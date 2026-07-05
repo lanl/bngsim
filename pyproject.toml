@@ -219,12 +219,21 @@ manylinux-x86_64-image = "manylinux_2_28"
 before-all = "dnf install -y epel-release && dnf install -y suitesparse-devel"
 
 [tool.cibuildwheel.macos]
-before-all = "brew install suite-sparse"
-environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "$(brew --prefix suite-sparse)" }
+# SuiteSparse/KLU built FROM SOURCE (shared, KLU subset) at a low deployment
+# target -> broad-compat wheels (brew's suite-sparse targets the runner OS, so
+# delocate forced a runner-OS wheel tag). Installs to $HOME/suitesparse; delocate
+# bundles the dylibs. See ci/build_suitesparse.sh (reads MACOSX_DEPLOYMENT_TARGET
+# so the dylibs' min target matches the wheel's).
+before-all = "bash ci/build_suitesparse.sh $HOME/suitesparse"
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "$HOME/suitesparse", CMAKE_PREFIX_PATH = "$HOME/suitesparse" }
 
 [tool.cibuildwheel.windows]
-before-all = "vcpkg install suitesparse:x64-windows"
+# SuiteSparse/KLU built FROM SOURCE (shared, KLU subset) with MSVC -> the
+# amd/colamd/btf import libs SUNDIALS' KLU TPL needs (vcpkg ships only
+# klu+suitesparseconfig -> AMD/COLAMD/BTF_LIBRARY-NOTFOUND). Installs to
+# C:/suitesparse; delvewheel bundles the DLLs from C:/suitesparse/bin.
+# See ci/build_suitesparse.ps1.
+before-all = "powershell -ExecutionPolicy Bypass -File ci/build_suitesparse.ps1 -Prefix C:/suitesparse"
 before-build = "pip install delvewheel"
-environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "C:/vcpkg/installed/x64-windows", CMAKE_PREFIX_PATH = "C:/vcpkg/installed/x64-windows", CMAKE_ARGS = "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" }
-# delvewheel vendors the KLU DLLs (from vcpkg's bin) into the wheel.
-repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel} --add-path C:/vcpkg/installed/x64-windows/bin"
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "C:/suitesparse", CMAKE_PREFIX_PATH = "C:/suitesparse" }
+repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel} --add-path C:/suitesparse/bin"

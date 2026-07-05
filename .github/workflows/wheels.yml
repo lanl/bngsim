@@ -15,6 +15,7 @@ on:
       - "include/**"
       - "third_party/**"
       - "python/bngsim/**"
+      - "ci/**"
       - ".github/workflows/wheels.yml"
 
 concurrency:
@@ -33,9 +34,9 @@ jobs:
         include:
           - os: ubuntu-latest          # manylinux x86_64
           - os: macos-13               # macOS x86_64 (Intel)
-            macos_target: "13.0"
+            macos_target: "10.15"      # from-source SuiteSparse -> broad target
           - os: macos-14               # macOS arm64 (Apple Silicon)
-            macos_target: "14.0"
+            macos_target: "11.0"       # arm64 floor; from-source SuiteSparse
           - os: windows-latest         # Windows x86_64
     steps:
       - uses: actions/checkout@v4
