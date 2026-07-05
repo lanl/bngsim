@@ -201,9 +201,10 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # SUNDIALS is fetched + statically linked by CMake (no runtime dependency).
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
-# Skip musllinux (SuiteSparse on musl needs a source build — add later), PyPy,
-# and 32-bit targets.
-skip = "*-musllinux_* pp* *_i686 *-win32"
+# Skip musllinux (SuiteSparse on musl needs a source build — add later) and
+# 32-bit targets. PyPy is already excluded by the cpXY-only `build` selector
+# above (an explicit `pp*` skip trips a cibuildwheel v4 "invalid selector" warning).
+skip = "*-musllinux_* *_i686 *-win32"
 build-verbosity = 1
 environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
 # Smoke test: the wheel imports in a clean env AND KLU is actually bundled +
