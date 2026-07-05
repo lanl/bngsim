@@ -79,6 +79,18 @@ if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
 cmake --install "$work/build" --config Release
 if ($LASTEXITCODE -ne 0) { throw "cmake install failed" }
 
+# SUNDIALS' FindKLU.cmake searches for amd/colamd/btf with a "lib" prefix (Unix
+# convention: `set(CMAKE_FIND_LIBRARY_PREFIXES lib ...)` collapses to just "lib"
+# on Windows, where the default prefix is empty), but MSVC names the import libs
+# amd.lib/colamd.lib/btf.lib. Without this, SUNDIALS reports AMD/COLAMD/BTF-
+# NOTFOUND at SundialsKLU.cmake try_compile even though the libs are present.
+# Provide lib-prefixed duplicates so both naming conventions resolve.
+foreach ($n in @("amd", "colamd", "btf", "klu", "suitesparseconfig")) {
+    $src = Join-Path $Prefix "lib/$n.lib"
+    $dst = Join-Path $Prefix "lib/lib$n.lib"
+    if ((Test-Path $src) -and -not (Test-Path $dst)) { Copy-Item $src $dst }
+}
+
 Write-Host "==> Installed SuiteSparse to ${Prefix}:"
 Get-ChildItem "$Prefix/bin" -ErrorAction SilentlyContinue | Select-Object Name
 Get-ChildItem "$Prefix/lib" -ErrorAction SilentlyContinue | Select-Object Name
