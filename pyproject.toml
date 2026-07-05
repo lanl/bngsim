@@ -159,6 +159,12 @@ wheel.exclude = [
 
 [tool.scikit-build.cmake.define]
 BNGSIM_BUILD_PYTHON = "ON"
+# Every pip build — wheel AND sdist source-install — must get SuiteSparse/KLU or
+# fail loudly with the GH #209 message, never a silent dense-only fallback (KLU is
+# essential for efficiency on sparse networks). Defining it here guarantees it
+# reaches CMake for all scikit-build-core builds; the cibuildwheel `environment`
+# sets the same var but as a bare env var it does not reach CMake's option().
+BNGSIM_REQUIRE_KLU = "ON"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
