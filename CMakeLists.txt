@@ -69,6 +69,11 @@ option(BNGSIM_ENABLE_KLU "Enable SuiteSparse/KLU sparse Jacobian support when av
 # SuiteSparse/KLU is a FATAL_ERROR instead of a silent dense-only fallback —
 # so an HPC/CI deployment can never ship a dense-only build unnoticed.
 option(BNGSIM_REQUIRE_KLU "Fail the build if SuiteSparse/KLU is not found/usable" OFF)
+# Gold-standard self-sufficiency (GH #209): when no system SuiteSparse/KLU is
+# found, build a pinned KLU subset from source and bundle it beside the
+# extension, so an sdist `pip install` on a box with no SuiteSparse still gets
+# the sparse solver instead of failing (REQUIRE_KLU) or degrading to dense.
+option(BNGSIM_KLU_AUTOBUILD "Build+bundle a pinned SuiteSparse/KLU subset from source when none is found" ON)
 
 # When building Python bindings, build everything as static libraries so the
 # extension module (.so/.dylib) is fully self-contained.
@@ -165,6 +170,83 @@ macro(_bngsim_require_klu_or_die _reason)
             "Or drop the requirement: -DBNGSIM_REQUIRE_KLU=OFF (default), or "
             "disable sparse support entirely with -DBNGSIM_ENABLE_KLU=OFF."
         )
+    endif()
+endmacro()
+
+# Gold-standard fallback (GH #209): build the pinned SuiteSparse/KLU subset from
+# source at configure time (ci/build_suitesparse.sh) and bundle the shared libs
+# next to the extension, so `pip install` from an sdist gets KLU even with no
+# system SuiteSparse — instead of failing (REQUIRE_KLU) or silently degrading to
+# the dense O(N^3) solver. Reuses the same recipe as the wheels, but tells it to
+# emit relocatable install names (@rpath/$ORIGIN) since no delocate/auditwheel
+# runs on an sdist install; the extension gets a matching rpath below.
+#
+# Gated to non-Windows (Windows ships a wheel; its from-source build needs the
+# MSVC/OpenBLAS handling in ci/build_suitesparse.ps1). On any failure — e.g.
+# Linux with no BLAS for SuiteSparse_config's find_package(BLAS REQUIRED) — this
+# leaves BNGSIM_KLU_FOUND OFF so the caller falls through to require-or-die.
+macro(_bngsim_autobuild_klu)
+    if(WIN32)
+        message(STATUS
+            "BNGsim: SuiteSparse/KLU auto-build is not supported on Windows — "
+            "install the published wheel or SuiteSparse and re-configure.")
+    else()
+        find_program(BNGSIM_BASH bash)
+        find_program(BNGSIM_GIT git)
+        if(NOT BNGSIM_BASH OR NOT BNGSIM_GIT)
+            message(STATUS
+                "BNGsim: SuiteSparse/KLU auto-build needs both bash and git on "
+                "PATH; not found — skipping the from-source fallback.")
+        else()
+            set(_bngsim_klu_prefix "${CMAKE_BINARY_DIR}/_bngsim_klu_autobuild")
+            set(_bngsim_ss_script "${CMAKE_CURRENT_SOURCE_DIR}/ci/build_suitesparse.sh")
+            # Relocatable install: @rpath install-names plus an rpath so the KLU
+            # dylibs find each other once copied beside the extension.
+            set(_bngsim_ss_env "")
+            if(APPLE)
+                list(APPEND _bngsim_ss_env
+                    "SS_INSTALL_NAME_DIR=@rpath" "SS_INSTALL_RPATH=@loader_path")
+                if(CMAKE_OSX_DEPLOYMENT_TARGET)
+                    list(APPEND _bngsim_ss_env
+                        "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+                endif()
+            else()
+                list(APPEND _bngsim_ss_env "SS_INSTALL_RPATH=$ORIGIN")
+            endif()
+            message(STATUS
+                "BNGsim: SuiteSparse/KLU not found — building the pinned KLU "
+                "subset from source into ${_bngsim_klu_prefix} (one-time, ~1-2 min) …")
+            execute_process(
+                COMMAND ${CMAKE_COMMAND} -E env ${_bngsim_ss_env}
+                        ${BNGSIM_BASH} ${_bngsim_ss_script} ${_bngsim_klu_prefix}
+                RESULT_VARIABLE _bngsim_ss_rc)
+            if(NOT _bngsim_ss_rc EQUAL 0)
+                message(STATUS
+                    "BNGsim: SuiteSparse/KLU auto-build FAILED (exit ${_bngsim_ss_rc}); "
+                    "see the output above. Falling back to system discovery result.")
+            else()
+                # Re-discover against the freshly built prefix. Clear any cached
+                # NOTFOUND from the first probe so find_* actually re-searches.
+                unset(KLU_INCLUDE_DIR CACHE)
+                unset(KLU_LIBRARY CACHE)
+                unset(KLU_LIBRARY_DIR CACHE)
+                set(KLU_ROOT "${_bngsim_klu_prefix}")
+                _bngsim_discover_klu()
+                if(BNGSIM_KLU_FOUND)
+                    # Bundle the built dylibs beside the extension (install rule +
+                    # extension rpath added after the target is defined).
+                    set(BNGSIM_KLU_AUTOBUILT ON)
+                    set(BNGSIM_KLU_BUNDLE_DIR "${KLU_LIBRARY_DIR}")
+                    message(STATUS
+                        "BNGsim: built + bundling SuiteSparse/KLU from source — "
+                        "lib=${KLU_LIBRARY_DIR}")
+                else()
+                    message(STATUS
+                        "BNGsim: SuiteSparse/KLU auto-build installed but KLU is "
+                        "still not discoverable under ${_bngsim_klu_prefix}.")
+                endif()
+            endif()
+        endif()
     endif()
 endmacro()
 
@@ -274,6 +356,12 @@ else()
     # (set by the macro from the resolved libklu); nothing is FORCE-stomped.
     if(BNGSIM_ENABLE_KLU)
         _bngsim_discover_klu()
+        # No system SuiteSparse? Build+bundle the pinned KLU subset from source
+        # (self-sufficient sdist installs) before giving up. Sets BNGSIM_KLU_FOUND
+        # + BNGSIM_KLU_AUTOBUILT on success.
+        if(NOT BNGSIM_KLU_FOUND AND BNGSIM_KLU_AUTOBUILD)
+            _bngsim_autobuild_klu()
+        endif()
         if(BNGSIM_KLU_FOUND)
             set(ENABLE_KLU ON CACHE BOOL "" FORCE)
             message(STATUS "BNGsim: found SuiteSparse/KLU — "
@@ -871,6 +959,31 @@ if(BNGSIM_BUILD_PYTHON)
     # wheel.install-dir = "bngsim" in pyproject.toml, so DESTINATION "."
     # puts the .so at bngsim/_bngsim_core.so (inside the Python package).
     install(TARGETS _bngsim_core DESTINATION .)
+
+    # When KLU was built from source (no system SuiteSparse — the sdist
+    # fallback), delocate/auditwheel does not run, so bundle the shared libs
+    # ourselves: copy them into bngsim/.dylibs and point the extension's rpath
+    # there. The libs already carry @rpath/$ORIGIN install-names + an rpath to
+    # find each other (ci/build_suitesparse.sh, SS_INSTALL_* env). No-op on the
+    # wheel path, where system KLU is discovered and the repair tool bundles it.
+    if(BNGSIM_KLU_AUTOBUILT)
+        # Copy the whole KLU shared-lib set (SuiteSparse ships each as a
+        # real file + a SONAME symlink + an unversioned dev symlink). We match
+        # every dylib/so, not just the SONAME the extension references: matching
+        # only the SONAME would select the *symlink* while excluding its real
+        # target, leaving a dangling link the wheel writer drops. The writer
+        # dereferences the symlinks into copies, so the bundle carries a few
+        # redundant copies — acceptable for this no-system-SuiteSparse fallback.
+        install(DIRECTORY "${BNGSIM_KLU_BUNDLE_DIR}/" DESTINATION .dylibs
+                FILES_MATCHING PATTERN "*.dylib" PATTERN "*.so*")
+        if(APPLE)
+            set_property(TARGET _bngsim_core APPEND PROPERTY
+                INSTALL_RPATH "@loader_path/.dylibs")
+        else()
+            set_property(TARGET _bngsim_core APPEND PROPERTY
+                INSTALL_RPATH "$ORIGIN/.dylibs")
+        endif()
+    endif()
 endif()
 
 # ─── Install (C++ library — standalone builds only) ───────────────────────
