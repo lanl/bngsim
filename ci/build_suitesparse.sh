@@ -14,6 +14,13 @@
 # delocate / delvewheel) rather than static-linking (which triggers LGPL relink
 # obligations).
 #
+# SUITESPARSE_USE_FORTRAN=OFF: AMD ships an optional Fortran interface KLU never
+# calls. When a Fortran compiler is on PATH (e.g. a dev box with Homebrew gcc's
+# gfortran) SuiteSparse builds it, linking libamd against Homebrew's
+# libgfortran/libgcc_s/libquadmath (min target 11.0/15.0) -> delocate then refuses
+# the low-tagged wheel. The bare CI runners have no gfortran so they never hit it;
+# disabling Fortran makes the build reproducible regardless of host toolchain.
+#
 # Usage: build_suitesparse.sh <install-prefix>
 #   Reads MACOSX_DEPLOYMENT_TARGET from the env (set by the workflow matrix) so
 #   the SuiteSparse dylibs' min target matches the wheel's; falls back to an
@@ -39,8 +46,21 @@ if ! command -v cmake >/dev/null 2>&1; then
 fi
 cmake --version | head -1
 
-# --- platform-specific CMake args ---------------------------------------------
-osx_args=()
+# --- CMake args (single array; kept non-empty so "${args[@]}" is safe under
+#     `set -u` on macOS's stock bash 3.2, where expanding an empty array errors) -
+args=(
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_INSTALL_PREFIX="${PREFIX}"
+    -DBUILD_SHARED_LIBS=ON
+    -DBUILD_STATIC_LIBS=OFF
+    -DSUITESPARSE_ENABLE_PROJECTS="suitesparse_config;amd;colamd;btf;klu"
+    -DKLU_USE_CHOLMOD=OFF
+    -DSUITESPARSE_USE_FORTRAN=OFF
+    -DSUITESPARSE_USE_OPENMP=OFF
+    -DSUITESPARSE_USE_CUDA=OFF
+    -DSUITESPARSE_DEMOS=OFF
+)
+
 if [[ "$(uname -s)" == "Darwin" ]]; then
     arch="$(uname -m)"
     # Prefer the wheel's target so SuiteSparse dylibs and the extension agree;
@@ -53,13 +73,23 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     else
         target="10.15"
     fi
-    osx_args+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=${target}"
-               "-DCMAKE_OSX_ARCHITECTURES=${arch}"
-               # Absolute install names (like Homebrew's) so delocate resolves
-               # the dylibs by path at repair time, independent of the extension's
-               # rpath (which scikit-build does not point at this prefix).
-               "-DCMAKE_INSTALL_NAME_DIR=${PREFIX}/lib")
+    # Install names: absolute ${PREFIX}/lib by default (like Homebrew's), so
+    # delocate resolves the dylibs by path at wheel-repair time. The CMake sdist
+    # fallback (no delocate) sets SS_INSTALL_NAME_DIR=@rpath instead so the
+    # dylibs are relocatable via the extension's rpath.
+    args+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=${target}"
+           "-DCMAKE_OSX_ARCHITECTURES=${arch}"
+           "-DCMAKE_INSTALL_NAME_DIR=${SS_INSTALL_NAME_DIR:-${PREFIX}/lib}")
     echo "==> macOS ${arch}, deployment target ${target}"
+fi
+
+# Optional install RPATH baked into the dylibs so they locate each other once
+# copied beside the extension (the sdist fallback sets SS_INSTALL_RPATH to
+# @loader_path on macOS / $ORIGIN on Linux). Unset by default → no change to the
+# wheel path, whose dylibs are resolved by absolute name / auditwheel.
+if [[ -n "${SS_INSTALL_RPATH:-}" ]]; then
+    args+=("-DCMAKE_INSTALL_RPATH=${SS_INSTALL_RPATH}"
+           "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON")
 fi
 
 # --- fetch (shallow clone of the pinned tag, verify the commit) ---------------
@@ -74,17 +104,7 @@ if [[ "${got}" != "${SS_COMMIT}" ]]; then
 fi
 
 # --- configure + build + install (KLU subset, shared, no OpenMP/CUDA) ---------
-cmake -B "${work}/build" -S "${work}/SuiteSparse" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
-    -DBUILD_SHARED_LIBS=ON \
-    -DBUILD_STATIC_LIBS=OFF \
-    -DSUITESPARSE_ENABLE_PROJECTS="suitesparse_config;amd;colamd;btf;klu" \
-    -DKLU_USE_CHOLMOD=OFF \
-    -DSUITESPARSE_USE_OPENMP=OFF \
-    -DSUITESPARSE_USE_CUDA=OFF \
-    -DSUITESPARSE_DEMOS=OFF \
-    "${osx_args[@]}"
+cmake -B "${work}/build" -S "${work}/SuiteSparse" "${args[@]}"
 
 cmake --build "${work}/build" --config Release -j
 cmake --install "${work}/build" --config Release
