@@ -1,0 +1,65 @@
+name: wheels
+
+# Build binary wheels (Linux / macOS / Windows) + an sdist with cibuildwheel,
+# and upload them as CI artifacts. No PyPI publishing — that's a separate step.
+# Wheels bundle SuiteSparse/KLU (see [tool.cibuildwheel] in pyproject.toml).
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "CMakeLists.txt"
+      - "src/**"
+      - "include/**"
+      - "third_party/**"
+      - "python/bngsim/**"
+      - ".github/workflows/wheels.yml"
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheels:
+    name: wheels · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest          # manylinux x86_64
+          - os: macos-13               # macOS x86_64 (Intel)
+            macos_target: "10.15"
+          - os: macos-14               # macOS arm64 (Apple Silicon)
+            macos_target: "11.0"
+          - os: windows-latest         # Windows x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        run: pipx run build --sdist
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: ./dist/*.tar.gz
+          if-no-files-found: error

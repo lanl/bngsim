@@ -193,3 +193,38 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "harness/**" = ["E501"]
 "scripts/**" = ["E501"]
 "parity_checks/**" = ["E501"]
+
+# ── cibuildwheel: binary wheels for Linux / macOS / Windows (GH #140) ─────────
+# Wheels bundle SuiteSparse/KLU: BNGSIM_REQUIRE_KLU=ON makes a build that cannot
+# find KLU fail loudly instead of silently shipping the dense-only fallback, and
+# auditwheel/delocate/delvewheel then vendor the KLU shared libs into the wheel.
+# SUNDIALS is fetched + statically linked by CMake (no runtime dependency).
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+# Skip musllinux (SuiteSparse on musl needs a source build — add later), PyPy,
+# and 32-bit targets.
+skip = "*-musllinux_* pp* *_i686 *-win32"
+build-verbosity = 1
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
+# Smoke test: the wheel imports in a clean env AND KLU is actually bundled +
+# loadable (HAS_KLU is False when the sparse solver was not linked).
+test-command = 'python -c "import bngsim; print(bngsim.__version__); assert bngsim.HAS_KLU"'
+
+[tool.cibuildwheel.linux]
+# manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its
+# klu.h lands in /usr/include/suitesparse — covered by the CMake find_path
+# suffix. x86_64 only for now (aarch64 via QEMU is slow; add later).
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux_2_28"
+before-all = "dnf install -y epel-release && dnf install -y suitesparse-devel"
+
+[tool.cibuildwheel.macos]
+before-all = "brew install suite-sparse"
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "$(brew --prefix suite-sparse)" }
+
+[tool.cibuildwheel.windows]
+before-all = "vcpkg install suitesparse:x64-windows"
+before-build = "pip install delvewheel"
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "C:/vcpkg/installed/x64-windows", CMAKE_PREFIX_PATH = "C:/vcpkg/installed/x64-windows" }
+# delvewheel vendors the KLU DLLs (from vcpkg's bin) into the wheel.
+repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel} --add-path C:/vcpkg/installed/x64-windows/bin"
