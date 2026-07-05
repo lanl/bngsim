@@ -38,6 +38,7 @@ jobs:
           - os: ubuntu-latest        # manylinux x86_64
           - os: macos-14             # macOS arm64 (Apple Silicon)
             macos_target: "11.0"
+          - os: windows-latest       # Windows x86_64 (KLU via from-source SuiteSparse)
     steps:
       - uses: actions/checkout@v4
       - name: Build wheels
@@ -81,4 +82,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          # Idempotent: skip any file already present for this version (e.g. when
+          # backfilling a newly-supported platform's wheels into an existing release).
+          skip-existing: true
           repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
