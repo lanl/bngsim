@@ -225,6 +225,6 @@ environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE
 [tool.cibuildwheel.windows]
 before-all = "vcpkg install suitesparse:x64-windows"
 before-build = "pip install delvewheel"
-environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "C:/vcpkg/installed/x64-windows", CMAKE_PREFIX_PATH = "C:/vcpkg/installed/x64-windows" }
+environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON", SUITESPARSE_ROOT = "C:/vcpkg/installed/x64-windows", CMAKE_PREFIX_PATH = "C:/vcpkg/installed/x64-windows", CMAKE_ARGS = "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" }
 # delvewheel vendors the KLU DLLs (from vcpkg's bin) into the wheel.
 repair-wheel-command = "delvewheel repair -w {dest_dir} {wheel} --add-path C:/vcpkg/installed/x64-windows/bin"
