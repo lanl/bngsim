@@ -1,0 +1,84 @@
+name: release
+
+# Build release artifacts (wheels + sdist) and publish via PyPI Trusted
+# Publishing (OIDC — no API tokens).
+#
+#   - Manual run (workflow_dispatch): choose `testpypi` (rehearsal) or `pypi`.
+#   - Tag push (v*): publishes to PyPI.
+#
+# Scope: Linux (manylinux x86_64) + macOS arm64 + sdist. Intel-macOS / Windows
+# wheels can be added later; platforms without a wheel fall back to the sdist.
+#
+# The publish job runs in the `pypi` / `testpypi` GitHub Environment so it matches
+# the trusted-publisher configuration on (Test)PyPI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  wheels:
+    name: wheels · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest        # manylinux x86_64
+          - os: macos-14             # macOS arm64 (Apple Silicon)
+            macos_target: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-sdist
+          path: ./dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    # `pypi` for a tag push or an explicit dispatch target of pypi; else `testpypi`.
+    environment: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'pypi' || 'testpypi' }}
+    permissions:
+      id-token: write        # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: List collected distributions
+        run: ls -la dist
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
