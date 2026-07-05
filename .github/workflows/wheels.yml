@@ -26,8 +26,6 @@ jobs:
   wheels:
     name: wheels · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Windows KLU (vcpkg AMD/COLAMD/BTF + dlsym) still WIP → non-blocking.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
