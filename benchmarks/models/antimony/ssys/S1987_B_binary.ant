@@ -1,0 +1,48 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Appendix B - Half system to Binary system transformation
+//          Equations B4-B6
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z1(0) = Z10, Z2(0) = Z20, Z3(0) = Z30
+//
+// Original Half system (Equation B4):
+//   dZ1/dt = 3*Z1^(-1/3)*Z2^(1/2)
+//   dZ2/dt = -Z1^2*Z3
+//   dZ3/dt = 0.5*Z1*Z3
+//
+// Binary systems have exponents that are all 0 or 1.
+// This is achieved by introducing new variables for each power-law factor.
+//
+// Recast Binary system (6 variables, Equation B6):
+//   Define: V11 = Z1^(-1/3), V12 = Z2^(1/2), V21 = Z1^2, V33 = Z3
+//   Then eliminate Z variables and add U1 = V11^2 to remove squares
+//
+//   dX1/dt = -X1*X2
+//   dX2/dt = -0.5*X2*X3
+//   dX3/dt = 12*X1*X2*X4
+//   dX4/dt = 3*X1*X2*X4
+//   dX5/dt = 0.5*X4*X6
+//   dX6/dt = -2*X1*X2*X4
+//
+// where X1=V11, X2=V12, X3=V21, X4=V33, X5=Z3=V33, X6=U1
+// X(0) = (Z10^(-1/3), Z20^(1/2), Z10^2, Z30, Z30, Z10^(-2/3))
+//
+// NOTE: Parameter values added for simulation purposes.
+// =============================================================================
+
+model S1987_B_binary()
+    // Original Half system
+    Z1' = 3*Z1^(-1/3)*Z2^(1/2)
+    Z2' = -Z1^2*Z3
+    Z3' = 0.5*Z1*Z3
+    
+    // Initial conditions (added for simulation)
+    Z1 = 1.0
+    Z2 = 1.0
+    Z3 = 1.0
+end
+// @SIM T_START=0 T_END=0.387 N_STEPS=387 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

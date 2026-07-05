@@ -1,0 +1,185 @@
+{
+  "name": "NFsim",
+  "vendored_path": "bngsim/third_party/nfsim",
+  "source": {
+    "local_checkout": "/private/tmp/nfsim-vendor-candidate",
+    "upstream_remote": "https://github.com/RuleWorld/nfsim.git",
+    "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
+    "fork_remote": null,
+    "branch_or_ref": "bngsim/vendor",
+    "commit": "8478a3c85c6ed382ff27b4c5f145cf97525b873d",
+    "base_ref": "origin/master",
+    "base_commit": "4c3da839f6c1ecdf1a1ea32942c5de52904e0377"
+  },
+  "imported_at_utc": "2026-06-14T02:22:24+00:00",
+  "pruning": {
+    "included_paths": [
+      "CMakeLists.txt",
+      "LICENSE.txt",
+      "README.md",
+      "src"
+    ],
+    "excluded_paths": [
+      "src/NFtest",
+      "src/NFfunction/muParser",
+      "src/NFfunction/exprtk",
+      "src/NFutil/MTrand/mttest.cpp"
+    ]
+  },
+  "carry_queue": [
+    {
+      "topic": "bngsim/carry-v1143-compat",
+      "kind": "local",
+      "status": "BNGsim selector compatibility toggle for same-seed parity with NFsim v1.14.3 CLI behavior.",
+      "commits": [
+        {
+          "commit": "dcce96d80aca19c4a27f1881035a424cb1caae83",
+          "summary": "bngsim: add NFsim v1.14.3 selector compat toggle"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-exception-safety",
+      "kind": "local",
+      "status": "Raise an exception instead of terminating when the global molecule limit is exceeded.",
+      "commits": [
+        {
+          "commit": "8c6974906573d7897268cb4fd87948d9ce7929c0",
+          "summary": "bngsim: throw when molecule limit is exceeded"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-tfun-comments",
+      "kind": "local",
+      "status": "Ignore comment lines in TFUN data files used by BNG fixtures.",
+      "commits": [
+        {
+          "commit": "bd88bad22ee128680b0818070e758e5c51a90fd1",
+          "summary": "bngsim: ignore comments in TFUN data files"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-subproject-macos-arch",
+      "kind": "local",
+      "status": "Do not force universal macOS architectures inside vendored NFsim subprojects; the embedding build owns target-architecture choice.",
+      "commits": [
+        {
+          "commit": "b7060fec03467885e7b50bf626ee06e36d1ac6fe",
+          "summary": "bngsim: don't force universal macOS arch in subprojects"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-exit-to-exception",
+      "kind": "local",
+      "status": "Convert exit(1) calls to throw std::runtime_error across six NFsim files so malformed input and other fatal-error paths raise exceptions instead of killing the embedding host. Originally landed as PyBNF-Private bngsim 9c77d2ec (Session 29, Feb 22 2026) but written directly into bngsim/third_party/nfsim and silently reverted by 008529a7 on May 15 2026; now staged here so future vendor_nfsim.py refreshes preserve it.",
+      "commits": [
+        {
+          "commit": "8321769384f69f0992be2373f718cd713bea5c2f",
+          "summary": "bngsim: convert exit(1) calls to throw std::runtime_error"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-multibond-molecularity",
+      "kind": "local",
+      "status": "Fix TransformationSet::checkMolecularity for rules that delete several bonds at once to open a cyclic complex. The Issue #48 product-molecularity check tested each deleted bond in isolation (canReachExcludingBond, single bond), so a symmetric two-bond homodimer dissociation never fired \u2014 each ring bond alone leaves the partners connected through the other \u2014 and the dimer became a kinetic trap, over-assembling versus the network ODE and upstream NFsim (internal#57). Now the full set of bonds the rule deletes is excluded at once (canReachExcludingBonds); single-bond ring dissociations that genuinely fail molecularity (internal#54/#55) stay blocked. Candidate to push upstream.",
+      "commits": [
+        {
+          "commit": "6de87b43674c8af566a4792b5b7c9176f6ec7643",
+          "summary": "bngsim: fix product-molecularity check for multi-bond ring-opening"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-species-obs-complex-tracking",
+      "kind": "local",
+      "status": "Track complexes (System.useComplex) whenever the model declares a Species-typed observable, independently of the -bscb policy. useComplex was derived solely from blockSameComplexBinding, so with same-complex binding allowed (-bscb off) Species observables were counted with complex tracking disabled and reported wildly inflated values (~1.5e6 interfaces from ~400 molecules, no real aggregation) (internal#57, phenomenon 2). The retroactive setUsingComplex() for Species observables (Issue #49) flips the flag too late to repair the incremental counters. Pre-scan the XML for Species observables before System construction and set useComplex = blockSameComplexBinding || hasSpeciesObservable. Candidate to push upstream.",
+      "commits": [
+        {
+          "commit": "cc920af56e765fc48e6b6314653c01376213ee04",
+          "summary": "bngsim: track complexes for Species observables regardless of -bscb"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-reserved-symbol-remap",
+      "kind": "local",
+      "status": "Forward the mu::Parser ExprTk shim's BNG identifier -> ExprTk symbol mapping (the unconditional leading-underscore remap and the conditional reserved-symbol mangle, nfsim_funcparser.h) to the host single source bngsim::expr_compat (compute_registration_name + remap_name, exposed via <bngsim/expr_compat.hpp> and linked into the vendored NFsim target through bngsim::expression). Previously this logic was hand-ported into the shim alongside the same code in bngsim/src/expression.cpp; that dual ownership is the drift risk issue #49 flags. The shim now keeps only the thin mu::Parser adapter state (the per-parser mangled-name map and the call-form ambiguity check). The host reserved set is a superset of the shim's former one (it also guards the `time` alias and the u_* constant keys from GH #90); the extra names only add internally-consistent mangling, so behavior is unchanged on the full suite. Closes the reserved-symbol half of the BNG-compatibility split (internal#49, originally #64).",
+      "commits": [
+        {
+          "commit": "958058ba9e82a2b0d4354c5a935c4bba95d341b0",
+          "summary": "bngsim: forward mu::Parser reserved-symbol remap to host expr_compat"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-mratio-builtin",
+      "kind": "local",
+      "status": "Forward the NFsim ExprTk mu::Parser shim's mratio(a,b,z) built-in \u2014 confluent hypergeometric ratio M(a+1,b+1,z)/M(a,b,z), BNG2.pl Perl2/Expression.pm \u2014 to the host single source bngsim::expr_compat::mratio (nfsim_funcparser.h). The modified-Lentz continued-fraction implementation was previously ported verbatim from bngsim/src/expression.cpp into the shim; now both the NFsim shim and the ODE/SSA engine evaluate it from one definition. The shim still registers `mratio` as a 3-arg ExprTk function; only the adapter body changes. Closes the mratio half of the BNG-compatibility split (internal#49, originally #64).",
+      "commits": [
+        {
+          "commit": "b18a561a6676c4a79720ca55a4b872d7593efa6f",
+          "summary": "bngsim: forward mu::Parser mratio() built-in to host expr_compat"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-reactant-count-composite-guard",
+      "kind": "local",
+      "status": "Guard CompositeFunction::evaluateOn against a missing reactant-count context when a composite depends on reactant_N(). bngsim probes composites scope-free to discover scalar output columns; without this guard, reactant-count-only composites dereference a NULL count buffer and segfault during initialize() instead of being skipped as non-scalar output functions (GH #116).",
+      "commits": [
+        {
+          "commit": "e7223236dd5ce380243a984eb055bc8ca812bdc2",
+          "summary": "bngsim: guard reactant-count composite scope-free eval"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-products-selector-hard-stop",
+      "kind": "local",
+      "status": "Restore the pre-PR-85 hard load failure for include_products()/exclude_products(). Upstream origin/master now parses product-side selector blocks, but BNGsim's regression contract is still to fail loudly rather than silently change semantics mid-refresh; keep the clear 'not yet enforced in NFsim' abort until the products-side selector implementation is finished and validated deliberately.",
+      "commits": [
+        {
+          "commit": "6f7f7a71208069bdc0a9989af35215f55a27b8b6",
+          "summary": "bngsim: restore hard stop for include_products/exclude_products"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-prune-nftest-facade",
+      "kind": "local",
+      "status": "Prune NFtest-only headers from NFsim.hh in the vendored facade. The generated vendor export still omits src/NFtest/, but upstream NFsim.hh includes those test harness headers directly; without this carry, embedding/library builds fail on missing NFtest paths even when NFSIM_BUILD_EXECUTABLE is off.",
+      "commits": [
+        {
+          "commit": "6cffc8788c2964a77dd74161f2144e56e6c3588c",
+          "summary": "bngsim: prune NFtest headers from vendored facade"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-library-only-cli-trim",
+      "kind": "local",
+      "status": "Trim standalone CLI and NFtest-only sources from NFsim's current top-level CMake build when BNGsim builds the vendored library with NFSIM_BUILD_LIBRARY=ON and NFSIM_BUILD_EXECUTABLE=OFF. The vendor export omits src/NFtest, so library-only builds must not compile NFsim.cpp, Scheduler.cpp, or the NFtest harness sources.",
+      "commits": [
+        {
+          "commit": "08f137b9d412ccb346bf62678ebc97a0874fbfad",
+          "summary": "bngsim: trim CLI sources from library-only NFsim build"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-step-to-cache-hook",
+      "kind": "local",
+      "status": "Restore the public System::invalidateStepToCache() compatibility hook that bngsim's session wrapper uses after parameter and species mutations. Upstream NFsim still keeps the pending stepTo() cache internally, but the method is protected again; expose the existing cache reset logic so the host build and runtime stay compatible.",
+      "commits": [
+        {
+          "commit": "f1f21e84cd182e62263ece6ef56c69427c2c00ee",
+          "summary": "bngsim: restore stepTo cache compatibility hook"
+        }
+      ]
+    }
+  ]
+}

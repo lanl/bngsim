@@ -1,0 +1,79 @@
+begin model
+#@model_id: m07_SIR
+#@title: SIR epidemiological model
+#@description: Classic Kermack-McKendrick SIR model with mass-action infection (beta*S*I) and first-order recovery (gamma*I). NYC-scale initial conditions.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA          6.02214076e23  # 1/mol
+  V_ref       1.0            # L
+  f           1.0            # dimensionless scaling factor
+
+  S0          20000000       # molecules  total initial population
+  beta_rate   1e-7           # 1/(s*molecule)  infection rate per contact
+  gamma_rate  0.142857142857143  # 1/s  recovery rate (~1/7)
+
+  S_init      19999999       # molecules  initial susceptible
+  I_init      1              # molecules  initial infected
+  R_init      0              # molecules  initial recovered
+end parameters
+
+begin molecule types
+  S()
+  I()
+  R()
+end molecule types
+
+begin seed species
+  S()  S_init  # molecules
+  I()  I_init  # molecules
+  R()  R_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_S  S()
+  Molecules  Obs_Tot_I  I()
+  Molecules  Obs_Tot_R  R()
+end observables
+
+begin functions
+  # Infection propensity: beta_rate * S * I
+  rate_infection() = beta_rate * Obs_Tot_S * Obs_Tot_I
+end functions
+
+begin reaction rules
+  # Infection: S -> I at rate beta_rate*S*I
+  # Decomposed: S is consumed with functional rate beta_rate*S*I / S = beta_rate*I
+  # and I is produced at rate beta_rate*S*I
+  # Using two separate rules for consumption and production:
+
+  # S consumption (infection removes one S)
+  S() -> 0  beta_rate*Obs_Tot_I
+
+  # I production from infection
+  0 -> I()  rate_infection()
+
+  # I consumption by recovery (first-order)
+  I() -> 0  gamma_rate
+
+  # R production from recovery
+  0 -> R()  gamma_rate*Obs_Tot_I
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+end actions

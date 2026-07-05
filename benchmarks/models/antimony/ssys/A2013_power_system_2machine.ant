@@ -1,0 +1,65 @@
+// Power System Stability - 2-Machine with Transfer Conductances
+// Source: Anghel, Milano & Papachristodoulou, IEEE Trans. Circuits Syst. I (2013)
+// Section V-B: Model B
+//
+// Original equations (swing equations with trigonometric nonlinearities and losses):
+//   dθ₁/dt = ω₁
+//   dω₁/dt = -2.6 sin(θ₁) + 0.2 cos(θ₁) - sin(θ₁-θ₂) - 0.1 cos(θ₁-θ₂) + 1.0
+//   dθ₂/dt = ω₂  
+//   dω₂/dt = - sin(θ₂-θ₁) + 0.1 cos(θ₂-θ₁) - 1.8 sin(θ₂) + 0.1 cos(θ₂) + 0.5
+//
+// where θ₁, θ₂ are relative angles w.r.t. infinite bus
+// The cos() terms represent transfer conductances (system losses)
+//
+// Parameters: H₁=1, H₂=1, D=0 (no damping)
+// Stable equilibrium: θ₁ˢ = 0.2, θ₂ˢ = 0.1
+//
+// ==============================================================================
+// RECASTING TO POLYNOMIAL DAE (Section V-B):
+// ==============================================================================
+// To apply SOS/SDP techniques, trigonometric terms are recast to polynomial form.
+// 
+// Change of variables (shifted coordinates):
+//   δ₁ = θ₁ - θ₁ˢ,  δ₂ = θ₂ - θ₂ˢ  (shift equilibrium to origin)
+//
+// Recasting variables:
+//   c₁ = cos(δ₁),  s₁ = sin(δ₁)
+//   c₂ = cos(δ₂),  s₂ = sin(δ₂)
+//
+// Algebraic constraints (required for exact equivalence):
+//   c₁² + s₁² = 1
+//   c₂² + s₂² = 1
+//
+// The dynamics become polynomial in (ω₁, ω₂, c₁, s₁, c₂, s₂) on the manifold.
+//
+// Note: No analytical energy function exists for this system (transfer 
+// conductances violate the conditions). However, Lyapunov functions can 
+// still be constructed algorithmically using the polynomial recast form.
+// ==============================================================================
+
+model A2013_power_system_2machine()
+  // Variables (original trigonometric form, shifted coordinates)
+  compartment cell = 1;var species delta1 in cell; var species omega1 in cell; var species delta2 in cell; var species omega2 in cell
+
+  // Parameters (from paper)
+  // Stable equilibrium shifted to origin
+  theta1s := 0.2; theta2s := 0.1
+  
+  // Original trigonometric equations (in shifted coordinates)
+  
+  // dδ₁/dt = ω₁
+  delta1' = omega1
+  
+  // dω₁/dt = -2.6 sin(θ₁) + 0.2 cos(θ₁) - sin(θ₁-θ₂) - 0.1 cos(θ₁-θ₂) + 1.0
+  omega1' = -2.6 * sin(delta1 + theta1s) + 0.2 * cos(delta1 + theta1s) - sin(delta1 + theta1s - delta2 - theta2s) - 0.1 * cos(delta1 + theta1s - delta2 - theta2s) + 1.0
+  
+  // dδ₂/dt = ω₂
+  delta2' = omega2
+  
+  // dω₂/dt = - sin(θ₂-θ₁) + 0.1 cos(θ₂-θ₁) - 1.8 sin(θ₂) + 0.1 cos(θ₂) + 0.5
+  omega2' = -sin(delta2 + theta2s - delta1 - theta1s) + 0.1 * cos(delta2 + theta2s - delta1 - theta1s) - 1.8 * sin(delta2 + theta2s) + 0.1 * cos(delta2 + theta2s) + 0.5
+  
+  // Initial conditions (at shifted equilibrium = origin)
+  delta1 = 0.0; omega1 = 0.0; delta2 = 0.0; omega2 = 0.0; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

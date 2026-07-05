@@ -1,0 +1,98 @@
+begin model
+begin parameters
+    # Integrated Stress Response: eIF2alpha and the translational gate.
+    # Advanced features: if function for pulsatile stress and eIF2B sequestration logic.
+    
+    # Stress Stimulus
+    k_stress_amp 5.0
+    k_perk_act 1.0
+    
+    # eIF2a Signaling
+    k_phos 2.0         # Kinase-mediated phosphorylation
+    k_dephos_basal 0.1
+    k_dephos_fb 0.8    # GADD34-mediated (Feedback)
+    
+    # Sequestration (The inhibitory mechanism)
+    k_eif2b_bind 10.0  # p-eIF2a binds eIF2B (Fast/Tight)
+    k_eif2b_off 0.01   # Near-irreversible competitive inhibition
+    
+    # Recovery feedback
+    k_gadd34_synth 0.2
+    k_reset 0.05
+    
+    # Initials
+    eIF2a_tot 1000
+    eIF2B_tot 200      # Limiting GEF factor
+    PERK_tot 100
+    GADD34_pool 10
+    k_stress_pulse 0.1 # Current stress level
+end parameters
+
+begin molecule types
+    Stress()
+    eIF2a(b,s~U~P)
+    eIF2B(b,s~Active~Inactive)           # The rate-limiting GEF
+    PERK(s~off~on)
+    GADD34()
+end molecule types
+
+begin seed species
+    Stress() 0
+    eIF2a(b,s~U) eIF2a_tot
+    eIF2B(b,s~Active) eIF2B_tot
+    PERK(s~off) PERK_tot
+    GADD34() GADD34_pool
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Transl_Sequest eIF2a(b!1).eIF2B(b!1)    # Core inhibitory complex
+    Molecules Active_GEF     eIF2B(s~Active)          # Available translational drive
+    Molecules Global_Stark   eIF2a(s~P)               # Total stress signal
+    Molecules Signal_Sensor  PERK(s~on)               # Sensing activity
+    Molecules Feedback_GADD  GADD34()                 # Recovery agent
+end observables
+
+begin functions
+end functions
+
+begin reaction rules
+    ## SENSING Phase
+    # Stress triggers PERK
+    0 -> Stress() k_stress_pulse
+    Stress() + PERK(s~off) -> Stress() + PERK(s~on) k_perk_act
+    
+    ## SIGNALING Phase
+    # Active PERK phosphorylates eIF2alpha
+    PERK(s~on) + eIF2a(b,s~U) -> PERK(s~on) + eIF2a(b,s~P) k_phos
+    
+    ## SEQUESTRATION (The translational block)
+    # p-eIF2a acts as a competitive inhibitor of eIF2B
+    eIF2a(s~P,b) + eIF2B(b,s~Active) <-> eIF2a(s~P,b!1).eIF2B(b!1,s~Inactive) k_eif2b_bind,k_eif2b_off
+    
+    ## FEEDBACK & RECOVERY
+    # p-eIF2a induces GADD34 (Self-limit)
+    eIF2a(s~P) -> eIF2a(s~P) + GADD34() k_gadd34_synth
+    
+    # GADD34 drives dephosphorylation
+    GADD34() + eIF2a(s~P) -> GADD34() + eIF2a(s~U) k_dephos_fb
+    
+    ## RESET Phase
+    Stress() -> 0 0.2
+    PERK(s~on) -> PERK(s~off) 0.1
+    GADD34() -> 0 0.05
+    eIF2a(s~P) -> eIF2a(s~U) k_dephos_basal
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-30)
+    simulate({method=>"ode",t_end=>30,n_steps=>100})
+    # Phase 2: Stress Pulse (30-100)
+    setParameter("k_stress_pulse",5.0)
+    simulate({method=>"ode",t_end=>100,n_steps=>200,continue=>1})
+    # Phase 3: Recovery (100-200)
+    setParameter("k_stress_pulse",0.1)
+    simulate({method=>"ode",t_end=>200,n_steps=>200,continue=>1})
+end actions
+end model

@@ -1,0 +1,10 @@
+# TFUN data file for NFsim integration test
+# Maps X_phos observable count to a dephosphorylation rate multiplier
+# When few molecules are phosphorylated, the rate is low.
+# When many are phosphorylated, the rate is high (feedback).
+0    0.0
+10   0.5
+25   1.0
+50   2.0
+75   3.0
+100  4.0

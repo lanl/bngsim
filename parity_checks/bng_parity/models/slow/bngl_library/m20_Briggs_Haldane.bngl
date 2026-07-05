@@ -1,0 +1,69 @@
+begin model
+#@model_id: m20_Briggs_Haldane
+#@title: Briggs-Haldane enzyme kinetics
+#@description: Enzyme-substrate binding with explicit enzyme species. Three reactions: binding, unbinding, catalysis. From Briggs & Haldane (1925) Biochem J 19:338-339.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  # Counts scaled by 100 for integer SSA counts
+  scale    100            # dimensionless
+  k_1      0.01           # 1/(molecule*time)  forward binding (1.0/scale)
+  k_m_1    0.5            # 1/time  reverse binding
+  k_2      0.3            # 1/time  catalytic rate
+end parameters
+
+begin molecule types
+  S()    # substrate
+  E()    # free enzyme
+  C()    # enzyme-substrate complex
+  P()    # product
+end molecule types
+
+begin seed species
+  S()  100   # molecules  (1.0 * scale)
+  E()  100   # molecules  (E_T = 1.0 * scale)
+  C()  0     # molecules
+  P()  0     # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_S  S()
+  Molecules  Obs_E  E()
+  Molecules  Obs_C  C()
+  Molecules  Obs_P  P()
+end observables
+
+begin reaction rules
+  # Binding: S + E -> C  (bimolecular mass-action)
+  S() + E() -> C()  k_1
+
+  # Unbinding: C -> S + E  (first-order)
+  C() -> S() + E()  k_m_1
+
+  # Catalysis: C -> P + E  (first-order)
+  C() -> P() + E()  k_2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

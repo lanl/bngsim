@@ -1,0 +1,108 @@
+# The model consists of a monovalent extracellular ligand,
+# a monovalent cell-surface receptor, a bivalent cytosolic adapter protein,
+# and a cytosolic kinase.  The receptor dimerizes through a
+# receptor-receptor interaction that depends on ligand binding.
+# The adapter binds the receptor and the kinase.
+# When two kinases are juxtaposed through binding to
+# receptor-associated adapter proteins, one of the kinases can
+# transphosphorylate the second kinase.
+
+begin parameters
+L_tot 	1000
+R_tot   1000
+A_tot 	1000
+K_tot	1000
+
+kpL 	0.0001
+kmL 	0.1
+# kpD and kmD were divided by two from their values in toy.in
+# give the right symmetry factor.
+kpD 	0.001
+kmD 	0.1
+kpA 	0.0001
+kmA 	0.1
+kpK 	0.0001
+kmK 	0.1
+pK  	 1
+pKs	    0.01
+dM       1
+dC	     10
+end parameters
+
+
+begin species
+# Set to zero for equilibration
+L(r)	         L_tot
+# r binds to l of R
+
+R(l,r,a)         R_tot
+# l binds to r of L
+# r binds to r of R
+
+A(r,k)	         A_tot
+# r binds to a of R
+# k binds to a of K
+
+K(a,Y~U)         K_tot
+# a binds to k of A
+# Y is phosphorylation site that is either unphosphorylated (U) or
+#   phosphorylated (P)
+
+#Null 0
+end species
+
+begin reaction rules
+# Ligand binding (L+R)
+# Note: specifying r in R here means that the r component must not
+#       be bound.  This prevents dissociation of ligand from R
+#       when R is in a dimer.
+L(r) + R(l,r) <-> L(r!1).R(l!1,r) kpL, kmL
+
+# Aggregation (R+R)
+# Note:  R must be bound to ligand to dimerize.
+L(r!1).R(l!1,r) + L(r!1).R(l!1,r) <-> L(r!1).R(l!1,r!3).L(r!2).R(l!2,r!3) kpD,kmD
+
+# Receptor binding to adaptor (R+A)
+# Note: A and R can bind independent of whether A is bound to K or
+#       whether R is in a dimer.
+A(r) + R(a) <-> A(r!1).R(a!1) kpA,kmA
+
+# Adaptor binding kinase
+# Note: Doesn't depend on phosphorylation state of K or whether A is bound to
+#       receptor, i.e. binding rate is same whether A is on membrane (bound to
+#        R) or in cytosol.
+A(k) + K(a) <-> A(k!1).K(a!1) kpK,kmK
+
+# Kinase transphosphorylation by inactive kinase
+# Note: Rule doesn't specify how two K's are associated
+K(Y~U).K(Y~U) -> K(Y~U).K(Y~P) pK
+
+# Kinase transphosphorylation by active kinase
+# Note: Rule doesn't specify how two K's are associated
+K(Y~P).K(Y~U) -> K(Y~P).K(Y~P) pKs
+
+# Dephosphorylation of kinase in membrane complex
+R(a!1).A(r!1,k!2).K(a!2,Y~P) -> R(a!1).A(r!1,k!2).K(a!2,Y~U) dM
+
+# Dephosphorylation of kinase in cytosol
+K(a,Y~P) -> K(a,Y~U) dC
+
+end reaction rules
+
+begin observables
+
+Molecules RecDim_1   R(r!+)
+Molecules Rec_A_1   R(a!1).A(r!1)
+Molecules Rec_K_1   R(a!1).A(r!1,k!2).K(a!2)
+Molecules Rec_Kp_1   R(a!1).A(r!1,k!2).K(a!2,Y~P)
+Molecules RecDim_Kp_1   R().R(a!1).A(r!1,k!2).K(a!2,Y~P)
+Molecules L_tot_1   L()
+Molecules A_tot_1   A()
+Molecules K_tot_1   K()
+Molecules R_tot_1   R()
+
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

@@ -1,0 +1,82 @@
+begin model
+
+begin parameters
+
+kon_CN 5.5e6 # /M/s
+koff_CN 380 # /s
+
+kon_CN_pm 6.6e6 # /M/s
+koff_CN_pm 550 # /s
+
+KD_Nprime 5e-3 # dimensionless (<<5e-3)
+koff_NC 950 # /s
+kmxN=koff_NC
+kpxN=kmxN/KD_Nprime
+
+KD_Nprime_pm 38e-3 # dimensionless
+koff_NC_pm 2000 # /s
+kmxN_pm=koff_NC_pm
+kpxN_pm=kmxN_pm/KD_Nprime_pm
+
+end parameters
+
+begin molecule types
+
+# full-length ITAM peptide
+ITP(N,C)
+ITPpm(N,C)
+
+# tandem SH2 domain unit of Syk
+tSH2(N,C)
+
+# phosphomimetic (pm) mutation of Syk
+tSH2pm(N,C)
+
+end molecule types
+
+begin seed species
+
+ITP(N!1,C!2).tSH2(N!2,C!1) 1 # M
+ITPpm(N!1,C!2).tSH2pm(N!2,C!1) 1 # M
+
+end seed species
+
+begin observables
+
+Molecules Free_tSH2 tSH2(N,C)
+Molecules Free_tSH2pm tSH2pm(N,C)
+
+Molecules Bound_tSH2 tSH2(N!+,C) tSH2(N,C!+) tSH2(N!+,C!+)
+Molecules Bound_tSH2pm tSH2pm(N!+,C) tSH2pm(N,C!+) tSH2pm(N!+,C!+)
+
+end observables
+
+begin functions
+
+
+end functions
+
+begin reaction rules
+
+# 3-state model for tSH2 binding to ITP
+
+#tSH2(N,C)+ITP(N,C)<->tSH2(N,C!1).ITP(N!1,C) kon_CN,koff_CN
+tSH2(N,C!1).ITP(N!1,C)->tSH2(N,C)+ITP(N,C) koff_CN
+tSH2(N,C!1).ITP(N!1,C)<->tSH2(N!2,C!1).ITP(N!1,C!2) kpxN,kmxN
+
+# same as above except for phosphomimemtic mutation of tSH2
+
+#tSH2pm(N,C)+ITPpm(N,C)<->tSH2pm(N,C!1).ITPpm(N!1,C) kon_CN_pm,koff_CN_pm
+tSH2pm(N,C!1).ITPpm(N!1,C)->tSH2pm(N,C)+ITPpm(N,C) koff_CN_pm
+tSH2pm(N,C!1).ITPpm(N!1,C)<->tSH2pm(N!2,C!1).ITPpm(N!1,C!2) kpxN_pm,kmxN_pm
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>3,n_steps=>1200})
+
+end actions

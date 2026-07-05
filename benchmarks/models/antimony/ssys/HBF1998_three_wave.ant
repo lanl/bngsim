@@ -1,0 +1,71 @@
+// Three-Wave Interaction - Recasting to Unimonomial Form
+// Source: Hernández-Bermejo, Fairén & Brenig, "Algebraic recasting of nonlinear
+//         systems of ODEs into universal formats"
+//         J. Phys. A: Math. Gen. 31:2415-2430 (1998)
+//         Section 4.3, Equations (55)-(61)
+//
+// From Brenig & Goriely (1989). Models nonlinear interaction of three waves
+// in plasma physics / nonlinear optics. Includes mode competition and resonance.
+//
+// Original system (Eq. 55):
+//   ẋ₁ = x₁·[ω₁ + Σⱼ N₁ⱼ·xⱼ² + γ·x₁⁻¹·x₂·x₃]
+//   ẋ₂ = x₂·[ω₂ + Σⱼ N₂ⱼ·xⱼ²]
+//   ẋ₃ = x₃·[ω₃ + Σⱼ N₃ⱼ·xⱼ²]
+//
+// Where:
+//   xᵢ = wave amplitudes
+//   ωᵢ = dissipation (when negative)
+//   Nᵢⱼ = mode competition coefficients  
+//   γ = resonance coupling term
+//
+// ==============================================================================
+// EXACT RECASTING (Eq. 58):
+// ==============================================================================
+// Using quasimonomial transformation with matrix C = N (competition matrix),
+// system reduces from 10 to 6 nonlinear terms (dimension preserved).
+//
+// Full unimonomial embedding (3 → 4 variables, Eq. 61):
+//   ż₁ = z₁·[ω̃₁ + z₁^(2N₁₁)·z₂^(2N₁₂)·z₃^(2N₁₃)·z₄^(2γ)]
+//   ż₂ = z₂·[ω̃₂ + z₁^(2N₂₁)·z₂^(2N₂₂)·z₃^(2N₂₃)]
+//   ż₃ = z₃·[ω̃₃ + z₁^(2N₃₁)·z₂^(2N₃₂)·z₃^(2N₃₃)]
+//   ż₄ = z₄·[ω̃₄ + z₁^λ₁·z₂^λ₂·z₃^λ₃·z₄^(-γ)]
+//
+// where λᵢ = -N₁ᵢ + N₂ᵢ + N₃ᵢ
+// Maximum simplification: only 4 nonlinear terms (one per equation).
+// ==============================================================================
+
+model HBF1998_three_wave()
+  // State variables - wave amplitudes
+  compartment cell = 1;var species x1 in cell; var species x2 in cell; var species x3 in cell
+
+  // Parameters
+  // Dissipation rates (negative for damping)
+  omega1 := -0.1;
+  omega2 := -0.1;
+  omega3 := -0.1;
+  
+  // Mode competition matrix (symmetric for conservative case)
+  N11 := 0.5;
+  N12 := 0.3;
+  N13 := 0.2;
+  N21 := 0.3;
+  N22 := 0.4;
+  N23 := 0.3;
+  N31 := 0.2;
+  N32 := 0.3;
+  N33 := 0.5;
+  
+  // Resonance coupling
+  gamma_rate := 0.5;
+  
+  // ORIGINAL ODEs (Eq. 55)
+  // Three-wave interaction with mode competition and resonance
+  x1' = x1 * (omega1 + N11*x1^2 + N12*x2^2 + N13*x3^2 + gamma_rate*x2*x3/x1);
+  x2' = x2 * (omega2 + N21*x1^2 + N22*x2^2 + N23*x3^2);
+  x3' = x3 * (omega3 + N31*x1^2 + N32*x2^2 + N33*x3^2);
+  
+  // Initial conditions
+  x1 = 1.0; x2 = 0.8; x3 = 0.6;
+end
+// @SIM T_START=0; T_END=0.65; N_STEPS =200 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

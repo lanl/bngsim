@@ -1,0 +1,226 @@
+begin model
+
+#@title: Lac operon lactose induction (Dreisigmeyer et al., 2008)
+
+#@description: |
+#  Model of the E. coli lac operon induced by extracellular lactose,
+#  based on Eq. (1) in Dreisigmeyer et al. (2008). Three ODE state
+#  variables — internal lactose (L), allolactose (A), and
+#  beta-galactosidase (Z) — track intracellular concentrations in uM.
+#
+#  Processes: (1) permease-dependent lactose import with
+#  active-transport asymmetry (phi < 1) and asymmetric Michaelis
+#  constants (rho < 1); (2) beta-gal-catalyzed degradation of
+#  lactose and allolactose with competitive substrate inhibition;
+#  (3) allolactose production as a branching fraction (nu) of
+#  lactose metabolism; (4) Hill-function-regulated beta-gal
+#  expression with cooperativity n = 2; and (5) first-order growth
+#  dilution of all intracellular species. Passive transport
+#  (alpha_0) is set to zero.
+#
+#  With nominal parameters (Table 1) at l_ext = 1000 uM, the
+#  system relaxes to a partially induced steady state (Z ~ 0.34
+#  uM, ~10x basal). A parameter scan of l_ext reproduces the
+#  monostable induction curve in Fig. 8 of the paper — no
+#  bistability is observed, consistent with the paper's central
+#  conclusion for lactose (as opposed to artificial inducers like
+#  TMG).
+#
+#  Rate expressions use concentration-based observables (uM), making
+#  the model ODE-only. SSA/NFsim require conversion to population-based
+#  (molecule count) rate expressions.
+
+#@keyword: |
+#  gene regulation, lac operon, lactose metabolism, allolactose,
+#  beta-galactosidase, Hill kinetics, Michaelis-Menten,
+#  Escherichia coli, monostable
+
+#@reference: |
+#  Dreisigmeyer DW, Stajic J, Nemenman I, Hlavacek WS, Wall ME
+#  (2008). Determinants of bistability in induction of the
+#  Escherichia coli lac operon. IET Syst Biol 2:293-303.
+#  doi:10.1049/iet-syb:20080095
+
+begin parameters
+
+  #@note: |
+  #  Concentration units: uM. Time units: min.
+  #  Original paper (Table 1) uses nM; the source Antimony model
+  #  converted to uM (nM / 1000, mM * 1000).
+
+  # Avogadro constant (for potential population-based conversion)
+  NA  6.02214076e23  # /mol
+
+  # Reference volume: E. coli mean cell volume
+  # (Kubitschek and Friske, 1986; Ref. [30] in
+  # Dreisigmeyer et al., 2008)
+  V_ref  1e-15  # L/cell
+
+  # Subvolume scaling factor (single cell)
+  f  1.0  # dimensionless
+
+  # External lactose (constant boundary condition; 1.0 mM = 1000 uM)
+  l_ext  1000.0  # uM
+
+  # Growth dilution rate (gamma in paper; ~30 min doubling time)
+  growth_rate  0.0231  # /min
+
+  # Permease transport parameters
+  # Import turnover number; Eq. (1a) in Dreisigmeyer et al. (2008)
+  alpha  600.0  # /min
+  # Ratio of export-to-import turnover numbers
+  phi  0.5  # dimensionless
+  # Ratio of import-to-export Michaelis constants
+  rho  0.1  # dimensionless
+  # Permease Michaelis constant (5e5 nM = 500 uM)
+  K_i  500.0  # uM
+
+  # Beta-gal lactose metabolism parameters
+  # Lactose turnover number
+  beta  2.85e4  # /min
+  # Lactose -> allolactose branching fraction
+  nu  0.468  # dimensionless
+  # Beta-gal lactose Michaelis constant (2.53 mM = 2530 uM)
+  K_m_l  2530.0  # uM
+
+  # Beta-gal allolactose metabolism parameters
+  # Allolactose turnover number
+  delta  2.30e4  # /min
+  # Beta-gal allolactose Michaelis constant (1.2 mM = 1200 uM)
+  K_m_a  1200.0  # uM
+
+  # Beta-gal expression parameters
+  # Fully induced beta-gal level (34286 nM = 34.285 uM)
+  eps  34.285  # uM
+  # Basal beta-gal level (c in paper; 34.3 nM = 0.0343 uM)
+  c_basal  0.0343  # uM
+  # Half-maximal allolactose induction level (1.05e5 nM = 105 uM)
+  K_z  105.0  # uM
+  # Hill coefficient for lac induction
+  n_Hill  2.0  # dimensionless
+
+end parameters
+
+begin molecule types
+  # Internal lactose (l in Dreisigmeyer et al., 2008)
+  L()
+  # Allolactose (a in Dreisigmeyer et al., 2008)
+  A()
+  # Beta-galactosidase (z in Dreisigmeyer et al., 2008)
+  Z()
+end molecule types
+
+begin seed species
+  L()  0  # uM
+  A()  0  # uM
+  Z()  c_basal  # uM
+end seed species
+
+begin observables
+  # Intracellular concentrations (uM)
+  Molecules  Obs_Tot_L  L()
+  Molecules  Obs_Tot_A  A()
+  Molecules  Obs_Tot_Z  Z()
+end observables
+
+begin functions
+  # Permease-dependent lactose transport (net import);
+  # Eq. (1a), first term in Dreisigmeyer et al. (2008)
+  transport_L() = alpha * Obs_Tot_Z \
+    * (l_ext - phi * rho * Obs_Tot_L) \
+    / (K_i + l_ext + rho * Obs_Tot_L)
+
+  # Effective first-order rate constant for beta-gal-catalyzed
+  # lactose degradation; Eq. (1a), second term in
+  # Dreisigmeyer et al. (2008). Competitive inhibition: shared
+  # denominator (1 + a/K_m_a + l/K_m_l). BNG multiplies by [L].
+  metab_L() = (beta / K_m_l) * Obs_Tot_Z \
+    / (1 + Obs_Tot_A / K_m_a + Obs_Tot_L / K_m_l)
+
+  # Allolactose production (branching fraction of lactose
+  # degradation); Eq. (1b), first term in Dreisigmeyer et al. (2008)
+  prod_A() = nu * (beta / K_m_l) * Obs_Tot_Z * Obs_Tot_L \
+    / (1 + Obs_Tot_A / K_m_a + Obs_Tot_L / K_m_l)
+
+  # Effective first-order rate constant for beta-gal-catalyzed
+  # allolactose degradation; Eq. (1b), second term in
+  # Dreisigmeyer et al. (2008). BNG multiplies by [A].
+  metab_A() = (delta / K_m_a) * Obs_Tot_Z \
+    / (1 + Obs_Tot_A / K_m_a + Obs_Tot_L / K_m_l)
+
+  # Beta-gal synthesis: basal + Hill-induced;
+  # Eq. (1c) in Dreisigmeyer et al. (2008)
+  syn_Z() = growth_rate * (c_basal \
+    + eps * Obs_Tot_A^n_Hill \
+    / (K_z^n_Hill + Obs_Tot_A^n_Hill))
+
+  # Dimensional conversions (uncomment for concentration output
+  # if model is converted to population-based units)
+# L_conc() = Obs_Tot_L / (NA * V_ref) * 1e6  # uM
+# A_conc() = Obs_Tot_A / (NA * V_ref) * 1e6  # uM
+# Z_conc() = Obs_Tot_Z / (NA * V_ref) * 1e6  # uM
+end functions
+
+begin reaction rules
+  # Permease-dependent lactose import
+  0 -> L()  transport_L()
+
+  # Beta-gal-catalyzed lactose degradation
+  L() -> 0  metab_L()
+
+  # Growth dilution of internal lactose
+  L() -> 0  growth_rate
+
+  # Allolactose production from lactose metabolism
+  0 -> A()  prod_A()
+
+  # Beta-gal-catalyzed allolactose degradation
+  A() -> 0  metab_A()
+
+  # Growth dilution of allolactose
+  A() -> 0  growth_rate
+
+  # Beta-gal synthesis (basal + allolactose-induced Hill function)
+  0 -> Z()  syn_Z()
+
+  # Growth dilution of beta-galactosidase
+  Z() -> 0  growth_rate
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 3 species, 8 reactions
+  saveConcentrations()
+
+  #@note: |
+  #  Two protocols: (1) time-course relaxation, (2) induction
+  #  curve scan. Both are active.
+
+  # Time-course relaxation to steady state
+
+  #@protocol: |
+  #  Integrate from uninduced initial conditions (L=0, A=0,
+  #  Z=c_basal) with constant external lactose l_ext = 1000 uM.
+  #  The system relaxes to a partially induced steady state
+  #  (Z ~ 0.33 uM, ~10x basal) over ~200 min.
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",\
+    t_start=>0,t_end=>500,n_steps=>500})
+
+  # Induction curve: parameter scan over external lactose
+
+  #@protocol: |
+  #  Scan l_ext logarithmically from 0.01 to 1e6 uM. Each
+  #  scan point runs to t = 500 min (steady state). The
+  #  resulting Z-vs-l_ext curve is monostable — no S-shaped
+  #  bistable region — consistent with the paper's conclusion.
+
+  #@figure: Fig. 8 (top, gamma = 0.0231) in Dreisigmeyer et al. (2008)
+
+  parameter_scan({method=>"ode",parameter=>"l_ext",\
+    par_min=>0.01,par_max=>1e6,n_scan_pts=>100,\
+    log_scale=>1,t_start=>0,t_end=>500,n_steps=>200,\
+    suffix=>"scan"})
+end actions

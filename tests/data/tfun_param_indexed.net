@@ -1,0 +1,21 @@
+# TFUN test: parameter-indexed table function
+# response() is indexed by drug_conc parameter
+# A --rate--> B, where rate = response(drug_conc) * k1
+begin parameters
+    1 k1         0.01
+    2 drug_conc  1.0
+end parameters
+begin functions
+    1 response()  tfun('dose_response.tfun', drug_conc)
+end functions
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 response #R1: A -> B at rate response(drug_conc)
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

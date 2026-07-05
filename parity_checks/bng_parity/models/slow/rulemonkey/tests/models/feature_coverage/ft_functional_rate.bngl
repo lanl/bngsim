@@ -1,0 +1,44 @@
+# Feature: observable-dependent functional rate laws
+# Tests: rate law that references observable values (negative feedback)
+# Tier: base
+# Expected: A_total approaches carrying capacity K=80 via logistic growth
+
+begin model
+begin parameters
+    K        80     # carrying capacity
+    k_birth  0.5    # /s, max birth rate
+    k_death  0.01   # /s, per-capita death rate
+end parameters
+
+begin molecule types
+    Src()
+    A()
+    Trash()
+end molecule types
+
+begin seed species
+    Src()    1
+    A()      5
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total    A()
+    Molecules  Src_total  Src()
+end observables
+
+begin functions
+    birth_rate() = k_birth * max(K - A_total, 0) / K
+end functions
+
+begin reaction rules
+    # Logistic growth: birth rate decreases as A approaches K
+    Src() -> Src() + A()   birth_rate()
+    # Constant death rate
+    A() -> Trash()          k_death
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>300,n_steps=>100})
+end actions

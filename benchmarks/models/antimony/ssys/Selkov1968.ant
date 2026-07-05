@@ -1,0 +1,33 @@
+// Sel'kov glycolytic oscillator (dimensionless form)
+//   dx/dt = -x + a*y + x^2*y
+//   dy/dt =  b - a*y - x^2*y
+//
+// Original biology & model:
+//   E. E. Sel'kov, "Self-oscillations in glycolysis. I. A simple kinetic model,"
+//   European Journal of Biochemistry 4:79–86, 1968.
+//
+// Example parameter set giving a stable limit cycle:
+//   T. Das & M. Acharyya, "Transient behaviour towards the stable limit cycle
+//   in the Selkov model of Glycolysis: A physiological disorder,"
+//   arXiv:2005.09190, 2020 (they use a = 0.08, b = 0.6).
+
+model Selkov_1968()
+
+  // Species (dimensionless concentrations)
+  species x, y;
+
+  // Parameters
+  a = 0.08;
+  b = 0.6;
+
+  // Dynamics (using prime notation for ssys parser)
+  x' = -x + a*y + x^2*y;
+  y' =  b - a*y - x^2*y;
+
+  // Initial conditions (generic off-fixed-point start; adjust as needed)
+  x = 1.0;
+  y = 1.0;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

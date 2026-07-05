@@ -1,0 +1,65 @@
+begin model
+#@model_id: MS2007_MM_to_GMA
+#@title: Michaelis-Menten to GMA recasting (Marin-Sanguino et al. 2007, Eq. 14)
+#@description: Single metabolite with MM production and MM degradation. dX1/dt = Vmax1*X0/(KM1+X0) - Vmax2*X1/(KM2+X1). Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1186/1742-4682-4-38
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  Vmax1    1.0            # 1/s  (max production rate)
+  Vmax2    0.5            # 1/s  (max degradation rate)
+  KM1      1.0            # dimensionless  (production Km, concentration units)
+  KM2      0.5            # dimensionless  (degradation Km, concentration units)
+  X0       2.0            # dimensionless  (constant substrate, concentration units)
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  X1()
+end molecule types
+
+begin seed species
+  X1()  500  # molecules  (0.5 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+end observables
+
+begin functions
+  # Descaled concentration
+  x1_conc() = Obs_X1 * inv_s
+
+  # Production: Vmax1*X0/(KM1+X0) -- constant rate (X0 is a parameter)
+  func_prod() = Vmax1 * X0 / (KM1 + X0) * scale
+
+  # Degradation: Vmax2*X1/(KM2+X1) -- in molecule space
+  func_deg() = Vmax2 * x1_conc() / (KM2 + x1_conc()) * scale
+end functions
+
+begin reaction rules
+  # MM production (constant since X0 is fixed)
+  0 -> X1()  func_prod()
+
+  # MM degradation
+  X1() -> 0  func_deg()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

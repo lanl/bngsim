@@ -1,0 +1,112 @@
+begin model
+# core model for allosteric interactions 
+#  of RAF monomers and dimers with inhibitors
+begin parameters
+# circumference:diameter
+pi=2*acos(0) # dimensionless
+# Avogadro constant (exact value)
+NA 6.02214076e23 # molecules per mole
+ 
+# cytoplasmic volume
+Vcyt 1e-12 # L per cell
+
+kf 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr 0.01 # /s
+
+RAF_total 2e5 # copies per cell
+inh_I_total 0 # copies per cell
+inh_II_total 602 # copies per cell
+inh_Ihalf_total 602 # copies per cell
+
+# parameters for kinase conformation changes
+# see Equations (1)-(4)
+b=5 # dimensionless, \in [5,10] (Table S2)
+c=5 # dimensionless, \in [5,10] (Table S2)
+# cooperativity factor
+gamma=1 # dimensionless, \in [1,10] (Table S2)
+# equilibrium constant for [aC~IN/DFG~OUT]<->[aC~IN/DFG~IN]
+b1=gamma*b 
+# equilibrium constant for [aC~OUT/DFG~OUT]<->[aC~OUT/DFG~IN]
+b2=b
+# equilibrium constant for [aC~OUT/DFG~IN]<->[aC~IN/DFG~IN]
+c1=gamma*c
+# equilibrium constant for [aC~OUT/DFG~OUT]<->[aC~IN/DFG~OUT]
+c2=c
+
+# parameters for Type I (CI/DI) inhibitor binding
+KD_I=pi
+# coefficient for inhibitor binding to aC~IN/DFG~IN conformation
+a11_I=1
+# coefficient for inhibitor binding to aC~IN/DFG~OUT conformation
+a21_I=1000
+# coefficient for inhibitor binding to aC~OUT/DFG~IN conformation
+a12_I=1000
+# coefficient for inhibitor binding to aC~OUT/DFG~OUT conformation
+a22_I=1000
+ 
+# parameters for Type II (CI/DO) inhibitor binding
+KD_II=pi
+# coefficient for inhibitor binding to aC~IN/DFG~IN conformation
+a11_II=1000
+# coefficient for inhibitor binding to aC~IN/DFG~OUT conformation
+a21_II=1
+# coefficient for inhibitor binding to aC~OUT/DFG~IN conformation
+a12_II=1000
+# coefficient for inhibitor binding to aC~OUT/DFG~OUT conformation
+a22_II=1000
+ 
+# parameters for Tyipe I 1/2 (CO/DI) inhibitor binding
+KD_Ihalf=1000
+# coefficient for inhibitor binding to aC~IN/DFG~IN conformation
+a11_Ihalf=1000
+# coefficient for inhibitor binding to aC~IN/DFG~OUT conformation
+a21_Ihalf=1000
+# coefficient for inhibitor binding to aC~OUT/DFG~IN conformation
+a12_Ihalf=1
+# coefficient for inhibitor binding to aC~OUT/DFG~OUT conformation
+a22_Ihalf=1000
+
+end parameters
+begin molecule types
+counter()
+# RAF serine/threonine protein kinase
+RAF(ATPBS,aC~IN~OUT,DFG~IN~OUT)
+# ATPBS: ATP binding site (discontinuous)
+# aC: alpha-C helix
+# DFG: DFG motif 
+# RAF-specific ATP-competitive kinase inhibitors, types I, II, and I 1/2
+inh_I()
+inh_II() # An example is sorafenib.
+inh_Ihalf() # Examples include dabrafenib, encorafenib, and vemurafenib.
+end molecule types
+begin seed species
+counter() 0
+RAF(ATPBS,aC~OUT,DFG~OUT) RAF_total
+inh_I() inh_I_total
+inh_II() inh_II_total
+inh_Ihalf() inh_Ihalf_total
+end seed species
+begin observables
+#Molecules t counter()
+Molecules RAF_active RAF(aC~IN,DFG~IN)
+end observables
+begin functions
+#value_of_pi()=pi
+#RAF_inactive()=RAF_total-RAF_active
+end functions
+begin reaction rules
+0->counter() 1
+# RAF kinase conformation changes
+RAF(aC~IN,DFG~OUT)<->RAF(aC~IN,DFG~IN) kr*b1,kr
+RAF(aC~OUT,DFG~OUT)<->RAF(aC~OUT,DFG~IN) kf*b2,kr
+RAF(aC~OUT,DFG~IN)<->RAF(aC~IN,DFG~IN) kf*c1,kr
+RAF(aC~OUT,DFG~OUT)<->RAF(aC~IN,DFG~OUT) kf*c2,kr
+
+
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# gml=>2147483647
+simulate({method=>"ode",t_end=>1000,n_steps=>100,print_functions=>1})
+end actions

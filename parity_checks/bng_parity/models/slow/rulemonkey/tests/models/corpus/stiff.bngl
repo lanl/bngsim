@@ -1,0 +1,36 @@
+# stiff.bngl
+begin parameters
+t_end		10
+n_steps     100
+
+A_tot		100000
+B_tot		100000
+f			100.0
+
+kp1		1.0
+kp2		f*kp1
+end parameters
+
+begin molecule types
+A(a~U~P)
+B(b~U~P)
+end molecule types
+
+begin species
+A(a~U)		A_tot
+B(b~U)		B_tot
+end species
+
+begin reaction rules
+A(a~U) -> A(a~P) kp1
+B(b~U) -> B(b~P) kp2
+end reaction rules
+
+begin observables
+Species AU_1   A(a~U)
+Species BU_1   B(b~U)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>100})
+end actions

@@ -1,0 +1,45 @@
+// Morse Oscillator - Recasting to Lotka-Volterra Form
+// Source: Hernández-Bermejo, Fairén & Brenig, "Algebraic recasting of nonlinear
+//         systems of ODEs into universal formats"
+//         J. Phys. A: Math. Gen. 31:2415-2430 (1998)
+//         Section 3.2, Equations (17)-(25)
+//
+// This paper develops the quasipolynomial (QP) formalism for systematic recasting.
+// The Morse oscillator from molecular physics (Bransden & Joachain 1990).
+//
+// Original system (Eq. 17):
+//   ẋ = y
+//   ẏ = -2d·e^(-x)·(1 - e^(-x))
+//
+// After phase-space translation by c and introducing z = e^(-x):
+//   ẋ = y - c
+//   ẏ = a·z - a·b·z² where a = -2d, b = e^c
+//   ż = c·z - y·z
+//
+// ==============================================================================
+// EXACT RECASTING TO QP FORM (Eq. 18):
+// ==============================================================================
+// With X₁ = x, X₂ = y, X₃ = z = e^(-x), the system becomes:
+//   Ẋ₁ = X₁·[X₁⁻¹·X₂ - c·X₁⁻¹]
+//   Ẋ₂ = X₂·[a·X₂⁻¹·X₃ - a·b·X₂⁻¹·X₃²]
+//   Ẋ₃ = X₃·[c - X₂]
+//
+// After Lotka-Volterra embedding (5 variables), system is purely quadratic.
+// ==============================================================================
+
+model HBF1998_morse_oscillator()
+  // State variables
+  compartment cell = 1;var species x in cell; var species y in cell
+
+  // Parameters (Morse potential)
+  d := 1.0
+  
+  // ORIGINAL ODEs (Eq. 17)
+  // Morse potential: V(x) = d·(1 - e^(-x))²
+  x' = y; y' = -2 * d * exp(-x) * (1 - exp(-x))
+  
+  // Initial conditions (bound oscillation)
+  x = 0.5; y = 0.5;
+end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,42 @@
+// This model is essentially the same as S1987_A5_spiral().
+
+// Exact S-system recast of:
+//   t' = 1
+//   Z' = (Z - t)/(Z + t)
+//
+// Transformation:
+//   p   = 5
+//   X1  = Z + p
+//   X2  = t + p
+//   X3  = Z + t
+//
+// Inverse:
+//   Z = X1 - p
+//   t = X2 - p
+//
+// Check:
+//   Z' = X1' = X1/X3 - X2/X3 = (X1 - X2)/X3 = (Z - t)/(Z + t)
+//   t' = X2' = 1
+//   X3 = Z + t => X3' = Z' + t' = (Z - t)/(Z + t) + 1
+//                 = 2Z/(Z + t) = 2 X1/X3 - 2p/X3
+
+model spiral()
+
+  // Scalar ODE:
+  //   dZ/dt = (Z - t)/(Z + t)
+  //   Z(0) = 4
+  //
+  // Implemented by treating t as an explicit time state with t' = 1.
+
+  species t, Z;
+
+  // Initial conditions
+  t = 0;
+  Z = 4;
+
+  // Dynamics
+  t' = 1;
+  Z' = (Z - t)/(Z + t);
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

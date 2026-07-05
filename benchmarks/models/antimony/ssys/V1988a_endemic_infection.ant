@@ -1,0 +1,64 @@
+// =============================================================================
+// Source: Voit (1988) "S-Systems as a Canonical Nonlinear Form"
+//         Math. Comput. Modelling 11:140-145
+// Example: Endemic infection with asymptomatics - exact recasting (Eq. 14-15)
+//          Based on Kemper (1978) and Cooke (1982)
+// =============================================================================
+// Time horizon: t ∈ [0, 100]
+//
+// Original model (Equation 14):
+//   dS/dt = γ1*I + γ2*A - S*[g(I) + h(A)]
+//   dI/dt = f*S*[g(I) + h(A)] - γ1*I
+//   dA/dt = (1-f)*S*[g(I) + h(A)] - γ2*A
+//
+// With mass action interactions: g(I) = r1*I, h(A) = r2*A
+//
+// Variables:
+//   S = susceptibles (proportion)
+//   I = infectives with symptoms (proportion)
+//   A = asymptomatics (proportion)
+//   S + I + A = 1 (conservation)
+//
+// Parameters:
+//   f = fraction developing symptoms
+//   γ1, γ2 = recovery rates
+//   r1, r2 = contact rates
+//
+// Exact S-system recasting (Equation 15):
+//   Define: X1=S, X2=I, X3=A
+//           X4 = r1*I + r2*A (infection force)
+//           X5 = auxiliary for product decomposition
+//           X6 = γ1*I + γ2*A (recovery flux)
+//           X7 = auxiliary for product decomposition
+//
+//   dX1/dt = X6*X7^(-1) - X1*X4*X5^(-1)
+//   dX2/dt = f*X1*X4*X5^(-1) - γ1*X2
+//   dX3/dt = (1-f)*X1*X4*X5^(-1) - γ2*X3
+//   dX4/dt = r1*f*X1*X4 - r1*γ1*X2*X5
+//   dX5/dt = r2*γ2*X3*X4^(-1)*X5^2 - r2*(1-f)*X1*X5
+//   dX6/dt = γ1*f*X1*X4*X5^(-1)*X7 - γ1^2*X2*X7
+//   dX7/dt = γ2^2*X3*X6^(-1)*X7^2 - γ2*(1-f)*X1*X4*X5^(-1)*X6^(-1)*X7^2
+//
+// This is an EXACT recasting of the Kemper/Cooke endemic infection model.
+// =============================================================================
+
+model V1988a_endemic_infection()
+    // Parameters
+    f = 0.5       // Fraction developing symptoms
+    gamma1 = 0.1  // Recovery rate for symptomatics
+    gamma2 = 0.2  // Recovery rate for asymptomatics
+    r1 = 0.5      // Contact rate for symptomatics
+    r2 = 0.3      // Contact rate for asymptomatics
+    
+    // Original equations with mass action (g=r1*I, h=r2*A)
+    S' = gamma1*I + gamma2*A - S*(r1*I + r2*A)
+    I' = f*S*(r1*I + r2*A) - gamma1*I
+    A' = (1-f)*S*(r1*I + r2*A) - gamma2*A
+    
+    // Initial conditions (fractions sum to 1)
+    S = 0.9   // Susceptibles
+    I = 0.05  // Infected with symptoms
+    A = 0.05  // Asymptomatic carriers
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

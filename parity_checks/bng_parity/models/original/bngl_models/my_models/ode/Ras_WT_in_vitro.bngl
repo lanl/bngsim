@@ -1,0 +1,253 @@
+# A model for WT Ras signaling in vitro 
+#   A single well-mixed reaction compartment is assumed.
+#
+# Author information:
+# William S. Hlavacek
+# Theoretical Division
+# [PII REMOVED]
+#
+# Date:
+# 16-December-2013
+#
+# Platform information:
+# Mac OS X, version 10.5.8
+#
+# Software information:
+# BioNetGen, version 2.1.7 (http://bionetgen.org)
+# RuleBender, version 1.1.415 (http://rulebender.cs.pitt.edu)
+
+begin model
+
+begin parameters
+
+# simulation parameters
+
+# fraction of reaction volume to explicitly consider in a stochastic simulation
+f  1.0 # [=] dimensionless, [0 < f <= 1.0]
+
+# physical constants and unit conversion factors
+
+# Avogadro constant
+NA  6.02214e23 # [=] number of molecules per mol
+
+# reaction volume
+V  f*1.0e-12 # [=] L
+
+# molecular parameters (e.g., copy numbers)
+
+# NB: concentrations are each given in M
+# and then converted to molecules per volume of reaction compartment
+
+GTP_conc  1.8e-4*NA*V # [=] M
+GDP_conc  1.8e-5*NA*V # [=] M
+KRAS_conc  4.0e-7*NA*V # [=] M
+CRAF_conc  4.0e-7*NA*V # [=] M
+SOS1_conc  2.0e-11*NA*V # [=] M
+RASA1_conc  6.0e-11*NA*V # [=] M
+
+# interaction parameters (e.g., rate constants)
+
+# NB: biomolecular assocication rate constants are each given in /M/s
+# and then converted to /(molecules per volume of reaction compartment)/s
+
+# binding
+
+# GDP binding to apo Ras
+# KD1 = 9.0e-12 M
+km1  2.0e-5 # [=] /s
+kp1  2.2e6/(NA*V) # [=] /M/s
+
+# GEF binding to apo Ras
+# KD2 = 3.3e-9 M
+km2  1.0e-3 # [=] /s
+kp2  3.3e5/(NA*V) # [=] /M/s
+
+# GEF binding to RasGDP
+# KD3 = 2.2e-4 M
+km3  5.0 # [=] /s
+kp3  2.3e4/(NA*V) # [=] /M/s
+
+# GDP binding to apo Ras-GEF complex
+# KD4 = 6.0e-7 M
+km4  3.9 # [=] /s
+kp4  6.5e6/(NA*V) # [=] /M/s
+
+# GTP binding to apo Ras
+# KD5 = 5.0e-12 M
+km5  1.0e-5 # [=] /s
+kp5  2.0e6/(NA*V) # [=] /M/s
+
+# GTP binding to apo Ras-GEF complex
+# KD6 = 3.0e-7 M
+km6  1.1 # [=] /s
+kp6  3.7e6/(NA*V) # [=] /M/s
+
+# GEF binding to RasGTP
+# KD7 = 2.0e-4 M
+km7  5.0 # [=] /s
+kp7  2.5e4/(NA*V) # [=] /M/s
+
+# Effector binding
+# KD = 8.0e-8 M
+kaEff  4.5e7/(NA*V) # [=] /M/s
+kdEff  3.6 # [=] /s
+
+# catalysis
+
+# GTP hyrdolysis via the intrinsic GTPase activity of Ras
+khyd  3.5e-4 # [=] /s
+
+# GAP activity via a Michaelis-Menten mechanism
+# KM = 2.3e-7 M
+kf  4.0e7/(NA*V) # [=] /M/s
+kr  3.8 # [=] /s
+kcat  5.4 # [=] /s
+
+end parameters
+
+begin molecule types
+
+# Except as noted, proteins are named in accordance with the recommendations of
+#   the HUGO Gene Nomenclature Committee (HGNC).
+#   http://www.genenames.org
+
+# Organism information:
+# Homo sapiens (human)
+
+# small molecules
+
+## GDP ##
+################################################################################
+# guanosine diphosphate
+################################################################################
+GDP
+
+## GTP ##
+################################################################################
+# guanosine-5'-triphosphate
+################################################################################
+GTP
+
+# proteins
+
+## KRAS ##
+################################################################################
+# KRAS consists of a G domain
+# The G domain can be free (the apo form of Ras), bound to GDP, or bound to GTP.
+################################################################################
+KRAS(G~apo~GDP~GTP)
+
+## RASA1 ##
+################################################################################
+# RASA1 contains a GAP domain
+################################################################################
+RASA1(GAP)
+
+## SOS1 ##
+################################################################################
+# SOS1 contains a GEF domain
+################################################################################
+SOS1(GEF)
+
+## CRAF ##
+################################################################################
+# CRAF contains an RDB (Ras binding domain)
+################################################################################
+CRAF(RBD)
+
+end molecule types
+
+begin seed species
+
+# small molecules
+
+GDP  GDP_conc
+GTP  GTP_conc
+
+# proteins
+
+# Set apo Ras, RasGDP and RasGTP concentrations to their near equilibrium values
+KRAS(G~apo)  KRAS_conc/(1.+(kp1/km1)*GDP_conc+(kp5/km5)*GTP_conc)
+KRAS(G~GDP)  \
+(kp1/km1)*GDP_conc*KRAS_conc/(1.+(kp1/km1)*GDP_conc+(kp5/km5)*GTP_conc)
+KRAS(G~GTP)  \
+(kp5/km5)*GTP_conc*KRAS_conc/(1.+(kp1/km1)*GDP_conc+(kp5/km5)*GTP_conc)
+
+# The settings below simulate addition of SOS1, RASA1 and CRAF at time t=0
+SOS1(GEF)  SOS1_conc
+RASA1(GAP)  RASA1_conc
+CRAF(RBD)  CRAF_conc
+
+end seed species
+
+begin observables
+
+Molecules RasGTP KRAS(G~GTP!?)
+Molecules RasGDP KRAS(G~GDP!?)
+Molecules ActiveEff CRAF(RBD!+)
+
+# conservation laws
+Molecules KRAStot KRAS()
+Molecules Gtot GDP GTP KRAS(G~GDP!?) KRAS(G~GTP!?)
+Molecules SOS1tot SOS1()
+Molecules RASA1tot RASA1()
+Molecules CRAFtot CRAF()
+
+end observables
+
+begin reaction rules
+
+# GDP binds the apo form of Ras
+KRAS(G~apo)+GDP->KRAS(G~GDP) kp1
+# GDP spontaneously dissociates from Ras
+KRAS(G~GDP)->KRAS(G~apo)+GDP km1
+
+# GEF reversibly binds apo Ras
+KRAS(G~apo)+SOS1(GEF)<->KRAS(G~apo!1).SOS1(GEF!1) kp2,km2
+
+# GEF reversibly binds RasGDP
+KRAS(G~GDP)+SOS1(GEF)<->KRAS(G~GDP!1).SOS1(GEF!1) kp3,km3
+
+# GDP binds apo Ras-GEF complex
+KRAS(G~apo!1).SOS1(GEF!1)+GDP->KRAS(G~GDP!1).SOS1(GEF!1) kp4
+# GDP dissociates from RasGDP-GEF complex
+KRAS(G~GDP!1).SOS1(GEF!1)->KRAS(G~apo!1).SOS1(GEF!1)+GDP km4
+
+# GTP binds the apo form of Ras
+KRAS(G~apo)+GTP->KRAS(G~GTP) kp5
+# GTP spontaneoulsy dissociates from Ras
+KRAS(G~GTP)->KRAS(G~apo)+GTP km5
+
+# GTP binds apo Ras-GEF complex
+KRAS(G~apo!1).SOS1(GEF!1)+GTP->KRAS(G~GTP!1).SOS1(GEF!1) kp6
+# GTP dissociates from RasGTP-GEF complex
+KRAS(G~GTP!1).SOS1(GEF!1)->KRAS(G~apo!1).SOS1(GEF!1)+GTP km6
+
+# GEF reversibly binds RasGTP
+KRAS(G~GTP)+SOS1(GEF)<->KRAS(G~GTP!1).SOS1(GEF!1) kp7,km7
+
+# Effector reversibly binds RasGTP
+KRAS(G~GTP)+CRAF(RBD)<->KRAS(G~GTP!1).CRAF(RBD!1) kaEff,kdEff
+
+# GTP hydrolysis via the intrinsic GTPase activity of Ras
+#   RasGTP is free
+KRAS(G~GTP)->KRAS(G~GDP) khyd
+#   RasGTP is bound to effector, fast release of effector after hydrolysis
+KRAS(G~GTP!1).CRAF(RBD!1)->KRAS(G~GDP)+CRAF(RBD) khyd
+
+# GAP-assisted hydrolysis of GTP via a Michaelis-Menten mechanism
+#   Enzyme-substrate association
+KRAS(G~GTP)+RASA1(GAP)->KRAS(G~GTP!1).RASA1(GAP!1) kf
+#   Enzyyme-substrate dissociation (no reaction)
+KRAS(G~GTP!1).RASA1(GAP!1)->KRAS(G~GTP)+RASA1(GAP) kr
+#   Hydrolysis (reaction), fast dissoc of enzyme and product after hydrolysis
+KRAS(G~GTP!1).RASA1(GAP!1)->KRAS(G~GDP)+RASA1(GAP) kcat
+
+end reaction rules
+
+end model
+
+# actions
+
+generate_network({overwrite=>1});
+simulate_ode({t_end=>10,n_steps=>100});

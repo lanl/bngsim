@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Malformed BNG XML: invalid structure to trigger NFsim parse error -->
+<sbml>
+  <ListOfMoleculeTypes>
+    <MoleculeType id="INVALID" BROKEN_ATTR>
+  </ListOfMoleculeTypes>
+</sbml>

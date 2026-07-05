@@ -1,0 +1,54 @@
+# Model: synbio_counter_molecular.bngl
+# Description: Models a chemical counter that tallies input pulses.
+#              Each pulse converts state S_i to S_{i+1}.
+#              Demonstrates sequential logic.
+
+begin model
+
+begin parameters
+    k_step 10.0
+    k_in   1.0
+    k_deg_pulse 1.0 # Fast decay of pulse to simulate discrete events
+end parameters
+
+begin molecule types
+    State(val~0~1~2~3) # 3-bit counter? No, just 0-3 states.
+    Input() # Pulse
+end molecule types
+
+begin seed species
+    State(val~0) 100
+    Input() 0
+end seed species
+
+begin observables
+    Molecules S0 State(val~0)
+    Molecules S1 State(val~1)
+    Molecules S2 State(val~2)
+    Molecules S3 State(val~3)
+    Molecules Pulse Input()
+end observables
+
+begin reaction rules
+    # 1. Pulse Generation (External or Test)
+    # 0 -> Input() k_in
+    # Input() -> 0 k_deg_pulse
+    
+    # 2. Counting Logic
+    # Input + S0 -> S1 (Input consumed or catalyzed? Let's say catalyzed but Input decays fast)
+    State(val~0) + Input() -> State(val~1) + Input() k_step
+    State(val~1) + Input() -> State(val~2) + Input() k_step
+    State(val~2) + Input() -> State(val~3) + Input() k_step
+    
+    # Reset?
+    # State(val~3) + Input() -> State(val~0) + Input() k_step
+    
+    # Pulse decay
+    Input() -> 0 k_deg_pulse
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

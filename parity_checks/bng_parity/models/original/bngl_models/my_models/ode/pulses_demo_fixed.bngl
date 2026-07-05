@@ -1,0 +1,89 @@
+begin model
+
+begin parameters
+# Physical constants / geometry
+NA          6.02214e23
+ncells      20000
+V           100.0e-6/ncells      # L extracellular volume per cell
+mwtAg       22400                # g/mol
+
+# Binding kinetics
+koff        0.001264             # 1/s
+KD          7.435e-10            # M
+kon         (koff/KD)/(NA*V)     # /(molecule/cell)/s
+
+# Receptor abundance
+IgEtot      9838                 # molecules/cell
+
+# Pulse control
+Agconc      10                   # ng/ml; changed in the actions block
+const       1                    # 1 = ligand present, 0 = wash / no ligand
+Agtot       Agconc*1.0e-6*(NA*V)/mwtAg
+kon_pulse   kon*Agtot*const
+end parameters
+
+begin molecule types
+Ag(site)
+IgE(Fab)
+end molecule types
+
+begin seed species
+IgE(Fab)  IgEtot
+end seed species
+
+begin observables
+Molecules FreeIgE   IgE(Fab)
+Molecules BoundIgE  IgE(Fab!+)
+end observables
+
+begin reaction rules
+# During a pulse, ligand is represented as a constant external bath.
+IgE(Fab) -> IgE(Fab!1).Ag(site!1) kon_pulse
+
+# During the wash, const=0, so rebinding turns off and complexes simply decay.
+IgE(Fab!1).Ag(site!1) -> IgE(Fab) koff
+end reaction rules
+
+end model
+
+begin actions
+# Pulse / wash protocol.
+# The key detail is continue=>1 from the second simulate onward so that all
+# intervals are appended into one continuous GDAT trace instead of overwriting.
+
+generate_network({overwrite=>1})
+
+# Pulse 1: 0-300 s at 10 ng/ml
+setParameter("Agconc",10)
+setParameter("const",1)
+simulate({method=>"ode",suffix=>"pulses",get_final_state=>1,print_functions=>1,\
+          t_start=>0,t_end=>300,n_steps=>300})
+
+# Wash 1: 300-600 s
+setParameter("const",0)
+simulate({method=>"ode",suffix=>"pulses",continue=>1,get_final_state=>1,print_functions=>1,\
+          t_start=>300,t_end=>600,n_steps=>300})
+
+# Pulse 2: 600-900 s at 30 ng/ml
+setParameter("Agconc",30)
+setParameter("const",1)
+simulate({method=>"ode",suffix=>"pulses",continue=>1,get_final_state=>1,print_functions=>1,\
+          t_start=>600,t_end=>900,n_steps=>300})
+
+# Wash 2: 900-1200 s
+setParameter("const",0)
+simulate({method=>"ode",suffix=>"pulses",continue=>1,get_final_state=>1,print_functions=>1,\
+          t_start=>900,t_end=>1200,n_steps=>300})
+
+# Pulse 3: 1200-1500 s at 100 ng/ml
+setParameter("Agconc",100)
+setParameter("const",1)
+simulate({method=>"ode",suffix=>"pulses",continue=>1,get_final_state=>1,print_functions=>1,\
+          t_start=>1200,t_end=>1500,n_steps=>300})
+
+# Final wash: 1500-2400 s
+setParameter("const",0)
+simulate({method=>"ode",suffix=>"pulses",continue=>1,get_final_state=>1,print_functions=>1,\
+          t_start=>1500,t_end=>2400,n_steps=>900})
+
+end actions

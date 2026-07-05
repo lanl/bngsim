@@ -1,0 +1,91 @@
+# McMillen2002_RelaxationOscillator.bngl
+# Deterministic ODE-equivalent BNGL model (BioNetGen)
+# Transliteration of the Antimony ODEs using functions of observables.
+
+begin model
+
+begin parameters
+  # Hill nonlinearities
+  alpha      600
+  beta       10
+
+  # Production / copy-number prefactors
+  m_x        10
+  m_y        1
+  mu_x       50
+  mu_l       50
+
+  # Degradation / dilution rates
+  gamma_x    0.5
+  gamma_y    0.5
+  gamma_l    25
+  gamma_a    0.2
+
+  # Proteolytic degradation of x by y
+  gamma_xy   5
+
+  # AI synthesis / transport
+  mu_a       0.4
+  D_a        120
+  Q          0.6
+end parameters
+
+begin molecule types
+  X()
+  Y()
+  L()
+  A()
+end molecule types
+
+begin seed species
+  X() 0
+  Y() 0
+  L() 0
+  A() 0
+end seed species
+
+begin observables
+  Molecules Xobs  X()
+  Molecules Yobs  Y()
+  Molecules Lobs  L()
+  Molecules Aobs  A()
+end observables
+
+begin functions
+  # f(x) = (1 + alpha*x^4) / (1 + x^4)
+  f = (1 + alpha*Xobs^4) / (1 + Xobs^4)
+
+  # g(a) = (1 + beta*a^2) / (1 + a^2)
+  g = (1 + beta*Aobs^2) / (1 + Aobs^2)
+
+  # a_e = Q * a  => exchange term -D_a*(a - a_e) = -D_a*(1-Q)*a
+  gamma_a_eff = gamma_a + D_a*(1 - Q)
+end functions
+
+begin reaction rules
+  # Production from PRE promoter (activated by X)
+  0 -> X()    m_x*f
+  0 -> Y()    m_y*f
+  0 -> L()    mu_l*f
+
+  # AI-activated X production
+  0 -> X()    mu_x*g
+
+  # AI synthesis from LuxI
+  0 -> A()    mu_a*Lobs
+
+  # Proteolysis: X degraded catalytically by Y (Y preserved)
+  X() + Y() -> Y()   gamma_xy
+
+  # Dilution/degradation
+  X() -> 0    gamma_x
+  Y() -> 0    gamma_y
+  L() -> 0    gamma_l
+  A() -> 0    gamma_a_eff
+end reaction rules
+
+end model
+
+# Deterministic simulation (ODE)
+generate_network({overwrite=>1})
+simulate_ode({t_end=>12, n_steps=>400})

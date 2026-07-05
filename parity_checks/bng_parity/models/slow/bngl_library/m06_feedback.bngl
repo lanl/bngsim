@@ -1,0 +1,69 @@
+begin model
+#@model_id: m06_feedback
+#@title: Biochemical pathway with negative feedback
+#@description: Two-variable feedback system with constant production into X1, transfer X1->X2, degradation of X2, and negative feedback from X2 on X1 production. ODEs: X1' = a - c*X2 - b*X1, X2' = b*X1 - b*X2.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        100            # dimensionless scaling factor (scale up for SSA)
+
+  a        1*f            # molecules/s  basal production rate (scaled)
+  b        0.2            # 1/s  transfer/degradation rate
+  c        0.8            # 1/s  feedback inhibition strength
+
+  X1_init  0              # molecules  initial count of X1
+  X2_init  0              # molecules  initial count of X2
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+end molecule types
+
+begin seed species
+  X1()  X1_init  # molecules
+  X2()  X2_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_X1  X1()
+  Molecules  Obs_Tot_X2  X2()
+end observables
+
+begin functions
+  # Production rate for X1: a - c*X2 (clamped at 0 to avoid negative propensity)
+  # In the ODE regime this equals a - c*X2; for SSA we ensure non-negativity.
+  rate_X1_prod() = max(a - c*Obs_Tot_X2, 0)
+end functions
+
+begin reaction rules
+  # Constant production of X1 with feedback inhibition from X2
+  0 -> X1()  rate_X1_prod()
+
+  # Transfer: X1 -> X2 at rate b (first-order)
+  X1() -> X2()  b
+
+  # Degradation of X2 at rate b (first-order)
+  X2() -> 0  b
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

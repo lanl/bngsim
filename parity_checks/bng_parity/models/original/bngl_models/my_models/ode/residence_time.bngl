@@ -1,0 +1,115 @@
+# Filename: residence_time.bngl
+
+begin model
+
+# metadata
+
+begin parameters
+
+# lifetime of bond at site 1
+xtau1 10 # s
+ytau1 10
+
+# lifetime of bond at site 2
+xtau2 2.5 # s
+ytau2 10 # set at 5 or 2.5 to see faster dissociation of Syk_Y130E
+
+# ring-closure constant
+#   make a bond with site 2
+xk1_to_12 20 # /s
+yk1_to_12 5
+
+# ring-opening constant
+#   break a bond with site 2
+xk12_to_1=1/xtau2 # /s
+yk12_to_1=1/ytau2
+
+# ring-closure constant
+#   make a bond with site 1
+xk2_to_12 40 # /s
+yk2_to_12 10
+
+# ring-opening constant
+#   break a bond with site 1
+xk12_to_2=1/xtau1 # /s
+yk12_to_2=1/ytau1
+
+# dissociate into bulk from site 1
+xk1_to_sink=1/xtau1 # /s
+yk1_to_sink=1/ytau1
+
+# dissociate into bulk from site 2
+xk2_to_sink=1/xtau2 # /s
+yk2_to_sink=1/ytau2
+
+end parameters
+
+begin molecule types
+
+x1
+x2
+x12
+x0
+
+y1
+y2
+y12
+y0
+
+z1
+z2
+z12
+z0
+
+end molecule types
+
+begin seed species
+
+x1 1
+y1 1
+z1 1
+
+end seed species
+
+begin observables
+
+Species boundSyk_Y130A x1 x2 x12
+Species boundSyk_Y130E y1 y2 y12
+Species boundSyk_Y130E_one_ITAM z1
+
+end observables
+
+begin reaction rules
+
+# rules for Syk_Y130A (tight clamping only)
+
+x1->x12 xk1_to_12
+x1->x0 xk1_to_sink
+
+x12->x1 xk12_to_1
+x12->x2 xk12_to_2
+
+x2->x12 xk2_to_12
+x2->x0 xk2_to_sink
+
+# rules for Syk_Y130E (loose clamping only)
+
+y1->y12 yk1_to_12
+y1->y0 yk1_to_sink
+
+y12->y1 yk12_to_1
+y12->y2 yk12_to_2
+
+y2->y12 yk2_to_12
+y2->y0 yk2_to_sink
+
+z1->z0 yk1_to_sink
+
+end reaction rules
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>600,n_steps=>300})
+
+end actions

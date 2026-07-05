@@ -1,0 +1,77 @@
+From b18a561a6676c4a79720ca55a4b872d7593efa6f Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Wed, 10 Jun 2026 07:07:03 -0600
+Subject: [PATCH 09/14] bngsim: forward mu::Parser mratio() built-in to host
+ expr_compat
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+mratio(a,b,z) — the confluent hypergeometric ratio M(a+1,b+1,z)/M(a,b,z),
+a BNGL built-in — was ported verbatim into the shim from
+bngsim/src/expression.cpp. Replace the duplicated modified-Lentz
+implementation with a forward to the host single source
+bngsim::expr_compat::mratio, so the NFsim shim and the ODE/SSA engine evaluate
+it from one definition. The shim still registers `mratio` as a 3-arg ExprTk
+function; only the body changes. Part of issue #49.
+---
+ src/NFfunction/nfsim_funcparser.h | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/src/NFfunction/nfsim_funcparser.h b/src/NFfunction/nfsim_funcparser.h
+index 34ac707..a192ad5 100644
+--- a/src/NFfunction/nfsim_funcparser.h
++++ b/src/NFfunction/nfsim_funcparser.h
+@@ -15,9 +15,9 @@
+ // - Constants: _PI, _e, _Na (NFsim convention) plus bngsim's _pi, _kB, _NA, _R, _h, _F.
+ //
+ // SINGLE SOURCE OF TRUTH (issue #49): the BNG-compatibility logic this shim needs
+-// — the BNG-identifier → ExprTk-symbol mapping (the unconditional leading-
+-// underscore remap and the conditional reserved-symbol mangle) — is owned by
+-// the host evaluator and exposed via
++// — the mratio() built-in and the BNG-identifier → ExprTk-symbol mapping (the
++// unconditional leading-underscore remap and the conditional reserved-symbol
++// mangle) — is owned by the host evaluator and exposed via
+ // <bngsim/expr_compat.hpp>. This shim FORWARDS to those definitions instead of
+ // carrying a hand-ported copy, so the logic lives in exactly one place (the
+ // bngsim::expression archive that the vendored NFsim target links). The shim
+@@ -107,6 +107,20 @@ struct SignFunction : public exprtk::ifunction<T> {
+     }
+ };
+ 
++// 3-arg: mratio(a, b, z) — BNGL built-in confluent hypergeometric ratio.
++// Forwards to the host single source bngsim::expr_compat::mratio (issue #49),
++// so the NFsim shim and the ODE/SSA engine evaluate it from one implementation.
++template <typename T>
++struct MratioFunction : public exprtk::ifunction<T> {
++    MratioFunction() : exprtk::ifunction<T>(3) {
++        exprtk::ifunction<T>::allow_zero_parameters() = false;
++    }
++    T operator()(const T& a, const T& b, const T& z) override {
++        return static_cast<T>(bngsim::expr_compat::mratio(static_cast<double>(a),
++                                                          static_cast<double>(b),
++                                                          static_cast<double>(z)));
++    }
++};
+ 
+ }  // namespace detail
+ 
+@@ -141,6 +155,7 @@ public:
+         symbol_table_.add_function("ln",     ln_func_);
+         symbol_table_.add_function("rint",   rint_func_);
+         symbol_table_.add_function("sign",   sign_func_);
++        symbol_table_.add_function("mratio", mratio_func_);
+     }
+ 
+     ~Parser() = default;
+@@ -319,6 +334,7 @@ private:
+     detail::LnFunction<double> ln_func_;
+     detail::RintFunction<double> rint_func_;
+     detail::SignFunction<double> sign_func_;
++    detail::MratioFunction<double> mratio_func_;
+ };
+ 
+ }  // namespace mu
+-- 
+2.53.0
+

@@ -1,0 +1,126 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molecules per mole
+
+cell_density 1e9 # cells per L
+Vecf=1/cell_density # L/cell
+Vcyt 1e-12 # L/cell
+
+IgE_dimer_conc 1e-9 # M
+IgE_dimer_tot=IgE_dimer_conc*(NA*Vecf) # copies per cell
+
+R_tot 3e5 # copies per cell
+Lyn_tot 3e5 # copies per cell
+Syk_tot 3e5 # copies per cell
+
+kf 1e8/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr 2e-1 # /s
+
+KxRT 300 # dimensionless
+kmx=kr # /s
+kpx=KxRT*kmx/R_tot
+
+kpL 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kmL 0.01 # /s
+
+fLyn 0
+
+kPP 1 # /s
+kdp 0.1 # /s
+# approximation becomes better as kPP decreases
+
+kpSyk 1e6/(NA*Vcyt)
+kmSyk 0.01 
+
+end parameters
+
+begin molecule types
+
+# n - natural
+# r - restructured
+
+# covalently crosslinked IgE dimer
+nDim(Fc,Fc)
+
+
+# high-affinity IgE receptor
+nR(a,b,g~0~PP)
+
+
+nLyn(U)
+
+
+nSyk(tSH2)
+
+
+end molecule types
+
+begin seed species
+
+nDim(Fc,Fc) IgE_dimer_tot
+nR(a,b!1,g~0).nLyn(U!1) fLyn*R_tot
+nR(a,b,g~0) (1-fLyn)*R_tot
+nLyn(U) Lyn_tot-fLyn*R_tot
+nSyk(tSH2) Syk_tot
+
+
+
+end seed species
+
+begin observables
+
+Molecules n_freeR nR(a)
+#Molecules n_monomeric_ligand_bound_R nR(a!1).nDim(Fc!1,Fc)
+#Molecules n_all_ligand_bound_R nR(a!+)
+#Molecules n_monomeric_R nR(a) nR(a!1).nDim(Fc!1,Fc)
+Molecules n_R_in_dimers nR(a!1).nDim(Fc!1,Fc!2).nR(a!2)
+Molecules n_Rtot nR()
+Molecules n_R_bound_Lyn nR(b!1).nLyn(U!1)
+Molecules n_R_gPP nR(g~PP)
+Molecules n_dimericR_bound_Lyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!+)
+Species n_dimers_with_b0g0_ULyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!3).nR(a!3,b,g~0)
+Molecules n_denom nR(a!1,b,g~0).nDim(Fc!1,Fc!2).nR(a!2,b) nR(a!1,b,g~0).nDim(Fc!1,Fc!2).nR(a!2,b!3).nLyn(U!3) 
+Molecules n_freeLyn_obs nLyn(U)
+Species n_doubleLyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!3).nR(a!3,b!4).nLyn(U!4)
+Molecules n_freeSyk nSyk(tSH2)
+Molecules n_recruitedSyk nSyk(tSH2!+)
+
+
+
+end observables
+
+begin functions
+
+
+
+end functions
+
+begin reaction rules
+
+# rules for naturally formulated model
+
+nR(a)+nDim(Fc,Fc)<->nR(a!1).nDim(Fc!1,Fc) kf,kr
+nR(a)+nR(a!1).nDim(Fc!1,Fc)<->nR(a!2).nR(a!1).nDim(Fc!1,Fc!2) kpx,kmx
+
+nR(b)+nLyn(U)<->nR(b!1).nLyn(U!1) kpL,kmL
+
+nR(a!1,b!2).nDim(Fc!1,Fc!3).nLyn(U!2).nR(a!3,g~0)->\
+nR(a!1,b!2).nDim(Fc!1,Fc!3).nLyn(U!2).nR(a!3,g~PP) kPP
+
+nR(g~PP)->nR(g~0) kdp
+
+nR(g~PP)+nSyk(tSH2)<->nR(g~PP!1).nSyk(tSH2!1) kpSyk,kmSyk
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>60,n_steps=>300,print_functions=>1})
+
+end actions

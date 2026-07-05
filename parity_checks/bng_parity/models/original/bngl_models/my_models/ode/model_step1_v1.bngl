@@ -1,0 +1,292 @@
+begin model
+# References:
+#  - De Boer RJ, Ribeiro RM, Perelson AS (2010) Current estimates for HIV-1 production imply rapid viral clearance in lymphoid tissue. {\it PLOS Comput Biol} {\bf 6}: e1000906.
+#  - Hlavacek WS, Stilianakis NI, Notermans DW, Danner SA, Perelson AS (2000) Influence of follicular dendritic cells on decay of HIV during antiretroviral therapy. {\it Proc Natl Acad Sci USA} {\bf 97}: 10966--10971
+#  - Zhao J, Cao Y, Jusko WJ (2015) Across-species scaling of monoclonal antibody pharmacokinetics using a minimal PBPK model. {\it Pharm Res} {\bf 32}: 3269--3281.
+#  - Zhu P, Liu J, Bess J Jr, Chertova E, Lifson JD, Gris{\'{e}} H, Ofek GA, Taylor KA, Roux KH (2006) Distribution and three-dimensional structure of AIDS virus envelope spikes. {\it Nature} {\bf 441}: 847--852.
+begin parameters
+
+
+
+########## Best-fit parameter values ###############################################
+R0__FREE 70.57
+R0_prime__FREE 89.87
+mu__FREE 0.004398
+f__FREE 0.08407
+#delta__FREE 1
+p__FREE 666300
+c__FREE 129.0
+kE__FREE 1.245
+rho__FREE 0.01255
+fa__FREE 0.005093
+fr__FREE 0.3943
+#T0_ref__FREE 3.85e8
+nCells_ref__FREE 3.144e9
+####################################################################################
+###########################################
+########## ADJUSTABLE PARAMETERS ##########
+###########################################
+# composite parameters R0 and R0_prime
+#  - We assume that R0<R0_prime.
+#  - R0 must be greater than 1 for persistent viral infection.
+#  - The definitions of R0 and R0_prime have the same form as the expression 
+#    for the basic reproduction number of the standard viral dynamics (SVD) model.
+R0 = min(R0__FREE,R0_prime__FREE) # dimensionless
+R0_prime = max(R0__FREE,R0_prime__FREE) # dimensionless
+# rate constant for death of (uninfected) target cells
+#  - We assume that naive (n) and activated (a) target cells have the same lifetime.
+mu = mu__FREE # /d
+#mu_n = mu # /d
+#mu_a = mu # /d
+# fraction determining the relative lifetimes of short- and long-lived productively infected cells
+#  - 0<f<1
+#  - We expect f<<1.
+#  - The lifetime of a short-lived infected cell is f*100 percent of the lifetime of a long-lived infected cell.
+f = f__FREE # dimensionless
+# rate constant for death of short-lived productively infected cells
+#  - The rate constant for death of long-lived productively infected cells is f*delta.
+delta = 1 # delta__FREE # /d
+#delta_s = delta # /d
+#delta_l = f*delta # /d
+# rate constant characterizing generation of virus by productively infected cells
+#  - We assume that short-lived (s) and long-lived (l) productively infected cells generate virus at the same per capita rate.
+p = p__FREE # /d
+#p_s = p # /d
+#p_l = p # /d
+# rate constant for clearance of free virus (in the interstitial fluid of lymphoid tissue)
+c = c__FREE # /d
+# rate constant for progression of exposed cells through stages of the eclipse phase of infection
+#  - We take the eclipse phase to consist of three stages, each of equal expected duration.
+kE = kE__FREE # /d
+# ratio p_s*[Il()]:p_l*[Is()] in steady state of persistent viral infection
+#  - We expect 0<rho<<1.
+rho = rho__FREE # dimensionless
+# fraction that determines the values of alpha and gamma
+#  - 0<fa<1
+fa = fa__FREE # dimensionless
+# fraction that determines the value of r
+#  - 0<fr<1
+fr = fr__FREE # dimensionless
+# initial number of target cells for reference body weight
+T0_ref = 3.85e8 # T0_ref__FREE # population
+# number of CD4- mononuclear cells at reference body weight
+nCells_ref = nCells_ref__FREE # population
+######################################################
+########## FIXED AND CONSTRAINED PARAMETERS ##########
+######################################################
+# reference body weight
+w_ref 8.07 # kg
+# cohort-specific (arithmetic mean) body weight 
+#  - phase 1 control animals: 5.32 kg 
+#  - phase 1 treated animals: 5.24 kg
+#  - phase 2 control animals: 7.67 kg
+#  - phase 2 treated animals: 8.09 kg
+w 5.32 # kg
+# blood plasma volume for reference body weight
+#  - See Table I in Zhao et al. (2015).
+#  - According to Zhao et al. (20150, nuP = 0.157 L for a body weight of 3.5 kg.
+#  - It follows that nuP = 0.362 L for a body weight of 8.07 kg.
+nuP_ref 0.362 # L
+# cohort-specific blood plasma volume
+nuP = nuP_ref*(w/w_ref) # L
+# cohort-specific initial number of target cells
+T0 = T0_ref*(w/w_ref) # population
+# ratio T0:(Tn+Ta), where Tn and Ta are evaluated at the steady state of persistent viral infection
+#  - Recall that R0<R0_prime.
+r = R0+fr*(R0_prime-R0) # dimensionless ratio
+# steady-state fraction of target cells that are naive (vs. activated)
+theta = (R0_prime-r)/(R0_prime-R0) # dimensionless
+# ratio (CD4+ cells before infection):(CD4+ cells after infection)
+CD4_before_infection 5.78e10 # population
+CD4_after_infection 1.88e10 # population
+r_prime = CD4_before_infection/CD4_after_infection # dimensionless ratio
+# cohort-specific number of CD4+ cells invulnerable to infection
+#  - This population includes CD4+ cells lacking a viral coreceptor.
+T0_prime = T0*(r-r_prime)/(r*(r_prime-1)) # population
+# cohort-specific number of CD4- mononuclear cells
+nCells = nCells_ref*(w/w_ref) # population
+# rate of de novo generation of (naive) target cells
+lmbda = mu*T0 # /d
+# rate constants for infection of naive (n) and activated (a) target cells
+beta_n = (c*delta/p)*(R0/T0) # /d
+beta_a = (c*delta/p)*(R0_prime/T0) # /d
+# fraction of exposed cells that become long-lived productively infected cells
+#  - This formula assumes that p_s = p_l.
+#  - If p_s != p_l, then eps = rho*f*p_s/(rho*f*p_s+p_l).
+#  - We expect eps<<1.
+eps = rho*f/(rho*f+1) # dimensionless
+# rate constant for virus-dependent activation of naive cells
+#  - Note that phi appears only in the expression for alpha.
+phi = fa*min(1,(r-theta)/(1-theta)) # dimensionless
+alpha = phi*(beta_n+beta_a*(r/theta-1))/((r-theta)/(1-theta)-phi) # /d
+# rate constant for virus-dependent proliferation of activated cells
+gamma = (1-fa)*(beta_a+(alpha+beta_n)/(r/theta-1))
+# rate constant for import of virions (De Boer et al., 2010)
+#  - virions move from lymphoid tissue to blood plasma
+ki 2.4 # /d
+# rate constant for export of virions (De Boer et al., 2010)
+#  - virions move from blood plasma to interstitial fluid
+ke 240 # /d
+# fraction of virions returning to lymphoid tissue from blood plasma (De Boer et al., 2010) 
+ft 0.5 # dimensionless
+# geometric mean viral load for all Phase II animals (control and treated) at t = 6 weeks (42 d) p.i.
+#Gv 787504 # vRNA copies per mL
+# anti-retroviral therapy (ART) indicator
+ART 0 # 0 (-ART) or 1 (+ART)
+# anti-CD21 antibody therapy (Ab) indicator
+thera_Ab 0 # 0 (-Ab) or 1 (+Ab)
+end parameters
+begin molecule types
+counter()
+Tn() # naive target cells
+Ta() # virus-activated target cells
+E1() # pre-symptomatic exposed cells in stage 1 of eclipse phase 
+E2() # pre-symptomatic exposed cells in stage 2 of eclipse phase
+E3() # pre-symptomatic exposed cells in stage 3 of eclipse phase
+Is() # short-lived productively infected cells
+Il() # long-lived productively infected cells
+Vf() # free virions in interstitial fluid surrounding follicular dendritic cells (FDCs)
+Vp() # free virions in blood plasma
+end molecule types
+begin seed species
+counter() 0
+Tn() T0
+Ta() 0
+E1() 0
+E2() 0
+E3() 0
+Is() 1
+Il() 0
+Vf() 0
+Vp() 0
+end seed species
+begin observables
+Molecules t counter()
+Molecules Tn Tn()
+Molecules Ta Ta()
+Molecules E1 E1()
+Molecules E2 E2()
+Molecules E3 E3()
+Molecules Is Is()
+Molecules Il Il()
+Molecules Vf Vf()
+Molecules Vp Vp()
+end observables
+begin functions
+#formula_log10Vp_conc()=log10(Gv)
+# abundance of CD4+ cells
+CD4_positive_cell_count()=T0_prime+Tn+Ta
+#################################################
+########## frequency of infected cells ##########
+#################################################
+freqI()=log10(1e5*(Is+Il)/(Is+Il+E1+E2+E3+Tn+Ta+T0_prime+nCells)) # log10(number of infected cells per 100,000 mononuclear cells)
+# data for control animals log10(geomtric mean)
+freq_inf_cells_p1_C()=if(t<14, 0,\
+if(t<28,2.156,\
+if(t<56,2.089,\
+if(t<60,1.951,0))))
+# data for treated animals log10(geometric mean)
+freq_inf_cells_p1_T()=if(t<14, 0,\
+if(t<28,2.263,\
+if(t<56,2.062,\
+if(t<60,1.592,0))))
+#######################################
+########## plasma viral load ##########
+#######################################
+#  - Note that 15 copies per mL is the limit of detection.
+#  - [Vp()] is approximately (ki/ke)*[Vf()].
+log_pVL_only()=if(Vp>(15*1000/2)*nuP,log10(2*Vp/(1000*nuP)),1.176) # log10(vRNA copies per mL)
+#log_pVL_only_approx()=if(Vf>(15*1000/2)*(ke/ki)*nuP,log10(2*Vf*(ki/ke)/(nuP*1000)),1.176) # log10(vRNA copies per mL)
+log_pVL_only_p1_C()=if(t< 7,1.176091259,\
+if(t<14,5.872825680,\
+if(t<21,7.271765428,\
+if(t<28,6.652363064,\
+if(t<35,6.537802956,\
+if(t<42,6.199181106,\
+if(t<49,5.880386327,\
+if(t<56,5.920500486,\
+if(t<60,6.083642508,0)))))))))
+log_pVL_only_p1_T()=if(t< 7,1.176091259,\
+if(t<14,5.843776587,\
+if(t<21,7.549073893,\
+if(t<28,6.704401913,\
+if(t<35,6.458363513,\
+if(t<42,6.102778765,\
+if(t<49,5.382656780,\
+if(t<56,5.821900523,\
+if(t<60,5.781070187,0)))))))))
+log_pVL_only_p2_C()=if(t< 7,1.176091259,\
+if(t<14,5.712486031,\
+if(t<21,7.153994248,\
+if(t<28,6.354212256,\
+if(t<35,6.161951654,\
+if(t<42,5.692717962,\
+if(t<49,5.914894404,0)))))))
+log_pVL_only_p2_T()=if(t< 7,1.176091259,\
+if(t<14,5.445937944,\
+if(t<21,7.175144927,\
+if(t<28,6.423994503,\
+if(t<35,6.168238474,\
+if(t<42,5.726241912,\
+if(t<49,5.883825458,0)))))))
+#
+end functions
+begin reaction rules
+# timer
+0->counter() 1
+# de novo generation of naive target cells
+0->Tn() lmbda
+# virus-dependent activation of naive cells
+Tn()+Vf()->Ta()+Vf() alpha
+# virus-dependent proliferation of activated cells
+Ta()+Vf()->Ta()+Ta()+Vf() gamma
+# infection of target cells
+Tn()+Vf()->E1()+Vf() beta_n
+Ta()+Vf()->E1()+Vf() beta_a
+# death of target cells
+Tn()->0 mu
+Ta()->0 mu
+# progression through the eclipse phase of infection
+E1()->E2() kE
+E2()->E3() kE
+E3()->Is() kE*(1-eps)
+E3()->Il() kE*eps
+# death of infected cells
+Is()->0 delta
+Il()->0 f*delta
+# generation of virus by productively infected cells
+Is()->Is()+Vf() p
+Il()->Il()+Vf() p
+# clearance of virus
+Vf()->0 c
+# transport of free virus between interstitial fluid of lymphoid tissue and blood plasma
+Vf()<->Vp() ki,ft*ke
+# export of virus from blood plasma to sink (iterstitial fluid of non-lymphoid tissues/organs)
+Vp()->0 (1-ft)*ke
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+#################################################
+##### Phase I pVL data for control animals ######
+#################################################
+resetConcentrations()
+setParameter("w",5.32) # arithmetic mean body weight (kg) of Phase I control animals
+setParameter("thera_Ab",0) # -Ab, no antibody treatment
+simulate({suffix=>"p1_control_pVL_freqI",method=>"ode",t_start=>0,t_end=>56,n_steps=>560,print_functions=>1})
+##################################################
+##### Phase II pVL data for control animals ######
+##################################################
+resetConcentrations()
+setParameter("w",7.67) # arithmetic mean body weight (kg) of Phase II control animals
+setParameter("thera_Ab",0) # -Ab, no antibody treatment
+simulate({suffix=>"p2_control_pVL",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+#################################################
+##### Phase II pVL data for treated animals #####
+#################################################
+resetConcentrations()
+setParameter("w",8.09) # arithmetic mean body weight (kg) of Phase II treated animals
+setParameter("thera_Ab",0) # -Ab, no antibody treatment
+simulate({suffix=>"p2_treated_pVL",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+end actions

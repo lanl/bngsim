@@ -1,0 +1,176 @@
+#This model is based on J.L. Macdonald and L.J. Pike (2008) PNAS 105:112-117.
+#Note that there is a published correction (PNAS 105:9129, 2008)
+#Measurements at 4 degrees C
+
+#William S. Hlavacek
+#Simulations with BioNetGen version 2.1.6 (bionetgen.org)
+#Use of BNGEditor is recommended (current version is 0.2.210)
+#http://www.cs.pitt.edu/~ams292/bngbuilds.html
+
+begin parameters
+
+#Parameter values need to be given in consistent units (assumed by BioNetGen)
+
+#1/K11 = 220 pM
+K11=4.6 # [=] /nM see corrected Fig. 3
+#T.C. Elleman, T. Domagala, ..., C.W. Ward (2001) Biochemistry 40:8930-3939.
+#Measurements at room temperature
+#plasmon surface resonance was used to measured rate constants for EGF interaction with
+#a dimerization-competent form of the EGFR ectodomain (sEGFR501).  
+#The value of the dissociation rate constant was reported to be 0.02 /sec (Table 1).
+#A value of 0.103 /sec was reported in Table 2, but this value is for immobilized EGF.
+#Because EGF is fairly small and two-point attachment to EGFR is needed for strong binding,
+#I put more weight on the value reported in Table 1.
+#I put more weight on sEGFR501 results than sEGFR621 results, because it seems that sEGFR621
+#might adopt the tethered configuration of the EGFR ectodomain.
+k11r	0.02 # [=] /sec
+k11f	K11*k11r # [=] /nM/sec
+
+#K21 in Macdonald and Pike is *not* a single-site equilibrium association constant
+#(from inspection of Eqs. [1] and [2])
+#Note that the ...+K21+... term in Eq. [2] should be replaced by ...+K21*[EGF]+...
+#Divide (multiply) by 2 to obtain the single-site equil assoc (dissoc) const
+#1/K21 = 380 pM (190 pM reported)
+K21=5.3/2.0 # [=] /nM see corrected Fig. 3, then divide by 2
+k21r	0.02 # [=] /sec, assumed to be about the same as k11r
+k21f	K21*k21r # [=] /nM/sec
+
+#K22 in Macdonald and Pike is *not* a single-site equilibrium association constant
+#(from inspection of Eqs. [1] and [2])
+#Note that the ...+K21+... term in Eq. [2] should be replaced by ...+K21*[EGF]+...
+#Multiply (divide) by 2 to obtain the single-site equil assoc (dissoc) const
+#1/K22 = 1.5 nM (2.9 nM reported)
+K22=0.34*2.0 # [=] /nM see corrected Fig. 3, then multiply by 2
+k22r	0.2 # [=] /sec, assumed to be an order of magnitude larger than k11r, consistent with equil constants
+k22f	K22*k22r # [=] /nM/sec
+
+#From inset of Fig. 5A, we can read the x-intercept to determine the total receptor concentration in assays
+#From this information, we can determine a characteristic length (d) that converts surface densities to concentrations
+#I find d=0.4 dm (87,000 receptors/cell)
+#Linda Pike communicated on 9/29/2010 that the Scatchard plot in the Fig. 5A inset corresponds
+#to the middle case (87K receptors/cell)
+#Note that this conversion factor only applies for the assay conditions reported in Macdonald and Pike
+#(i.e., monolayer of cells in a dish of unspecified size with unspecified volume of extracellular fluid)
+d=0.4 # [=] dm, converts nmol/dm^2 to nmol/dm^3 (nM)
+
+#L20 in Macdonald and Pike is *not* a single-site equilibrium association constant
+#(from inspection of Eqs. [1] and [2])
+#Note that the ...+K21+... term in Eq. [2] should be replaced by ...+K21*[EGF]+...
+#Multiply (divide) by 2 to obtain the single-site equil assoc (dissoc) const
+L20_2D=5.3e2*2.0 # [=] dm^2/nmol see corrected Fig. 3, then multiply by 2
+L20=L20_2D*d # [=] /nM (conversion needed for unit consistency throughout)
+# I. Chung, R. Akita, ...., I. Mellman (2010) Nature 464:783-787.
+#The method of measurement has been criticized but...
+#A dimer "lifetime" was reported as 13.0 sec
+#This lifetime corresponds to a dissociation rate constant of approx 0.1 /sec
+#Dimer persistence was found to be about the same w/ or w/o EGF.
+#However, the numbers (see below) indicate that EGF reduces persistence by 60%; 
+#I will assume that this 60% difference is inconsequential.
+#The numbers are 6.2 sec "lifetime" after EGF vs. 9.8 sec "lifetime" before EGF for kinase-dead EGFR
+l20r	0.1 # [=] /sec
+l20f	L20*l20r # [=] dm^3/nmol/sec
+
+#L21 is determined by detailed balance constraint
+#K11*L21=K21*L20
+L21_2D=K21*L20_2D/K11 # [=] dm^2/nmol
+L21=L21_2D*d # [=] /nM (conversion needed for unit consistency throughout)
+l21r	0.1 # [=] /sec, assumed to be about the same as l20r
+l21f=L21*l21r # dm^3/nmol/sec
+
+#L22 is determined by detailed balance constraint
+#K11*L22=K22*L21
+L22_2D=K22*L21_2D/K11 # [=] dm^2/nmol
+L22=L22_2D*d # [=] /nM (conversion needed for unit consistency throughout)
+l22r	0.1 # [=] /sec, assumed to be about the same as l20r
+l22f=L22*l21r # dm^3/nmol/sec
+
+#W.W. Chen, B. Schoeberl, ...., P.K. Sorger (2009) Mol Syst Biol 5:239
+#An EGF concentration of 5 nM is used to generate data used for fitting
+#A431 cells were measured to have about 1 million copies of EGFR (Chen et al.)
+LT		0.25 # nM (ranges from 0.01 nM to 10 nM in Macdonald and Pike)
+RTnum	1000.0e3 # copies per cell (ranges from 24,000 to 447,000 copies per cell in Macdonald and Pike)
+#30,0000 molecules/cell corresponds to a surface density of 1.175e-12 mol/dm^2
+#Personal communication, L.J. Pike (9/23/2010)
+RTref	30.0e3 # 30,000 copies of EGFR per cell
+density	1.175e-3 # [=] nmol/dm^2 # This surface density was directly measured by FCS
+#Linda Pike communicated that 20 GFP-EGFR were detected on average in a beam with radius 0.3 microns
+#for a cell line known to expression 30,000 receptors per cell
+
+#convert receptor copy number to surface density
+RT_2D=(RTnum/RTref)*density # [=] nmol/dm^2
+#convert to nM (needed for unit consistency throughout)
+RT=RT_2D/d # [=] nM
+
+#calculations needed to set initial condition
+#there is dimerization of EGFR in the abscence of EGF
+a=L20_2D*RT_2D
+x=(sqrt(1.0+4.0*a)-1.0)/(2.0*a)
+y=0.5*a*x*x
+
+end parameters
+
+begin molecule types
+EGF(rec)
+EGFR(back,lig)
+end molecule types
+
+begin seed species
+EGF(rec)							LT
+EGFR(back,lig)						x*RT # EGF-free monomeric and dimeric EGFR in equil
+EGFR(back!1,lig).EGFR(back!1,lig)	y*RT # see above
+end seed species
+
+begin reaction rules
+
+# EGF binds free monomeric EGFR
+EGF(rec) + EGFR(back,lig) <-> EGF(rec!1).EGFR(back,lig!1) k11f,k11r
+
+# EGF binds EGF-free EGFR dimer
+EGF(rec) + EGFR(back!1,lig).EGFR(back!1,lig) <-> \
+EGF(rec!2).EGFR(back!1,lig!2).EGFR(back!1,lig) k21f,k21r
+
+# EGF binds EGF-bound EGFR dimer
+EGF(rec) + EGF(rec!1).EGFR(back!2,lig!1).EGFR(back!2,lig) <-> \
+EGF(rec!3).EGF(rec!1).EGFR(back!2,lig!1).EGFR(back!2,lig!3) k22f,k22r
+
+# EGFR dimerization (both receptors free of EGF)
+EGFR(back,lig) + EGFR(back,lig) <-> EGFR(back!1,lig).EGFR(back!1,lig) l20f,l20r
+
+# EGFR dimerization (one receptor free, one receptor bound to EGF)
+EGFR(back,lig) + EGF(rec!1).EGFR(back,lig!1) <-> \
+EGFR(back!2,lig).EGF(rec!1).EGFR(back!2,lig!1) l21f,l21r
+
+# EGFR dimerization (both receptors bound to EGF)
+EGF(rec!1).EGFR(back,lig!1) + EGF(rec!2).EGFR(back,lig!2) <-> \
+EGF(rec!1).EGFR(back!3,lig!1).EGF(rec!2).EGFR(back!3,lig!2) l22f,l22r
+
+end reaction rules
+
+begin observables
+
+#Free EGF
+Molecules EGF_free EGF(rec)
+
+#Total EGF
+Molecules EGF_total EGF(rec) EGF(rec!+)
+
+#Free EGFR
+Molecules EGFR_free EGFR(back,lig)
+
+#Total EGFR
+Molecules EGFR_tot EGFR()
+
+#Dimeric EGFR
+Molecules dimers EGFR(back!+)
+
+#EGF-bound EGFR
+Molecules bound EGFR(lig!+)
+
+#Concentration of EGFR dimers with at least one EGFR bound to EGF
+Species active EGFR(lig!+,back!+)
+
+end observables
+
+generate_network({overwrite=>1});
+simulate_ode({t_end=>60,n_steps=>200});
+

@@ -1,0 +1,144 @@
+begin model
+
+#@title: TLBR aggregation kinetics (Yang et al., 2008)
+
+#@description: |
+#  Trivalent-ligand/bivalent-receptor (TLBR) aggregation model
+#  from Yang et al. (2008). A trivalent ligand (L, three identical
+#  binding sites) crosslinks bivalent cell-surface receptors
+#  (R, two identical binding sites) through three reaction rules:
+#  (R1) ligand capture — a free ligand binds a free receptor site;
+#  (R2) crosslinking — a receptor-bound ligand binds an additional
+#  free receptor site on a DIFFERENT complex (no intra-complex
+#  rings); (R3) dissociation — any ligand-receptor bond breaks.
+#
+#  The model generates a combinatorially large reaction network
+#  (>10^5 species after five rounds of rule application) and is
+#  therefore simulated network-free via NFsim. The equilibrium
+#  aggregate-size distribution is controlled by two dimensionless
+#  parameters: c_tot = 3*kon1*NL/koff (ligand saturation) and
+#  beta_param = kon2*NR/koff (crosslinking propensity). Above a
+#  critical beta_param, the system undergoes a percolation (sol-gel)
+#  transition and a macroscopic receptor aggregate forms.
+#
+#  Default parameterization (beta_param=0.1, below percolation)
+#  produces small transient aggregates that equilibrate rapidly.
+#  This regime allows verification against mean-field ODE
+#  predictions for bond counts and free-site fractions.
+
+#@keyword: |
+#  aggregation, multivalent binding, crosslinking,
+#  percolation, sol-gel transition, rule-based modeling,
+#  network-free simulation, kinetic Monte Carlo,
+#  mass action, IgE receptor
+
+#@reference: |
+#  Yang J, Monine MI, Faeder JR, Hlavacek WS (2008). Kinetic
+#  Monte Carlo method for rule-based modeling of biochemical
+#  networks. Phys Rev E 78:031910.
+#  doi:10.1103/PhysRevE.78.031910
+
+begin parameters
+
+  #@note: |
+  #  All rate constants are stochastic (per-molecule-pair or
+  #  per-molecule). Time unit: seconds. The bimolecular constants
+  #  kon1 and kon2 absorb the volume factor (k+1/V and k+2/V in
+  #  the paper) so that propensity = kon * count_A * count_B.
+  #
+  #  Dimensionless control parameters from Goldstein and
+  #  Perelson (1984):
+  #    c_tot = 3 * kon1 * NL / koff  (ligand saturation)
+  #    beta_param = kon2 * NR / koff (crosslinking propensity)
+  #
+  #  Default: c_tot ~ 0.84, beta_param = 0.1 (sol phase,
+  #  below percolation transition).
+
+  # Molecule counts
+  # NR = 300 receptors, NL = 14*NR = 4200 ligands;
+  # see Fig. 3(c,d) caption in Yang et al. (2008)
+  NL  4200  # molecules
+  NR  300   # molecules
+
+  # Dissociation rate constant (single bond)
+  koff  0.01  # /s
+
+  # Bimolecular association rate constant for ligand capture (R1)
+  # kon1 = c_tot * koff / (3 * NL); c_tot = 0.84
+  kon1  6.667e-7  # /(molecule*s)
+
+  # Bimolecular association rate constant for crosslinking (R2)
+  # kon2 = beta_param * koff / NR; beta_param = 0.1
+  kon2  3.333e-6  # /(molecule*s)
+
+end parameters
+
+begin molecule types
+  # Trivalent ligand with three identical receptor-binding sites
+  L(r,r,r)
+  # Bivalent receptor with two identical ligand-binding sites
+  R(l,l)
+end molecule types
+
+begin seed species
+  # All ligands and receptors initially free
+  L(r,r,r)  NL  # molecules
+  R(l,l)    NR  # molecules
+end seed species
+
+begin observables
+  # Free ligand (all three sites unbound);
+  # Species avoids 3! overcounting from identical r sites
+  Species    Obs_Free_L       L(r,r,r)
+  # Free receptor (both sites unbound);
+  # Species avoids 2! overcounting from identical l sites
+  Species    Obs_Free_R       R(l,l)
+  # Total ligand-receptor bonds
+  Molecules  Obs_Bonds        L(r!1).R(l!1)
+  # Free ligand sites on any ligand
+  Molecules  Obs_Free_L_sites L(r)
+  # Free receptor sites on any receptor
+  Molecules  Obs_Free_R_sites R(l)
+end observables
+
+begin reaction rules
+  # R1: Ligand capture — free ligand binds a free receptor site.
+  # Rate = kon1 * (free L sites on free ligands) * (free R sites).
+  # See Fig. 1(b), R1 in Yang et al. (2008).
+  L(r,r,r) + R(l) -> L(r!1,r,r).R(l!1)  kon1
+
+  # R2: Crosslinking — a receptor-bound ligand binds an
+  # additional free receptor on a DIFFERENT complex. The "+"
+  # between reactants enforces inter-complex binding (no
+  # intra-complex rings). See Fig. 1(b), R2 in
+  # Yang et al. (2008).
+  L(r!+,r) + R(l) -> L(r!+,r!1).R(l!1)  kon2
+
+  # R3: Dissociation — any ligand-receptor bond breaks.
+  # See Fig. 1(b), R3 in Yang et al. (2008).
+  L(r!1).R(l!1) -> L(r) + R(l)  koff
+end reaction rules
+
+end model
+
+begin actions
+
+  #@note: |
+  #  Network generation is infeasible (combinatorial explosion
+  #  of aggregate topologies). All simulations use NFsim
+  #  (network-free). ODE and SSA via generate_network are not
+  #  included.
+
+  # Equilibration kinetics
+
+  #@protocol: |
+  #  Simulate from all-free initial conditions to equilibrium
+  #  (3000 s, well beyond the ~100 s equilibration timescale
+  #  at these parameters). NFsim tracks individual molecules
+  #  and applies rules stochastically.
+
+  #@figure: Fig. 3(a) in Yang et al. (2008)
+
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,\
+    t_end=>3000,n_steps=>300})
+end actions

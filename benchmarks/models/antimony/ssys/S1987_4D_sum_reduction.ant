@@ -1,0 +1,38 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Section 4D - Sum reduction (Equations 22-25)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z(0) = 4
+//
+// Original ODE:
+//   dZ/dt = 2*Z^(2/3) - Z^2 - Z^(1/2)
+//
+// Recast S-system (2 variables):
+//   Define: Z = X1*X2
+//   X1(0) = 1, X2(0) = 4
+//
+//   dX1/dt = -X1^(1/2) * X2^(-1/2)
+//   dX2/dt = 2*X1^(2/3)*X2^(2/3) - X1*X2^2
+//
+// Logarithmic form (Equation 25):
+//   dY1/dt = -exp[-(Y1+Y2)/2]
+//   dY2/dt = 2*exp[-(Y1+Y2)/3] - exp[(Y1+Y2)]
+//   where Y = log(X)
+//
+// Translation symmetry: Y1 + Q, Y2 - Q leaves system unchanged
+// Three basins: 0 < Z < 0.0158123, 0.0158123 < Z < 1, Z > 1
+// Fixed points: Z = 1 (attracting), Z = 0.0158123 (repelling)
+// =============================================================================
+
+model S1987_4D_sum_reduction()
+    // Original single ODE with sum of power-law terms
+    Z' = 2*Z^(2/3) - Z^2 - Z^(1/2)
+    
+    // Initial condition
+    Z = 4
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

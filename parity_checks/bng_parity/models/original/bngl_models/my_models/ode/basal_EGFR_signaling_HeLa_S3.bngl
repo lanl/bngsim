@@ -1,0 +1,84 @@
+# basal_EGFR_signaling_HeLa_S3.bngl
+begin model
+  begin parameters
+    NA 6.02214076e23 # molecules per mole
+    Vcyt 1e-12 # L per cell
+    Vecf 1e-9 # L per cell
+    EGFR_cpc 1e4 # copies per cell
+    GRB2_cpc 1e5 # copies per cell
+    SHC1_cpc 1e5 # copies per cell
+    PTPRJ_cpc 1e6 # copies per cell
+    agonist_conc 1e-6 # M
+    agonist_cpc=agonist_conc*(NA*Vecf) # copies per cell
+    KXRT 0.02 # dimensionless
+    krdim 1 # /s
+    kfdim=krdim*KXRT/EGFR_cpc # /(molecule/cell)/s
+    kphos1 1 # /s
+    kphos2 1 # /s
+    kPTK_nonspecific 0.01 # /s
+    kPTP_nonspecific 0.01 # /s
+    kfGRB2 5e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+    krGRB2 0.05 # /s
+    kfSHC1 2e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+    krSHC1 0.2 # /s
+    kfagonist 1e5/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+    kragonist 0.1 # /s
+    kp1 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+    km1 0.1 # /s
+    kcat1_slow 0.05 # /s
+    kcat1_fast=10*kcat1_slow # /s
+    kp2 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+    km2 0.1 # /s
+    kcat2_slow 0.05 # /s
+    kcat2_fast=10*kcat1_slow # /s
+  end parameters
+  begin molecule types
+    EGFR(II,Y1092~0~P,Y1172~0~P)
+    GRB2(SH2)
+    SHC1(PTB)
+    PTPRJ(ecto,cat)
+    agonist(pep19)
+  end molecule types
+  begin seed species
+    EGFR(II,Y1092~0,Y1172~0) EGFR_cpc
+    GRB2(SH2) GRB2_cpc
+    SHC1(PTB) SHC1_cpc
+    PTPRJ(ecto,cat) PTPRJ_cpc
+    agonist(pep19) 0
+  end seed species
+  begin observables
+    Molecules pY1068 EGFR(Y1092~P!?)
+    Molecules pY1148 EGFR(Y1172~P!?)
+    Molecules GRB2_recruited GRB2(SH2!1).EGFR(Y1092~P!1)
+    Molecules SHC1_recruited SHC1(PTB!1).EGFR(Y1172~P!1)
+    Molecules pep19_bound_PTPRJ agonist(pep19!1).PTPRJ(ecto!1)
+  end observables
+  begin functions
+  end functions
+  begin reaction rules
+    EGFR(Y1092~0)->EGFR(Y1092~P) kPTK_nonspecific
+    EGFR(Y1172~0)->EGFR(Y1172~P) kPTK_nonspecific
+    EGFR(Y1092~P)->EGFR(Y1092~0) kPTP_nonspecific
+    EGFR(Y1172~P)->EGFR(Y1172~0) kPTP_nonspecific
+    EGFR(II)+EGFR(II)<->EGFR(II!1).EGFR(II!1) kfdim,krdim
+    EGFR(II!+,Y1092~0)->EGFR(II!+,Y1092~P) kphos1
+    EGFR(II!+,Y1172~0)->EGFR(II!+,Y1172~P) kphos2
+    GRB2(SH2)+EGFR(Y1092~P)<->GRB2(SH2!1).EGFR(Y1092~P!1) kfGRB2,krGRB2
+    SHC1(PTB)+EGFR(Y1172~P)<->SHC1(PTB!1).EGFR(Y1172~P!1) kfSHC1,krSHC1
+    agonist(pep19)+PTPRJ(ecto)<->agonist(pep19!1).PTPRJ(ecto!1) kfagonist,kragonist
+    PTPRJ(cat)+EGFR(Y1092~P)<->PTPRJ(cat!1).EGFR(Y1092~P!1) kp1,km1
+    PTPRJ(ecto,cat!1).EGFR(Y1092~P!1)->PTPRJ(ecto,cat)+EGFR(Y1092~0) kcat1_slow
+    PTPRJ(ecto!+,cat!1).EGFR(Y1092~P!1)->PTPRJ(ecto!+,cat)+EGFR(Y1092~0) kcat1_fast
+    PTPRJ(cat)+EGFR(Y1172~P)<->PTPRJ(cat!1).EGFR(Y1172~P!1) kp2,km2
+    PTPRJ(ecto,cat!1).EGFR(Y1172~P!1)->PTPRJ(ecto,cat)+EGFR(Y1172~0) kcat2_slow
+    PTPRJ(ecto!+,cat!1).EGFR(Y1172~P!1)->PTPRJ(ecto!+,cat)+EGFR(Y1172~0) kcat2_fast
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  setConcentration("agonist(pep19)",0)
+  simulate({method=>"ode",t_end=>100,n_steps=>100})
+  setConcentration("agonist(pep19)","agonist_cpc")
+  simulate({method=>"ode",t_end=>200,n_steps=>100,continue=>1})
+end actions
+# EOF

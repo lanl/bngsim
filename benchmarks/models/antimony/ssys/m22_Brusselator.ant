@@ -1,0 +1,41 @@
+// Prigogine I, Lefever R (1968) J Chem Phys 48: 1695-1700.
+// Related: test_models3/HBF1998_brusselator.ant
+// This model is essentially the same as HBF1998.
+// Recast:
+// Mapping (exact):
+//    x = X1 * X2
+//    y = X3
+//
+//   species X1, X2, X3;
+//
+// Parameters (carry-over)
+//   A = 1.0;
+//   B = 3.0;
+// 
+// Canonical S-system (two monomials per ODE; positive coefficients)
+// From product rule: (X1*X2)' = X1'*X2 + X1*X2'
+//   X1' =  A * (X2^(-1))     -  B * X1;
+//   X2' =  1 * X1*(X2^2)*X3  -  1 * X2;
+//   X3' =  B * X1*X2         -  1 * (X1^2)*(X2^2)*X3;
+//
+// Initial conditions (consistent with x=1, y=1)
+//   X1 = 1;
+//   X2 = 1;
+//   X3 = 1;
+//
+// Observables (original variables)
+//   var x_obs, y_obs;
+//   x_obs := X1 * X2;
+//   y_obs := X3;
+//
+model Brusselator()
+
+  species x, y
+  A = 1.0; B = 3.0;
+
+  x' =  A - (B + 1)*x + x^2*y;
+  y' =  B*x - x^2*y;
+
+  x = 1; y = 1;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

@@ -1,0 +1,57 @@
+# Model: compartment_nested_transport.bngl
+# Description: Models transport through a 3-level nested functionality:
+#              Cytoplasm (CP) -> Nucleus (NU) -> Nucleolus (NO).
+#              Demonstrates how to define nested compartment hierarchies and move species deeply.
+
+begin model
+
+begin parameters
+    # Volumes (Nested containment)
+    V_CP 100
+    V_NU 20
+    V_NO 2
+    
+    # Transport Rates
+    k_cp_nu 1.0  # cytoplasm to nucleus
+    k_nu_no 5.0  # nucleus to nucleolus (sequestration)
+    k_no_nu 0.5  # release from nucleolus
+    k_nu_cp 0.1  # export to cytoplasm
+    
+    S_tot 100
+end parameters
+
+begin molecule types
+    S() # Shuttle protein
+end molecule types
+
+begin compartments
+    CP 3 V_CP
+    NM 2 1.0 CP
+    NU 3 V_NU NM
+    NOM 2 1.0 NU
+    NO 3 V_NO NOM
+end compartments
+
+begin seed species
+    S()@CP S_tot
+end seed species
+
+begin observables
+    Molecules Cyto S()@CP
+    Molecules Nuc  S()@NU
+    Molecules No   S()@NO
+end observables
+
+begin reaction rules
+    # Step 1: CP -> NU
+    S()@CP <-> S()@NU k_cp_nu, k_nu_cp
+    
+    # Step 2: NU -> NO
+    S()@NU <-> S()@NO k_nu_no, k_no_nu
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

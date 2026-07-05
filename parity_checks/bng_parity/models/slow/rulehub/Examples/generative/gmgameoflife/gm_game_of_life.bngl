@@ -1,0 +1,127 @@
+# Model: gm_game_of_life.bngl
+# Description: Implements Conway's Game of Life on a 3x3 torus.
+#              Cells are molecules with (x,y) states.
+#              Demonstrates neighbor-counting and threshold logic in BNGL.
+
+begin model
+
+begin parameters
+    # Growth/Death rates (step-like integration)
+    k_step 10.0
+end parameters
+
+begin molecule types
+    Cell(x~1~2~3,y~1~2~3,state~DEAD~ALIVE)
+end molecule types
+
+begin seed species
+    # Glider initialization (approximate for 3x3 torus)
+    Cell(x~1,y~1,state~DEAD) 1.0
+    Cell(x~2,y~1,state~ALIVE) 1.0
+    Cell(x~3,y~1,state~DEAD) 1.0
+    
+    Cell(x~1,y~2,state~DEAD) 1.0
+    Cell(x~2,y~2,state~DEAD) 1.0
+    Cell(x~3,y~2,state~ALIVE) 1.0
+    
+    Cell(x~1,y~3,state~ALIVE) 1.0
+    Cell(x~2,y~3,state~ALIVE) 1.0
+    Cell(x~3,y~3,state~ALIVE) 1.0
+end seed species
+
+begin observables
+    Molecules Alive_Count Cell(state~ALIVE)
+    # Individual cells
+    Molecules C11 Cell(x~1,y~1,state~ALIVE)
+    Molecules C12 Cell(x~1,y~2,state~ALIVE)
+    Molecules C13 Cell(x~1,y~3,state~ALIVE)
+    Molecules C21 Cell(x~2,y~1,state~ALIVE)
+    Molecules C22 Cell(x~2,y~2,state~ALIVE)
+    Molecules C23 Cell(x~2,y~3,state~ALIVE)
+    Molecules C31 Cell(x~3,y~1,state~ALIVE)
+    Molecules C32 Cell(x~3,y~2,state~ALIVE)
+    Molecules C33 Cell(x~3,y~3,state~ALIVE)
+end observables
+
+begin functions
+    # Neighbor counting on a 3x3 torus
+    # Cxy are observables for Cell(x~x,y~y,state~ALIVE)
+    # ----------------------------------------------------
+    N11() = C33+C13+C23 + C31+C21 + C32+C12+C22
+    N12() = C31+C11+C21 + C32+C22 + C33+C13+C23
+    N13() = C32+C12+C22 + C33+C23 + C31+C11+C21
+    
+    N21() = C13+C23+C33 + C11+C31 + C12+C22+C32
+    N22() = C11+C21+C31 + C12+C32 + C13+C23+C33
+    N23() = C12+C22+C32 + C13+C33 + C11+C21+C31
+    
+    N31() = C23+C33+C13 + C21+C11 + C22+C32+C12
+    N32() = C21+C31+C11 + C22+C12 + C23+C33+C13
+    N33() = C22+C32+C12 + C23+C13 + C21+C31+C11
+    
+    # Birth: exactly 3 neighbors
+    B11() = if(N11()>2.5 && N11()<3.5, k_step, 0)
+    B12() = if(N12()>2.5 && N12()<3.5, k_step, 0)
+    B13() = if(N13()>2.5 && N13()<3.5, k_step, 0)
+    B21() = if(N21()>2.5 && N21()<3.5, k_step, 0)
+    B22() = if(N22()>2.5 && N22()<3.5, k_step, 0)
+    B23() = if(N23()>2.5 && N23()<3.5, k_step, 0)
+    B31() = if(N31()>2.5 && N31()<3.5, k_step, 0)
+    B32() = if(N32()>2.5 && N32()<3.5, k_step, 0)
+    B33() = if(N33()>2.5 && N33()<3.5, k_step, 0)
+    
+    # Death: <2 or >3 neighbors
+    D11() = if(N11()<1.5 || N11()>3.5, k_step, 0)
+    D12() = if(N12()<1.5 || N12()>3.5, k_step, 0)
+    D13() = if(N13()<1.5 || N13()>3.5, k_step, 0)
+    D21() = if(N21()<1.5 || N21()>3.5, k_step, 0)
+    D22() = if(N22()<1.5 || N22()>3.5, k_step, 0)
+    D23() = if(N23()<1.5 || N23()>3.5, k_step, 0)
+    D31() = if(N31()<1.5 || N31()>3.5, k_step, 0)
+    D32() = if(N32()<1.5 || N32()>3.5, k_step, 0)
+    D33() = if(N33()<1.5 || N33()>3.5, k_step, 0)
+end functions
+
+begin reaction rules
+    # Cell 1,1
+    Cell(x~1,y~1,state~DEAD) -> Cell(x~1,y~1,state~ALIVE) B11()
+    Cell(x~1,y~1,state~ALIVE) -> Cell(x~1,y~1,state~DEAD) D11()
+    
+    # Cell 1,2
+    Cell(x~1,y~2,state~DEAD) -> Cell(x~1,y~2,state~ALIVE) B12()
+    Cell(x~1,y~2,state~ALIVE) -> Cell(x~1,y~2,state~DEAD) D12()
+    
+    # Cell 1,3
+    Cell(x~1,y~3,state~DEAD) -> Cell(x~1,y~3,state~ALIVE) B13()
+    Cell(x~1,y~3,state~ALIVE) -> Cell(x~1,y~3,state~DEAD) D13()
+    
+    # ... and so on for all 9 cells.
+    # To keep this artifact concise,I'll implement a few more but the principle is clear.
+    
+    # Row 2
+    Cell(x~2,y~1,state~DEAD) -> Cell(x~2,y~1,state~ALIVE) B21()
+    Cell(x~2,y~1,state~ALIVE) -> Cell(x~2,y~1,state~DEAD) D21()
+    
+    Cell(x~2,y~2,state~DEAD) -> Cell(x~2,y~2,state~ALIVE) B22()
+    Cell(x~2,y~2,state~ALIVE) -> Cell(x~2,y~2,state~DEAD) D22()
+    
+    Cell(x~2,y~3,state~DEAD) -> Cell(x~2,y~3,state~ALIVE) B23()
+    Cell(x~2,y~3,state~ALIVE) -> Cell(x~2,y~3,state~DEAD) D23()
+    
+    # Row 3
+    Cell(x~3,y~1,state~DEAD) -> Cell(x~3,y~1,state~ALIVE) B31()
+    Cell(x~3,y~1,state~ALIVE) -> Cell(x~3,y~1,state~DEAD) D31()
+    
+    Cell(x~3,y~2,state~DEAD) -> Cell(x~3,y~2,state~ALIVE) B32()
+    Cell(x~3,y~2,state~ALIVE) -> Cell(x~3,y~2,state~DEAD) D32()
+    
+    Cell(x~3,y~3,state~DEAD) -> Cell(x~3,y~3,state~ALIVE) B33()
+    Cell(x~3,y~3,state~ALIVE) -> Cell(x~3,y~3,state~DEAD) D33()
+    
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ssa",t_end=>10,n_steps=>100})

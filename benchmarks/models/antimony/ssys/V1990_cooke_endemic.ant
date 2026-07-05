@@ -1,0 +1,55 @@
+// =============================================================================
+// Source: Voit (1990) "S-System Modelling of Endemic Infections"
+//         Comput. Math. Applic. 20(4-6):161-173
+// Example: Cooke's endemic infection model - exact recasting (Equation 15)
+//          Original: Cooke (1982)
+// =============================================================================
+// Time horizon: t ∈ [0, 100]
+//
+// Original Cooke model (Equation 7 with different γ1, γ2):
+//   dS/dt = γ1*I + γ2*A - S*[r1*I + r2*A]
+//   dI/dt = f*S*[r1*I + r2*A] - γ1*I
+//   dA/dt = (1-f)*S*[r1*I + r2*A] - γ2*A
+//
+// Variables:
+//   S = susceptibles (proportion)
+//   I = infectives with symptoms (proportion)
+//   A = asymptomatics (proportion)
+//   S + I + A = 1 (conservation)
+//
+// Exact S-system recasting (Equation 15):
+//   Define: X1=S, X2=I, X3=A
+//           X4/X5 = r1*I + r2*A (Z1 in paper)
+//           X6/X7 = γ1*I + γ2*A (Z2 in paper)
+//
+//   dX1/dt = X6*X7^(-1) - X1*X4*X5^(-1)
+//   dX2/dt = f*X1*X4*X5^(-1) - γ1*X2
+//   dX3/dt = (1-f)*X1*X4*X5^(-1) - γ2*X3
+//   dX4/dt = r1*f*X1*X4 - r1*γ1*X2*X5
+//   dX5/dt = r2*γ2*X3*X4^(-1)*X5^2 - r2*(1-f)*X1*X5
+//   dX6/dt = γ1*f*X1*X4*X5^(-1)*X7 - γ1^2*X2*X7
+//   dX7/dt = γ2^2*X3*X6^(-1)*X7^2 - γ2*(1-f)*X1*X4*X5^(-1)*X6^(-1)*X7^2
+//
+// This is the general form with different recovery rates.
+// =============================================================================
+
+model V1990_cooke_endemic()
+    // Parameters
+    f = 0.8       // Fraction developing symptoms
+    gamma1 = 0.2  // Recovery rate for symptomatics
+    gamma2 = 0.1  // Recovery rate for asymptomatics (different!)
+    r1 = 0.5      // Contact rate for symptomatics
+    r2 = 0.3      // Contact rate for asymptomatics
+    
+    // Original Cooke equations with different recovery rates
+    S' = gamma1*I + gamma2*A - S*(r1*I + r2*A)
+    I' = f*S*(r1*I + r2*A) - gamma1*I
+    A' = (1-f)*S*(r1*I + r2*A) - gamma2*A
+    
+    // Initial conditions (away from steady state)
+    S = 0.9   // Susceptibles
+    I = 0.05  // Infected with symptoms
+    A = 0.05  // Asymptomatic carriers
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

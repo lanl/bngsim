@@ -1,0 +1,82 @@
+begin model
+#@model_id: gardner2000_toggle_switch
+#@title: Genetic toggle switch (Gardner 2000) in population form
+#@description: Two mutually repressive gene products with Hill-type repression and first-order degradation. Converted from Antimony to BNGL with population variables for SSA/NFsim/ODE benchmarking.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: Parameters authored in 1/s and molecules; repression implemented as propensity depending on molecule counts. NA and compartment volume supplied for convertibility.
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+#@references: doi:10.1038/35002131
+#@notes: |
+#  Fix: compartment tags are required on products when compartments are defined.
+#  Rules now explicitly place R1 and R2 in compartment "cell".
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_cell   1.0            # L
+  h_mem    1e-7           # m
+  f        1.0            # dimensionless
+
+  alpha_1  156.25         # molecules/s
+  alpha_2  15.6           # molecules/s
+  n_2      2.5            # dimensionless
+  n_1      1.0            # dimensionless
+  k_deg1   1.0            # 1/s
+  k_deg2   1.0            # 1/s
+end parameters
+
+begin compartments
+  # Single compartment explicitly defined to support unit conversion readiness.
+  cell  3  V_cell
+end compartments
+
+begin molecule types
+  # Repressor 1 (gene product 1)
+  R1()
+  # Repressor 2 (gene product 2)
+  R2()
+end molecule types
+
+begin seed species
+  R1()@cell  0  # molecules
+  R2()@cell  0  # molecules
+end seed species
+
+begin observables
+  # Total R1 molecules
+  Molecules  Obs_Tot_R1  R1()@cell
+  # Total R2 molecules
+  Molecules  Obs_Tot_R2  R2()@cell
+end observables
+
+begin functions
+  # Hill-repressed synthesis propensities as functions of molecule counts.
+  syn_R1() = alpha_1 / (1 + (Obs_Tot_R2)^n_2)
+  syn_R2() = alpha_2 / (1 + (Obs_Tot_R1)^n_1)
+end functions
+
+begin reaction rules
+  # Synthesis with Hill repression (explicit compartment placement)
+  0 -> R1()@cell  syn_R1()
+  0 -> R2()@cell  syn_R2()
+
+  # First-order degradation/dilution (explicit compartment placement)
+  R1()@cell -> 0  k_deg1
+  R2()@cell -> 0  k_deg2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>8,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>8,n_steps=>400})
+#  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>8,n_steps=>400,complex=>1})
+end actions

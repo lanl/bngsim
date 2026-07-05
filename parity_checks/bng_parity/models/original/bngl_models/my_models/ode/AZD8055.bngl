@@ -1,0 +1,100 @@
+begin model
+
+begin parameters
+
+f 0.01 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+Vcyt 2e-12*f # L per cell
+
+MTOR_cpc 1e5*f # copies per cell
+substrate_cpc 1e5*f # copies per cell
+
+kp1 5e6/(NA*Vcyt) # /M/s
+km1 0.05 # /s
+
+ATP_conc 3.7e-3 # M
+ATP_cpc ATP_conc*(NA*Vcyt) # copies per cell
+
+AZD8055_conc_nM 100 # nM
+AZD8055_conc=AZD8055_conc_nM*1e-9 # M
+AZD8055_cpc=AZD8055_conc*(NA*Vcyt) # copies per cell
+
+KD_ATP_MTOR 15e-6 # M
+kf_ATP_MTOR 1e7 # /M/s
+kr_ATP_MTOR=kf_ATP_MTOR*KD_ATP_MTOR # /s
+
+KD_AZD8055_MTOR 1.3e-9 # M
+kf_AZD8055_MTOR 1e7 # /M/s
+kr_AZD8055_MTOR=kf_AZD8055_MTOR*KD_AZD8055_MTOR # /s
+
+EC50_AZD8055_MTORC1substrate 30e-9 # M
+freefractionATP=(KD_ATP_MTOR/ATP_conc)*(1+EC50_AZD8055_MTORC1substrate/KD_AZD8055_MTOR)
+
+kpA=kf_ATP_MTOR*ATP_conc*freefractionATP # /s
+kmA=kr_ATP_MTOR # /s
+KA=kpA/kmA # dimensionless
+
+kpB=kf_AZD8055_MTOR*AZD8055_conc # /s
+kmB=kr_AZD8055_MTOR # /s
+KB=kpB/kmB # dimensionless
+
+end parameters
+
+begin molecule types
+
+MTOR(PIKK~0~ATP~AZD8055)
+substrate(S~0~P)
+
+end molecule types
+
+begin seed species
+
+MTOR(PIKK~ATP) MTOR_cpc
+substrate(S~0) substrate_cpc
+
+end seed species
+
+begin observables
+
+Molecules MTORtot MTOR()
+
+Molecules PIKK_ATP MTOR(PIKK~ATP!?)
+Molecules PIKK_AZD8055 MTOR(PIKK~AZD8055!?)
+
+end observables
+
+begin functions
+
+rateLaw_AZD8055_replaces_ATP() (MTORtot/PIKK_ATP)*(kpB/(1+KA))
+rateLaw_ATP_replaces_AZD8055() kmB+kpB/(1+KA)
+
+MTOR_bound_to_ATP_formula() MTORtot*(1+KA)/(1+KA+KB)
+MTOR_bound_to_AZD8055_formula() MTORtot*KB/(1+KA+KB)
+
+end functions
+
+begin reaction rules
+
+MTOR(PIKK~ATP)+substrate(S~0)<->MTOR(PIKK~ATP!1).substrate(S~0!1) kp1,km1
+
+MTOR(PIKK~ATP!?)->MTOR(PIKK~AZD8055!?) rateLaw_AZD8055_replaces_ATP()
+MTOR(PIKK~AZD8055!?)->MTOR(PIKK~ATP!?) rateLaw_ATP_replaces_AZD8055()
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+saveConcentrations()
+
+resetConcentrations()
+simulate({suffix=>"A_ODE_solver",method=>"ode",t_start=>0,t_end=>200,n_steps=>100,print_functions=>1})
+
+resetConcentrations()
+simulate({suffix=>"B_NFsim",method=>"nf",t_start=>0,t_end=>200,n_steps=>100,print_functions=>1})
+
+end actions

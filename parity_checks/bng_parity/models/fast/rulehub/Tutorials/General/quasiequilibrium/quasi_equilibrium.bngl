@@ -1,0 +1,57 @@
+
+# quasi_equilibrium.bngl
+# 
+# A minimal three-species model demonstrating the quasi-equilibrium approximation.
+# Species A and B rapidly equilibrate while B slowly converts to C irreversibly.
+# When the equilibration timescale (1/k_plus, 1/k_minus) is much faster than the
+# conversion timescale (1/r), B_st/A_st ≈ K = k_plus/k_minus holds throughout,
+# and the system can be reduced to an effective two-variable model.
+#
+# Increasing r breaks this approximation as conversion competes with equilibration.
+
+begin model
+
+begin parameters
+    A0      1           # Initial concentration of A
+    k_plus  10          # Forward rate A -> B (fast)
+    k_minus 10          # Reverse rate B -> A (fast)
+    r       0.01         # Conversion rate B -> C (slow)
+                         # Increase this rate to break quasi-equilibrium
+    
+    # Equilibrium constant
+    K       k_plus/k_minus  # = 1 for these parameters
+end parameters
+
+begin molecule types
+    A()
+    B()
+    C()
+end molecule types
+
+begin seed species
+    A()     A0
+    B()     0
+    C()     0
+end seed species
+
+begin observables
+    Molecules A_conc A()
+    Molecules B_conc B()
+    Molecules C_conc C()
+end observables
+
+begin reaction rules
+    # Rapid equilibration between A and B
+    A() <-> B()     k_plus, k_minus
+    
+    # Slow irreversible conversion of B to C
+    B() -> C()      r
+end reaction rules
+
+end model
+
+# Simulation commands
+generate_network({overwrite=>1})
+
+# Simulate with ODE - time in units of 1/k_minus
+simulate({method=>"ode", t_end=>25, n_steps=>500, print_functions=>1})

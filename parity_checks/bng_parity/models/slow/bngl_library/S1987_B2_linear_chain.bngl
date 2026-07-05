@@ -1,0 +1,66 @@
+begin model
+#@model_id: S1987_B2_linear_chain
+#@title: Linear chemical reaction chain
+#@description: Three-species linear chain dZ1/dt = -Z1+Z2, dZ2/dt = Z1-2*Z2+Z3, dZ3/dt = Z2-Z3. From Savageau & Voit (1987) Problem B2.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  k_fwd    1.0            # 1/s; forward transfer rate
+  k_rev    1.0            # 1/s; reverse transfer rate
+end parameters
+
+begin molecule types
+  Z1()
+  Z2()
+  Z3()
+end molecule types
+
+begin seed species
+  Z1()  200  # molecules (Z1(0)=2 scaled x100)
+  Z2()    0  # molecules (Z2(0)=0)
+  Z3()  100  # molecules (Z3(0)=1 scaled x100)
+end seed species
+
+begin observables
+  Molecules  Obs_Z1  Z1()
+  Molecules  Obs_Z2  Z2()
+  Molecules  Obs_Z3  Z3()
+end observables
+
+begin reaction rules
+  # dZ1/dt = -Z1 + Z2  =>  Z1 decays, Z2 produces Z1
+  # Transfer Z1 -> Z2 (rate k_fwd)
+  Z1() -> Z2()  k_fwd
+
+  # Transfer Z2 -> Z1 (rate k_rev)
+  Z2() -> Z1()  k_rev
+
+  # Transfer Z2 -> Z3 (rate k_fwd)
+  Z2() -> Z3()  k_fwd
+
+  # Transfer Z3 -> Z2 (rate k_rev)
+  Z3() -> Z2()  k_rev
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>6,n_steps=>400,complex=>1})
+end actions

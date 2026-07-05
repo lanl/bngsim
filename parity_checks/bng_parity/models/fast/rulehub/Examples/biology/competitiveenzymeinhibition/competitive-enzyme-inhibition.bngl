@@ -1,0 +1,73 @@
+begin model
+begin parameters
+    # Competitive inhibition: Inhibitor (I) and Substrate (S) compete for the same
+    # active site of Enzyme (E).
+    
+    # Reaction rates
+    k_bind_s 1e-3      # Substrate binding
+    k_unbind_s 0.1     # Substrate dissociation
+    k_cat 1.0          # Catalysis (Product formation)
+    
+    k_bind_i 1e-4      # Inhibitor binding (Higher affinity proxy)
+    k_unbind_i 0.01    # Inhibitor dissociation
+    k_recovery 0.05    # Product clearance
+    
+    # Multi-substrate extension
+    k_bind_s2 5e-4     # Competitor substrate
+    
+    # Initials
+    Enzyme_tot 100
+    Substrate_tot 1000
+    Substrate2_tot 0
+    Inhibitor_tot 500
+    Product_init 0
+end parameters
+
+begin molecule types
+    Enzyme(s,state~free~bound)
+    Substrate1(b)
+    Substrate2(b)
+    Inhibitor(b)
+    Product()
+end molecule types
+
+begin seed species
+    Enzyme(s,state~free) Enzyme_tot
+    Substrate1(b) Substrate_tot
+    Substrate2(b) Substrate2_tot
+    Inhibitor(b) Inhibitor_tot
+    Product() Product_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Free_Enzyme    Enzyme(state~free)         # Working capacity
+    Molecules ES_Complex     Enzyme(s!1).Substrate1(b!1) # Catalytic intermediate
+    Molecules EI_Complex     Enzyme(s!1).Inhibitor(b!1)  # Sequestrated/Inhibited enzyme
+    Molecules Total_Product  Product()                  # Reaction velocity proxy
+    Molecules S_Remaining    Substrate1()               # Mass balance
+end observables
+
+begin reaction rules
+    ## CLASSIC COMPETITION
+    # Enzyme + Substrate <-> ES -> Enzyme + Product
+    Enzyme(s,state~free) + Substrate1(b) <-> Enzyme(s!1,state~bound).Substrate1(b!1) k_bind_s,k_unbind_s
+    Enzyme(s!1,state~bound).Substrate1(b!1) -> Enzyme(s,state~free) + Product() k_cat
+    
+    # Enzyme + Inhibitor <-> EI (Dead end complex)
+    Enzyme(s,state~free) + Inhibitor(b) <-> Enzyme(s!1,state~bound).Inhibitor(b!1) k_bind_i,k_unbind_i
+    
+    ## MULTI-SUBSTRATE EXTENSION
+    # Enzyme + Substrate2 <-> ES2
+    Enzyme(s,state~free) + Substrate2(b) <-> Enzyme(s!1,state~bound).Substrate2(b!1) k_bind_s2,k_unbind_s
+    
+    ## CLEARANCE
+    Product() -> 0 k_recovery
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

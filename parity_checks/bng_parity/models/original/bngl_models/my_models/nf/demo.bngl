@@ -1,0 +1,50 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+V 1e-12 # L
+
+kf 1e6/(NA*V) # /M/s
+kr 0.1 # /s
+
+Molecule_Abundance 10e-9*(NA*V) # 10 nM
+
+end parameters
+
+begin molecule types
+Molecule(site,site)
+end molecule types
+
+begin seed species
+
+Molecule(site,site) Molecule_Abundance
+
+end seed species
+
+begin observables
+
+Species Dimers Molecule(site!+)
+
+Species S1 Molecule(site,site)
+Species S2 Molecule(site,site!1).Molecule(site!1,site)
+Species S3 Molecule(site,site!1).Molecule(site!1,site!2).Molecule(site!2,site)
+
+end observables
+
+begin reaction rules
+
+Molecule(site)+Molecule(site)<->Molecule(site!2).Molecule(site!2) kf,kr
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+#generate_network({overwrite=>1})
+
+simulate({method=>"nf",t_start=>0,t_end=>10,n_steps=>100})
+
+end actions

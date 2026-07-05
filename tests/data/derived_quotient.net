@@ -1,0 +1,22 @@
+# Regression test for non-product derived rate-constant parameters
+# (e.g., m1 = 5/MEK as in tcr_signaling). Without sympy-backed
+# ``_compute_derived_param_jacobian`` the chain-rule contribution
+# ``∂(5/MEK)/∂MEK = -5/MEK**2`` is dropped from the codegen sens RHS
+# and the sensitivity for ``MEK`` is wrong.
+begin parameters
+    1 MEK        2.0     # Constant
+    2 kr         0.7     # Constant
+    3 m1         5/MEK   # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 m1   #_Rfwd
+    2 2 1 kr   #_Rrev
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups

@@ -1,0 +1,151 @@
+# Image Convolution Filter in BNGL
+# ==================================
+# Pixels are molecules. Brightness is concentration.
+# A 3x3 edge-detection kernel is encoded as BNGL functions
+# that read neighbor pixel concentrations and compute output.
+#
+# No real "reactions" — the ODE system IS the convolution.
+# Rate functions act as kernel weights applied to neighbor pixels.
+#
+# 5x5 image,3x3 Sobel edge-detection kernel (horizontal)
+# Kernel:  [-1 0 1]
+#          [-2 0 2]
+#          [-1 0 1]
+
+begin model
+
+begin parameters
+    # Convolution dynamics
+    tau     1.0     # Integration time constant
+    kout    1.0     # Output read rate
+end parameters
+
+begin molecule types
+    # Input pixel at position (row,col)
+    Px(r~r1~r2~r3~r4~r5,c~c1~c2~c3~c4~c5)
+    # Output (edge-detected) pixel
+    Ex(r~r1~r2~r3~r4~r5,c~c1~c2~c3~c4~c5)
+    # Sink for dynamics
+    Sink()
+end molecule types
+
+begin seed species
+    # A 5x5 "image" — concentrations ARE pixel brightness
+    # Encoding a vertical bright bar in columns 3-4:
+    #  0 0 1 1 0
+    #  0 0 1 1 0
+    #  0 0 1 1 0
+    #  0 0 1 1 0
+    #  0 0 1 1 0
+    
+    Px(r~r1,c~c1) 0
+    Px(r~r1,c~c2) 0
+    Px(r~r1,c~c3) 100
+    Px(r~r1,c~c4) 100
+    Px(r~r1,c~c5) 0
+    
+    Px(r~r2,c~c1) 0
+    Px(r~r2,c~c2) 0
+    Px(r~r2,c~c3) 100
+    Px(r~r2,c~c4) 100
+    Px(r~r2,c~c5) 0
+    
+    Px(r~r3,c~c1) 0
+    Px(r~r3,c~c2) 0
+    Px(r~r3,c~c3) 100
+    Px(r~r3,c~c4) 100
+    Px(r~r3,c~c5) 0
+    
+    Px(r~r4,c~c1) 0
+    Px(r~r4,c~c2) 0
+    Px(r~r4,c~c3) 100
+    Px(r~r4,c~c4) 100
+    Px(r~r4,c~c5) 0
+    
+    Px(r~r5,c~c1) 0
+    Px(r~r5,c~c2) 0
+    Px(r~r5,c~c3) 100
+    Px(r~r5,c~c4) 100
+    Px(r~r5,c~c5) 0
+    
+    # Output pixels start at 0
+    Ex(r~r2,c~c2) 0
+    Ex(r~r2,c~c3) 0
+    Ex(r~r2,c~c4) 0
+    Ex(r~r3,c~c2) 0
+    Ex(r~r3,c~c3) 0
+    Ex(r~r3,c~c4) 0
+    Ex(r~r4,c~c2) 0
+    Ex(r~r4,c~c3) 0
+    Ex(r~r4,c~c4) 0
+    
+    Sink() 1
+end seed species
+
+begin observables
+    # Input image
+    Molecules In_r3c1 Px(r~r3,c~c1)
+    Molecules In_r3c2 Px(r~r3,c~c2)
+    Molecules In_r3c3 Px(r~r3,c~c3)
+    Molecules In_r3c4 Px(r~r3,c~c4)
+    Molecules In_r3c5 Px(r~r3,c~c5)
+    
+    # Output edge-detected image (interior 3x3)
+    Molecules Edge_r2c2 Ex(r~r2,c~c2)
+    Molecules Edge_r2c3 Ex(r~r2,c~c3)
+    Molecules Edge_r2c4 Ex(r~r2,c~c4)
+    Molecules Edge_r3c2 Ex(r~r3,c~c2)
+    Molecules Edge_r3c3 Ex(r~r3,c~c3)
+    Molecules Edge_r3c4 Ex(r~r3,c~c4)
+    Molecules Edge_r4c2 Ex(r~r4,c~c2)
+    Molecules Edge_r4c3 Ex(r~r4,c~c3)
+    Molecules Edge_r4c4 Ex(r~r4,c~c4)
+end observables
+
+begin functions
+    # Sobel horizontal kernel applied to position (3,3):
+    # Conv(3,3) = -1*Px(2,2) + 0*Px(2,3) + 1*Px(2,4)
+    #             -2*Px(3,2) + 0*Px(3,3) + 2*Px(3,4)
+    #             -1*Px(4,2) + 0*Px(4,3) + 1*Px(4,4)
+    
+    # Convolution at each interior pixel
+    # ReLU activation: max(0,conv_result) via if()
+    
+    Conv_r2c2() = -1*In_r3c1 + 1*In_r3c3 - 2*In_r3c1 + 2*In_r3c3 - 1*In_r3c1 + 1*In_r3c3
+    Conv_r2c3() = -1*In_r3c2 + 1*In_r3c4 - 2*In_r3c2 + 2*In_r3c4 - 1*In_r3c2 + 1*In_r3c4
+    Conv_r2c4() = -1*In_r3c3 + 1*In_r3c5 - 2*In_r3c3 + 2*In_r3c5 - 1*In_r3c3 + 1*In_r3c5
+    
+    # For row 3 (middle row,proper Sobel with 3 different rows)
+    Conv_r3c2() = -1*In_r3c1 + 1*In_r3c3 \
+                  -2*In_r3c1 + 2*In_r3c3 \
+                  -1*In_r3c1 + 1*In_r3c3
+    Conv_r3c3() = -1*In_r3c2 + 1*In_r3c4 \
+                  -2*In_r3c2 + 2*In_r3c4 \
+                  -1*In_r3c2 + 1*In_r3c4
+    Conv_r3c4() = -1*In_r3c3 + 1*In_r3c5 \
+                  -2*In_r3c3 + 2*In_r3c5 \
+                  -1*In_r3c3 + 1*In_r3c5
+    
+    # ReLU: output = max(0,conv)
+    ReLU_r3c2() = if(Conv_r3c2() > 0,Conv_r3c2(),0)
+    ReLU_r3c3() = if(Conv_r3c3() > 0,Conv_r3c3(),0)
+    ReLU_r3c4() = if(Conv_r3c4() > 0,Conv_r3c4(),0)
+end functions
+
+begin reaction rules
+    # Output pixels are PRODUCED at a rate equal to the convolution result
+    # The ODE: dEx/dt = ReLU(conv) - decay*Ex  => steady state = ReLU(conv)/decay
+    # This means the steady-state concentration IS the filtered pixel value
+    
+    0 -> Ex(r~r3,c~c2)  ReLU_r3c2()
+    0 -> Ex(r~r3,c~c3)  ReLU_r3c3()
+    0 -> Ex(r~r3,c~c4)  ReLU_r3c4()
+    
+    # Decay to reach steady state
+    Ex() -> 0  kout
+end reaction rules
+
+end model
+
+# Run to steady state — final concentrations ARE the filtered image
+simulate({method=>"ode",t_end=>10,n_steps=>100})

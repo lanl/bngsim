@@ -1,0 +1,93 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# cytosolic volume
+Vcyt 1e-12 # L per cell
+# equilibrium constants
+# low-affinity single-site equilibrium association constant for S-P binding
+# NB: KT is usually taken to be an equilibrium dissociation constant.
+KT 1e6/(NA*Vcyt) # /M converted to /(molecule/cell)
+# high-affinity single-site equilibrium association constant for S-P binding
+# NB: KR is usually taken to be an equilibrium dissociation constant.
+KR 5e6/(NA*Vcyt) # /M converted to /(molecule/cell)
+# ratio
+c=KT/KR # dimensionless
+# number of subunits in oligomeric protein
+n 4 # dimensionless
+# isomerization constants
+L0 0.1 # dimensionless, T_eq * L0 = R_eq
+L=1/L0 # dimensionless, NB: Normally, L0 is defined such that R_eq * L0 = T_eq
+# L1, L2, L3, and L4 are found from detailed balance constraints
+L1=L0*(KR/KT)^1 # dimensionless
+L2=L0*(KR/KT)^2 # dimensionless
+L3=L0*(KR/KT)^3 # dimensionless
+L4=L0*(KR/KT)^4 # dimensionless
+# rate constants
+koff 0.1 # /s
+kmT=koff # /s
+kpT=kmT*KT # /(molecule/cell)/s
+kmR=koff # /s
+kpR=kmR*KR # /(molecule/cell)/s
+kmL0=koff # /s
+kpL0=kmL0*L0 # /s
+kmL1=koff # /s
+kpL1=kmL1*L1 # /s
+kmL2=koff # /s
+kpL2=kmL2*L2 # /s
+kmL3=koff # /s
+kpL3=kmL3*L3 # /s
+kmL4=koff # /s
+kpL4=kmL4*L4 # /s
+# initial abundances of P and S
+P0 1e5 # molecules per cell
+S0 1e6 # molecules per cell
+end parameters
+begin molecule types
+# oligomeric protein with four subunits (n=4)
+P(s,s,s,s,conform~T~R)
+# ligand/substrate
+S(s)
+end molecule types
+begin seed species
+P(s,s,s,s,conform~T) P0*(1/(1+L0))
+P(s,s,s,s,conform~R) P0*(L0/(1+L0))
+S(s) S0
+end seed species
+begin observables
+Species freeP P(s,s,s,s)
+Species PT P(conform~T)
+Species PR P(conform~R)
+Species P1 P(s!+,s,s,s)
+Species P2 P(s!+,s!+,s,s)
+Species P3 P(s!+,s!+,s!+,s)
+Species satP P(s!+,s!+,s!+,s!+)
+Species freeS S(s)
+Molecules boundS S(s!+)
+Molecules totalP P()
+Molecules totalS S()
+end observables
+begin functions
+# scaled ligand/substrate concentration
+a()=freeS*KR # dimensionless
+# Ybar is the fractional occupancy of ligand binding sites at equilibrium if a() takes its equilibrium value
+Ybar_formula()=(L*c*a()*(1+c*a())^(n-1)+a()*(1+a())^(n-1))/((1+a())^n+L*(1+c*a())^n)
+Ybar_BNGL()=(P1+2*P2+3*P3+4*satP)/(n*totalP)
+# Rbar is the fraction of proteins in the R state at equilibrium if a() takes its equilibrium value
+Rbar_formula()=((1+a())^n)/((1+a())^n+L*(1+c*a())^n)
+Rbar_BNGL()=PR/totalP
+end functions
+begin reaction rules
+S(s)+P(s,conform~T)<->S(s!1).P(s!1,conform~T) kpT,kmT
+S(s)+P(s,conform~R)<->S(s!1).P(s!1,conform~R) kpR,kmR
+P(s,s,s,s,conform~T)<->P(s,s,s,s,conform~R) kpL0,kmL0
+P(s!+,s,s,s,conform~T)<->P(s!+,s,s,s,conform~R) kpL1,kmL1
+P(s!+,s!+,s,s,conform~T)<->P(s!+,s!+,s,s,conform~R) kpL2,kmL2
+P(s!+,s!+,s!+,s,conform~T)<->P(s!+,s!+,s!+,s,conform~R) kpL3,kmL3
+P(s!+,s!+,s!+,s!+,conform~T)<->P(s!+,s!+,s!+,s!+,conform~R) kpL4,kmL4
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>60,n_steps=>600,print_functions=>1})
+end actions

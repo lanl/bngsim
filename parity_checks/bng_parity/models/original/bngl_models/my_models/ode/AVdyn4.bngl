@@ -1,0 +1,94 @@
+begin model
+# A population dynamics model for phagophores and autophagosomes
+begin parameters
+# smallest single-precision floating-point number
+epsilon 2^-126 
+# parameter estimates from Martin et al. (2013)
+ksynmin 0.18 # vesicles per min
+ksynmax 0.71 # vesicles per min
+c 0.037 # /min
+# amino acid (AA) abundance
+# AA = 100 => nutrient replete condition
+# AA = 0 => AA starvation
+# AA is in the set {0, 1, 5, 7, 10, 100}.
+AA 100 # percent
+# presence/absence of BafA1
+# delta_b = 0 => -BafA1
+# delta_b = 0 => +BafA1
+delta_b 0 # Boolean indicator
+# efficiency of BafA1 at inhibiting AP clearance
+BafA1efficiency 0.9
+kdegmax=c # /min
+# AA level (percent) at which AA/(AA+EC50_syn)=1/2
+EC50_syn 1 # percent
+# AP count at which EC50_deg/([AP]+EC50_deg)=1/2
+EC50_deg 50
+EC50_mat 1
+kmatmin 0.01
+kmatmax 0.05
+relaxationTime 90 # min
+krelax=log2(2)/relaxationTime # /min  
+end parameters
+begin molecule types
+# phagophore
+PG()
+# autophagosome
+AP()
+tim()
+end molecule types
+begin seed species
+PG() 0
+AP() 0
+tim() 0
+end seed species
+begin observables
+Molecules WIPI2b_readout PG() 
+Molecules LC3_readout PG() AP() 
+Molecules APcount AP()
+Molecules PGcount PG()
+Molecules t tim()
+end observables
+begin functions
+BafA1()=delta_b
+ksyn()=ksynmax-(ksynmax-ksynmin)*(AA/(AA+EC50_syn))
+kmat()=kmatmin+(kmatmax-kmatmin)*(1-exp(-krelax*t)) # increasing maturation rate constant with time
+# if [AP]<<EC50_deg then degradation rate = kdegmax*[AP]
+# if [AP]>>EC50_deg then degradation rate = kdegmax*EC50_deg
+kdeg()=if(delta_b>epsilon,(1-BafA1efficiency)*kdegmax*(EC50_deg/(APcount+EC50_deg)),kdegmax*(EC50_deg/(APcount+EC50_deg)))
+percentAA() AA
+end functions
+begin reaction rules
+# counter for time
+0->tim() 1
+# AA-dependent generation of phagophores
+0->PG() ksyn()
+# maturation (conversion of phagophores into autophagosomes)
+PG()->AP() kmat()
+# saturable clearance of autophagosomes, +/- BafA1-mediated inhibition of degradation
+AP()->0 kdeg()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration to steady state
+# -BafA1, AA replete condition
+setParameter("AA",100)
+setParameter("delta_b",0)
+simulate({suffix=>"1_equil_to_AAreplete-BafA1",method=>"ode",t_end=>12000,n_steps=>300,print_functions=>1})
+saveConcentrations()
+# +BafA1, AA replete condition
+resetConcentrations()
+setParameter("AA",100)
+setParameter("delta_b",1)
+simulate({suffix=>"2a_AAreplete+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# -BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setParameter("delta_b",0)
+simulate({suffix=>"2b_AAstarvation-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setParameter("delta_b",1)
+simulate({suffix=>"2c_AAstarvation+BafA1",method=>"ode",t_end=>3600,n_steps=>180,print_functions=>1})
+end actions

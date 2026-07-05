@@ -1,0 +1,39 @@
+# Feature: clamped (fixed) species with $ prefix
+# Tests: $ species maintain constant concentration despite reactions
+# Tier: base
+# Expected: E stays at 10 forever; S depletes, P accumulates
+
+begin model
+begin parameters
+    E_tot   10
+    S_tot   50
+    k_cat   0.1   # /s, catalytic rate
+end parameters
+
+begin molecule types
+    E(s)
+    S(x)
+    P()
+end molecule types
+
+begin seed species
+    $E(s)   E_tot
+    S(x)    S_tot
+    P()     0
+end seed species
+
+begin observables
+    Molecules  E_free   E(s)
+    Molecules  S_total  S()
+    Molecules  P_total  P()
+end observables
+
+begin reaction rules
+    # Enzyme converts substrate to product (enzyme is clamped)
+    E(s) + S(x) -> E(s) + P()   k_cat
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

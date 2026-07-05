@@ -1,0 +1,84 @@
+# Model: process_actin_treadmilling.bngl
+# Description: Models the treadmilling of an Actin filament.
+#              Monomers add to the Barbed (+) end and dissociate from the Pointed (-) end.
+#              ATP hydrolysis drives the flux of monomers through the filament.
+#              Simplified to: Free -> Plus_End -> Minus_End -> Free
+
+begin model
+
+begin parameters
+    # Rates
+    k_on_plus   1.0   # Fast association at +
+    k_off_plus  0.1
+    
+    k_on_minus  0.1   # Slow association at -
+    k_off_minus 0.5   # Faster dissociation at - (netloss)
+    
+    k_hydrolysis 0.2  # ATP -> ADP inside filament (controlsstability)
+    
+    Actin_tot 100
+end parameters
+
+begin molecule types
+    # Simplified: Filament is not explicit chain, but a pool of "Filamentous Actin"
+    # To model length, we need chain or aggregate count.
+    # Let's use explicit chain for short filaments or "state" for simplistic model.
+    # Let's do explicit Linear Chain to show "Treadmilling" (movementofunits).
+    
+    Actin(p,m,state~ATP~ADP) # plus, minus sites. State of nucleotide.
+    # p binds m of next monomer.
+end molecule types
+
+begin seed species
+    Actin(p,m,state~ATP) Actin_tot
+    # Nucleation seed approx
+    # Actin(p!1,m,state~ATP).Actin(p,m!1,state~ATP) 10
+end seed species
+
+begin observables
+    Molecules Free_Monomers Actin(p,m)
+    Molecules Filaments     Actin(p!+,m) # Monomers with plus end bound? No.
+    # Count bonds?
+end observables
+
+begin reaction rules
+    # 1. Nucleation (Spontaneousdimerformation-slow)
+    Actin(p,m) + Actin(p,m) <-> Actin(p!1,m).Actin(p,m!1) 0.001, 0.1
+    
+    # 2. Elongation at Plus End (Fast)
+    # Monomer(m) binds to Filament(p)
+    # Filament(p) is an Actin with free 'p' site that is part of a complex?
+    # We need to distinguish Free Monomer from Filament End.
+    # Free Monomer has BOTH p and m free?
+    # Filament Plus End has 'p' free (and'm'bound).
+    
+    # Net: Filament(p) + Monomer(m) <-> Filament(p!1).Monomer(m!1)
+    # Rules 2 and 3 are defined below for clarity
+    
+    # Let's refine observables/patterns:
+    # Free: Actin(p,m)
+    # Plus_End: Actin(p,m!+)  (pisfree,misbound)
+    # Minus_End: Actin(p!+,m) (pisbound,misfree)
+    # Middle: Actin(p!+,m!+)
+    
+    # Rule 2: Elongation (General Linear Polymerization)
+    # This rule allows any free p site to bind to any free m site.
+    Actin(p,m) + Actin(p,m) <-> Actin(p!1,m).Actin(p,m!1) k_on_plus, k_off_plus
+    
+    # Note: For this simplified model, we use the same rule structure for both ends,
+    # but the parameters k_on_plus/minus provide the asymmetry.
+    
+    # 4. Hydrolysis (ATP->ADP)
+    Actin(p!+,m!+,state~ATP) -> Actin(p!+,m!+,state~ADP) k_hydrolysis
+    
+    # Destabilization: ADP actin off-rate at minus end is higher?
+    # We set k_off_minus for generic. We can make it specific.
+    # Actin(p!+,m!1,state~ADP).Actin(p,m!+,p!1) -> ...
+    
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1,max_iter=>10})
+simulate({method=>"ssa", t_end=>50, n_steps=>200})

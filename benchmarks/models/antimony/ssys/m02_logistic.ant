@@ -1,0 +1,11 @@
+// Model for logistic growth: X' = r*X*(1 - X/K)
+// This model is essentially the same as S1987_A4_logistic.
+// Canonical S-system: X' = r * (X^1) - (r/K) * (X^2)
+
+model logistic()
+X = 1
+r = 0.5
+K = 5
+X' = r*X*(1 - X/K)
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

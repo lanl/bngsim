@@ -1,0 +1,65 @@
+# Model: process_autophagy_flux.bngl
+# Description: Models the stages of macroautophagy:
+#              Initiation -> Phagophore -> Autophagosome -> Fusion with Lysosome -> Degradation.
+#              Tracks the flux of cargo degradation.
+
+begin model
+
+begin parameters
+    k_init  0.5   # Phagophore formation
+    k_close 0.5   # Closure to Autophagosome
+    k_fuse  0.5   # Fusion with Lysosome
+    k_deg   1.0   # Degradation
+    
+    Stress  1.0   # Inducer level
+end parameters
+
+begin molecule types
+    # Organelles
+    Phagophore()
+    Autophagosome(cargo)
+    Lysosome()
+    Autolysosome(cargo)
+    
+    # Substrate
+    Cargo(container)
+end molecule types
+
+begin seed species
+    Cargo(container) 100
+    Lysosome() 20
+    # Stress induces Phagophores
+end seed species
+
+begin observables
+    Molecules Phagophores    Phagophore()
+    Molecules AVs            Autophagosome()
+    Molecules ALs            Autolysosome()
+    Molecules Degraded       Cargo(container) # Not observable if degraded to Null, track loss total
+    Molecules Remaining_Cargo Cargo(container)
+end observables
+
+begin reaction rules
+    # 1. Initiation (Stress Induced)
+    # Creates empty phagophore
+    0 -> Phagophore() k_init * Stress
+    
+    # 2. Cargo Sequestration & Closure
+    # Phagophore engulfs Cargo -> Autophagosome
+    Phagophore() + Cargo(container) -> Autophagosome(cargo!1).Cargo(container!1) k_close 
+    # Use state or just consume
+    
+    # 3. Fusion
+    Autophagosome(cargo!1).Cargo(container!1) + Lysosome() -> Autolysosome(cargo!1).Cargo(container!1) k_fuse
+    
+    # 4. Degradation / Recycling
+    # Autolysosome breakdown, releases Lysosome? Or consumed?
+    # Usually enzymes recycled, AA released.
+    Autolysosome(cargo!1).Cargo(container!1) -> Lysosome() k_deg
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

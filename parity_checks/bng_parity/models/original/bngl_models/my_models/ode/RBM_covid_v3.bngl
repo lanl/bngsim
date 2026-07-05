@@ -1,0 +1,178 @@
+begin model
+begin parameters
+S0 1.92e7 # population of NYC
+I0 1
+beta 1 # /d (NYC-specific estimate, beta = 2)
+#mb 0.1 # dimensionless
+rhoA 0.9 # dimensionless
+rhoE 1.1 # dimensionless
+#kL 0.94 # /d
+#kQ 0.0038 # /d
+#jQ 0.4 # /d
+fA 0.44 # dimensionless
+fH 0.054 # dimensionless
+fR 0.79 # dimensionless
+#cA 0.26 # /d
+#cI 0.12 # /d
+#cH 0.17 # /d
+kp 0.94 # /d (set equal to kL)
+# The uniform infection fatality rate is 0.64% (6.4 deaths per 1000 infections).
+ki 0.96 # /d
+kc 1
+kl 5e-3
+end parameters
+begin molecule types
+counterI()
+counterC()
+counterH()
+counterB()
+# classic SEIR model has persons in S, E, I, and R states
+person(state~S~E~I~R)
+# model with multiple internal infection & immunity states
+p(\
+v~0~E1~E2~E3~E4~E5~I1~I2~I3~I4~I5~I6~I7~I8~H1~H2~H3~H4~H5~H6~D,\
+vflag~0~1,\
+i~N~P1~P2~P3~P4~P5~P6~S,\
+iflag~0~1)
+# v (0->E{1-5}->I{1-8}->H{1-6}->D) indicates viral infection state
+# i (N->P{1-6}->S) indicates immunity state
+# vflag: 0, uninfected; 1, infected
+# iflag: 0, absence of sterilizing immunity; 1, presence of sterilizing immunity
+end molecule types
+begin seed species
+counterI() 0
+counterC() 0
+counterH() 0
+counterB() 0
+# initial condition (classic SIR model)
+person(state~S) S0-I0
+person(state~I) I0
+# initial condition (model with internal infection & immunity states)
+p(v~0,vflag~0,i~N,iflag~0) S0-I0
+p(v~I1,vflag~1,i~N,iflag~0) I0
+end seed species
+begin observables
+# readouts of classic SEIR model
+Molecules S_ person(state~S)
+Molecules E_ person(state~E)
+Molecules I_ person(state~I)
+Molecules R_ person(state~R)
+# readouts of model with internal infection & immunity states
+# susceptible (S), meaning uninfected and no immunity
+Molecules S p(v~0,i~N)
+# exposed w/o sterilizing immunity (E1+E2+E3+E4+E5)
+Molecules E p(v~E1,iflag~0) p(v~E2,iflag~0) p(v~E3,iflag~0) p(v~E4,iflag~0) p(v~E5,iflag~0)
+# exposed w/o sterilizing immunity & infectious (E2+E3+E4+E5)
+Molecules Einf p(v~E2,iflag~0) p(v~E3,iflag~0) p(v~E4,iflag~0) p(v~E5,iflag~0)
+# asymptomatic (A), exposed w/ sterilizing immunity
+Molecules A p(v~E1,iflag~1) p(v~E2,iflag~1) p(v~E3,iflag~1) p(v~E4,iflag~1) p(v~E5,iflag~1) 
+# asymptomatic & infectious
+Molecules Ainf p(v~E2,iflag~1) p(v~E3,iflag~1) p(v~E4,iflag~1) p(v~E5,iflag~1)
+# symptomatic (mild illness)
+Molecules I p(v~I1) p(v~I2) p(v~I3) p(v~I4) p(v~I5) p(v~I6) p(v~I7) p(v~I8)
+# recovered, w/ sterilizing immunity
+Molecules R p(v~0,i~S)
+# hospitalized or at-home with severe illness (H)
+Molecules H p(v~H1) p(v~H2) p(v~H3) p(v~H4) p(v~H5) p(v~H6)
+# deceased
+Molecules D p(v~D)
+# number of infections
+Molecules Ninfections counterI()
+Molecules Ncases counterC()
+Molecules Nhospitalizations counterH()
+Molecules Nbreakthroughs counterB()
+end observables
+begin functions
+# fraction of cases that are asymptomatic
+#fA_instantaneous()=if(A+I>0,A/(A+I),0)
+fA_cumulative()=if(Ninfections>0,(Ninfections-Ncases)/Ninfections,0)
+fA_estimated()=fA
+fH_cumulative()=if(Ncases>0,Nhospitalizations/Ncases,0)
+fH_estimated()=fH
+fR_cumulative()=if(Nhospitalizations>0,(Nhospitalizations-D)/Nhospitalizations,0)
+fR_estimated()=fR
+uniform_IFR()=if(Ninfections>0,D/Ninfections,0)
+uniform_IFR_estimated()=(1-fA)*fH*(1-fR) # = 6.4e-3
+# force of infection (classic SEIR model)
+rate_()=(beta/S0)*(I_ + rhoE*E_)
+# force of infection (model with internal infection & immunity states)
+rate()=(beta/S0)*(I + rhoE*Einf + rhoA*Ainf) # total infectious persons = I + Einf + Ainf 
+end functions
+begin reaction rules
+######################
+# classic SEIR model #
+######################
+person(state~S)->person(state~E) rate_()
+person(state~E)->person(state~I) kp/5
+person(state~I)->person(state~R) kp/8
+###################################################
+# model with internal infection & immunity states #
+###################################################
+# infection of persons lacking sterilizing immunity
+#p(v~0,vflag~0,iflag~0)->p(v~E1,vflag~1,iflag~0)+counterI() rate() # = (beta/S0)*phi(I,E,A,rhoE,rhoA)
+# new infections
+p(v~0,vflag~0,i~N)->p(v~E1,vflag~1,i~N)+counterI() rate() # increment new inf. counter
+# reinfections
+p(v~0,vflag~0,i~P1)->p(v~0,vflag~1,i~P1)+counterB() rate() # increment breakthrough inf. counter
+p(v~0,vflag~0,i~P2)->p(v~0,vflag~1,i~P2)+counterB() rate()
+p(v~0,vflag~0,i~P3)->p(v~0,vflag~1,i~P3)+counterB() rate()
+p(v~0,vflag~0,i~P4)->p(v~0,vflag~1,i~P4)+counterB() rate()
+p(v~0,vflag~0,i~P5)->p(v~0,vflag~1,i~P5)+counterB() rate()
+p(v~0,vflag~0,i~P6)->p(v~0,vflag~1,i~P6)+counterB() rate()
+#  disease progression S->E->I->H->D 
+#  (progression depends on absence of sterilizing immunity)
+# incubation period
+p(v~E1,iflag~0)->p(v~E2,iflag~0) kp
+p(v~E2,iflag~0)->p(v~E3,iflag~0) kp
+p(v~E3,iflag~0)->p(v~E4,iflag~0) kp
+p(v~E4,iflag~0)->p(v~E5,iflag~0) kp
+p(v~E5,iflag~0)->p(v~I1,iflag~0)+counterC() kp # increment case counter
+p(v~I1,iflag~0)->p(v~I2,iflag~0) kp
+p(v~I2,iflag~0)->p(v~I3,iflag~0) kp
+p(v~I3,iflag~0)->p(v~I4,iflag~0) kp
+p(v~I4,iflag~0)->p(v~I5,iflag~0) kp
+p(v~I5,iflag~0)->p(v~I6,iflag~0) kp
+p(v~I6,iflag~0)->p(v~I7,iflag~0) kp
+p(v~I7,iflag~0)->p(v~I8,iflag~0) kp
+p(v~I8,iflag~0)->p(v~H1,iflag~0)+counterH() kp # increment hosp. counter
+p(v~H1,iflag~0)->p(v~H2,iflag~0) kp
+p(v~H2,iflag~0)->p(v~H3,iflag~0) kp
+p(v~H3,iflag~0)->p(v~H4,iflag~0) kp
+p(v~H4,iflag~0)->p(v~H5,iflag~0) kp
+p(v~H5,iflag~0)->p(v~H6,iflag~0) kp
+p(v~H6,iflag~0,vflag~1)->p(v~D,iflag~0,vflag~0) kp
+# priming of the immune system (depends on presence of viral infection)
+p(i~N,vflag~1)->p(i~P1,vflag~1) ki
+p(i~P1,vflag~1)->p(i~P2,vflag~1) ki
+p(i~P2,vflag~1)->p(i~P3,vflag~1) ki
+p(i~P3,vflag~1)->p(i~P4,vflag~1) ki
+p(i~P4,vflag~1)->p(i~P5,vflag~1) ki
+p(i~P5,vflag~1)->p(i~P6,vflag~1) ki
+p(i~P6,vflag~1,iflag~0)->p(i~S,vflag~1,iflag~1) ki
+# immune clearance (depends on sterilizing immunity)
+p(v~H3,iflag~1)->p(v~H2,iflag~1) kc
+p(v~H2,iflag~1)->p(v~H1,iflag~1) kc
+p(v~H1,iflag~1)->p(v~I4,iflag~1) kc
+p(v~I4,iflag~1)->p(v~I3,iflag~1) kc
+p(v~I3,iflag~1)->p(v~I2,iflag~1) kc
+p(v~I2,iflag~1)->p(v~I1,iflag~1) kc
+p(v~I1,iflag~1)->p(v~E5,iflag~1) kc
+p(v~E5,iflag~1)->p(v~E4,iflag~1) kc
+p(v~E4,iflag~1)->p(v~E3,iflag~1) kc
+p(v~E3,iflag~1)->p(v~E2,iflag~1) kc
+p(v~E2,iflag~1)->p(v~E1,iflag~1) kc
+p(v~E1,iflag~1,vflag~1)->p(v~0,iflag~1,vflag~0) kc
+# slow loss of immunity (in the absence of viral infection)
+p(i~S,vflag~0,iflag~1)->p(i~P6,vflag~0,iflag~0) kl
+p(i~P6,vflag~0)->p(i~P5,vflag~0) kl
+p(i~P5,vflag~0)->p(i~P4,vflag~0) kl
+p(i~P4,vflag~0)->p(i~P3,vflag~0) kl
+p(i~P3,vflag~0)->p(i~P2,vflag~0) kl
+p(i~P2,vflag~0)->p(i~P1,vflag~0) kl
+p(i~P1,vflag~0)->p(i~N,vflag~0) kl
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>200,print_functions=>1})
+end actions

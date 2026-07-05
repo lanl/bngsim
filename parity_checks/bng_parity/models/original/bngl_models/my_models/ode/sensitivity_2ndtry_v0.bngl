@@ -1,0 +1,108 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+
+Vcyt 2e-12 # L per cell
+
+Etot 1e4 # copies per cell
+Stot 1e4 # copies per cell
+Itot 1e6 # copies per cell
+
+kp2 1e6/(NA*Vcyt) # /M/s
+km2 0.05 # /s
+
+# KM=(km1+kcat)/(kp1*eps)
+# kp1=1e4 => KM=10
+# kp1=1e6 => KM=0.1
+kp1 1e6/(NA*Vcyt) # /M/s
+km1 0.9 # /s
+
+# effective concentration
+eps  1e-5*(NA*Vcyt) # M
+
+kcat 0.1 # /s
+
+pase 0.01 # /s
+
+phi 0.333 # dimensionless
+
+kp3 1e6/(NA*Vcyt) # /M/s
+km3 0 # /s
+
+a_small_number 1e-6 # dimensionless
+
+end parameters
+
+begin molecule types
+
+E(i,dock,cat)
+S(dock,sub~0~P)
+I(site)
+
+end molecule types
+
+begin seed species
+
+E(i,dock,cat) Etot
+S(dock,sub~0) Stot
+I(site) 0
+
+end seed species
+
+begin observables
+
+Molecules pS S(sub~P!?)
+
+end observables
+
+begin functions
+
+
+end functions
+
+begin reaction rules
+
+# recruitment of substrate to vicinity of kinase
+E(dock,cat)+S(dock,sub~0)<->E(dock!1,cat).S(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+#  no steric hindrance
+E(i,dock!1,cat).S(dock!1,sub~0)<->E(i,dock!1,cat!2).S(dock!1,sub~0!2) kp1*eps,km1
+#  with steric hindrance because of inhibitor
+E(i!+,dock!1,cat).S(dock!1,sub~0)<->E(i!+,dock!1,cat!2).S(dock!1,sub~0!2) phi*kp1*eps,km1
+
+# direct association of substrate and kinase
+#E(i,dock,cat)+S(dock,sub~0)<->E(i,dock,cat!1).S(dock,sub~0!1) kp1,km1
+#E(i!+,dock,cat)+S(dock,sub~0)<->E(i!+,dock,cat!1).S(dock,sub~0!1) phi*kp1,km1
+
+# isomerization (NB: detailed balance)
+#E(dock,cat!1).S(dock,sub~0!1)<->E(dock!2,cat!1).S(dock!2,sub~0!1) kp2*eps,km2
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+#E(dock,cat!1).S(dock,sub~0!1)->E(dock,cat)+S(dock,sub~P) kcat
+E(dock!1,cat!2).S(dock!1,sub~0!2)->E(dock,cat)+S(dock,sub~P) kcat
+
+# dephosphorylation
+S(dock,sub~P)->S(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+E(i,dock,cat)+I(site)<->E(i!1,dock,cat).I(site!1) kp3,km3
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",prefix=>"equil",t_start=>0,t_end=>3600,n_steps=>300,print_functions=>1})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("I(site)","Itot")
+simulate({method=>"ode",prefix=>"prod",t_start=>0,t_end=>3600,n_steps=>300,print_functions=>1})
+
+end actions

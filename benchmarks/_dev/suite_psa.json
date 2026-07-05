@@ -1,0 +1,42 @@
+{
+  "description": "PSA benchmark suite: 3 models for PSA-only testing (large populations or many reactions make exact SSA impractical)",
+  "reference": "Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150: 244101",
+  "models": [
+    {
+      "name": "tcr_signaling",
+      "net_file": "models/net/psa/tcr_signaling.net",
+      "bngl_file": "models/bngl/psa/tcr_signaling.bngl",
+      "sbml_file": "suites/sbml_roundtrip/tcr_signaling.xml",
+      "species": 37,
+      "reactions": 97,
+      "t_end": 300,
+      "n_steps": 1000,
+      "poplevel": [10, 30, 100, 300],
+      "notes": "Bistable stochastic switching; PSA Nc=300 gives 8x speedup over SSA"
+    },
+    {
+      "name": "prion_aggregation",
+      "net_file": "models/net/psa/prion_aggregation.net",
+      "bngl_file": "models/bngl/psa/prion_aggregation.bngl",
+      "sbml_file": "suites/sbml_roundtrip/prion_aggregation.xml",
+      "species": 104,
+      "reactions": 2809,
+      "t_end": 10,
+      "n_steps": 1000,
+      "poplevel": [10, 30, 100, 300],
+      "notes": "Nucleated polymerization; 2809 reactions make SSA slow"
+    },
+    {
+      "name": "erk_activation",
+      "net_file": "models/net/psa/erk_activation.net",
+      "bngl_file": "models/bngl/psa/erk_activation.bngl",
+      "sbml_file": "suites/sbml_roundtrip/erk_activation.xml",
+      "species": 34,
+      "reactions": 65,
+      "t_end": 8640,
+      "n_steps": 1000,
+      "poplevel": [10, 30, 100, 300],
+      "notes": "Populations up to 3e6; exact SSA infeasible (billions of events)"
+    }
+  ]
+}

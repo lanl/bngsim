@@ -1,0 +1,72 @@
+// ManganAlon2003_CoherentFFL_AND.ant
+//
+// Source:
+//   Mangan S, Alon U (2003)
+//   "The coherent feedforward loop serves as a sign-sensitive delay
+//    element in transcription networks."
+//   J Mol Biol 334(2):197–204. doi:10.1016/j.jmb.2003.09.049
+//
+// Model:
+//   Type-1 coherent feed-forward loop (AND gate at Z):
+//     X activates Y;
+//     X and Y jointly activate Z (AND logic).
+//
+//   ODEs (Materials and Methods):
+//     dY/dt = By + b1 * f(X, Kxy) - a1 * Y
+//     dZ/dt = b2 * f(X, Kxz) * f(Y, Kyz) - a2 * Z
+//
+//   with Hill activation:
+//     f(u, K) = u^H / (K^H + u^H)
+//
+//   Simulation parameters used in Fig. 4(a,b):
+//     a1 = a2 = 1
+//     b1 = b2 = 1
+//     H = 2
+//     Kxy = Kxz = Kyz = 0.5
+//     By = 0
+//   The stimulus Sx is represented by X = 1 (ON) or X = 0 (OFF).
+//
+//   This is a 2-dimensional nonlinear ODE with Hill-type terms;
+//   X is treated here as a constant input parameter.
+
+model ManganAlon2003_CoherentFFL_AND
+
+  // Compartment
+  compartment cell = 1;
+
+  // Species (state variables)
+  species Y in cell;
+  species Z in cell;
+
+  // Input transcription factor X (treated as constant stimulus Sx)
+  const X = 1;
+
+  // Parameters (Fig. 4 parameter set)
+  const B_y   = 0;
+  const b_1   = 1;
+  const b_2   = 1;
+  const a_1   = 1;
+  const a_2   = 1;
+  const H     = 2;
+  const K_xy  = 0.5;
+  const K_xz  = 0.5;
+  const K_yz  = 0.5;
+
+  // ODEs (Hill activation inlined: f(u, K) = u^H / (K^H + u^H))
+  
+  // Y: activated by X, with basal production B_y
+  Y' = B_y + b_1 * X^H / (K_xy^H + X^H) - a_1 * Y;
+
+  // Z: AND gate of X and Y (product of two Hill activations)
+  Z' = b_2 * (X^H / (K_xz^H + X^H)) * (Y^H / (K_yz^H + Y^H)) - a_2 * Z;
+
+  // Initial conditions
+  // Not fixed in the paper; natural choice is near-zero expression
+  // before an ON step of X. Using 0.01 (well below K thresholds of 0.5)
+  // to avoid numerical issues with negative exponents in recast.
+  Y = 0.01;
+  Z = 0.01;
+
+end
+// @SIM T_START=0 T_END=10 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

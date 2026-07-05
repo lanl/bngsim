@@ -1,0 +1,60 @@
+# Feature: multi-step signaling cascade (receptor -> kinase -> substrate)
+# Tests: sequential recruitment and phosphorylation through a cascade
+# Covers: fceri_ji, tcr, Tutorial_Example, toy_jim from existing corpus
+# Tier: base
+# Expected: signal propagates: receptor dimerizes, recruits kinase, kinase phosphorylates substrate
+
+begin model
+begin parameters
+    L_tot    30
+    R_tot    50
+    K_tot    40
+    S_tot    100
+    kfLR     0.01    # /s, ligand-receptor binding
+    krLR     0.05    # /s, ligand-receptor unbinding
+    kfRK     0.02    # /s, receptor-kinase recruitment
+    krRK     0.1     # /s, receptor-kinase unbinding
+    kfKS     0.005   # /s, kinase-substrate binding
+    krKS     0.5     # /s, kinase-substrate unbinding
+    kcat     2.0     # /s, phosphorylation catalytic rate
+end parameters
+
+begin molecule types
+    L(r)
+    R(l,k)
+    K(r,s)
+    S(k,p~U~P)
+end molecule types
+
+begin seed species
+    L(r)              L_tot
+    R(l,k)            R_tot
+    K(r,s)            K_tot
+    S(k,p~U)          S_tot
+end seed species
+
+begin observables
+    Molecules  L_free     L(r)
+    Molecules  R_free     R(l,k)
+    Molecules  LR         L(r!1).R(l!1)
+    Molecules  K_free     K(r,s)
+    Molecules  K_recruited K(r!+)
+    Molecules  S_phos     S(p~P)
+    Molecules  S_unphos   S(p~U)
+end observables
+
+begin reaction rules
+    # Ligand binds receptor
+    L(r) + R(l) <-> L(r!1).R(l!1)  kfLR, krLR
+    # Kinase recruits to ligand-bound receptor
+    R(l!+,k) + K(r) <-> R(l!+,k!1).K(r!1)  kfRK, krRK
+    # Recruited kinase binds substrate
+    K(r!+,s) + S(k,p~U) <-> K(r!+,s!1).S(k!1,p~U)  kfKS, krKS
+    # Catalytic phosphorylation
+    K(s!1).S(k!1,p~U) -> K(s) + S(k,p~P)  kcat
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

@@ -1,0 +1,100 @@
+begin model
+begin parameters
+    # Insulin-Glucose: Compartmentalized transport.
+    # Advanced features: Compartments (Blood flow vs Tissue uptake).
+    
+    # Volumes
+    Vol_Blood 100
+    Vol_Tissue 50
+    
+    # Flux Rates
+    k_input   0.2     # Dietary glucose intake
+    k_sense   0.005   # Beta-cell sensing
+    k_relax   0.05    # Beta-cell reset
+    k_release 0.4     # Insulin secretion
+    
+    # Transport
+    k_ins_bind 0.1    # Insulin to Receptor
+    k_glut4_exo 1.0   # Translocation to PM
+    k_glut4_endo 0.2  # Recycling
+    
+    k_uptake  0.5     # Glucose transport (per GLUT4)
+    k_util    0.1     # Glycolysis/Storage
+    k_clear   0.2     # Insulin clearance
+    
+    # Initials
+    Glc_blood_init 80
+    Ins_init 0
+    IR_tot 50
+    GLUT4_tot 100
+end parameters
+
+begin compartments
+    Blood  3  Vol_Blood
+    PM     2  1          Blood
+    Tissue 3  Vol_Tissue PM
+end compartments
+
+begin molecule types
+    Glucose()
+    Insulin(b)
+    IR(b,s~U~P)
+    GLUT4(loc~vesicle~PM)
+    Pancreas(state~resting~active)
+end molecule types
+
+begin seed species
+    Glucose()@Blood Glc_blood_init
+    Insulin(b)@Blood Ins_init
+    IR(b,s~U)@PM IR_tot
+    GLUT4(loc~vesicle)@Tissue GLUT4_tot
+    Pancreas(state~resting)@Blood 1
+end seed species
+
+begin observables
+    Molecules Blood_Glucose    Glucose()@Blood
+    Molecules Cellular_Glucose Glucose()@Tissue
+    Molecules Insulin_Level    Insulin()@Blood
+    Molecules Surface_GLUT4    GLUT4(loc~PM)@PM
+    Molecules Active_IR        IR(s~P)
+end observables
+
+begin reaction rules
+    # 1. Glucose Influx (Meal)
+    0 -> Glucose()@Blood k_input
+    
+    # 2. Sensing (Pancreas in Blood detects high glucose)
+    # Simplified: Glucose binds/activates Pancreas
+    Pancreas(state~resting)@Blood + Glucose()@Blood -> Pancreas(state~active)@Blood + Glucose()@Blood k_sense
+    
+    # 3. Response (Insulin Secretion into Blood)
+    Pancreas(state~active)@Blood -> Pancreas(state~active)@Blood + Insulin(b)@Blood k_release
+    
+    # 4. Signaling & Translocation
+    # Insulin binds IR at PM
+    Insulin(b)@Blood + IR(b,s~U)@PM <-> Insulin(b!1)@Blood.IR(b!1,s~P)@PM k_ins_bind,0.01
+    
+    # Active IR promotes GLUT4 exocytosis (Tissue -> PM)
+    # Functional rule: IR(Bound) catalyzes GLUT4 move
+    Insulin(b!1)@Blood.IR(b!1,s~P)@PM + GLUT4(loc~vesicle)@Tissue -> Insulin(b!1)@Blood.IR(b!1,s~P)@PM + GLUT4(loc~PM)@PM k_glut4_exo
+    
+    # Endocytosis (PM -> Tissue)
+    GLUT4(loc~PM)@PM -> GLUT4(loc~vesicle)@Tissue k_glut4_endo
+    
+    # 5. Glucose Transport (The Main Event)
+    # GLUT4 at PM facilitates Blood -> Tissue flux
+    Glucose()@Blood + GLUT4(loc~PM)@PM -> Glucose()@Tissue + GLUT4(loc~PM)@PM k_uptake
+    
+    # 6. Metabolism (Intracellular)
+    Glucose()@Tissue -> 0 k_util
+    
+    # 7. Clearance / Reset
+    Insulin(b)@Blood -> 0 k_clear
+    Pancreas(state~active)@Blood -> Pancreas(state~resting)@Blood k_relax
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>800,n_steps=>300})
+end actions
+end model

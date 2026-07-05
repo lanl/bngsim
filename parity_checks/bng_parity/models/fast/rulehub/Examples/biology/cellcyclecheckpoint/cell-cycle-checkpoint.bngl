@@ -1,0 +1,118 @@
+begin model
+begin parameters
+    # Cell cycle checkpoint: Mitotic entry switch (CDK1).
+    # Advanced features: Hill kinetics for APC/C and exclusion logic for Wee1/CDC25.
+    
+    # Growth & Synthesis
+    k_synth 0.15       # Cyclin production
+    k_deg_basal 0.05
+    
+    # CDK1 Switch
+    k_bind_cdk 1.0     # Cyclin-CDK assembly
+    k_act_cdc25 2.0    # CDC25-mediated dephosphorylation
+    k_inh_wee1 1.0     # Wee1-mediated phosphorylation
+    
+    # Feedback Control
+    k_cdc25_fb 5.0     # CDK1 activates CDC25
+    k_wee1_fb 5.0      # CDK1 inhibits Wee1
+    
+    # Mitotic Exit (Sharp negative feedback)
+    k_apc_synth 2.0    # CDK1 activates APC/C
+    k_apc_deg 15.0     # APC/C destroys Cyclin (Fast)
+    Km_apc 400         # Threshold for cycle termination
+    n_hill 5.0         # Ultra-sharp exit switch
+    
+    # Damage Block (p21 proxy)
+    k_p21_inh 3.0      # Sequesters active Cyclin-CDK
+    
+    # Initials
+    Cyclin_init 20
+    CDK_tot 500
+    CDC25_tot 100
+    Wee1_tot 100
+    APC_tot 150
+    p21_tot 50         # DNA damage level
+end parameters
+
+begin molecule types
+    Cyclin(b)
+    CDK(b,s~U~P,act~off~on) # s~P is inhibitory phos
+    CDC25(s~off~on)
+    Wee1(s~off~on)
+    APC(s~off~on)
+    p21(b)
+end molecule types
+
+begin seed species
+    Cyclin(b) Cyclin_init
+    CDK(b,s~U,act~off) CDK_tot
+    CDC25(s~off) CDC25_tot
+    Wee1(s~on) Wee1_tot
+    APC(s~off) APC_tot
+    p21(b) p21_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Mitotic_Engine   CDK(act~on)              # Active CDK1-Cyclin pool
+    Molecules Total_Mass       Cyclin()                 # Total cyclin (Synthesis-balanced)
+    Molecules Exit_Signal      APC(s~on)                # Mitotic exit activity
+    Molecules Primed_Engine    CDK(s~P)                 # Inhibited/Primed status
+    Molecules Active_CycB      Cyclin(b!1).CDK(b!1)     # Phase status
+    Molecules Active_APC       APC(s~on)                # Exit driver status
+    Molecules Damage_Block     Cyclin(b!1).p21(b!1)     # Arrest status
+end observables
+
+begin functions
+    # Sharp switch for APC/C-mediated exit
+    v_exit() = k_apc_deg * (Active_APC^n_hill) / (Km_apc^n_hill + Active_APC^n_hill)
+end functions
+
+begin reaction rules
+    ## ASSEMBLY Phase
+    # Cyclin binds CDK
+    Cyclin(b) + CDK(b) <-> Cyclin(b!1).CDK(b!1) k_bind_cdk,0.1
+    
+    # DNA damage (p21) sequesters Cyclin-CDK
+    p21(b) + Cyclin(b!1).CDK(b!1) <-> p21(b!2).Cyclin(b!1!2).CDK(b!1) k_p21_inh,0.2
+    
+    ## INHIBITORY Phosphorylation (The Brake)
+    # Wee1 phosphorylates CDK1
+    # exclude_reactants: Wee1 cannot phosphorylate if CDC25 is actively opposing (Simulated by high rate competition)
+    Wee1(s~on) + CDK(s~U) -> Wee1(s~on) + CDK(s~P) k_inh_wee1
+    
+    # CDC25 removes inhibitory phosphate (The Accelerator)
+    CDC25(s~on) + CDK(s~P) -> CDC25(s~on) + CDK(s~U) k_act_cdc25
+    
+    # Activation once unphosphorylated
+    CDK(b,s~U) -> CDK(b,s~U,act~on) 10.0
+    
+    ## FEEDBACK Phase
+    # Active CDK1 activates its own activator (CDC25)
+    CDK(act~on) + CDC25(s~off) -> CDK(act~on) + CDC25(s~on) k_cdc25_fb
+    
+    # Active CDK1 inhibits its own inhibitor (Wee1)
+    CDK(act~on) + Wee1(s~on) -> CDK(act~on) + Wee1(s~off) k_wee1_fb
+    
+    ## EXIT Phase (Negative Feedback)
+    # CDK1 activates APC/C
+    CDK(act~on) + APC(s~off) -> CDK(act~on) + APC(s~on) k_apc_synth
+    
+    # APC/C destroys Cyclin (Functional Rate - Hill)
+    Cyclin() -> 0 v_exit()
+    
+    ## RECOVERY
+    0 -> Cyclin(b) k_synth
+    Cyclin() -> 0 k_deg_basal
+    CDC25(s~on) -> CDC25(s~off) 0.1
+    Wee1(s~off) -> Wee1(s~on) 0.1
+    APC(s~on) -> APC(s~off) 0.1
+    CDK(act~on) -> CDK(act~off) 0.5
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>400})
+end actions
+end model
+

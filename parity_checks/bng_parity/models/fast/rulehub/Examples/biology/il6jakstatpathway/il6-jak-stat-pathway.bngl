@@ -1,0 +1,101 @@
+begin model
+begin parameters
+    # IL-6 Signaling: gp130 hexamerization and pSTAT3 import.
+    # Advanced features: MoveConnected for pSTAT3 dimers and SAT kinetics for SOCS.
+    
+    # Reception
+    k_bind_il6 1e-5
+    k_hexamer 1.5      # Formation of active signaling unit
+    
+    # JAK Signaling
+    k_jak_act 2.0      # Trans-activation
+    k_stat_phos 1.2    # Recruitment and phosphorylation
+    
+    # Negative Feedback (SOCS Axis)
+    k_socs_max 5.0     # Peak inhibitory speed
+    Km_jak 200         # Threshold for SOCS inhibition
+    
+    # Nuclear Translocation
+    k_import 2.5       # Active factor entry
+    k_export 0.5       # Nuclear exit
+    
+    # Gene Induction
+    k_socs_synth 0.2   # Feed-forward inhibition induction
+    k_reset 0.05
+    
+    # Initials
+    IL6_tot 100
+    gp130_tot 400      # Limiting receptor factor
+    STAT3_tot 600
+    SOCS_init 10
+end parameters
+
+begin molecule types
+    IL6(b)
+    gp130(b1,b2,s~U~P)
+    STAT3(b,s~U~P,loc~cyt~nuc)
+    SOCS(b)
+end molecule types
+
+begin seed species
+    IL6(b) IL6_tot
+    gp130(b1,b2,s~U) gp130_tot
+    STAT3(b,s~U,loc~cyt) STAT3_tot
+    SOCS(b) SOCS_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_TF       STAT3(s~P,loc~nuc)    # Functional transcriptional factor
+    Molecules pgp130_Signals  gp130(s~P)                # Active signaling platform status
+    Molecules Global_pSTAT3   STAT3(s~P)                # Total activation burden
+    Molecules SOCS_Feedback   SOCS()                   # Inhibition status
+    Molecules Nuclear_Pool    STAT3(loc~nuc)            # Local concentration
+    # Molecules Active_Platform  gp130(s!1).JAK(b!1)       # Phosphorylation hub (Removed: JAK not defined)
+    Molecules Active_gp130     gp130(s~P)                # Functional inhibitor substrate
+end observables
+
+begin functions
+    # Saturable SOCS inhibition of JAK-mediated phosphorylation
+    v_socs_inh() = k_socs_max * (Active_gp130 / (Km_jak + Active_gp130))
+end functions
+
+begin reaction rules
+    ## RECEPTION Phase
+    # IL-6 binds gp130
+    IL6(b) + gp130(b1) <-> IL6(b!1).gp130(b1!1) 1.0,0.1
+    
+    # gp130 Dimerization (Active Unit)
+    gp130(b2,s~U) + gp130(b2,s~U) <-> gp130(b2!1,s~U).gp130(b2!1,s~U) k_hexamer,0.2
+    
+    ## SIGNALING Stage
+    # Trans-activation of gp130 cluster
+    gp130(b2!+,s~U) -> gp130(b2!+,s~P) k_jak_act
+    
+    # p-gp130 recruits and phosphorylates STAT3
+    gp130(s~P) + STAT3(loc~cyt,s~U) -> gp130(s~P) + STAT3(loc~cyt,s~P) k_stat_phos
+    
+    # p-STAT3 forms dimers for nuclear translocation
+    STAT3(s~P,b) + STAT3(s~P,b) <-> STAT3(s~P,b!1).STAT3(s~P,b!1) 5.0,0.2
+    
+    ## TRANSPORT Phase
+    # p-STAT3 moves to nucleus (MoveConnected: dimers stay together)
+    STAT3(loc~cyt,s~P) <-> STAT3(loc~nuc,s~P) k_import,k_export MoveConnected
+    
+    ## FEEDBACK Controlling
+    # Nuclear STAT3 induces SOCS
+    STAT3(loc~nuc,s~P) -> STAT3(loc~nuc,s~P) + SOCS(b) k_socs_synth
+    
+    # SOCS inhibits active gp130 (Functional Rate - Saturation)
+    SOCS(b) + gp130(s~P) -> SOCS(b) + gp130(s~U) v_socs_inh()
+    
+    ## RESET
+    STAT3(s~P) -> STAT3(s~U) k_reset
+    SOCS() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>600,n_steps=>300})
+end actions
+end model

@@ -1,0 +1,84 @@
+// Dreisigmeyer2008_LacOperon_Lactose_uM.ant
+//
+// Use µM everywhere for concentrations:
+//   l, a, z, l_ext, K_i, K_m_l, K_m_a, eps, c, K_z  are all in µM
+//
+// Conversions applied:
+//   nM -> µM : divide by 1000
+//   mM -> µM : multiply by 1000
+//
+// Rates (min^-1) and dimensionless parameters unchanged.
+
+model Dreisigmeyer2008_LacOperon_Lactose_uM
+
+  // Compartment (dimensionless volume)
+  compartment cell = 1;
+
+  // State variables (µM)
+  species l in cell;
+  species a in cell;
+  species z in cell;
+
+  // External lactose (constant input; µM)
+  // Original example: 1.0 mM -> 1000 µM
+  const l_ext = 1000.0;
+
+  // -----------------------------
+  // Parameters
+  // -----------------------------
+
+  // Growth dilution
+  const growth_rate = 0.02;
+
+  // Permease transport
+  const alpha = 600.0;
+  const phi   = 0.5;
+
+  // Michaelis constants / saturation constants (µM)
+  // Original K_i = 5.0e5 nM -> 500 µM
+  const K_i   = 500.0;
+
+  // β-galactosidase lactose metabolism
+  const beta  = 2.85e4;
+  const nu    = 0.468;
+  // Original K_m_l = 2.53 mM -> 2530 µM
+  const K_m_l = 2530.0;
+
+  // β-galactosidase allolactose metabolism
+  const delta = 2.30e4;
+  // Original K_m_a = 1.2 mM -> 1200 µM
+  const K_m_a = 1200.0;
+
+  // β-gal expression parameters (µM)
+  // Original eps = 34285 nM -> 34.285 µM
+  const eps    = 34.285;
+  // Original c = 34.3 nM -> 0.0343 µM
+  const c      = 0.0343;
+  // Original K_z = 1.05e5 nM -> 105 µM
+  const K_z    = 105.0;
+  const n_Hill = 2.0;
+
+  // -----------------------------
+  // ODEs
+  // -----------------------------
+
+  // Internal lactose l (µM)
+  l' =  alpha * z * (l_ext - phi*l) / (K_i + l + l_ext) - beta * z * l / ((1 + a/K_m_a) * (K_m_l + l)) - growth_rate * l;
+
+  // Allolactose a (µM)
+  a' =  nu * beta * z * l / ((1 + a/K_m_a) * (K_m_l + l)) - delta * z * a / ((1 + l/K_m_l) * (K_m_a + a)) - growth_rate * a;
+
+  // β-galactosidase z (µM)
+  z' =  c * growth_rate + eps * growth_rate * a^n_Hill / (K_z^n_Hill + a^n_Hill) - growth_rate * z;
+
+  // -----------------------------
+  // Initial conditions (µM)
+  // -----------------------------
+  // Uninduced baseline
+  l = 0.0;
+  a = 0.0;
+  z = c;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=200 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,69 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# Boltzmann constant
+kB 1.380649e-23 # J/K
+# gas constant
+R=NA*kB # J/(mol K)
+# reference volume
+Vref 1e-18 # L (1 attoliter)
+# scaling factor 
+# (This parameter determines system size.)
+scale 1 # dimensionless (NB: scale may be reset in the actions block.)
+# subvolume of batch reactor 
+V=scale*Vref # L
+# reference temperature
+Tref 273.15 # K (0 degrees C)
+# temperature
+T=70+Tref # C converted to K
+# initial abundance of initiator
+I0 2.58e-2*(NA*V) # M converted to number of molecules in reactor subvolume
+# initial abundance of monomer
+M0 1*(NA*V) # M converted to number of molecules in reactor subvolume
+# rate constant for thermal decomposition of initiator
+kd=1.05e15*exp(-15430/T) # /s
+# efficiency factor
+f 0.58 # dimensionless
+# rate constant for chain propagation
+kp=2.673e6*exp(-22.3e3/(R*T))/(NA*V) # /M/s converted to /(molecule/subvolume)/s
+# rate constant for chain termination
+kt=1.984e8*exp(-5.89e3/(R*T))/(NA*V) # /M/s converted to /(molecule/subvolume)/s
+end parameters
+begin molecule types
+M()
+R()
+P()
+counter()
+end molecule types
+begin seed species
+M() M0
+end seed species
+begin observables
+Molecules N_M M()
+Molecules N_R R()
+Molecules N_P P()
+Molecules t counter()
+end observables
+begin functions
+correction()=1/N_M # correct for BioNetGen's assumption of mass-action kinetics
+I()=I0*exp(-kd*t)
+ki()=2*f*kd*I0*exp(-kd*t)
+conversion()=1-N_M/M0
+corrected_ki_rate()=2*f*kd*I0*exp(-kd*t)/N_M
+end functions
+begin reaction rules
+0->counter() 1
+M()->R() ki()*correction()
+M()+R()->R() kp
+R()+R()->P()+P() kt
+end reaction rules
+end model
+begin actions
+saveConcentrations()
+#
+resetConcentrations()
+setParameter("scale",1)
+simulate({suffix=>"V4=1aL",method=>"nf",t_end=>2400,n_steps=>240,\
+print_functions=>1,get_final_state=>0,gml=>2147483647})
+end actions

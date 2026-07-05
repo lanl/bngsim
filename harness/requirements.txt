@@ -1,0 +1,11 @@
+# Core (always required)
+numpy
+
+# DSMTS Z-score / SSA-roundtrip KS testing in run_dsmts.py + run_ssa_roundtrip.py
+scipy
+
+# Cross-engine comparisons
+libroadrunner>=2.5
+
+# Optional: AMICI comparison (requires libsbml)
+# amici>=0.21

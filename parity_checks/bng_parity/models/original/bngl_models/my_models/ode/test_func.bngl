@@ -1,0 +1,39 @@
+begin model
+begin parameters
+Fmin 1.01
+a 0.504
+b 0.0027
+n 0.336
+beta 0.502
+end parameters
+begin molecule types
+F()
+P()
+counter()
+end molecule types
+begin seed species
+F() Fmin
+P() Fmin
+counter() 0
+end seed species
+begin observables
+Molecules F F()
+Molecules P P()
+Molecules t counter()
+end observables
+begin functions
+alpha()=a+b*t
+SatRate()=beta*F^(n-1)
+end functions
+begin reaction rules
+0->counter() 1
+0->F() alpha()
+F()->0 SatRate()
+0->P() 1*P/Fmin
+P()->0 beta*P^(n-1)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+end actions

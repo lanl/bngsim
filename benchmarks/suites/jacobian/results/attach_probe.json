@@ -1,0 +1,50 @@
+[
+  {
+    "model": "BIOMD0000000013",
+    "n_functional_rxns": 21,
+    "n_species": 27,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  },
+  {
+    "model": "MODEL9089538076",
+    "n_functional_rxns": 42,
+    "n_species": 200,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  },
+  {
+    "model": "BIOMD0000000595",
+    "n_functional_rxns": 903,
+    "n_species": 218,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  },
+  {
+    "model": "MODEL9087255381",
+    "n_functional_rxns": 130,
+    "n_species": 289,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  },
+  {
+    "model": "MODEL9087474843",
+    "n_functional_rxns": 130,
+    "n_species": 290,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  },
+  {
+    "model": "egfr_net_red",
+    "n_functional_rxns": 16,
+    "n_species": 40,
+    "attached": true,
+    "self_check_failed": false,
+    "debug_stderr": ""
+  }
+]

@@ -1,0 +1,92 @@
+begin model
+begin parameters
+    # HIF-1alpha Oxygen Sensing: Hydroxylation and VHL-mediated decay.
+    # Advanced features: Multi-phase simulation for pulsatile hypoxia.
+    
+    # Synthesis & Oxygen Pressure
+    k_synth 1.0        # Constant synthesis
+    k_phd_max 5.0      # Peak hydroxylation drive
+    Km_hif 300         # Threshold for PHD
+    O2_Sens 1.0        # 1.0 Normoxia, 0.05 Hypoxia
+    
+    # VHL Cycle (The Eraser)
+    k_vhl_bind 10.0    # Rapid recognition of OH-HIF
+    k_vhl_deg 50.0     # Proteasomal destruction
+    
+    # Stabilizing Relay
+    k_import 2.0       # Entry of unhydroxylated HIF
+    k_arnt_bind 5.0    # Nuclear partnership
+    
+    # physiological Feedback
+    k_vegf_synth 0.1   # Induced hypoxic output
+    
+    # Initials
+    HIF_tot 50
+    VHL_tot 200
+    ARNT_tot 150
+end parameters
+
+begin molecule types
+    HIF1a(site~U~OH,b,loc~cyt~nuc)
+    VHL(b)
+    ARNT(b)
+end molecule types
+
+begin seed species
+    HIF1a(b,site~U,loc~cyt) HIF_tot
+    VHL(b) VHL_tot
+    ARNT(b) ARNT_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Hypoxia_Factor   HIF1a(b!1,loc~nuc).ARNT(b!1) # Functional TF dimer
+    Molecules Total_HIF        HIF1a()                   # Stabilization tracker
+    Molecules OH_HIF_Mark     HIF1a(site~OH)            # Modification status
+    Molecules VHL_Captured    HIF1a(b!1).VHL(b!1)       # Degradation intermediate
+    Molecules Nuclear_Accum    HIF1a(loc~nuc)            # Local concentration
+    Molecules HIF_Substrate   HIF1a(site~U,loc~cyt)    # Proteasomal substrate
+end observables
+
+begin functions
+    # Oxygen-dependent Michaelis-Menten hydroxylation
+    # Decreases sharply in hypoxia
+    v_hydrox() = k_phd_max * (HIF_Substrate / (Km_hif + HIF_Substrate)) * O2_Sens
+end functions
+
+begin reaction rules
+    ## SENSING Phase
+    # Continuous synthesis (Input)
+    0 -> HIF1a(b,site~U,loc~cyt) k_synth
+    
+    # Hydroxylation (Functional Rate - O2/Sat)
+    HIF1a(b,site~U,loc~cyt) -> HIF1a(b,site~OH,loc~cyt) v_hydrox()
+    
+    ## DEGRADING Stage
+    # VHL captures hydroxylated HIF (Rapid)
+    HIF1a(b,site~OH,loc~cyt) + VHL(b) <-> HIF1a(b!1,site~OH,loc~cyt).VHL(b!1) k_vhl_bind,0.5
+    HIF1a(b!1,site~OH,loc~cyt).VHL(b!1) -> VHL(b) + HIF1a(b,site~OH,loc~cyt) k_vhl_deg
+    
+    ## STABILIZING Stage (The Hypoxic Shift)
+    # Unhydroxylated HIF accumulates and enters nucleus
+    HIF1a(b,site~U,loc~cyt) <-> HIF1a(b,site~U,loc~nuc) k_import,0.1
+    
+    # Nuclear HIF binds ARNT
+    HIF1a(b,loc~nuc,site~U) + ARNT(b) <-> HIF1a(b!1,loc~nuc,site~U).ARNT(b!1) k_arnt_bind,0.5
+    
+    ## RESET Phase
+    HIF1a() -> 0 0.02
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Normoxia (0-40)
+    simulate({method=>"ode",t_end=>40,n_steps=>80})
+    # Phase 2: Hypoxia (40-100)
+    setParameter("O2_Sens",0.05)
+    simulate({method=>"ode",t_end=>100,n_steps=>120,continue=>1})
+    # Phase 3: Normoxia recovery (100-150)
+    setParameter("O2_Sens",1.0)
+    simulate({method=>"ode",t_end=>150,n_steps=>100,continue=>1})
+end actions
+end model

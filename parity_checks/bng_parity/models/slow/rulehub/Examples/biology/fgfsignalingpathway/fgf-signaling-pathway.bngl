@@ -1,0 +1,99 @@
+begin model
+begin parameters
+    # FGF Signaling: FGFR dimerization and FRS2-Ras/PI3K relay.
+    # Advanced features: exclude_reactants for FRS2 stability and DeleteMolecules clearance.
+    
+    # Assembly
+    k_bind_fgf 1e-4    # FGF binding
+    k_dimer 1.5        # Receptor pairing
+    
+    # FRS2 Relay (The Hub)
+    k_frs2_bind 1.0    # Recruitment to dimer
+    k_frs2_phos 0.8    # Trans-activation
+    
+    # Downstream Branches
+    k_ras_act 1.2      # RasGEF branch
+    k_pi3k_act 0.6     # PI3K branch
+    
+    # Feedback Control
+    k_spry_inh 5.0     # Sprouty sequestration
+    k_reset 0.05
+    
+    # Internalization
+    k_intern 0.8       # Clathrin-mediated removal
+    k_deg 0.1          # Lysosomal decay
+    
+    # Initials
+    FGF_tot 100
+    FGFR_tot 400
+    FRS2_tot 500
+    Spry_tot 150
+    Grb2_SOS 200
+end parameters
+
+begin molecule types
+    FGF(b,state~U~H)  # H: Heparan bound proxy
+    FGFR(l,d,s~U~P)
+    FRS2(b,r,s~U~P)
+    Spry(b)
+    RasGEF(b)
+    Internalized_Rec()
+end molecule types
+
+begin seed species
+    FGF(b,state~U) FGF_tot
+    FGFR(l,d,s~U) FGFR_tot
+    FRS2(b,r,s~U) FRS2_tot
+    Spry(b) 100
+    RasGEF(b) 200
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Dimer     FGFR(d!+,s~P)           # Signalling intensity
+    Molecules FRS2_Hub_Status  FRS2(s~P)                # Core transducing pool
+    Molecules Ras_Drive_Comp   FRS2(r!1).RasGEF(b!1)    # Mitogenic relay activity
+    Molecules Total_Bound_FGF  FGF(b!+)                 # Receptor occupancy
+    Molecules Spry_Brake       Spry(b!+)                # Inhibition status
+end observables
+
+begin reaction rules
+    ## ASSEMBLY Phase
+    # FGF binds FGFR
+    FGF(b) + FGFR(l) <-> FGF(b!1).FGFR(l!1) k_bind_fgf,0.1
+    
+    # Dimerization (Active trans-phosphorylation)
+    FGF(b!1).FGFR(l!1,d,s~U) + FGF(b!2).FGFR(l!2,d,s~U) <-> FGF(b!1).FGFR(l!1,d!3,s~P).FGF(b!2).FGFR(l!2,d!3,s~P) k_dimer,0.2
+    
+    ## HUB RELAY Stage
+    # FGFR dimer recruits FRS2
+    # exclude_reactants to prevent redundant re-binding while p-FRS2 is active
+    FGFR(s~P) + FRS2(b,s~U) <-> FGFR(s~P!1).FRS2(b!1,s~U) k_frs2_bind,0.5
+    
+    # FRS2 Phosphorylation
+    FGFR(s~P!1).FRS2(b!1,s~U) -> FGFR(s~P!1).FRS2(b!1,s~P) k_frs2_phos
+    
+    # p-FRS2 Hub recruits downstream effectors (RasGEF)
+    FRS2(s~P,r) + RasGEF(b) <-> FRS2(s~P,r!1).RasGEF(b!1) k_ras_act,0.1
+    
+    ## FEEDBACK Controlling
+    # Sprouty blocks FRS2 recruitment
+    Spry(b) + FGFR(s~P) <-> Spry(b!1).FGFR(s~P!1) k_spry_inh,0.5
+    
+    ## INTERNALIZATION Stage
+    # Active dimers are internalized and terminated
+    # DeleteMolecules: Final removal of the active signaling factor
+    FGFR(s~P) -> Internalized_Rec() k_intern
+    Internalized_Rec() -> 0 k_deg DeleteMolecules
+    
+    # Reset
+    FRS2(s~P) -> FRS2(s~U) k_reset
+    FRS2(s~P,r!1).RasGEF(b!1) -> FRS2(s~U,r) + RasGEF(b) 0.5
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>40,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,39 @@
+# Feature: state wildcard ~? in patterns
+# Tests: ~? matches any defined state in observables and rules
+# Tier: base
+# Expected: A_any_state counts all A regardless of phospho state
+
+begin model
+begin parameters
+    A_tot    60
+    k_phos   0.02   # /s, phosphorylation rate
+    k_dephos 0.01   # /s, dephosphorylation rate
+end parameters
+
+begin molecule types
+    A(p~U~P~PP)
+end molecule types
+
+begin seed species
+    A(p~U)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_unphos    A(p~U)
+    Molecules  A_mono      A(p~P)
+    Molecules  A_di        A(p~PP)
+    Molecules  A_any       A(p~?)
+    Molecules  A_total     A()
+end observables
+
+begin reaction rules
+    A(p~U)  -> A(p~P)   k_phos
+    A(p~P)  -> A(p~PP)  k_phos
+    A(p~PP) -> A(p~P)   k_dephos
+    A(p~P)  -> A(p~U)   k_dephos
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

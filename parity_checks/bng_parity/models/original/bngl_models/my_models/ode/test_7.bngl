@@ -1,0 +1,32 @@
+begin model
+begin parameters
+V0 1
+c 1
+end parameters
+begin molecule types
+V()
+end molecule types
+begin seed species
+V() V0
+end seed species
+begin observables
+Molecules V V()
+end observables
+begin functions
+end functions
+begin reaction rules
+V()->0 c
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+setParameter("V0",2)
+simulate({prefix=>"V0=2",method=>"ode",t_start=>0,t_end=>1,n_steps=>100,print_functions=>1})
+resetConcentrations()
+setParameter("V0",4)
+simulate({prefix=>"V0=4",method=>"ode",t_start=>0,t_end=>1,n_steps=>100,print_functions=>1})
+resetConcentrations()
+setParameter("V0",8)
+simulate({prefix=>"V0=8",method=>"ode",t_start=>0,t_end=>1,n_steps=>100,print_functions=>1})
+end actions

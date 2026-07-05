@@ -1,0 +1,36 @@
+# Expression output-sensitivity fixture (GH #198).
+#
+# Linear mass-action chain  A --k1--> B --k2--> C  (all elementary, so the
+# codegen sensitivity RHS engages and the IC axis is available), plus global
+# functions exercising every addressable chain-rule dependency kind:
+#   scaled() = scale*A_obs              parameter + observable
+#   ratio()  = A_obs/(BC2+eps)          two observables + parameter
+#   combo()  = scaled() + ratio()       earlier functions
+#   tdep()   = k1*A_obs*time()          time (drops) + parameter + observable
+# Observables (from obs_sens_chain.net): A_obs=A, BC2=B+2C, Total=A+B+C.
+begin parameters
+    1 k1    0.30
+    2 k2    0.15
+    3 scale 2.0
+    4 eps   0.50
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 C() 0
+end species
+begin reactions
+    1 1 2 k1 #A_to_B
+    2 2 3 k2 #B_to_C
+end reactions
+begin groups
+    1 A_obs 1
+    2 BC2   2,2*3
+    3 Total 1,2,3
+end groups
+begin functions
+    1 scaled() scale*A_obs
+    2 ratio() A_obs/(BC2+eps)
+    3 combo() scaled()+ratio()
+    4 tdep() k1*A_obs*time()
+end functions

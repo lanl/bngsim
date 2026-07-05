@@ -1,0 +1,131 @@
+begin model
+begin parameters
+# Avogadro constant (exact value)
+NA 6.02214076e23 # molecules per mole
+# total extracellular fluid volume
+Vecf 2.781 # L (for BW = 8.07 kg)
+# valence
+n 10
+# single-site forward rate constant
+kf = 60*60*24*1e3/(NA*Vecf) # /d
+# single-site reverse rate constant
+kr = 60*60*24*0.1 # /d
+# equilibrium crosslinking constant
+KxRT 2 # 3.44 # dimensionless
+kmx = kr # /d
+kpxRT = kmx*KxRT # /d
+# total number of viral receptors on FDCs
+RT 1e12 # dimensionless
+kpx = kpxRT/RT # /d
+# effective reverse rate constant
+kr_mono = kr*n*KxRT/((1+KxRT)^n-1) # /d
+# rate constant for death of infected cells
+delta 1 # /d
+# basic reproduction number (>1)
+R0 5.2 # 8.5 # dimensionless
+# approximate initial growth rate of plasma viral load
+r0 = delta*(R0-1)
+# rate constant for viral clearance
+c 3 # 3
+# duration of eclipse phase
+tau 1 # d
+end parameters
+begin molecule types
+counter()
+Vmono()
+Vpoly()
+Rmono()
+Rpoly()
+Bmono()
+B1()
+B2()
+B3()
+B4()
+B5()
+B6()
+B7()
+B8()
+B9()
+B10()
+aV()
+aB()
+end molecule types
+begin seed species
+counter() 0
+Vmono() 1
+Vpoly() 1
+Rmono() RT
+Rpoly() RT
+Bmono() 0
+B1() 0
+B2() 0
+B3() 0
+B4() 0
+B5() 0
+B6() 0
+B7() 0
+B8() 0
+B9() 0
+B10() 0
+aV() 1
+aB() 1.153806503176e+11
+end seed species
+begin observables
+Molecules t counter()
+Molecules Vmono Vmono()
+Molecules Vpoly Vpoly()
+Molecules Rmono Rmono()
+Molecules Rpoly Rpoly()
+Molecules Bmono Bmono()
+Molecules Bpoly B1() B2() B3() B4() B5() B6() B7() B8() B9() B10()
+Molecules approxV aV()
+Molecules approxB aB()
+end observables
+begin functions
+rate()=if(t>=tau && t<14,r0,0)
+step()=if(t<42,0,1)
+saturation_mono()=(RT-Rmono)/RT
+saturation_poly()=(RT-Rpoly)/RT
+lnV_anal()=if(t>tau,if(ln(2*exp(r0*(t-tau))/(Vecf*1000))<2.708,2.708,ln(2*exp(r0*(t-tau))/(Vecf*1000))),2.708)
+#lnVmono()=if(2*Vmono/(1000*Vecf)>0,ln(2*Vmono/(1000*Vecf)),2.708)
+#lnVpoly()=if(2*Vpoly/(1000*Vecf)>0,ln(2*Vpoly/(1000*Vecf)),2.708)
+lnVmono()=if(2*Vmono/(1000*Vecf)>15,ln(2*Vmono/(1000*Vecf)),2.708)
+lnVpoly()=if(2*Vpoly/(1000*Vecf)>15,ln(2*Vpoly/(1000*Vecf)),2.708)
+lnBmono()=if(Bmono>0,if(ln(Bmono)>0,ln(Bmono),0),0)
+lnBpoly()=if(Bpoly>0,if(ln(Bpoly)>0,ln(Bpoly),0),0)
+# report_kr_mono()=kr_mono
+report_kfRT()=kf*RT
+end functions
+begin reaction rules
+#0->aV() r0
+#aV()->0 c*step()
+#aV()->aB() kf*RT
+#aB()->aV() kr
+aB()->0 kr_mono*step()
+
+# timer
+0->counter() 1
+# exponential growth in virion abundance
+Vmono()->Vmono()+Vmono() rate()
+Vpoly()->Vpoly()+Vpoly() rate()
+# viral clearance
+Vmono()->0 c*step()
+Vpoly()->0 c*step()
+# virus-receptor association
+Vmono()+Rmono()<->Bmono() n*kf,kr_mono
+Vpoly()+Rpoly()<->B1() n*kf,kr
+B1()+Rpoly()<->B2() (n-1)*kpx,2*kmx
+B2()+Rpoly()<->B3() (n-2)*kpx,3*kmx
+B3()+Rpoly()<->B4() (n-3)*kpx,4*kmx
+B4()+Rpoly()<->B5() (n-4)*kpx,5*kmx
+B5()+Rpoly()<->B6() (n-5)*kpx,6*kmx
+B6()+Rpoly()<->B7() (n-6)*kpx,7*kmx
+B7()+Rpoly()<->B8() (n-7)*kpx,8*kmx
+B8()+Rpoly()<->B9() (n-8)*kpx,9*kmx
+B9()+Rpoly()<->B10() (n-9)*kpx,10*kmx
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>84,n_steps=>840,print_functions=>1})
+end actions

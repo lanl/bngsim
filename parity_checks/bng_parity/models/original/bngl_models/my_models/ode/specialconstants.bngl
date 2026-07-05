@@ -1,0 +1,60 @@
+begin model
+
+# Reference:
+#   - Euler L (1748) Introductio in analysin infinitorum
+#     Euler L (1988) Introduction to Analysis of the Infinite, Book 1 (translated by Blanton JD) Springer, New York.
+#   - Marquardt R et al. (2018) Definition of the mole (IUPAC Recommendation 2017). Pure Appl Chem 90: 175-180.
+
+begin parameters
+
+# Avogadro constant
+# The Avogadro number is the exact number of elementary entities per mole (Marquardt et al., 2018).
+NA 6.02214076e23 # /mol
+
+# Archimedes' constant (the ratio of a circle's circumference to its diameter)
+# pi=2*acos(0)=2*asin(1)
+# Euler (1748) used the Greek letter pi to refer to this constant.
+pi 2*acos(0) # dimensionless
+
+# Euler's number
+# Euler (1748) used the Latin letter e to refer to this constant and
+# showed that e is the limit of (1+1/n)^n as n approaches infinity.
+e exp(1) # dimensionless
+
+end parameters
+
+begin molecule types
+A
+B
+t
+end molecule types
+
+begin seed species
+A pi
+B e
+end seed species
+
+begin observables
+Species O_pi A
+Species O_e B
+Species n t
+end observables
+
+begin functions
+
+limit()=(1+1/n)^n
+
+end functions
+
+begin reaction rules
+0->t 1
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>1000,print_functions=>1})
+
+end actions

@@ -1,0 +1,51 @@
+// This model is essentially the same as V1988b_exponential_ode.
+//
+// Exact canonical S-system for: X' = exp(k*X)
+// Introduce Y = exp(k*X). IC must satisfy Y(0) = exp(k*X(0)).
+//
+//   species X, Y;
+//
+// Parameter
+//   k = -0.5;    // any real k; here negative to avoid blow-up
+//
+// Choose positive rate constants so that:
+//   (alpha1 - beta1) = 1   and   (alpha2 - beta2) = k
+// The two terms per ODE are canonical monomials (same variables allowed).
+//   b1 = 1.0;                // arbitrary > 0
+//   alpha1 = b1 + 1.0;       // => alpha1 - beta1 = 1
+//   beta1  = b1;
+//
+//  alpha2 = 1.0;            // pick any > 0
+//  beta2  = 1.0 - k;        // ensures alpha2 - beta2 = k (positive since k < 1)
+//
+// Canonical S-system dynamics (two monomials per equation)
+//   X' = alpha1 * (Y^1) - beta1 * (Y^1);   // net = (alpha1 - beta1)*Y = Y
+//   Y' = alpha2 * (Y^2) - beta2 * (Y^2);   // net = (alpha2 - beta2)*Y^2 = k*Y^2
+//
+// Initial conditions (consistent with Y = exp(k*X))
+//   X = 0.0;
+//   Y = 1.0;   // exp(k*X0) with X0=0, k=-0.5
+//
+model composite_func_decomp()
+
+  // Original general ODE (composite function), used to illustrate recasting Operation (3)
+  // in Voit (1988), "NEW NONLINEAR METHODOLOGIES FOR MODELING MOLECULAR AND CELLULAR SYSTEMS".
+  // Example: x' = exp(x) (see discussion around decomposition of composite functions).
+  // This is a synthetic test case to exercise the recaster's handling of exp() via variable introduction.
+
+  species X;
+
+  k = -0.5; // no finite-time explosion for k < 0
+
+  // Dynamics
+  X' = exp(k*X); // X >= 0 for X(0) >= 0
+
+  // Initial condition (placeholder)
+  X = 0.0; // non-negative initial condition
+
+  // Notes:
+  // * No parameters appear in the paper's minimal example; treat as unit scaling.
+  // * Recasting typically introduces an auxiliary variable Z = exp(X) to obtain S-system form.
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

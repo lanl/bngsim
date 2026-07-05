@@ -1,0 +1,50 @@
+# Feature: catalytic rule that breaks a bond (enzymatic complex disassembly)
+# Tests: bond deletion as part of a catalytic cycle
+# Tier: base
+# Expected: enzyme E breaks A-B bonds; AB decreases, A_free and B_free increase
+
+begin model
+begin parameters
+    A_tot  30
+    B_tot  30
+    E_tot  5
+    kf     0.05    # /s, A-B binding rate
+    kr     0.001   # /s, spontaneous A-B unbinding (slow)
+    k_cat  0.5     # /s, enzymatic bond-breaking rate
+    kfE    0.1     # /s, E binds to A in complex
+    krE    0.5     # /s, E unbinds from A
+end parameters
+
+begin molecule types
+    A(b,e)
+    B(b)
+    E(s)
+end molecule types
+
+begin seed species
+    A(b,e)   A_tot
+    B(b)     B_tot
+    E(s)     E_tot
+end seed species
+
+begin observables
+    Molecules  A_free    A(b,e)
+    Molecules  B_free    B(b)
+    Molecules  AB        A(b!1).B(b!1)
+    Molecules  E_free    E(s)
+    Molecules  E_bound   E(s!+)
+end observables
+
+begin reaction rules
+    # A-B binding (slow unbinding)
+    A(b) + B(b) <-> A(b!1).B(b!1)  kf, kr
+    # E binds A that is in A-B complex
+    E(s) + A(b!+,e) <-> E(s!1).A(b!+,e!1)  kfE, krE
+    # Catalytic step: E breaks A-B bond while bound to A
+    E(s!1).A(b!2,e!1).B(b!2) -> E(s!1).A(b,e!1) + B(b)  k_cat
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

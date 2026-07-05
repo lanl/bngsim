@@ -1,0 +1,7 @@
+# Suite-local caches. The fitting suite's results/ is NOT wholesale
+# ignored -- the small run JSONs are the benchmark deliverable. The
+# rendered table fragment lives in bngsim/dev/paper/latex/generated/.
+# Transient PyBNF run output (per-problem output/, bnf_*.log,
+# on-the-fly confs, mmc3/) is ignored by the repo-root .gitignore;
+# see the "Multi-model fitting benchmark" block.
+__pycache__/

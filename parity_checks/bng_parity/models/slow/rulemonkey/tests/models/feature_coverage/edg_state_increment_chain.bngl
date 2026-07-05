@@ -1,0 +1,62 @@
+# Edge case: state declarations in non-alphabetic order, with all
+# transitions exercised
+# Tests:  RM sorts allowed states into a canonical order at load time
+#         (simulator.cpp:559-575: numeric first, then string-ascending).
+#         When the BNGL author lists states out of order, the canonical
+#         order can differ from the declaration order, and any code
+#         path that uses the canonical index (e.g., serialize/restore,
+#         StateChange resolution, compare-against-required_state_index)
+#         must be consistent.  This test cycles a 5-state ladder both
+#         forward and backward through ALL transitions, declared in a
+#         deliberately permuted order ("s2,s0,s4,s1,s3"), to make any
+#         declaration-order assumption show up as wrong populations
+#         vs. NFsim.
+# Edge:   five rules forward + five rules backward = ten StateChange
+#         operations, all on the same component.  If RM's index map
+#         is internally consistent, the ladder reaches steady state
+#         with state populations balanced by the rate ratio.
+# Tier:   base
+# invariant: conserved A_total = 60
+
+begin model
+begin parameters
+    A_tot   60
+    k_fwd   0.20
+    k_rev   0.10
+end parameters
+
+begin molecule types
+    # Permuted declaration order — RM sorts to s0,s1,s2,s3,s4.
+    A(s~s2~s0~s4~s1~s3)
+end molecule types
+
+begin seed species
+    A(s~s0)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_total  A()
+    Molecules  A_s0     A(s~s0)
+    Molecules  A_s1     A(s~s1)
+    Molecules  A_s2     A(s~s2)
+    Molecules  A_s3     A(s~s3)
+    Molecules  A_s4     A(s~s4)
+end observables
+
+begin reaction rules
+    # Forward ladder
+    A(s~s0) -> A(s~s1)  k_fwd
+    A(s~s1) -> A(s~s2)  k_fwd
+    A(s~s2) -> A(s~s3)  k_fwd
+    A(s~s3) -> A(s~s4)  k_fwd
+    # Reverse ladder
+    A(s~s1) -> A(s~s0)  k_rev
+    A(s~s2) -> A(s~s1)  k_rev
+    A(s~s3) -> A(s~s2)  k_rev
+    A(s~s4) -> A(s~s3)  k_rev
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

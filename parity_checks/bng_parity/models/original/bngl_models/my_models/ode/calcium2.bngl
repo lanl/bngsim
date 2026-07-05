@@ -1,0 +1,133 @@
+# filename: calcium2.bngl
+# created: 23-March-2017
+# contributors: Bill Hlavacek, Ryan Suderman, Nesia Zurek
+
+# objective: understand how Syk activation and downstream calcium mobilization
+#            depend on properties of soluble glucans and nano-patterned patches 
+#            of immobilized glucans
+
+begin model
+
+# This model produces a "shark fin" temporal profile for cytosolic calcium.
+# Calcium in the lumen of the endoplasmic reticulum (ER) "falls off a cliff."
+# Adaptation (cytosolic calcium level) occurs via a "toilet flush" mechanism.
+
+# NB: We need a clearer picture of the relevant processes and molecular mechanisms.
+
+begin parameters
+
+# fraction of cell to consider in a simulation
+f 1 # fraction, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#######################
+# compartment volumes #
+#######################
+
+# cytosol
+Vcyt 1e-12*f # L
+
+# lumen of ER (10% of total cell volume)
+VER=0.1*Vcyt*f # L
+
+##############
+# abundances #
+##############
+
+# copies of Syk per cell
+Syk_cpc 2e5*f # cpc
+
+# concentration of calcium in ER (400 uM)
+Ca_conc_ER 400e-6 # M
+
+# concentration of calcium in the cytosol of a resting cell (50 nM)
+Ca_conc_cytosol 50e-9 # M
+
+# unit conversion
+NCa_ER=Ca_conc_ER*(NA*VER) # cpc
+NCa_cytosol=Ca_conc_cytosol*(NA*Vcyt) # cpc
+
+###########################
+# parameters of rate laws #
+###########################
+
+# This parameter places an upper bound on the rate of calcium release from ER stores
+Vmax 0.1 # /s
+K_SykP 1e5*f # cpc
+nS 2 # dimensionless exponent
+K_Ca_cytosol 1e6*f # cpc
+nC 2 # dimensionless exponent
+
+# This parameter determines how rapidly calcium exits the cytosol
+rho 5 # dimensionless ratio
+
+end parameters
+
+begin molecule types
+
+Ca_ER()
+Ca_cytosol()
+Syk(Y~0~P)
+
+end molecule types
+
+begin seed species
+
+Ca_ER() NCa_ER
+Ca_cytosol() NCa_cytosol
+Syk(Y~P) Syk_cpc # We take all Syk to be activated at time t = 0 (for simplicity).
+
+end seed species
+
+begin observables
+
+Molecules calcium_ER Ca_ER()
+Molecules calcium_cytosol Ca_cytosol()
+Molecules SykP Syk(Y~P!?) 
+
+end observables
+
+begin functions
+
+# rate of calcium release from ER stores is regulated by Syk according to a Hill function
+# w/ cytosolic calcium enhancing the rate of release (positive feedback)
+# Calcium binding to the IP3 receptor controls gating of this ion channel.
+krelease()=Vmax*((SykP/K_SykP)^nS/(1+(SykP/K_SykP)^nS))*(1+(calcium_cytosol/K_Ca_cytosol)^nC)
+
+# cytosolic calcium exits the cytosol via a first-order process (uptake by mitochondria)
+kclearance()=Vmax*rho
+
+end functions
+
+begin reaction rules
+
+# Add rules for glucan-induced/Dectin 1-mediated activation of Syk.
+
+# Consider adding rules for PLCG2 activation (downstream of Syk) 
+# and PLCG2 activity (generation of IP3).
+
+# Consider adding rules for relatively slow-acting calcium-mediated negative feedback.
+# Calcium inhibits generation of the second messenger IP3.
+
+# release of calcium from ER stores into the cytosol
+Ca_ER()->Ca_cytosol() krelease()
+
+# exit of calcium from the cytosol (uptake by mitochondria)
+Ca_cytosol()->0 kclearance() 
+
+# Consider adding rules for replenishment of ER calcium via STIM2-mediated influx
+# of extracellular calcium at ER-plasma membrane junctions, which involves
+# a negative feedback loop encompassing STIM2 (sensor of ER calcium abundance).
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>400,print_functions=>1})
+
+end actions

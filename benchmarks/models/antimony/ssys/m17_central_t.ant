@@ -1,0 +1,34 @@
+// This model is essentially the same as RV1990_central_t_density.
+// Recasting:
+// X1 = t + c, X2 = nu + t^2, X3 = f(t)
+//   species X1, X2, X3
+//   nu = 8
+//   c  = 1.0                 // shift > 0
+//
+// Canonical S-system
+//   X1' = 1                                  // = 1 - 0
+//   X2' = 2*X1 - 2*c                         // = (2)*X1^1 - (2*c)*X1^0
+//   X3' = (nu+1)*c * X2^(-1) * X3 - (nu+1) * X1 * X2^(-1) * X3;
+//
+// ICs matching t=0
+// gamma((nu+1)/2) / (sqrt(nu*pi) * gamma(nu/2)) for nu=8 ≈ 0.386
+//   X1 = c;
+//   X2 = nu;
+//   X3 = 0.3866990209613933;
+//
+model central_t()
+  // Central t density: f'(t) = -((nu+1)*t/(nu + t^2)) * f(t)
+  species t, f
+  nu = 8                   // degrees of freedom (example)
+
+  t' = 1
+  f' = - ( (nu+1) * t / (nu + t^2) ) * f
+
+  // ICs (example): start at t=0 with exact value
+  // f(0) = Gamma((nu+1)/2) / (sqrt(nu*pi) * Gamma(nu/2))
+  // For nu=8: gamma(4.5) / (sqrt(8*pi) * gamma(4)) = 0.3866990209613933
+  t = 0
+  f = 0.3866990209613933
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

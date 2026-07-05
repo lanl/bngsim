@@ -1,0 +1,36 @@
+# Test file for function composition (inter-function references).
+# BNG2.pl emits patterns like "-1*fRate0()" where fRate0 is another function.
+# BNGsim must resolve funcName() → variable reference.
+#
+# Model: simple A → B with a rate law that composes two functions.
+#   fRate0() = k1 * A_tot        (base rate function)
+#   _rateLaw1() = -1*fRate0()    (composed: references fRate0 by name)
+#   _rateLaw2() = (-1*2.0)*fRate0()  (another pattern from atomizer)
+#
+# Also tests && operator: fRate_cond uses if() with && condition.
+
+begin parameters
+    1 k1 0.1
+    2 k2 0.05
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 C() 50
+end species
+begin functions
+    1 fRate0() k1*A_tot
+    2 _rateLaw1() -1*fRate0()
+    3 _rateLaw2() (-1*2.0)*fRate0()
+    4 fRate_cond() if(((A_tot>=0)&&(A_tot<=200)),k2*C_tot,0)
+end functions
+begin reactions
+    1 1 2 fRate0 #A_to_B
+    2 0 1 _rateLaw1 #source_A (rate = -(-0.1*100) = +10)
+    3 0 3 fRate_cond #cond_source_C
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+    3 C_tot 3
+end groups

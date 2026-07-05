@@ -1,0 +1,145 @@
+begin model
+# The model defined here is equivalent to the following system of coupled ODEs:
+# d(S/N)/dt = -N*beta(t)*(S/N)*(I/N) - eta*(S/N) + delta*(R/N)
+# d(I/N)/dt = N*beta(t)*(S/N)*(I/N) + eta*(S/N) - gamma*(I/N)
+# d(R/N)/dt = gamma*(I/N) - delta*(R/N)
+# The eta*(S/N) term serves to prevent hospitalizations from falling to 0.
+# The delta*(R/N) term replenishes the supply of susceptible persons, allowing for periodic disease transmission.
+# The function beta(t) is defined piecewise.
+# The start time of a flu season and its duration are allowed to vary from season to season.
+# During a given flu season, the function beta(t) has the shape of season-specific two-parameter probability distribution.
+# The model should be flexible enough to reproduce transmission dynamics over multiple flu seasons.
+begin parameters
+# ratio circumference:diameter
+#pi = 2*acos(0) # dimensionless
+# summer solstice times
+#  Simulation begins at time t = t0. 
+#  Simulation ends at time t = t4.
+#  We assume that flu-related hospitalizations reach their lowest levels around the time of the summer solstice.
+t0 0 # d corresponds to June 21, 2021 (summer solstice)
+t1 365 # d corresponds to June 21, 2022
+t2 730 # d corresponds to June 21, 2023
+t3 1096 # d corresponds to June 21, 2024 (NB: 2024 is a leap year.) 
+t4 1461 # d corresponds to June 21, 2025
+# total population for region of interest
+#  We assume that population is conserved across flu seasons.
+N 7.15e6 # population of Arizona
+#N 5.88e6 # population of Colorado
+#N 2.11e6 # population of New Mexico
+#N 3.42e6 # population of Utah
+# initial number of infected persons
+I0 1
+# fraction of population that is immune at time t = t0
+fI 0.35 # dimensionless (0<fI<1)
+# initial number of removed persons
+R0 = fI*N
+# initial number of susceptible persons
+S0 = N-I0-R0
+# fraction of new infections leading to hospitalization
+#  For information about flu burden in the US, see
+#  https://www.cdc.gov/flu-burden/php/about/index.html?CDC_AAref_Val=https://www.cdc.gov/flu/about/burden/index.html
+#  We assume constant morbidity/mortality across flu seasons.
+fH 0.017 # dimensionless (0<fH<1)
+# scaled contact rate 
+#  We assume that infectiousness varies seasonally.
+Nbeta_min 0.01 # /d (at nadir)
+Nbeta_max_2021 0.35 # /d (at peak)
+Nbeta_max_2022 0.65 # /d
+Nbeta_max_2023 0.60 # /d
+Nbeta_max_2024 0.55 # /d
+# rate constant for disease introduction through travel
+#  We assume there's an ongoing baseline rate of infection given by eta*[S] that is caused by travel.
+eta 1e-5 # /d
+# rate constant for removal (transition from I to R)
+gamma 0.2 # /d
+# rate constant for loss of immunity (transition from R to S)
+#  We assume loss of immunity is constant across flu seasons.
+delta 3e-3 # /d
+# start of the flu season (number of days after the summer solstice)
+dt_2021 118 # d (2021-2022 season) 
+dt_2022 101 # d (2022-2023 season)
+dt_2023 132 # d (2023-2024 season)
+dt_2024 140 # d (2024-2025 season)
+# fraction that determines the duration of the flu season
+fD_2021 0.91 # dimensionless (0<fD<1)
+fD_2022 0.56 # dimensionless
+fD_2023 0.84 # dimensionless
+fD_2024 0.97 # dimensionless
+# duration of flu season
+#  We assume that the duration of the flu season can vary.
+D_2021 = fD_2021*(365-dt_2021) # d (2021-2022 season)
+D_2022 = fD_2022*(365-dt_2022) # d (2022-2023 season)
+D_2023 = fD_2023*(366-dt_2023) # d (2023-2024 season) NB: 2024 is a leap year.
+D_2024 = fD_2024*(365-dt_2024) # d (2024-2025 season)
+# parameters of the Kumaraswamy distribution (a, b >= 1)
+#  https://en.wikipedia.org/wiki/Kumaraswamy_distribution
+a_2021 5 # 2021-2022 season
+b_2021 2
+a_2022 3 # 2022-2023 season
+b_2022 3
+a_2023 2 # 2023-2024 season
+b_2023 8
+a_2024 4 # 2024-2025 season
+b_2024 4 
+end parameters
+begin molecule types
+S()
+I()
+R()
+counter()
+end molecule types
+begin seed species
+S() S0/N
+I() I0/N
+R() R0/N
+counter() 0
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules t counter() # days since June 21,2021
+end observables
+begin functions
+duration()=if(t<t1,D_2021,\
+           if(t<t2,D_2022,\
+           if(t<t3,D_2023,\
+           if(t<t4,D_2024,D_2024))))
+t_start()=if(t<t1,t0+dt_2021,\
+          if(t<t2,t1+dt_2022,\
+          if(t<t3,t2+dt_2023,\
+          if(t<t4,t3+dt_2024,dt_2024))))
+scaled_time()=if(t>=t_start() && t<=t_start()+duration(),(t-t_start())/duration(),0) 
+a()=if(t<t1,a_2021,\
+    if(t<t2,a_2022,\
+    if(t<t3,a_2023,\
+    if(t<t4,a_2024,a_2024))))
+b()=if(t<t1,b_2021,\
+    if(t<t2,b_2022,\
+    if(t<t3,b_2023,\
+    if(t<t4,b_2024,b_2024))))
+xmax() = ((1-a())/(1-a()*b()))^(1/a())
+fmax() = a()*b()*(xmax()^(a()-1))*(1-xmax()^a())^(b()-1)  
+# Kumaraswamy distribution, scaled such that the maximum value is 1.
+# NB: the support of this distribtion is [0,1].
+f()=(1/fmax())*a()*b()*((scaled_time())^(a()-1))*(1-(scaled_time())^a())^(b()-1) # 0 <= f() <= 1
+Nbeta_max()=if(t<t1,Nbeta_max_2021,\
+            if(t<t2,Nbeta_max_2022,\
+            if(t<t3,Nbeta_max_2023,\
+            if(t<t4,Nbeta_max_2024,Nbeta_max_2024))))
+Nbeta()=(Nbeta_min+(Nbeta_max()-Nbeta_min)*f()) # Nbeta_min <= Nbeta() <= Nbeta_max
+# hospitalizations
+H()=fH*I*N
+end functions
+begin reaction rules
+0->counter() 1
+S()->I() Nbeta()*I
+S()->I() eta
+I()->R() gamma
+R()->S() delta
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"flu_2021_to_2025",method=>"ode",t_end=>1461,n_steps=>1461,print_functions=>1})
+end actions

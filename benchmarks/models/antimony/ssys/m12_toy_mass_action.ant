@@ -1,0 +1,66 @@
+// Starting model:
+//   X1' = a*X1*X2 - b*X1^2*X2 - c*X1^2
+//   X2' = X1 - X2
+// We recast into S-system form via a change of variables:
+//   X1 = X3*X4.
+// Dynamic states: X2, X3, X4  (X1 is observed as X3*X4).
+// Parameters
+//   a = 0.15;   // >0
+//   b = 0.03;   // >0
+//   c = 0.01;   // >0
+//
+// Choose positive S-system rate constants with (alpha4 - beta4) = -c
+//   alpha4 = 1.0;          // arbitrary >0
+//   beta4  = 1.0 + c;      // ensures alpha4 - beta4 = -c
+//
+// States
+//   species X2, X3, X4;
+//
+// Canonical S-system dynamics (two monomials per ODE)
+// X3' =  a * X3 * X2        −  b * X3^2 * X4 * X2
+//   X3' =  a * X3 * X2 - b * (X3^2) * X4 * X2;
+//
+// X4' = (alpha4) * X3 * X4^2 − (beta4) * X3 * X4^2  ⇒ net = (alpha4 - beta4) * X3 * X4^2 = -c * X3 * X4^2
+//   X4' =  alpha4 * X3 * (X4^2) - beta4 * X3 * (X4^2);
+//
+// X2' =  1 * X3 * X4        −  1 * X2
+//   X2' =  X3 * X4 - X2;
+//
+// Observable for the original variable
+//   var X1_obs;
+//   X1_obs := X3 * X4;
+//
+// Initial conditions (consistent with original X1(0)=1, X2(0)=3)
+//   X3 = 0.5;   // pick any positive pair with X3*X4 = 1
+//   X4 = 2.0;
+//   X2 = 3.0;
+//
+model toy_mass_action()
+
+  // ODE model for mass-action kinetics, from the illustrative example
+  // used to demonstrate Operation (4) (product rule) and auxiliary variables (X1 = X3*X4).
+  // Voit (1988), pp. 223–224: X2' = X1 - X2 and X1' built from four positive-rate terms that are
+  // later split across X3 and X4 before elimination. Summing those terms gives:
+  //    X1' = (gamma1 + gamma3)*X1*X2 - gamma2*X1^2*X2 - gamma4*X1^2
+  // We rename parameters as follows: a = gamma1 + gamma3, b = gamma2, c = gamma4.
+
+  species X1, X2;
+  a = 0.15;   // net coefficient on X1*X2
+  b = 0.03;   // coefficient on X1^2*X2
+  c = 0.01;   // coefficient on X1^2
+  k = 0.5;
+
+  // Dynamics (original system prior to S-system recast)
+  X1' = a*X1*X2 - b*X1^2*X2 - c*X1^2;
+  X2' = X1 - k*X2;
+
+  // Initial conditions
+  X1 = 1.0;
+  X2 = 3.0;
+
+  // Notes:
+  // * This is the unreduced, original form implied by the text; Voit then introduces X3, X4 with X1 = X3*X4
+  //   to arrive at canonical S-system equations. 
+  // * All parameters are positive, as stated.
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

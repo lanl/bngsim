@@ -1,0 +1,43 @@
+# Feature: network-free only — branching aggregation (trivalent)
+# Tests: unbounded complex sizes from trivalent cross-linking
+# Tier: network-free (NFsim reference only)
+# Expected: aggregate sizes grow; gelation possible at high concentration
+# invariant: conserved T_total = 30
+# invariant: conserved B_total = 40
+
+begin model
+begin parameters
+    T_tot  30     # trivalent molecules
+    B_tot  40     # bivalent molecules
+    kf     0.005  # /s, binding rate
+    kr     0.1    # /s, unbinding rate
+end parameters
+
+begin molecule types
+    T(s,s,s)
+    B(s,s)
+end molecule types
+
+begin seed species
+    T(s,s,s)  T_tot
+    B(s,s)    B_tot
+end seed species
+
+begin observables
+    Molecules  T_total     T()
+    Molecules  B_total     B()
+    Molecules  T_free_s    T(s)
+    Molecules  B_free_s    B(s)
+    Molecules  T_bound     T(s!+)
+    Molecules  B_bound     B(s!+)
+    Species    Complexes   T(s!+)
+end observables
+
+begin reaction rules
+    T(s) + B(s) <-> T(s!1).B(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

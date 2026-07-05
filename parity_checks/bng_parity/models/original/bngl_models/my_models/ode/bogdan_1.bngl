@@ -1,0 +1,58 @@
+begin model
+
+begin parameters
+L 0
+N 6
+K_R 0.5
+K_B 0.5
+K_a 3
+K_i 18.2*0.001
+m0 2
+alpha 1.7
+end parameters
+
+begin molecule types
+m()
+end molecule types
+
+begin seed species
+m() m0
+end seed species
+
+begin observables
+Molecules Methylation m()
+Molecules dummy1 m()
+Molecules dummy2 m()
+Molecules dummy3 m()
+end observables
+
+begin functions
+f()=alpha*(m0-Methylation)
+F()=f()-ln(1+(L/K_a))+ln(1+(L/K_i))
+a()=1/(1+exp(N*F()))
+end functions
+
+begin reaction rules
+0->m() K_R
+m()->0 ((K_R+K_B)/Methylation)*a()
+end reaction rules
+
+end model
+
+begin actions
+generate_network({overwrite=>1})
+setParameter("L",1e-4)
+simulate({method=>"ode",t_start=>0,t_end=>5,n_steps=>50,print_functions=>1})
+setParameter("L",1e-3)
+simulate({continue=>1,method=>"ode",t_start=>5,t_end=>15,n_steps=>100,print_functions=>1})
+setParameter("L",0.01)
+simulate({continue=>1,method=>"ode",t_start=>15,t_end=>25,n_steps=>100,print_functions=>1})
+setParameter("L",0.1)
+simulate({continue=>1,method=>"ode",t_start=>25,t_end=>35,n_steps=>100,print_functions=>1})
+setParameter("L",1)
+simulate({continue=>1,method=>"ode",t_start=>35,t_end=>45,n_steps=>100,print_functions=>1})
+setParameter("L",10)
+simulate({continue=>1,method=>"ode",t_start=>45,t_end=>55,n_steps=>100,print_functions=>1})
+setParameter("L",100)
+simulate({continue=>1,method=>"ode",t_start=>55,t_end=>65,n_steps=>100,print_functions=>1})
+end actions

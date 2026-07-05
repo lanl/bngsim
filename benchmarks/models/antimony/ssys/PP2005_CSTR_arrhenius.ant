@@ -1,0 +1,62 @@
+// Diabatic CSTR with Arrhenius Kinetics
+// Source: Papachristodoulou & Prajna, "Analysis of Non-polynomial Systems
+//         using the Sum of Squares Decomposition", Springer (2005), Section 4.4
+//
+// This paper explicitly cites Savageau & Voit (1987) as reference [14].
+//
+// System: Continuously Stirred Tank Reactor (CSTR) with first-order exothermic
+//         irreversible reaction A -> B
+//
+// Original ODEs (Eq. 42-43):
+//   dC_A/dt = (F/V)(C_Af - C_A) - k0*exp(-Delta_E/(RT))*C_A
+//   dT/dt = (F/V)(Tf - T) - (Delta_H/(rho*cp))*k0*exp(-Delta_E/(RT))*C_A - (UA/(V*rho*cp))*(T - Tj)
+//
+// The exponential Arrhenius term makes this non-polynomial.
+//
+// ==============================================================================
+// RECASTING TO RATIONAL FORM (pp. 17-18):
+// ==============================================================================
+// After equilibrium shift (x1 = CA/CA0 - 1, x2 = T/T0 - 1):
+//
+// Introduce auxiliary variable:
+//   x3 = exp(Delta_E*x2 / (RT0*(x2+1))) - 1
+//
+// Dynamics for x3 (chain rule):
+//   dx3/dt = [Delta_E / (RT0*(x2+1)^2)] * (x3+1) * dx2/dt
+//
+// Constraint: x3 > -1 (exponential is always positive)
+//
+// The recasted 3D system (Eq. 44-46) is now rational in (x1, x2, x3).
+// ==============================================================================
+
+model PP2005_CSTR_arrhenius()
+  // Variables (in physical coordinates, pre-transformation)
+  compartment cell = 1
+  var species C_A in cell
+  var species T in cell
+
+  // Parameters from Table 1 (p. 17)
+  F_V = 1.0
+  k0 = 34930800
+  Delta_H = -5960
+  Delta_E = 11843
+  R = 1.987
+  rho_cp = 500
+  T_f = 25
+  C_Af = 10
+  UA_V = 150
+  T_j = 25
+  
+  // Arrhenius rate constant (T is in Celsius, convert to Kelvin)
+  k := k0 * exp(-Delta_E / (R * (T + 273.15)))
+  
+  // Original non-polynomial ODEs
+  C_A' = F_V * (C_Af - C_A) - k * C_A
+  T' = F_V * (T_f - T) + (-Delta_H / rho_cp) * k * C_A - (UA_V / rho_cp) * (T - T_j)
+  
+  // Initial conditions (at equilibrium from paper: CA0=8.5636, T0=311.171K = 38.02C)
+  C_A = 8.5636
+  T = 38.02
+end
+// @SIM T_START=0 T_END=10 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

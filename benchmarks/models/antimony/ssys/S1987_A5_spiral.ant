@@ -1,0 +1,33 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem A5 - Spiral curve (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z(0) = 4
+//
+// Original ODE:
+//   dZ/dt = (Z - t) / (Z + t)
+//
+// Recast S-system (3 variables):
+//   Define: X1 = Z + p, X2 = t + p, X3 = X1 + X2 - 2p
+//   where p > 4 is arbitrary (paper uses p = 5)
+//   X(0) = (9, 1, 4)  [since Z(0)=4, t(0)=0, p=5]
+//
+//   dX1/dt = X3*X2^(-1) - X2*X2^(-1)    [simplifies with care]
+//   dX2/dt = 1
+//   dX3/dt = 2*X3*X2^(-1) - 2*p*X2^(-1)
+//
+// Note: Translation parameter p=5 ensures positivity
+// =============================================================================
+
+model S1987_A5_spiral()
+    // Original ODE describing a spiral curve
+    Z' = (Z - time) / (Z + time)
+    
+    // Initial condition
+    Z = 4
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

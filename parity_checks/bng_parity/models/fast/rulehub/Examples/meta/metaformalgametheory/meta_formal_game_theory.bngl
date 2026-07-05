@@ -1,0 +1,73 @@
+# Model: meta_formal_game_theory.bngl
+# Description: Models the replicator dynamics of a game (e.g., Hawk-Dove).
+#              Strategies replicate based on their payoff against the population.
+#              The system settles into a Nash Equilibrium (Evolutionarily Stable Strategy).
+
+begin model
+
+begin parameters
+    # Payoff Matrix
+    #        H      D
+    # H    (V-C)/2  V
+    # D     0      V/2
+    
+    V 4.0  # Value of resource
+    C 6.0  # Cost of fighting
+    
+    # Payoffs
+    P_HH -1.0 # (4-6)/2
+    P_HD  4.0
+    P_DH  0.0
+    P_DD  2.0
+    
+    # Baseline fitness (to replenish)
+    Base 2.0
+
+    # Derived Rate Constants (0.01 * (Base + Payoff))
+    k_HH 0.01 # 0.01 * (2.0 - 1.0) = 0.01
+    k_HD 0.06 # 0.01 * (2.0 + 4.0) = 0.06
+    k_DH 0.02 # 0.01 * (2.0 + 0.0) = 0.02
+    k_DD 0.04 # 0.01 * (2.0 + 2.0) = 0.04
+end parameters
+
+begin molecule types
+    Hawk()
+    Dove()
+end molecule types
+
+begin seed species
+    Hawk() 10 # Initial Strategies
+    Dove() 90
+end seed species
+
+begin observables
+    Molecules H Hawk()
+    Molecules D Dove()
+end observables
+
+begin functions
+    # Logistic crowding effect (Death increases with total population)
+    Pop() = H + D + 1e-12
+    Capacity 200
+    
+    # Payoffs for each strategy against current population
+    PayoffH() = (H * P_HH + D * P_HD) / Pop()
+    PayoffD() = (H * P_DH + D * P_DD) / Pop()
+end functions
+
+begin reaction rules
+    # Replicator-style growth
+    # Growth rate is proportional to strategy population and its payoff relative to base
+    Hawk() -> Hawk() + Hawk() 0.05 * (Base + PayoffH()) * (1 - Pop()/Capacity)
+    Dove() -> Dove() + Dove() 0.05 * (Base + PayoffD()) * (1 - Pop()/Capacity)
+    
+    # Basal Death
+    Hawk() -> 0 0.05
+    Dove() -> 0 0.05
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>2, n_steps=>100})

@@ -1,0 +1,82 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molecules per mole
+
+cell_density 1e9 # cells per L
+Vecf=1/cell_density # L/cell
+Vcyt 1e-12 # L/cell
+
+IgE_dimer_conc 1e-9 # M
+IgE_dimer_tot=IgE_dimer_conc*(NA*Vecf) # copies per cell
+
+R_tot 3e5 # copies per cell
+Lyn_tot 3e5 # copies per cell
+Syk_tot 3e5 # copies per cell
+
+kf 1e8/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr 2e-1 # /s
+
+KxRT 300 # dimensionless
+kmx=kr # /s
+kpx=KxRT*kmx/R_tot
+
+kpL 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kmL 0.01 # /s
+
+fLyn 0
+
+end parameters
+
+begin molecule types
+IgE_dimer()
+R(a~0~1~X,b~0~P~ULyn~SH2Lyn,g~0~PP~Syk~SykPLyn~SykPSyk~SykPP)
+Lyn()
+Syk()
+end molecule types
+
+begin seed species
+IgE_dimer() IgE_dimer_tot
+R(a~0,b~ULyn,g~0) fLyn*R_tot
+R(a~0,b~0,g~0) (1-fLyn)*R_tot
+Lyn() Lyn_tot-fLyn*R_tot
+Syk() Syk_tot
+end seed species
+
+begin observables
+
+Molecules free_R R(a~0)
+Molecules monomeric_ligand_bound_R R(a~1)
+Molecules ligand_bound_R R(a~1) R(a~X)
+Molecules monomeric_R R(a~0) R(a~1)
+Molecules R_in_dimers R(a~X)
+Molecules Rtot R()
+Molecules Rtot_alt R(a~0) R(a~1) R(a~X)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+R(a~0)+IgE_dimer()<->R(a~1) kf,kr
+R(a~0)+R(a~1)->R(a~X)+R(a~X) kpx
+R(a~X)->R(a~0) kmx
+R(a~X)->R(a~1) kmx
+
+R(b~0)+Lyn()<->R(b~ULyn) kpL,kmL
+R(b~P)+Lyn()<->R(b~SH2Lyn) kpL,kmL
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>50,n_steps=>500})
+
+end actions

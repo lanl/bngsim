@@ -1,0 +1,58 @@
+# Model: compartment_nuclear_transport.bngl
+# Description: Models the bidirectional transport of a transcription factor (TF) between Chemotoplasm and Nucleus.
+#              Demonstrates reversible transport and compartment-specific volume scaling.
+
+begin model
+
+begin parameters
+    # Volumes
+    Vol_CP 100 # Cytoplasm
+    Vol_NM 5   # Nuclear Membrane (not explicitly populated but defines boundary)
+    Vol_NU 20  # Nucleus (smaller than CP)
+    
+    # Rates
+    k_in  1.0  # Import rate
+    k_out 0.5  # Export rate (slower, leading to accumulation)
+    
+    TF_init 100
+end parameters
+
+begin molecule types
+    TF() # Transcription Factor
+end molecule types
+
+begin compartments
+    # Standard topology: EC -> PM -> CP -> NM -> NU
+    # We simplify to just CP and NU for this model
+    CP  3  Vol_CP
+    NM  2  1.0    CP
+    NU  3  Vol_NU NM
+end compartments
+
+begin seed species
+    TF()@CP  TF_init
+end seed species
+
+begin observables
+    Molecules Cytoplasmic_TF TF()@CP
+    Molecules Nuclear_TF     TF()@NU
+end observables
+
+begin reaction rules
+    # 1. Nuclear Import
+    # Transport from CP to NU
+    # Rate is k_in * [TF] in CP
+    TF()@CP -> TF()@NU k_in
+    
+    # 2. Nuclear Export
+    # Transport from NU to CP
+    # Rate is k_out * [TF] in NU
+    # Note: Since Vol_NU < Vol_CP, the concentration in NU will be higher for same number of molecules
+    TF()@NU -> TF()@CP k_out
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>20, n_steps=>100})

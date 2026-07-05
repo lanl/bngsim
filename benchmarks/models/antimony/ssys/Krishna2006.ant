@@ -1,0 +1,77 @@
+// Krishna2006_NFkB_3Variable_Core.ant
+//
+// Core NF-κB feedback loop reduced from the Hoffmann et al. (2002)
+// IκB–NF-κB signaling module.
+//
+// Source (reduction):
+//   Krishna S, Jensen MH, Sneppen K (2006)
+//   "Minimal model of spiky oscillations in NF-κB signaling."
+//   Proc Natl Acad Sci USA 103:10840–10845.
+//   (Parameter values taken from the Hoffmann et al. NF-κB module.)
+//
+// Original source module (full network):
+//   Hoffmann A, Levchenko A, Scott ML, Baltimore D (2002)
+//   "The IκB–NF-κB signaling module: Temporal control and
+//    selective gene activation."
+//   Science 298:1241–1245.
+//
+// Variables (dimensionless):
+//   Nn : nuclear NF-κB (normalized concentration)
+//   Im : IκB mRNA (normalized)
+//   I  : cytoplasmic IκB (normalized)
+//
+// ODEs (Krishna et al., eqs. (1a–c)):
+//   dNn/dt = A * (1 - Nn)/(eps + I) - B * I * Nn / (delta + Nn)
+//   dIm/dt = Nn^2 - Im
+//   dI/dt  = Im - C * (1 - Nn) * I / (eps + I)
+//
+// Parameter set for sustained spiky oscillations (Fig. 2):
+//   A     = 0.007
+//   B     = 954.5
+//   C     = 0.035
+//   delta = 0.029
+//   eps   = 2e-5
+//
+// Time unit: minutes (inherited from Hoffmann et al.).
+//
+// Initial conditions: not specified in the paper; here we choose
+//   Nn(0) = 0, Im(0) = 0, I(0) = 0
+// as a simple OFF-like starting point. Any point in the basin of
+// the limit cycle is acceptable for testing.
+
+model Krishna2006_NFkB_3Variable_Core
+
+  // Compartment
+  compartment cell = 1;
+
+  // State variables (dimensionless)
+  species Nn in cell;
+  species Im in cell;
+  species I  in cell;
+
+  // Parameters (dimensionless)
+  const A     = 0.007;
+  const B     = 954.5;
+  const C     = 0.035;
+  const delta = 0.029;
+  const eps   = 2e-5;
+
+  // ODEs
+
+  // Nuclear NF-κB
+  Nn' = A * (1 - Nn)/(eps + I) - B * I * Nn/(delta + Nn);
+
+  // IκB mRNA
+  Im' = Nn^2 - Im;
+
+  // Cytoplasmic IκB
+  I'  = Im - C * (1 - Nn) * I/(eps + I);
+
+  // Initial conditions (chosen)
+  Nn = 0;
+  Im = 0;
+  I  = 0;
+
+end
+// @SIM T_START=0 T_END=10 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

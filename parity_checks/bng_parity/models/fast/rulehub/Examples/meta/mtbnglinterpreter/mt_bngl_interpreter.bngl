@@ -1,0 +1,59 @@
+# Model: mt_bngl_interpreter.bngl
+# Description: A self-referential BNGL model that parses and executes a subset of BNGL rules.
+#              The "Program" is encoded as concentrations of Rule molecules.
+#              The "State" is encoded as concentrations of Species molecules.
+#              Demonstrates the meta-programming capabilities of rule-based languages.
+
+begin model
+
+begin parameters
+    k_eval 1.0  # Speed of internal "execution"
+end parameters
+
+begin molecule types
+    # Internal Rule Representation: R(reactant, product, rate)
+    Rule(r~S1~S2,p~S1~S2)
+    # Virtual Species
+    Species(i~S1~S2)
+end molecule types
+
+begin seed species
+    # Define Rule: S1 -> S2 (encoded as R(r~S1,p~S2))
+    Rule(r~S1,p~S2) 1.0
+    
+    # Initial State: 10 units of S1
+    Species(i~S1) 10.0
+    Species(i~S2) 0.0
+end seed species
+
+begin observables
+    Molecules S1 Species(i~S1)
+    Molecules S2 Species(i~S2)
+    Molecules R12 Rule(r~S1,p~S2)
+end observables
+
+begin functions
+    # Execution Logic:
+    # If a rule (r~A,p~B) exists, it should consume Species(A) and produce Species(B)
+    
+    # Rate of S1 -> S2 execution
+    # Rate = k * [Rule(r~S1,p~S2)] * [Species(S1)]
+    Exec_S1_S2() = k_eval * R12 * S1
+end functions
+
+begin reaction rules
+    # Virtual Reaction execution
+    # Consume S1
+    RuleS1_S2_Consume: Species(i~S1) -> 0 Exec_S1_S2()
+    # Produce S2
+    RuleS1_S2_Produce: 0 -> Species(i~S2) Exec_S1_S2()
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})
+
+# VERIFICATION:
+# S1 should decrease and S2 should increase as the "virtual rule" executes.

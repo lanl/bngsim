@@ -1,0 +1,124 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+Vcyt 1e-12 # L per cell
+
+kon_fast 5e4/(NA*Vcyt) # /M/s converted to /cpc/s
+kon_slow 5e3/(NA*Vcyt) # /M/s converted to /cpc/s
+
+lifetime_WT 2 # s
+lifetime_YE 1.4 # s
+
+koff_WT=1/lifetime_WT # /s
+koff_YE=1/lifetime_YE # /s
+
+kp1 0.01 # /s
+kp2 0.01 # /s
+
+kdp_cyt 5 # /s
+kdp_mem 0 # /s
+
+epsilon 1e-10 # dimensionless
+
+Syktot 2e5 # cpc
+Dimtot 2e5 # cpc
+
+end parameters
+
+begin molecule types
+
+RAggWT(ITAM~0~P,ITAM~0~P)
+SykWT(tSH2,Y346~0~P,Y519~0~P)
+RAggYE(ITAM~0~P,ITAM~0~P)
+SykYE(tSH2,Y346~0~P,Y519~0~P)
+PLCGYE(SH2)
+
+end molecule types
+
+begin seed species
+
+RAggWT(ITAM~P,ITAM~P) Dimtot
+SykWT(tSH2,Y346~0,Y519~0) Syktot
+RAggYE(ITAM~P,ITAM~P) Dimtot
+SykYE(tSH2,Y346~0,Y519~0) Syktot
+
+end seed species
+
+begin observables
+
+Species OneWT RAggWT(ITAM~P!1,ITAM~?).SykWT(tSH2!1)
+Species TwoWT RAggWT(ITAM~P!1,ITAM~P!2).SykWT(tSH2!1).SykWT(tSH2!2)
+Molecules pY519WT SykWT(Y519~P!?)
+Molecules pY346WT SykWT(Y346~P!?)
+
+
+Species OneYE RAggYE(ITAM~P!1,ITAM~?).SykYE(tSH2!1)
+Species TwoYE RAggYE(ITAM~P!1,ITAM~P!2).SykYE(tSH2!1).SykYE(tSH2!2)
+Molecules pY519YE SykYE(Y519~P!?)
+Molecules pY346YE SykYE(Y346~P!?)
+
+end observables
+
+begin functions
+
+ratio_OneWT_OneYE()=(OneWT+epsilon)/(OneYE+epsilon)
+ratio_TwoWT_TwoYE()=(TwoWT+epsilon)/(TwoYE+epsilon)
+ratio_pY519WT_pY519YE()=(pY519WT+epsilon)/(pY519YE+epsilon)
+ratio_pY346WT_pY346YE()=(pY346WT+epsilon)/(pY346YE+epsilon)
+
+end functions
+
+begin reaction rules
+
+######
+# WT #
+######
+
+#  Steps 1 and 2
+RAggWT(ITAM~P,ITAM~P)+SykWT(tSH2)<->RAggWT(ITAM~P!1,ITAM~P).SykWT(tSH2!1) kon_fast,koff_WT
+RAggWT(ITAM~P!+,ITAM~P)+SykWT(tSH2)<->RAggWT(ITAM~P!+,ITAM~P!1).SykWT(tSH2!1) kon_slow,koff_WT
+# Step 3
+RAggWT(ITAM~P!1,ITAM~P!2).SykWT(tSH2!1).SykWT(tSH2!2,Y519~0)->\
+RAggWT(ITAM~P!1,ITAM~P!2).SykWT(tSH2!1).SykWT(tSH2!2,Y519~P) kp1
+# Step 4
+RAggWT(ITAM~P!1,ITAM~P!2).SykWT(tSH2!1).SykWT(tSH2!2,Y346~0,Y519~P)->\
+RAggWT(ITAM~P!1,ITAM~P!2).SykWT(tSH2!1).SykWT(tSH2!2,Y346~P,Y519~P) kp2
+
+SykWT(tSH2,Y519~P)->SykWT(tSH2,Y519~0) kdp_cyt
+SykWT(tSH2!+,Y519~P)->SykWT(tSH2!+,Y519~0) kdp_mem
+
+SykWT(tSH2,Y346~P)->SykWT(tSH2,Y346~0) kdp_cyt
+SykWT(tSH2!+,Y346~P)->SykWT(tSH2!+,Y346~0) kdp_mem
+
+######
+# YE #
+######
+
+#  Steps 1 and 2
+RAggYE(ITAM~P,ITAM~P)+SykYE(tSH2)<->RAggYE(ITAM~P!1,ITAM~P).SykYE(tSH2!1) kon_fast,koff_YE
+RAggYE(ITAM~P!+,ITAM~P)+SykYE(tSH2)<->RAggYE(ITAM~P!+,ITAM~P!1).SykYE(tSH2!1) kon_slow,koff_YE
+# Step 3
+RAggYE(ITAM~P!1,ITAM~P!2).SykYE(tSH2!1).SykYE(tSH2!2,Y519~0)->\
+RAggYE(ITAM~P!1,ITAM~P!2).SykYE(tSH2!1).SykYE(tSH2!2,Y519~P) kp1
+# Step 4
+RAggYE(ITAM~P!1,ITAM~P!2).SykYE(tSH2!1).SykYE(tSH2!2,Y346~0,Y519~P)->\
+RAggYE(ITAM~P!1,ITAM~P!2).SykYE(tSH2!1).SykYE(tSH2!2,Y346~P,Y519~P) kp2
+
+SykYE(tSH2,Y519~P)->SykYE(tSH2,Y519~0) kdp_cyt
+SykYE(tSH2!+,Y519~P)->SykYE(tSH2!+,Y519~0) kdp_mem
+
+SykYE(tSH2,Y346~P)->SykYE(tSH2,Y346~0) kdp_cyt
+SykYE(tSH2!+,Y346~P)->SykYE(tSH2!+,Y346~0) kdp_mem
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>500,print_functions=>1})
+
+end actions

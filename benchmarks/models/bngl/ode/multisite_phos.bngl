@@ -1,0 +1,87 @@
+# Multisite phosphorylation: 5-site substrate with kinase E and phosphatase F
+# Source: NFsim distribution (models/multisite_phos/e5.bngl), modernized
+# Network: ~98 species, ~60 reactions (2^5 phospho states × enzyme binding)
+# Populations: 300 to 3000 molecules
+# Behavior: Distributive multisite phosphorylation; ultrasensitive switch
+
+begin model
+
+begin parameters
+   Etot   300
+   Ftot   300
+   Stot   3000
+
+   kOnE   0.7
+   kOffE  3
+   kCatE  5.0
+
+   kOnF   0.7
+   kOffF  3
+   kCatF  5.1
+end parameters
+
+begin molecule types
+   E(s)
+   F(s)
+   S(p1~U~P,p2~U~P,p3~U~P,p4~U~P,p5~U~P)
+end molecule types
+
+begin species
+   E(s)     Etot
+   F(s)     Ftot
+   S(p1~U,p2~U,p3~U,p4~U,p5~U)  Stot
+end species
+
+begin observables
+   Molecules Efree E(s)
+   Molecules Ffree F(s)
+   Molecules S1P   S(p1~P!?)
+   Molecules S2P   S(p2~P!?)
+   Molecules S3P   S(p3~P!?)
+   Molecules S4P   S(p4~P!?)
+   Molecules S5P   S(p5~P!?)
+end observables
+
+begin reaction rules
+
+   # Site 1
+   E(s) + S(p1~U) <-> E(s!1).S(p1~U!1) kOnE, kOffE
+   E(s!1).S(p1~U!1) -> E(s) + S(p1~P) kCatE
+   F(s) + S(p1~P) <-> F(s!1).S(p1~P!1) kOnF, kOffF
+   F(s!1).S(p1~P!1) -> F(s) + S(p1~U) kCatF
+
+   # Site 2
+   E(s) + S(p2~U) <-> E(s!1).S(p2~U!1) kOnE, kOffE
+   E(s!1).S(p2~U!1) -> E(s) + S(p2~P) kCatE
+   F(s) + S(p2~P) <-> F(s!1).S(p2~P!1) kOnF, kOffF
+   F(s!1).S(p2~P!1) -> F(s) + S(p2~U) kCatF
+
+   # Site 3
+   E(s) + S(p3~U) <-> E(s!1).S(p3~U!1) kOnE, kOffE
+   E(s!1).S(p3~U!1) -> E(s) + S(p3~P) kCatE
+   F(s) + S(p3~P) <-> F(s!1).S(p3~P!1) kOnF, kOffF
+   F(s!1).S(p3~P!1) -> F(s) + S(p3~U) kCatF
+
+   # Site 4
+   E(s) + S(p4~U) <-> E(s!1).S(p4~U!1) kOnE, kOffE
+   E(s!1).S(p4~U!1) -> E(s) + S(p4~P) kCatE
+   F(s) + S(p4~P) <-> F(s!1).S(p4~P!1) kOnF, kOffF
+   F(s!1).S(p4~P!1) -> F(s) + S(p4~U) kCatF
+
+   # Site 5
+   E(s) + S(p5~U) <-> E(s!1).S(p5~U!1) kOnE, kOffE
+   E(s!1).S(p5~U!1) -> E(s) + S(p5~P) kCatE
+   F(s) + S(p5~P) <-> F(s!1).S(p5~P!1) kOnF, kOffF
+   F(s!1).S(p5~P!1) -> F(s) + S(p5~U) kCatF
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",t_end=>1.5,n_steps=>300})
+
+end actions

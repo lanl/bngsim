@@ -1,0 +1,40 @@
+# Feature: molecule with 3+ identical binding sites (symmetric components)
+# Tests: correct combinatorial counting for symmetric identical sites
+# Tier: base
+# Expected: R with 3 sites binds L; aggregation up to trimers of L per R
+
+begin model
+begin parameters
+    R_tot  20
+    L_tot  40
+    kf     0.01   # /s, per-site binding rate
+    kr     0.2    # /s, unbinding rate
+end parameters
+
+begin molecule types
+    R(s,s,s)
+    L(s)
+end molecule types
+
+begin seed species
+    R(s,s,s)  R_tot
+    L(s)      L_tot
+end seed species
+
+begin observables
+    Molecules  R_total     R()
+    Molecules  L_total     L()
+    Molecules  L_free      L(s)
+    Molecules  L_bound     L(s!+)
+    Molecules  R_free      R(s,s,s)
+    Species    Complexes   R(s!+)
+end observables
+
+begin reaction rules
+    R(s) + L(s) <-> R(s!1).L(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

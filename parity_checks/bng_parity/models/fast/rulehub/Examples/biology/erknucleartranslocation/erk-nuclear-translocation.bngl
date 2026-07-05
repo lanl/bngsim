@@ -1,0 +1,93 @@
+begin model
+begin parameters
+    # ERK Translocation: Spatial signaling and transcriptional assembly.
+    # Advanced features: MoveConnected for pERK-partner transport and Hill output.
+    
+    # Activation
+    k_mek_act 1.0       # Cytoplasmic MEK drive
+    k_dimer 1.5         # pERK dimerization
+    
+    # Transport
+    k_import 2.0        # Nuclear entry
+    k_export 0.5        # Nuclear exit
+    
+    # Nuclear Action
+    k_nuc_bind 10.0     # Elk1 engagement
+    k_trans_max 5.0     # Peak transcription
+    Km_target 200       # Target occupancy threshold
+    n_hill 2.0          # Non-linear transcriptional response
+    
+    # Phosphatases (Feedback)
+    k_dusp 0.8          # Nuclear DUSP drive
+    k_reset 0.05
+    
+    # Initials
+    ERK_tot 1000
+    MEK_tot 100
+    Elk1_tot 150
+    DUSP_tot 80
+end parameters
+
+begin molecule types
+    ERK(b,s~U~P,loc~cyt~nuc)
+    MEK(s~off~on)
+    Elk1(b)
+    DUSP(b)
+    Transcription_Signal()
+end molecule types
+
+begin seed species
+    ERK(b,s~U,loc~cyt) ERK_tot
+    MEK(s~on) MEK_tot
+    Elk1(b) Elk1_tot
+    DUSP(b) DUSP_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Functional_ELK   ERK(s~P,loc~nuc,b!1).Elk1(b!1) # Active TF complex
+    Molecules Total_pERK       ERK(s~P)                 # Global signal burden
+    Molecules Nuclear_pERK     ERK(s~P,loc~nuc)        # Locally active pool
+    Molecules Cyto_Buffer      ERK(loc~cyt)             # Reservoir capacity
+    Molecules Trans_Activity   Transcription_Signal()   # Biological output proxy
+    Molecules ELK1_Occupancy   Elk1(b!+)                # TF drive status
+end observables
+
+begin functions
+    # Hill-driven transcriptional burst
+    v_trans() = k_trans_max * (ELK1_Occupancy / (Km_target + ELK1_Occupancy))^n_hill
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # MEK phosphorylates ERK in cytoplasm
+    MEK(s~on) + ERK(b,loc~cyt,s~U) -> MEK(s~on) + ERK(b,loc~cyt,s~P) k_mek_act
+    
+    # pERK forms dimers (Higher affinity for import machinery)
+    ERK(s~P,b) + ERK(s~P,b) <-> ERK(s~P,b!1).ERK(s~P,b!1) k_dimer,0.2
+    
+    ## TRANSPORT Stage
+    # pERK moves to nucleus (MoveConnected: dimers stay together)
+    ERK(s~P,loc~cyt,b!?) <-> ERK(s~P,loc~nuc,b!?) k_import,k_export MoveConnected
+    
+    ## NUCLEAR ACTION
+    # pERK binds target (Elk1)
+    # elk1 is only in nucleus (Implicit by binding location)
+    ERK(loc~nuc,s~P,b) + Elk1(b) <-> ERK(loc~nuc,s~P,b!1).Elk1(b!1) k_nuc_bind,0.5
+    
+    # Transcription Induction (Functional Rate)
+    0 -> Transcription_Signal() v_trans()
+    
+    ## RECOVERY
+    # DUSP-mediated nuclear dephosphorylation
+    DUSP(b) + ERK(loc~nuc,s~P,b) -> DUSP(b) + ERK(loc~nuc,s~U,b) k_dusp
+    
+    # Export of inactive ERK
+    ERK(s~U,loc~nuc,b) -> ERK(s~U,loc~cyt,b) 1.0
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model

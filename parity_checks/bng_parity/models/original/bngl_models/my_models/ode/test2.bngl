@@ -1,0 +1,244 @@
+#test2.bngl
+
+
+begin model
+#BNGL encoding of model from Nikonova 2013
+
+
+begin parameters
+#Avogadro number NA
+NA 6.02214e23 #molecules/mol
+
+#scaling factor 
+f 1 #dimensionless
+
+#volume of cytosol
+V f*1.2e-12 #L/cell
+
+# Volume ratio D := V_cyto/V_endo
+#   V_cyto := V is the volume explored by a protein freely diffusing in the cytosol.
+#   V_endo is the effective volume explored when the protein is tethered to the endosomal membrane.
+D 25000 # [=] dimensionless
+
+
+#GTPase_concentration described in supplement
+GTPase_concentration 0.05e-6 #M
+GTPase_copyNumber=GTPase_concentration*NA*V #molecules/cell
+
+#RHOA copy number 
+RHOA_copyNumber=GTPase_copyNumber #molecules/cell
+
+
+#gamma is GDI:GTPase in table S1
+gamma 1.3 #dimensionless
+
+ARHGDIA_copyNumber=GTPase_copyNumber/gamma #molecules/cell
+
+#RhoGEF copy number
+RhoGEF_total 1e4 # copies per per cell (our model includes a single endosome)
+
+#GAP copy number
+GAP_total 10
+
+#EGFR_concentration
+EGFR_total 2e3 #TS 
+
+RacGEF_total 1e4 #copies per cell
+
+k_delivery f*1e6/(NA*V) #/s
+k_extraction 1 #/s
+kf 1e6/(NA*V) #/M/s converted to /(molecule/cell)/s
+kr 0.1 #/s
+
+# GEF parameters (from Table S1 in Ref 1)
+kcatGDP 3.9 # [=] /s
+kcatGTP 0.72 # [=] /s
+KmGDP_std_units 386e-6 # [=] M
+KmGDP_cyto=KmGDP_std_units*(NA*V) # [=] molecules per cell (the reactor is the cytoplasm)
+KmGDP_endo=KmGDP_cyto/D # [=] molecules per cell (the reactor is the thin layer adjacent to the endosomal membrane)
+KmGTP_std_units 300e-6 # [=] M
+KmGTP_cyto=KmGTP_std_units*(NA*V) # [=] molecules per cell (the reactor is the cytoplasm)
+KmGTP_endo=KmGTP_cyto/D # [=] molecules per cell (the reactor is the thin layer adjacent to the endosomal membrane)
+
+#GAP parameters (from Table S1 in Ref 1)
+kcatGAP 5.40 # [=]	/s	
+KmGAP_std_units 0.23e-6 # [=] M	
+KmGAP_cyto=KmGAP_std_units*(NA*V) # [=] molecules per cell (the reactor is the cytoplasm)
+KmGAP_endo=KmGAP_cyto/D # [=] molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+
+kp1 1e6/(NA*V) #/M/s
+km1 0.1 #/s
+
+end parameters
+
+
+
+begin molecule types
+
+
+#RhoA
+RHOA(G~GDP~GTP,loc~cytosol~endo)
+
+
+#RhoGDI
+ARHGDIA(RhoGDI,loc~cytosol~endo)
+
+#GEF 
+RhoGEF(UBD,RBD) #TS Ubiquitin binding domain; GEF recruitment
+
+GAP()
+
+RhoGAP(RBD)
+
+#EGFR
+EGFR(K~0~Ub) #TS EGF receptor unmodified and ubiquitinated
+
+RacGEF(RBD)
+
+#Rac1
+RAC1(G~GDP~GTP,loc~cytosol~endo)
+
+end molecule types
+
+
+
+
+begin seed species
+
+RHOA(G~GDP,loc~endo) RHOA_copyNumber
+ARHGDIA(RhoGDI,loc~cytosol) ARHGDIA_copyNumber
+
+RhoGEF(UBD,RBD) RhoGEF_total
+
+GAP() GAP_total
+
+EGFR(K~Ub) EGFR_total
+
+RacGEF(RBD) RacGEF_total
+
+RAC1(G~GDP,loc~endo) RHOA_copyNumber
+
+RhoGAP(RBD) RacGEF_total
+
+end seed species
+
+
+
+begin observables
+
+Molecules FreeRhoGDI ARHGDIA(RhoGDI)
+Molecules BoundRhoGDI ARHGDIA(RhoGDI!+)
+Molecules EndosomalRhoA RHOA(loc~endo)
+
+
+Molecules FreeRhoAGDP RHOA(G~GDP)
+Molecules FreeRhoAGTP RHOA(G~GTP)
+Molecules RhoGEFcat RhoGEF(UBD!+) RhoGEF(RBD!+)
+
+Molecules GAPcat GAP()
+
+Molecules RacGEFcat RacGEF(RBD!+)
+
+Molecules FreeRac1GDP RAC1(G~GDP)
+Molecules FreeRac1GTP RAC1(G~GTP)
+
+Molecules BoundEGFR EGFR(K~Ub!+)
+
+Molecules RhoGTP RHOA(G~GTP!?)
+Molecules RacGTP RAC1(G~GTP!?)
+
+Molecules RhoGAPcat RhoGAP(RBD!+)
+ 
+end observables
+
+begin functions
+
+# rate laws for GDP/GTP exchange on RhoA by RhoGEF
+#   Each rate law is [substrate]*function
+#   The following variables (defined in the Observables block) are used in these functions:
+#     RhoGEFcat: total amount of RhoGEF
+#     FreeRhoAGDP: amount of free GDP-loaded RhoA
+#     FreeRhoAGTP: amount of free GTP-loaded RhoA
+R3f_endo() kcatGDP*RhoGEFcat*(1/KmGDP_endo)/(1+(FreeRhoAGDP/KmGDP_endo)+(FreeRhoAGTP/KmGTP_endo))
+R3r_endo() kcatGTP*RhoGEFcat*(1/KmGTP_endo)/(1+(FreeRhoAGDP/KmGDP_endo)+(FreeRhoAGTP/KmGTP_endo))
+
+R5f_endo() kcatGAP*GAPcat*(1/KmGAP_endo)/(1+(FreeRhoAGTP/KmGAP_endo))
+
+R3f_rac() kcatGDP*RacGEFcat*(1/KmGDP_endo)/(1+(FreeRac1GDP/KmGDP_endo)+(FreeRac1GTP/KmGTP_endo))
+R3r_rac() kcatGTP*RacGEFcat*(1/KmGTP_endo)/(1+(FreeRac1GDP/KmGDP_endo)+(FreeRac1GTP/KmGTP_endo))
+
+R5f_rac() kcatGAP*GAPcat*(1/KmGAP_endo)/(1+(FreeRac1GTP/KmGAP_endo))
+
+R5f_rho() kcatGAP*RhoGAPcat*(1/KmGAP_endo)/(1+(FreeRhoAGTP/KmGAP_endo))
+
+end functions
+
+begin reaction rules
+
+#delivery
+ARHGDIA(RhoGDI!1,loc~cytosol).RHOA(G~GDP!1,loc~cytosol)->\
+ARHGDIA(RhoGDI!1,loc~endo).RHOA(G~GDP!1,loc~endo) k_delivery 
+
+#extraction
+ARHGDIA(RhoGDI!1,loc~endo).RHOA(G~GDP!1,loc~endo)->\
+ARHGDIA(RhoGDI!1,loc~cytosol).RHOA(G~GDP!1,loc~cytosol) k_extraction
+
+#binding
+ARHGDIA(RhoGDI,loc~cytosol)+RHOA(G~GDP,loc~endo)<->\
+ARHGDIA(RhoGDI!1,loc~endo).RHOA(G~GDP!1,loc~endo) kf,kr 
+
+# GEF-catalyzed GDP/GTP exchange
+RHOA(G~GDP)->RHOA(G~GTP) R3f_endo() # rate = [RHOA(G~GDP)]*R3f_endo()
+RHOA(G~GTP)->RHOA(G~GDP) R3r_endo() # rate = [RHOA(G~GTP)]*R3r_endo()
+
+# GAP-catalyzed hydrolysis of RhoA-loaded GTP
+RHOA(G~GTP)->RHOA(G~GDP) R5f_endo() # rate = [RHOA(G~GTP)]*R5f_endo()
+
+# GEF binding to ubiquitinated EGFR #TS
+EGFR(K~Ub)+RhoGEF(UBD,RBD)->EGFR(K~Ub!1).RhoGEF(UBD!1,RBD) kp1
+EGFR(K~Ub!1).RhoGEF(UBD!1)->EGFR(K~Ub)+RhoGEF(UBD) km1
+
+#positive feedback
+RhoGEF(UBD,RBD)+RHOA(G~GTP)->RhoGEF(UBD,RBD!1).RHOA(G~GTP!1) kp1
+RhoGEF(RBD!1).RHOA(G~GTP!1)->RhoGEF(RBD)+RHOA(G~GTP) km1
+
+#recruitment of RacGEF
+RacGEF(RBD)+RHOA(G~GTP)<->RacGEF(RBD!1).RHOA(G~GTP!1) kp1,km1
+
+#delivery
+ARHGDIA(RhoGDI!1,loc~cytosol).RAC1(G~GDP!1,loc~cytosol)->\
+ARHGDIA(RhoGDI!1,loc~endo).RAC1(G~GDP!1,loc~endo) k_delivery 
+
+#extraction
+ARHGDIA(RhoGDI!1,loc~endo).RAC1(G~GDP!1,loc~endo)->\
+ARHGDIA(RhoGDI!1,loc~cytosol).RAC1(G~GDP!1,loc~cytosol) k_extraction
+
+#binding
+ARHGDIA(RhoGDI,loc~cytosol)+RAC1(G~GDP,loc~endo)<->\
+ARHGDIA(RhoGDI!1,loc~endo).RAC1(G~GDP!1,loc~endo) kf,kr 
+
+# GEF-catalyzed GDP/GTP exchange
+RAC1(G~GDP)->RAC1(G~GTP) R3f_rac() # rate = [RAC1(G~GDP)]*R3f_rac()
+RAC1(G~GTP)->RAC1(G~GDP) R3r_rac() # rate = [RAC1(G~GTP)]*R3r_rac()
+
+# GAP-catalyzed hydrolysis of RhoA-loaded GTP
+RAC1(G~GTP)->RAC1(G~GDP) R5f_rac() # rate = [RAC1(G~GTP)]*R5f_rac()
+
+# Rac1 recruits RhoGAP
+RAC1(G~GTP)+RhoGAP(RBD)<->RAC1(G~GTP!1).RhoGAP(RBD!1) kp1,km1
+
+# Negative feedback
+RHOA(G~GTP)->RHOA(G~GDP) R5f_rho() # rate = [RHOA(G~GTP)]*R5f_rho()
+
+end reaction rules
+
+end model
+
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>3000,n_steps=>300})
+
+
+end actions

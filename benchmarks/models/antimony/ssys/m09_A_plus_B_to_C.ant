@@ -1,0 +1,27 @@
+// Model for irreversible chemical reaction: A + B -> C (mass-action kinetics)
+// ODEs:
+//   A' = -kf*A*B
+//   B' = -kf*A*B
+//   C' =  kf*A*B
+// ICs: A(0)=10, B(0)=8, C(0)=0
+// Params: kf = 0.01 (units depend on the concentration/time units)
+//
+// Canonical S-system dynamics (two single monomials per ODE)
+//   eps = 1.0;   // arbitrary slack > 0 (can be any positive value)
+//   A' =  eps * A * B  -  (eps + kf) * A * B;
+//   B' =  eps * A * B  -  (eps + kf) * A * B;
+//   C' =  (eps + kf) * A * B  -  eps * A * B;
+//
+model A_plus_B_to_C()
+  // initial conditions
+  A = 10
+  B = 8
+  C = 0
+
+  // parameter
+  k_f = 0.01
+
+  // reaction
+  R_1: A + B -> C; k_f*A*B
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

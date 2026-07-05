@@ -1,0 +1,41 @@
+// SIR model
+// Related: m29_time_varying_beta.ant (SIR with time-varying β)
+// Kermack WO, McKendrick AG (1927) A contribution to the
+//   the mathematical theory of epidemics. Proc R Soc A 115: 700-721.
+// States and ICs (NYC-scale):
+//   S(0) = 2e7 - 1 = 19999999
+//   I(0) = 1
+//   R(0) = 0
+// Parameters:
+//   beta_rate  = 1 / S0 = 5e-8   [/d/person]
+//   gamma_rate = 1/7 ≈ 0.142857 [/d]
+//
+// Canonical S-system requires two monomials per ODE with positive coefficients.
+// Use arbitrary positive "slack" epsilons; dynamics are unchanged.
+// epsS = 1.0   // for S'
+// epsR = 1.0   // for R'
+//
+// Dynamics (each RHS: production monomial − degradation monomial)
+// S' =  epsS * S * I        -  (epsS + beta_rate) * S * I;   // net = -beta_rate*S*I
+// I' =  beta_rate * S * I        -  gamma_rate * I;               // already two monomials
+// R' =  (gamma_rate + epsR) * I  -  epsR * I;       
+//
+model SIR()
+  // initial conditions
+  S = 19999999
+  I = 1
+  R = 0
+
+  // parameters
+  S0 = 20000000
+  I0 = 1
+  beta_rate = 1e-7
+  gamma_rate = 0.142857142857143
+
+  // infection: S -> I at rate beta_rate * S * I
+  R1: S -> I; beta_rate*S*I
+
+  // recovery: I -> R at rate gamma_rate * I
+  R2: I -> R; gamma_rate*I
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

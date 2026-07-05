@@ -1,0 +1,99 @@
+From ed3ca583b1c97fbab8f924a25afc5edec1db53db Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Tue, 9 Jun 2026 12:31:23 -0600
+Subject: [PATCH 12/14] bngsim: prune NFtest headers from vendored facade
+
+---
+ src/NFsim.hh | 61 ++++++----------------------------------------------
+ 1 file changed, 6 insertions(+), 55 deletions(-)
+
+diff --git a/src/NFsim.hh b/src/NFsim.hh
+index 5693bb0..08ef31a 100644
+--- a/src/NFsim.hh
++++ b/src/NFsim.hh
+@@ -4,76 +4,27 @@
+ //    A software platform for efficient simulation of biochemical reaction
+ //    systems with a large or infinite state space.
+ //
+-//    Copyright (C) 2016
++//    Copyright (C) 2009,2010,2011,2012
+ //    Michael W. Sneddon, James R. Faeder, Thierry Emonet
+ //
+-//    Licensed under the MIT License. See LICENSE.txt for details.
+-//
+-//
+-//    For more information on NFsim, see http://emonet.biology.yale.edu/nfsim
++//    Licensed under MIT License (see LICENSE.txt).
++//    Vendored and modified for bngsim library embedding.
+ //
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+-
+-
+ #ifndef NFSIM_HH_
+ #define NFSIM_HH_
+ 
+-//Include "mpi.h" in Scheduler.h first
++// Include "mpi.h" in Scheduler.h first
+ #include "NFscheduler/Scheduler.h"
+ 
+-//Include the core files needed to run the simulation
++// Include the core files needed to run the simulation
+ #include "NFcore/NFcore.hh"
+ #include "NFutil/NFutil.hh"
+ #include "NFinput/NFinput.hh"
+ #include "NFreactions/NFreactions.hh"
+-
+-//Include the specific tests
+ #include "NFfunction/NFfunction.hh"
+-//#include "NFtest/compare/compare.hh"
+-//#include  "NFtest/transformations/transformations.hh"
+-#include  "NFtest/simple_system/simple_system.hh"
+-#include  "NFtest/transcription/transcription.hh"
+-#include  "NFtest/tlbr/tlbr.hh"
+-#include  "NFtest/agentcell/agentcell.hh"
+-#include  "NFtest/scheduler/scheduler.hh"
+-#include  "NFtest/transformations/test_transformations.hh"
+-#include  "NFtest/util/test_util.hh"
+-#include "NFtest/input/test_input.hh"
+-#include  "NFtest/tinyxml/test_tinyxml.hh"
+-#include  "NFtest/nauty24/test_nauty24.hh"
+-#include "NFtest/system/test_system.hh"
+-#include "NFtest/compartment/test_compartment.hh"
+-#include "NFtest/reactionClass/test_reactionClass.hh"
+-#include "NFtest/observable/test_observable.hh"
+-
+-
+-
+-//! Runs the NFsim command-line entrypoint using argv-style arguments.
+-/*!
+-  @author Michael Sneddon
+-*/
+-int runNFsimMain(int argc, char *argv[]);
+-
+-
+-//! Runs a given System with the specified arguments
+-/*!
+-  @author Michael Sneddon
+-*/
+-bool runFromArgs(System *s, const map<string,string>& argMap, bool verbose);
+-
+-
+-//! Initialize a system from command line flags
+-/*!
+-  @author Michael Sneddon
+-*/
+-System *initSystemFromFlags(const map<string,string>& argMap, bool verbose);
+-
+-
+-
+-
+-
+-
+ 
++// NFtest/ headers removed — test harnesses not needed for library use
+ 
+ #endif /*NFSIM_HH_*/
+-- 
+2.53.0
+

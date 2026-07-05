@@ -1,0 +1,62 @@
+begin model
+#@model_id: S1987_A4_logistic
+#@title: Logistic growth
+#@description: Classic logistic growth dZ/dt = 0.25*Z*(1 - Z/20). From Savageau & Voit (1987) Problem A4.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  r        0.25           # 1/s; intrinsic growth rate
+  K        2000           # molecules; carrying capacity (20 scaled x100)
+  S        100            # dimensionless; scale factor
+end parameters
+
+begin molecule types
+  Z()
+end molecule types
+
+begin seed species
+  Z()  100  # molecules (Z(0)=1 scaled x100)
+end seed species
+
+begin observables
+  Molecules  Obs_Z  Z()
+end observables
+
+begin functions
+  # Production rate: r*Z (linear growth term)
+  # Consumption rate: r*Z^2/K (quadratic saturation term)
+  # Combined: dZ/dt = r*Z - (r/K)*Z^2
+  rate_growth()  = r * Obs_Z
+  rate_death()   = r * Obs_Z * Obs_Z / K
+end functions
+
+begin reaction rules
+  # Logistic growth: production term 0.25*Z
+  0 -> Z()  rate_growth()
+
+  # Logistic saturation: consumption term (0.25/K)*Z^2
+  Z() -> 0  rate_death()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

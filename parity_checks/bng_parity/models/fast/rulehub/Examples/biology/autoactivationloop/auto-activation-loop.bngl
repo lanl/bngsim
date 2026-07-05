@@ -1,0 +1,103 @@
+begin model
+begin parameters
+    # Auto-activation loop: A positive feedback circuit.
+    # Advanced features: if function for pulsatile stimulation and TotalRate driver.
+    
+    # Transcription & Feedback
+    k_trans_basal 0.05 # Leakiness
+    k_trans_max 2.0    # Stimulated peak
+    k_bind_prom 1.0    # TF binding
+    
+    # Translation & Stability
+    k_translat_max 10.0 # Peak translation drive
+    k_deg_mrna 0.2
+    k_deg_prot 0.05
+    
+    # Complex Dynamics
+    k_dimer 1e-3
+    k_dimer_off 0.1
+    
+    # Regulatory Sequestration (RBP)
+    k_rbp_bind 2.0     # Sequesters mRNA
+    
+    # Initials
+    Gene_sites 1
+    mRNA_init 0
+    Prot_init 10
+    RBP_tot 100
+    v_stim_current 0.1
+end parameters
+
+begin molecule types
+    Gene(prom~off~on)
+    mRNA(b)
+    Protein(b)
+    RBP(b)
+end molecule types
+
+begin seed species
+    Gene(prom~off) Gene_sites
+    mRNA(b) mRNA_init
+    Protein(b) Prot_init
+    RBP(b) RBP_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Protein   Protein(b)               # Functional pool
+    Molecules Transcript_Mass mRNA()                   # RNA reservoir
+    Molecules Promoter_State  Gene(prom~on)            # Circuit status
+    Molecules Sequest_mRNA    mRNA(b!1).RBP(b!1)       # Regulation overhead
+    Species   TF_Dimers       Protein(b!1).Protein(b!1) # Active driver
+end observables
+
+
+
+begin functions
+    # PoolConstraint function: modulates rate based on pool size vs capacity
+    Capacity 1000
+    PoolConstraint() = 1 - (Sequest_mRNA + Transcript_Mass)/Capacity
+    v_translat() = k_translat_max * v_stim_current * PoolConstraint()
+end functions
+
+begin reaction rules
+    ## TRANSCRIPTION
+    # Basal and TF-mediated production
+    Gene(prom~off) -> Gene(prom~off) + mRNA(b) k_trans_basal
+    Gene(prom~on) -> Gene(prom~on) + mRNA(b) k_trans_max
+    
+    ## TRANSLATION (Driver-dependent)
+    # Uses PoolConstraint to avoid explosive growth
+    mRNA(b) -> mRNA(b) + Protein(b) v_translat()
+    
+    ## FEEDBACK & ASSEMBLY
+    # Protein dimerization to form TF
+    Protein(b) + Protein(b) <-> Protein(b!1).Protein(b!1) k_dimer,k_dimer_off
+    
+    # TF binds promoter
+    Protein(b!1).Protein(b!1) + Gene(prom~off) <-> Protein(b!1).Protein(b!1).Gene(prom~on) k_bind_prom,0.1
+    
+    ## SEQUESTRATION
+    # RBP binds and silences mRNA (Anti-feedback)
+    mRNA(b) + RBP(b) <-> mRNA(b!1).RBP(b!1) k_rbp_bind,0.2
+    
+    ## RESET
+    mRNA() -> 0 k_deg_mrna
+    Protein(b) -> 0 k_deg_prot
+    RBP() -> 0 0.01  # Slow turnover
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-10s)
+    simulate({method=>"ode",t_end=>10,n_steps=>20})
+    
+    # Phase 2: Pulsatile Stimulation (10-40s)
+    setParameter("v_stim_current",5.0)
+    simulate({method=>"ode",t_start=>10,t_end=>40,n_steps=>60,continue=>1})
+    
+    # Phase 3: Relaxation (40-100s)
+    setParameter("v_stim_current",0.1)
+    simulate({method=>"ode",t_start=>40,t_end=>100,n_steps=>120,continue=>1})
+end actions
+end model

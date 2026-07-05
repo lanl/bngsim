@@ -1,0 +1,86 @@
+begin model
+
+begin parameters
+
+f 0.001
+
+NA 6.02214e23
+pi 3.14159
+
+Vecf 2e-9*f # L per cell
+
+Lconc_nM 0.1 # nM
+Lconc=1e-9*Lconc_nM # M
+Lcpc=Lconc*(NA*Vecf) # copies per cell
+
+Rcpc 3e5*f # copies per cell
+
+kon 2.6e7/(NA*Vecf) # /M/s
+koff 0.02 # /s
+
+D 1e-9 # dm^2/s
+
+a 1.5e-4/2 # dm
+
+end parameters
+
+begin molecule types
+
+L0(s)
+R0(s)
+Ls(s)
+Rs(s)
+
+end molecule types
+
+begin seed species
+
+L0(s) Lcpc
+R0(s) Rcpc
+Ls(s) Lcpc
+Rs(s) Rcpc
+
+end seed species
+
+begin observables
+
+Molecules freeFab0 R0(s)
+Molecules freeFabs Rs(s)
+Molecules boundFab0 R0(s!+)
+Molecules boundFabs Rs(s!+)
+
+end observables
+
+begin functions
+
+kf()=kon/(1+kon*(freeFabs/f)*Vecf/(4*pi*D*a))
+kr()=koff/(1+kon*(freeFabs/f)*Vecf/(4*pi*D*a))
+
+end functions
+
+begin reaction rules
+
+L0(s)+R0(s)<->L0(s!1).R0(s!1) kon,koff
+
+Ls(s)+Rs(s)<->Ls(s!1).Rs(s!1) kf(),kr()
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+saveConcentrations()
+setParameter("f",1.0)
+simulate({suffix=>"ode1",method=>"ode",t_start=>0,t_end=>300,n_steps=>300})
+resetConcentrations()
+setParameter("f",0.01)
+simulate({suffix=>"ode2",method=>"ode",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"ssa",method=>"ssa",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"xnf",method=>"nf",complex=>1,get_final_state=>0,gml=>10000000,t_start=>0,t_end=>300,n_steps=>300})
+
+end actions

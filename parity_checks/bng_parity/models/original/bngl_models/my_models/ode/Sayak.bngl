@@ -1,0 +1,45 @@
+begin model
+begin parameters
+    v0       0.2         # /s
+    d0       0.5         # /s
+
+end parameters
+
+begin molecule types
+
+    DNA()
+    mRNA()
+
+end molecule types
+
+begin seed species
+
+    DNA() 1
+    mRNA()                         0
+
+end seed species
+
+begin observables
+
+Molecules DNA_Total  DNA()
+Molecules mRNA_Total mRNA()
+
+
+end observables
+
+begin functions
+
+mRNA_synth() = v0 
+
+end functions
+
+begin reaction rules
+    R3: 0 -> mRNA() mRNA_synth() 
+    R5: mRNA() -> 0 d0 
+
+end reaction rules
+end model
+
+#actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>200,n_steps=>800})

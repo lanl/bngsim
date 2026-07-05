@@ -1,0 +1,95 @@
+begin model
+begin parameters
+    # IL-1beta Signaling: MyD88/IRAK assembly and NF-kB translocation.
+    # Advanced features: TotalRate for signal amplification and Hill kinetics for relay.
+    
+    # Reception
+    k_bind_il1 0.01
+    k_trim 1.0         # Receptor clustering drive
+    
+    # MyD88 Relay (The Scaffold)
+    k_myd88_max 2.0    # Peak recruitment speed
+    Km_myd88 200       # Saturation threshold
+    
+    # IRAK Signal Burst
+    k_irak_act_max 10.0
+    Km_signal 300      # Threshold for downstream drive
+    n_hill 3.0         # Cooperative relay switch
+    
+    # NFkB Drive
+    k_nfkb_trans 2.0   # Nuclear translocation
+    k_reset 0.05
+    k_ikba_synth 0.1   # Negative feedback loop
+    
+    # Initials
+    IL1b_tot 100
+    IL1RI_tot 300
+    MyD88_tot 400
+    IRAK_tot 500
+    NFkB_tot 600
+end parameters
+
+begin molecule types
+    IL1b(b)
+    IL1RI(l,f,b,s~U~A) # f: focal recruitment,s: active cluster
+    MyD88(b)
+    IRAK(b,s~U~P)
+    NFkB(loc~cyt~nuc,s~off~on)
+end molecule types
+
+begin seed species
+    IL1b(b) IL1b_tot
+    IL1RI(l,f,b,s~U) IL1RI_tot
+    MyD88(b) MyD88_tot
+    IRAK(b,s~U) IRAK_tot
+    NFkB(loc~cyt,s~off) NFkB_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules ProInflam_NFkB  NFkB(loc~nuc,s~on)      # Final transcriptional drive
+    Molecules Signal_Burst    IRAK(b,s~P)                # Peak relay intensity
+    Molecules Active_DISC     IL1RI(s~A!1).MyD88(b!1)  # Recruitment platform
+    Molecules Receptor_Occ    IL1RI(l!+)               # Ligand occupancy status
+    Molecules Total_Bound_L   IL1b(b!+)                # Mass balance tracker
+    Molecules Active_Clusters IL1RI(s~A)               # High-order relay drive
+end observables
+
+begin functions
+    # Dimer/Cluster-driven IRAK activation (TotalRate)
+    v_signal_burst() = k_irak_act_max * (Active_Clusters / 10)^n_hill
+end functions
+
+begin reaction rules
+    ## RECEPTION Phase
+    # IL-1b binds receptor
+    IL1b(b) + IL1RI(l) <-> IL1b(b!1).IL1RI(l!1) k_bind_il1,0.1
+    
+    # clustering activates recruitment (Simplified)
+    IL1RI(l!+,s~U) -> IL1RI(l!+,s~A) k_trim
+    
+    ## RELAY Stage
+    # Active receptor clusters recruit MyD88
+    IL1RI(s~A) + MyD88(b) <-> IL1RI(s~A!1).MyD88(b!1) 2.0,0.5
+    
+    # Signal Burst: MyD88/IRAK amplification (Functional Rate - Hill)
+    0 -> IRAK(b,s~P) v_signal_burst()
+    
+    # p-IRAK converts NFkB to active form
+    IRAK(b,s~P) + NFkB(loc~cyt,s~off) -> IRAK(b,s~P) + NFkB(loc~nuc,s~on) k_nfkb_trans
+    
+    ## FEEDBACK Controlling
+    # Nuclear NFkB induces its own inhibitor (IkBa) - simplified as direct reset
+    NFkB(loc~nuc) -> NFkB(loc~cyt,s~off) k_ikba_synth
+    
+    ## RESET
+    IRAK(b,s~P) -> IRAK(b,s~U) k_reset
+    IL1RI(s~A) -> IL1RI(s~U) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,37 @@
+begin model
+begin parameters
+kp1 0.2 # /s
+kd1 0.05 # /s
+kp2 0.4 # /s
+kd2 0.1 # /s
+kp3 0.05 # /s
+kd3 0.01 # /s
+Minit 1e5 # copies per cell
+end parameters
+begin molecule types
+M(Y1~0~P,Y2~0~P,Y3~0~P)
+#RAS(G~apo~GDP~GTP)
+end molecule types
+begin seed species
+M(Y1~0,Y2~0,Y3~0) Minit
+end seed species
+begin observables
+Molecules pY1 M(Y1~P)
+Molecules pY2 M(Y2~P)
+Molecules pY3 M(Y3~P)
+end observables
+begin functions
+end functions
+begin reaction rules
+M(Y1~0,Y2~0)->M(Y1~P,Y2~0) kp1
+M(Y1~P)->M(Y1~0) kd1
+M(Y2~0)<->M(Y2~P) kp2,kd2
+M(Y3~0)<->M(Y3~P) kp3,kd3
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+writeMfile()
+writeLaTeXfile()
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1})
+end actions

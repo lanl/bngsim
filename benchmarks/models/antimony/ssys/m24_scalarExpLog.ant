@@ -1,0 +1,32 @@
+// Exact S-system recast of dZ/dt = k * exp[(ln Z)^2] via two lifting steps.
+// Variables:
+//   X1 = Z
+//   X2 = exp[(ln Z)^2]
+//   X3 = ln Z
+//
+// Scaled S-system:
+//   X1' = k * X2
+//   X2' = 2*k * X1^-1 * X2^2 * X3
+//   X3' = k * X1^-1 * X2
+//
+// Initial conditions
+// X1(0) = Z(0)
+// X3(0) = log Z(0)
+// X2(0) = exp[(log Z(0))^2]
+//
+model scalarExpLog()
+
+  // One-dimensional ODE with slowed dynamics
+  species Z;
+
+  // Time-scale parameter (dimension 1/time)
+  k = 0.04
+
+  // Dynamics: Z' = k * exp[(log Z)^2]
+  Z' = k * exp((log(Z))^2);
+
+  // Initial condition
+  Z = 2;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

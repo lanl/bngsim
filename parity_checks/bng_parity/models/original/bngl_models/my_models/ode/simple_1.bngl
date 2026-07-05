@@ -1,0 +1,129 @@
+begin model
+begin parameters
+########## FREE PARAMETERS ###################################
+# basic reproduction number
+R0 2 # dimensionless, R0_prime > r > R0 > 1 (or R0 > r > R0_prime)
+# pseudo basic reproduction number
+R0_prime 10 # dimensionless
+# rate constant for production of virus by infected cells
+p 1000 # /d
+# steady-state fraction of activated target cells derived from resting cells (vs. proliferation)
+fa 0.2 # dimensionless, 0<fa<1
+########## BODY WEIGHT-INDEPENDENT FIXED PARAMETERS ##########
+# rate constant for viral clearance
+c 285 # /d
+# rate constant for death of infected cells
+delta 1 # /d
+# rate constant for death of uninfected cells
+#  target cell lifetime, 22 d according to Table 2 in Rane et al. (2022)
+mu 1/22 # /d
+# ratio (steady-state target cell count before infection):(steady-state target cell count after infection)
+measured_num_CD4_before_inf 5.78e10 # this study
+measured_num_CD4_after_inf 1.88e10 # this study
+r = measured_num_CD4_before_inf/measured_num_CD4_after_inf # dimensionless
+########## BODY WEIGHT-DEPENDENT FIXED PARAMETERS ############
+# reference body weight (overall arithmetic mean body weight of animals in Phase I and II studies)
+BW_ref 8.07 # kg
+# cohort-specific arithmetic mean body weight
+#  BW_T1 5.24 # kg, treated animals in Phase I study
+#  BW_C1 5.32 # kg, control animals in Phase I study
+#  BW_T2 8.09 # kg, treated animals in Phase II study
+#  BW_C2 7.67 # kg, control animals in Phase II study
+BW 5.32 # kg
+# initial steady-state number of uninfected resting target cells
+T0 = measured_num_CD4_before_inf*(BW/BW_ref)
+# extracellular fluid volume for reference body weight
+#  - See Table I in Zhao et al. (2015): nu = (0.157+0.314+0.735)*(BW/3.5) # L
+#  - nu = 2.781 L for BW = 8.07 kg
+nu_ref 2.781 # L
+# cohort-specific extracellular fluid volume
+nu = nu_ref*(BW/BW_ref) # L
+########## CONSTRAINED PARAMETERS ############################
+# rate of de novo target cell generation
+lmbda = mu*T0 # /d
+# rate constant for infection of resting target cells 
+beta_r = (c*delta*mu/(p*lmbda))*R0 # /d
+# rate constant for infection of activated target cells
+beta_a = (c*delta*mu/(p*lmbda))*R0_prime # /d
+# fraction of uninfected target cells that are resting cells in a steady state of persistent viral infection
+theta = (r - R0_prime)/(R0 - R0_prime) # dimensionless
+# rate constant for virus-dependent activation of resting cells
+phi = fa*min(1,(r-theta)/(1-theta))
+alpha = phi*(beta_r+beta_a*(r/theta-1))/((r-theta)/(1-theta)-phi)
+# rate constant for proliferation of activated cells
+gamma = (1 - fa)*(beta_a+(alpha + beta_r)/(r/theta-1))
+end parameters
+begin molecule types
+counter()
+Tr()
+Ta()
+I()
+V()
+end molecule types
+begin seed species
+counter() 0
+Tr() T0
+Ta() 0
+I() 1
+V() 0
+end seed species
+begin observables
+Molecules Tr Tr()
+Molecules Ta Ta()
+Molecules I I()
+Molecules V V()
+Molecules t counter()
+end observables
+begin functions
+Vbeta_r()=beta_r*V
+Vbeta_a()=beta_a*V
+Valpha()=alpha*V
+Vgamma()=gamma*V
+#Tr_ss()=T0*theta/r
+#Ta_ss()=T0*(1-theta)/r
+#V_ss()=mu*(r/theta-1)/(alpha+beta_r)
+#I_ss()=c*V_ss()/p
+#report_theta()=theta
+#report_phi()=phi
+#report_alpha()=alpha
+#report_gamma()=gamma
+# plasma viral load
+log_pVL()=if(V>(15*1000/2)*nu,log10(2*V/(nu*1000)),1.176) # log10 vRNA copies per mL, 15 copies per mL is the limit of detection
+# pVL data
+log_pVL_p1_C()=if(t< 7,1.176091259,\
+if(t<14,5.87282568,\
+if(t<21,7.271765428,\
+if(t<28,6.652363064,\
+if(t<35,6.537802956,\
+if(t<42,6.199181106,\
+if(t<49,5.880386327,\
+if(t<56,5.920500486,\
+if(t<60,6.083642508,0)))))))))
+end functions
+begin reaction rules
+# timer
+0->counter() 1
+# de novo generation of target cells
+0->Tr() lmbda
+# death of uninfected cells
+Tr()->0 mu
+Ta()->0 mu
+# infection
+Tr()->I() Vbeta_r()
+Ta()->I() Vbeta_a() 
+# virus-dependent activation of uninfected resting target cells
+Tr()->Ta() Valpha()
+# virus-dependent proliferation of uninfected activated target cells
+Ta()->Ta()+Ta() Vgamma()
+# death of infected cells
+I()->0 delta
+# production of virus by infected cells
+I()->I()+V() p
+# viral clearance
+V()->0 c
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"p1_control",method=>"ode",t_start=>0,t_end=>60,n_steps=>240,print_functions=>1})
+end actions

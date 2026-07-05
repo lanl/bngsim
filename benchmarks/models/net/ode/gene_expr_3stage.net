@@ -1,0 +1,40 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 a              4  # Constant
+    2 b              10  # Constant
+    3 gam            10  # Constant
+    4 kap0           0.6  # Constant
+    5 kap1           0.2  # Constant
+    6 d1             0.0005  # Constant
+    7 d0             gam*d1  # ConstantExpression
+    8 k0             kap0*d1  # ConstantExpression
+    9 k1             kap1*d1  # ConstantExpression
+   10 v0             a*d1  # ConstantExpression
+   11 v1             b*d0  # ConstantExpression
+end parameters
+begin functions
+    1 fcn_mRNA() v0*DNA_Active
+    2 fcn_Prot() v1*mRNA_Total
+end functions
+begin species
+    1 DNA(promoter~0) 1
+    2 mRNA() 0
+    3 Protein() 0
+    4 Src() 1
+    5 $Null() 0
+    6 DNA(promoter~1) 0
+end species
+begin reactions
+    1 1 6 k0 #_R1
+    2 4 4,2 fcn_mRNA #_R2
+    3 4 4,3 fcn_Prot #_R3
+    4 2 5 d0 #_R4
+    5 3 5 d1 #_R5
+    6 6 1 k1 #_reverse__R1
+end reactions
+begin groups
+    1 DNA_Active           6
+    2 DNA_Total            1,6
+    3 mRNA_Total           2
+    4 Protein_Total        3
+end groups

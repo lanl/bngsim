@@ -1,0 +1,56 @@
+# Model: cs_huffman.bngl
+# Description: Implements Huffman Encoding tree-building logic.
+#              Characters (A,B,C,D) start with different concentrations (frequencies).
+#              Molecular binding represents the greedy merge step: 
+#              two lowest concentrations bind to form a parent node.
+#              Demonstrates competitive binding as a sorting/grouping mechanism.
+
+begin model
+
+begin parameters
+    # Initial Frequencies
+    fA 5.0
+    fB 2.0
+    fC 1.0
+    fD 1.0
+    
+    k_merge 10.0
+end parameters
+
+begin molecule types
+    Char(i~A~B~C~D,l~0~1~2)
+    HNode(st~P1~P2~Root)
+end molecule types
+
+begin seed species
+    Char(i~A,l~0) fA
+    Char(i~B,l~0) fB
+    Char(i~C,l~0) fC
+    Char(i~D,l~0) fD
+end seed species
+
+begin observables
+    Molecules A0 Char(i~A,l~0)
+    Molecules B0 Char(i~B,l~0)
+    Molecules C0 Char(i~C,l~0)
+    Molecules D0 Char(i~D,l~0)
+    Molecules ObsP1 HNode(st~P1)
+    Molecules ObsP2 HNode(st~P2)
+end observables
+
+begin reaction rules
+    # Step 1: C and D are lowest (1.0 each). 
+    Rule_CD: Char(i~C,l~0) + Char(i~D,l~0) -> HNode(st~P1) k_merge
+    
+    # Step 2: Now we have A(5),B(2),P1(1).
+    Rule_BP1: Char(i~B,l~0) + HNode(st~P1) -> HNode(st~P2) k_merge
+    
+    # Step 3: Finally A(5) and P2(1).
+    Rule_AP2: Char(i~A,l~0) + HNode(st~P2) -> HNode(st~Root) k_merge
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>500})

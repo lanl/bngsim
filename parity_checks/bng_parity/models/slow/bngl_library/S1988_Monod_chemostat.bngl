@@ -1,0 +1,73 @@
+begin model
+#@model_id: S1988_Monod_chemostat
+#@title: Monod chemostat model (Savageau 1988)
+#@description: Two-variable Monod chemostat: cell concentration X1 grows on substrate X2 with Monod saturation kinetics, diluted at constant rate. Substrate feeds from reservoir concentration Xr. Converted from Antimony to BNGL with population variables.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: Savageau (1988) Math. Comput. Modelling 11:546-551
+#@note: |
+#  Monod saturation kinetics require functional rate expressions.
+#  Time is normalized with respect to dilution rate D.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L  (reference volume)
+  f        1.0            # dimensionless
+
+  alpha1   2.0            # 1/time  (exponential growth rate constant)
+  beta2    4.0            # 1/time  (alpha1 / yield coefficient Y)
+  Xr       5.0            # concentration  (reservoir substrate, normalized)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+end molecule types
+
+begin seed species
+  X1()  1   # molecules (scaled from 0.1 concentration x 10)
+  X2()  40  # molecules (scaled from 4.0 concentration x 10)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # Monod growth: alpha1 * X1 * X2 / (X2 + 1)
+  # Note: seed species scaled by 10, so observables are 10x concentration.
+  # We keep functional rates in terms of observables directly (population model).
+  monod_growth() = alpha1 * Obs_X1 * Obs_X2 / (Obs_X2 + 1)
+  # Dilution of X1: X1 (rate = 1 in normalized time)
+  # Substrate inflow: Xr - X2 (split into production and consumption)
+  substrate_inflow() = Xr
+  # Substrate consumption by growth: beta2 * X1 * X2 / (X2 + 1)
+  monod_consumption() = beta2 * Obs_X1 * Obs_X2 / (Obs_X2 + 1)
+end functions
+
+begin reaction rules
+  # Cell growth (Monod kinetics)
+  0 -> X1()  monod_growth()
+  # Cell dilution (first-order, rate=1 in normalized time)
+  X1() -> 0  1
+  # Substrate inflow from reservoir (constant)
+  0 -> X2()  substrate_inflow()
+  # Substrate dilution (first-order, rate=1 in normalized time)
+  X2() -> 0  1
+  # Substrate consumption by cell growth
+  X2() -> 0  monod_consumption()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

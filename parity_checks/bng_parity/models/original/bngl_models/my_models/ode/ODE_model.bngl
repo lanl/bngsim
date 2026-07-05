@@ -1,0 +1,101 @@
+begin model
+# A deterministic model for free radical polymerization of methyl methacrylate (MMA).
+# The initiator is azobisisobutyronitrile (AIBN).
+# Reference:
+# - Tripathi AK, Sundberg DC (2015) Macromol Theory Simul 24: 52-64.
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# Boltzmann constant
+kB 1.380649e-23 # J/K
+# gas constant
+R=NA*kB # J/(mol K)
+# reference volume
+Vref 1e-18 # L (1 attoliter)
+# scaling factor (determines system size, i.e., the subvolume)
+scale 1 # dimensionless (NB: this parameter setting is rest in the actions block.)
+# subvolume of batch reactor 
+V=scale*Vref # L
+# reference temperature
+Tref 273.15 # K
+# temperature
+T=70+Tref # C converted to K
+# initial monomer concentration
+M0=1*(NA*V) # M converted to number of molecules in reactor subvolume
+# initial initiator concentration
+I20=2.58e-2*(NA*V) # M converted to number of molecules in reactor subvolume
+# rate constant for thermal decomposition of initiator
+kd=1.05e15*exp(-15430/T) # /s
+# efficiency factor
+f 0.58 # dimensionless
+# rate constant for chain propagation
+kp=2.673e6*exp(-22.3e3/(R*T))/(NA*V) # /M/s converted to /(molecules/subvolume)/s
+# rate constant for chain termination
+kt=1.984e8*exp(-5.89e3/(R*T))/(NA*V) # /M/s converted to /(molecules/subvolume)/s
+# rate constant for chain initiation
+# [I2] - concentration of initiator
+# [Ir] - concentration of initiator radical
+# [M] - concentration of monomer
+# [Ir]/[I2]<<1 => ki/(NA*V)>>2*f*kd/([M]*(NA*V))
+# Set ki/(NA*V)=C*(2*f*d)/M0, where M0=[M](t=0)*(NA*V) and C>>1.
+C 1e4
+ki=C*(2*f*kd)/M0
+end parameters
+begin molecule types
+delta()
+iota()
+mu()
+rho()
+pi()
+tim()
+end molecule types
+begin seed species
+delta() I20
+iota() 0
+mu() M0
+rho() 0
+pi() 0
+tim() 0
+end seed species
+begin observables
+Species Initiator_I2_ODE delta()
+Species InitiatorRadical_Ir_ODE iota()
+Species Monomer_ODE mu()
+Species npolymericRadicals_ODE rho()
+Species npolymers_ODE pi()
+Molecules t tim()
+end observables
+begin functions
+Mtot()=M0
+# minVolume is given by Equation (25) in Tripathi & Sundberg (2015).
+volume_div_minVolume()=V/((2/NA)*sqrt(kt*(NA*V)/(f*kd*I20/(NA*V))))
+scale_factor()=scale
+conversion_ODE()=1-Monomer_ODE/M0
+rateLaw_monomer_consumption_ODE()=kp*npolymericRadicals_ODE
+rateLaw_chain_termination_ODE()=kt*npolymericRadicals_ODE
+rate_radical_generation_ODE()=2*f*kd*Initiator_I2_ODE
+rate_radical_consumption_ODE()=ki*InitiatorRadical_Ir_ODE*Monomer_ODE
+avg_poly_length_ODE()=if(npolymers_ODE>0,(M0-Monomer_ODE)/npolymers_ODE,0)
+initiator_analytical()=I20*exp(-kd*t)
+ki_value()=ki
+end functions
+begin reaction rules
+0->tim() 1
+# ODE model
+# thermal decomposition of initiator
+delta()->0 kd
+# generation of initiator radical with efficiency f
+0->iota() rate_radical_generation_ODE()
+# chain initiation (consumes monomer and initiator radical, generates a polymeric radical)
+mu()+iota()->rho() ki
+# consumption of monomer in chain propagation reactions
+mu()->0 rateLaw_monomer_consumption_ODE()
+# chain termination
+rho()->pi() rateLaw_chain_termination_ODE()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+setParameter("scale",1)
+simulate({suffix=>"ODE",method=>"ode",t_end=>2400,n_steps=>240,print_functions=>1})
+end actions

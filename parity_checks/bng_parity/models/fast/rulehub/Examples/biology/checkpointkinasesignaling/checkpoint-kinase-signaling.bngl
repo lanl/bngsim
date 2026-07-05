@@ -1,0 +1,109 @@
+begin model
+begin parameters
+    # DNA Checkpoint: ATM/ATR mediated damage sensing.
+    # Advanced features: Hill kinetics for Chk1/2 thresholds and wildcard damage sensing.
+    
+    # Damage Induction
+    k_dsb 0.2          # DSB formation (ATM trigger)
+    k_ssb 0.5          # Replication stress (ATR trigger)
+    k_repair 0.1       # Resection/Ligation
+    
+    # Kinase Cascades
+    k_atm_act 1.0      # ATM recruitment
+    k_atr_act 1.2      # ATR recruitment
+    k_chk_phos_max 2.5 # Peak checkpoint kinase activation
+    Km_damage 150      # Threshold for signaling
+    n_hill 2.0         # Cooperative activation
+    
+    # Effectors
+    k_p53_stab 0.8     # stabilization relay
+    k_cdc25_inh 1.5    # Cell cycle arrest trigger
+    
+    # Reset
+    k_reset 0.05
+    
+    # Initials
+    DNA_sites 1000
+    ATM_tot 100
+    ATR_tot 100
+    Chk1_tot 200
+    Chk2_tot 200
+    p53_tot 300
+    Cdc25_tot 100
+end parameters
+
+begin molecule types
+    DNA(s~intact~dsb~ssb)
+    ATM(s~U~A)
+    ATR(s~U~A)
+    Chk1(s~U~P)
+    Chk2(s~U~P)
+    p53(s~U~A)
+    Cdc25(s~on~off)
+end molecule types
+
+begin seed species
+    DNA(s~intact) DNA_sites
+    ATM(s~U) ATM_tot
+    ATR(s~U) ATR_tot
+    Chk1(s~U) Chk1_tot
+    Chk2(s~U) Chk2_tot
+    p53(s~U) p53_tot
+    Cdc25(s~on) Cdc25_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Checkpt   Chk1(s~P),Chk2(s~P)      # Integrated signal relay
+    Molecules Total_Damage     DNA(s~dsb),DNA(s~ssb)   # Input sensor status
+    Molecules DSB_Signal      ATM(s~A)                 # DSB pathway intensity
+    Molecules Replication_Stress ATR(s~A)               # SSB/Stall intensity
+    Molecules Arrest_Status   Cdc25(s~off)             # Biological functional halt
+end observables
+
+begin functions
+    # Sharp Hill switch for checkpoint activation
+    v_chk_phos() = k_chk_phos_max * (Total_Damage^n_hill) / (Km_damage^n_hill + Total_Damage^n_hill)
+end functions
+
+begin reaction rules
+    ## SENSING Phase
+    # Spontaneous or induced damage
+    DNA(s~intact) -> DNA(s~dsb) k_dsb
+    DNA(s~intact) -> DNA(s~ssb) k_ssb
+    
+    # DSB activates ATM; SSB/Stalls activate ATR
+    DNA(s~dsb) + ATM(s~U) -> DNA(s~dsb) + ATM(s~A) 1.0
+    DNA(s~ssb) + ATR(s~U) -> DNA(s~ssb) + ATR(s~A) 1.0
+    
+    ## CASCADE Phase
+    # Active sensors phosphorylate Chk1/2 (Functional Rate)
+    # Wildcard (!?) for any damage state - expanded to explicit states
+    DNA(s~dsb) + Chk1(s~U) -> DNA(s~dsb) + Chk1(s~P) v_chk_phos()
+    DNA(s~ssb) + Chk1(s~U) -> DNA(s~ssb) + Chk1(s~P) v_chk_phos()
+    DNA(s~dsb) + Chk2(s~U) -> DNA(s~dsb) + Chk2(s~P) v_chk_phos()
+    DNA(s~ssb) + Chk2(s~U) -> DNA(s~ssb) + Chk2(s~P) v_chk_phos()
+    
+    ## EFFECTOR Phase
+    # Chk kinases inactivate Cdc25 (Arresting the cycle)
+    Chk1(s~P) + Cdc25(s~on) -> Chk1(s~P) + Cdc25(s~off) k_cdc25_inh
+    Chk2(s~P) + Cdc25(s~on) -> Chk2(s~P) + Cdc25(s~off) k_cdc25_inh
+    
+    # p53 stabilization relay
+    Chk2(s~P) + p53(s~U) -> Chk2(s~P) + p53(s~A) k_p53_stab
+    
+    ## RECOVERY
+    DNA(s~dsb) -> DNA(s~intact) k_repair
+    DNA(s~ssb) -> DNA(s~intact) k_repair
+    ATM(s~A) -> ATM(s~U) k_reset
+    ATR(s~A) -> ATR(s~U) k_reset
+    Chk1(s~P) -> Chk1(s~U) k_reset
+    Chk2(s~P) -> Chk2(s~U) k_reset
+    Cdc25(s~off) -> Cdc25(s~on) k_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>80,n_steps=>300})
+end actions
+end model

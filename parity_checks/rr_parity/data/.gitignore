@@ -1,0 +1,7 @@
+# SED-ML protocols from sys-bio/temp-biomodels (PMC12677764, ~49 MB)
+# Downloaded by fetch_sedml.py, never committed to git
+sedml_source/
+
+# Local one-off backups of pre-repair corpus files (the bad COPASI/empty originals);
+# kept locally, never committed. The committed fix lives in sbml_overrides/.
+corpus_repair_backup_*/

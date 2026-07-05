@@ -1,0 +1,135 @@
+# Filename: sensitivity.bngl
+# Created: 31 May 2016
+# Completed: TBA
+# [PII REMOVED]
+
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+
+Vcyt 2e-12 # L per cell
+
+Etot 1e4 # copies per cell
+S_sen_tot 1e-7*(NA*Vcyt) # copies per cell
+S_ins_tot 1e-7*(NA*Vcyt) # copies per cell
+Itot 1e6 # copies per cell
+
+kp2 1e6/(NA*Vcyt) # /M/s
+km2 0.05 # /s
+
+kp1_sen 1e4/(NA*Vcyt) # /M/s
+km1_sen 0.9 # /s
+
+kp1_ins 2e6/(NA*Vcyt) # /M/s
+km1_ins 0.1 # /s
+
+# effective concentration
+eps  1e-5*(NA*Vcyt) # M
+
+kcat_sen 0.1 # /s
+kcat_ins 0.1 # /s
+
+pase 0.01 # /s
+
+kp3 1e6/(NA*Vcyt) # /M/s
+km3 0 # /s
+
+phi 0.1 # dimensionless
+
+end parameters
+
+begin molecule types
+
+E(i,dock,cat)
+Ssen(dock,sub~0~P)
+Sins(dock,sub~0~P)
+I(site)
+
+end molecule types
+
+begin seed species
+
+E(i,dock,cat) Etot
+Ssen(dock,sub~0) S_sen_tot
+Sins(dock,sub~0) S_ins_tot
+I(site) 0
+
+end seed species
+
+begin observables
+
+Molecules SsenTotal Ssen()
+Molecules Ssen_0 Ssen(sub~0!?)
+Molecules Ssen_P Ssen(sub~P!?)
+
+Molecules SinsTotal Sins()
+Molecules Sins_0 Sins(sub~0!?)
+Molecules Sins_P Sins(sub~P!?)
+
+end observables
+
+begin functions
+
+alpha_sen_ratio_a1_div_aphi()=(1/(1+(kcat_sen+km1_sen)/kp1_sen*eps))/(phi/(phi+(kcat_sen+km1_sen)/kp1_sen*eps))
+alpha_ins_ratio_a1_div_aphi()=(1/(1+(kcat_ins+km1_ins)/kp1_ins*eps))/(phi/(phi+(kcat_ins+km1_ins)/kp1_ins*eps))
+
+frac_Ssen_P()=Ssen_P/SsenTotal
+frac_Sins_P()=Sins_P/SinsTotal
+
+KM_Ssen()=(kcat_sen+km1_sen)/kp1_sen
+KM_Sins()=(kcat_ins+km1_ins)/kp1_ins
+
+end functions
+
+begin reaction rules
+
+# recruitment of substrate to vicinity of kinase
+E(dock,cat)+Ssen(dock,sub~0)<->E(dock!1,cat).Ssen(dock!1,sub~0) kp2,km2
+E(dock,cat)+Sins(dock,sub~0)<->E(dock!1,cat).Sins(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+E(i,dock!1,cat).Ssen(dock!1,sub~0)<->E(i,dock!1,cat!2).Ssen(dock!1,sub~0!2) kp1_sen*eps,km1_ins
+E(i,dock!1,cat).Sins(dock!1,sub~0)<->E(i,dock!1,cat!2).Sins(dock!1,sub~0!2) kp1_sen*eps,km1_ins
+E(i!+,dock!1,cat).Ssen(dock!1,sub~0)<->E(i!+,dock!1,cat!2).Ssen(dock!1,sub~0!2) phi*kp1_sen*eps,km1_ins
+E(i!+,dock!1,cat).Sins(dock!1,sub~0)<->E(i!+,dock!1,cat!2).Sins(dock!1,sub~0!2) phi*kp1_sen*eps,km1_ins
+
+# direct association of substrate and kinase
+E(i,dock,cat)+Ssen(dock,sub~0)<->E(i,dock,cat!1).Ssen(dock,sub~0!1) kp1_sen,km1_sen
+E(i,dock,cat)+Sins(dock,sub~0)<->E(i,dock,cat!1).Sins(dock,sub~0!1) kp1_ins,km1_ins
+E(i!+,dock,cat)+Ssen(dock,sub~0)<->E(i!+,dock,cat!1).Ssen(dock,sub~0!1) phi*kp1_sen,km1_sen
+E(i!+,dock,cat)+Sins(dock,sub~0)<->E(i!+,dock,cat!1).Sins(dock,sub~0!1) phi*kp1_ins,km1_ins
+
+# isomerization (NB: detailed balance)
+E(dock,cat!1).Ssen(dock,sub~0!1)<->E(dock!2,cat!1).Ssen(dock!2,sub~0!1) kp2*eps,km2
+E(dock,cat!1).Sins(dock,sub~0!1)<->E(dock!2,cat!1).Sins(dock!2,sub~0!1) kp2*eps,km2
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+E(dock,cat!1).Ssen(dock,sub~0!1)->E(dock,cat)+Ssen(dock,sub~P) kcat_sen
+E(dock,cat!1).Sins(dock,sub~0!1)->E(dock,cat)+Sins(dock,sub~P) kcat_ins
+E(dock!1,cat!2).Ssen(dock!1,sub~0!2)->E(dock,cat)+Ssen(dock,sub~P) kcat_sen
+E(dock!1,cat!2).Sins(dock!1,sub~0!2)->E(dock,cat)+Sins(dock,sub~P) kcat_ins
+
+# dephosphorylation
+Ssen(dock,sub~P)->Ssen(dock,sub~0) pase
+Sins(dock,sub~P)->Sins(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+E(i,dock,cat)+I(site)<->E(i!1,dock,cat).I(site!1) kp3,km3
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",prefix=>"equil",t_start=>0,t_end=>1200,n_steps=>150,print_functions=>1})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("I(site)","Itot")
+simulate({method=>"ode",prefix=>"prod",t_start=>1200,t_end=>6000,n_steps=>300,print_functions=>1})
+
+end actions

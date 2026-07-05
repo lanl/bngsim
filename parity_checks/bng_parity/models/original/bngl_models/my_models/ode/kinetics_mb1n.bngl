@@ -1,0 +1,202 @@
+begin model
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# factor for scaling system size corresponding to
+# 
+f 1 # dimensionless, 0<f<=1
+ncells 20000
+
+# volume of extracellular fluid surrounding a single cell (on average)
+V f*100.0e-6/ncells # L per cell
+
+# const is 1 when there is ligand in solution, and zero when there is no ligand
+const 1
+
+# new rates
+koff 0.001264 # /s
+KD 7.435e-10 # M
+
+kp1=(koff/KD)/(NA*V) # /M/s converted to /(molecule/cell)/s 
+
+
+IgEtot 0 # molecules per cell
+
+# NB: the value of Agconc and IgEtot should be set in the ACTIONS block
+
+Agconc 0 # ng/ml, in [1e-4, ..., 1e4]
+
+mwtAg 22400 # g/mol molecular weight of antigen
+
+Agtot = const*(Agconc*1.0e-6*(NA*V)/mwtAg)#/f # molecules per cell =0
+
+Agmax = 1.397e6 # molecules per cell 
+
+
+epsilon 1.0e-6 # a small dimensionless number (used to avoid divide by zero)
+
+end parameters
+
+begin molecule types
+
+# Monovalent
+Ag(e0,bound~0~1)
+
+IgE(Fab,Fab)
+
+end molecule types
+
+begin seed species
+
+# Monovalent
+Ag(e0,bound~0) min(Agtot,Agmax)
+
+IgE(Fab,Fab) IgEtot
+
+end seed species
+
+begin observables
+
+Molecules Ltot Ag()
+Molecules Rtot IgE()
+Species R1 IgE==1
+Molecules freeAg Ag(bound~0)
+Molecules boundAg Ag(bound~1)
+
+
+end observables
+
+begin functions
+
+m() if(Agmax/Rtot<100,1,0)
+kp1Agtot() kp1*Agtot
+
+
+end functions
+
+begin reaction rules
+
+# antigen capture when....
+#   the antigen abundance is limiting
+#   Rates are 0 unless m()=1, i.e., rates are 0 unless Ltot/Rtot<100.
+IgE(Fab)+Ag(e0,bound~0)->IgE(Fab!1).Ag(e0!1,bound~1) kp1*m()*const
+
+# antigen capture when...
+#   the antigen abundance is in large excess of the receptor abundance
+#   Rates are 0 unless m()=0, i.e., rates are 0 unless Ltot/Rtot>=100.
+IgE(Fab)->IgE(Fab!1).Ag(e0!1,bound~1) kp1Agtot()*(1-m())*const
+
+# monovalent ligand, no crosslinking
+
+# dissociation reactions (with or without antigen escape from the cell surface)
+#   The rules below treat all dissociation reactions equivalently, 
+#   regardless of whether antigen is liberated from the cell surface or not.
+IgE(Fab!1).Ag(e0!1)->IgE(Fab)+Ag(e0) koff
+
+# If m()=1 (i.e., the overall abundance of Ag is limiting)
+#   and an Ag molecule is free (i.e., not bound to IgE), 
+#   the internal state of the Ag molecule's "bound" component
+#   should change from ~1 (bound) to ~0 (free) 
+#   with a rate constant that effectively makes the transformation instantaneous.
+#   This transformation makes the Ag molecule available again for capture by surface IgE.
+Ag(e0,bound~1)->Ag(e0,bound~0) 1e6*koff*m()
+
+# If m()=0 (i.e., Ag is available in excess such that the free Ag pool is 
+#  not significantly depleted by interaction with cell surface IgE) 
+#  and an Ag molecule escapes from the cell surface,
+#  it should be removed with a rate constant that effectively makes removal instantaneous.
+#  For cases where m()=0, we do not track the free antigen concentration.
+#  It is assumed to be constant, because antigen is available in excess.
+#  Removal of free Ag prevents free Ag (not being used in calculations) from accumulating.
+#  Thus, this rule is included here only to prevent wasteful use/exhaustion of computer memory.
+Ag(e0,bound~1)->0 1e6*koff*(1-m())
+
+end reaction rules
+
+end model
+
+begin actions
+
+# VS Code version of BioNetGen does not support the "suffix" option for filename!
+# Need to solve each time interval sequentially. Since only the last output file is saved,
+# comment out below all time intervals later than the one from which you want to save data.
+
+#t = 0 to t = 5 min
+ saveConcentrations()
+ setParameter("Agconc",7.46) # in [22.4] (ng/ml)
+ setConcentration("IgE(Fab,Fab)",9838) # (copies per RBL cell)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+         t_start=>0,t_end=>393,n_steps=>393})
+
+#t = 5 to t = 10 min 
+ saveConcentrations()
+ setParameter("const",0)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>393,t_end=>677,n_steps=>284,continue=>1})
+
+#t = 10 to t = 15 min         
+ saveConcentrations()
+ setParameter("Agconc",22.4)
+ setParameter("const",1)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>677,t_end=>970,n_steps=>293,continue=>1})
+
+#t = 15 to t = 20 min
+ saveConcentrations()
+ setParameter("const",0)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>970,t_end=>1246,n_steps=>276,continue=>1})
+
+#t = 20 to t = 25 min
+ saveConcentrations()
+ setParameter("Agconc",67.2)
+ setParameter("const",1)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>1246,t_end=>1546,n_steps=>300,continue=>1})
+
+#t = 25 to t = 30 min
+ saveConcentrations()
+ setParameter("const",0)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>1546,t_end=>1804,n_steps=>258,continue=>1})
+
+#t = 30 to t = 35 min
+ saveConcentrations()
+ setParameter("Agconc",201.6)
+ setParameter("const",1)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>1804,t_end=>2108,n_steps=>304,continue=>1})
+
+#t = 35 to t = 40 min
+ saveConcentrations()
+ setParameter("const",0)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>2108,t_end=>2383,n_steps=>275,continue=>1})
+
+#t = 40 to t = 45 min
+ saveConcentrations()
+ setParameter("Agconc",604.8)
+ setParameter("const",1)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>2383,t_end=>2664,n_steps=>281,continue=>1})
+
+#t = 45 to t = 75 min
+ saveConcentrations()
+ setParameter("const",0)
+ simulate({method=>"ode",get_final_state=>1,\
+          print_functions=>1,\
+          t_start=>2664,t_end=>4500,n_steps=>1836,continue=>1})
+
+end actions

@@ -1,0 +1,67 @@
+begin model
+
+begin parameters
+
+f 1 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+
+V f*1e-9 # L per cell
+
+Ltot f*1e5 # cpc
+Rtot f*1e5 # cpc
+
+kf 1e7/(NA*V) # /M/s converted to /cpc/s
+kr 0.01 # /s
+
+end parameters
+
+begin molecule types
+
+L(s~0~1~2~3)
+R(s)
+
+end molecule types
+
+begin seed species
+
+L(s~0) Ltot
+R(s) Rtot
+
+end seed species
+
+begin observables
+
+Molecules L0 L(s~0!?)
+Molecules L1 L(s~1!?)
+Molecules L2 L(s~2!?)
+Molecules L3 L(s~3!?)
+
+Molecules freeR R(s)
+Molecules boundR R(s!+)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+L(s~0)+R(s)<->L(s~1!1).R(s!1) kf,kr
+L(s~1!1).R(s!1)+R(s)<->L(s~2!1!2).R(s!1).R(s!2) kf,kr
+L(s~2!1!2).R(s!1).R(s!2)+R(s)<->L(s~3!1!2!3).R(s!1).R(s!2).R(s!3) kf,kr
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>1000,n_steps=>100})
+
+# NB: this model specification is incompatible with use of NFsim, 
+#  which does not allow more than one bond per site.
+
+end actions

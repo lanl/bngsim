@@ -1,0 +1,49 @@
+# Feature: cooperative/allosteric binding (state-dependent affinity)
+# Tests: binding of first ligand changes rate for second site
+# Covers: bench_blbr_cooperativity_posner2004* from existing corpus
+# Tier: base
+# Expected: second binding event is faster (positive cooperativity)
+
+begin model
+begin parameters
+    L_tot   400
+    R_tot   200
+    kf1     0.0005  # /s, first binding rate (scaled for 5x more mols)
+    kr1     0.2     # /s, first unbinding rate
+    kf2     0.002   # /s, second binding rate (4x faster = positive coop)
+    kr2     0.05    # /s, second unbinding rate (4x slower)
+end parameters
+
+begin molecule types
+    L(r)
+    R(l,l,st~open~closed)
+end molecule types
+
+begin seed species
+    L(r)               L_tot
+    R(l,l,st~open)     R_tot
+end seed species
+
+begin observables
+    Molecules  L_free       L(r)
+    Molecules  L_bound      L(r!+)
+    Molecules  R_0          R(l,l)
+    Molecules  R_1          R(l!+,l)
+    Molecules  R_2          R(l!+,l!+)
+    Molecules  R_open       R(st~open)
+    Molecules  R_closed     R(st~closed)
+end observables
+
+begin reaction rules
+    # First ligand binding (open state, normal rate)
+    L(r) + R(l,l,st~open) -> L(r!1).R(l!1,l,st~closed)  kf1
+    # Unbinding from singly-occupied receptor (reverts to open)
+    L(r!1).R(l!1,l,st~closed) -> L(r) + R(l,l,st~open)  kr1
+    # Second ligand binding (closed state, enhanced rate)
+    L(r) + R(l!+,l,st~closed) <-> L(r!1).R(l!+,l!1,st~closed)  kf2, kr2
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

@@ -1,0 +1,64 @@
+begin model
+begin parameters
+    # Oxidative Stress Response (Keap1-Nrf2 Pathway)
+    # Cellular defense mechanism against reactive oxygen species (ROS).
+    
+    k_ros 0.05          # ROS generation
+    k_keap1 0.3         # Keap1-Nrf2 sensing
+    k_release 0.25      # Nrf2 release
+    k_transcription 0.4 # Antioxidant gene expression
+    k_clear 0.1         # ROS scavenging
+    k_reset 0.07        # Turnover
+end parameters
+
+begin molecule types
+    ROS(level~basal~elevated)
+    KEAP1(state~bound~released)
+    NRF2(loc~cyto~nuc)
+    Antioxidant(level~low~high)
+end molecule types
+
+begin seed species
+    ROS(level~basal) 60
+    KEAP1(state~bound) 50
+    NRF2(loc~cyto) 40
+    Antioxidant(level~low) 30
+end seed species
+
+begin reaction rules
+    # 1. Stress Induction
+    ROS(level~basal) -> ROS(level~elevated) k_ros
+    
+    # 2. Sensing
+    # Elevated ROS modifies Keap1, releasing Nrf2
+    ROS(level~elevated) + KEAP1(state~bound) -> ROS(level~elevated) + KEAP1(state~released) k_release
+    
+    # 3. Translocation
+    KEAP1(state~released) + NRF2(loc~cyto) -> KEAP1(state~released) + NRF2(loc~nuc) k_release
+    
+    # 4. Response
+    # Nuclear Nrf2 drives antioxidant production
+    NRF2(loc~nuc) + Antioxidant(level~low) -> NRF2(loc~nuc) + Antioxidant(level~high) k_transcription
+    
+    # 5. Clearance
+    # Antioxidants neutralize ROS
+    Antioxidant(level~high) + ROS(level~elevated) -> Antioxidant(level~high) + ROS(level~basal) k_clear
+    
+    # 6. Reset
+    KEAP1(state~released) -> KEAP1(state~bound) k_reset
+    NRF2(loc~nuc) -> NRF2(loc~cyto) k_reset
+    Antioxidant(level~high) -> Antioxidant(level~low) k_reset
+end reaction rules
+
+begin observables
+    Molecules Elevated_ROS ROS(level~elevated)
+    Molecules Released_KEAP1 KEAP1(state~released)
+    Molecules Nuclear_NRF2 NRF2(loc~nuc)
+    Molecules High_Antioxidant Antioxidant(level~high)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>200})
+end actions
+end model

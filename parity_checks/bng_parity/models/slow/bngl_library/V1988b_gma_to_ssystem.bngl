@@ -1,0 +1,68 @@
+begin model
+#@model_id: V1988b_gma_to_ssystem
+#@title: GMA to S-system conversion example (Voit 1988b)
+#@description: Two-variable GMA system with bimolecular (X1*X2) and trimolecular (X1^2*X3) power-law terms. X3 is a constant auxiliary. Demonstrates product-rule recasting. Converted from Antimony to BNGL with functional rates for nonlinear terms.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: Voit (1988) Proc. IFAC Modelling and Control in Biomedical Systems, Venice
+#@note: |
+#  X1*X2 is bimolecular, X1^2*X3 is trimolecular -- both use functional rates.
+#  X3 is held constant (dX3/dt = 0), treated as a parameter.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L  (reference volume)
+  f        1.0            # dimensionless
+
+  gamma1   1.0            # 1/time  (growth rate coefficient)
+  gamma2   0.5            # 1/time  (consumption rate coefficient)
+  X3_const 1.0            # dimensionless  (constant auxiliary variable)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+end molecule types
+
+begin seed species
+  X1()  1  # molecules (from 1.0)
+  X2()  1  # molecules (from 1.0)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # Production of X1: gamma1*X1*X2 (bimolecular)
+  prod_X1() = gamma1 * Obs_X1 * Obs_X2
+  # Consumption of X1: gamma2*X1^2*X3 (trimolecular, X3 constant)
+  cons_X1() = gamma2 * Obs_X1 * Obs_X1 * X3_const
+  # Production of X2: rate = X1 (value of X1, i.e., Obs_X1)
+  prod_X2() = Obs_X1
+end functions
+
+begin reaction rules
+  # Production of X1 (gamma1*X1*X2, bimolecular -- functional rate)
+  0 -> X1()  prod_X1()
+  # Consumption of X1 (gamma2*X1^2*X3, trimolecular -- functional rate)
+  X1() -> 0  cons_X1()
+  # Production of X2 from X1 (rate = X1 count)
+  0 -> X2()  prod_X2()
+  # Consumption of X2 (first-order decay, rate=1)
+  X2() -> 0  1
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>6,n_steps=>300})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>6,n_steps=>300})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>6,n_steps=>300,complex=>1})
+end actions

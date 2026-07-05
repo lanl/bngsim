@@ -1,0 +1,33 @@
+// This model is essentially the same as S1987_A3_cos_growth().
+// Recasting of: dX/dt = X*cos(t),  X(0) = 1
+// Lifted 3D autonomous system:
+//   X_1 = X
+//   X_2 = cos(t) + 2
+//   X_3 = sin(t) + 2
+//
+// ODEs:
+//   dX_1/dt = X_1*X_2 - 2*X_1
+//   dX_2/dt = 2 - X_3
+//   dX_3/dt = X_2 - 2
+//
+// ICs:
+//   X_1(0) = 1
+//   X_2(0) = 3
+//   X_3(0) = 2
+
+model cos_growth()
+  // dX/dt = X*cos(t),  X(0) = 1
+
+  species t, X
+
+  // Independent variable
+  t' = 1
+
+  // State equation
+  X' = X*cos(t)
+
+  // Initial conditions
+  t = 0
+  X = 5
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

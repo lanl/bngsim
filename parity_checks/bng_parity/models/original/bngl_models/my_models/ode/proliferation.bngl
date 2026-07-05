@@ -1,0 +1,27 @@
+begin parameters
+  Vmax 20
+  Vmin 10
+end parameters
+begin molecule types
+  V()
+  div(s~0~1)
+end molecule types
+begin seed species
+  div(s~0) 1
+  V() Vmin
+end seed species
+begin observables
+  Molecules V V()
+  Molecules divide div(s~1)
+end observables
+begin reaction rules
+  0->V() (1-divide())*1
+  div(s~0)->div(s~1) 100*(1+tanh((V-Vmax)/0.01))
+  div(s~0)+div(s~1)->div(s~1)+div(s~1) 100*divide()
+  div(s~1)->div(s~0) 100*(1-tanh((V-Vmin)/0.01))
+  V()->0 10*divide()
+end reaction rules
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",n_steps=>10000,t_end=>100})
+end actions

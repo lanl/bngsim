@@ -1,0 +1,1667 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model id="HER2Low" metaid="d32aed38-6ef8-4fcb-b197-daf2faf63f79" name="Kemmer2022 - Disentangling ERBB Signaling in Breast Cancer Subtypes – a Model-Based Analysis">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+     <p>This is a dynamic pathway model capturing ERBB receptor signaling as well as downstream MAPK and PI3K signaling pathways. The effect of different growth factors and drugs on the formation of active receptor dimers is explicitly included. The model was established and calibrated on time-resolved data of the luminal breast cancer cell lines MCF7 and T47D across an array of four ligands and five drugs. For the description of the full modeling project including condition-specific parameters, observables, measurement data and experimental conditions the model is provided in PEtab format in addition to the classical SBML version.</p>
+  </body>
+    </notes>
+    <annotation>
+	<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/">
+        <rdf:Description rdf:about="#d32aed38-6ef8-4fcb-b197-daf2faf63f79">
+	<bqbiol:hasProperty>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/mamo/MAMO_0000046"/>
+	</rdf:Bag>
+	</bqbiol:hasProperty>
+	</rdf:Description>
+	
+	
+	
+	</rdf:RDF>
+	</annotation>
+      <listOfUnitDefinitions>
+      <unitDefinition id="time">
+        <listOfUnits>
+          <unit exponent="1" kind="second" multiplier="60" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment id="cytoplasm" size="1"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species compartment="cytoplasm" id="R1" initialAmount="1" name="R1"/>
+      <species compartment="cytoplasm" id="R1R1" initialAmount="1" name="R1R1"/>
+      <species compartment="cytoplasm" id="R2" initialAmount="1" name="R2"/>
+      <species compartment="cytoplasm" id="R1R2" initialAmount="1" name="R1R2"/>
+      <species compartment="cytoplasm" id="R3" initialAmount="1" name="R3"/>
+      <species compartment="cytoplasm" id="R1R3" initialAmount="1" name="R1R3"/>
+      <species compartment="cytoplasm" id="R2R3" initialAmount="1" name="R2R3"/>
+      <species compartment="cytoplasm" id="R1R2_off" initialAmount="1" name="R1R2_off"/>
+      <species compartment="cytoplasm" id="R2R3_off" initialAmount="1" name="R2R3_off"/>
+      <species compartment="cytoplasm" id="R2R2_off" initialAmount="1" name="R2R2_off"/>
+      <species compartment="cytoplasm" id="AKT" initialAmount="1" name="AKT"/>
+      <species compartment="cytoplasm" id="pAKT" initialAmount="1" name="pAKT"/>
+      <species compartment="cytoplasm" id="cRAF" initialAmount="1" name="cRAF"/>
+      <species compartment="cytoplasm" id="pcRAF" initialAmount="1" name="pcRAF"/>
+      <species compartment="cytoplasm" id="MEK" initialAmount="1" name="MEK"/>
+      <species compartment="cytoplasm" id="pMEK" initialAmount="1" name="pMEK"/>
+      <species compartment="cytoplasm" id="ppMEK" initialAmount="1" name="ppMEK"/>
+      <species compartment="cytoplasm" id="ERK" initialAmount="1" name="ERK"/>
+      <species compartment="cytoplasm" id="pERK" initialAmount="1" name="pERK"/>
+      <species compartment="cytoplasm" id="ppERK" initialAmount="1" name="ppERK"/>
+      <species compartment="cytoplasm" id="S6K" initialAmount="1" name="S6K"/>
+      <species compartment="cytoplasm" id="ppS6K" initialAmount="1" name="ppS6K"/>
+      <species compartment="cytoplasm" id="ligand" initialAmount="1" name="ligand"/>
+      <species compartment="cytoplasm" id="drug" initialAmount="1" name="drug"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="build_R1R1" value="0.1"/>
+      <parameter id="drug_R1R1" value="0.119148936170213"/>
+      <parameter id="decay_R1R1" value="0.138297872340426"/>
+      <parameter id="build_R1R2" value="0.157446808510638"/>
+      <parameter id="drug_R1R2" value="0.176595744680851"/>
+      <parameter id="decay_R1R2" value="0.195744680851064"/>
+      <parameter id="build_R1R3" value="0.214893617021277"/>
+      <parameter id="drug_R1R3" value="0.234042553191489"/>
+      <parameter id="decay_R1R3" value="0.253191489361702"/>
+      <parameter id="build_R2R3" value="0.272340425531915"/>
+      <parameter id="drug_R2R3" value="0.291489361702128"/>
+      <parameter id="decay_R2R3" value="0.31063829787234"/>
+      <parameter id="build_R1R2off" value="0.329787234042553"/>
+      <parameter id="decay_R1R2off" value="0.348936170212766"/>
+      <parameter id="build_R2R3off" value="0.368085106382979"/>
+      <parameter id="decay_R2R3off" value="0.387234042553191"/>
+      <parameter id="build_R2R2off" value="0.406382978723404"/>
+      <parameter id="decay_R2R2off" value="0.425531914893617"/>
+      <parameter id="degrade_R1R1" value="0.44468085106383"/>
+      <parameter id="degrade_R1R2" value="0.463829787234043"/>
+      <parameter id="degrade_R1R3" value="0.482978723404255"/>
+      <parameter id="degrade_R2R3" value="0.502127659574468"/>
+      <parameter id="degrade_R3_lumretuzumab" value="0.521276595744681"/>
+      <parameter id="phospho_AKT_R1R1" value="0.540425531914894"/>
+      <parameter id="phospho_AKT_R1R2" value="0.559574468085106"/>
+      <parameter id="phospho_AKT_R1R3" value="0.578723404255319"/>
+      <parameter id="phospho_AKT_R2R3" value="0.597872340425532"/>
+      <parameter id="phospho_AKT_basal" value="0.617021276595745"/>
+      <parameter id="dephospho_pAKT" value="0.636170212765957"/>
+      <parameter id="mutation" value="0.65531914893617"/>
+      <parameter id="phospho_cRAF_R1R1" value="0.674468085106383"/>
+      <parameter id="drug_cRAF_R1R1" value="0.693617021276596"/>
+      <parameter id="phospho_cRAF_R1R2" value="0.712765957446808"/>
+      <parameter id="drug_cRAF_R1R2" value="0.731914893617021"/>
+      <parameter id="phospho_cRAF_R1R3" value="0.751063829787234"/>
+      <parameter id="drug_cRAF_R1R3" value="0.770212765957447"/>
+      <parameter id="phospho_cRAF_R2R3" value="0.78936170212766"/>
+      <parameter id="drug_cRAF_R2R3" value="0.808510638297872"/>
+      <parameter id="phospho_cRAF_basal" value="0.827659574468085"/>
+      <parameter id="deact_cRAF" value="0.846808510638298"/>
+      <parameter id="phospho_MEK" value="0.865957446808511"/>
+      <parameter id="phospho_MEK_basal" value="0.885106382978723"/>
+      <parameter id="dephospho_pMEK" value="0.904255319148936"/>
+      <parameter id="phospho_ERK" value="0.923404255319149"/>
+      <parameter id="dephospho_pERK" value="0.942553191489362"/>
+      <parameter id="phospho_S6K_AKT" value="0.961702127659574"/>
+      <parameter id="phospho_S6K_ERK" value="0.980851063829787"/>
+      <parameter id="dephospho_S6K" value="1"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="pAKT">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> AKT </ci>
+              <ci> Kd_pAKT_basal </ci>
+              <ci> dephospho_pAKT </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> dephospho_pAKT </ci>
+              <ci> mutation </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pcRAF">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> cRAF </ci>
+              <ci> Kd_pcRAF_basal </ci>
+              <ci> deact_cRAF </ci>
+            </apply>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pMEK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MEK </ci>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> cRAF </ci>
+                  <ci> Kd_pcRAF_basal </ci>
+                  <ci> deact_cRAF </ci>
+                  <ci> phospho_MEK </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> deact_cRAF </ci>
+                  <ci> phospho_MEK_basal </ci>
+                </apply>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> deact_cRAF </ci>
+              <ci> dephospho_pMEK </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="ppMEK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MEK </ci>
+              <apply>
+                <power/>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> cRAF </ci>
+                    <ci> Kd_pcRAF_basal </ci>
+                    <ci> deact_cRAF </ci>
+                    <ci> phospho_MEK </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> deact_cRAF </ci>
+                    <ci> phospho_MEK_basal </ci>
+                  </apply>
+                </apply>
+                <cn type="integer"> 2 </cn>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <apply>
+                <power/>
+                <ci> deact_cRAF </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <apply>
+                <power/>
+                <ci> dephospho_pMEK </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pERK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> ERK </ci>
+              <ci> phospho_ERK </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> MEK </ci>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <plus/>
+                      <apply>
+                        <times/>
+                        <ci> cRAF </ci>
+                        <ci> Kd_pcRAF_basal </ci>
+                        <ci> deact_cRAF </ci>
+                        <ci> phospho_MEK </ci>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <ci> deact_cRAF </ci>
+                        <ci> phospho_MEK_basal </ci>
+                      </apply>
+                    </apply>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> deact_cRAF </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> dephospho_pMEK </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+              </apply>
+            </apply>
+            <ci> dephospho_pERK </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="ppERK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> ERK </ci>
+                  <ci> phospho_ERK </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> MEK </ci>
+                      <apply>
+                        <power/>
+                        <apply>
+                          <plus/>
+                          <apply>
+                            <times/>
+                            <ci> cRAF </ci>
+                            <ci> Kd_pcRAF_basal </ci>
+                            <ci> deact_cRAF </ci>
+                            <ci> phospho_MEK </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> deact_cRAF </ci>
+                            <ci> phospho_MEK_basal </ci>
+                          </apply>
+                        </apply>
+                        <cn type="integer"> 2 </cn>
+                      </apply>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <apply>
+                        <power/>
+                        <ci> deact_cRAF </ci>
+                        <cn type="integer"> 2 </cn>
+                      </apply>
+                      <apply>
+                        <power/>
+                        <ci> dephospho_pMEK </ci>
+                        <cn type="integer"> 2 </cn>
+                      </apply>
+                    </apply>
+                  </apply>
+                </apply>
+                <ci> dephospho_pERK </ci>
+              </apply>
+              <ci> phospho_ERK </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> MEK </ci>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <plus/>
+                      <apply>
+                        <times/>
+                        <ci> cRAF </ci>
+                        <ci> Kd_pcRAF_basal </ci>
+                        <ci> deact_cRAF </ci>
+                        <ci> phospho_MEK </ci>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <ci> deact_cRAF </ci>
+                        <ci> phospho_MEK_basal </ci>
+                      </apply>
+                    </apply>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> deact_cRAF </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> dephospho_pMEK </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+              </apply>
+            </apply>
+            <ci> dephospho_pERK </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="ppS6K">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <plus/>
+              <apply>
+                <times/>
+                <ci> phospho_S6K_AKT </ci>
+                <ci> S6K </ci>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> AKT </ci>
+                    <ci> Kd_pAKT_basal </ci>
+                    <ci> dephospho_pAKT </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> dephospho_pAKT </ci>
+                    <ci> mutation </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <apply>
+                <times/>
+                <ci> phospho_S6K_ERK </ci>
+                <ci> S6K </ci>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> ERK </ci>
+                        <ci> phospho_ERK </ci>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> MEK </ci>
+                            <apply>
+                              <power/>
+                              <apply>
+                                <plus/>
+                                <apply>
+                                  <times/>
+                                  <ci> cRAF </ci>
+                                  <ci> Kd_pcRAF_basal </ci>
+                                  <ci> deact_cRAF </ci>
+                                  <ci> phospho_MEK </ci>
+                                </apply>
+                                <apply>
+                                  <times/>
+                                  <ci> deact_cRAF </ci>
+                                  <ci> phospho_MEK_basal </ci>
+                                </apply>
+                              </apply>
+                              <cn type="integer"> 2 </cn>
+                            </apply>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <apply>
+                              <power/>
+                              <ci> deact_cRAF </ci>
+                              <cn type="integer"> 2 </cn>
+                            </apply>
+                            <apply>
+                              <power/>
+                              <ci> dephospho_pMEK </ci>
+                              <cn type="integer"> 2 </cn>
+                            </apply>
+                          </apply>
+                        </apply>
+                      </apply>
+                      <ci> dephospho_pERK </ci>
+                    </apply>
+                    <ci> phospho_ERK </ci>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> MEK </ci>
+                        <apply>
+                          <power/>
+                          <apply>
+                            <plus/>
+                            <apply>
+                              <times/>
+                              <ci> cRAF </ci>
+                              <ci> Kd_pcRAF_basal </ci>
+                              <ci> deact_cRAF </ci>
+                              <ci> phospho_MEK </ci>
+                            </apply>
+                            <apply>
+                              <times/>
+                              <ci> deact_cRAF </ci>
+                              <ci> phospho_MEK_basal </ci>
+                            </apply>
+                          </apply>
+                          <cn type="integer"> 2 </cn>
+                        </apply>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <apply>
+                          <power/>
+                          <ci> deact_cRAF </ci>
+                          <cn type="integer"> 2 </cn>
+                        </apply>
+                        <apply>
+                          <power/>
+                          <ci> dephospho_pMEK </ci>
+                          <cn type="integer"> 2 </cn>
+                        </apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                  <ci> dephospho_pERK </ci>
+                </apply>
+              </apply>
+            </apply>
+            <ci> dephospho_S6K </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="decay_R1R2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <ci> build_R1R2 </ci>
+            <ci> Kd_R1R2 </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="decay_R1R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <ci> build_R1R3 </ci>
+            <ci> Kd_R1R3 </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="decay_R2R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <ci> build_R2R3 </ci>
+            <ci> Kd_R2R3 </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="build_R1R2off">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_R1R2off </ci>
+            <ci> decay_R1R2off </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="build_R2R3off">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_R2R3off </ci>
+            <ci> decay_R2R3off </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="build_R2R2off">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_R2R2off </ci>
+            <ci> decay_R2R2off </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_AKT_R1R1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pAKT_R1R1 </ci>
+            <ci> dephospho_pAKT </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_AKT_R1R2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pAKT_R1R2 </ci>
+            <ci> dephospho_pAKT </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_AKT_R1R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pAKT_R1R3 </ci>
+            <ci> dephospho_pAKT </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_AKT_R2R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pAKT_R2R3 </ci>
+            <ci> dephospho_pAKT </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_AKT_basal">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pAKT_basal </ci>
+            <ci> dephospho_pAKT </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_cRAF_R1R1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> degrade_R1R1 </ci>
+            <ci> ActRatio_pcRAF_R1R1 </ci>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_cRAF_R1R2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pcRAF_R1R2 </ci>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_cRAF_R1R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pcRAF_R1R3 </ci>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_cRAF_R2R3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pcRAF_R2R3 </ci>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="phospho_cRAF_basal">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> Kd_pcRAF_basal </ci>
+            <ci> deact_cRAF </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="R1R1dimerizationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1" stoichiometry="2"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1R1" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ligand"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R1R1 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_R1R1 </ci>
+                </apply>
+              </apply>
+              <ci> R1 </ci>
+              <ci> R1 </ci>
+              <ci> ligand </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R1decay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1" stoichiometry="2"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R1R1 </ci>
+              <ci> R1R1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R2dimerizationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1R2" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ligand"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R1R2 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_R1R2 </ci>
+                </apply>
+              </apply>
+              <ci> R1 </ci>
+              <ci> R2 </ci>
+              <ci> ligand </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R2decay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R1R2 </ci>
+              <ci> R1R2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R3dimerizationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1R3" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ligand"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R1R3 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_R1R3 </ci>
+                </apply>
+              </apply>
+              <ci> R1 </ci>
+              <ci> R3 </ci>
+              <ci> ligand </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R3decay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R1R3 </ci>
+              <ci> R1R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R3dimerizationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2R3" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ligand"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R2R3 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_R2R3 </ci>
+                </apply>
+              </apply>
+              <ci> R2 </ci>
+              <ci> R3 </ci>
+              <ci> ligand </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R3decay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R2R3 </ci>
+              <ci> R2R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R2dimerizationbydrugNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1R2_off" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="drug"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R1R2off </ci>
+              <ci> R1 </ci>
+              <ci> R2 </ci>
+              <ci> drug </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R2offdecay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R2_off" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R1" stoichiometry="1"/>
+          <speciesReference species="R2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R1R2off </ci>
+              <ci> R1R2_off </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R3dimerizationbydrugNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2R3_off" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="drug"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R2R3off </ci>
+              <ci> R2 </ci>
+              <ci> R3 </ci>
+              <ci> drug </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R3_offdecay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2R3_off" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2" stoichiometry="1"/>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R2R3off </ci>
+              <ci> R2R3_off </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R2dimerizationbydrugNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2" stoichiometry="2"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2R2_off" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="drug"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> build_R2R2off </ci>
+              <ci> R2 </ci>
+              <ci> R2 </ci>
+              <ci> drug </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R2_offdecay" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2R2_off" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="R2" stoichiometry="2"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> decay_R2R2off </ci>
+              <ci> R2R2_off </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R1degradationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R1" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> degrade_R1R1 </ci>
+              <ci> R1R1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R2degradationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R2" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> degrade_R1R2 </ci>
+              <ci> R1R2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R1R3degradationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R1R3" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> degrade_R1R3 </ci>
+              <ci> R1R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R2R3degradationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R2R3" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> degrade_R2R3 </ci>
+              <ci> R2R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="R3degradationbylumNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="R3" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="drug"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> degrade_R3_lumretuzumab </ci>
+              <ci> R3 </ci>
+              <ci> drug </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="AKTtopAKTbyR1R1NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R1"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_AKT_R1R1 </ci>
+              <ci> AKT </ci>
+              <ci> R1R1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="AKTtopAKTbyR1R2NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R2"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_AKT_R1R2 </ci>
+              <ci> AKT </ci>
+              <ci> R1R2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="AKTtopAKTbyR1R3NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R3"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_AKT_R1R3 </ci>
+              <ci> AKT </ci>
+              <ci> R1R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="AKTtopAKTbyR2R3NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R2R3"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_AKT_R2R3 </ci>
+              <ci> AKT </ci>
+              <ci> R2R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="basalAKTtopAKT" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_AKT_basal </ci>
+              <ci> AKT </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pAKTtoAKT" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pAKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_pAKT </ci>
+              <ci> pAKT </ci>
+              <ci> mutation </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cRAFactivationbyR1R1NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R1"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_cRAF_R1R1 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_cRAF_R1R1 </ci>
+                </apply>
+              </apply>
+              <ci> cRAF </ci>
+              <ci> R1R1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cRAFactivationbyR1R2NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R2"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_cRAF_R1R2 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_cRAF_R1R2 </ci>
+                </apply>
+              </apply>
+              <ci> cRAF </ci>
+              <ci> R1R2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cRAFactivationbyR1R3NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R1R3"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_cRAF_R1R3 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_cRAF_R1R3 </ci>
+                </apply>
+              </apply>
+              <ci> cRAF </ci>
+              <ci> R1R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cRAFactivationbyR2R3NISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R2R3"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_cRAF_R2R3 </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <ci> drug_cRAF_R2R3 </ci>
+                </apply>
+              </apply>
+              <ci> cRAF </ci>
+              <ci> R2R3 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="basalcRAFactivation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_cRAF_basal </ci>
+              <ci> cRAF </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cRAFinactivation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pcRAF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cRAF" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> pcRAF </ci>
+              <ci> deact_cRAF </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="MEKtopMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pcRAF"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_MEK </ci>
+              <ci> MEK </ci>
+              <ci> pcRAF </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pMEKtoppMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ppMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pcRAF"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_MEK </ci>
+              <ci> pMEK </ci>
+              <ci> pcRAF </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="basalMEKtopMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_MEK_basal </ci>
+              <ci> MEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="basalpMEKtoppMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ppMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_MEK_basal </ci>
+              <ci> pMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ppMEKtopMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="ppMEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_pMEK </ci>
+              <ci> ppMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pMEKtoMEK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="MEK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_pMEK </ci>
+              <ci> pMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ERKtopERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="ERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ppMEK"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_ERK </ci>
+              <ci> ERK </ci>
+              <ci> ppMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pERKtoppERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ppERK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ppMEK"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_ERK </ci>
+              <ci> pERK </ci>
+              <ci> ppMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ppERKtopERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="ppERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_pERK </ci>
+              <ci> ppERK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pERKtoERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ERK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_pERK </ci>
+              <ci> pERK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6KtoppS6KbypAKT" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S6K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ppS6K" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pAKT"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_S6K_AKT </ci>
+              <ci> S6K </ci>
+              <ci> pAKT </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6KtoppS6KbyppERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S6K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ppS6K" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="ppERK"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> phospho_S6K_ERK </ci>
+              <ci> S6K </ci>
+              <ci> ppERK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ppS6KtoS6K" reversible="false">
+        <listOfReactants>
+          <speciesReference species="ppS6K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="S6K" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> dephospho_S6K </ci>
+              <ci> ppS6K </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ligandinductionNISS" reversible="false">
+        <listOfProducts>
+          <speciesReference species="ligand" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <cn type="integer"> 0 </cn>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="drugadditionNISS" reversible="false">
+        <listOfProducts>
+          <speciesReference species="drug" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <cn type="integer"> 0 </cn>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event>
+        <trigger>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn type="integer"> 60 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="ligand">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn type="integer"> 1 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event>
+        <trigger>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <geq/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn type="integer"> 0 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="drug">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn type="integer"> 1 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>

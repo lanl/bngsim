@@ -1,0 +1,103 @@
+# Created by BioNetGen 2.9.3
+version("2.2.4")
+setOption("NumberPerQuantityUnit","6.0221e+23")
+begin parameters
+    1 RT                   2.5774863  # Constant
+    2 NA                   6.0221418e23  # Constant
+    3 PI                   3.1415927  # Constant
+    4 rad_cell             1e-4  # Constant
+    5 vol_CP               ((4/3)*PI)*(rad_cell^3)  # ConstantExpression
+    6 conc_S_0             1e-9  # Constant
+    7 conc_A_0             10e-9  # Constant
+    8 conc_B_0             10e-9  # Constant
+    9 conc_C_0             10e-9  # Constant
+   10 Gf_SA                -47.5  # Constant
+   11 Gf_SB                -47.5  # Constant
+   12 Gf_SC                -47.5  # Constant
+   13 Gf_SAB               1.8  # Constant
+   14 Gf_SBC               -5.9  # Constant
+   15 Gf_SABC              -1.8  # Constant
+   16 phi                  0.5  # Constant
+   17 Ea0_SA               -17.8  # Constant
+   18 Ea0_SB               -17.8  # Constant
+   19 Ea0_SC               -17.8  # Constant
+   20 _InitialConc1        (conc_S_0*NA)*vol_CP  # ConstantExpression
+   21 _InitialConc2        (conc_A_0*NA)*vol_CP  # ConstantExpression
+   22 _InitialConc3        (conc_B_0*NA)*vol_CP  # ConstantExpression
+   23 _InitialConc4        (conc_B_0*NA)*vol_CP  # ConstantExpression
+   24 _AEact0_1            Ea0_SA/RT  # ConstantExpression
+   25 _AEact0_2            Ea0_SB/RT  # ConstantExpression
+   26 _AEact0_3            Ea0_SC/RT  # ConstantExpression
+   27 _R0_local1           exp((-(_AEact0_1+(phi*(Gf_SA/RT)))))  # ConstantExpression
+   28 _R1_local1           exp((-(_AEact0_2+(phi*(Gf_SB/RT)))))  # ConstantExpression
+   29 _R2_local1           exp((-(_AEact0_3+(phi*(Gf_SC/RT)))))  # ConstantExpression
+   30 _R0_local2           exp((-(_AEact0_1+(phi*((Gf_SA/RT)+(Gf_SAB/RT))))))  # ConstantExpression
+   31 __reverse_R0_local1  exp((-(_AEact0_1+((1-phi)*(-(Gf_SA/RT))))))  # ConstantExpression
+   32 _R1_local2           exp((-(_AEact0_2+(phi*((Gf_SB/RT)+(Gf_SAB/RT))))))  # ConstantExpression
+   33 _R1_local3           exp((-(_AEact0_2+(phi*((Gf_SB/RT)+(Gf_SBC/RT))))))  # ConstantExpression
+   34 __reverse_R1_local1  exp((-(_AEact0_2+((1-phi)*(-(Gf_SB/RT))))))  # ConstantExpression
+   35 _R2_local2           exp((-(_AEact0_3+(phi*((Gf_SC/RT)+(Gf_SBC/RT))))))  # ConstantExpression
+   36 __reverse_R2_local1  exp((-(_AEact0_3+((1-phi)*(-(Gf_SC/RT))))))  # ConstantExpression
+   37 _R0_local3           exp((-(_AEact0_1+(phi*((Gf_SA/RT)+(Gf_SAB/RT)+(Gf_SABC/RT))))))  # ConstantExpression
+   38 __reverse_R0_local2  exp((-(_AEact0_1+((1-phi)*((-(Gf_SA/RT))+(-(Gf_SAB/RT)))))))  # ConstantExpression
+   39 _R1_local4           exp((-(_AEact0_2+(phi*((Gf_SB/RT)+(Gf_SAB/RT)+(Gf_SBC/RT)+(Gf_SABC/RT))))))  # ConstantExpression
+   40 __reverse_R1_local2  exp((-(_AEact0_2+((1-phi)*((-(Gf_SB/RT))+(-(Gf_SAB/RT)))))))  # ConstantExpression
+   41 __reverse_R1_local3  exp((-(_AEact0_2+((1-phi)*((-(Gf_SB/RT))+(-(Gf_SBC/RT)))))))  # ConstantExpression
+   42 _R2_local3           exp((-(_AEact0_3+(phi*((Gf_SC/RT)+(Gf_SBC/RT)+(Gf_SABC/RT))))))  # ConstantExpression
+   43 __reverse_R2_local2  exp((-(_AEact0_3+((1-phi)*((-(Gf_SC/RT))+(-(Gf_SBC/RT)))))))  # ConstantExpression
+   44 __reverse_R0_local3  exp((-(_AEact0_1+((1-phi)*((-(Gf_SA/RT))+(-(Gf_SAB/RT))+(-(Gf_SABC/RT)))))))  # ConstantExpression
+   45 __reverse_R1_local4  exp((-(_AEact0_2+((1-phi)*((-(Gf_SB/RT))+(-(Gf_SAB/RT))+(-(Gf_SBC/RT))+(-(Gf_SABC/RT)))))))  # ConstantExpression
+   46 __reverse_R2_local3  exp((-(_AEact0_3+((1-phi)*((-(Gf_SC/RT))+(-(Gf_SBC/RT))+(-(Gf_SABC/RT)))))))  # ConstantExpression
+end parameters
+begin species
+    1 @CP::S(a,b,c) _InitialConc1
+    2 @CP::A(s) _InitialConc2
+    3 @CP::B(s) _InitialConc3
+    4 @CP::C(s) _InitialConc4
+    5 @CP::A(s!1).S(a!1,b,c) 0
+    6 @CP::B(s!1).S(a,b!1,c) 0
+    7 @CP::C(s!1).S(a,b,c!1) 0
+    8 @CP::A(s!1).B(s!2).S(a!1,b!2,c) 0
+    9 @CP::A(s!1).C(s!2).S(a!1,b,c!2) 0
+   10 @CP::B(s!1).C(s!2).S(a,b!1,c!2) 0
+   11 @CP::A(s!1).B(s!2).C(s!3).S(a!1,b!2,c!3) 0
+end species
+begin reactions
+    1 1,2 5 3.9642718e-13*_R0_local1 #R0 unit_conversion=1/(6.0221e+23*vol_CP)
+    2 1,3 6 3.9642718e-13*_R1_local1 #R1 unit_conversion=1/(6.0221e+23*vol_CP)
+    3 1,4 7 3.9642718e-13*_R2_local1 #R2 unit_conversion=1/(6.0221e+23*vol_CP)
+    4 2,6 8 3.9642718e-13*_R0_local2 #R0 unit_conversion=1/(6.0221e+23*vol_CP)
+    5 2,7 9 3.9642718e-13*_R0_local1 #R0 unit_conversion=1/(6.0221e+23*vol_CP)
+    6 5 1,2 __reverse_R0_local1 #_reverse_R0
+    7 3,5 8 3.9642718e-13*_R1_local2 #R1 unit_conversion=1/(6.0221e+23*vol_CP)
+    8 3,7 10 3.9642718e-13*_R1_local3 #R1 unit_conversion=1/(6.0221e+23*vol_CP)
+    9 6 1,3 __reverse_R1_local1 #_reverse_R1
+   10 4,5 9 3.9642718e-13*_R2_local1 #R2 unit_conversion=1/(6.0221e+23*vol_CP)
+   11 4,6 10 3.9642718e-13*_R2_local2 #R2 unit_conversion=1/(6.0221e+23*vol_CP)
+   12 7 1,4 __reverse_R2_local1 #_reverse_R2
+   13 2,10 11 3.9642718e-13*_R0_local3 #R0 unit_conversion=1/(6.0221e+23*vol_CP)
+   14 8 2,6 __reverse_R0_local2 #_reverse_R0
+   15 9 2,7 __reverse_R0_local1 #_reverse_R0
+   16 3,9 11 3.9642718e-13*_R1_local4 #R1 unit_conversion=1/(6.0221e+23*vol_CP)
+   17 8 3,5 __reverse_R1_local2 #_reverse_R1
+   18 10 3,7 __reverse_R1_local3 #_reverse_R1
+   19 4,8 11 3.9642718e-13*_R2_local3 #R2 unit_conversion=1/(6.0221e+23*vol_CP)
+   20 9 4,5 __reverse_R2_local1 #_reverse_R2
+   21 10 4,6 __reverse_R2_local2 #_reverse_R2
+   22 11 2,10 __reverse_R0_local3 #_reverse_R0
+   23 11 3,9 __reverse_R1_local4 #_reverse_R1
+   24 11 4,8 __reverse_R2_local3 #_reverse_R2
+end reactions
+begin groups
+    1 SAB_only             8
+    2 SAC_only             9,11
+    3 SBC_only             10,11
+    4 SABC                 11
+    5 S_total              1,5,6,7,8,9,10,11
+    6 A_bound              5,8,9,11
+    7 A_total              2,5,8,9,11
+    8 B_bound              6,8,10,11
+    9 B_total              3,6,8,10,11
+   10 C_bound              7,9,10,11
+   11 C_total              4,7,9,10,11
+end groups

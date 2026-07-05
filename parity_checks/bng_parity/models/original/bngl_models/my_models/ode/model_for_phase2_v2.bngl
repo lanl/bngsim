@@ -1,0 +1,319 @@
+begin model
+begin parameters
+##### Settings for adjustable parameters #####
+KA0__FREE 1.137217826929963    
+KXRT__FREE 1.4047526254695337               
+RT_ref__FREE 0.17534919848431335         
+a_ref__FREE 5.632746465406803  
+c__FREE 288.5038950948649           
+jm__FREE 0.11141531912614688  
+jp__FREE 0.10184384965073504   
+kfRT__FREE 3.477481617697133
+##############################################
+# rate constant for clearance of free virus
+c = c__FREE # /d
+# single-site rate constant for virion-receptor association
+kfRT = kfRT__FREE # /d
+# scaled equilibrium crosslinking constant
+KXRT = KXRT__FREE # dimensionless
+# total number of FDC receptors
+RT_ref = RT_ref__FREE*1e15 # dimensionless
+# reference total surface area of FDCs
+#  - The expected value is 82.1e9*(7.67/5.32)/(1e6*exp(9.899)) = 5.947 m^2
+#  - (based on measurements of B at t = 8 wks and B/a at t = 6 wks).
+a_ref = a_ref__FREE # m^2
+# (effective) equilibrium constant for anti-CD21 Ab-CD21 binding scaled by free Ab abundance
+#  - Affinity/avidit (K) and free Ab concentration (A0) need not be known independently because
+#  -  we are assuming that A0 is unperturbed by interaction with viral receptors on FDCs.
+#  -  We assume that the antibody is available in excess or its plasma concentration is buffered.
+KA0 = KA0__FREE # dimensionless
+# antibody crosslinking factor (=0 => binding is effectively monovalent)
+chi = 0 # chi__FREE # dimensionless
+# rate constant for reversal of immobilization
+jm = jm__FREE # /d
+# rate constant for immobilization
+jp = jp__FREE # dimensionless
+# factor characterizing immobilization dependence on cluster size (0 or 1)
+#  - =0 => immobilization is independent of cluster size
+fjp = 0 # fjp__FREE # dimensionless
+# factor characterizing reversal of immobilization dependence on cluster size (0 or 1)
+#  - =0 => reversal of immobilization is independent of cluster size
+fjm = 0 # fjm__FREE # dimensionless
+# fraction of receptors inaccessible to therapeutic antibody
+f_avail = 1 # f_avail__FREE # dimensionless
+##############################################
+# Avogadro constant (exact value)
+NA 6.02214076e23 # /mol
+# reference body weight (average of all animals)
+BWref 8.07 # kg
+# cohort-specific body weight
+# BW_C1 5.32 # kg, control animals in Phase I study
+# BW_T1 5.24 # kg, treated animals in Phase I study
+# BW_C2 7.67 # kg, control animals in Phase II study
+# BW_T2 8.09 # kg, treated animals in Phase II study
+BW 7.67 # kg
+# extracellular fluid volume
+#  - See Table I in Zhao et al. (2015).
+#  - nu = 2.78 L for BW = 8.07 kg
+nu = (0.157+0.314+0.735)*(BW/3.5) # L
+# valence
+#  - Valence is related to the number of Env spikes per virion.
+#  - HIV has 14 Env spikes per virion and SIVmac239 has 73 Env spikes per virion (Zhu et al., 2006).
+n 14 # dimensionless
+# total number of viral receptors on FDCs
+#RT = RT_int*a # dimensionless
+RT = RT_ref*(BW/BWref)
+# total FDC surface area
+a = a_ref*1e6*(BW/BWref) # mm^2 (1 m^2 = 1e6 mm^2)
+# single-site virion-receptor dissociation rate constant
+#  - See Table 2 in Hlavacek et al. (2000).
+kr = 0.1*(60*60*24) # 0.1 /s converted to 8640 /d
+# single-site virion-receptor association rate constant
+#kf = kf_int*(60*60*24)/(NA*nu) # /M/s (intensive) converted to /d (extensive)
+kf = kfRT/RT
+# reverse crosslinking constant
+kmx = kr # /d
+# forward crosslinking constant
+kpx = kmx*KXRT/RT # /d
+# plasma viral load at t = 7 weeks (42 d) p.i.
+#  - See initial measurements for the control animals in the Phase II study.
+#  - The quantity 1676200/mL is the average BW-independent concentration for all 15 animals in Phase II.
+#  - The quantity V0 is a cohort-specific BW-dependent quantity
+V0 = 1676200*1000*nu/2 # vRNA copies per mL converted to whole-body number
+# FDC-associated viral load at t = 7 weeks (42 d) p.i.
+#  - See initial measurements for the control animals in the Phase II study.
+#  - The quantity 21917/mm^2 is the average BW-independent surface density measurement for all 15 animals in Phase II.
+#  - The quantity B0 is a cohort-specific BW-dependent quantity
+B0 = 21917*a # number of virions per mm^2 converted to whole-body number
+# anti-retroviral therapy (ART) indicator
+ART 0 # 0 (-ART) or 1 (+ART)
+# rate constant for anti-CD21 Ab-receptor dissociation
+k_dissoc = 0.01*(60*60*24) # 0.01 /s converted to 864 /d
+# effective rate constant for Ab-receptor association
+k_assoc_A0 = k_dissoc*KA0 # /d
+# reverse rate constant for Ab-mediated receptor crosslinking
+kmxa = k_dissoc # /d
+# forward rate constant for Ab-mediated receptor crosslinking
+kpxa = (kmxa/kmx)*chi*kpx # /d
+# anti-CD21 antibody therapy (Ab) indicator
+thera_Ab 0 # 0 (-Ab) or 1 (+Ab)
+end parameters
+begin molecule types
+counter()
+V()
+R()
+H()
+R01(mobile~T~F)
+R02(mobile~T~F)
+R03(mobile~T~F)
+R04(mobile~T~F)
+R05(mobile~T~F)
+R06(mobile~T~F)
+R07(mobile~T~F)
+R08(mobile~T~F)
+R09(mobile~T~F)
+R10(mobile~T~F)
+R11(mobile~T~F)
+R12(mobile~T~F)
+R13(mobile~T~F)
+R14(mobile~T~F)
+H01(mobile~T~F)
+H02(mobile~T~F)
+H03(mobile~T~F)
+H04(mobile~T~F)
+H05(mobile~T~F)
+H06(mobile~T~F)
+H07(mobile~T~F)
+H08(mobile~T~F)
+H09(mobile~T~F)
+H10(mobile~T~F)
+H11(mobile~T~F)
+H12(mobile~T~F)
+H13(mobile~T~F)
+H14(mobile~T~F)
+S1()
+S2()
+end molecule types
+begin seed species
+counter() 0
+V() B0+V0
+R() f_avail*RT
+H() (1-f_avail)*RT
+end seed species
+begin observables
+Molecules freeV V()
+Molecules freeR R()
+Molecules freeH H()
+Molecules V_bnd_R R01() R02() R03() R04() R05() R06() R07() R08() R09() R10() R11() R12() R13() R14()
+Molecules V_bnd_H H01() H02() H03() H04() H05() H06() H07() H08() H09() H10() H11() H12() H13() H14()
+Molecules S1 S1()
+Molecules S2 S2()
+Molecules t counter()
+end observables
+begin functions
+# plasma viral load
+lnVconc()=if(freeV>0,ln(2*freeV/(nu*1000)),2.708) # natural log vRNA copies per mL, 15 copies per mL is the limit of detection
+lnVconc_p2_C()=if(t<7,13.620,\
+if(t<49,13.620,\
+if(t<56,9.192,\
+if(t<63,7.454,\
+if(t<70,7.591,\
+if(t<77,7.248,\
+if(t<84,6.463,\
+if(t<88,5.530,0))))))))#)))))
+lnVconc_p2_T()=if(t<7,13.548,\
+if(t<49,13.548,\
+if(t<56,9.495,\
+if(t<63,8.166,\
+if(t<70,7.706,\
+if(t<77,7.340,\
+if(t<84,6.802,\
+if(t<88,5.664,0))))))))
+# (apparent) whole-body number of FDC-associated virions scaled by 1e-9
+totFDC()=V_bnd_R*1e-9 # billions of FDC-associated virions
+totFDC_p1_C()=if(t<14, 0,\
+if(t<28,82.1*7.67/5.32,\
+if(t<56,82.1*7.67/5.32,\
+if(t<60,82.1*7.67/5.32,0))))
+totFDC_p1_T()=if(t<14, 0,\
+if(t<28,5.71*8.09/5.24,\
+if(t<56,5.71*8.09/5.24,\
+if(t<60,5.71*8.09/5.24,0))))
+# (apparent) FDC-associated virion surface density
+lnFDCdens()=if(V_bnd_R>0,ln(V_bnd_R/a),0) # natural log number of virions per mm^2
+lnFDCden_p2_C()=if(t<42,9.899,\
+if(t<49,9.899,\
+if(t<56,9.486,\
+if(t<70,8.298,\
+if(t<84,7.117,\
+if(t<88,5.851,0))))))
+lnFDCdens_p2_T()=if(t<42,9.764,\
+if(t<49,9.764,\
+if(t<56,9.091,\
+if(t<70,7.755,\
+if(t<84,6.170,\
+if(t<88,4.049,0))))))
+#
+#app_f_rec_free()=freeR/(f_avail*RT) #=(freeR+freeH)/RT
+app_f_rec_bnd_to_virus()=(f_avail*RT-freeR-S1-2*S2)/(f_avail*RT) #=1-freeR/RT-freeH/RT-(S1+2*S2)/RT
+app_f_rec_bnd_to_Ab()=(S1+2*S2)/(f_avail*RT) #=(S1+2*S2)/RT
+#app_f_avail_rec_bnd_to_Ab()=(S1+2*S2)/(f_avail*RT)
+#pa_approx()=(f_avail*RT-S1-2*S2)/(RT-S1-2*S2)
+#pa_exact()=freeR/(freeR+freeH)
+end functions
+begin reaction rules
+# timer
+0->counter() 1
+# viral decay
+V()->0 c*ART
+# capture/release of free virions
+#  by receptors accessible to therapeutic antibody
+V()+R()<->R01(mobile~T) n*kf,kr
+#  by receptors inaccessible to therapeutic antibody
+V()+H()<->H01(mobile~T) n*kf,kr
+# reversible crosslinking of viral receptors by FDC-tethered virions
+#  by receptors accessible to therapeutic antibody
+R01(mobile~T)+R()<->R02(mobile~T) (n-1)*kpx,2*kmx
+R02(mobile~T)+R()<->R03(mobile~T) (n-2)*kpx,3*kmx
+R03(mobile~T)+R()<->R04(mobile~T) (n-3)*kpx,4*kmx
+R04(mobile~T)+R()<->R05(mobile~T) (n-4)*kpx,5*kmx
+R05(mobile~T)+R()<->R06(mobile~T) (n-5)*kpx,6*kmx
+R06(mobile~T)+R()<->R07(mobile~T) (n-6)*kpx,7*kmx
+R07(mobile~T)+R()<->R08(mobile~T) (n-7)*kpx,8*kmx
+R08(mobile~T)+R()<->R09(mobile~T) (n-8)*kpx,9*kmx
+R09(mobile~T)+R()<->R10(mobile~T) (n-9)*kpx,10*kmx
+R10(mobile~T)+R()<->R11(mobile~T) (n-10)*kpx,11*kmx
+R11(mobile~T)+R()<->R12(mobile~T) (n-11)*kpx,12*kmx
+R12(mobile~T)+R()<->R13(mobile~T) (n-12)*kpx,13*kmx
+R13(mobile~T)+R()<->R14(mobile~T) (n-13)*kpx,14*kmx
+#  by receptors inaccessible to therapeutic antibody
+H01(mobile~T)+H()<->H02(mobile~T) (n-1)*kpx,2*kmx
+H02(mobile~T)+H()<->H03(mobile~T) (n-2)*kpx,3*kmx
+H03(mobile~T)+H()<->H04(mobile~T) (n-3)*kpx,4*kmx
+H04(mobile~T)+H()<->H05(mobile~T) (n-4)*kpx,5*kmx
+H05(mobile~T)+H()<->H06(mobile~T) (n-5)*kpx,6*kmx
+H06(mobile~T)+H()<->H07(mobile~T) (n-6)*kpx,7*kmx
+H07(mobile~T)+H()<->H08(mobile~T) (n-7)*kpx,8*kmx
+H08(mobile~T)+H()<->H09(mobile~T) (n-8)*kpx,9*kmx
+H09(mobile~T)+H()<->H10(mobile~T) (n-9)*kpx,10*kmx
+H10(mobile~T)+H()<->H11(mobile~T) (n-10)*kpx,11*kmx
+H11(mobile~T)+H()<->H12(mobile~T) (n-11)*kpx,12*kmx
+H12(mobile~T)+H()<->H13(mobile~T) (n-12)*kpx,13*kmx
+H13(mobile~T)+H()<->H14(mobile~T) (n-13)*kpx,14*kmx
+# immobilization
+#  of receptors accessible to therapeutic antibody
+R03(mobile~T)<->R03(mobile~F) jp*(1+2*fjp),jm/(1+2*fjm)
+R04(mobile~T)<->R04(mobile~F) jp*(1+3*fjp),jm/(1+3*fjm)
+R05(mobile~T)<->R05(mobile~F) jp*(1+4*fjp),jm/(1+4*fjm)
+R06(mobile~T)<->R06(mobile~F) jp*(1+5*fjp),jm/(1+5*fjm)
+R07(mobile~T)<->R07(mobile~F) jp*(1+6*fjp),jm/(1+6*fjm)
+R08(mobile~T)<->R08(mobile~F) jp*(1+7*fjp),jm/(1+7*fjm)
+R09(mobile~T)<->R09(mobile~F) jp*(1+8*fjp),jm/(1+8*fjm)
+R10(mobile~T)<->R10(mobile~F) jp*(1+9*fjp),jm/(1+9*fjm)
+R11(mobile~T)<->R11(mobile~F) jp*(1+10*fjp),jm/(1+10*fjm)
+R12(mobile~T)<->R12(mobile~F) jp*(1+11*fjp),jm/(1+11*fjm)
+R13(mobile~T)<->R13(mobile~F) jp*(1+12*fjp),jm/(1+12*fjm)
+R14(mobile~T)<->R14(mobile~F) jp*(1+13*fjp),jm/(1+13*fjm)
+#  of receptors inaccessible to therapeutic antibody
+H03(mobile~T)<->H03(mobile~F) jp*(1+2*fjp),jm/(1+2*fjm)
+H04(mobile~T)<->H04(mobile~F) jp*(1+3*fjp),jm/(1+3*fjm)
+H05(mobile~T)<->H05(mobile~F) jp*(1+4*fjp),jm/(1+4*fjm)
+H06(mobile~T)<->H06(mobile~F) jp*(1+5*fjp),jm/(1+5*fjm)
+H07(mobile~T)<->H07(mobile~F) jp*(1+6*fjp),jm/(1+6*fjm)
+H08(mobile~T)<->H08(mobile~F) jp*(1+7*fjp),jm/(1+7*fjm)
+H09(mobile~T)<->H09(mobile~F) jp*(1+8*fjp),jm/(1+8*fjm)
+H10(mobile~T)<->H10(mobile~F) jp*(1+9*fjp),jm/(1+9*fjm)
+H11(mobile~T)<->H11(mobile~F) jp*(1+10*fjp),jm/(1+10*fjm)
+H12(mobile~T)<->H12(mobile~F) jp*(1+11*fjp),jm/(1+11*fjm)
+H13(mobile~T)<->H13(mobile~F) jp*(1+12*fjp),jm/(1+12*fjm)
+H14(mobile~T)<->H14(mobile~F) jp*(1+13*fjp),jm/(1+13*fjm)
+# sequestration of viral receptors on FDCs through binding to (bivalent) therapeutic antibody
+#  - R() is accessible to the antibody.
+#  - H() is hidden (inaccessible to the antibody).
+R()<->S1() thera_Ab*2*k_assoc_A0,k_dissoc
+S1()+R()<->S2() chi*kpxa,2*kmxa
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+###########################################
+##### Phase II data - control animals #####
+###########################################
+# calculate (apparent) steady-state accumulation of virions on FDCs (in the absence of therapeutic antibody)
+resetConcentrations()
+setParameter("BW",7.67) # average body weight (kg) of Phase II control animals
+setParameter("ART",0) # -ART, no viral decay
+setParameter("thera_Ab",0) # -Ab, no therapeutic antibody
+simulate({suffix=>"p1_control_ART",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# equilibration
+resetConcentrations()
+setParameter("BW",7.67) # average body weight (kg) of Phase II control animals
+setParameter("ART",0) # -ART, no viral decay
+setParameter("thera_Ab",0) # -Ab, no therapeutic antibody
+simulate({suffix=>"p2_control_ART",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# simulate ART
+setParameter("ART",1) # +ART
+simulate({suffix=>"p2_control_ART",continue=>1,method=>"ode",t_start=>42,t_end=>88,n_steps=>460,print_functions=>1})
+###########################################
+##### Phase II data - treated animals #####
+###########################################
+# calculate (apparent) steady-state accumulation of virions on FDCs (in the presence of therapeutic antibody)
+resetConcentrations()
+setParameter("BW",8.09) # average body weight (kg) of Phase II treated animals
+setParameter("ART",0) # -ART, no viral decay
+setParameter("thera_Ab",1) # +Ab, antibody treatment
+simulate({suffix=>"p1_treated_ART_Ab",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# equilibration
+resetConcentrations()
+setParameter("BW",8.09) # average body weight (kg) of Phase II treated animals
+setParameter("ART",0) # -ART, no viral decay
+setParameter("thera_Ab",0) # -Ab, no therapeutic antibody
+simulate({suffix=>"p2_treated_ART_Ab",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# simulate ART
+setParameter("ART",1) # +ART
+simulate({suffix=>"p2_treated_ART_Ab",continue=>1,method=>"ode",t_start=>42,t_end=>49,n_steps=>70,print_functions=>1})
+# simulate treatment with therapeutic antibody
+setParameter("thera_Ab",1) # +Ab
+simulate({suffix=>"p2_treated_ART_Ab",continue=>1,method=>"ode",t_start=>49,t_end=>88,n_steps=>390,print_functions=>1})
+end actions

@@ -1,0 +1,34 @@
+# Regression test for issue #28: BNGL accepts an Observable referenced
+# as a zero-arg call (`obs()`) anywhere bareword `obs` is valid. The BNG
+# Perl parser at bionetgen/bng2/Perl2/Expression.pm:870-927 explicitly
+# allows this; BNG2.pl preserves the syntax verbatim when it emits the
+# .net file. ExprTk's grammar would parse `obs()` as the implicit
+# multiplication `obs * ()` and reject the empty parens with ERR248,
+# so bngsim's ExprTkEvaluator::compile() strips `obs()` → `obs` for
+# any name registered as a scalar variable.
+#
+# Model: A --k1*Atot()--> B
+#   Atot() in the rate law would have failed to compile pre-fix.
+#   Btot is referenced as a bareword in a second function so we also
+#   exercise the mixed bareword/zero-arg-call case.
+#
+#   Analytical: dA/dt = -k1*A,   A(t) = A0*exp(-k1*t)
+begin parameters
+    1 k1  0.5  # Constant
+end parameters
+begin species
+    1 A() 10
+    2 B()  0
+end species
+begin functions
+    1 _rateLaw1() k1*Atot()
+    2 _rateLaw2() k1*Btot
+end functions
+begin reactions
+    1 1 2 _rateLaw1 #_R1
+    2 2 1 _rateLaw2 #_R2_back
+end reactions
+begin groups
+    1 Atot  1
+    2 Btot  2
+end groups

@@ -1,0 +1,165 @@
+
+begin model
+begin parameters
+NA			6.02e23 # Avogadro's number (molecules per mol)
+f			1.0 # fraction of one cell to be considered in simulation
+Vo			f*5.0e-10 # [=] L, volume of fluid surrounding one cell
+# Vo is based on a channel volume of 500 nL and 1000 cells per channel
+V			f*3.0e-12 # [=] L, cytoplasmic volume (3 pL)
+L_tot_0		0.0
+L_tot_1		10.0e-9*NA*Vo # [=] ligand molecules per cell
+# L_tot_1 is based on a ligand concentration of 10 nM
+R_tot		3.0e5 # [=] receptor molecules per cell
+# R_tot corresponds to a receptor concentration of 1 nM based on
+# ... channel volume is 500 nL
+# ... 1000 cells per channel
+# ... 3.0e5 receptors per cell
+# association rate constant for ligand-receptor binding is 1.8e8 /M/min
+# dissociation rate constant is 0.60 /min
+# divide by NA*Vo to convert from /M/min to /(molecule/cell)/min
+kon			1.8e8/(NA*Vo) # [=] /(molecule/cell)/min
+koff		0.60 # [=] /min
+Syk_tot		3.0e5 # number per cell
+SHIP_tot	3.0e5 # number per cell
+PH_tot		3.0e5 # number per cell
+IP3R_tot	3.0e5 # number per cell
+kase		60.0 # [=] /min
+pase		120.0 # [=] /min (2 /sec)
+kp_Syk		6.0e7/(NA*V) # corresponds to 1.e6 /M/sec
+km_Syk		7.8 # [=] /min, corresponds to 0.13 /sec
+kp_SHIP		1.0e6/(NA*V) # slower recruitment of SHIP (vs. Syk), 10x steady-state level
+km_SHIP		0.10 # 0.05 # [=] /min - long-lived membrane-associated SHIP complex
+ksynth1		10.0 # [=] /min
+kdeg1		0.002 # [=] /min, > 1 per min
+kp_PH		30.0e7/(NA*V) # corresponds to 1.e6 /M/sec
+km_PH		30.0 # /min, corresponds to 0.1 /sec
+ksynth2		10.0 # /min (save 2.0)
+kdeg2		500.0 # /min (save 100.0)
+kp_IP3		5.0e9/(NA*V) # 
+km_IP3		30.0 # /min
+H_tot		1.0e6 # number per cell
+kdegran		2.0e-6 # tuned to produce 10% degranulation after 5 min pulse of ligand 
+kE3		0.035 # 0.025	#10.0 # fast ubiquitination of membrane-associated SHIP
+kproteosome	60 # 0.02 # /min (slow degradation of ubiquitinated SHIP) 
+kp_fast		6.0e6/(NA*V)
+km_fast		60.0 # [=] /min (short-lived membrane-associated SHIP complex)
+k_on		1
+k_off		0.002
+kp_x		1e6
+km_x		100
+x_tot 8*SHIP_tot
+end parameters
+
+begin molecule types
+L(r)
+R(l,Y~O~P)
+Syk(tSH2)
+x(on~0~1,K~0~Ub) 
+SHIP(SH2,C2,K~O~Ub,x)
+PIP3(s)
+PI34P2(s)
+PH(s)
+IP3(s)
+IP3R(s)
+null()
+H(loc~in~out)
+end molecule types
+
+begin seed species
+$L(r)				0.0
+R(l,Y~O)			R_tot
+Syk(tSH2)			Syk_tot
+SHIP(SH2,C2,K~O,x)		SHIP_tot
+PIP3(s)				0.0
+PH(s)				PH_tot
+IP3(s)				0.0
+IP3R(s)				IP3R_tot
+null()				1.0
+H(loc~in)			H_tot
+PI34P2(s)			0.0
+x(on~0,K~0)			x_tot
+end  seed species
+
+begin observables
+Molecules freeL L(r)
+Molecules boundR R(l!+)
+Molecules freeR R(l)
+Molecules phosR R(Y~P!?)
+Molecules unphosR R(Y~O)
+Molecules actSyk Syk(tSH2!+)
+Molecules actSHIP SHIP(SH2!+,x!+) SHIP(C2!+,x!+)
+Molecules SHIP_Ub SHIP(K~Ub)
+Molecules totalSHIP SHIP()
+Molecules boundPIP3 PIP3(s!+)
+Molecules freePIP3 PIP3(s)
+Molecules freeIP3 IP3(s)
+Molecules boundIP3 IP3(s!+)
+Molecules degranulation H(loc~out)
+Molecules x x()
+Molecules x_on x(on~1)
+Molecules xShip x().SHIP()
+Molecules Ubx x(K~Ub)
+Molecules Ligtot L()
+end observables
+
+begin reaction rules
+# ligand-receptor binding
+L(r) + R(l) <-> L(r!1).R(l!1) kon,koff
+# ligand-dependent receptor phosphorylation
+R(l!+,Y~O) -> R(l!+,Y~P) kase
+# receptor dephosphorylation
+R(Y~P) -> R(Y~O) pase
+# recruitment of Syk to phosphorylated receptor
+R(Y~P) + Syk(tSH2) <-> R(Y~P!1).Syk(tSH2!1) kp_Syk,km_Syk
+# recruitment of SHIP to phosphorylated receptor
+R(Y~P) + SHIP(SH2,C2) <-> R(Y~P!1).SHIP(SH2!1,C2) kp_SHIP,km_SHIP
+# activation of x
+R(Y~P) + x(on~0) -> R(Y~P) + x(on~1) k_on
+# decativation of x
+x(on~1) -> x(on~0) k_off
+# activated Syk-dependent synthesis of PIP3
+Syk(tSH2!+) -> Syk(tSH2!+) + PIP3(s) ksynth1
+# x binds to SHIP
+x(on~1) + SHIP(x) <-> x(on~1!1).SHIP(x!1) kp_x,km_x
+# activated SHIP-dependent degradation of PIP3
+SHIP(SH2!+,x!+) + PIP3(s) -> SHIP(SH2!+,x!+) + PI34P2(s) kdeg1
+SHIP(C2!+,x!+) + PIP3(s) -> SHIP(C2!+,x!+) + PI34P2(s) kdeg1
+# recruitment of SHIP to PtdIns(3,4)P2 via C2 domain of SHIP
+## SHIP(SH2,C2) + PI34P2(s) <-> SHIP(SH2,C2!1).PI34P2(s!1) kp_fast,km_fast
+# recruitment of PH domain-containing protein(s) to PIP3
+PIP3(s) + PH(s) <-> PIP3(s!1).PH(s!1) kp_PH,km_PH
+# activated PH domain-containing protein-dependent synthesis of IP3
+PH(s!+) -> PH(s!+) + IP3(s) ksynth2
+# clearance of IP3
+IP3(s) + null() -> null() kdeg2
+# IP3-IP3R binding
+IP3(s) + IP3R(s) <-> IP3(s!1).IP3R(s!1) kp_IP3,km_IP3
+# degranulation (histamine release)
+H(loc~in) + IP3(s!+) -> H(loc~out) + IP3(s!+) kdegran
+# ubiquitination of activated x
+x(on~1!?,K~0) -> x(on~1!?,K~Ub) kE3
+
+# proteosomal degradation of ubiquitinated x
+x(on,K~Ub) + null() -> null() kproteosome
+x(on~1!1,K~Ub).SHIP(x!1) + null() -> null() + SHIP(x) kproteosome
+end reaction rules
+
+end model
+
+#ACTIONS
+# 5 MINUTES
+generate_network({overwrite=>1});
+writeLatex()
+# first 5 min pulse of ligand
+setConcentration("L(r)","L_tot_1");
+simulate_ode({suffix=>"p1_5",t_end=>5,n_steps=>50});
+saveConcentrations();
+resetConcentrations();
+# remove ligand for 5 min (or 60 min or 240 min)
+setConcentration("L(r)","L_tot_0");
+simulate_ode({suffix=>"p2_5",t_end=>5,n_steps=>50});
+saveConcentrations();
+resetConcentrations();
+# second 5 min pulse of ligand
+setConcentration("L(r)","L_tot_1");
+simulate_ode({suffix=>"p3_5",t_end=>5,n_steps=>50});

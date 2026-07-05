@@ -1,0 +1,533 @@
+{
+  "machine_info": {
+    "platform": "macOS-15.7.4-x86_64-i386-64bit",
+    "processor": "i386",
+    "cpu_count": 6,
+    "python": "3.12.13",
+    "bngsim_version": "0.9.22",
+    "date": "2026-05-31 20:42 UTC",
+    "git_commit": "04147c29",
+    "run_network_version": "run_network 3.0"
+  },
+  "mode": "both",
+  "effort": "high",
+  "repeats": 7,
+  "results": [
+    {
+      "model": "BIOMD0000000013",
+      "effort": "low",
+      "T": 100.0,
+      "N": 200,
+      "note": "Calvin cycle, stiff, ns~27",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 0.0009459597832992103,
+        "max_abs": 3.8066977126050006e-08,
+        "peak": 4.426518589561662,
+        "peak_rel": 8.599755395993852e-09
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.0033138630096800625,
+          "median_wall": 0.0033289499988313764,
+          "spread": 0.0002656519936863333,
+          "rel_spread": 0.07980053583850466,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 695,
+            "n_rhs_evals": 955,
+            "n_jac_evals": 141,
+            "n_err_test_fails": 46,
+            "n_nonlin_iters": 952,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/BIOMD0000000013/BIOMD0000000013_url.xml",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.0033138630096800625,
+            "stats": {
+              "n_steps": 695,
+              "n_rhs_evals": 955,
+              "n_jac_evals": 141,
+              "n_err_test_fails": 46,
+              "n_nonlin_iters": 952,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.003431801000260748,
+          "median_wall": 0.003466024005319923,
+          "spread": 0.0004802289913641289,
+          "rel_spread": 0.13855327909646215,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 693,
+            "n_rhs_evals": 954,
+            "n_jac_evals": 141,
+            "n_err_test_fails": 46,
+            "n_nonlin_iters": 951,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/BIOMD0000000013/BIOMD0000000013_url.xml",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.0035664099996211007,
+            "stats": {
+              "n_steps": 693,
+              "n_rhs_evals": 954,
+              "n_jac_evals": 141,
+              "n_err_test_fails": 46,
+              "n_nonlin_iters": 951,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 1.0355892776002444,
+        "speedup_median": 1.0411763488597505
+      }
+    },
+    {
+      "model": "MODEL9089538076",
+      "effort": "medium",
+      "T": 100.0,
+      "N": 200,
+      "note": "ns~200",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 0.008905270056524523,
+        "max_abs": 0.04411752230953425,
+        "peak": 658699.4763785785,
+        "peak_rel": 6.697670772730099e-08
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.026590064997435547,
+          "median_wall": 0.028362914992612787,
+          "spread": 0.005549365014303476,
+          "rel_spread": 0.19565566570815537,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 433,
+            "n_rhs_evals": 549,
+            "n_jac_evals": 56,
+            "n_err_test_fails": 10,
+            "n_nonlin_iters": 546,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9089538076/MODEL9089538076.xml",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.028362914992612787,
+            "stats": {
+              "n_steps": 433,
+              "n_rhs_evals": 549,
+              "n_jac_evals": 56,
+              "n_err_test_fails": 10,
+              "n_nonlin_iters": 546,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.032915438001509756,
+          "median_wall": 0.033567756006959826,
+          "spread": 0.003703193986439146,
+          "rel_spread": 0.11031997449193025,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 423,
+            "n_rhs_evals": 537,
+            "n_jac_evals": 54,
+            "n_err_test_fails": 12,
+            "n_nonlin_iters": 534,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9089538076/MODEL9089538076.xml",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.0366186319879489,
+            "stats": {
+              "n_steps": 423,
+              "n_rhs_evals": 537,
+              "n_jac_evals": 54,
+              "n_err_test_fails": 12,
+              "n_nonlin_iters": 534,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 1.2378848267081803,
+        "speedup_median": 1.183508677288729
+      }
+    },
+    {
+      "model": "BIOMD0000000595",
+      "effort": "medium",
+      "T": 100.0,
+      "N": 200,
+      "note": "ns~218, 1490 rxns (reaches steady state fast at T=100)",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 3.648049492342976e-11,
+        "max_abs": 1.3322676295501878e-15,
+        "peak": 3.32,
+        "peak_rel": 4.01285430587406e-16
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.044120391001342796,
+          "median_wall": 0.045373806002316996,
+          "spread": 0.004216485991491936,
+          "rel_spread": 0.09292775640810522,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 16,
+            "n_rhs_evals": 22,
+            "n_jac_evals": 11,
+            "n_err_test_fails": 0,
+            "n_nonlin_iters": 19,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/BIOMD0000000595/BIOMD0000000595_url.xml",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.04833687699283473,
+            "stats": {
+              "n_steps": 16,
+              "n_rhs_evals": 22,
+              "n_jac_evals": 11,
+              "n_err_test_fails": 0,
+              "n_nonlin_iters": 19,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.04751816399220843,
+          "median_wall": 0.049986675003310665,
+          "spread": 0.0042696860182331875,
+          "rel_spread": 0.08541648385195459,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 16,
+            "n_rhs_evals": 22,
+            "n_jac_evals": 11,
+            "n_err_test_fails": 0,
+            "n_nonlin_iters": 19,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/BIOMD0000000595/BIOMD0000000595_url.xml",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.05112843199458439,
+            "stats": {
+              "n_steps": 16,
+              "n_rhs_evals": 22,
+              "n_jac_evals": 11,
+              "n_err_test_fails": 0,
+              "n_nonlin_iters": 19,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 1.077011397989701,
+        "speedup_median": 1.101663699993739
+      }
+    },
+    {
+      "model": "MODEL9087255381",
+      "effort": "high",
+      "T": 100.0,
+      "N": 200,
+      "note": "ns~289",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 0.0015961697503123818,
+        "max_abs": 3.361030010751165e-06,
+        "peak": 2000.0,
+        "peak_rel": 1.6805150053755825e-09
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.3343114219896961,
+          "median_wall": 1.395018176001031,
+          "spread": 2.766322752009728,
+          "rel_spread": 1.983001225073417,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 454,
+            "n_rhs_evals": 599,
+            "n_jac_evals": 68,
+            "n_err_test_fails": 19,
+            "n_nonlin_iters": 596,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9087255381/MODEL9087255381.xml",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.33660862599208485,
+            "stats": {
+              "n_steps": 454,
+              "n_rhs_evals": 599,
+              "n_jac_evals": 68,
+              "n_err_test_fails": 19,
+              "n_nonlin_iters": 596,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.3203516580106225,
+          "median_wall": 0.34059918200364336,
+          "spread": 1.84982772298099,
+          "rel_spread": 5.43109854844338,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 472,
+            "n_rhs_evals": 569,
+            "n_jac_evals": 54,
+            "n_err_test_fails": 8,
+            "n_nonlin_iters": 566,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9087255381/MODEL9087255381.xml",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.3249680500011891,
+            "stats": {
+              "n_steps": 472,
+              "n_rhs_evals": 569,
+              "n_jac_evals": 54,
+              "n_err_test_fails": 8,
+              "n_nonlin_iters": 566,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 0.9582432335216358,
+        "speedup_median": 0.24415393853864142
+      }
+    },
+    {
+      "model": "MODEL9087474843",
+      "effort": "high",
+      "T": 100.0,
+      "N": 200,
+      "note": "ns~290, 497 rxns",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 0.0009393005360749886,
+        "max_abs": 1.9144581111518733e-06,
+        "peak": 2000.0,
+        "peak_rel": 9.572290555759365e-10
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.32629175001056865,
+          "median_wall": 0.3375086089945398,
+          "spread": 2.745072020989028,
+          "rel_spread": 8.133339262565114,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 451,
+            "n_rhs_evals": 605,
+            "n_jac_evals": 60,
+            "n_err_test_fails": 14,
+            "n_nonlin_iters": 602,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9087474843/MODEL9087474843.xml",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 1.6957313970051473,
+            "stats": {
+              "n_steps": 451,
+              "n_rhs_evals": 605,
+              "n_jac_evals": 60,
+              "n_err_test_fails": 14,
+              "n_nonlin_iters": 602,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.31810341399977915,
+          "median_wall": 0.32253467600094154,
+          "spread": 1.6725545399967814,
+          "rel_spread": 5.185658053064343,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 461,
+            "n_rhs_evals": 593,
+            "n_jac_evals": 52,
+            "n_err_test_fails": 6,
+            "n_nonlin_iters": 590,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "parity_checks/rr_parity/models/MODEL9087474843/MODEL9087474843.xml",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 1.9906579539965605,
+            "stats": {
+              "n_steps": 461,
+              "n_rhs_evals": 593,
+              "n_jac_evals": 52,
+              "n_err_test_fails": 6,
+              "n_nonlin_iters": 590,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 0.974904863483296,
+        "speedup_median": 0.9556339228258307
+      }
+    },
+    {
+      "model": "egfr_net_red",
+      "effort": "low",
+      "T": 100.0,
+      "N": 200,
+      "note": "EGFR reduced, ns~40, 123 rxns, 16 per-observable Functional reactions (.net)",
+      "correctness": {
+        "pass": true,
+        "tol_ratio": 1.025530331539887e-09,
+        "max_abs": 2.3283064365386963e-09,
+        "peak": 1200000.0,
+        "peak_rel": 1.940255363782247e-15
+      },
+      "timing": {
+        "analytical": {
+          "min_wall": 0.002926086002844386,
+          "median_wall": 0.0030422900017583743,
+          "spread": 0.0003077389992540702,
+          "rel_spread": 0.10115373586219725,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 567,
+            "n_rhs_evals": 598,
+            "n_jac_evals": 59,
+            "n_err_test_fails": 2,
+            "n_nonlin_iters": 596,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "benchmarks/models/net/ode/egfr_net_red.net",
+            "mode": "analytical",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.002948385998024605,
+            "stats": {
+              "n_steps": 567,
+              "n_rhs_evals": 598,
+              "n_jac_evals": 59,
+              "n_err_test_fails": 2,
+              "n_nonlin_iters": 596,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "fd": {
+          "min_wall": 0.00340974100981839,
+          "median_wall": 0.003455369995208457,
+          "spread": 0.0002934849908342585,
+          "rel_spread": 0.08493590881475285,
+          "n_ok": 7,
+          "stats": {
+            "n_steps": 567,
+            "n_rhs_evals": 598,
+            "n_jac_evals": 59,
+            "n_err_test_fails": 2,
+            "n_nonlin_iters": 596,
+            "n_nonlin_conv_fails": 0,
+            "steady_state_reached": 0
+          },
+          "last": {
+            "path": "benchmarks/models/net/ode/egfr_net_red.net",
+            "mode": "fd",
+            "T": 100.0,
+            "N": 200,
+            "version": "0.9.22",
+            "wall": 0.0035403899964876473,
+            "stats": {
+              "n_steps": 567,
+              "n_rhs_evals": 598,
+              "n_jac_evals": 59,
+              "n_err_test_fails": 2,
+              "n_nonlin_iters": 596,
+              "n_nonlin_conv_fails": 0,
+              "steady_state_reached": 0
+            },
+            "ok": true
+          }
+        },
+        "speedup": 1.165290769479726,
+        "speedup_median": 1.135779295600134
+      }
+    }
+  ]
+}

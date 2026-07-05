@@ -1,0 +1,160 @@
+# filename: prion_model.bngl
+# availability: https://github.com/RuleWorld/RuleHub/tree/master/Contributed/Lin2019
+# compatibility: BioNetGen version 2.4 or higher
+# contributors: Yen Ting Lin, Song Feng, and William S. Hlavacek
+# date: 19 March 2019
+# This file provides a formulation of the model of Rubenstein et al. (2007). 
+# We have confirmed that this formulation is consistent with the original formulation.
+# The actions section at bottom defines various simulations, including that of Fig. 2(b) 
+# in Lin et al. (2019).
+# References:
+#  - Rubenstein R et al. (2007) Biophys Chem 125: 360-367. 
+#    https://www.ncbi.nlm.nih.gov/pubmed/17084016
+#  - Lin YT, Feng S, Hlavacek WS (2019) Scaling methods for accelerating
+#    kinetic Monte Carlo simulations of chemical reaction networks.
+#    LA-UR-19-22745
+#    https://arxiv.org/abs/1903.08615
+
+begin model
+
+# The time unit is days.
+
+# Dynamics of the nucleated polymerization model of prion replication
+
+# Reference:
+# - Rubenstein R, Gray PC, Cleland TJ, et al. (2007) Biophys Chem 125: 360-367.
+
+begin parameters
+
+lambda_scaling_factor 1.0
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# volume
+Volume 1e-12 # L
+# 602 copies per reaction compartment corresponds to 1 nM
+# 1e-9 M * (NA*V) = 602
+
+# Table 1
+# 
+a 0.047 # per day (the value of this parameter will be adjusted in the actions block)
+#
+beta 2.92e-3/lambda_scaling_factor # per day
+#
+b 0.0314 # per day
+#
+lambda_model_parameter 30000*lambda_scaling_factor # per day
+#
+d 4 # per day
+#
+x_0=lambda_model_parameter/d # (=2400/4=600) dimensionless
+#
+n 2 # (2 or 3) dimensionless
+
+gamma 100 # per day
+
+epsilon 1e-10 # a small number (used to avoid a divide-by-zero error)
+
+end parameters
+
+begin molecule types
+
+PrP(a~C~Sc,x,y)
+
+end molecule types
+
+begin seed species
+
+PrP(a~C,x,y) x_0 # 1 nM
+PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y) 3*lambda_scaling_factor # 0.005 nM
+
+end seed species
+
+begin observables
+
+Species Species1 PrP(a~C,x,y)
+Species Species2 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y).PrP(a~Sc,x,y!1)
+Species Species15 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y!3).PrP(a~Sc,x!3,y!4).PrP(a~Sc,x!4,y!5).PrP(a~Sc,x!5,y!6).PrP(a~Sc,x!6,y!7).PrP(a~Sc,x!7,y!8).PrP(a~Sc,x!8,y!9).PrP(a~Sc,x!9,y!10).PrP(a~Sc,x!10,y!11).PrP(a~Sc,x!11,y!12).PrP(a~Sc,x!12,y!13).PrP(a~Sc,x!13,y).PrP(a~Sc,x,y!1)
+Species Species30 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y!3).PrP(a~Sc,x!3,y!4).PrP(a~Sc,x!4,y!5).PrP(a~Sc,x!5,y!6).PrP(a~Sc,x!6,y!7).PrP(a~Sc,x!7,y!8).PrP(a~Sc,x!8,y!9).PrP(a~Sc,x!9,y!10).PrP(a~Sc,x!10,y!11).PrP(a~Sc,x!11,y!12).PrP(a~Sc,x!12,y!13).PrP(a~Sc,x!13,y!14).PrP(a~Sc,x!14,y!15).PrP(a~Sc,x!15,y!16).PrP(a~Sc,x!16,y!17).PrP(a~Sc,x!17,y!18).PrP(a~Sc,x!18,y!19).PrP(a~Sc,x!19,y!20).PrP(a~Sc,x!20,y!21).PrP(a~Sc,x!21,y!22).PrP(a~Sc,x!22,y!23).PrP(a~Sc,x!23,y!24).PrP(a~Sc,x!24,y!25).PrP(a~Sc,x!25,y!26).PrP(a~Sc,x!26,y!27).PrP(a~Sc,x!27,y!28).PrP(a~Sc,x!28,y).PrP(a~Sc,x,y!1)
+
+end observables
+
+begin functions
+scaledUpSpecies1()=Species1/lambda_scaling_factor
+scaledUpSpecies2()=Species2/lambda_scaling_factor
+scaledUpSpecies15()=Species15/lambda_scaling_factor
+scaledUpSpecies30()=Species30/lambda_scaling_factor
+end functions
+
+begin reaction rules
+
+# Equation (1) - PrPC synthesis
+0->PrP(a~C,x,y) lambda_model_parameter
+
+# Equation (2) - PrPC degradation
+PrP(a~C,x,y)->0 d
+
+# Equation (3) - clearance of PrPSc chains (slow)
+# This rule deletes any species containing a molecule of PrP in the Sc conformation.
+# The {MatchOnce} qualifier means that the rate of degradation 
+#  does NOT depend on the number of copies of PrPSc in the species to be deleted.
+{MatchOnce}PrP(a~Sc)->0 a
+
+# Equation (4) - PrPSc chain elongation
+PrP(a~Sc,y)+PrP(a~C,x,y)->PrP(a~Sc,y!1).PrP(a~Sc,x!1,y) beta
+
+# Equation (5) - PrPSc chain breakage
+PrP(a~Sc,y!1).PrP(a~Sc,x!1)->PrP(a~Sc,y)+PrP(a~Sc,x) b
+
+# Equation (6) - conformation change (Sc to C)
+# n = 2
+# include the line below if n>=1
+PrP(a~Sc,x,y)->PrP(a~C,x,y) gamma
+# include the line below if n>=2
+PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y)->PrP(a~C,x,y)+PrP(a~C,x,y) gamma
+# include the line below if n>=3
+#PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y)->PrP(a~C,x,y)+PrP(a~C,x,y)+PrP(a~C,x,y) gamma
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate reaction network
+#  - The output of this command is a BNG-NET file (prion_model.net).
+#  - The max_stoich setting truncates network generation.
+#  - We have confirmed that the truncated network satisfactorily captures the populated chemical species.
+#  - Network truncation should be reevaluated if the parameter settings are changed.
+generate_network({overwrite=>1,check_iso=>1,max_stoich=>{PrP=>120}})
+
+saveParameters()
+saveConcentrations()
+
+# perform a deterministic simulation
+#  - Simulation results for outputs defined as observables and functions 
+#    are reported in a GDAT file (prion_model_ODE.gdat).
+#  - Simluation results for all chemical species concentrations 
+#    are reported in a CDAT file if print_CDAT=>1 (prion_model_ODE.cdat).
+simulate({suffix=>"ODE",method=>"ode",print_CDAT=>0,t_start=>0,t_end=>300,n_steps=>30000})
+ 
+# perform an exact stochastic simulation - results are shown in Fig. 2(b)
+resetConcentrations()
+simulate({suffix=>"exact",method=>"ssa",print_CDAT=>0,t_start=>0,t_end=>300,n_steps=>30000})
+
+# perform a stochastic simulation using standard scaling ($\lambda=0.01$) 
+#   - Results are shown in Fig. 4(a), (c), (e) and (g).
+setParameter("lambda_scaling_factor",0.01)
+resetConcentrations()
+simulate({suffix=>"std_scaling",method=>"ssa",print_CDAT=>0,t_start=>0,t_end=>300,n_steps=>30000,\
+          print_functions=>1})
+
+# perform a stochastic simulation using partial scaling ($N_c=300$) 
+#  - Results are shown in Fig. 4(b), (d), (f) and (h).
+resetParameters()
+resetConcentrations()
+simulate({suffix=>"partial_scaling",method=>"ssa",poplevel=>10,print_CDAT=>0,\
+          t_start=>0,t_end=>300,n_steps=>30000})
+
+end actions

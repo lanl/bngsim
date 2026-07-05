@@ -1,0 +1,34 @@
+// =============================================================================
+// Related: test_models1/m03_Lotka_Volterra.ant
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem B1 - Lotka-Volterra equations (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z1(0) = 1, Z2(0) = 3
+//
+// Original ODEs:
+//   dZ1/dt = 2*(Z1 - Z1*Z2)
+//   dZ2/dt = -(Z2 - Z1*Z2)
+//
+// Recast S-system:
+//   Already in S-system form!
+//   dX1/dt = 2*X1 - 2*X1*X2
+//   dX2/dt = X1*X2 - X2
+//
+// These are the classic Lotka-Volterra predator-prey equations
+// describing population dynamics of conflicting species.
+// =============================================================================
+
+model S1987_B1_lotka_volterra()
+    // Already in S-system canonical form
+    Z1' = 2*(Z1 - Z1*Z2)
+    Z2' = -(Z2 - Z1*Z2)
+    
+    // Initial conditions
+    Z1 = 1
+    Z2 = 3
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

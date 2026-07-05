@@ -1,0 +1,35 @@
+begin model
+begin parameters
+    k_prey_birth 1.0
+    k_predation 0.002
+    k_pred_birth 0.001
+    k_pred_death 0.5
+end parameters
+
+begin molecule types
+    Prey()
+    Predator()
+end molecule types
+
+begin seed species
+    Prey() 200
+    Predator() 20
+end seed species
+
+begin observables
+    Molecules Prey_count Prey()
+    Molecules Predator_count Predator()
+end observables
+
+begin reaction rules
+    Prey() -> Prey() + Prey() k_prey_birth
+    Predator() + Prey() -> Predator() + Predator() k_pred_birth
+    Predator() + Prey() -> Predator() k_predation
+    Predator() -> 0 k_pred_death
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>1000,n_steps=>300})
+end actions
+end model

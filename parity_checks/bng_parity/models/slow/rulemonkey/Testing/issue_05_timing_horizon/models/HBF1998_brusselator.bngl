@@ -1,0 +1,76 @@
+begin model
+#@model_id: HBF1998_brusselator
+#@title: Brusselator (Hernandez-Bermejo, Fairen & Brenig 1998, Eq. 45)
+#@description: Classic Brusselator model x1'=a-(b+1)*x1+x1^2*x2, x2'=b*x1-x1^2*x2. Limit-cycle oscillations in the Belousov-Zhabotinskii reaction. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1088/0305-4470/31/10/016
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  a        1.0            # 1/s  (constant influx rate, concentration units)
+  b        3.0            # dimensionless  (branching parameter)
+  bp1      4.0            # 1/s  (b+1, linear decay coefficient)
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  x1()
+  x2()
+end molecule types
+
+begin seed species
+  x1()  1500  # molecules  (1.5 * scale)
+  x2()  3000  # molecules  (3.0 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_x1  x1()
+  Molecules  Obs_x2  x2()
+end observables
+
+begin functions
+  # Descaled concentrations
+  x1_c() = Obs_x1 * inv_s
+  x2_c() = Obs_x2 * inv_s
+
+  # Autocatalytic trimolecular term: x1^2*x2 (in molecules/s)
+  autocat() = x1_c() * x1_c() * x2_c() * scale
+
+  # Linear production of x2: b*x1 (in molecules/s)
+  prod_x2() = b * x1_c() * scale
+end functions
+
+begin reaction rules
+  # Constant source of x1: a (scaled to molecules/s)
+  0 -> x1()  a*scale
+
+  # First-order decay of x1: (b+1)*x1
+  x1() -> 0  bp1
+
+  # Autocatalytic production of x1: x1^2*x2
+  0 -> x1()  autocat()
+
+  # Production of x2: b*x1
+  0 -> x2()  prod_x2()
+
+  # Consumption of x2: x1^2*x2 (same trimolecular term)
+  x2() -> 0  autocat()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>12,n_steps=>360})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>12,n_steps=>360})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>12,n_steps=>360,complex=>1})
+end actions

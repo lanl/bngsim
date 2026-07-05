@@ -1,0 +1,40 @@
+begin model
+begin parameters
+kT 0.8549 # /d
+T0 2.28e4 # copies per mm^2
+kC 0.6445
+C0 2.37e4 
+end parameters
+begin molecule types
+#counter()
+T()
+C()
+end molecule types
+begin seed species
+#counter() 0
+T() T0
+C() C0
+end seed species
+begin observables
+#Molecules t counter()
+Molecules T T()
+Molecules C C()
+end observables
+begin functions
+#T1_eqn()=V0*exp(-k*t)
+#T1_dat()=if(t<=0,13277,\
+#         if(t<=1,2948,\
+#         if(t<=2,1363,\
+#         if(t<=4,34,\
+#         if(t<=6,4,0)))))
+end functions
+begin reaction rules
+#0->counter() 1
+T()->0 kT
+C()->0 kC
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>6,n_steps=>30,print_functions=>1})
+end actions

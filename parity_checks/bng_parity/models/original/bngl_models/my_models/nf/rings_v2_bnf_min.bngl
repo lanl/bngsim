@@ -1,0 +1,101 @@
+begin model
+
+begin parameters
+
+f 0.01 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+
+V f*1e-9 # L per (sub)volume
+
+n 15 # dimensionless
+
+m 4 # dimensionless
+
+nu0 3.000
+nu1 1.766
+nu2 0.785
+nu3 0.165
+nu4 0.000
+
+koff 1.2e-2*0.563249425 # /s 
+kp1 0.334639389*0.05*9.2e6/(NA*V) # /M/s converted to /(molecules per (sub)volume)/s
+km1=koff
+
+jp2=100 # /s
+jm2=koff
+
+Lconc_nM 5.5 # nM
+Lconc=Lconc_nM*1e-9 # M
+Ltot=Lconc*(NA*V) # M converted to copies per (sub)volume
+
+Rconc_nM 1.5 # nM
+Rconc=Rconc_nM*1e-9 # M
+Rtot=Rconc*(NA*V) # M converted to copies per (sub)volume
+
+Fmax 96 # a.u. (from y-value in Figure 6 at time t = 654 s)
+Fmin 69 # a.u. (from dashed line in Figure 6, corresonding to Fab saturation)
+
+end parameters
+
+begin molecule types
+
+BSA(DNP,DNP,DNP,DNP) # m = 4
+IgE(Fab,Fab)
+
+
+end molecule types
+
+begin seed species
+
+BSA(DNP,DNP,DNP,DNP) Ltot
+IgE(Fab,Fab) Rtot
+
+
+end seed species
+
+begin observables
+
+
+Molecules boundFab IgE(Fab!+)
+
+end observables
+
+begin functions
+
+
+FL()=Fmax*(2*Rtot-boundFab)/(2*Rtot)+Fmin*boundFab/(2*Rtot)
+
+end functions
+
+begin reaction rules
+
+
+BSA(DNP,DNP,DNP,DNP)+IgE(Fab)->BSA(DNP!1,DNP,DNP,DNP).IgE(Fab!1) (nu0/(m-0))*kp1
+BSA(DNP!+,DNP,DNP,DNP)+IgE(Fab)->BSA(DNP!+,DNP!1,DNP,DNP).IgE(Fab!1) (nu1/(m-1))*kp1
+BSA(DNP!+,DNP!+,DNP,DNP)+IgE(Fab)->BSA(DNP!+,DNP!+,DNP!1,DNP).IgE(Fab!1) (nu2/(m-2))*kp1
+BSA(DNP!+,DNP!+,DNP!+,DNP)+IgE(Fab)->BSA(DNP!+,DNP!+,DNP!+,DNP!1).IgE(Fab!1) (nu3/(m-3))*kp1
+
+BSA(DNP!1,DNP,DNP,DNP).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab)->\
+BSA(DNP!1,DNP!4,DNP,DNP).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab!4) (nu1/(m-1))*jp2
+BSA(DNP!+,DNP!1,DNP,DNP).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab)->\
+BSA(DNP!+,DNP!1,DNP!4,DNP).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab!4) (nu2/(m-2))*jp2
+BSA(DNP!+,DNP!+,DNP!1,DNP).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab)->\
+BSA(DNP!+,DNP!+,DNP!1,DNP!4).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab!4) (nu3/(m-3))*jp2
+
+BSA(DNP!1).IgE(Fab!1)->BSA(DNP)+IgE(Fab) koff
+
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+
+setParameter("Lconc_nM",5.5)
+
+simulate({method=>"nf",suffix=>"xu_fig6b_high_approx_scaled",complex=>1,utl=>100,gml=>20000000,get_final_state=>0,t_start=>0,t_end=>1816,n_steps=>1816,print_functions=>1})
+
+end actions

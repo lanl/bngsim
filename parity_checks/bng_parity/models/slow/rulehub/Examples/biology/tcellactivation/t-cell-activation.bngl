@@ -1,0 +1,39 @@
+begin model
+begin parameters
+    k_bind 0.004
+    k_unbind 0.001
+    k_signal 0.3
+    k_deact 0.05
+    k_cyt 0.6
+    k_cyt_deg 0.1
+end parameters
+
+begin molecule types
+    TCR(state~inactive~active)
+    Antigen()
+    Cytokine()
+end molecule types
+
+begin seed species
+    TCR(state~inactive) 100
+    Antigen() 80
+end seed species
+
+begin observables
+    Molecules Active_tcr TCR(state~active)
+    Molecules Cytokine_pool Cytokine()
+end observables
+
+begin reaction rules
+    TCR(state~inactive) + Antigen() <-> TCR(state~active) + Antigen() k_bind,k_unbind
+    TCR(state~active) -> TCR(state~inactive) k_deact
+    TCR(state~active) -> TCR(state~active) + Cytokine() k_cyt
+    Cytokine() -> 0 k_cyt_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>240})
+end actions
+end model
+

@@ -1,0 +1,118 @@
+# PID Controller in BNGL
+# =======================
+# A proportional-integral-derivative controller where:
+# - "Setpoint" molecule concentration = desired value
+# - "Sensor" molecule concentration = measured value  
+# - "Actuator" production rate = PID output
+# - Integral term: an Accumulator molecule that integrates error over time
+# - Derivative term: approximated via a LeakyError molecule with fast decay
+#
+# No real chemistry. The ODE system IS the control algorithm.
+# Demonstrates: functions as computation,0->X synthesis as "output"
+
+begin model
+
+begin parameters
+    # PID gains
+    Kp      5.0     # Proportional gain
+    Ki      0.5     # Integral gain  
+    Kd      2.0     # Derivative gain
+    
+    # System dynamics
+    tau_plant   1.0     # Plant time constant
+    tau_deriv   0.1     # Derivative filter time constant (fast leak)
+    
+    # Setpoint
+    SP      100.0    # Target trajectory (desired concentration over time)
+    # Target trajectory is defined in functions
+    
+    # Disturbance (kicks in at t > 5)
+    disturb_mag  30.0
+    disturb_time 5.0
+    t 0
+end parameters
+
+begin molecule types
+    Sensor()            # Process variable (what we're controlling)
+    Accumulator()       # Integral of error (molecular memory!)
+    LeakyError()        # Fast-decaying error for derivative approximation
+    Actuator()          # Control output
+    Disturbance()       # External perturbation
+end molecule types
+
+begin seed species
+    Sensor()        0       # Starts at 0,must reach setpoint
+    Accumulator()   0       # No accumulated error yet
+    LeakyError()    0       # No derivative memory yet
+    Actuator()      0
+    Disturbance()   0
+end seed species
+
+begin observables
+    Molecules PV        Sensor()        # Process variable
+    Molecules Integral  Accumulator()   # Integral term state
+    Molecules Deriv     LeakyError()    # Derivative approximation
+    Molecules Output    Actuator()      # Control signal
+end observables
+
+begin functions
+    # Target trajectory (desired concentration over time)
+    Target() = 50 + 20*sin(0.1*t)
+
+    # Error = Setpoint - Process Variable
+    Error() = SP - PV
+    
+    # PID output (can go negative via functions,but synthesis rate clamps to 0)
+    # P term: proportional to current error
+    P_term() = Kp * Error()
+    
+    # I term: proportional to accumulated error (Accumulator concentration)
+    I_term() = Ki * Integral
+    
+    # D term: proportional to rate of change of error
+    # Approximated by: error - leaky_filtered_error (high-pass filter)
+    D_term() = Kd * (Error() - Deriv) / tau_deriv
+    
+    # Total PID output (clamped to non-negative for synthesis rate)
+    PID_out() = if(P_term() + I_term() + D_term() > 0,\
+                   P_term() + I_term() + D_term(),0)
+    
+    # Disturbance function (step at t=disturb_time)
+    Disturb_rate() = if(t > disturb_time, disturb_mag, 0)
+end functions
+
+begin reaction rules
+    # === THE PLANT ===
+    # Sensor increases based on Actuator,decreases naturally
+    0 -> Sensor()       PID_out()           # Control input drives process
+    Sensor() -> 0       1/tau_plant         # Natural decay of process variable
+    
+    # Disturbance adds to plant
+    0 -> Sensor()       Disturb_rate()      # External perturbation at t=5
+    
+    # === INTEGRAL TERM ===
+    # Accumulator integrates error over time
+    # dAccumulator/dt = Error  (molecular memory of past errors!)
+    0 -> Accumulator()  if(Error() > 0,Error(),0)    # Positive error accumulates
+    Accumulator() -> 0  if(Error() < 0,-Error()/max(Integral,0.01),0)  # Negative error depletes
+    
+    # Anti-windup: slow leak prevents runaway integration  
+    Accumulator() -> 0  0.01
+    
+    # === DERIVATIVE TERM ===
+    # LeakyError tracks error with fast decay (exponential filter)
+    # At steady state: LeakyError ≈ Error
+    # During transients: LeakyError lags Error
+    # So (Error - LeakyError) ≈ derivative of error
+    0 -> LeakyError()           if(Error() > 0,Error()/tau_deriv,0)
+    LeakyError() -> 0           1/tau_deriv     # Fast leak
+    
+    # === ACTUATOR (just tracks PID output for observability) ===
+    0 -> Actuator()     PID_out()
+    Actuator() -> 0     1.0
+end reaction rules
+
+end model
+
+# Watch the controller bring Sensor to setpoint,then reject disturbance
+simulate({method=>"ode",t_end=>20,n_steps=>500})

@@ -1,0 +1,41 @@
+begin model
+begin parameters
+pi = acos(-1) # dimensionless ratio
+# coefficient of variation
+CV 2.857142857142857 # NB: setting CV to a too large value will cause numerical underflow error
+# standard deviation
+sigma 1.75
+# mean
+mu = sigma*CV
+#x0 0
+#P0 = (1/(sigma*sqrt(2*pi)))*exp(-(1/2)*(CV)^2) # assumes x = x0
+x0 = mu - 3*sigma # if x != 0 then t = x + non-zero constant
+P0 = (1/(sigma*sqrt(2*pi)))*exp(-(1/2)*((x0-mu)/sigma)^2) # x0 is arbitrary
+end parameters
+begin molecule types
+counter() # support
+P() # probability density
+end molecule types
+begin seed species
+counter() x0
+P() P0 # other initial conditions do not yield a normalized area under the curve
+end seed species
+begin observables
+Molecules x counter()
+Molecules P P()
+end observables
+begin functions
+rate() = -(1/(sigma*sigma))*(x-mu)*P
+P_func() = (1/(sigma*sqrt(2*pi)))*exp(-(1/2)*((x-mu)/sigma)^2)
+end functions
+begin reaction rules
+0->counter() 1
+0->P() rate()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# I'd like to be able to specify t_start=>x0
+# pdf is shifted by the difference between 0 and x0
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>200,print_functions=>1})
+end actions

@@ -1,0 +1,27 @@
+begin model
+begin molecule types
+_EO_(epo,oh~0~1) 
+_EG_(oh~p,oh~p) 
+_PERYT_(oh~p,oh~p,oh~p,oh~p) 
+_PO_(epo,oh~0~1)
+end molecule types
+
+begin seed species
+_PERYT_(oh~p,oh~p,oh~p,oh~p) 1140 
+_EO_(epo,oh~0) 580
+_PO_(epo,oh~0) 70907 
+_EG_(oh~p,oh~p) 27373
+end seed species 
+
+begin reaction rules
+_EG_(oh~p) + _EO_(epo,oh~0) -> _EG_(oh~p!1)._EO_(epo!1,oh~1) 1.0 
+_EG_(oh~p) + _PO_(epo,oh~0) -> _EG_(oh~p!1)._PO_(epo!1,oh~1) 1.0 
+_PERYT_(oh~p) + _EO_(epo,oh~0) -> _PERYT_(oh~p!1)._EO_(epo!1,oh~1) 1.0 
+_PERYT_(oh~p) + _PO_(epo,oh~0) -> _PERYT_(oh~p!1)._PO_(epo!1,oh~1) 1.0 
+_EO_(epo,oh~0) + _EO_(oh~1) -> _EO_(epo!1,oh~1)._EO_(oh~1!1) 1.0 
+_PO_(epo,oh~0) + _PO_(oh~1) -> _PO_(epo!1,oh~1)._PO_(oh~1!1) 1.0
+end reaction rules
+
+
+
+end model

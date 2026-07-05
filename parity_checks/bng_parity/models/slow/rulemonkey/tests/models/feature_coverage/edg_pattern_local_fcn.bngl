@@ -1,0 +1,59 @@
+# Edge case: local function whose argument tags a MULTI-MOL pattern
+# Tests:  when the BNGL writes the tag at the pattern level (`%x:`,
+#         outside any single Molecule), BNG2 emits XML where the
+#         Argument @value points at a ReactantPattern id, not a
+#         Molecule id.  RM's loader switches local_arg_is_molecule off
+#         in that case (simulator.cpp:1188-1199); the engine then
+#         evaluates the local observable across the WHOLE complex the
+#         matched pattern is part of, not just one seed molecule.
+#         The existing ft_local_functions.bngl uses the molecule-tag
+#         form (S%x(...)) — only the per-molecule path is exercised.
+#         This model puts the tag at the pattern head so the
+#         complex-wide path runs.
+# Edge:   per-complex observable counts the full chain length, so the
+#         break rate scales with aggregate size.  Long chains decompose
+#         faster, short ones slower.  Divergence from NFsim immediately
+#         implies the complex-wide path is mis-evaluating.
+# Tier:   base
+# invariant: conserved A_total = 30
+
+begin model
+begin parameters
+    A_tot    30
+    kf       0.04        # /s, forward (chain growth, plain)
+    k_break  0.05        # /s, baseline break rate (used in local fn)
+end parameters
+
+begin molecule types
+    A(l,r)
+end molecule types
+
+begin seed species
+    A(l,r)   A_tot
+end seed species
+
+begin observables
+    Molecules  A_total      A()
+    Molecules  A_bound      A(l!+), A(r!+)
+    Molecules  A_bound_l    A(l!+)
+    Molecules  A_bound_r    A(r!+)
+end observables
+
+begin functions
+    # Local function: rate scales with the number of bonded endpoints
+    # in the matched COMPLEX.  z is bound to the entire 2-mol pattern
+    # (pattern-level tag form).
+    breakRate(z) = k_break * (1 + 0.30 * A_bound(z))
+end functions
+
+begin reaction rules
+    # Forward binding (no reverse) — break is supplied by the local-fn rule.
+    A(r) + A(l) -> A(r!1).A(l!1)  kf
+    # Pattern-level tagged break: %x covers the whole 2-mol pattern.
+    %x:A(r!1).A(l!1) -> A(r) + A(l)   breakRate(x)
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>80,param=>"-bscb"})
+end actions

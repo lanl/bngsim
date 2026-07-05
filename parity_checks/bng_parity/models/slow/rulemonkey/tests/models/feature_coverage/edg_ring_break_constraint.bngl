@@ -1,0 +1,56 @@
+# Edge case: bond break in a multi-bond complex with strict product `+`
+# Tests:  the strict-product-side `+` semantics RM enforces by default
+#         (model.bool block_same_complex_binding=true).  The L-shaped
+#         complex A(l!1,r!2).A(l!2,r!3).A(l!3,r!4).A(l!4,r) is a
+#         linear 4-mer.  A rule "A(l!1,r!+) + A(l!+,r!1) -> ..." that
+#         tries to break the central l-r bond would, by `+` strictness,
+#         have to leave the molecules in DIFFERENT complexes after the
+#         break.  But because of the additional bonds, the chain stays
+#         connected — RM must REJECT the firing.
+# Edge:   the model also includes a SHORT 2-mer (A(l!1,r).A(l,r!1))
+#         where breaking the only bond DOES disconnect the species.
+#         Both populations coexist; RM must allow firing on the 2-mer
+#         and refuse on the 4-mer.  Hits engine.cpp's BFS-based
+#         product-side connectivity check.
+# Tier:   base
+# Seed: 10 × 2-mer (= 20 A) + 5 × 4-mer (= 20 A) = 40 A total.
+# invariant: conserved A_total = 40
+
+begin model
+begin parameters
+    A_tot   30
+    kf      0.0   # disable formation — initial seeds drive it
+    kr      0.5   # baseline break rate
+end parameters
+
+begin molecule types
+    A(l,r)
+end molecule types
+
+begin seed species
+    # A 2-mer that DOES break apart cleanly when the bond is cut:
+    A(l,r!1).A(l!1,r)        10
+    # A 4-mer "linear" chain.  Breaking ANY interior bond still leaves
+    # the chain connected only on one side, so each break-site only
+    # produces a clean separation when applied to an endpoint bond.
+    A(l,r!1).A(l!1,r!2).A(l!2,r!3).A(l!3,r)   5
+end seed species
+
+begin observables
+    Molecules  A_total     A()
+    Molecules  A_bound_l   A(l!+)
+    Molecules  A_bound_r   A(r!+)
+    Species    Free_A      A(l,r)
+    Species    Dimers      A(l,r!1).A(l!1,r)
+end observables
+
+begin reaction rules
+    # Strict `+` on the product side: this rule may only fire when
+    # breaking the bond actually disconnects the two molecules.
+    A(l,r!1).A(l!1,r) -> A(l,r) + A(l,r)   kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>40,param=>"-bscb"})
+end actions

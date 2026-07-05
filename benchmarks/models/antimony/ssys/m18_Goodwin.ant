@@ -1,0 +1,42 @@
+// Goodwin BC (1965) Oscillatory behavior in enzymatic control processes
+//   Advances in Enzyme Regulation 3: 425-428.
+//
+// Recasting:
+//
+// States
+//   species X1, X2, X3, Y    // Y := 1 + (X3/K)^n
+//
+// Parameters (positive)
+//   k1 = 5;   K = 2;   n = 3;   d1 = 1;
+//   k2 = 1.5; d2 = 1;
+//   k3 = 1.2; d3 = 1;
+//
+// Canonical S-system (two monomials per ODE)
+//   X1' =  k1 * (Y^(-1))              -  d1 * X1;
+//   X2' =  k2 * X1                    -  d2 * X2;
+//   X3' =  k3 * X2                    -  d3 * X3;
+//   Y'  =  (n*k3)/(K^n) * X2*(X3^(n-1))  -  (n*d3)/(K^n) * (X3^n);
+//
+// Initial conditions (consistent with Y definition)
+//   X1 = 1;  X2 = 1;  X3 = 1;
+//   Y  = 1 + (X3/K)^n;   // = 1.125 with K=2, n=3, X3=1
+//
+model Goodwin()
+
+  species X1, X2, X3   // mRNA, enzyme, product (repressor)
+
+  // parameters (example values; keep positive)
+  k1 = 5;   K = 2;   n = 3;   d1 = 1;
+  k2 = 1.5; d2 = 1;
+  k3 = 1.2; d3 = 1;
+
+  // X1' = k1 / (1 + (X3/K)^n) - d1*X1
+  X1' = k1 / (1 + (X3/K)^n) - d1*X1;
+  X2' = k2*X1 - d2*X2;
+  X3' = k3*X2 - d3*X3;
+
+  // ICs (example)
+  X1 = 1;  X2 = 1;  X3 = 1;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

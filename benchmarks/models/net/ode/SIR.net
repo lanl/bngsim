@@ -1,0 +1,24 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 S0     2e7  # Constant
+    2 I0     1  # Constant
+    3 beta   1/S0  # ConstantExpression
+    4 gamma  1/7  # Constant
+end parameters
+begin functions
+    1 betaI() beta*I
+end functions
+begin species
+    1 S() S0
+    2 I() I0
+    3 R() 0
+end species
+begin reactions
+    1 1 2 betaI #_R1
+    2 2 3 gamma #_R2
+end reactions
+begin groups
+    1 S                    1
+    2 I                    2
+    3 R                    3
+end groups

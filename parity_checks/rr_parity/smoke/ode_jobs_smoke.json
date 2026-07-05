@@ -1,0 +1,158 @@
+{
+ "_meta": {
+  "description": "Hermetic smoke subset of ode_jobs.json \u2014 the pipeline runs end-to-end against a committed, provenance-pinned corpus WITHOUT the ~300MB fetch.",
+  "reference_engine": "roadrunner",
+  "parent_manifest": "ode_jobs.json",
+  "provenance": "smoke/models/<id>/{*.xml,*.sedml} bytes are sha256-verified against temp_biomodels_manifest.json (upstream_pin: sys-bio/temp-biomodels @6a09daf46af1bb89e4857436b623a7b8720863ad).",
+  "n_jobs": 6,
+  "model_ids": [
+   "BIOMD0000000001",
+   "BIOMD0000000003",
+   "BIOMD0000000004",
+   "BIOMD0000000005",
+   "BIOMD0000000006",
+   "BIOMD0000000010"
+  ],
+  "schema_version": 1
+ },
+ "jobs": [
+  {
+   "model_id": "BIOMD0000000001",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000001/BIOMD0000000001_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000001_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000003",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000003/BIOMD0000000003_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000003_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000004",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000004/BIOMD0000000004_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000004_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000005",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000005/BIOMD0000000005_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000005.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000006",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000006/BIOMD0000000006_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000006_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000010",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "roadrunner",
+   "model": "smoke/models/BIOMD0000000010/BIOMD0000000010_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000010_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 9000.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  }
+ ]
+}

@@ -1,0 +1,41 @@
+# Feature: network-free only — unbounded linear polymer growth
+# Tests: species count grows without bound (cannot enumerate with generate_network)
+# Tier: network-free (NFsim reference only)
+# Expected: chain length distribution broadens over time
+# invariant: conserved M_total = 50
+# invariant: balance M_bound_l = M_bound_r
+
+begin model
+begin parameters
+    M_tot  50
+    kf     0.01   # /s, polymerization rate
+    kr     0.05   # /s, depolymerization rate
+end parameters
+
+begin molecule types
+    M(l,r)
+end molecule types
+
+begin seed species
+    M(l,r)  M_tot
+end seed species
+
+begin observables
+    Molecules  M_total    M()
+    Molecules  M_free     M(l,r)
+    Molecules  M_left_free  M(l)
+    Molecules  M_right_free M(r)
+    Molecules  M_bound_l  M(l!+)
+    Molecules  M_bound_r  M(r!+)
+    Species    Chains     M(l!+)
+end observables
+
+begin reaction rules
+    # Polymerization: right end joins left end
+    M(r) + M(l) <-> M(r!1).M(l!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

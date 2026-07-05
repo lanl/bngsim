@@ -1,0 +1,57 @@
+begin model
+
+begin parameters
+
+# fraction of a cell to be considered in a (stochastic) simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+f 0.01 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cytoplasmic volume
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell 
+#   in culture (Tan et al., 2012):
+#     N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+# The following copy numbers are based on the data of Kulak et al. (2014)
+#   for HeLa S3 cells (ATCC CCL-2.2).
+EGFR_copyNum 92674*f # [=] copies per cell
+RIN1_copyNum 65438*f # [=] copies per cell
+
+# rate contants for pTyr-SH2 domain interaction
+kf_pTyr_SH2 1e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_pTyr_SH2 0.1 # [=] /s
+
+end parameters
+
+begin molecule types
+EGFR(Y~0~P)
+RIN1(SH2)
+end molecule types
+
+begin seed species
+EGFR(Y~P) EGFR_copyNum
+RIN1(SH2) RIN1_copyNum
+end seed species
+
+begin observables
+Molecules freeEGFR EGFR(Y~P)
+Molecules freeRIN1 RIN1(SH2)
+Molecules EGFR_RIN1_bonds EGFR(Y~P!1).RIN1(SH2!1)
+end observables
+
+begin reaction rules
+EGFR(Y~P)+RIN1(SH2)<->EGFR(Y~P!1).RIN1(SH2!1) kf_pTyr_SH2,kr_pTyr_SH2
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>'nf',t_start=>0,t_end=>15,n_steps=>150})
+
+end actions

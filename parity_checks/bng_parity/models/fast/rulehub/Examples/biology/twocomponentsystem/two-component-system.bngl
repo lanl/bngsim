@@ -1,0 +1,40 @@
+begin model
+begin parameters
+    k_auto 0.3
+    k_transfer 0.5
+    k_dephos 0.1
+    k_synth 0.8
+    k_deg 0.05
+end parameters
+
+begin molecule types
+    Kinase(state~U~P)
+    Regulator(state~U~P)
+    Target()
+end molecule types
+
+begin seed species
+    Kinase(state~U) 40
+    Regulator(state~U) 80
+end seed species
+
+begin observables
+    Molecules Kinase_P Kinase(state~P)
+    Molecules Reg_P Regulator(state~P)
+    Molecules Target Target()
+end observables
+
+begin reaction rules
+    Kinase(state~U) -> Kinase(state~P) k_auto
+    Kinase(state~P) + Regulator(state~U) -> Kinase(state~U) + Regulator(state~P) k_transfer
+    Regulator(state~P) -> Regulator(state~U) k_dephos
+    Regulator(state~P) -> Regulator(state~P) + Target() k_synth
+    Target() -> 0 k_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>120,n_steps=>240})
+end actions
+end model
+

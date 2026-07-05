@@ -1,0 +1,40 @@
+begin model
+begin parameters
+    # Kinetic Constants
+    k_on    1.0    # Forward binding rate (E+S -> ES)
+    k_off   0.5    # Reverse binding rate (ES -> E+S)
+    k_cat   0.2    # Catalytic rate (ES -> E+P)
+    
+    # Initial Concentrations
+    E_0     1.0    # Total Enzyme
+    S_0     10.0   # Total Substrate
+end parameters
+
+begin molecule types
+    E(s)    # Enzyme
+    S(e)    # Substrate
+    P()     # Product
+end molecule types
+
+begin seed species
+    E(s) E_0
+    S(e) S_0
+end seed species
+
+begin observables
+    Molecules obs_Product     P()
+    Molecules obs_ES_Complex  E(s!+)
+end observables
+
+begin reaction rules
+    # 1. Reversible Binding
+    Binding:   E(s) + S(e) <-> E(s!1).S(e!1) k_on,k_off
+    
+    # 2. Catalysis
+    Catalysis: E(s!1).S(e!1) -> E(s) + P() k_cat
+end reaction rules
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>50,n_steps=>50})
+writeSBML()

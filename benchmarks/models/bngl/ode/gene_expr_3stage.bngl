@@ -1,0 +1,73 @@
+# Three-stage model of gene expression
+# Reference: Shahrezaei V, Swain PS (2008) PNAS 105: 17256-17261.
+# Benchmark source: BioNetGen test suite (Models2/gene_expr_func.bngl)
+# Network: 5 species, 5 reactions
+# Populations: 0 to ~100 molecules (proteins); 0-1 DNA
+# Behavior: Bursty gene expression with promoter switching;
+#   analytically tractable equilibrium distribution
+
+begin model
+begin parameters
+    # unitless parameters
+    a     4       # a = v0/d1
+    b     10      # b = v1/d0
+    gam   10      # gam = d0/d
+    kap0  0.6     # kap0 = k0/d1
+    kap1  0.2     # kap1 = k1/d1
+    # kinetic parameters
+    d1   0.0005      # /s
+    d0   gam*d1      # /s
+    k0   kap0*d1     # /s
+    k1   kap1*d1     # /s
+    v0   a*d1        # /s
+    v1   b*d0        # /s
+end parameters
+begin molecule types
+    DNA(promoter~0~1)
+    mRNA()
+    Protein()
+    Src()
+    Null()
+end molecule types
+begin seed species
+    DNA(promoter~0)  1
+    mRNA()           0
+    Protein()        0
+    Src()            1
+    $Null()          0
+end seed species
+begin observables
+    Molecules  DNA_Active     DNA(promoter~1)
+    Molecules  DNA_Total      DNA()
+    Molecules  mRNA_Total     mRNA()
+    Molecules  Protein_Total  Protein()
+end observables
+begin functions
+    fcn_mRNA() =  v0*DNA_Active
+    fcn_Prot() =  v1*mRNA_Total
+end functions
+begin reaction rules
+    # promoter activation
+    DNA(promoter~0)  <->  DNA(promoter~1)    k0,k1
+    # mRNA synthesis
+    Src()  ->  Src() + mRNA()       fcn_mRNA()
+    # Protein synthesis
+    Src()  ->  Src() + Protein()    fcn_Prot()
+    # degradation
+    mRNA()     ->  Null()   d0
+    Protein()  ->  Null()   d1
+end reaction rules
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# Burn-in to reach stochastic equilibrium
+simulate({method=>"ode",suffix=>"burnin",t_start=>0,t_end=>10000000,n_steps=>1})
+saveConcentrations()
+
+# Sample equilibrium distribution (long time, many output steps)
+simulate({method=>"ode",suffix=>"equil",t_start=>0,t_end=>200000000,n_steps=>10000})
+
+end actions

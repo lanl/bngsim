@@ -1,0 +1,101 @@
+begin model
+begin parameters
+    # AMPK signaling: The cellular energy sensor.
+    # Advanced features: SAT kinetics and wildcard dephosphorylation.
+    
+    # Energy Sensing (AMP/ATP ratio)
+    k_bind_amp 1e-4    # AMP binding
+    k_unbind_amp 0.1
+    
+    # AMPK Activation (Phosphorylation at Thr172)
+    k_lkb1_act 0.5     # LKB1-mediated (Constitutive)
+    k_camkk_act 1.0    # CaMKK2-mediated (Calcium-dependent)
+    Km_ampk 150        # Half-saturation for activation
+    
+    # Feedback Control (SIK Pathway)
+    k_sik_phos 0.8     # pAMPK phosphorylates SIK
+    k_crtc_inh 1.2     # SIK inhibits CRTC translocation
+    
+    # Dephosphorylation
+    k_dephos 0.1       # Phos-independent basal reset
+    
+    # Initials
+    AMPK_tot 500
+    AMP_tot 800
+    LKB1_tot 50
+    SIK_tot 100
+    CRTC_tot 300
+end parameters
+
+begin molecule types
+    AMPK(amp,s~U~P)
+    AMP(b)
+    LKB1()
+    Ca()
+    SIK(s~U~P)
+    CRTC(loc~cyt~nuc)
+end molecule types
+
+begin seed species
+    AMPK(amp,s~U) AMPK_tot
+    AMP(b) AMP_tot
+    LKB1() LKB1_tot
+    Ca() 0
+    SIK(s~U) SIK_tot
+    CRTC(loc~nuc) CRTC_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Energy_Sensor   AMPK(s~P)                # Active AMPK pool
+    Molecules Low_Energy_Sig  AMPK(amp!+)              # AMP-detected fraction
+    Molecules SIK_Activity    SIK(s~P)                 # Signaling branch
+    Molecules Nuclear_CRTC    CRTC(loc~nuc)            # Growth/Metabolism driver
+    Molecules Calcium_Stim    Ca()                     # Input proxy
+    Molecules Active_AMPK     AMPK(s~P)                # Total energy sensor
+    Molecules Bound_AMPK_AMP  AMPK(amp!+)               # Activation status
+end observables
+
+begin functions
+    # Saturable phosphorylation rate dependent on AMP binding
+    # AMP binding increases susceptibility to LKB1/CaMKK
+    v_act_amp() = k_lkb1_act * LKB1_tot * (Bound_AMPK_AMP / (Km_ampk + Bound_AMPK_AMP))
+end functions
+
+begin reaction rules
+    ## ACTIVATION
+    # AMP binding (Energy sensor)
+    AMPK(amp) + AMP(b) <-> AMPK(amp!1).AMP(b!1) k_bind_amp,k_unbind_amp
+    
+    # LKB1 activates AMPK (Faster when AMP is bound - functional rate)
+    # Wildcard !+ means AMP is bound
+    AMPK(s~U,amp!+) -> AMPK(s~P,amp!+) v_act_amp()
+    
+    # CaMKK2 activates AMPK (Calcium drive)
+    Ca() + AMPK(s~U) -> Ca() + AMPK(s~P) k_camkk_act
+    
+    ## DOWNSTREAM RELAY (SIK/CRTC)
+    # Active AMPK phosphorylates SIK
+    AMPK(s~P) + SIK(s~U) -> AMPK(s~P) + SIK(s~P) k_sik_phos
+    
+    # p-SIK phosphorylates CRTC,causing nuclear export
+    SIK(s~P) + CRTC(loc~nuc) -> SIK(s~P) + CRTC(loc~cyt) k_crtc_inh
+    
+    ## RECOVERY
+    # Wildcard !? for any AMP state during dephosphorylation
+    AMPK(s~P,amp!?) -> AMPK(s~U,amp!?) k_dephos
+    
+    SIK(s~P) -> SIK(s~U) 0.05
+    CRTC(loc~cyt) -> CRTC(loc~nuc) 0.1
+    
+    # Transient Calcium stimulus
+    0 -> Ca() 5.0
+    Ca() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>60,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,74 @@
+# Model: synbio_edge_detector.bngl
+# Description: Implements an Edge Detector using an Incoherent Feedforward Loop (IFFL).
+#              Input X activates both Output Z and Repressor Y.
+#              Y represses Z.
+#              A step increase in X causes a transient pulse in Z before Y catches up.
+
+begin model
+
+begin parameters
+    # Production
+    k_z 1.0
+    k_y 0.5 # Slower than Z to allow pulse
+    
+    # Repression
+    k_rep 10.0 # Strong repression
+    
+    # Degradation
+    d_z 0.5
+    d_y 0.2
+    
+    X_level 0
+end parameters
+
+begin molecule types
+    X()
+    Y()
+    Z()
+end molecule types
+
+begin seed species
+    X() 0
+    Y() 0
+    Z() 0
+end seed species
+
+begin observables
+    Molecules Input  X()
+    Molecules Output Z()
+    Molecules Repressor Y()
+end observables
+
+begin reaction rules
+    # 1. Input drives Z and Y
+    # X -> X + Z
+    X() -> X() + Z() k_z
+    # X -> X + Y
+    X() -> X() + Y() k_y
+    
+    # 2. Y represses Z (Degradation or Inhibition of synthesis)
+    # Direct degradation: Y + Z -> Y
+    Y() + Z() -> Y() k_rep
+    
+    # 3. Basal Degradation
+    Z() -> 0 d_z
+    Y() -> 0 d_y
+    
+    # 4. Input Step Function (Simulated by events)
+    # 0 -> X() 1.0 (at t=10)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+# Phase 1: No Input (0-10)
+simulate({method=>"ode", t_end=>10, n_steps=>40})
+# Phase 2: High Input (10-30)
+setParameter("X_level", 10)
+setConcentration("X()", 10)
+simulate({method=>"ode", t_end=>30, n_steps=>80, continue=>1})
+# Phase 3: No Input (30-50)
+setParameter("X_level", 0)
+setConcentration("X()", 0)
+simulate({method=>"ode", t_end=>50, n_steps=>80, continue=>1})

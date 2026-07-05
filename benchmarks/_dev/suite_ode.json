@@ -1,0 +1,258 @@
+{
+  "description": "ODE benchmark suite: BNGsim CVODE vs run_network CVODE",
+  "notes": "27 models from 2 to 3744 species (18 original + 9 from SSA/PSA corpus)",
+  "models": [
+    {
+      "name": "LV",
+      "net_file": "models/net/ode/LV.net",
+      "species": 2,
+      "reactions": 3,
+      "t_end": 0.1,
+      "n_steps": 200,
+      "ref": "Lotka-Volterra (Faeder 2015)"
+    },
+    {
+      "name": "gene_expression_hill",
+      "net_file": "models/net/ode/gene_expression_hill.net",
+      "species": 2,
+      "reactions": 4,
+      "t_end": 3600,
+      "n_steps": 360,
+      "ref": "Positive autoregulation with Hill function (Lin & Doering 2016)"
+    },
+    {
+      "name": "SIR",
+      "net_file": "models/net/ode/SIR.net",
+      "species": 3,
+      "reactions": 2,
+      "t_end": 100,
+      "n_steps": 200,
+      "ref": "SIR compartmental"
+    },
+    {
+      "name": "m1_ground",
+      "net_file": "models/net/ode/m1_ground.net",
+      "species": 4,
+      "reactions": 3,
+      "t_end": 100,
+      "n_steps": 200,
+      "ref": "Three-step pathway (Mitra 2019)"
+    },
+    {
+      "name": "simple_system",
+      "net_file": "models/net/ode/simple_system.net",
+      "species": 4,
+      "reactions": 4,
+      "t_end": 5,
+      "n_steps": 200,
+      "ref": "Enzyme-substrate binding (NFsim distribution)"
+    },
+    {
+      "name": "flagellar_motor",
+      "net_file": "models/net/ode/flagellar_motor.net",
+      "species": 4,
+      "reactions": 4,
+      "t_end": 0.5,
+      "n_steps": 200,
+      "ref": "CheY-driven motor switching (NFsim distribution)"
+    },
+    {
+      "name": "CaOscillate_functional",
+      "net_file": "models/net/ode/CaOscillate_functional.net",
+      "species": 4,
+      "reactions": 8,
+      "t_end": 20,
+      "n_steps": 200,
+      "ref": "CaOscillate with Sat() rewritten as Functional"
+    },
+    {
+      "name": "oscillatory_system",
+      "net_file": "models/net/ode/oscillatory_system.net",
+      "species": 5,
+      "reactions": 8,
+      "t_end": 50,
+      "n_steps": 400,
+      "ref": "Negative-feedback oscillations (NFsim distribution)"
+    },
+    {
+      "name": "gene_expr_3stage",
+      "net_file": "models/net/ode/gene_expr_3stage.net",
+      "species": 6,
+      "reactions": 6,
+      "t_end": 200000000,
+      "n_steps": 10000,
+      "ref": "Bursty promoter switching (Shahrezaei & Swain 2008)"
+    },
+    {
+      "name": "RAFi_ground",
+      "net_file": "models/net/ode/RAFi_ground.net",
+      "species": 6,
+      "reactions": 12,
+      "t_end": 10000,
+      "n_steps": 200,
+      "ref": "RAF inhibitor (Mitra 2019)"
+    },
+    {
+      "name": "localfunc",
+      "net_file": "models/net/ode/localfunc.net",
+      "species": 7,
+      "reactions": 11,
+      "t_end": 100,
+      "n_steps": 100,
+      "ref": "Local functions example"
+    },
+    {
+      "name": "gene_expression",
+      "net_file": "models/net/ode/gene_expression.net",
+      "species": 10,
+      "reactions": 14,
+      "t_end": 60000,
+      "n_steps": 1000,
+      "ref": "Two-state gene model (Munsky et al. 2012)"
+    },
+    {
+      "name": "Repressilator",
+      "net_file": "models/net/ode/Repressilator.net",
+      "species": 15,
+      "reactions": 30,
+      "t_end": 1000,
+      "n_steps": 1000,
+      "ref": "Elowitz & Leibler 2000"
+    },
+    {
+      "name": "egfr_path",
+      "net_file": "models/net/ode/egfr_path.net",
+      "species": 18,
+      "reactions": 37,
+      "t_end": 120,
+      "n_steps": 120,
+      "ref": "EGFR pathway"
+    },
+    {
+      "name": "nfkb",
+      "net_file": "models/net/ode/nfkb.net",
+      "species": 22,
+      "reactions": 31,
+      "t_end": 200,
+      "n_steps": 200,
+      "ref": "NF-kB signaling"
+    },
+    {
+      "name": "erk_activation",
+      "net_file": "models/net/ode/erk_activation.net",
+      "species": 34,
+      "reactions": 65,
+      "t_end": 300,
+      "n_steps": 1000,
+      "ref": "ERK activation cascade (Kochanczyk 2017)"
+    },
+    {
+      "name": "tcr_signaling",
+      "net_file": "models/net/ode/tcr_signaling.net",
+      "species": 37,
+      "reactions": 97,
+      "t_end": 300,
+      "n_steps": 1000,
+      "ref": "Bistable TCR activation (Lipniacki 2008)"
+    },
+    {
+      "name": "egfr_net_red",
+      "net_file": "models/net/ode/egfr_net_red.net",
+      "species": 40,
+      "reactions": 123,
+      "t_end": 120,
+      "n_steps": 120,
+      "ref": "Blinov EGFR reduced"
+    },
+    {
+      "name": "Scaff_22_ground",
+      "net_file": "models/net/ode/Scaff_22_ground.net",
+      "species": 85,
+      "reactions": 487,
+      "t_end": 1000,
+      "n_steps": 200,
+      "ref": "MAPK scaffolding (Mitra 2019)"
+    },
+    {
+      "name": "prion_aggregation",
+      "net_file": "models/net/ode/prion_aggregation.net",
+      "species": 104,
+      "reactions": 2809,
+      "t_end": 100,
+      "n_steps": 200,
+      "ref": "Prion polymerization (Rubenstein et al. 2007)"
+    },
+    {
+      "name": "SHP2_base_model",
+      "net_file": "models/net/ode/SHP2_base_model.net",
+      "species": 149,
+      "reactions": 1032,
+      "t_end": 100,
+      "n_steps": 200,
+      "ref": "SHP2 phosphatase"
+    },
+    {
+      "name": "fceri_ji",
+      "net_file": "models/net/ode/fceri_ji.net",
+      "species": 354,
+      "reactions": 3680,
+      "t_end": 200,
+      "n_steps": 200,
+      "ref": "Faeder et al. 2003"
+    },
+    {
+      "name": "egfr_net",
+      "net_file": "models/net/ode/egfr_net.net",
+      "species": 356,
+      "reactions": 3749,
+      "t_end": 120,
+      "n_steps": 120,
+      "ref": "Blinov et al. 2006"
+    },
+    {
+      "name": "before_bunching",
+      "net_file": "models/net/ode/before_bunching.net",
+      "species": 593,
+      "reactions": 6400,
+      "t_end": 100,
+      "n_steps": 200,
+      "ref": "Hlavacek 2018 restructuration"
+    },
+    {
+      "name": "multisite_phos",
+      "net_file": "models/net/ode/multisite_phos.net",
+      "species": 1026,
+      "reactions": 7680,
+      "t_end": 120,
+      "n_steps": 120,
+      "ref": "5-site phosphorylation"
+    },
+    {
+      "name": "fceri_fyn",
+      "net_file": "models/net/ode/fceri_fyn.net",
+      "species": 1281,
+      "reactions": 15256,
+      "t_end": 200,
+      "n_steps": 200,
+      "ref": "FcεRI + Fyn kinase"
+    },
+    {
+      "name": "fceri_gamma",
+      "net_file": "models/net/ode/fceri_gamma.net",
+      "species": 3744,
+      "reactions": 58276,
+      "t_end": 10,
+      "n_steps": 20,
+      "ref": "Goldstein et al. 2004"
+    },
+    {
+      "name": "metapop_sir_100",
+      "net_file": "models/net/ode/metapop_sir_100.net",
+      "species": 300,
+      "reactions": 600,
+      "t_end": 200,
+      "n_steps": 200,
+      "ref": "100-city metapopulation SIR with ring-topology transport (Session 18). Sparse Jacobian showcase: 4 graph colors (75x compression). Only model where KLU + colored FD outperforms dense."
+    }
+  ]
+}

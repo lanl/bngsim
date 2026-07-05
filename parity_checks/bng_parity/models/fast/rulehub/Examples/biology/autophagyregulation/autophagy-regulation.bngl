@@ -1,0 +1,102 @@
+begin model
+begin parameters
+    # Autophagy regulation: mTOR and AMPK competition on the ULK1 switch.
+    # Advanced features: exclude_reactants and wildcards (!?) for phosphorylation.
+    
+    # Sensing
+    k_nutrients 0.8    # Sustained mTOR drive
+    k_stress 1.5       # Starvation trigger
+    k_stress_multiplier 0.1
+    
+    # Kinase Competition
+    k_mtor_ulk 2.0     # mTOR inhibits ULK1
+    k_ampk_ulk 1.8     # AMPK activates ULK1
+    
+    # Autophagosome Formation
+    k_p62_bind 1.0     # Cargo recognition
+    Km_vps34 300       # Metabolic bottleneck
+    
+    # Reset
+    k_reset 0.2        # General recovery
+    
+    # Initials
+    AMPK_tot 800
+    ULK1_tot 400
+    LC3_tot 2000
+    p62_tot 500
+end parameters
+
+begin molecule types
+    mTOR(s~on~off)
+    AMPK(s~U~P)
+    ULK1(s~U~P_mTOR~active)
+    LC3(s~I~II)        # Soluble vs Lipid-bound
+    p62(b)             # Cargo sensor
+end molecule types
+
+begin seed species
+    mTOR(s~on) 100
+    AMPK(s~U) AMPK_tot
+    ULK1(s~U) ULK1_tot
+    LC3(s~I) LC3_tot
+    p62(b) p62_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Autophagy_Drive  LC3(s~II)                # Structural marker (LC3-II)
+    Molecules Stress_Sensor   AMPK(s~P)                # Energy status
+    Molecules Growth_Sensor   mTOR(s~on)               # Nutrient status
+    Molecules Primed_ULK1     ULK1(s~active)           # Initiator status
+    Molecules Cargo_Capture   p62(b!+)                 # Functional clearance
+end observables
+
+begin functions
+    v_stress_inh() = k_stress * k_stress_multiplier
+end functions
+
+begin reaction rules
+    ## SENSING (Stress/Nutrient competition)
+    # Nutrients keep mTOR active
+    0 -> mTOR(s~on) k_nutrients
+    # Induction using stress multiplier
+    mTOR(s~on) -> mTOR(s~off) v_stress_inh()
+    
+    # Stress activates AMPK
+    AMPK(s~U) -> AMPK(s~P) k_stress
+    
+    ## ULK1 SWITCHBOARD
+    # Competition: mTOR inhibits ULK1
+    # exclude_reactants: mTOR cannot inhibit if AMPK has already primed ULK1 (Simplified logic)
+    mTOR(s~on) + ULK1(s~U) -> mTOR(s~on) + ULK1(s~P_mTOR) k_mtor_ulk
+    
+    # AMPK activates ULK1
+    AMPK(s~P) + ULK1(s~U) -> AMPK(s~P) + ULK1(s~active) k_ampk_ulk
+    
+    ## DOWNSTREAM EXECUTION (Phagophore elongation)
+    # Active ULK1 promotes LC3 lipidation (uses Primed_ULK1 observable)
+    LC3(s~I) -> LC3(s~II) 1.0 * (Primed_ULK1/(Km_vps34 + Primed_ULK1))
+    
+    # LC3-II recruits p62 (Cargo selection)
+    LC3(s~II) + p62(b) <-> LC3(s~II!1).p62(b!1) k_p62_bind,0.5
+    
+    ## RECOVERY
+    # Wildcard dephosphorylation (!?)
+    ULK1(s~P_mTOR) -> ULK1(s~U) k_reset
+    ULK1(s~active) -> ULK1(s~U) k_reset
+    LC3(s~II) -> LC3(s~I) 0.1
+    AMPK(s~P) -> AMPK(s~U) k_reset
+    mTOR(s~off) -> mTOR(s~on) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (Normal Nutrients)
+    setParameter("k_stress_multiplier", 0.1)
+    simulate({method=>"ode",t_end=>50,n_steps=>100})
+    # Phase 2: Stress (Starvation pulse)
+    setParameter("k_stress_multiplier", 2.0)
+    simulate({method=>"ode",t_end=>150,n_steps=>200,continue=>1})
+end actions
+end model
+

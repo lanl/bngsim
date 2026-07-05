@@ -1,0 +1,38 @@
+begin model
+begin parameters
+    k1 0.4
+    k2 0.3
+    k3 0.2
+    k_reset 0.05
+end parameters
+
+begin molecule types
+    Sensor(state~U~P)
+    Relay(state~U~P)
+    Output(state~U~P)
+end molecule types
+
+begin seed species
+    Sensor(state~U) 50
+    Relay(state~U) 70
+    Output(state~U) 90
+end seed species
+
+begin observables
+    Molecules Sensor_P Sensor(state~P)
+    Molecules Relay_P Relay(state~P)
+    Molecules Output_P Output(state~P)
+end observables
+
+begin reaction rules
+    Sensor(state~U) -> Sensor(state~P) k1
+    Sensor(state~P) + Relay(state~U) -> Sensor(state~P) + Relay(state~P) k2
+    Relay(state~P) + Output(state~U) -> Relay(state~P) + Output(state~P) k3
+    Output(state~P) -> Output(state~U) k_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model

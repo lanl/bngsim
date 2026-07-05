@@ -1,0 +1,100 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+# volume of extracellular fluid
+V 15 # L per body
+# rate constant for proliferation of target cells
+p 0.01 # /d
+# carrying capacity
+Tc 3e11 # cells per body
+# rate constant for death of target cells
+mu 0.0038 # /d
+# initial number of target cells
+T0 = Tc*(1-mu/p) # cells per body (1.86e11)
+# abundance of reservoir CD21
+R0 2e12 # copies per body
+# initial number of anti-CD21 therapeutic antibodies
+A0 2e14 # copies per body 
+# forward rate constant for antibody/virus binding
+kf 11e10/(NA*V) # /M/d converted to /molecules/body/d [9e10]
+# reverse rate constant
+kr 20 # /d [0.2]
+KD = kr/kf # M (2e-12 M or 2 pM) converted to /molecules/body
+# enhanced lifetime of virus (relative to antibody)
+enhanced_lifetime 2 # dimensionless
+# initial amount of virus
+V0 2e5
+# rate constant for viral clearance
+c 10 # /d
+# rate constant for infection
+k 6e13/(NA*V) # /M/d converted to /(molecule/body)/d
+# rate constant for infection-induced cell death
+delta 3 # /d
+# number of virions produced per infected cell (on average)
+N 50 # dimensionless
+end parameters
+begin molecule types
+counter()
+# target cell
+T(s)
+# barcoded virus
+V(s)
+# reservoir CD21
+R(s)
+# anti-CD21 therapeutic antibody
+A(s)
+end molecule types
+begin seed species
+counter() 0
+T(s) T0
+R(s) R0
+A(s) A0
+V(s) V0
+end seed species
+begin observables
+Molecules t counter()
+Molecules T T()
+Molecules Rfree R(s)
+Molecules Afree A(s)
+Molecules AR_complex A(s!1).R(s!1)
+Molecules Vfree V(s)
+Molecules VR_complex V(s!1).R(s!1)
+end observables
+begin functions
+proliferation_rate_law() = p*T*(1-T/Tc)
+infection_rate_law() = if(t<14,N*delta,0)
+A_div_A0() = Afree/A0
+R_div_R0() = Rfree/R0
+AR_div_R0() = AR_complex/R0
+number_2e10() = 2e10
+number_2e12() = 2e12
+end functions
+begin reaction rules
+0->counter() 1
+# proliferation
+0->T(s) proliferation_rate_law()
+# antibody binding
+A(s)+R(s)<->A(s!1).R(s!1) kf,kr
+# death
+T(s)->0 mu
+# viral clearance
+V(s)->0 c
+# virus capture and release by FDCs
+V(s)+R(s)<->V(s!1).R(s!1) kf,(1/enhanced_lifetime)*kr
+# infection
+V(s)+T(s)->V(s!1).T(s!1) k 
+# infection-induced cell death
+V(s!1).T(s!1)->0 delta
+# shedding of virus by infected cells
+V(s!1).T(s!1)->V(s!1).T(s!1)+V(s) infection_rate_law()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({suffix=>"with_Ab",method=>"ode",t_start=>0,t_end=>28,n_steps=>560,print_functions=>1})
+resetConcentrations()
+setConcentration("A(s)",0)
+simulate({suffix=>"without_Ab",method=>"ode",t_start=>0,t_end=>28,n_steps=>560,print_functions=>1})
+end actions

@@ -1,0 +1,63 @@
+# Edge case: single rule with SIMULTANEOUS state change, AddBond,
+# DeleteBond, AddMolecule and DeleteMolecule operations.
+# Tests:  fire_rule must apply ALL ops in the right order without
+#         clobbering intermediate state.  In particular: we delete the
+#         "spent" cofactor C, change the kinase K's state to active,
+#         break the K-S bond, AND create a brand-new product P that
+#         leaves the system as a free monomer.  The map nodes that
+#         carry reactant→product component identity have to thread
+#         through correctly; an incorrect AddMolecule/AddBond ordering
+#         would leave the new P with stale state or a missing bond.
+# Edge:   intentionally densest single-rule action profile — no other
+#         coverage model exercises this many distinct OpTypes per fire.
+# Tier:   base
+# invariant: conserved K_total = 20
+
+begin model
+begin parameters
+    K_tot   20
+    S_tot   30
+    C_tot   30
+    kf      0.05
+    kr      0.10
+    kcat    0.30
+end parameters
+
+begin molecule types
+    K(s,a~U~A)
+    S(k)
+    C()      # cofactor — consumed by the catalytic step
+    P()      # product — created by the catalytic step
+end molecule types
+
+begin seed species
+    K(s,a~U)  K_tot
+    S(k)      S_tot
+    C()       C_tot
+    P()       0
+end seed species
+
+begin observables
+    Molecules  K_total      K()
+    Molecules  K_inactive   K(a~U)
+    Molecules  K_active     K(a~A)
+    Molecules  S_free       S(k)
+    Molecules  S_bound      S(k!+)
+    Molecules  C_total      C()
+    Molecules  P_total      P()
+    Molecules  KS           K(s!1).S(k!1)
+end observables
+
+begin reaction rules
+    # Vanilla recruitment.
+    K(s,a~U) + S(k) <-> K(s!1,a~U).S(k!1)   kf, kr
+    # The compound rule: simultaneously consumes one C, breaks the K-S
+    # bond, activates K (state U->A), and emits a new P molecule.
+    # All five operations land in one ListOfOperations.
+    K(s!1,a~U).S(k!1) + C() -> K(s,a~A) + S(k) + P()   kcat
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

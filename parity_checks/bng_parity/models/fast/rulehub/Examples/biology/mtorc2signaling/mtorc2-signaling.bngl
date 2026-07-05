@@ -1,0 +1,98 @@
+begin model
+begin parameters
+    # mTORC2 signaling regulates cell survival and growth via AKT and SGK1.
+    # Advanced features: Hill kinetics for assembly and wildcard binding.
+    
+    # Complex Assembly
+    k_sin1_bind 0.01   # Recruit SIN1 to mTOR (increased for observable dynamics)
+    k_rictor_bind 0.01 # Recruit Rictor (Stabilizing)
+    
+    # Activation
+    k_act_max 5.0      # Max mTORC2 activation
+    Km_pip3 300        # Half-saturation by PIP3
+    n_hill 2.0         # Cooperativity in activation
+    
+    # Signal Transduction
+    k_akt_phos 2.0     # S473 phosphorylation (mTORC2 signature)
+    k_sgk_phos 1.0     # SGK1 phosphorylation
+    
+    # Initials
+    mTOR_tot 500
+    SIN1_tot 400
+    Rictor_tot 400
+    AKT_init 800
+    SGK_init 300
+    PIP3_level 100     # Input drive (Parameter for scaling)
+    k_syn_pip3 10.0
+    k_deg_pip3 0.1
+end parameters
+
+begin molecule types
+    mTOR(sin,ric,s~U~P)
+    SIN1(b)
+    Rictor(b)
+    AKT(s~U~P)
+    SGK1(s~U~P)
+    PIP3()
+end molecule types
+
+begin seed species
+    mTOR(sin,ric,s~U) mTOR_tot
+    SIN1(b) SIN1_tot
+    Rictor(b) Rictor_tot
+    AKT(s~U) AKT_init
+    SGK1(s~U) SGK_init
+    PIP3() 0
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_mTORC2   mTOR(sin!+,ric!+,s~P)   # Fully assembled and active complex
+    Molecules Total_pAKT      AKT(s~P)                 # Survival readout
+    Molecules Total_pSGK      SGK1(s~P)                # Volume control readout
+    Molecules mTORC2_Assembled mTOR(sin!+,ric!+)       # Structural integrity metrics
+    Molecules PIP3_Sensors    PIP3()                   # Drive metrics
+end observables
+
+begin functions
+    # Hill-like activation rate
+    # Hill-like activation rate
+    v_act() = k_act_max * (PIP3_Sensors^n_hill) / (Km_pip3^n_hill + PIP3_Sensors^n_hill)
+end functions
+
+begin reaction rules
+    ## ASSEMBLY
+    # Wildcard: mTOR binds SIN1 regardless of Rictor status (!?)
+    mTOR(sin) + SIN1(b) <-> mTOR(sin!1).SIN1(b!1) k_sin1_bind,0.1
+    
+    # Rictor recruitment
+    mTOR(ric) + Rictor(b) <-> mTOR(ric!1).Rictor(b!1) k_rictor_bind,0.1
+    
+    ## ACTIVATION
+    # Assembled mTORC2 is activated by PIP3 (Functional Rate)
+    # include_reactants: Only assemble if both sites are bound
+    mTOR(sin!+,ric!+,s~U) -> mTOR(sin!+,ric!+,s~P) v_act()
+    
+    ## RELAY
+    # p-mTORC2 phosphorylates AKT
+    mTOR(s~P) + AKT(s~U) -> mTOR(s~P) + AKT(s~P) k_akt_phos
+    
+    # p-mTORC2 phosphorylates SGK1
+    mTOR(s~P) + SGK1(s~U) -> mTOR(s~P) + SGK1(s~P) k_sgk_phos
+    
+    ## RESET
+    AKT(s~P) -> AKT(s~U) 0.05
+    SGK1(s~P) -> SGK1(s~U) 0.05
+    mTOR(s~P) -> mTOR(s~U) 0.01
+
+    ## PIP3 Dynamics
+    0 -> PIP3() k_syn_pip3
+    PIP3() -> 0 k_deg_pip3
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>50,n_steps=>300})
+end actions
+end model
+

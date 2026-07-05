@@ -1,0 +1,61 @@
+// Central t-Distribution Density - Original Form
+// Related: test_models1/m17_central_t.ant
+// Source: Voit & Rust, "Evaluation of the Noncentral t Distribution with S-Systems"
+//         Biom. J. 32(6):681-695 (1990)
+//         Equations (2)-(4)
+//
+// Also in: Rust & Voit, "Statistical Densities, Cumulatives, Quantiles, and Power..."
+//          JASA 85(410):572-578 (1990)
+//
+// Both papers explicitly cite Savageau & Voit (1987).
+//
+// Original ODE for central t density with v degrees of freedom:
+//   f(t) = C · (1 + t²/v)^(-(v+1)/2)
+//   f'(t) = -(v+1) · t / (v + t²) · f(t)
+//
+// This is NOT in S-system form because of the SUM (v + t²) in denominator.
+//
+// ==============================================================================
+// EXACT RECASTING TO S-SYSTEM (Eq. 4):
+// ==============================================================================
+// Define auxiliary variables:
+//   X₁ = t + c    (shifted to avoid zero for log-transform in ESSYNS)
+//   X₂ = v + t²   (the troublesome denominator term)
+//   X₃ = f(t)     (the density)
+//   X₄ = F(t)     (cumulative)
+//
+// Recast S-system (1 → 4 variables):
+//   X₁' = 1
+//   X₂' = 2·X₁ - 2·c = 2·t  (derivative of v + t² w.r.t. t)
+//   X₃' = c·(v+1)·X₁⁻¹·X₃ - (v+1)·X₁·X₂⁻¹·X₃
+//   X₄' = X₃
+// ==============================================================================
+
+model RV1990_central_t_density()
+  // ORIGINAL ODE (not S-system form due to sum in denominator)
+  // t is treated as a state variable marching along with time
+  
+  compartment cell = 1;
+  species t in cell;
+  species f_var in cell;
+  species F in cell;
+
+  // Parameters
+  v = 8;
+  
+  // ORIGINAL ODEs
+  // f'(t) = -(v+1) · t / (v + t²) · f(t)
+  // Note: (v + t²) is a SUM - not S-system compatible
+  t' = 1;
+  f_var' = -(v + 1) * t / (v + t^2) * f_var;
+  F' = f_var;
+  
+  // Initial conditions at t = 0
+  // f(0) = Gamma((v+1)/2) / (sqrt(v*pi) * Gamma(v/2))
+  // For v = 8: f(0) ≈ 0.3866990209613933
+  t = 0.001;  // Small positive value to avoid division issues at t=0
+  f_var = 0.3866990209613933;
+  F = 0.5;
+end
+
+// @SIM T_START=0 T_END=4 N_STEPS=400

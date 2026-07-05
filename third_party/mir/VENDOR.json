@@ -1,0 +1,68 @@
+{
+  "name": "MIR",
+  "vendored_path": "bngsim/third_party/mir",
+  "status": "prototype",
+  "purpose": "In-process micro-JIT backend for the code-generated ODE RHS (GH #78). c2mir (MIR's C11 frontend) JIT-compiles the same C source bngsim._codegen already emits, in ~1-2 ms instead of shelling out to `cc -O3` + dlopen (~80 ms-seconds). Targets x86-64 and aarch64 (Apple Silicon) with no external toolchain — MIR is a single ~1 MB C library, so it adds no new build dependency to the C++/scikit-build wheel pipeline.",
+  "source": {
+    "authoritative_remote": "https://github.com/vnmakarov/mir.git",
+    "authoritative_branch": "master",
+    "upstream_remote": "https://github.com/vnmakarov/mir.git",
+    "branch_or_ref": "origin/master",
+    "commit": "99c65079038f3ba9242ef646f308c266cfd7a8e5"
+  },
+  "license": {
+    "spdx": "MIT",
+    "holder": "Vladimir Makarov (2018-2024)",
+    "file": "bngsim/third_party/mir/LICENSE"
+  },
+  "imported_at_utc": "2026-06-11T00:00:00+00:00",
+  "build": {
+    "translation_units": [
+      "mir.c",
+      "mir-gen.c",
+      "c2mir/c2mir.c"
+    ],
+    "include_dirs": [
+      "bngsim/third_party/mir",
+      "bngsim/third_party/mir/c2mir"
+    ],
+    "notes": [
+      "mir.c #includes the matching target backend (mir-x86_64.c / mir-aarch64.c / ...) and mir-interp.c, guarded by target macros; only the host target's file is read.",
+      "mir-gen.c #includes mir-gen-<target>.c the same way.",
+      "c2mir/c2mir.c #includes the per-arch frontend under c2mir/<target>/, also target-guarded.",
+      "All target backends are vendored so the same tree builds on x86-64 and aarch64 without per-arch pruning."
+    ]
+  },
+  "files": {
+    "mir.c":        { "sha256": "d0e10c8ac198c07e41af7a96182a095169c06bc6527b06b098710625ee7bc5aa" },
+    "mir-gen.c":    { "sha256": "d7cd6d68ba3395244768bf21dea37c39b1b6e51490f34b42a5326fdbed1b4522" },
+    "c2mir/c2mir.c":{ "sha256": "7f049525b34008f1911654a177e4c2be7640c7a37c65c516093dbd9ee68bb226" },
+    "mir.h":        { "sha256": "c1cd21d417ad0b19c5b8c8c0593e48a890ab784e19706126bc545b1edf1e020f" },
+    "mir-gen.h":    { "sha256": "2d8ef6af6764639152ab6c7ec6a4f3293d6890239382058043012667f1549c77" },
+    "c2mir/c2mir.h":{ "sha256": "7bff6e7eeec3f949240fbe3e781b489994397293d579533ee208001cd9cad8c0" },
+    "LICENSE":      { "sha256": "7dba19bef537b8b0acf1508470c8cf7654861aa8d3f0c6ceaadd4dd160f916d5" }
+  },
+  "pruning": {
+    "included_paths": [
+      "mir.c, mir.h, mir-gen.c, mir-gen.h, mir-interp.c and all root mir-*.{c,h} backends",
+      "mir-alloc*.{c,h}, mir-code-alloc*.{c,h}, mir-dlist.h, mir-htab.h, mir-varr.h, mir-bitmap.h, mir-hash.h, mir-reduce.h, real-time.h",
+      "c2mir/ (c2mir.c, c2mir.h, mirc*.h, and the x86_64/aarch64/ppc64/s390x/riscv64 frontend subdirs)",
+      "LICENSE, README.md"
+    ],
+    "excluded_paths": [
+      ".github, adt-tests, c-benchmarks, c-tests, llvm2mir, mir2c, mir-tests, mir-utils",
+      "sieve.c, mir-bin-driver.c, mir-bin-run.c, mir-gen-stub.c, c2mir/c2mir-driver.c (standalone CLI/test drivers)",
+      "*.svg, GNUmakefile, CMakeLists.txt (upstream's), docs (*.md except LICENSE/README), shell + CI scripts"
+    ]
+  },
+  "guardrails": {
+    "jit_source_must_be_header_free": "c2mir's bundled preprocessor cannot parse the platform SDK <math.h>/<stdlib.h> (they use compiler-specific extensions; on macOS it reports 'Unsupported compiler detected'). The JIT path therefore strips system #includes from the generated C and prepends extern declarations for the libc/libm symbols it calls (pow, exp, sqrt, log, fabs, fmax, fmin, memset, ...). MIR resolves those externals at link time via the import resolver (dlsym(RTLD_DEFAULT, name)). See bngsim/include/bngsim/mir_jit.hpp.",
+    "api_find_func_by_iteration": "MIR_get_global_item is declared in mir.h but not defined in this commit; locate the JIT'd function by scanning module->items for a MIR_func_item whose name matches (the version-stable approach c2mir-driver uses).",
+    "single_maintainer_upstream": "MIR is effectively single-maintainer. Pinned to an immutable commit; refresh deliberately."
+  },
+  "local_carries": [],
+  "notes": [
+    "Prototype vendoring for GH #78. Gated behind the BNGSIM_ENABLE_MIR CMake option (default OFF); the cc-subprocess + dlopen codegen backend and the ExprTk fallback are unchanged when MIR is off.",
+    "Refresh via bngsim/scripts/vendor_mir.py (prunes the tree from a vnmakarov/mir checkout and re-anchors this file's commit + files{} checksums); --check is the offline tripwire that the checked-in tree still matches this metadata. See bngsim/scripts/MIR_VENDORING.md."
+  ]
+}

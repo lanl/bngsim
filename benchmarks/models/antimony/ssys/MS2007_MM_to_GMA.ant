@@ -1,0 +1,43 @@
+// =============================================================================
+// Source: Marin-Sanguino et al. (2007) "Optimization of biotechnological
+//         systems through geometric programming"
+//         Theor. Biol. Med. Model. 4:38
+// Example: Michaelis-Menten to GMA recasting (Equations 14-16)
+// =============================================================================
+// Time horizon: t ∈ [0, 20] (not specified in paper, added for simulation)
+//
+// Original ODE with Michaelis-Menten kinetics (Equation 14):
+//   dX1/dt = Vmax,1*X0/(KM,1 + X0) - Vmax,2*X1/(KM,2 + X1)
+//
+// Recast to GMA form (Equations 15-16):
+//   Define auxiliary variables:
+//     X2 = KM,2 + X1
+//     X3 = KM,1 + X0  (constant if X0 is independent)
+//
+//   GMA system:
+//     dX1/dt = Vmax,1*X0*X3^(-1) - Vmax,2*X1*X2^(-1)
+//     dX2/dt = Vmax,1*X0*X3^(-1) - Vmax,2*X1*X2^(-1)
+//
+//   Initial conditions:
+//     X1(0) = X10
+//     X2(0) = KM,2 + X10
+//
+// NOTE: Parameter values added for simulation - not specified in original paper.
+// =============================================================================
+
+model MS2007_MM_to_GMA()
+    // Parameters (added for simulation)
+    Vmax1 = 1.0   // Maximum rate for production
+    Vmax2 = 0.5   // Maximum rate for degradation
+    KM1 = 1.0     // Michaelis constant for production
+    KM2 = 0.5     // Michaelis constant for degradation
+    X0 = 2.0      // Substrate (constant, independent variable)
+    
+    // Original Michaelis-Menten form
+    X1' = Vmax1*X0/(KM1 + X0) - Vmax2*X1/(KM2 + X1)
+    
+    // Initial condition
+    X1 = 0.5
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

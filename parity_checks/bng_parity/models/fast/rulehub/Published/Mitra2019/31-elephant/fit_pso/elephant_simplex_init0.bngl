@@ -1,0 +1,265 @@
+begin model
+
+# Reference:
+# - Kuhl FP, Giardina CR (1982) Computer Graphics and Image Processing 18: 236-258.
+
+begin parameters
+A0__FREE 48.646423381016724
+C0__FREE 37.00000000000122
+a10__FREE -0.1182189059681308
+a11__FREE 0.13905077409384886
+a12__FREE -0.21245151627919423
+a13__FREE 0.8967145526347943
+a14__FREE 0.23876908358856594
+a15__FREE 0.5461399198561808
+a16__FREE 0.33710615781499936
+a17__FREE 0.6511397239066338
+a18__FREE 0.17405809675207165
+a19__FREE 0.08212527116134813
+a1__FREE 30.067975802709938
+a20__FREE -0.2762198978735742
+a2__FREE 12.761412869837558
+a3__FREE 2.2409325192255576
+a4__FREE -0.8413259060129311
+a5__FREE -1.6097858775011107
+a6__FREE -0.16390821533538796
+a7__FREE -0.03633232727399186
+a8__FREE -0.9999999992709172
+a9__FREE 0.2508578364379159
+b10__FREE 0.9203781507491541
+b11__FREE -0.39174793662337193
+b12__FREE 0.6109984351315654
+b13__FREE -0.9721105420713593
+b14__FREE 0.9899049511238366
+b15__FREE -0.6205315213705854
+b16__FREE 0.22410741755277033
+b17__FREE 0.23374589983325023
+b18__FREE 0.4432005814070316
+b19__FREE 0.34664014330087306
+b1__FREE 21.97750945497944
+b20__FREE -0.43694031621433926
+b2__FREE -3.354107438922501
+b3__FREE -3.5053201789205963
+b4__FREE -0.5043937586120336
+b5__FREE 0.21999237251709206
+b6__FREE -0.2990541398684732
+b7__FREE -0.5028476733684103
+b8__FREE -0.825580908727552
+b9__FREE -0.1763018188902182
+c10__FREE -0.89502689801221
+c11__FREE 0.06909107922759433
+c12__FREE -0.8841057019633473
+c13__FREE -0.5186095794804905
+c14__FREE 0.281607647915454
+c15__FREE 0.13103545193687885
+c16__FREE 0.23715096029787663
+c17__FREE -0.005930830525243724
+c18__FREE -0.06245834432650127
+c19__FREE 0.11334632742182431
+c1__FREE 16.47466661433132
+c20__FREE -0.44163182766277853
+c2__FREE -0.6990964636697966
+c3__FREE -4.4846673299781035
+c4__FREE -5.691429490137389
+c5__FREE 0.3659321507934119
+c6__FREE 4.036378461104539
+c7__FREE -0.016760363870456665
+c8__FREE 0.007421948069163572
+c9__FREE 0.3659579763264941
+d10__FREE 1.5866217209008882
+d11__FREE 0.5622443681291581
+d12__FREE -0.38292244079243476
+d13__FREE 0.6929930171828148
+d14__FREE 0.6600258909184927
+d15__FREE 0.2648671266363968
+d16__FREE 0.3172102609983126
+d17__FREE -0.201209594997589
+d18__FREE -0.4047972506409551
+d19__FREE -0.30039502812547375
+d1__FREE -15.285926190206874
+d20__FREE 0.3242594407557992
+d2__FREE -10.371340111165503
+d3__FREE -3.3780201734351847
+d4__FREE -1.3668259678006427
+d5__FREE -1.7824547947039406
+d6__FREE -8.762865804579045
+d7__FREE 7.028898076933997
+d8__FREE 0.4422202109675259
+d9__FREE 0.4139384462387033
+
+A0 A0__FREE
+
+a1 a1__FREE
+a2 a2__FREE
+a3 a3__FREE
+a4 a4__FREE
+a5 a5__FREE
+a6 a6__FREE
+a7 a7__FREE
+a8 a8__FREE
+a9 a9__FREE
+a10 a10__FREE
+a11 a11__FREE
+a12 a12__FREE
+a13 a13__FREE
+a14 a14__FREE
+a15 a15__FREE
+a16 a16__FREE
+a17 a17__FREE
+a18 a18__FREE
+a19 a19__FREE
+a20 a20__FREE
+
+b1 b1__FREE
+b2 b2__FREE
+b3 b3__FREE
+b4 b4__FREE
+b5 b5__FREE
+b6 b6__FREE
+b7 b7__FREE
+b8 b8__FREE
+b9 b9__FREE
+b10 b10__FREE
+b11 b11__FREE
+b12 b12__FREE
+b13 b13__FREE
+b14 b14__FREE
+b15 b15__FREE
+b16 b16__FREE
+b17 b17__FREE
+b18 b18__FREE
+b19 b19__FREE
+b20 b20__FREE
+
+C0 C0__FREE
+
+c1 c1__FREE
+c2 c2__FREE
+c3 c3__FREE
+c4 c4__FREE
+c5 c5__FREE
+c6 c6__FREE
+c7 c7__FREE
+c8 c8__FREE
+c9 c9__FREE
+c10 c10__FREE
+c11 c11__FREE
+c12 c12__FREE
+c13 c13__FREE
+c14 c14__FREE
+c15 c15__FREE
+c16 c16__FREE
+c17 c17__FREE
+c18 c18__FREE
+c19 c19__FREE
+c20 c20__FREE
+
+d1 d1__FREE
+d2 d2__FREE
+d3 d3__FREE
+d4 d4__FREE
+d5 d5__FREE
+d6 d6__FREE
+d7 d7__FREE
+d8 d8__FREE
+d9 d9__FREE
+d10 d10__FREE
+d11 d11__FREE
+d12 d12__FREE
+d13 d13__FREE
+d14 d14__FREE
+d15 d15__FREE
+d16 d16__FREE
+d17 d17__FREE
+d18 d18__FREE
+d19 d19__FREE
+d20 d20__FREE
+
+tmax 464
+pi=2*asin(1)
+mult=2*pi/tmax
+
+end parameters
+
+begin molecule types
+
+t
+
+end molecule types
+
+begin seed species
+
+t 0
+
+end seed species
+
+begin observables
+
+Species t t
+
+end observables
+
+begin functions
+
+X()=A0\
++a1*cos(mult*1*t)+b1*sin(mult*1*t)\
++a2*cos(mult*2*t)+b2*sin(mult*2*t)\
++a3*cos(mult*3*t)+b3*sin(mult*3*t)\
++a4*cos(mult*4*t)+b4*sin(mult*4*t)\
++a5*cos(mult*5*t)+b5*sin(mult*5*t)\
++a6*cos(mult*6*t)+b6*sin(mult*6*t)\
++a7*cos(mult*7*t)+b7*sin(mult*7*t)\
++a8*cos(mult*8*t)+b8*sin(mult*8*t)\
++a9*cos(mult*9*t)+b9*sin(mult*9*t)\
++a10*cos(mult*10*t)+b10*sin(mult*10*t)\
++a11*cos(mult*11*t)+b11*sin(mult*11*t)\
++a12*cos(mult*12*t)+b12*sin(mult*12*t)\
++a13*cos(mult*13*t)+b13*sin(mult*13*t)\
++a14*cos(mult*14*t)+b14*sin(mult*14*t)\
++a15*cos(mult*15*t)+b15*sin(mult*15*t)\
++a16*cos(mult*16*t)+b16*sin(mult*16*t)\
++a17*cos(mult*17*t)+b17*sin(mult*17*t)\
++a18*cos(mult*18*t)+b18*sin(mult*18*t)\
++a19*cos(mult*19*t)+b19*sin(mult*19*t)\
++a20*cos(mult*20*t)+b20*sin(mult*20*t)\
+
+Y()=C0\
++c1*cos(mult*1*t)+d1*sin(mult*1*t)\
++c2*cos(mult*2*t)+d2*sin(mult*2*t)\
++c3*cos(mult*3*t)+d3*sin(mult*3*t)\
++c4*cos(mult*4*t)+d4*sin(mult*4*t)\
++c5*cos(mult*5*t)+d5*sin(mult*5*t)\
++c6*cos(mult*6*t)+d6*sin(mult*6*t)\
++c7*cos(mult*7*t)+d7*sin(mult*7*t)\
++c8*cos(mult*8*t)+d8*sin(mult*8*t)\
++c9*cos(mult*9*t)+d9*sin(mult*9*t)\
++c10*cos(mult*10*t)+d10*sin(mult*10*t)\
++c11*cos(mult*11*t)+d11*sin(mult*11*t)\
++c12*cos(mult*12*t)+d12*sin(mult*12*t)\
++c13*cos(mult*13*t)+d13*sin(mult*13*t)\
++c14*cos(mult*14*t)+d14*sin(mult*14*t)\
++c15*cos(mult*15*t)+d15*sin(mult*15*t)\
++c16*cos(mult*16*t)+d16*sin(mult*16*t)\
++c17*cos(mult*17*t)+d17*sin(mult*17*t)\
++c18*cos(mult*18*t)+d18*sin(mult*18*t)\
++c19*cos(mult*19*t)+d19*sin(mult*19*t)\
++c20*cos(mult*20*t)+d20*sin(mult*20*t)\
+
+end functions
+
+begin reaction rules
+
+0->t 1
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({suffix=>"elephant",method=>"ode",t_start=>0,t_end=>464,n_steps=>464,\
+print_functions=>1})
+
+end actions

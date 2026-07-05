@@ -1,0 +1,163 @@
+begin model
+
+# A model for constitutive and regulated gene expression (in yeast)
+# Reference:
+# 1. Munsky B, Neuert G, van Oudenaarden A (2012) Science 336: 183-187.
+
+# We consider a transcript regulated according to Eq 1 in Ref 1, meaning
+#   a constitutively expressed transcript.
+#   This transcript is taken to have an average abundance of 5 copies per cell.
+# We consider three transcripts regulated according to the two-state model
+#   of Ref 1. 
+#   Each transcript is taken to have an average abundance of 25 copies per cell;
+#   however, parameters in the two-state model are such that the 
+#   copy number distributions of the transcripts have qualitatively distinct shapes.
+#   In the two-state model, a gene is either 'on' (able to catalyze transcription)
+#   or 'off' (unable to catalyze transcription).
+#   Transitions between the 'on' and 'off' states of a gene are governed by a
+#   transcription factor (TF), which is assumed to be expressed at a constant level. 
+#   Thus, TF abundance is not explicitly considered in the model.
+#   The rate of transcription is >0 when a gene is 'on' and 0 when a gene is 'off.'
+
+begin parameters
+
+# characteristic mRNA lifetime
+#   This lifetime is typical for transcripts in yeast.
+lifetime 300.0 # [=] s (5 min)
+
+# rate constant for mRNA clearance (through degradation and dilution) 
+#   This value is from Fig 2 in Ref 1.
+#   This process is assumed to occur with first-order mass-action kinetics.
+gammaR 1.0/lifetime # [=] /s
+
+# average number of constitutively expressed transcripts per cell
+#   (from literature results discussed and cited in Ref 1)
+m_avg_const 5.0 # [=] copies per cell
+
+# rate of constitutive mRNA synthesis (derived from Eq 1 in Ref 1)
+#   This process is assumed to occur with zero-order mass-action kinetics.
+kR_const=m_avg_const*gammaR # [=] molecules per cell per s
+
+# rate of mRNA synthesis when a gene is 'on' (from Fig 2 in Ref 1)
+#   This process is assumed to occur with zero-order mass-action kinetics.
+kR_reg 100.0/lifetime # [=] molecules per cell per s
+
+# rate constant for gene activation for regulated gene 1 (from Fig 2 in Ref 1)
+#   This parameter characterizes the 'off' to 'on' transition.
+kOn1 (2.0/15.)*gammaR # [=] /s
+
+# rate constant for gene inactivation for regulated gene 1 (from Fig 2 in Ref 1)
+#   This parameter characterizes the 'on' to 'off' transition.
+kOff1 0.4*gammaR # [=] /s
+
+# rate constants for gene (in)activation for regulated gene 2 (from Fig 2 in Ref 1)
+kOn2 (2.0/3.0)*gammaR # [=] /s
+kOff2 (2.0)*gammaR # [=] /s
+
+# rate constants for gene (in)activation for regulated gene 3 (from Fig 2 in Ref 1)
+kOn3 (10.0/3.0)*gammaR # [=] /s
+kOff3 10.0*gammaR # [=] /s
+
+# each regulated transcript is expressed at a level of 25 copies per cell (derived)
+m_avg_gene1=(kR_reg/gammaR)*kOn1/(kOn1+kOff1) # [=] copies per cell
+m_avg_gene2=(kR_reg/gammaR)*kOn2/(kOn2+kOff2) # [=] copies per cell
+m_avg_gene3=(kR_reg/gammaR)*kOn3/(kOn3+kOff3) # [=] copies per cell
+
+end parameters
+
+begin molecule types
+
+# constitutively expressed (unregulated) transcript
+m_const()
+
+# regulated transcript with Class I (bimodal) distribution of mRNA abundance
+#   long 'on' and 'off' periods
+m_I()
+
+# regulated transcript with Class II (long tail) distribution of mRNA abundance
+#   short 'on' and long 'off' periods; bursts of transcription
+m_II()
+
+# regulated transcript with Class III (unimodal) distribution of mRNA abundance
+#   short 'off' periods
+m_III()
+
+# two-state genes 1, 2 and 3
+gene1(state~on~off)
+gene2(state~on~off)
+gene3(state~on~off)
+
+end molecule types
+
+begin seed species
+
+# set initial mRNA levels at their expected values
+m_const() m_avg_const
+m_I() m_avg_gene1
+m_II() m_avg_gene2
+m_III() m_avg_gene3
+
+# There is one copy of each regulated gene per cell, initially in the 'off' state
+#   Yeast is haploid.
+#   The initial activity state is set arbitrarily.
+gene1(state~off) 1 # [=] copies per cell
+gene2(state~off) 1 # [=] copies per cell
+gene3(state~off) 1 # [=] copies per cell
+
+end seed species
+
+begin observables
+
+# number of mRNA molecules per cell
+Molecules m0 m_const() 
+Molecules m1 m_I() 
+Molecules m2 m_II() 
+Molecules m3 m_III()
+
+# gene activity levels (0 or 1 per cell)
+Molecules g1 gene1(state~on)
+Molecules g2 gene2(state~on)
+Molecules g3 gene3(state~on)
+
+end observables
+
+begin reaction rules
+
+# mRNA synthesis
+#   0 indicates a source
+0->m_const() kR_const
+0->m_I() if(g1>0,kR_reg,0.0)
+0->m_II() if(g2>0,kR_reg,0.0)
+0->m_III() if(g3>0,kR_reg,0.0)
+
+# mRNA clearance
+#   0 indicates a sink
+m_const()->0 gammaR
+m_I()->0 gammaR
+m_II()->0 gammaR
+m_III()->0 gammaR
+
+# gene activation
+gene1(state~off)->gene1(state~on) kOn1
+gene2(state~off)->gene2(state~on) kOn2
+gene3(state~off)->gene3(state~on) kOn3
+
+# gene inactivation
+gene1(state~on)->gene1(state~off) kOff1
+gene2(state~on)->gene2(state~off) kOff2
+gene3(state~on)->gene3(state~off) kOff3
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate reaction network from rules
+generate_network({overwrite=>1})
+
+# perform a stochastic simulation
+#   t [=] s
+simulate({method=>"ssa",t_end=>60000,n_steps=>1000})
+
+end actions

@@ -1,0 +1,47 @@
+begin model
+  begin parameters
+    NA 6.02214076e23 # molecules per mol
+    Vecf 1e-9 # L per cell
+    EGFtot 25e-9*(NA*Vecf) # copies per cell
+    EGFRtot 1e5 # copies per cell
+    KD 1e-9 # M
+    kr 5e-3 # /s
+    kf=(kr/KD)/(NA*Vecf) # /(molecule/cell)/s
+    kpx 3e-5 # /(molecule/cell)/s
+    kmx 0.3 # /s
+    kp 0.1 # /s
+    kdp 0.1 # /s
+  end parameters
+  begin molecule types
+    EGF(EGFL)
+    EGFR(I_III,II~m~d,Y1016~0~P,Y1092~0~P,Y1110~0~P,Y1172~0~P,Y1197~0~P)
+  end molecule types
+  begin seed species
+    EGF(EGFL) EGFtot
+    EGFR(I_III,II~m,Y1016~0,Y1092~0,Y1110~0,Y1172~0,Y1197~0) EGFRtot
+  end seed species
+  begin observables
+    Molecules EGFR_monomers EGFR(II~m)
+    Molecules EGFR_in_dimers EGFR(II~d)
+    Molecules pY1092 EGFR(Y1092~P!?)
+  end observables
+  begin reaction rules
+    EGF(EGFL)+EGFR(I_III,II~m)<->EGF(EGFL!1).EGFR(I_III!1,II~m) kf,kr
+    EGFR(I_III!+,II~m)+EGFR(I_III!+,II~m)->EGFR(I_III!+,II~d)+EGFR(I_III!+,II~d) kpx
+    EGFR(I_III!+,II~d)->EGFR(I_III!+,II~m) kmx
+    EGFR(II~d,Y1016~0)->EGFR(II~d,Y1016~P) kp
+    EGFR(II~d,Y1092~0)->EGFR(II~d,Y1092~P) kp
+    EGFR(II~d,Y1110~0)->EGFR(II~d,Y1110~P) kp
+    EGFR(II~d,Y1172~0)->EGFR(II~d,Y1172~P) kp
+    EGFR(II~d,Y1197~0)->EGFR(II~d,Y1197~P) kp
+    EGFR(Y1016~P)->EGFR(Y1016~0) kdp
+    EGFR(Y1092~P)->EGFR(Y1092~0) kdp
+    EGFR(Y1110~P)->EGFR(Y1110~0) kdp
+    EGFR(Y1172~P)->EGFR(Y1172~0) kdp
+    EGFR(Y1197~P)->EGFR(Y1197~0) kdp    
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_end=>60,n_steps=>120})
+end actions

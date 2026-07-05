@@ -1,0 +1,72 @@
+# Edge case: dynamic rate law that DIVIDES by an observable that can
+# transiently reach zero
+# Tests:  rate function "k * Pool / (Pool + epsilon)".  The expression
+#         remains finite when Pool=0 (giving 0), but the AST
+#         evaluation path must not produce NaN/inf, and the dynamic-
+#         rate recompute must fire whenever Pool changes (otherwise
+#         the propensity goes stale).  More importantly: the if(...)
+#         conditional branch is evaluated at rate-update time.  If
+#         the engine recomputes rates lazily, a stale "0" propensity
+#         when Pool became >0 would produce zero events.
+# Edge:   Pool is initially 0 (no producer molecules), then a synthesis
+#         rule produces them at constant rate.  After Pool first
+#         rises, the conditional rate must "wake up" and start firing
+#         the consumer rule.  This catches a class of bug where the
+#         engine doesn't add a rule to the priority queue until its
+#         reactant population becomes nonzero AND a stale rate is
+#         marked dirty.
+# Tier:   base
+
+begin model
+begin parameters
+    Src_tot   1
+    k_birth   0.5   # /s, A synthesis from Src
+    k_pool    0.30  # /s, A -> P (poolling)
+    k_consume 1.0   # /s, P -> Trash, but only when Pool>0 (gated by if())
+    k_decay   0.05  # /s, baseline P -> Trash decay
+end parameters
+
+begin molecule types
+    Src()
+    A()
+    P()
+    Trash()
+end molecule types
+
+begin seed species
+    Src()      Src_tot
+    A()        0
+    P()        0
+    $Trash()   0
+end seed species
+
+begin observables
+    Molecules  A_n     A()
+    Molecules  P_n     P()
+    Molecules  Pool    P()
+    Molecules  Src_n   Src()
+end observables
+
+begin functions
+    # Rate uses a conditional gate AND a divide-by-Pool form.
+    # if(Pool>0, k*Pool/Pool, 0)  → k when Pool>=1; 0 when Pool=0.
+    # The division-by-zero never actually happens because the
+    # condition guards it; but RM's AST must still SEE the divide
+    # subexpression and not pre-evaluate it.
+    consumeRate() = if(Pool > 0, k_consume * Pool / (Pool + 0.0), 0)
+end functions
+
+begin reaction rules
+    Src() -> Src() + A()    k_birth
+    A() -> P()              k_pool
+    # Conditional rate: fires only when Pool>=1.
+    P() -> Trash()          consumeRate()
+    # Background: lets Pool drop to 0 occasionally and re-fire the
+    # conditional path on next event.
+    P() -> Trash()          k_decay
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>80})
+end actions

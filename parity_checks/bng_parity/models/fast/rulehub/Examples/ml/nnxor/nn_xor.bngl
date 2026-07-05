@@ -1,0 +1,189 @@
+# Model: nn_xor.bngl
+# Description: A multilayer perceptron trained to solve the XOR problem using backpropagation logic.
+#              Demonstrates adaptive learning and gradient descent in BNGL.
+
+begin model
+
+begin parameters
+    Tau 1.0
+    BaseEta 15.0
+    Gain 4.0
+    Bias -0.5
+    DecayRate 0.1
+end parameters
+
+begin molecule types
+    Input(id~1~2)
+    Hidden(id~1~2)
+    Output(y)
+    Target(t)
+    WeightIH(i~1~2,j~1~2,type~POS~NEG)
+    WeightHO(j~1~2,type~POS~NEG)
+    Dopamine(conc)
+end molecule types
+
+begin seed species
+    # Phase 1: The Void (0,0 -> 0)
+    Input(id~1) 0.0
+    Input(id~2) 0.0
+    Target(t)   0.0
+    
+    Hidden(id~1) 0.0
+    Hidden(id~2) 0.0
+    Output(y)    0.0
+    
+    # Initialize weights
+    WeightIH(i~1,j~1,type~POS) 0.5
+    WeightIH(i~1,j~2,type~POS) 0.5
+    WeightIH(i~2,j~1,type~POS) 0.5
+    WeightIH(i~2,j~2,type~POS) 0.5
+    
+    WeightHO(j~1,type~POS) 0.5
+    WeightHO(j~2,type~POS) 0.5
+    
+    Dopamine(conc) 0.0
+end seed species
+
+begin observables
+    # --- ESSENTIAL: Define EVERY weight component used in math ---
+    
+    # Inputs & Outputs
+    Molecules In1    Input(id~1)
+    Molecules In2    Input(id~2)
+    Molecules Y_Out  Output(y)
+    Molecules Truth  Target(t)  # Intentional: constant reference signal for error computation
+    Molecules DA     Dopamine(conc)
+    
+    # Hidden Neurons (Needed for Backprop)
+    Molecules H1_Act Hidden(id~1)
+    Molecules H2_Act Hidden(id~2)
+
+    # Weights: Input 1 -> Hidden 1
+    Molecules W11_Pos WeightIH(i~1,j~1,type~POS)
+    Molecules W11_Neg WeightIH(i~1,j~1,type~NEG)
+    
+    # Weights: Input 1 -> Hidden 2
+    Molecules W12_Pos WeightIH(i~1,j~2,type~POS)
+    Molecules W12_Neg WeightIH(i~1,j~2,type~NEG)
+    
+    # Weights: Input 2 -> Hidden 1
+    Molecules W21_Pos WeightIH(i~2,j~1,type~POS)
+    Molecules W21_Neg WeightIH(i~2,j~1,type~NEG)
+    
+    # Weights: Input 2 -> Hidden 2
+    Molecules W22_Pos WeightIH(i~2,j~2,type~POS)
+    Molecules W22_Neg WeightIH(i~2,j~2,type~NEG)
+    
+    # Weights: Hidden 1 -> Output
+    Molecules V1_Pos  WeightHO(j~1,type~POS)
+    Molecules V1_Neg  WeightHO(j~1,type~NEG)
+    
+    # Weights: Hidden 2 -> Output
+    Molecules V2_Pos  WeightHO(j~2,type~POS)
+    Molecules V2_Neg  WeightHO(j~2,type~NEG)
+end observables
+
+begin functions
+    # Net Weights
+    W11_Net() = W11_Pos - W11_Neg
+    W12_Net() = W12_Pos - W12_Neg
+    W21_Net() = W21_Pos - W21_Neg
+    W22_Net() = W22_Pos - W22_Neg
+    V1_Net()  = V1_Pos - V1_Neg
+    V2_Net()  = V2_Pos - V2_Neg
+
+    # Forward Pass
+    Net_H1() = (In1 * W11_Net()) + (In2 * W21_Net()) + Bias
+    Sig_H1() = 1 / (1 + exp(-Gain * Net_H1()))
+    
+    Net_H2() = (In1 * W12_Net()) + (In2 * W22_Net()) + Bias
+    Sig_H2() = 1 / (1 + exp(-Gain * Net_H2()))
+    
+    Net_Y()  = (H1_Act * V1_Net()) + (H2_Act * V2_Net()) + Bias
+    Sig_Y()  = 1 / (1 + exp(-Gain * Net_Y()))
+    
+    # ODEs
+    dH1_dt() = (Sig_H1() - H1_Act) / Tau
+    dH2_dt() = (Sig_H2() - H2_Act) / Tau
+    dY_dt()  = (Sig_Y()  - Y_Out)  / Tau
+
+    # Meta Learning
+    Global_Error() = (Truth - Y_Out)^2
+    Target_DA()    = 1.0 + (50.0 * Global_Error())
+    dDA_dt()       = (Target_DA() - DA) * 5.0
+
+    # Backprop
+    E_term() = (Truth - Y_Out)
+    
+    Grad_V1() = E_term() * (Y_Out*(1-Y_Out)) * H1_Act
+    Grad_W11() = E_term() * (Y_Out*(1-Y_Out)) * V1_Net() * (H1_Act*(1-H1_Act)) * In1
+    
+    # Rates
+    Rate_V1()  = BaseEta * DA * Grad_V1()
+    Rate_W11() = BaseEta * DA * Grad_W11()
+end functions
+
+begin reaction rules
+    # Neurons
+    Upd_H1: 0 -> Hidden(id~1) if(dH1_dt()>0,dH1_dt(),0)
+    Dec_H1: Hidden(id~1) -> 0 if(dH1_dt()<0,-dH1_dt(),0)
+    
+    Upd_H2: 0 -> Hidden(id~2) if(dH2_dt()>0,dH2_dt(),0)
+    Dec_H2: Hidden(id~2) -> 0 if(dH2_dt()<0,-dH2_dt(),0)
+    
+    Upd_Y:  0 -> Output(y)    if(dY_dt()>0,dY_dt(),0)
+    Dec_Y:  Output(y) -> 0    if(dY_dt()<0,-dY_dt(),0)
+    
+    # Dopamine
+    Upd_DA: 0 -> Dopamine(conc) if(dDA_dt()>0,dDA_dt(),0)
+    Dec_DA: Dopamine(conc) -> 0 if(dDA_dt()<0,-dDA_dt(),0)
+
+    # Plasticity (Growth)
+    Grow_V1_Pos: 0 -> WeightHO(j~1,type~POS) if(Rate_V1()>0,Rate_V1(),0)
+    Grow_V1_Neg: 0 -> WeightHO(j~1,type~NEG) if(Rate_V1()<0,-Rate_V1(),0)
+    
+    Grow_W11_Pos: 0 -> WeightIH(i~1,j~1,type~POS) if(Rate_W11()>0,Rate_W11(),0)
+    Grow_W11_Neg: 0 -> WeightIH(i~1,j~1,type~NEG) if(Rate_W11()<0,-Rate_W11(),0)
+
+    # Plasticity (Decay/Forgetting) - APPLY TO ALL WEIGHTS
+    Rot_W11_Pos: WeightIH(i~1,j~1,type~POS) -> 0 DecayRate
+    Rot_W11_Neg: WeightIH(i~1,j~1,type~NEG) -> 0 DecayRate
+    
+    Rot_W12_Pos: WeightIH(i~1,j~2,type~POS) -> 0 DecayRate
+    Rot_W12_Neg: WeightIH(i~1,j~2,type~NEG) -> 0 DecayRate
+    
+    Rot_W21_Pos: WeightIH(i~2,j~1,type~POS) -> 0 DecayRate
+    Rot_W21_Neg: WeightIH(i~2,j~1,type~NEG) -> 0 DecayRate
+    
+    Rot_W22_Pos: WeightIH(i~2,j~2,type~POS) -> 0 DecayRate
+    Rot_W22_Neg: WeightIH(i~2,j~2,type~NEG) -> 0 DecayRate
+    
+    Rot_V1_Pos: WeightHO(j~1,type~POS) -> 0 DecayRate
+    Rot_V1_Neg: WeightHO(j~1,type~NEG) -> 0 DecayRate
+    
+    Rot_V2_Pos: WeightHO(j~2,type~POS) -> 0 DecayRate
+    Rot_V2_Neg: WeightHO(j~2,type~NEG) -> 0 DecayRate
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+
+# PHASE 1: The Void (0,0) -> 0
+simulate({method=>"ode",t_end=>40,n_steps=>200})
+
+# PHASE 2: Left Excitation (1,0) -> 1
+setConcentration("Input(id~1)",1.0)
+setConcentration("Target(t)",1.0)
+simulate({method=>"ode",t_end=>80,n_steps=>200,continue=>1})
+
+# PHASE 3: Right Excitation (0,1) -> 1
+setConcentration("Input(id~1)",0.0)
+setConcentration("Input(id~2)",1.0)
+simulate({method=>"ode",t_end=>120,n_steps=>200,continue=>1})
+
+# PHASE 4: The Conflict (1,1) -> 0
+setConcentration("Input(id~1)",1.0)
+setConcentration("Target(t)",0.0)
+simulate({method=>"ode",t_end=>160,n_steps=>200,continue=>1})

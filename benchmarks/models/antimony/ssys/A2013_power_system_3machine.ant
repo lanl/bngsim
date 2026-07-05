@@ -1,0 +1,65 @@
+// Power System Stability - 3-Machine Lossless Model
+// Source: Anghel, Milano & Papachristodoulou, IEEE Trans. Circuits Syst. I (2013)
+// Section V-A: Model A
+//
+// Original equations (swing equations with trigonometric nonlinearities):
+//   dθ₁/dt = ω₁
+//   dω₁/dt = -2.8 sin(θ₁) + 1.2 sin(θ₂-θ₁) + 0.5
+//   dθ₂/dt = ω₂  
+//   dω₂/dt = 1.2 sin(θ₁-θ₂) - 2.4 sin(θ₂) + 0.6
+//
+// where θ₁, θ₂ are relative angles w.r.t. reference machine 3
+//
+// Parameters: H₁=1, H₂=1, D=0 (no damping)
+// Stable equilibrium: θ₁ˢ = 0.1, θ₂ˢ = 0.2
+//
+// ==============================================================================
+// RECASTING TO POLYNOMIAL DAE (Section V-A):
+// ==============================================================================
+// To apply SOS/SDP techniques, trigonometric terms are recast to polynomial form.
+// 
+// Change of variables (shifted coordinates):
+//   δ₁ = θ₁ - θ₁ˢ,  δ₂ = θ₂ - θ₂ˢ  (shift equilibrium to origin)
+//
+// Recasting variables:
+//   c₁ = cos(δ₁),  s₁ = sin(δ₁)
+//   c₂ = cos(δ₂),  s₂ = sin(δ₂)
+//
+// Algebraic constraints (required for exact equivalence):
+//   c₁² + s₁² = 1
+//   c₂² + s₂² = 1
+//
+// This gives polynomial dynamics + algebraic constraints (DAE system).
+//
+// Note: The recasting increases state dimension from 4 to 6, but adds 2 
+// algebraic constraints, keeping the effective dimension at 4.
+// ==============================================================================
+
+model A2013_power_system_3machine()
+  // Variables (original trigonometric form, shifted coordinates)
+  compartment cell = 1;var species delta1 in cell; var species omega1 in cell; var species delta2 in cell; var species omega2 in cell
+
+  // Parameters (from paper)
+  // Stable equilibrium shifted to origin
+  theta1s := 0.1; theta2s := 0.2
+  
+  // Original trigonometric equations (in shifted coordinates)
+  // Using trig identities: sin(δ + θˢ) = sin(δ)cos(θˢ) + cos(δ)sin(θˢ)
+  
+  // dδ₁/dt = ω₁
+  delta1' = omega1
+  
+  // dω₁/dt = -2.8 sin(θ₁) + 1.2 sin(θ₂-θ₁) + 0.5
+  // In shifted coords with θ₁ = δ₁ + θ₁ˢ, θ₂ = δ₂ + θ₂ˢ
+  omega1' = -2.8 * sin(delta1 + theta1s) + 1.2 * sin(delta2 + theta2s - delta1 - theta1s) + 0.5
+  
+  // dδ₂/dt = ω₂
+  delta2' = omega2
+  
+  // dω₂/dt = 1.2 sin(θ₁-θ₂) - 2.4 sin(θ₂) + 0.6
+  omega2' = 1.2 * sin(delta1 + theta1s - delta2 - theta2s) - 2.4 * sin(delta2 + theta2s) + 0.6
+  
+  // Initial conditions (at shifted equilibrium = origin)
+  delta1 = 0.0; omega1 = 0.0; delta2 = 0.0; omega2 = 0.0; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

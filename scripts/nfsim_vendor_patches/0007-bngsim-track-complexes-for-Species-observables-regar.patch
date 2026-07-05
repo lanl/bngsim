@@ -1,0 +1,104 @@
+From bb92c36a58afd8c5007456a51ac4734b49d7486a Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Sat, 23 May 2026 09:29:03 -0600
+Subject: [PATCH 07/14] bngsim: track complexes for Species observables
+ regardless of -bscb
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+System.useComplex (complex tracking) was derived solely from
+blockSameComplexBinding in initializeFromXML. But Species-typed observables are
+tallied by iterating complexes, and their incremental counts are only correct
+when complex tracking is enabled from System construction — before molecules
+and observables are built. The retroactive setUsingComplex() that fires when a
+Species observable is parsed (Issue #49) flips the flag too late to repair the
+already-wired incremental counters.
+
+So whenever same-complex binding was allowed (-bscb off) on a model with
+Species observables, those observables reported wildly inflated counts — e.g.
+~1.5e6 MTOR_MTOR_interfaces from ~400 molecules with no actual aggregation,
+purely a counting artifact (internal#57, phenomenon 2).
+
+Pre-scan the model XML for any Species-typed observable before constructing the
+System and set useComplex = blockSameComplexBinding || hasSpeciesObservable.
+This decouples complex tracking (needed for correct Species counts) from the
+-bscb same-complex binding policy, which stays governed by
+blockSameComplexBinding downstream (TransformationSet::setComplexBookkeeping).
+A model can now allow same-complex binding and still count Species observables
+correctly, matching BNG2.pl's complex=>1 semantics.
+---
+ src/NFinput/NFinput.cpp | 43 ++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index 1ea59dd..6a1735c 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -47,6 +47,26 @@ component::~component()
+ 
+ 
+ 
++// Returns true if the model declares any Species-typed observable. Species
++// observables are tallied by iterating complexes, so the System must track
++// complexes (useComplex) for their counts to be correct. Detecting this from
++// the XML before the System is constructed lets complex tracking be enabled
++// independently of the -bscb policy (#57).
++static bool modelHasSpeciesObservable(TiXmlElement *pModel)
++{
++	if (pModel == NULL) return false;
++	TiXmlElement *pListOfObservables = pModel->FirstChildElement("ListOfObservables");
++	if (pListOfObservables == NULL) return false;
++	for (TiXmlElement *pObs = pListOfObservables->FirstChildElement("Observable");
++			pObs != NULL; pObs = pObs->NextSiblingElement("Observable"))
++	{
++		const char *type = pObs->Attribute("type");
++		if (type != NULL && string(type) == "Species") return true;
++	}
++	return false;
++}
++
++
+ System * NFinput::initializeFromXML(
+ 		string filename,
+ 		bool blockSameComplexBinding,
+@@ -74,18 +94,31 @@ System * NFinput::initializeFromXML(
+ 		TiXmlElement *pModel = hDoc.FirstChildElement().Node()->FirstChildElement("model");
+ 		if(!pModel) { cout<<"\tNo 'model' tag found.  Quitting."; return NULL; }
+ 
++		// Decide whether the System must track complexes (useComplex). Two
++		// independent needs require it:
++		//   1. blockSameComplexBinding (-bscb): the same-complex binding /
++		//      molecularity policy needs complex membership to evaluate.
++		//   2. any Species-typed observable: those are counted by iterating
++		//      complexes, and their incremental count is only correct if complex
++		//      tracking is on from System construction (before molecules and
++		//      observables are built). Deriving useComplex from -bscb alone left
++		//      Species counts wildly inflated whenever same-complex binding was
++		//      allowed (#57); the late retroactive setUsingComplex() does not
++		//      repair the already-wired incremental observable counters.
++		// Complex tracking (counting) is thus decoupled here from the -bscb
++		// policy, which stays governed by blockSameComplexBinding downstream
++		// (TransformationSet::setComplexBookkeeping).
++		bool useComplex = blockSameComplexBinding || modelHasSpeciesObservable(pModel);
++
+ 		//Make sure the basics are there
+ 		string modelName;
+ 		if(!pModel->Attribute("id"))  {
+-			if(!blockSameComplexBinding) s=new System("nameless",false,globalMoleculeLimit);
+-			else s=new System("nameless",true,globalMoleculeLimit);
++			s=new System("nameless",useComplex,globalMoleculeLimit);
+ 			if(verbose) cout<<"\tNo System name given, so I'm calling your system: "<<s->getName()<<endl;
+ 		}
+ 		else  {
+ 			modelName=pModel->Attribute("id");
+-			//We have to add complex bookkeeping if we are blocking same complex binding
+-			if(!blockSameComplexBinding) s=new System(modelName,false,globalMoleculeLimit);
+-			else s=new System(modelName,true,globalMoleculeLimit);
++			s=new System(modelName,useComplex,globalMoleculeLimit);
+ 			if(verbose) cout<<"\tCreating system: "<<s->getName()<<endl;
+ 		}
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,61 @@
+begin model
+begin parameters
+    # Neurotransmitter Release
+    # Models Calcium-triggered synaptic vesicle fusion via SNARE complex.
+    
+    k_influx 0.5    # Calcium entry
+    k_clear 0.1     # Calcium clearance
+    k_snare 0.4     # SNARE complex opening
+    k_fusion 0.35   # Vesicle fusion
+    k_response 0.3  # Postsynaptic activation
+    k_reset 0.08    # System reset
+end parameters
+
+begin molecule types
+    Calcium(level~low~high)
+    SNARE(state~closed~open)
+    Vesicle(state~docked~fused)
+    Postsynaptic(state~rest~active)
+end molecule types
+
+begin seed species
+    Calcium(level~low) 100
+    SNARE(state~closed) 60
+    Vesicle(state~docked) 40
+    Postsynaptic(state~rest) 40
+end seed species
+
+begin reaction rules
+    # 1. Calcium Influx
+    Calcium(level~low) -> Calcium(level~high) k_influx
+    
+    # 2. SNARE Activation
+    # Calcium sensors trigger SNARE opening
+    Calcium(level~high) + SNARE(state~closed) -> Calcium(level~high) + SNARE(state~open) k_snare
+    
+    # 3. Vesicle Fusion
+    # Open SNAREs drive vesicle fusion
+    SNARE(state~open) + Vesicle(state~docked) -> SNARE(state~open) + Vesicle(state~fused) k_fusion
+    
+    # 4. Postsynaptic Response
+    Vesicle(state~fused) + Postsynaptic(state~rest) -> Vesicle(state~fused) + Postsynaptic(state~active) k_response
+    
+    # 5. Reset / Re-uptake
+    Postsynaptic(state~active) -> Postsynaptic(state~rest) k_reset
+    Vesicle(state~fused) -> Vesicle(state~docked) k_reset
+    SNARE(state~open) -> SNARE(state~closed) k_reset
+    Calcium(level~high) -> Calcium(level~low) k_clear
+end reaction rules
+
+begin observables
+    Molecules High_Calcium Calcium(level~high)
+    Molecules Open_SNARE SNARE(state~open)
+    Molecules Fused_Vesicle Vesicle(state~fused)
+    Molecules Postsynaptic_Response Postsynaptic(state~active)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>80,n_steps=>200})
+end actions
+end model

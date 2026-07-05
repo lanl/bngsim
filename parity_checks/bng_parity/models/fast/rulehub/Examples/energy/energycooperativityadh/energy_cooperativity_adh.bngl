@@ -1,0 +1,71 @@
+# Model: energy_cooperativity_adh.bngl
+# Description: Models ligand binding to a receptor with two sites using energy patterns to implement cooperativity.
+#              Binding of the first ligand makes binding of the second ligand more favorable (negative cooperativity energy).
+
+begin model
+
+begin parameters
+    # --- Energy Parameters ---
+    G_L 0      # Free ligand energy
+    G_R 0      # Free receptor energy
+    
+    # Binding energy contribution per bond
+    G_bind -5.0 
+    
+    # Cooperative interaction energy
+    # G_coop < 0 implies positive cooperativity (stabilizes double bound state)
+    G_coop -3.0
+    
+    Ea_bind 2.0 # Activation barrier for binding
+    RT 1.0
+    phi 0.5
+    
+    # --- Concentrations ---
+    L_tot 200
+    R_tot 50
+end parameters
+
+begin molecule types
+    R(s,s) # Receptor with two identical binding sites
+    L(r)   # Ligand
+end molecule types
+
+begin seed species
+    R(s,s) R_tot
+    L(r)   L_tot
+end seed species
+
+begin observables
+    Molecules Bound_0 R(s,s)
+    Molecules Bound_1 R(s!+,s)
+    Molecules Bound_2 R(s!+,s!+)
+    Molecules L_free  L(r)
+end observables
+
+begin energy patterns
+    # Base energies for components
+    L(r) G_L
+    R(s) G_R
+    
+    # Energy associated with the bond R(s!1).L(r!1)
+    # This applies to EACH instance of the bond matches
+    R(s!1).L(r!1) G_bind
+    
+    # Cooperative energy term
+    # This pattern matches ONLY when BOTH sites on R are bound
+    # It adds an extra energy term G_coop to the system energy
+    # This lowers the energy of the doubly-bound state, making the second binding step faster/more affinity
+    R(s!+,s!+) G_coop
+end energy patterns
+
+begin reaction rules
+    # Single reaction rule covers both binding steps
+    # The rate for the second binding will be automatically adjusted by G_coop
+    R(s) + L(r) <-> R(s!1).L(r!1) Arrhenius(phi, Ea_bind)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>10, n_steps=>100})

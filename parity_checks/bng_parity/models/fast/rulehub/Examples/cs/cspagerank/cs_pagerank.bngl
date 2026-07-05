@@ -1,0 +1,74 @@
+# Model: cs_pagerank.bngl
+# Description: Implements the PageRank algorithm where web pages are molecules.
+#              Links are represented as catalytic production rules.
+#              Steady-state concentrations correspond to the PageRank scores.
+
+begin model
+
+begin parameters
+    d 0.85          # Damping factor
+    N 4             # Total number of nodes
+    Teleport (1-d)/N
+    LinkPower d
+end parameters
+
+begin molecule types
+    Page(id~A~B~C~D)
+end molecule types
+
+begin seed species
+    Page(id~A) 0.25
+    Page(id~B) 0.25
+    Page(id~C) 0.25
+    Page(id~D) 0.25
+end seed species
+
+begin observables
+    Molecules Rank_A Page(id~A)
+    Molecules Rank_B Page(id~B)
+    Molecules Rank_C Page(id~C)
+    Molecules Rank_D Page(id~D)
+end observables
+
+begin reaction rules
+    # --- Link Structure ---
+    # A links to B,C,D (Outdegree 3)
+    # B links to A,D    (Outdegree 2)
+    # C links to A       (Outdegree 1)
+    # D links to C       (Outdegree 1)
+
+    # A's influence distribution
+    Page(id~A) -> Page(id~A) + Page(id~B) LinkPower/3
+    Page(id~A) -> Page(id~A) + Page(id~C) LinkPower/3
+    Page(id~A) -> Page(id~A) + Page(id~D) LinkPower/3
+    
+    # B's influence distribution
+    Page(id~B) -> Page(id~B) + Page(id~A) LinkPower/2
+    Page(id~B) -> Page(id~B) + Page(id~D) LinkPower/2
+    
+    # C's influence distribution
+    Page(id~C) -> Page(id~C) + Page(id~A) LinkPower/1
+    
+    # D's influence distribution
+    Page(id~D) -> Page(id~D) + Page(id~C) LinkPower/1
+
+    # --- Teleportation (Damping) ---
+    # Global influx to all pages
+    0 -> Page(id~A) Teleport
+    0 -> Page(id~B) Teleport
+    0 -> Page(id~C) Teleport
+    0 -> Page(id~D) Teleport
+
+    # --- Normalization (Decay) ---
+    # Ensures total probability remains centered or bounded
+    Page(id~A) -> 0 1.0
+    Page(id~B) -> 0 1.0
+    Page(id~C) -> 0 1.0
+    Page(id~D) -> 0 1.0
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>50,n_steps=>100})

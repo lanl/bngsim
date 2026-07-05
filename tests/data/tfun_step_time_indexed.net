@@ -1,0 +1,23 @@
+# TFUN step interpolation test: dB/dt = stepDrive(t)
+# stepDrive data:
+#   t in [0,1): 0
+#   t in [1,2): 10
+#   t >= 2: 20
+# So B(2) should be near 10 for step interpolation (vs 20 for linear).
+begin parameters
+    1 k0  0.0
+end parameters
+begin functions
+    1 stepDrive()  tfun('step_drive.tfun', time, method=>"step")
+end functions
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin reactions
+    1 1 1,2 stepDrive #R1: A -> A + B at rate stepDrive(t)
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

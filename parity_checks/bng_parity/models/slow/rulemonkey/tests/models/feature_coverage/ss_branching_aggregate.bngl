@@ -1,0 +1,44 @@
+# Stress: trivalent-bivalent branched aggregation at scale
+# Tests: complex merge/split bookkeeping with branched topology
+# Bug pattern: complex-tracking regressions when many complexes merge and split
+# Tier: stress (network-free; NFsim reference only)
+# Target: ~20-40s RM, gelation-adjacent regime
+# invariant: conserved T_total = 100
+# invariant: conserved B_total = 150
+
+begin model
+begin parameters
+    T_tot  100    # trivalent
+    B_tot  150    # bivalent
+    kf     0.01   # /s, binding — tuned below gelation
+    kr     0.1    # /s, unbinding
+end parameters
+
+begin molecule types
+    T(s,s,s)
+    B(s,s)
+end molecule types
+
+begin seed species
+    T(s,s,s)  T_tot
+    B(s,s)    B_tot
+end seed species
+
+begin observables
+    Molecules  T_total     T()
+    Molecules  B_total     B()
+    Molecules  T_free_s    T(s)
+    Molecules  B_free_s    B(s)
+    Molecules  T_bound     T(s!+)
+    Molecules  B_bound     B(s!+)
+    Species    Complexes   T(s!+)
+end observables
+
+begin reaction rules
+    T(s) + B(s) <-> T(s!1).B(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>400,n_steps=>100})
+end actions

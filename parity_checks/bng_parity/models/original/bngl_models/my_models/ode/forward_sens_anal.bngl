@@ -1,0 +1,43 @@
+begin model
+begin parameters
+a 0.75 # molec/s
+b 0.1 # /s
+X0 100
+end parameters
+begin molecule types
+X()
+counter()
+S_Xa()
+S_Xb()
+end molecule types
+begin seed species
+X() X0
+counter() 0
+S_Xa() 0
+S_Xb() 0
+end seed species
+begin observables
+Molecules X X()
+Molecules t counter()
+Molecules SXa S_Xa()
+Molecules SXb S_Xb()
+end observables
+begin functions
+X_analytic()=a/b-(a/b-X0)*exp(-b*t)
+S_Xa_analytic()=(1/b)*(1-exp(-b*t))
+S_Xb_analytic()=(a/(b*b))*(exp(-b*t)-1)+(a/b-X0)*t*exp(-b*t)
+rate_X()=a-b*X
+rate_SXa()=-b*SXa+1
+rate_SXb()=-b*SXb-X
+end functions
+begin reaction rules
+0->counter() 1
+0->X() rate_X() # dX/dt = a - b*X; f(a,b,X) = a - b*X; dX/dt = f(a,b,X)
+0->S_Xa() rate_SXa() # dSXa/dt = -b*SXa + 1 = df/dx * SXa + df/da
+0->S_Xb() rate_SXb() # dSXb/dt = -b*SXb - X = df/dx * SXb + df/db
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>200,print_functions=>1})
+end actions

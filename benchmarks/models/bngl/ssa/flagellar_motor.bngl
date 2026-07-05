@@ -1,0 +1,69 @@
+# Flagellar motor switching with CheY phosphorylation
+# Source: NFsim distribution (models/flagellar_motor/motor.bngl), modernized
+# Network: 4 species, 4 reactions
+# Populations: 10 motors, 2200 CheY molecules
+# Behavior: CheY phosphorylation/dephosphorylation drives motor CW/CCW switching
+#   via global functions; motor switching rate depends on CheYp concentration
+
+begin model
+
+begin parameters
+   # CheY phosphorylation/dephosphorylation rates (per second)
+   kpy 3.5
+   kmy 10
+
+   # Motor switching parameters
+   Kd 3.06
+   g1 35
+   w 1.02
+
+   # Volume and Avogadro's number for concentration conversion
+   cellVolume 1.41e-15
+   NA 6.02e23
+
+   # Initial counts
+   motorCount 10
+   CheYCount  2200
+end parameters
+
+begin molecule types
+   CheY(p~unphos~PHOS)
+   Motor(state~CW~CCW)
+end molecule types
+
+begin seed species
+   CheY(p~PHOS) CheYCount
+   Motor(state~CW) motorCount
+end seed species
+
+begin observables
+   Molecules CheYp  CheY(p~PHOS)
+   Molecules MotCW  Motor(state~CW)
+   Molecules MotCCW Motor(state~CCW)
+end observables
+
+begin functions
+   # Motor switching rates as a function of [CheYp]
+   # CheYp/(cellVolume*NA*1e-6) converts molecule count to micromolar
+   kPlus() = w*exp((g1/2.0)*((1.0/2.0)-((CheYp/(cellVolume*NA*10^-6))/(Kd+(CheYp/(cellVolume*NA*10^-6))))))
+   kMinus() = w*exp(-(g1/2.0)*((1.0/2.0)-((CheYp/(cellVolume*NA*10^-6))/(Kd+(CheYp/(cellVolume*NA*10^-6))))))
+end functions
+
+begin reaction rules
+   # CheY phosphorylation/dephosphorylation (drives motor switching)
+   CheY(p~unphos) <-> CheY(p~PHOS) kpy, kmy
+
+   # Motor switching (rate depends on CheYp via global functions)
+   Motor(state~CW)  -> Motor(state~CCW) kPlus()
+   Motor(state~CCW) -> Motor(state~CW)  kMinus()
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ssa",t_end=>0.5,n_steps=>200})
+
+end actions

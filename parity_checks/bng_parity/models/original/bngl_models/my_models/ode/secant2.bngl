@@ -1,0 +1,41 @@
+begin model
+begin parameters
+pi 2*acos(0)
+a 5 # M/s
+b 1 # /s
+c 4 # /s
+end parameters
+begin molecule types
+X1
+X2
+t()
+end molecule types
+begin seed species 
+# X1 = X2 = 0 at time t = 0
+end seed species
+begin observables
+Species X1 X1
+Species X2 X2
+Species t t()
+end observables
+begin functions
+feedback_inh()=c*X2
+X1_analytic()=(a/(b+c))*(1+(sqrt(c/b)*sin(t*sqrt(b*c))-cos(t*sqrt(b*c)))*exp(-b*t))
+X2_analytic()=(a/(b+c))*(1-(sqrt(b/c)*sin(t*sqrt(b*c))+cos(t*sqrt(b*c)))*exp(-b*t))
+end functions
+begin reaction rules
+0->X1 a-feedback_inh()
+X1->X2 b
+X2->0 b
+0->t() 1
+# a = feed rate
+# b = rate constant for metabolite consumption
+# c*X2 = strength of negative feedback (end-product inhibition)
+# dX1/dt = b*(    -X1) + (a - c*X2)  
+# dX2/dt = b*(X1 - X2)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>5,n_steps=>500,print_functions=>1})
+end actions

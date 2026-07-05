@@ -1,0 +1,22 @@
+# TFUN test: BNG-style canonicalization — `.tfun` column-1 header is
+# `drug_conc()` (with empty parens) and column-2 is `response()`. The tfun
+# call uses the bare parameter name `drug_conc`. Should load identically to
+# tfun_param_indexed.net.
+begin parameters
+    1 k1         0.01
+    2 drug_conc  1.0
+end parameters
+begin functions
+    1 response()  tfun('dose_response_paren.tfun', drug_conc)
+end functions
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 response #R1: A -> B at rate response(drug_conc)
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

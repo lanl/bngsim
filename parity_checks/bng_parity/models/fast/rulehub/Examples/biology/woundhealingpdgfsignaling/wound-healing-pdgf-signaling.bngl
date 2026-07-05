@@ -1,0 +1,46 @@
+begin model
+begin parameters
+    k_bind 0.014
+    k_unbind 0.0014
+    k_receptor 0.33
+    k_stat3 0.3
+    k_response 0.27
+    k_reset 0.07
+end parameters
+
+begin molecule types
+    PDGF(r)
+    PDGFR(l,state~inactive~active)
+    STAT3(phos~U~P)
+    Fibroblast(state~resting~migratory)
+end molecule types
+
+begin seed species
+    PDGF(r) 60
+    PDGFR(l,state~inactive) 40
+    STAT3(phos~U) 90
+    Fibroblast(state~resting) 35
+end seed species
+
+begin reaction rules
+    PDGF(r) + PDGFR(l,state~inactive) <-> PDGF(r!1).PDGFR(l!1,state~inactive) k_bind,k_unbind
+    PDGF(r!1).PDGFR(l!1,state~inactive) -> PDGF(r!1).PDGFR(l!1,state~active) k_receptor
+    PDGFR(l!+,state~active) + STAT3(phos~U) -> PDGFR(l!+,state~active) + STAT3(phos~P) k_stat3
+    STAT3(phos~P) + Fibroblast(state~resting) -> STAT3(phos~P) + Fibroblast(state~migratory) k_response
+    Fibroblast(state~migratory) -> Fibroblast(state~resting) k_reset
+    STAT3(phos~P) -> STAT3(phos~U) k_reset
+    PDGFR(l,state~active) -> PDGFR(l,state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_PDGFR PDGFR(state~active)
+    Molecules Phospho_STAT3 STAT3(phos~P)
+    Molecules Migratory_Fibroblast Fibroblast(state~migratory)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>40,n_steps=>180})
+end actions
+end model
+

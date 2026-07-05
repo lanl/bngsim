@@ -1,0 +1,59 @@
+# Model: synbio_oscillator_synchronization.bngl
+# Description: Models two coupled relaxation oscillators (A-B and C-D).
+#              They synchronize phase due to coupling (quorum sensing or shared intermediate).
+
+begin model
+
+begin parameters
+    k_prod 1.0
+    k_deg  0.1
+    k_couple 0.05 # Coupling strength
+end parameters
+
+begin molecule types
+    Osc1(state~A~B)
+    Osc2(state~A~B)
+    Signal() # Diffusible signal
+end molecule types
+
+begin seed species
+    Osc1(state~A) 100
+    Osc2(state~B) 100 # Start out of phase
+    Signal() 0
+end seed species
+
+begin observables
+    Molecules O1_A Osc1(state~A)
+    Molecules O2_A Osc2(state~A)
+    Molecules Sig  Signal()
+end observables
+
+begin reaction rules
+    # Oscillator 1
+    # A -> B (Slow build up triggers switch)
+    Osc1(state~A) -> Osc1(state~B) k_prod
+    # B -> A (Reset)
+    Osc1(state~B) -> Osc1(state~A) k_deg
+    
+    # Oscillator 2 (Same parameters)
+    Osc2(state~A) -> Osc2(state~B) k_prod
+    Osc2(state~B) -> Osc2(state~A) k_deg
+    
+    # Coupling
+    # State A produces Signal
+    Osc1(state~A) -> Osc1(state~A) + Signal() k_couple
+    Osc2(state~A) -> Osc2(state~A) + Signal() k_couple
+    
+    # Signal promotes A -> B (Phase advance)
+    Signal() + Osc1(state~A) -> Signal() + Osc1(state~B) 0.1
+    Signal() + Osc2(state~A) -> Signal() + Osc2(state~B) 0.1
+    
+    # Decay
+    Signal() -> 0 0.5
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>200, n_steps=>500})

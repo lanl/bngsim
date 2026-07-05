@@ -1,0 +1,47 @@
+begin model
+begin parameters
+pi 2*acos(0)
+F 1
+# n = 3
+g13 -4
+kin 1
+end parameters
+begin molecule types
+X1
+X2
+X3
+end molecule types
+begin seed species 
+# X1 = X2 = X3 = 0 at time t = 0
+end seed species
+begin observables
+Species X1 X1
+Species X2 X2
+Species X3 X3
+end observables
+begin functions
+feedback_inh()=F*g13*X3
+# -g13<stability_condition()
+stability_condition()=(1/cos(pi/3))^3 # -g13<8
+end functions
+begin reaction rules
+0->X1 kin+feedback_inh()
+X1->X2 F
+X2->X3 F
+X3->0 F
+# F>0, g13<0
+# kin = feed rate
+# F*g13*X3 = negative feedback (end-product inhibition)
+# dX1/dt = F*(    -X1) + (kin + F*g13*X3)  
+# dX2/dt = F*(X1 - X2)
+# dX3/dt = F*(X2 - X3)
+end reaction rules
+end model
+begin actions
+# \lambda_1 = F*((cos(1*pi/3)+i*sin(1*pi/3))*((-g13)^(1/3))-1) = F*(exp(1*i*pi/3)*((-g13)^(1/3))-1)
+# \lambda_2 = F*((cos(3*pi/3)+i*sin(3*pi/3))*((-g13)^(1/3))-1) = F*(exp(3*i*pi/3)*((-g13)^(1/3))-1)
+# \lambda_3 = F*((cos(5*pi/3)+i*sin(5*pi/3))*((-g13)^(1/3))-1) = F*(exp(5*i*pi/3)*((-g13)^(1/3))-1)
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})
+#simulate({method=>"ode",t_end=>10,n_steps=>100,print_functions=>1})
+end actions

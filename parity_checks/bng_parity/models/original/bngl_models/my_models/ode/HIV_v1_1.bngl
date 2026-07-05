@@ -1,0 +1,121 @@
+begin model
+
+begin parameters
+
+f 1
+
+# a small number (used to avoid a divide-by-zero error)
+epsilon 1e-10 # dimensionless
+
+NA 6.2214e23 # molecules per mol
+Vecf f*1e-9 # L per cell
+
+HIVtot f*1e3 # cpc
+CR2tot f*1e4 # cpc
+
+# lifetime of ligand-receptor bond
+tau 1/(3600*24) # s -> d
+koff=1/tau # /d
+
+kf (3600*24)*1e6/(NA*Vecf) # /M/d -> /cpc/d
+kr=koff # /d
+
+KXRT 10 # dimensionless equilibrium crosslinking constant
+kmx=koff # /d
+kpx=kmx*KXRT/CR2tot # /cpc/d
+
+k_instant=1000*HIVtot*max(kf*CR2tot,kpx*CR2tot,koff)
+
+c 1 # /d
+ksynth=c # /d
+
+n 14
+
+m 7
+
+end parameters
+
+begin molecule types
+
+HIV(knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,\
+knob~1~2~3~4~5~6~7,bound~0~1)
+
+
+CR2(s)
+
+end molecule types
+
+begin seed species
+
+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~0) HIVtot #-100
+
+CR2(s) CR2tot #-100
+
+#CR2(s!1).HIV(knob~1!1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~1) 100
+
+end seed species
+
+begin observables
+
+Molecules freeHIV HIV(bound~0)
+Molecules boundHIV HIV(bound~1)
+Molecules freeCR2 CR2(s)
+Molecules boundCR2 CR2(s!+)
+
+end observables
+
+begin functions
+
+avg_CR2_per_bound_virion()=boundCR2/(epsilon+boundHIV)
+
+end functions
+
+begin reaction rules
+
+# CR2-mediated capture of free HIV
+CR2(s)+HIV(knob,bound~0)->CR2(s!1).HIV(knob!1,bound~1) (n/m)*kf
+
+# virion-mediated receptor crosslinking
+CR2(s)+HIV(knob,bound~1)->CR2(s!1).HIV(knob!1,bound~1) kpx
+
+# break a bond
+CR2(s!1).HIV(knob!1)->CR2(s)+HIV(knob) koff
+
+# erase "bound" tag if all knobs are free (instantaneously)
+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~1)->\
+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~0) k_instant
+
+HIV(bound~0)->0 c
+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~0)->\
+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~0)+HIV(knob~1,knob~2,knob~3,knob~4,knob~5,knob~6,knob~7,bound~0) ksynth
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+setParameter("c",1)
+setParameter("ksynth",1)
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+setParameter("c",1)
+setParameter("ksynth",0)
+simulate({continue=>1,method=>"ode",t_start=>100,t_end=>150,n_steps=>50})
+#simulate({continue=>1,method=>"ssa",t_start=>150,t_end=>151,n_steps=>250})
+
+
+#simulate({method=>"nf",complex=>1,utl=>1e6,gml=>1e6,get_final_state=>0,print_functions=>1,t_start=>0,t_end=>3600,n_steps=>360})
+#saveConcentrations()
+
+#resetConcentrations()
+#setParameter("c",10)
+#simulate({continue=>1,suffix=>"Part2",method=>"nf",complex=>1,utl=>1e6,gml=>1e6,get_final_state=>0,print_functions=>1,t_start=>0,t_end=>3600,n_steps=>360})
+
+end actions

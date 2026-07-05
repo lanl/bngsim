@@ -1,0 +1,78 @@
+# DF3 assembly/disassembly kinetics
+
+
+begin model
+
+
+begin parameters
+
+# simulation parameters
+
+kp2  1.9e-3 # [=] /nM/s
+km2  59.0 # [=] /s
+
+kp3  5.4e-3 # [=] /nM/s
+km3  110.0 # [=] /s
+
+kp4  210.0 # [=] /s
+km4  4.2e-4 # [=] /s
+
+M0  600.0 # [=] nM
+
+end parameters
+
+
+begin molecule types
+
+I()
+D()
+T()
+N()
+
+end molecule types
+
+
+begin seed species
+
+I()  0.0
+D()  0.0
+T()  0.0
+N()  M0
+
+end  seed species
+
+
+begin observables
+
+Species Iconc I()
+Species Dconc D()
+Species Tconc T()
+Species Nconc N()
+
+end observables
+
+
+begin reaction rules
+
+# I + I = D
+I()+I()->D() kp2
+D()->I()+I() km2
+
+# I + D = T
+I()+D()->T() kp3
+T()->I()+D() km3
+
+# T = N
+T()->N() kp4
+N()->T() km4
+
+end reaction rules
+
+
+end model
+
+
+# actions
+
+generate_network({overwrite=>1});
+simulate_ode({t_start=>0,t_end=>3600,n_steps=>3600});

@@ -1,0 +1,99 @@
+begin model
+begin parameters
+    # Inositol Phosphate (IP) Metabolism: PLC signaling and branch points.
+    # Advanced features: saturable 3-kinase/5-phosphatase competition and agonist drive.
+    
+    # Metabolic Fluxes
+    k_plc_max 10.0     # Peak agonist drive
+    Km_pip2 500        # PLC saturation
+    
+    # Branch 1: 5-phosphatase (IP3 -> IP2)
+    k_5phos_max 5.0    
+    Km_ip3_5p 200      
+    
+    # Branch 2: 3-kinase (IP3 -> IP4)
+    k_3kin_max 3.0     
+    Km_ip3_3k 100      
+    
+    # Feedback & Restoration
+    k_pip2_synth 2.0   # PI-cycle restoration
+    k_ca_fb 0.5        # Calcium positive feedback on PLC
+    
+    # Initials
+    PIP2_tot 1000
+    IP3_init 10
+    IP4_init 0
+    Ca_init 50         # Intracellular Calcium
+    k_agonist_synth 10.0  # Initial agonist synthesis rate
+end parameters
+
+begin molecule types
+    PIP2()
+    IP3()
+    IP4()
+    Calcium()
+    Agonist(s~off~on)
+end molecule types
+
+begin seed species
+    PIP2() PIP2_tot
+    IP3() IP3_init
+    IP4() IP4_init
+    Calcium() Ca_init
+    Agonist(s~off) 1000
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Calcium_Signal IP3()             # The mobilizing messenger
+    Molecules Metabolic_Hub   IP3(),IP4()      # Total IP drive
+    Molecules PIP2_Pool      PIP2()            # Membrane precursor
+    Molecules Late_Response   IP4()             # Long-term signaling status
+    Molecules PLC_Output     IP3()             # Current flux proxy
+    Molecules Active_Agonist Agonist(s~on)     # Agonist drive status
+    Molecules Ca_Level       Calcium()            # Feedback level status
+    Molecules IP3_Pool       IP3()             # Metabolic substrate status
+end observables
+
+begin functions
+    # Agonist-driven PLC activity (TotalRate)
+    # Scaled by Calcium feedback
+    v_plc() = (k_plc_max / 100) * (Active_Agonist * (1 + Ca_Level / 200))
+    
+    # Saturable 5-phosphatase (Branch 1)
+    v_metab_5p() = k_5phos_max * (IP3_Pool / (Km_ip3_5p + IP3_Pool))
+    
+    # Saturable 3-kinase (Branch 2)
+    v_metab_3k() = k_3kin_max * (IP3_Pool / (Km_ip3_3k + IP3_Pool))
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # Agonist triggers activity
+    Agonist(s~off) -> Agonist(s~on) k_agonist_synth
+    
+    # PLC hydrolysis (TotalRate)
+    PIP2() -> IP3() v_plc() TotalRate
+    
+    ## METABOLISM Stage
+    # Branching: IP3 clearance (Functional Rates)
+    IP3() -> 0 v_metab_5p()
+    IP3() -> IP4() v_metab_3k()
+    
+    # IP4 clearance
+    IP4() -> 0 0.2
+    
+    ## RECYCLING Phase
+    0 -> PIP2() k_pip2_synth
+    
+    # Calcium dynamics (Simplified link)
+    IP3() -> IP3() + Calcium() 0.5
+    Calcium() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

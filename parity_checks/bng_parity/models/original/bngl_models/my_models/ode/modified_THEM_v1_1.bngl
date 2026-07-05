@@ -1,0 +1,935 @@
+#################
+# file metadata #
+#################
+
+#---
+# Filename: BSA_v[version_number].bngl
+# Versions:
+#  - Version 1 (v1) was created on 02-Aug-2016 (at work).
+#  - Version 2 (v2) was created on 02-Aug-2016 (at home). 
+#    With completion of v2 (completed on 03-Aug-2016), 
+#    a first-pass attempt to account for steric effects is done.
+#  - Version 3 (v3) was created on 03-Aug-2016. The goal now is 
+#    to add diffusional slowing of ligand capture and release using the
+#    Berg-Purcell theory.
+#  - Version 4 (v4) was created on 03-Aug-2016 (at home). 
+#    Implementation of diffusion-control of ligand capture/release was completed on 05-Aug-2016.
+#  - Version 5 (v5) was created on 05-Aug-2016 (at work). The goal now is
+#    to add fast and slow mobility classes of receptor-containing chemical species.
+#    It seems that v5 is working (at the end of 08-Aug-2016). Simulations are slow because of the
+#    observables being used to inspect products of dissociation reactions. This can be fixed if the
+#    observables are defined as Species-type observables instead of Molecules-type observables. However,
+#    Species-type observables are incompatible with local functions when NFsim is the simulator.
+#  - Version 6 (v6) was created on 09-Aug-2016 (at work). The goal of this version is to redo the model for
+#    dissociation such that use of a local function is not required. Completed on 09-Aug-2016. 
+#    Simulations from v6 can be compared to simulations from v5.
+#  - Version 7 (v6) was created on 09-Aug-2016 (at work). The goal is to setup validation simulations.
+#    Simulations were slow, so I changed the ligand dose to a lower concentration. This sped up simulations.
+#    This version seems to work (10-Aug-2016).
+#  - Version 8 (v8) was created on 10-Aug-2016 (at work). This version has cleaner annotation.
+#  - Version 9 (v9) was created on 10-Aug-2016 (at work). This version adds the transient hapten exposure model (THEM).
+#  - Version 10 (v10) was created on 11-Aug-2016 (at work). Debugging.
+#  - Version 11 (v11) was created on 11-Aug-2016 (at work). The goal is to make DCT implicit in the new model.
+#    This version was completed on 11-Aug-2016 (at ~1:30 PM). With this version, we now have the model that we
+#    wanted at the outset. The challenge now is to update the model to account for the structural modeling results.
+#    This will be the goal for version 12. Version 12 was created and completed on 11-Aug-2016.
+#    Future modifications may include 1) calculation of expected diffusion coefficient for a single receptor,
+#    2) consideration of ring formation and cyclic receptor dimers, 3) calculation of BSA monomer and dimer fractions,
+#    4) use of an excess ligand approximation for cases where DNP-BSA concentration is much higher than the effective
+#    receptor concentration, 5) consideration of signaling events (e.g., Lyn-catalyzed receptor phosphorylation, and
+#    6) receptor internalization.
+# Completed: TBA
+# Software: 
+#  - RuleBender 2.0.r382r3-osx64
+#  - BioNetGen 2.2.6
+#  - NFsim 1.11
+#  - Software is available online (http://bionetgen.org/index.php/Download).
+#---
+
+begin model
+
+##################
+# model metadata #
+##################
+
+#---
+# Title: A rule-based model for multivalent ligand-receptor interactions
+# Contributors:
+#  - William S. Hlavacek
+#  - Emanuel Salazar Cavazos
+#  - Mara P. Steinkamp
+#  - Ryan Suderman
+#  - Chang-Shung Tung
+#  - Students of the 2016 q-bio Summer School in Albuquerque 
+#    (Janie Byrum, Thibaut Lagny, and Maulik Nariya).
+# Acknowledgments:
+#  - Thanks to David A. Holowka for helpful discussions.
+# Description: 
+#  - The multivalent ligand is bovine serum albumin (BSA)
+#    conjugated to n 2,4-dinitrophenyl (DNP) groups (on average).
+#  - The epsilon-amino group of a BSA lysine side chain 
+#    couples to the 1-position of DNP's benzene ring.
+#  - The receptor is DNP-specific monoclonal cell-surface IgE (sIgE) on RBL-2H3 cells.
+#  - IgE is tethered to the cell surface through a high-affinity long-lived interaction with 
+#    the alpha subunit of the multimeric IgE receptor 
+#    (Fcer1a, http://www.uniprot.org/uniprot/P12371).
+#  - The model is formulated for a single RBL-2H3 cell.
+#  - The model incorporates steric effects.
+#  - The model incorporates diffusion control of multivalent ligand capture and release.
+#  - The model incorporates slow and fast receptor aggregate mobility classes.
+#  - The model considers a competitive monovalent ligand, which may be added in large
+#    excess to induce dissociation of DNP-BSA from cells and breakup of receptor aggregates.
+#  - The monovalent ligand is {epsilon-[(2,4-DNP)amino]caproyl}-L-tyrosine (DCT).
+#  - For comparison purposes, this file also includes a specification of the
+#    transient hapten exposure model (THEM) of Xu et al. (1999) for DNP-BSA interaction with sIgE.
+# Inputs:
+#  - ligand dose
+# Outputs:
+#  - amount of bound ligand
+#  - number of free receptor sites
+#  - average ligand-induced receptor aggregate size
+#  - average receptor mobility
+# Cell lines:
+#  - rat basophilic leukemia (RBL) cells, clone 2H3 (RBL-2H3)
+# Compartments:
+#  - extracellular fluid (ecf)
+#  - extracellular face of the plasma membrane (epm)
+# References:
+#  - Andrews NL, ..., Lidke DS (2009) Immunity 31: 469-479. [PMID: 19747859]
+#  - Bujacz A (2012) Acta Crystallogr D Biol Crystallogr 68: 1278-1289. [PMID: 22993082]
+#  - Drinkwater N, ..., Sutton BJ (2014) Nat Struct Mol Biol 21: 397-404. [PMID: 24632569]
+#  - Erickson J, ..., Baird B (1986) Mol Immunol 72: 769-781. [PMID: 2948110]
+#  - Erickson J, ..., Baird B (1987) Biophys J 52: 657-662. [PMID: 2960385]
+#  - Goldstein B, Levine H, Torney D (2007) SIAM J Appl Math 67: 1147-1165.
+#  - Goldstein B, ..., Baird B (1989) Biophys J 56: 955-966. [PMID: 2532552]
+#  - Hlavacek WS, Posner RG, Perelson AS (1999) Biophys J 76: 3031-3043. [PMID: 10354429]
+#  - Mahajan A, ..., Wilson BS (2014) ACS Chem Biol 9: 1508-1519. [PMID: 24784318]
+#  - Majorek KA, ..., Minor W (2012) Mol Immunol 52: 174-182. [PMID: 22677715]
+#  - Medda L, Monduzzi M, Salis A (2015) Chem Commun 51: 6663-6666. [PMID: 25782536]
+#  - Meechai N, Jamieson AM, Blackwell J (1999) J Colloid Interface Sci 218: 167-175. [PMID: 10489290]
+#  - Padlan EA (1994) Mol Immunol 31: 169-217. [PMID: 8114766]
+#  - Poljak RJ, ..., Saul F (1973) Proc Natl Acad Sci USA 70: 3305-3310. [PMID: 4519624]
+#  - Roosen-Runge F, ..., Schreiber F (2010) Biochim Biophys Acta 1804: 68-75. [PMID: 19616646]
+#  - Swift DG, Posner RG, Hammer DA (1998) Biophys J 75: 2597-2611. [PMID: 9788956]
+#  - Xu K, ..., Baird B (1998) J Immunol 160: 3225-3235. [PMID: 9531278]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a (stochastic) simulation
+#  comments:
+#   - The scaling factor f should multiply compartment volumes, 
+#     copy numbers, and rate constants of zero-order processes.
+#   - This parameter can be set to a value <1 to accelerate stochastic
+#     simulation.
+#   - The value of f has no effect on the efficiency of a deterministic
+#     (ODE-based) simulation.
+#  usage examples: 
+#   - Volume_cytosol 1e-12*f # L per cell
+#   - Protein_copyNumber 100*f # copies per cell
+#   - k_synthesis 10*f # copies produced per cell per s [0->Protein() k_synthesis]
+f 0.001 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# ratio of a circle's circumference to its diameter
+pi 3.14159265359 # dimensionless
+
+# a small number (used to avoid divide-by-zero error)
+epsilon 1e-10 # dimensionless
+
+##############################
+# properties of compartments #
+##############################
+
+# volume of extracellular fluid (ecf) surrounding a single RBL-2H3 cell
+#  If cells are in suspension, we assume the following:
+#   - cell density of 1e6 cells per mL
+#  If cells are adherent to a surface, we assume the following:
+#   - 15 cm culture dishes (cells 95% confluent)
+#   - 1.2e5 cells per cm^2
+#   - growth surface area of 140 cm^2
+#   - 1.7e7 cells per dish
+#   - 0.25 mL of medium per square cm of growth surface
+#   - 35 mL of medium per dish
+
+# cell density when cells are in suspension
+#  comments:
+#   - Xu et al. (1998) report a cell density of 1e6 cells per mL (Figure 1).
+cellDensity 1e9 # cells per L
+
+# number of cells per culture dish
+Ncells 1.7e7 # cells per dish
+
+# area of culture dish covered by adherent cells
+Adish 1.4 # dm^2 per dish
+
+# confluency of cells (fraction of surface covered by cells)
+confluency 0.95 # dimensionless
+
+# area covered per cell
+Acell=confluency*Adish/Ncells # dm^2 per cell
+
+# volume of medium in culture dish
+Vmedium 3.5e-2 # L (dm^3) per dish
+
+# height of medium in culture dish
+Hmedium=Vmedium/Adish # dm (0.25 mm)
+
+# volume of extracellular fluid surrounding a single cell on average
+#  in suspension
+Vecf=f/cellDensity # L per cell (1 nL per cell)
+#  adherent to a surface
+#Vecf=f*Vmedium/Ncells # L per cell (2 nL per cell)
+
+# average diameter of an RBL-2H3 cell
+#  comments:
+#   - Swift et al. (1998) report that RBL-2H3 cells are spherical with an average diameter of 15 microns.
+#     The size range is 12 to 17 microns. The technique used to determine size/shape was brightfield microscopy.
+#   - A cell diameter (radius) of 8 (4) microns was estimated in the study of Erickson et al. (1987).
+#   - This estimate was used in the study of Goldstein et al. (1989).
+#   - D. Holowka estimates a diameter of 10 microns (personal communication, see email from DAH to WSH dated 10-Aug-2016).
+Dcell 1e-4 # dm (10 microns)
+
+# height of a thin layer adjacent to the extracellular face of the plasma membrane
+#  in which cell-surface ligand-receptor interactions occur
+#  comments:
+#   - This height is estimated as the largest dimension of a
+#     complex of Fcer1a, IgE, and BSA.
+#   - Models of the IgE-FceRIalpha complex are available.
+#     See Drinkwater et al. (2014) and Mahajan et al. (2014).
+#   - The structure of BSA is known (Bujacz, 2012; Majorek et al., 2012).
+Hepm 3e-7 # dm (30 nm)
+
+# volume of the thin layer adjacent to the extracellular face of the plasma membrane
+Vepm=(pi/6)*((Dcell+Hepm)^3-Dcell^3)*f # L (dm^3) per cell (~4.7e-15 L per cell)
+
+# Vecf/Vepm = ~1e5
+
+# viscosity of extracellular fluid (water) at 37 C
+eta_ecf 0.6913 # mPa s
+
+# viscosity of plasma membrane (olive oil) at 37 C
+eta_mem 34.1 # mPa s
+
+# eta_ecf/eta_mem = ~2.0e-2
+
+# (Vecf/Vepm)*(eta_ecf/eta_mem) = ~4300
+
+#######################################
+# properties of ligands and receptors #
+#######################################
+
+# molecular weight of BSA
+mwt_BSA 66463 # g per mol
+
+# molecular weight of 2,4-dinitrophenol
+mwt_DNP 184 # g per mol
+
+# molecular weight of DNP-L-tyrosine (DCT) in solution (vs. in salt, where m.wt. = 642)
+#  D. Holowka (personal communication, see email from DAH to WSH dated 03-Aug-2016)
+mwt_DCT 446 # g per mol (+/-2 depending on whether the carboxyl group and secondary amine are protonated)
+
+# average number of DNP groups per BSA
+#  comments:
+#   - DNP_{15}-BSA was considered in the study of Xu et al. (1998).
+#   - NB: nu0 \neq n. Only 5 of 25 exposed BSA lysines permit K-DNP binding to IgE based on
+#     structural models for IgE:DNP-BSA complexes. Thus, the maximum value of nu0 is 5.
+#   - A sufficiently long and flexible linker between DNP and lysine would increase the 
+#     number of available DNP groups to the number of DNP groups conjugated to BSA on average.
+n 15 # dimensionless
+
+# maximum number of binding sites (DNP groups) on the same ligand
+#  that can be simultaneously occupied by receptors
+#  comments:
+#   - A packing limit of 5 is a rough estimate based on dimensions of BSA and IgE Fab.
+#   - A packing limit of 4 is estimated based on structural models for IgE:DNP-BSA complexes.
+m 4 # dimensionless, f<=n
+
+# area covered by a Fab arm 
+#  comments: 
+#   - crude estimate based on Fab dimensions
+#   - Structures of antibody Fab arms are available (Poljak et al., 1973; Padlan, 1994). 
+Area_Fab 30 # nm^2 
+
+# total surface area of BSA 
+#  comments:
+#   - crude estimate based on BSA dimensions
+#   - The structure of BSA is available (Bujacz, 2012; Majorek et al., 2012).
+Area_BSA 300 # nm^2 
+
+# fraction of ligand surface area covered by a bound Fab arm
+a=Area_Fab/Area_BSA # dimensionless (0.1)
+
+# steric hindrance factors for i=1,..,m-1
+#  formula: H(i)=(1-i*a)*(1-3*a/(1-i*a))^i (Hlavacek et al., 1999)
+H0=1
+H1=(1-1*a)*(1-3*a/(1-1*a))^1 # 0.60
+H2=(1-2*a)*(1-3*a/(1-2*a))^2 # 0.31
+H3=(1-3*a)*(1-3*a/(1-3*a))^3 # 0.13
+H4=(1-4*a)*(1-3*a/(1-4*a))^4 # 0.04
+
+# expected number of available ligand binding sites
+#  for different ligand binding site occupancy levels, 1 to m
+#  formula: nu(i)=(n-i)*H(i) (Hlavacek et al., 1999)
+nu0_theory=(n-0)*H0 # 15 for n=15
+nu1_theory=(n-1)*H1 # ~8 for n=15
+nu2_theory=(n-2)*H2 # ~4 for n=15
+nu3_theory=(n-3)*H3 # ~2 for n=15
+nu4_theory=(n-4)*H4 # <1 for n=15 (0 by assumption that m=4)
+
+# structure-based estimates of number of available DNP groups at different
+#  ligand binding site occupancy levels
+#  comments:
+#   - We take n = 15 (15 DNP groups per BSA molecule on average).
+#   - DNP can be conjugated to each of 25 exposed lysines in BSA.
+#   - Only 5 of the 25 exposed lysines permit K-DNP interaction with anti-DNP IgE.
+#     These lysines are K127, K261, K312, K396, and K414.
+#   - Of these 5 sites, binding at two sites (K312 and K414) is mutually exclusive.
+#     In other words, K312-DNP cannot be bound by anti-DNP IgE if K414-DNP is 
+#     already bound and vice versa.
+#   - A Monte Carlo method was used to calculate site availability at different 
+#     occupancy levels. The method is implemented in a Fortran program named 
+#     avail_sites.f (for source code, see the ~/Simulations/Fortran/sites
+#     folder on lat2.lanl.gov).
+nu0_structure 3.000
+nu1_structure 1.766
+nu2_structure 0.785
+nu3_structure 0.165
+nu4_structure 0.000
+
+# use structure-based estimates of DNP group availability
+#  comments:
+#   - We use nu(i) to indicate the expected number of free DNP groups on a 
+#     copy of DNP-BSA when this copy is bound by i receptors.
+#   - Here, we assume that m = 4. A nu(i) value should be defined below for
+#     i = 0, ..., m, with nu(m) = 0.
+nu0=nu0_structure
+nu1=nu1_structure
+nu2=nu2_structure
+nu3=nu3_structure
+nu4=nu4_structure
+
+# molecular weight of BSA conjugated to n DNP groups
+#  comments:
+#   - The conjugation chemistry results in the epsilon-amino group of a lysine side chain
+#     bonding to 2,4-dinitrophenyl (DNP) at the 1-position of DNP's benzene ring
+#     (personal communication, see email from DAH to WSH dated 11-Aug-2016).
+#   - The molecular weight is ~69 kDa for DNP_{15}-BSA.
+#   - The molecular weight is ~71 kDa for DNP_{24}-BSA.
+mwt_DNPnBSA=mwt_BSA+n*mwt_DNP # g per mol 
+
+# diffusion coefficient of BSA in water
+#  comments:
+#   - Medda et al. (2015) measured the diffusion coefficient of BSA (8e-9 dm^2/s)
+#     at these conditions: T = 37 C, pH = 7, [NaCl] = 0.1 M.
+#   - This measurement is consistent with earlier measurements.
+#     Meechai et al. (1999) report values in the range 4.30 to 5.99e-9 dm^2/s
+#     depending on pH and ionic strength (see Table 2).
+#     Roosen-Runge et al. (2010) report values in the range 0.416 to 3.26e-9 dm^2/s
+#     depending on conditions (see Table 1).
+D_BSA 8e-9 # dm^2/s
+#D_BSA=D_BSA__FREE__
+
+# diffusion coefficient of DCT 
+#  comments:
+#   - Erickson et al. (1987) claim that 1e-7 dm^2/s is a reasonable estimate
+#     of the diffusion coefficient of DCT.
+D_DCT 1e-7 # dm^2/s
+
+# multivalent ligand (DNP-BSA) dose
+#  comments: 
+#   - At a cell density of 1e6 cells per mL, ligand and receptor
+#     concentrations equal each other at a ligand dose of 0.5 nM.
+#   - A DNP_{15}-BSA dose of 11 nM was used in the experiment corresponding to 
+#     Figure 1 in the report of Xu et al. (1998).
+Lconc_nM 11 # nM
+Lconc=1e-9*Lconc_nM # M
+Lcpc=Lconc*(NA*Vecf) # copies per cell
+
+# monovalent ligand (DCT) dose
+#  comments:
+#   - A DCT dose of 77 uM was used in the experiment corresponding to
+#     Figure 1 in the report of Xu et al. (1998).
+#   - A DCT dose of 5.6 nM was used in the experiment corresonding to
+#     the inset of Figure 1 in the report of Xu et al. (1998).
+Mconc_uM 77 # uM
+#Mconc_nM 5.6 # nM
+Mconc=1e-6*Mconc_uM # M
+#Mconc=1e-9*Mconc_nM # M
+Mcpc=Mconc*(NA*Vecf) # copies per cell
+
+# average number of receptors per cell
+#  comments:
+#   - The number of IgE receptors per RBL-2H3 cell is variable;
+#     the range is ~1e4 to ~1e6 IgE receptors per cell (Erickson et al., 1987).
+#   - In the caption of Figure 1, Xu et al. (1998) indicate that the IgE receptor 
+#     concentration is 0.5 nM at a cell density of 1e6 cells per mL. This concentration 
+#     corresponds to a copy number of 3e5 receptors per cell.
+Rcpc 3e5*f # copies per cell
+
+# number of DNP-specific Fab arms (antigen-combinining sites) per cell
+#  comments:
+#   - IgE is bivalent (i.e., an IgE antibody has two Fab arms).
+Fcpc=2*Rcpc # copies per cell
+
+# diffusion coefficient of IgE receptor on RBL-2H3 cells 
+#  at different concentrations of DNP_{25}-BSA 
+#  comments:
+#   - See Figure 1A and Table S1 of Andrews et al. (2009).
+#   - The technique used to estimate receptor mobility was 
+#     single-particle tracking of quantum dot-tagged IgE bound to FceRI. 
+D_FcR_0 0.0986e-2 # dm^2/s [DNP_{25}-BSA] = 0     mcg/ml,   0       nM
+D_FcR_1 0.0662e-2 # dm^2/s [DNP_{25}-BSA] = 0.001 mcg/ml,   0.01445 nM
+D_FcR_2 0.0519e-2 # dm^2/s [DNP_{25}-BSA] = 0.01  mcg/ml,   0.1445  nM
+D_FcR_3 0.0119e-2 # dm^2/s [DNP_{25}-BSA] = 0.1   mcg/ml,   1.445   nM
+D_FcR_4 0.0030e-2 # dm^2/s [DNP_{25}-BSA] = 1     mcg/ml,  14.45    nM
+D_FcR_5 0.0069e-2 # dm^2/s [DNP_{25}-BSA] = 10    mcg/ml, 144.5     nM
+
+###################################################
+# rate constants for ligand-receptor interactions #
+###################################################
+
+# association rate constant for DCT binding to a Fab arm in cell-surface IgE
+#  comments:
+#   - A value of 2e7 /M/s is reported in the caption of Figure 2 of the report of Xu et al. (1998).
+#     This value is based on the data presented in the inset of Figure 1.
+#   - A similar value of 2.6e7 /M/s was reported earlier by Erickson et al. (1987).
+kon_DCT 2e7/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+
+# dissociation rate constant for release of DCT from a Fab arm in cell-surface IgE
+#  comments:
+#   - A value of 1.1e-2 is reported in the caption of Figure 2 of the report of Xu et al. (1998).
+#   - A similar value is obtained from the equilibrium association constant (1.4e9 /M) and
+#     association rate constant (2.6e7 /M/s) estimated in the study of Erickson et al. (1986).
+#     koff_DCT=kon_DCT/KA_DCT=2.6e7/1.4e9=1.8e-2 /s.
+#   - For the kon_DCT and koff_DCT values estimated in the study of Xu et al. (1998), we find that
+#     KA_DCT=kon_DCT/koff_DCT=2e7/1.1e-2=1.8e9 /M.
+koff_DCT 1.1e-2 # /s
+
+# effective rate constants for DCT interaction with antigen-combining sites in sIgE
+#  comments:
+#   - We assume that DCT reactions are NOT controlled by diffusion.
+#   - We assume that DCT is present in large excess such that the abundance of free DCT
+#     is very approximately equal to the total abundance of DCT, i.e., we assume that the
+#     pool of DCT is only negligibly depleted by DCT interaction with sIgE.
+kfeff_DCT=kon_DCT*Mcpc # /s
+kreff_DCT=koff_DCT # /s
+
+# rate constants for DNP_n-BSA
+#  comments:
+#   - BSA is significantly larger than DCT.
+#   - We correct for the size difference using the Stokes-Einstein relation
+#     and an assumption that molecular weight is proportional to molecular volume.
+kon=kon_DCT*(mwt_DCT/mwt_DNPnBSA)^(1/3) # kon = ~3.7e6 /M/s
+#kon=kon__FREE__
+koff=koff_DCT
+#koff=koff__FREE__
+
+# rate constants for DNP_n-BSA-IgE cell-surface interactions
+#  comments:
+#   - The diffusion limit is reached when kpx*Rcpc = ~50 /s (Goldstein et al., 2007).
+kpx=kon*(Vecf/Vepm)*(eta_ecf/eta_mem) # kpx*Rcpc = ~8 /s
+kpxRcpc=kpx*Rcpc # /s
+#kpxRcpc=kpxRcpc__FREE__
+#kpx=kpxRcpc/Rcpc # /(molecule/cell)/s <-- use this relation to find kpx if kpxRcpc is estimated in fitting.
+kmx=koff
+
+# mobility threshold
+#  comments:
+#   - A receptor aggregate is "immobile" if it contains more than a threshold number of receptors.
+#   - Otherwise, a receptor aggregate is "mobile."
+#   - Setting threshold = 2 means that receptor monomers and dimers are mobile;
+#     aggregates with more than two receptors are immobile.
+threshold 2 # dimensionless
+
+# slowing factor
+sigma 1e-3 # dimensionless
+#sigma=sigma__FREE__
+
+# number of DNP groups per BSA molecule
+valL=n # dimensionless
+# number of antigen-combining sites (Fab arms) per IgE molecule
+valR 2 # dimensionless
+
+# fast rate constants
+delta=10*max(max(kon,kpx)*valL*Lcpc*valR*Rcpc,max(koff,kmx)*valR*Rcpc) # /s
+rho=delta*(1-sigma)/sigma # /s
+
+###################
+# THEM parameters #
+###################
+
+# association rate constant for DCT binding to a Fab arm in cell-surface IgE
+#  comments:
+#   - A value of 2e7 /M/s is reported in the caption of Figure 2 of the report of Xu et al. (1998).
+#     This value is based on the data presented in the inset of Figure 1.
+#   - A similar value of 2.6e7 /M/s was reported earlier by Erickson et al. (1987).
+kon_DCT_THEM 2e7/(NA*Vecf) # /M/s
+
+# dissociation rate constant for release of DCT from a Fab arm in cell-surface IgE
+#  comments:
+#   - A value of 1.1e-2 is reported in the caption of Figure 2 of the report of Xu et al. (1998).
+#   - A similar value is obtained from the equilibrium association constant (1.4e9 /M) and
+#     association rate constant (2.6e7 /M/s) estimated in the study of Erickson et al. (1986).
+#     koff_DCT=kon_DCT/KA_DCT=2.6e7/1.4e9=1.8e-2 /s.
+#   - For the kon_DCT and koff_DCT values estimated in the study of Xu et al. (1998), we find that
+#     KA_DCT=kon_DCT/koff_DCT=2e7/1.1e-2=1.8e9 /M.
+koff_DCT_THEM 1.1e-2 # /s
+
+# parameters for DCT interaction with antigen-combining sites
+kfeff_DCT_THEM=kon_DCT_THEM*Mcpc # /s
+kreff_DCT_THEM=koff_DCT_THEM # /s
+
+# parameters that characterize hapten exposure 
+#   rate constant for transition from the buried to the exposed hapten state
+#     A value of 9.1e-5 /s is reported in Figure 3 of the report of Xu et al. (1998).
+lambda_plus 9.1e-5 # /s
+#   rate constant for transition from the exposed to the buried hapten state
+#     A value of 7.5e-4 /s is reported in Figure 3 of the report of Xu et al. (1998).
+lambda_minus 7.5e-4 # /s
+
+# equilibrium constant for hapten exposure
+#   lambda = 0.12, for rate constants given above
+lambda=lambda_plus/lambda_minus # dimensionless
+
+# THEM parameters that characterize multivalent ligand-bivalent receptor interaction
+#   rate constant for capture of free ligand
+#     A value of 9.2e6 /M/s is reported in Figure 3 of the report of Xu et al. (1998).
+kp1THEM_perMpers 9.2e6 # /M/s
+kp1THEM=kp1THEM_perMpers/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+#   rate constant for release of ligand
+#     A value of 0.012 /s is reported in Figure 3 of the report of Xu et al. (1998).
+km1THEM 1.2e-2 # /s
+#   forward rate constant for receptor crosslinking by a tethered ligand
+#     The quantity kp2THEM*Fcpc is reported to have a value of 0.11 /s in Figure 3 of the report of Xu et al. (1998).
+kp2THEMFcpc 0.11 # /s
+kp2THEM=kp2THEMFcpc/Fcpc # /(molecule/cell)/s
+#   reverse rate constant
+#     A value of 0.012 /s is reported in Figure 3 of the report of Xu et al. (1998).
+#     Note that km1THEM = km2THEM = koffTHEM.
+km2THEM 1.2e-2 # /s
+
+# km1THEM = km2THEM = koffTHEM
+koffTHEM 1.2e-2 # /s
+
+################################
+# measurement model parameters #
+################################
+
+# parameters of the basic measurement model - see Eq 4 in Xu et al. (1998)
+#   Maximum fluorescence
+#     This quantity is obtained by reading Fig 3C in Xu et al. (1998); 
+#     it corresponds to the "relative fluorescence" at time t = 0.
+Fmax_THEM 96.6 # a.u.
+#   Minimum fluorescence
+#     This quantity is obtained by calculation (based on THEM and parameter values of Xu et al. (1998)) 
+#     and by reading Fig 3C in Xu et al. (1998).
+#     Three intermediate quantities must be known.
+#     The first is the calculated fractional occupancy of Fab sites, fb, at time t = 2000 s:
+#     fb = 4.07878/6.02214 = 0.677297.
+#     The second is the "relative fluorescence" at time t = 2000 s: 63.8 (a.u.).
+#     The third is the "relative fluorescence" at time t = 0 (i.e., Fmax).
+Fmin_THEM 48.2 # a.u.
+
+# parameters of the complete measurement model (for Figure 1 in Xu et al. (1998))
+#   This measurement model incorporates the effect of DCT on fluorescence of FITC-labeled IgE.
+# fluorescence when all Fab sites are free
+F_free_THEM 96.6 # a.u.
+# fluorescence when all Fab sites are bound to DNP-BSA
+F_multi_THEM 48.2 # a.u.
+# fluorescence when all Fab sites are bound to DCT
+F_mono_THEM 67.6 # a.u.
+
+# scaling factors for the new model
+F_free=F_free_THEM
+adj 1 # dimensionless <-- This adjustment factor should be allowed to vary in fitting.
+F_multi=adj*F_multi_THEM 
+#F_multi=F_multi__FREE__
+F_mono=F_mono_THEM # <-- This setting is OK to use so long as DCT almost completely displaces DNP-BSA.
+
+end parameters
+
+begin molecule types
+
+# DNP-L-tyrosine (monovalent ligand)
+#DCT(DNP)
+
+# bovine serum albumin (BSA) conjugated to n DNP groups 
+BSA(DNP,DNP,DNP,DNP,dnp~hidden~exposed)
+#---
+# BSA: DNP-conjugated bovine serum albumin (DNP-BSA)
+#  components:
+#   DNP: 2,4-dinitrophenyl group conjugated to epsilon-amino group of lysine side chain
+#---
+
+# DNP-specific IgE Fab
+Fab(Fab~0~DCT)
+#---
+# IgE: monoclonal anti-DNP IgE bound to the high-affinity IgE receptor
+#  components:
+#   Fab: Fab arm (two per IgE)
+#    states:
+#     - 0: ground state (free of DCT)
+#     - DCT: bound to DCT
+#---
+
+###############################################################
+# molecules considered in the transient hapten exposure model #
+###############################################################
+
+#DCT_THEM(DNP)
+
+BSA_THEM(DNP~hidden~exposed,DNP~hidden~exposed)
+#---
+# BSA_THEM: Bos taurus (bovine) serum albumin (ALB, aka BSA)
+#  UniProt entry: http://www.uniprot.org/uniprot/P02769
+#  comments:
+#   - sequence P02769-1 (607 amino acids)
+#   - This molecule type definition corresponds to the representation
+#     of DNP-BSA in the transient hapten exposure model of Xu et al. (1998).
+#  components:
+#   DNP: 2,4-dinitrophenyl group conjugated to lysine residue
+#    states:
+#     - hidden: unavailable for interaction with DNP-specific IgE antibody
+#     - exposed: available for interaction with DNP-specific IgE antibody
+#    comments:
+#     - BSA is taken to contain two identical copies of this component. 
+#     - DNP groups are assumed to transition between hidden and exposed states.
+#---
+
+Fab_THEM(Fab~0~DCT)
+#---
+# Fab_THEM: Fab arm of an IgE antibody on the surface of an RBL-2H3 cell
+#  comments:
+#   - This molecule type definition corresponds to the representation
+#     of cell-surface IgE DNP-specific Fab arms in the transient hapten exposure model
+#     of Xu et al. (1998).
+#  components:
+#   Fab: Fab arm (containing a DNP-specific antigen-combining site) of sIgE
+#    states:
+#     - 0: free of DCT
+#     - DCT: bound to DCT (monovalent DNP ligand)
+#---
+
+end molecule types
+
+begin seed species
+
+##################################
+# Initial conditions (new model) #
+##################################
+
+# DCT is considered implicitly.
+#DCT(DNP) Mcpc
+
+# All ligand is initially free.
+BSA(DNP,DNP,DNP,DNP,dnp~hidden) Lcpc/(1+lambda)
+BSA(DNP,DNP,DNP,DNP,dnp~exposed) Lcpc*lambda/(1+lambda)
+
+# All receptor is initially free.
+Fab(Fab~0) Fcpc
+
+########################################################
+# Initial conditions (transient hapten exposure model) #
+########################################################
+
+# DCT is considered implicitly.
+#DCT_THEM(DNP) Mcpc
+
+# All ligand is initially free.
+# We assume the equilibrium distribution of hapten exposure states.
+#  See Equation 12 in the report of Xu et al. (1998).
+BSA_THEM(DNP~hidden,DNP~hidden) Lcpc/((1+lambda)*(1+lambda)) # from Eq 12a
+BSA_THEM(DNP~hidden,DNP~exposed) 2*lambda*Lcpc/((1+lambda)*(1+lambda)) # from Eq 12b
+BSA_THEM(DNP~exposed,DNP~exposed) lambda*lambda*Lcpc/((1+lambda)*(1+lambda)) # from Eq 12c 
+
+# All receptor sites are initially free.
+Fab_THEM(Fab~0) Fcpc # Fcpc=2*Rcpc
+
+end seed species
+
+begin observables
+
+##################################
+# simulation outputs (new model) #
+##################################
+
+Molecules BSAtot BSA()
+Molecules Fabtot Fab()
+
+Molecules freeFab Fab(Fab~0)
+
+# total number of bound Fab arms
+Molecules boundFab Fab(Fab~0!+) Fab(Fab~DCT)
+# number of Fab arms bound to DNP-BSA
+Molecules BSAxFab Fab(Fab~0!1).BSA(DNP!1) Fab(Fab~0!1).BSA(dnp~exposed!1)
+# number of Fab arms bound to DCT
+Molecules DCTxFab Fab(Fab~DCT)
+
+Species freeBSA BSA(DNP,DNP,DNP,DNP,dnp~?) 
+
+########################################################
+# simulation outputs (transient hapten exposure model) #
+########################################################
+
+Molecules BSAtot_THEM BSA_THEM()
+Molecules Fabtot_THEM Fab_THEM()
+
+Molecules freeFab_THEM Fab_THEM(Fab~0)
+
+# total number of bound Fab arms
+Molecules boundFab_THEM Fab_THEM(Fab~0!+) Fab_THEM(Fab~DCT)
+# number of Fab arms bound to DNP-BSA
+Molecules BSAxFab_THEM Fab_THEM(Fab~0!1).BSA_THEM(DNP~exposed!1)
+# number of Fab arms bound to DCT
+Molecules DCTxFab_THEM Fab_THEM(Fab~DCT)
+
+Species freeBSA_THEM BSA_THEM(DNP~?,DNP~?)
+
+end observables
+
+begin functions
+
+#######################################################################
+# simulation outputs (global functions of observables and parameters) #
+#######################################################################
+
+boundBSA()=BSAtot-freeBSA
+boundBSA_THEM()=BSAtot_THEM-freeBSA_THEM
+
+#####################
+# measurement model #
+#####################
+
+# The measurement model is a function that relates model parameters and predictions
+#  to observations. It relates scaling factors (F_free, F_multi and F_mono)
+#  and predicted levels of Fab occupancy by DNP-BSA and DCT to FITC fluorescence, 
+#  measured in arbitrary units (a.u.).
+
+# new model
+FL1() F_free*(freeFab/Fcpc)+F_multi*(BSAxFab/Fcpc)+F_mono*(DCTxFab/Fcpc)
+
+# transient hapten exposure model
+#  comments:
+#   - The measurement model is based on Equation 4 in the report of Xu et al. (1998):
+#     fb = (Fmax-F)/(Fmax-Fmin). 
+#   - This formula would be expressed here as follows:
+#     FL1_Eq4_THEM()=Fmax-(Fmax-Fmin)*boundFab_THEM/Fcpc
+#   - Equation 4 only considers DNP-BSA. The measurement model needs to be
+#     extended to include three parameters (vs. two) to consider both DNP-BSA and DCT.
+FL1_THEM()=F_free_THEM*(freeFab_THEM/Fcpc)+F_multi_THEM*(BSAxFab_THEM/Fcpc)+F_mono_THEM*(DCTxFab_THEM/Fcpc)
+
+##############################################
+# functions used to calculate reaction rates #
+##############################################
+
+#########################################################################
+# global functions used in rate laws for diffusion-controlled reactions #
+#########################################################################
+
+# effective forward and reverse rate constants for diffusion-controlled DCT capture/release
+#  cells are in suspension
+#kf_DCT()=kon_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(4*pi*D_DCT*(Dcell/2)))
+#kr_DCT()=koff_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(4*pi*D_DCT*(Dcell/2)))
+#  cells are adherent to a surface
+#kf_DCT()=kon_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(3*D_DCT*Acell/Hmedium))
+#kr_DCT()=koff_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(3*D_DCT*Acell/Hmedium))
+
+# effective forward and reverse rate constants for diffusion-controlled DNP_n-BSA capture/release
+#  cells are in suspension
+#kf_BSA()=kon/(1+nu0*kon*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+#kr_BSA()=koff/(1+nu0*kon*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+
+kf_BSA()=(kp1THEM/23)/(1+4*(kp1THEM/23)*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+kr_BSA()=koffTHEM/(1+4*(kp1THEM/23)*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+
+#  cells are adherent to a surface
+#kf_BSA()=kon/(1+nu0*kon*(freeFab/f)*Vecf/(3*D_BSA*Acell/Hmedium))
+#kr_BSA()=koff/(1+nu0*kon*(freeFab/f)*Vecf/(3*D_BSA*Acell/Hmedium))
+
+##########################################################################################
+# local function used to determine appropriate rates for receptor crosslinking reactions #
+##########################################################################################
+
+# Boolean local function
+#  comments:
+#   - threshold T = 2
+#   - F if a receptor aggregate contains more than two receptors
+#   - T otherwise (i.e., if an aggregate contains just one or two receptors)
+#mobility(ptr) if(IgEtot(ptr)>threshold,0,1)
+
+end functions
+
+begin reaction rules
+
+###########################################################
+# monovalent ligand (DCT) capture and release (new model) #
+###########################################################
+
+# monovalent ligand capture/release
+Fab(Fab~0)<->Fab(Fab~DCT) kfeff_DCT_THEM,kreff_DCT_THEM
+
+############################################################
+# large-scale BSA conformation change dynamics (new model) #
+############################################################
+
+# hapten exposure/burying
+BSA(dnp~hidden)<->BSA(dnp~exposed) 1*lambda_plus,1*lambda_minus
+
+####################################################
+# multivalent ligand (DNP-BSA) capture (new model) #
+####################################################
+
+# multivalent ligand capture/release
+BSA(DNP,DNP,DNP,DNP,dnp~?)+Fab(Fab~0)<->BSA(DNP!1,DNP,DNP,DNP,dnp~?).Fab(Fab~0!1) kp1THEM/23,koffTHEM # kf_BSA(),kr_BSA() 
+BSA(DNP,DNP,DNP,DNP,dnp~exposed)+Fab(Fab~0)<->BSA(DNP,DNP,DNP,DNP,dnp~exposed!1).Fab(Fab~0!1) kp1THEM/23,koffTHEM # kf_BSA(),kr_BSA() 
+
+#################################################################
+# multivalent ligand-mediated receptor crosslinking (new model) #
+#################################################################
+
+Fab(Fab~0!1).BSA(DNP!1,dnp~exposed)+Fab(Fab~0)->\
+Fab(Fab~0!1).BSA(DNP!1,dnp~exposed!2).Fab(Fab~0!2) 1*kp2THEM/23
+
+Fab(Fab~0)+BSA(DNP,dnp~exposed!1).Fab(Fab~0!1)->\
+Fab(Fab~0!2).BSA(DNP!2,dnp~exposed!1).Fab(Fab~0!1) 1*kp2THEM/23
+
+Fab(Fab~0!1).BSA(DNP!1,DNP)+Fab(Fab~0)->\
+Fab(Fab~0!1).BSA(DNP!1,DNP!2).Fab(Fab~0!2) 1*kp2THEM/23
+
+############################
+# dissociation (new model) #
+############################
+
+#  dissociation of a ligand-receptor bond
+#    to release ligand or break a crosslink
+Fab(Fab~0!1).BSA(DNP!+,DNP!1,dnp~?)->Fab(Fab~0)+BSA(DNP!+,DNP,dnp~?) koffTHEM
+Fab(Fab~0!1).BSA(DNP!1,dnp~exposed!+)->Fab(Fab~0)+BSA(DNP,dnp~exposed!+) koffTHEM
+Fab(Fab~0!1).BSA(DNP!+,dnp~exposed!1)->Fab(Fab~0)+BSA(DNP!+,dnp~exposed) koffTHEM
+
+####################################################
+# DCT interaction with DNP-specific IgE Fab (THEM) #
+####################################################
+
+# monovalent ligand-receptor interaction
+#  comments:
+#   - We assume that DCT is present in large excess, 
+#     such that the pool of free DCT is only negligibly depleted 
+#     by DCT interaction with receptors.
+#   - We assume that DCT interactions with sIgE antigen-combining sites 
+#     are reaction limited. In other words, we assume that these
+#     interactions are NOT controlled by diffusion.
+#   - The parameter kfeff_DCT_THEM is defined as kon_DCT*[DCT]_total,
+#     which is assumed to very approximately equal kon_DCT*[DCT]_free.
+#     The parameter kfeff_DCT_THEM is defined as koff_DCT_THEM.
+Fab_THEM(Fab~0)<->Fab_THEM(Fab~DCT) kfeff_DCT_THEM,kreff_DCT_THEM
+
+########################################################
+# DNP-BSA interaction with DNP-specific IgE Fab (THEM) #
+########################################################
+
+# multivalent ligand-receptor interaction
+#  comments:
+#   - The transient hapten exposure model (THEM) does not predict
+#     the ligand-induced receptor aggregate size distribution.
+
+#  hapten exposure/burying (spontaneous)
+BSA_THEM(DNP~hidden)<->BSA_THEM(DNP~exposed) lambda_plus,lambda_minus
+
+#  capture of free DNP-BSA ligand
+BSA_THEM(DNP~exposed,DNP~?)+Fab_THEM(Fab~0)->\
+BSA_THEM(DNP~exposed!1,DNP~?).Fab_THEM(Fab~0!1) kp1THEM
+
+#  ligand-mediated receptor crosslinking
+Fab_THEM(Fab~0!1).BSA_THEM(DNP~exposed!1,DNP~exposed)+Fab_THEM(Fab~0)->\
+Fab_THEM(Fab~0!1).BSA_THEM(DNP~exposed!1,DNP~exposed!2).Fab_THEM(Fab~0!2) kp2THEM
+
+#  dissociation of a ligand-receptor bond
+#    to release ligand or break a crosslink
+Fab_THEM(Fab~0!1).BSA_THEM(DNP~exposed!1)->Fab_THEM(Fab~0)+BSA_THEM(DNP~exposed) koffTHEM
+
+end reaction rules
+
+end model
+
+begin actions
+
+#########################
+# Simulation protocol 1 # <-- for fitting
+#########################
+
+generate_network({overwrite=>1})
+
+# The experiment summarized in Figure 1 of Xu et al. (1998) has the following protocol:
+#  - At time t = 0, the experiment begins and (over roughly 5 min) 
+#    the baseline level of fluorescence of FITC-labeled anti-DNP sIgE is determined
+#    for a suspension of IgE-saturated RBL-2H3 cells at a density of 1e6 cells per mL.
+#    The number of IgE (or high-affinity IgE receptor) per cell is 3e5 (= 0.5 nM).
+#  - At time t = 263 s, DNP_{15}-BSA is added (11 nM) and quenching of FITC fluorescence
+#    is monitored as a function of time (for roughly 30 min).
+#    DNP quenches FITC fluoresence (Erickson et al., 1986).
+#  - At time t = 2093 s, DCT is added (77 uM) and recovery of FITC fluorescence is monitored
+#    as a function of time (for roughly 25 min).
+
+setParameter("Lconc_nM",0) # <-- set BSA concentration to 0
+setConcentration("BSA(DNP,DNP,DNP,DNP,dnp~hidden)",0)
+setConcentration("BSA(DNP,DNP,DNP,DNP,dnp~exposed)",0)
+setConcentration("BSA_THEM(DNP~hidden,DNP~hidden)",0)
+setConcentration("BSA_THEM(DNP~hidden,DNP~exposed)",0)
+setConcentration("BSA_THEM(DNP~exposed,DNP~exposed)",0)
+setParameter("Mconc_uM",0) # <-- set DCT concentration to 0
+simulate({method=>"ode",print_functions=>1,\
+	t_start=>0,t_end=>263,n_steps=>263})
+
+# Simulate addition of DNP_{15}-BSA to a suspension of sensitized RBL-2H3 cells at time t = 263 s.
+#  Experimental data are presented in Figure 3C (Xu et al., 1998).
+#  These data are the same data shown in Figure 1 for t (s) \in [263, 2093].
+#setParameter("kon",0) # <-- this setting suppresses calculations using the new model
+setParameter("Lconc_nM",11) # <-- set BSA concentration to 11 nM
+setConcentration("BSA(DNP,DNP,DNP,DNP,dnp~hidden)","(1/3)*(5.5/11)*Lcpc/(1+lambda)")
+setConcentration("BSA(DNP,DNP,DNP,DNP,dnp~exposed)","(1/3)*(5.5/11)*Lcpc*lambda/(1+lambda)")
+setConcentration("BSA_THEM(DNP~hidden,DNP~hidden)","Lcpc/((1+lambda)*(1+lambda))")
+setConcentration("BSA_THEM(DNP~hidden,DNP~exposed)","2*lambda*Lcpc/((1+lambda)*(1+lambda))")
+setConcentration("BSA_THEM(DNP~exposed,DNP~exposed)","lambda*lambda*Lcpc/((1+lambda)*(1+lambda))")
+setParameter("Mconc_uM",0) # <-- set DCT concentration to 0
+simulate({continue=>1,method=>"ode",print_functions=>1,\
+	t_start=>263,t_end=>2093,n_steps=>305}) 
+#   t_start=>263, t_end=>2093 (t_end-t_start=1830) n_steps=>305 (report results every 6 s)
+#saveConcentrations()
+
+# Simulate addition of DCT at time t = 2093 s.
+#  Experimental data are presented in Figure 3B (Xu et al., 1998).
+#  These data are the same data shown in Figure 1 for t (s) \in [2093, 3533].
+#resetConcentrations()
+setParameter("Mconc_uM",77) # <-- set DCT concentration to 77 uM
+simulate({continue=>1,method=>"ode",print_functions=>1,\
+	t_start=>2093,t_end=>3533,n_steps=>240}) 
+#   t_start=>2093, t_end=>3533 (t_end-t_start=1440) n_steps=>240 (report results every 6 s)
+
+#########################
+# Simulation protocol 2 # <-- for sanity checks
+#########################
+
+#setParameter("Mconc_uM",0) # <-- set DCT concentration to 0
+#saveConcentrations()
+
+#setParameter("D_BSA",8e-6) # consider fast diffusion of BSA (instead of D_BSA 8e-9 dm^2/s)
+#setParameter("sigma",1) # consider all receptor aggregates to be in the fast mobility class (instead of sigma 0.001)
+#simulate({suffix=>"Run1_00",method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,print_functions=>1,\
+#	t_start=>0,t_end=>1000,n_steps=>200})
+
+#resetConcentrations()
+#setParameter("D_BSA",8e-9) # set to nominal value
+#setParameter("sigma",1) # consider all receptor aggregates to be in the fast mobility class (instead of sigma 0.001)
+#simulate({suffix=>"Run2_10",method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,print_functions=>1,\
+#	t_start=>0,t_end=>3000,n_steps=>200})
+
+#resetConcentrations()
+#setParameter("D_BSA",8e-9) # set to nominal value
+#setParameter("sigma",0.001) # set to nominal value
+#simulate({suffix=>"Run3_11",method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,print_functions=>1,\
+#	t_start=>0,t_end=>3000,n_steps=>200})
+
+end actions

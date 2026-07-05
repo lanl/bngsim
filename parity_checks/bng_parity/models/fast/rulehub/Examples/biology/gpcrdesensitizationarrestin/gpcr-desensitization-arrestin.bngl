@@ -1,0 +1,93 @@
+begin model
+begin parameters
+    # GPCR Desensitization: Arrestin-mediated spatial sequestration.
+    # Advanced features: MoveConnected for internalized receptors and SAT kinetics.
+    
+    # Activation
+    k_bind_lig 1e-4
+    k_act_max 5.0      # Peak G-protein relay
+    Km_rec 300         # Threshold for G-protein activation
+    
+    # Desensitization (GRK Axis)
+    k_grk_phos 2.0     # GRK mediated phosphorylation
+    k_arr_bind 5.0     # Arrestin binding (High affinity to pGPCR)
+    
+    # Sequestration (Spatial)
+    k_internal 2.0     # Clathrin-mediated entry
+    k_recycle 0.5      # Return to surface (Sensitization)
+    
+    # Regulation (Feedback)
+    k_pka_phos 0.8     # PKA-mediated heterologous desensitization
+    k_reset 0.05
+    
+    # Initials
+    GPCR_tot 500
+    Ligand_tot 100
+    Arrestin_tot 300
+    GRK_tot 100
+    Gprotein_tot 800
+end parameters
+
+begin molecule types
+    Ligand(b)
+    GPCR(l,b,s~U~P,loc~mem~cyt)
+    Arrestin(b)
+    Gprotein(s~off~on)
+end molecule types
+
+begin seed species
+    Ligand(b) Ligand_tot
+    GPCR(l,b,s~U,loc~mem) GPCR_tot
+    Arrestin(b) Arrestin_tot
+    Gprotein(s~off) Gprotein_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules G_Signal_Act    Gprotein(s~on)           # Primary output transducer
+    Molecules Desensitized_R  GPCR(s~P)                # Phosphorylated pool
+    Molecules Arrestin_Block  GPCR(b!1).Arrestin(b!1)  # Terminated receptor status
+    Molecules Internal_Rec    GPCR(loc~cyt)            # Sequestered reservoir
+    Molecules Surface_Rec     GPCR(loc~mem)            # signaling-competent pool
+    Molecules Active_Rec_Mem  GPCR(l!+,s~U,loc~mem)  # Functional relay driver
+end observables
+
+begin functions
+    # Saturable G-protein activation by active receptors
+    v_act() = k_act_max * (Active_Rec_Mem / (Km_rec + Active_Rec_Mem))
+end functions
+
+begin reaction rules
+    ## ACTIVATION Phase
+    # Ligand-Receptor binding
+    Ligand(b) + GPCR(l,loc~mem) <-> Ligand(b!1).GPCR(l!1,loc~mem) k_bind_lig,0.1
+    
+    # G-protein activation (Functional Rate - Saturation)
+    Gprotein(s~off) -> Gprotein(s~on) v_act()
+    
+    ## DESENSITIZATION Stage
+    # GRK phosphorylates active (ligand-bound) GPCR
+    GPCR(l!+,s~U,loc~mem) -> GPCR(l!+,s~P,loc~mem) k_grk_phos
+    
+    # Arrestin binds phospho-GPCR (High affinity)
+    GPCR(s~P,b,loc~mem) + Arrestin(b) <-> GPCR(s~P,b!1,loc~mem).Arrestin(b!1) k_arr_bind,0.2
+    
+    ## SEQUESTRATION Phase
+    # Arrestin-bound complex is internalized (MoveConnected: partner stays)
+    GPCR(b!1,loc~mem).Arrestin(b!1) -> GPCR(l,b!1,loc~cyt,s~P).Arrestin(b!1) k_internal MoveConnected
+    
+    # Recycling (Resensitization)
+    GPCR(loc~cyt) -> GPCR(loc~mem) k_recycle
+    GPCR(s~P) -> GPCR(s~U) 0.1
+    
+    ## RESET Phase
+    Gprotein(s~on) -> Gprotein(s~off) 0.5
+    Ligand(b!1).GPCR(l!1) -> Ligand(b) + GPCR(l) 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

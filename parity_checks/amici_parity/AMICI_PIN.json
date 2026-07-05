@@ -1,0 +1,20 @@
+{
+  "_comment": "Canonical pin for the AMICI reference build used by the amici_parity ODE sweep. Previously AMICI was an unpinned local editable build (a checkout under a developer home dir), recorded nowhere committed — so every AMICI PASS/DIFF/REFERENCE_FAILED/timing claim in AMICI_KNOWN_ISSUES.md was tied to an unreconstructable environment. This file pins the exact upstream commit our results were generated against. `describe` is authoritative; the bare `amici.__version__` (stamped into reports via _core.versions.amici_version) reports only the release string '1.0.1' and omits the commit-level detail below. Every AMICI-build reference (README, AMICI_KNOWN_ISSUES.md) points here.",
+  "source": "AMICI-dev/AMICI",
+  "url": "https://github.com/AMICI-dev/AMICI",
+  "commit": "667b17b6bfc16a28f95fc5ef9564c3e2c4db2126",
+  "describe": "v1.0.1-12-g667b17b6b",
+  "nearest_tag": "v1.0.1",
+  "commit_subject": "Merge SBML test suite results (#3171)",
+  "commit_date": "2026-04-29",
+  "release_tag_date": "2026-03-13",
+  "package_version": "1.0.1",
+  "license": "BSD-3-Clause",
+  "build": {
+    "committed": false,
+    "install": "source build from the pinned commit, installed editable into bngsim/.venv",
+    "requires": "swig + a C++ toolchain and BLAS (AMICI codegens and compiles a C++ model per SBML)",
+    "reproduce": "git clone https://github.com/AMICI-dev/AMICI && git -C AMICI checkout 667b17b6bfc16a28f95fc5ef9564c3e2c4db2126 && pip install -e AMICI/python/sdist (per AMICI's install docs). The commit is an ancestor of AMICI-dev/AMICI main (12 commits past the v1.0.1 release tag), so it is fetchable by SHA.",
+    "runtime_stamp": "amici_run reports also stamp the live package version via _core.versions.amici_version() (= '1.0.1'); this pin supplies the commit that the bare version string does not."
+  }
+}

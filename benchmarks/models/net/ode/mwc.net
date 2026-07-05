@@ -1,0 +1,162 @@
+# Created by BioNetGen 2.9.3
+setOption("NumberPerQuantityUnit","6.0221e+23")
+begin parameters
+    1 RT                      2.5774863  # Constant
+    2 NA                      6.0221418e23  # Constant
+    3 PI                      3.1415927  # Constant
+    4 reacvol                 1e-3  # Constant
+    5 log_P_ox                0  # Constant
+    6 P_ox                    10^log_P_ox  # ConstantExpression
+    7 conv                    (7.5*1e3)*RT  # ConstantExpression
+    8 C_ox                    P_ox/conv  # ConstantExpression
+    9 C_B                     2e-3  # Constant
+   10 C_H                     60e-6  # Constant
+   11 L0                      1.4e3  # Constant
+   12 K_RT                    1.4e3  # Constant
+   13 K_Ox                    0.68*conv  # ConstantExpression
+   14 alpha_R                 8.4  # Constant
+   15 alpha_T                 0.2  # Constant
+   16 K_B                     1/1.03e-4  # Constant
+   17 beta_R                  0.022  # Constant
+   18 beta_T                  1  # Constant
+   19 phi                     0.5  # Constant
+   20 EA                      -10  # Constant
+   21 coopRT                  0  # Constant
+   22 coopB                   0  # Constant
+   23 _InitialConc1           (C_ox*NA)*reacvol  # ConstantExpression
+   24 _InitialConc2           (C_H*NA)*reacvol  # ConstantExpression
+   25 _InitialConc3           (C_B*NA)*reacvol  # ConstantExpression
+   26 __reverse_R_RT_local1   exp((-(EA+((1-phi)*(-(-ln(K_RT)))))))  # ConstantExpression
+   27 _R_Ox_local1            exp((-(EA+(phi*((-ln(K_Ox))+(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))))))  # ConstantExpression
+   28 _R_B_local1             exp((-(EA+(phi*((-ln(K_B))+(-ln((((1-coopB)*1)+(coopB*beta_T)))))))))  # ConstantExpression
+   29 _R_RT_local1            exp((-(EA+(phi*(-ln(K_RT))))))  # ConstantExpression
+   30 __reverse_R_RT_local2   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))))))  # ConstantExpression
+   31 __reverse_R_RT_local3   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-(-ln((((1-coopB)*1)+(coopB*beta_T)))))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   32 _R_Ox_local2            exp((-(EA+(phi*((-ln(K_Ox))+(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))))))  # ConstantExpression
+   33 __reverse_R_Ox_local1   exp((-(EA+((1-phi)*((-(-ln(K_Ox)))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_T))))))))))  # ConstantExpression
+   34 _R_B_local2             exp((-(EA+(phi*((-ln(K_B))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   35 __reverse_R_B_local1    exp((-(EA+((1-phi)*((-(-ln(K_B)))+(-(-ln((((1-coopB)*1)+(coopB*beta_T))))))))))  # ConstantExpression
+   36 _R_RT_local2            exp((-(EA+(phi*((-ln(K_RT))+(-ln((((1-coopRT)*1)+(coopRT*alpha_T))))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   37 _R_RT_local3            exp((-(EA+(phi*((-ln(K_RT))+(-ln((((1-coopB)*1)+(coopB*beta_T))))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+   38 __reverse_R_RT_local4   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-2*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(2*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   39 __reverse_R_RT_local5   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))+(-(-ln((((1-coopB)*1)+(coopB*beta_T)))))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   40 __reverse_R_Ox_local2   exp((-(EA+((1-phi)*((-(-ln(K_Ox)))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   41 __reverse_R_B_local2    exp((-(EA+((1-phi)*((-(-ln(K_B)))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+   42 _R_RT_local4            exp((-(EA+(phi*((-ln(K_RT))+(2*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-2*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   43 _R_RT_local5            exp((-(EA+(phi*((-ln(K_RT))+(-ln((((1-coopRT)*1)+(coopRT*alpha_T))))+(-(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-ln((((1-coopB)*1)+(coopB*beta_T))))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+   44 __reverse_R_RT_local6   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-3*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(3*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   45 __reverse_R_RT_local7   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-2*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(2*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-(-ln((((1-coopB)*1)+(coopB*beta_T)))))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   46 _R_RT_local6            exp((-(EA+(phi*((-ln(K_RT))+(3*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-3*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   47 _R_RT_local7            exp((-(EA+(phi*((-ln(K_RT))+(2*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-2*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-ln((((1-coopB)*1)+(coopB*beta_T))))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+   48 __reverse_R_RT_local8   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-4*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(4*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   49 __reverse_R_RT_local9   exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-3*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(3*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-(-ln((((1-coopB)*1)+(coopB*beta_T)))))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   50 _R_RT_local8            exp((-(EA+(phi*((-ln(K_RT))+(4*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-4*(-ln((((1-coopRT)*1)+(coopRT*alpha_R))))))))))  # ConstantExpression
+   51 _R_RT_local9            exp((-(EA+(phi*((-ln(K_RT))+(3*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-3*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-ln((((1-coopB)*1)+(coopB*beta_T))))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+   52 __reverse_R_RT_local10  exp((-(EA+((1-phi)*((-(-ln(K_RT)))+(-4*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(4*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-(-ln((((1-coopB)*1)+(coopB*beta_T)))))+(-ln((((1-coopB)*1)+(coopB*beta_R)))))))))  # ConstantExpression
+   53 _R_RT_local10           exp((-(EA+(phi*((-ln(K_RT))+(4*(-ln((((1-coopRT)*1)+(coopRT*alpha_T)))))+(-4*(-ln((((1-coopRT)*1)+(coopRT*alpha_R)))))+(-ln((((1-coopB)*1)+(coopB*beta_T))))+(-(-ln((((1-coopB)*1)+(coopB*beta_R))))))))))  # ConstantExpression
+end parameters
+begin functions
+    1 boundfrac() H_ox/(H_ox+H_free)
+end functions
+begin species
+    1 @V::Ox(h) _InitialConc1
+    2 @V::H(b,g,g,g,g,m~T) _InitialConc2
+    3 @V::B(h) _InitialConc3
+    4 @V::H(b,g,g,g,g,m~R) 0
+    5 @V::H(b,g!1,g,g,g,m~T).Ox(h!1) 0
+    6 @V::B(h!1).H(b!1,g,g,g,g,m~T) 0
+    7 @V::H(b,g!1,g,g,g,m~R).Ox(h!1) 0
+    8 @V::B(h!1).H(b!1,g,g,g,g,m~R) 0
+    9 @V::H(b,g!1,g!2,g,g,m~T).Ox(h!1).Ox(h!2) 0
+   10 @V::B(h!1).H(b!1,g!2,g,g,g,m~T).Ox(h!2) 0
+   11 @V::H(b,g!1,g!2,g,g,m~R).Ox(h!1).Ox(h!2) 0
+   12 @V::B(h!1).H(b!1,g!2,g,g,g,m~R).Ox(h!2) 0
+   13 @V::H(b,g!1,g!2,g!3,g,m~T).Ox(h!1).Ox(h!2).Ox(h!3) 0
+   14 @V::B(h!1).H(b!1,g!2,g!3,g,g,m~T).Ox(h!2).Ox(h!3) 0
+   15 @V::H(b,g!1,g!2,g!3,g,m~R).Ox(h!1).Ox(h!2).Ox(h!3) 0
+   16 @V::B(h!1).H(b!1,g!2,g!3,g,g,m~R).Ox(h!2).Ox(h!3) 0
+   17 @V::H(b,g!1,g!2,g!3,g!4,m~T).Ox(h!1).Ox(h!2).Ox(h!3).Ox(h!4) 0
+   18 @V::B(h!1).H(b!1,g!2,g!3,g!4,g,m~T).Ox(h!2).Ox(h!3).Ox(h!4) 0
+   19 @V::H(b,g!1,g!2,g!3,g!4,m~R).Ox(h!1).Ox(h!2).Ox(h!3).Ox(h!4) 0
+   20 @V::B(h!1).H(b!1,g!2,g!3,g!4,g,m~R).Ox(h!2).Ox(h!3).Ox(h!4) 0
+   21 @V::B(h!1).H(b!1,g!2,g!3,g!4,g!5,m~T).Ox(h!2).Ox(h!3).Ox(h!4).Ox(h!5) 0
+   22 @V::B(h!1).H(b!1,g!2,g!3,g!4,g!5,m~R).Ox(h!2).Ox(h!3).Ox(h!4).Ox(h!5) 0
+end species
+begin reactions
+    1 2 4 __reverse_R_RT_local1 #_reverse_R_RT
+    2 1,2 5 6.6422012e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+    3 2,3 6 1.6605503e-21*_R_B_local1 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+    4 4 2 _R_RT_local1 #R_RT
+    5 5 7 __reverse_R_RT_local2 #_reverse_R_RT
+    6 6 8 __reverse_R_RT_local3 #_reverse_R_RT
+    7 1,4 7 6.6422012e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+    8 1,5 9 4.9816509e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+    9 1,6 10 6.6422012e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   10 5 1,2 __reverse_R_Ox_local1 #_reverse_R_Ox
+   11 3,4 8 1.6605503e-21*_R_B_local2 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   12 3,5 10 1.6605503e-21*_R_B_local1 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   13 6 2,3 __reverse_R_B_local1 #_reverse_R_B
+   14 7 5 _R_RT_local2 #R_RT
+   15 8 6 _R_RT_local3 #R_RT
+   16 9 11 __reverse_R_RT_local4 #_reverse_R_RT
+   17 10 12 __reverse_R_RT_local5 #_reverse_R_RT
+   18 1,7 11 4.9816509e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   19 1,8 12 6.6422012e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   20 1,9 13 3.3211006e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   21 1,10 14 4.9816509e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   22 7 1,4 __reverse_R_Ox_local2 #_reverse_R_Ox
+   23 9 1,5 2*__reverse_R_Ox_local1 #_reverse_R_Ox
+   24 10 1,6 __reverse_R_Ox_local1 #_reverse_R_Ox
+   25 3,7 12 1.6605503e-21*_R_B_local2 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   26 3,9 14 1.6605503e-21*_R_B_local1 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   27 8 3,4 __reverse_R_B_local2 #_reverse_R_B
+   28 10 3,5 __reverse_R_B_local1 #_reverse_R_B
+   29 11 9 _R_RT_local4 #R_RT
+   30 12 10 _R_RT_local5 #R_RT
+   31 13 15 __reverse_R_RT_local6 #_reverse_R_RT
+   32 14 16 __reverse_R_RT_local7 #_reverse_R_RT
+   33 1,11 15 3.3211006e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   34 1,12 16 4.9816509e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   35 1,13 17 1.6605503e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   36 1,14 18 3.3211006e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   37 11 1,7 2*__reverse_R_Ox_local2 #_reverse_R_Ox
+   38 12 1,8 __reverse_R_Ox_local2 #_reverse_R_Ox
+   39 13 1,9 3*__reverse_R_Ox_local1 #_reverse_R_Ox
+   40 14 1,10 2*__reverse_R_Ox_local1 #_reverse_R_Ox
+   41 3,11 16 1.6605503e-21*_R_B_local2 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   42 3,13 18 1.6605503e-21*_R_B_local1 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   43 12 3,7 __reverse_R_B_local2 #_reverse_R_B
+   44 14 3,9 __reverse_R_B_local1 #_reverse_R_B
+   45 15 13 _R_RT_local6 #R_RT
+   46 16 14 _R_RT_local7 #R_RT
+   47 17 19 __reverse_R_RT_local8 #_reverse_R_RT
+   48 18 20 __reverse_R_RT_local9 #_reverse_R_RT
+   49 1,15 19 1.6605503e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   50 1,16 20 3.3211006e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   51 1,18 21 1.6605503e-21*_R_Ox_local1 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   52 15 1,11 3*__reverse_R_Ox_local2 #_reverse_R_Ox
+   53 16 1,12 2*__reverse_R_Ox_local2 #_reverse_R_Ox
+   54 17 1,13 4*__reverse_R_Ox_local1 #_reverse_R_Ox
+   55 18 1,14 3*__reverse_R_Ox_local1 #_reverse_R_Ox
+   56 3,15 20 1.6605503e-21*_R_B_local2 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   57 3,17 21 1.6605503e-21*_R_B_local1 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   58 16 3,11 __reverse_R_B_local2 #_reverse_R_B
+   59 18 3,13 __reverse_R_B_local1 #_reverse_R_B
+   60 19 17 _R_RT_local8 #R_RT
+   61 20 18 _R_RT_local9 #R_RT
+   62 21 22 __reverse_R_RT_local10 #_reverse_R_RT
+   63 1,20 22 1.6605503e-21*_R_Ox_local2 #R_Ox unit_conversion=1/(6.0221e+23*reacvol)
+   64 19 1,15 4*__reverse_R_Ox_local2 #_reverse_R_Ox
+   65 20 1,16 3*__reverse_R_Ox_local2 #_reverse_R_Ox
+   66 21 1,18 4*__reverse_R_Ox_local1 #_reverse_R_Ox
+   67 3,19 22 1.6605503e-21*_R_B_local2 #R_B unit_conversion=1/(6.0221e+23*reacvol)
+   68 20 3,15 __reverse_R_B_local2 #_reverse_R_B
+   69 21 3,17 __reverse_R_B_local1 #_reverse_R_B
+   70 22 21 _R_RT_local10 #R_RT
+   71 22 1,20 4*__reverse_R_Ox_local2 #_reverse_R_Ox
+   72 22 3,19 __reverse_R_B_local2 #_reverse_R_B
+end reactions
+begin groups
+    1 H_ox                 5,7,2*9,10,2*11,12,3*13,2*14,3*15,2*16,4*17,3*18,4*19,3*20,4*21,4*22
+    2 H_free               4*2,4*4,3*5,4*6,3*7,4*8,2*9,3*10,2*11,3*12,13,2*14,15,2*16,18,20
+end groups

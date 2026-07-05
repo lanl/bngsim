@@ -1,0 +1,80 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 V1           2.5  # Constant
+    2 n            1  # Constant
+    3 KI           9  # Constant
+    4 K1           10  # Constant
+    5 V2           0.25  # Constant
+    6 K2           8  # Constant
+    7 k3           0.025  # Constant
+    8 K3           15  # Constant
+    9 k4           0.025  # Constant
+   10 K4           15  # Constant
+   11 V5           0.75  # Constant
+   12 K5           15  # Constant
+   13 V6           0.75  # Constant
+   14 K6           15  # Constant
+   15 k7           0.025  # Constant
+   16 K7           15  # Constant
+   17 k8           0.025  # Constant
+   18 K8           15  # Constant
+   19 V9           0.5  # Constant
+   20 K9           15  # Constant
+   21 V10          0.5  # Constant
+   22 K10          15  # Constant
+   23 MKKK_ini     90  # Constant
+   24 MKKK_P_ini   10  # Constant
+   25 MKK_ini      280  # Constant
+   26 MKK_P_ini    10  # Constant
+   27 MKK_PP_ini   10  # Constant
+   28 MAPK_ini     280  # Constant
+   29 MAPK_P_ini   10  # Constant
+   30 MAPK_PP_ini  10  # Constant
+end parameters
+begin functions
+    1 v1() V1/((1+((MAPK_PP/KI)^n))*(K1+MKKK))
+    2 v2() V2/(K2+MKKK_P)
+    3 v3() (k3*MKKK_P)/(K3+MKKK)
+    4 v4() (k4*MKKK_P)/(K4+MKK_P)
+    5 v5() V5/(K5+MKK_PP)
+    6 v6() V6/(K6+MKK_P)
+    7 v7() (k7*MKK_PP)/(K7+MAPK)
+    8 v8() (k8*MKK_PP)/(K8+MAPK_P)
+    9 v9() V9/(K9+MAPK_PP)
+   10 v10() V10/(K10+MAPK_P)
+end functions
+begin species
+    1 MKKK() MKKK_ini
+    2 MKKK_P() MKKK_P_ini
+    3 MKK() MKK_ini
+    4 MKK_P() MKK_P_ini
+    5 MKK_PP() MKK_PP_ini
+    6 MAPK() MAPK_ini
+    7 MAPK_P() MAPK_P_ini
+    8 MAPK_PP() MAPK_PP_ini
+end species
+begin reactions
+    1 1 2 v1 #_R1
+    2 2 1 v2 #_reverse__R1
+    3 3 4 v3 #_R2
+    4 4 3 v6 #_reverse__R2
+    5 4 5 v4 #_R3
+    6 5 4 v5 #_reverse__R3
+    7 6 7 v7 #_R4
+    8 7 6 v10 #_reverse__R4
+    9 7 8 v8 #_R5
+   10 8 7 v9 #_reverse__R5
+end reactions
+begin groups
+    1 MKKK                 3
+    2 MKKK_P               2
+    3 MKK                  3
+    4 MKK_P                4
+    5 MKK_PP               5
+    6 MAPK                 6
+    7 MAPK_P               7
+    8 MAPK_PP              8
+    9 MKKK_tot             1,2
+   10 MKK_tot              3,4,5
+   11 MAPK_tot             6,7,8
+end groups

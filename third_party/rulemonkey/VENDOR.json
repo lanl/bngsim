@@ -1,0 +1,51 @@
+{
+  "name": "RuleMonkey",
+  "vendored_path": "bngsim/third_party/rulemonkey",
+  "source": {
+    "authoritative_remote": "https://github.com/richardposner/RuleMonkey.git",
+    "authoritative_branch": "main",
+    "local_checkout": "~/Code/RuleMonkey",
+    "upstream_remote": "https://github.com/richardposner/RuleMonkey.git",
+    "local_origin_remote": "git@github.com:richardposner/RuleMonkey.git",
+    "local_upstream_remote": null,
+    "fork_remote": null,
+    "branch_or_ref": "origin/main",
+    "commit": "fbdde54ff252f4329d52982f8b97028ad4ff7d9b"
+  },
+  "imported_at_utc": "2026-06-23T05:06:28+00:00",
+  "pruning": {
+    "included_paths": [
+      "CMakeLists.txt",
+      "LICENSE",
+      "README.md",
+      "CHANGELOG.md",
+      "cmake",
+      "cpp",
+      "docs",
+      "include"
+    ],
+    "excluded_paths": [
+      "cpp/cli"
+    ]
+  },
+  "exprtk_sync": {
+    "rulemonkey_vendor_note": "third_party/bngsim_expr/VENDOR",
+    "pinned_bngsim_commit": "1a1d49da13f8cd723be213774c2a81f0da538c84",
+    "verified_against_bngsim_paths": [
+      "bngsim/third_party/exprtk/exprtk.hpp",
+      "bngsim/include/bngsim/expression.hpp",
+      "bngsim/include/bngsim/expr_compat.hpp",
+      "bngsim/src/expression.cpp"
+    ]
+  },
+  "normalizations": [
+    "Removed RuleMonkey's unconditional third_party/bngsim_expr include path from the rulemonkey target.",
+    "Repointed the CHANGELOG.md bngsim link to the public lanl/bngsim (previously an internal-repo URL). Fixed upstream at richardposner/RuleMonkey main; applied here as a vendored edit because this release stays on pin fbdde54f, which predates the upstream fix."
+  ],
+  "notes": [
+    "RuleMonkey is consumed through add_subdirectory(third_party/rulemonkey).",
+    "BNGsim disables RuleMonkey CLI, tests, examples, and install rules at configure time.",
+    "RuleMonkey third_party/ is intentionally not vendored into BNGsim.",
+    "BNGsim requires the host-target handoff through bngsim::expression to avoid duplicate ExprTkEvaluator symbols."
+  ]
+}

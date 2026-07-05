@@ -1,0 +1,195 @@
+# pyproject.toml — bngsim Python package
+#
+# Build system: scikit-build-core + pybind11
+# Usage: pip install . (from bngsim/ directory)
+#        uv pip install . (preferred)
+
+[build-system]
+requires = [
+    "scikit-build-core>=0.10",
+    "pybind11>=2.13",
+    # Note: scikit-build-core automatically provides ninja when needed,
+    # so it should NOT be listed here (causes warnings).
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "bngsim"
+version = "0.11.31"
+description = "Embeddable simulation engine for BioNetGen reaction networks"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "William S. Hlavacek"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "numpy>=1.24",
+    "python-libsbml>=5.20",
+    # sympy is required by _codegen.py to chain-rule through derived
+    # rate-constant parameters (BNG2.pl-emitted ``_rateLaw{N}``-style
+    # ConstantExpressions, including non-product forms like ``5/MEK``).
+    # Without it, ``_compute_derived_param_jacobian`` silently returns
+    # None and codegen sensitivities for the underlying primary
+    # parameters are wrong (issue #2 regression).
+    "sympy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/lanl/bngsim"
+Documentation = "https://bngsim.readthedocs.io"
+Repository = "https://github.com/lanl/bngsim"
+Changelog = "https://github.com/lanl/bngsim/blob/HEAD/CHANGELOG.md"
+Issues = "https://github.com/lanl/bngsim/issues"
+
+[project.optional-dependencies]
+antimony = [
+    # TODO: bump to antimony>=3.1.2 as soon as 3.1.2 is available on PyPI.
+    "antimony>=3.1.1",
+]
+pandas = ["pandas>=2.0"]
+hdf5 = ["h5py>=3.0"]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    # test_ssa_time_dependent_rate imports antimony at module scope.
+    "antimony>=3.1.1",
+    "scipy>=1.15",
+]
+jax = [
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "diffrax>=0.6",
+]
+# Optional Vivarium process shell (bngsim.vivarium, GH #102). vivarium-core's
+# process interface is migrating to process-bigraph; the shell stays thin.
+vivarium = ["vivarium-core>=1.6"]
+benchmarks = [
+    "bioservices>=1.11",
+]
+# Reference engine for the parity_checks/ cross-validation suites (and a few
+# cross-validate tests that skip when it is absent). DEVELOPER-ONLY: RoadRunner
+# is never a base dependency, so regular users never receive it in any form. The
+# rr_parity matrix's per-model RoadRunner *load* timing additionally needs the
+# source-instrumented fork (parity_checks/rr_parity/INSTRUMENTED_ROADRUNNER.md +
+# dev/notes/build_instrumented_roadrunner.sh); stock libroadrunner here covers
+# the correctness/oracle role.
+roadrunner = [
+    "libroadrunner>=2.7",
+]
+dev = [
+    "bngsim[antimony,pandas,hdf5,test,jax,vivarium,benchmarks,roadrunner]",
+    "ruff>=0.8",
+    # Regenerates python/bngsim/_bngsim_core.pyi from the built extension in
+    # scripts/rebuild_editable.py, keeping the type stub in sync with the C++
+    # bindings so mypy does not drift into spurious attr-defined errors.
+    "pybind11-stubgen>=2.5",
+]
+
+[project.scripts]
+# SBML → .net network converter (GH #215). Also runnable as
+# ``python -m bngsim.convert``.
+bngsim-sbml2net = "bngsim.convert._cli:main"
+# .net → SBML network converter (GH #216), the reverse direction.
+bngsim-net2sbml = "bngsim.convert._cli:net2sbml_main"
+# SBML → compartmental .bngl (cBNGL) writer (GH #224): recovers static volumes.
+bngsim-sbml2bngl = "bngsim.convert._cli:sbml2bngl_main"
+# Conversion-validation framework (GH #217): L0–L4 gate over either direction.
+bngsim-validate-conversion = "bngsim.convert._cli:validate_main"
+# COMBINE archive (.omex) packaging (GH #219): pack/unpack SBML + SED-ML + manifest.
+bngsim-omex = "bngsim.convert._cli:omex_main"
+
+[tool.scikit-build]
+cmake.source-dir = "."
+cmake.build-type = "Release"
+cmake.args = [
+    "-DBNGSIM_BUILD_TESTS=OFF",
+    "-DBNGSIM_BUILD_PYTHON=ON",
+]
+# Let CMake auto-detect generator (prefers Ninja, falls back to Unix Makefiles).
+# ninja is in build-system.requires for wheel builds; for editable installs
+# it uses whatever's in PATH, falling back gracefully if unavailable.
+wheel.packages = ["python/bngsim"]
+wheel.install-dir = "bngsim"
+build-dir = "build/{wheel_tag}"
+# Disable automatic rebuild on import for editable installs. While convenient,
+# it causes import failures when the build environment (especially ninja from
+# scikit-build-core) isn't persistently available at runtime. Developers
+# should manually rebuild after C++ changes:
+#   uv pip install -e . --force-reinstall --no-deps
+# See issue #23.
+editable.rebuild = false
+sdist.exclude = [
+    ".pytest_cache",
+    ".venv",
+    "benchmarks",
+    "build",
+    "dev",
+    "harness",
+    "python/bngsim/__pycache__",
+    "python/bngsim/__pycache__/**",
+    "python/bngsim/_bngsim_core*.dylib",
+    "python/bngsim/_bngsim_core*.pyd",
+    "python/bngsim/_bngsim_core*.so",
+    "python/tests",
+    "run_tests.sh",
+    "scripts",
+    "tests",
+]
+wheel.exclude = [
+    "python/bngsim/__pycache__",
+    "python/bngsim/__pycache__/**",
+    "python/bngsim/_bngsim_core*.dylib",
+    "python/bngsim/_bngsim_core*.pyd",
+    "python/bngsim/_bngsim_core*.so",
+]
+
+[tool.scikit-build.cmake.define]
+BNGSIM_BUILD_PYTHON = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+addopts = "-v --tb=short --import-mode=importlib"
+
+[tool.mypy]
+python_version = "3.10"
+files = ["python/bngsim"]
+ignore_missing_imports = true
+follow_imports = "silent"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+# Notebooks are interactive scratch/showcase content; lint via nbqa
+# in CI if/when we want it, not as part of the Python source pass.
+# benchmarks/temp is a tracked scratch area for one-off benchmark scripts kept
+# so they don't get lost across machines; not held to the style bar.
+extend-exclude = ["*.ipynb", "benchmarks/temp"]
+# Apply excludes even when pre-commit passes file paths explicitly.
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Research/benchmark/showcase code: long format strings (LaTeX
+# captions, multi-line doc messages, tabular output) are clearer
+# on one line. Hard line-length is enforced for the shipped
+# package + tests, not for these scripts.
+"benchmarks/**" = ["E501"]
+"harness/**" = ["E501"]
+"scripts/**" = ["E501"]
+"parity_checks/**" = ["E501"]

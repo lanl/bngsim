@@ -1,0 +1,16 @@
+# Downloaded and intermediate data
+data/
+
+# Pipeline results
+results/
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Atomizer venv (Python 3.11)
+.venv311/

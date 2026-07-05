@@ -1,0 +1,53 @@
+# Model: wacky_alchemy_stone.bngl
+# Description: Models the alchemical transmutation of Lead (Pb) into Gold (Au).
+#              Requires the presence of the mythical Philosopher's Stone (Catalyst).
+#              The process is very slow and rare.
+
+begin model
+
+begin parameters
+    # Transmutation rate
+    k_transmute 0.01 
+    
+    # Stone Decay (it gets used up or loses potency)
+    k_decay 0.05
+    
+    Pb_init 1000
+    Stone_init 5
+end parameters
+
+begin molecule types
+    Lead()
+    Gold()
+    Stone()
+end molecule types
+
+begin seed species
+    Lead() Pb_init
+    Stone() Stone_init
+    Gold() 0
+end seed species
+
+begin observables
+    Molecules Base_Metal Lead()
+    Molecules Noble_Metal Gold()
+    Molecules Catalyst    Stone()
+end observables
+
+begin reaction rules
+    # The Great Work (Magnum Opus)
+    # Lead + Stone -> Gold + Stone
+    Lead() + Stone() -> Gold() + Stone() k_transmute
+    
+    # The Stone is unstable
+    Stone() -> 0 k_decay
+    
+    # Side reaction: Lead Toxicity (inhibits Stone?)
+    # Lead() + Stone() -> Lead().Stone() (Poisoned)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>200, n_steps=>200})

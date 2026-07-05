@@ -1,0 +1,130 @@
+begin model
+# Reference:
+#  - Hlavacek WS et al. (2000) PNAS 97: 10966-10971
+#  - Rane S, Hogan T, Lee E, Seddon B, Yates AJ (2022) eLife 11: e78168.
+#  - Sopper S, Nierwetberg D, Halbach A et al. (2003) Blood 101: 1213-1219.
+#  - Zhao J, Cao Y, Jusko WJ (2015) Pharm Res 32: 3269-3281.
+begin parameters
+N__FREE 738.3138623652495
+T0__FREE 2475953651.5432525
+c__FREE 3.0064583741451463
+delta__FREE 2.658825021685561
+f__FREE 0.587001183572096
+lifetime__FREE 33.053879410713165
+# body weight
+BW 7 # kg
+# total volume of extracellular fluid (in L)
+#  See Table I in Zhao et al. (2015)
+Vecf = BW*(0.157+0.314+0.735)/3.5 # L
+# total number of target cells in an uninfected monkey (Sopper et al. 2003)
+T0 T0__FREE # 3.5e9 # cells per body [FREE]
+# fraction 0<f<1
+f f__FREE # 0.7 # R0 = 1/f = T0/T1 [FREE]
+# total number of target cells in an asymptomatic SIV-infected monkey
+T1 = f*T0
+# total number of target cells in an asymptomatic SIV-infected monkey (Sopper et al., 2003)
+#T1 6.6e9 # cells per body
+# target cell lifetime, from Table 2 in Rane et al. (2022)
+lifetime lifetime__FREE # 22 # d [FREE]
+# rate constant for target cell death
+mu = 1/lifetime # /d
+# rate of de novo target cell generation
+lambda = mu*T0 # cells per day
+# rate constant for viral clearance
+#  Table 2 value given for Patient 20485 in Hlavacek et al. (2000)
+c c__FREE # 34 # /d [FREE]
+# burst size (expected number of virions produced by a productively infected cell over its lifetime)
+#  Table 2 value given for Patient 20485 in Hlavacek et al. (2000)
+#  2 copies of vRNA per virion
+N N__FREE # 49*2 # dimensionless [FREE]
+# rate constant for infection of target cells
+#  Table 2 value given for Patient 20485 in Hlavacek et al. (2000), Vecf (human) = 15 L
+k = c/(N*T1) # = c/(N*T1) # /virion/d
+# rate constant for death of productively infected cells
+#  Table 2 value given for Patient 20485 in Hlavacek et al. (2000)
+delta delta__FREE # 2.7 # /d [FREE]
+# initial viral load
+#  15 copies per mL is the limit of detection indicated in spreadsheet w/ Estes lab data
+V0 = 1.5e4*Vecf # vRNA copies
+# total number of viral receptors on FDCs
+#  based on relative body weights of man and monkey and RT estimated for Patient 20485
+FDC_RT 1.8e12*(7/70)
+# effective rate constant for viral attachment to FDC receptors
+alpha 3*1.5e-12 # /d (1.5e-10 used in Hlavacek et al. (2000))
+# effective rate constant for viral release from FDC receptors 
+#  beta is estimated as 1/t1 using KxRT and kr values for Patient 20485 and n=20 
+beta 0.2586 # /d
+end parameters
+begin molecule types
+T() # target cells
+P() # productively infected cells
+V() # virus
+FDC_R() # viral receptors on FDCs
+FDC_B() # FDC-bound virus
+counter()
+end molecule types
+begin seed species
+T() T0
+P() 0
+V() V0
+FDC_R() FDC_RT
+FDC_B() 0
+counter() 0
+end seed species
+begin observables
+Molecules T T()
+Molecules P P()
+Molecules V V()
+Molecules free_FDC_receptors FDC_R()
+Molecules FDC_bound_virus FDC_B()
+Molecules total_virus V() FDC_B()
+Molecules t counter()
+end observables
+begin functions
+infection()=k*V
+production()=N*delta*P
+V_final()=lambda*N/c-mu/k
+T_initial()=lambda/mu
+T_final()=c/(k*N)
+P_final()=(c/(N*delta))*V_final()
+freq_infected_cells()=1e3*P/(T+P) # number of infected cells per 1,000 cells
+lnVconc()=ln(V/(Vecf*1000)) # vRNA copies per mL
+lnVconc_avg_measurements()=if(t<7,2.708,\
+if(t<14,13.456,\
+if(t<21,17.382,\
+if(t<28,15.437,\
+if(t<35,14.871,\
+if(t<42,14.052,\
+if(t<49,12.394,\
+if(t<56,13.405,\
+if(t<63,13.311,0)))))))))
+freq_inf_cells_measurements()=if(t<14,0,\
+if(t<28,2.502,\
+if(t<56,0.875,0.502)))
+# basic reproduction number
+R0()=k*lambda*N/(c*mu) # = T_initial()/T_final()
+# R0 in the presence of FDC receptors
+R0_with_FDCs() = (N*k*T0 + alpha*FDC_RT)/(c + alpha*FDC_RT)
+end functions
+begin reaction rules
+0->counter() 1
+# generation of target cells
+0->T() lambda
+# target cell death
+T()->0 mu
+# infection
+T()->P() infection()
+# productively infected cell death
+P()->0 delta
+# production of virions by infected cells
+0->V() production()
+# viral clearance
+V()->0 c
+V()+FDC_R()<->FDC_B() alpha,beta
+end reaction rules
+end model
+begin actions
+
+generate_network({overwrite=>1})
+simulate({suffix=>"avg_treated_animals",method=>"ode",t_start=>0,t_end=>56,n_steps=>560,print_functions=>1})
+end actions

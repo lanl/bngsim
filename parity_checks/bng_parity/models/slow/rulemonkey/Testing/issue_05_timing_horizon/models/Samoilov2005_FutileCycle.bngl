@@ -1,0 +1,85 @@
+begin model
+#@model_id: Samoilov2005_FutileCycle
+#@title: Enzymatic futile cycle (Samoilov et al. 2005)
+#@description: Mass-action enzymatic futile cycle with explicit enzyme-substrate complexes. Forward branch E1+X -> C1 -> E1+X*; reverse branch E2+X* -> C2 -> E2+X. Molecule-count species. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1073/pnas.0406841102
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Forward branch: E1 + X <-> C1 -> E1 + X*
+  k1_f     40             # 1/(molecules*s) (binding)
+  k1_r     2e4            # 1/s (unbinding)
+  k1_cat   1e4            # 1/s (catalysis)
+
+  # Reverse branch: E2 + X* <-> C2 -> E2 + X
+  k2_f     200            # 1/(molecules*s) (binding)
+  k2_r     100            # 1/s (unbinding)
+  k2_cat   5e3            # 1/s (catalysis)
+end parameters
+
+begin molecule types
+  X()         # unmodified substrate
+  X_star()    # modified substrate
+  E1()        # forward enzyme
+  C1()        # E1-X complex
+  E2()        # reverse enzyme
+  C2()        # E2-X* complex
+end molecule types
+
+begin seed species
+  X()       1     # molecules (perturbed from 0)
+  X_star()  2000  # molecules
+  E1()      20    # molecules
+  C1()      1     # molecules (perturbed from 0)
+  E2()      50    # molecules
+  C2()      1     # molecules (perturbed from 0)
+end seed species
+
+begin observables
+  Molecules  Obs_X       X()
+  Molecules  Obs_X_star  X_star()
+  Molecules  Obs_E1      E1()
+  Molecules  Obs_C1      C1()
+  Molecules  Obs_E2      E2()
+  Molecules  Obs_C2      C2()
+end observables
+
+begin reaction rules
+  # Forward branch: E1 + X <-> C1 -> E1 + X*
+  # R1: binding
+  E1() + X() -> C1()  k1_f
+
+  # R2: unbinding
+  C1() -> E1() + X()  k1_r
+
+  # R3: catalysis
+  C1() -> E1() + X_star()  k1_cat
+
+  # Reverse branch: E2 + X* <-> C2 -> E2 + X
+  # R4: binding
+  E2() + X_star() -> C2()  k2_f
+
+  # R5: unbinding
+  C2() -> E2() + X_star()  k2_r
+
+  # R6: catalysis
+  C2() -> E2() + X()  k2_cat
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>0.0018,n_steps=>180})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>0.0018,n_steps=>180})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>0.0018,n_steps=>180,complex=>1})
+end actions

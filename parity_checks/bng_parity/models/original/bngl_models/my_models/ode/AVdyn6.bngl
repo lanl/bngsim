@@ -1,0 +1,170 @@
+# filename: AVdyn6.bngl
+# date: 27-January-2020
+# [PII REMOVED]
+# [PII REMOVED]
+begin model
+# A population dynamics model for phagophores and autophagosomes in U2OS cells
+begin parameters
+# smallest single-precision floating-point number
+epsilon 2^-126 
+# parameter estimates from Martin et al. (2013)
+# basal rate of phagophore synthesis
+#Pmin 0.18 # vesicles per cell per min
+Pmin 0.022 # vesicles per cell per min
+# maximum rate of phagophore synthesis achievable through mTORC1 inhibition
+#Pmax 0.71 # vesicles per cell per min
+Pmax 0.43 # vesicles per cell per min
+# factor relating PG count to fluorescence intensity of WIPI2b probe
+FL_WIPI2b 1150 # a.u. per vesicle
+# factor relating PG+AP count to fluorescence intensity of LC3 probe
+FL_LC3 1150 # a.u. per vesicle
+# rate constant for autophagosome clearance when clearance is a first-order process
+c 0.037 # /min
+# amino acid (AA) abundance
+# AA=100 => nutrient replete condition (full medium)
+# 0<AA<100 => amino acid-depleted medium
+# AA=0 => AA starvation (complete absence of amino acids in medium)
+# AA is in the set {0, 1, 5, 7, 10, 100}.
+AA 100 # percent
+# threshold below which leucine deficiency occurs
+AA_threshold 10 # percent
+# time delay for boosted autophagy induction
+tau 210 # min
+# boost parameter
+fboost 0.16 # vesicles per min per AA%
+# presence/absence of AZD8055 (catalytic mTOR inhibitor)
+# delta_A=0 => -AZD8055
+# delta_A=1 => +AZD8055
+delta_A 0 # Boolean indicator
+# presence/absence of BafA1
+# delta_B=0 => -BafA1
+# delta_B=1 => +BafA1
+delta_B 0 # Boolean indicator
+# AA level (percent) at which AA/(AA+EC50_syn)=1/2
+EC50_syn 5 # percent
+# AP count at which EC50_deg/([AP]+EC50_deg)=1/2
+EC50_deg 200 # vesicles per cell
+# rate constant for phagophore disassembly
+kdis 0.00215 # /min
+# rate constant for PG->AP transition
+k_PGtoAP 0.00215 # /min
+end parameters
+begin molecule types
+# phagophore
+PG()
+# autophagosome
+AP()
+timeCounter()
+end molecule types
+begin seed species
+PG() 0
+AP() 0
+timeCounter() 0
+end seed species
+begin observables
+Molecules unscaled_WIPI2bout PG() 
+Molecules unscaled_LC3out PG() AP() 
+Molecules PGcount PG()
+Molecules APcount AP()
+Molecules t timeCounter()
+end observables
+begin functions
+dummy()=4e5
+WIPI2b_readout()=FL_WIPI2b*unscaled_WIPI2bout
+LC3_readout()=FL_LC3*unscaled_LC3out
+#AZD8055()=delta_A
+BafA1()=delta_B
+percentAA()=AA
+boost()=if(AA<AA_threshold,if(t>tau,fboost*(AA_threshold-AA),0),0)
+ksynPG()=(Pmax-(Pmax-Pmin)*(AA*AA/(AA*AA+EC50_syn*EC50_syn))*(1-delta_A))+boost()
+ksynAP()=k_PGtoAP*PGcount
+kdeg()=c*(1-delta_B)*(EC50_deg/(APcount+EC50_deg))
+end functions
+begin reaction rules
+# counter for time
+0->timeCounter() 1
+# AA-dependent generation of phagophores, +/- AZD8055-mediated inhibition of synthesis, +/- leucine boost at time t=tau
+0->PG() ksynPG()
+# phagophore structure disassembly
+PG()->0 kdis
+# generation of autophagosomes
+0->AP() ksynAP()
+# saturable clearance of autophagosomes, +/- BafA1-mediated inhibition of degradation
+AP()->0 kdeg()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration to steady state
+# -BafA1, AA replete condition (full medium)
+setParameter("AA",100)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh1_equil_to_AAreplete-BafA1",method=>"ode",t_end=>12000,n_steps=>300,print_functions=>1})
+saveConcentrations()
+# +BafA1, AA replete condition
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",100)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh2_AAreplete+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# -BafA1, full AA starvation
+resetConcentrations()
+setConcentration("timeCounter",0)
+setParameter("AA",0)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh3a_AAstarvation-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, full AA starvation
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",0)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh3b_AAstarvation+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+#  -BafA1, AA=1 percent
+resetConcentrations()
+setConcentration("timeCounter",0)
+setParameter("AA",1)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh4a_AA=01-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, AA=1 percent
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",1)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh4b_AA=01+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+#  -BafA1, AA=5 percent
+resetConcentrations()
+setConcentration("timeCounter",0)
+setParameter("AA",5)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh5a_AA=05-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, AA=5 percent
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",5)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh5b_AA=05+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+#  -BafA1, AA=7 percent
+resetConcentrations()
+setConcentration("timeCounter",0)
+setParameter("AA",7)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh6a_AA=07-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, AA=7 percent
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",7)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh6b_AA=07+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# -BafA1, AA=10 percent
+resetConcentrations()
+setConcentration("timeCounter",0)
+setParameter("AA",10)
+setParameter("delta_B",0)
+simulate({suffix=>"wsh7a_AA=10-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, AA=10 percent
+#resetConcentrations()
+#setConcentration("timeCounter",0)
+#setParameter("AA",10)
+#setParameter("delta_B",1)
+#simulate({suffix=>"wsh7b_AA=10+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+end actions

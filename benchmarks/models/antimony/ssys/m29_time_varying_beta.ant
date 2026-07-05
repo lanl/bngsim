@@ -1,0 +1,127 @@
+// SIR model with time-dependent beta(t), exp-based step approximation.
+// Related: m07_SIR.ant (standard SIR with constant β)
+//   dS/dt = -beta_t*S*I + delta*R
+//   dI/dt =  beta_t*S*I - gamma*I
+//   dR/dt =  gamma*I - delta*R
+//   dt/dt =  1
+//
+// Smooth step implemented with an exp-only approximation:
+//
+//   beta_t = beta0*0.5*(σ(t - tau0) - σ(t - tau1))
+//          + beta1*0.5*(σ(t - tau1) + 1)
+//
+//   σ(x) ≈ (exp(2*k*x) - 1) / (exp(2*k*x) + 1)
+//
+// NOTE:
+//   A tanh-based version would be:
+//   beta_t = beta0*0.5*(tanh(k*(t - tau0)) - tanh(k*(t - tau1)))
+//          + beta1*0.5*(tanh(k*(t - tau1)) + 1)
+
+// Recast:
+// Transformations:
+  // E0 := exp(2*k*(t - tau0))
+  // E1 := exp(2*k*(t - tau1))
+  //
+  // N0 := E0 - 1
+  // Y0 := E0 + 1
+  // N1 := E1 - 1
+  // Y1 := E1 + 1
+  //
+  // σ0(t) := (E0 - 1)/(E0 + 1) = N0/Y0
+  // σ1(t) := (E1 - 1)/(E1 + 1) = N1/Y1
+  //
+  // Original exp-based beta_t(t):
+  //   beta_t(t) = beta0*0.5*(σ0(t) - σ1(t))
+  //             + beta1*0.5*(σ1(t) + 1)
+  //
+  // After lifting:
+  //   beta_t(t)*S*I =
+  //       0.5*beta0 * S*I * N0*Y0^-1
+  //     + 0.5*(beta1 - beta0) * S*I * N1*Y1^-1
+  //     + 0.5*beta1 * S*I
+  //
+  // which is a sum of pure power-law monomials in (S, I, N0, Y0, N1, Y1).
+// Dynamics:
+  // Time variable
+  //   t' = 1;
+  // S dynamics:
+  // dS/dt = -beta_t(t)*S*I + delta*R
+  //   S' = -0.5*beta0*S*I*N0*Y0^(-1) - 0.5*(beta1-beta0)*S*I*N1*Y1^(-1) - 0.5*beta1*S*I + delta*R;
+  // I dynamics:
+  // dI/dt =  beta_t(t)*S*I - gamma_rate*I
+  //   I' = 0.5*beta0*S*I*N0*Y0^(-1) + 0.5*(beta1-beta0)*S*I*N1*Y1^(-1) + 0.5*beta1*S*I - gamma_rate*I;
+  // R dynamics:
+  // dR/dt = gamma_rate*I - delta*R
+  //   R' = gamma_rate*I - delta*R;
+  // Exponential lifts:
+  // E0(t) = exp(2*k*(t - tau0))  =>  E0' = 2*k*E0 * t' = 2*k*E0
+  // E1(t) = exp(2*k*(t - tau1))  =>  E1' = 2*k*E1
+  //   E0' = 2*k*E0;
+  //   E1' = 2*k*E1;
+  // Linear combinations N0, Y0, N1, Y1 that track (E0±1), (E1±1):
+  // N0 = E0 - 1, Y0 = E0 + 1  =>  N0' = Y0' = E0' = 2*k*E0
+  // N1 = E1 - 1, Y1 = E1 + 1  =>  N1' = Y1' = E1' = 2*k*E1
+  //   N0' = 2*k*E0;
+  //   Y0' = 2*k*E0;
+  //   N1' = 2*k*E1;
+  //   Y1' = 2*k*E1;
+  // INITIAL CONDITIONS
+  //   S = S0;
+  //   I = I0;
+  //   R = R0;
+  //   t = 0;
+  // E0(0) = exp(2*k*(0 - tau0)),  E1(0) = exp(2*k*(0 - tau1))
+  //   E0 = exp(2*k*(0 - tau0));
+  //   E1 = exp(2*k*(0 - tau1));
+  // N0(0) = E0(0) - 1, Y0(0) = E0(0) + 1, etc.
+  //   N0 = E0 - 1;
+  //   Y0 = E0 + 1;
+  //   N1 = E1 - 1;
+  //   Y1 = E1 + 1;
+
+model time_varying_beta()
+
+  // -------------------------------------------------------------------
+  // Parameters
+  // -------------------------------------------------------------------
+  S0    = 1e5;
+  I0    = 1.0;
+  R0    = 0.0;
+
+  beta0 = 3e-6;
+  beta1 = 15e-6;
+  gamma_rate = 0.1;
+  delta = 0.05;
+
+  k     = 1.0;
+  tau0  = 5.0;
+  tau1  = 200.0;
+
+  // -------------------------------------------------------------------
+  // State variables
+  // -------------------------------------------------------------------
+  species S, I, R, t;
+
+  // -------------------------------------------------------------------
+  // Time-varying beta as assignment rule (uses model parameters)
+  // -------------------------------------------------------------------
+  beta_t := beta0*0.5 * ( (exp(2*k*(t - tau0)) - 1)/(exp(2*k*(t - tau0)) + 1) - (exp(2*k*(t - tau1)) - 1)/(exp(2*k*(t - tau1)) + 1) ) + beta1*0.5 * ( (exp(2*k*(t - tau1)) - 1)/(exp(2*k*(t - tau1)) + 1) + 1 );
+
+  // -------------------------------------------------------------------
+  // ODE system
+  // -------------------------------------------------------------------
+  S' = -beta_t*S*I + delta*R;
+  I' =  beta_t*S*I - gamma_rate*I;
+  R' =  gamma_rate*I    - delta*R;
+  t' =  1;
+
+  // -------------------------------------------------------------------
+  // Initial conditions
+  // -------------------------------------------------------------------
+  S = S0;
+  I = I0;
+  R = R0;
+  t = 0;
+
+end
+// @SIM T_START=0 T_END=200 N_STEPS=400 EPS_SLACK=1e-10

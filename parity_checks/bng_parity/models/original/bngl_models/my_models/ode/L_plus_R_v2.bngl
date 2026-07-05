@@ -1,0 +1,135 @@
+begin model
+
+begin parameters
+
+f 1 # dimensionless
+NA 6.02214e23 # molecules per mol
+
+# volume of extracellular fluid surrounding a single cell on average
+Vecf 2.1e-9 # L per cell
+# volume of cytosol
+Vcyt 1.2e-12*f # L per cell
+
+# ligand dose (nM)
+IGF1_conc_nM 1 # nM
+# convert from nM to M
+IGF1_conc=IGF1_conc_nM*1e-9 # M
+# convert from M to copies per cell
+IGF1_total=IGF1_conc*(NA*Vecf) # cpc
+
+# The following settings are based on
+#  the data of Kulak et al. (2014) for HeLa S3 cells (ATCC CCL-2.2).
+IGF1R_total  14809*f # cpc (NB: There are two copies of IGF1R per dimer.)
+IRS1_total    1329*f # cpc
+GRB10_total  24164*f # cpc
+
+# forward and reverse rate constants for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+a1 3.47e5/(NA*Vecf) # [=] /M/s converted to /(molecule/cell)/s
+d1 3.2e-3 # [=] /s
+
+######################################################################
+# scale IGF1R dimer abundance by a factor of 2 in "compressed" model #
+######################################################################
+
+# NB: nLT/2+nKD must be greater than nRT
+
+nLT=IGF1_total
+nRT=0.5*IGF1R_total
+
+cLT=0.5*nLT
+cRT=2*nRT
+
+nkf=a1
+nkr=d1
+
+nKD=nkr/nkf
+cKD=(nLT-cLT)+(nRT-cRT)+nKD
+
+ckf=nkf
+ckr=ckf*cKD
+
+end parameters
+
+begin molecule types
+
+# natural
+nL(s)
+nR(s)
+
+# compressed
+cL(s)
+cR(s)
+
+end molecule types
+
+begin seed species
+
+nL(s) nLT
+nR(s) nRT
+
+cL(s) cLT
+cR(s) cRT
+
+end seed species
+
+begin observables
+
+#Molecules nFreeLigand nL(s)
+#Molecules nFreeReceptor nR(s)
+Molecules nBoundReceptor nR(s!+)
+
+#Molecules cFreeLigand_uncorrected cL(s)
+#Molecules cFreeReceptor_uncorrected cR(s)
+Molecules cBoundReceptor cR(s!+)
+
+end observables
+
+begin functions
+
+check()=2*cBoundReceptor
+
+#ngamma()=sqrt(nkf^2*(nLT-nRT)^2+2*nkf*nkr*(nLT+nRT)+nkr^2)/nkf
+#cgamma()=sqrt(ckf^2*(cLT-cRT)^2+2*ckf*ckr*(cLT+cRT)+ckr^2)/ckf
+
+
+#nsqrtDelta()=sqrt((nLT-nRT)^2+2*nKD*(nLT+nRT)+nKD^2)/ngamma()
+#csqrtDelta()=sqrt((cLT-cRT)^2+2*cKD*(cLT+cRT)+cKD^2)/cgamma()
+
+#nBeq()=2*nLT*nRT/(nLT+nRT+nKD+nsqrtDelta())
+#cBeq()=2*cLT*cRT/(cLT+cRT+cKD+csqrtDelta())
+
+#nLTcRT()=nLT*nRT
+#cLTcRT()=cLT*cRT
+
+#nLT_et_nRT_et_nKD()=nLT+nRT+nKD
+#cLT_et_cRT_et_cKD()=cLT+cRT+cKD
+
+#nkf_func()=nkf
+#ckf_func()=ckf
+
+#ndelta()=sqrt((nLT-nRT)^2+2*nKD*(nLT+nRT)+nKD^2)
+#cdelta()=sqrt((cLT-cRT)^2+2*cKD*(cLT+cRT)+cKD^2)
+
+#cFreeLigand()=2*cFreeLigand_uncorrected
+#cFreeReceptor()=0.5*cFreeReceptor_uncorrected
+#cBoundReceptor()=0.5*cBoundReceptor_uncorrected
+
+end functions
+
+begin reaction rules
+
+nL(s)+nR(s)<->nL(s!1).nR(s!1) nkf,nkr
+
+cL(s)+cR(s)<->cL(s!1).cR(s!1) ckf,ckr
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10000,n_steps=>2000,print_functions=>1})
+
+end actions

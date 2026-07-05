@@ -1,0 +1,39 @@
+# Control sibling for include_reactants_gate.bngl (internal#60).
+#
+# Identical kinetics to the gated model, but WITHOUT the include_reactants
+# modifier. Here A(s,p~U) is free to bind B(s), so AB_total grows > 0.
+#
+# This proves the gated model's AB_total == 0 is the selector doing its job,
+# not the model being trivially incapable of binding. If a regression made
+# the gated and ungated runs identical, this case still binds and the
+# gated case's == 0 assertion fails.
+#
+# XML is regenerated with: BNG2.pl include_reactants_ungated.bngl
+begin model
+begin parameters
+    N       100
+    kf      0.01
+    k_phos  0.0
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,p~U)  N
+    B(s)      N
+end seed species
+
+begin observables
+    Molecules  AB_total  A(s!1).B(s!1)
+    Molecules  A_phos    A(p~P)
+end observables
+
+begin reaction rules
+    A(s) + B(s) -> A(s!1).B(s!1)  kf
+end reaction rules
+end model
+
+writeXML()

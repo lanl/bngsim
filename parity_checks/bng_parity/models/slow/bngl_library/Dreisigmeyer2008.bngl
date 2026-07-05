@@ -1,0 +1,122 @@
+begin model
+#@model_id: dreisigmeyer2008_lac_operon
+#@title: Lac operon lactose induction model (Dreisigmeyer 2008)
+#@description: Three-variable lac operon model tracking internal lactose (l), allolactose (a), and beta-galactosidase (z) with permease transport, enzymatic metabolism, and Hill-function gene expression. All concentrations in uM.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@note: |
+#  Species scaled x1000 for SSA integer counts (original uM * 1000).
+#  Functional rates used throughout due to rational and Hill expressions.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Scaling
+  scale    1000           # dimensionless
+
+  # External lactose (uM, constant)
+  l_ext    1000.0         # uM
+
+  # Growth dilution
+  growth_rate  0.02       # 1/min
+
+  # Permease transport
+  alpha    600.0          # 1/min
+  phi      0.5            # dimensionless
+
+  # Saturation constants (uM)
+  K_i      500.0          # uM
+
+  # beta-gal lactose metabolism
+  beta     2.85e4         # 1/min
+  nu       0.468          # dimensionless
+  K_m_l    2530.0         # uM
+
+  # beta-gal allolactose metabolism
+  delta_k  2.30e4         # 1/min
+  K_m_a    1200.0         # uM
+
+  # beta-gal expression parameters (uM)
+  eps      34.285         # uM
+  c_basal  0.0343         # uM
+  K_z      105.0          # uM
+  n_Hill   2.0            # dimensionless
+end parameters
+
+begin molecule types
+  L()
+  A()
+  Z()
+end molecule types
+
+begin seed species
+  L()  1       # molecules (0 uM * 1000, use 1 for SSA)
+  A()  1       # molecules (0 uM * 1000, use 1 for SSA)
+  Z()  34      # molecules (c_basal * 1000 = 0.0343 * 1000 ~ 34)
+end seed species
+
+begin observables
+  Molecules  Obs_L  L()
+  Molecules  Obs_A  A()
+  Molecules  Obs_Z  Z()
+end observables
+
+begin functions
+  # Rescaled concentrations (back to uM for rate expressions)
+  l_conc()  = Obs_L / scale
+  a_conc()  = Obs_A / scale
+  z_conc()  = Obs_Z / scale
+
+  # Transport term: alpha * z * (l_ext - phi*l) / (K_i + l + l_ext)
+  transport() = alpha * z_conc() * (l_ext - phi * l_conc()) / (K_i + l_conc() + l_ext)
+
+  # Lactose metabolism: beta * z * l / ((1 + a/K_m_a)*(K_m_l + l))
+  metab_l()  = beta * z_conc() * l_conc() / ((1 + a_conc()/K_m_a) * (K_m_l + l_conc()))
+
+  # Production rate for L (scaled): transport * scale
+  prod_L()   = transport() * scale
+
+  # Consumption rate for L (total negative terms): metab_l + growth_rate*l, scaled
+  cons_L()   = (metab_l() + growth_rate * l_conc()) * scale
+
+  # Allolactose production: nu * metab_l
+  # Allolactose metabolism: delta_k * z * a / ((1 + l/K_m_l)*(K_m_a + a))
+  metab_a()  = delta_k * z_conc() * a_conc() / ((1 + l_conc()/K_m_l) * (K_m_a + a_conc()))
+
+  prod_A()   = nu * metab_l() * scale
+  cons_A()   = (metab_a() + growth_rate * a_conc()) * scale
+
+  # Z production: c_basal*growth_rate + eps*growth_rate*a^n/(K_z^n + a^n)
+  prod_Z()   = (c_basal * growth_rate + eps * growth_rate * a_conc()^n_Hill / (K_z^n_Hill + a_conc()^n_Hill)) * scale
+
+  # Z consumption: growth_rate * z
+  cons_Z()   = growth_rate * z_conc() * scale
+end functions
+
+begin reaction rules
+  # Internal lactose
+  0 -> L()  prod_L()
+  L() -> 0  cons_L()
+
+  # Allolactose
+  0 -> A()  prod_A()
+  A() -> 0  cons_A()
+
+  # Beta-galactosidase
+  0 -> Z()  prod_Z()
+  Z() -> 0  cons_Z()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>200})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>200})
+end actions

@@ -1,0 +1,38 @@
+# Model: feature_synthesis_degradation_ss.bngl
+# Description: Demonstrates basic zero-order synthesis (0 -> M) and first-order degradation (M -> 0).
+#              Shows approach to steady state.
+
+begin model
+
+begin parameters
+    k_syn 10.0  # Synthesis rate (M/s or molecules/s)
+    k_deg 0.1   # Degradation rate constant (1/s)
+end parameters
+
+begin molecule types
+    M()
+end molecule types
+
+begin seed species
+    M() 0
+end seed species
+
+begin observables
+    Molecules Total_M M()
+end observables
+
+begin reaction rules
+    # 1. Synthesis
+    # Source is infinite (0). Rate is constant k_syn.
+    0 -> M() k_syn
+    
+    # 2. Degradation
+    # Sink is infinite/null (0). Rate is k_deg * [M].
+    M() -> 0 k_deg
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>200})

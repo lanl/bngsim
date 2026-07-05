@@ -1,0 +1,149 @@
+
+begin model
+
+begin parameters
+
+f 0.01 # dimensionless
+NA 6.02214e23 # molecules per mol
+
+# cell density
+cellDensity 1e9 # cell per L
+
+# volume of extracellular fluid surrounding a single cell
+Vecf=(1/cellDensity)*f # L per cell
+
+# ligand concentration
+Lconc_nM 4 # nM
+Lconc=Lconc_nM*1e-9 # M
+LT=Lconc*(NA*Vecf) # copies per cell (cpc)
+
+# number of receptors per cell
+RT 1e5*f # cpc
+
+# ligand-receptor binding parameters
+KD_nM 10 # nM
+KD=KD_nM*1e-9 # M
+kr 0.001 # /s
+kf=(kr/KD)/(NA*Vecf) # /M/s converted to /cpc/s
+
+# parameters for monomeric receptor conformation dynamics
+KD_TtoE 5 # dimensionless
+k_TtoE 1 # /s
+k_EtoT=k_TtoE*KD_TtoE # /s
+
+# EGFR dimer lifetime
+lifetime 10 # s
+koff=1/lifetime # /s
+
+KxRT_H2H 10 # dimensionless
+kmx_H2H=koff # /s
+kpx_H2H=KxRT_H2H*kmx_H2H/RT # /cpc/s
+
+KxRT_B2B 100 # dimensionless
+kmx_B2B=koff # /s
+kpx_B2B=KxRT_B2B*kmx_B2B/RT # /cpc/s
+
+end parameters
+
+begin molecule types
+
+EGF(EGFL)
+EGFR(I_III,II,ecto~T~E~A)
+
+end molecule types
+
+begin seed species
+
+EGF(EGFL) LT
+EGFR(I_III,II,ecto~T) RT
+
+end seed species
+
+begin observables
+
+Molecules EGFtot EGF()
+Molecules freeEGF EGF(EGFL)
+Molecules boundEGF EGF(EGFL!+)
+
+Molecules EGFRtot EGFR()
+Molecules freeEGFR_I_III EGFR(I_III)
+Molecules EGFboundEGFR EGFR(I_III!1).EGF(EGFL!1)
+
+Molecules _II_II__bonds EGFR(II!1).EGFR(II!1)
+Molecules III_III_bonds EGFR(I_III!1).EGFR(I_III!1)
+
+Species SepDIM EGF(EGFL!1).EGFR(I_III!1,II!2).EGFR(II!2,I_III!3).EGFR(I_III!3,II!4).EGFR(II!4,I_III!5).EGF(EGFL!5)
+Species SepTET EGF(EGFL!1).EGFR(I_III!1,II!2).EGFR(II!2,I_III!3).EGFR(I_III!3,II!4).EGFR(II!4,I_III!5).EGFR(I_III!5,II!6).EGFR(II!6,I_III!7).EGF(EGFL!7)
+Species SepHEX EGF(EGFL!1).EGFR(I_III!1,II!2).EGFR(II!2,I_III!3).EGFR(I_III!3,II!4).EGFR(II!4,I_III!5).EGFR(I_III!5,II!6).EGFR(II!6,I_III!7).EGFR(I_III!7,II!8).EGFR(II!8,I_III!9).EGF(EGFL!9)
+Species SepOCT EGF(EGFL!1).EGFR(I_III!1,II!2).EGFR(II!2,I_III!3).EGFR(I_III!3,II!4).EGFR(II!4,I_III!5).EGFR(I_III!5,II!6).EGFR(II!6,I_III!7).EGFR(I_III!7,II!8).EGFR(II!8,I_III!9).EGFR(I_III!9,II!10).EGFR(II!10,I_III!11).EGF(EGFL!11)
+Species SepDEC EGF(EGFL!1).EGFR(I_III!1,II!2).EGFR(II!2,I_III!3).EGFR(I_III!3,II!4).EGFR(II!4,I_III!5).EGFR(I_III!5,II!6).EGFR(II!6,I_III!7).EGFR(I_III!7,II!8).EGFR(II!8,I_III!9).EGFR(I_III!9,II!10).EGFR(II!10,I_III!11).EGFR(I_III!11,II!12).EGFR(II!12,I_III!13).EGF(EGFL!13)
+
+Species monEGFR EGFR==1
+Species dimEGFR EGFR==2
+Species triEGFR EGFR==3
+Species tetEGFR EGFR==4
+Species penEGFR EGFR==5
+Species hexEGFR EGFR==6
+Species hepEGFR EGFR==7
+Species octEGFR EGFR==8
+
+end observables
+
+begin functions
+
+#fracMON()=monEGFR/EGFRtot
+#fracDIM()=dimEGFR/EGFRtot
+#fracTRI()=triEGFR/EGFRtot
+#fracTET()=tetEGFR/EGFRtot
+#fracPEN()=penEGFR/EGFRtot
+#fracHEX()=hexEGFR/EGFRtot
+#fracHEP()=hepEGFR/EGFRtot
+#fracOCT()=octEGFR/EGFRtot
+
+end functions
+
+begin reaction rules
+
+# conformation dynamics of monomeric receptors
+EGFR(I_III,II,ecto~T)<->EGFR(I_III,II,ecto~A) k_TtoE,k_EtoT
+
+# ligand-receptor interaction
+EGF(EGFL)+EGFR(I_III,II,ecto~T)->EGF(EGFL!1).EGFR(I_III!1,II,ecto~E) kf
+EGF(EGFL!1).EGFR(I_III!1,II,ecto~E)->EGF(EGFL)+EGFR(I_III,II,ecto~T) kr
+
+# receptor-receptor interaction via back-to-back interface
+#  forward reactions
+EGFR(II,ecto~E)+EGFR(II,ecto~E)->EGFR(II!1,ecto~E).EGFR(II!1,ecto~E) kpx_B2B
+EGFR(II,ecto~E)+EGFR(II,ecto~T)->EGFR(II!1,ecto~E).EGFR(II!1,ecto~E) kpx_B2B
+#  reverse reactions
+EGFR(I_III,II!1,ecto~E).EGFR(I_III,II!1,ecto~E)->EGFR(I_III,II,ecto~T)+EGFR(I_III,II,ecto~T) kmx_B2B
+EGF(EGFL!2).EGFR(I_III!2,II!1,ecto~E).EGFR(I_III,II!1,ecto~E)->EGF(EGFL!2).EGFR(I_III!2,II,ecto~E)+EGFR(I_III,II,ecto~T) kmx_B2B
+EGF(EGFL!2).EGFR(I_III!2,II!1,ecto~E).EGF(EGFL!3).EGFR(I_III!3,II!1,ecto~E)->EGF(EGFL!2).EGFR(I_III!2,II,ecto~E)+EGF(EGFL!3).EGFR(I_III!3,II,ecto~E) kmx_B2B
+
+# receptor-receptor interaction via head-to-head interface
+#  forward reactions
+EGFR(I_III,II,ecto~A)+EGFR(I_III,II,ecto~A)->EGFR(I_III!1,II,ecto~A).EGFR(I_III!1,II,ecto~A) kpx_H2H
+EGFR(I_III,II!+,ecto~E)+EGFR(I_III,ecto~A)->EGFR(I_III!1,II!+,ecto~E).EGFR(I_III!1,ecto~A) kpx_H2H
+#  reverse reactions
+EGFR(I_III!1).EGFR(I_III!1)->EGFR(I_III)+EGFR(I_III) kmx_H2H
+
+end reaction rules
+
+end model
+
+begin actions
+
+saveConcentrations()
+setConcentration("EGF(EGFL)",0)
+simulate({suffix=>"1",method=>"nf",complex=>1,gml=>1e8,t_start=>0,t_end=>300,n_steps=>100,print_functions=>1,get_final_state=>1})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("EGF(EGFL)","LT")
+simulate({suffix=>"2",method=>"nf",complex=>1,gml=>1e8,t_start=>0,t_end=>300,n_steps=>100,print_functions=>1,get_final_state=>0})
+
+#parameter_scan({method=>"nf",complex=>1,gml=>1e7,print_functions=>1,\
+#parameter=>"RT",par_min=>100,par_max=>1e4,n_scan_pts=>10,log_scale=>1,\
+#t_start=>0,t_end=>1000,n_steps=>10})
+
+end actions

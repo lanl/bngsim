@@ -1,0 +1,55 @@
+// =============================================================================
+// Source: Voit (2005) "Smooth bistable S-systems"
+//         IEE Proc. Syst. Biol. 152(4):207-213
+// Example: Bistable gene expression system (Equations 3-4)
+// =============================================================================
+// Time horizon: t ∈ [0, 200]
+//
+// Bistable gene expression system (Figure 2):
+//   X1 = gene expression level (mRNA)
+//   X2 = protein level
+//   X3 = metabolite level
+//   X4 = inducer (feedback signal)
+//
+// Sigmoidal induction function:
+//   f(X4) = q1 + q2*X4^n / (q3^n + X4^n)
+//
+// This creates bistability with hysteresis.
+//
+// Full system (Equation 4):
+//   dX1/dt = (4 + 8*X4^4/(256 + X4^4)) * X3^0.5 - 0.5*X1^0.5
+//   dX2/dt = X1^0.5 - 5*X2^0.5
+//   dX3/dt = 2*X2 - 3*X3
+//   dX4/dt = 3*X3 - 12*X4^0.75
+//
+// Stable steady states (Equation 9):
+//   State 1: (13.598, 7.3964, 4.9309, 1.3218)
+//   State 2: (27.251, 29.705, 19.804, 8.4381)
+//   Unstable: (19.849, 15.760, 10.507, 3.6241)
+//
+// =============================================================================
+
+model V2005_bistable_gene()
+    // Sigmoidal parameters
+    q1 = 4.0      // Basal expression level
+    q2 = 8.0      // Maximal additional expression
+    q3 = 4.0      // Switch point (q3^n = 256 for n=4)
+    n = 4         // Hill coefficient (steepness)
+    
+    // Sigmoidal induction function
+    sigma := q1 + q2*X4^n/(q3^n + X4^n)
+    
+    // Gene expression system with bistability
+    X1' = sigma * X3^0.5 - 0.5*X1^0.5
+    X2' = X1^0.5 - 5*X2^0.5
+    X3' = 2*X2 - 3*X3
+    X4' = 3*X3 - 12*X4^0.75
+    
+    // Initial conditions (near lower stable state)
+    X1 = 10.0
+    X2 = 5.0
+    X3 = 3.0
+    X4 = 1.0
+end
+// @SIM T_START=0 T_END=3 N_STEPS=300 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

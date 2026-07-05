@@ -1,0 +1,69 @@
+begin model
+begin parameters
+    # Binding constants
+    k_on_S 2e-3        # Substrate binding to enzyme
+    k_off_S 5e-4       # Substrate dissociation
+    k_on_A 1.5e-3      # Activator binding (cooperative step 1)
+    k_off_A 3e-4       # Activator dissociation
+    
+    # Catalytic rates
+    k_cat_basal 0.02   # Catalysis by inactive/partially-active enzyme
+    k_cat_full  0.25   # Catalysis by fully activated enzyme
+    
+    # Feedback
+    k_inh 0.01         # Product-mediated feedback inhibition
+end parameters
+
+begin molecule types
+    # Enzyme has a substrate site (s),two activator sites (a1,a2),and can be inhibited (i)
+    Enzyme(s,a1,a2,i~off~on)
+    Substrate(b)
+    Activator(b)
+    Product()
+end molecule types
+
+begin seed species
+    Enzyme(s,a1,a2,i~off) 50
+    Substrate(b) 500
+    Activator(b) 200
+    Product() 0
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Free_Enzyme     Enzyme(a1,a2,s,i~off)            # Available enzyme
+    Molecules Single_Bound    Enzyme(a1!1,a2).Activator(b!1)    # Partially activated
+    Molecules Double_Bound    Enzyme(a1!1,a2!2).Activator(b!1).Activator(b!2) # Fully activated
+    Molecules Product_Count   Product()                         # Cumulative product
+    Molecules Inhibited_Enz   Enzyme(i~on)                      # Enzyme sequestered by feedback
+end observables
+
+begin reaction rules
+    ## ALLOSTERIC COOPERATIVITY
+    # First activator binding
+    Enzyme(a1,i~off) + Activator(b) <-> Enzyme(a1!1,i~off).Activator(b!1) k_on_A,k_off_A
+    
+    # Second activator binding (cooperative recruitment)
+    Enzyme(a1!+,a2,i~off) + Activator(b) <-> Enzyme(a1!+,a2!1,i~off).Activator(b!1) k_on_A*2,k_off_A/2
+    
+    ## SUBSTRATE PROCESSING
+    # Substrate binds to enzyme (any state,but faster if active)
+    Enzyme(s,i~off) + Substrate(b) <-> Enzyme(s!1,i~off).Substrate(b!1) k_on_S,k_off_S
+    
+    # Basal catalysis (inactive or partially active)
+    Enzyme(s!1,a2,i~off).Substrate(b!1) -> Enzyme(s,a2,i~off) + Product() k_cat_basal
+    
+    # Enhanced catalysis (both allosteric sites bound)
+    Enzyme(s!1,a1!+,a2!+,i~off).Substrate(b!1) -> Enzyme(s,a1!+,a2!+,i~off) + Product() k_cat_full
+    
+    ## FEEDBACK REGULATION
+    # Product mediates negative feedback inhibition (e.g.,metabolic control)
+    Product() + Enzyme(i~off) -> Enzyme(i~on) k_inh
+    Enzyme(i~on) -> Enzyme(i~off) k_off_S
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>5000,n_steps=>300})
+end actions
+end model

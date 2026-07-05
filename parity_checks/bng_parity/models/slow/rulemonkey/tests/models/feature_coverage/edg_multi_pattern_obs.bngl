@@ -1,0 +1,69 @@
+# Edge case: observable with MANY alternative patterns (sum of matches)
+# Tests:  a single Observable can carry multiple Patterns (comma-
+#         separated in BNGL).  The Molecules type sums embedding counts
+#         across all patterns; the Species type sums species counts
+#         (with potential overlap suppressed).  ft_local_functions
+#         already uses 2-pattern observables; this model goes wider
+#         (5 patterns per observable, two observables) and crosses
+#         molecule-type boundaries within one observable.  Hits
+#         Observable::patterns iteration in the incremental update
+#         (engine.cpp:4143).  Bug pattern: a previous regression
+#         double-counted overlapping species patterns when a single
+#         species matched two of the alternatives.
+# Edge:   One pattern (`A(s!+,t!+)`) is a strict subset of another
+#         (`A(s!+)`).  An observable summing both will count the
+#         doubly-bonded A twice (correct for Molecules-type, plain
+#         union for Species-type).  This dual semantics is what we
+#         test.
+# Tier:   base
+# invariant: conserved A_total = 30
+
+begin model
+begin parameters
+    A_tot   30
+    B_tot   30
+    C_tot   30
+    kf1     0.05
+    kr1     0.10
+    kf2     0.04
+    kr2     0.08
+end parameters
+
+begin molecule types
+    A(s,t,p~U~P)
+    B(a)
+    C(a)
+end molecule types
+
+begin seed species
+    A(s,t,p~U)   A_tot
+    B(a)         B_tot
+    C(a)         C_tot
+end seed species
+
+begin observables
+    # Molecules: sum of embedding counts.  A(s!+) and A(s!+,t!+) overlap
+    # by design — A doubly bound counts twice in this observable.
+    Molecules  AnyBound   A(s!+), A(t!+), A(s!+,t!+), B(a!+), C(a!+)
+    # Species: union of species matching ANY listed pattern.
+    Species    HetSpec    A(s!+), B(a!+), C(a!+)
+    # Cross-molecule-type Molecules observable mixing 5 patterns.
+    Molecules  Anything   A(p~U), A(p~P), B(a), B(a!+), C()
+    # Plain reference observables.
+    Molecules  A_total    A()
+    Molecules  B_free     B(a)
+    Molecules  C_free     C(a)
+    Molecules  A_doubly   A(s!+,t!+)
+end observables
+
+begin reaction rules
+    A(s) + B(a) <-> A(s!1).B(a!1)  kf1, kr1
+    A(t) + C(a) <-> A(t!1).C(a!1)  kf2, kr2
+    # Background phospho keeps p~P populated.
+    A(p~U) -> A(p~P)  0.02
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

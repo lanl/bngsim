@@ -1,0 +1,108 @@
+begin model
+
+# TLBR model
+
+# References:
+# 1. Monine MI et al. (2010) Biophys J 98: 48-56.
+# 2. Posner RG et al. (2007) Org Lett 9: 3551-3554.
+
+# NB: simulations in the sol-gel coexistence regime are expensive.
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# fraction of a cell to consider in a stochastic simulation
+f 0.001 # see Table 1 in Ref 1
+
+# cell density
+cellDensity 1e9 # [=] cells per L (1e6 cells per ml), see Table 1 in Ref 1
+
+# volume per cell
+V f/cellDensity # [=] L, cf. value given in Table 1 in Ref 1
+
+# number of receptors per cell
+NR f*3e5 # [=] copies per cell, cf. value given in Table 1 in Ref 1 and reference cited therein
+
+# ligand concentration
+L_conc 0.7 # [=] nM
+
+# number of ligands per cell
+#   The factor 1e-9 converts nM to M
+NL=L_conc*1e-9*(NA*V) # [=] copies per cell, cf. value given in Table 1 in Ref 1
+
+# equilibrium association constant
+K1nM .270297360
+
+# equilibrium crosslinking constant
+K2nM  51.8690464
+
+K1=K1nM*10^9
+K2=K2nM*10^9
+
+# dissociation rate constant
+koff 0.01 # [=] /s, see Table 1 in Ref 1 and reference cited therein
+
+kp1=K1*koff/(NA*V) # [=] /(molecule per cell)/s
+kp2=K2*koff/(NA*V) # [=] /(molecule per cell)/s
+
+end parameters
+
+begin molecule types
+
+# trivalent DNP ligand
+L(r,r,r)
+
+# bivalent anti-DNP cell-surface IgE
+R(l,l)
+
+end molecule types
+
+begin seed species
+
+# all ligand is initially free
+L(r,r,r) NL
+
+# all receptor is initially free
+R(l,l) NR
+
+end  seed species
+
+begin observables
+
+Species Rfree R(l,l)
+Species Lfree L(r,r,r)
+Molecules Ltot L()
+
+end observables
+
+begin functions
+
+# amount of ligand bound divided by number of receptor sites
+lambda() (Ltot-Lfree)/(2*NR) # [=] dimensionless, <=1
+
+end functions
+
+begin reaction rules
+
+# capture of free ligand
+#   Equation (4) in Ref 1
+L(r,r,r)+R(l)->L(r!1,r,r).R(l!1) kp1
+
+# receptor crosslinking
+#   Equation (5) in Ref 1
+L(r!+,r)+R(l)->L(r!+,r!1).R(l!1) kp2
+
+# dissociation of ligand-receptor bond
+#   Equation (6) in Ref 1
+L(r!1).R(l!1)->L(r)+R(l) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>20,n_steps=>100})
+end actions

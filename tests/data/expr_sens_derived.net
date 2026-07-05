@@ -1,0 +1,27 @@
+# Expression output-sensitivity fixture (GH #198): derived-parameter chain.
+#
+# kd = 2*kbase is a ConstantExpression (derived) parameter; the global function
+# dfn() = kd*A_obs references it directly, so d dfn/d kbase must include the
+# derived chain ∂dfn/∂kd · ∂kd/∂kbase = A_obs·2 (plus the dynamics term through
+# A_obs, since kbase is also the A->B rate constant).
+begin parameters
+    1 kbase 0.30
+    2 kd    2.0*kbase
+    3 k2    0.15
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 C() 0
+end species
+begin reactions
+    1 1 2 kbase #A_to_B
+    2 2 3 k2 #B_to_C
+end reactions
+begin groups
+    1 A_obs 1
+    2 BC2   2,2*3
+end groups
+begin functions
+    1 dfn() kd*A_obs
+end functions

@@ -1,0 +1,135 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+
+V_cytoplasm 1.2e-12 # L per cell
+
+V_ratio 100 # = V_cytoplasm/V_thin_layer (dimensionless)
+V_thin_layer=V_cytoplasm/V_ratio # L per cell
+
+kon_intensive_units 1.0e6 # /M/s
+kon_cytoplasm=kon_intensive_units/(NA*V_cytoplasm) # /M/s converted to /(molecule/cell)/s
+kon_thin_layer=kon_intensive_units/(NA*V_thin_layer) # /M/s converted to /(molecule/cell)/s
+
+koff 0.1 # /s
+
+EGFR_total 1e5 # copies per cell
+GRB2_total 1e6 # copies per cell
+SOS1_total 1e4 # copies per cell
+
+end parameters
+
+begin molecule types
+EGFR(Y1068~0~P)
+GRB2(nSH3,SH2)
+SOS1(PRS1,PRS2,PRS3,PRS4)
+EGFR_simple(Y1068~0~P)
+GRB2_simple(nSH3,SH2)
+SOS1_simple(PRR)
+end molecule types
+
+begin seed species
+EGFR(Y1068~P) EGFR_total
+GRB2(nSH3,SH2) GRB2_total
+SOS1(PRS1,PRS2,PRS3,PRS4) SOS1_total
+EGFR_simple(Y1068~P) EGFR_total
+GRB2_simple(nSH3,SH2) GRB2_total
+SOS1_simple(PRR) SOS1_total
+end seed species
+
+begin observables
+Molecules RGbonds GRB2(SH2!+) # number of EGFR-GRB2 bonds
+Molecules GSbonds GRB2(nSH3!+) # number of GRB2-SOS1 bonds
+Molecules copies_of_EGFR EGFR()
+Species Monomers EGFR==1 # population level of species containing one copy of EGFR
+Species Dimers EGFR==2 # population level of species containing two copies of EGFR
+Species Trimers EGFR==3 # population level of species containing three copies of EGFR
+Species Tetramers EGFR==4 # population level of species containing four copies of EGFR
+Molecules recruited_SOS1_simple GRB2_simple(nSH3!1,SH2!+).SOS1_simple(PRR!1)
+Molecules copies_of_SOS1 SOS1()
+Molecules c0 SOS1(PRS1,PRS2,PRS3,PRS4)
+Molecules c1 SOS1(PRS1!1,PRS2,PRS3,PRS4).GRB2(nSH3!1,SH2)
+Molecules c2 SOS1(PRS1,PRS2!1,PRS3,PRS4).GRB2(nSH3!1,SH2)
+Molecules c3 SOS1(PRS1,PRS2,PRS3!1,PRS4).GRB2(nSH3!1,SH2)
+Molecules c4 SOS1(PRS1,PRS2,PRS3,PRS4!1).GRB2(nSH3!1,SH2)
+Molecules c5 SOS1(PRS1!1,PRS2!2,PRS3,PRS4).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c6 SOS1(PRS1!1,PRS2,PRS3!2,PRS4).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c7 SOS1(PRS1!1,PRS2,PRS3,PRS4!2).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c8 SOS1(PRS1,PRS2!1,PRS3!2,PRS4).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c9 SOS1(PRS1,PRS2!1,PRS3,PRS4!2).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c10 SOS1(PRS1,PRS2,PRS3!1,PRS4!2).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2)
+Molecules c11 SOS1(PRS1!1,PRS2!2,PRS3!3,PRS4).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2).GRB2(nSH3!3,SH2)
+Molecules c12 SOS1(PRS1!1,PRS2!2,PRS3,PRS4!3).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2).GRB2(nSH3!3,SH2)
+Molecules c13 SOS1(PRS1!1,PRS2,PRS3!2,PRS4!3).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2).GRB2(nSH3!3,SH2)
+Molecules c14 SOS1(PRS1,PRS2!1,PRS3!2,PRS4!3).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2).GRB2(nSH3!3,SH2)
+Molecules c15 SOS1(PRS1!1,PRS2!2,PRS3!3,PRS4!4).GRB2(nSH3!1,SH2).GRB2(nSH3!2,SH2).GRB2(nSH3!3,SH2).GRB2(nSH3!4,SH2)
+end observables
+
+begin functions
+
+# if species x contains one or more copies of EGFR
+#   rate_const = kon_thin_layer 
+# else 
+#   rate_const = kon_cytoplasm
+rate_const(x) if(copies_of_EGFR(x)>0,kon_thin_layer,kon_cytoplasm)
+
+# cytosolic SOS1
+cytosolic_SOS1()=c0+c1+c2+c3+c4+c5+c6+c7+c8+c9+c10+c11+c12+c13+c14+c15
+recruited_SOS1()=copies_of_SOS1-cytosolic_SOS1()
+
+end functions
+
+begin reaction rules
+
+#####################################################
+# simple model - SOS1 has one binding site for GRB2 #
+#####################################################
+
+EGFR_simple(Y1068~P)+GRB2_simple(SH2)<->\
+EGFR_simple(Y1068~P!1).GRB2_simple(SH2!1) kon_cytoplasm,koff
+
+GRB2_simple(nSH3)+SOS1_simple(PRR)<->\
+GRB2_simple(nSH3!1).SOS1_simple(PRR!1) kon_cytoplasm,koff
+
+############################################################
+# complicated model - SOS1 has four binding sites for GRB2 # 
+############################################################
+
+# recruitment of GRB2 to EGFR via pTyr-SH2 domain interaction
+EGFR(Y1068~P)+GRB2(SH2)<->EGFR(Y1068~P!1).GRB2(SH2!1) kon_cytoplasm,koff
+
+# binding of the SH2 domain in free, cytosolic GRB2 to a proline-rich sequence in SOS1
+#   The N-terminal SH3 domain in GRB2 interacts with one of four proline-rich sequences in SOS1.
+GRB2(nSH3,SH2)+SOS1(PRS1)->GRB2(nSH3!1,SH2).SOS1(PRS1!1) kon_cytoplasm
+GRB2(nSH3,SH2)+SOS1(PRS2)->GRB2(nSH3!1,SH2).SOS1(PRS2!1) kon_cytoplasm
+GRB2(nSH3,SH2)+SOS1(PRS3)->GRB2(nSH3!1,SH2).SOS1(PRS3!1) kon_cytoplasm
+GRB2(nSH3,SH2)+SOS1(PRS4)->GRB2(nSH3!1,SH2).SOS1(PRS4!1) kon_cytoplasm
+
+# binding of the SH2 domain in EGFR-bound GRB2 to a proline-rich sequence in SOS1
+#   SOS1 may be cytosolic or associated with EGFR.
+#   The value of rate_const(x) depends on whether SOS1 is cytosolic or associated with EGFR.
+#   The x in rate_const(x), which is a local function, refers to a species matched by a pattern.
+#   The relevant pattern is indicated with a prefix '%x:' on the LHS of each rule.
+GRB2(nSH3,SH2!+)+%x:SOS1(PRS1)->GRB2(nSH3!1,SH2!+).SOS1(PRS1!1) rate_const(x)
+GRB2(nSH3,SH2!+)+%x:SOS1(PRS2)->GRB2(nSH3!1,SH2!+).SOS1(PRS2!1) rate_const(x)
+GRB2(nSH3,SH2!+)+%x:SOS1(PRS3)->GRB2(nSH3!1,SH2!+).SOS1(PRS3!1) rate_const(x)
+GRB2(nSH3,SH2!+)+%x:SOS1(PRS4)->GRB2(nSH3!1,SH2!+).SOS1(PRS4!1) rate_const(x)
+
+# dissociation of GRB2 and SOS1
+GRB2(nSH3!1).SOS1(PRS1!1)->GRB2(nSH3)+SOS1(PRS1) koff
+GRB2(nSH3!1).SOS1(PRS2!1)->GRB2(nSH3)+SOS1(PRS2) koff
+GRB2(nSH3!1).SOS1(PRS3!1)->GRB2(nSH3)+SOS1(PRS3) koff
+GRB2(nSH3!1).SOS1(PRS4!1)->GRB2(nSH3)+SOS1(PRS4) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>20,n_steps=>200,print_functions=>1})
+
+end actions

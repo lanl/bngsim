@@ -1,0 +1,58 @@
+begin model
+begin parameters
+    # Rate Constants
+    k_bind   0.018   # IFN binding
+    k_unbind 0.0018  # Dissociation
+    k_jak    0.45    # JAK/TYK2 activation
+    k_stat   0.32    # STAT phosphorylation
+    k_reset  0.075   # Deactivation
+end parameters
+
+begin molecule types
+    IFN(r)
+    IFNAR(l,state~inactive~active)
+    TYK2(state~off~on)              # Tyrosine kinase 2
+    STAT1(phos~U~P,loc~cyto~nuc)    # Signal Transducer
+end molecule types
+
+begin seed species
+    IFN(r) 0
+    IFNAR(l,state~inactive) 35
+    TYK2(state~off) 30
+    STAT1(phos~U,loc~cyto) 120
+end seed species
+
+begin reaction rules
+    # 1. Ligand Binding
+    IFN(r) + IFNAR(l,state~inactive) <-> IFN(r!1).IFNAR(l!1,state~inactive) k_bind,k_unbind
+    
+    # 2. Receptor Activation (conformation change)
+    IFN(r!1).IFNAR(l!1,state~inactive) -> IFN(r!1).IFNAR(l!1,state~active) k_jak
+    
+    # 3. TYK2 Association/Activation
+    IFNAR(l!+,state~active) + TYK2(state~off) -> IFNAR(l!+,state~active) + TYK2(state~on) k_jak
+    
+    # 4. STAT1 Phosphorylation
+    TYK2(state~on) + STAT1(phos~U,loc~cyto) -> TYK2(state~on) + STAT1(phos~P,loc~cyto) k_stat
+    
+    # 5. Nuclear Translocation
+    STAT1(phos~P,loc~cyto) -> STAT1(phos~P,loc~nuc) k_stat
+    
+    # 6. Reset Mechanisms
+    STAT1(phos~P,loc~nuc) -> STAT1(phos~U,loc~cyto) k_reset
+    TYK2(state~on) -> TYK2(state~off) k_reset
+    IFNAR(l,state~active) -> IFNAR(l,state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_IFNAR  IFNAR(state~active)
+    Molecules Active_TYK2   TYK2(state~on)
+    Molecules Nuclear_STAT1 STAT1(phos~P,loc~nuc)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    setConcentration("IFN(r)", 100)
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model

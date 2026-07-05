@@ -1,0 +1,121 @@
+// Monod J, Wyman J, Changeux JP (1965) J Mol Biol 12: 88-118.
+// This model has GMA form.
+model MWC()
+
+  // Monod-Wyman-Changeux (MWC) model
+
+  // ===== Parameters =====
+
+  N_A   = 6.02214076e23;   // molecules per mole
+  V_cyt = 1e-12;           // L per cell
+
+  K_T = 1e6/(N_A*V_cyt);   // /(molecule/cell)
+  K_R = 5e6/(N_A*V_cyt);   // /(molecule/cell)
+
+  c = K_T/K_R;             // dimensionless
+  n = 4;                   // tetramer
+
+  L_0 = 0.1;               // dimensionless
+  L   = 1/L_0;             // dimensionless
+
+  L_1 = L_0*(K_R/K_T)^1;
+  L_2 = L_0*(K_R/K_T)^2;
+  L_3 = L_0*(K_R/K_T)^3;
+  L_4 = L_0*(K_R/K_T)^4;
+
+  k_off = 0.1;             // /s
+
+  k_mT = k_off;            // /s
+  k_pT = k_mT*K_T;         // /(molecule/cell)/s
+
+  k_mR = k_off;            // /s
+  k_pR = k_mR*K_R;         // /(molecule/cell)/s
+
+  k_mL_0 = k_off;          // /s
+  k_pL_0 = k_mL_0*L_0;     // /s
+
+  k_mL_1 = k_off;          // /s
+  k_pL_1 = k_mL_1*L_1;     // /s
+
+  k_mL_2 = k_off;          // /s
+  k_pL_2 = k_mL_2*L_2;     // /s
+
+  k_mL_3 = k_off;          // /s
+  k_pL_3 = k_mL_3*L_3;     // /s
+
+  k_mL_4 = k_off;          // /s
+  k_pL_4 = k_mL_4*L_4;     // /s
+
+  P_0 = 1e5;               // total oligomer copies
+  S_0 = 1e5;               // ligand copies
+
+  // ===== State variables (species) =====
+
+  species S;
+  species P_T0, P_T1, P_T2, P_T3, P_T4;
+  species P_R0, P_R1, P_R2, P_R3, P_R4;
+
+  // ===== Initial conditions =====
+
+  P_T0 = P_0*(1/(1 + L_0));
+  P_R0 = P_0*(L_0/(1 + L_0));
+
+  P_T1 = 0.0;
+  P_T2 = 0.0;
+  P_T3 = 0.0;
+  P_T4 = 0.0;
+
+  P_R1 = 0.0;
+  P_R2 = 0.0;
+  P_R3 = 0.0;
+  P_R4 = 0.0;
+
+  S    = S_0;
+
+  // ===== Binding/unbinding: T state =====
+
+  R_T_bind0:   P_T0 + S -> P_T1; k_pT*4*P_T0*S;
+  R_T_unbind1: P_T1 -> P_T0 + S; k_mT*1*P_T1;
+
+  R_T_bind1:   P_T1 + S -> P_T2; k_pT*3*P_T1*S;
+  R_T_unbind2: P_T2 -> P_T1 + S; k_mT*2*P_T2;
+
+  R_T_bind2:   P_T2 + S -> P_T3; k_pT*2*P_T2*S;
+  R_T_unbind3: P_T3 -> P_T2 + S; k_mT*3*P_T3;
+
+  R_T_bind3:   P_T3 + S -> P_T4; k_pT*1*P_T3*S;
+  R_T_unbind4: P_T4 -> P_T3 + S; k_mT*4*P_T4;
+
+  // ===== Binding/unbinding: R state =====
+
+  R_R_bind0:   P_R0 + S -> P_R1; k_pR*4*P_R0*S;
+  R_R_unbind1: P_R1 -> P_R0 + S; k_mR*1*P_R1;
+
+  R_R_bind1:   P_R1 + S -> P_R2; k_pR*3*P_R1*S;
+  R_R_unbind2: P_R2 -> P_R1 + S; k_mR*2*P_R2;
+
+  R_R_bind2:   P_R2 + S -> P_R3; k_pR*2*P_R2*S;
+  R_R_unbind3: P_R3 -> P_R2 + S; k_mR*3*P_R3;
+
+  R_R_bind3:   P_R3 + S -> P_R4; k_pR*1*P_R3*S;
+  R_R_unbind4: P_R4 -> P_R3 + S; k_mR*4*P_R4;
+
+  // ===== T <-> R isomerization =====
+
+  Iso0_f: P_T0 -> P_R0; k_pL_0*P_T0;
+  Iso0_b: P_R0 -> P_T0; k_mL_0*P_R0;
+
+  Iso1_f: P_T1 -> P_R1; k_pL_1*P_T1;
+  Iso1_b: P_R1 -> P_T1; k_mL_1*P_R1;
+
+  Iso2_f: P_T2 -> P_R2; k_pL_2*P_T2;
+  Iso2_b: P_R2 -> P_T2; k_mL_2*P_R2;
+
+  Iso3_f: P_T3 -> P_R3; k_pL_3*P_T3;
+  Iso3_b: P_R3 -> P_T3; k_mL_3*P_R3;
+
+  Iso4_f: P_T4 -> P_R4; k_pL_4*P_T4;
+  Iso4_b: P_R4 -> P_T4; k_mL_4*P_R4;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

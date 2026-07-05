@@ -1,0 +1,79 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molecules per mole
+Vcyt 1e-12 # L per cell
+
+kf_MTOR_MLST8 2e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MTOR_MLST8 1e-4 # /s
+
+kf_MTOR_MTOR 5e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MTOR_MTOR 1e-3 # /s
+
+kf_MTOR_RPTOR 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MTOR_RPTOR 1e-4 # /s
+
+end parameters
+
+begin molecule types
+
+#FKBP1A(FKBP~0~rapamycin)
+
+MTOR(NHEAT_TOR,NHEAT_RAP,MHEAT_TOR,MHEAT_RAP,FAT,PIKK~0~ATP~AZD8055,FRB,LBE_FATC)
+MLST8(WD40)
+RPTOR(RNC,ARM,WD40,S792~0~P,S855~0~P,S859~0~P,S863~0~P)
+
+#RPS6KB1(TOS,T389~0~P)
+#EIF4EBP1(T37_T46~0~P,S65_T70~0~P,TOS)
+
+end molecule types
+
+begin seed species
+
+MTOR(NHEAT_TOR,NHEAT_RAP,MHEAT_TOR,MHEAT_RAP,FAT,PIKK~0,FRB,LBE_FATC) 5e4
+MLST8(WD40) 5e4
+RPTOR(RNC,ARM,WD40,S792~0,S855~0,S859~0,S863~0) 5e4
+
+end seed species
+
+begin observables
+Molecules MTOR_monomers MTOR(NHEAT_TOR,MHEAT_TOR)
+Molecules MTOR_in_dimers MTOR(NHEAT_TOR!+,MHEAT_TOR!+)
+Species MTOR_dimers MTOR(NHEAT_TOR!+,MHEAT_TOR!+)
+Species MTOR_RPTOR_MTOR_RPTOR_cycle MTOR(NHEAT_TOR!1,NHEAT_RAP!+,MHEAT_TOR!2,MHEAT_RAP!+).MTOR(NHEAT_TOR!2,NHEAT_RAP!+,MHEAT_TOR!1,MHEAT_RAP!+)
+Species mTORC1 MTOR(NHEAT_TOR!1,NHEAT_RAP!+,MHEAT_TOR!2,MHEAT_RAP!+,LBE_FATC!+).MTOR(NHEAT_TOR!2,NHEAT_RAP!+,MHEAT_TOR!1,MHEAT_RAP!+,LBE_FATC!+)
+end observables
+
+begin functions
+end functions
+
+begin reaction rules
+
+# MTOR-MLST8 interaction
+
+MTOR(LBE_FATC)+MLST8(WD40)<->MTOR(LBE_FATC!1).MLST8(WD40!1) kf_MTOR_MLST8,kr_MTOR_MLST8
+
+# MTOR-MTOR interaction
+
+MTOR(NHEAT_TOR,MHEAT_TOR)+MTOR(NHEAT_TOR,MHEAT_TOR)->\
+MTOR(NHEAT_TOR!1,MHEAT_TOR!2).MTOR(NHEAT_TOR!2,MHEAT_TOR!1) kf_MTOR_MTOR
+
+MTOR(NHEAT_TOR!1,NHEAT_RAP,MHEAT_TOR!2,MHEAT_RAP).MTOR(NHEAT_TOR!2,NHEAT_RAP,MHEAT_TOR!1,MHEAT_RAP)->\
+MTOR(NHEAT_TOR,NHEAT_RAP,MHEAT_TOR,MHEAT_RAP)+MTOR(NHEAT_TOR,NHEAT_RAP,MHEAT_TOR,MHEAT_RAP) kr_MTOR_MTOR
+
+# MTOR-RPTOR interaction
+
+MTOR(NHEAT_TOR!1,NHEAT_RAP).MTOR(MHEAT_TOR!1,MHEAT_RAP)+RPTOR(RNC,ARM)<->\
+MTOR(NHEAT_TOR!1,NHEAT_RAP!3).MTOR(MHEAT_TOR!1,MHEAT_RAP!2).RPTOR(RNC!2,ARM!3) kf_MTOR_RPTOR,kr_MTOR_RPTOR
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>3000,n_steps=>600})
+
+end actions

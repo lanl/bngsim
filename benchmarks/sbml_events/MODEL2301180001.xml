@@ -1,0 +1,737 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" layout:required="false" level="3" render:required="false" version="1" xmlns:layout="http://www.sbml.org/sbml/level3/version1/layout/version1" xmlns:render="http://www.sbml.org/sbml/level3/version1/render/version1">
+  <model areaUnits="area" extentUnits="substance" id="__main" lengthUnits="length" metaid="__main" name="Li2021-MicroRNAs noncanonical feedback model" substanceUnits="substance" timeUnits="time" volumeUnits="volume">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+     <p>(I am not the first author of the paper who contributed to the experimental data, I did the modeling)
+Bistable switches and oscillators have long been considered key mechanisms underlying cell fate decisions and pattern formation in biology.  Previous studies of these dynamical behaviors focused on regulatory networks with intuitive feedback loops. It was therefore unclear whether other common biochemical reactions can act as bistable switches or oscillators crucial for cellular and physiological dynamics. In this work, we used mass-action-based models to show that elementary production, degradation and binding reactions involving as few as two RNA species (e.g.an mRNA and a microRNA) can generate bistability and oscillation. We showed that both bistability and oscillation depend on cooperativity of two microRNA binding sites on the mRNA. We therefore termed our model the two-site mRNA-microRNA (MMI2) model. Remarkably, the network structure of the MMI2 model does not have any explicit feedback loop. We estimated that this simple reaction network is applicable to nearly half of human protein-coding genes. Using in vitro and in vivo experiments, we showed the function of a newly proposed MMI2-based switch in governing motor neuron lineage segregation in the spinal cord of mammalian embryos. Our findings reveal a previously underappreciated post-transcriptional mechanism that may have widespread functions in cell fate decisions, oscillatory cell dynamics and tissue patterning. Furthermore, our results challenge the long-standing idea of using intuitive feedback loops to explain bistability and oscillation. In addition to its significance in biology, the MMI2 model enables nontrivial mathematical analysis due to its simplicity. Using algebraic geometry and chemical reaction network theory, we obtained key conditions for bistability of the MMI2 model. These conditions include an inequality that reveals to a hidden feedback loop arising from regulated degradation. For these reasons, we expect that our model will not only provide useful insights into a wide range of problems in cell and developmental biology, but also enable new analytical approaches in systems biology and mathematical biology.     </p>
+  </body>
+    </notes>
+    <annotation>
+      <copasi:COPASI xmlns:copasi="http://www.copasi.org/static/sbml">
+        <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="#__main">
+            <dcterms:created>
+              <rdf:Description>
+                <dcterms:W3CDTF>2023-01-18T06:44:21Z</dcterms:W3CDTF>
+              </rdf:Description>
+            </dcterms:created>
+          </rdf:Description>
+        </rdf:RDF>
+      </copasi:COPASI>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/">
+        <rdf:Description rdf:about="#__main">
+	<bqbiol:hasProperty>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/mamo/MAMO_0000046"/>
+	</rdf:Bag>
+	</bqbiol:hasProperty>
+	</rdf:Description>
+	
+	
+	</rdf:RDF>
+	</annotation>
+      <listOfFunctionDefinitions>
+      <functionDefinition id="Function_for_J3" metaid="COPASI27" name="Function for J3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> K2 </ci>
+            </bvar>
+            <bvar>
+              <ci> a2 </ci>
+            </bvar>
+            <bvar>
+              <ci> b2 </ci>
+            </bvar>
+            <bvar>
+              <ci> c1 </ci>
+            </bvar>
+            <bvar>
+              <ci> c2 </ci>
+            </bvar>
+            <bvar>
+              <ci> default_compartment </ci>
+            </bvar>
+            <bvar>
+              <ci> g </ci>
+            </bvar>
+            <bvar>
+              <ci> koff </ci>
+            </bvar>
+            <bvar>
+              <ci> r </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <minus/>
+                    <apply>
+                      <times/>
+                      <ci> K2 </ci>
+                      <ci> koff </ci>
+                      <cn type="integer"> 2 </cn>
+                      <ci> c1 </ci>
+                      <ci> r </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> koff </ci>
+                      <cn type="integer"> 2 </cn>
+                      <ci> c2 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> c2 </ci>
+                    <cn type="integer"> 2 </cn>
+                    <ci> g </ci>
+                    <ci> b2 </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> c2 </ci>
+                  <ci> a2 </ci>
+                </apply>
+              </apply>
+              <ci> default_compartment </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="Function_for_J0" metaid="COPASI28" name="Function for J0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> K1 </ci>
+            </bvar>
+            <bvar>
+              <ci> K2 </ci>
+            </bvar>
+            <bvar>
+              <ci> R </ci>
+            </bvar>
+            <bvar>
+              <ci> a1 </ci>
+            </bvar>
+            <bvar>
+              <ci> a2 </ci>
+            </bvar>
+            <bvar>
+              <ci> c1 </ci>
+            </bvar>
+            <bvar>
+              <ci> c2 </ci>
+            </bvar>
+            <bvar>
+              <ci> default_compartment </ci>
+            </bvar>
+            <bvar>
+              <ci> g </ci>
+            </bvar>
+            <bvar>
+              <ci> koff </ci>
+            </bvar>
+            <bvar>
+              <ci> r </ci>
+            </bvar>
+            <bvar>
+              <ci> sr </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <minus/>
+                      <apply>
+                        <plus/>
+                        <apply>
+                          <minus/>
+                          <ci> sr </ci>
+                          <apply>
+                            <times/>
+                            <ci> g </ci>
+                            <ci> r </ci>
+                          </apply>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> koff </ci>
+                          <cn type="integer"> 2 </cn>
+                          <ci> c1 </ci>
+                        </apply>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <ci> K1 </ci>
+                        <ci> koff </ci>
+                        <cn type="integer"> 2 </cn>
+                        <ci> R </ci>
+                        <ci> r </ci>
+                      </apply>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> koff </ci>
+                      <cn type="integer"> 2 </cn>
+                      <ci> c2 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> K2 </ci>
+                    <ci> koff </ci>
+                    <cn type="integer"> 2 </cn>
+                    <ci> c1 </ci>
+                    <ci> r </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <cn type="integer"> 2 </cn>
+                  <ci> c1 </ci>
+                  <ci> a1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> c2 </ci>
+                  <ci> a2 </ci>
+                  <cn type="integer"> 2 </cn>
+                </apply>
+              </apply>
+              <ci> default_compartment </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="Function_for_J2" metaid="COPASI29" name="Function for J2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> K1 </ci>
+            </bvar>
+            <bvar>
+              <ci> K2 </ci>
+            </bvar>
+            <bvar>
+              <ci> R </ci>
+            </bvar>
+            <bvar>
+              <ci> a1 </ci>
+            </bvar>
+            <bvar>
+              <ci> b1 </ci>
+            </bvar>
+            <bvar>
+              <ci> b2 </ci>
+            </bvar>
+            <bvar>
+              <ci> c1 </ci>
+            </bvar>
+            <bvar>
+              <ci> c2 </ci>
+            </bvar>
+            <bvar>
+              <ci> default_compartment </ci>
+            </bvar>
+            <bvar>
+              <ci> g </ci>
+            </bvar>
+            <bvar>
+              <ci> koff </ci>
+            </bvar>
+            <bvar>
+              <ci> r </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <minus/>
+                      <apply>
+                        <plus/>
+                        <apply>
+                          <minus/>
+                          <apply>
+                            <times/>
+                            <ci> K1 </ci>
+                            <ci> koff </ci>
+                            <ci> R </ci>
+                            <ci> r </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> koff </ci>
+                            <ci> c1 </ci>
+                          </apply>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> koff </ci>
+                          <ci> c2 </ci>
+                        </apply>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <ci> K2 </ci>
+                        <ci> koff </ci>
+                        <ci> c1 </ci>
+                        <ci> r </ci>
+                      </apply>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> c2 </ci>
+                      <ci> g </ci>
+                      <ci> b2 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> c1 </ci>
+                    <ci> a1 </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> c1 </ci>
+                  <ci> g </ci>
+                  <ci> b1 </ci>
+                </apply>
+              </apply>
+              <ci> default_compartment </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="Function_for_J1" metaid="COPASI30" name="Function for J1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> K1 </ci>
+            </bvar>
+            <bvar>
+              <ci> R </ci>
+            </bvar>
+            <bvar>
+              <ci> b1 </ci>
+            </bvar>
+            <bvar>
+              <ci> c1 </ci>
+            </bvar>
+            <bvar>
+              <ci> default_compartment </ci>
+            </bvar>
+            <bvar>
+              <ci> g </ci>
+            </bvar>
+            <bvar>
+              <ci> koff </ci>
+            </bvar>
+            <bvar>
+              <ci> r </ci>
+            </bvar>
+            <bvar>
+              <ci> sR </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <minus/>
+                      <ci> sR </ci>
+                      <ci> R </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> koff </ci>
+                      <cn type="integer"> 2 </cn>
+                      <ci> c1 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> K1 </ci>
+                    <ci> koff </ci>
+                    <cn type="integer"> 2 </cn>
+                    <ci> R </ci>
+                    <ci> r </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <cn type="integer"> 2 </cn>
+                  <ci> c1 </ci>
+                  <ci> g </ci>
+                  <ci> b1 </ci>
+                </apply>
+              </apply>
+              <ci> default_compartment </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+    </listOfFunctionDefinitions>
+    <listOfUnitDefinitions>
+      <unitDefinition id="length" name="length">
+        <listOfUnits>
+          <unit exponent="1" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="area" name="area">
+        <listOfUnits>
+          <unit exponent="2" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="volume" name="volume">
+        <listOfUnits>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="time" name="time">
+        <listOfUnits>
+          <unit exponent="1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="substance" name="substance">
+        <listOfUnits>
+          <unit exponent="1" kind="mole" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment constant="true" id="default_compartment" metaid="COPASI0" name="default_compartment" sboTerm="SBO:0000410" size="1" spatialDimensions="3" units="volume">
+        <annotation>
+          <copasi:COPASI xmlns:copasi="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:CopasiMT="http://www.copasi.org/RDF/MiriamTerms#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI0">
+                <CopasiMT:is>
+                  <rdf:Bag>
+                    <rdf:li rdf:resource="http://identifiers.org/SBO:0000410"/>
+                  </rdf:Bag>
+                </CopasiMT:is>
+              </rdf:Description>
+            </rdf:RDF>
+          </copasi:COPASI>
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:vCard4="http://www.w3.org/2006/vcard/ns#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+            <rdf:Description rdf:about="#COPASI0">
+	<bqbiol:is>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/SBO:0000410"/>
+	</rdf:Bag>
+	</bqbiol:is>
+	</rdf:Description>
+	
+	
+	
+          </rdf:RDF>
+        </annotation>
+            </compartment>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species boundaryCondition="false" compartment="default_compartment" constant="false" hasOnlySubstanceUnits="false" id="R" initialAmount="0.000919996619981075" metaid="COPASI1" name="R" substanceUnits="substance">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>mRNA</pre>
+          </body>
+        </notes>
+      </species>
+      <species boundaryCondition="false" compartment="default_compartment" constant="false" hasOnlySubstanceUnits="false" id="c1" initialAmount="0.00263388662752573" metaid="COPASI2" name="c1" substanceUnits="substance">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>1:1 complex</pre>
+          </body>
+        </notes>
+      </species>
+      <species boundaryCondition="false" compartment="default_compartment" constant="false" hasOnlySubstanceUnits="false" id="r" initialAmount="0.263707264821585" metaid="COPASI3" name="r" substanceUnits="substance">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>microRNA</pre>
+          </body>
+        </notes>
+      </species>
+      <species boundaryCondition="false" compartment="default_compartment" constant="false" hasOnlySubstanceUnits="false" id="c2" initialAmount="0.399200613736717" metaid="COPASI4" name="c2" substanceUnits="substance">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>2:1 complex</pre>
+          </body>
+        </notes>
+      </species>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter constant="false" id="sR" metaid="COPASI5" name="sR" value="3"/>
+      <parameter constant="true" id="a1" metaid="COPASI6" name="a1" value="1"/>
+      <parameter constant="false" id="a2" metaid="COPASI7" name="a2" value="4"/>
+      <parameter constant="false" id="b1" metaid="COPASI8" name="b1" value="5"/>
+      <parameter constant="false" id="b2" metaid="COPASI9" name="b2" value="1"/>
+      <parameter constant="false" id="g" metaid="COPASI10" name="g" value="0.24"/>
+      <parameter constant="true" id="sr" metaid="COPASI11" name="sr" value="1"/>
+      <parameter constant="true" id="K1" metaid="COPASI12" name="K1" value="1000"/>
+      <parameter constant="true" id="K2" metaid="COPASI13" name="K2" value="1000"/>
+      <parameter constant="true" id="koff" metaid="COPASI14" name="koff" value="10"/>
+      <parameter constant="false" id="Signal_sR" metaid="COPASI15" name="Signal_sR" value="3"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="Signal_sR">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> sR </ci>
+        </math>
+            </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction fast="false" id="J1" metaid="COPASI19" name="J1" reversible="true">
+        <listOfProducts>
+          <speciesReference constant="true" species="R" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="c1"/>
+          <modifierSpeciesReference species="r"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> default_compartment </ci>
+              <apply>
+                <ci> Function_for_J1 </ci>
+                <ci> K1 </ci>
+                <ci> R </ci>
+                <ci> b1 </ci>
+                <ci> c1 </ci>
+                <ci> default_compartment </ci>
+                <ci> g </ci>
+                <ci> koff </ci>
+                <ci> r </ci>
+                <ci> sR </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="J0" metaid="COPASI20" name="J0" reversible="true">
+        <listOfProducts>
+          <speciesReference constant="true" species="r" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R"/>
+          <modifierSpeciesReference species="c2"/>
+          <modifierSpeciesReference species="c1"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> default_compartment </ci>
+              <apply>
+                <ci> Function_for_J0 </ci>
+                <ci> K1 </ci>
+                <ci> K2 </ci>
+                <ci> R </ci>
+                <ci> a1 </ci>
+                <ci> a2 </ci>
+                <ci> c1 </ci>
+                <ci> c2 </ci>
+                <ci> default_compartment </ci>
+                <ci> g </ci>
+                <ci> koff </ci>
+                <ci> r </ci>
+                <ci> sr </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="J2" metaid="COPASI21" name="J2" reversible="true">
+        <listOfProducts>
+          <speciesReference constant="true" species="c1" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="R"/>
+          <modifierSpeciesReference species="c2"/>
+          <modifierSpeciesReference species="r"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> default_compartment </ci>
+              <apply>
+                <ci> Function_for_J2 </ci>
+                <ci> K1 </ci>
+                <ci> K2 </ci>
+                <ci> R </ci>
+                <ci> a1 </ci>
+                <ci> b1 </ci>
+                <ci> b2 </ci>
+                <ci> c1 </ci>
+                <ci> c2 </ci>
+                <ci> default_compartment </ci>
+                <ci> g </ci>
+                <ci> koff </ci>
+                <ci> r </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="J3" metaid="COPASI22" name="J3" reversible="true">
+        <listOfProducts>
+          <speciesReference constant="true" species="c2" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="c1"/>
+          <modifierSpeciesReference species="r"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> default_compartment </ci>
+              <apply>
+                <ci> Function_for_J3 </ci>
+                <ci> K2 </ci>
+                <ci> a2 </ci>
+                <ci> b2 </ci>
+                <ci> c1 </ci>
+                <ci> c2 </ci>
+                <ci> default_compartment </ci>
+                <ci> g </ci>
+                <ci> koff </ci>
+                <ci> r </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="_E0" metaid="COPASI16" name="_E0" useValuesFromTriggerTime="true">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>Event 1 for demonstrating bistability.
+Turning on signal for mRNA production.</pre>
+          </body>
+        </notes>
+        <trigger initialValue="true" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 30 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <delay>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <cn> 0 </cn>
+          </math>
+                </delay>
+        <listOfEventAssignments>
+          <eventAssignment variable="sR">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 10 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event id="_E1" metaid="COPASI17" name="_E1" useValuesFromTriggerTime="true">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>Event 2 for demonstrating bistability.
+Turning off signal for mRNA production.</pre>
+          </body>
+        </notes>
+        <trigger initialValue="true" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 70 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <delay>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <cn> 0 </cn>
+          </math>
+                </delay>
+        <listOfEventAssignments>
+          <eventAssignment variable="sR">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 3 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event id="_E2" metaid="COPASI18" name="_E2" useValuesFromTriggerTime="true">
+        <notes>
+          <body xmlns="http://www.w3.org/1999/xhtml">
+            <pre>Event for demonstrating oscillation.
+Changing rate constants to region of stable limit cycle.</pre>
+          </body>
+        </notes>
+        <trigger initialValue="true" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 100 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <delay>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <cn> 0 </cn>
+          </math>
+                </delay>
+        <listOfEventAssignments>
+          <eventAssignment variable="g">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 0.2 </cn>
+            </math>
+                    </eventAssignment>
+          <eventAssignment variable="a2">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 12 </cn>
+            </math>
+                    </eventAssignment>
+          <eventAssignment variable="b2">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 7 </cn>
+            </math>
+                    </eventAssignment>
+          <eventAssignment variable="b1">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 1 </cn>
+            </math>
+                    </eventAssignment>
+          <eventAssignment variable="sR">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 4.8 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>

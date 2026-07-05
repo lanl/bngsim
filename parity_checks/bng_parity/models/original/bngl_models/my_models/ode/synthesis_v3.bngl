@@ -1,0 +1,146 @@
+begin model
+begin parameters
+###################################
+#### best-fit parameter values ####
+###################################
+px__FREE 0.05 # 0<pa<1
+py__FREE 0.95 # 0<pb<1
+tau__FREE 180*5 # tau>>180
+Fmin__FREE 2 # >0
+Fdiff__FREE 18 # >0
+kST__FREE 10 # >0
+mult__FREE 1 # >0
+c__FREE 0.037 # >0
+###################################
+###################################
+px px__FREE # dimensionless, 0<pa<1
+py py__FREE # dimensionless, 0<pb<1
+p1=min(px,py)
+p2=max(px,py)
+tau tau__FREE # min, tau>>180
+gamma=(1/tau)*(1-p2) # /min
+a=(1/tau)*(1-p2)*(p1/(1-p1)) # /min
+b=(1/tau)*(1-p2)*((p2/(1-p2))-(p1/(1-p1))) # /min
+alpha_min=a # /min
+alpha_max=a+b # /min
+Fmin Fmin__FREE # copies per cell
+Fdiff Fdiff__FREE # copies per cell
+Fmax=Fmin+Fdiff # copies per cell
+ratio=Fmax/Fmin # dimensionless
+kST kST__FREE # copies per cell per min
+ST 1 # NB: do not change this setting.
+mult mult__FREE # dimensionless
+rmax=(1+mult)*kST*(a+b)/(a+b+gamma) # copies per cell per min
+c c__FREE # /min
+Amax 12 # %
+###################################
+###################################
+# initial amino-acid abundance 
+# (percentage of amino acid abundance in nutrient-replete cell culture medium)
+A0 100 # %
+# amino-acid abundance during full starvation
+A100 0 # %
+# amino-acid abundance during simulated starvation experiment 
+A 0 # % NB: the value of this setting may be adjusted in the actions block
+alpha_A0=alpha_min+(alpha_max-alpha_min)*max(0,(Amax-A0)/Amax)
+S0=(alpha_A0/(alpha_A0+gamma))*ST
+alpha_A100=alpha_min+(alpha_max-alpha_min)*max(0,(Amax-A100)/Amax)
+S100=(alpha_A100/(alpha_A100+gamma))*ST
+# Hill coefficient
+n=ln((rmax*S100-kST*S0*S100)/(rmax*S0-kST*S0*S100))/ln(ratio) # dimensionless
+# phagophore abundance at which the rate of maturation is half-maximal
+Fh=(Fmin^n*(rmax-kST*S0)/(kST*S0))^(1/n) # copies per cell
+# initial steady-state phagophore abundance
+F0=(Fh^n*((kST*S0)/(rmax-kST*S0)))^(1/n) # copies per cell
+# initial steady-state autophagic vesicle abundance
+V0=kST*S0/c # copies per cell
+end parameters
+begin molecule types
+# cytosolic synthetic factors
+Sprime()
+# membrane-recruited activated synthetic factors
+S()
+# phagophores
+F()
+# autophagic vesicles
+V()
+counter()
+end molecule types
+begin seed species
+Sprime() ST-S0 # nutrient replete stationary condition
+S() S0 # nutrient replete stationary condition
+F() F0 # nutrient replete stationary condition
+V() V0 # nutrient replete stationary condition
+counter() 0
+end seed species
+begin observables
+Molecules Stot Sprime() S()
+Molecules Sprime Sprime()
+Molecules S S()
+Molecules F F()
+Molecules V V()
+Molecules t counter() # time
+end observables
+begin functions
+alpha_A()=a+b*max(0,(Amax-A)/Amax)
+SatRate_div_F()=rmax*F^(n-1)/(F^n+Fh^n)
+#
+alpha_0()=a+b*max(0,(Amax-0)/Amax)
+alpha_1()=a+b*max(0,(Amax-1)/Amax)
+alpha_5()=a+b*max(0,(Amax-5)/Amax)
+alpha_7()=a+b*max(0,(Amax-7)/Amax)
+alpha_10()=a+b*max(0,(Amax-10)/Amax)
+alpha_100()=a+b*max(0,(Amax-100)/Amax)
+S_analyt_0()=(alpha_0()/(alpha_0()+gamma))*ST-((alpha_0()/(alpha_0()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_0()+gamma))
+S_analyt_1()=(alpha_1()/(alpha_1()+gamma))*ST-((alpha_1()/(alpha_1()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_1()+gamma))
+S_analyt_5()=(alpha_5()/(alpha_5()+gamma))*ST-((alpha_5()/(alpha_5()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_5()+gamma))
+S_analyt_7()=(alpha_7()/(alpha_7()+gamma))*ST-((alpha_7()/(alpha_7()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_7()+gamma))
+S_analyt_10()=(alpha_10()/(alpha_10()+gamma))*ST-((alpha_10()/(alpha_10()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_10()+gamma))
+S_analyt_100()=(alpha_100()/(alpha_100()+gamma))*ST-((alpha_100()/(alpha_100()+gamma))*ST-(alpha_A0/(alpha_A0+gamma))*ST)*exp(-t*(alpha_100()+gamma))
+#S_1stOrder_approx_0()=S0+(alpha_0()*ST-S0*(alpha_0()+gamma))*t
+#S_2ndOrder_approx_0()=S0+(alpha_0()*ST-S0*(alpha_0()+gamma))*t*(1-0.5*t*(alpha_0()+gamma))
+#one()=1
+#epsilon_0()=0.5*t*(alpha_0()+gamma)
+#
+#one_hundred()=100
+#ten()=10
+# 
+#report_a()=a
+#report_b()=b
+#report_gamma()=gamma
+#report_Fmin()=Fmin
+#report_Fmax()=Fmax
+#report_n()=n
+#report_Fh()=Fh
+#report_rmax()=rmax
+end functions
+begin reaction rules
+0->counter() 1 # time
+Sprime()<->S() alpha_A(),gamma
+0->F() kST*S
+F()->V() SatRate_div_F() 
+V()->0 c
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+setParameter("A",0)
+simulate({suffix=>"A=0",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+#resetConcentrations()
+#setParameter("A",1)
+#simulate({suffix=>"A=1",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+#resetConcentrations()
+#setParameter("A",5)
+#simulate({suffix=>"A=5",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+#resetConcentrations()
+#setParameter("A",7)
+#simulate({suffix=>"A=7",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+#resetConcentrations()
+#setParameter("A",10)
+#simulate({suffix=>"A=10",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+#resetConcentrations()
+#setParameter("A",100)
+#simulate({suffix=>"A=100",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+end actions

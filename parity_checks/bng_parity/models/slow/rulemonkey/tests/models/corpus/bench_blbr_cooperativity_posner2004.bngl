@@ -1,0 +1,181 @@
+begin model
+
+#@title: Cooperative binding of anti-IgE 23G3 to cell-surface IgE-FcεRI (Posner et al., 2004)
+
+#@description: |
+#  Network-free (NFsim) kinetic model of bivalent ligand (23G3
+#  antibody) binding cooperatively to bivalent cell-surface receptor
+#  (IgE-FcεRI). 23G3 has two identical IgE-binding arms; IgE bound
+#  to FcεRI expresses two 23G3 epitopes. Binding is negatively
+#  cooperative (H < 1): occupancy of one epitope reduces the affinity
+#  for the second. Cross-linking produces unbounded linear chains of
+#  alternating receptor-ligand pairs. Ring formation is not explicitly
+#  modeled (base model, J2 = 0). Parameters from Table 1 of Posner
+#  et al. (2004), "-rings" column. The reaction scheme follows Fig. 1
+#  of Wofsy and Goldstein (1987).
+#
+#  The parameter scan over total 23G3 concentration reproduces the
+#  equilibrium binding curve in Fig. 3a of Posner et al. (2004):
+#  fraction of 23G3 epitopes bound vs antibody concentration.
+
+#@keyword: |
+#  bivalent ligand, bivalent receptor, cooperative binding, negative
+#  cooperativity, cross-linking, IgE, FcεRI, mast cell, aggregation,
+#  network-free, NFsim, anti-IgE, 23G3, RBL-2H3
+
+#@reference: |
+#  Posner RG, Paar JM, Licht A, Pecht I, Conrad DH, Hlavacek WS
+#  (2004). Interaction of a monoclonal IgE-specific antibody with
+#  cell-surface IgE-FcεRI: characterization of equilibrium binding
+#  and secretory response. Biochemistry 43:11352-11360.
+#  doi:10.1021/bi049686o
+#
+#  Wofsy C, Goldstein B (1987). The effect of co-operativity on the
+#  equilibrium binding of symmetric bivalent ligands to antibodies:
+#  theoretical results with application to histamine release from
+#  basophils. Mol Immunol 24:151-161.
+#  doi:10.1016/0161-5890(87)90091-2
+
+#@note: |
+#  Network generation is not feasible because bivalent-bivalent
+#  cross-linking produces an unbounded set of chain species.
+#  NFsim (network-free simulation) is used instead.
+#
+#  The 16 reaction rules enumerate all combinations of
+#  distinguishable sites (r1,r2 on ligand; l1,l2 on receptor)
+#  with single-site rate constants. BioNetGen/NFsim provides
+#  correct statistical factors through pattern matching.
+#
+#  The subvolume fraction f scales the system to ~900 receptors
+#  for computational tractability. Equilibrium fractions are
+#  independent of f.
+
+begin parameters
+
+  # Physical constants
+  NA         6.02214076e23  # /mol
+
+  # Experimental conditions (Posner et al. 2004)
+  C_cells    1e6            # cells/mL (cell concentration in assay)
+  R_per_cell 3e5            # molecules/cell (FcεRI per RBL-2H3 cell)
+  V_cell     1e-9           # L/cell (= 1/C_cells in L)
+
+  # SSA/NFsim scaling
+  f          0.003          # dimensionless (subvolume fraction)
+  V_sim      V_cell*f       # L (simulation volume)
+
+  # Scaled molecule counts
+  RT         R_per_cell*f   # molecules (= 900)
+
+  # Scanned parameter: total 23G3 antibody concentration
+  AT_nM      1              # nM (total intact 23G3 concentration)
+
+  # Total ligand count (depends on AT_nM)
+  LT         AT_nM*1e-9*NA*V_sim  # molecules
+
+  # Equilibrium constants (Table 1, -rings column)
+  # K:    single-site affinity of 23G3 arm for free epitope on IgE
+  # KxST: dimensionless cross-linking parameter = Kx * S_T
+  #        where S_T = 2*R_T (total epitopes per cell)
+  # H:    cooperativity factor (< 1 = negative cooperativity)
+  K          0.098          # /nM
+  KxST       2.5            # dimensionless
+  H          0.39           # dimensionless
+
+  # Kinetic rate constants
+  # Choice of kr sets the timescale; equilibrium is independent of
+  # absolute rates (only ratios K = kf/kr and Kx = kxf/kxr matter).
+  kr         10             # /s (reverse rate, solution unbinding)
+  kxr        10             # /s (reverse rate, cross-link unbinding)
+
+  # Forward rate for solution binding (single-site, population-based)
+  # K (in /M) = kf_conc / kr; kf_pop = kf_conc / (NA * V_sim)
+  kf         K*1e9*kr/(NA*V_sim)       # /(molecule*s)
+
+  # Forward rate for cross-linking (single-site, population-based)
+  # Kx = KxST / (2*RT); kxf = Kx * kxr
+  kxf        KxST/(2*RT)*kxr           # /(molecule*s)
+
+end parameters
+
+begin molecule types
+  L(r1,r2)
+  # Bivalent ligand (23G3 intact antibody): two IgE-binding arms
+  R(l1,l2)
+  # Bivalent receptor (IgE bound to FcεRI): two 23G3 epitopes
+end molecule types
+
+begin seed species
+  L(r1,r2)  LT  # molecules
+  R(l1,l2)  RT  # molecules
+end seed species
+
+begin observables
+  # Total ligand count
+  Molecules  Obs_L_tot       L()
+  # Receptor epitopes bound (each counts one occupied site)
+  Molecules  Obs_R_l1_bound  R(l1!+)
+  Molecules  Obs_R_l2_bound  R(l2!+)
+  # Receptors with both sites free (unaggregated, no ligand)
+  Molecules  Obs_R_free      R(l1,l2)
+end observables
+
+begin functions
+  # Fraction of 23G3 epitopes bound (ordinate of Fig. 3a)
+  frac_bound() = (Obs_R_l1_bound + Obs_R_l2_bound) / (2*RT)
+
+  # Dimensional conversions (uncomment for concentration output)
+# L_conc_nM() = Obs_L_tot / (NA * V_sim * 1e-9)  # nM
+end functions
+
+begin reaction rules
+
+  # ================================================================
+  # Solution binding: free ligand from solution binds receptor site
+  # ================================================================
+  # L has both arms free (r1, r2 unbound).
+  # Rate depends on cooperativity state of receptor.
+  #
+  # --- No cooperativity: both receptor sites free ---
+  # 4 rules for (r1,r2) x (l1,l2) site combinations
+  L(r1,r2) + R(l1,l2) <-> L(r1!1,r2).R(l1!1,l2)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1,r2!1).R(l1!1,l2)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1!1,r2).R(l1,l2!1)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1,r2!1).R(l1,l2!1)  kf, kr
+  #
+  # --- Cooperativity: one receptor site already bound ---
+  # Affinity reduced by factor H < 1 (negative cooperativity).
+  # 2 L arms x 2 receptor configurations = 4 rules
+  L(r1,r2) + R(l1!+,l2) <-> L(r1!1,r2).R(l1!+,l2!1)  H*kf, kr
+  L(r1,r2) + R(l1!+,l2) <-> L(r1,r2!1).R(l1!+,l2!1)  H*kf, kr
+  L(r1,r2) + R(l1,l2!+) <-> L(r1!1,r2).R(l1!1,l2!+)  H*kf, kr
+  L(r1,r2) + R(l1,l2!+) <-> L(r1,r2!1).R(l1!1,l2!+)  H*kf, kr
+
+  # ================================================================
+  # Cross-linking: membrane-tethered ligand arm binds receptor site
+  # ================================================================
+  # L has one arm already bound to a receptor; the free arm binds
+  # a site on a DIFFERENT receptor molecule.
+  #
+  # --- No cooperativity: both receptor sites free ---
+  # 2 L configurations x 2 receptor sites = 4 rules
+  L(r1!+,r2) + R(l1,l2) <-> L(r1!+,r2!1).R(l1!1,l2)  kxf, kxr
+  L(r1!+,r2) + R(l1,l2) <-> L(r1!+,r2!1).R(l1,l2!1)  kxf, kxr
+  L(r1,r2!+) + R(l1,l2) <-> L(r1!1,r2!+).R(l1!1,l2)  kxf, kxr
+  L(r1,r2!+) + R(l1,l2) <-> L(r1!1,r2!+).R(l1,l2!1)  kxf, kxr
+  #
+  # --- Cooperativity: one receptor site already bound ---
+  # 2 L configurations x 2 receptor configurations = 4 rules
+  L(r1!+,r2) + R(l1!+,l2) <-> L(r1!+,r2!1).R(l1!+,l2!1)  H*kxf, kxr
+  L(r1!+,r2) + R(l1,l2!+) <-> L(r1!+,r2!1).R(l1!1,l2!+)  H*kxf, kxr
+  L(r1,r2!+) + R(l1!+,l2) <-> L(r1!1,r2!+).R(l1!+,l2!1)  H*kxf, kxr
+  L(r1,r2!+) + R(l1,l2!+) <-> L(r1!1,r2!+).R(l1!1,l2!+)  H*kxf, kxr
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>10,n_steps=>10})
+end actions

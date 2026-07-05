@@ -1,0 +1,34 @@
+# Regression test for issue #24: BNGL identifiers literally named `t`
+# must not collide with bngsim's simulation-time binding. BNG2.pl exposes
+# simulation time as the zero-arg function time(); `t` is an ordinary
+# user identifier. Models in the wild rely on this (e.g. the
+# `Molecules t counter()` event-counter pattern), so bngsim must too.
+#
+# Model: A --k1--> B and a counter molecule that accumulates over time.
+#   Observable `t` counts t() molecules.
+#   Function _rateLaw1 = k1 * (1 + 0*t)    references the observable `t`.
+# Effective rate is just k1 (because t is multiplied by 0), so the analytical
+# solution is independent of `t` and matches simple_decay.net:
+#   A(t) = 100 * exp(-k1 * t)
+# The point of the test is that the .net loads at all, and that the function
+# body referencing `t` resolves to the observable rather than a reserved
+# token.
+begin parameters
+    1 k1  0.1  # Constant
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 t() 0
+end species
+begin functions
+    1 _rateLaw1() k1*(1+0*t)
+end functions
+begin reactions
+    1 1 2 _rateLaw1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+    3 t      3
+end groups

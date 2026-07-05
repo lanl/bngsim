@@ -1,0 +1,31 @@
+// =============================================================================
+// Source: Voit (1988) "New Nonlinear Methodologies for Modeling Molecular
+//         and Cellular Systems"
+//         Proc. IFAC Modelling and Control in Biomedical Systems, Venice, Italy
+// Example: Simple exponential ODE - exact recasting (page 223)
+// =============================================================================
+// Time horizon: t ∈ [0, 5]
+//
+// Original ODE:
+//   dX/dt = exp(X)
+//
+// Recast S-system:
+//   Define: X1 = X, X2 = exp(X1)
+//   From X2 = exp(X1), we have dX2/dt = X2 * dX1/dt
+//
+//   dX1/dt = X2
+//   dX2/dt = X2 * X1' = X2 * X2 = X2^2
+//
+// This is an EXACT recasting of the exponential ODE.
+// Note: Solution blows up (X → ∞) as t → 1 - ln(X0+1).
+// =============================================================================
+
+model V1988b_exponential_ode()
+    // Original exponential ODE
+    X' = exp(X)
+    
+    // Initial condition (small value to avoid quick blowup)
+    X = -2.0
+end
+// @SIM T_START=0 T_END=7.38 N_STEPS=369 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

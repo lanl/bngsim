@@ -1,0 +1,45 @@
+# Feature: Fixed species ($prefix) STRICT test — non-catalytic consumption
+# Tests: $A stays constant even when a rule fires "A -> B" that would
+#   normally consume A.  Companion to ft_clamped_species.bngl, where
+#   the rule is catalytic (E on both sides) so conservation is
+#   automatic regardless of Fixed support.
+# Tier: base
+# Expected: A_tot ≡ 100 for all t; B_tot grows linearly at rate k*A0 = 10/s.
+#   At t=50, B_tot ≈ 500.
+# If RM silently ignores Fixed/$: A decays exponentially at rate k=0.1,
+#   at t=50 (t*k=5) A_tot ≈ 100*exp(-5) ≈ 0.67 and B_tot asymptotes
+#   at ~99.3.  Divergence from NFsim is unambiguous.
+
+begin model
+begin parameters
+    A0  100
+    k   0.1   # /s
+end parameters
+
+begin molecule types
+    A()
+    B()
+end molecule types
+
+begin seed species
+    $A()  A0   # $ = Fixed population — must not deplete
+    B()   0
+end seed species
+
+begin observables
+    Molecules  A_tot  A()
+    Molecules  B_tot  B()
+end observables
+
+begin reaction rules
+    # Non-catalytic: A on LHS but NOT on RHS.  With Fixed enforcement
+    # A stays at A0; without enforcement A depletes.
+    A() -> B()  k
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>50,n_steps=>50})
+end actions
+
+# invariant: conserved A_tot = 100

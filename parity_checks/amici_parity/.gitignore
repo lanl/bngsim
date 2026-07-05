@@ -1,0 +1,6 @@
+# Per-run _core reports (regenerated every run). amici_run.py writes here by default.
+runs/
+# Compiled AMICI extension cache, keyed by SBML content hash. AMICI generates and
+# compiles a bespoke C++ shared library per model (~20s cold); these are large,
+# machine-specific build artifacts, never committed.
+amici_cache/

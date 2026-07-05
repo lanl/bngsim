@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "description": "Canonical run config for the bngsim-vs-RoadRunner SSA cross-engine screen (GH #108). The per-model spec is ssa_candidates.json (which biomodels) plus the roundtrip suite; THIS file pins the global run knobs the committed baseline (ssa_baseline.json) was produced at, so a fresh run and the regression diff are apples-to-apples. `jobs` (parallelism) and `biomodels_sbml_dir` are environment-specific and deliberately NOT pinned here. NOTE (GH #190): n_replicates was raised 30->100 for tighter ensemble-runtime statistics; because the z-gate standard error shrinks like 1/sqrt(N), mean_z_tol and self_z_tol were scaled by sqrt(100/30) (5.0->9.13, 4.0->7.30) so the correctness gate still detects the same minimum *meaningful* difference rather than mechanically flagging tinier ones, and per_model_timeout_sec was raised 40->120 so the slower 100-replicate ensembles complete. If you change n_replicates, rescale the z-tols by sqrt(N/30).",
+    "schema": "ssa_spec/1",
+    "baseline": "ssa_baseline.json",
+    "screen": "ssa_screen.py"
+  },
+  "corpus": "all",
+  "effort": "high",
+  "n_replicates": 100,
+  "seed_base": 2000,
+  "biomodels_t_end": 100.0,
+  "biomodels_n_steps": 10,
+  "mean_z_tol": 9.13,
+  "min_mean_count": 2.0,
+  "self_z_tol": 7.30,
+  "per_model_timeout_sec": 120.0
+}

@@ -1,0 +1,15 @@
+begin parameters
+    1 k  1.0
+end parameters
+begin species
+    1 A() 5.7
+end species
+begin observables
+    1 Molecules Atot A()
+end observables
+begin reactions
+    1 1 0 k  #A->0
+end reactions
+begin groups
+    1 Atot 1
+end groups

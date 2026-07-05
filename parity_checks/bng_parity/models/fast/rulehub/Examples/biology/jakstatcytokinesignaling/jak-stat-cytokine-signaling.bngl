@@ -1,0 +1,59 @@
+begin model
+begin parameters
+    # Rate Constants
+    k_produce      0.05   # Basal cytokine production
+    k_clear        0.02   # Cytokine clearance
+    k_bind         0.01   # Receptor binding
+    k_unbind       0.002  # Dissociation
+    k_receptor_act 0.4    # Receptor auto-activation
+    k_stat_phos    0.3    # STAT phosphorylation by receptor
+    k_translocate  0.2    # Nuclear translocation
+    k_stat_reset   0.1    # Nuclear export / dephosphorylation
+    k_receptor_down 0.05  # Receptor internalization/reset
+end parameters
+
+begin molecule types
+    Cytokine(r)
+    Receptor(l,state~inactive~active)
+    STAT(state~U~P,loc~cyto~nuc)
+end molecule types
+
+begin seed species
+    Cytokine(r) 60
+    Receptor(l,state~inactive) 30
+    STAT(state~U,loc~cyto) 200
+end seed species
+
+begin observables
+    Molecules Cytokine_pool   Cytokine()
+    Molecules Active_receptor Receptor(state~active)
+    Molecules Nuclear_STAT    STAT(loc~nuc)
+end observables
+
+begin reaction rules
+    # 1. Cytokine Turnover
+    0 -> Cytokine(r) k_produce
+    Cytokine(r) -> 0 k_clear
+    
+    # 2. Receptor Binding & Activation
+    Cytokine(r) + Receptor(l,state~inactive) <-> Cytokine(r!1).Receptor(l!1,state~inactive) k_bind,k_unbind
+    Cytokine(r!1).Receptor(l!1,state~inactive) -> Cytokine(r!1).Receptor(l!1,state~active) k_receptor_act
+    
+    # 3. STAT Signaling
+    # Active receptor recruitment and phosphorylation of STAT
+    Receptor(state~active) + STAT(state~U,loc~cyto) -> Receptor(state~active) + STAT(state~P,loc~cyto) k_stat_phos
+    
+    # 4. Nuclear Translocation
+    STAT(state~P,loc~cyto) -> STAT(state~P,loc~nuc) k_translocate
+    
+    # 5. Negative Feedback / Reset
+    STAT(state~P,loc~nuc) -> STAT(state~U,loc~cyto) k_stat_reset
+    Receptor(state~active) -> Receptor(state~inactive) k_receptor_down
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>160,n_steps=>320})
+end actions
+end model
+

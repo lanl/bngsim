@@ -1,0 +1,79 @@
+begin model
+# References:
+# - Diamante LM, Lan T (2014) J Food Processing 2014: 234583.
+begin parameters
+NA 6.02214076e23 # number per mole (exact value)
+Temp 37+273.15 # K <-- physiological temperature (37 C)
+mu_H2O=2.414e-2*10^(247.8/(Temp-140)) # mPa s (0.69 mPa s)
+mu_lipid 34.1 # mPa s viscosity of olive oil @ 38 degrees C (Diamante and Lan, 2014)
+cellDensity 1e9 # cells per L
+pi=2*asin(1) # dimensionless ratio
+cellDiameter 2e-4 # dm (20 um) <-- typical diameter of a HeLa cell
+Area=pi*cellDiameter^2 # dm^2 per cell
+height 5e-8 # dm (5 nm)
+V_thinLayer=Area*height # L per cell
+V_thinLayer_effective=V_thinLayer*(mu_lipid/mu_H2O)
+V_cytosol 1e-12 # L per cell (1 pL) <-- typical cytoplasmic volume for a mammalian cell
+Ras_cpc 1e5 # copies per cell
+Raf_cpc 1e5 # copies per cell
+#  equilibrium parameter for Raf-Raf dimerization
+K1 1e6/(NA*V_cytosol) # /M converted to /(molecule/cell)
+# equilibrium association constant for Ras-Raf binding
+K2 1e6/(NA*V_cytosol) # /M converted to /(molecule/cell)
+sigma1 10 # dimensionless
+K3=sigma1*K1
+K4=(K2*K3)/K1
+# cooperativity factor
+sigma2 100 # dimensionless
+K5=sigma2*K1
+K6=(K2*K5)/K3
+# detailed balance constraints
+# K1*K4=K2*K3
+# K3*K6=K2*K5
+koff 0.1 # /s
+km1=koff
+km2=koff
+km3=koff
+km4=koff
+km5=koff
+km6=koff
+kp1=km1*K1 # /(molecule/cell)/s
+kp2=km2*K2
+kp3=km3*K3
+kp4=km4*K4
+kp5=km5*K5
+kp6=km6*K6
+end parameters
+begin molecule types
+Ras(G~GTP) # G = G domain
+Raf(RBD,TKL) # RBD = Ras-binding domain, TKL = tyrosine kinase-like protein kinase
+end molecule types
+begin seed species
+Ras(G~GTP) Ras_cpc
+Raf(RBD,TKL) Raf_cpc
+end seed species
+begin observables
+Species Ras Ras(G~GTP)
+Species Raf Raf(RBD,TKL)
+Species RafRaf Raf(RBD,TKL!1).Raf(RBD,TKL!1)
+Species RasRaf Ras(G~GTP!1).Raf(RBD!1,TKL)
+Species RasRafRaf Ras(G~GTP!1).Raf(RBD!1,TKL!2).Raf(RBD,TKL!2)
+Species RasRafRasRaf Ras(G~GTP!1).Raf(RBD!1,TKL!2).Ras(G~GTP!3).Raf(RBD!3,TKL!2)
+end observables
+begin functions
+#ratio_lipid_div_H2O()=mu_lipid/mu_H2O
+#ratio_V_cytosol_div_V_thinLayer()=V_cytosol/V_thinLayer
+end functions
+begin reaction rules
+Raf(RBD,TKL)+Raf(RBD,TKL)<->Raf(RBD,TKL!1).Raf(RBD,TKL!1) kp1,km1
+Raf(RBD,TKL)+Ras(G~GTP)<->Raf(RBD!1,TKL).Ras(G~GTP!1) kp2,km2
+Raf(RBD!1,TKL).Ras(G~GTP!1)+Raf(RBD,TKL)<->Raf(RBD!1,TKL!2).Ras(G~GTP!1).Raf(RBD,TKL!2) kp3,km3
+Raf(RBD,TKL!1).Raf(RBD,TKL!1)+Ras(G~GTP)<->Raf(RBD!2,TKL!1).Raf(RBD,TKL!1).Ras(G~GTP!2) kp4,km4
+Raf(RBD!1,TKL).Ras(G~GTP!1)+Raf(RBD!2,TKL).Ras(G~GTP!2)<->Raf(RBD!1,TKL!3).Ras(G~GTP!1).Raf(RBD!2,TKL!3).Ras(G~GTP!2) kp5*((V_cytosol/V_thinLayer)*(mu_H2O/mu_lipid)),km5
+Raf(RBD!2,TKL!1).Raf(RBD,TKL!1).Ras(G~GTP!2)+Ras(G~GTP)<->Raf(RBD!2,TKL!1).Raf(RBD!3,TKL!1).Ras(G~GTP!2).Ras(G~GTP!3) kp6*((V_cytosol/V_thinLayer)*(mu_H2O/mu_lipid)),km6
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>1,t_end=>100,n_steps=>100,print_functions=>1})
+end actions

@@ -1,0 +1,127 @@
+# Model: ph_schrodinger.bngl
+# Description: Simulates the 1D Schrödinger equation (particle in a box).
+#              Wavefunction real and imaginary parts are molecule concentrations.
+#              Demonstrates quantum state evolution in a rule-based framework.
+
+begin model
+
+begin parameters
+    hbar 1.0
+    k_pot 0.5
+    t_end 10
+end parameters
+
+begin molecule types
+    Psi(x~1~2~3~4~5,t~RE~IM)
+end molecule types
+
+begin seed species
+    # Initial Wavepacket (sinusoidal)
+    Psi(x~1,t~RE) 0.0
+    Psi(x~2,t~RE) 0.5
+    Psi(x~3,t~RE) 1.0
+    Psi(x~4,t~RE) 0.5
+    Psi(x~5,t~RE) 0.0
+    
+    Psi(x~1,t~IM) 0.0
+    Psi(x~2,t~IM) 0.0
+    Psi(x~3,t~IM) 0.0
+    Psi(x~4,t~IM) 0.0
+    Psi(x~5,t~IM) 0.0
+end seed species
+
+begin observables
+    # Probabilities density |Psi|^2
+    Molecules r1 Psi(x~1,t~RE)
+    Molecules r2 Psi(x~2,t~RE)
+    Molecules r3 Psi(x~3,t~RE)
+    Molecules r4 Psi(x~4,t~RE)
+    Molecules r5 Psi(x~5,t~RE)
+    
+    Molecules i1 Psi(x~1,t~IM)
+    Molecules i2 Psi(x~2,t~IM)
+    Molecules i3 Psi(x~3,t~IM)
+    Molecules i4 Psi(x~4,t~IM)
+    Molecules i5 Psi(x~5,t~IM)
+end observables
+
+begin functions
+    # Probabilities
+    Prob_X1() = r1*r1 + i1*i1
+    Prob_X2() = r2*r2 + i2*i2
+    Prob_X3() = r3*r3 + i3*i3
+    Prob_X4() = r4*r4 + i4*i4
+    Prob_X5() = r5*r5 + i5*i5
+
+    # Laplacian: Psi(x+1) - 2*Psi(x) + Psi(x-1)
+    # V(i) is 100 for x=1,5 (wall), 0 otherwise
+    
+    Lap_RE1() = r2 - 2*r1 + 0
+    Lap_RE2() = r3 - 2*r2 + r1
+    Lap_RE3() = r4 - 2*r3 + r2
+    Lap_RE4() = r5 - 2*r4 + r3
+    Lap_RE5() = 0 - 2*r5 + r4
+    
+    Lap_IM1() = i2 - 2*i1 + 0
+    Lap_IM2() = i3 - 2*i2 + i1
+    Lap_IM3() = i4 - 2*i3 + i2
+    Lap_IM4() = i5 - 2*i4 + i3
+    Lap_IM5() = 0 - 2*i5 + i4
+
+    HAM_RE1() = -k_pot * Lap_RE1() + 100*r1
+    HAM_RE2() = -k_pot * Lap_RE2() + 0*r2
+    HAM_RE3() = -k_pot * Lap_RE3() + 0*r3
+    HAM_RE4() = -k_pot * Lap_RE4() + 0*r4
+    HAM_RE5() = -k_pot * Lap_RE5() + 100*r5
+    
+    HAM_IM1() = -k_pot * Lap_IM1() + 100*i1
+    HAM_IM2() = -k_pot * Lap_IM2() + 0*i2
+    HAM_IM3() = -k_pot * Lap_IM3() + 0*i3
+    HAM_IM4() = -k_pot * Lap_IM4() + 0*i4
+    HAM_IM5() = -k_pot * Lap_IM5() + 100*i5
+
+    dRE1_dt() = -HAM_IM1()/hbar
+    dRE2_dt() = -HAM_IM2()/hbar
+    dRE3_dt() = -HAM_IM3()/hbar
+    dRE4_dt() = -HAM_IM4()/hbar
+    dRE5_dt() = -HAM_IM5()/hbar
+    
+    dIM1_dt() = HAM_RE1()/hbar
+    dIM2_dt() = HAM_RE2()/hbar
+    dIM3_dt() = HAM_RE3()/hbar
+    dIM4_dt() = HAM_RE4()/hbar
+    dIM5_dt() = HAM_RE5()/hbar
+end functions
+
+begin reaction rules
+    # Real part updates
+    Up_RE1: 0 -> Psi(x~1,t~RE) if(dRE1_dt()>0, dRE1_dt(), 0)
+    Up_RE2: 0 -> Psi(x~2,t~RE) if(dRE2_dt()>0, dRE2_dt(), 0)
+    Up_RE3: 0 -> Psi(x~3,t~RE) if(dRE3_dt()>0, dRE3_dt(), 0)
+    Up_RE4: 0 -> Psi(x~4,t~RE) if(dRE4_dt()>0, dRE4_dt(), 0)
+    Up_RE5: 0 -> Psi(x~5,t~RE) if(dRE5_dt()>0, dRE5_dt(), 0)
+    
+    Dn_RE1: Psi(x~1,t~RE) -> 0 if(dRE1_dt()<0, -dRE1_dt(), 0)
+    Dn_RE2: Psi(x~2,t~RE) -> 0 if(dRE2_dt()<0, -dRE2_dt(), 0)
+    Dn_RE3: Psi(x~3,t~RE) -> 0 if(dRE3_dt()<0, -dRE3_dt(), 0)
+    Dn_RE4: Psi(x~4,t~RE) -> 0 if(dRE4_dt()<0, -dRE4_dt(), 0)
+    Dn_RE5: Psi(x~5,t~RE) -> 0 if(dRE5_dt()<0, -dRE5_dt(), 0)
+    
+    # Imaginary part updates
+    Up_IM1: 0 -> Psi(x~1,t~IM) if(dIM1_dt()>0, dIM1_dt(), 0)
+    Up_IM2: 0 -> Psi(x~2,t~IM) if(dIM2_dt()>0, dIM2_dt(), 0)
+    Up_IM3: 0 -> Psi(x~3,t~IM) if(dIM3_dt()>0, dIM3_dt(), 0)
+    Up_IM4: 0 -> Psi(x~4,t~IM) if(dIM4_dt()>0, dIM4_dt(), 0)
+    Up_IM5: 0 -> Psi(x~5,t~IM) if(dIM5_dt()>0, dIM5_dt(), 0)
+    
+    Dn_IM1: Psi(x~1,t~IM) -> 0 if(dIM1_dt()<0, -dIM1_dt(), 0)
+    Dn_IM2: Psi(x~2,t~IM) -> 0 if(dIM2_dt()<0, -dIM2_dt(), 0)
+    Dn_IM3: Psi(x~3,t~IM) -> 0 if(dIM3_dt()<0, -dIM3_dt(), 0)
+    Dn_IM4: Psi(x~4,t~IM) -> 0 if(dIM4_dt()<0, -dIM4_dt(), 0)
+    Dn_IM5: Psi(x~5,t~IM) -> 0 if(dIM5_dt()<0, -dIM5_dt(), 0)
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>500})

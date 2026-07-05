@@ -1,0 +1,21 @@
+# TFUN test: time-indexed table function drives production rate
+# A --rate--> A + B, where rate = cumNcases() (from table function)
+# B accumulates: dB/dt = cumNcases(t)
+# At t=0: cumNcases=0, at t=3: cumNcases=1, at t=7: cumNcases=22
+begin parameters
+    1 k0  0.0
+end parameters
+begin functions
+    1 cumNcases()  tfun('cumNcases.tfun')
+end functions
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin reactions
+    1 1 1,2 cumNcases #R1: A -> A + B at rate cumNcases(t)
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

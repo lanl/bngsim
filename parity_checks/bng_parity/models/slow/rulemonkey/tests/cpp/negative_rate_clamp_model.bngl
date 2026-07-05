@@ -1,0 +1,35 @@
+begin model
+begin parameters
+  k_decay 1.0
+  setpoint 5
+end parameters
+
+begin molecule types
+  A()
+  B()
+end molecule types
+
+begin seed species
+  A() 10
+  B() 0
+end seed species
+
+begin observables
+  Molecules Obs_A A()
+end observables
+
+begin functions
+  # Production rate that goes negative once Obs_A drops below setpoint
+  prod_rate() = Obs_A - setpoint
+end functions
+
+begin reaction rules
+  A() -> 0 k_decay
+  0 -> B() prod_rate()
+end reaction rules
+
+end model
+
+begin actions
+  writeXML()
+end actions

@@ -1,0 +1,29 @@
+begin model
+begin parameters
+k 1
+end parameters
+begin molecule types
+counter()
+A(state~0~1)
+end molecule types
+begin seed species
+counter() 0
+A(state~0) 100
+end seed species
+begin observables
+Molecules A0 A(state~0)
+Molecules A1 A(state~1)
+Molecules t counter()
+end observables
+begin functions
+f()=1
+#func() = TFUN(t, "file.dat")
+end functions
+begin reaction rules
+0->counter() k
+A(state~0)<->A(state~1) 1,1
+end reaction rules
+end model
+begin actions
+simulate({method=>"nf",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+end actions

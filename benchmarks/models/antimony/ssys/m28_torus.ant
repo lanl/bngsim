@@ -1,0 +1,57 @@
+// This model is essentially the same as S1987_B4_torus().
+// Recast:
+// Mapping:
+//   X1 = Z_1
+//   X2 = Z_2
+//   X3 = Z_3
+//   X4 = sqrt(Z_1^2 + Z_2^2)
+//
+//   species X1, X2, X3, X4;
+// Dynamics (all RHSs are sums of power-law monomials):
+//   X1' = -X2 - X1*X3/X4
+//   X2' =  X1 - X2*X3/X4
+//   X3' =  X1/X4
+//   X4' = -X3
+//
+// Initial conditions corresponding to:
+// Z_1(0)=3, Z_2(0)=0, Z_3(0)=0
+// X4(0) = sqrt(3^2+0^2) = 3
+//   X1 = 3;
+//   X2 = 0;
+//   X3 = 0;
+//   X4 = 3;
+//
+// Original variables
+//  var Z_1, Z_2, Z_3;
+//  Z_1 := X1;
+//  Z_2 := X2;
+//  Z_3 := X3;
+//
+model torus()
+
+  // Torus-like trajectory system
+  //
+  // Original system:
+  //   dZ_1/dt = -Z_2 - Z_1 Z_3 (Z_1^2 + Z_2^2)^(-1/2)
+  //   dZ_2/dt =  Z_1 - Z_2 Z_3 (Z_1^2 + Z_2^2)^(-1/2)
+  //   dZ_3/dt =  Z_1 (Z_1^2 + Z_2^2)^(-1/2)
+  //
+  // Initial conditions:
+  //   Z_1(0) = 3
+  //   Z_2(0) = 0
+  //   Z_3(0) = 0
+
+  species Z_1, Z_2, Z_3;
+
+  // Initial conditions
+  Z_1 = 3;
+  Z_2 = 0;
+  Z_3 = 0;
+
+  // Dynamics
+  Z_1' = -Z_2 - Z_1*Z_3*(Z_1^2 + Z_2^2)^(-0.5);
+  Z_2' =  Z_1 - Z_2*Z_3*(Z_1^2 + Z_2^2)^(-0.5);
+  Z_3' =  Z_1*(Z_1^2 + Z_2^2)^(-0.5);
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

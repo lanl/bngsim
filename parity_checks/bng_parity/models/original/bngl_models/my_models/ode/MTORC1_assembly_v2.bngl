@@ -1,0 +1,608 @@
+#---
+# File:
+#  Filename: MTORC1_assembly_v2.bngl
+#  Created: 1 June 2016 (v2) by editing v1, which was completed between May 17 and 19, 2016
+#  Completed: 1 June 2016
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#  Remark: 
+#   I updated the model to reflect the understanding that 
+#    - 1) MLST8 likely binds MTOR more strongly than RPTOR (Kim et al., 2003),
+#    - 2) MLST8 binding to MTOR does not require RPTOR (Kim et al., 2003),
+#    - 3) reduction in MLST8 expression reduces MTOR-RPTOR association 
+#         (Kim et al., 2003; Kakumoto et al., 2015), and
+#    - 4) MLST8 is not essential for MTORC1 function (Guertin et al., 2006).  
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r3
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# Model:
+#  Title: a model for assembly of MTORC1
+#  Contributors:
+#   - Joern Dengjel
+#   - Kristin E. Dittenhafer-Reed
+#   - William S. Hlavacek
+#   - Jeffrey P. MacKeigan
+#   - Katie R. Martin
+#   - Joshua L. Schipper
+#  Remark:
+#   This model does not account for possible disruption of MTORC1 by rapaymcin.
+#   There are conflicting reports in the literature about whether rapamycin disrupts
+#   the interaction between MTOR and RPTOR.
+#   Papers standing AGAINST rapamycin-mediated disruption of MTORC1 include the following:
+#    - Aylett CHS, ..., Maier T (2016) Science 351: 48-52. [PMID: 26678875]
+#    - Yadav RB, ..., Botchway SW (2013) BMC Cell Biol 14:3. [PMID: 23311891]
+#    - Jacinto E, ..., Hall MN (2004) Nat Cell Biol 6: 1122-1128. [PMID: 15467718] 
+#    - Hara K, ..., Yonezawa K (2002) Cell 110: 177-189. [PMID: 12150926]  
+#   Papers standing FOR rapamycin-mediated disruption of MTORC1 include the following:
+#    - Jain A, ..., Ha T (2014) PNAS 111: 17833-17838. [PMID: 25453101]
+#    - Yip CK, ..., Kang SA (2010) Mol Cell 38: 768-774. [PMID: 20542007]
+#    - Oshiro N, ..., Yonezawa K (2004) Genes Cells 9: 359-366. [PMID: 15066126]
+#    - Kim DH, ..., Sabatini DM (2002) Cell 110: 163-175. [PMID: 12150925]
+#---
+
+#---
+# Cell lines:
+#  - HEK293 cells
+#  - U2OS cells
+#  - HeLa S3 cells
+#  - HeLa Kyoto cells
+#---
+
+#---
+# Compartments:
+#  cyt: cytosol
+#---
+
+#---
+# References:
+#  - Avruch J, ..., Kikkawa U (2009) Biochem Soc Trans 37: 223-226. [PMID: 19143636]
+#  - Aylett CHS, ..., Maier T (2016) Science 351: 48-52. [PMID: 26678875]
+#  - Baretic D, ..., Williams RL (2016) Nat Commun 7: 11016 [PMID: 27072897]
+#  - Coffman K, ..., Tamanoi F (2014) J Biol Chem 289: 4723-4734. [PMID: 24403073]
+#  - Dunlop EA, ..., Tee AR (2009) Cell Signal 21: 1073-1084. [PMID: 19272448]
+#  - Dunlop EA, ..., Tee AR (2011) Autophagy 7: 737-747. [PMID: 21460630]
+#  - Egan DF, ..., Shaw RJ (2015) Mol Cell 59: 285-297. [PMID: 26118643]
+#  - Foster KG, ..., Fingar DC (2010) J Biol Chem 285: 80-94. [PMID: 19864431] 
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Guertin DA, ..., Sabatini DM (2006) Dev Cell 11: 859-871. [PMID: 17141160]
+#  - Gwinn DM, ..., Shaw RJ (2008) Mol Cell 30: 214-226. [PMID: 18439900]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Kakumoto K, ..., Oneyama C (2015) PLOS ONE 10: e0119015. [PMID: 25906254]
+#  - Kim DH, ..., Sabatini DM (2002) Cell 110: 163-175. [PMID: 12150925]
+#  - Kim DH, ..., Sabatini DM (2003) Mol Cell 11: 895-904. [PMID: 12718876]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Long X, ..., Avruch J (2005) Curr Biol 15: 702-713. [PMID: 15854902]
+#  - Schaffer BE, ..., Brunet A (2015) Cell Metab 22: 907-921. [PMID: 26456332]
+#  - Sekiguchi T, ..., Kobayashi H (2014) Genes Cells 19: 449-463. [PMID: 24702707]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#  - Stretton C, ..., Hundal HS (2015) Biochem J 470: 207-221. [PMID: 26348909]
+#  - Yadav RB, ..., Botchway SW (2013) BMC Cell Biol 14:3. [PMID: 23311891]
+#  - Yang H, ..., Pavletich NP (2013) Nature 497: 217-223 [PMID: 23636326]
+#  - Yuan HX, ..., Guan KL (2015) Genes Dev 29: 2362-2376. [PMID: 26588989]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; 
+#     see Table S3.
+Vcyt 2.0e-12*f # L per cell
+
+#####################################
+# endogenous abundances of proteins #
+#####################################
+
+# protein abundances in HEK293 cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #1 (iBAQ1)
+
+FKBP1A_iBAQ1_HEK293 7.834383 # dimensionless
+MTOR_iBAQ1_HEK293   5.646002 # dimensionless
+RPTOR_iBAQ1_HEK293  5.420879 # dimensionless
+MLST8_iBAQ1_HEK293   6.145289 # dimensionless
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_HEK293 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+FKBP1A_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^FKBP1A_iBAQ1_HEK293 # copies per cell
+MTOR_cpc_HEK293   = iBAQ_to_cpc_HEK293*10^MTOR_iBAQ1_HEK293   # copies per cell
+RPTOR_cpc_HEK293  = iBAQ_to_cpc_HEK293*10^RPTOR_iBAQ1_HEK293  # copies per cell
+MLST8_cpc_HEK293  = iBAQ_to_cpc_HEK293*10^MLST8_iBAQ1_HEK293  # copies per cell
+
+# protein abundances in U2OS cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #3 (iBAQ3)
+
+FKBP1A_iBAQ3_U2OS 7.828821 # dimensionless
+MTOR_iBAQ3_U2OS   6.296182 # dimensionless
+RPTOR_iBAQ3_U2OS  6.208065 # dimensionless
+MLST8_iBAQ3_U2OS  6.004837 # dimensionless
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_U2OS 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+FKBP1A_cpc_U2OS = iBAQ_to_cpc_U2OS*10^FKBP1A_iBAQ3_U2OS # copies per cell
+MTOR_cpc_U2OS   = iBAQ_to_cpc_U2OS*10^MTOR_iBAQ3_U2OS   # copies per cell
+RPTOR_cpc_U2OS  = iBAQ_to_cpc_U2OS*10^RPTOR_iBAQ3_U2OS  # copies per cell
+MLST8_cpc_U2OS  = iBAQ_to_cpc_U2OS*10^MLST8_iBAQ3_U2OS  # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  comments:
+#   - See Supplementary Table 1 (Kulak et al. 2014).
+
+FKBP1A_cpc_HeLa_S3 838853.3*f # copies per cell
+MTOR_cpc_HeLa_S3   47731.53*f # copies per cell
+RPTOR_cpc_HeLa_S3  17519.06*f # copies per cell
+MLST8_cpc_HeLa_S3  52279.72*f # copies per cell
+
+# protein abundances in HeLa Kyoto cells
+#  comments:
+#   - See Table S3 (Hein et al., 2015).
+
+FKBP1A_cpc_HeLa_Kyoto 349764*f # copies per cell
+MTOR_cpc_HeLa_Kyoto    74960*f # copies per cell
+RPTOR_cpc_HeLa_Kyoto    5573*f # copies per cell
+MLST8_cpc_HeLa_Kyoto   29372*f # copies per cell
+
+###########################
+# parameters of rate laws #
+###########################
+
+# MTOR interaction with MLST8
+#  comments:
+#   - Binding of MLST8 to MTOR appears to be tigher than binding of RPTOR to MTOR
+#     (Kim et al., 2003).
+#   - For the parameter settings below, the KD is 5 nM and the bond lifetime is ~3.3 min.
+kf_MLST8_MTOR 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MLST8_MTOR 0.005 # /s
+
+# MTOR interaction with RPTOR
+#  comments: 
+#   - Binding of RPTOR to MTOR appears to be looser than binding of MLST8 to MTOR
+#     (Kim et al., 2003).
+#   - For the parameter settings below, the KD is 25 nM and the bond lifetime is ~1.3 min.
+kf_MTOR_RPTOR 5e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MTOR_RPTOR 0.0125 # /s
+
+# positive cooperativity in binding of MLST8 and RPTOR to MTOR
+#  comments:
+#   - Based on the findings of Kim et al. (2003) and Kakumoto et al. (2015), 
+#     we will assume that MLST8 and RPTOR bind MTOR with positive cooperativity.
+#   - The enhancement of RPTOR affinity for MTOR caused by MLST8 binding to MTOR is a factor phi.
+#   - The enhancement of MLST8 affinity for MTOR caused by RPTOR binding to MTOR must be the same
+#     for satisfaction of detailed balance.
+phi_MLST8_MTOR_RPTOR 25 # dimensionless
+phi_kf_MLST8_MTOR_RPTOR=sqrt(phi_MLST8_MTOR_RPTOR) # dimensionless
+phi_kr_MLST8_MTOR_RPTOR=1/sqrt(phi_MLST8_MTOR_RPTOR) # dimensionless
+
+# MTOR homodimerization
+#  comments:
+#   - For the parameter settings below, the KD is 1 nM and the bond lifetime is ~2.8 hours.
+kf_MTOR_MTOR 1e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_MTOR_MTOR 1e-4 # /s
+
+# rate constant for clearance of free MLST8
+kdeg_MLST8 0 # /s
+
+end parameters
+
+begin molecule types
+
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~0~ATP~AZD8055,FRB,LBE_FATC)
+#---
+# MTOR: mechanistic target of rapamycin
+#  UniProt entry: http://www.uniprot.org/uniprot/P42345
+#  comments:
+#   - 2549 amino acids (P42345-1)
+#   - MTOR is a serine/threonine-specific protein kinase.
+#   - It is the catalytic component of MTOR complexes 1 and 2.
+#   - contains 32 HEAT repeats
+#     http://pfam.sanger.ac.uk/family/HEAT
+#     The HEAT repeat is so named because it is found in 
+#     (H)untingin, (E)longation factor 3, protein phosphatase 2(A) and yeast (T)OR1.
+#   - contains 16 tetratricopeptide repeat (TPR) motifs
+#     http://pfam.xfam.org/family/PF00515
+#   - contains a FAT domain
+#     http://pfam.xfam.org/family/PF02259
+#     The FAT domain is so named because it is found in
+#     (F)RAP, (A)TM and (T)RRAP.
+#   - contains a PI3/PI4-family kinase domain (but lacks lipid kinase activity)
+#     http://pfam.xfam.org/family/PF00454.23
+#   - contains an FRB domain
+#     http://pfam.xfam.org/family/PF08771
+#   - contains a FATC domain
+#     http://pfam.xfam.org/family/PF02260
+#     The FATC domain is so named because it is found in the C-terminal regions of FRAP, ATM and TRRAP.
+#  components:
+#   HEAT_horn: N-terminal part of HEAT domain
+#    comments:
+#     - a highly curved, superhelical alpha-solenoid consisting of HEAT repeats
+#     - named the "horn" by Aylett et al. (2016)
+#     - named the "spiral" by Baretic et al. (2016)
+#     - larger than the bridge
+#     - In an MTOR homodimer, the N-terminal tip of the horn in one copy of MTOR contacts 
+#       the FAT domain in the second copy of MTOR (Aylett et al., 2016).
+#     - MTOR homodimerization likely requires HEAT domain stabilization by RPTOR (Aylett et al., 2016).
+#   HEAT_step: junction of the "horn" and "bridge" alpha-solenoids
+#    comments:
+#     - named the "step" by Aylett et al. (2016)
+#     - At the step, the C-terminal part of the horn contacts the ARM domain in RPTOR (Aylett et al., 2016).
+#     - At the step, the N-terminal part of the bridge contacts the RNC domain in RPTOR (Aylett et al., 2016).
+#   HEAT_bridge: C-terminal part of the HEAT domain
+#    comments:
+#     - a linear alpha-solenoid consisting of HEAT repeats
+#     - named the "bridge" by Aylett et al. (2016)
+#     - smaller than the horn
+#     - The bridge is located between the horn and the FAT domain (Aylett et al., 2016).
+#     - MTOR homodimerization likely requires HEAT domain stabilization by RPTOR (Aylett et al., 2016).
+#   FAT: FAT domain
+#    comments:
+#     - consists of HEAT repeats and TPR motifs
+#     - a C-shaped alpha-solenoid domain that clamps the kinase domain (Yang et al., 2013)
+#     - In an MTOR homodimer, the FAT domain in one copy of MTOR contacts 
+#       the N-terminal tip of the horn in the second copy of MTOR (Aylett et al., 2016).
+#   PIKK: PI3K-related serine/threonine-specific protein kinase (PIKK) domain
+#    states:
+#     - 0: the ATP-binding site is free 
+#     - ATP: bound to ATP 
+#     - AZD8055: bound to the ATP-competitive inhibitor AZD8055
+#                https://pubchem.ncbi.nlm.nih.gov/compound/azd8055
+#    comments:
+#     - consists of canonical kinase N- and C-lobes, which are modified by inserts (Yang et al., 2013)
+#     - There is a large insert in the N-lobe, the FRB domain (Yang et al., 2013).
+#     - There are four inserts in the C-lobe, including the LBE sequence and 
+#       part of the FATC domain (Yang et al., 2013).
+#     - RHEB binds the N-lobe of the MTOR kinase domain (aa 2148-2300) (Long et al., 2005).
+#     - Yadav et al. (2013) confirmed direct interaction between RHEB and MTOR.
+#     - MTOR binds RHEB independently of RHEB's GDP/GTP loading status; however,
+#       only GTP-loaded RHEB activates MTOR kinase activity (Avruch et al., 2009).
+#   FRB: FKBP12-rapamycin binding (FRB) domain
+#    comments:
+#     - binds rapamycin in complex with FKBP1A (aka FKBP12)
+#     - may serve as a secondary recruitment site for some MTOR substrates (Yang et al., 2013)
+#   LBE_FATC: LST8-binding element (LBE) and FATC domain
+#    comments:
+#     - The "LBE" sequence is an ~40 aa insert (residues 2258-2296) in the 
+#       C-lobe of the kinase domain (Yang et al., 2013).
+#     - The LBE sequence and a residue from the FATC domain contacts MLST8 (Yang et al., 2013).
+#     - The LBE sequence, the FATC domain, and MLST8, together, likely plays a role in stabilizing the
+#       folded structure of the kinase domain's activation loop (Yang et al., 2013).
+#     - The yeast structure of Baretic et al. (2016) suggests that MLST8 also contacts
+#       an LST8-binding loop (LBL), which corresponds to aa 2510-2516 (near the C-terminal end of the kinase).
+#---
+
+RPTOR(RNC,RNC_ARM,ARM,S792~0~P,S855~0~P,S859~0~P~P,S863~0~P,WD40)
+#---
+# RPTOR: regulatory-associated protein of MTOR (aka RAPTOR)
+#  UniProt entry: http://www.uniprot.org/uniprot/Q8N122
+#  comments:
+#   - 1335 amino acids (Q8N122-1)
+#   - RPTOR is a scaffold protein.
+#   - RPTOR regulates the substrate specificity of MTORC1.
+#   - contains an N-terminal domain conserved among Raptor family members, 
+#     part of which assembles into a fold that resembles a caspase (Aylett et al., 2016)
+#     http://pfam.xfam.org/family/PF14538
+#   - contains an armadillo (ARM) domain based on a cryo-EM structure of human MTORC1,
+#     a crystal structure of Raptor from C. thermophilum, and sequence alignment (Aylett et al., 2016)
+#   - The ARM domain is composed of armadillo (ARM) repeats.
+#     http://pfam.xfam.org/family/PF00514
+#   - contains a WD40 domain composed of WD40 repeats that assemble into a beta-propeller structure
+#     http://pfam.xfam.org/family/PF00400
+#   - WD40 repeats are so named because they tend to consist of ~40 aa and end with a WD dipeptide.
+#  components:
+#   RNC: RAPTOR N-terminal caspase-like (RNC) domain (encompassed by the Raptor N-terminal conserved domain)
+#    comments:
+#     - Aylett et al. (2016) identified residues 57-394 (338 amino acids) as corresponding
+#       to a caspase-like structure.
+#     - The active site in caspases, a family of cysteine-dependent aspartate-directed proteases, 
+#       is conserved in RNC; this site consists of residues H153 and G154 (Aylett et al., 2016).
+#     - Aylett et al. (2016) proposed that the H153/G154 site may be the part of the RNC domain
+#       responsible for recruiting TOS motif-containing substrates to MTORC1.
+#     - Coffman et al. (2014) identifed a region spanning residues 89-180 in RPTOR as being 
+#       in close proximity to EIF4EBP1 (aka 4EBP1), a substrate of MTORC1.
+#     - Mutations of the N-terminal conserved domain disupt RPTOR interaction with EIF4EBP1 (aka 4EBP1)
+#       (Dunlop et al., 2009).
+#     - Sequences upstream of the caspase fold are conserved among Raptor family members (Aylett et al., 2016).
+#     - Part of the RNC domain contacts MTOR's HEAT domain - see below.
+#   RNC_ARM: the parts of the RNC and ARM domains that contact MTOR's HEAT domain at its "step" structure
+#    comments:
+#     - The "step" is the junction of two alpha-solenoids, the "horn" and the "bridge," 
+#       which together compose the HEAT domain in MTOR (Aylett et al., 2016).
+#     - At the step, part of the ARM domain contacts the C-terminal part of the horn (Aylett et al., 2016).
+#     - At the step, part of the RNC domain contacts the N-terminal part of the bridge (Aylett et al., 2016).
+#     - RPTOR preferentially interacts with MTOR's HEAT domain (Kim et al., 2002).
+#     - Mutations in RPTOR's N-terminal conserved domain negatively affect RPTOR interaction with MTOR (Kim et al., 2002).
+#     - There is some uncertainty about how RPTOR is positioned within MTORC1.
+#       Aylett et al. (2016) propose a model wherein RPTOR contacts one and only one copy of MTOR.
+#       Baretic et al. (2016) suggest that RPTOR instead makes contact with both copies of MTOR in MTORC1.
+#   ARM: armadillo (ARM) domain
+#    comments:
+#     - Aylett et al. (2016) identified residues 401-689 (289 amino acids) as corresponding
+#       to an alpha-solenoid structure composed of ARM repeats.
+#     - Part of the ARM domain contacts MTOR's HEAT domain - see above.
+#     - Sekiguchi et al. (2014) demonstrated that a fragment of Kog1p from S. cerevisiae (aa 661-1156)
+#       interacts with both Gtr1p and Gtr2p. The human homologs of Kog1p, Gtr1p, and Gtr2p are 
+#       RPTOR, RRAGA/B, and RRAGC/D. Fragment 661-1156 from Kog1p corresponds to fragment 528-971 from RPTOR,
+#       which encompasses a C-terminal region of RPTOR's ARM domain and most of the intrinsically disorded region
+#       between the ARM domain and the WD40 domain.
+#     - Sekiguchi et al. (2014) determined that residues V797 and R798 in Kog1p are important 
+#       for interaction with Gtr1p. These residues are conserved and correspond to V615 and R616 in RPTOR, which
+#       are located in the ARM domain.
+#   S792: serine 792
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, RASS(ph)YSS
+#    comments:
+#     - located in an intrinsically disordered region
+#     - S792 is a substrate of AMPK (Gwinn et al., 2008).
+#     - S792 is located in a sequence consistent with other known AMPK substrates (Schaffer et al., 2015).
+#     - pS792 is a 14-3-3 binding site (Gwinn et al., 2008).
+#     - S792 is located in a sequence consistent with other known 14-3-3 binding sites.
+#     - S792 is a possible substrate of ULK1 (Dunlop et al., 2011). However, alternatively,
+#       Dunlop et al. (2011) suggested that ULK1 interaction with both RPTOR and AMPK may possibly
+#       faciliate AMPK-mediated phosphorylation of S792 in RPTOR.
+#     - ULK1 mediates phosphorylation of S792 less strongly than S859 (Dunlop et al., 2011).
+#     - Phosphorylation of S792 suppresses interaction of RPTOR with MTOR (Gwinn et al., 2008).
+#   S855/S859: serines 855 and 859
+#    states: 
+#     - 0: unmodified
+#     - P: singly phosphorylated (at either S855 or S859), DTSS(ph)LTQ or LTQS(ph)APA
+#     - PP: doubly phosphorylated (at both S855 and S859), DTSS(ph)LTQS(ph)APA
+#    comments:
+#     - located in an intrinsically disorded region
+#     - S855 and S859 are possible substrates of ULK1 (Dunlop et al., 2011).
+#     - S859 is a possible substrate of GSK3B (Stretton et al., 2015).
+#     - S855 and S859, especially S859, are situated in sequences consistent with
+#       known ULK1 substrates (Egan et al., 2015). 
+#     - ULK1 mediates phosphorylation of S859 more strongly than S792 (Dunlop et al., 2011).
+#     - Priming phosphorylation at S863 appears to be a prerequisite for phosphorylation of S859 by GSK3B 
+#       (Stretton et al., 2015). Priming phosphorylation of S863 may also
+#       be important for phosphorylation of additional sites in RPTOR (Foster et al., 2010).
+#     - Phosphorylation of S859 promotes interaction of RPTOR with MTOR (Stretton et al., 2015).
+#   S863: located in the ARM domain
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, APAS(ph)PTN
+#    comments:
+#     - Priming phosphorylation of S863 is required for phosphorylation of S859 by GSK3 
+#       (Stretton et al., 2015). Priming phosphorylation of S863 may be important for phosphorylation
+#       of additional sites in RAPTOR (Foster et al., 2010).
+#     - Phosphorylation of S863 interferes in RPTOR interaction with Rag GTPases (Yuan et al., 2015).
+#     - S863 is a substrate of NLK (Yuan et al., 2015) and JNK.
+#     - S863 may or may not be a substrate of MTORC1. Stretton et al. (2015) observed that S863 is 
+#       phosphorylated in a nutrient dependent manner consistent with this site being a substrate of
+#       MTORC1; however, MTORC1 inhibitors did not affect phosphorylation of S863.
+#   WD40: WD40 domain
+#    comments:
+#     - Aylett et al. (2016) identified residues 1001-1335 (335 amino acids) as corresonding
+#       to a 7-bladed beta-propeller structure composed of seven WD40 repeats.
+#     - interacts with RHEB (Long et al., 2005)
+#     - Yadav et al. (2013) confirmed direct interaction between RHEB and RPTOR.
+#---
+
+MLST8(WD40)
+#---
+# MLST8: mammalian lethal with Sec13 8 (aka GbetaL, G protein beta subunit-like)
+#  UniProt entry: http://www.uniprot.org/uniprot/Q9BVC4
+#  comments:
+#   - 326 amino acids (Q9BVC4-1)
+#   - MLST8 is a component of MTOR complexes 1 and 2 (Kim et al., 2003).
+#   - However, MLST8 is not required for MTORC1 function (Guertin et al., 2006).
+#   - consists of seven WD40 repeats, similar to beta subunits of heterotrimeric G protein complexes
+#   - The WD40 repeats assemble into a 7-bladed beta-propeller structure (Yang et al., 2013).
+#     http://pfam.xfam.org/family/PF00400
+#   - WD40 repeats are so named because they typically consist of ~40 aa and end with a WD dipeptide.
+#  components:
+#   WD40_mtor: the part of the WD40 domain that interacts with MTOR
+#    comments:
+#     - The narrow part of the beta-propeller structure contacts MTOR (Yang et al., 2013).
+#     - The MLST8-MTOR interface involves six of the seven WD40 repeats in MLST8,
+#       both helices and the intervening loop of the LBE sequence in MTOR, and a single residue 
+#       from the FATC domain in MTOR (Yang et al., 2013).
+#   WD40_rheb: the part of the WD40 domain that interacts with RHEB
+#    comments:
+#     - interacts with RHEB (Long et al., 2005) 
+#---
+
+end molecule types
+
+begin seed species
+
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~ATP,FRB,LBE_FATC) MTOR_cpc_U2OS
+RPTOR(RNC,RNC_ARM,ARM,S792~0,S855~0,S859~0,S863~0,WD40) RPTOR_cpc_U2OS
+MLST8(WD40) MLST8_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules MTORtot MTOR()
+Molecules RPTORtot RPTOR()
+Molecules MLST8tot MLST8()
+Molecules MLST8_MTOR_bonds MTOR(LBE_FATC!1).MLST8(WD40!1)
+Molecules MTOR_RPTOR_bonds MTOR(HEAT_step!1).RPTOR(RNC_ARM!1)
+Molecules MTOR_RPTOR_dimers MTOR(HEAT_horn,HEAT_step!1,FAT,LBE_FATC).RPTOR(RNC_ARM!1)
+Species all_MTOR_MTOR_dimers MTOR(HEAT_horn!1,FAT!2).MTOR(HEAT_horn!2,FAT!1)
+Species cytMTORC1_full_hexamer MTOR(HEAT_horn!3,HEAT_step!1,FAT!4,PIKK,LBE_FATC!5).RPTOR(RNC_ARM!1,ARM,WD40).MLST8(WD40!5).MTOR(HEAT_horn!4,HEAT_step!2,FAT!3,PIKK,LBE_FATC!6).RPTOR(RNC_ARM!2,ARM,WD40).MLST8(WD40!6)
+Species cytMTORC1_missing1mLST8 MTOR(HEAT_horn!3,HEAT_step!1,FAT!4,PIKK,LBE_FATC!5).RPTOR(RNC_ARM!1,ARM,WD40).MLST8(WD40!5).MTOR(HEAT_horn!4,HEAT_step!2,FAT!3,PIKK,LBE_FATC).RPTOR(RNC_ARM!2,ARM,WD40)
+Species cytMTORC1__missing2mLST8 MTOR(HEAT_horn!3,HEAT_step!1,FAT!4,PIKK,LBE_FATC).RPTOR(RNC_ARM!1,ARM,WD40).MTOR(HEAT_horn!4,HEAT_step!2,FAT!3,PIKK,LBE_FATC).RPTOR(RNC_ARM!2,ARM,WD40)
+Molecules RPTOR_monMTOR_MLST8_trimers RPTOR(RNC_ARM!1).MTOR(HEAT_horn,HEAT_step!1,FAT,LBE_FATC!2).MLST8(WD40!2)
+
+end observables
+
+begin functions
+
+fraction_of_MTOR_in_homodimers() 2*all_MTOR_MTOR_dimers/MTORtot
+fraction_of_MTOR_in_hexamers() 2*cytMTORC1_full_hexamer/MTORtot
+fraction_of_MTORdimers_with_1or2_MLST8() 2*(cytMTORC1_full_hexamer+cytMTORC1_missing1mLST8)/MTORtot
+
+end functions
+
+begin reaction rules
+
+##########################
+# MTOR-MLST8 interaction #
+##########################
+
+# monomeric MLST8 associates with monomeric RPTOR-free MTOR
+#  comments:
+#   - We assume that dimeric MTOR is always bound to RPTOR (i.e., there is no
+#     rule that allows RPTOR to dissociate from dimeric MTOR), so we do
+#     not need to consider the case of dimeric RPTOR-free MTOR.
+#   - MTOR associates with itself via its HEAT_horn and FAT domains, 
+#     so it is monomeric when these parts of the protein are unoccupied.
+#   - MTOR associates with RPTOR via the HEAT_step structure, so MTOR is free
+#     of RPTOR when this structure is unoccupied.
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC)+MLST8(WD40)->\
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC!1).MLST8(WD40!1) kf_MLST8_MTOR
+
+# monomeric MLST8 associates with monomeric or dimeric RPTOR-bound MTOR
+#  comments:
+#   - Association is assumed to be faster than when MTOR is bound to RPTOR (positive cooperativity).
+#   - RPTOR-bound MTOR can be monomeric or dimeric.
+#   - We assume that the oligomerization state of MTOR does not affect
+#     association of MLST8 with MTOR.
+MTOR(HEAT_step!1,LBE_FATC).RPTOR(RNC_ARM!1)+MLST8(WD40)->\
+MTOR(HEAT_step!1,LBE_FATC!2).RPTOR(RNC_ARM!1).MLST8(WD40!2) \
+kf_MLST8_MTOR*phi_kf_MLST8_MTOR_RPTOR
+
+# dissociation of MLST8 from monomeric or dimeric RPTOR-free MTOR
+#  comments:
+#   - MTOR associates with RPTOR via its HEAT_step structure, so it is free
+#     of RPTOR when this structure is unoccupied.
+MTOR(HEAT_step,LBE_FATC!1).MLST8(WD40!1)->\
+MTOR(HEAT_step,LBE_FATC)+MLST8(WD40) kr_MLST8_MTOR
+
+# dissociation of MLST8 from monomeric or dimeric RPTOR-bound MTOR
+#  comments:
+#   - Dissociation is assumed to be slower when MTOR is bound to RPTOR (positive cooperativity).
+#   - RPTOR-bound MTOR can be monomeric or dimeric.
+#   - We assume that the oligomerization state of MTOR does not affect
+#     dissociation of MLST8 from MTOR.
+MTOR(HEAT_step!1,LBE_FATC!2).RPTOR(RNC_ARM!1).MLST8(WD40!2)->\
+MTOR(HEAT_step!1,LBE_FATC).RPTOR(RNC_ARM!1)+MLST8(WD40) kr_MLST8_MTOR*phi_kr_MLST8_MTOR_RPTOR
+
+##########################
+# MTOR-RPTOR interaction #
+##########################
+
+# monomeric RPTOR associates with monomeric MLST8-free MTOR
+#  comments:
+#   - Association is blocked when S792 in RPTOR is phosphorylated (and bound to 14-3-3 proteins).
+#   - MTOR associates with itself via its HEAT_horn and FAT domains, 
+#     so it is monomeric when these parts of the protein are unoccupied.
+#   - MTOR associates with MLST8 via its LBE_FATC structure, so it is free of MLST8
+#     when this structure is unoccupied.
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC)+RPTOR(RNC_ARM,S792~0)->\
+MTOR(HEAT_horn,HEAT_step!1,FAT,LBE_FATC).RPTOR(RNC_ARM!1,S792~0) kf_MTOR_RPTOR
+
+# monomeric RPTOR associates with monomeric MLST8-bound MTOR
+#  comments:
+#   - Association is blocked when S792 in RPTOR is phosphorylated (and bound to 14-3-3 proteins).
+#   - MTOR associates with itself via its HEAT_horn and FAT domains, 
+#     so it is monomeric when these parts of the protien are unoccupied.
+#   - Association is assumed to be faster when MTOR is bound to MLST8 (positive cooperativity).
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC!1).MLST8(WD40!1)+RPTOR(RNC_ARM,S792~0)->\
+MTOR(HEAT_horn,HEAT_step!2,FAT,LBE_FATC!1).MLST8(WD40!1).RPTOR(RNC_ARM!2,S792~0) \
+kf_MTOR_RPTOR*phi_kf_MLST8_MTOR_RPTOR
+
+# dissociation of RPTOR from monomeric MLST8-free MTOR
+#  comments:
+#   - We assume that dissociation of RPTOR from dimeric MTOR is unfavorable, so we 
+#     do not allow for dissociation of RPTOR from dimeric MTOR.
+#   - MTOR associates with itself via its HEAT_horn and FAT domains, 
+#     so it is monomeric when these parts of the protein are unoccupied.
+#   - MTOR associates with MLST8 via its LBE_FATC structure, so it is free of MLST8
+#     when this structure is unoccupied.
+MTOR(HEAT_horn,HEAT_step!1,FAT,LBE_FATC).RPTOR(RNC_ARM!1)->\
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC)+RPTOR(RNC_ARM) kr_MTOR_RPTOR
+
+# dissociation of RPTOR from monomeric MLST8-bound MTOR
+#  comments:
+#   - We assume that dissociation of RPTOR from dimeric MTOR is unfavorable, so we
+#     do not allow for dissociation of RPTOR from dimeric MTOR.
+#   - Dissociation is assumed to be slower when MTOR is bound to MLST8 (positive cooperativity).
+MTOR(HEAT_horn,HEAT_step!2,FAT,LBE_FATC!1).MLST8(WD40!1).RPTOR(RNC_ARM!2)->\
+MTOR(HEAT_horn,HEAT_step,FAT,LBE_FATC!1).MLST8(WD40!1)+RPTOR(RNC_ARM) \
+kr_MTOR_RPTOR*phi_kr_MLST8_MTOR_RPTOR
+
+#########################
+# MTOR homodimerization #
+#########################
+
+# RPTOR-dependent formation of an MTOR homodimer
+#  comments:
+#   - MTOR homodimerization is taken to require RPTOR stabilization of MTOR's HEAT domain.
+#   - We assume that homodimerization only occurs in the cytosol, meaning that
+#     the N-lobe of MTOR's kinase domain is not bound to lysosomal GTP-loaded RHEB and that 
+#     RPTOR's ARM domain is not bound to a lysosomal RRAGA/B-RRAGC/D dimer
+MTOR(HEAT_horn,HEAT_step!1,FAT,PIKK).RPTOR(RNC_ARM!1,ARM)+\
+MTOR(HEAT_horn,HEAT_step!2,FAT,PIKK).RPTOR(RNC_ARM!2,ARM)<->\
+MTOR(HEAT_horn!3,HEAT_step!1,FAT!4,PIKK).RPTOR(RNC_ARM!1,ARM).\
+MTOR(HEAT_horn!4,HEAT_step!2,FAT!3,PIKK).RPTOR(RNC_ARM!2,ARM) kf_MTOR_MTOR,kr_MTOR_MTOR
+ 
+# degradation of free MLST8
+MLST8(WD40)->0 kdeg_MLST8 
+  
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibrate to complete assembly (3 hrs)
+simulate({method=>"ode",suffix=>"equil",t_start=>0,t_end=>10800,n_steps=>300,print_functions=>1})
+saveConcentrations()
+
+# simulate induced degradation of free MLST8 (to zero abundance)
+resetConcentrations()
+setParameter("kdeg_MLST8",1) # kdeg changes from 0 to 1 /s
+simulate({method=>"ode",suffix=>"prod",t_start=>10800,t_end=>21600,n_steps=>300,print_functions=>1})
+
+end actions

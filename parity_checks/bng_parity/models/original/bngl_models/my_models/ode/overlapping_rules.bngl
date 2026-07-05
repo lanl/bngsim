@@ -1,0 +1,110 @@
+begin model
+
+begin parameters
+
+p 0.1 # dimensionless
+koff 0.1 # /s
+L_copyNum 10000 # molecules per cell
+
+end parameters
+
+begin molecule types
+
+L1(r,r,r)
+R1(l)
+
+L2(r,r,r)
+R2(l)
+
+L3(r,r,r)
+R3(l)
+
+end molecule types
+
+begin seed species
+
+L1(r!1,r!2,r!3).R1(l!1).R1(l!2).R1(l!3) L_copyNum/3
+L2(r!1,r!2,r!3).R2(l!1).R2(l!2).R2(l!3) L_copyNum/3
+L3(r!1,r!2,r!3).R3(l!1).R3(l!2).R3(l!3) L_copyNum/3
+
+L1(r!1,r!2,r).R1(l!1).R1(l!2) L_copyNum/3
+L2(r!1,r!2,r).R2(l!1).R2(l!2) L_copyNum/3
+L3(r!1,r!2,r).R3(l!1).R3(l!2) L_copyNum/3
+
+L1(r!1,r,r).R1(l!1) L_copyNum/3
+L2(r!1,r,r).R2(l!1) L_copyNum/3
+L3(r!1,r,r).R3(l!1) L_copyNum/3
+
+end seed species
+
+begin observables
+
+Species free_L1 L1(r,r,r)
+Species singly_bound_L1 L1(r!+,r,r)
+Species doubly_bound_L1 L1(r!+,r!+,r)
+Species triply_bound_L1 L1(r!+,r!+,r!+)
+
+Species free_L2 L2(r,r,r)
+Species singly_bound_L2 L2(r!+,r,r)
+Species doubly_bound_L2 L2(r!+,r!+,r)
+Species triply_bound_L2 L2(r!+,r!+,r!+)
+
+Species free_L3 L3(r,r,r)
+Species singly_bound_L3 L3(r!+,r,r)
+Species doubly_bound_L3 L3(r!+,r!+,r)
+Species triply_bound_L3 L3(r!+,r!+,r!+)
+
+end observables
+
+begin functions
+
+# None
+
+end functions
+
+begin reaction rules
+
+###########
+# Model 1 #
+###########
+
+# generic bond-breaking rule
+L1(r!1).R1(l!1)->L1(r)+R1(l) koff
+
+###########
+# Model 2 #
+###########
+
+L2(r!1,r!2,r!3).R2(l!1).R2(l!2).R2(l!3)->L2(r!1,r!2,r).R2(l!1).R2(l!2)+R2(l) p*koff
+L2(r!1,r!2,r).R2(l!1).R2(l!2)->L2(r!1,r,r).R2(l!1)+R2(l) p*koff
+L2(r!1,r,r).R2(l!1)->L2(r,r,r)+R2(l) p*koff
+
+L2(r!1).R2(l!1)->L2(r)+R2(l) (1-p)*koff
+
+###########
+# Model 3 #
+###########
+
+L3(r!1,r!2,r!3).R3(l!1).R3(l!2).R3(l!3)->L3(r!1,r!2,r).R3(l!1).R3(l!2)+R3(l) koff
+L3(r!1,r!2,r).R3(l!1).R3(l!2)->L3(r!1,r,r).R3(l!1)+R3(l) koff
+L3(r!1,r,r).R3(l!1)->L3(r,r,r)+R3(l) koff
+
+L3(r!1).R3(l!1)->L3(r)+R3(l) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+saveConcentrations()
+
+resetConcentrations()
+simulate({suffix=>"BNG",method=>"ode",t_start=>0,t_end=>5,n_steps=>100})
+
+resetConcentrations()
+simulate({suffix=>"NFS",method=>"nf",complex=>1,t_start=>0,t_end=>5,n_steps=>100})
+
+end actions

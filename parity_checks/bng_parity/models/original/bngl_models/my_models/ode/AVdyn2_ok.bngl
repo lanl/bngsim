@@ -1,0 +1,113 @@
+begin model
+# A population dynamics model for omegasomes, phagophores, and autophagosomes
+begin parameters
+# smallest single-precision floating-point number
+epsilon 2^-126 
+# parameter estimates from Martin et al. (2013)
+ksynmin 0.18 # vesicles per min
+ksynmax 0.71 # vesicles per min
+c 0.037 # /min
+# amino acid (AA) abundance
+# AA = 100 => nutrient replete condition
+# AA = 0 => AA starvation
+# AA is in the set {0, 1, 5, 7, 10, 100}.
+AA 100 # percent
+# presence/absence of BafA1
+# delta_b = 0 => -BafA1
+# delta_b = 0 => +BafA1
+delta_b 0 # Boolean indicator
+# efficiency of BafA1 at inhibiting AP clearance
+BafA1efficiency 0.9
+# rate constant for zero-order constitutive omegasome assembly
+kass 0.028 # omegasomes per min
+# rate constant for first-order disassembly of unoccupied omegasomes
+kdis 0.05 # /min
+kdegmax=c # /min
+# AA level at which AA/(AA+EC50_syn)=1/2
+EC50_syn 1 # percent
+# AP count at which EC50_deg/([AP]+EC50_deg)=1/2
+EC50_deg 50
+EC50_mat 1
+kmatmin 0.01
+kmatmax 0.05
+relaxationTime 90 # min
+krelax=log2(2)/relaxationTime # /min  
+end parameters
+begin molecule types
+# omegasome
+OM(s)
+# phagophore
+PG(s)
+# autophagosome
+AP()
+tim()
+end molecule types
+begin seed species
+OM(s) 0
+PG(s) 0
+AP() 0
+tim() 0
+end seed species
+begin observables
+Molecules DFCP1_readout OM() # same as OM(s) OM(s!+)
+Molecules WIPI_readout PG() # same as PG(s!+)
+Molecules LC3_readout PG() AP() # same as PG(s!+) AP()
+Molecules freeOM OM(s)
+Molecules occupiedOM OM(s!+)
+Molecules APcount AP()
+Molecules PGcount PG()
+Molecules t tim()
+end observables
+begin functions
+BafA1()=delta_b
+ksyn()=ksynmax-(ksynmax-ksynmin)*(AA/(AA+EC50_syn))
+kmat()=kmatmin+(kmatmax-kmatmin)*(1-exp(-krelax*t)) # increasing maturation rate constant with time
+# if [AP]<<EC50_deg then degradation rate = kdegmax*[AP]
+# if [AP]>>EC50_deg then degradation rate = kdegmax*EC50_deg
+kdeg()=if(delta_b>epsilon,(1-BafA1efficiency)*kdegmax*(EC50_deg/(APcount+EC50_deg)),kdegmax*(EC50_deg/(APcount+EC50_deg)))
+percentAA() AA
+feedback()=0.5*kass*PGcount
+end functions
+begin reaction rules
+# counter for time
+0->tim() 1
+# zero-order constitutive assembly of omegasomes
+0->OM(s) kass
+# positive feedback
+0->OM(s) feedback()
+# first-order disassembly of *free* omegasomes
+# We assume that occupied omegasomes are protected from disassembly.
+OM(s)->0 kdis
+# AA-controlled omegasome-dependent synthesis of phagophores
+OM(s)->OM(s!1).PG(s!1) ksyn()
+# building block-limited maturation of phagophores into autophagosomes, 
+#   regeneration of free omegasomes
+OM(s!1).PG(s!1)->OM(s)+AP() kmat()
+# saturable clearance of autophagosomes, +/- BafA1-mediated inhibition of degradation
+AP()->0 kdeg()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration to steady state
+# -BafA1, AA replete condition
+setParameter("AA",100)
+setParameter("delta_b",0)
+simulate({suffix=>"equil_to_AAreplete-BafA1",method=>"ode",t_end=>12000,n_steps=>300,print_functions=>1})
+saveConcentrations()
+# +BafA1, AA replete condition
+resetConcentrations()
+setParameter("AA",100)
+setParameter("delta_b",1)
+simulate({suffix=>"AAreplete+BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# -BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setParameter("delta_b",0)
+simulate({suffix=>"AAstarvation-BafA1",method=>"ode",t_end=>360,n_steps=>180,print_functions=>1})
+# +BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setParameter("delta_b",1)
+simulate({suffix=>"AAstarvation+BafA1",method=>"ode",t_end=>3600,n_steps=>180,print_functions=>1})
+end actions

@@ -1,0 +1,64 @@
+# Edge case: rule whose LHS is a 3-MOLECULE pattern (ternary complex)
+# Tests:  count_multi_molecule_embeddings handles a single 3-mol
+#         reactant pattern (one ReactantPattern with 3 Molecules
+#         connected by 2 Bonds).  Most coverage models top out at
+#         2-mol patterns; the cooperative-binding pattern type is
+#         present in ft_signaling_cascade but only bimolecularly.
+#         The 3-mol pattern uniquely tests the "seed mol + walk to
+#         each of 2 partners" embedding loop, and the partner-mol
+#         BFS / cycle-bond skip logic that drives ss_tlbr_rings (the
+#         AgentPool cycle-bond counter sprint, P7).
+# Edge:   the rule SETS a state on the central molecule when the
+#         flanking molecules are both bound — this is "the central
+#         site has both neighbours" sensing, which only fires when
+#         the 3-mol embedding is complete.
+# Tier:   base
+# invariant: conserved A_total = 30
+# invariant: conserved B_total = 30
+# invariant: conserved C_total = 30
+
+begin model
+begin parameters
+    A_tot  30
+    B_tot  30
+    C_tot  30
+    kf     0.05   # binding (both pairs)
+    kr     0.05   # unbinding
+    k_act  0.20   # /s, central activation when ternary complex forms
+end parameters
+
+begin molecule types
+    A(b)
+    B(a,c,st~off~on)
+    C(b)
+end molecule types
+
+begin seed species
+    A(b)             A_tot
+    B(a,c,st~off)    B_tot
+    C(b)             C_tot
+end seed species
+
+begin observables
+    Molecules  A_total      A()
+    Molecules  B_total      B()
+    Molecules  C_total      C()
+    Molecules  AB           A(b!1).B(a!1)
+    Molecules  BC           B(c!1).C(b!1)
+    Molecules  ABC          A(b!1).B(a!1,c!2).C(b!2)
+    Molecules  B_active     B(st~on)
+    Species    ABC_active   A(b!1).B(a!1,c!2,st~on).C(b!2)
+end observables
+
+begin reaction rules
+    A(b) + B(a) <-> A(b!1).B(a!1)   kf, kr
+    B(c) + C(b) <-> B(c!1).C(b!1)   kf, kr
+    # Ternary-pattern rule: central B activates only when both
+    # flanking molecules are present and bonded to it.
+    A(b!1).B(a!1,c!2,st~off).C(b!2) -> A(b!1).B(a!1,c!2,st~on).C(b!2)   k_act
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

@@ -1,0 +1,82 @@
+#Razi: This model is developed to checks the product molecules to make sure that the reaction products are separated islands
+
+begin model
+
+begin parameters
+
+K1 0.1
+K2 0.1
+K3 0.1
+
+end parameters
+
+begin molecule types
+
+X(y,z)
+Y(x,z)
+Z(x,y)
+
+end molecule types
+
+begin seed species
+
+#X(y,z)  1000
+#Y(x,z)  1100
+#Z(x,y)  1200
+X(y!1,z!2).Y(x!1,z!3).Z(x!2,y!3) 1000
+#X(y!1,z).Y(x!1,z!3).Z(x!2,y!3) 2000
+
+end seed species
+
+begin observables
+
+#Molecules Xtot X()
+#Molecules Ytot Y()
+#Molecules Ytot Z()
+
+Species XY X(y!1,z).Y(x!1,z)
+Species XZ X(y,z!1).Z(x!1,y)
+Species YZ Y(x,z!1).Z(x,y!1)
+Species XYZ X(y!1,z).Y(x!1,z!2).Z(x,y!2)    	 #X-Y-Z: no Z-X connection
+Species YZX X(y,z!3).Y(x,z!2).Z(x!3,y!2)  		 #Y-Z-X: no X-Y connection
+Species ZXY X(y!1,z!3).Y(x!1,z).Z(x!3,y)    	 #Z-X-Y: no Y-Z connection
+Species XYZloop X(y,z!2).Y(x,z!3).Z(x!2,y!3) #X-Y-Z-X
+Species XYZloop2 X(y!1,z!2).Y(x!1,z!3).Z(x!2,y!3) #X-Y-Z-X 
+
+end observables
+
+
+
+begin reaction rules
+
+#XYbind: X(y,z!?)+Y(x,z!?)->X(y!1,z).Y(x!1,z)   0.1
+#XZbind: X(y!?,z)+Z(x,y!?)->X(y,z!1).Z(x!1,y)   0.1
+#YZbind: Y(x!?,z)+Z(x!?,y)->Y(x,z!1).Z(x,y!1)   0.1
+
+
+
+# Razi Note: In the old version, this reaction applies to X.Y.Z molecules with and without loop and the output products are: 
+# XYZ   ==> X + YZ
+# ZXY   ==> ZX + Y
+# XYZloop   ==> YZX
+# In the new  version, this reaction applies only to X.Y.Z molecules without loop [if co flag is set] and the output products are: 
+# XYZ   ==> X + YZ
+# ZXY   ==> ZX + Y
+# XYZloop   ==> YZX [invalid]
+# To see the difference run the xml file with nfsim with and without the switch -co 
+# with the active check output flag (co), we should have more of loops since it is not broken by the XYunbin rule
+#XYunbind: X(y!1,z!+).Y(x!1,z!+)->X(y,z)+Y(x,z)   0.5   
+
+XYunbind1: X(y!1).Y(x!1)->X(y,z)+Y(x,z!3).Z(y!3,x)   0.5   
+XYunbind2: X(y!1).Y(x!1)->X(y,z!2).Z(x!2,y)+Y(x,z)   0.5   
+XYunbind3: X(y!1).Y(x!1)->X(y,z)+Y(x,z)   0.5   
+end reaction rules
+writeXML();
+end model
+
+#begin actions
+
+#simulate({method=>"nf",gml=>100000,complex=>1,get_final_state=>0,print_functions=>1, t_start=>0,t_end=>1,n_steps=>100})
+          
+#end actions
+

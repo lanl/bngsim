@@ -1,0 +1,85 @@
+begin model
+#@model_id: m21_Haldane_chemostat
+#@title: Haldane (substrate-inhibited) chemostat
+#@description: Chemostat with substrate-inhibited growth kinetics (Andrews/Haldane). Substrate inhibition via S^2/K_I term in the Monod denominator. From Andrews (1968) Biotechnol Bioeng 10:707-723.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  # Counts scaled by 100 for integer SSA counts
+  scale    100            # dimensionless
+  mu_max   1.0            # 1/time  max specific growth rate
+  K_S      50             # molecules  half-saturation (0.5 * scale)
+  K_I      200            # molecules  inhibition constant (2.0 * scale)
+  Y_xs     0.5            # dimensionless  biomass yield
+  D        0.1            # 1/time  dilution rate
+  S_in     500            # molecules  inlet substrate (5.0 * scale)
+end parameters
+
+begin molecule types
+  X()    # biomass
+  S()    # substrate
+end molecule types
+
+begin seed species
+  X()  10    # molecules  (0.1 * scale)
+  S()  400   # molecules  (4.0 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X  X()
+  Molecules  Obs_S  S()
+end observables
+
+begin functions
+  # Haldane growth rate: mu_max * S / (K_S + S + S^2/K_I)
+  mu()         = mu_max * Obs_S / (K_S + Obs_S + Obs_S * Obs_S / K_I)
+
+  # Biomass growth: mu * X
+  growth_X()   = mu() * Obs_X
+
+  # Substrate consumption by growth: (1/Y_xs) * mu * X
+  consume_S()  = (1 / Y_xs) * mu() * Obs_X
+
+  # Substrate inflow: D * S_in (constant)
+  inflow_S()   = D * S_in
+end functions
+
+begin reaction rules
+  # Biomass growth (Haldane kinetics)
+  0 -> X()  growth_X()
+
+  # Biomass dilution/washout (first-order)
+  X() -> 0  D
+
+  # Substrate inflow from reservoir (zeroth-order)
+  0 -> S()  inflow_S()
+
+  # Substrate dilution/washout (first-order)
+  S() -> 0  D
+
+  # Substrate consumption by biomass growth
+  S() -> 0  consume_S()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+end actions

@@ -1,0 +1,177 @@
+begin model
+# References:
+# - Diamante LM, Lan T (2014) J Food Processing 2014: 234583.
+begin parameters
+# fraction of a cell to be considered
+f 1 # dimensionless (0<f<=1)
+# We will assume no cell growth (i.e., volumes are constant).
+pi=2*asin(1) # dimensionless ratio
+# Avogadro constant
+NA 6.02214076e23 # molec/mol (exact value)
+Temp 37+273.15 # K (physiological temperature)
+# viscosities of the cytosol (H2O) and plasma membrane (lipid)
+mu_H2O=2.414e-2*10^(247.8/(Temp-140)) # mPa s (0.69 mPa s)
+mu_lipid 34.1 # mPa s viscosity of olive oil @ 38 degrees C (Diamante and Lan, 2014)
+cellDiameter 2e-4 # dm (20 microns)
+Area=pi*cellDiameter^2 # dm^2 per cell 
+# height of thin layer adjacent to cytoplasmic side of plasma membrane
+height 50e-9 # dm (5 nm)
+# effective volume of thin layer
+Vlayer=f*Area*height*(mu_lipid/mu_H2O) # L per cell
+#   Reactants embedded in or tethered to the plasma membrane diffuse more slowly 
+#   than when they are free in the cytosol, which slows bimolecular reactions.
+#   We account for this effect by adjusting the thin layer volume by the relative
+#   viscosities of the lipid membrane and the cytosol (water).
+# cell density (cells are in suspension)
+cellDensity 1e9 # cells/L (1e6 cells per mL)
+# volume of extracellular fluid surrounding a single cell (on average)
+Vecf=f*1/cellDensity # L/cell
+# volume of cytoplasm
+Vcyt f*1e-12 # L/cell (1 pL)
+# volume of nucleus
+Vnuc f*5e-13 # L/cell (0.5 pL)
+# initial abundances of ligand, receptor, and TF
+L_conc 0.5e-9 # M (0.5 nM)
+L_init=L_conc*(NA*Vecf) # M converted to molec/cell 
+R_init f*1e5 # molec/cell
+TF_init f*5e4 # molec/cell
+# forward and reverse rate constants for ligand-receptor binding
+kp1 1e7/(NA*Vecf) # /M/s converted to /(molec/cell)/s
+km1 1e-2 # /s
+# rate constant for receptor internalization and recycling to plasma membrane
+krecycle 1/60 # /s
+# forward and reverse rate constants for receptor-TF binding
+kp2_3D 1e6/(NA*Vcyt) # /M/s converted to /(molec/cell)/s
+kp2_2D=kp2_3D*(Vcyt/Vlayer) # /(molec/cell)/s
+km2 1e-1 # /s
+# rate constants for TF phosphorylation and dephosphorylation
+kphos 0.1 # /s
+kdephos 0.05 # /s
+# forward and reverse rate constants for TF dimerization
+kdim_3D_cyt 5e6/(NA*Vcyt) # /M/s converted to /(molec/cell)/s
+kdim_2D_ipm=kdim_3D_cyt*(Vcyt/Vlayer) # /(molec/cell)/s
+kdim_3D_nuc=kdim_3D_cyt*(Vcyt/Vnuc) # /(molec/cell)/s
+kdiss 0.2 # /s
+# rate parameters for mRNA synthesis
+ksynth f*0.5 # molec/s
+K50 f*10 # molec
+# rate constant for mRNA turnover
+kdeg 0.01 # /s
+# transfer rate constants
+kCytNuc_TF 0.01 # /s
+kNucCyt_TF 0.05 # /s
+kNucCyt_mRNA 0.05 # /s
+end parameters
+begin molecule types
+L(r) # ligand
+R(l,t) # receptor
+TF(r,a~0~P,loc~cyt~nuc) # transcription factor
+mRNA(loc~cyt~nuc) # mRNA
+end molecule types
+begin seed species
+L(r) L_init
+R(l,t) R_init
+TF(r,a~0,loc~cyt) TF_init*(kNucCyt_TF/(kCytNuc_TF+kNucCyt_TF))
+TF(r,a~0,loc~nuc) TF_init*(kCytNuc_TF/(kCytNuc_TF+kNucCyt_TF))
+mRNA(loc~nuc) 0
+end seed species
+begin observables
+Molecules total_ligand L()
+Molecules total_receptor R()
+Molecules total_TF TF()
+Molecules Lfree L(r)
+Molecules Rfree R(l)
+Molecules LboundR R(l!+)
+Molecules inactiveTF TF(a~0!?)
+Molecules pTF_all TF(a~P!?)
+Molecules pTF_allMonomers TF(a~P)
+Species all_dimers_of_pTF TF(a~P!1).TF(a~P!1)
+Molecules all_pTF_in_cyt TF(a~P!?,loc~cyt)
+Molecules all_pTR_in_nuc TF(a~P!?,loc~nuc)
+Molecules IllegalDimers TF(a~P!1,loc~cyt).TF(a~P!1,loc~nuc) # should be 0 abundance
+Molecules RrecruitedTF TF(r!+)
+Molecules cytTF TF(loc~cyt)
+Molecules nucTF TF(loc~nuc)
+Species cytTFdimers TF(a~P!1,loc~cyt).TF(a~P!1,loc~cyt)
+Species nucTFdimers TF(a~P!1,loc~nuc).TF(a~P!1,loc~nuc)
+Molecules cyt_mRNA mRNA(loc~cyt)
+Molecules nuc_mRNA mRNA(loc~nuc)
+end observables
+begin functions
+totalTFdimers()=cytTFdimers+nucTFdimers
+totalmRNA()=cyt_mRNA+nuc_mRNA
+Vol_ratio()=Vcyt/Vlayer
+synthesisRate()=ksynth*nucTFdimers^2/(K50^2+nucTFdimers^2)
+end functions
+begin reaction rules
+##########################################################
+# reactions in the extracellular fluid (ECF) compartment #
+##########################################################
+# ligand-receptor binding 
+L(r)+R(l)<->L(r!1).R(l!1) kp1,km1 # kp1 is scaled by 1/Vecf
+############################################################################
+# reactions in the cytosol and at the inner leaflet of the plasma membrane #
+############################################################################
+# ligand internalization via endocytosis 
+#   & ligand degradation 
+#   & recycling of receptor from endocytic compartments to the plasma membrane
+L(r!1).R(l!1)->R(l) krecycle
+# recruitment of monomeric TF to ligand-bound receptor 
+R(l!+,t)+TF(r,a~?,loc~cyt)->R(l!+,t!1).TF(r!1,a~?,loc~cyt) kp2_3D
+#   kp2_3D is scaled by 1/Vcyt
+# recruitment of dimeric TF to receptor
+R(l!+,t)+TF(r,a~P!1,loc~cyt).TF(r,a~P!1,loc~cyt)->\
+R(l!+,t!2).TF(r!2,a~P!1,loc~cyt).TF(r,a~P!1,loc~cyt) kp2_3D
+# receptor crosslinking by dimeric TF
+R(t!1).TF(r!1,a~P!2,loc~cyt).TF(r,a~P!2,loc~cyt)+R(l!+,t)->\
+R(t!1).TF(r!1,a~P!2,loc~cyt).TF(r!3,a~P!2,loc~cyt).R(l!+,t!3) kp2_2D
+#   kp2_2D is scaled by 1/Vipm
+# receptor-TF dissociation
+R(t!1).TF(r!1)->R(t)+TF(r) km2
+# ligand-stimulated activating phosphorylation of receptor-bound monomeric TF
+R(l!+,t!1).TF(r!1,a~0)->R(l!+,t!1).TF(r!1,a~P) kphos
+# deactivation of monomeric TF (taken to occur only in cytosol)
+TF(a~P,loc~cyt)->TF(a~0,loc~cyt) kdephos
+# TF dimerization at the plasma membrane
+TF(r!+,a~P)+TF(r,a~P,loc~cyt)->TF(r!+,a~P!1).TF(r,a~P!1,loc~cyt) kdim_3D_cyt
+#   kdim_3D_cyt is scaled by 1/Vcyt
+TF(r!+,a~P)+TF(r!+,a~P,loc~cyt)->TF(r!+,a~P!1).TF(r!+,a~P!1,loc~cyt) kdim_2D_ipm
+#   kdim_2D_ipm is scaled by 1/Vipm
+# TF dimerization in the cytosol 
+TF(r,a~P,loc~cyt)+TF(r,a~P,loc~cyt)->\
+TF(r,a~P!1,loc~cyt).TF(r,a~P!1,loc~cyt) kdim_3D_cyt
+# TF dimer dissociation in the cytosolic compartment
+TF(a~P!1,loc~cyt).TF(a~P!1,loc~cyt)->TF(a~P,loc~cyt)+TF(a~P,loc~cyt) kdiss
+# mRNA degradation (only occurs in the cytosol)
+mRNA(loc~cyt)->0 kdeg
+#######################
+# transport processes #
+#######################
+# TF moves from cytosol to nucleus
+TF(r,a~?,loc~cyt)->TF(r,a~?,loc~nuc) kCytNuc_TF
+TF(r,a~P!1,loc~cyt).TF(r,a~P!1,loc~cyt)->\
+TF(r,a~P!1,loc~nuc).TF(r,a~P!1,loc~nuc) 10*kCytNuc_TF
+# TF moves from nucleus to cytosol
+TF(a~?,loc~nuc)->TF(a~?,loc~cyt) kNucCyt_TF
+TF(a~P!1,loc~nuc).TF(a~P!1,loc~nuc)->\
+TF(a~P!1,loc~cyt).TF(a~P!1,loc~cyt) kNucCyt_TF
+# mRNA moves from nucleus to cytosol
+mRNA(loc~nuc)->mRNA(loc~cyt) kNucCyt_mRNA
+############################ 
+# reactions in the nucleus #
+############################
+# reversible TF dimerization
+TF(a~P,loc~nuc)+TF(a~P,loc~nuc)<->\
+TF(a~P!1,loc~nuc).TF(a~P!1,loc~nuc) kdim_3D_nuc,kdiss
+#   kdim_3D_nuc is scaled by 1/Vnuc
+# saturable dimeric TF-dependent mRNA synthesis
+0->mRNA(loc~nuc) synthesisRate()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({suffix=>"ode",method=>"ode",t_end=>2500,n_steps=>250,print_functions=>1})
+resetConcentrations()
+simulate({suffix=>"ssa",method=>"ssa",t_end=>2500,n_steps=>250,print_functions=>1})
+end actions

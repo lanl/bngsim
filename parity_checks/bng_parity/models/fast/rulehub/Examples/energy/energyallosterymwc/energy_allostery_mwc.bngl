@@ -1,0 +1,84 @@
+# Model: energy_allostery_mwc.bngl
+# Description: Implements the classic Monod-Wyman-Changeux (MWC) model of allostery using energy patterns.
+#              Receptor P exists in T (Tense, low affinity) and R (Relaxed, high affinity) states.
+#              Ligand binding shifts the equilibrium towards the R state.
+
+begin model
+
+begin parameters
+    # --- MWC Energy Parameters ---
+    # T state is lower energy (more stable) in absence of ligand
+    G_T 0
+    G_R 2.0  # R state cost
+    
+    # Ligand binding energies
+    # R state binds Ligand tightly (more negative G)
+    G_bind_R -8.0
+    # T state binds Ligand weakly
+    G_bind_T -2.0
+    
+    # --- Kinetics Barriers ---
+    Ea_conf 3.0 # Barrier for T <-> R transition
+    Ea_bind 2.0 # Barrier for Ligand binding
+    
+    RT 1.0
+    phi 0.5
+    
+    # --- Initial Conditions ---
+    L_tot 100
+    P_tot 50
+end parameters
+
+begin molecule types
+    # P: Protein with 2 binding sites 's' and conformational state 'c'
+    P(s,s,c~T~R)
+    L(r)
+end molecule types
+
+begin seed species
+    P(s,s,c~T) P_tot # Start predominantly in T state
+    L(r)       L_tot
+end seed species
+
+begin observables
+    Molecules P_Total P() # Note: constant total (conserved) P()
+    Molecules P_T P(c~T)
+    Molecules P_R P(c~R)
+    Molecules Bound_L L(r!+)
+    Molecules Fully_Bound_R P(c~R,s!+,s!+)
+end observables
+
+begin energy patterns
+    # Energy of the conformational states
+    P(c~T) G_T
+    P(c~R) G_R
+    
+    # Binding energy depends on the conformation of P
+    # If P is in state R, bond energy is G_bind_R
+    # If P is in state T, bond energy is G_bind_T
+    # BioNetGen automatically applies the correct term based on the match
+    P(c~R,s!1).L(r!1) G_bind_R
+    P(c~T,s!1).L(r!1) G_bind_T
+    
+    # Free Ligand reference energy
+    L(r) 0
+end energy patterns
+
+begin reaction rules
+    # 1. Conformational Change P(T) <-> P(R)
+    # The rate is governed by the energy difference between the entire complex in T vs R state.
+    # As ligands bind, the R state becomes more favorable due to G_bind_R < G_bind_T.
+    P(c~T) <-> P(c~R) Arrhenius(phi, Ea_conf)
+    
+    # 2. Ligand Binding
+    # We write a generic binding rule P(s) + L(r).
+    # The 'Arrhenius' rate law uses the energy patterns to determine the specific Delta G 
+    # for T-binding vs R-binding.
+    P(s) + L(r) <-> P(s!1).L(r!1) Arrhenius(phi, Ea_bind)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>20, n_steps=>200})

@@ -1,0 +1,856 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" metaid="_560256" level="2" version="4">
+  <model metaid="_761092" id="Sorokina2009_PhyA_FHL_ON_OFF_9h" name="Sorokina2009_PhyA_FHL_ON_OFF_9h">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+    Final version obtained by merging of the  PhyA_FHL model with On_OFF 9h long experiment    <p>This model originates from BioModels Database: A Database of Annotated Published Models (http://www.ebi.ac.uk/biomodels/). It is copyright (c) 2005-2011 The BioModels.net Team.      <br/>
+          To the extent possible under law, all copyright and related or neighbouring rights to this encoded model have been dedicated to the public domain worldwide. Please refer to      <a href="http://creativecommons.org/publicdomain/zero/1.0/" title="Creative Commons CC0">CC0 Public Domain Dedication</a>
+          for more information.      </p>
+    <p>In summary, you are entitled to use this encoded model in absolutely any manner you deem suitable, verbatim, or with modification, alone or embedded it in a larger context, redistribute it, commercially or not, in a restricted way or not..      <br/>
+    <br/>
+          To cite BioModels Database, please use:      <a href="http://www.ncbi.nlm.nih.gov/pubmed/20587024" target="_blank">Li C, Donizelli M, Rodriguez N, Dharuri H, Endler L, Chelliah V, Li L, He E, Henry A, Stefan MI, Snoep JL, Hucka M, Le Novère N, Laibe C (2010) BioModels Database: An enhanced, curated and annotated resource for published quantitative kinetic models. BMC Syst Biol., 4:92.</a>
+</p>
+</body>
+</notes><annotation>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+    <rdf:Description rdf:about="#_761092">
+      <bqmodel:is>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/biomodels.db/MODEL0911120000"/>
+        </rdf:Bag>
+      </bqmodel:is>
+      <bqmodel:isDescribedBy>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/pubmed/19761615"/>
+        </rdf:Bag>
+      </bqmodel:isDescribedBy>
+      <bqbiol:hasTaxon>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/taxonomy/4932"/>
+        </rdf:Bag>
+      </bqbiol:hasTaxon>
+      <bqbiol:isVersionOf>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/go/GO:0010017"/>
+        </rdf:Bag>
+      </bqbiol:isVersionOf>
+    </rdf:Description>
+  </rdf:RDF>
+</annotation><listOfCompartments>
+  <compartment metaid="_761093" id="colony" name="colony" size="0.0001" outside="default"/>
+  <compartment metaid="_761094" id="gel" name="gel" size="0.02" outside="default"/>
+  <compartment metaid="_761095" id="default" name="default" size="1"/>
+</listOfCompartments><listOfSpecies>
+  <species metaid="_761096" id="FRL" name="FRL" compartment="colony" initialAmount="0"/>
+  <species metaid="_761098" id="Pfr_GBD_c" name="Pfr_GBD_c" compartment="colony" initialAmount="0"/>
+  <species metaid="_761099" id="Pfr_GBD_f" name="Pfr_GBD_f" compartment="colony" initialAmount="0"/>
+  <species metaid="_761101" id="Pfr_PIF3" name="Pfr_PIF3" compartment="colony" initialAmount="0"/>
+  <species metaid="_761102" id="Pr_GBD_f" name="Pr_GBD_f" compartment="colony" initialAmount="0"/>
+  <species metaid="_761104" id="Pr_PIF3" name="Pr_PIF3" compartment="colony" initialAmount="0"/>
+  <species metaid="_761105" id="RL" name="RL" compartment="colony" initialAmount="0"/>
+  <species metaid="_761107" id="nLUC" name="nLUC" compartment="colony" initialAmount="1"/>
+  <species metaid="_761108" id="nLuc" name="nLuc" compartment="colony" initialAmount="1"/>
+</listOfSpecies><listOfParameters>
+  <parameter metaid="_761170" id="Kbase" name="Kbase" value="0.457713413019138"/>
+  <parameter metaid="_761172" id="mLUC" name="mLUC" value="3"/>
+  <parameter metaid="_761173" id="Pool_Phy" name="Pool_Phy" value="40"/>
+  <parameter metaid="_761175" id="Pool_PIF3" name="Pool_PIF3" value="99.9996024453186"/>
+  <parameter metaid="_761176" id="K1" name="K1" value="1.5"/>
+  <parameter metaid="_761178" id="K2" name="K2" value="0.0118460853656881"/>
+  <parameter metaid="_761179" id="K3" name="K3" value="9.99870580247869"/>
+  <parameter metaid="_761181" id="K_dis" name="K_dis" value="0.0310929101712517"/>
+  <parameter metaid="_761182" id="K_rev" name="K_rev" value="0.204771607516236"/>
+  <parameter metaid="_761184" id="a_Luc" name="a_Luc" value="2"/>
+  <parameter metaid="_761185" id="g_Luc" name="g_Luc" value="1.04620770351146"/>
+  <parameter metaid="_761187" id="n_Luc" name="n_Luc" value="29.4081640279003"/>
+  <parameter metaid="_761188" id="Ka_R" name="Ka_R" value="0.004953"/>
+  <parameter metaid="_761190" id="Ka_FR" name="Ka_FR" value="3.553e-05"/>
+  <parameter metaid="_761191" id="Ki_R" name="Ki_R" value="0.0007439"/>
+  <parameter metaid="_761193" id="Ki_FR" name="Ki_FR" value="0.001701"/>
+  <parameter metaid="_761194" id="p_Luc" name="p_Luc" value="10.0005909042167"/>
+  <parameter metaid="_761196" id="m_Luc1" name="m_Luc1" value="0"/>
+  <parameter metaid="_761197" id="m_Luc" name="m_Luc" value="0.793942683910748"/>
+  <parameter metaid="_761199" id="k_cat" name="k_cat" value="499.790308377165"/>
+  <parameter metaid="_761200" id="Km" name="Km" value="1900000"/>
+  <parameter metaid="_761202" id="RLU" name="RLU" value="10.0013">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+        <notes>optimizedvalue</notes>
+      </body>
+    </notes>
+  </parameter>
+  <parameter metaid="_761203" id="RLU_a" name="RLU_a" value="0"/>
+  <parameter metaid="_761205" id="Ka_560" name="Ka_560" value="0.0003988"/>
+  <parameter metaid="_761206" id="Ki_560" name="Ki_560" value="8.173e-05"/>
+  <parameter metaid="_761208" id="vCell" name="vCell" value="7e-14"/>
+  <parameter metaid="_761209" id="Navogadro" name="Navogadro" value="6.23e+23"/>
+  <parameter metaid="_761211" id="coefnM" name="coefnM" value="43.6"/>
+  <parameter metaid="_761212" id="D" name="D" value="-0.023956"/>
+  <parameter metaid="_761214" id="r0" name="r0" value="1.9092e-05"/>
+  <parameter metaid="_761215" id="A" name="A" value="0.33707"/>
+  <parameter metaid="_761217" id="B" name="B" value="0.5705"/>
+  <parameter metaid="_761218" id="m_S" name="m_S" value="0.00646"/>
+  <parameter metaid="_761220" id="kLUC" name="kLUC" value="0" constant="false"/>
+  <parameter metaid="_761221" id="kLuc" name="kLuc" value="0" constant="false"/>
+  <parameter metaid="_761223" id="Luc" name="Luc" value="0" constant="false"/>
+  <parameter metaid="_761224" id="LUC" name="LUC" value="0" constant="false"/>
+  <parameter metaid="_761226" id="rnaCopies" name="rnaCopies" value="0" constant="false"/>
+  <parameter metaid="_761227" id="lucCopies" name="lucCopies" value="0" constant="false"/>
+  <parameter metaid="_761229" id="PhyCopies" name="PhyCopies" value="0" constant="false"/>
+  <parameter metaid="_761230" id="Pr_GBD_c" name="Pr_GBD_c" value="0" constant="false"/>
+  <parameter metaid="_761232" id="PIF3_GAD" name="PIF3_GAD" value="0" constant="false"/>
+  <parameter metaid="_761233" id="Scyt" name="Scyt" value="0" constant="false"/>
+  <parameter metaid="_761235" id="R_a" name="R_a" value="0" constant="false"/>
+  <parameter metaid="_761236" id="LuM" name="LuM" value="0" constant="false"/>
+</listOfParameters><listOfRules>
+  <assignmentRule metaid="_761151" variable="kLUC">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <divide/>
+        <ci> Kbase </ci>
+        <ci> mLUC </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761153" variable="kLuc">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <divide/>
+        <apply>
+          <times/>
+          <ci> kLUC </ci>
+          <ci> p_Luc </ci>
+        </apply>
+        <ci> m_Luc </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761154" variable="Luc">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> nLuc </ci>
+        <ci> kLuc </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761156" variable="LUC">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> nLUC </ci>
+        <ci> kLUC </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761157" variable="rnaCopies">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> LUC </ci>
+        <ci> kLUC </ci>
+        <ci> coefnM </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761159" variable="lucCopies">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> Luc </ci>
+        <ci> kLuc </ci>
+        <ci> coefnM </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761160" variable="PhyCopies">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <ci> Pool_Phy </ci>
+        <ci> coefnM </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761162" variable="Pr_GBD_c">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <minus/>
+        <apply>
+          <minus/>
+          <apply>
+            <minus/>
+            <apply>
+              <minus/>
+              <apply>
+                <minus/>
+                <ci> Pool_Phy </ci>
+                <ci> Pfr_PIF3 </ci>
+              </apply>
+              <ci> Pr_PIF3 </ci>
+            </apply>
+            <ci> Pfr_GBD_c </ci>
+          </apply>
+          <ci> Pfr_GBD_f </ci>
+        </apply>
+        <ci> Pr_GBD_f </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761163" variable="PIF3_GAD">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <minus/>
+        <apply>
+          <minus/>
+          <ci> Pool_PIF3 </ci>
+          <ci> Pfr_PIF3 </ci>
+        </apply>
+        <ci> Pr_PIF3 </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761165" variable="Scyt">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <cn type="integer"> 2500000 </cn>
+        <apply>
+          <plus/>
+          <ci> A </ci>
+          <apply>
+            <times/>
+            <apply>
+              <divide/>
+              <ci> B </ci>
+              <apply>
+                <plus/>
+                <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+                <cn type="integer"> 1 </cn>
+              </apply>
+            </apply>
+            <apply>
+              <exp/>
+              <apply>
+                <divide/>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <apply>
+                      <divide/>
+                      <cn type="integer"> -1 </cn>
+                      <cn type="integer"> 4 </cn>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> r0 </ci>
+                      <cn type="integer"> 2 </cn>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> D </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <plus/>
+                  <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+                  <cn type="integer"> 1 </cn>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </apply>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761166" variable="R_a">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> k_cat </ci>
+            <ci> Luc </ci>
+            <ci> kLuc </ci>
+            <ci> Scyt </ci>
+          </apply>
+          <apply>
+            <plus/>
+            <ci> Km </ci>
+            <ci> Scyt </ci>
+          </apply>
+        </apply>
+        <ci> RLU_a </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+  <assignmentRule metaid="_761168" variable="LuM">
+    <math xmlns="http://www.w3.org/1998/Math/MathML">
+      <apply>
+        <times/>
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> k_cat </ci>
+            <ci> Luc </ci>
+            <ci> kLuc </ci>
+            <ci> Scyt </ci>
+          </apply>
+          <apply>
+            <plus/>
+            <ci> Km </ci>
+            <ci> Scyt </ci>
+          </apply>
+        </apply>
+        <ci> RLU </ci>
+      </apply>
+    </math>
+  </assignmentRule>
+</listOfRules><listOfReactions>
+  <reaction metaid="_761109" id="LUCtrnbasic" name="LUCtrnbasic" reversible="false">
+    <listOfProducts>
+      <speciesReference metaid="_560268" species="nLUC"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560280">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <ci> Kbase </ci>
+          <ci> kLUC </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761111" id="LUCdeg" name="LUCdeg" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560292" species="nLUC"/>
+    </listOfReactants>
+    <kineticLaw metaid="_560304">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> mLUC </ci>
+            <ci> LUC </ci>
+          </apply>
+          <ci> kLUC </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761112" id="Pfr_GBDtrs" name="Pfr_GBDtrs" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560316" species="Pfr_GBD_c"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560328" species="Pfr_GBD_f"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560341">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K2 </ci>
+          <ci> Pfr_GBD_c </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761114" id="Pr_GBDtrs" name="Pr_GBDtrs" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560353" species="Pr_GBD_f"/>
+    </listOfReactants>
+    <kineticLaw metaid="_560365">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K3 </ci>
+          <ci> Pr_GBD_f </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761115" id="Darkrev_c" name="Darkrev_c" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560378" species="Pfr_GBD_c"/>
+    </listOfReactants>
+    <kineticLaw metaid="_560390">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K_rev </ci>
+          <ci> Pfr_GBD_c </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761117" id="Darkrev_f" name="Darkrev_f" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560402" species="Pfr_GBD_f"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560414" species="Pr_GBD_f"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560426">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K_rev </ci>
+          <ci> Pfr_GBD_f </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761118" id="Pfr_PIF3cplx" name="Pfr_PIF3cplx" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560438" species="Pfr_GBD_f"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560451" species="Pfr_PIF3"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560463" species="Pr_PIF3"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560475">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K1 </ci>
+          <ci> Pfr_GBD_f </ci>
+          <ci> PIF3_GAD </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761120" id="Darkrev_cplx" name="Darkrev_cplx" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560487" species="Pfr_PIF3"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560499" species="Pr_PIF3"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560511">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K_rev </ci>
+          <ci> Pfr_PIF3 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761121" id="Pr_PIF3diss" name="Pr_PIF3diss" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560523" species="Pr_PIF3"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560535" species="Pr_GBD_f"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560548">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> K_dis </ci>
+          <ci> Pr_PIF3 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761123" id="Pfr_PIF3_fcon" name="Pfr_PIF3_fcon" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560560" species="Pfr_PIF3"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560573" species="Pr_PIF3"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560585" species="FRL"/>
+      <modifierSpeciesReference metaid="_560597" species="RL"/>
+      <modifierSpeciesReference metaid="_560610" species="nLuc"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560622">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <apply>
+            <plus/>
+            <apply>
+              <times/>
+              <ci> Ki_R </ci>
+              <ci> RL </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> Ki_FR </ci>
+              <ci> FRL </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> Ki_560 </ci>
+              <ci> R_a </ci>
+            </apply>
+          </apply>
+          <ci> Pfr_PIF3 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761124" id="LUCtrnind" name="LUCtrnind" reversible="false">
+    <listOfProducts>
+      <speciesReference metaid="_560634" species="nLUC"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560647" species="Pfr_PIF3"/>
+      <modifierSpeciesReference metaid="_560659" species="Pr_PIF3"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560671">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> n_Luc </ci>
+              <apply>
+                <power/>
+                <apply>
+                  <plus/>
+                  <ci> Pfr_PIF3 </ci>
+                  <ci> Pr_PIF3 </ci>
+                </apply>
+                <ci> a_Luc </ci>
+              </apply>
+            </apply>
+            <apply>
+              <plus/>
+              <apply>
+                <power/>
+                <ci> g_Luc </ci>
+                <ci> a_Luc </ci>
+              </apply>
+              <apply>
+                <power/>
+                <apply>
+                  <plus/>
+                  <ci> Pfr_PIF3 </ci>
+                  <ci> Pr_PIF3 </ci>
+                </apply>
+                <ci> a_Luc </ci>
+              </apply>
+            </apply>
+          </apply>
+          <ci> kLUC </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761126" id="Phyact_f" name="Phyact_f">
+    <listOfReactants>
+      <speciesReference metaid="_560683" species="Pr_GBD_f"/>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_560695" species="Pfr_GBD_f"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560707" species="FRL"/>
+      <modifierSpeciesReference metaid="_560720" species="RL"/>
+      <modifierSpeciesReference metaid="_560732" species="nLuc"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560744">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <apply>
+              <plus/>
+              <apply>
+                <times/>
+                <ci> Ka_R </ci>
+                <ci> RL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ka_FR </ci>
+                <ci> FRL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ka_560 </ci>
+                <ci> R_a </ci>
+              </apply>
+            </apply>
+            <ci> Pr_GBD_f </ci>
+          </apply>
+          <apply>
+            <times/>
+            <apply>
+              <plus/>
+              <apply>
+                <times/>
+                <ci> Ki_R </ci>
+                <ci> RL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ki_FR </ci>
+                <ci> FRL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ki_560 </ci>
+                <ci> R_a </ci>
+              </apply>
+            </apply>
+            <ci> Pfr_GBD_f </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761127" id="Phyact_c" name="Phyact_c">
+    <listOfProducts>
+      <speciesReference metaid="_560756" species="Pfr_GBD_c"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560768" species="FRL"/>
+      <modifierSpeciesReference metaid="_560780" species="Pfr_GBD_f"/>
+      <modifierSpeciesReference metaid="_560793" species="Pfr_PIF3"/>
+      <modifierSpeciesReference metaid="_560805" species="Pr_GBD_f"/>
+      <modifierSpeciesReference metaid="_560817" species="Pr_PIF3"/>
+      <modifierSpeciesReference metaid="_560829" species="RL"/>
+      <modifierSpeciesReference metaid="_560841" species="nLuc"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560853">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <apply>
+              <plus/>
+              <apply>
+                <times/>
+                <ci> Ka_R </ci>
+                <ci> RL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ka_FR </ci>
+                <ci> FRL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ka_560 </ci>
+                <ci> R_a </ci>
+              </apply>
+            </apply>
+            <ci> Pr_GBD_c </ci>
+          </apply>
+          <apply>
+            <times/>
+            <apply>
+              <plus/>
+              <apply>
+                <times/>
+                <ci> Ki_R </ci>
+                <ci> RL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ki_FR </ci>
+                <ci> FRL </ci>
+              </apply>
+              <apply>
+                <times/>
+                <ci> Ki_560 </ci>
+                <ci> R_a </ci>
+              </apply>
+            </apply>
+            <ci> Pfr_GBD_c </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761129" id="Luctrl" name="Luctrl" reversible="false">
+    <listOfProducts>
+      <speciesReference metaid="_560865" species="nLuc"/>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_560877" species="nLUC"/>
+    </listOfModifiers>
+    <kineticLaw metaid="_560890">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> p_Luc </ci>
+            <ci> LUC </ci>
+          </apply>
+          <ci> kLuc </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761130" id="Lucdeg" name="Lucdeg" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560902" species="nLuc"/>
+    </listOfReactants>
+    <kineticLaw metaid="_560915">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> m_Luc </ci>
+            <ci> Luc </ci>
+          </apply>
+          <ci> kLuc </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761132" id="LucSdeg" name="LucSdeg" reversible="false">
+    <listOfReactants>
+      <speciesReference metaid="_560927" species="nLuc"/>
+    </listOfReactants>
+    <kineticLaw metaid="_560939">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <times/>
+            <ci> m_Luc1 </ci>
+            <ci> Luc </ci>
+            <ci> Scyt </ci>
+          </apply>
+          <ci> kLuc </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761133" id="redLight" name="redLight" reversible="false">
+    <listOfProducts>
+      <speciesReference metaid="_560951" species="RL"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560963">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_761135" id="farRedLight" name="farRedLight" reversible="false">
+    <listOfProducts>
+      <speciesReference metaid="_560975" species="FRL"/>
+    </listOfProducts>
+    <kineticLaw metaid="_560987">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </kineticLaw>
+  </reaction>
+</listOfReactions><listOfEvents>
+  <event metaid="_761146" id="StateChange_1" name="StateChange_1">
+    <trigger metaid="_560999">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <geq/>
+          <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+          <cn type="integer"> 16 </cn>
+        </apply>
+      </math>
+    </trigger>
+    <delay metaid="_561011">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </delay>
+    <listOfEventAssignments>
+      <eventAssignment metaid="_561023" variable="RL">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <cn type="integer"> 252000 </cn>
+        </math>
+      </eventAssignment>
+    </listOfEventAssignments>
+  </event>
+  <event metaid="_761147" id="StateChange_2" name="StateChange_2">
+    <trigger metaid="_561035">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <geq/>
+          <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+          <cn> 16.16 </cn>
+        </apply>
+      </math>
+    </trigger>
+    <delay metaid="_561047">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </delay>
+    <listOfEventAssignments>
+      <eventAssignment metaid="_561059" variable="RL">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <cn type="integer"> 0 </cn>
+        </math>
+      </eventAssignment>
+    </listOfEventAssignments>
+  </event>
+  <event metaid="_761149" id="StateChange_3" name="StateChange_3">
+    <trigger metaid="_561071">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <geq/>
+          <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+          <cn> 24.5 </cn>
+        </apply>
+      </math>
+    </trigger>
+    <delay metaid="_561083">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </delay>
+    <listOfEventAssignments>
+      <eventAssignment metaid="_561095" variable="FRL">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <cn type="integer"> 288000 </cn>
+        </math>
+      </eventAssignment>
+    </listOfEventAssignments>
+  </event>
+  <event metaid="_761150" id="StateChange_4" name="StateChange_4">
+    <trigger metaid="_561107">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <geq/>
+          <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+          <cn> 24.66 </cn>
+        </apply>
+      </math>
+    </trigger>
+    <delay metaid="_561119">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </delay>
+    <listOfEventAssignments>
+      <eventAssignment metaid="_561132" variable="FRL">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <cn type="integer"> 0 </cn>
+        </math>
+      </eventAssignment>
+    </listOfEventAssignments>
+  </event>
+</listOfEvents>
+</model>
+</sbml>

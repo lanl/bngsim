@@ -1,0 +1,61 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23
+Vcyt 1e-12
+
+kf 1e6/(NA*Vcyt)
+kr 0.01
+
+kp 0.1
+km 0.1
+
+Acpc 1e5
+Bcpc 2e5
+
+end parameters
+
+begin molecule types
+A(x~0~1,x~0~1)
+B(y)
+end molecule types
+
+begin seed species
+A(x~0,x~0) Acpc
+B(y) Bcpc
+end seed species
+
+begin observables
+Species freeA_1 A(x,x)
+Species freeA_2 A(x~0,x~0) A(x~0,x~1) A(x~1,x~1)
+Molecules freeB B(y)
+Molecules boundAxsites_1 A(x!+)
+Molecules boundAxsites_2 A(x~0!+)
+end observables
+
+begin reaction rules
+A(x~0)<->A(x~1) kp,km
+
+# A binds B rule, version 1
+# This rule does NOT break plotting by RuleBender (when simulate method=>"nf" OR method=>"ode")
+#A(x~0,x~?)+B(y)<->A(x~0!1,x~?).B(y!1) kf,kr
+
+# A binds B rule, version 2 (expected to be equivalent to version 1)
+# This rule DOES break plotting by RuleBender (when simulate method=>"nf" or method=>"ode")
+A(x~0,x)+B(y)<->A(x~0!1,x).B(y!1) kf,kr
+
+end reaction rules
+
+end model
+
+begin actions
+
+# Simulation results are the same for both versions of the A binds B rule when method=>"ode"
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>10})
+
+# Simulation results are the same for both versions of the A binds B rule when method=>"nf"
+#simulate({method=>"nf",complex=>1,get_final_state=>0,gml=>10000000,t_start=>0,t_end=>10,n_steps=>10})
+
+end actions

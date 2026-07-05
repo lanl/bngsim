@@ -1,0 +1,26 @@
+# Observable output-sensitivity fixture (GH #197).
+#
+# Linear mass-action chain  A --k1--> B --k2--> C  (all elementary, so the
+# codegen sensitivity RHS engages and the IC axis is available). The groups
+# exercise the observable chain rule d obs/dθ = Σ_i c_ji·dx_i/dθ:
+#   - A_obs      = A           single species, unit coefficient
+#   - BC2        = B + 2*C     multi-species, NON-unit coefficient, time-varying
+#   - Total      = A + B + C   conserved (=100): d/dp ≈ 0, d/dA(0) ≈ 1
+begin parameters
+    1 k1 0.30
+    2 k2 0.15
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 C() 0
+end species
+begin reactions
+    1 1 2 k1 #A_to_B
+    2 2 3 k2 #B_to_C
+end reactions
+begin groups
+    1 A_obs 1
+    2 BC2   2,2*3
+    3 Total 1,2,3
+end groups

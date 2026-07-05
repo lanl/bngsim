@@ -1,0 +1,47 @@
+// =============================================================================
+// Source: Voit (1993) "S-System Modelling of Complex Systems with Chaotic Input"
+//         Environmetrics 4(2):153-186
+// Example: Screw-type Rossler band - exact recasting (Equation 15)
+//          Original: Rossler (1979)
+// =============================================================================
+// Time horizon: t ∈ [0, 100]
+//
+// Original Rossler system (Equation 11):
+//   dx/dt = -y - z
+//   dy/dt = x + a*y
+//   dz/dt = b*z - c*z + x*z
+//
+// Rossler parameters:
+//   a = 0.5, b = 0.4, c = 4.5
+//
+// The Rossler band is a classic example of deterministic chaos.
+//
+// Exact S-system recasting (Equation 15):
+//   Shift variables to ensure positivity: p=25, q=50
+//   X1 = x + p, X2 = -y + q, X3X4 = z + q
+//
+//   dX1/dt = X2 - X3*X4
+//   dX2/dt = 0.5*X2 - X1
+//   dX3/dt = 0.0586*X1*X3*X4^(-1) - 1.984*X3*X4^(-1)
+//   dX4/dt = 0.0586*X1*X4 - 0.59*X4
+//
+// =============================================================================
+
+model V1993_rossler_band()
+    // Parameters (Rossler 1979)
+    a = 0.5
+    b = 0.4
+    c = 4.5
+    
+    // Original Rossler equations (chaos)
+    x' = -y - z
+    y' = x + a*y
+    z' = b*z - c*z + x*z
+    
+    // Initial conditions (Rossler 1979)
+    x = 0.0   // x(0) = 0
+    y = 3.0   // y(0) = 3
+    z = 0.0   // z(0) = 0
+end
+// @SIM T_START=0 T_END=12 N_STEPS=240 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

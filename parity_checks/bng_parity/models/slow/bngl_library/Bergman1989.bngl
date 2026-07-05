@@ -1,0 +1,83 @@
+begin model
+#@model_id: bergman1989_minimal_glucose
+#@title: Bergman minimal glucose model (1989)
+#@description: Minimal model of glucose disappearance with remote insulin compartment. G decays toward basal via glucose effectiveness and insulin action; X tracks remote insulin effect. I held at basal as placeholder.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.2337/diab.38.12.1512
+#@note: |
+#  Insulin I is held constant at basal. In practice I(t) would be replaced
+#  by measured data. Species scaled x100 for SSA integer counts.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Basal levels (scaled: original mg/dL or uU/mL * 100)
+  G_b      9000           # 90 * 100, basal glucose (scaled)
+  I_b      1000           # 10 * 100, basal insulin (scaled)
+
+  # Kinetic parameters (1/min)
+  p_1      0.021          # 1/min, glucose effectiveness
+  p_2      0.025          # 1/min, remote insulin decay
+  p_3      1.25e-5        # 1/(min^2 * (uU/mL)), insulin sensitivity
+
+  # Scaling factor
+  scale    100            # dimensionless
+end parameters
+
+begin molecule types
+  G()
+  X()
+  I()
+end molecule types
+
+begin seed species
+  G()  18000   # molecules (180 * 100)
+  X()  1       # molecules (0.01 * 100)
+  I()  1000    # molecules (I_b = 10 * 100)
+end seed species
+
+begin observables
+  Molecules  Obs_G  G()
+  Molecules  Obs_X  X()
+  Molecules  Obs_I  I()
+end observables
+
+begin functions
+  # Production of G: p_1*G_b + X*G_b (restoring terms toward basal)
+  # dG/dt = -(p_1 + X/scale)*G + (p_1 + X/scale)*G_b
+  # = -(p_1)*G - (X/scale)*G + p_1*G_b + (X/scale)*G_b
+  prod_G()  = p_1 * G_b + (Obs_X / scale) * G_b
+  cons_G()  = p_1 + Obs_X / scale
+
+  # dX/dt = -p_2*X + p_3*scale*(I - I_b)
+  prod_X()  = p_3 * scale * (Obs_I - I_b)
+end functions
+
+begin reaction rules
+  # Glucose production (restoring toward basal)
+  0 -> G()  prod_G()
+
+  # Glucose consumption (first-order with insulin-augmented rate)
+  G() -> 0  cons_G()
+
+  # Remote insulin production
+  0 -> X()  prod_X()
+
+  # Remote insulin decay
+  X() -> 0  p_2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>200,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>200,n_steps=>400})
+end actions

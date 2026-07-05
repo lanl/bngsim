@@ -1,0 +1,45 @@
+// Sinusoidal Dynamics Recasting
+// Source: Daniels & Nemenman, PLOS ONE 10(3):e0119821 (2015)
+// Equation 7
+//
+// This paper explicitly cites Savageau & Voit (1987) as reference [17].
+//
+// Original trigonometric dynamics (1D):
+//   dx₁/dt = sin(x₁)
+//
+// ==============================================================================
+// RECASTING TO S-SYSTEM FORM (Eq. 7):
+// ==============================================================================
+// "The dynamics x'₁ = sin(x₁) has a representation" (p. 4)
+//
+// Introduce auxiliary variables:
+//   x₂ = sin(x₁)
+//   x₃ = cos(x₁)
+//
+// Derive dynamics using chain rule:
+//   dx₂/dt = cos(x₁)·dx₁/dt = x₃·x₂
+//   dx₃/dt = -sin(x₁)·dx₁/dt = -x₂·x₂ = -x₂²
+//
+// The recast S-system (Eq. 7 in paper):
+//   dx₁/dt = x₂
+//   dx₂/dt = x₃·x₂
+//   dx₃/dt = -x₂²
+//
+// Algebraic constraint (Pythagorean identity):
+//   x₂² + x₃² = 1
+//
+// This is polynomial in the recast variables.
+// ==============================================================================
+
+model DN2015b_sinx_recasting()
+  // Variables
+  compartment cell = 1;var species x1 in cell
+
+  // Original trigonometric ODE
+  // dx₁/dt = sin(x₁)
+  x1' = sin(x1)
+  
+  // Initial condition
+  x1 = 0.1; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

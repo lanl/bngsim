@@ -1,0 +1,45 @@
+begin model
+  begin parameters
+    NA 6.02214076e23
+    Vcyt 1e-12
+    kf 1e6/(NA*Vcyt)
+    kr 0.01
+    Ainit 1e5
+    Binit 2e5
+    Cinit 0
+    p1=25*1e-9
+    p2=25   *1e-9
+    p3 = 25e-9
+    p4 = 25 * 10 ^ -9
+    p5 = 25 / 10 ^ 9
+  end parameters
+  begin molecule types
+    A()
+    B()
+    C()
+  end    molecule types
+  begin seed species
+    A() Ainit
+    B() Binit
+    C() Cinit
+  end seed species
+  begin observables
+    Species A A()
+    Species B B()
+    Species C C()
+  end observables
+  begin functions
+    p1_func()=p1
+    p2_func()=p2
+    p3_func()=p3
+    p4_func()=p4
+    p5_func()=p5
+  end functions
+  begin reaction     rules
+    A()+B()<->C() kf,kr
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode", t_end=>10,    n_steps=>100,print_functions => 1})
+end actions

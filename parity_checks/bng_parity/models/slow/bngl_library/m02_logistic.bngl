@@ -1,0 +1,61 @@
+begin model
+#@model_id: m02_logistic
+#@title: Logistic growth
+#@description: Logistic growth model X' = r*X*(1 - X/K). Growth is decomposed into a production term r*X and a consumption term (r/K)*X^2.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        100            # dimensionless scaling factor (X0=1 -> 100 molecules)
+
+  r        0.5            # 1/s  intrinsic growth rate
+  K        5*f            # molecules  carrying capacity (scaled)
+
+  X_init   1*f            # molecules  initial count of X
+end parameters
+
+begin molecule types
+  X()
+end molecule types
+
+begin seed species
+  X()  X_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_X  X()
+end observables
+
+begin functions
+  # Nonlinear consumption rate: (r/K)*X^2 / X = (r/K)*X
+  # This is the per-capita quadratic loss term
+  rate_consumption() = (r/K)*Obs_Tot_X
+end functions
+
+begin reaction rules
+  # Production: r*X  (first-order synthesis proportional to X)
+  0 -> X()  r
+
+  # Consumption: (r/K)*X^2 -> divide out one X for degradation rule
+  X() -> 0  rate_consumption()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

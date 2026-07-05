@@ -1,0 +1,46 @@
+# Feature: DeleteMolecules keyword on degradation rules
+# Tests: deleting one molecule from a complex frees its binding partners
+# Tier: base
+# Expected: A degrades from complexes, B is released (B_free increases)
+#   Without DeleteMolecules, the entire complex would be destroyed
+
+begin model
+begin parameters
+    A_tot   40
+    B_tot   40
+    kf      0.05    # /s, binding rate
+    kr      0.01    # /s, unbinding rate
+    k_deg   0.02    # /s, A degradation rate
+end parameters
+
+begin molecule types
+    A(s)
+    B(s)
+    Trash()
+end molecule types
+
+begin seed species
+    A(s)     A_tot
+    B(s)     B_tot
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total  A()
+    Molecules  B_total  B()
+    Molecules  B_free   B(s)
+    Molecules  B_bound  B(s!+)
+    Molecules  AB       A(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    # Binding
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+    # A degrades, but only removes A from complex (B survives)
+    A() -> Trash()  k_deg  DeleteMolecules
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

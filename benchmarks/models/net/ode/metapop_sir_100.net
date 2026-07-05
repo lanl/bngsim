@@ -1,0 +1,917 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 beta     0.3  # Constant
+    2 gamma    0.1  # Constant
+    3 mu       0.01  # Constant
+    4 S0       990  # Constant
+    5 I0       10  # Constant
+end parameters
+begin species
+    1 P(city~c0,state~S) S0
+    2 P(city~c1,state~S) S0
+    3 P(city~c2,state~S) S0
+    4 P(city~c3,state~S) S0
+    5 P(city~c4,state~S) S0
+    6 P(city~c5,state~S) S0
+    7 P(city~c6,state~S) S0
+    8 P(city~c7,state~S) S0
+    9 P(city~c8,state~S) S0
+   10 P(city~c9,state~S) S0
+   11 P(city~c10,state~S) S0
+   12 P(city~c11,state~S) S0
+   13 P(city~c12,state~S) S0
+   14 P(city~c13,state~S) S0
+   15 P(city~c14,state~S) S0
+   16 P(city~c15,state~S) S0
+   17 P(city~c16,state~S) S0
+   18 P(city~c17,state~S) S0
+   19 P(city~c18,state~S) S0
+   20 P(city~c19,state~S) S0
+   21 P(city~c20,state~S) S0
+   22 P(city~c21,state~S) S0
+   23 P(city~c22,state~S) S0
+   24 P(city~c23,state~S) S0
+   25 P(city~c24,state~S) S0
+   26 P(city~c25,state~S) S0
+   27 P(city~c26,state~S) S0
+   28 P(city~c27,state~S) S0
+   29 P(city~c28,state~S) S0
+   30 P(city~c29,state~S) S0
+   31 P(city~c30,state~S) S0
+   32 P(city~c31,state~S) S0
+   33 P(city~c32,state~S) S0
+   34 P(city~c33,state~S) S0
+   35 P(city~c34,state~S) S0
+   36 P(city~c35,state~S) S0
+   37 P(city~c36,state~S) S0
+   38 P(city~c37,state~S) S0
+   39 P(city~c38,state~S) S0
+   40 P(city~c39,state~S) S0
+   41 P(city~c40,state~S) S0
+   42 P(city~c41,state~S) S0
+   43 P(city~c42,state~S) S0
+   44 P(city~c43,state~S) S0
+   45 P(city~c44,state~S) S0
+   46 P(city~c45,state~S) S0
+   47 P(city~c46,state~S) S0
+   48 P(city~c47,state~S) S0
+   49 P(city~c48,state~S) S0
+   50 P(city~c49,state~S) S0
+   51 P(city~c50,state~S) S0
+   52 P(city~c51,state~S) S0
+   53 P(city~c52,state~S) S0
+   54 P(city~c53,state~S) S0
+   55 P(city~c54,state~S) S0
+   56 P(city~c55,state~S) S0
+   57 P(city~c56,state~S) S0
+   58 P(city~c57,state~S) S0
+   59 P(city~c58,state~S) S0
+   60 P(city~c59,state~S) S0
+   61 P(city~c60,state~S) S0
+   62 P(city~c61,state~S) S0
+   63 P(city~c62,state~S) S0
+   64 P(city~c63,state~S) S0
+   65 P(city~c64,state~S) S0
+   66 P(city~c65,state~S) S0
+   67 P(city~c66,state~S) S0
+   68 P(city~c67,state~S) S0
+   69 P(city~c68,state~S) S0
+   70 P(city~c69,state~S) S0
+   71 P(city~c70,state~S) S0
+   72 P(city~c71,state~S) S0
+   73 P(city~c72,state~S) S0
+   74 P(city~c73,state~S) S0
+   75 P(city~c74,state~S) S0
+   76 P(city~c75,state~S) S0
+   77 P(city~c76,state~S) S0
+   78 P(city~c77,state~S) S0
+   79 P(city~c78,state~S) S0
+   80 P(city~c79,state~S) S0
+   81 P(city~c80,state~S) S0
+   82 P(city~c81,state~S) S0
+   83 P(city~c82,state~S) S0
+   84 P(city~c83,state~S) S0
+   85 P(city~c84,state~S) S0
+   86 P(city~c85,state~S) S0
+   87 P(city~c86,state~S) S0
+   88 P(city~c87,state~S) S0
+   89 P(city~c88,state~S) S0
+   90 P(city~c89,state~S) S0
+   91 P(city~c90,state~S) S0
+   92 P(city~c91,state~S) S0
+   93 P(city~c92,state~S) S0
+   94 P(city~c93,state~S) S0
+   95 P(city~c94,state~S) S0
+   96 P(city~c95,state~S) S0
+   97 P(city~c96,state~S) S0
+   98 P(city~c97,state~S) S0
+   99 P(city~c98,state~S) S0
+  100 P(city~c99,state~S) S0
+  101 P(city~c0,state~I) I0
+  102 P(city~c0,state~R) 0
+  103 P(city~c1,state~I) 0
+  104 P(city~c99,state~I) 0
+  105 P(city~c1,state~R) 0
+  106 P(city~c99,state~R) 0
+  107 P(city~c2,state~I) 0
+  108 P(city~c98,state~I) 0
+  109 P(city~c2,state~R) 0
+  110 P(city~c98,state~R) 0
+  111 P(city~c3,state~I) 0
+  112 P(city~c97,state~I) 0
+  113 P(city~c3,state~R) 0
+  114 P(city~c97,state~R) 0
+  115 P(city~c4,state~I) 0
+  116 P(city~c96,state~I) 0
+  117 P(city~c4,state~R) 0
+  118 P(city~c96,state~R) 0
+  119 P(city~c5,state~I) 0
+  120 P(city~c95,state~I) 0
+  121 P(city~c5,state~R) 0
+  122 P(city~c95,state~R) 0
+  123 P(city~c6,state~I) 0
+  124 P(city~c94,state~I) 0
+  125 P(city~c6,state~R) 0
+  126 P(city~c94,state~R) 0
+  127 P(city~c7,state~I) 0
+  128 P(city~c93,state~I) 0
+  129 P(city~c7,state~R) 0
+  130 P(city~c93,state~R) 0
+  131 P(city~c8,state~I) 0
+  132 P(city~c92,state~I) 0
+  133 P(city~c8,state~R) 0
+  134 P(city~c92,state~R) 0
+  135 P(city~c9,state~I) 0
+  136 P(city~c91,state~I) 0
+  137 P(city~c9,state~R) 0
+  138 P(city~c91,state~R) 0
+  139 P(city~c10,state~I) 0
+  140 P(city~c90,state~I) 0
+  141 P(city~c10,state~R) 0
+  142 P(city~c90,state~R) 0
+  143 P(city~c11,state~I) 0
+  144 P(city~c89,state~I) 0
+  145 P(city~c11,state~R) 0
+  146 P(city~c89,state~R) 0
+  147 P(city~c12,state~I) 0
+  148 P(city~c88,state~I) 0
+  149 P(city~c12,state~R) 0
+  150 P(city~c88,state~R) 0
+  151 P(city~c13,state~I) 0
+  152 P(city~c87,state~I) 0
+  153 P(city~c13,state~R) 0
+  154 P(city~c87,state~R) 0
+  155 P(city~c14,state~I) 0
+  156 P(city~c86,state~I) 0
+  157 P(city~c14,state~R) 0
+  158 P(city~c86,state~R) 0
+  159 P(city~c15,state~I) 0
+  160 P(city~c85,state~I) 0
+  161 P(city~c15,state~R) 0
+  162 P(city~c85,state~R) 0
+  163 P(city~c16,state~I) 0
+  164 P(city~c84,state~I) 0
+  165 P(city~c16,state~R) 0
+  166 P(city~c84,state~R) 0
+  167 P(city~c17,state~I) 0
+  168 P(city~c83,state~I) 0
+  169 P(city~c17,state~R) 0
+  170 P(city~c83,state~R) 0
+  171 P(city~c18,state~I) 0
+  172 P(city~c82,state~I) 0
+  173 P(city~c18,state~R) 0
+  174 P(city~c82,state~R) 0
+  175 P(city~c19,state~I) 0
+  176 P(city~c81,state~I) 0
+  177 P(city~c19,state~R) 0
+  178 P(city~c81,state~R) 0
+  179 P(city~c20,state~I) 0
+  180 P(city~c80,state~I) 0
+  181 P(city~c20,state~R) 0
+  182 P(city~c80,state~R) 0
+  183 P(city~c21,state~I) 0
+  184 P(city~c79,state~I) 0
+  185 P(city~c21,state~R) 0
+  186 P(city~c79,state~R) 0
+  187 P(city~c22,state~I) 0
+  188 P(city~c78,state~I) 0
+  189 P(city~c22,state~R) 0
+  190 P(city~c78,state~R) 0
+  191 P(city~c23,state~I) 0
+  192 P(city~c77,state~I) 0
+  193 P(city~c23,state~R) 0
+  194 P(city~c77,state~R) 0
+  195 P(city~c24,state~I) 0
+  196 P(city~c76,state~I) 0
+  197 P(city~c24,state~R) 0
+  198 P(city~c76,state~R) 0
+  199 P(city~c25,state~I) 0
+  200 P(city~c75,state~I) 0
+  201 P(city~c25,state~R) 0
+  202 P(city~c75,state~R) 0
+  203 P(city~c26,state~I) 0
+  204 P(city~c74,state~I) 0
+  205 P(city~c26,state~R) 0
+  206 P(city~c74,state~R) 0
+  207 P(city~c27,state~I) 0
+  208 P(city~c73,state~I) 0
+  209 P(city~c27,state~R) 0
+  210 P(city~c73,state~R) 0
+  211 P(city~c28,state~I) 0
+  212 P(city~c72,state~I) 0
+  213 P(city~c28,state~R) 0
+  214 P(city~c72,state~R) 0
+  215 P(city~c29,state~I) 0
+  216 P(city~c71,state~I) 0
+  217 P(city~c29,state~R) 0
+  218 P(city~c71,state~R) 0
+  219 P(city~c30,state~I) 0
+  220 P(city~c70,state~I) 0
+  221 P(city~c30,state~R) 0
+  222 P(city~c70,state~R) 0
+  223 P(city~c31,state~I) 0
+  224 P(city~c69,state~I) 0
+  225 P(city~c31,state~R) 0
+  226 P(city~c69,state~R) 0
+  227 P(city~c32,state~I) 0
+  228 P(city~c68,state~I) 0
+  229 P(city~c32,state~R) 0
+  230 P(city~c68,state~R) 0
+  231 P(city~c33,state~I) 0
+  232 P(city~c67,state~I) 0
+  233 P(city~c33,state~R) 0
+  234 P(city~c67,state~R) 0
+  235 P(city~c34,state~I) 0
+  236 P(city~c66,state~I) 0
+  237 P(city~c34,state~R) 0
+  238 P(city~c66,state~R) 0
+  239 P(city~c35,state~I) 0
+  240 P(city~c65,state~I) 0
+  241 P(city~c35,state~R) 0
+  242 P(city~c65,state~R) 0
+  243 P(city~c36,state~I) 0
+  244 P(city~c64,state~I) 0
+  245 P(city~c36,state~R) 0
+  246 P(city~c64,state~R) 0
+  247 P(city~c37,state~I) 0
+  248 P(city~c63,state~I) 0
+  249 P(city~c37,state~R) 0
+  250 P(city~c63,state~R) 0
+  251 P(city~c38,state~I) 0
+  252 P(city~c62,state~I) 0
+  253 P(city~c38,state~R) 0
+  254 P(city~c62,state~R) 0
+  255 P(city~c39,state~I) 0
+  256 P(city~c61,state~I) 0
+  257 P(city~c39,state~R) 0
+  258 P(city~c61,state~R) 0
+  259 P(city~c40,state~I) 0
+  260 P(city~c60,state~I) 0
+  261 P(city~c40,state~R) 0
+  262 P(city~c60,state~R) 0
+  263 P(city~c41,state~I) 0
+  264 P(city~c59,state~I) 0
+  265 P(city~c41,state~R) 0
+  266 P(city~c59,state~R) 0
+  267 P(city~c42,state~I) 0
+  268 P(city~c58,state~I) 0
+  269 P(city~c42,state~R) 0
+  270 P(city~c58,state~R) 0
+  271 P(city~c43,state~I) 0
+  272 P(city~c57,state~I) 0
+  273 P(city~c43,state~R) 0
+  274 P(city~c57,state~R) 0
+  275 P(city~c44,state~I) 0
+  276 P(city~c56,state~I) 0
+  277 P(city~c44,state~R) 0
+  278 P(city~c56,state~R) 0
+  279 P(city~c45,state~I) 0
+  280 P(city~c55,state~I) 0
+  281 P(city~c45,state~R) 0
+  282 P(city~c55,state~R) 0
+  283 P(city~c46,state~I) 0
+  284 P(city~c54,state~I) 0
+  285 P(city~c46,state~R) 0
+  286 P(city~c54,state~R) 0
+  287 P(city~c47,state~I) 0
+  288 P(city~c53,state~I) 0
+  289 P(city~c47,state~R) 0
+  290 P(city~c53,state~R) 0
+  291 P(city~c48,state~I) 0
+  292 P(city~c52,state~I) 0
+  293 P(city~c48,state~R) 0
+  294 P(city~c52,state~R) 0
+  295 P(city~c49,state~I) 0
+  296 P(city~c51,state~I) 0
+  297 P(city~c49,state~R) 0
+  298 P(city~c51,state~R) 0
+  299 P(city~c50,state~I) 0
+  300 P(city~c50,state~R) 0
+end species
+begin reactions
+    1 1,101 101,101 beta #_R1
+    2 101 102 gamma #_R101
+    3 1 2 mu #_R102
+    4 2 1 mu #_R103
+    5 101 103 mu #_R104
+    6 2 3 mu #_R106
+    7 3 2 mu #_R107
+    8 3 4 mu #_R110
+    9 4 3 mu #_R111
+   10 4 5 mu #_R114
+   11 5 4 mu #_R115
+   12 5 6 mu #_R118
+   13 6 5 mu #_R119
+   14 6 7 mu #_R122
+   15 7 6 mu #_R123
+   16 7 8 mu #_R126
+   17 8 7 mu #_R127
+   18 8 9 mu #_R130
+   19 9 8 mu #_R131
+   20 9 10 mu #_R134
+   21 10 9 mu #_R135
+   22 10 11 mu #_R138
+   23 11 10 mu #_R139
+   24 11 12 mu #_R142
+   25 12 11 mu #_R143
+   26 12 13 mu #_R146
+   27 13 12 mu #_R147
+   28 13 14 mu #_R150
+   29 14 13 mu #_R151
+   30 14 15 mu #_R154
+   31 15 14 mu #_R155
+   32 15 16 mu #_R158
+   33 16 15 mu #_R159
+   34 16 17 mu #_R162
+   35 17 16 mu #_R163
+   36 17 18 mu #_R166
+   37 18 17 mu #_R167
+   38 18 19 mu #_R170
+   39 19 18 mu #_R171
+   40 19 20 mu #_R174
+   41 20 19 mu #_R175
+   42 20 21 mu #_R178
+   43 21 20 mu #_R179
+   44 21 22 mu #_R182
+   45 22 21 mu #_R183
+   46 22 23 mu #_R186
+   47 23 22 mu #_R187
+   48 23 24 mu #_R190
+   49 24 23 mu #_R191
+   50 24 25 mu #_R194
+   51 25 24 mu #_R195
+   52 25 26 mu #_R198
+   53 26 25 mu #_R199
+   54 26 27 mu #_R202
+   55 27 26 mu #_R203
+   56 27 28 mu #_R206
+   57 28 27 mu #_R207
+   58 28 29 mu #_R210
+   59 29 28 mu #_R211
+   60 29 30 mu #_R214
+   61 30 29 mu #_R215
+   62 30 31 mu #_R218
+   63 31 30 mu #_R219
+   64 31 32 mu #_R222
+   65 32 31 mu #_R223
+   66 32 33 mu #_R226
+   67 33 32 mu #_R227
+   68 33 34 mu #_R230
+   69 34 33 mu #_R231
+   70 34 35 mu #_R234
+   71 35 34 mu #_R235
+   72 35 36 mu #_R238
+   73 36 35 mu #_R239
+   74 36 37 mu #_R242
+   75 37 36 mu #_R243
+   76 37 38 mu #_R246
+   77 38 37 mu #_R247
+   78 38 39 mu #_R250
+   79 39 38 mu #_R251
+   80 39 40 mu #_R254
+   81 40 39 mu #_R255
+   82 40 41 mu #_R258
+   83 41 40 mu #_R259
+   84 41 42 mu #_R262
+   85 42 41 mu #_R263
+   86 42 43 mu #_R266
+   87 43 42 mu #_R267
+   88 43 44 mu #_R270
+   89 44 43 mu #_R271
+   90 44 45 mu #_R274
+   91 45 44 mu #_R275
+   92 45 46 mu #_R278
+   93 46 45 mu #_R279
+   94 46 47 mu #_R282
+   95 47 46 mu #_R283
+   96 47 48 mu #_R286
+   97 48 47 mu #_R287
+   98 48 49 mu #_R290
+   99 49 48 mu #_R291
+  100 49 50 mu #_R294
+  101 50 49 mu #_R295
+  102 50 51 mu #_R298
+  103 51 50 mu #_R299
+  104 51 52 mu #_R302
+  105 52 51 mu #_R303
+  106 52 53 mu #_R306
+  107 53 52 mu #_R307
+  108 53 54 mu #_R310
+  109 54 53 mu #_R311
+  110 54 55 mu #_R314
+  111 55 54 mu #_R315
+  112 55 56 mu #_R318
+  113 56 55 mu #_R319
+  114 56 57 mu #_R322
+  115 57 56 mu #_R323
+  116 57 58 mu #_R326
+  117 58 57 mu #_R327
+  118 58 59 mu #_R330
+  119 59 58 mu #_R331
+  120 59 60 mu #_R334
+  121 60 59 mu #_R335
+  122 60 61 mu #_R338
+  123 61 60 mu #_R339
+  124 61 62 mu #_R342
+  125 62 61 mu #_R343
+  126 62 63 mu #_R346
+  127 63 62 mu #_R347
+  128 63 64 mu #_R350
+  129 64 63 mu #_R351
+  130 64 65 mu #_R354
+  131 65 64 mu #_R355
+  132 65 66 mu #_R358
+  133 66 65 mu #_R359
+  134 66 67 mu #_R362
+  135 67 66 mu #_R363
+  136 67 68 mu #_R366
+  137 68 67 mu #_R367
+  138 68 69 mu #_R370
+  139 69 68 mu #_R371
+  140 69 70 mu #_R374
+  141 70 69 mu #_R375
+  142 70 71 mu #_R378
+  143 71 70 mu #_R379
+  144 71 72 mu #_R382
+  145 72 71 mu #_R383
+  146 72 73 mu #_R386
+  147 73 72 mu #_R387
+  148 73 74 mu #_R390
+  149 74 73 mu #_R391
+  150 74 75 mu #_R394
+  151 75 74 mu #_R395
+  152 75 76 mu #_R398
+  153 76 75 mu #_R399
+  154 76 77 mu #_R402
+  155 77 76 mu #_R403
+  156 77 78 mu #_R406
+  157 78 77 mu #_R407
+  158 78 79 mu #_R410
+  159 79 78 mu #_R411
+  160 79 80 mu #_R414
+  161 80 79 mu #_R415
+  162 80 81 mu #_R418
+  163 81 80 mu #_R419
+  164 81 82 mu #_R422
+  165 82 81 mu #_R423
+  166 82 83 mu #_R426
+  167 83 82 mu #_R427
+  168 83 84 mu #_R430
+  169 84 83 mu #_R431
+  170 84 85 mu #_R434
+  171 85 84 mu #_R435
+  172 85 86 mu #_R438
+  173 86 85 mu #_R439
+  174 86 87 mu #_R442
+  175 87 86 mu #_R443
+  176 87 88 mu #_R446
+  177 88 87 mu #_R447
+  178 88 89 mu #_R450
+  179 89 88 mu #_R451
+  180 89 90 mu #_R454
+  181 90 89 mu #_R455
+  182 90 91 mu #_R458
+  183 91 90 mu #_R459
+  184 91 92 mu #_R462
+  185 92 91 mu #_R463
+  186 92 93 mu #_R466
+  187 93 92 mu #_R467
+  188 93 94 mu #_R470
+  189 94 93 mu #_R471
+  190 94 95 mu #_R474
+  191 95 94 mu #_R475
+  192 95 96 mu #_R478
+  193 96 95 mu #_R479
+  194 96 97 mu #_R482
+  195 97 96 mu #_R483
+  196 97 98 mu #_R486
+  197 98 97 mu #_R487
+  198 98 99 mu #_R490
+  199 99 98 mu #_R491
+  200 99 100 mu #_R494
+  201 100 99 mu #_R495
+  202 100 1 mu #_R498
+  203 1 100 mu #_R499
+  204 101 104 mu #_R501
+  205 2,103 103,103 beta #_R2
+  206 100,104 104,104 beta #_R100
+  207 103 105 gamma #_R101
+  208 104 106 gamma #_R101
+  209 103 101 mu #_R105
+  210 103 107 mu #_R108
+  211 104 108 mu #_R497
+  212 104 101 mu #_R500
+  213 3,107 107,107 beta #_R3
+  214 99,108 108,108 beta #_R99
+  215 107 109 gamma #_R101
+  216 108 110 gamma #_R101
+  217 107 103 mu #_R109
+  218 107 111 mu #_R112
+  219 108 112 mu #_R493
+  220 108 104 mu #_R496
+  221 4,111 111,111 beta #_R4
+  222 98,112 112,112 beta #_R98
+  223 111 113 gamma #_R101
+  224 112 114 gamma #_R101
+  225 111 107 mu #_R113
+  226 111 115 mu #_R116
+  227 112 116 mu #_R489
+  228 112 108 mu #_R492
+  229 5,115 115,115 beta #_R5
+  230 97,116 116,116 beta #_R97
+  231 115 117 gamma #_R101
+  232 116 118 gamma #_R101
+  233 115 111 mu #_R117
+  234 115 119 mu #_R120
+  235 116 120 mu #_R485
+  236 116 112 mu #_R488
+  237 6,119 119,119 beta #_R6
+  238 96,120 120,120 beta #_R96
+  239 119 121 gamma #_R101
+  240 120 122 gamma #_R101
+  241 119 115 mu #_R121
+  242 119 123 mu #_R124
+  243 120 124 mu #_R481
+  244 120 116 mu #_R484
+  245 7,123 123,123 beta #_R7
+  246 95,124 124,124 beta #_R95
+  247 123 125 gamma #_R101
+  248 124 126 gamma #_R101
+  249 123 119 mu #_R125
+  250 123 127 mu #_R128
+  251 124 128 mu #_R477
+  252 124 120 mu #_R480
+  253 8,127 127,127 beta #_R8
+  254 94,128 128,128 beta #_R94
+  255 127 129 gamma #_R101
+  256 128 130 gamma #_R101
+  257 127 123 mu #_R129
+  258 127 131 mu #_R132
+  259 128 132 mu #_R473
+  260 128 124 mu #_R476
+  261 9,131 131,131 beta #_R9
+  262 93,132 132,132 beta #_R93
+  263 131 133 gamma #_R101
+  264 132 134 gamma #_R101
+  265 131 127 mu #_R133
+  266 131 135 mu #_R136
+  267 132 136 mu #_R469
+  268 132 128 mu #_R472
+  269 10,135 135,135 beta #_R10
+  270 92,136 136,136 beta #_R92
+  271 135 137 gamma #_R101
+  272 136 138 gamma #_R101
+  273 135 131 mu #_R137
+  274 135 139 mu #_R140
+  275 136 140 mu #_R465
+  276 136 132 mu #_R468
+  277 11,139 139,139 beta #_R11
+  278 91,140 140,140 beta #_R91
+  279 139 141 gamma #_R101
+  280 140 142 gamma #_R101
+  281 139 135 mu #_R141
+  282 139 143 mu #_R144
+  283 140 144 mu #_R461
+  284 140 136 mu #_R464
+  285 12,143 143,143 beta #_R12
+  286 90,144 144,144 beta #_R90
+  287 143 145 gamma #_R101
+  288 144 146 gamma #_R101
+  289 143 139 mu #_R145
+  290 143 147 mu #_R148
+  291 144 148 mu #_R457
+  292 144 140 mu #_R460
+  293 13,147 147,147 beta #_R13
+  294 89,148 148,148 beta #_R89
+  295 147 149 gamma #_R101
+  296 148 150 gamma #_R101
+  297 147 143 mu #_R149
+  298 147 151 mu #_R152
+  299 148 152 mu #_R453
+  300 148 144 mu #_R456
+  301 14,151 151,151 beta #_R14
+  302 88,152 152,152 beta #_R88
+  303 151 153 gamma #_R101
+  304 152 154 gamma #_R101
+  305 151 147 mu #_R153
+  306 151 155 mu #_R156
+  307 152 156 mu #_R449
+  308 152 148 mu #_R452
+  309 15,155 155,155 beta #_R15
+  310 87,156 156,156 beta #_R87
+  311 155 157 gamma #_R101
+  312 156 158 gamma #_R101
+  313 155 151 mu #_R157
+  314 155 159 mu #_R160
+  315 156 160 mu #_R445
+  316 156 152 mu #_R448
+  317 16,159 159,159 beta #_R16
+  318 86,160 160,160 beta #_R86
+  319 159 161 gamma #_R101
+  320 160 162 gamma #_R101
+  321 159 155 mu #_R161
+  322 159 163 mu #_R164
+  323 160 164 mu #_R441
+  324 160 156 mu #_R444
+  325 17,163 163,163 beta #_R17
+  326 85,164 164,164 beta #_R85
+  327 163 165 gamma #_R101
+  328 164 166 gamma #_R101
+  329 163 159 mu #_R165
+  330 163 167 mu #_R168
+  331 164 168 mu #_R437
+  332 164 160 mu #_R440
+  333 18,167 167,167 beta #_R18
+  334 84,168 168,168 beta #_R84
+  335 167 169 gamma #_R101
+  336 168 170 gamma #_R101
+  337 167 163 mu #_R169
+  338 167 171 mu #_R172
+  339 168 172 mu #_R433
+  340 168 164 mu #_R436
+  341 19,171 171,171 beta #_R19
+  342 83,172 172,172 beta #_R83
+  343 171 173 gamma #_R101
+  344 172 174 gamma #_R101
+  345 171 167 mu #_R173
+  346 171 175 mu #_R176
+  347 172 176 mu #_R429
+  348 172 168 mu #_R432
+  349 20,175 175,175 beta #_R20
+  350 82,176 176,176 beta #_R82
+  351 175 177 gamma #_R101
+  352 176 178 gamma #_R101
+  353 175 171 mu #_R177
+  354 175 179 mu #_R180
+  355 176 180 mu #_R425
+  356 176 172 mu #_R428
+  357 21,179 179,179 beta #_R21
+  358 81,180 180,180 beta #_R81
+  359 179 181 gamma #_R101
+  360 180 182 gamma #_R101
+  361 179 175 mu #_R181
+  362 179 183 mu #_R184
+  363 180 184 mu #_R421
+  364 180 176 mu #_R424
+  365 22,183 183,183 beta #_R22
+  366 80,184 184,184 beta #_R80
+  367 183 185 gamma #_R101
+  368 184 186 gamma #_R101
+  369 183 179 mu #_R185
+  370 183 187 mu #_R188
+  371 184 188 mu #_R417
+  372 184 180 mu #_R420
+  373 23,187 187,187 beta #_R23
+  374 79,188 188,188 beta #_R79
+  375 187 189 gamma #_R101
+  376 188 190 gamma #_R101
+  377 187 183 mu #_R189
+  378 187 191 mu #_R192
+  379 188 192 mu #_R413
+  380 188 184 mu #_R416
+  381 24,191 191,191 beta #_R24
+  382 78,192 192,192 beta #_R78
+  383 191 193 gamma #_R101
+  384 192 194 gamma #_R101
+  385 191 187 mu #_R193
+  386 191 195 mu #_R196
+  387 192 196 mu #_R409
+  388 192 188 mu #_R412
+  389 25,195 195,195 beta #_R25
+  390 77,196 196,196 beta #_R77
+  391 195 197 gamma #_R101
+  392 196 198 gamma #_R101
+  393 195 191 mu #_R197
+  394 195 199 mu #_R200
+  395 196 200 mu #_R405
+  396 196 192 mu #_R408
+  397 26,199 199,199 beta #_R26
+  398 76,200 200,200 beta #_R76
+  399 199 201 gamma #_R101
+  400 200 202 gamma #_R101
+  401 199 195 mu #_R201
+  402 199 203 mu #_R204
+  403 200 204 mu #_R401
+  404 200 196 mu #_R404
+  405 27,203 203,203 beta #_R27
+  406 75,204 204,204 beta #_R75
+  407 203 205 gamma #_R101
+  408 204 206 gamma #_R101
+  409 203 199 mu #_R205
+  410 203 207 mu #_R208
+  411 204 208 mu #_R397
+  412 204 200 mu #_R400
+  413 28,207 207,207 beta #_R28
+  414 74,208 208,208 beta #_R74
+  415 207 209 gamma #_R101
+  416 208 210 gamma #_R101
+  417 207 203 mu #_R209
+  418 207 211 mu #_R212
+  419 208 212 mu #_R393
+  420 208 204 mu #_R396
+  421 29,211 211,211 beta #_R29
+  422 73,212 212,212 beta #_R73
+  423 211 213 gamma #_R101
+  424 212 214 gamma #_R101
+  425 211 207 mu #_R213
+  426 211 215 mu #_R216
+  427 212 216 mu #_R389
+  428 212 208 mu #_R392
+  429 30,215 215,215 beta #_R30
+  430 72,216 216,216 beta #_R72
+  431 215 217 gamma #_R101
+  432 216 218 gamma #_R101
+  433 215 211 mu #_R217
+  434 215 219 mu #_R220
+  435 216 220 mu #_R385
+  436 216 212 mu #_R388
+  437 31,219 219,219 beta #_R31
+  438 71,220 220,220 beta #_R71
+  439 219 221 gamma #_R101
+  440 220 222 gamma #_R101
+  441 219 215 mu #_R221
+  442 219 223 mu #_R224
+  443 220 224 mu #_R381
+  444 220 216 mu #_R384
+  445 32,223 223,223 beta #_R32
+  446 70,224 224,224 beta #_R70
+  447 223 225 gamma #_R101
+  448 224 226 gamma #_R101
+  449 223 219 mu #_R225
+  450 223 227 mu #_R228
+  451 224 228 mu #_R377
+  452 224 220 mu #_R380
+  453 33,227 227,227 beta #_R33
+  454 69,228 228,228 beta #_R69
+  455 227 229 gamma #_R101
+  456 228 230 gamma #_R101
+  457 227 223 mu #_R229
+  458 227 231 mu #_R232
+  459 228 232 mu #_R373
+  460 228 224 mu #_R376
+  461 34,231 231,231 beta #_R34
+  462 68,232 232,232 beta #_R68
+  463 231 233 gamma #_R101
+  464 232 234 gamma #_R101
+  465 231 227 mu #_R233
+  466 231 235 mu #_R236
+  467 232 236 mu #_R369
+  468 232 228 mu #_R372
+  469 35,235 235,235 beta #_R35
+  470 67,236 236,236 beta #_R67
+  471 235 237 gamma #_R101
+  472 236 238 gamma #_R101
+  473 235 231 mu #_R237
+  474 235 239 mu #_R240
+  475 236 240 mu #_R365
+  476 236 232 mu #_R368
+  477 36,239 239,239 beta #_R36
+  478 66,240 240,240 beta #_R66
+  479 239 241 gamma #_R101
+  480 240 242 gamma #_R101
+  481 239 235 mu #_R241
+  482 239 243 mu #_R244
+  483 240 244 mu #_R361
+  484 240 236 mu #_R364
+  485 37,243 243,243 beta #_R37
+  486 65,244 244,244 beta #_R65
+  487 243 245 gamma #_R101
+  488 244 246 gamma #_R101
+  489 243 239 mu #_R245
+  490 243 247 mu #_R248
+  491 244 248 mu #_R357
+  492 244 240 mu #_R360
+  493 38,247 247,247 beta #_R38
+  494 64,248 248,248 beta #_R64
+  495 247 249 gamma #_R101
+  496 248 250 gamma #_R101
+  497 247 243 mu #_R249
+  498 247 251 mu #_R252
+  499 248 252 mu #_R353
+  500 248 244 mu #_R356
+  501 39,251 251,251 beta #_R39
+  502 63,252 252,252 beta #_R63
+  503 251 253 gamma #_R101
+  504 252 254 gamma #_R101
+  505 251 247 mu #_R253
+  506 251 255 mu #_R256
+  507 252 256 mu #_R349
+  508 252 248 mu #_R352
+  509 40,255 255,255 beta #_R40
+  510 62,256 256,256 beta #_R62
+  511 255 257 gamma #_R101
+  512 256 258 gamma #_R101
+  513 255 251 mu #_R257
+  514 255 259 mu #_R260
+  515 256 260 mu #_R345
+  516 256 252 mu #_R348
+  517 41,259 259,259 beta #_R41
+  518 61,260 260,260 beta #_R61
+  519 259 261 gamma #_R101
+  520 260 262 gamma #_R101
+  521 259 255 mu #_R261
+  522 259 263 mu #_R264
+  523 260 264 mu #_R341
+  524 260 256 mu #_R344
+  525 42,263 263,263 beta #_R42
+  526 60,264 264,264 beta #_R60
+  527 263 265 gamma #_R101
+  528 264 266 gamma #_R101
+  529 263 259 mu #_R265
+  530 263 267 mu #_R268
+  531 264 268 mu #_R337
+  532 264 260 mu #_R340
+  533 43,267 267,267 beta #_R43
+  534 59,268 268,268 beta #_R59
+  535 267 269 gamma #_R101
+  536 268 270 gamma #_R101
+  537 267 263 mu #_R269
+  538 267 271 mu #_R272
+  539 268 272 mu #_R333
+  540 268 264 mu #_R336
+  541 44,271 271,271 beta #_R44
+  542 58,272 272,272 beta #_R58
+  543 271 273 gamma #_R101
+  544 272 274 gamma #_R101
+  545 271 267 mu #_R273
+  546 271 275 mu #_R276
+  547 272 276 mu #_R329
+  548 272 268 mu #_R332
+  549 45,275 275,275 beta #_R45
+  550 57,276 276,276 beta #_R57
+  551 275 277 gamma #_R101
+  552 276 278 gamma #_R101
+  553 275 271 mu #_R277
+  554 275 279 mu #_R280
+  555 276 280 mu #_R325
+  556 276 272 mu #_R328
+  557 46,279 279,279 beta #_R46
+  558 56,280 280,280 beta #_R56
+  559 279 281 gamma #_R101
+  560 280 282 gamma #_R101
+  561 279 275 mu #_R281
+  562 279 283 mu #_R284
+  563 280 284 mu #_R321
+  564 280 276 mu #_R324
+  565 47,283 283,283 beta #_R47
+  566 55,284 284,284 beta #_R55
+  567 283 285 gamma #_R101
+  568 284 286 gamma #_R101
+  569 283 279 mu #_R285
+  570 283 287 mu #_R288
+  571 284 288 mu #_R317
+  572 284 280 mu #_R320
+  573 48,287 287,287 beta #_R48
+  574 54,288 288,288 beta #_R54
+  575 287 289 gamma #_R101
+  576 288 290 gamma #_R101
+  577 287 283 mu #_R289
+  578 287 291 mu #_R292
+  579 288 292 mu #_R313
+  580 288 284 mu #_R316
+  581 49,291 291,291 beta #_R49
+  582 53,292 292,292 beta #_R53
+  583 291 293 gamma #_R101
+  584 292 294 gamma #_R101
+  585 291 287 mu #_R293
+  586 291 295 mu #_R296
+  587 292 296 mu #_R309
+  588 292 288 mu #_R312
+  589 50,295 295,295 beta #_R50
+  590 52,296 296,296 beta #_R52
+  591 295 297 gamma #_R101
+  592 296 298 gamma #_R101
+  593 295 291 mu #_R297
+  594 295 299 mu #_R300
+  595 296 299 mu #_R305
+  596 296 292 mu #_R308
+  597 51,299 299,299 beta #_R51
+  598 299 300 gamma #_R101
+  599 299 295 mu #_R301
+  600 299 296 mu #_R304
+end reactions
+begin groups
+    1 S_total              1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100
+    2 I_total              101,103,104,107,108,111,112,115,116,119,120,123,124,127,128,131,132,135,136,139,140,143,144,147,148,151,152,155,156,159,160,163,164,167,168,171,172,175,176,179,180,183,184,187,188,191,192,195,196,199,200,203,204,207,208,211,212,215,216,219,220,223,224,227,228,231,232,235,236,239,240,243,244,247,248,251,252,255,256,259,260,263,264,267,268,271,272,275,276,279,280,283,284,287,288,291,292,295,296,299
+    3 R_total              102,105,106,109,110,113,114,117,118,121,122,125,126,129,130,133,134,137,138,141,142,145,146,149,150,153,154,157,158,161,162,165,166,169,170,173,174,177,178,181,182,185,186,189,190,193,194,197,198,201,202,205,206,209,210,213,214,217,218,221,222,225,226,229,230,233,234,237,238,241,242,245,246,249,250,253,254,257,258,261,262,265,266,269,270,273,274,277,278,281,282,285,286,289,290,293,294,297,298,300
+end groups

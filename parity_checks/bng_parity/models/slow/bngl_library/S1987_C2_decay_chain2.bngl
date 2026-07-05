@@ -1,0 +1,107 @@
+begin model
+#@model_id: S1987_C2_decay_chain2
+#@title: Radioactive decay chain variant (10 species)
+#@description: Decay chain with double decay dZ1/dt = -Z1, dZi/dt = Z(i-1) - 2*Zi (i=2..9), dZ10/dt = Z9. From Savageau & Voit (1987) Problem C2.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  k_fwd    1.0            # 1/s; forward transfer rate along chain
+  k_deg    1.0            # 1/s; additional degradation rate for intermediates
+end parameters
+
+begin molecule types
+  Z1()
+  Z2()
+  Z3()
+  Z4()
+  Z5()
+  Z6()
+  Z7()
+  Z8()
+  Z9()
+  Z10()
+end molecule types
+
+begin seed species
+  Z1()   100  # molecules (Z1(0)=1 scaled x100)
+  Z2()     0  # molecules
+  Z3()     0  # molecules
+  Z4()     0  # molecules
+  Z5()     0  # molecules
+  Z6()     0  # molecules
+  Z7()     0  # molecules
+  Z8()     0  # molecules
+  Z9()     0  # molecules
+  Z10()    0  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Z1   Z1()
+  Molecules  Obs_Z2   Z2()
+  Molecules  Obs_Z3   Z3()
+  Molecules  Obs_Z4   Z4()
+  Molecules  Obs_Z5   Z5()
+  Molecules  Obs_Z6   Z6()
+  Molecules  Obs_Z7   Z7()
+  Molecules  Obs_Z8   Z8()
+  Molecules  Obs_Z9   Z9()
+  Molecules  Obs_Z10  Z10()
+end observables
+
+begin reaction rules
+  # dZ1/dt = -Z1: Z1 transfers to Z2 at rate k_fwd
+  Z1() -> Z2()  k_fwd
+
+  # dZi/dt = Z(i-1) - 2*Zi for i=2..9:
+  #   Production from Z(i-1) -> Zi (transfer, rate k_fwd)
+  #   Consumption 2*Zi = transfer to Z(i+1) at k_fwd + degradation at k_deg
+  Z2() -> Z3()  k_fwd
+  Z2() -> 0     k_deg
+
+  Z3() -> Z4()  k_fwd
+  Z3() -> 0     k_deg
+
+  Z4() -> Z5()  k_fwd
+  Z4() -> 0     k_deg
+
+  Z5() -> Z6()  k_fwd
+  Z5() -> 0     k_deg
+
+  Z6() -> Z7()  k_fwd
+  Z6() -> 0     k_deg
+
+  Z7() -> Z8()  k_fwd
+  Z7() -> 0     k_deg
+
+  Z8() -> Z9()  k_fwd
+  Z8() -> 0     k_deg
+
+  # dZ9/dt = Z8 - 2*Z9: transfer to Z10 + degradation
+  Z9() -> Z10()  k_fwd
+  Z9() -> 0      k_deg
+
+  # dZ10/dt = Z9: terminal accumulation (no degradation, no transfer out)
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>6,n_steps=>400,complex=>1})
+end actions

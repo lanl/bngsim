@@ -1,0 +1,101 @@
+# Model: ml_kmeans.bngl
+# Description: Implements K-means clustering logic in BNGL.
+#              Centroids (AX, AY, BX, BY) are distinct molecule types.
+#              Centroids drift toward the mean of assigned data points.
+
+begin model
+
+begin parameters
+    # Coordinates of 4 data points
+    X1 10.0
+    Y1 10.0
+    X2 12.0
+    Y2 8.0
+    X3 50.0
+    Y3 50.0
+    X4 55.0
+    Y4 45.0
+    
+    LearningRate 0.005
+    Tau 1.0
+end parameters
+
+begin molecule types
+    AX()
+    AY()
+    BX()
+    BY()
+end molecule types
+
+begin seed species
+    AX() 30.0
+    AY() 30.0
+    BX() 31.0
+    BY() 31.0
+end seed species
+
+begin observables
+    Molecules ObsAX AX()
+    Molecules ObsAY AY()
+    Molecules ObsBX BX()
+    Molecules ObsBY BY()
+end observables
+
+begin functions
+    # Distance squared calculation - Point 1
+    DistSqA1() = (X1-ObsAX)*(X1-ObsAX) + (Y1-ObsAY)*(Y1-ObsAY)
+    DistSqB1() = (X1-ObsBX)*(X1-ObsBX) + (Y1-ObsBY)*(Y1-ObsBY)
+    IsA1() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqB1() - DistSqA1())))))
+    IsB1() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqA1() - DistSqB1())))))
+
+    # Distance squared calculation - Point 2
+    DistSqA2() = (X2-ObsAX)*(X2-ObsAX) + (Y2-ObsAY)*(Y2-ObsAY)
+    DistSqB2() = (X2-ObsBX)*(X2-ObsBX) + (Y2-ObsBY)*(Y2-ObsBY)
+    IsA2() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqB2() - DistSqA2())))))
+    IsB2() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqA2() - DistSqB2())))))
+
+    # Distance squared calculation - Point 3
+    DistSqA3() = (X3-ObsAX)*(X3-ObsAX) + (Y3-ObsAY)*(Y3-ObsAY)
+    DistSqB3() = (X3-ObsBX)*(X3-ObsBX) + (Y3-ObsBY)*(Y3-ObsBY)
+    IsA3() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqB3() - DistSqA3())))))
+    IsB3() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqA3() - DistSqB3())))))
+
+    # Distance squared calculation - Point 4
+    DistSqA4() = (X4-ObsAX)*(X4-ObsAX) + (Y4-ObsAY)*(Y4-ObsAY)
+    DistSqB4() = (X4-ObsBX)*(X4-ObsBX) + (Y4-ObsBY)*(Y4-ObsBY)
+    IsA4() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqB4() - DistSqA4())))))
+    IsB4() = 1 / (1 + exp(min(50, max(-50, -10 * (DistSqA4() - DistSqB4())))))
+
+    # Drift forcing
+    dAX_dt() = LearningRate * (IsA1()*(X1-ObsAX) + IsA2()*(X2-ObsAX) + IsA3()*(X3-ObsAX) + IsA4()*(X4-ObsAX))
+    dAY_dt() = LearningRate * (IsA1()*(Y1-ObsAY) + IsA2()*(Y2-ObsAY) + IsA3()*(Y3-ObsAY) + IsA4()*(Y4-ObsAY))
+    dBX_dt() = LearningRate * (IsB1()*(X1-ObsBX) + IsB2()*(X2-ObsBX) + IsB3()*(X3-ObsBX) + IsB4()*(X4-ObsBX))
+    dBY_dt() = LearningRate * (IsB1()*(Y1-ObsBY) + IsB2()*(Y2-ObsBY) + IsB3()*(Y3-ObsBY) + IsB4()*(Y4-ObsBY))
+
+    # Smooth Positive Function (approx for max(0, x))
+    # SmoothPos inlined
+    rateAXU() = 0.5 * (dAX_dt() + sqrt(dAX_dt()^2 + 1e-4))
+    rateAXD() = 0.5 * (-dAX_dt() + sqrt((-dAX_dt())^2 + 1e-4))
+    rateAYU() = 0.5 * (dAY_dt() + sqrt(dAY_dt()^2 + 1e-4))
+    rateAYD() = 0.5 * (-dAY_dt() + sqrt((-dAY_dt())^2 + 1e-4))
+    rateBXU() = 0.5 * (dBX_dt() + sqrt(dBX_dt()^2 + 1e-4))
+    rateBXD() = 0.5 * (-dBX_dt() + sqrt((-dBX_dt())^2 + 1e-4))
+    rateBYU() = 0.5 * (dBY_dt() + sqrt(dBY_dt()^2 + 1e-4))
+    rateBYD() = 0.5 * (-dBY_dt() + sqrt((-dBY_dt())^2 + 1e-4))
+end functions
+
+begin reaction rules
+    R1: 0 -> AX() rateAXU()
+    R2: AX() -> 0 rateAXD()
+    R3: 0 -> AY() rateAYU()
+    R4: AY() -> 0 rateAYD()
+    R5: 0 -> BX() rateBXU()
+    R6: BX() -> 0 rateBXD()
+    R7: 0 -> BY() rateBYU()
+    R8: BY() -> 0 rateBYD()
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>0.1,n_steps=>10})

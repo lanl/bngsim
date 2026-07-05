@@ -1,0 +1,92 @@
+begin model
+begin parameters
+    # STAT3-mediated transcription and feedback.
+    # Advanced features: Hill kinetics and PIAS3 negative feedback.
+    
+    # Activation
+    k_phos_max 1.5     # Max phosphorylation by JAK
+    Km_phos 200        # Half-saturation for phosphorylation
+    k_dimer 2.0        # pSTAT3 dimerization
+    
+    # Transport
+    k_import 0.8       # Nuclear import of dimers
+    k_export 0.2       # Nuclear export
+    
+    # Transcription
+    k_trans_max 5.0    # Peak mRNA production
+    Km_dna 10.0        # Half-saturation for DNA binding
+    n_hill 2.0         # Cooperativity
+    
+    # Feedback
+    k_pias_bind 1.2    # PIAS3 inhibits DNA binding
+    k_pias_synth 0.1   # STAT3 induces PIAS3
+    
+    # Initials
+    STAT3_tot 1000
+    DNA_sites 5        # Specific target promoters
+    PIAS3_init 10
+    mRNA_init 0
+end parameters
+
+begin molecule types
+    STAT3(s~U~P,loc~cyt~nuc,b,dna)
+    DNA(b)
+    PIAS3(b)
+    mRNA()
+end molecule types
+
+begin seed species
+    STAT3(s~U,loc~cyt,b,dna) STAT3_tot
+    DNA(b) DNA_sites
+    PIAS3(b) PIAS3_init
+    mRNA() mRNA_init
+end seed species
+
+begin observables
+    Molecules Active_Dimer     STAT3(b!+,loc~nuc)       # Nuclear signaling pool
+    Molecules Total_pSTAT3     STAT3(s~P)               # Aggregate signal
+    Molecules DNA_Engagement   DNA(b!+)                 # Transcription driver
+    Molecules mRNA_Level       mRNA()                   # Gene expression
+    Molecules PIAS3_Feedback   PIAS3()                  # Negative feedback intensity
+end observables
+
+begin reaction rules
+    ## ACTIVATION PHASE
+    # Cytosolic STAT3 phosphorylation (Saturable)
+    STAT3(s~U,loc~cyt) -> STAT3(s~P,loc~cyt) k_phos_max * (100 / (Km_phos + 100)) # Stimulus proxy
+    
+    # Phospho-STAT3 dimerization
+    STAT3(s~P,loc~cyt,b) + STAT3(s~P,loc~cyt,b) <-> STAT3(s~P,loc~cyt,b!1).STAT3(s~P,loc~cyt,b!1) k_dimer,0.1
+    
+    ## TRANSPORT
+    # Dimers translocate to nucleus (Wildcard: any dimerized state !+)
+    STAT3(s~P,loc~cyt,b!+) -> STAT3(s~P,loc~nuc,b!+) k_import
+    
+    # Export back to cytosol
+    STAT3(loc~nuc) -> STAT3(loc~cyt) k_export
+    
+    ## TRANSCRIPTION & FEEDBACK
+    # Nuclear dimers bind DNA (using separate dna domain, allowing dimer to bind)
+    STAT3(s~P,loc~nuc,dna) + DNA(b) <-> STAT3(s~P,loc~nuc,dna!1).DNA(b!1) k_pias_bind,0.05
+    
+    # PIAS3 inhibits DNA binding by sequestering STAT3
+    PIAS3(b) + STAT3(s~P,loc~nuc,b) <-> PIAS3(b!1).STAT3(s~P,loc~nuc,b!1) k_pias_bind,0.1
+    
+    # DNA-bound STAT3 induces mRNA (Functional Rate)
+    DNA(b!+) -> DNA(b!+) + mRNA() k_trans_max
+    
+    # Active transcription induces PIAS3 (Slow feedback)
+    mRNA() -> mRNA() + PIAS3(b) k_pias_synth
+    
+    ## RESET
+    mRNA() -> 0 0.1
+    STAT3(s~P) -> STAT3(s~U) 0.05
+    PIAS3() -> 0 0.02
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model
+

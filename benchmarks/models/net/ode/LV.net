@@ -1,0 +1,21 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA    6.02e23  # Constant
+    2 V     ((0.5*0.5)*0.01)*1e-15  # Constant
+    3 k1    1.29e5  # Constant
+    4 k2    1e8/(NA*V)  # ConstantExpression
+    5 k3    1.3e5  # Constant
+end parameters
+begin species
+    1 S() 1000
+    2 W() 500
+end species
+begin reactions
+    1 1 1,1 k1 #_R1
+    2 1,2 2,2 k2 #_R2
+    3 2 0 k3 #_R3
+end reactions
+begin groups
+    1 Stot                 1
+    2 Wtot                 2
+end groups

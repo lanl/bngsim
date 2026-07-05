@@ -1,0 +1,58 @@
+# Model: wacky_zombie_infection.bngl
+# Description: Models a Zombie Outbreak using an SIR-type framework.
+#              S (Susceptible Humans) -> Z (Zombies) via bite.
+#              Zombies can be "removed" (killed) by Humans (Headshot).
+#              Tracks the collapse of civilization.
+
+begin model
+
+begin parameters
+    # Rates
+    beta  0.01  # Infection rate (Bite probability)
+    alpha 0.005 # Zombie removal rate (Headshot by Human)
+    delta 0.001 # Natural death of Z (starvation)
+    gamma 0.002 # Resurrection from natural death (if not headshot)?
+    
+    H_init 500
+    Z_init 1
+end parameters
+
+begin molecule types
+    Human(state~Healthy~Infected)
+    Zombie(state~Active~Dead)
+end molecule types
+
+begin seed species
+    Human(state~Healthy) H_init
+    Zombie(state~Active) Z_init
+end seed species
+
+begin observables
+    Molecules Humans  Human(state~Healthy)
+    Molecules Zombies Zombie(state~Active)
+    Molecules Dead_Z  Zombie(state~Dead)
+end observables
+
+begin reaction rules
+    # 1. Infection (Bite)
+    # Zombie bites Human -> Human becomes Zombie
+    # Immediate transformation for simplicity (or via Infected state)
+    Zombie(state~Active) + Human(state~Healthy) -> Zombie(state~Active) + Zombie(state~Active) beta
+    
+    # 2. Defense (Headshot)
+    # Human kills Zombie
+    Human(state~Healthy) + Zombie(state~Active) -> Human(state~Healthy) + Zombie(state~Dead) alpha
+    
+    # 3. Starvation
+    Zombie(state~Active) -> Zombie(state~Dead) delta
+    
+    # 4. Resurrection (The Dead Rise)
+    # Dead_Z -> Active_Z?
+    Zombie(state~Dead) -> Zombie(state~Active) gamma
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>800, n_steps=>300})

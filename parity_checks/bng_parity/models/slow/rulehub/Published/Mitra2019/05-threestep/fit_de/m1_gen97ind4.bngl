@@ -1,0 +1,39 @@
+# Toy model of a 3-step signaling cascade
+
+begin model
+begin parameters
+k1__FREE 0.0295398071781967
+k2__FREE 0.018809389022504737
+k3__FREE 0.009924504146694036
+k1 k1__FREE
+k2 k2__FREE
+k3 k3__FREE
+end parameters
+begin molecule types
+A()
+B()
+C()
+D()
+end molecule types
+begin seed species
+A() 100
+end seed species
+begin observables
+Molecules A A()
+Molecules B B()
+Molecules C C()
+Molecules D D()
+end observables
+begin reaction rules
+A() -> B() k1
+B() -> C() k2
+C() -> D() k3
+end reaction rules
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>200,\
+n_steps=>40,suffix=>"d1"})
+end actions

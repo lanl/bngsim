@@ -1,0 +1,45 @@
+begin model
+begin parameters
+    k_synth 0.5
+    k_export 0.4
+    k_import 0.3
+    k_activate 0.2
+    k_deg 0.05
+end parameters
+
+begin molecule types
+    Autoinducer()
+    Autoinducer_env()
+    Gene(state~off~on)
+    Protein()
+end molecule types
+
+begin seed species
+    Gene(state~off) 1
+    Protein() 100
+    Autoinducer_env() 1000
+end seed species
+
+begin observables
+    Molecules Autoinducer_pool Autoinducer()
+    Molecules Gene_on Gene(state~on)
+    Molecules Protein Protein()
+    Molecules Autoinducer_env_pool Autoinducer_env()
+end observables
+
+begin reaction rules
+    Autoinducer_env() -> Autoinducer() k_synth
+    Autoinducer() -> Autoinducer_env() k_deg
+    Autoinducer() + Gene(state~off) -> Gene(state~on) + Autoinducer() k_activate
+    Gene(state~on) -> Gene(state~on) + Protein() k_export
+    Protein() -> 0 k_import
+    Protein() -> Protein() + Autoinducer() 0.1  # Protein produces AI
+    Autoinducer() -> 0 0.05  # AI degradation
+    Autoinducer_env() -> 0 0.02  # Environmental AI clearance
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>40,n_steps=>240})
+end actions
+end model

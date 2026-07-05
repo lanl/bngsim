@@ -1,0 +1,33 @@
+begin model
+begin parameters
+ksynth 1e2 # molecules/s
+kdeg 1 # /s
+Xinit 0 # copies per cell
+# Archimedes' constant, $\pi$
+pi_param=2*asin(1)
+# Euler's number, $e$
+e_param=exp(1)
+end parameters
+begin molecule types
+X
+end molecule types
+begin seed species
+X Xinit
+end seed species
+begin observables
+Species X X
+end observables
+begin functions
+pi_func()=2*asin(1)
+e_func()=exp(1)
+report_pi_param()=pi_param
+report_e_param()=e_param
+end functions
+begin reaction rules
+0<->X ksynth,kdeg
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ssa",t_end=>10,n_steps=>100,print_functions=>1})
+end actions

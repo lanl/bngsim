@@ -1,0 +1,45 @@
+begin model
+begin parameters
+    k_bind 1.0
+    k_unbind 0.001
+    k_activation 10.0
+    k_expression 1.0
+    k_reset 0.06
+end parameters
+
+begin molecule types
+    RA(r)
+    RARRXR(l,state~repressed~active)
+    Corepressor(state~bound~released)
+    TargetGene(state~off~on)
+end molecule types
+
+begin seed species
+    RA(r) 60
+    RARRXR(l,state~repressed) 40
+    Corepressor(state~bound) 30
+    TargetGene(state~off) 50
+end seed species
+
+begin reaction rules
+    RA(r) + RARRXR(l,state~repressed) <-> RA(r!1).RARRXR(l!1,state~repressed) k_bind,k_unbind
+    RA(r!1).RARRXR(l!1,state~repressed) -> RA(r!1).RARRXR(l!1,state~active) k_activation
+    RARRXR(l!+,state~active) + Corepressor(state~bound) -> RARRXR(l!+,state~active) + Corepressor(state~released) k_activation
+    RARRXR(l!+,state~active) + TargetGene(state~off) -> RARRXR(l!+,state~active) + TargetGene(state~on) k_expression
+    Corepressor(state~released) -> Corepressor(state~bound) k_reset
+    TargetGene(state~on) -> TargetGene(state~off) k_reset
+    RARRXR(l,state~active) -> RARRXR(l,state~repressed) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_RARRXR RARRXR(state~active)
+    Molecules Released_Corepressor Corepressor(state~released)
+    Molecules Gene_On TargetGene(state~on)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>50,n_steps=>200})
+end actions
+end model
+

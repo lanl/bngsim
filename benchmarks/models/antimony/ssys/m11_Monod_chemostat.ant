@@ -1,0 +1,52 @@
+// This model is essentially the same as S1988_monod_chemostat.
+//
+// There is no exact recasting of the original model into canonical S-system form.
+// We can find a recasting in GMA form.
+//  
+// States
+//   species X1, X2, Y;   // Y := 1 + X2
+//
+// Dynamics (all terms are power-law monomials; negatives appear via subtraction)
+// X1' = alpha1 * X1 * X2 / (1 + X2) - X1  =>  alpha1*X1*X2*Y^(-1) - 1*X1
+//   X1' = alpha1 * X1 * X2 * (Y^(-1)) - 1 * X1;
+// X2' = X_r - X2 - beta2 * X1 * X2 / (1 + X2)
+//   X2' = X_r - 1 * X2 - beta2 * X1 * X2 * (Y^(-1));
+//
+// Ancillary identity (exact): Y = 1 + X2  ⇒  Y' = X2'
+//   Y' = X_r - 1 * X2 - beta2 * X1 * X2 * (Y^(-1));
+//
+// Initial conditions (consistent with the original)
+//   X1 = 0.1;
+//   X2 = 0.1;
+//   Y  = 1 + X2;
+model Monod_chemostat()
+
+  // Original general ODE model (not the S-system recast).
+  // Source: Savageau (1988), "Introduction to S-Systems and the Underlying Power-Law Formalism",
+  // Proc. 6th Int. Conf. on Mathematical Modelling, pp. 549–550, Eq. (19).
+  // This version keeps the paper’s normalization: time scaled by dilution rate D (so D=1),
+  // substrate X2 normalized by Monod constant K_s (so K_s=1).
+
+  // Variables (species)
+  species X1, X2;
+
+  // Parameters
+  // alpha1    : max specific growth rate (in excess substrate)
+  // beta2     : alpha1 / Y (Y = yield), treated here as independent parameter
+  // X_r        : reservoir substrate concentration (normalized)
+  alpha1 = 0.2;
+  beta2  = 0.1;
+  X_r     = 2.0;
+
+  // Dynamics (exactly as Eq. (19) in the paper)
+  X1' = alpha1*X1*X2/(X2 + 1) - X1;
+  X2' = (X_r - X2) - beta2*X1*X2/(X2 + 1);
+
+  // Initial conditions (placeholders; adjust as needed)
+  X1 = 0.1;
+  X2 = 0.1;
+
+  // Notes:
+  // * Positive orthant invariance expected for X1, X2 given positive ICs/params.
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

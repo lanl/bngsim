@@ -1,0 +1,56 @@
+// Linear Pathway with Michaelis-Menten Kinetics and Competitive Inhibition
+// Source: Pozo et al., "Steady-state global optimization of metabolic non-linear
+//         dynamic models through recasting into power-law canonical models"
+//         BMC Systems Biology 5:137 (2011)
+//         Equations (20)-(23)
+//
+// This paper explicitly cites Savageau & Voit (1987) as reference [36].
+//
+// Original Michaelis-Menten model (Eq. 20) - 2 variables:
+//   dX₁/dt = V₁·X₃ / (K₁(1 + Kᵢ/X₂) + X₃) - V₂·X₁ / (K₂ + X₁)
+//   dX₂/dt = V₂·X₁ / (K₂ + X₁) - V₃·X₂² / (K₃² + X₂²)
+//
+// X₃ is external (fixed), X₂ is competitive inhibitor of first reaction
+//
+// ==============================================================================
+// EXACT RECASTING TO GMA (Eq. 21-23):
+// ==============================================================================
+// Introduce auxiliary variables:
+//   X₄ = K₁(1 + Kᵢ/X₂) + X₃
+//   X₅ = K₂ + X₁
+//   X₆ = K₃² + X₂²
+//
+// Recast GMA model (2 → 6 variables):
+//   dX₁/dt = V₁·X₃·X₄⁻¹ - V₂·X₁·X₅⁻¹
+//   dX₂/dt = V₂·X₁·X₅⁻¹ - V₃·X₂²·X₆⁻¹
+//   dX₄/dt = -K₁·Kᵢ·dX₂/dt / X₂² = V₃·K₁·Kᵢ·X₆⁻¹ - V₂·K₁·Kᵢ·X₁·X₅⁻¹·X₂⁻²
+//   dX₅/dt = dX₁/dt = V₁·X₃·X₄⁻¹ - V₂·X₁·X₅⁻¹
+//   dX₆/dt = 2·X₂·dX₂/dt = 2·V₂·X₁·X₂·X₅⁻¹ - 2·V₃·X₂³·X₆⁻¹
+// ==============================================================================
+
+model P2011_linear_pathway_MM()
+  // State variables (original)
+  compartment cell = 1;var species X1 in cell; var species X2 in cell
+
+  // External (fixed) variable
+  X3 := 1.0;
+  
+  // Kinetic parameters
+  V1 := 10.0;
+  V2 := 5.0;
+  V3 := 5.0;
+  K1 := 0.5;
+  K2 := 0.5;
+  K3 := 0.5;
+  Ki := 1.0;
+  
+  // Original Michaelis-Menten model (Eq. 20)
+  // Competitive inhibition: apparent Km = K1·(1 + Ki/X2)
+  X1' = V1 * X3 / (K1 * (1 + Ki / X2) + X3) - V2 * X1 / (K2 + X1);
+  X2' = V2 * X1 / (K2 + X1) - V3 * X2^2 / (K3^2 + X2^2);
+  
+  // Initial conditions
+  X1 = 1.0; X2 = 1.0;
+end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

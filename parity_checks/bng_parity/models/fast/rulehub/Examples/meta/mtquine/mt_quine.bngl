@@ -1,0 +1,56 @@
+# Model: mt_quine.bngl
+# Description: Implements a BioNetGen Quine (Self-Replicating Model Logic).
+#              A true Quine in code prints its own source.
+#              In BNGL,this model's steady-state concentrations encode its own parameters.
+#              Parameters: P1=10,P2=20.
+#              Observables: S1 -> 10,S2 -> 20.
+
+begin model
+
+begin parameters
+    # The "Genetic" Code
+    P1 10.0
+    P2 20.0
+    k_synth 1.0
+end parameters
+
+begin molecule types
+    Gene(id~1~2)
+    Protein(id~1~2)
+end molecule types
+
+begin seed species
+    # The source code (Gened)
+    Gene(id~1) 1.0
+    Gene(id~2) 1.0
+    Protein(id~1) 0.0
+    Protein(id~2) 0.0
+end seed species
+
+begin observables
+    Molecules S1 Protein(id~1)
+    Molecules S2 Protein(id~2)
+end observables
+
+begin reaction rules
+    # Gene 1 expresses Protein 1 at rate P1
+    Gene(id~1) -> Gene(id~1) + Protein(id~1) P1 * k_synth
+    
+    # Gene 2 expresses Protein 2 at rate P2
+    Gene(id~2) -> Gene(id~2) + Protein(id~2) P2 * k_synth
+    
+    # Normalization (Decay at rate 1.0)
+    # Steady state: Synth = Decay => P * 1 = [Prob] * 1 => [Prob] = P
+    Protein(id~1) -> 0 1.0
+    Protein(id~2) -> 0 1.0
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})
+
+# VERIFICATION:
+# If [Protein(id~1)] @ ss == P1 AND [Protein(id~2)] @ ss == P2:
+# The model has successfully "printed" its own internal constants.

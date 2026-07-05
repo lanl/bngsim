@@ -1,0 +1,88 @@
+// WeberRaymondMunsky2018_Model2_LambdaA.ant
+//
+// Source:
+//   Weber L, Raymond W, Munsky B (2018)
+//   "Identification of gene regulation models from single-cell data."
+//   Physical Biology 15(5):055001.
+//
+// Deterministic 3-state promoter + mRNA model (Model 2):
+//   States:
+//     S1(t), S2(t), S3(t) : probabilities (fractions) of promoter
+//                           being in states 1, 2, 3
+//     R(t)               : mean mRNA copy number
+//
+//   ODEs (Eqs. 3–6):
+//     dS1/dt = -k12(t)*S1 + k21(t)*S2
+//     dS2/dt =  k12(t)*S1 - (k21(t) + k23(t))*S2 + k32(t)*S3
+//     dS3/dt =  k23(t)*S2 - k32(t)*S3
+//     dR/dt  =  k_r2*S2 + k_r3*S3 - gamma*R
+//
+//   Time-dependent input:
+//     Y1(t) = 0,                                  t ≤ 5
+//           = 1 - cos(2π t / 30),               5 < t < 70
+//           = 0,                                  t ≥ 70
+//
+//   Only k23 is input-dependent in Model 2:
+//     k23(t) = max(0, k23_0 + beta*Y1(t))
+//   All other k_ij(t) are constant: k_ij(t) = k_ij(0).
+//
+//   Parameter set Λ_A (Model 2):
+//     [k12_0, k23_0, k21_0, k32_0, k_r2, k_r3, beta, gamma]
+//       = [3, -0.4, 2.5, 1, 9, 2, 1, 0.8]
+//
+//   Initial conditions (t = 0):
+//     S1(0) = 1, S2(0) = 0, S3(0) = 0, R(0) = 0
+//   (all promoters OFF, no mRNA)
+
+model WeberRaymondMunsky2018_Model2_LambdaA
+
+  // Constants and parameters
+  // Note: 'pi' is a built-in constant in Antimony, no need to define it
+
+  // Base transition rates k_ij(0)
+  const k_12_0  = 3;
+  const k_23_0  = -0.4;
+  const k_21_0  = 2.5;
+  const k_32_0  = 1;
+
+  // Transcription and degradation parameters
+  const k_r_2   = 9;
+  const k_r_3   = 2;
+  const beta    = 1;
+  const gam     = 0.8;
+
+  // Smooth approximation parameters
+  const k_steep = 5.0;
+  const eps_k   = 0.01;
+
+  // Time-dependent input Y_1(t)
+  // Smooth approximation of time window 5 < t < 70 using tanh sigmoids
+  // H_on turns on at t=5, H_off turns off at t=70
+  H_on  := 0.5*(1 + tanh(k_steep*(time - 5)));
+  H_off := 0.5*(1 + tanh(k_steep*(70 - time)));
+  Y_1   := (1 - cos(2*pi*time/30)) * H_on * H_off;
+
+  // Effective transition rates
+  k_12 := k_12_0;
+  k_21 := k_21_0;
+  k_32 := k_32_0;
+
+  // k_23(t) = max(0, k_23_0 + beta*Y_1(t)) via smooth ReLU approximation
+  k_23_raw := k_23_0 + beta*Y_1;
+  k_23 := 0.5 * (k_23_raw + sqrt(k_23_raw^2 + eps_k^2));
+
+  // ODEs (Promoter state probabilities and mean mRNA)
+  S_1' = -k_12*S_1 + k_21*S_2;
+  S_2' =  k_12*S_1 - (k_21 + k_23)*S_2 + k_32*S_3;
+  S_3' =  k_23*S_2 - k_32*S_3;
+  R'   =  k_r_2*S_2 + k_r_3*S_3 - gam*R;
+
+  // Initial conditions
+  S_1 = 1;
+  S_2 = 0;
+  S_3 = 0;
+  R   = 0;
+
+end
+// @SIM T_START=0 T_END=100 N_STEPS=500 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

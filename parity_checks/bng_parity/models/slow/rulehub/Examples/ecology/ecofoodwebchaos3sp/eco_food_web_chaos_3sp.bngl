@@ -1,0 +1,77 @@
+# Model: eco_food_web_chaos_3sp.bngl
+# Description: Models a 3-species food chain (Resource -> Consumer -> Predator).
+#              Demonstrates chaotic dynamics (Hastings-Powell model equivalent).
+#              Requires specific non-linear functional responses (Type II).
+
+begin model
+
+begin parameters
+    # Resource Growth (Logistic)
+    r 1.0
+    K 100
+    
+    # C eats R
+    a1 5.0
+    b1 3.0
+    e1 1.0 # Efficiency
+    d1 0.4
+    
+    # P eats C
+    a2 0.1
+    b2 2.0
+    e2 1.0
+    d2 0.01
+end parameters
+
+begin molecule types
+    R() # Resource
+    C() # Consumer
+    P() # Predator
+end molecule types
+
+begin seed species
+    R() 50
+    C() 10
+    P() 5
+end seed species
+
+begin observables
+    Molecules Res R()
+    Molecules Con C()
+    Molecules Pred P()
+end observables
+
+begin functions
+    # Type II Functional Response: Rate = a * R * C / (1 + b * R)
+    # Effective k = a / (1 + b * [R])
+    
+    k_eat_R() = a1 / (1 + b1 * Res)
+    k_eat_C() = a2 / (1 + b2 * Con)
+end functions
+
+begin reaction rules
+    # 1. Resource Logistic Growth
+    R() -> R() + R() r
+    R() + R() -> R() r/K
+    
+    # 2. Consumption of R by C (Type II)
+    # C + R -> C + C
+    # Rate constant k depends on [R] via k_eat_R()
+    C() + R() -> C() + C() k_eat_R()
+    
+    # 3. Consumption of C by P
+    P() + C() -> P() + P() k_eat_C()
+    
+    # 4. Death
+    C() -> 0 d1
+    P() -> 0 d2
+
+    0 -> R() 1.0  # Resource regeneration
+    R() -> 0 0.01  # Resource natural decay
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ssa", t_end=>200, n_steps=>200})

@@ -1,0 +1,9 @@
+# The BNG-roundtrip SBML corpus is a regenerated artifact, not a
+# tracked fixture: every *.xml is byte-derivable from
+# models/bngl/ssa/*.bngl + BNG2.pl via run.py. load_check.json is the
+# loader smoke-test report run.py writes alongside. Regenerate with:
+#   cd bngsim && uv run python benchmarks/suites/sbml_roundtrip/run.py
+*.xml
+load_check.json
+results/
+__pycache__/

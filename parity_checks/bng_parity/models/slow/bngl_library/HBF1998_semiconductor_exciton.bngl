@@ -1,0 +1,75 @@
+begin model
+#@model_id: HBF1998_semiconductor_exciton
+#@title: Semiconductor electron-hole/exciton oscillations (Hernandez-Bermejo et al. 1998, Eq. 29)
+#@description: Electron-hole pairs (x1) and excitons (x2) in an intrinsic semiconductor. x1'=g-c*x1^2*x2, x2'=c*x1^2*x2-k*x2/(1+q*x2)^m. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1088/0305-4470/31/10/016
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  g_rate   1.0            # 1/s  (photogeneration rate, concentration units)
+  c_rate   0.5            # 1/(conc^2 * s)  (exciton formation rate)
+  k_rate   1.0            # 1/s  (radiative decay rate)
+  q_param  0.5            # 1/conc  (saturation parameter)
+  m_exp    2              # dimensionless  (decay nonlinearity exponent)
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  x1()
+  x2()
+end molecule types
+
+begin seed species
+  x1()  1000  # molecules  (1.0 * scale)
+  x2()  500   # molecules  (0.5 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_x1  x1()
+  Molecules  Obs_x2  x2()
+end observables
+
+begin functions
+  # Descaled concentrations
+  x1_c() = Obs_x1 * inv_s
+  x2_c() = Obs_x2 * inv_s
+
+  # Exciton formation: c*x1^2*x2 (in molecules/s)
+  exciton_form() = c_rate * x1_c() * x1_c() * x2_c() * scale
+
+  # Saturable radiative decay: k*x2/(1+q*x2)^m (in molecules/s)
+  sat_decay() = k_rate * x2_c() / (1 + q_param * x2_c())^m_exp * scale
+end functions
+
+begin reaction rules
+  # Photogeneration of electron-hole pairs: constant rate g
+  0 -> x1()  g_rate*scale
+
+  # Consumption of x1 by exciton formation: c*x1^2*x2
+  x1() -> 0  exciton_form()
+
+  # Production of x2 by exciton formation: c*x1^2*x2
+  0 -> x2()  exciton_form()
+
+  # Saturable radiative decay of x2: k*x2/(1+q*x2)^m
+  x2() -> 0  sat_decay()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

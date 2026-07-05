@@ -1,0 +1,123 @@
+# a preliminary model for intracellular flu dynamics
+
+begin model
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cyto_volume (2 pL)
+cyto_volume 2.0e-12 # [=] L
+
+# (zero-order) rate constant for basal AV production 
+P0 0.18 # [=] /min
+
+# (zero-ordr) rate constant for induced AV production
+PI 0.71 # [=] /min
+
+# (first-order) rate constant for AV clearance
+c 0.037 # [=] /min
+
+ksynth 0.01 # [=] /min
+
+kcapture 1.0e6*60.0/(NA*cyto_volume) # [=] /(molecule/cell)/min
+
+kp1 1.0e6*60.0/(NA*cyto_volume) # [=] /(molecule/cell)/min
+km1 0.01 # [=] /min
+
+kin 1.0 # [=] /min
+kbudding 1.0 # [=] /min
+
+kon 1.0e6*60.0/(NA*cyto_volume) # [=] /(molecule/cell)/min
+koff 0.0001 # [=] /min
+
+end parameters
+
+begin molecule types
+
+# endomembrane
+endo()
+
+# autophagic vesicle
+AV(LC3) 
+
+# viral genome
+genome()
+
+# influenza M2 protein
+M2(z,C)
+
+# budding virion
+bud()
+
+# patch of plasma membrane
+PM_patch(x)
+
+# extracellular virion
+virion(y,loc~cyto~PM~ECF)
+
+# drug
+drug(m2)
+
+end molecule types
+
+begin seed species
+drug(m2) 0
+endo() 1
+genome() 1
+PM_patch(x) 5000
+AV(LC3) 5 # =P0/c
+end  seed species
+
+begin observables
+Molecules patches PM_patch()
+Molecules virions virion(loc~ECF)
+Molecules AVtotal AV()
+end observables
+
+begin reaction rules
+
+# production of autophagic vesicles
+#   basal production
+endo()->endo()+AV(LC3) P0
+#   virus-induced production
+genome()->genome()+AV(LC3) PI*10 
+
+# clearance of autophagic vesicles
+AV(LC3)->0 c
+
+# production of influenza M2 protein and virions
+genome()->genome()+M2(z,C) ksynth
+genome()->genome()+virion(y,loc~cyto) ksynth*100
+
+# M2 interaction with AV
+AV(LC3)+M2(C)<->AV(LC3!1).M2(C!1) kp1,km1
+
+# translocation of virions and M2 to PM
+PM_patch(x)+virion(y,loc~cyto)->PM_patch(x!1).virion(y!1,loc~PM) kcapture
+PM_patch(x)+M2(z)->PM_patch(x!1).M2(z!1) kcapture
+
+# creation of a new patch through destruction of an AV
+PM_patch(x!1).M2(z!1,C!2).AV(LC3!2)->PM_patch(x)+PM_patch(x!1).M2(z!1,C) kin
+
+# destruction of a PM patch through budding of a virion
+PM_patch(x!1).virion(y!1,loc~PM)->virion(y,loc~ECF) kbudding
+
+# drug effect
+drug(m2)+M2(C)<->drug(m2!1).M2(C!1) kon,koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate_ode({t_start=>1,t_end=>7200,n_steps=>720,suffix=>"minus_drug"})
+resetConcentrations()
+setConcentration("drug(m2)","100000.0")
+simulate_ode({t_start=>1,t_end=>7200,n_steps=>720,suffix=>"plus_drug"})
+
+
+end actions

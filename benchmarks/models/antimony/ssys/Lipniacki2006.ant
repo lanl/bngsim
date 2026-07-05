@@ -1,0 +1,52 @@
+// Lipniacki2006_Autorepression_2D.ant
+//
+// Source:
+//   Lipniacki T, Paszek P, Marciniak-Czochra A, Brasier AR, Kimmel M (2006)
+//   "Transcriptional stochasticity in gene expression."
+//   J Theor Biol 238(2):348–367. doi:10.1016/j.jtbi.2005.05.032
+//
+// Deterministic (thermodynamic) limit of a stochastically regulated
+// auto-repressive gene with n copies.
+//
+// Scaled variables (cf. Eqs. (7–10), (15–16) in the paper):
+//   x(t) : normalized mRNA level
+//   y(t) : normalized protein level
+//
+// ODEs (thermodynamic limit):
+//   dx/dt = -x + n*c / (c + b*y)
+//   dy/dt =  r*(x - y)
+//
+// Here we take the "near thermodynamic limit" parameter set used
+// in their Fig. 4: n = 1, c = 6, b = 3, r = 0.2.
+//
+// This gives a 2D, rational-feedback negative autoregulation system,
+// directly traceable to Lipniacki et al.'s analysis of stochastic
+// gene expression, but purely deterministic and small enough for
+// S-system / GMA recasting stress tests.
+
+model Lipniacki2006_Autorepression_2D
+
+  // Compartment
+  compartment cell = 1;
+
+  // State variables
+  species x in cell;
+  species y in cell;
+
+  // Parameters (dimensionless, from example in the paper)
+  const n = 1.0;
+  const c = 6.0;
+  const b = 3.0;
+  const r = 0.2;
+
+  // ODEs: deterministic limit of auto-repressive gene
+  x' = -x + n*c / (c + b*y);
+  y' =  r*(x - y);
+
+  // Initial conditions (simple OFF-like start used in their examples)
+  x = 0;
+  y = 0;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,49 @@
+begin model
+#@model_id: S1987_A1_exponential
+#@title: Negative exponential decay
+#@description: Simple first-order exponential decay dZ/dt = -Z. From Savageau & Voit (1987) Problem A1.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  k_decay  1.0            # 1/s; first-order decay rate
+end parameters
+
+begin molecule types
+  Z()
+end molecule types
+
+begin seed species
+  Z()  100  # molecules (Z(0)=1 scaled x100)
+end seed species
+
+begin observables
+  Molecules  Obs_Z  Z()
+end observables
+
+begin reaction rules
+  # First-order decay: dZ/dt = -Z
+  Z() -> 0  k_decay
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

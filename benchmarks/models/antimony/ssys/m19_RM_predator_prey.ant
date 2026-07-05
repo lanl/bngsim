@@ -1,0 +1,39 @@
+// Rosenzweig ML, MacArthur RH (1963) Am Nat 97: 209-223.
+// Holling SC (1959) Canadian Entomologist 91: 385-398.
+//
+// There is no exact recasting of the original model into canonical S-system form.
+// We can recast into GMA form.
+// ===== States =====
+//   species x, y, Y    // Y := 1 + a*h*x
+//
+// ===== Parameters (positive) =====
+//   r = 1.0; K = 10.0; a = 0.5; h = 0.4; e = 0.6; m = 0.2;
+//
+// ===== Exact GMA dynamics =====
+// Original:
+//   x' = r*x*(1 - x/K) - (a*x*y)/(1 + a*h*x)
+//   y' = e*(a*x*y)/(1 + a*h*x) - m*y
+//
+// With Y = 1 + a*h*x:
+//   x' =  r*x  -  (r/K)*x^2  -  a*x*y*(Y^(-1));
+//   y' =  (a*e)*x*y*(Y^(-1)) -  m*y;
+//
+// Ancillary identity (exact via chain rule): Y' = a*h*x'
+//   Y' =  a*h*( r*x - (r/K)*x^2 - a*x*y*(Y^(-1)) );
+//
+// ===== Initial conditions (consistent with Y definition) =====
+//   x = 2;
+//   y = 1;
+//   Y = 1 + a*h*x;   // = 1 + 0.5*0.4*2 = 1.4
+//
+model RM_predator_prey()
+
+  species x, y
+  r = 1.0; K = 10.0; a = 0.5; h = 0.4; e = 0.6; m = 0.2;
+
+  x' = r*x*(1 - x/K) - (a*x*y)/(1 + a*h*x);
+  y' = e*(a*x*y)/(1 + a*h*x) - m*y;
+
+  x = 2; y = 1;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

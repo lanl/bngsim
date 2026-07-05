@@ -1,0 +1,73 @@
+begin model
+#@model_id: Ozbudak2004_LacOperon_Simplified
+#@title: Simplified lac operon bistable switch (Ozbudak et al. 2004)
+#@description: Two-variable reduced ODE model of the lac bistable switch with Hill-type positive feedback. x = intracellular TMG, y = LacY permease level. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1038/nature02298
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters (dimensionless, from fitted forms at G=0, T=30 mM)
+  alpha    100.5          # maximal LacY expression (dimensionless)
+  rho      167.1          # repression strength (dimensionless)
+  beta_p   0.62           # TMG import rate coefficient (dimensionless)
+end parameters
+
+begin molecule types
+  # Intracellular TMG (dimensionless, scaled)
+  x()
+  # LacY permease level (relative expression)
+  y()
+end molecule types
+
+begin seed species
+  x()  1    # molecules (scaled from 0; use 1 to avoid zero)
+  y()  1    # molecules (scaled from alpha/rho ~ 0.6)
+end seed species
+
+begin observables
+  Molecules  Obs_x  x()
+  Molecules  Obs_y  y()
+end observables
+
+begin functions
+  # Effective inhibition function: 1 + (rho - 1)/(1 + x^2)
+  inhib() = 1 + (rho - 1) / (1 + Obs_x^2)
+
+  # x production: beta * y
+  prod_x() = beta_p * Obs_y
+
+  # y production: alpha / inhib
+  prod_y() = alpha / inhib()
+end functions
+
+begin reaction rules
+  # x dynamics: dx/dt = beta*y - x
+  # Production
+  0 -> x()  prod_x()
+  # Degradation (first-order, rate 1)
+  x() -> 0  1.0
+
+  # y dynamics: dy/dt = alpha/inhib - y
+  # Production
+  0 -> y()  prod_y()
+  # Degradation (first-order, rate 1)
+  y() -> 0  1.0
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>10,n_steps=>400,complex=>1})
+end actions

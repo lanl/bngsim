@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-authored test fixture for the sync_parameters fixed-point cascade.
+     Declares parameters in REVERSE dependency order:
+
+       C = 2*B    (declared first, depends on B)
+       B = 2*A    (declared second, depends on A)
+       A = 1      (declared last)
+
+     load_model already iterates parameter resolution to fixed point at
+     parse time, so the parsed map gets {A=1, B=2, C=4}.  After
+     set_param("A", 10), sync_parameters must also iterate to fixed
+     point so {A=10, B=20, C=40} — a single declaration-order pass
+     would only refresh C from a stale B and leave the chain broken.
+-->
+<sbml xmlns="http://www.sbml.org/sbml/level3" level="3" version="1">
+  <model id="out_of_order_param_model">
+    <ListOfParameters>
+      <Parameter id="C" type="Constant" value="2*B" expr="2*B"/>
+      <Parameter id="B" type="Constant" value="2*A" expr="2*A"/>
+      <Parameter id="A" type="Constant" value="1"   expr="1"/>
+    </ListOfParameters>
+    <ListOfMoleculeTypes>
+      <MoleculeType id="X">
+        <ListOfComponentTypes/>
+      </MoleculeType>
+    </ListOfMoleculeTypes>
+    <ListOfSpecies>
+      <Species id="S1" concentration="C" name="X()">
+        <ListOfMolecules>
+          <Molecule id="S1_M1" name="X"/>
+        </ListOfMolecules>
+      </Species>
+    </ListOfSpecies>
+    <ListOfReactionRules/>
+    <ListOfObservables>
+      <Observable id="O1" name="X_count" type="Molecules">
+        <ListOfPatterns>
+          <Pattern id="O1_P1">
+            <ListOfMolecules>
+              <Molecule id="O1_P1_M1" name="X"/>
+            </ListOfMolecules>
+          </Pattern>
+        </ListOfPatterns>
+      </Observable>
+    </ListOfObservables>
+  </model>
+</sbml>

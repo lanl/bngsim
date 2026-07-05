@@ -1,0 +1,68 @@
+# Model: wacky_bouncing_ball.bngl
+# Description: Models a particle 'bouncing' in a 1D potential well (Gravity).
+#              Height (H) converts to Velocity (V) and back.
+#              Includes damping (friction) which reduces the bounce height over time.
+
+begin model
+
+begin parameters
+    g 1.0     # Gravity acceleration
+    k 1.0     # Spring constant / Wall elasticity
+    friction 0.05
+    Mass 100
+end parameters
+
+begin molecule types
+    Ball(state~Rising~Falling)
+    Height()
+    Velocity()
+end molecule types
+
+begin seed species
+    Ball(state~Falling) 1
+    Height() 100 # Initial Height
+    Velocity() 0
+end seed species
+
+begin observables
+    Molecules H Height()
+    Molecules V Velocity()
+    Molecules Ball_Rising Ball(state~Rising)
+    Molecules Ball_Falling Ball(state~Falling)
+end observables
+
+begin reaction rules
+    # Falling Phase (Height -> Velocity)
+    # Potential Energy (H) converts to Kinetic Energy (V)
+    Height() -> Velocity() g
+    
+    # Rising Phase (Velocity -> Height)
+    # Kinetic Energy (V) converts to Potential Energy (H)
+    # Only if moving Up?
+    # We need a direction state.
+    
+    # While Down: H -> V (Acceleration)
+    # While Up:   V -> H (Deceleration against gravity)
+    
+    # Bounce at Bottom (H=0): Down -> Up
+    # But H is molecules. H->0 means ground.
+    # If H=0 and V>0 (limit), change direction.
+    # This logic is hard in pure reaction rules without explicit zero-checking.
+    
+    # Potential Energy (A) <-> Kinetic Energy (B)
+    Ball(state~Falling) + Height() -> Ball(state~Falling) + Velocity() g
+    Ball(state~Rising) + Velocity() -> Ball(state~Rising) + Height() k
+    
+    # State switching (Very approximate for demonstration)
+    Ball(state~Falling) -> Ball(state~Rising) 0.1 # Bounce (At bottom)
+    Ball(state~Rising) -> Ball(state~Falling) 0.1 # Peak
+    
+    # Damping
+    Velocity() -> 0 friction
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

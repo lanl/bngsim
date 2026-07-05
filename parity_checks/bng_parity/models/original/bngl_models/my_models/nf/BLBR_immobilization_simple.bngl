@@ -1,0 +1,142 @@
+begin model
+
+begin parameters
+
+f 0.01 # dimensionless, 0<f<=1
+
+NA 6.02214e23 # molecules per mol
+Vecf 1e-9*f # L per cell
+
+Lconc_nM 10 # nM
+Lconc=Lconc_nM*1e-9 # M
+L_cpc=Lconc*(NA*Vecf) # copies per cell
+
+R_cpc 3e5*f # copies per cell
+
+kf 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr 0.01 # /s
+
+# forward crosslinking constant
+kpx=5000*kf
+# reverse crosslinking constant
+kmx=kr
+
+# threshold
+#  We consider two mobility classes.
+#  Receptor aggregates containing T or fewer receptors are mobile.
+#  Receptor aggregates containing more than T receptors are immobile.
+T 2 # dimensionless
+
+# slowing factor, which will effectively multiply kpx and kmx when appropriate
+#   This factor characterizes the reduced mobility of aggregates above a threshold size.
+sigma 1e-2 # dimensionless, 0<sigma<=1
+
+# a small number (used to avoid "divide by zero" issue)
+epsilon 1e-10 # dimensionless
+
+valL 2
+valR 2
+
+# fast rate constants
+delta=10*max(max(kf,kpx)*valL*L_cpc*valR*R_cpc,max(kr,kmx)*valR*R_cpc) # /s
+rho=delta*(1-sigma)/sigma # /s
+
+end parameters
+
+begin molecule types
+
+L(s,s)
+R(s~0~1,s~0~1)
+
+L0(s,s)
+R0(s,s)
+
+end molecule types
+
+begin seed species
+
+L(s,s) L_cpc
+R(s~0,s~0) R_cpc
+
+L0(s,s) L_cpc
+R0(s,s) R_cpc
+
+end seed species
+
+begin observables
+
+Molecules Rtot R()
+
+Species Req1 R==1
+Species Rgt1 R>1
+#Species Req5 R==5
+#Species Req10 R==10
+
+Molecules long_pattern R(s~1!1).L(s!1,s!2).R(s~0!2,s~0!3).L(s!3,s!4).R(s~0!4,s~0!5).L(s!5,s!6).R(s~0!6)
+Molecules short_pattern R(s~0!4).L(s!4,s!3).R(s~0!3,s~0!2).L(s!2,s!1).R(s~0!1,s~1!+)
+
+Molecules R0tot R0()
+Species R0eq1 R0==1
+Species R0gt1 R0>1
+#Species R0eq5 R0==5
+#Species R0eq10 R0==10
+
+end observables
+
+begin functions
+
+avg_agg_size() (Rtot-Req1)/(Rgt1+epsilon)
+avg_agg_size0() (R0tot-R0eq1)/(R0gt1+epsilon)
+
+mobility_factor(ptr) if(Rtot(ptr)>T,0,1)
+
+twoBigProducts(ptr) if(((short_pattern(ptr)>0) && (long_pattern(ptr)>0)),1,0)
+
+end functions
+
+begin reaction rules
+
+# capture/release of free ligand
+L(s,s)+R(s)<->L(s,s!1).R(s!1) kf,kr
+
+# reactions occuring on the cell surface
+
+#  association
+
+# x is mobile; y is mobile
+# x is immobile; y is mobile
+L(s,s!+)+%y:R(s)->L(s!1,s!+).R(s!1) kpx*mobility_factor(y)
+
+# x is mobile; y is immobile
+%x:L(s,s!+)+%y:R(s)->L(s!1,s!+).R(s!1) \
+FunctionProduct("kpx*mobility_factor(x)","(1-mobility_factor(y))")
+
+# x is immobile; y is immobile
+%x:L(s,s!+)+%y:R(s)->L(s!1,s!+).R(s!1) \
+FunctionProduct("sigma*kpx*(1-mobility_factor(x))","(1-mobility_factor(y))")
+
+#  dissociation
+
+# tag bond for possible breaking
+L(s!1,s!+).R(s~0!1)->L(s!1,s!+).R(s~1!1) kmx
+
+# break bond
+L(s!1,s!+).R(s~1!1)->L(s,s!+)+R(s~0) delta
+
+# reject (erase tag with breaking bond)
+%z:R(s~1!1).L(s!1,s!+)->R(s~0!1).L(s!1,s!+) rho*twoBigProducts(z)
+
+# model without immobilization
+L0(s,s)+R0(s)<->L0(s,s!1).R0(s!1) kf,kr
+L0(s,s!+)+R0(s)<->L0(s!1,s!+).R0(s!1) kpx,kmx
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,\
+t_start=>0,t_end=>600,n_steps=>600,print_functions=>1})
+
+end actions

@@ -1,0 +1,78 @@
+// Phase-Locked Loop (PLL) Converter Grid Connection
+// Source: Zhang et al., IEEE Trans. Power Systems 37(2):1351-1362 (2022)
+// Section IV.C: Polynomial Conversion of Power System
+//
+// Original system (Eq. 7): 2nd-order PLL with trigonometric nonlinearities
+//   dx₁/dt = x₂
+//   dx₂/dt = -C₁ cos(x₁) x₂ - C₂ sin(x₁) + C₃
+//
+// where:
+//   x₁ = θ_PLL - θ_sep (phase angle relative to stable equilibrium)
+//   x₂ = Δω_PLL (angular frequency deviation)
+//   C₁ = k_{p,PLL} |V_g| |K| (damping coefficient)
+//   C₂ = k_{i,PLL} |V_g| |K| (synchronizing coefficient)
+//   C₃ = k_{i,PLL} |Z| |I| sin(θ_Z + θ_C) (power injection term)
+//
+// Parameters from paper (Section V-A):
+//   k_{p,PLL} = 0.32, k_{i,PLL} = 0.37 s⁻¹
+//   SCR = 5, X/R = 7
+//   Rated: 400V, 10kW
+//
+// ==============================================================================
+// EXACT RECASTING TO POLYNOMIAL FORM (Eq. 17-18):
+// ==============================================================================
+// The paper explicitly cites Savageau & Voit (1987) [ref 30] for this recasting.
+//
+// Substitution variables:
+//   u₁ = sin(x₁)
+//   u₂ = 1 - cos(x₁)
+//
+// Algebraic constraint (from Pythagorean identity):
+//   u₁² + u₂² - 2u₂ = 0
+//
+// The recast polynomial DAE (Eq. 19):
+//   State: (x₁, x₂, u₁, u₂) — 4D with 1 constraint → effective 3D
+//
+// Dynamics for recast variables (using chain rule):
+//   du₁/dt = cos(x₁) · dx₁/dt = (1-u₂) · x₂
+//   du₂/dt = sin(x₁) · dx₁/dt = u₁ · x₂
+//
+// Full polynomial system:
+//   dx₁/dt = x₂
+//   dx₂/dt = -C₁(1-u₂)x₂ - C₂u₁ + C₃
+//   du₁/dt = (1-u₂)x₂
+//   du₂/dt = u₁x₂
+//   subject to: u₁² + u₂² - 2u₂ = 0
+//
+// This is polynomial form suitable for SOS programming analysis.
+// ==============================================================================
+
+model Z2022_pll_converter()
+
+// Compartment
+compartment cell = 1;
+
+// State variables
+species x1 in cell;
+species x2 in cell;
+
+// PLL control parameters (from paper Section V-A)
+kp_pll = 0.32;
+ki_pll = 0.37;
+
+// Combined coefficients C1, C2, C3 (derived from grid parameters SCR=5, X/R=7)
+C1 = 1.0;
+C2 = 1.2;
+C3 = 0.3;
+
+// Original trigonometric ODEs (Eq. 7)
+x1' = x2;
+x2' = -C1 * cos(x1) * x2 - C2 * sin(x1) + C3;
+
+// Initial conditions (near stable equilibrium)
+x1 = 0.1;
+x2 = 0.0;
+
+end
+
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6

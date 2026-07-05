@@ -1,0 +1,27 @@
+# Pinned PyBioNetGen for the bng_parity / benchmark suite.  (GH #68)
+#
+# The suite drives bngsim THROUGH PyBioNetGen's in-Python BNGsim bridge — the
+# merged integration in RuleWorld/PyBioNetGen#102. Pin the exact RuleWorld commit
+# that carries that bridge so every machine runs the SAME engine routing: no local
+# checkout, no PR-branch, no PYTHONPATH dance, no reliance on whatever bionetgen
+# happens to be importable. `5109a46` is the PR #102 merge commit on
+# RuleWorld/PyBioNetGen@main.
+#
+# Install notes (PyBioNetGen's setup.py shells out to `pip install numpy` and
+# downloads BNG2.pl at build time, so the build needs pip+setuptools+numpy in the
+# target env and `--no-build-isolation`). The turnkey path that handles this is
+#   python bng_parity/bootstrap_parity_env.py --venv <env>
+# which installs this pin and the bngsim wheel, then verifies the BNGsim backend
+# is actually live before any sweep.
+#
+# bngsim is intentionally NOT pinned here: it is not on PyPI and ships from this
+# repo's own wheel (scripts/ship_wheel.py). The bootstrap installs it separately.
+#
+# Provenance is recorded so a consumer can confirm a run used this exact pin:
+#   * each sweep's _summary.json -> bngsim_backend.bionetgen_commit
+#   * golden.json -> _meta.bionetgen_commit
+# A machine whose installed commit differs from 5109a46 is using a different
+# bridge; the engine pre-flight + per-job audit (bngsim_backend.py) will still
+# refuse/flag a run that does not actually exercise bngsim.
+
+bionetgen @ git+https://github.com/RuleWorld/PyBioNetGen.git@5109a46

@@ -1,0 +1,96 @@
+# Model: ph_wave_equation.bngl
+# Description: Simulates 1D longitudinal wave propagation in a discrete-mass spring system.
+#              Demonstrates physics simulations in a rule-based framework.
+
+begin model
+
+begin parameters
+    k_spring 10.0
+    mass 1.0
+    dt_scale 0.05
+    rate_coeff k_spring/mass * dt_scale
+end parameters
+
+begin molecule types
+    Node(i~1~2~3~4~5,t~POS~VEL)
+end molecule types
+
+begin seed species
+    # Initial displacement (Gaussian pulse)
+    Node(i~1,t~POS) 0.0
+    Node(i~2,t~POS) 0.5
+    Node(i~3,t~POS) 1.0
+    Node(i~4,t~POS) 0.5
+    Node(i~5,t~POS) 0.0
+    
+    # Initial velocity
+    Node(i~1,t~VEL) 0.0
+    Node(i~2,t~VEL) 0.0
+    Node(i~3,t~VEL) 0.0
+    Node(i~4,t~VEL) 0.0
+    Node(i~5,t~VEL) 0.0
+end seed species
+
+begin observables
+    Molecules P1 Node(i~1,t~POS)
+    Molecules P2 Node(i~2,t~POS)
+    Molecules P3 Node(i~3,t~POS)
+    Molecules P4 Node(i~4,t~POS)
+    Molecules P5 Node(i~5,t~POS)
+    
+    Molecules V1 Node(i~1,t~VEL)
+    Molecules V2 Node(i~2,t~VEL)
+    Molecules V3 Node(i~3,t~VEL)
+    Molecules V4 Node(i~4,t~VEL)
+    Molecules V5 Node(i~5,t~VEL)
+end observables
+
+begin functions
+    # Force on node i = k * (x_{i+1} - 2*x_i + x_{i-1})
+    # Fixed boundaries: x_0 = x_6 = 0
+    BC_Acc1() = P2 - 2*P1
+    BC_Acc2() = P3 - 2*P2 + P1
+    BC_Acc3() = P4 - 2*P3 + P2
+    BC_Acc4() = P5 - 2*P4 + P3
+    BC_Acc5() = 0 - 2*P5 + P4
+end functions
+
+begin reaction rules
+    # VEL += Force * dt
+    Rule_V1_Up: 0 -> Node(i~1,t~VEL) if(BC_Acc1()>0, BC_Acc1()*rate_coeff, 0)
+    Rule_V1_Dn: Node(i~1,t~VEL) -> 0 if(BC_Acc1()<0, -BC_Acc1()*rate_coeff, 0)
+    
+    Rule_V2_Up: 0 -> Node(i~2,t~VEL) if(BC_Acc2()>0, BC_Acc2()*rate_coeff, 0)
+    Rule_V2_Dn: Node(i~2,t~VEL) -> 0 if(BC_Acc2()<0, -BC_Acc2()*rate_coeff, 0)
+    
+    Rule_V3_Up: 0 -> Node(i~3,t~VEL) if(BC_Acc3()>0, BC_Acc3()*rate_coeff, 0)
+    Rule_V3_Dn: Node(i~3,t~VEL) -> 0 if(BC_Acc3()<0, -BC_Acc3()*rate_coeff, 0)
+    
+    Rule_V4_Up: 0 -> Node(i~4,t~VEL) if(BC_Acc4()>0, BC_Acc4()*rate_coeff, 0)
+    Rule_V4_Dn: Node(i~4,t~VEL) -> 0 if(BC_Acc4()<0, -BC_Acc4()*rate_coeff, 0)
+    
+    Rule_V5_Up: 0 -> Node(i~5,t~VEL) if(BC_Acc5()>0, BC_Acc5()*rate_coeff, 0)
+    Rule_V5_Dn: Node(i~5,t~VEL) -> 0 if(BC_Acc5()<0, -BC_Acc5()*rate_coeff, 0)
+
+    # POS += VEL * dt
+    Rule_P1_Up: 0 -> Node(i~1,t~POS) if(V1>0, V1*dt_scale, 0)
+    Rule_P1_Dn: Node(i~1,t~POS) -> 0 if(V1<0, -V1*dt_scale, 0)
+    
+    Rule_P2_Up: 0 -> Node(i~2,t~POS) if(V2>0, V2*dt_scale, 0)
+    Rule_P2_Dn: Node(i~2,t~POS) -> 0 if(V2<0, -V2*dt_scale, 0)
+    
+    Rule_P3_Up: 0 -> Node(i~3,t~POS) if(V3>0, V3*dt_scale, 0)
+    Rule_P3_Dn: Node(i~3,t~POS) -> 0 if(V3<0, -V3*dt_scale, 0)
+    
+    Rule_P4_Up: 0 -> Node(i~4,t~POS) if(V4>0, V4*dt_scale, 0)
+    Rule_P4_Dn: Node(i~4,t~POS) -> 0 if(V4<0, -V4*dt_scale, 0)
+    
+    Rule_P5_Up: 0 -> Node(i~5,t~POS) if(V5>0, V5*dt_scale, 0)
+    Rule_P5_Dn: Node(i~5,t~POS) -> 0 if(V5<0, -V5*dt_scale, 0)
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>1000,atol=>1e-8,rtol=>1e-8})

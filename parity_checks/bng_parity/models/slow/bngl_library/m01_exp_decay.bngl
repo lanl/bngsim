@@ -1,0 +1,51 @@
+begin model
+#@model_id: m01_exp_decay
+#@title: First-order exponential decay
+#@description: Simple first-order decay S' = -k*S. A single species degrades with rate constant k.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless scaling factor
+
+  k        0.3            # 1/s  decay rate constant
+
+  S_init   10*f           # molecules  initial count of S
+end parameters
+
+begin molecule types
+  S()
+end molecule types
+
+begin seed species
+  S()  S_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_S  S()
+end observables
+
+begin reaction rules
+  # First-order decay: S -> 0 at rate k
+  S() -> 0  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

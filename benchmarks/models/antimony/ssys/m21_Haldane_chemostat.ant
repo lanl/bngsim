@@ -1,0 +1,43 @@
+// Andrews JF (1968) Biotechnol Bioeng 10: 707-723. 
+// Exact GMA recast of:
+  //   mu := mu_max * S / (K_S + S + S^2 / K_I)
+  //   X' = (mu - D) * X
+  //   S' = D*(S_in - S) - (1/Y_xs)*mu*X
+  //
+  // Auxiliary variable:
+  //   Y = K_S + S + S^2 / K_I
+  // so that
+  //   mu = mu_max * S * Y^(-1)
+  //
+  // Then:
+  //   X' = mu_max * X * S * Y^(-1) - D * X
+  //   S' = D*S_in - D*S - (mu_max/Y_xs) * X * S * Y^(-1)
+  //
+  // and using Y = K_S + S + S^2/K_I ⇒ Y' = (1 + 2S/K_I) * S'
+  // gives, after expansion:
+  //
+  //   Y' =  D*S_in
+  //       + (2*D*S_in/K_I) * S
+  //       - D*S
+  //       - (2*D/K_I) * S^2
+  //       - (mu_max/Y_xs)        * X * S      * Y^(-1)
+  //       - (2*mu_max/(K_I*Y_xs))* X * S^2    * Y^(-1)
+  //
+  // Every term is a power-law monomial,
+  // so this is an exact GMA representation of the original system.
+
+model Haldane_chemostat()
+
+  species X, S
+  mu_max = 1.0; K_S = 0.5; K_I = 2.0;  // kinetics
+  Y_xs = 0.5;                           // yield
+  D = 0.1;  S_in = 5.0;                 // chemostat
+
+  mu := mu_max * S / (K_S + S + (S^2)/K_I);
+
+  X' = (mu - D) * X;
+  S' = D*(S_in - S) - (1/Y_xs)*mu*X;
+
+  X = 0.1; S = 4.0;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6 EPS_SLACK=1e-10

@@ -1,0 +1,18 @@
+# SSA propensity test: A+A+A -> C (homotrimer)
+# Reactants: 1,1,1. stat_factor=1/6 (BNG2.pl: C(n,3) = n(n-1)(n-2)/6).
+# A(0)=2: propensity = (1/6)*k*2*1*0 = 0 → no reaction (need 3 molecules)
+# A(0)=3: propensity = (1/6)*k*3*2*1 = k → fires
+begin parameters
+    1 k1  1.0  # Constant
+end parameters
+begin species
+    1 A() 2
+    2 C() 0
+end species
+begin reactions
+    1 1,1,1 2 0.166666666666667*k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 C_tot  2
+end groups

@@ -1,0 +1,108 @@
+# A model for ligand-receptor binding with diffusion effects
+#   captured using the approximate theory of Ref 1.
+# Parameter values are for DCT interacting with cell-surface IgE on RBL-2H3 cells (Ref 2).
+# Reaction scheme: L+R<=>B
+# At equilibrium [B]=Keq*[L]*[R].
+# We assume conservation of ligand and receptor.
+
+# List of References
+# 1. Berg HC, Purcell EM (1977)
+#    Physics of chemoreception.
+#    Biophys J 20: 193-219.
+# 2. Erickson J, Goldstein B, Holowka D, Baird B (1987)
+#    The effect of receptor density on the forward rate contant
+#    for binding of ligands to cell surface receptors.
+#    Biophys J 52: 657-662.
+# 3. Faeder JR et al. (2003) J Immunol 170: 3769-3781.
+# 4. Erickson J et al. (1986) Mol Immunol 72: 769-781.
+
+begin model
+
+begin parameters
+
+pi  3.14159
+
+# Avogadro constant
+NA  6.02214e23 # [=] molecules per mol
+
+# total ligand (DCT) concentration
+#   DCT is a monovalent DNP ligand
+LTconc  1.0 # [=] nM
+
+# receptors per cell
+#   A receptor is a Fab arm of cell-surface anti-DNP IgE (from Ref 3)
+RT  4.0e5 # [=] copy number per cell
+
+# density of cells (in suspension)
+rho  1.0e6 # [=] cells per mL
+
+# volume of fluid surrounding a single cell (on average)
+V=1.0/rho # [=] mL or cm^3
+
+# radius of an RBL-2H3 cell; a cell is assumed to be spherical (from Ref 3)
+a_micron  7.0 # [=] micron
+# convert to cm
+a=a_micron*1.0e-4
+
+# diffusion coefficent of ligand in water (from Ref 2 and value of a)
+D  5.64e-6 # [=] cm^2/s
+
+# equilibrium association constant for ligand-receptor binding (from Ref 4)
+Keq  1.4e9 # [=] /M
+
+# reaction-limited association rate constant (from Ref 2)
+kon  1.12e8 # [=] /M/s
+
+# derive the dissociation rate constant
+koff=kon/Keq # 0.08 /s
+
+# number of ligands per cell (unit conversion)
+# the factor of 1.0e-12 (below) arises from 1000 mL/L and 1.0e9 nM/M
+LT=LTconc*1.0e-12*NA/rho # approximately 600,000 ligands per cell
+
+end parameters
+
+begin molecule types
+
+L(r) # Monovalent ligand (DCT); r is DNP moiety
+R(l,l) # Bivalent receptor (Fab arm of cell-surface IgE); l is Ag-combining site
+
+end molecule types
+
+begin seed species
+
+# set initial values
+L(r)  LT # all ligand is initially free
+R(l,l)  RT # all receptor is initially free
+
+end  seed species
+
+begin observables
+
+Species Lfree L(r) # number of free ligands per cell
+Molecules Rfree R(l) # number of free receptor sites per cell
+Molecules LR L(r!1).R(l!1) # number of ligand-receptor bonds per cell
+
+end observables
+
+begin functions
+
+# the factor of 1000.0 (below) arises from 1000 mL/L
+# multiplying kon by 1000.0/(NA*V) converts /M/s to /(molecule/cell)/s
+kp1()  (kon*1000.0/(NA*V))/(1.0+(Rfree*kon*1000.0/NA)/(4.0*pi*D*a))
+km1()  koff/(1.0+(Rfree*kon*1000.0/NA)/(4.0*pi*D*a))
+
+end functions
+
+begin reaction rules
+
+L(r)+R(l)<->L(r!1).R(l!1) kp1(),km1()
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1});
+simulate_ode({t_start=>0,t_end=>60,n_steps=>120});

@@ -1,0 +1,53 @@
+# Feature: multi-mol unimolecular RULE rate where the seed pattern molecule
+#          contains identical (symmetric) NON-REACTING components.
+# Tests:   embedding_correction_a must NOT divide on top of the seed-side
+#          reacting_local dedup applied in count_multi_mol_fast_generic.
+#          Applying both halves the rate.
+# Bug pattern: r18 / basicmodels v18 R3
+#          `L2(r!1,r,r).R2(l!1) -> L2(r,r,r) + R2(l) k`
+#          The pattern's two free `r` components are sym non-reacting; the
+#          old compute_embedding_correction_multimol returned 2 to undo
+#          the count_embeddings_single overcount, but after r02 fix the
+#          seed dedup already collapses those embeddings to 1, so the
+#          correction was double-applied -> propensity halved.
+# Tier: base
+# Expected: RM unbind rate matches NFsim/BNG `_rateLaw` (no factor-of-2),
+#          and the singly->free decay tracks the analytic rate k = 0.05/s.
+# invariant: conserved L2_total = 1000
+
+begin model
+begin parameters
+    L2_init  1000
+    k        0.05
+end parameters
+
+begin molecule types
+    L2(r,r,r)
+    R2(l)
+end molecule types
+
+begin seed species
+    L2(r!1,r,r).R2(l!1)  L2_init
+end seed species
+
+begin observables
+    Molecules  L2_total   L2()
+    Species    singly     L2(r!+,r,r)
+    Species    free       L2(r,r,r)
+    Molecules  R2_free    R2(l)
+    Molecules  R2_bound   R2(l!+)
+end observables
+
+begin reaction rules
+    # The bug-trigger: pattern names 3 r components on L2 — 1 BoundTo
+    # (reacting via DeleteBond), 2 Free (NON-reacting, sym). The seed
+    # dedup at count time and the old compile-time correction were both
+    # applied, so the rate was 0.5 * k instead of k. With ca=1.0 in the
+    # multi-mol path, dedup alone gives the correct rate.
+    L2(r!1,r,r).R2(l!1) -> L2(r,r,r) + R2(l)  k
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>10.0,n_steps=>40,param=>"-bscb"})
+end actions

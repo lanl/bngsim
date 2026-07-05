@@ -1,0 +1,246 @@
+begin model
+
+#@title: Kinetic proofreading in receptor signaling (Hlavacek et al., 2001)
+
+#@description: |
+#  Kinetic proofreading model for receptor-mediated cell signaling.
+#  A symmetric bivalent ligand (two identical receptor-binding sites)
+#  interacts with monovalent cell-surface receptors, forming receptor
+#  dimers through sequential binding. Dimers undergo a series of N=5
+#  unidirectional modifications (representing phosphorylation, kinase
+#  recruitment, adapter association, etc.). If a dimer dissociates
+#  before completing all modifications, the receptors revert to their
+#  basal unmodified state.
+#
+#  This architecture implements kinetic proofreading: the fraction of
+#  terminally modified dimers at steady state scales as alpha^N where
+#  alpha = kp/(kp + 2*koff), providing exponential discrimination
+#  between ligands with different dissociation rate constants. Ligands
+#  forming long-lived receptor complexes generate disproportionately
+#  more fully modified dimers than ligands forming short-lived
+#  complexes.
+#
+#  The modification counter is tracked on the ligand molecule (which
+#  is the center of each dimer). When either bond in a dimer breaks,
+#  the counter resets to zero — faithfully implementing the
+#  irreversible-loss-of-modifications assumption of McKeithan (1995).
+#
+#  Default parameterization uses values estimated for bispecific IgE
+#  interacting with a bivalent antigen and FcepsilonRI on RBL-2H3
+#  cells. With koff = 0.1/s and kp = 0.4/s, alpha = 2/3 and the
+#  fraction of dimers completing all 5 modifications is (2/3)^5 ~13%.
+
+#@keyword: |
+#  kinetic proofreading, receptor aggregation, signal transduction,
+#  ligand discrimination, receptor modification, mass action,
+#  bivalent ligand, monovalent receptor, dimer, immunoreceptor,
+#  FcepsilonRI
+
+#@reference: |
+#  Hlavacek WS, Redondo A, Wofsy C, Goldstein B (2002). Kinetic
+#  proofreading in receptor-mediated transduction of cellular
+#  signals: receptor aggregation, partially activated receptors,
+#  and cytosolic messengers. Bull Math Biol 64:887-911.
+#  doi:10.1006/bulm.2002.0306
+#
+#  Hlavacek WS, Redondo A, Metzger H, Wofsy C, Goldstein B
+#  (2001). Kinetic proofreading models for cell signaling predict
+#  ways to escape kinetic proofreading. Proc Natl Acad Sci USA
+#  98:7295-7300. doi:10.1073/pnas.121172298
+
+begin parameters
+
+  #@note: |
+  #  Parameters estimated for bispecific IgE interacting with a
+  #  bivalent antigen and FcepsilonRI on RBL-2H3 cells.
+  #  See Table 1 in Hlavacek et al. (2002). Bimolecular rate
+  #  constants converted from concentration-based (M^-1 s^-1) to
+  #  population-based (per molecule pair per second) using NA and
+  #  V_ref. First-order rate constants are unchanged.
+
+  # Avogadro constant
+  NA  6.02214076e23  # /mol
+
+  # Extracellular volume per cell
+  # 10^6 cells/ml => V_ref = 10^-9 L/cell
+  V_ref  1e-9  # L/cell
+
+  # Receptors per cell; see Erickson et al. (1987)
+  NR  300000  # molecules
+
+  # Ligand at 1 nM: NL = LT * NA * V_ref
+  NL  602  # molecules
+
+  # Single-site forward rate constant for ligand capture
+  # k_p1 = 1e7 /M/s; kon1 = k_p1 / (NA * V_ref)
+  kon1  1.661e-8  # /(molecule*s)
+
+  # Single-site forward rate constant for crosslinking
+  # k_p2*RT = 1 /s (surface); kon2 = 1/NR
+  kon2  3.333e-6  # /(molecule*s)
+
+  # Single-site dissociation rate constant (k_m1 = k_m2)
+  koff  0.1  # /s
+
+  # Modification rate constant; see Eq. 5-7
+  # in Hlavacek et al. (2002)
+  kp  0.4  # /s
+
+end parameters
+
+begin molecule types
+  # Bivalent ligand with two identical receptor-binding sites
+  # and a modification counter (0-5) tracking dimer state
+  L(r,r,mod~0~1~2~3~4~5)
+  # Monovalent receptor with one ligand-binding site
+  R(l)
+end molecule types
+
+begin seed species
+  L(r,r,mod~0)  NL  # molecules
+  R(l)          NR  # molecules
+end seed species
+
+begin observables
+  # Free ligand (both sites unbound)
+  Species    Obs_Free_L       L(r,r,mod~0)
+  # Free receptor
+  Species    Obs_Free_R       R(l)
+  # Singly-bound ligand (one site bound, one free)
+  Species    Obs_Singly_Bound L(r!+,r,mod~0)
+  # Total dimers (ligand with both sites bound)
+  Species    Obs_Tot_Dimers   L(r!+,r!+)
+  # Dimers by modification state
+  Species    Obs_D0  L(r!+,r!+,mod~0)
+  Species    Obs_D1  L(r!+,r!+,mod~1)
+  Species    Obs_D2  L(r!+,r!+,mod~2)
+  Species    Obs_D3  L(r!+,r!+,mod~3)
+  Species    Obs_D4  L(r!+,r!+,mod~4)
+  # Terminally modified dimers (fully activated)
+  Species    Obs_D5  L(r!+,r!+,mod~5)
+end observables
+
+begin functions
+  # Proofreading parameter alpha (Eq. 15 in
+  # Hlavacek et al., 2002): probability that
+  # the next modification occurs before dimer
+  # dissociation
+  alpha() = kp / (kp + 2 * koff)
+
+  # Fraction of receptors in dimers
+  frac_dimers() = 2 * Obs_Tot_Dimers / NR
+
+  # Fraction of dimers terminally modified
+  frac_term() = Obs_D5 / (Obs_Tot_Dimers + 1e-30)
+
+  # Fraction of all receptors terminally modified
+  frac_R_term() = 2 * Obs_D5 / NR
+
+  # Dimensional conversions (uncomment for output)
+# L_conc() = Obs_Free_L / (NA * V_ref)  # M
+# R_conc() = Obs_Free_R / (NA * V_ref)  # M
+end functions
+
+begin reaction rules
+  # Ligand capture: free ligand binds a free receptor.
+  # BioNetGen applies the factor of 2 for the two
+  # equivalent r sites on L automatically.
+  # See Fig. 1(a) in Hlavacek et al. (2002).
+  L(r,r,mod~0) + R(l) -> L(r!1,r,mod~0).R(l!1)  kon1
+
+  # Receptor crosslinking: singly-bound ligand engages
+  # a second free receptor, forming a dimer.
+  # See Fig. 1(a) in Hlavacek et al. (2002).
+  L(r!+,r,mod~0) + R(l) -> L(r!+,r!1,mod~0).R(l!1)  kon2
+
+  # Dimer dissociation with modification reset.
+  # Any L-R bond can break. When a dimer bond opens,
+  # the modification counter resets to 0, implementing
+  # the assumption that receptor modifications are
+  # reversed upon loss of aggregation. For dimers, each
+  # of 2 bonds can break at rate koff, giving total
+  # dimer dissociation rate 2*koff (the factor of 2 is
+  # applied by BioNetGen). For singly-bound ligand,
+  # only the mod~0 rule applies (singly-bound L always
+  # has mod=0). See Eq. 1-7 in Hlavacek et al. (2002).
+  L(r!1,mod~0).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~1).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~2).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~3).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~4).R(l!1) -> L(r,mod~0) + R(l)  koff
+  L(r!1,mod~5).R(l!1) -> L(r,mod~0) + R(l)  koff
+
+  # Sequential modification of dimers (unidirectional).
+  # L(r!+,r!+) matches only ligands with both sites
+  # bound (dimers). Each step proceeds at rate kp.
+  # See Fig. 1(b) in Hlavacek et al. (2002).
+  L(r!+,r!+,mod~0) -> L(r!+,r!+,mod~1)  kp
+  L(r!+,r!+,mod~1) -> L(r!+,r!+,mod~2)  kp
+  L(r!+,r!+,mod~2) -> L(r!+,r!+,mod~3)  kp
+  L(r!+,r!+,mod~3) -> L(r!+,r!+,mod~4)  kp
+  L(r!+,r!+,mod~4) -> L(r!+,r!+,mod~5)  kp
+
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 9 species, 14 reactions
+
+  #@note: |
+  #  Network is small (9 species, ~14 reactions). ODE is
+  #  the preferred method. SSA is feasible but slow at
+  #  NR=300000; reduce NR and NL proportionally if SSA
+  #  performance is needed.
+
+  saveConcentrations()
+
+  # Kinetic proofreading time course
+
+  #@protocol: |
+  #  Simulate from all-free initial conditions to
+  #  steady state (600 s). Binding equilibrates on
+  #  the timescale 1/(2*kon1*NR) ~ 100 s. Dimer
+  #  modification is faster (~1/kp = 2.5 s) but
+  #  depends on dimer availability. The time course
+  #  shows progressive dimer formation followed by
+  #  sequential population of modification states,
+  #  with early states populated transiently before
+  #  the terminal state D5 accumulates. At steady
+  #  state, D5/D_total should approach alpha^5 ~ 13%.
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",\
+    t_start=>0,t_end=>600,n_steps=>300})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",suffix=>"ssa",\
+#    t_start=>0,t_end=>600,n_steps=>300})
+
+  # Kinetic proofreading demonstration: koff scan
+
+  #@protocol: |
+  #  Scan koff from 0.001 to 1/s (log scale) at fixed
+  #  ligand concentration, showing how the steady-state
+  #  fraction of terminally modified dimers decreases
+  #  sharply with increasing koff. This demonstrates
+  #  kinetic proofreading: small changes in the ligand
+  #  dissociation rate produce large changes in terminal
+  #  modification.
+  #
+  #  Note: this scan varies koff alone at fixed LT.
+  #  The controlled comparison in Hlavacek et al. (2002)
+  #  Fig. 3(b) simultaneously adjusts LT to hold
+  #  2D/RT = const. Despite this difference, the scan
+  #  qualitatively demonstrates the exponential
+  #  sensitivity of terminal modification to koff.
+
+  #@figure: Fig. 3(b) in Hlavacek et al. (2002)
+
+  resetConcentrations()
+  parameter_scan({method=>"ode",parameter=>"koff",\
+    par_min=>0.001,par_max=>1.0,n_scan_pts=>30,\
+    log_scale=>1,\
+    t_start=>0,t_end=>1000,n_steps=>100,\
+    suffix=>"scan_koff"})
+end actions

@@ -1,0 +1,50 @@
+begin model
+begin parameters
+cI 0.12 # /d
+fH 0.054 # dimensionless
+k1=(1-fH)*cI # /d I->R
+k2=fH*cI # /d I->H
+cH 0.17 # /d
+fR 0.79 # dimensionless
+k3=fR*cH # /d H->R
+k4=(1-fR)*cH # /d H->D
+Dmax 1.13e-2
+end parameters
+begin molecule types
+I1()
+R1()
+H1()
+D1()
+#I2()
+#R2_plus_H2()
+end molecule types
+begin seed species
+I1() 1
+#I2() 1
+end seed species
+begin observables
+Molecules I1 I1()
+Molecules R1 R1()
+Molecules H1 H1()
+Molecules D1 D1()
+# Molecules I2 I2()
+#Molecules R2_plus_H2 R2_plus_H2()
+end observables
+begin functions
+symptomatic()=I1+H1
+
+#R2()=(k1/(k1+k2))*R2_plus_H2
+#H2()=(k2/(k1+k2))*R2_plus_H2
+end functions
+begin reaction rules
+I1()->R1() k1
+I1()->H1() k2
+H1()->R1() k3
+H1()->D1() k4
+#I2()->R2_plus_H2() k1+k2
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>1000,print_functions=>1})
+end actions

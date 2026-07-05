@@ -1,0 +1,75 @@
+begin model
+
+begin parameters
+
+k 1
+
+end parameters
+
+begin molecule types
+
+DF3(DNP,DNP,DNP)
+IgE(Fab,Fab)
+
+A()
+
+end molecule types
+
+begin seed species
+
+A() 0
+
+# unicyclic aggregate
+DF3(DNP,DNP!5,DNP!1).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP!4).IgE(Fab!3,Fab!5).IgE(Fab!4,Fab) 1
+# bicyclic aggregate
+DF3(DNP!6,DNP!5,DNP!1).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP!4).IgE(Fab!3,Fab!5).IgE(Fab!4,Fab!6) 2
+
+# trees
+# 0 0 (should be detected by TestPattern1)
+DF3(DNP,DNP!1,DNP).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP).IgE(Fab!3,Fab) 0 # 5
+# 0 !+ (should be detected by TestPattern1)
+DF3(DNP,DNP!1,DNP).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP!4).IgE(Fab!3,Fab).IgE(Fab!4,Fab) 0 # 6
+# !+ 0 (should be detected by TestPattern2)
+IgE(Fab,Fab!4).DF3(DNP,DNP!1,DNP!4).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP).IgE(Fab!3,Fab) 0 # 13
+# !+ !+ (should be detected by TestPattern3)
+IgE(Fab,Fab!5).DF3(DNP,DNP!1,DNP!5).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP!6).IgE(Fab!3,Fab).IgE(Fab!6,Fab) 0 # 17
+
+end seed species
+
+begin observables
+
+Species Ring DF3(DNP!4,DNP!1).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3).IgE(Fab!3,Fab!4) # =3?
+Species TestPattern1 DF3(DNP,DNP!1,DNP).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3).IgE(Fab!3,Fab) # =0? (no trees) or 11?
+Species TestPattern2 DF3(DNP,DNP!1,DNP!+).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP).IgE(Fab!3,Fab) # =0? (no trees) or 13?
+Species TestPattern3 DF3(DNP,DNP!1,DNP!5).IgE(Fab!5).IgE(Fab!1,Fab!2).DF3(DNP!2,DNP!3,DNP!6).IgE(Fab!6).IgE(Fab!3,Fab) # =0? (no trees) or 17?
+
+Species E222 IgE(Fab!1).DF3(DNP!1,DNP!2).IgE(Fab!2,Fab!3).DF3(DNP!3,DNP!4).IgE(Fab!4,Fab!5).DF3(DNP!5,DNP!6).IgE(Fab!6)
+Species E23 IgE(Fab!1).DF3(DNP!1,DNP!2).IgE(Fab!2,Fab!3).DF3(DNP!3,DNP!4,DNP!5).IgE(Fab!4).IgE(Fab!5)
+Species E32 IgE(Fab!1).DF3(DNP!1,DNP!2,DNP!3).IgE(Fab!2).IgE(Fab!3,Fab!4).DF3(DNP!4,DNP!5).IgE(Fab!5)
+Species I22 IgE(Fab!+,Fab!1).DF3(DNP!1,DNP!2).IgE(Fab!2,Fab!3).DF3(DNP!3,DNP!4).IgE(Fab!4)
+Species I3 IgE(Fab!+,Fab!1).DF3(DNP!1,DNP!2,DNP!3).IgE(Fab!2).IgE(Fab!3) 
+
+end observables
+
+begin functions
+
+#dummy0() 0
+dummy3() 3
+dummy11() 11
+dummy13() 13
+dummy17() 17
+
+end functions
+
+begin reaction rules
+0->A() k
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>1,print_functions=>1})
+
+end actions

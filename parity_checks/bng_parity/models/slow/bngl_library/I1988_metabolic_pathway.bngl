@@ -1,0 +1,159 @@
+begin model
+#@model_id: I1988_metabolic_pathway
+#@title: Unbranched metabolic pathway with Michaelis-Menten kinetics (Irvine 1988, Eq. 8)
+#@description: Nine-step unbranched metabolic pathway with MM kinetics and end-product inhibition on V0. dXi/dt = V(i-1) - Vi. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1016/0895-7177(88)90469-7
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Substrate and inhibition constants (concentration units)
+  Xc       1.0            # dimensionless  (external substrate concentration)
+  Kc       1.0            # dimensionless  (substrate half-saturation)
+  K1       0.1            # dimensionless  (inhibition constant)
+
+  # Vmax parameters (concentration/s)
+  Vm0      10.0           # 1/s
+  Vm1      5.0            # 1/s
+  Vm2      5.0            # 1/s
+  Vm3      5.0            # 1/s
+  Vm4      5.0            # 1/s
+  Vm5      5.0            # 1/s
+  Vm6      5.0            # 1/s
+  Vm7      5.0            # 1/s
+  Vm8      5.0            # 1/s
+  Vm9      5.0            # 1/s
+
+  # Michaelis constants (concentration units)
+  K_1      0.5            # dimensionless
+  K_2      0.5            # dimensionless
+  K_3      0.5            # dimensionless
+  K_4      0.5            # dimensionless
+  K_5      0.5            # dimensionless
+  K_6      0.5            # dimensionless
+  K_7      0.5            # dimensionless
+  K_8      0.5            # dimensionless
+  K_9      0.5            # dimensionless
+
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+  X3()
+  X4()
+  X5()
+  X6()
+  X7()
+  X8()
+  X9()
+end molecule types
+
+begin seed species
+  X1()  1000  # molecules  (1.0 * scale)
+  X2()  1000  # molecules
+  X3()  1000  # molecules
+  X4()  1000  # molecules
+  X5()  1000  # molecules
+  X6()  1000  # molecules
+  X7()  1000  # molecules
+  X8()  1000  # molecules
+  X9()  1000  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+  Molecules  Obs_X4  X4()
+  Molecules  Obs_X5  X5()
+  Molecules  Obs_X6  X6()
+  Molecules  Obs_X7  X7()
+  Molecules  Obs_X8  X8()
+  Molecules  Obs_X9  X9()
+end observables
+
+begin functions
+  # Descaled concentrations
+  x1() = Obs_X1 * inv_s
+  x2() = Obs_X2 * inv_s
+  x3() = Obs_X3 * inv_s
+  x4() = Obs_X4 * inv_s
+  x5() = Obs_X5 * inv_s
+  x6() = Obs_X6 * inv_s
+  x7() = Obs_X7 * inv_s
+  x8() = Obs_X8 * inv_s
+  x9() = Obs_X9 * inv_s
+
+  # V0: end-product inhibited MM rate
+  # V0 = Vm0 * (Xc/Kc) * K1 / (K1 + (Xc/Kc)*K1 + X9)
+  func_V0() = Vm0 * Xc / Kc * K1 / (K1 + Xc / Kc * K1 + x9()) * scale
+
+  # Vi: standard Michaelis-Menten rates (i=1..9)
+  func_V1() = Vm1 * x1() / (x1() + K_1) * scale
+  func_V2() = Vm2 * x2() / (x2() + K_2) * scale
+  func_V3() = Vm3 * x3() / (x3() + K_3) * scale
+  func_V4() = Vm4 * x4() / (x4() + K_4) * scale
+  func_V5() = Vm5 * x5() / (x5() + K_5) * scale
+  func_V6() = Vm6 * x6() / (x6() + K_6) * scale
+  func_V7() = Vm7 * x7() / (x7() + K_7) * scale
+  func_V8() = Vm8 * x8() / (x8() + K_8) * scale
+  func_V9() = Vm9 * x9() / (x9() + K_9) * scale
+end functions
+
+begin reaction rules
+  # X1: production from V0, consumption by V1
+  0 -> X1()  func_V0()
+  X1() -> 0  func_V1()
+
+  # X2: production from V1, consumption by V2
+  0 -> X2()  func_V1()
+  X2() -> 0  func_V2()
+
+  # X3: production from V2, consumption by V3
+  0 -> X3()  func_V2()
+  X3() -> 0  func_V3()
+
+  # X4: production from V3, consumption by V4
+  0 -> X4()  func_V3()
+  X4() -> 0  func_V4()
+
+  # X5: production from V4, consumption by V5
+  0 -> X5()  func_V4()
+  X5() -> 0  func_V5()
+
+  # X6: production from V5, consumption by V6
+  0 -> X6()  func_V5()
+  X6() -> 0  func_V6()
+
+  # X7: production from V6, consumption by V7
+  0 -> X7()  func_V6()
+  X7() -> 0  func_V7()
+
+  # X8: production from V7, consumption by V8
+  0 -> X8()  func_V7()
+  X8() -> 0  func_V8()
+
+  # X9: production from V8, consumption by V9
+  0 -> X9()  func_V8()
+  X9() -> 0  func_V9()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>4,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>4,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>4,n_steps=>400,complex=>1})
+end actions

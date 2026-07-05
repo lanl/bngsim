@@ -1,0 +1,226 @@
+# Project: Broadbelt polymerization model
+# filename: BA_MMA_v1.bngl
+
+begin model
+
+# A penultimate model for free radical polymerization 
+# of butyl acrylate (BA) and methyl methacrylate (MMA)
+# in benzene.
+
+# Reference:
+# - Gao H et al. (2015) Ind Eng Chem Res 54: 11975-11985.
+# - Regatte VR et al. (2014) Macromol Theory Simul 23: 564-574.
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+
+# Boltzmann constant
+kB 1.380649e-23 # J/K
+
+# gas constant
+R=NA*kB # J/(mol K)
+
+# reference volume
+Vref 1e-15 # L (1 femtoliter)
+
+# scaling factor 
+# (determines system size)
+# scale:=1/1.66451971 => 1e10 monomers and solvent molecules
+scale 1e-4/1.66451971 # dimensionless
+
+# volume of batch reactor 
+V=scale*Vref # L
+
+# temperature
+T 50+273.15 # K (50 C)
+
+# BA molecular weight
+BA_mwt 128.17 # g/mol
+
+# MMA molecular weight
+MMA_mwt 100.121 # g/mol
+
+# initial number of M1 (BA) monomers
+BA_0 7.01*(NA*V) # 7.01 M [from Table 2 in Gao et al. (2015)]
+
+# initial number of M2 (MMA) monomers
+MMA_0 9.40*(NA*V) # 9.40 M [from Table 2 in Gao et al. (2015)]
+
+# initial number of solvent (benzene) molecules
+benzene_0 11.23*(NA*V) # 11.23 M [from Table 2 in Gao et al. (2015)]
+
+# initiation parameters
+# The initiator is azodiisobutyronitrile (AIBN).
+
+# total number of initiator molecules
+AIBN_0 5e-3*(NA*V) # 0.005 M [from Table 2 in Regatte et al. (2014)]
+
+# initiator efficiency factor
+f 0.5 # dimensionless [from Table 2 in Gao et al. (2015)]
+
+# rate constant for initiator decomposition
+#  pre-exponential factor
+Ai 6.04e15 # /s [from Table 2 in Gao et al. (2015)]
+#  activation energy
+Eai 31.46*4184 # J/mol (31.46 kcal/mol) [from Table 2 in Gao et al. (2015)]
+ki=Ai*exp(-Eai/(R*T)) # /s
+
+# rate constant for BA homopolymerization
+#  pre-exponential factor
+A111 2.21e7 # /M/s [from Table 2 in Gao et al. (2015)]
+#  activation energy
+Ea111 4.28*4184 # J/mol (4.28 kcal/mol) [from Table 2 in Gao et al. (2015)]
+k111=(A111*exp(-Ea111/(R*T)))/(NA*V) # /M/s converted to /(molecule/reactor)/s
+
+# rate constant for MMA homopolymerization
+#  pre-exponential factor
+A222 2.67e6 # /M/s [from Table 2 in Gao et al. (2015)]
+#  activation energy
+Ea222 5.35*4184 # J/mol (5.35 kcal/mol) [from Table 2 in Gao et al. (2015)]
+k222=(A222*exp(-Ea222/(R*T)))/(NA*V) # /M/s converted to /(molecule/reactor)/s
+
+# reactivity ratios
+# r1=k111/k112=k211/k212
+# r2=k222/k221=k122/k121
+# s1=k111/k211
+# s2=k222/k122
+r1 0.35 # dimensionless [from Table 2 in Gao et al. (2015)]
+r2 2.06 # dimensionless [from Table 2 in Gao et al. (2015)]
+s1 0.4 # dimensionless [from Table 2 in Gao et al. (2015)]
+s2 1.78 # dimensionless [from Table 2 in Gao et al. (2015)]
+
+k211=k111/s1
+k122=k222/s2
+k112=k111/r1
+k121=k122/r2
+k221=k222/r2
+k212=k211/r1
+
+# rate constant for BA termination by recombination
+#  pre-exponential factor
+Ar1 3.70e9 # /M/s[from Table 2 in Gao et al. (2015)]
+#  activation energy
+Ear1 2.01*4184 # J/mol (2.01 kcal/mol) [from Table 2 in Gao et al. (2015)]
+kr1=(Ar1*exp(-Ear1/(R*T)))/(NA*V) # /M/s converted to /(molecule/reactor)/s
+
+# rate constant for MMA termination by recombination
+#  pre-exponential factor
+Ar2 1.20e8 # /M/s[from Table 2 in Gao et al. (2015)]
+#  activation energy
+Ear2 1.34*4184 # J/mol (1.34 kcal/mol) [from Table 2 in Gao et al. (2015)]
+kr2=(Ar2*exp(-Ear2/(R*T)))/(NA*V) # /M/s converted to /(molecule/reactor)/s
+
+# kd/kt,kt=kd+kr
+# fraction of disproportionation to total termination
+#  BA
+kd1_div_kt1 0.05 # dimensionless [from Table 2 in Gao et al. (2015)]
+#  MMA
+kd2_div_kt2 0.6 # dimensionless [from Table 2 in Gao et al. (2015)]
+
+# rate constnat for disproportionation, BA
+kd1=kr1*kd1_div_kt1/(1-kd1_div_kt1)
+
+# rate constant for disproportionation, MMA
+kd2=kr2*kd2_div_kt2/(1-kd2_div_kt2)
+
+# rate constants for cross-termination reactions
+#  The geometric mean of two numbers, a and b, is (a*b)^(1/2).
+krx=(kr1*kr2)^0.5
+kdx=(kd1*kd2)^0.5
+
+# a small number (used to avoid divide-by-zero error)
+eps 1e-20
+
+end parameters
+
+begin molecule types
+# isobutyronitrile (IBN)
+IBN(N)
+# butyl acrylate (BA)
+M1(a~0~1,b~0~1) 
+#  a~0: unprimed
+#  a~1: primed
+#  b~0: live
+#  b~1: dead 
+# methyl methacrylate (MMA)
+M2(a~0~1,b~0~1)
+#  a~0: unprimed
+#  a~1: primed
+#  b~0: live
+#  b~1: dead 
+end molecule types
+
+begin seed species
+# initiator [AIBN, azobis(isobutyronitrile)]
+IBN(N!1).IBN(N!1) AIBN_0
+# M1 (BA) monomers
+M1(a~0,b~0) BA_0
+# M2 (MMA) monomers
+M2(a~0,b~0) MMA_0
+end seed species
+
+begin observables
+Species AIBN IBN(N!1).IBN(N!1)
+Molecules IBN IBN(N)
+Molecules BA_monomer M1(a~0,b~0)
+Molecules MMA_monomer M2(a~0,b~0)
+end observables
+
+begin functions
+# system size (total number of monomers + solvent molecules)
+Ntot()=BA_0+MMA_0+benzene_0 
+BA_init()=BA_0
+MMA_init()=MMA_0
+IBN_effective()=f*IBN
+conversion()=1-(BA_monomer+MMA_monomer)/(BA_0+MMA_0)
+end functions
+
+begin reaction rules
+
+# thermal decomposition of AIBN
+# The product of decomposition is molecular nitrogen and two 2-cyanoprop-2-yl radicals.
+# The efficiency factor is introduced to account for the effective concentration of radicals.
+# (Not all radicals are available to seed polymerization.)
+IBN(N!1).IBN(N!1)->IBN(N)+IBN(N) f*ki
+
+# chain initiation
+IBN(N)+M1(a~0,b~0)->M1(a~1,b~0) (k111+k121+k211+k221)/4
+IBN(N)+M2(a~0,b~0)->M2(a~1,b~0) (k222+k212+k122+k112)/4
+
+# propagation, first propagation
+M1(a~1,b~0)+M1(a~0,b~0)->M1(a~1,b~0!2).M1(a~1!2,b~0) (k111+k211)/2
+M1(a~1,b~0)+M2(a~0,b~0)->M1(a~1,b~0!2).M2(a~1!2,b~0) (k112+k212)/2
+M2(a~1,b~0)+M1(a~0,b~0)->M2(a~1,b~0!2).M1(a~1!2,b~0) (k121+k221)/2
+M2(a~1,b~0)+M2(a~0,b~0)->M2(a~1,b~0!2).M2(a~1!2,b~0) (k122+k222)/2
+
+# propagation, penultimate effect
+M1(b!1).M1(a!1,b~0)+M1(a~0,b~0)->M1(b!1).M1(a!1,b~0!2).M1(a~1!2,b~0) k111
+M1(b!1).M1(a!1,b~0)+M2(a~0,b~0)->M1(b!1).M1(a!1,b~0!2).M2(a~1!2,b~0) k112
+M1(b!1).M2(a!1,b~0)+M1(a~0,b~0)->M1(b!1).M2(a!1,b~0!2).M1(a~1!2,b~0) k121
+M1(b!1).M2(a!1,b~0)+M2(a~0,b~0)->M1(b!1).M2(a!1,b~0!2).M2(a~1!2,b~0) k122
+M2(b!1).M1(a!1,b~0)+M1(a~0,b~0)->M2(b!1).M1(a!1,b~0!2).M1(a~1!2,b~0) k211
+M2(b!1).M1(a!1,b~0)+M2(a~0,b~0)->M2(b!1).M1(a!1,b~0!2).M2(a~1!2,b~0) k212
+M2(b!1).M2(a!1,b~0)+M1(a~0,b~0)->M2(b!1).M2(a!1,b~0!2).M1(a~1!2,b~0) k221
+M2(b!1).M2(a!1,b~0)+M2(a~0,b~0)->M2(b!1).M2(a!1,b~0!2).M2(a~1!2,b~0) k222
+
+# termination, by recombination
+M1(a!+,b~0)+M1(a!+,b~0)->M1(a!+,b~1!1).M1(a!+,b~1!1) kr1
+M2(a!+,b~0)+M2(a!+,b~0)->M2(a!+,b~1!1).M2(a!+,b~1!1) kr2
+M1(a!+,b~0)+M2(a!+,b~0)->M1(a!+,b~1!1).M2(a!+,b~1!1) krx
+
+# termination, by disproportionation
+M1(a!+,b~0)+M1(a!+,b~0)->M1(a!+,b~1)+M1(a!+,b~1) kd1
+M2(a!+,b~0)+M2(a!+,b~0)->M2(a!+,b~1)+M2(a!+,b~1) kd2
+M1(a!+,b~0)+M2(a!+,b~1)->M1(a!+,b~1)+M2(a!+,b~1) kdx
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>30000,n_steps=>300,print_functions=>1,get_final_state=>0,gml=>1e9})
+
+end actions

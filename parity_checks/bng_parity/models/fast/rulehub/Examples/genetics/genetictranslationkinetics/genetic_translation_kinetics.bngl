@@ -1,0 +1,66 @@
+# Model: genetic_translation_kinetics.bngl
+# Description: Models the steps of protein translation: Initiation, Elongation, Termination.
+#              Includes mRNA degradation which stops production.
+
+begin model
+
+begin parameters
+    k_bind  1.0   # Ribosome binding mRNA
+    k_start 0.5   # Initiation (FirstAA)
+    k_elong 2.0   # Elongation step (lumped)
+    k_term  0.1   # Termination and release
+    k_deg   0.05  # mRNA degradation
+    
+    mRNA_0  10
+    Rib_0   50
+end parameters
+
+begin molecule types
+    mRNA(r)       # Ribosome binding site
+    Rib(m,state~Free~Init~Elong~Term)
+    Protein()
+end molecule types
+
+begin seed species
+    mRNA(r) mRNA_0
+    Rib(m,state~Free) Rib_0
+    Protein() 0
+end seed species
+
+begin observables
+    Molecules Active_Ribosomes Rib(m!+,state~Elong)
+    Molecules Completed_Proteins Protein()
+    Molecules mRNA_Count mRNA()
+end observables
+
+begin reaction rules
+    # 1. Binding
+    mRNA(r) + Rib(m,state~Free) <-> mRNA(r!1).Rib(m!1,state~Free) k_bind,0.1
+    
+    # 2. Initiation -> Elongation
+    # Ribosome commits to translation
+    mRNA(r!1).Rib(m!1,state~Free) -> mRNA(r!1).Rib(m!1,state~Elong) k_start
+    
+    # 3. Elongation (Simplified)
+    # We don't model AA addition explicitly here, just a delay or state transition
+    # For simplicity in this demo, Elong -> Term
+    # To mimic length, we could have multiple elongation states or separate steps
+    mRNA(r!1).Rib(m!1,state~Elong) -> mRNA(r!1).Rib(m!1,state~Term) k_elong
+    
+    # 4. Termination
+    # Releases Protein, Ribosome, and mRNA
+    mRNA(r!1).Rib(m!1,state~Term) -> mRNA(r) + Rib(m,state~Free) + Protein() k_term
+    
+    # 5. mRNA Degradation
+    # Destroys mRNA. If Ribosome is bound, what happens?
+    # Option A: Ribosome protects mRNA.
+    # Option B: Ribosome falls off or gets stuck.
+    # Let's say only free mRNA degrades.
+    mRNA(r) -> 0 k_deg
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>200})

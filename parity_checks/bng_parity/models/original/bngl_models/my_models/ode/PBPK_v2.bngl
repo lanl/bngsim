@@ -1,0 +1,170 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# body weight
+BW 7.7 # kg
+# blood plasma volume
+VP=0.037*BW # L
+# lymph volume
+VL=0.074*BW # L
+# interstitial fluid volume
+VI=0.22*BW # L
+# systemic lymph flow rate
+nu=4.92e-3*(BW^0.73) # L per hr
+# rate constant for antibody clearance (in blood)
+cP=1.04e-2/(BW^0.1) # /hr
+# molecular weight of antibody (IgG)
+mwt 1.5e5 # g/mol
+# extensive amount of mAb administered during an infusion
+dose=(2e-2*BW/mwt)*1e9 # nmol
+# antibody infusion rate
+I=dose/3 # nmol per hour
+# fraction of interstitial fluid accessible to antibody
+Kp 0.8 # dimensionless
+# reflection coefficient of tight tissue
+sigma1 0.945 # dimensionless
+# reflection coefficient of leaky tissue
+sigma2 0.697 # dimensionless
+# reflection coefficient of lymph
+sigmaL 0.2 # dimensionless
+# tight tissue fraction of interstitial fluid volume
+fV 0.65 # dimensionless
+# tight tissue fraction of lymph flow
+fnu 0.33
+# volume of ISF in tight tissue
+V1=fV*Kp*VI# L
+# volume of ISF in leaky tissue
+V2=(1-fV)*Kp*VI # L
+# tight tissue lymph flow
+nu1=fnu*nu # L per hour
+# leaky tissue lymph flow
+nu2=(1-fnu)*nu # L per hour
+# indicator
+indicator 1 # 0 or 1 (when antibody is being infused)
+# number of B cells in lymph nodes
+B_cell_total 3e9 # cells
+# number of CR2 per B cell
+CR2_per_B_cell 3e4 # 30,000 CR2 per B cell 
+# extrinsic abundance of CR2 on B cells in lymph nodes
+B_CR2_total=(B_cell_total*CR2_per_B_cell/NA)*1e9 # nmol
+#  binding parameters
+koff 0.01*3600 # /s converted to /hr
+kp1 1e6*3600*1e-9/VL # /M/s converted to /(nmol/compartment)/hr
+km1=koff # /hr
+K2RT 10 # dimensionless
+km2=koff # /hr
+kp2=K2RT*km2/B_CR2_total # /(nmol/compartment)/hr
+#########
+# NOTES #
+#########
+# effective radius of FDCS is 5x that of B cells - random
+# FDCs are 1% of all cells in lymphoid tissue - see paper
+# surface density of CR2 on FDCs is much higher than on B cells - see HL99
+end parameters
+begin molecule types
+NP()
+N1()
+N2()
+NL(Fab,Fab)
+B_CR2(s)
+end molecule types
+begin seed species
+NP() 0
+N1() 0
+N2() 0
+NL(Fab,Fab) 0
+B_CR2(s) B_CR2_total
+end seed species
+begin observables
+Molecules NP NP()
+Molecules N1 N1()
+Molecules N2 N2()
+Species NL_free NL(Fab,Fab)
+Species NL_bound NL(Fab!+)
+Species NL_total NL()
+Molecules B_CR2_all B_CR2()
+Molecules B_CR2_free B_CR2(s)
+Species mAb_CR2_binary_complexes NL(Fab,Fab!1).B_CR2(s!1)
+Species mAb_CR2_ternary_complexes NL(Fab!1,Fab!2).B_CR2(s!1).B_CR2(s!2)
+end observables
+begin functions
+CP()=NP/VP # M
+C1()=N1/V1 # M
+C2()=N2/V2 # M
+CL_free()=NL_free/VL # M
+CL_bound()=NL_bound/VL # M
+CL_total()=NL_total/VL # M
+B_CR2_bound()=B_CR2_all-B_CR2_free
+ratio_ClymphTotal_vs_Cplasma()=if(NP>0,(NL_total/VL)/(NP/VP),0)
+ratio_mAB_inVL_vs_B_CR2_inVL()=NL_total/B_CR2_all
+end functions
+begin reaction rules
+############### 
+# mAb Therapy #
+###############
+# mAb infusion
+0->NP() indicator*I
+#################
+# mAb Transport #
+#################
+# transport from blood plasma to tissue compartment 1
+NP()->N1() (1-sigma1)*nu1/VP
+# transport from blood plasma to tissue compartment 2
+NP()->N2() (1-sigma2)*nu2/VP
+# transport from tissue compartment 1 to lymph
+N1()->NL(Fab,Fab) (1-sigmaL)*nu1/V1
+# transport from tissue compartment 2 to lymph
+N2()->NL(Fab,Fab) (1-sigmaL)*nu2/V2
+# transport from lymph to blood plasma
+NL(Fab,Fab)->NP() nu/VL
+#################
+# mAb Clearance #
+#################
+# clearance in blood
+NP()->0 cP
+#########################
+# mAb Binding to Target #
+#########################
+NL(Fab,Fab)+B_CR2(s)<->NL(Fab!1,Fab).B_CR2(s!1) kp1,km1
+NL(Fab!1,Fab).B_CR2(s!1)+B_CR2(s)<->NL(Fab!1,Fab!2).B_CR2(s!1).B_CR2(s!2) kp2,km2
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# no infusion initially
+setParameter("indicator",0)
+simulate({method=>"ode",t_start=>0,t_end=>3,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>3,t_end=>168,\
+n_steps=>165,print_functions=>1})
+# first infusion at 1 week
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>168,t_end=>171,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>171,t_end=>336,\
+n_steps=>165,print_functions=>1})
+# second infusion at 2 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>336,t_end=>339,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>339,t_end=>672,\
+n_steps=>333,print_functions=>1})
+# third infusion at 4 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>672,t_end=>675,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>675,t_end=>1008,\
+n_steps=>333,print_functions=>1})
+# fourth infusion at 6 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>1008,t_end=>1011,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>1011,t_end=>1344,\
+n_steps=>333,print_functions=>1})
+end actions

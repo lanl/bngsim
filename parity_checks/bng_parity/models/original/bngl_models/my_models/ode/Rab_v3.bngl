@@ -1,0 +1,271 @@
+# Filename: Rab_v[version_number].bngl
+# [PII REMOVED]
+
+begin model
+
+# A model for a GTPase cascade (the Rab5-Rab7 switch)
+# This model is based on Figure 3 in Barr (2013).
+
+# References:
+# Barr FA (2013) J Cell Biol 202:191-199.
+# Kulak NA et al. (2014) Nat Methods 11:319-324. [PMID:24487582]
+# Pylypenko O et al. (2006) EMBO J 25:13-23.
+# Stites EC et al. (2007) Science 318:463-467. 
+# Tan CW et al. (2012) PLOS ONE 7:e31882 [PMID:22363759]
+
+begin parameters
+
+# fraction of a cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+f 1 # [=] dimensionless, 0<f<=1
+
+# ratio of a circle's circumference to its diameter
+pi 3.14159265359 # [=] dimensionless ratio
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cytoplasmic volume
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell 
+#   in culture (Tan et al., 2012):
+#     N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+# number of early endosomes in a cell
+Nee 1*f # [=] copies per cell 
+#  (not used at present; some parameter settings below are based on Nee=1)
+
+# diameter of an early endosome (1 micron)
+Dee 1.0e-5 # [=] dm (1 dm^3 = 1 L)
+
+# total surface area of early endosomes in a cell
+Aee=pi*Dee*Dee*Nee # [=] dm^2 per cell
+
+# total endomembrane surface area (~2000 square microns)
+#   The surface area of the plasma membrane is estimated to be 1600 square microns.
+Atotal 2.0e-7 # [=] dm^2 per cell
+
+# volume ratio Vratio := Vcyt/Vee
+#   Vcyt is the volume explored by a protein diffusing in the cytosol.
+#   Vee is the effective volume explored by a protein tethered to an early endosome.
+#   Stites et al. (2007) estimated 250 for Vcyt/Vpm; Vcyt/Vee will be larger.
+#   I assume that an early endosome has 400-fold less area than the plasma membrane.
+Vratio 1e5 # [=] dimensionless ratio, =250*400
+
+# The following copy numbers are based on the data of Kulak et al. (2014)
+#   for HeLa S3 cells (ATCC CCL-2.2).
+GDI1_total    23155*f # [=] copies per cell
+RAB5A_total   68671*f # [=] copies per cell
+RAB7A_total 1843126*f # [=] copies per cell
+
+# The parameter settings below yield 100 copies of RAB5A/RAB7A per early endosome
+#   in the absence of regulation at steady state.
+kAimport 0.05*f # [=] molecules per s
+kBimport 1.0*f # [=] molecules per s, assumes 20-fold more available RAB7A than RAB5A
+kAexport 5.0e-4 # [=] /s
+kBexport 1.0e-2 # [=] /s, assumes 20-fold faster extraction of RAB7A vs. RAB5A
+
+# GEF parameters from Table S1 of Stites et al. (2007)
+kcatGDP 3.9 # [=] /s
+kcatGTP 0.72 # [=] /s
+KmGDP_std_units 386e-6 # [=] M
+KmGDP_cyt=KmGDP_std_units*(NA*Vcyt) # [=] molecules per cell 
+#  (the reactor is the cytoplasm)
+KmGDP_ee=KmGDP_cyt/Vratio # [=] molecules per cell 
+#  (the reactor is the thin layer adjacent to the early endosome membrane)
+KmGTP_std_units 300e-6 # [=] M
+KmGTP_cyt=KmGTP_std_units*(NA*Vcyt) # [=] molecules per cell 
+#  (the reactor is the cytoplasm)
+KmGTP_ee=KmGTP_cyt/Vratio # [=] molecules per cell 
+#  (the reactor is the thin layer adjacent to the early endosome membrane)
+
+# effector parameters from Table S1 of Stites et al. (2007)
+kdEff 3.6 # [=] /s
+kaEff_std_units 45e6 # [=] /M/s
+# Kd=kdEff/kaEff_std_units=0.08e-6 M 
+kaEff=kaEff_std_units/(NA*Vcyt)  # [=] /(molecule/cell)/s
+
+# GAP parameters from Table S1 of Stites et al. (2007)
+kcatGAP 5.40 # [=]	/s
+KmGAP_std_units 0.23e-6 # [=] M
+KmGAP_cyt=KmGAP_std_units*(NA*Vcyt) # [=] molecules per cell 
+#  (the reactor is the cytoplasm)	
+KmGAP_ee=KmGAP_cyt/Vratio # [=] molecules per cell 
+#  (the reactor is the thin layer adjacent to the early endosome membrane)
+
+end parameters
+
+begin molecule types
+
+# GDP dissociation inhibitor (GDI) alpha (GDI1) - non-specific w.r.t. Rab
+#   See Pylypenko et al. (2006).
+#   domain I contains several parts, including
+#     the C-terminus binding region (CBR),
+#     the Rab-binding platform, and
+#     the mobile effector loop (MEL).
+#   domain I interacts with the switch I/II region of GDP-loaded Rab.
+#   domain II interacts with prenyl groups covalently coupled to Rab HVR.
+#GDI1(domainI,domainII) # <-- for possible later use
+
+# small GTPase "A" (RAB5A)
+#   G: G domain (bound to GDP or GTP)
+#   HVR: C-terminal hypervariable region
+#   Rab proteins usually terminate in a CC or CxC motif.
+#   The cysteines are usually each linked to a geranylgeranyl group.
+#   Constitutive prenylation is assumed.
+# RAB_A(G~GDP~GTP,HVR~prenyl) # <-- for possible later use
+RAB_A(G~GDP~GTP)
+
+# small GTPase "B" (RAB7A)
+#   constitutive prenylation is assumed
+# RAB_B(G~GDP~GTP,HVR~prenyl) # <-- for possible later use
+RAB_B(G~GDP~GTP)
+
+# guanine nucleotide exchange factor (GEF) specific for Rab-A
+#   assumed to be localized to the early endosomal membrane at constant abundance
+GEF_A(RabGEF)
+
+# GEF specific for Rab-B
+#   assumed to be cytosolic initially
+#   recruited to endosomal membranes by GTP-loaded Rab-A and GTP-loaded Rab-B
+#   RBD is a Ras-binding domain, or a functionally equivalent component of GEF B.
+GEF_B(RBD,RabGEF)
+
+# GTPase activating protein (GAP) specific for Rab-A
+#   assumed to be cytosolic
+#   recruited to endosomal membranes by GTP-loaded Rab-B
+#   RBD is a Ras-binding domain, or a functionally equivalent component of GAP A.
+GAP_A(RBD,RabGAP)
+
+# GAP specific for Rab-B
+#   assumed to be localized to the early endosomal membrane at constant abundance
+GAP_B(RabGAP)
+
+end molecule types
+
+begin seed species
+
+# free cytosolic GDI1
+#GDI1(domainI,domainII) GDI1_total # <-- for possible later use
+
+# Initially, there is no RabA on the early endosomal membrane
+RAB_A(G~GDP) 0 # copies per early endosome
+
+# Initially, there is no RabB on the early endosomal membrane
+RAB_B(G~GDP) 0 # copies per early endosome
+
+# GEF A is present on early endosomal membrane at a constant level
+GEF_A(RabGEF) 1000 # copies per early endosome
+
+# All GEF B is initially cytosolic
+GEF_B(RBD,RabGEF) 100000 # copies per cell
+
+# All GAP A is initially cytosolic
+GAP_A(RBD,RabGAP) 10000 # copies per cell
+
+# GAP B is present on early endomsomal membrane at a constant level
+GAP_B(RabGAP) 5 # copies per early endosome
+
+end  seed species
+
+begin observables
+
+# simulation outputs
+
+Molecules totRAB_A RAB_A()
+Molecules totRAB_B RAB_B()
+Molecules actRAB_A RAB_A(G~GTP!?)
+Molecules actRAB_B RAB_B(G~GTP!?)
+
+# the observables defined below are used in functions
+
+Molecules CatGEFA GEF_A() # all GEF_A is active
+Molecules FreeRabAGDP RAB_A(G~GDP)
+Molecules FreeRabAGTP RAB_A(G~GTP)
+
+Molecules CatGEFB GEF_B(RBD!+) # recruited GEF_B is active
+Molecules FreeRabBGDP RAB_B(G~GDP)
+Molecules FreeRabBGTP RAB_B(G~GTP)
+
+Molecules CatGAPB GAP_B() # all GAP_B is active
+Molecules CatGAPA GAP_A(RBD!+) # recruited GAP_A is active
+
+end observables
+
+begin functions
+
+# functions for GEF_A-catalyzed GDP/GTP exchange
+#   Each rate law has the form [substrate]*function.
+R3Af_ee() kcatGDP*CatGEFA*(1/KmGDP_ee)/(1+(FreeRabAGDP/KmGDP_ee)+(FreeRabAGTP/KmGTP_ee))
+R3Ar_ee() kcatGTP*CatGEFA*(1/KmGTP_ee)/(1+(FreeRabAGDP/KmGDP_ee)+(FreeRabAGTP/KmGTP_ee))
+
+# functions for GEF_B-catalyzed GDP/GTP exchange
+#   Each rate law has the form [substrate]*function.
+R3Bf_ee() kcatGDP*CatGEFB*(1/KmGDP_ee)/(1+(FreeRabBGDP/KmGDP_ee)+(FreeRabBGTP/KmGTP_ee))
+R3Br_ee() kcatGTP*CatGEFB*(1/KmGTP_ee)/(1+(FreeRabBGDP/KmGDP_ee)+(FreeRabBGTP/KmGTP_ee))
+
+# function for GAP_B-assisted GTP hydrolysis
+#   The rate law has the form [substrate]*function.
+R5Bf_ee() kcatGAP*CatGAPB*(1/KmGAP_ee)/(1+(FreeRabBGTP/KmGAP_ee))
+
+# function for GAP_A-assisted GTP hydrolysis
+#   The rate law has the form [substrate]*function.
+R5Af_ee() kcatGAP*CatGAPA*(1/KmGAP_ee)/(1+(FreeRabAGTP/KmGAP_ee))
+
+end functions
+
+begin reaction rules
+
+# Rab trafficking (a simplified treatment)
+#   The processes below are assumed not to be regulated.
+0->RAB_A(G~GDP) kAimport # delivery of RAB_A to early endosome
+#  (zero-order process)
+0->RAB_B(G~GDP) kBimport # delivery of RAB_B to early endosome
+#  (zero-order process)
+RAB_A(G~GDP)->0 kAexport # removal of RAB_A from early endosome
+#  (first-order process)
+RAB_B(G~GDP)->0 kBexport # removal of RAB_B from early endosome
+#  (first-order process)
+
+# GEF_A-catalyzed GDP/GTP exchange on RAB_A
+RAB_A(G~GDP)->RAB_A(G~GTP) R3Af_ee()
+RAB_A(G~GTP)->RAB_A(G~GDP) R3Ar_ee()
+
+# recruitment of GEF_B by GTP-loaded RAB_A
+RAB_A(G~GTP)+GEF_B(RBD)<->RAB_A(G~GTP!1).GEF_B(RBD!1) kaEff,kdEff
+
+# recruited GEF_B-catalyzed GDP/GTP exchange on RAB_B
+RAB_B(G~GDP)->RAB_B(G~GTP) R3Bf_ee()
+RAB_B(G~GTP)->RAB_B(G~GDP) R3Br_ee()
+
+# GAP_B-catalyzed hydrolysis of RAB_B-loaded GTP
+RAB_B(G~GTP)->RAB_B(G~GDP) R5Bf_ee()
+
+# recruitment of GAP_A by GTP-loaded RAB_B
+RAB_B(G~GTP)+GAP_A(RBD)<->RAB_B(G~GTP!1).GAP_A(RBD!1) kaEff,kdEff
+
+# GAP_A-catalyzed hydrolysis of RAB_A-loaded GTP
+RAB_A(G~GTP)->RAB_A(G~GDP) R5Af_ee()
+
+# RAB_B recruits its own GEF
+RAB_B(G~GTP)+GEF_B(RBD)<->RAB_B(G~GTP!1).GEF_B(RBD!1) kaEff,kdEff
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate reaction network implied by rules
+generate_network({overwrite=>1})
+writeMfile()
+
+
+# generate ODEs and numerically integrate
+#   Simulate Rab5/Rab7 decoration dynamics for 12 hours.
+#   Early endosome is taken to be newly formed at time t = 0.
+simulate({method=>"ode",t_start=>0,t_end=>43200,n_steps=>200})
+
+end actions

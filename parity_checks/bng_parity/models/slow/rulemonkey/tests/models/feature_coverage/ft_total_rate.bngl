@@ -1,0 +1,38 @@
+# Feature: TotalRate modifier on reaction rules
+# Tests: TotalRate makes rate independent of number of matching sites
+# Tier: base
+# Expected: binding rate is exactly k*[A]*[B], NOT 2*k*[A]*[B]
+#   (A has 2 identical sites but TotalRate suppresses the factor of 2)
+
+begin model
+begin parameters
+    A_tot   50
+    B_tot   50
+    kf      0.01   # /s, forward binding rate (total)
+    kr      0.1    # /s, reverse unbinding rate
+end parameters
+
+begin molecule types
+    A(s,s)
+    B(t)
+end molecule types
+
+begin seed species
+    A(s,s)  A_tot
+    B(t)    B_tot
+end seed species
+
+begin observables
+    Molecules  A_free     A(s,s)
+    Molecules  B_free     B(t)
+    Molecules  AB_total   B(t!+)
+end observables
+
+begin reaction rules
+    A(s) + B(t) <-> A(s!1).B(t!1)  kf, kr  TotalRate
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

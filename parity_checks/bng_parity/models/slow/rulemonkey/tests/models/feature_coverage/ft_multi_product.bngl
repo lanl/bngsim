@@ -1,0 +1,45 @@
+# Feature: rule producing multiple new molecules (one reactant -> many products)
+# Tests: correct handling of multi-product synthesis rules
+# Tier: base
+# Expected: each firing of the rule produces one B and one C simultaneously
+
+begin model
+begin parameters
+    A_tot    30
+    k_split  0.02    # /s, rate of A splitting
+    k_bindBC 0.01    # /s, B-C binding rate
+    kr       0.1     # /s, B-C unbinding rate
+end parameters
+
+begin molecule types
+    A(x)
+    B(s)
+    C(s)
+    Trash()
+end molecule types
+
+begin seed species
+    A(x)     A_tot
+    B(s)     0
+    C(s)     0
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total  A()
+    Molecules  B_total  B()
+    Molecules  C_total  C()
+    Molecules  BC       B(s!1).C(s!1)
+end observables
+
+begin reaction rules
+    # A splits into B + C (A consumed)
+    A(x) -> B(s) + C(s)   k_split
+    # B and C can rebind
+    B(s) + C(s) <-> B(s!1).C(s!1)  k_bindBC, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

@@ -1,0 +1,105 @@
+begin model
+begin parameters
+    # Bacterial Chemotaxis: Adaptation through methylation.
+    # Advanced features: TotalRate for cluster drive and saturable adaptation.
+    
+    # Sensing
+    k_bind_attr 1e-4   # Attracant binding
+    k_cluster_drive 2.5 # Peak catalytic activity of MCP cluster
+    
+    # Core Relay
+    k_transfer 2.0     # CheA-P to CheY/CheB
+    k_chez_max 5.0     # CheZ-mediated dephosphorylation
+    Km_chey 200        # Saturation of reset mechanism
+    
+    # Adaptation Cycle
+    k_che_r 0.5        # Methylation by CheR (Constitutive)
+    k_che_b 1.2        # Demethylation by p-CheB (Signal-dependent)
+    
+    # Behavioral Output
+    k_run_to_tumble 2.0
+    k_tumble_to_run 2.0
+    
+    # Initials
+    Attr_tot 100
+    MCP_sites 500
+    CheA_tot 100
+    CheY_tot 300
+    CheZ_tot 100
+    CheR_tot 50
+    CheB_tot 50
+end parameters
+
+begin molecule types
+    Attr(b)
+    MCP(b,s~U~M)      # s: methylation status
+    CheA(s~U~P)
+    CheY(s~U~P)
+    CheB(s~U~P)
+    Motor(s~CCW~CW)
+end molecule types
+
+begin seed species
+    Attr(b) Attr_tot
+    MCP(b,s~U) MCP_sites
+    CheA(s~U) CheA_tot
+    CheY(s~U) CheY_tot
+    CheB(s~U) CheB_tot
+    Motor(s~CCW) 1
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Motor_State      Motor(s~CW)              # Tumble frequency (Behavior)
+    Molecules Methylation_Status MCP(s~M)               # System adaptation state
+    Molecules Signaling_Effector CheY(s~P)              # Relay driver intensity
+    Molecules Environmental_Bias Attr(b!+)              # Receptor occupancy
+    Molecules Adaptation_Drive  CheB(s~P)               # Feedback intensity
+    Molecules Active_MCP       MCP(b,s~U)              # Activity drive status
+end observables
+
+begin functions
+    # Cluster activity: Unbound MCP promotes CheA phos
+    # TotalRate: driven by total local cluster composition
+    v_cluster() = k_cluster_drive * (Active_MCP / MCP_sites)
+    
+    # Saturable CheY reset
+    v_chey_reset() = k_chez_max * (Signaling_Effector / (Km_chey + Signaling_Effector))
+end functions
+
+begin reaction rules
+    ## SENSING Phase
+    # Attracant binds and inactivates MCP signaling
+    Attr(b) + MCP(b,s~U) <-> Attr(b!1).MCP(b!1,s~U) k_bind_attr,0.1
+    
+    ## RELAY Phase
+    # Cluster drives CheA autophosphorylation (TotalRate)
+    CheA(s~U) -> CheA(s~P) v_cluster() TotalRate
+    
+    # Phosphotransfer to effectors
+    CheA(s~P) + CheY(s~U) -> CheA(s~U) + CheY(s~P) k_transfer
+    CheA(s~P) + CheB(s~U) -> CheA(s~U) + CheB(s~P) k_transfer
+    
+    # Behavioral shift
+    CheY(s~P) + Motor(s~CCW) -> CheY(s~P) + Motor(s~CW) k_run_to_tumble
+    Motor(s~CW) -> Motor(s~CCW) k_tumble_to_run
+    
+    ## ADAPTATION Phase
+    # CheR methylates MCP (Restores activity - slow)
+    MCP(s~U) -> MCP(s~M) k_che_r
+    
+    # p-CheB demethylates MCP (Adaptation - fast)
+    CheB(s~P) + MCP(s~M) -> CheB(s~P) + MCP(s~U) k_che_b
+    
+    ## RESET Phase
+    # CheZ-mediated dephos (Functional Rate)
+    CheY(s~P) -> CheY(s~U) v_chey_reset()
+    CheB(s~P) -> CheB(s~U) 0.2
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>60,n_steps=>300})
+end actions
+end model
+

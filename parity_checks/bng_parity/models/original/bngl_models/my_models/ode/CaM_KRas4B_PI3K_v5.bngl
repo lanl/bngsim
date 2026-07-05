@@ -1,0 +1,248 @@
+begin model
+# Question: Does CaM associate with HRAS and NRAS? Or just KRAS? 
+# 	-just KRAS. There are a number of papers that state this.
+# References:
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+begin parameters
+# NB: rate constants need to be introduced.
+# NB: add empirical copy numbers for HeLa Kyoto cells (or other cell types/lines of interest).
+# Avogadro constant (NA)
+NA 6.02214076e23 # molecules per mole (exact value)
+# volume of the cytosol (V_cyt)
+#  comments:
+#   - Hein et al. (2015) assumed a cytoplasmic volume of 2 pL for HeLa Kyoto cells.  
+V_cyt 2e-12 # L 
+# ratio (circumference:diameter)
+pi=2*asin(1) # dimensionless
+# time at which oscillations begin
+t_delay 300 # s, set to 0 to start Ca2+ oscillations right away
+# period of calcium oscillations (<1 s to several minutes)
+period 300 # s
+# min and max free cytosolic Ca2+ concentrations 
+free_ion_conc_min 100e-10 # M
+free_ion_conc_max 100e-9 # M
+# equilibrium dissociation constant for CaM binding to Ca2+
+KD_CaM_Ca 600e-9 # M
+# dissociation rate constant
+koff_CaM_Ca 6.41e-3 # /s
+# association rate constant
+kon_CaM_Ca=koff_CaM_Ca/KD_CaM_Ca # /M/s
+
+# typical rate constant for protein-protein association
+kf 1e6 # /M/s
+# typical rate constant for protein-protein dissociation
+kr 0.01 # /s
+# typical equilibrium association constant for protein-protein binding
+K=kf/kr # /M
+# equilibrium dissociation constant for CaM binding to KRas-GDP (similar to GTP-laoaded)
+KD_CaM_KRasGDP 1.499e-7 # nM (Abdelkarim et al. 2021)
+
+# number of copies of calmodulin per cell
+#  comments:
+#   - Calmodulin abundance was measured by Hein et al. (2015) for HeLa Kyoto cells.  
+CaM_cpc 11354804 # copies per cell
+CaM_conc=CaM_cpc/(NA*V_cyt) # M
+# copy numbers
+KRAS_cpc 1e5 # copies per cell
+KRAS_conc=KRAS_cpc/(NA*V_cyt) # M
+PI3K_cpc 1e5 # copies per cell
+PI3K_conc=PI3K_cpc/(NA*V_cyt) # M
+
+weight 1 #parameter that characterizes the effect of RAS binding on PI3K activity
+
+##############################################################################
+# SPECIFICATION OF RATE CONSTANTS IN RULES (kf1,kr1,kf2,kr2,kf3,kr3,kf4,kr4) #
+##############################################################################
+# binding parameters for interaction of Ca2+-bound CaM with KRAS
+kf1=kf/(NA*V_cyt) # /M/s converted to /(molecule/cell)/s
+kr1=kf1/KD_CaM_KRasGDP # /s
+K1=kf1/kr1 # /(molecule/cell)
+# binding parameters for interaction of Ca2+-free CaM with KRAS
+#  We want K2<<K1 because CaM interaction with KRAS should be Ca2+ dependent.
+kf2=(kf/30)/(NA*V_cyt) # /M/s converted to /(molecule/cell)/s
+kr2=30*kr # /s
+K2=kf2/kr2 # /(molecule/cell), K2 is 900-fold smaller than K1.
+# binding parameters for interaction of Ca2+ with KRAS-free CaM
+#  We will assume that [Ca2+] is constant.
+kf3=kon_CaM_Ca*free_ion_conc_max # /s 
+kr3=koff_CaM_Ca # /s
+K3=kf3/kr3 # dimensionless
+# binding parameters for interaction of Ca2+ with KRAS-bound CaM
+#  We need to respect a detailed balance constraint, namely, K1*K3=K2*K4.
+K4=K1*K3/K2 # dimensionless <=== DETAILED BALANCE CONSTRAINT
+# Let's assume that kf4=kf3, i.e., binding of Ca2+ to CaM is independent
+# of whether CaM is bound to or free of KRAS.
+kf4=kf3 # /s <=== ASSUMPTION (arbitary)
+kr4=kf4/K4 # /s <=== DERIVED from assumed kf4 value and K4, which is constrained to equal K1*K3/K2
+# Detailed balance eliminates 1 degree of freedom.
+# In this example, kr4 cannot be specified independently after the other rate constants are assigned values.
+end parameters
+begin molecule types
+KRas4B(G~GDP~GTP,HVR~0~P)
+#---
+# KRas4B: KRAS isoform 2
+#  components:
+#   G: G domain
+#    states:
+#     - GDP: GDP bound
+#     - GTP: GTP bound
+#   HVR: hypervariable region, which contains S181
+#    states:
+#     - 0: S181
+#     - P: pS181
+#---
+CaM(EF~0~1,linker,pY99) # Assume CaM is phosphorylated at pY99 
+#---
+# CaM: calmodulin
+#  components:
+#   EF: EF hands
+#    states:
+#     - 0: Ca2+ free
+#     - 1: Ca2+ bound
+#   linker: disordered region linking the two globular domains
+#   pY99: tyrosine 99
+#    states:
+#     - 0: unphosphorylated
+#     - P: phosphorylated
+#---
+PI3K(nSH2_p85,cSH2_p85,RBD_p110)
+#---
+# PI3K: phosphatidylinositol 3-kinase
+#  components:
+#   nSH2_p85: N-terminal SH2 domain in the regulatory subunit (p85)
+#   cSH2_p85: C-terminal SH2 domain in the regulatory subunit (p85)
+#   RBD_p110: Ras binding domain (RBD) in the catalytic subunit (p110)
+counter() # keeps track of time
+end molecule types
+begin seed species
+counter() 0
+KRas4B(G~GTP,HVR~0) KRAS_cpc
+#CaM(EF~1,linker,pY99) CaM_cpc
+CaM(EF~0,linker,pY99) CaM_cpc*KD_CaM_Ca/(free_ion_conc_min+KD_CaM_Ca) # equilibrium abundance
+CaM(EF~1,linker,pY99) CaM_cpc*free_ion_conc_min/(free_ion_conc_min+KD_CaM_Ca) # equilibrium abundance
+PI3K(nSH2_p85,cSH2_p85,RBD_p110) PI3K_cpc
+end seed species
+begin observables
+# NB: Define additional simulation outputs here.
+Molecules autoinhibited_PI3K PI3K(nSH2_p85!1,RBD_p110!1)
+Molecules hyper_activate_PI3K KRas4B(G~GTP!1).PI3K(RBD_p110!1) 
+Molecules t counter() # t is time 
+Molecules CaM_0 CaM(EF~0) # Ca2+ free CaM
+Molecules CaM_1 CaM(EF~1) # Ca2+ bound CaM
+Molecules RAS_activated_PI3K KRas4B(G~GTP!1).PI3K(RBD_p110!1) 
+Molecules active_recruited_PI3K PI3K(RBD_p110,cSH2_p85!1).CaM(pY99!1)
+end observables
+begin functions
+# We assume that free Ca2+ concentration is sinusoidal with specified period and amplitude
+#  for t>=t_delay. For t<t_delay, free Ca2+ concentration is steady and at its minimum.
+free_ion_conc()=if(t>=t_delay,free_ion_conc_min+((free_ion_conc_max-free_ion_conc_min)/2)*(1+sin(pi*(3/2+2*(t-t_delay)/period))),free_ion_conc_min)
+kon_eff()=kon_CaM_Ca*free_ion_conc()
+  
+PI3K_activity()=weight*RAS_activated_PI3K+active_recruited_PI3K
+end functions
+begin reaction rules
+# NB: The rules need to be written carefully so as to disallow chain propagation. 
+# NB: Replace 1's and 1e6/(NA*V_cyt)'s with rate constants.
+
+# Single-Species Reactions
+	# CaM can bind to unphosyphorylated KRas (forward+reverse)
+	# KRAS+CaM<->KRAS:CaM
+KRas4B(HVR~0)+CaM(EF~1,linker,pY99)->KRas4B(HVR~0!1).CaM(EF~1,linker!1,pY99) kf1
+KRas4B(HVR~0!1).CaM(linker!1)->KRas4B(HVR~0)+CaM(linker) kr1
+# included for thermodynamic consistency. this reaction does not actually occur
+KRas4B(HVR~0)+CaM(EF~0,linker,pY99)<->KRas4B(HVR~0!1).CaM(EF~0,linker!1,pY99) kf2,kr2
+#RAS-bound CaM reversibly binds Ca2+
+CaM(EF~0,linker!1).KRas4B(HVR~0!1)<->CaM(EF~1,linker!1).KRas4B(HVR~0!1) kf4,kr4
+	#  KRas G(GTP) domain binds to RBD of PI3K(NOT autoinhibited)
+	# KRAS+PI3K-> KRAS:PI3K
+KRas4B(G~GTP) + PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+KRas4B(G~GTP!1).PI3K(nSH2_p85,cSH2_p85,RBD_p110!1) 1e6/(NA*V_cyt)
+
+KRas4B(G~GTP!1).PI3K(RBD_p110!1)->KRas4B(G~GTP)+PI3K(RBD_p110) 1 
+	
+	# CaM binds to PI3K at nSH2 (not autoinhibited) -> CaM:PI3K
+	# association in the cytosol (forward+reverse)
+	# CaM+PI3K<->CaM:PI3K
+CaM(EF~1,linker,pY99)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+CaM(EF~1,linker!2,pY99!1).PI3K(nSH2_p85!1!2,cSH2_p85,RBD_p110) 1e6/(NA*V_cyt)
+
+CaM(linker!2,pY99!1).PI3K(nSH2_p85!1!2)->CaM(linker,pY99) + PI3K(nSH2_p85) 1
+	 
+	#  CaM binds to PI3K at cSH2
+	# included for thermodynamic consistency but rarely happens
+CaM(EF~1,linker,pY99)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+CaM(EF~1,linker,pY99!1).PI3K(nSH2_p85,cSH2_p85!1,RBD_p110) 0.00001 #this parameter should be related to other parameters
+CaM(linker,pY99!1).PI3K(cSH2_p85!1)->CaM(linker,pY99) + PI3K(cSH2_p85) 1
+
+# Formantion of Ternary Complexes
+	# recruitment of PI3K (autoinhibited) to the plasma membrane by KRas4B-CaM complex
+	# Note that autoinhibition persists as CaM binds to cSH2 not nSH2
+	# No direct binding between KRas and PI3K
+KRas4B(G,HVR~0!1).CaM(EF~1,linker!1,pY99)+PI3K(nSH2_p85!2,cSH2_p85,RBD_p110!2)->\
+KRas4B(G,HVR~0!1).CaM(EF~1,linker!1,pY99!3).PI3K(nSH2_p85!2,cSH2_p85!3,RBD_p110!2) 1e6/(NA*V_cyt)
+
+	#  recruitment of PI3K (not autoinhibited) to the plasma membrane by KRas4B:CaM complex via CaM
+	# No direct binding between KRas and PI3K
+KRas4B(G,HVR~0!1).CaM(EF~1,linker!1,pY99)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+KRas4B(G,HVR~0!1).CaM(EF~1,linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110) 1e6/(NA*V_cyt)
+
+	#  KRas:PI3K binds CaM to form KRas:PI3K:CaM with 
+	# no direct binding between KRas and CaM
+KRas4B(G~GTP!1,HVR~0).PI3K(nSH2_p85,cSH2_p85,RBD_p110!1)+CaM(EF~1,linker,pY99)->\
+KRas4B(G~GTP!1,HVR~0).PI3K(nSH2_p85!2!3,cSH2_p85,RBD_p110!1).CaM(EF~1,linker!3,pY99!2) 1e6/(NA*V_cyt)
+
+	# KRas binds to CaM:PI3K via PI3K -> CaM:PI3K:KRAS. 
+	# No direct binding between KRas and CaM
+KRas4B(G~GTP,HVR)+CaM(EF~1,linker!2,pY99!1).PI3K(nSH2_p85!1!2,cSH2_p85,RBD_p110)->\
+KRas4B(G~GTP!3,HVR).CaM(EF~1,linker!2,pY99!1).PI3K(nSH2_p85!1!2,cSH2_p85,RBD_p110!3) 1e6/(NA*V_cyt)
+
+	#  KRAS:CaM binds to PI3K via KRAS
+	# No direct binding between CaM and PI3K
+KRas4B(G~GTP,HVR~0!1).CaM(EF~1,linker!1,pY99)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+KRas4B(G~GTP!2,HVR~0!1).CaM(EF~1,linker!1,pY99).PI3K(nSH2_p85,cSH2_p85,RBD_p110!2) 1e6/(NA*V_cyt)
+
+	# KRAS:PI3K binds to CaM via KRAS
+	# No direct binding between CaM and PI3K
+KRas4B(G~GTP!1,HVR~0).PI3K(nSH2_p85,cSH2_p85,RBD_p110!1)+CaM(EF~1,linker,pY99)->\
+KRas4B(G~GTP!1,HVR~0!2).PI3K(nSH2_p85,cSH2_p85,RBD_p110!1).CaM(EF~1,linker!2,pY99) 1e6/(NA*V_cyt)
+
+# Formation of cyclic ternary complexes
+	# Cycle 1: KRas:CaM:PI3K(NOT autoinhib)->KRas:CaM:PI3K:KRas
+KRas4B(G~GTP,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110)->\
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3) 1
+
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3)->\
+KRas4B(G~GTP!3,HVR~0).CaM(linker,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3) 1
+
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3)->\
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,pY99).PI3K(nSH2_p85,cSH2_p85,RBD_p110!3) 1
+
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3)->\
+KRas4B(G~GTP,HVR~0!1).CaM(linker!1,pY99!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110) 1
+
+	# Cycle 2: KRas:PI3K:CaM->KRas:PI3K:CaM:KRas 
+KRas4B(G~GTP!1,HVR~0).PI3K(cSH2_p85!2,RBD_p110!1).CaM(linker,pY99!2)->\
+KRas4B(G~GTP!1,HVR~0!3).PI3K(cSH2_p85!2,RBD_p110!1).CaM(linker!3,pY99!2) 1
+
+	# Cycle 3: PI3K:KRas:CaM->PI3K:KRas:CaM:PI3K
+KRas4B(G~GTP!2,HVR~0!1).CaM(EF~1,linker!1,pY99).PI3K(nSH2_p85,cSH2_p85,RBD_p110!2)->\
+KRas4B(G~GTP!2,HVR~0!1).CaM(EF~1,linker!1,pY99!3).PI3K(nSH2_p85,cSH2_p85!3,RBD_p110!2) 1
+
+# PI3K autoinhibition
+PI3K(nSH2_p85,RBD_p110)<->PI3K(nSH2_p85!1,RBD_p110!1) 1,1
+
+# KRAS Phosphorylation - this is done by PKC which is not included in the model
+KRas4B(HVR~0)<->KRas4B(HVR~P) 1,1
+
+# The molecule counter() accumulates at a rate of 1 molecule per unit time.
+# The abundance of counter() [the number of counter() molecules] is equivalent to time. 
+# The time can also be fetched using the built-in function time().
+0->counter() 1 
+# Ca2+ binding to CaM
+CaM(EF~0)<->CaM(EF~1) kon_eff(),kr2
+
+end reaction rules
+end model
+begin actions
+simulate({method=>"ode",t_end=>3000,n_steps=>300,print_functions=>1})
+end actions

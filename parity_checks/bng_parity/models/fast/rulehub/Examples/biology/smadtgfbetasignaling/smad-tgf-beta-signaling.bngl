@@ -1,0 +1,45 @@
+begin model
+begin parameters
+    k_bind 0.016
+    k_unbind 0.0016
+    k_receptor 0.38
+    k_smad 0.32
+    k_complex 0.28
+    k_reset 0.07
+end parameters
+
+begin molecule types
+    TGFB(r)
+    TGFBR(l,state~inactive~active)
+    SMAD2(phos~U~P,b)
+    SMAD4(state~free~complexed,b)
+end molecule types
+
+begin seed species
+    TGFB(r) 55
+    TGFBR(l,state~inactive) 40
+    SMAD2(phos~U,b) 100
+    SMAD4(state~free,b) 50
+end seed species
+
+begin reaction rules
+    TGFB(r) + TGFBR(l,state~inactive) <-> TGFB(r!1).TGFBR(l!1,state~inactive) k_bind,k_unbind
+    TGFB(r!1).TGFBR(l!1,state~inactive) -> TGFB(r!1).TGFBR(l!1,state~active) k_receptor
+    TGFBR(l!+,state~active) + SMAD2(phos~U,b) -> TGFBR(l!+,state~active) + SMAD2(phos~P,b) k_smad
+    SMAD2(phos~P,b) + SMAD4(state~free,b) -> SMAD2(phos~P,b!1).SMAD4(state~complexed,b!1) k_complex
+    SMAD2(phos~P,b!1).SMAD4(state~complexed,b!1) -> SMAD2(phos~U,b) + SMAD4(state~free,b) k_reset
+    TGFBR(l,state~active) -> TGFBR(l,state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_TGFBR TGFBR(state~active)
+    Molecules Phospho_SMAD2 SMAD2(phos~P)
+    Molecules SMAD_Complex SMAD4(b!+)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>40,n_steps=>180})
+end actions
+end model
+

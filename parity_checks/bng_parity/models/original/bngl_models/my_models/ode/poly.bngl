@@ -1,0 +1,85 @@
+begin model
+# A + A -> AA
+# A + AA -> AAA
+# AA + AA -> AAAA
+# and so on and so forth
+# Polymers can be chains and trees; cyclic structures are not considered.
+# Each A subunit can be bonded to an arbitrary number of other A subunits within a polymer.
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+# reactor volume
+V 1e-12 # L per reactor
+# rate constant for A-A bond formation
+k 1e6/(NA*V) # /M/s converted to /(molecule/reactor)/s
+# initial number of monomer subunits in reactor
+A0 10000 # molecules per reactor
+end parameters
+begin molecule types
+# A can be monomeric (~monomer) or incorporated into a polymer (~poly)
+A(state~monomer~poly)
+# If we want to limit the number of bonds that an A subunit can join, we could
+# perhaps introduce a new state label, such as ~dead, to limit A subunit reactivity.
+# polymer
+poly()
+# Adummy() included as part of a sanity check
+Adummy()
+end molecule types
+begin seed species
+A(state~monomer) A0
+poly() 0
+Adummy() A0
+end seed species
+begin observables
+Molecules nAdummy Adummy() 
+Molecules npoly poly() # number of polymers, PLOT this readout 
+Molecules nA_in_Monomers A(state~monomer) # PLOT this readout
+Species nA_in_Polymers A(state~poly) # PLOT this readout
+end observables
+begin functions
+nA_in_Polymers_sanityCheck()=A0-nA_in_Monomers # Sanity check. This function should equal nA_in_Polymers.
+# average polymer length
+zero_sanityCheck()=A0-nA_in_Monomers-nA_in_Polymers
+AvgLen()=if(npoly>0,nA_in_Polymers/npoly,0)
+#
+# 
+# The RateFactor() function is used to calculate the rate of a polymer+polymer->polymer reaction.
+# The rate is calculated approximately as nA_in_Polymers*(nA_in_Polymers-AvgLen) =
+#   nA_in_Polymers^2*((nA_in_Polymers-AvgLen)/nA_in_Polymers) =
+#   nA_in_Polymers^2*(1-1/npoly).
+# The idea is that the rate is k*X1*X2, where 
+#   X1 is the number of A subunits in polymers (assuming every polymeric A is reactive) and
+#   X2 is the number of A subunits in polymers excepting the A subnits in the same polymer as the reacting A.
+# The 1/npoly^2 term in RateFactor() is included to cancel out the npoly^2 term arising from the
+#   "...poly()+poly()..." part of the LHS of the rule for polymer addition.
+RateFactor()=if(npoly>0,(k/(npoly^2))*(1-1/npoly),0)
+end functions
+begin reaction rules
+# loss of monomeric A should be faster than loss of Adummy
+Adummy()+Adummy()->0 k # This reaction is included as part of a sanity check.
+#
+# 
+# two monomeric A subunits react to form a polymer
+# - This reaction consumes 2 monomers and produces 1 polymer.
+A(state~monomer)+A(state~monomer)->A(state~poly)+A(state~poly)+poly() k
+# 
+# 
+#  addition of a monomeric A subunit to a polymer
+# - This reaction consumes 1 monomer and 1 polymer and produces 1 polymer.
+A(state~monomer)+A(state~poly)->A(state~poly)+A(state~poly) k
+# 
+# 
+#  two polymers react to form a larger polymer
+#  - The rate of reaction is [A(state~poly)]^2*[poly()]^2*RateFactor().
+#  - This reaction consumes 2 polymers and produces 1 polymer.
+A(state~poly)+A(state~poly)+poly()+poly()->A(state~poly)+A(state~poly)+poly() RateFactor()
+end reaction rules
+end model
+begin actions
+# generate-first
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>200,n_steps=>400,print_functions=>1})
+# network-free
+# simulate({method=>"nf",t_end=>200,n_steps=>400,print_functions=>1,gml=>2147483647})
+# Note: a gel is formed when nA_in_Polymers = AvgLen (i.e., all A subunits are part of the same polymer).
+end actions

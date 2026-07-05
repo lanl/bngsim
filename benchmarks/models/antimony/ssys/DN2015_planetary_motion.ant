@@ -1,0 +1,60 @@
+// Planetary Motion (Two-Body Gravitational Problem)
+// Source: Daniels & Nemenman, Nature Communications 6:8133 (2015)
+// Supplementary Note 2, Equations 5-6
+//
+// Original 2nd-order ODE (rescaled units):
+//   d²r/dt² = r₀²/r³ - 1/r²
+//
+// where:
+//   r = radial distance from sun
+//   r₀ = initial distance (determines angular momentum h = r₀)
+//   Units: distance in GM/v₀², time in GM/v₀³
+//
+// The orbit type depends on r₀:
+//   r₀ = 1: circular orbit
+//   1 < r₀ < 2: elliptical orbit  
+//   r₀ = 2: parabolic escape
+//   r₀ > 2: hyperbolic escape
+//
+// For this example: r₀ = 1.5 (elliptical orbit)
+//
+// ==============================================================================
+// POSITIVITY-PRESERVING TRANSFORMATION:
+// ==============================================================================
+// S-systems require all variables to be positive (for power-law terms X^g).
+// However, v = dr/dt can become negative during orbital motion.
+// 
+// Solution: Define a shifted velocity χ = v + 1 = dr/dt + 1
+// For bound orbits with |v| < 1, this ensures χ > 0 always.
+//
+// The transformed system becomes:
+//   dr/dt = χ - 1
+//   dχ/dt = r₀²·r⁻³ - r⁻²
+//
+// This is now in S-system form with all variables positive:
+//   α₁ = 1, g₁_χ = 1;  β₁ = 1 (constant)
+//   α₂ = r₀², g₂_r = -3;  β₂ = 1, h₂_r = -2
+//
+// Initial conditions:
+//   r(0) = r₀ = 1.5 > 0
+//   χ(0) = v(0) + 1 = 0 + 1 = 1 > 0  (perpendicular launch: v_r = 0)
+// ==============================================================================
+
+model DN2015_planetary_motion()
+  // Variables (positivity-preserving S-system form)
+  compartment cell = 1;var species r in cell; var species chi in cell
+
+  // Parameters
+  r0 := 1.5
+  
+  // S-system equations (positivity-preserving form)
+  // dr/dt = χ - 1
+  r' = chi - 1
+  
+  // dχ/dt = r₀²·r⁻³ - r⁻²  (centrifugal - gravitational)
+  chi' = r0^2 * r^(-3) - r^(-2)
+  
+  // Initial conditions (both positive)
+  r = 1.5; chi = 1.0; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,564 @@
+# filename: RAB_v[version number].bngl
+
+begin model
+
+# References:
+# Barbieri MA et al. (2003) J Biol Chem 278:32027-32036. [PMID:12783862]
+# Barr FA (2013) J Cell Biol 202:191-199.
+# Kulak NA et al. (2014) Nat Methods 11:319-324. [PMID:24487582]
+# Pylypenko O et al. (2006) EMBO J 25:13-23.
+# Stites EC et al. (2007) Science 318:463-467. 
+# Tan CW et al. (2012) PLOS ONE 7:e31882 [PMID:22363759]
+
+begin parameters
+
+# fraction of a cell to be considered in a (stochastic) simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+f 1 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cytoplasmic volume
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell 
+#   in culture (Tan et al., 2012):
+#     N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+# Volume ratio D := V_cyto/V_endo
+#   V_cyto := V is the volume explored by a protein freely diffusing in the cytosol.
+#   V_endo is the effective volume explored when the protein is tethered to the endosomal membrane.
+D 25000 # [=] dimensionless
+
+# cell density
+cellDensity 1e9 # [=] cells per L
+
+# volume of extracellular fluid surrounding a single cell on average
+Vecf=f/cellDensity # [=] L per cell
+
+EGF_conc_nM 1 # [=] nM
+EGF_conc=EGF_conc_nM*1e-9 # [=] M
+EGF_copyNum=EGF_conc*(NA*Vecf) # [=] copies per cell
+
+# The following copy numbers are based on the data of Kulak et al. (2014)
+#   for HeLa S3 cells (ATCC CCL-2.2).
+EGFR_copyNum 92674*f # [=] copies per cell
+GDI1_copyNum 267197*f # [=] copies per cell
+RAB5A_copyNum 68671*f # [=] copies per cell
+RAB5B_copyNum 54667*f # [=] copies per cell
+RAB5C_copyNum 832850*f # [=] copies per cell
+RAB7A_copyNum 1843126*f # [=] copies per cell
+RABGEF1_copyNum 52504*f # [=] copies per cell
+RIN1_copyNum 65438*f # [=] copies per cell
+RABEP1_copyNum 64253*f # [=] copies per cell
+# Kulak et al. (2014) did not report a copy number for RAB7B. RAB7B may not be involved in endocytosis.
+
+USP6NL_copyNum 1818*f # [=] copies per cell (GAP for Rab5)
+SGSM3_copyNum  4583*f # [=] copies per cell (GAP for Rab5 with RUN domain)
+
+MON1A_copyNum 946*f # [=] copies per cell (GEF subunit for Rab7)
+MON1B_copyNum 1858*f # [=] copies per cell (GEF subunit for Rab7)
+MON1_copyNum=MON1A_copyNum+MON1B_copyNum
+CCZ1_copyNum 63932*f # [=] copies per cell, NB: This # is the sum of copy #'s for both CCZ1 and CCZ1B
+# CCZ1 is a GEF subunit for Rab7
+
+TBC1D5_copyNum 50903 # [=] copies per cell (GAP for Rab7)
+TBC1D15_copyNum 174798 # [=] copies per cell (GAP for Rab7)
+
+RAB5_copyNum=RAB5A_copyNum+RAB5B_copyNum+RAB5C_copyNum
+RAB7_copyNum=RAB7A_copyNum
+
+# fraction of all EGFR in a cell that is on early endosome and ubiquitinated
+fUb 0.01
+# fraction  of all EGFR in a cell that is on early endosome and phosphorylated
+fP 0.01
+
+#kp1 1
+#km1 1
+#kp2 1
+#km2 1
+#kf_Ub 1
+#kr_Ub 1
+#kf_P 1
+#kr_P 1
+
+# rate constants for Ub-UIM interaction
+kf_KUb_UIM 1e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_KUb_UIM 0.1 # [=] /s
+
+# rate contants for pTyr-SH2 domain interaction
+kf_pTyr_SH2 1e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_pTyr_SH2 0.1 # [=] /s
+
+# rate constant for removal of EGFR from the early endosome compartment
+kdeg 0.00001 # [=] /s
+
+# rate constants for RABGEF1-RABEP1 interaction
+kf_CC 5e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_CC 0.01 # [=] /c
+
+# rate constants for GDI trafficking
+k_delivery_endo f*1e7/(NA*Vcyt) #/s
+k_delivery_omem f*1e9/(NA*Vcyt) #/s
+k_extraction 0.05 #/s
+kf_GDI_Rab_endo 1e7/(NA*Vcyt) #/M/s converted to /(molecule/cell)/s
+kf_GDI_Rab_omem 1e9/(NA*Vcyt) #/M/s converted to /(molecule/cell)/s
+kr_GDI_Rab 0.1 #/s
+
+# GEF parameters (from Table S1 in Ref 1)
+kcatGDP 3.9 # [=] /s
+kcatGTP 0.72 # [=] /s
+KmGDP_std_units 386e-6 # [=] M
+KmGDP_cyto=KmGDP_std_units*(NA*Vcyt) # [=] molecules per cell (the reactor is the cytoplasm)
+KmGDP_endo=KmGDP_cyto/D # [=] molecules per cell (the reactor is the thin layer adjacent to the endosomal membrane)
+KmGTP_std_units 300e-6 # [=] M
+KmGTP_cyto=KmGTP_std_units*(NA*Vcyt) # [=] molecules per cell (the reactor is the cytoplasm)
+KmGTP_endo=KmGTP_cyto/D # [=] molecules per cell (the reactor is the thin layer adjacent to the endosomal membrane)
+
+# GEF parameters for Rab5 GEFs; calculated using Yoshimura 2010. JCB
+kcatGDP_Rab5 0.063 # [=] /s
+kcatGTP_Rab5 0.013 # [=] /s ;arbitrarily 1/5 kcatGDP
+
+# GEF parameters for Mon1-Ccz1; set to same as Rab5
+kcatGDP_Rab7 0.063 # [=] /s
+kcatGTP_Rab7 0.013 # [=] /s ;arbitrarily 1/5 kcatGDP
+
+# Positive feedback 
+kf_Rab5_Rabaptin 2e7/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_Rab5_Rabaptin 0.05 # [=] /s
+kf_Rab5_Rin1 2e7/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_Rab5_Rin1 0.05 # [=] /s
+
+#Rates for Rab5 Mon1 interaction. No published data. Copied from Rabaptin
+kf_Rab5_Mon1 2e7/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+kr_Rab5_Mon1 0.05 # [=] /s
+
+#Rates for reversible Mon1-Ccz1 complex formation via longin domains
+#Levine 2013
+#Cabrera 2014
+kf_Mon1_Ccz1 2e7/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_Mon1_Ccz1 0.05 # /s
+
+# GAP parameters from Table S1 of Stites et al. (2007)
+kcatGAP 5.40 # [=]	/s
+KmGAP_std_units 0.23e-6 # [=] M
+KmGAP_cyt=KmGAP_std_units*(NA*Vcyt) # [=] molecules per cell 
+#  (the reactor is the cytoplasm)	
+KmGAP_endo=KmGAP_cyt/D # [=] molecules per cell 
+#  (the reactor is the thin layer adjacent to the early endosome membrane)
+
+# GAP parameters for TBC1D15
+# Approximated from Simon 1996 (intrinsic) and Zhang 2005 (90 fold increase)
+kcatGAP_TBC1D15 0.081 # [=]  /s   
+
+# GAP parameters for SGSM3 from Simon 1996
+kcatGAP_SGSM3 0.008 # [=]  /s
+
+# effector parameters from Table S1 of Stites et al. (2007)
+kdEff 3.6 # [=] /s
+kaEff_std_units 45e6 # [=] /M/s
+# Kd=kdEff/kaEff_std_units=0.08e-6 M 
+kaEff=kaEff_std_units/(NA*Vcyt)  # [=] /(molecule/cell)/s
+
+# intrinsic hydrolysis rates
+k_hyd_Rab5 0.002 # [=] /s
+k_hyd_Rab7 0.0009 # [=] /s
+
+
+end parameters
+
+begin molecule types
+
+#EGF(EGFL)
+#EGFR(I_III,II,K~0~Ub,Y~0~P)
+
+# EGFR associated with early endosome
+#   K: lysine residues, which may be ubiquitinated (Ub)
+#   Y: tyrosine residues, which may be phosphorylated (P)
+EGFR(K~0~Ub,Y~0~P)
+
+# GDP dissociation inhibitor (GDI) alpha (GDI1) - non-specific w.r.t. Rab
+#   See Pylypenko et al. (2006).
+#   domain I contains several parts, including
+#     the C-terminus binding region (CBR),
+#     the Rab-binding platform, and
+#     the mobile effector loop (MEL).
+#   domain I interacts with the switch I/II region of GDP-loaded Rab.
+#   domain II interacts with prenyl groups covalently coupled to Rab HVR.
+#   For simplicity, we only consider domain I at this time. We will not model the full mechanism
+#     of interation of GDI1 with RAB proteins.
+#   loc is a location tag
+#     ~cyto is cytosol
+#     ~endo is early endosome
+#     ~omem is other membrane
+GDI1(domainI,loc~cyto~endo~omem)
+
+# small GTPases
+
+# There are three isoforms of Rab5 in humans: RAB5A, RAB5B and RAB5C.
+#   loc is a location tag
+#     ~endo is early endosome
+#     ~omem is other membrane
+#     ~cyto is cytosol (in complex with GDI)
+RAB5(G~GDP~GTP,loc~endo~omem~cyto)
+
+# There is one isoform of Rab7 in humans relevant for endocytosis: RAB7A.
+#   loc is a location tag
+#     ~endo is early endosome
+#     ~omem is other membrane
+#     ~cyto is cytosol (in complex with GDI)
+RAB7(G~GDP~GTP,loc~endo~omem~cyto)
+
+# guanine nucleotide exchange factors (GEFs)
+
+# Rab5 GDP/GTP exchange factor (also known as RABEX5)
+#   VPS9 is the Rab GEF domain
+#   UIM is the ubiquitin interacting motif (aa residues 139-252)
+#   ZnF is the zinc finger domain (binds Ub)
+#     For simplicity, we will treat UIM and ZnF as a single site (UIM)
+#   CC is the coiled-coil domain near the C-terminus responsible for interaction with RABEP1
+RABGEF1(UIM,VPS9,CC) # also known as RABEX5
+
+# Ras and Rab interactor 1
+#   SH2 is the Src homology 2 domain
+#     The SH2 domain of RIN1 interacts with tyrosine-phosphorylated EGFR (Barbieri et al., 2003).
+#   VPS9 is the Rab GEF domain
+#   RA is the Ras-associating domain
+RIN1(SH2,VPS9,RA)
+
+# Rab GTPase-binding effector protein 1 (also known as Rabaptin-5)
+#   CC is the coiled coil domain (C1-2) that interacts with RABGEF1
+#   Rab5BD is the Rab5 binding domain near the C-terminus
+#     Rab5 BD preferentially interacts with GTP-loaded Rab5.
+RABEP1(CC,Rab5BD)
+
+# GAP for Rab5
+#   TBC is the Rab GAP domain
+USP6NL(TBC)
+
+# GAP for Rab5
+#   TBC is the Rab GAP domain.
+#   This protein contains an SH3 domain.
+#   This protein contains a RUN domain, which may enable interaction with a GTPase.
+#   AKA RabGAP-5
+SGSM3(TBC,SH3,RUN)
+
+# The subunit of a GEF for Rab7 (CCZ1 is the other subunit)
+#   This protein contains a longin domain
+#   Longin domains enable interactions between subunits of a GEF
+MON1(longin,Rab5BD)
+
+# The subunit of a GEF for Rab7 (MON1A is the other subunit)
+#   This protein contains a longin domain
+#   Longin domains enable interactions between subunits of a GEF
+CCZ1(longin)
+
+# GAP for Rab7
+# TBC1 domain family member 5
+#   This protein probably contains a TBC domain
+TBC1D5(TBC)
+
+# GAP for Rab7
+# TBC1 domain family member 15
+#   This protein probably contains a TBC domain
+TBC1D15(DUF3548,TBC)
+
+end molecule types
+
+begin seed species
+
+#EGF(EGFL) EGF_copyNum
+#EGFR(I_III,II,K~0,Y~0) EGFR_copyNum
+
+EGFR(K~Ub,Y~0) rint(EGFR_copyNum*fUb)
+EGFR(K~0,Y~P) rint(EGFR_copyNum*fP)
+
+GDI1(domainI,loc~cyto) GDI1_copyNum
+
+RAB5(G~GDP,loc~omem) RAB5_copyNum
+RAB7(G~GDP,loc~omem) RAB7_copyNum
+
+RABGEF1(UIM,VPS9,CC) RABGEF1_copyNum
+RIN1(SH2,VPS9,RA) RIN1_copyNum
+
+RABEP1(CC,Rab5BD) RABEP1_copyNum
+
+MON1(longin,Rab5BD) MON1_copyNum
+CCZ1(longin) CCZ1_copyNum
+
+SGSM3(TBC,SH3,RUN) SGSM3_copyNum
+TBC1D15(DUF3548,TBC) TBC1D15_copyNum
+
+end seed species
+
+begin observables
+
+Molecules EGFR_Ub EGFR(K~Ub,Y~0)
+Molecules EGFR_P EGFR(K~0,Y~P)
+Molecules EGFR_P_Ub EGFR(K~Ub,Y~P)
+Molecules EGFR_endo EGFR()
+Molecules EGFR_free EGFR(K~0,Y~0)
+
+#Molecules RABGEF1_RABEP1 RABGEF1(CC!1).RABEP1(CC!1)
+
+Molecules Rab5_endo RAB5(loc~endo)
+Molecules Rab5_omem RAB5(loc~omem)
+Molecules Rab5_cyto RAB5(loc~cyto)
+Molecules Rab5_all RAB5()
+
+#Molecules Rab7_endo RAB7(loc~endo)
+#Molecules Rab7_omem RAB7(loc~omem)
+#Molecules Rab7_cyto RAB7(loc~cyto)
+#Molecules Rab7_all RAB7()
+
+Species Rab5_bnd_to_EGFR RAB5().EGFR()
+
+Molecules all_GTP_loaded_RAB5 RAB5(G~GTP!?)
+Molecules all_GTP_loaded_RAB7 RAB7(G~GTP!?)
+Molecules recruited_Rab5_GEFs RAB5(G~GTP!1).RABEP1(Rab5BD!1,CC!2).RABGEF1(CC!2) EGFR(K~Ub!1).RABGEF1(UIM!1) RAB5(G~GTP!1).RIN1(RA!1) EGFR(Y~P!1).RIN1(SH2!1)
+Molecules recruited_Rab7_GEFs RAB5(G~GTP!1).MON1(Rab5BD!1,longin!2).CCZ1(longin!2)
+Molecules recruited_Rab5_GAPs SGSM3(RUN!+) 
+Molecules cytosolic_Rab7_GAPs TBC1D15()
+
+
+Molecules all_RAB5_endo RAB5(loc~endo)
+Molecules GTP_loaded_RAB5_endo RAB5(G~GTP!?,loc~endo)
+Molecules GDP_loaded_RAB5_endo RAB5(G~GDP!?,loc~endo)
+#Molecules GTP_loaded_RAB5_omem RAB5(G~GTP!?,loc~omem)
+#Molecules GTP_loaded_RAB5_cyto RAB5(G~GTP!?,loc~cyto)
+#Molecules GTP_loaded_RAB7_endo RAB7(G~GTP!?,loc~endo)
+#Molecules GTP_loaded_RAB7_omem RAB7(G~GTP!?,loc~omem)
+#Molecules GTP_loaded_RAB7_cyto RAB7(G~GTP!?,loc~cyto)
+
+#Molecules MON1_total MON1()
+
+Molecules MON1_bndTo_RAB5 RAB5(G~GTP!1).MON1(Rab5BD!1)
+Molecules CCZ1_bndTo_RAB5 RAB5(G~GTP!1).MON1(Rab5BD!1,longin!2).CCZ1(longin!2)
+Molecules RABGEF1_bndTo_RAB5_and_RABEP1 RAB5(G~GTP!1).RABEP1(Rab5BD!1,CC!2).RABGEF1(CC!2)
+Molecules RABGEF1_bndTo_EGFR EGFR(K~Ub!1).RABGEF1(UIM!1,CC!2).RABEP1(CC!2)
+Molecules RIN1_bndTo_RAB5 RAB5(G~GTP!1).RIN1(RA!1)
+Molecules RIN1_bndTo_EGFR EGFR(Y~P!1).RIN1(SH2!1)
+Molecules RABEP1_bndTo_RAB5 RAB5(G~GTP!1).RABEP1(Rab5BD!1)
+
+
+
+#Molecules RIN1_total RIN1()
+#Molecules RABGEF1_total RABGEF1()
+
+###################################################
+# observables used in functions are defined below #
+###################################################
+
+Molecules FreeRab5GDP RAB5(G~GDP,loc~endo)
+Molecules FreeRab5GTP RAB5(G~GTP,loc~endo)
+Molecules RABGEF1cat RABGEF1(UIM!+) RABGEF1(CC!1).RABEP1(CC!1,Rab5BD!+)
+Molecules RIN1cat RIN1(SH2!+) RIN1(RA!+)
+
+Molecules Mon1Ccz1cat MON1(Rab5BD!+,longin!1).CCZ1(longin!1) # RAB7(G~GTP!1).CCZ1(longin!1)
+Molecules FreeRab7GDP RAB7(G~GDP,loc~endo)
+Molecules FreeRab7GTP RAB7(G~GTP,loc~endo)
+
+Molecules CatGAP_SGSM3 SGSM3(RUN!+) # recruited SGSM3 is active
+Molecules CatGAP_TBC1D15 TBC1D15() # all (including cytosolic) TBC1D15 is active
+Molecules CatGAP_rTBC1D15 TBC1D15(DUF3548!+) # recruited TBC1D15 is active
+
+# hypothetical positive feedback
+Molecules Rab7Ccz1cat RAB7(G~GTP!1).CCZ1(longin!1)
+
+end observables
+
+begin functions
+
+# rate laws for GDP/GTP exchange on Rab5 by RABGEF1 and RIN1
+#   Each rate law is [substrate]*function
+#   The following variables (defined in the Observables block) are used in these functions:
+#     RABGEF1cat: total amount of RABGEF1 localized to early endosome
+#     RIN1cat: total amount of RIN1 localized to early endosome
+#     FreeRab5GDP: amount of free GDP-loaded Rab5 on early endosome
+#     FreeRab5GTP: amount of free GTP-loaded Rab5 on early endosome
+R3f_RABGEF1() kcatGDP_Rab5*RABGEF1cat*(1/KmGDP_endo)/(1+(FreeRab5GDP/KmGDP_endo)+(FreeRab5GTP/KmGTP_endo))
+R3r_RABGEF1() kcatGTP_Rab5*RABGEF1cat*(1/KmGTP_endo)/(1+(FreeRab5GDP/KmGDP_endo)+(FreeRab5GTP/KmGTP_endo))
+R3f_RIN1() kcatGDP_Rab5*RIN1cat*(1/KmGDP_endo)/(1+(FreeRab5GDP/KmGDP_endo)+(FreeRab5GTP/KmGTP_endo))
+R3r_RIN1() kcatGTP_Rab5*RIN1cat*(1/KmGTP_endo)/(1+(FreeRab5GDP/KmGDP_endo)+(FreeRab5GTP/KmGTP_endo))
+
+R3f_Mon1Ccz1() 5*kcatGDP_Rab7*Mon1Ccz1cat*(1/KmGDP_endo)/(1+(FreeRab7GDP/KmGDP_endo)+(FreeRab7GTP/KmGTP_endo))
+R3r_Mon1Ccz1() 5*kcatGTP_Rab7*Mon1Ccz1cat*(1/KmGTP_endo)/(1+(FreeRab7GDP/KmGDP_endo)+(FreeRab7GTP/KmGTP_endo))
+
+# function for GAP-assisted hydrolysis of Rab5-bound GTP
+#   The rate law has the form [substrate]*function.
+R5f_SGSM3() 10*kcatGAP_SGSM3*CatGAP_SGSM3*(1/(0.01*KmGAP_endo))/(1+(FreeRab5GTP/(0.01*KmGAP_endo)))
+
+# function for intrinsic hydrolysis of Rab5-bound GTP
+# [Rab5~GTP]*rate
+R5f_intrinsic() k_hyd_Rab5*(all_GTP_loaded_RAB5)
+
+# function for intrinsic hydrolysis of Rab5-bound GTP
+# [Rab5~GTP]*rate
+R7f_intrinsic() k_hyd_Rab7*(all_GTP_loaded_RAB7)
+
+# function for GAP-assisted hydrolysis of Rab7-bound GTP
+#   The rate law has the form [substrate]*function.
+R5f_TBC1D15() (kcatGAP_TBC1D15/1)*CatGAP_TBC1D15*(1/(1*KmGAP_cyt))/(1+(FreeRab7GTP/(1*KmGAP_cyt)))
+
+# function for GAP-assisted hydrolysis of Rab7-bound GTP
+#   The rate law has the form [substrate]*function.
+R5f_rTBC1D15() (kcatGAP_TBC1D15)*CatGAP_rTBC1D15*(1/KmGAP_endo)/(1+(FreeRab7GTP/KmGAP_endo))
+
+# hypothetical positive feedback Rab7-recruited GEF activity
+R3f_Rab7Ccz1() 1*kcatGDP_Rab7*Rab7Ccz1cat*(1/KmGDP_endo)/(1+(FreeRab7GDP/KmGDP_endo)+(FreeRab7GTP/KmGTP_endo))
+R3r_Rab7Ccz1() 1*kcatGTP_Rab7*Rab7Ccz1cat*(1/KmGTP_endo)/(1+(FreeRab7GDP/KmGDP_endo)+(FreeRab7GTP/KmGTP_endo))
+
+# EGFR degredation rate that is dependent on Rab5GTP
+Rd_EGFR() kdeg*(all_GTP_loaded_RAB5)
+
+
+end functions
+
+begin reaction rules
+
+#EGF(EGFL)+EGFR(I_III,II)->EGF(EGFL!1).EGFR(I_III!1,II) kp1
+#EGF(EGFL!1).EGFR(I_III!1)->EGF(EGFL)+EGFR(I_III) km1
+#EGFR(I_III!+,II)+EGFR(I_III!+,II)->EGFR(I_III!+,II!1).EGFR(I_III!+,II!1) kp2
+#EGFR(II!1).EGFR(II!1)->EGFR(II)+EGFR(II) km2
+#EGFR(II!+,K~0)->EGFR(II!+,K~Ub) kf_Ub
+#EGFR(II!+,Y~0)->EGFR(II!+,Y~P) kf_P
+#EGFR(K~Ub)->EGFR(K~0) kr_Ub
+#EGFR(Y~P)->EGFR(Y~0) kr_P
+
+# reversible recruitment of RABGEF1 to ubiquitinated EGFR
+EGFR(K~Ub)+RABGEF1(UIM)<->EGFR(K~Ub!1).RABGEF1(UIM!1) kf_KUb_UIM,kr_KUb_UIM
+
+# reversible recruitment of RIN1 to phosphorylated EGFR
+EGFR(Y~P)+RIN1(SH2)<->EGFR(Y~P!1).RIN1(SH2!1) kf_pTyr_SH2,kr_pTyr_SH2
+
+# removal of EGFR from the early endosome compartment
+#EGFR()->0 kdeg
+EGFR()->0 Rd_EGFR()
+
+
+# association of RABGEF1 and RABEP1
+#   in the cytosol
+RABGEF1(UIM,VPS9,CC)+RABEP1(CC,Rab5BD)->RABGEF1(UIM,VPS9,CC!1).RABEP1(CC!1,Rab5BD) 5*kf_CC
+#   when RABGEF1 is bound to EGFR
+RABGEF1(UIM!+,VPS9,CC)+RABEP1(CC,Rab5BD)->RABGEF1(UIM!+,VPS9,CC!1).RABEP1(CC!1,Rab5BD) 5*kf_CC
+#   when RABEP1 is bound to GTP-loaded RAB5
+RABGEF1(UIM,VPS9,CC)+RABEP1(CC,Rab5BD!+)->RABGEF1(UIM,VPS9,CC!1).RABEP1(CC!1,Rab5BD!+) 5*kf_CC
+# dissociation of RABGEF1 from RABEP1
+RABGEF1(CC!1).RABEP1(CC!1)->RABGEF1(CC)+RABEP1(CC) 5*kr_CC
+
+#delivery of Rab5 to membranes
+GDI1(domainI!1,loc~cyto).RAB5(G~GDP!1,loc~cyto)->\
+GDI1(domainI!1,loc~endo).RAB5(G~GDP!1,loc~endo) k_delivery_endo 
+GDI1(domainI!1,loc~cyto).RAB5(G~GDP!1,loc~cyto)->\
+GDI1(domainI!1,loc~omem).RAB5(G~GDP!1,loc~omem) k_delivery_omem
+
+#extraction of Rab5 from membranes
+GDI1(domainI!1,loc~endo).RAB5(G~GDP!1,loc~endo)->\
+GDI1(domainI!1,loc~cyto).RAB5(G~GDP!1,loc~cyto) k_extraction
+GDI1(domainI!1,loc~omem).RAB5(G~GDP!1,loc~omem)->\
+GDI1(domainI!1,loc~cyto).RAB5(G~GDP!1,loc~cyto) k_extraction
+
+#interaction of free Rab5 with GDI
+GDI1(domainI,loc~cyto)+RAB5(G~GDP,loc~endo)<->\
+GDI1(domainI!1,loc~endo).RAB5(G~GDP!1,loc~endo) kf_GDI_Rab_endo,kr_GDI_Rab 
+GDI1(domainI,loc~cyto)+RAB5(G~GDP,loc~omem)<->\
+GDI1(domainI!1,loc~omem).RAB5(G~GDP!1,loc~omem) kf_GDI_Rab_omem,kr_GDI_Rab 
+
+#delivery of Rab7 to membranes
+GDI1(domainI!1,loc~cyto).RAB7(G~GDP!1,loc~cyto)->\
+GDI1(domainI!1,loc~endo).RAB7(G~GDP!1,loc~endo) k_delivery_endo 
+GDI1(domainI!1,loc~cyto).RAB7(G~GDP!1,loc~cyto)->\
+GDI1(domainI!1,loc~omem).RAB7(G~GDP!1,loc~omem) k_delivery_omem
+
+#extraction of Rab7 from membranes
+GDI1(domainI!1,loc~endo).RAB7(G~GDP!1,loc~endo)->\
+GDI1(domainI!1,loc~cyto).RAB7(G~GDP!1,loc~cyto) k_extraction
+GDI1(domainI!1,loc~omem).RAB7(G~GDP!1,loc~omem)->\
+GDI1(domainI!1,loc~cyto).RAB7(G~GDP!1,loc~cyto) k_extraction
+
+#interaction of free Rab7 with GDI
+GDI1(domainI,loc~cyto)+RAB7(G~GDP,loc~endo)<->\
+GDI1(domainI!1,loc~endo).RAB7(G~GDP!1,loc~endo) kf_GDI_Rab_endo,kr_GDI_Rab 
+GDI1(domainI,loc~cyto)+RAB7(G~GDP,loc~omem)<->\
+GDI1(domainI!1,loc~omem).RAB7(G~GDP!1,loc~omem) kf_GDI_Rab_omem,kr_GDI_Rab 
+
+# GEF-catalyzed GDP/GTP exchange on Rab5 on early endosome
+RAB5(G~GDP,loc~endo)->RAB5(G~GTP,loc~endo) R3f_RABGEF1() # rate = [RAB(G~GDP)]*R3f()
+RAB5(G~GTP,loc~endo)->RAB5(G~GDP,loc~endo) R3r_RABGEF1() # rate = [RAB(G~GTP)]*R3r()
+RAB5(G~GDP,loc~endo)->RAB5(G~GTP,loc~endo) R3f_RIN1() # rate = [RAB(G~GDP)]*R3f()
+RAB5(G~GTP,loc~endo)->RAB5(G~GDP,loc~endo) R3r_RIN1() # rate = [RAB(G~GTP)]*R3r()
+
+# positive feedback
+#   recruitment of cytosolic Rab5 GEF to GTP-loaded Rab5
+RAB5(G~GTP)+RABEP1(CC!1,Rab5BD).RABGEF1(UIM,VPS9,CC!1)->\
+RAB5(G~GTP!2).RABEP1(CC!1,Rab5BD!2).RABGEF1(UIM,VPS9,CC!1) kf_Rab5_Rabaptin
+#   release
+RAB5(G~GTP!1).RABEP1(Rab5BD!1)->RAB5(G~GTP)+RABEP1(Rab5BD) kr_Rab5_Rabaptin
+#   recruitment of cytosolic Rab5 GEF to GTP-loaded Rab5
+RAB5(G~GTP)+RIN1(SH2,RA)->RAB5(G~GTP!1).RIN1(SH2,RA!1) kf_Rab5_Rin1
+#   release
+RAB5(G~GTP!1).RIN1(RA!1)->RAB5(G~GTP)+RIN1(RA) kr_Rab5_Rin1
+
+# Reversible recruitment of Mon1 to Rab5GTP at endosomes; Kinchen and Ravichandran 2010
+# Only Mon1A was shown to interact with Rab5 
+#   but there is homology in the C-terminus to justify assuming both isoforms interact with Rab5
+RAB5(G~GTP)+MON1(Rab5BD)->RAB5(G~GTP!1).MON1(Rab5BD!1) kf_Rab5_Mon1
+#  fast dissociation when MON1 is not bound to CCZ1
+RAB5(G~GTP!1).MON1(Rab5BD!1,longin)->RAB5(G~GTP)+MON1(Rab5BD,longin) kr_Rab5_Mon1
+#  slow dissociation when MON1 is bound to CCZ1
+RAB5(G~GTP!1).MON1(Rab5BD!1,longin!+)->RAB5(G~GTP)+MON1(Rab5BD,longin!+) 0.01*kr_Rab5_Mon1
+
+# Mon1 displaces RabGEF1 from Rab5
+
+# Formation of Mon1-Ccz1 heterodimer at endosomes
+MON1(Rab5BD!+,longin)+CCZ1(longin)->MON1(Rab5BD!+,longin!1).CCZ1(longin!1) kf_Mon1_Ccz1
+#  fast dissociation when MON1 is not bound to Rab5-GTP
+MON1(Rab5BD,longin!1).CCZ1(longin!1)->MON1(Rab5BD,longin)+CCZ1(longin) kr_Mon1_Ccz1
+#  slow dissociation when MON1 is bound to Rab5-GTP
+MON1(Rab5BD!+,longin!1).CCZ1(longin!1)->MON1(Rab5BD!+,longin)+CCZ1(longin) 0.01*kr_Mon1_Ccz1
+
+# Mon1-Ccz1 heterodimer catalyzed GDP/GTP exchange on Rab7 at endosomes
+RAB7(G~GDP,loc~endo)->RAB7(G~GTP,loc~endo) R3f_Mon1Ccz1() # rate = [RAB(G~GDP)]*R3f()
+RAB7(G~GTP,loc~endo)->RAB7(G~GDP,loc~endo) R3r_Mon1Ccz1() # rate = [RAB(G~GTP)]*R3r()
+
+# recruitment of Rab7 GAP to GTP-loaded Rab7
+#RAB7(G~GTP)+TBC1D15(DUF3548)<->RAB7(G~GTP!1).TBC1D15(DUF3548!1) kaEff,0.5*kdEff
+#RAB5(G~GTP)+TBC1D15(DUF3548)<->RAB5(G~GTP!1).TBC1D15(DUF3548!1) 0.1*kaEff,kdEff
+
+# GAP-catalyzed hydrolysis of Rab7-bound GTP 
+RAB7(G~GTP,loc~endo)->RAB7(G~GDP,loc~endo) R5f_TBC1D15()
+
+# intrinsic hydrolysis of GTP by Rab5
+RAB5(G~GTP)->RAB5(G~GDP) R5f_intrinsic()
+
+# recruitment of Rab5 GAP by GTP-loaded Rab7
+RAB7(G~GTP)+SGSM3(RUN)<->RAB7(G~GTP!1).SGSM3(RUN!1) kaEff,kdEff
+
+# GAP-catalyzed hydrolysis of Rab5-bound GTP 
+RAB5(G~GTP)->RAB5(G~GDP) R5f_SGSM3()
+
+# intrinsic hydrolysis of GTP by Rab7
+RAB7(G~GTP)->RAB7(G~GDP) k_hyd_Rab7
+
+# hypothetical recruitment of Rab7 GEF to GTP-loaded Rab7
+RAB7(G~GTP)+CCZ1(longin)<->RAB7(G~GTP!1).CCZ1(longin!1) kaEff,kdEff
+# hypothetical recruited GEF actvity
+#   positive feedback
+RAB7(G~GDP,loc~endo)->RAB7(G~GTP,loc~endo) R3f_Rab7Ccz1()
+RAB7(G~GTP,loc~endo)->RAB7(G~GDP,loc~endo) R3r_Rab7Ccz1()
+# hypothetical negative feedback
+RAB7(G~GTP,loc~endo)->RAB7(G~GDP,loc~endo) R5f_rTBC1D15()
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+#writeMfile()
+simulate({method=>"ode",t_start=>0,t_end=>2500,n_steps=>1000,print_functions=>1})
+
+end actions

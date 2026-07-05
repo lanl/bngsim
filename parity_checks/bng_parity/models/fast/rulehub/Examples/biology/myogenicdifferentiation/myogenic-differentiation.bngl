@@ -1,0 +1,57 @@
+begin model
+begin parameters
+    # Myogenic Differentiation
+    # Models the MyoD-Myogenin-MEF2 regulatory circuit in muscle cell development.
+    
+    k_induce 0.2        # Induction of MyoD
+    k_expression 0.35   # Myogenin expression
+    k_mef2 0.3          # MEF2 activation
+    k_feedback 0.25     # Positive/Negative feedback loops
+    k_reset 0.06        # Protein turnover
+end parameters
+
+begin molecule types
+    MYOD(level~low~high)  # Master regulator transcription factor
+    MYOG(state~off~on)    # Myogenin
+    MEF2(state~off~on)    # Myocyte enhancer factor 2
+end molecule types
+
+begin seed species
+    MYOD(level~low) 60
+    MYOG(state~off) 50
+    MEF2(state~off) 40
+end seed species
+
+begin reaction rules
+    # 1. Initiation
+    MYOD(level~low) -> MYOD(level~high) k_induce
+    
+    # 2. Myogenin Expression
+    # High MyoD drives Myogenin
+    MYOD(level~high) + MYOG(state~off) -> MYOD(level~high) + MYOG(state~on) k_expression
+    
+    # 3. MEF2 Activation
+    # Myogenin activates MEF2
+    MYOG(state~on) + MEF2(state~off) -> MYOG(state~on) + MEF2(state~on) k_mef2
+    
+    # 4. Feedback Loops & Regulation
+    # Positive feedback: MEF2 maintains high MyoD
+    MEF2(state~on) + MYOD(level~low) -> MEF2(state~on) + MYOD(level~high) k_feedback
+    
+    # Negative regulation / Turnover
+    MYOD(level~high) -> MYOD(level~low) k_feedback
+    MEF2(state~on) -> MEF2(state~off) k_reset
+    MYOG(state~on) -> MYOG(state~off) k_reset
+end reaction rules
+
+begin observables
+    Molecules High_MYOD MYOD(level~high)
+    Molecules MYOG_On MYOG(state~on)
+    Molecules MEF2_On MEF2(state~on)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>120,n_steps=>200})
+end actions
+end model

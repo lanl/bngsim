@@ -1,0 +1,194 @@
+begin model
+# model for HIV dynamics in Patient 20485 during triple therapy
+begin parameters
+# parameter values from Table 1 (baseline total body numbers)
+# free viral particles
+V0 0.41e9 # copies per body
+# FDC-associated viral particles
+F0 4.6e10 # copies per body
+# uninfected target cells
+T0 9.9e10 # copies per body
+# productively infected cells
+T0star 1.1e8 # copies per body
+# chronically infected cells
+C0star 3.0e6 # copies per body
+# parameter values from Table 2
+ep 0 # dimensionless
+er 0 # dimensionless
+lambda 0 # copies per d
+muC 0.35e-2 # /d
+c 34 # /d
+delta 2.7 # /d
+KxRT 0.95 # dimensionless
+p 1e-2 # /d
+Tc 2.9e11 # copies per body
+N 49 # dimensionless
+RT 1.8e12 # copies per body
+k 6.8e-12 # /d
+kC 2.9e-16 # /d
+val 20 # dimensionless
+alpha 1.5e-10 # /d
+kr 8600 # /d
+kmx=kr # /d
+kpx=KxRT*kmx/RT # /(copies per body)/d
+mu 3.8e-3 # /d
+pi 0
+end parameters
+begin molecule types
+T()
+I()
+C()
+V()
+W()
+R()
+B01()
+B02()
+B03()
+B04()
+B05()
+B06()
+B07()
+B08()
+B09()
+B10()
+B11()
+B12()
+B13()
+B14()
+B15()
+B16()
+B17()
+B18()
+B19()
+B20()
+C01()
+C02()
+C03()
+C04()
+C05()
+C06()
+C07()
+C08()
+C09()
+C10()
+C11()
+C12()
+C13()
+C14()
+C15()
+C16()
+C17()
+C18()
+C19()
+C20()
+end molecule types
+begin seed species
+T() T0
+I() T0star
+C() C0star
+V() V0
+W() 0 
+B01() F0
+C01() 0
+R() RT-F0
+end seed species
+begin observables
+Molecules Vfree V() # free infectious viral particles
+Molecules Wfree W() # free non-infectious viral particles
+Molecules Tu T() # uninfected target cells
+Molecules Ti_short I() # infected target cells (short-lived)
+Molecules Ti_long C() # chronically infected target cells (long-lived)
+Molecules Ball B01() B02() B03() B04() B05() B06() B07() B08() B09() B10() B11() B12() B13() B14() B15() B16() B17() B18() B19() B20()
+Molecules Call C01() C02() C03() C04() C05() C06() C07() C08() C09() C10() C11() C12() C13() C14() C15() C16() C17() C18() C19() C20()
+end observables
+begin functions
+proliferation()=p*(1-Tu/Tc)
+infectionI()=(1-er)*k*Vfree
+infectionC()=(1-er)*kC*Vfree
+burstV()=(1-ep)*(N*delta*Ti_short+pi*Ti_long)
+burstW()=ep*(N*delta*Ti_short+pi*Ti_long)
+plasmaVirus()=Vfree+Wfree
+FDCassociatedVirus()=Ball+Call
+end functions
+begin reaction rules
+# capture and escape
+#  infectious viral particles
+V()+R()<->B01() alpha,kr
+# capture and escape
+#  non-infectious viral particles
+W()+R()<->C01() alpha,kr
+# reversible crosslinking
+#  infectious viral particles
+B01()+R()<->B02() 19*kpx,2*kmx
+B02()+R()<->B03() 18*kpx,3*kmx
+B03()+R()<->B04() 17*kpx,4*kmx
+B04()+R()<->B05() 16*kpx,5*kmx
+B05()+R()<->B06() 15*kpx,6*kmx
+B06()+R()<->B07() 14*kpx,7*kmx
+B07()+R()<->B08() 13*kpx,8*kmx
+B08()+R()<->B09() 12*kpx,9*kmx
+B09()+R()<->B10() 11*kpx,10*kmx
+B10()+R()<->B11() 10*kpx,11*kmx
+B11()+R()<->B12() 9*kpx,12*kmx
+B12()+R()<->B13() 8*kpx,13*kmx
+B13()+R()<->B14() 7*kpx,14*kmx
+B14()+R()<->B15() 6*kpx,15*kmx
+B15()+R()<->B16() 5*kpx,16*kmx
+B16()+R()<->B17() 4*kpx,17*kmx
+B17()+R()<->B18() 3*kpx,18*kmx
+B18()+R()<->B19() 2*kpx,19*kmx
+B19()+R()<->B20() 1*kpx,20*kmx
+# reversible crosslinking
+#  non-infectious viral particles
+C01()+R()<->C02() 19*kpx,2*kmx
+C02()+R()<->C03() 18*kpx,3*kmx
+C03()+R()<->C04() 17*kpx,4*kmx
+C04()+R()<->C05() 16*kpx,5*kmx
+C05()+R()<->C06() 15*kpx,6*kmx
+C06()+R()<->C07() 14*kpx,7*kmx
+C07()+R()<->C08() 13*kpx,8*kmx
+C08()+R()<->C09() 12*kpx,9*kmx
+C09()+R()<->C10() 11*kpx,10*kmx
+C10()+R()<->C11() 10*kpx,11*kmx
+C11()+R()<->C12() 9*kpx,12*kmx
+C12()+R()<->C13() 8*kpx,13*kmx
+C13()+R()<->C14() 7*kpx,14*kmx
+C14()+R()<->C15() 6*kpx,15*kmx
+C15()+R()<->C16() 5*kpx,16*kmx
+C16()+R()<->C17() 4*kpx,17*kmx
+C17()+R()<->C18() 3*kpx,18*kmx
+C18()+R()<->C19() 2*kpx,19*kmx
+C19()+R()<->C20() 1*kpx,20*kmx
+# viral clearance (infectious & non-infectious viral particles)
+V()->0 c
+W()->0 c
+# generation of target cells
+0->T() lambda
+# proliferation of target cells
+T()->T()+T() proliferation() # rate=p*T*(1-T/Tc)
+# (natural) death of uninfected target cells
+T()->0 mu
+# infection
+T()->I() infectionI()
+T()->C() infectionC()
+# death of (short-lived) infected cells 
+I()->0 delta
+# death of (long-lived) chronically infected cells
+C()->0 muC
+# generation of infectious viral particles
+0->V() burstV()
+# generation of non-infectious viral particles
+0->W() burstW()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration
+simulate({suffix=>"equil",method=>"ode",t_end=>3600,n_steps=>360,print_functions=>1})
+saveConcentrations()
+# therapy response
+resetConcentrations()
+setParameter("ep",1)
+setParameter("er",1)
+simulate({suffix=>"therapy",method=>"ode",t_end=>360,n_steps=>360,print_functions=>1})
+end actions

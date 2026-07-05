@@ -1,0 +1,274 @@
+begin model
+
+#---
+# Title: A simple model of Syk activation in response to FcR crosslinking by IgG
+# Contributors:
+#   William S. Hlavacek
+#   Ryan Suderman
+# Versions:
+#   v1 - initial model
+#   v2 - phosphorylation of Syk Y130 by Lyn removed, pY130 now refers to the Syk Y130E mutant
+#   v3 - 
+#   v4 - WT Syk can bridge C-C and N-C as Y130E
+#   v5 - Syk Y130E can bind single ITAM, additional free parameters govern bridging
+
+begin parameters
+
+# fraction of a cell to consider in a (stochastic) simulation
+f 1 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+
+# cell volume
+Vcyt f*1e-12 # L per cell
+
+# protein abundances (copies per cell, cpc)
+complex_cpc 1e6*f # cpc (200,000 - 300,000 molecules/cell depending on duration of IgE priming)
+
+# parameters for Syk-receptor interaction (Feng and Post (2016) PCCP)
+kon_CN 5.5e6 # /M/s
+koff_CN 380 # /s
+# for phosphomimetic
+kon_CN_pm 6.6e6 # /M/s
+koff_CN_pm 550 # /s
+
+# interaction between C terminal tyr on ITAM and Syk cSH2 domain
+kon_CC 12e6 # /M/s
+koff_CC 2600 # /s
+# for phosphomimetic
+kon_CC_pm 13e6 # /M/s
+koff_CC_pm 4100 # /s
+
+# parameters for two point attachment (Feng and Post (2016) PCCP)
+# Assumptions:
+#  WT bridging is slower than Y130E bridging only for specific interactions
+#  For example, C-C WT bridging could be faster than N-C Y130E bridging 
+#  so long as N-C WT bridging is slower than N-C Y130E bridging
+#
+#  two point attachment to single ITAM (WT)
+KD_Nprime 5e-3 # dimensionless (<<5e-3)
+koff_NC 950 # /s 
+kmxN=koff_NC
+kpxN=kmxN/KD_Nprime
+#  bridging for WT Syk (assumes same rates for N-C and C-C bridging)
+#   bridging parameter set to match Rivera data
+KD_NC_bridge 1e3
+kmxNb=koff_CC
+kpxNb=kmxNb/KD_NC_bridge
+KD_CC_bridge 1e3
+kmxCb=koff_CC
+kpxCb=kmxCb/KD_CC_bridge
+#  two point attachment for phosphomimetic (Feng and Post (2016) PCCP) 
+KD_Nprime_pm 38e-3 # dimensionless
+koff_NC_pm 2000 # /s
+kmxN_pm=koff_NC_pm
+kpxN_pm=kmxN_pm/KD_Nprime_pm
+#  bridging for phosphomimetic
+KD_NC_bridge_pm 1e3
+kmxNb_pm=koff_CC_pm
+kpxNb_pm=kmxNb_pm/KD_NC_bridge_pm
+KD_CC_bridge_pm 1e3
+kmxCb_pm=koff_CC_pm
+kpxCb_pm=kmxCb_pm/KD_CC_bridge_pm
+
+# parameters for approximate one-step 2 point attachment
+# kon_2p = kon1*kon2/(koff1+kon2)
+# koff_2p = koff1*koff2/(koff1+kon2)
+## two point attachment (WT, single ITAM)
+kon_CN_2p = kon_CN*kpxN/(kpxN+koff_CN)/(NA*Vcyt)
+koff_CN_2p = koff_CN*kmxN/(kpxN+koff_CN)
+## two point attachment (WT, bridging ITAMs)
+kon_CC_2pb = kon_CC*kpxCb/(kpxCb+koff_CC)/(NA*Vcyt)
+koff_CC_2pb = koff_CC*kmxCb/(kpxCb+koff_CC)
+kon_CN_2pb = kon_CN*kpxNb/(kpxNb+koff_CN)/(NA*Vcyt)
+koff_CN_2pb = koff_CN*kmxNb/(kpxNb+koff_CN)
+## two point attachment (Y130E, single ITAM)
+kon_CN_2p_pm = kon_CN_pm*kpxN_pm/(kpxN_pm+koff_CN_pm)/(NA*Vcyt)
+koff_CN_2p_pm = koff_CN_pm*kmxN_pm/(kpxN_pm+koff_CN_pm)
+## two point attachment (Y130E, bridging ITAMs)
+kon_CC_2pb_pm = kon_CC_pm*kpxCb_pm/(kpxCb_pm+koff_CC_pm)/(NA*Vcyt)
+koff_CC_2pb_pm = koff_CC_pm*kmxCb_pm/(kpxCb_pm+koff_CC_pm)
+kon_CN_2pb_pm = kon_CN_pm*kpxNb_pm/(kpxNb_pm+koff_CN_pm)/(NA*Vcyt)
+koff_CN_2pb_pm = koff_CN_pm*kmxNb_pm/(kpxNb_pm+koff_CN_pm)
+
+kcat_Syk_Syk 1
+
+kcat_Lyn_Syk 10
+
+kdp 1
+
+phos 1
+dephosN 0.01
+dephosC 1
+
+end parameters
+
+begin molecule types
+
+FceRI(gamma1_Y65~0~P~F,gamma1_Y76~0~P,gamma2_Y65~0~P~F~KO,gamma2_Y76~0~P~KO)
+Syk(nSH2,Y130~0~P,cSH2,Y342~0~P,Y346~0~P)
+
+end molecule types
+
+begin seed species
+
+FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~0,gamma2_Y76~0) 4e5
+FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~KO,gamma2_Y76~KO) 0
+Syk(cSH2,nSH2,Y130~0,Y342~0,Y346~0) 2e5
+Syk(cSH2,nSH2,Y130~P,Y342~0,Y346~0) 0
+
+end seed species
+
+begin observables
+
+Molecules Syk_gamma Syk().FceRI()
+
+Molecules Syk_single_attachment Syk(nSH2!2,cSH2!1).FceRI(gamma1_Y65!1,gamma1_Y76!2) Syk(nSH2!2,cSH2!1).FceRI(gamma2_Y65!1,gamma2_Y76!2)
+Molecules Syk_bridge_attachment Syk(nSH2!1,cSH2!2).FceRI(gamma1_Y65!2,gamma2_Y76!1) Syk(nSH2!1,cSH2!2).FceRI(gamma2_Y65!2,gamma1_Y76!1) Syk(nSH2!1,cSH2!2).FceRI(gamma1_Y76!2,gamma2_Y76!1) Syk(nSH2!1,cSH2!2).FceRI(gamma1_Y76!1,gamma2_Y76!2)
+
+Molecules Syk_tp Syk(Y342~P)
+Molecules Syk_lp Syk(Y346~P)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+########################
+# ITAM phosphorylation #
+########################
+
+# phosphorylation/dephosphorylation of FcR
+FceRI(gamma1_Y65~0) <-> FceRI(gamma1_Y65~P) phos,dephosN
+FceRI(gamma2_Y65~0) <-> FceRI(gamma2_Y65~P) phos,dephosN
+
+FceRI(gamma1_Y76~0) <-> FceRI(gamma1_Y76~P) phos,dephosC
+FceRI(gamma2_Y76~0) <-> FceRI(gamma2_Y76~P) phos,dephosC
+
+#########################
+# Syk dephosphorylation #
+#########################
+
+# dephosphorylation in the cytosol only
+Syk(nSH2,cSH2,Y342~P) -> Syk(nSH2,cSH2,Y342~0) kdp
+Syk(nSH2,cSH2,Y346~P) -> Syk(nSH2,cSH2,Y346~0) kdp
+
+############################
+# Syk-receptor interaction #
+############################
+
+# The cSH2 domain in Syk reversibly binds pY65 in one of the two gamma chains
+#  single ITAM binding
+#  Y130
+#    gamma1
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~P,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~?)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~P!1,gamma1_Y76~P!2,gamma2_Y65~?,gamma2_Y76~?) kon_CN_2p,koff_CN_2p
+#    gamma2
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~?,gamma1_Y76~?,gamma2_Y65~P,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~?,gamma1_Y76~?,gamma2_Y65~P!1,gamma2_Y76~P!2) kon_CN_2p,koff_CN_2p
+#  pY130
+#    gamma1
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~P,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~?)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~P!1,gamma1_Y76~P!2,gamma2_Y65~?,gamma2_Y76~?) kon_CN_2p_pm,koff_CN_2p_pm
+#    gamma2
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~?,gamma1_Y76~?,gamma2_Y65~P,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~?,gamma1_Y76~?,gamma2_Y65~P!1,gamma2_Y76~P!2) kon_CN_2p_pm,koff_CN_2p_pm
+#  ITAM bridging
+#  Y130
+#    gamma1
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~P,gamma1_Y76~?,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~P!1,gamma1_Y76~?,gamma2_Y65~?,gamma2_Y76~P!2) kon_CN_2pb,koff_CN_2pb
+#    gamma2
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~P,gamma2_Y76~?)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~?,gamma1_Y76~P!2,gamma2_Y65~P!1,gamma2_Y76~?) kon_CN_2pb,koff_CN_2pb
+#  pY130
+#    gamma1
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~P,gamma1_Y76~?,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~P!1,gamma1_Y76~?,gamma2_Y65~?,gamma2_Y76~P!2) kon_CN_2pb_pm,koff_CN_2pb_pm
+#    gamma2
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~P,gamma2_Y76~?)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~?,gamma1_Y76~P!2,gamma2_Y65~P!1,gamma2_Y76~?) kon_CN_2pb_pm,koff_CN_2pb_pm
+
+
+# The cSH2 domain in Syk reversibly binds pY76 in one of the two gamma chains
+#  ITAM bridging
+#  Y130
+#    gamma1
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~?,gamma1_Y76~P!1,gamma2_Y65~?,gamma2_Y76~P!2) kon_CC_2pb,koff_CC_2pb
+#    gamma2
+Syk(nSH2,cSH2,Y130~0)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~0).FceRI(gamma1_Y65~?,gamma1_Y76~P!2,gamma2_Y65~?,gamma2_Y76~P!1) kon_CC_2pb,koff_CC_2pb
+#  pY130
+#    gamma1
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~?,gamma1_Y76~P!1,gamma2_Y65~?,gamma2_Y76~P!2) kon_CC_2pb_pm,koff_CC_2pb_pm
+#    gamma2
+Syk(nSH2,cSH2,Y130~P)+FceRI(gamma1_Y65~?,gamma1_Y76~P,gamma2_Y65~?,gamma2_Y76~P)<->\
+Syk(nSH2!2,cSH2!1,Y130~P).FceRI(gamma1_Y65~?,gamma1_Y76~P!2,gamma2_Y65~?,gamma2_Y76~P!1) kon_CC_2pb_pm,koff_CC_2pb_pm
+
+#######################
+# Syk-Syk interaction #
+#######################
+
+# Syk phosphorylates Y342 in neighboring Syk
+# probability of encountering Syk in neighboring FcR incorporated into catalytic rate
+## N-C bridging 1 to 2
+Syk(nSH2!+,Y342~0) -> Syk(nSH2!+,Y342~P) kcat_Syk_Syk
+
+#######################
+# Lyn-Syk interaction #
+#######################
+## N-C bridging
+Syk(nSH2!+,Y346~0) -> Syk(nSH2!+,Y346~P) kcat_Lyn_Syk
+
+end reaction rules
+
+end model
+
+begin actions
+
+setParameter("KD_Nprime",0.0014)
+setParameter("KD_NC_bridge",0.001)
+setParameter("KD_CC_bridge",0.000316227766017)
+setParameter("KD_NC_bridge_pm",0.001)
+setParameter("KD_CC_bridge_pm",0.000316227766017)
+
+generate_network({overwrite=>1})
+
+# visualize({type=>"regulatory"})
+# visualize({type=>"contactmap"})
+
+### WT RECEPTOR ####
+
+saveConcentrations()
+setParameter("f",1)
+
+simulate({method=>"ode",suffix=>"wt",t_start=>0,t_end=>100,n_steps=>1000,get_final_state=>1,print_CDAT=>0,steady_state=>1})
+
+resetConcentrations()
+setConcentration("Syk(cSH2,nSH2,Y130~P,Y342~0,Y346~0)",2e5)
+setConcentration("Syk(cSH2,nSH2,Y130~0,Y342~0,Y346~0)",0)
+
+simulate({method=>"ode",suffix=>"ye",t_start=>0,t_end=>100,n_steps=>1000,get_final_state=>1,print_CDAT=>0,steady_state=>1})
+
+### RECEPTOR WITH 1 GAMMA CHAIN ####
+
+resetConcentrations()
+setConcentration("FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~KO,gamma2_Y76~KO)",4e5)
+setConcentration("FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~0,gamma2_Y76~0)",0)
+
+simulate({method=>"ode",suffix=>"wt_1ko",t_start=>0,t_end=>100,n_steps=>1000,get_final_state=>1,print_CDAT=>0,steady_state=>1})
+
+resetConcentrations()
+setConcentration("FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~KO,gamma2_Y76~KO)",4e5)
+setConcentration("FceRI(gamma1_Y65~0,gamma1_Y76~0,gamma2_Y65~0,gamma2_Y76~0)",0)
+setConcentration("Syk(cSH2,nSH2,Y130~P,Y342~0,Y346~0)",2e5)
+setConcentration("Syk(cSH2,nSH2,Y130~0,Y342~0,Y346~0)",0)
+
+simulate({method=>"ode",suffix=>"ye_1ko",t_start=>0,t_end=>100,n_steps=>1000,get_final_state=>1,print_CDAT=>0,steady_state=>1})
+
+end actions

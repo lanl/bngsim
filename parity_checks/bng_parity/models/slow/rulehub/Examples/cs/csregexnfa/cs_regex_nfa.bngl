@@ -1,0 +1,64 @@
+# Model: cs_regex_nfa.bngl
+# Description: Implements a Regex Matcher using a Nondeterministic Finite Automaton (NFA).
+#              Matches the regex: (A|B)*C
+#              NFA states are molecules. Input characters (A,B,C) trigger transitions.
+#              Match is detected by accumulation in the 'Accept' state.
+
+begin model
+
+begin parameters
+    # Character input rates (Simulation of streaming input)
+    k_input_A 10.0
+    k_input_B 0.0
+    k_input_C 0.0  # We'll set this during simulation
+end parameters
+
+begin molecule types
+    State(s_type~Q0~Q1~Accept)
+    Char(val~A~B~C)
+end molecule types
+
+begin seed species
+    State(s_type~Q0) 1.0
+end seed species
+
+begin observables
+    Molecules Match State(s_type~Accept)
+    Molecules Current_Q0 State(s_type~Q0)
+end observables
+
+begin reaction rules
+    # --- Input Generation (External stream) ---
+    0 -> Char(val~A) k_input_A
+    0 -> Char(val~B) k_input_B
+    0 -> Char(val~C) k_input_C
+    
+    # Input molecules decay quickly (Transient signals)
+    Char() -> 0 100.0
+
+    # --- NFA Transitions for (A|B)*C ---
+    # Q0: Start status
+    # Q0 --A--> Q0
+    # Q0 --B--> Q0
+    # Q0 --C--> Accept
+    
+    Rule_A: State(s_type~Q0) + Char(val~A) -> State(s_type~Q0) 1.0
+    Rule_B: State(s_type~Q0) + Char(val~B) -> State(s_type~Q0) 1.0
+    Rule_C: State(s_type~Q0) + Char(val~C) -> State(s_type~Accept) 1.0
+    
+    # Note: For (A|B)*C,we stay in Q0 until a C is seen.
+    # In a real NFA molecules would be consumed/produced to move states.
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+
+# Phase 1: Stream 'A's
+simulate({method=>"ssa",t_end=>5,n_steps=>100})
+
+# Phase 2: Send 'C' to trigger match
+setParameter("k_input_A",0)
+setParameter("k_input_C",50)
+simulate({method=>"ssa",t_end=>10,n_steps=>100,continue=>1})

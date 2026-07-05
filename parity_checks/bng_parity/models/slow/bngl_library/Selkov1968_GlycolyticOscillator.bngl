@@ -1,0 +1,73 @@
+begin model
+#@model_id: Selkov1968_GlycolyticOscillator
+#@title: Selkov glycolytic oscillator (Selkov 1968)
+#@description: Dimensionless two-variable glycolytic oscillator. dx/dt = -x + a*y + x^2*y; dy/dt = b - a*y - x^2*y. The x^2*y term is handled via a functional rate. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1111/j.1432-1033.1968.tb00175.x
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters (dimensionless)
+  a        0.08           # dimensionless
+  b        0.6            # molecules/s (constant influx)
+end parameters
+
+begin molecule types
+  # Substrate (ADP analogue)
+  x()
+  # Product (ATP analogue / PFK effector)
+  y()
+end molecule types
+
+begin seed species
+  x()  1  # molecules (scaled from 1.0)
+  y()  1  # molecules (scaled from 1.0)
+end seed species
+
+begin observables
+  Molecules  Obs_x  x()
+  Molecules  Obs_y  y()
+end observables
+
+begin functions
+  # Linear interconversion: a*y
+  rate_ay() = a * Obs_y
+
+  # Nonlinear autocatalytic term: x^2*y
+  rate_x2y() = Obs_x^2 * Obs_y
+end functions
+
+begin reaction rules
+  # x dynamics: dx/dt = -x + a*y + x^2*y
+  # Production from a*y
+  0 -> x()  rate_ay()
+  # Production from x^2*y (autocatalytic)
+  0 -> x()  rate_x2y()
+  # Degradation of x (first-order, rate 1)
+  x() -> 0  1.0
+
+  # y dynamics: dy/dt = b - a*y - x^2*y
+  # Constant influx b
+  0 -> y()  b
+  # Consumption by a*y
+  y() -> 0  rate_ay()
+  # Consumption by x^2*y
+  y() -> 0  rate_x2y()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

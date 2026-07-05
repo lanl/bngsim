@@ -1,0 +1,54 @@
+begin model
+begin parameters
+k__FREE 0.10421778715119231
+k k__FREE
+end parameters
+begin molecule types
+x()
+y()
+counter()
+end molecule types
+begin seed species
+x() 1
+y() 0
+counter() 0
+end seed species
+begin observables
+Molecules CDF y()
+Molecules t counter()
+end observables
+begin functions
+CDF_empirical()=if(t<=0,0.00,\
+                if(t<=1,0.00,\
+                if(t<=2,0.00,\
+                if(t<=3,0.01,\
+                if(t<=4,0.04,\
+                if(t<=5,0.11,\
+                if(t<=6,0.36,\
+                if(t<=7,0.39,\
+                if(t<=8,0.48,\
+                if(t<=9,0.59,\
+                if(t<=10,0.70,\
+                if(t<=11,0.79,\
+                if(t<=12,0.83,\
+                if(t<=13,0.85,\
+                if(t<=14,0.87,\
+                if(t<=15,0.88,\
+                if(t<=16,0.94,\
+                if(t<=17,0.96,\
+                if(t<=18,0.95,\
+                if(t<=19,0.96,\
+                if(t<=20,0.97,\
+                if(t<=21,0.00,\
+                0))))))))))))))))))))))
+end functions
+begin reaction rules
+0->counter() 1
+x()->y() k
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"asymp",method=>"ode",t_end=>21,n_steps=>21,\
+          print_functions=>1})
+end actions

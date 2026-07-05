@@ -1,0 +1,43 @@
+# Feature: if() conditional function in rate laws
+# Tests: conditional branching in rate expressions
+# Tier: base
+# Expected: production switches off when A_total exceeds threshold
+
+begin model
+begin parameters
+    threshold  30
+    k_on       0.5   # /s, production rate when below threshold
+    k_off      0.0   # /s, production rate when above threshold
+    k_death    0.01  # /s, degradation rate
+end parameters
+
+begin molecule types
+    Src()
+    A()
+    Trash()
+end molecule types
+
+begin seed species
+    Src()    1
+    A()      0
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total    A()
+    Molecules  Src_total  Src()
+end observables
+
+begin functions
+    prod_rate() = if(A_total < threshold, k_on, k_off)
+end functions
+
+begin reaction rules
+    Src() -> Src() + A()   prod_rate()
+    A() -> Trash()          k_death
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>500,n_steps=>100})
+end actions

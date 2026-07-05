@@ -1,0 +1,276 @@
+begin model
+
+#@title: |
+#  Heterogeneous bivalent hapten-receptor cross-linking
+#  (Goldstein and Wofsy, 1980)
+
+#@description: |
+#  Network-free (NFsim) kinetic model of symmetric bivalent
+#  hapten binding to a HETEROGENEOUS population of bivalent
+#  cell-surface antibody (IgE). Two antibody subpopulations
+#  (R1, R2) with distinct single-site affinities K1, K2
+#  share the same cross-linking geometry (kappa). Three
+#  processes per receptor type: (1) hapten capture from
+#  solution, (2) inter-complex cross-linking, (3) bond
+#  dissociation. No intra-complex rings.
+#
+#  Heterogeneity breaks the symmetry of the cross-linking
+#  curve: x_poly vs log(A) is no longer symmetric about a
+#  single A_max, and the position of the peak shifts with
+#  total antibody concentration X_T. The default
+#  parameterization (K1 = 5e6 /M, K2 = 5e8 /M, r1 = r2
+#  = 0.5, X_T = 500) reproduces the bottom curve in
+#  Fig. 5 of Goldstein and Wofsy (1980). To reproduce
+#  other curves, change X_T_per_cell to 5000 or 10000.
+#
+#  An excess-ligand approximation is used when LT/RT >=
+#  100: free ligand is treated as a constant bath and
+#  capture becomes pseudo-first-order, keeping molecule
+#  counts low for NFsim at high ligand concentrations.
+
+#@keyword: |
+#  bivalent hapten, bivalent receptor, cross-linking,
+#  antibody heterogeneity, IgE, basophil, prozone effect,
+#  bell-shaped dose response, mass action, network-free,
+#  NFsim, aggregation, histamine release
+
+#@reference: |
+#  Goldstein B, Wofsy C (1980). Theory of equilibrium
+#  binding of a bivalent ligand to cell surface antibody:
+#  the effect of antibody heterogeneity on cross-linking.
+#  J Math Biol 10:347-366. doi:10.1007/BF00276093
+#
+#  Dembo M, Goldstein B (1978). Theory of equilibrium
+#  binding of symmetric bivalent haptens to cell surface
+#  antibody: application to histamine release from
+#  basophils. J Immunol 121:345-353.
+#  doi:10.4049/jimmunol.121.1.345
+
+#@note: |
+#  Network generation is not feasible because bivalent-
+#  bivalent cross-linking produces an unbounded set of
+#  chain species. NFsim is used with -bscb (block same-
+#  complex binding, which implies complex bookkeeping).
+#
+#  Mapping to Goldstein and Wofsy (1980) notation:
+#    K_i  = single-site equilibrium constant for type i
+#    kappa = cross-linking coefficient (K_ij = kappa*K_j)
+#    X_T  = total antibody surface density
+#    r_i  = fraction of antibody in population i
+#    w_i  = fraction of type i not cross-linked
+#    x_poly = 1 - sum(w_i) (Eq. 14)
+#    delta_ij = 4*K_i*A*kappa*K_j*X_T /
+#               [(1+K_i(2A+B))(1+K_j(2A+B))]
+
+begin parameters
+
+  # Physical constants
+  NA  6.02214076e23  # /mol
+
+  # Cell geometry (basophil)
+  V_cell  1e-9  # L/cell
+  S_cell  4.7e-6  # cm^2/cell
+
+  # Antibody populations on cell surface
+  # Fig. 5: X_T = 500, 5000, or 10000 IgE/cell
+  X_T_per_cell  500  # molecules/cell
+  # Equal fractions of low- and high-affinity IgE
+  r1  0.5  # dimensionless
+  r2  0.5  # dimensionless
+
+  # SSA/NFsim subvolume scaling
+  f  0.1  # dimensionless
+  V_sim  V_cell*f  # L
+
+  # Scaled receptor counts
+  RT  X_T_per_cell*f  # molecules
+  RT_1  r1*RT  # molecules
+  RT_2  r2*RT  # molecules
+
+  # Single-site equilibrium association constants
+  # K1 = low affinity, K2 = high affinity
+  Ka_1  5e6  # /M
+  Ka_2  5e8  # /M
+
+  # Cross-linking coefficient; see Eq. 3 in
+  # Goldstein and Wofsy (1980) and Fig. 3 caption
+  kappa  4e-15  # cm^2*M/molecule
+
+  # Cross-linking equilibrium constants (2D, per site)
+  # Kx_j = kappa * Ka_j (Eq. 3)
+  Kx_1  kappa*Ka_1  # cm^2/molecule
+  Kx_2  kappa*Ka_2  # cm^2/molecule
+
+  # Dimensionless cross-linking propensities
+  # KxRT_j = Kx_j * X_T_per_cell / S_cell
+  KxRT_1  Kx_1*X_T_per_cell/S_cell  # dimensionless
+  KxRT_2  Kx_2*X_T_per_cell/S_cell  # dimensionless
+
+  # Kinetic rates (koff sets timescale; equilibrium
+  # depends only on ratios Ka = kf/koff, Kx = kxf/koff)
+  koff  10  # /s
+
+  # Solution binding forward rates (single-site, per pair)
+  kf1  Ka_1*koff/(NA*V_sim)  # /(molecule*s)
+  kf2  Ka_2*koff/(NA*V_sim)  # /(molecule*s)
+
+  # Cross-linking forward rates (single-site, per pair)
+  # kxf_j = KxRT_j / RT * koff
+  kxf1  KxRT_1/RT*koff  # /(molecule*s)
+  kxf2  KxRT_2/RT*koff  # /(molecule*s)
+
+  # Scanned parameter: bivalent ligand concentration
+  LT_conc_M  1e-8  # M
+  LT  LT_conc_M*NA*V_sim  # molecules
+
+  # --- Excess-ligand approximation ---
+  # When LT >> RT, free ligand is approximately constant.
+  # Replace bimolecular capture with pseudo-first-order
+  # and stop tracking free ligand molecules.
+  excess_ratio  100  # threshold for switching
+  use_excess  if(LT/(RT+0.01)>=excess_ratio,1,0)
+
+  # Pseudo-first-order capture rates (independent of f)
+  # kf_pseudo = Ka * koff * LT_conc_M  (per receptor site)
+  kf1_pseudo  Ka_1*koff*LT_conc_M  # /s
+  kf2_pseudo  Ka_2*koff*LT_conc_M  # /s
+
+  # Fast cleanup rate for free L in excess mode
+  fast  1e4*koff  # /s
+
+  # Initial free ligand: full count in explicit mode, 0 in excess
+  Lfree_init  LT*(1-use_excess)  # molecules
+
+end parameters
+
+begin molecule types
+  # Bivalent hapten (ligand): two receptor-binding arms
+  L(r1,r2)
+  # Type 1 antibody (low affinity, Ka_1 = 5e6 /M)
+  R1(l1,l2)
+  # Type 2 antibody (high affinity, Ka_2 = 5e8 /M)
+  R2(l1,l2)
+end molecule types
+
+begin seed species
+  L(r1,r2)   Lfree_init  # 0 in excess mode, LT in explicit mode
+  R1(l1,l2)  RT_1  # molecules
+  R2(l1,l2)  RT_2  # molecules
+end seed species
+
+begin observables
+  # Free receptors (both sites unbound)
+  Molecules  Obs_Free_R1  R1(l1,l2)
+  Molecules  Obs_Free_R2  R2(l1,l2)
+
+  # Non-cross-linked R1: free + singly-capped + dicapped
+  # monomeric. Each pattern requires every L arm bound to
+  # R1 to have its OTHER arm free (no cross-links).
+  Molecules  Obs_NCL_R1  R1(l1,l2) \
+    R1(l1!1,l2).L(r1!1,r2) \
+    R1(l1!1,l2).L(r1,r2!1) \
+    R1(l1,l2!1).L(r1!1,r2) \
+    R1(l1,l2!1).L(r1,r2!1) \
+    L(r1!1,r2).R1(l1!1,l2!2).L(r1!2,r2) \
+    L(r1!1,r2).R1(l1!1,l2!2).L(r1,r2!2) \
+    L(r1,r2!1).R1(l1!1,l2!2).L(r1!2,r2) \
+    L(r1,r2!1).R1(l1!1,l2!2).L(r1,r2!2)
+
+  # Non-cross-linked R2 (same pattern structure as R1)
+  Molecules  Obs_NCL_R2  R2(l1,l2) \
+    R2(l1!1,l2).L(r1!1,r2) \
+    R2(l1!1,l2).L(r1,r2!1) \
+    R2(l1,l2!1).L(r1!1,r2) \
+    R2(l1,l2!1).L(r1,r2!1) \
+    L(r1!1,r2).R2(l1!1,l2!2).L(r1!2,r2) \
+    L(r1!1,r2).R2(l1!1,l2!2).L(r1,r2!2) \
+    L(r1,r2!1).R2(l1!1,l2!2).L(r1!2,r2) \
+    L(r1,r2!1).R2(l1!1,l2!2).L(r1,r2!2)
+
+  # Doubly-bound ligands (cross-links connecting two R)
+  Molecules  Obs_Xlinks  L(r1!+,r2!+)
+end observables
+
+begin functions
+  # Fraction of non-cross-linked antibody of each type
+  # w_i in Goldstein and Wofsy (1980) notation
+  w1() = Obs_NCL_R1 / RT_1
+  w2() = Obs_NCL_R2 / RT_2
+
+  # Fraction of all antibody in cross-linked aggregates
+  # x_poly = 1 - sum(w_i); Eq. 14
+  x_poly() = 1 - (Obs_NCL_R1 + Obs_NCL_R2) / RT
+end functions
+
+begin reaction rules
+
+  # ============================================================
+  # Hapten capture: free ligand from solution binds receptor
+  # ============================================================
+  # Explicit mode (use_excess=0): bimolecular, consumes free L.
+  # Excess mode (use_excess=1): rate set to 0 (no free L exists).
+
+  # --- Explicit capture by R1 (low affinity) ---
+  L(r1,r2) + R1(l1) <-> L(r1!1,r2).R1(l1!1)  kf1*(1-use_excess), koff
+  L(r1,r2) + R1(l2) <-> L(r1!1,r2).R1(l2!1)  kf1*(1-use_excess), koff
+  L(r1,r2) + R1(l1) <-> L(r1,r2!1).R1(l1!1)  kf1*(1-use_excess), koff
+  L(r1,r2) + R1(l2) <-> L(r1,r2!1).R1(l2!1)  kf1*(1-use_excess), koff
+
+  # --- Explicit capture by R2 (high affinity) ---
+  L(r1,r2) + R2(l1) <-> L(r1!1,r2).R2(l1!1)  kf2*(1-use_excess), koff
+  L(r1,r2) + R2(l2) <-> L(r1!1,r2).R2(l2!1)  kf2*(1-use_excess), koff
+  L(r1,r2) + R2(l1) <-> L(r1,r2!1).R2(l1!1)  kf2*(1-use_excess), koff
+  L(r1,r2) + R2(l2) <-> L(r1,r2!1).R2(l2!1)  kf2*(1-use_excess), koff
+
+  # ============================================================
+  # Pseudo-first-order capture (excess-ligand regime)
+  # ============================================================
+  # When LT >> RT, free ligand is an implicit constant bath.
+  # Capture is unimolecular in receptor, creating a new L.
+
+  # --- Pseudo capture by R1 ---
+  R1(l1) -> R1(l1!1).L(r1!1,r2)  kf1_pseudo*use_excess
+  R1(l2) -> R1(l2!1).L(r1!1,r2)  kf1_pseudo*use_excess
+  R1(l1) -> R1(l1!1).L(r1,r2!1)  kf1_pseudo*use_excess
+  R1(l2) -> R1(l2!1).L(r1,r2!1)  kf1_pseudo*use_excess
+
+  # --- Pseudo capture by R2 ---
+  R2(l1) -> R2(l1!1).L(r1!1,r2)  kf2_pseudo*use_excess
+  R2(l2) -> R2(l2!1).L(r1!1,r2)  kf2_pseudo*use_excess
+  R2(l1) -> R2(l1!1).L(r1,r2!1)  kf2_pseudo*use_excess
+  R2(l2) -> R2(l2!1).L(r1,r2!1)  kf2_pseudo*use_excess
+
+  # ============================================================
+  # Cross-linking: tethered hapten arm binds DIFFERENT complex
+  # ============================================================
+  # Unchanged — cross-linking is a surface reaction that does
+  # not depend on the free ligand population.
+
+  # --- Cross-link to R1 (low affinity) ---
+  L(r1!+,r2) + R1(l1) <-> L(r1!+,r2!1).R1(l1!1)  kxf1, koff
+  L(r1!+,r2) + R1(l2) <-> L(r1!+,r2!1).R1(l2!1)  kxf1, koff
+  L(r1,r2!+) + R1(l1) <-> L(r1!1,r2!+).R1(l1!1)  kxf1, koff
+  L(r1,r2!+) + R1(l2) <-> L(r1!1,r2!+).R1(l2!1)  kxf1, koff
+
+  # --- Cross-link to R2 (high affinity) ---
+  L(r1!+,r2) + R2(l1) <-> L(r1!+,r2!1).R2(l1!1)  kxf2, koff
+  L(r1!+,r2) + R2(l2) <-> L(r1!+,r2!1).R2(l2!1)  kxf2, koff
+  L(r1,r2!+) + R2(l1) <-> L(r1!1,r2!+).R2(l1!1)  kxf2, koff
+  L(r1,r2!+) + R2(l2) <-> L(r1!1,r2!+).R2(l2!1)  kxf2, koff
+
+  # ============================================================
+  # Cleanup: destroy fully-free ligand in excess mode
+  # ============================================================
+  # In excess mode, dissociation can produce L(r1,r2) (both
+  # arms free). These are deleted immediately since the bath
+  # maintains constant free ligand concentration.
+  L(r1,r2) -> 0  fast*use_excess  DeleteMolecules
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>10,n_steps=>10})
+end actions

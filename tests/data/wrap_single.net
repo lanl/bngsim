@@ -1,0 +1,16 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k_scale    10.0  # Constant
+end parameters
+begin functions
+    1 f_complex() (tfun('drive.tfun',time)+5)/k_scale
+end functions
+begin species
+    1 X() 0
+end species
+begin reactions
+    1 0 1 f_complex #_R1
+end reactions
+begin groups
+    1 Xtot                 1
+end groups

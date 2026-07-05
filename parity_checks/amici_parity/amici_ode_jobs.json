@@ -1,0 +1,1192 @@
+{
+ "_meta": {
+  "description": "Curated bngsim-vs-AMICI ODE parity subset of rr_parity/ode_jobs.json, stratified by species count + structural feature coverage. AMICI compiles a C++ extension per model, so this is a representative subset, not the full corpus.",
+  "reference_engine": "amici",
+  "source_manifest": "rr_parity/ode_jobs.json",
+  "selection": {
+   "per_bin": 10,
+   "feature_min": 3,
+   "prefer_comparable": true,
+   "species_bins_chosen": {
+    "0-5": 10,
+    "6-20": 10,
+    "21-50": 10,
+    "51-150": 10,
+    "151-500": 10
+   },
+   "feature_coverage": {
+    "events": 18,
+    "rate rules": 14,
+    "assignment rules": 25,
+    "variable volume": 3,
+    "function definitions": 15
+   },
+   "very_large_excluded": {
+    "threshold_species": 500,
+    "count_in_corpus": 15
+   }
+  },
+  "n_jobs": 50,
+  "notes": "model paths are suite-relative and resolve under rr_parity/ (the SBML corpus). reference_engine=amici. Regenerate with build_amici_jobs.py."
+ },
+ "jobs": [
+  {
+   "model_id": "BIOMD0000000012",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000012/BIOMD0000000012_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000012_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000020",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000020/BIOMD0000000020_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000020_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000029",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000029/BIOMD0000000029_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000029_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000031",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000031/BIOMD0000000031_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000031_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000053",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000053/BIOMD0000000053_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000053_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000057",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000057/BIOMD0000000057_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000057_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000059",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000059/BIOMD0000000059_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000059_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000101",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000101/BIOMD0000000101_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000101_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000104",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000104/BIOMD0000000104_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000104_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000116",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000116/BIOMD0000000116_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000116_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000118",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000118/BIOMD0000000118_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000118_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000121",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000121/BIOMD0000000121_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000121_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000127",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000127/BIOMD0000000127_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000127_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000129",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000129/BIOMD0000000129_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000129_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000130",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000130/BIOMD0000000130_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000130_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000131",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000131/BIOMD0000000131_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000131_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000132",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000132/BIOMD0000000132_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000132_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000133",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000133/BIOMD0000000133_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000133_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000134",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000134/BIOMD0000000134_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000134_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000135",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000135/BIOMD0000000135_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000135_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000205",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000205/BIOMD0000000205_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000205_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000342",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000342/BIOMD0000000342_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Zi2011_fig1Cblue.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 480.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [
+    {
+     "field": "known_artifact",
+     "value": {
+      "issue": null
+     },
+     "reason": "RoadRunner bug (bngsim correct). RR loads init([TGF_beta_ex])=0 despite the SBML carrying initialConcentration=0.05, and no initialAssignment / rule / firing event overrides it (the only event's trigger needs stimulation_type==2, but type=1). bngsim honors the literal 0.05, so the whole TGF-beta receptor cascade activates (worst LRC_endo, relmax 1.0); RR leaves it frozen. bngsim matches the literal SBML and the biological intent."
+    }
+   ],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000392",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000392/BIOMD0000000392_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000392_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000410",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000410/BIOMD0000000410_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000410_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000427",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000427/BIOMD0000000427_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000427_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000457",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000457/BIOMD0000000457_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000457_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000492",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000492/BIOMD0000000492_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000492_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000496",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000496/BIOMD0000000496_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000496_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000497",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000497/BIOMD0000000497_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000497_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000498",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000498/BIOMD0000000498.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "BIOMD0000000502",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000502/BIOMD0000000502_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000502_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000515",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000515/BIOMD0000000515_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000515_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000554",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000554/BIOMD0000000554_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Cloutier2009(final).sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 2500.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000569",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000569/BIOMD0000000569_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Dutta-Roy2015.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 1e-05,
+    "t_end": 0.01,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000574",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000574/BIOMD0000000574.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "BIOMD0000000579",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000579/BIOMD0000000579_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000579_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000595",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000595/BIOMD0000000595_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000595_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000608",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000608/BIOMD0000000608_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000608_url.sedml",
+    "horizon_source": "template_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000618",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000618/BIOMD0000000618_url.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "BIOMD0000000618.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 150.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000675",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000675/BIOMD0000000675.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "MODEL1006230004.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 175.0,
+    "n_points": 351,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000725",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000725/MODEL1511020000_urn.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "MODEL1511020000_urn.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 10.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000842",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000842/MODEL1012080000.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "MODEL1012080000.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 90.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000000943",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000000943/Hat2016.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Hat2016.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 2592000.0,
+    "t_end": 2851800.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000001028",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000001028/Zake2021 - PBPK Metformin Human single PO dose.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Zake2021 - PBPK Metformin Human single PO dose.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 30.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "BIOMD0000001029",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/BIOMD0000001029/Zake2021 - PBPK Metformin Human multiple PO dose.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "temp-biomodels",
+    "sedml": "Zake2021 - PBPK Metformin Human multiple PO dose.sedml",
+    "horizon_source": "figure_sedml",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": ""
+  },
+  {
+   "model_id": "MODEL1101170000",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/MODEL1101170000/MODEL1101170000.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "MODEL1102210000",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/MODEL1102210000/MODEL1102210000.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "MODEL1506070001",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/MODEL1506070001/MODEL1506070001.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "MODEL1601140000",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/MODEL1601140000/MODEL1601140000.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  },
+  {
+   "model_id": "MODEL1705170005",
+   "input_format": "sbml",
+   "method": "ode",
+   "reference_engine": "amici",
+   "model": "models/MODEL1705170005/MODEL1705170005.xml",
+   "oracle": {
+    "metric": "max_rel_err",
+    "tol": 0.0001
+   },
+   "params": {
+    "sbml_origin": "biomodels_dir",
+    "sedml": null,
+    "horizon_source": "invented",
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "overrides": [],
+   "notes": "invented horizon (placeholder)"
+  }
+ ]
+}

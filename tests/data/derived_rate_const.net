@@ -1,0 +1,24 @@
+# Regression test for issue #2: derived (ConstantExpression) rate-constant
+# parameters such as ``_rateLaw{N} = chi*kon`` exported by BNG2.pl.
+#
+# Without the chain-rule fix in _codegen.py / cvode_simulator.cpp,
+# forward sensitivity for ``kon`` would miss the indirect dependence
+# through ``_rateLaw1`` and produce a wrong (often sign-flipped) result.
+begin parameters
+    1 kon        1.0  # Constant
+    2 chi        10.0 # Constant
+    3 koff       0.5  # Constant
+    4 _rateLaw1  chi*kon  # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 _rateLaw1   #_Rfwd
+    2 2 1 koff        #_Rrev
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups

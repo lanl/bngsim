@@ -1,0 +1,110 @@
+// Samoilov2005_FutileCycle.ant
+// Deterministic enzymatic futile cycle model from:
+//   Samoilov M, Plyasunov S, Arkin AP (2005)
+//   "Stochastic amplification and signaling in enzymatic futile cycles
+//    through noise-induced bistability with oscillations."
+//   Proc Natl Acad Sci USA 102(7):2310–2315. doi:10.1073/pnas.0406841102
+//
+// This is the underlying mass-action ODE system (no external noise)
+// corresponding to the enzymatic futile cycle in Fig. 1 and the
+// parameter set used in Fig. 3 of the paper (X, X*, E1, E2, C1, C2).
+// Species are molecule counts; time units follow the paper's convention.
+//
+// ============================================================================
+// PATHOLOGICAL CASE: SEVERE STIFFNESS IN RECAST
+// ============================================================================
+//
+// The S-system recast of this model exhibits severe numerical stiffness.
+// While the recast is algebraically exact (passes symbolic and numerical
+// pointwise validation), trajectory integration fails due to stiffness.
+//
+// ROOT CAUSES:
+//
+// 1. RATE CONSTANT SPAN (inherent in chemistry):
+//    - k1_r = 2e4 vs k1_f = 40 (500x ratio)
+//    - k1_cat = 1e4, k2_cat = 5e3 (fast catalytic steps)
+//    - This creates inherent fast/slow timescale separation.
+//
+// 2. POOL CONSTRUCTION WITH NEAR-ZERO INITIAL CONDITIONS:
+//    - S-system recasting uses pool construction: each ODE term gets an
+//      auxiliary variable X_t1, X_t2, etc., where X = X_t1 * X_t2 * ...
+//    - The pool formula creates terms with NEGATIVE EXPONENTS like X_t1^(-1)
+//      in the ODEs for other auxiliaries.
+//    - When X(0) = 0.01 (near zero), the auxiliary X_t1 starts near zero.
+//    - X_t1^(-1) then produces HUGE values, causing numerical instability.
+//
+// 3. STIFFNESS AMPLIFICATION:
+//    - Original model: 6 species, mild stiffness from rate constant span
+//    - Recast model: 18+ auxiliaries (3 terms per species × 6 species)
+//    - Each auxiliary has negative exponents from other auxiliaries
+//    - Eigenvalue spread is dramatically amplified
+//
+// VALIDATION RESULTS:
+//    - Symbolic equivalence: PASS (Δ ≡ 0)
+//    - Numerical pointwise: PASS (max error ~1e-16)
+//    - Trajectory comparison: FAIL (stiffness causes solver failure or error)
+//
+// ============================================================================
+
+model Samoilov2005_FutileCycle
+
+  //-------- Compartments --------
+  compartment cell = 1;
+
+  //-------- Species (molecule numbers) --------
+  species X in cell;        // unmodified substrate X
+  species X_star in cell;   // modified substrate X*
+  species E1 in cell;       // forward enzyme (X -> X*)
+  species C1 in cell;       // E1–X complex
+  species E2 in cell;       // reverse enzyme (X* -> X)
+  species C2 in cell;       // E2–X* complex
+
+  //-------- Parameters (from Fig. 3 caption) --------
+  // "Reaction mechanism given in Expression 7" parameters:
+  //   k1+ , k1− , k1_cat : forward branch (E1 + X ⇌ C1 → E1 + X*)
+  //   k2+ , k2− , k2_cat : reverse branch (E2 + X* ⇌ C2 → E2 + X)
+  //
+  // All rate constants are in the same (paper's) units.
+
+  const k1_f   = 40;        // k1+  (E1 + X -> C1)
+  const k1_r   = 2e4;       // k1-  (C1 -> E1 + X)
+  const k1_cat = 1e4;       // k1_cat (C1 -> E1 + X*)
+
+  const k2_f   = 200;       // k2+  (E2 + X* -> C2)
+  const k2_r   = 100;       // k2-  (C2 -> E2 + X*)
+  const k2_cat = 5e3;       // k2_cat (C2 -> E2 + X)
+
+  //-------- Reactions (Expression 7 mechanism) --------
+  // Forward branch: X --(E1)--> X*
+  R1: E1 + X  -> C1;             k1_f   * E1 * X;
+  R2: C1      -> E1 + X;         k1_r   * C1;
+  R3: C1      -> E1 + X_star;    k1_cat * C1;
+
+  // Reverse branch: X* --(E2)--> X
+  R4: E2 + X_star -> C2;         k2_f   * E2 * X_star;
+  R5: C2         -> E2 + X_star; k2_r   * C2;
+  R6: C2         -> E2 + X;      k2_cat * C2;
+
+  //-------- Initial conditions (Fig. 3 simulation) --------
+  // From the figure caption:
+  //   E1(t=0) = 20
+  //   E2(t=0) = 50
+  //   X(t=0)  = 0
+  //   X*(t=0) = 2000
+  //   complexes start empty
+  //
+  // This choice fixes:
+  //   total substrate X_tot = X + X* = 2000
+  //   total enzymes E1_tot = E1 + C1 = 20
+  //                     E2_tot = E2 + C2 = 50
+
+  X       = 0.01;  // Perturbed from 0 to avoid numerical stiffness
+  X_star  = 2000;
+  E1      = 20;
+  C1      = 0.01;  // Perturbed from 0 to avoid numerical stiffness in recast
+  E2      = 50;
+  C2      = 0.01;  // Perturbed from 0 to avoid numerical stiffness in recast
+
+end
+// @SIM T_START=0 T_END=0.0018 N_STEPS=180 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

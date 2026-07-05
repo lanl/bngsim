@@ -1,0 +1,37 @@
+// =============================================================================
+// Source: Voit (1993) "S-System Modelling of Complex Systems with Chaotic Input"
+//         Environmetrics 4(2):153-186
+// Example: Blue sky catastrophe - exact recasting (Appendix, Equations A4-A6)
+// =============================================================================
+// Time horizon: t ∈ [0, 200]
+//
+// Original blue sky catastrophe (Equation A4):
+//   dx/dt = 0.7*y + x - 10*x*y^2
+//   dy/dt = C - x + 0.25*sin(1.5*t)
+//
+// This system is very sensitive to perturbations and initial conditions.
+// Trajectories can suddenly escape to infinity (hence "blue sky catastrophe").
+//
+// Typical parameter: C = 0.097
+//
+// Exact S-system recasting (Equation A6):
+//   Introduce: X1 = x + p, X2 = y + q, X3 = sin(1.5t) + r, X4 = cos(1.5t) + r
+//   With constraint: r = 4*(C + p), e.g., p = q = 10, r = 40.388
+//
+// The system is chaotic with intermittent escapes to infinity.
+// =============================================================================
+
+model V1993_blue_sky()
+    // Parameter (typical value)
+    C = 0.097
+    
+    // Blue sky catastrophe equations
+    x' = 0.7*y + x - 10*x*y^2
+    y' = C - x + 0.25*sin(1.5*time)
+    
+    // Initial conditions
+    x = -0.4
+    y = 0.388
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,644 @@
+#---
+# File:
+#  Filename: ATG_activation_v1.bngl
+#  Created: 13 May 2016 (v1)
+#  Completed: 15 May 2016 (v1)
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r3
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# Model:
+#  Title: Autophagy induction
+#  Contributors: 
+#   - Joern Dengjel
+#   - Kristin E. Dittenhafer-Reed
+#   - William S. Hlavacek
+#   - Jeffrey P. MacKeigan
+#   - Katie R. Martin
+#---
+
+#---
+# Cell lines: 
+#  - HeLa Kyoto cells
+#  - HeLa S3 cells
+#  - U2OS cells
+#---
+
+#---
+# Compartments:
+#  cyt: cytosol
+#---
+
+#---
+# References:
+#  - Chen S, ..., Guan JL (2016) Genes Dev 30: 856-869. [PMID: 27013233]
+#  - Egan DF, ..., Shaw RJ (2015) Mol Cell 59: 285-297. [PMID: 26118643]
+#  - Fujioka Y, ..., Noda NN (2014) Nat Struct Mol Biol 21: 513-521. [PMID: 24793651]
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Hieke N, ..., Stork B (2015) Autophagy 11: 1471-1483. [PMID: 26213203]
+#  - Hosokawa N, ..., Mizushima N (2009) Mol Biol Cell 20: 1981-1991. [PMID: 19211835]
+#  - Joo JH, ..., Kundu M (2011) Mol Cell 43: 572-585. [PMID: 21855797]
+#  - Jung CH, ..., Kim DH (2009) Mol Biol Cell 20: 1992-2003. [PMID: 19225151]
+#  - Kim J, ..., Guan KL (2011) Nat Cell Biol 13: 132-141 [PMID: 21258367]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Lazarus MB, ..., Shokat KM (2015) ACS Chem Biol 10: 257-261. [PMID: 25551253]
+#  - Lee JW, ..., Wang HG (2010) PLOS ONE 5: e15394. [PMID: 21072212]
+#  - Lin MG, Hurley JH (2016) Curr Opin Cell Biol 39: 61-68. [PMID: 26921696]
+#  - Popelka H, Klionsky DJ (2015) FEBS J 282: 3474-3488. [PMID: 26108642]
+#  - Puente C, ..., Jiang X (2016) J Biol Chem 291: 6026-6035. [PMID: 26801615]
+#  - Qi S, ..., Hurley JH (2015) Structure 23: 1848-1857. [PMID: 26299944]
+#  - Stjepanovic G, ..., Hurley JH (2014) Proc Natl Acad Sci USA 111:12793-12798. [PMID:25139988]
+#  - Suzuki H, ..., Noda NN (2015) Nat Struct Mol Biol 22: 572-580. [PMID: 26030876]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#  - Wesseborg S, Stork B (2015) Cell Mol Life Sci 72: 4721-4757. [PMID: 26390974]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#    and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; 
+#     see Table S3.
+Vcyt 2.0e-12*f # L per cell
+
+###########################
+# abundances of molecules #
+###########################
+
+# protein abundances in HeLa Kyoto cells
+#  Table S3 (Hein et al., 2015)
+
+ATG13_cpc_HeLa_Kyoto  rint( 4902*f) # copies per cell
+ATG101_cpc_HeLa_Kyoto rint(30357*f) # copies per cell
+RB1CC1_cpc_HeLa_Kyoto rint(12371*f) # copies per cell
+ULK1_cpc_HeLa_Kyoto   rint(    0*f) # copies per cell <-- no value reported by Hein et al. (2015)
+
+AMBRA1_cpc_HeLa_Kyoto rint( 6635*f) # copies per cell
+ATG14_cpc_HeLa_Kyoto  rint( 4100*f) # copies per cell
+BECN1_cpc_HeLa_Kyoto  rint(79931*f) # copies per cell
+PIK3C3_cpc_HeLa_Kyoto rint(33632*f) # copies per cell
+PIK3R4_cpc_HeLa_Kyoto rint(62358*f) # copies per cell
+
+PPP2R1A_cpc_HeLa_Kyoto rint(809547*f) # copies per cell
+PPP2R1B_cpc_HeLa_Kyoto rint(1795621*f) # copies per cell 
+
+PPP2R2A_cpc_HeLa_Kyoto rint(853198*f) # copies per cell
+PPP2R2B_cpc_HeLa_Kyoto rint(0*f) # copies per cell <-- no value reported by Hein et al. (2015) 
+PPP2R2C_cpc_HeLa_Kyoto rint(0*f) # copies per cell  <-- no value reported by Hein et al. (2015)
+PPP2R2D_cpc_HeLa_Kyoto rint(11244*f) # copies per cell
+PPP2R3A_cpc_HeLa_Kyoto rint(0*f) # copies per cell <-- no value reported by Hein et al. (2015)
+PPP2R3B_cpc_HeLa_Kyoto rint(3931*f) # copies per cell
+PPP2R3C_cpc_HeLa_Kyoto rint(2066*f) # copies per cell
+PPP2R4_cpc_HeLa_Kyoto  rint(125243*f) # copies per cell
+PPP2R5A_cpc_HeLa_Kyoto rint(65352*f) # copies per cell
+PPP2R5B_cpc_HeLa_Kyoto rint(63*f) # copies per cell
+PPP2R5C_cpc_HeLa_Kyoto rint(65682*f) # copies per cell
+PPP2R5D_cpc_HeLa_Kyoto rint(244048*f) # copies per cell
+PPP2R5E_cpc_HeLa_Kyoto rint(79310*f) # copies per cell
+
+PPP2CA_cpc_HeLa_Kyoto  rint(1413926*f) # copies per cell
+PPP2CB_cpc_HeLa_Kyoto  rint(89902*f) # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  Supplementary Table 1 (Kulak et al. 2014)
+
+ATG13_cpc_HeLa_S3  rint(11038.72*f) # copies per cell
+ATG101_cpc_HeLa_S3 rint(15175.04*f) # copies per cell
+RB1CC1_cpc_HeLa_S3 rint(12859.45*f) # copies per cell
+ULK1_cpc_HeLa_S3   rint(2820.227*f) # copies per cell
+
+AMBRA1_cpc_HeLa_S3 rint(4293.529*f) # copies per cell
+ATG14_cpc_HeLa_S3  rint(1446.051*f) # copies per cell
+BECN1_cpc_HeLa_S3  rint(21965.14*f) # copies per cell
+PIK3C3_cpc_HeLa_S3 rint(45084.32*f) # copies per cell
+PIK3R4_cpc_HeLa_S3 rint(52603.83*f) # copies per cell
+
+PPP2R1A_cpc_HeLa_S3 rint(2215985*f) # copies per cell
+PPP2R1B_cpc_HeLa_S3 rint(574038.1*f) # copies per cell 
+
+PPP2R2A_cpc_HeLa_S3 rint(385298.9*f) # copies per cell
+PPP2R2B_cpc_HeLa_S3 rint(0*f) # copies per cell <-- no value reported by Kulak et al. (2014)
+PPP2R2C_cpc_HeLa_S3 rint(0*f) # copies per cell <-- no value reported by Kulak et al. (2014)
+PPP2R2D_cpc_HeLa_S3 rint(3400.644*f) # copies per cell
+PPP2R3A_cpc_HeLa_S3 rint(0*f) # copies per cell <-- no value reported by Kulak et al. (2014)
+PPP2R3B_cpc_HeLa_S3 rint(3599.801*f) # copies per cell
+PPP2R3C_cpc_HeLa_S3 rint(1754.499*f) # copies per cell
+PPP2R4_cpc_HeLa_S3  rint(2913.265*f) # copies per cell
+PPP2R5A_cpc_HeLa_S3 rint(77298.52*f) # copies per cell
+PPP2R5B_cpc_HeLa_S3 rint(2884.92*f) # copies per cell
+PPP2R5C_cpc_HeLa_S3 rint(70360.15*f) # copies per cell
+PPP2R5D_cpc_HeLa_S3 rint(327622.5*f) # copies per cell
+PPP2R5E_cpc_HeLa_S3 rint(56710.95*f) # copies per cell
+
+PPP2CA_cpc_HeLa_S3  rint(774554.4*f) # copies per cell
+PPP2CB_cpc_HeLa_S3  rint(18454.64*f) # copies per cell
+
+# protein abundances in U2OS cells
+#  Supplemental Table 3 (Geiger et al., 2012)
+#  In this table, abundance is reported as log10(iBAQ value).
+
+# components of the ULK1 complex
+ATG13_iBAQ3_U2OS  5.291635
+ATG101_iBAQ3_U2OS 6.268555
+RB1CC1_iBAQ3_U2OS 6.141105 
+ULK1_iBAQ3_U2OS   4.329865 
+
+# components of the Beclin-1/Vps34 complex
+AMBRA1_iBAQ3_U2OS 4.607251
+ATG14_iBAQ3_U2OS  4.851552
+BECN1_iBAQ3_U2OS  6.399847 
+PIK3C3_iBAQ3_U2OS 6.710997 
+PIK3R4_iBAQ3_U2OS 6.471658
+
+# components of PP2A, a heterotrimeric protein phosphatase
+#  subunit A (the structural subunit)
+#   alpha isoform
+PPP2R1A_iBAQ3_U2OS 8.175366
+#   beta isoform
+PPP2R1B_iBAQ3_U2OS 6.802514
+#  subunit B (the regulatory subunit)
+#   B55alpha isoform
+PPP2R2A_iBAQ3_U2OS 7.459468
+#   B55beta isoform
+#PPP2R2B_iBAQ3_U2OS <-- no value reported by Geiger et al. (2012)
+#   B55gamma isoform
+#PPP2R2C_iBAQ3_U2OS <-- no value reported by Geiger et al. (2012)
+#   B55delta isoform
+PPP2R2D_iBAQ3_U2OS 5.579566
+#   B''alpha isoform
+PPP2R3A_iBAQ3_U2OS 5.419757   
+#   B''beta isoform
+#PPP2R3B_iBAQ3_U2OS <-- no value reported by Geiger et al. (2012)  
+#   B''gamma isoform     
+#PPP2R3C_iBAQ3_U2OS <-- no value reported by Geiger et al. (2012) 
+#   PTPA    
+PPP2R4_iBAQ3_U2OS  6.416258   
+#   B'alpha isoform
+PPP2R5A_iBAQ3_U2OS 6.765169   
+#   B'beta isoform
+PPP2R5B_iBAQ3_U2OS 5.442636
+#   B'gamma isoform
+PPP2R5C_iBAQ3_U2OS 6.298307
+#   B'delta isoform       
+PPP2R5D_iBAQ3_U2OS 7.264085  
+#   B'epsilon isoform   
+PPP2R5E_iBAQ3_U2OS 7.251054
+#  subunit C (the catalytic subunit)
+#   alpha isoform
+PPP2CA_iBAQ3_U2OS  5.93858
+#   beta isoform
+PPP2CB_iBAQ3_U2OS  7.814647
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  The iBAQ value of a protein is proportional to its molar abundance.
+iBAQ_to_cpc 0.02*f
+
+# convert from log10(iBAQ) to copies per cell
+ATG13_cpc_U2OS=iBAQ_to_cpc*10^ATG13_iBAQ3_U2OS
+ATG101_cpc_U2OS=iBAQ_to_cpc*10^ATG101_iBAQ3_U2OS
+RB1CC1_cpc_U2OS=iBAQ_to_cpc*10^RB1CC1_iBAQ3_U2OS
+ULK1_cpc_U2OS=iBAQ_to_cpc*10^ULK1_iBAQ3_U2OS  
+
+AMBRA1_cpc_U2OS=iBAQ_to_cpc*10^AMBRA1_iBAQ3_U2OS
+ATG14_cpc_U2OS=iBAQ_to_cpc*10^ATG14_iBAQ3_U2OS
+BECN1_cpc_U2OS=iBAQ_to_cpc*10^BECN1_iBAQ3_U2OS
+PIK3C3_cpc_U2OS=iBAQ_to_cpc*10^PIK3C3_iBAQ3_U2OS
+PIK3R4_cpc_U2OS=iBAQ_to_cpc*10^PIK3R4_iBAQ3_U2OS
+
+PPP2R1A_cpc_U2OS=iBAQ_to_cpc*10^PPP2R1A_iBAQ3_U2OS
+PPP2R1B_cpc_U2OS=iBAQ_to_cpc*10^PPP2R1B_iBAQ3_U2OS
+
+PPP2R2A_cpc_U2OS=iBAQ_to_cpc*10^PPP2R2A_iBAQ3_U2OS
+PPP2R2B_cpc_U2OS=0 # <-- no iBAQ value reported by Geiger et al. (2012)
+PPP2R2C_cpc_U2OS=0 # <-- no iBAQ value reported by Geiger et al. (2012)
+PPP2R2D_cpc_U2OS=iBAQ_to_cpc*10^PPP2R2D_iBAQ3_U2OS
+PPP2R3A_cpc_U2OS=iBAQ_to_cpc*10^PPP2R3A_iBAQ3_U2OS
+PPP2R3B_cpc_U2OS=0 # <-- no iBAQ value reported by Geiger et al. (2012)       
+PPP2R3C_cpc_U2OS=0 # <-- no iBAQ value reported by Geiger et al. (2012)        
+PPP2R4_cpc_U2OS=iBAQ_to_cpc*10^PPP2R4_iBAQ3_U2OS
+PPP2R5A_cpc_U2OS=iBAQ_to_cpc*10^PPP2R5A_iBAQ3_U2OS
+PPP2R5B_cpc_U2OS=iBAQ_to_cpc*10^PPP2R5B_iBAQ3_U2OS
+PPP2R5C_cpc_U2OS=iBAQ_to_cpc*10^PPP2R5C_iBAQ3_U2OS
+PPP2R5D_cpc_U2OS=iBAQ_to_cpc*10^PPP2R5D_iBAQ3_U2OS
+PPP2R5E_cpc_U2OS=iBAQ_to_cpc*10^PPP2R5E_iBAQ3_U2OS
+
+PPP2CA_cpc_U2OS=iBAQ_to_cpc*10^PPP2CA_iBAQ3_U2OS
+PPP2CB_cpc_U2OS=iBAQ_to_cpc*10^PPP2CB_iBAQ3_U2OS
+
+###########################
+# parameters of rate laws #
+###########################
+
+# Stjepanovic et al. (2014) measured a KD of 100 nM for interaction of the yeast proteins Atg1 and Atg13.
+KD_ATG13_ULK1 10e-9*(NA*Vcyt) # M converted to molecules per cell
+kr_ATG13_ULK1 0.1 # /s
+kf_ATG13_ULK1=kr_ATG13_ULK1/KD_ATG13_ULK1 # /(molecule/cell)/s
+
+KD_ATG13_RB1CC1 5e-9*(NA*Vcyt) # M converted to molecules per cell
+kr_ATG13_RB1CC1 0.05 # /s
+kf_ATG13_RB1CC1=kr_ATG13_RB1CC1/KD_ATG13_RB1CC1 # /(molecule/cell)/s
+
+KD_ATG13_ATG101 2e-9*(NA*Vcyt) # M converted to molecules per cell
+kr_ATG13_ATG101 0.01 # /s
+kf_ATG13_ATG101=kr_ATG13_ATG101/KD_ATG13_ATG101 # /(molecule/cell)/s
+
+# expression factor
+eFactor 1 # dimensionless >0 number, <1 for knockdown, >1 for overexpression
+
+end parameters
+
+begin molecule types
+
+AMBRA1(WD,S52~0~P,S465~0~P,F2,S635~0~P,S639~0~P,LIR,TQTx2)
+#---
+# AMBRA1: (A)ctivating (M)olecule in (B)ECN1-(R)egulated (A)utophagy protein (1)
+#  description: scaffold protein
+#  UniProt entry:
+#  comments:
+#   - ULK1 phosphorylates AMBRA1 to loosen association with dynein.
+#     The site(s) in AMBRA1 phosphorylated by ULK1 have not been mapped.
+#   - ULK1-phosphorylated AMBRA1 is free to participate in induction of autophagy.
+#   - MTORC1 phosphorylates S52 to inhibit autophagy.
+#   - MTOR and AMBRA1 jointly regulate PP2A dephosphorylation of MYC (dephos. of pS62 in MYC).
+#  components:
+#   F1_and_F3: AMBRA1 fragments F1 (NTD, aa 1-531 in mouse) and F3 (CTD, aa 751-1269 in mouse) interact with ULK1.
+#   WD:
+#    description: WD domain (3 WD repeats, aa 51-90, 93-133 and 135-175)
+#   S52: serine 52
+#    description: substrate of MTORC1 (Nazio et al., 2013)
+#    comments: Phosphorylation of S52 inhibits autophagy (Nazio et al., 2013).
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, LPDS(ph)PRS
+#   PxP: PQPSTxR sequences (aa 275-281 and aa 1206-1212)
+#    description: respsonsible for binding the catalytic subunit of PP2A
+#   LIR: LIR (LC3-interacting region) motif
+#    description: SGVEYYWxxL (aa 1043-1052 in human)
+#   TQTx2: two TQT motifs (aa 1104-1106 and aa 1116-1118)
+#    description: responsible for binding DNAL1 (aka DLC1, dynein light chain 1)
+#   S465: serine 465
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, VYTS(ph)ATE
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#   F2:
+#    description: central fragment of AMBRA1 (aa 533-751 in mouse)
+#    comments: The isolated central F2 fragment binds BECN1 (Fimia et al., 2007).
+#   S635: serine 635
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, LELS(ph)SSA
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#   S639: serine 639
+#    comments: 
+#     - Phosphorylation of S639 has been detected in multiple MS-based proteomics studies.
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#---
+
+ATG13(HORMAb,HORMAa,S224~0~P,S259~0~P,S355~0~P,S389~0~P,LIR,TLQ)
+#---
+# ATG13: autophagy-related protein 13
+#  UniProt entry: http://www.uniprot.org/uniprot/O75143
+#  comments: 
+#   - 517 amino acids (O75143-1)
+#   - ATG13 is a scaffold protein.
+#   - contains an N-terminal HORMA domain (http://pfam.xfam.org/family/PF02301)
+#   - component of the ULK1 complex
+#   - interacts with ATG101, ULK1, and RB1CC1 (aka FIP200)
+#   - See yeast (S. pombe) Atg13-Atg101 structure (Suzuki et al., 2015).
+#   - See human ATG13 HORMA domain-ATG101 heterodimer structure (Qi et al., 2015).
+#  components:
+#   HORMAb: peptides encoded by exon 14 of the ATG13 gene
+#    comments:
+#     - responsible for interaction with RB1CC1 (aka FIP200);
+#       see citation of unpublished data in the review of Wesselborg and Stork (2015)
+#     - Exon 14 encodes the sequence MELEIWCLEMNE (amino acids 94-105).
+#     - This sequence is found in the beta5 and beta5' strands of the HORMA domain 
+#       (PBD ID: 5C50; Qi et al., 2015).
+#     - The "safety belt" loop of ATG13 crosses over the beta5 strand (Qi et al., 2015).
+#     - In apparent contradiction to the claim of Wesselborg and Stork (2015),
+#       Jung et al. (2009) mapped the RB1CC1 binding site in ATG13 to aa 384-517 (see Figure 2c).
+#   HORMAa: R133 in the alphaC helix of the HORMA domain
+#    comments:
+#     - responsible for interaction with ATG101 (Qi et al., 2015)
+#     - R133 in ATG13 forms a salt bridge with D54 in AGT101 (Qi et al., 2015).
+#     - ATG13's HORMA domain is not stable; it is stabilized by interaction with ATG101
+#       (Suzuki et al., 2015; Qi et al., 2015).
+#   S224: serine 224 (serine 224 in murine Atg13)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#    comments: 
+#     - substrate of AMPK (Puente et al., 2016)
+#     - Phosphorylation of S224 in murine Atg13 is regulated in response to starvation 
+#       (Puente et al., 2016).
+#   S259: serine 259 (serine 258 in murine Atg13)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#    comments: 
+#     - substrate of MTORC1 (Puente et al., 2016)
+#     - Phosphorylation of S258 in murine Atg13 is regulated in response to starvation
+#       (Puente et al., 2016).
+#   S355: serine 355 (serine 318 in isoform 2)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#    comments:
+#     - substrate of UKL1 (Joo et al., 2011)
+#     - involved in mitophagy (Joo et al., 2011)
+#   S389: serine 389
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, TLTS(ph)LDI
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#     - located in a region expected to be intrinsically disordered;
+#       see Table 1 in Lin and Hurley (2016)
+#   LIR: LC3-interacting region (LIR) motif
+#    comments:
+#     - amino acids 436-447 (SSGNTHDDFVMI) #AddReference
+#   TLQ: amino acids 515-517 (Thr-Leu-Gln)
+#    comments:
+#     - required for interaction with ULK1 (Hieke et al., 2015)
+#     - A C-terminal fragment of ATG13 (aa 384-517) interacts with ULK1 (Jung et al., 2009).
+#     - Isoforms 1 and 2 of ATG13 but not isoform 3 interact with ULK1 (Jung et al., 2009).
+#     - Isoform 3 is missing aa 443-517; it also differs from isoform 1 in other ways
+#       (cf. O75143-1 and O75143-3).
+#     - A C-terminal fragment of human ATG13 (aa 458-517) interacts with murine Ulk1 (Fujioka et al., 2014);
+#       see Supplementary Figure 2d.
+#     - Tandem MIT-interacting motifs (MIMs) in yeast Atg13
+#       interact with tandem MIT domains in Atg1 (Fujioka et al., 2014; Stjepanovic et al., 2014).
+#     - A sequence alignment between yeast (Sc) Atg13 and human ATG13 (Fujioka et al., 2014) 
+#       suggests that F466 and F470 in ATG13 are part of an N-terminal MIM; however, the
+#       F466A/F470A mutant form of ATG13 (F429A/F433A for isoform 2) interacts with ULK1 (Hieke et al., 2015).
+#     - L516 appears to be conserved between human and yeast (Sc) (Fujioka et al., 2014);
+#       see Supplementary Figure 2c.
+#     - L516 is predicted to be part of a C-terminal MIM in human ATG13 (Fujioka et al., 2014).
+#     - Hieke et al. (2015) note that the TLQ peptide resembles a class I PDZ domain ligand.
+#---
+
+ATG101(HORMA,S11~0~P,WF,S203~0~P)
+#---
+# ATG101: autophagy-related protein 101
+#  UniProt entry: http://www.uniprot.org/uniprot/Q9BSB4
+#  comments:
+#   - 218 amino acids (Q9BSB4-1)
+#   - ATG101 is a scaffold protein.
+#   - component of the ULK1 complex
+#   - consists entirely of a HORMA domain
+#   - See yeast (S. pombe) Atg13-Atg101 structure (Suzuki et al., 2015).
+#   - See ATG13 HORMA domain-ATG101 heterodimer structure (Qi et al., 2015).
+#   - See PDB ID: 5C50.
+#  components:
+#   HORMA: HORMA domain
+#    Pfam entry: http://pfam.xfam.org/family/PF02301
+#   S11: serine 11
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, LEVS(ph)VEG
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#     - located in loop connecting beta strand 1 and alpha helix A of HORMA domain (Qi et al., 2015)
+#   WF: WF finger motif
+#    comments:
+#     - a protruding loop
+#     - an insert
+#     - not required for interaction with ATG13
+#     - recruits downstream factors to autophagosome-formation site
+#     - consists of tryptophan (W) and phenylalanine (F) residues
+#       conserved among homologs (in Trp-Phe or Trp-Pro-Phe sequences) 
+#     - The WF finger motif consists of W110 and F112 in human ATG101.
+#     - The conformation of the WF finger motif (in or out) may be regulated.
+#   S203: serine 2013
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, LGTS(ph)VTT
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#     - located just beyond the C-terminal end of the HORMA domain (Qi et al., 2015)
+#---
+
+RB1CC1(LQFL,S943~0~P,S986~0~P,S1323~0~P)
+#---
+# RB1CC1: RB1-inducible coiled-coil protein 1 (aka FIP200)
+#  UniProt entry: http://www.uniprot.org/uniprot/Q8TDY2
+#  comments:
+#   - 1594 amino acids (Q8TDY2-1)
+#   - component of the ULK1 complex
+#  components:
+#   LQFL: amino acid residues 582-585 (Leu-Gln-Phe-Leu) in human RB1CC1 
+#    comments:
+#     - conserved between mouse and human
+#     - responsible for interaction of murine Rb1cc1 with murine Atg13 (Chen et al., 2016)
+#   S943: serine 943
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, IMHS(ph)QNC
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#   S986: serine 986
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, LEQS(ph)HLK
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#   S1323: serine 1323
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, VRTS(ph)LIA
+#    comments:
+#     - substrate of ULK1 (Egan et al., 2015)
+#---
+
+
+ULK1(Pkinase,T180~0~P,PS,S317~0~P,S556~0~P,S638~0~P,S758~0~P,EAT)
+#---
+# ULK1: Unc-51-like kinase 1
+#  UniProt entry: http://www.uniprot.org/uniprot/O75385
+#  comments:
+#   - 1050 amino acids (O75385-1)
+#   - ULK1 is a human homolog of yeast Atg1.
+#   - ULK1 is a serine/threonine-specific protein kinase.
+#   - AMPK interacts with aa 654-828 in ULK1 by co-i.p. (Lee et al., 2010). 
+#     This region lies within the PS domain and encompasses S758.
+#   - This finding is consistent with the finding of Kim et al. (2011), 
+#     who mapped the AMPK binding site to aa 711–828 in rodent Ulk1.
+#   - RPTOR interacts with aa 279-828 in ULK1 according to Hosokawa et al. (2009) 
+#     but aa 1-278 in ULK1 according to Lee et al. (2010).
+#   - Kim et al. (2011) mapped the RPTOR binding site in ULK1 to the N-terminal region of ULK1.
+#   - ATG13 interacts with the C-terminal region (aa 829-1051) of ULK1 (Jung et al., 2009).
+#   - ULK1 has a strong preference for serine as the phosphoacceptor (Egan et al., 2015).
+#   - ULK1's kinase prefers hydrophobic residues at the -3, +1 and +2 positions (Egan et al., 2015).
+#  components:
+#   Pkinase: protein kinase domain
+#    Pfam entry: http://pfam.xfam.org/family/PF00069.21
+#    comments:
+#     - aa 16-278
+#   T180: threonine 180
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, MAAT(ph)LC
+#    comments:
+#     - autophosphorylation site (Lazarus et al., 2015)
+#     - located in the activation loop of the ULK1 kinase domain (Lazarus et al., 2015);
+#       see PDB IDs: 4WNO, 4WNP 
+#     - Phosphorylation of T180 is required for ULK1 kinase activity (Lazarus et al., 2015).
+#   PS: proline/serine-rich (PS) domain (aka serine/proline-rich region)
+#    comments:
+#     - The PS domain is intrinsically disordered region. #AddReference
+#     - It contains multiple substrates of AMPK and MTORC1.
+#   S317: serine 317
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, SPPS(ph)LGE
+#    comments: 
+#     - S317 is a substrate of AMPK (Kim et al., 2011).
+#     - Phosphorylation of S317 activates ULK1 kinase activity. #AddReference
+#   S638: serine 638 (serine 637 in murine Ulk1)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, KTPS(ph)SQN
+#    comments:
+#     - S638 is a substrate of AMPK and MTORC1. #AddReference
+#     - Phosphorylation of S638 promotes interaction of ULK1 with AMPK. #AddReference
+#   S758: serine 758 (serine 757 in murine Ulk1)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, TVGS(ph)PPS
+#    comments:
+#     - S758 is a substrate of MTORC1 (Kim et al., 2011).
+#     - Phosphorylation of S758 inhibits interaction of AMPK with ULK1. #AddReference
+#   S556: serine 556 (serine 555 in murine Ulk1)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, RLHS(ph)APN
+#    comments:
+#     - S556 is a substrate of AMPK.
+#     - Phosphorylation of S556 allows interaction of ULK1 with 14-3-3 (YWHA) proteins.
+#   EAT: early autophagy targeting/tethering (EAT) domain (Popelka and Klionsky, 2015)
+#    comments:
+#     - Interaction of ATG13 with ULK1 depends on aa 829-1051 in ULK1 (Jung et al., 2009).
+#     - The C-terminal region of ULK1 contains a conserved sequence (aa 837-1044) called DUF3543 
+#       (domain of uncharacterized function 3543); see http://pfam.xfam.org/family/PF12063.4
+#     - The C-terminal region of yeast Atg1 contains two MIT (microtubule interacting and transport)
+#       domains (Fujioka et al., 2014); see http://pfam.xfam.org/family/PF04212
+#     - The two, tandem MIT domains have been called MIT1 and MIT2 (Fujioka et al., 2014).
+#     - The two, tandem MIT domains in yeast (Km) Atg1 mediate interaction with two, tandem
+#       MIT-interacting motifs (MIMs) in yeast Atg13 (Fujioka et al., 2014).
+#     - The DUF3543 sequence aligns with the yeast (K. marxianus) Atg1 sequence containing 
+#       the two, tandem MIT domains; however, there are several insertions in the human protein ULK1.
+#---
+
+dynein(DNAL1)
+#---
+# dynein: molecular motor
+#  description:
+#  components:
+#   DNAL1: dynein light chain 1, axonemal
+#    description:
+#    UniProt entry
+#---
+
+#PPP2R1A()
+
+end molecule types
+
+begin seed species
+
+ATG13(HORMAb,HORMAa,S224~0,S259~0,S355~0,S389~0,LIR,TLQ) eFactor*ATG13_cpc_U2OS
+ATG101(HORMA,S11~0,WF,S203~0) ATG101_cpc_U2OS
+RB1CC1(LQFL,S943~0,S986~0,S1323~0) RB1CC1_cpc_U2OS
+ULK1(Pkinase,T180~0,PS,S317~0,S556~0,S638~0,S758~0,EAT) ULK1_cpc_U2OS
+
+#dynein(DNAL1) 0
+#AMBRA1(WD,S52~0,S465~0,F2,S635~0,S639~0,LIR,TQTx2) AMBRA1_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules ATG13tot ATG13()
+Molecules ATG101tot ATG101()
+Molecules RB1CC1tot RB1CC1()
+Molecules ULK1tot ULK1()
+
+Molecules ATG101_ATG13_bonds_cpc ATG101(HORMA!1).ATG13(HORMAa!1)
+Molecules ATG13_ULK1_bonds_cpc ATG13(TLQ!1).ULK1(EAT!1)
+Molecules colocalized_ATG101_ATG13_ULK1_RB1CC1_cpc ATG101(HORMA!1).ATG13(HORMAb!3,HORMAa!1,TLQ!2).ULK1(EAT!2).RB1CC1(LQFL!3)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+# ATG101 and ATG13 reversibly associate via HORMA domain-HORMA domain interaction.
+#  Association of ATG101 with ATG13 stabilizes ATG13's HORMA domain.
+ATG13(HORMAb,HORMAa)+ATG101(HORMA)<->ATG13(HORMAb,HORMAa!1).ATG101(HORMA!1) kf_ATG13_ATG101,kr_ATG13_ATG101
+#  RB1CC1 (aka FIP200) rapidly dissociates from ATG13 when ATG101 dissociates from ATG13.
+ATG13(HORMAb!1,HORMAa!2).ATG101(HORMA!2).RB1CC1(LQFL!1)->\
+ATG13(HORMAb,HORMAa)+ATG101(HORMA)+RB1CC1(LQFL) kr_ATG13_ATG101
+
+# RB1CC1 reversibly binds ATG13 in complex with ATG101.
+ATG13(HORMAb,HORMAa!+)+RB1CC1(LQFL)<->ATG13(HORMAb!1,HORMAa!+).RB1CC1(LQFL!1) kf_ATG13_RB1CC1,kr_ATG13_RB1CC1
+
+# ULK1 reversibly associates with ATG13.
+ATG13(TLQ)+ULK1(EAT)<->ATG13(TLQ!1).ULK1(EAT!1) kf_ATG13_ULK1,kr_ATG13_ULK1
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+#simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+
+# vary the expression of ATG13 from 10% of normal to 1000-fold more than normal
+parameter_scan({parameter=>"eFactor",par_min=>1.0e-1,par_max=>1.0e3,n_scan_pts=>60,\
+log_scale=>1,method=>"ode",t_start=>0,t_end=>3600,n_steps=>36,\
+steady_state=>1})
+
+end actions

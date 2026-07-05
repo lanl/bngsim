@@ -1,0 +1,201 @@
+# Filename: Models_ncfb.bngl
+# Created: 28-Feb-2017
+# [PII REMOVED]
+
+begin model
+
+# We consider four formulations of a model for early events in IGF1R signaling.
+#  Model n: natural formulation
+#  Model c: with compression (representation of a protein complex by a single molecule)
+#  Model f: with fragmentation (separate representation of independent sites within a protein)
+#  Model b: with both compression and fragmentation 
+
+# References:
+#  - Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11:319-324 [PMID:24487582]
+#  - Tan CW, ..., Burgess AW (2012) PLOS ONE 7:e31882 [PMID:22363759]
+
+begin parameters
+
+# the fraction of a cell to be considered in a simulation
+f  1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# volume of extracellular fluid per cell
+#  Assumptions:
+#   - 15 cm culture dishes (cells 95% confluent)
+#   - 1.2e5 cells per cm^2
+#   - growth surface area of 140 cm^2
+#   - 1.7e7 cells per dish
+#   - 0.25 mL of medium per square cm of growth surface
+#   - 35 mL of medium per dish
+Vecf 2.1e-9*f # L per cell
+
+# cytoplasmic volume
+#  1.2 pL is a typical cytoplasmic volume 
+#   for a non-dividing mammalian cell in culture (Tan et al., 2012).
+#   [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max 1.87 pL] 
+#  NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # L per cell
+
+# ligand dose (nM)
+IGF1_conc_nM 1 # nM
+# convert from nM to M
+IGF1_conc=IGF1_conc_nM*1e-9 # M
+# convert from M to copies per cell
+IGF1_total=IGF1_conc*(NA*Vecf) # cpc
+
+# The following settings are based on
+#  the data of Kulak et al. (2014) for HeLa S3 cells (ATCC CCL-2.2).
+IGF1R_total  14809*f # cpc (NB: There are two copies of IGF1R per dimer.)
+IRS1_total    1329*f # cpc
+GRB10_total  24164*f # cpc
+
+
+
+# forward and reverse rate constants for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+a1 3.47e5/(NA*Vecf) # [=] /M/s converted to /(molecule/cell)/s
+d1 3.2e-3 # [=] /s
+# forward and reverse rate constants for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+a2 171361.2182/(NA*Vecf) # [=] /M/s convereted to /(molecule/cell)/s
+d2 4.2e-3 # [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+#   Kiselyov et al. (2009) assumed that the rate constant for crosslinking has the same value 
+#     as that determined for insulin-insulin receptor interaction. Furthermore, as a simplification,
+#     a single rate constant is used to characterize both of the two possible crosslinking reactions.
+#   Kiselyov et al. (2009) reported that setting d1prime=d1 and d2prime=d2 is a reasonable simplification.
+#     See discussion on pp. 8 and 9 (Kiselyov et al., 2009).
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+kcr 0.33 # [=] /s
+a1prime      kcr                                       # [=] /s 
+a2prime     (a2/a1)*a1prime                        # [=] /s
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime=d1 # [=] /s - see p. 9 in Kiselyov et al. (2009)
+#   Release of ligand from Site 2
+d2prime=d2 # [=] /s - see p. 9 in Kiselyov et al. (2009)
+
+
+# rate constant for autophosphorylation
+kp 0.5 # /s
+# rate constant for pseudo first-order dephosphorylation by phosphatases considered implicitly
+kdp 0.1 # /s
+
+# A typical association rate constant for a protein-protein interaction is 1e6 /M/s.
+kon_universal 1.0e6/(NA*Vcyt) # [=] /M/s converted to /cpc/s
+
+# KD's
+KD_R_pY1_A1_s 0.01*(1e-6*(NA*Vcyt)) # uM converted to cpc
+KD_R_pY2_A2_s 0.1*(1e-6*(NA*Vcyt)) # uM converted to cpc
+
+# dissociation rate constants
+koff_R_pY1_A1_s=kon_universal*KD_R_pY1_A1_s # /s
+koff_R_pY2_A2_s=kon_universal*KD_R_pY2_A2_s # /s
+
+end parameters
+
+begin molecule types
+
+# Nomenclature
+#  L: IGF1 (ligand)
+#   ds: "dimerization surface" (binds S1)
+#   hs: "hexamerization surface" (binds S2)
+#  R: IGF1R (receptor)
+#   S1: Site 1
+#   S2: Site 2
+#   C: cysteines involved in disulfide bonds
+#   Y1: tyrosine (e.g., Y980)
+#    0: unmodified
+#    P: phosphorylated
+#   Y2: tyrosine (e.g., Y1346)
+#    0: unmodified
+#    P: phosphorylated
+#  A1: adaptor protein that docks at pY1 (e.g., IRS1)
+#   s: phosphotyrosine-binding (PTB) or Src homology 2 (SH2) domain
+#  A2: adaptor protein that docks at pY2 (e.g., GRB10)
+#   s: phosphotyrosine-binding (PTB) or Src homology 2 (SH2) domain
+
+# Model n
+nL(ds,hs)
+nR(S1,S2,C)
+
+end molecule types
+
+begin seed species
+
+# Model n
+nL(ds,hs) IGF1_total
+nR(S1,S2,C!0).nR(S1,S2,C!0) 0.5*IGF1R_total
+
+end seed species
+
+begin observables
+
+# Model n
+Molecules n_FreeLigand nL(ds,hs)
+Molecules n_BoundLigand nL(ds!+,hs) nL(ds,hs!+) nL(ds!+,hs!+)
+Molecules n_CrosslinkedReceptors nR(S1!1,C!0).nR(S2!2,C!0).nL(ds!1,hs!2)
+Molecules n_Lig_boundOnceTo_S1 nR(S1!1).nL(ds!1,hs)
+Molecules n_Lig_boundOnceTo_S2 nR(S2!1).nL(ds,hs!1)
+
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+###########
+# Model n #
+###########
+ 
+# Free IGF1 reversibly binds a free copy of Site 1 in dimeric IGF1R.
+nL(ds,hs)+nR(S1,C!0).nR(S2,C!0)<->nL(ds!1,hs).nR(S1!1,C!0).nR(S2,C!0) a1,d1
+#   This rules stipulates that ligand binds S1 in R1 only if S2 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S1 in R1 and S2 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S1 in R1 and S2 in R2 can only accomodate a single ligand.
+# Free IGF1 reversibly binds a free copy of Site 2 in dimeric IGF1R.
+nL(ds,hs)+nR(S2,C!0).nR(S1,C!0)<->nL(ds,hs!1).nR(S2!1,C!0).nR(S1,C!0) a2,d2
+#   This rules stipulates that ligand binds S2 in R1 only if S1 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S2 in R1 and S1 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S2 in R1 and S1 in R2 can only accomodate a single ligand.
+
+# IGF1 bound at Site 1 in R1 reversibly crosslinks Site 1 in R1 and Site 2 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 2 in R1 and Site 1 in R2.
+nR(S1!1,C!0).nR(S1,S2,C!0).nL(ds!1,hs)<->\
+nR(S1!1,C!0).nR(S1,S2!2,C!0).nL(ds!1,hs!2) a2prime,d2prime
+nR(S1!1,S2,C!0).nR(S1!+,S2,C!0).nL(ds!1,hs)<->\
+nR(S1!1,S2,C!0).nR(S1!+,S2!2,C!0).nL(ds!1,hs!2) a2prime,d2prime
+
+# IGF1 bound at Site 2 in R1 reversibly crosslinks Site 2 in R1 and Site 1 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 1 in R1 and Site 2 in R2.
+nR(S2!1,C!0).nR(S1,S2,C!0).nL(ds,hs!1)<->\
+nR(S2!1,C!0).nR(S1!2,S2,C!0).nL(ds!2,hs!1) a1prime,d1prime
+nR(S1,S2!1,C!0).nR(S1,S2!+,C!0).nL(ds,hs!1)<->\
+nR(S1,S2!1,C!0).nR(S1!2,S2!+,C!0).nL(ds!2,hs!1) a1prime,d1prime
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+# Model n: Number of species = 10, Number of reactions = 28
+# Model c: Number of species = , Number of reactions =  
+# Model f: Number of species = , Number of reactions = 
+# Model b: Number of species = , Number of reactions = 
+
+simulate({method=>"ode",t_start=>0,t_end=>1000,n_steps=>100})
+
+end actions

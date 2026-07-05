@@ -1,0 +1,41 @@
+# Feature combination: AddBond-like operations + connected complex tracking
+# Tests: when bonds form, affected molecules must expand to full complex
+# Bug pattern: incremental drift bug (ac4cdb1) — affected_mols not expanded
+# Tier: combinations
+# Expected: trimer formation via sequential binding; observables track complex sizes
+# invariant: conserved A_total = 30
+# invariant: balance A_bound_l = A_bound_r
+
+begin model
+begin parameters
+    A_tot  30
+    kf     0.01   # /s, binding rate
+    kr     0.05   # /s, unbinding rate
+end parameters
+
+begin molecule types
+    A(l,r)
+end molecule types
+
+begin seed species
+    A(l,r)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_total     A()
+    Species    Monomers    A(l,r)
+    Species    Dimers      A(l,r!1).A(l!1,r)
+    Species    Trimers     A(l,r!1).A(l!1,r!2).A(l!2,r)
+    Molecules  A_bound_l   A(l!+)
+    Molecules  A_bound_r   A(r!+)
+end observables
+
+begin reaction rules
+    # Linear chain growth: left site binds right site
+    A(l) + A(r) <-> A(l!1).A(r!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

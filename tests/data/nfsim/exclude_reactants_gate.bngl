@@ -1,0 +1,37 @@
+# exclude_reactants sibling for internal#60 / RuleWorld/nfsim#63.
+#
+# exclude_reactants(1, A(p~U)) forbids unphosphorylated A from binding B.
+# With k_phos = 0 every A is A(p~U), so a selector-aware NFsim MUST keep
+# AB_total == 0 for all time. Exercises the exclude_reactants code path
+# (distinct from include_reactants) so a vendor refresh that drops either
+# branch fails loudly.
+#
+# XML is regenerated with: BNG2.pl exclude_reactants_gate.bngl
+begin model
+begin parameters
+    N       100
+    kf      0.01
+    k_phos  0.0
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,p~U)  N
+    B(s)      N
+end seed species
+
+begin observables
+    Molecules  AB_total  A(s!1).B(s!1)
+    Molecules  A_phos    A(p~P)
+end observables
+
+begin reaction rules
+    A(s) + B(s) -> A(s!1).B(s!1)  kf  exclude_reactants(1,A(p~U))
+end reaction rules
+end model
+
+writeXML()

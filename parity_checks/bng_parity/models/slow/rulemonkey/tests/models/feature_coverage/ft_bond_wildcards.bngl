@@ -1,0 +1,45 @@
+# Feature: bond wildcards !+ (any bond) and !? (bond or no bond) in patterns
+# Tests: wildcard matching in observables and reaction rules
+# Tier: base
+# Expected: A_any_bond counts bound A; A_maybe_bond counts all A;
+#   rule only fires on bound A
+
+begin model
+begin parameters
+    A_tot  50
+    B_tot  50
+    kf     0.02
+    kr     0.1
+    k_mod  0.05   # modification rate for bound A only
+end parameters
+
+begin molecule types
+    A(s,m~U~M)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,m~U)  A_tot
+    B(s)      B_tot
+end seed species
+
+begin observables
+    Molecules  A_total       A()
+    Molecules  A_any_bond    A(s!+)
+    Molecules  A_maybe_bond  A(s!?)
+    Molecules  A_free        A(s)
+    Molecules  A_modified    A(m~M)
+    Molecules  B_bound       B(s!+)
+end observables
+
+begin reaction rules
+    # Binding
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+    # Modification only when A is bound (using !+ wildcard)
+    A(s!+,m~U) -> A(s!+,m~M)  k_mod
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

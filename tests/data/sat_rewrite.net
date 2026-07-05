@@ -1,0 +1,16 @@
+# Test file: legacy Sat rate law should load via loader-level rewrite
+begin parameters
+    1 k3     1.52
+    2 K4     114.418
+    3 S0     100
+end parameters
+begin species
+    1 S() S0
+    2 P() 0
+end species
+begin reactions
+    1 1 2 Sat k3 K4
+end reactions
+begin groups
+    1 Stot 1
+end groups

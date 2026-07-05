@@ -1,0 +1,32 @@
+From f0d40096f919e8a3eca49c7339af6b00a1a08791 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Fri, 15 May 2026 15:01:57 -0600
+Subject: [PATCH 02/14] bngsim: throw when molecule limit is exceeded
+
+---
+ src/NFcore/moleculeLists/moleculeList.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/NFcore/moleculeLists/moleculeList.cpp b/src/NFcore/moleculeLists/moleculeList.cpp
+index b4de56f..8012f1b 100644
+--- a/src/NFcore/moleculeLists/moleculeList.cpp
++++ b/src/NFcore/moleculeLists/moleculeList.cpp
+@@ -1,4 +1,5 @@
+ #include "moleculeList.hh"
++#include <stdexcept>
+ 
+ 
+ using namespace NFcore;
+@@ -66,7 +67,8 @@ int MoleculeList::create(Molecule *&m)
+ 			cerr<<"  If you need \nto have more molecules, rerun with the -gml [int] flag \nto increase the limit.";
+ 			cerr<<"  For instance, to increase the limit \nto 1 million, write: -gml 1000000.\n\n";
+ 			cerr<<"Better luck next time!"<<endl;
+-			exit(1);
++			throw std::runtime_error(
++			    "NFsim: global molecule limit exceeded for a MoleculeType. Increase gml.");
+ 		}
+ 
+ 		//Copy everything over to new arrays that are double the size
+-- 
+2.53.0
+

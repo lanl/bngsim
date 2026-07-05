@@ -1,0 +1,73 @@
+begin model
+begin parameters
+    # Kinetic Parameters
+    k_bind       0.002   # LacI binding to promoter
+    k_unbind     0.02    # LacI dissociation
+    k_transcribe 1.0     # Transcription rate
+    k_translate  5.0     # Translation rate
+    k_mrna_deg   0.2     # mRNA degradation
+    k_beta_deg   0.05    # Protein degradation
+    k_import     0.1     # Lactose permease rate
+    k_conversion 0.08    # B-gal catalysis (Lactose->Allolactose)
+    k_allo_deg   0.04    # Metabolite consumption
+end parameters
+
+begin molecule types
+    LacI(state~free~bound)      # Repressor
+    Promoter(state~off~on)      # Lac Operon Promoter
+    mRNA()                      # polycistronic mRNA
+    BetaGal()                   # Beta-galactosidase
+    Lactose(loc~ext~int)        # Substrate
+    Allolactose()               # Inducer
+end molecule types
+
+begin seed species
+    LacI(state~free) 20
+    Promoter(state~off) 1
+    Lactose(loc~ext) 0
+end seed species
+
+begin observables
+    Molecules Promoter_active  Promoter(state~on)
+    Molecules Beta_gal         BetaGal()
+    Molecules Lactose_internal Lactose(loc~int)
+    Molecules Allolactose_pool Allolactose()
+end observables
+
+begin reaction rules
+    # 1. Represssiom
+    Promoter(state~on) + LacI(state~free) -> Promoter(state~off) + LacI(state~bound) k_bind
+    LacI(state~bound) -> LacI(state~free) k_unbind
+    
+    # 2. Induction
+    # Allolactose binds LacI (implicitly modeled as conversion/release here)
+    Allolactose() + Promoter(state~off) -> Allolactose() + Promoter(state~on) k_conversion
+    
+    # 3. Transcription & Translation
+    Promoter(state~on) -> Promoter(state~on) + mRNA() k_transcribe
+    # Basal / Leakage transcription (Essential for system startup)
+    Promoter(state~off) -> Promoter(state~off) + mRNA() k_transcribe * 0.001
+    mRNA() -> mRNA() + BetaGal() k_translate
+    
+    # 4. Degradation
+    mRNA() -> 0 k_mrna_deg
+    BetaGal() -> 0 k_beta_deg
+    
+    # 5. Metabolism
+    # Lactose Import
+    Lactose(loc~ext) -> Lactose(loc~int) k_import
+    # Conversion to Allolactose (Inducer)
+    BetaGal() + Lactose(loc~int) -> BetaGal() + Allolactose() k_conversion
+    # Consumption
+    Allolactose() -> 0 k_allo_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    
+    # Simple stimulatory simulation for parity
+    setConcentration("Lactose(loc~ext)", 100)
+    simulate({method=>"ode",t_end=>200,n_steps=>200})
+end actions
+end model
+

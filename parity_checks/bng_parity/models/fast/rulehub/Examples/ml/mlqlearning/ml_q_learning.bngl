@@ -1,0 +1,119 @@
+# Q-Learning Agent in BNGL
+# =========================
+# A reinforcement learning agent navigating a 1D environment.
+# 
+# State: Position along a line (encoded as concentration of Pos molecule)
+# Actions: Move Left or Move Right (competing molecule production)
+# Q-values: QL and QR molecules whose concentrations ARE the Q-values
+# Reward: proximity to goal position
+#
+# The Bellman update is encoded as production/decay functions.
+# Winner-take-all action selection via sigmoid competition.
+# No chemistry — the ODE system IS the RL algorithm.
+
+begin model
+
+begin parameters
+    # Environment
+    goal        80.0    # Goal position
+    
+    # RL hyperparameters
+    alpha       0.5     # Learning rate
+    gamma       0.9     # Discount factor
+    
+    # Action dynamics
+    step_size   5.0     # Movement per action
+    
+    # Exploration (softmax temperature)
+    temp        5.0     # Temperature for action selection
+    
+    # Offset
+    off         50.0    # Keep Q-values positive
+end parameters
+
+begin molecule types
+    Pos()           # Agent position
+    QL()            # Q-value for "move left"
+    QR()            # Q-value for "move right"
+    Reward()        # Current reward signal
+    Action()        # Current action (+1 = right,encoded as concentration)
+end molecule types
+
+begin seed species
+    Pos()       10.0    # Start near left edge
+    QL()        50.0    # Q(left) = 0 + offset (no preference)
+    QR()        50.0    # Q(right) = 0 + offset
+    Reward()    0
+    Action()    50.0    # Neutral
+end seed species
+
+begin observables
+    Molecules Position   Pos()
+    Molecules Q_Left     QL()
+    Molecules Q_Right    QR()
+    Molecules Rew        Reward()
+    Molecules Act        Action()
+end observables
+
+begin functions
+    # Actual Q-values (unshifted)
+    ql() = Q_Left - off
+    qr() = Q_Right - off
+    
+    # Reward: higher when closer to goal (Gaussian reward landscape)
+    reward() = 100 * exp(-(Position - goal)^2 / 500)
+    
+    # Softmax action selection:
+    # P(right) = exp(QR/temp) / (exp(QL/temp) + exp(QR/temp))
+    # Simplified: use sigmoid on Q difference
+    p_right() = 1 / (1 + exp(-(qr() - ql()) / temp))
+    p_left()  = 1 - p_right()
+    
+    # Net action: positive = move right,negative = move left
+    net_action() = step_size * (p_right() - p_left())
+    
+    # === BELLMAN UPDATE ===
+    # Q(s,right) += alpha * (reward + gamma * max(Q') - Q(s,right))
+    # max(Q') approximated by max(ql,qr) via soft-max
+    max_q() = if(qr() > ql(),qr(),ql())
+    
+    # TD error for right action
+    td_right() = reward() + gamma * max_q() - qr()
+    # TD error for left action  
+    td_left()  = reward() + gamma * max_q() - ql()
+    
+    # Weight updates by action probability (expected SARSA style)
+    dqr() = alpha * p_right() * td_right()
+    dql() = alpha * p_left() * td_left()
+end functions
+
+begin reaction rules
+    # === MOVEMENT ===
+    # Position changes based on softmax action selection
+    0 -> Pos()      if(net_action() > 0,net_action(),0)
+    Pos() -> 0      if(net_action() < 0,-net_action() / max(Position,0.01),0)
+    
+    # === Q-VALUE UPDATES (Bellman equation as ODE) ===
+    # Q(right) update
+    0 -> QR()       if(dqr() > 0,dqr(),0)
+    QR() -> 0       if(dqr() < 0,-dqr() / max(Q_Right,0.01),0)
+    
+    # Q(left) update
+    0 -> QL()       if(dql() > 0,dql(),0)
+    QL() -> 0       if(dql() < 0,-dql() / max(Q_Left,0.01),0)
+    
+    # === REWARD TRACKING ===
+    0 -> Reward()   reward()
+    Reward() -> 0   1.0
+    
+    # === ACTION TRACKING ===
+    0 -> Action()   if(net_action() + off > Act,\
+                       (net_action() + off - Act),0)
+    Action() -> 0   if(net_action() + off < Act,\
+                       (Act - net_action() - off)/max(Act,0.01),0)
+end reaction rules
+
+end model
+
+# Watch the agent learn to move toward the goal
+simulate({method=>"ode",t_end=>100,n_steps=>1000})

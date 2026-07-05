@@ -1,0 +1,1853 @@
+{
+  "_meta": {
+    "generated": "2026-05-24",
+    "sbml_dir": "$BIOMODELS_SBML_DIR",
+    "source": "derived from validate_for_ssa denominator pass (bngsim 0.9.7); species counts via libSBML. Reproduce with build_ssa_candidates.py.",
+    "prefilter": {
+      "total": 1644,
+      "empty": 26,
+      "sbml_error": 19,
+      "zero_reactions": 337,
+      "reaction_bearing": 1262
+    },
+    "rejected": {
+      "ssa_issues": 883,
+      "load_error": 20
+    },
+    "ssa_issue_freq": {
+      "non_integer_initial_population": 765,
+      "reversible_non_mass_action": 382,
+      "assignment_rule_on_reactant": 117,
+      "non_integer_stoichiometry": 48,
+      "non_mass_action_volumetric_species": 19,
+      "compartment_rate_rule": 6,
+      "fast_reaction": 5
+    },
+    "n_admitted": 306,
+    "tier_counts": {
+      "low": 202,
+      "medium": 77,
+      "high": 27
+    },
+    "note": "SSA-compatible BioModels: well-formed + reaction-bearing + from_sbml-loadable + validate_for_ssa-clean. ODE models NOT repurposed. SBML from $BIOMODELS_SBML_DIR.",
+    "post_validation_excludes": [
+      {
+        "name": "MODEL2003060002",
+        "reason": "negative_population",
+        "detail": "Grigolon2018 declares the reacting species IAA at initial concentration -350 (an ill-posed molecule pool). validate_for_ssa does not reject it because -350 is integer-valued, but a negative population is meaningless under SSA: roadrunner's gillespie carried it to a mean of ~-345 in the parity screen. Excluded as a malformed model, not an engine discrepancy. The stage-1 biomodels filter now drops it structurally via the 'negative_population' criterion.",
+        "excluded": "2026-05-24"
+      },
+      {
+        "name": "BIOMD0000000484",
+        "reason": "consumes_unreferenced_reactant",
+        "detail": "ES consumed by re2 at constant rate k1; rate law omits ES (re2: ES->S, rate=k1). ES is write-only across the model, so the ODE is well-posed (S->k1/k2), but under SSA the propensity never vanishes when ES empties and ES goes negative (RR gillespie mean ~-5.7). A valid ODE model, not a valid SSA model: ES should be boundaryCondition=true.",
+        "excluded": "2026-05-25"
+      },
+      {
+        "name": "BIOMD0000000485",
+        "reason": "consumes_unreferenced_reactant",
+        "detail": "ES (Schlogl buffer) consumed by Reaction1 (rate ~ X*(X-1)) and Reaction6 (rate = k3*B*V); neither references ES. Write-only ES => well-posed ODE but negative population under SSA (RR mean ~-3.0). Same defect as BIOMD0000000484: ES should be boundaryCondition=true.",
+        "excluded": "2026-05-25"
+      },
+      {
+        "name": "MODEL1504160000",
+        "reason": "consumes_unreferenced_reactant",
+        "detail": "s7/s8 consumed by reactions whose rates are driven by other species (re8: s8->cd8_in_spleen at rate (rho_s*D_m-delta_s)*cd8_in_spleen; the prefactor can even be negative). Rate omits the consumed reactant => negative population under SSA (s8 mean ~-0.97). ODE-only model.",
+        "excluded": "2026-05-25"
+      }
+    ],
+    "notes": [
+      "2026-05-25: a broader structural screen (a non-boundary reactant absent from its own reaction's rate law) flags 36 of the admitted models as ODE-only / SSA-invalid; only the 3 hand-verified offenders above are excluded so far. The remaining ~33 need case-by-case review (catalysts written on both sides share the signature without depleting) before any broader sweep."
+    ],
+    "structural_excludes": {
+      "generated": "2026-06-06",
+      "bngsim_version": "0.9.35",
+      "n_excluded": 49,
+      "counts": {
+        "sub_particle": 20,
+        "manual_exclude": 6,
+        "sign_indefinite": 23
+      },
+      "criteria": "Exact-SSA structural gates re-applied to the validate_for_ssa-clean manifest (build_ssa_candidates.py gates 5/6/7): sub_particle (0<count<0.5 rounds to 0 molecules), sign_indefinite (irreversible reaction rate@t0 < 0), manual_exclude (hand-verified misses). These models pass validate_for_ssa but are not valid exact-SSA models; they surfaced as parity-screen fails attributable to corpus quality, not a bngsim defect (GH #30).",
+      "models": [
+        {
+          "name": "BIOMD0000000002",
+          "reason": "sub_particle",
+          "detail": "B=1e-22, L=1e-21"
+        },
+        {
+          "name": "BIOMD0000000009",
+          "reason": "sub_particle",
+          "detail": "E1=1.2e-16, E2=1.2e-15, KKK=1.2e-14, KK=4.8e-12"
+        },
+        {
+          "name": "BIOMD0000000016",
+          "reason": "sub_particle",
+          "detail": "M=1e-16, P0=2.5e-16, P1=2.5e-16, P2=2.5e-16"
+        },
+        {
+          "name": "BIOMD0000000143",
+          "reason": "manual_exclude",
+          "detail": "Olsen2003 PO oscillator: forward-reverse net-rate transport (R1, R14-R18) on irreversible channels + signed proton species (H_p/H_c go negative); not a valid exact-SSA model"
+        },
+        {
+          "name": "BIOMD0000000150",
+          "reason": "sub_particle",
+          "detail": "CyclinA=4e-19, Cdk2=1e-19"
+        },
+        {
+          "name": "BIOMD0000000183",
+          "reason": "sub_particle",
+          "detail": "species_0=9.7e-27, species_1=1e-20, species_17=2e-22, species_33=7e-20"
+        },
+        {
+          "name": "BIOMD0000000251",
+          "reason": "manual_exclude",
+          "detail": "reaction_7 cFOSm synthesis is a net forward-reverse rate (k7*cFOSp - k8*cFOSm); < 0 when degradation dominates (local params hide it from the t0 gate)"
+        },
+        {
+          "name": "BIOMD0000000329",
+          "reason": "sub_particle",
+          "detail": "a=1e-15, b=1e-15, c=1e-15"
+        },
+        {
+          "name": "BIOMD0000000569",
+          "reason": "sub_particle",
+          "detail": "B0=8.3e-23, glu=8.3e-20"
+        },
+        {
+          "name": "BIOMD0000000609",
+          "reason": "sub_particle",
+          "detail": "Sulphate__PAPS=1.33e-14, GSH=6.87e-15, Paracetamol_APAP=1.32e-13"
+        },
+        {
+          "name": "BIOMD0000000628",
+          "reason": "sub_particle",
+          "detail": "CamR=1.45e-24, CamT=3e-20, Ca=1e-23, CaMKII=7e-20"
+        },
+        {
+          "name": "BIOMD0000000692",
+          "reason": "sub_particle",
+          "detail": "RasGTP=5.24e-13, NF1=5.24e-12"
+        },
+        {
+          "name": "BIOMD0000000708",
+          "reason": "sign_indefinite",
+          "detail": "reaction_1 rate@t0=-500"
+        },
+        {
+          "name": "BIOMD0000000709",
+          "reason": "sign_indefinite",
+          "detail": "reaction_1 rate@t0=-6.2e+04"
+        },
+        {
+          "name": "BIOMD0000000733",
+          "reason": "sign_indefinite",
+          "detail": "Tumor_killing rate@t0=-440"
+        },
+        {
+          "name": "BIOMD0000000742",
+          "reason": "sign_indefinite",
+          "detail": "immune_stimulation rate@t0=-0.1"
+        },
+        {
+          "name": "BIOMD0000000751",
+          "reason": "manual_exclude",
+          "detail": "immune_growth is logistic y*I*(1-I/K); rate < 0 once I exceeds capacity (positive at t0)"
+        },
+        {
+          "name": "BIOMD0000000752",
+          "reason": "manual_exclude",
+          "detail": "Wilkie2013r: same logistic immune_growth as BIOMD0000000751"
+        },
+        {
+          "name": "BIOMD0000000779",
+          "reason": "sign_indefinite",
+          "detail": "NK_Production_and_Turnover rate@t0=-3.12e+03"
+        },
+        {
+          "name": "BIOMD0000000821",
+          "reason": "manual_exclude",
+          "detail": "tumor/endothelial-volume growth term is sign-indefinite (negative); SSA propensity clamped -> frozen"
+        },
+        {
+          "name": "BIOMD0000000828",
+          "reason": "sub_particle",
+          "detail": "Glucose_G=6.64e-22, miR_451_M=3.06e-21, AMPK_A=2.08e-21, mTOR_R=4.58e-21"
+        },
+        {
+          "name": "BIOMD0000000888",
+          "reason": "sign_indefinite",
+          "detail": "Impact_on_the_formation_of_dendritic_cell rate@t0=-0.034"
+        },
+        {
+          "name": "BIOMD0000000895",
+          "reason": "sign_indefinite",
+          "detail": "Mr_Growth_Boost rate@t0=-3.09e+05"
+        },
+        {
+          "name": "BIOMD0000000898",
+          "reason": "sign_indefinite",
+          "detail": "HSC_Self_Renewal rate@t0=-20.2, LSC_Self_Renewal rate@t0=-50.4"
+        },
+        {
+          "name": "BIOMD0000000908",
+          "reason": "sign_indefinite",
+          "detail": "Increase_in_the_number_of_Treg_cells_per_litre_of_blood rate@t0=-3.09e+03"
+        },
+        {
+          "name": "BIOMD0000000910",
+          "reason": "sign_indefinite",
+          "detail": "Formation_and_removal_of_tumor rate@t0=-9.4e+04"
+        },
+        {
+          "name": "BIOMD0000000920",
+          "reason": "sign_indefinite",
+          "detail": "reaction_for_A rate@t0=-0.295, reaction_For_I rate@t0=-4.52, reaction_for_B rate@t0=-2.5, reaction_For_P rate@t0=-0.03"
+        },
+        {
+          "name": "BIOMD0000000921",
+          "reason": "sign_indefinite",
+          "detail": "Logistic_growth_term_for_macrophage rate@t0=-3.31e+09"
+        },
+        {
+          "name": "BIOMD0000000922",
+          "reason": "sign_indefinite",
+          "detail": "reaction_for_E rate@t0=-3.51e+03, reaction_for_L rate@t0=-2.31e+03, reaction_for_P rate@t0=-364"
+        },
+        {
+          "name": "BIOMD0000000923",
+          "reason": "sign_indefinite",
+          "detail": "reaction_fo_z rate@t0=-0.901, reaction_for_B rate@t0=-0.004"
+        },
+        {
+          "name": "BIOMD0000000968",
+          "reason": "sub_particle",
+          "detail": "IL7=1e-12, STAT5=2.49e-12, IL7RJAK1=1.66e-12"
+        },
+        {
+          "name": "BIOMD0000000985",
+          "reason": "manual_exclude",
+          "detail": "Ligand_EGF=1.99e14 -> binding propensity ~1e27; exact SSA intractable (continuum model)"
+        },
+        {
+          "name": "MODEL1302180001",
+          "reason": "sign_indefinite",
+          "detail": "_Evolution_THr rate@t0=-6e+03, _Evolution_THa rate@t0=-9.9e+04, _Evolution_THw rate@t0=-1, _Evolution_TCr rate@t0=-9e+04"
+        },
+        {
+          "name": "MODEL1302180002",
+          "reason": "sign_indefinite",
+          "detail": "_Evolution_THr rate@t0=-6e+03, _Evolution_THa rate@t0=-9.9e+04, _Evolution_TCr rate@t0=-9e+04, _Evolution_Dr rate@t0=-500"
+        },
+        {
+          "name": "MODEL1504240000",
+          "reason": "sign_indefinite",
+          "detail": "ApoE_A_death rate@t0=-750"
+        },
+        {
+          "name": "MODEL1511170000",
+          "reason": "sub_particle",
+          "detail": "mrna=1.71e-25, asrna=9.35e-26, protein=2.77e-22, rib=3.32e-22"
+        },
+        {
+          "name": "MODEL1511170001",
+          "reason": "sub_particle",
+          "detail": "mrna=1.71e-25, asrna=9.35e-26, protein=2.77e-22, rib=3.32e-22"
+        },
+        {
+          "name": "MODEL1511170002",
+          "reason": "sub_particle",
+          "detail": "mrna=1.71e-25, asrna=9.35e-26, protein=2.77e-22, rib=3.32e-22"
+        },
+        {
+          "name": "MODEL1909050002",
+          "reason": "sign_indefinite",
+          "detail": "A_1_b_Formation rate@t0=-9.33e-09"
+        },
+        {
+          "name": "MODEL1910020002",
+          "reason": "sign_indefinite",
+          "detail": "CSC_conversion_into_BM_blast_after_time_lag rate@t0=-inf"
+        },
+        {
+          "name": "MODEL2001140002",
+          "reason": "sign_indefinite",
+          "detail": "Removal_of_tumor_cell_by_the_action_of_chemothrepy_and_immuno_therapy rate@t0=-4.15e+06"
+        },
+        {
+          "name": "MODEL2003160003",
+          "reason": "sign_indefinite",
+          "detail": "reaction_for_I rate@t0=-6.65, reaction_for_S rate@t0=-58.4, reaction_for_X rate@t0=-91.6"
+        },
+        {
+          "name": "MODEL2105030001",
+          "reason": "sign_indefinite",
+          "detail": "reaction1 rate@t0=-129, reaction2 rate@t0=-1.71"
+        },
+        {
+          "name": "MODEL2109110005",
+          "reason": "sign_indefinite",
+          "detail": "Tumor_cell_growth rate@t0=-129"
+        },
+        {
+          "name": "MODEL4780441670",
+          "reason": "sub_particle",
+          "detail": "GC_slash_GTP=1.67e-15, GC_slash_NO_a=1.67e-19, GC_slash_sGC_basal=5e-18"
+        },
+        {
+          "name": "MODEL9087766308",
+          "reason": "sub_particle",
+          "detail": "Im_minus_nNOS=1.67e-18, L_minus_Arginine=1e-14"
+        },
+        {
+          "name": "MODEL9087988095",
+          "reason": "sub_particle",
+          "detail": "Im_minus_nNOS=1.67e-18, Homoarginine=1e-14"
+        },
+        {
+          "name": "MODEL9088169066",
+          "reason": "sub_particle",
+          "detail": "Im_minus_nNOS=1.67e-18, NM_minus_Arginine=1e-14"
+        },
+        {
+          "name": "MODEL9088294310",
+          "reason": "sub_particle",
+          "detail": "Im_minus_nNOS=1.67e-18, NOH_minus_Arginine=1e-14"
+        }
+      ]
+    }
+  },
+  "models": [
+    {
+      "name": "BIOMD0000000414",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000417",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000418",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000425",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000617",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000936",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001026",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001040",
+      "n_species": 1,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000114",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000115",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000420",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000421",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000486",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000558",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000573",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000753",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000760",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000762",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000774",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000897",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000935",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000973",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001013",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001024",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001037",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001057",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1608100000",
+      "n_species": 2,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000036",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000159",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000191",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000312",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000321",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000419",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000507",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000546",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000552",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000553",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000729",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000754",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000767",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000773",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000777",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000783",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000800",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000845",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000846",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000850",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000879",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000884",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000893",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000900",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000906",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000912",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000937",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001011",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001019",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001020",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001038",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001048",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001056",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1008060000",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1009230000",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1907260001",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1911150001",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2002030001",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2005130001",
+      "n_species": 3,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000233",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000267",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000363",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000435",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000716",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000717",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000741",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000743",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000746",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000756",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000765",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000770",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000789",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000790",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000797",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000802",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000860",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000865",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000875",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000876",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000877",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000880",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000881",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000882",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000885",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000892",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000928",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000932",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000967",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001012",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001022",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001025",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1907310002",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1909090003",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1912120002",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001160001",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001310001",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2301090002",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL8102792069",
+      "n_species": 4,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000008",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000027",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000125",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000289",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000290",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000721",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000732",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000766",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000768",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000769",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000791",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000840",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000886",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000903",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000905",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000929",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001014",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1008060002",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1303140000",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1611030000",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1909090002",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1909300003",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1910240001",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001090002",
+      "n_species": 5,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000012",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000029",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000031",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000104",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000178",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000181",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000207",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000240",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000405",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000462",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000487",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000539",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000556",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000759",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000808",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000811",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000863",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000913",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001015",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001042",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000001053",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1705170001",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1710260003",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1912120005",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001160002",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2003040001",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2003060001",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2003190008",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2005070001",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2209260001",
+      "n_species": 6,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000072",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000661",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000719",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000820",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000864",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000949",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000966",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1608100001",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1911270001",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001130003",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2001200002",
+      "n_species": 7,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000010",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000067",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000483",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000664",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000726",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000788",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000837",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000839",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000871",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000986",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1202030001",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1202270000",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1409240002",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1411130000",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1610100003",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1705170002",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1710260004",
+      "n_species": 8,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000862",
+      "n_species": 9,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000987",
+      "n_species": 9,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1610100002",
+      "n_species": 9,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL2937159804",
+      "n_species": 9,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000021",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000035",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000112",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000411",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000530",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000563",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000586",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000587",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000915",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1607210000",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "MODEL1911070001",
+      "n_species": 10,
+      "effort": "low"
+    },
+    {
+      "name": "BIOMD0000000026",
+      "n_species": 11,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000052",
+      "n_species": 11,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000703",
+      "n_species": 11,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1704110000",
+      "n_species": 11,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000889",
+      "n_species": 12,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1705170000",
+      "n_species": 12,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1710260000",
+      "n_species": 12,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000102",
+      "n_species": 13,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1202270001",
+      "n_species": 13,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1704110002",
+      "n_species": 13,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL2005150001",
+      "n_species": 13,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000050",
+      "n_species": 14,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1202030000",
+      "n_species": 14,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1705170003",
+      "n_species": 14,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000199",
+      "n_species": 15,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000687",
+      "n_species": 15,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1710260001",
+      "n_species": 15,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000028",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000091",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000823",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000925",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000934",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1704110003",
+      "n_species": 16,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000103",
+      "n_species": 17,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000259",
+      "n_species": 17,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000260",
+      "n_species": 17,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000261",
+      "n_species": 17,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1710260002",
+      "n_species": 17,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000030",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000189",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000600",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000646",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000942",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1704110001",
+      "n_species": 18,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000074",
+      "n_species": 19,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000083",
+      "n_species": 19,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1705170004",
+      "n_species": 19,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000188",
+      "n_species": 20,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000439",
+      "n_species": 20,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000940",
+      "n_species": 20,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL2109110002",
+      "n_species": 20,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000427",
+      "n_species": 21,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL8262229752",
+      "n_species": 21,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1502270000",
+      "n_species": 22,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000287",
+      "n_species": 23,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000475",
+      "n_species": 23,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280018",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280019",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280022",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280023",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280026",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280027",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280030",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280031",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL2205030001",
+      "n_species": 24,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280017",
+      "n_species": 25,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280021",
+      "n_species": 25,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280025",
+      "n_species": 25,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280029",
+      "n_species": 25,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000285",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000430",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000431",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000446",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280028",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1204280032",
+      "n_species": 27,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000479",
+      "n_species": 28,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL8459127548",
+      "n_species": 30,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1004010000",
+      "n_species": 31,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1004010001",
+      "n_species": 31,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1004010002",
+      "n_species": 31,
+      "effort": "medium"
+    },
+    {
+      "name": "MODEL1506220000",
+      "n_species": 32,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000478",
+      "n_species": 33,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000093",
+      "n_species": 34,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000094",
+      "n_species": 34,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000612",
+      "n_species": 37,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000105",
+      "n_species": 39,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000724",
+      "n_species": 39,
+      "effort": "medium"
+    },
+    {
+      "name": "BIOMD0000000873",
+      "n_species": 42,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1705030000",
+      "n_species": 42,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1705030001",
+      "n_species": 42,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL2311140001",
+      "n_species": 42,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000640",
+      "n_species": 45,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1704110004",
+      "n_species": 48,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL2003200001",
+      "n_species": 50,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000943",
+      "n_species": 52,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1705170005",
+      "n_species": 52,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1604100000",
+      "n_species": 53,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000344",
+      "n_species": 54,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000087",
+      "n_species": 55,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000286",
+      "n_species": 59,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1207300000",
+      "n_species": 64,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000560",
+      "n_species": 65,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000488",
+      "n_species": 69,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000634",
+      "n_species": 69,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1305010000",
+      "n_species": 71,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL2012040002",
+      "n_species": 71,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1303010000",
+      "n_species": 74,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000504",
+      "n_species": 75,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000559",
+      "n_species": 90,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1102210001",
+      "n_species": 119,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000474",
+      "n_species": 133,
+      "effort": "high"
+    },
+    {
+      "name": "BIOMD0000000293",
+      "n_species": 136,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1001150000",
+      "n_species": 156,
+      "effort": "high"
+    },
+    {
+      "name": "MODEL1112100000",
+      "n_species": 1265,
+      "effort": "high"
+    }
+  ]
+}

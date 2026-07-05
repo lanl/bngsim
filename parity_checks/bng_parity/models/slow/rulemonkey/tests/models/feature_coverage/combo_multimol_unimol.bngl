@@ -1,0 +1,51 @@
+# Feature combination: multi-molecular unimolecular reaction + chain topology
+# Tests: unimolecular reaction that requires specific complex context
+# Bug pattern: nfsim_hybrid_particle_field multi-mol unimolecular bug
+# Tier: combinations
+# Expected: state change in A only when A is part of an A-B-C chain
+
+begin model
+begin parameters
+    A_tot  30
+    B_tot  20
+    C_tot  20
+    kfAB   0.05   # /s, A-B binding
+    krAB   0.1    # /s, A-B unbinding
+    kfBC   0.05   # /s, B-C binding
+    krBC   0.1    # /s, B-C unbinding
+    k_act  0.2    # /s, activation when in chain
+end parameters
+
+begin molecule types
+    A(b,st~inactive~active)
+    B(a,c)
+    C(b)
+end molecule types
+
+begin seed species
+    A(b,st~inactive)  A_tot
+    B(a,c)            B_tot
+    C(b)              C_tot
+end seed species
+
+begin observables
+    Molecules  A_inactive  A(st~inactive)
+    Molecules  A_active    A(st~active)
+    Molecules  AB          A(b!1).B(a!1)
+    Molecules  BC          B(c!1).C(b!1)
+    Molecules  ABC_chain   A(b!1).B(a!1,c!2).C(b!2)
+end observables
+
+begin reaction rules
+    # A-B binding
+    A(b) + B(a) <-> A(b!1).B(a!1)  kfAB, krAB
+    # B-C binding
+    B(c) + C(b) <-> B(c!1).C(b!1)  kfBC, krBC
+    # A activates only when in A-B-C chain (multi-mol unimolecular)
+    A(b!1,st~inactive).B(a!1,c!2).C(b!2) -> A(b!1,st~active).B(a!1,c!2).C(b!2)  k_act
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

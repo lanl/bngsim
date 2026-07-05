@@ -1,0 +1,114 @@
+begin model
+begin parameters
+    # L-type Calcium Channel: Voltage gating and CDI (Calcium-dependent inactivation).
+    # Advanced features: if-scheduled pulsatile voltage and MoveConnected complex transport.
+    
+    # Voltage Gating
+    k_open_max 10.0    
+    V_half -15         # Activation threshold (mV)
+    k_slope 6          # Steepness
+    k_close 0.5        # Basal deactivation
+    
+    # CDI (Inactivation Drive)
+    k_inact_max 5.0    
+    Km_ca 200          # Local Calcium threshold for feedback
+    
+    # Ion Flux & Balance
+    k_ca_flux 15.0     # Conductance
+    k_ca_pump 0.8      # Cytoplasmic clearance
+    
+    # Adaptive Feedback
+    k_pka_shift -5.0   # PKA-mediated threshold shift
+    k_pka_on 2.0       # Phosphorylation boost
+    
+    # Initials
+    LTCC_tot 500
+    Ca_init 50
+    PKA_stim 0         # Signaling drive
+    V_Clamp -30.0      # Current voltage
+    k_pka_current 0    # PKA activity
+    
+    # Voltage Dynamics
+    k_v_stim 50.0
+    k_v_leak 1.0
+end parameters
+
+begin molecule types
+    LTCC(b,g~C~O,s~R~I,p~U~P,loc~mem) # g: gate,s: inact state,p: phospho
+    Calcium()
+    Voltage()          # Virtual carrier
+end molecule types
+
+begin seed species
+    LTCC(b,g~C,s~R,p~U,loc~mem) LTCC_tot
+    Calcium() Ca_init
+    Voltage() 1
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Calcium_Inflow  Calcium()                   # Integrated ion signal
+    Molecules Conducting_R    LTCC(g~O,s~R)           # Active current-passing pool
+    Molecules Inactivated_CH  LTCC(s~I)               # Terminated/Desensitized pool
+    Molecules Potentiated_R   LTCC(p~P)               # PKA-activated status
+    Molecules Surface_LTCC    LTCC(loc~mem)            # Channel density
+    Molecules Ca_Level        Calcium()                   # Local Ca status
+    Molecules Phospho_LTCC    LTCC(p~P)                # PKA status
+    Molecules Voltage_Level   Voltage()               # Input drive tracker
+end observables
+
+begin functions
+    # Voltage-dependent opening probability (Boltzmann)
+    # Voltage-dependent opening probability (Boltzmann), V_mem approx -70 + Voltage_Level
+    v_open() = k_open_max / (1 + exp(-( (-70 + Voltage_Level) - (V_half + v_pka_shift()))/k_slope))
+    
+    # Local Calcium dependent inactivation (Functional Rate)
+    v_inact() = k_inact_max * (Ca_Level / (Km_ca + Ca_Level))
+    
+    # PKA shift function (uses Phosphorus state check)
+    v_pka_shift() = if(Phospho_LTCC > 0,k_pka_shift,0)
+    
+    # Recovery rate (voltage dependent)
+    v_rec() = if( (-70 + Voltage_Level) < -20,0.5,0.05)
+end functions
+
+begin reaction rules
+    ## GATING Phase
+    # Voltage-driven opening (Functional Rate)
+    LTCC(g~C,s~R) -> LTCC(g~O,s~R) v_open()
+    
+    # Basal closing
+    LTCC(g~O) -> LTCC(g~C) k_close
+    
+    ## INACTIVATION Stage
+    # Calcium feedback on open channels (CDI)
+    LTCC(g~O,s~R) -> LTCC(g~O,s~I) v_inact()
+    
+    # Recovery (Voltage-dependent reset proxy)
+    LTCC(b,s~I) -> LTCC(b,s~R) v_rec()
+    
+    ## ION FLUX Stage
+    # Conducting channels allow Calcium entry
+    LTCC(g~O,s~R) -> LTCC(g~O,s~R) + Calcium() k_ca_flux
+    
+    # Clearance from space
+    Calcium() -> 0 k_ca_pump
+    
+    ## MODULATION Phase
+    LTCC(p~U) -> LTCC(p~P) 20.0
+    
+    # Reset
+    # Reset
+    LTCC(p~P) -> LTCC(p~U) 0.01
+
+    ## VOLTAGE DYNAMICS
+    0 -> Voltage() k_v_stim
+    Voltage() -> 0 k_v_leak
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

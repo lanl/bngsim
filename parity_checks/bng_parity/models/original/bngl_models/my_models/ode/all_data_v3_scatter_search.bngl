@@ -1,0 +1,338 @@
+begin model
+# Reference:
+#  - Hlavacek WS et al. (2000) PNAS 97: 10966-10971
+#  - Rane S, Hogan T, Lee E, Seddon B, Yates AJ (2022) eLife 11: e78168.
+#  - Sopper S, Nierwetberg D, Halbach A et al. (2003) Blood 101: 1213-1219.
+#  - Zhao J, Cao Y, Jusko WJ (2015) Pharm Res 32: 3269-3281.
+begin parameters
+# objective function value = 263.5846053218424
+KAT__FREE 203.94805832981712
+RT__FREE 133231828968.737
+area__FREE 8095151.218256237
+c__FREE 408.08504615007126
+kf__FREE 7.105155320079943e-10
+kr__FREE 0.11790152309866526
+nCells__FREE 127635956145.06621
+p__FREE 5097.30371992663
+tau__FREE 0.14979033600959665
+#
+#### best-fit parameter values ####
+## objective function value = 263.58463401829044
+#KAT__FREE 204.02279497426446
+#RT__FREE 133221436138.59186
+#area__FREE 8086485.3382508075
+#c__FREE 408.1751357275853
+#kf__FREE 7.109592496304167e-10
+#kr__FREE 0.11788671497186826
+#nCells__FREE 127632580166.22403
+#p__FREE 5098.548526821455
+#tau__FREE 0.14978987673832553
+###################################
+# ### best-fit parameter values ####
+#KAT__FREE 84.72081702438012
+#RT__FREE 147727547589.11542
+#area__FREE 5643214.667799137
+#c__FREE 383.73753103046107
+#kf__FREE 2.8711026800655533e-10
+#kr__FREE 0.12219624536897862
+#nCells__FREE 128059144502.27568
+#p__FREE 4667.587407866515
+#tau__FREE 0.15119427534043442
+###################################
+# indicator of the absence(0)/presence(1) of excess therapeutic anti-CD21 antibody
+thera_Ab 0
+# indicator of absence(0)/presence(1) of infection blocker(s)
+er 0
+# indicator of absence(0)/presence(1) of maturation blocker(s)
+ep 0
+# body weight
+#  The average for 5 treated animals in the Phase I study is 5.24 kg.
+#  The average for 7 control animals in the Phase I study is 5.32 kg.
+#  The average for all 12 animals is 5.29 kg.
+#  The average for the 9 treated animals in the Phase II study is 8.09 kg.
+#  The average for the 6 control animals in the Phase II study is 7.67 kg.
+#  The average for all 15 animals is 7.92 kg.
+#  The average for all 27 animals in both phases (I + II) is 8.07 kg.
+BW 8.07 # kg
+# total volume of extracellular fluid (in L)
+#  See Table I in Zhao et al. (2015)
+#  A body weight of 7.9 kg corresponds to 2.7 L.
+nu = BW*(0.157+0.314+0.735)/3.5 # L (a body weight of 7.9 kg corresponds to 2.7 L of ECF)
+# total number of target cells in an uninfected monkey (Sopper et al. 2003)
+#   3.5e9 cells in juvenile animals with mean BW of 3.821kg
+T0 3.5e9*BW/3.821 # dimensionless
+# fraction of baseline target cell number remaining in the persistent-infection steady state (0<tau<1)
+tau tau__FREE # R0 = 1/tau = T0/T1 [FREE]
+# total number of target cells in an asymptomatic SIV-infected monkey
+T1 = tau*T0 # 6.6e9 according to Sopper et al. (2003) in SIV+ juvenile animals (without AIDS) with mean BW of 4.453 kg
+# target cell lifetime, 22 d according to Table 2 in Rane et al. (2022)
+lT 22 # d
+# rate constant for target cell death
+mu = 1/lT # /d
+# rate of de novo target cell generation
+lmbda = mu*T0 # cells per day ("lmbda" because "lambda" is a reserved keyword in Python)
+# rate constant for death of productively infected cells
+delta 1.5 # /d
+# rate constant for viral clearance
+c c__FREE # /d [FREE]
+# rate of virion production by productively infected cells
+p p__FREE # virions per day per infected cell [FREE]
+# rate constant for infection of target cells
+beta = c*delta/(p*T1) # /virion/d
+# total number of viral receptors on FDCs
+RT RT__FREE*BW/8.07 # dimensionless [FREE]
+# effective forward rate constant for virion-receptor binding
+kf kf__FREE*8.07/BW # /virion/d [FREE]
+# effective reverse rate constant for virion-receptor binding
+kr kr__FREE # 0.25 # /receptor/d
+# number of non-CD4+ cells in lymph nodes
+nCells nCells__FREE*BW/8.07 # dimensionless [FREE]
+# rate constant for Ab-receptor dissociation
+k_dissoc 864 # /d
+# effective equilibrium constant for anti-CD21 interaction with viral receptors on FDCs
+KAT KAT__FREE # dimensionless [FREE]
+# effective rate constant for Ab-receptor association
+k_assoc = k_dissoc*KAT
+# total FDC surface area in BCF regions
+area area__FREE*BW/8.07 # mm^2 [FREE]
+# rate constants for exponential decay of FDC-associated virus in treated and control animals
+#  These parameters were found via linear regression.
+#c_treated 0.9629/7 # /wk converted to /d
+#c_control 0.6808/7 # /wk converted to /d
+# Abundance of FDC-associated virus at the start of ART
+#FDCV_treated_0 8.183288616633e+10*1e-9 # B(t=42 d) * 1e-9
+#FDCV_control_0 8.183288616633e+10*1e-9 # B(t=42 d) * 1e-9
+end parameters
+begin molecule types
+T() # target cells
+I() # productively infected cells
+V() # virions (infectious)
+V_defect() # virions (defective)
+R() # free viral receptors on FDCs
+B() # FDC-associated virions (infectious)
+B_defect() # FDC-associated virions (defective)
+S() # anti-CD21 sequestered viral receptors on FDCs
+#FDCV_treated() # FDC-associated viral load in treated animals
+#FDCV_control() # FDC-associated viral load in control animals
+counter()
+end molecule types
+begin seed species
+T() T0
+I() 1
+V() 0
+V_defect() 0
+R() RT
+B() 0
+B_defect() 0
+S() 0
+#FDCV_treated() FDCV_treated_0
+#FDCV_control() FDCV_control_0
+counter() 0
+end seed species
+begin observables
+Molecules T T()
+Molecules I I()
+Molecules V V()
+Molecules V_defect V_defect()
+Molecules R R()
+Molecules B B()
+Molecules B_defect B_defect()
+Molecules S S()
+#Molecules FDC_virus_treated FDCV_treated()
+#Molecules FDC_virus_control FDCV_control()
+Molecules t counter()
+end observables
+begin functions
+body_weight()=BW
+total_R()=RT
+bound_all_div_RT()=(B+B_defect)/RT
+#
+#infection()=beta*V
+#production()=p*I
+#
+V_final()= p*lmbda/(c*delta) - mu/beta
+#
+I_final()=lmbda/delta-c*mu/(p*beta) # = (c/p)*V_final()
+#
+T_initial()=lmbda/mu # = T0
+T_final()=(c*delta)/(p*beta)
+#
+lnVconc()=if(V>0,ln(2*V/(nu*1000)),2.708) # vRNA copies per mL, 15 copies per mL is the limit of detection
+# data for **control** animals
+# Phase I
+lnVconc_p1_C()=if(t< 7, 2.708,\
+if(t<14,13.523,\
+if(t<21,16.744,\
+if(t<28,15.318,\
+if(t<35,15.054,\
+if(t<42,14.274,\
+if(t<49,13.540,\
+if(t<56,13.632,\
+if(t<60,14.008,0)))))))))
+# Phase II
+lnVconc_p2_C()=if(t<7,2.708,\
+if(t<14,13.153,\
+if(t<21,16.473,\
+if(t<28,14.631,\
+if(t<35,14.188,\
+if(t<42,13.108,\
+if(t<49,13.620,\
+if(t<56,9.192,\
+if(t<63,7.454,\
+if(t<70,7.591,\
+if(t<77,7.248,\
+if(t<84,6.463,\
+if(t<88,5.530,0)))))))))))))
+# data for **treated** animals
+# Phase I
+lnVconc_p1_T()=if(t< 7, 2.708,\
+if(t<14,13.456,\
+if(t<21,17.382,\
+if(t<28,15.437,\
+if(t<35,14.871,\
+if(t<42,14.052,\
+if(t<49,12.394,\
+if(t<56,13.405,\
+if(t<60,13.311,0)))))))))
+# Phase II
+lnVconc_p2_T()=if(t<7,2.708,\
+if(t<14,12.540,\
+if(t<21,16.521,\
+if(t<28,14.792,\
+if(t<35,14.203,\
+if(t<42,13.185,\
+if(t<49,13.548,\
+if(t<56,9.495,\
+if(t<63,8.166,\
+if(t<70,7.706,\
+if(t<77,7.340,\
+if(t<84,6.802,\
+if(t<88,5.664,0)))))))))))))
+
+#freq_infected_cells_final()=1e4*m1*(lmbda/delta - c*mu/(p*beta))/(lmbda/delta - c*mu/(p*beta) + c*delta/(p*beta)) # per 10,000 cells
+#freq_infected_cells_alt()=1e4*m1*I/(T+I) # number of infected cells per 10,000 cells
+freq_infected_cells()=1e4*I/(T+I+nCells) # number of infected cells per 10,000 cells
+# data for control animals
+freq_inf_cells_p1_C()=if(t<14, 0,\
+if(t<28,21.65,\
+if(t<56,22.44,\
+if(t<60,21.19,0))))
+# data for treated animals
+freq_inf_cells_p1_T()=if(t<14, 0,\
+if(t<28,25.02,\
+if(t<56, 8.75,\
+if(t<60, 5.02,0))))
+#
+total_FDC_virions()=B*1e-9 # whole body number of FDC-associated virions scaled by 1e-9
+# data for control animals
+total_FDC_virions_p1_C()=if(t<56,0,\
+if(t<60,82.1,0))
+# data for treated animals
+total_FDC_virions_p1_T()=if(t<56,0,\
+if(t<60,5.70,0))
+#
+lnFDC_virion_density()=if(B>0,ln((B+B_defect)/area),0)
+lnFDC_virion_density_p2_C()=if(t<42,0,\
+if(t<49,9.899,\
+if(t<56,9.486,\
+if(t<70,8.298,\
+if(t<84,7.117,\
+if(t<88,5.851,0))))))
+lnFDC_virion_density_p2_T()=if(t<42,0,\
+if(t<49,9.764,\
+if(t<56,9.091,\
+if(t<70,7.755,\
+if(t<84,6.170,\
+if(t<88,4.049,0))))))
+
+# basic reproduction number
+R0_std_model()=p*beta*lmbda/(c*delta*mu) # = T_initial()/T_final()
+R0_ext_model()=(c*(p*beta*lmbda/(c*delta*mu))+kf*RT)/(c+kf*RT)
+end functions
+begin reaction rules
+0->counter() 1
+# generation of target cells
+0->T() lmbda
+# target cell death
+T()->0 mu
+# infection
+V()+T()->V()+I() beta*(1-er)
+# productively infected cell death
+I()->0 delta
+# production of virions by infected cells
+I()->I()+V() p*(1-ep)
+I()->I()+V_defect() p*ep
+# viral clearance
+V()->0 c
+V_defect()->0 c
+# virion interaction with viral receptors on FDCs
+V()+R()<->B() kf,kr
+V_defect()+R()<->B_defect() kf,kr
+# competitive interaction of anti-CD21 with viral receptors on FDCs
+R()<->S() thera_Ab*k_assoc,k_dissoc
+# exponential decay of FDC-associated virus
+#FDCV_treated()->0 er*c_treated
+#FDCV_control()->0 er*c_control
+end reaction rules
+end model
+begin actions
+
+generate_network({overwrite=>1})
+saveConcentrations()
+# Initial condition: T(0)=T0, I(0)=1, V(0)=0, R(0)=RT, B(0)=0
+# thera_Ab=0
+# er=0
+# ep=0
+###########################################################################
+#p1_control_animals.exp : +SIV at t=0                                     #
+#p1_treated_animals.exp : +SIV+aCD21 at t=0                               #
+#p2_control_animals.exp : +SIV at t=0, +ART at t=6 wks                    #
+#p2_treated_animals.exp : +SIV at t=0, +ART at t=6 wks, +aCD21 at t=7 wks #
+###########################################################################
+#
+##########################################
+##### Phase I data - control animals #####
+##########################################
+# Simulate +SIV at t=0.
+setParameter("BW",5.32)
+simulate({suffix=>"p1_control",method=>"ode",t_start=>0,t_end=>60,n_steps=>600,print_functions=>1})
+#
+##########################################
+##### Phase I data - treated animals #####
+##########################################
+# Simulate +SIV+aCD21 at t=0.
+resetConcentrations()
+setParameter("thera_Ab",1)
+setParameter("BW",5.24)
+simulate({suffix=>"p1_treated",method=>"ode",t_start=>0,t_end=>60,n_steps=>600,print_functions=>1})
+#
+###########################################
+##### Phase II data - control animals #####
+###########################################
+# Simulate +SIV at t=0.
+resetConcentrations()
+setParameter("thera_Ab",0)
+setParameter("BW",7.67)
+simulate({suffix=>"p2_control",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# Simulate +ART at t=42 d (6 wks post-infection).
+setParameter("er",1)
+setParameter("ep",1)
+simulate({suffix=>"p2_control",continue=>1,method=>"ode",t_start=>42,t_end=>88,n_steps=>460,print_functions=>1})
+#
+###########################################
+##### Phase II data - treated animals #####
+###########################################
+# Simulate +SIV at t=0.
+resetConcentrations()
+setParameter("er",0)
+setParameter("ep",0)
+setParameter("BW",8.09)
+simulate({suffix=>"p2_treated",method=>"ode",t_start=>0,t_end=>42,n_steps=>420,print_functions=>1})
+# Simulate +ART at t=42 d (6 wks post-infection)
+setParameter("er",1)
+setParameter("ep",1)
+simulate({suffix=>"p2_treated",continue=>1,method=>"ode",t_start=>42,t_end=>49,n_steps=>70,print_functions=>1})
+# Simulate +aCD21 at t=49 d (7 wks post-infection)
+setParameter("thera_Ab",1)
+simulate({suffix=>"p2_treated",continue=>1,method=>"ode",t_start=>49,t_end=>88,n_steps=>390,print_functions=>1})
+end actions

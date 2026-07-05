@@ -1,0 +1,75 @@
+# Model: mt_arithmetic_compiler.bngl
+# Description: Implements a bottom-up arithmetic expression tree evaluator.
+#              Input Expression: (3 + 4) * 2
+#              Molecules represent leaf nodes (Values) and internal nodes (Operations).
+#              Results propagate through the tree via function evaluation.
+#              Demonstrates hierarchical data processing in a rule-based language.
+
+begin model
+
+begin parameters
+    # Leaf Values
+    V1 3.0
+    V2 4.0
+    V3 2.0
+    
+    k_eval 1.0      # Evaluation timescale
+end parameters
+
+begin molecule types
+    Node(i~L1~L2~L3~Add~Mult,v)
+end molecule types
+
+begin seed species
+    # Initialize Leaf Nodes
+    Node(i~L1,v) V1
+    Node(i~L2,v) V2
+    Node(i~L3,v) V3
+    
+    # Internal Nodes (Initial value 0)
+    Node(i~Add,v) 0
+    Node(i~Mult,v) 0
+end seed species
+
+begin observables
+    Molecules Val_L1 Node(i~L1,v)
+    Molecules Val_L2 Node(i~L2,v)
+    Molecules Val_L3 Node(i~L3,v)
+    Molecules Val_Add Node(i~Add,v)
+    Molecules Val_Root Node(i~Mult,v)
+end observables
+
+begin functions
+    # Tree Structure: Mult( Add(L1,L2),L3 )
+    
+    # Target value for Add node: L1 + L2
+    Target_Add() = Val_L1 + Val_L2
+    
+    # Target value for Mult node: Add * L3
+    Target_Mult() = Val_Add * Val_L3
+    
+    # ODE Rates
+    dAdd_dt()  = (Target_Add() - Val_Add) / 1.0
+    dMult_dt() = (Target_Mult() - Val_Root) / 1.0
+end functions
+
+begin reaction rules
+    # Evaluation Flow (ODE simulated as production/decay)
+    
+    # Add Node evaluation
+    Up_Add: 0 -> Node(i~Add,v) if(dAdd_dt()>0,dAdd_dt(),0)
+    Dn_Add: Node(i~Add,v) -> 0 if(dAdd_dt()<0,-dAdd_dt(),0)
+    
+    # Mult Node evaluation
+    Up_Mult: 0 -> Node(i~Mult,v) if(dMult_dt()>0,dMult_dt(),0)
+    Dn_Mult: Node(i~Mult,v) -> 0 if(dMult_dt()<0,-dMult_dt(),0)
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})
+
+# VERIFICATION:
+# Val_Root should reach (3+4)*2 = 14.0 at steady state.

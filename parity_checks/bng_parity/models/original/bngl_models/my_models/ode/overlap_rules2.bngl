@@ -1,0 +1,69 @@
+begin model
+
+begin parameters
+
+# dissociation rate constant for case with two products
+koff 1 # /s
+
+# dissociation rate constant for case with one product (breaking a ring) 
+joff 0 # /s
+
+nRings 100 # molecules per cell
+
+end parameters
+
+begin molecule types
+
+L(r,r)
+R(l,l)
+
+end molecule types
+
+begin seed species
+
+# ring of size 2
+L(r!1,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l!1) nRings
+
+end seed species
+
+begin observables
+
+Species Ring2 L(r!1,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l!1)
+
+end observables
+
+begin functions
+
+# none
+
+end functions
+
+begin reaction rules
+
+# dissociation with one product (isomerization)
+#   break a ring
+L(r!1,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l!1)->L(r,r!2).R(l!2,l!3).L(r!3,r!4).R(l!4,l) joff
+
+# dissociation with two products
+L(r!1).R(l!1)->L(r)+R(l) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+saveConcentrations()
+
+# simulations with BioNetGen
+generate_network({overwrite=>1})
+
+resetConcentrations()
+simulate({suffix=>"BNG",method=>"ode",t_start=>0,t_end=>2,n_steps=>100})
+
+# simulations with NFsim
+resetConcentrations()
+simulate({suffix=>"NFS",method=>"nf",complex=>1,get_final_state=>0,t_start=>0,t_end=>2,n_steps=>100})
+
+
+end actions

@@ -1,0 +1,85 @@
+## BNGL simple model -- demonstrate core BNG features
+## OUTPUT files for ODE simulation (analogous file created for SSA simulation):
+  ## simple.net         : species reaction network file.
+## simple_ode.cdat    : ODE simulation state trajectory.
+## simple_ode.gdat    : ODE simulation observables trajectory (units of molecules/simcell).
+## simple_ode_end.net : network file set to end-of-simulation concentrations.
+
+begin model
+begin parameters
+
+  NA        6.02e23      # Avogadro's number (molecules/mole)
+  f         0.01         # fraction of cell to simulate 
+  V         3e-12*f      # cytoplasmic volume of cell simulation (liters)
+
+ k1  0.01
+ k2  0.2
+ k3  0.5
+ k4  1
+ k5  2
+ k6  10
+ k7  50
+ k8 100
+ k9  500 
+ k10 5
+
+end parameters
+begin molecule types    # define molecules present in the simulation
+
+  DNA(p,p,r)
+  AmRNA
+  RmRNA
+  A(b)
+  R(a)
+  C
+ trash
+  
+end molecule types
+begin seed species      # initial conditions
+
+  DNA(p,p,r)  1
+  AmRNA  0
+  RmRNA  0
+  A(b)  0
+  R(a)  0
+  C  0
+  trash  0
+
+end seed species
+begin observables       # model outputs
+
+  Molecules A    A
+  Molecules R    R
+  
+end observables
+begin reaction rules
+
+  DNA(p) ->  DNA(p) + AmRNA    k7
+  DNA(r) -> DNA(r) + RmRNA    k1
+  DNA(p!1).A(b!1) -> DNA(p!1).A(b!1) + AmRNA  k9
+  DNA(r!1).A(b!1) -> DNA(r!1).A(b!1) + RmRNA  k7
+  DNA(p) + A(b) <-> DNA(p!1).A(b!1) k4, k7
+  DNA(r) + A(b) <-> DNA(r!1).A(b!1) k4, k8
+  AmRNA ->AmRNA + A(b) k7  #if missing AmRNA on product side, result is off by order of magnitude
+  RmRNA -> RmRNA + R(a) k10  #if missing RmRNA on product side, result is off by order of magnitude
+  AmRNA -> trash k6
+  RmRNA -> trash k3
+  A(b) -> trash k4
+  R(a) -> trash k2
+  A(b) + R(a) -> C k5
+  C -> R(a) k4
+
+end reaction rules
+end model
+
+## model ACTIONS
+# generate network of all species and reactions
+generate_network({overwrite=>1,max_iter=>12,max_agg=>12});
+
+saveConcentrations();             # Save concentrations (in memory) for later use.
+simulate_ode({suffix=>"ode",t_start=>0,t_end=>400,n_steps=>1200});
+
+# resetConcentrations();            # reset concentrations to last saved values.
+# simulate_ssa({suffix=>ssa,t_start=>0,t_end=>12,n_steps=>120});
+
+writeSBML();                   # Output file as SBML.

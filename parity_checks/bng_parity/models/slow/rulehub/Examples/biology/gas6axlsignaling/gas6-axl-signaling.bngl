@@ -1,0 +1,107 @@
+begin model
+begin parameters
+    # GAS6/AXL Signaling: AKT activation and SOCS feedback.
+    # Advanced features: Hill kinetics for AKT activation and TotalRate for dimer drive.
+    
+    # Receptor Assembly
+    k_bind_gas6 1e-4
+    k_dimer 1.5        # Ligand-induced pairing
+    
+    # Relay Stage
+    k_axl_phos_max 5.0 # Trans-activation in dimers
+    k_pi3k_rec 1.0     # PI3K recruitment platform
+    
+    # AKT Terminal Axis
+    k_akt_act_max 10.0 # Peak catalytic drive
+    Km_akt 250         # Threshold for survival signal
+    n_hill 3.0         # Ultra-sensitive survival switch
+    
+    # Feedback (SOCS Axis)
+    k_socs_synth 0.1   # Transduction-induced feedback
+    k_socs_inh 2.5     # Competitive inhibition of p-AXL
+    
+    # Reset Phase
+    k_reset 0.05
+    k_deg 0.02         # Basal turnover
+    
+    # Initials
+    GAS6_tot 100
+    AXL_tot 400
+    PI3K_tot 150
+    AKT_tot 800
+    SOCS_init 10
+end parameters
+
+begin molecule types
+    GAS6(b)
+    AXL(l,d,s~U~P)
+    PI3K(b)
+    AKT(s~U~P)
+    SOCS(b)
+    Survival_Burst()
+end molecule types
+
+begin seed species
+    GAS6(b) GAS6_tot
+    AXL(l,d,s~U) AXL_tot
+    PI3K(b) PI3K_tot
+    AKT(s~U) AKT_tot
+    SOCS(b) SOCS_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Survival_Relay   Survival_Burst()         # Integrated biological response
+    Molecules Total_pAKT       AKT(s~P)                 # Signaling effector level
+    Molecules Active_Platform  AXL(s~P!1).PI3K(b!1)     # Recruitment intensity
+    Molecules SOCS_Feedback    SOCS()                   # Inhibitory feedback status
+    Molecules AXL_Dimer_Pool   AXL(d!+)                 # Structural cluster status
+end observables
+
+begin functions
+    # Dimer-driven trans-phosphorylation (TotalRate)
+    v_axl_phos() = k_axl_phos_max * (AXL_Dimer_Pool / 200)
+    
+    # Hill-driven AKT survival switch
+    v_akt_switch() = k_akt_act_max * (Total_pAKT^n_hill) / (Km_akt^n_hill + Total_pAKT^n_hill)
+end functions
+
+begin reaction rules
+    ## ASSEMBLY Phase
+    # GAS6 binds receptor
+    GAS6(b) + AXL(l) <-> GAS6(b!1).AXL(l!1) k_bind_gas6,0.1
+    
+    # Monomers dimerize
+    AXL(l!+,d) + AXL(l!+,d) <-> AXL(l!+,d!1).AXL(l!+,d!1) k_dimer,0.2
+    
+    ## RELAY Stage
+    # Trans-autophosphorylation in dimers (TotalRate)
+    AXL(s~U) -> AXL(s~P) v_axl_phos() TotalRate
+    
+    # pAXL recruits PI3K
+    AXL(s~P) + PI3K(b) <-> AXL(s~P!1).PI3K(b!1) k_pi3k_rec,0.2
+    
+    # PI3K/AXL complex activates AKT (Functional Rate - Hill)
+    AXL(s!1).PI3K(b!1) + AKT(s~U) -> AXL(s!1).PI3K(b!1) + AKT(s~P) 2.0
+    0 -> Survival_Burst() v_akt_switch()
+    
+    ## FEEDBACK Controlling
+    # pAKT induces SOCS
+    AKT(s~P) -> AKT(s~P) + SOCS(b) k_socs_synth
+    
+    # SOCS inhibits active AXL
+    SOCS(b) + AXL(s~P) <-> SOCS(b!1).AXL(s~P!1) k_socs_inh,0.1
+    
+    ## RESET Stage
+    AXL(s~P) -> AXL(s~U) k_reset
+    AKT(s~P) -> AKT(s~U) k_reset
+    SOCS(b) -> 0 k_deg
+    Survival_Burst() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

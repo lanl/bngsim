@@ -1,0 +1,139 @@
+begin model
+begin parameters
+pi = 2*acos(0) # dimensionless ratio circumference:diameter
+N 7.15e6 # total (conserved) population for region of interest
+I0 1 # initial number of infected persons
+fI 0.35 # initial fraction of population that is immune (0<fI<1)
+R0 = fI*N # initial number of recovered/removed persons
+S0 = N-I0-R0 # initial number of susceptible persons
+fH 1.6/100 # fraction of infections leading to hospitalization
+# flu burden
+# https://www.cdc.gov/flu-burden/php/about/index.html?CDC_AAref_Val=https://www.cdc.gov/flu/about/burden/index.html
+beta_min 2e-9*N # /d
+beta_max 6e-8*N # /d
+eta 1e-5 # /d
+gamma 0.2 # /d
+delta 1/365 # /d
+# period
+T 365.25 # d
+# phase shift
+phi (3/2)*pi
+#phi_2021 0 # determines the start of the 2021-2022 flu season
+#phi_2022 -30 # determines the start of the 2022-2023 flu season
+#phi_2023 -20 # determines the start of the 2023-2024 flu season
+#phi_2024 -40 # determines the start of the 2024-2025 flu season
+#multiplier_beta0 0.61 # dimensionless
+#beta0 0.581*multiplier_beta0 # /d
+#beta_min (beta0/2)/S0 # /person/d
+#beta_max beta0/S0 # /person/d
+#multiplier_gamma 1 # dimensionless
+#gamma 0.244*multiplier_gamma # /d
+L 0 # L>=0
+U 365 # U>L
+a_2021 5 # a>=1
+b_2021 2 # b>=1
+a_2022 3 
+b_2022 3
+a_2023 1.5
+b_2023 8
+a_2024 4
+b_2024 2
+d_2021 132
+d_2022 101
+d_2023 132
+d_2024 147
+fD_2021 0.96
+fD_2022 0.56
+fD_2023 0.84
+fD_2024 1.00
+end parameters
+begin molecule types
+S()
+I()
+R()
+S_K()
+I_K()
+R_K()
+counter()
+#cumulative_I()
+end molecule types
+begin seed species
+S() S0/N
+I() I0/N
+R() R0/N
+S_K() S0/N
+I_K() I0/N
+R_K() R0/N
+counter() 0
+#cumulative_I() 0 
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules S_K S_K()
+Molecules I_K I_K()
+Molecules R_K R_K()
+Molecules t counter() # days since June 21,2022
+#Molecules cumulative_I cumulative_I()
+end observables
+begin functions
+#f_max()=fmax
+#f()=(1/fmax)*a*b*(((t-L)/(U-L))^(a-1))*(1-((t-L)/(U-L))^a)^(b-1)
+a()=if(t<365,a_2021,\
+    if(t<730,a_2022,\
+    if(t<1096,a_2023,\
+    if(t<=1461,a_2024,0))))
+b()=if(t<365,b_2021,\
+    if(t<730,b_2022,\
+    if(t<1096,b_2023,\
+    if(t<=1461,b_2024,0))))
+xmax() = ((1-a())/(1-a()*b()))^(1/a())
+fmax() = a()*b()*(xmax()^(a()-1))*(1-xmax()^a())^(b()-1)
+t_start()=if(t<365,0+d_2021,\
+          if(t<730,365+d_2022,\
+          if(t<1096,730+d_2023,\
+          if(t<=1461,1096+d_2024,0))))
+t_end()=if(t<365,fD_2021*(365-d_2021-0)+0+d_2021,\
+        if(t<730,fD_2022*(730-d_2022-365)+365+d_2022,\
+        if(t<1096,fD_2023*(1096-d_2023-730)+730+d_2023,\
+        if(t<=1461,fD_2024*(1461-d_2024-1096)+1096+d_2024,0))))
+duration()=(t_end()-t_start())/7 # weeks
+scaled_time()=if(t>=t_start() && t<=t_end(),(t-t_start())/(t_end()-t_start()),0)
+# Kumaraswamy distribution for a,b>=1
+f()=(1/fmax())*a()*b()*((scaled_time())^(a()-1))*(1-(scaled_time())^a())^(b()-1)
+beta_K()=(beta_min+(beta_max-beta_min)*f())
+beta()=(beta_min+(beta_max-beta_min)*(1/2)*(1+sin(2*pi*t/T+phi)))
+# hospitalizations
+H()=fH*I*N
+H_K()=fH*I_K*N
+#beta()=beta_min+(beta_max-beta_min)*(sin(2*3.14156*t/365.25)+1)/2
+#cumulative_H()=fH*cumulative_I()
+# https://www.cdc.gov/flu/about/burden/index.html
+#Hmin()=1.4e5 # min annual number of hospitalizations (CDC)
+#Hmax()=7.1e5 # max annual number of hospitalizations (CDC)
+#Imin()=9e6 # min annual number of infections (CDC)
+#Imax()=41e6 # max annual number of infections (CDC)
+#Stot()=S+I+R
+end functions
+begin reaction rules
+0->counter() 1
+S()->I() beta()*I
+S()->I() eta
+I()->R() gamma
+R()->S() delta
+S_K()->I_K() beta_K()*I_K
+S_K()->I_K() eta
+I_K()->R_K() gamma
+R_K()->S_K() delta
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# t = 0 is June 21, 2021 (summer solstice)
+# t = 365 is June 21, 2022
+# t = 365+365 = 730 is June 21, 2023
+# t = 365+365+366 = 1096  is June 21, 2024 (2024 is a leap year)
+# t = 365+365+366+365 = 1461 is June 21, 2025
+simulate({suffix=>"a",method=>"ode",t_end=>1460,n_steps=>1460,print_functions=>1})
+end actions

@@ -1,0 +1,17 @@
+# Test file: legacy Hill rate law should load via loader-level rewrite
+begin parameters
+    1 k     1.0
+    2 K     50.0
+    3 n     2.0
+    4 S0    100
+end parameters
+begin species
+    1 S() S0
+    2 P() 0
+end species
+begin reactions
+    1 1 2 Hill k K n
+end reactions
+begin groups
+    1 Stot 1
+end groups

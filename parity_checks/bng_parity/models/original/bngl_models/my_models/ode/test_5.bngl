@@ -1,0 +1,108 @@
+begin model
+begin parameters
+V0 1
+R0 1
+A0 2
+kf 5
+kr 1
+krAb 0.02
+fa 0.5
+switch 0
+end parameters
+begin molecule types
+V(s1,s2,s3,s4)
+R(s,avail~T~F)
+A()
+S()
+Vt()
+Rt()
+At()
+St()
+B1()
+B2()
+B3()
+B4()
+Vx()
+Rx()
+Ax()
+Sx()
+B1x()
+B2x()
+B3x()
+B4x()
+end molecule types
+begin seed species
+V(s1,s2,s3,s4) V0
+R(s,avail~T) fa*R0
+R(s,avail~F) (1-fa)*R0
+A() A0
+S() 0
+Vt() V0
+Rt() R0
+At() A0
+St() 0
+B1() 0
+B2() 0
+B3() 0
+B4() 0
+Vx() V0
+Rx() R0
+Ax() A0
+Sx() 0
+B1x() 0
+B2x() 0
+B3x() 0
+B4x() 0
+end seed species
+begin observables
+Molecules freeV V(s1,s2,s3,s4)
+#Molecules V1 V(s1!+,s2,s3,s4)
+#Molecules V2 V(s1!+,s2!+,s3,s4)
+#Molecules V3 V(s1!+,s2!+,s3!+,s4)
+#Molecules V4 V(s1!+,s2!+,s3!+,s4!+)
+Molecules freeR_tot R(s)
+Molecules freeR_avail R(s,avail~T)
+#Molecules S S()
+Molecules freeVt Vt()
+#Molecules B1 B1()
+#Molecules B2 B2()
+#Molecules B3 B3()
+#Molecules B4 B4()
+#Molecules freeRt Rt()
+Molecules freeVx Vx()
+Molecules St St()
+end observables
+begin functions
+boundV()=V0-freeV
+boundVt()=V0-freeVt
+boundVx()=V0-freeVx
+pa()=(fa*R0-St)/(R0-St)
+true_pa()=freeR_avail/freeR_tot
+end functions
+begin reaction rules
+V(s1,s2,s3,s4)+R(s)<->V(s1!1,s2,s3,s4).R(s!1) 4*kf,kr
+V(s1!+,s2,s3,s4)+R(s)<->V(s1!+,s2!1,s3,s4).R(s!1) 3*kf,2*kr
+V(s1!+,s2!+,s3,s4)+R(s)<->V(s1!+,s2!+,s3!1,s4).R(s!1) 2*kf,3*kr
+V(s1!+,s2!+,s3!+,s4)+R(s)<->V(s1!+,s2!+,s3!+,s4!1).R(s!1) kf,4*kr
+A()+R(s,avail~T)<->S() switch*kf,krAb
+Vt()+Rt()<->B1() 4*kf,kr
+B1()+Rt()<->B2() 3*kf,2*kr
+B2()+Rt()<->B3() 2*kf,3*kr
+B3()+Rt()<->B4() kf,4*kr
+#At()+Rt()<->St() kf,kr # special case fa=1
+At()+Rt()<->St() switch*kf*pa(),krAb
+#
+Vx()+Rx()<->B1x() 4*kf,kr
+B1x()+Rx()<->B2x() 3*kf,2*kr
+B2x()+Rx()<->B3x() 2*kf,3*kr
+B3x()+Rx()<->B4x() kf,4*kr
+Ax()+Rx()<->Sx() switch*kf,krAb # special case fa=1
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+setParameter("switch",0)
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+setParameter("switch",1)
+simulate({continue=>1,method=>"ode",t_start=>10,t_end=>20,n_steps=>100,print_functions=>1})
+end actions

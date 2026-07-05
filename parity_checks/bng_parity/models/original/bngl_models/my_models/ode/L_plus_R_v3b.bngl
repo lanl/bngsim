@@ -1,0 +1,219 @@
+begin model
+
+begin parameters
+
+f 1 # dimensionless
+NA 6.02214e23 # molecules per mol
+
+# volume of extracellular fluid surrounding a single cell on average
+Vecf 2.1e-9*f # L per cell
+# volume of cytosol
+Vcyt 1.2e-12*f # L per cell
+
+# ligand dose (nM)
+IGF1_conc_nM 1 # nM
+# convert from nM to M
+IGF1_conc=IGF1_conc_nM*1e-9 # M
+# convert from M to copies per cell (cpc)
+IGF1_total=IGF1_conc*(NA*Vecf) # cpc
+
+# The following settings are based on
+#  the data of Kulak et al. (2014) for HeLa S3 cells (ATCC CCL-2.2).
+IGF1R_total  14809*f # cpc (NB: There are two copies of IGF1R per dimer.)
+IRS1_total    1329*f # cpc
+GRB10_total  24164*f # cpc
+
+# forward and reverse rate constants for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+kp1 3.47e5/(NA*Vecf) # /M/s converted to /cpc/s
+km1 3.2e-3 # /s
+
+######################################################################
+# scale IGF1R dimer abundance by a factor of 2 in "compressed" model #
+######################################################################
+
+# LT and RT for the natural formulation of the model
+nLT=IGF1_total
+nRT=0.5*IGF1R_total
+nkf=kp1
+nkr=km1
+nKD=nkr/nkf
+
+###############################################################################################
+
+#a1=nLT*nRT
+#b1=nLT+nRT+nKD
+#D1=sqrt(b1^2-4*a1) # b1^2-4*a1>0
+C 2 # dimesionless
+
+# Given C, a1 and b1, find a2 and b2 such that B2eq=C*B1eq and
+#  D2=D1, where D1^2=b1^2-4*a1 and D2^2=b2^2-4*a2.
+
+# b2^2-p*b2-q=0
+#p=4*C*a1/(b1+D1)
+#q=(p+D1)*D1
+#b2=0.5*(p+sqrt(p^2+4*q))
+
+#a2=((b2+D1)/2)*((b2-D1)/2)
+#D2=sqrt(b2^2-4*a2)
+
+# We set RT in the compressed formulation to 
+#  C times the value of RT in the natural formulation of the model.
+cRT=C*nRT
+
+cLT=C*nLT
+ckf=nkf/C
+ckr=nkr
+
+# We use a2 and b2 to find LT, KD, and kr for the compressed formulation.
+# We set kf in the compressed model to the same value of kf in the natural model.
+#cLT=a2/cRT
+#cKD=b2-(cLT+cRT)
+#ckf=nkf
+#ckr=ckf*cKD
+
+# These settings ensure that B2(t)=C*B1(t) for all time t.
+
+###############################################################################################
+
+
+# a small number, introduced to avoid a "divide by zero" error
+epsilon 1e-10 # dimensionless
+
+# rate constant for autophosphorylation
+kp 0.5 # /s
+# rate constant for pseudo first-order dephosphorylation by phosphatases considered implicitly
+kdp 0.1 # /s
+
+# A typical association rate constant for a protein-protein interaction is 1e6 /M/s.
+kon_universal 1.0e6/(NA*Vcyt) # [=] /M/s converted to /cpc/s
+
+# KD's
+KD_R_pY1_A1_s 0.01*(1e-6*(NA*Vcyt)) # uM converted to cpc
+KD_R_pY2_A2_s 0.1*(1e-6*(NA*Vcyt)) # uM converted to cpc
+
+# dissociation rate constants
+koff_R_pY1_A1_s=kon_universal*KD_R_pY1_A1_s # /s
+koff_R_pY2_A2_s=kon_universal*KD_R_pY2_A2_s # /s
+
+end parameters
+
+begin molecule types
+
+# natural
+nL(s)
+nR(s,Y1~0~P,Y1~0~P,Y2~0~P,Y2~0~P)
+nA1(s)
+nA2(s) 
+
+# compressed
+cL(s)
+cR(s,Y1~0~P,Y2~0~P)
+cA1(s) 
+cA2(s)
+
+end molecule types
+
+begin seed species
+
+nL(s) nLT
+nR(s,Y1~0,Y1~0,Y2~0,Y2~0) nRT
+nA1(s) IRS1_total
+nA2(s) GRB10_total
+
+cL(s) cLT
+cR(s,Y1~0,Y2~0) cRT
+cA1(s) IRS1_total
+cA2(s) GRB10_total
+
+end seed species
+
+begin observables
+
+#Molecules nFreeLigand nL(s)
+#Molecules nFreeReceptor nR(s)
+Molecules nBoundReceptor nR(s!+)
+Molecules npY1 nR(Y1~P!?)
+Molecules npY2 nR(Y2~P!?)
+Molecules n_RecruitedA1 nR(Y1~P!1).nA1(s!1)
+Molecules n_RecruitedA2 nR(Y2~P!1).nA2(s!1)
+
+#Molecules cFreeLigand_uncorrected cL(s)
+#Molecules cFreeReceptor_uncorrected cR(s)
+Molecules cBoundReceptor_uncorrected cR(s!+)
+Molecules cpY1 cR(Y1~P!?)
+Molecules cpY2 cR(Y2~P!?)
+Molecules c_RecruitedA1 cR(Y1~P!1).cA1(s!1)
+Molecules c_RecruitedA2 cR(Y2~P!1).cA2(s!1)
+
+end observables
+
+begin functions
+
+#nLT_report()=nLT
+#nRT_report()=nRT
+#nKD_report()=nKD
+#nkr_report()=nkr
+#cLT_report()=cLT
+#cRT_report()=cRT
+#cKD_report()=cKD
+#ckr_report()=ckr
+#D1_div_D2()=D1/D2
+#Beq1()=2*a1/(b1+D1)
+#Beq2()=2*a2/(b2+D2)
+#check()=0.5*cBoundReceptor_uncorrected/(nBoundReceptor+epsilon)
+
+cBoundReceptor_corrected()=(1/C)*cBoundReceptor_uncorrected
+
+end functions
+
+begin reaction rules
+
+###########
+# natural #
+###########
+
+# ligand-receptor interaction
+nL(s)+nR(s)<->nL(s!1).nR(s!1) nkf,nkr
+
+# receptor autophosphorylation when the receptor is bound to ligand
+nR(s!+,Y1~0)->nR(s!+,Y1~P) kp
+nR(s!+,Y2~0)->nR(s!+,Y2~P) kp
+
+# dephosphorylation
+nR(Y1~P)->nR(Y1~0) kdp
+nR(Y2~P)->nR(Y2~0) kdp
+
+# recruitment of adaptor proteins to the phosphorylated receptor
+nR(Y1~P)+nA1(s)<->nR(Y1~P!1).nA1(s!1) kon_universal,koff_R_pY1_A1_s
+nR(Y2~P)+nA2(s)<->nR(Y2~P!1).nA2(s!1) kon_universal,koff_R_pY2_A2_s
+
+##############
+# compressed #
+##############
+
+# ligand-receptor interaction
+cL(s)+cR(s)<->cL(s!1).cR(s!1) ckf,ckr
+
+# receptor autophosphorylation when the receptor is bound to ligand
+cR(s!+,Y1~0)->cR(s!+,Y1~P) kp
+cR(s!+,Y2~0)->cR(s!+,Y2~P) kp
+
+# dephosphorylation
+cR(Y1~P)->cR(Y1~0) kdp
+cR(Y2~P)->cR(Y2~0) kdp
+
+# recruitment of adaptor proteins to the phosphorylated receptor
+cR(Y1~P)+cA1(s)<->cR(Y1~P!1).cA1(s!1) kon_universal,koff_R_pY1_A1_s
+cR(Y2~P)+cA2(s)<->cR(Y2~P!1).cA2(s!1) kon_universal,koff_R_pY2_A2_s
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>3000,n_steps=>300,print_functions=>1})
+
+end actions

@@ -1,0 +1,504 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model id="New_Model" metaid="COPASI0" name="New Model">
+    <annotation>
+      <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+        <rdf:Description rdf:about="#COPASI0">
+	<dcterms:created rdf:parseType="Resource">
+	<dcterms:W3CDTF>2025-01-28T14:27:25Z</dcterms:W3CDTF>
+	</dcterms:created>
+	<dcterms:modified rdf:parseType="Resource">
+	<dcterms:W3CDTF>2025-01-28T14:27:25Z</dcterms:W3CDTF>
+	</dcterms:modified>
+	<bqmodel:is>
+	<rdf:Bag>
+	<rdf:li rdf:resource="https://identifiers.org/biomodels.db:MODEL2502210001"/>
+	</rdf:Bag>
+	</bqmodel:is>
+	<bqbiol:hasProperty>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/mamo/MAMO_0000046"/>
+	</rdf:Bag>
+	</bqbiol:hasProperty>
+	<bqmodel:isDescribedBy>
+	<rdf:Bag>
+	<rdf:li rdf:resource="https://identifiers.org/doi:10.1101/2025.07.22.666125"/>
+	</rdf:Bag>
+	</bqmodel:isDescribedBy>
+	</rdf:Description>
+	
+	
+	
+	
+      </rdf:RDF>
+      <copasi:COPASI xmlns:copasi="http://www.copasi.org/static/sbml">
+        <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="#COPASI0">
+            <dcterms:created>
+              <rdf:Description>
+                <dcterms:W3CDTF>2025-01-28T14:27:25Z</dcterms:W3CDTF>
+              </rdf:Description>
+            </dcterms:created>
+          </rdf:Description>
+        </rdf:RDF>
+      </copasi:COPASI>
+    </annotation>
+      <listOfFunctionDefinitions>
+      <functionDefinition id="Henri_Michaelis_Menten__irreversible" name="Henri-Michaelis-Menten (irreversible)">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> substrate </ci>
+            </bvar>
+            <bvar>
+              <ci> Km </ci>
+            </bvar>
+            <bvar>
+              <ci> V </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> V </ci>
+                <ci> substrate </ci>
+              </apply>
+              <apply>
+                <plus/>
+                <ci> Km </ci>
+                <ci> substrate </ci>
+              </apply>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="Competitive_inhibition__irr" name="Competitive inhibition (irr)">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> substrate </ci>
+            </bvar>
+            <bvar>
+              <ci> Inhibitor </ci>
+            </bvar>
+            <bvar>
+              <ci> Km </ci>
+            </bvar>
+            <bvar>
+              <ci> V </ci>
+            </bvar>
+            <bvar>
+              <ci> Ki </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> V </ci>
+                <ci> substrate </ci>
+              </apply>
+              <apply>
+                <plus/>
+                <ci> Km </ci>
+                <ci> substrate </ci>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> Km </ci>
+                    <ci> Inhibitor </ci>
+                  </apply>
+                  <ci> Ki </ci>
+                </apply>
+              </apply>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="Hill_Cooperativity" name="Hill Cooperativity">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> substrate </ci>
+            </bvar>
+            <bvar>
+              <ci> Shalve </ci>
+            </bvar>
+            <bvar>
+              <ci> V </ci>
+            </bvar>
+            <bvar>
+              <ci> h </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> V </ci>
+                <apply>
+                  <power/>
+                  <apply>
+                    <divide/>
+                    <ci> substrate </ci>
+                    <ci> Shalve </ci>
+                  </apply>
+                  <ci> h </ci>
+                </apply>
+              </apply>
+              <apply>
+                <plus/>
+                <cn> 1 </cn>
+                <apply>
+                  <power/>
+                  <apply>
+                    <divide/>
+                    <ci> substrate </ci>
+                    <ci> Shalve </ci>
+                  </apply>
+                  <ci> h </ci>
+                </apply>
+              </apply>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+    </listOfFunctionDefinitions>
+    <listOfUnitDefinitions>
+      <unitDefinition id="length" name="length">
+        <listOfUnits>
+          <unit exponent="1" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="area" name="area">
+        <listOfUnits>
+          <unit exponent="2" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="volume" name="volume">
+        <listOfUnits>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="time" name="time">
+        <listOfUnits>
+          <unit exponent="1" kind="second" multiplier="60" scale="-3"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="substance" name="substance">
+        <listOfUnits>
+          <unit exponent="1" kind="mole" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment constant="true" id="compartment" name="compartment" size="1" spatialDimensions="3"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="A" initialConcentration="0.999999999999997" name="A"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="B" initialConcentration="0" name="B"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="C" initialConcentration="0" name="C"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="D" initialConcentration="0" name="D"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="E" initialConcentration="0" name="E"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="F" initialConcentration="0" name="F"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="G" initialConcentration="0" name="G"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="H" initialConcentration="0" name="H"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="I" initialConcentration="0" name="I"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="J" initialConcentration="0" name="J"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" id="K" initialConcentration="0" name="K"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter constant="false" id="r1" name="r1" value="0.0999999999999997"/>
+      <parameter constant="false" id="r2" name="r2" value="0"/>
+      <parameter constant="false" id="r3" name="r3" value="0"/>
+      <parameter constant="false" id="r4" name="r4" value="0"/>
+      <parameter constant="false" id="r5" name="r5" value="0"/>
+      <parameter constant="false" id="r6" name="r6" value="0"/>
+      <parameter constant="false" id="r7" name="r7" value="0"/>
+      <parameter constant="false" id="r8" name="r8" value="0"/>
+      <parameter constant="false" id="r9" name="r9" value="0"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="r3">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r3_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r1_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r7">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r7_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r9">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r9_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r2_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r6">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r6_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r4">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r4_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r5">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r5_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="r8">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> r8_0 </ci>
+        </math>
+            </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="r1_0" name="r1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="A" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="B" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <ci> k1 </ci>
+              <ci> A </ci>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="k1" name="k1" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r2_0" name="r2" reversible="false">
+        <listOfReactants>
+          <speciesReference species="B" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="C" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="G"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Competitive_inhibition__irr </ci>
+                <ci> B </ci>
+                <ci> G </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+                <ci> Ki </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+            <parameter id="Ki" name="Ki" value="0.01"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r3_0" name="r3" reversible="false">
+        <listOfReactants>
+          <speciesReference species="C" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="D" stoichiometry="1"/>
+          <speciesReference species="E" stoichiometry="2"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Henri_Michaelis_Menten__irreversible </ci>
+                <ci> C </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r4_0" name="r4" reversible="false">
+        <listOfReactants>
+          <speciesReference species="B" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="F" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Henri_Michaelis_Menten__irreversible </ci>
+                <ci> B </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r5_0" name="r5" reversible="false">
+        <listOfReactants>
+          <speciesReference species="F" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="G" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Henri_Michaelis_Menten__irreversible </ci>
+                <ci> F </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r6_0" name="r6" reversible="false">
+        <listOfReactants>
+          <speciesReference species="G" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="H" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Henri_Michaelis_Menten__irreversible </ci>
+                <ci> G </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r7_0" name="r7" reversible="false">
+        <listOfReactants>
+          <speciesReference species="G" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="I" stoichiometry="1"/>
+          <speciesReference species="K" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Hill_Cooperativity </ci>
+                <ci> G </ci>
+                <ci> Shalve </ci>
+                <ci> V </ci>
+                <ci> h </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Shalve" name="Shalve" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+            <parameter id="h" name="h" value="1.5"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r8_0" name="r8" reversible="false">
+        <listOfReactants>
+          <speciesReference species="I" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="J" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <ci> Henri_Michaelis_Menten__irreversible </ci>
+                <ci> I </ci>
+                <ci> Km </ci>
+                <ci> V </ci>
+              </apply>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="Km" name="Km" value="0.1"/>
+            <parameter id="V" name="V" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="r9_0" name="r9" reversible="false">
+        <listOfReactants>
+          <speciesReference species="J" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="F" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <ci> k1 </ci>
+              <ci> J </ci>
+            </apply>
+          </math>
+                  <listOfParameters>
+            <parameter id="k1" name="k1" value="0.1"/>
+          </listOfParameters>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>

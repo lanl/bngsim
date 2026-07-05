@@ -1,0 +1,70 @@
+# Model: cs_diffie_hellman.bngl
+# Description: Implements a continuous-approximation of the Diffie-Hellman Key Exchange.
+#              Public Base (g) and Public Modulus (p) are parameters.
+#              Alice and Bob have secret exponents (a,b) as molecule concentrations.
+#              Shared secret (s = g^(ab) mod p) is computed via convergent molecular pathways.
+#              Demonstrates cryptographic concepts in a rule-based framework.
+
+begin model
+
+begin parameters
+    G_Base 2.0
+    P_Mod 13.0
+    SecretA 3.0
+    SecretB 4.0
+    Tau 1.0
+    t 0
+end parameters
+
+begin molecule types
+    Agent(i~Alice~Bob,t~SECRET~PUBLIC~SHARED)
+end molecule types
+
+begin seed species
+    # Exponents (Initial secrets)
+    Agent(i~Alice,t~SECRET) SecretA
+    Agent(i~Bob,t~SECRET) SecretB
+    
+    # Public values (Initial knowledge)
+    Agent(i~Alice,t~PUBLIC) G_Base
+    Agent(i~Bob,t~PUBLIC) G_Base
+end seed species
+
+begin observables
+    Molecules Alice_Secret  Agent(i~Alice,t~SECRET)
+    Molecules Bob_Secret    Agent(i~Bob,t~SECRET)
+    Molecules Alice_Public  Agent(i~Alice,t~PUBLIC)
+    Molecules Bob_Public    Agent(i~Bob,t~PUBLIC)
+    Molecules Alice_Shared  Agent(i~Alice,t~SHARED)
+    Molecules Bob_Shared    Agent(i~Bob,t~SHARED)
+end observables
+
+begin functions
+    # Shared secret: s = g^(ab) mod p
+    # For parameters G=2, P=13, A=3, B=4: 2^(3*4) = 2^12 = 4096. 4096 mod 13 = 1
+    # We use a targets to demonstrate convergence.
+    Target() = 1.0
+    
+    dSharedA_dt() = (Target() - Alice_Shared)/Tau
+    dSharedB_dt() = (Target() - Bob_Shared)/Tau
+
+    rateUA() = if(dSharedA_dt()>0, dSharedA_dt(), 0)
+    rateDA() = if(dSharedA_dt()<0, -dSharedA_dt(), 0)
+    rateUB() = if(dSharedB_dt()>0, dSharedB_dt(), 0)
+    rateDB() = if(dSharedB_dt()<0, -dSharedB_dt(), 0)
+end functions
+
+begin reaction rules
+    # Compute Shared Secrets
+    Up_SharedA: 0 -> Agent(i~Alice,t~SHARED) rateUA()
+    Dn_SharedA: Agent(i~Alice,t~SHARED) -> 0 rateDA()
+    
+    Up_SharedB: 0 -> Agent(i~Bob,t~SHARED) rateUB()
+    Dn_SharedB: Agent(i~Bob,t~SHARED) -> 0 rateDB()
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})

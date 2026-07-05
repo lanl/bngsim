@@ -1,0 +1,105 @@
+{
+  "model": "MODEL9087255381",
+  "T": 100.0,
+  "N": 200,
+  "runs": {
+    "analytical/default": {
+      "wall": 0.4043115269887494,
+      "stats": {
+        "n_steps": 454,
+        "n_rhs_evals": 599,
+        "n_jac_evals": 68,
+        "n_err_test_fails": 19,
+        "n_nonlin_iters": 596,
+        "steady_state_reached": 0
+      }
+    },
+    "analytical/tight": {
+      "wall": 0.39800463800202124,
+      "stats": {
+        "n_steps": 1053,
+        "n_rhs_evals": 1146,
+        "n_jac_evals": 91,
+        "n_err_test_fails": 8,
+        "n_nonlin_iters": 1144,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/default": {
+      "wall": 0.3652395340031944,
+      "stats": {
+        "n_steps": 472,
+        "n_rhs_evals": 569,
+        "n_jac_evals": 54,
+        "n_err_test_fails": 8,
+        "n_nonlin_iters": 566,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/tight": {
+      "wall": 1.2269015019992366,
+      "stats": {
+        "n_steps": 1049,
+        "n_rhs_evals": 1146,
+        "n_jac_evals": 92,
+        "n_err_test_fails": 9,
+        "n_nonlin_iters": 1144,
+        "steady_state_reached": 0
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "label": "analytical_default vs fd_default (the speedup-mode pair)",
+      "max_abs": 3.361030010751165e-06,
+      "peak": 2000.0,
+      "peak_rel": 1.6805150053755825e-09,
+      "max_elt_rel": 0.041276484547453834,
+      "at": {
+        "t_idx": 53,
+        "species": "NMDAR",
+        "a": 115.71802976305415,
+        "b": 115.71803312408416
+      }
+    },
+    {
+      "label": "analytical_tight vs fd_tight (do they converge together?)",
+      "max_abs": 3.6365905842217217e-09,
+      "peak": 2000.0,
+      "peak_rel": 1.8182952921108608e-12,
+      "max_elt_rel": 1.2581067879266329e-06,
+      "at": {
+        "t_idx": 28,
+        "species": "CaMKII_minus_PSD",
+        "a": 3.992576692816783,
+        "b": 3.9925766891801926
+      }
+    },
+    {
+      "label": "analytical: default vs tight (is analytical converging?)",
+      "max_abs": 2.1498801757117704e-06,
+      "peak": 2000.0,
+      "peak_rel": 1.0749400878558852e-09,
+      "max_elt_rel": 0.03953386016566326,
+      "at": {
+        "t_idx": 14,
+        "species": "tot_minus_CaM_minus_CaMKII_minus_PSD",
+        "a": 8.416832120601349e-05,
+        "b": 8.201844103030172e-05
+      }
+    },
+    {
+      "label": "fd: default vs tight (is fd converging?)",
+      "max_abs": 2.7025982234363255e-06,
+      "peak": 2000.0,
+      "peak_rel": 1.3512991117181627e-09,
+      "max_elt_rel": 0.022434321488352196,
+      "at": {
+        "t_idx": 53,
+        "species": "NMDAR",
+        "a": 115.71803312408416,
+        "b": 115.71803042148593
+      }
+    }
+  ]
+}

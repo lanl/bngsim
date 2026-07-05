@@ -1,0 +1,96 @@
+begin model
+begin parameters
+    # DR5 (TRAIL) Signaling: Extrinsic apoptosis and DISC formation.
+    # Advanced features: DeleteMolecules for clearance and Hill kinetics for activation.
+    
+    # Reception
+    k_bind_trail 1e-3
+    k_trim 0.8         # Receptor clustering
+    
+    # DISC Activation
+    k_c8_act_max 10.0  # Peak Casp-8 activation
+    Km_disc 200        # Threshold for apoptotic drive
+    n_hill 3.0         # Cooperative recruitment threshold
+    
+    # Inhibition (Life signals)
+    k_flip_inh 5.0     # c-FLIP isoforms (Competitive)
+    k_trail_clear 0.2  # Ligand neutralization (Decoy R)
+    
+    # Terminal Clearance
+    k_internal 1.5     # Internalisation (Spatial removal)
+    k_deg 0.1          # Post-activation degradation
+    
+    # Initials
+    TRAIL_tot 100
+    DR5_tot 500
+    FADD_tot 300
+    Caspase8_tot 600
+    FLIP_tot 200
+end parameters
+
+begin molecule types
+    TRAIL(b)
+    DR5(l,f,s~U~T,loc~mem~cyt) # s: trimer status
+    FADD(d,c)
+    Caspase8(b)
+    FLIP(b)
+    Death_Signal()
+end molecule types
+
+begin seed species
+    TRAIL(b) TRAIL_tot
+    DR5(l,f,s~U,loc~mem) DR5_tot
+    FADD(d,c) FADD_tot
+    Caspase8(b) Caspase8_tot
+    FLIP(b) FLIP_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Apoptotic_Drive Death_Signal()           # Final cell death effector
+    Molecules Active_DISC     DR5(s~T,f!1).FADD(d!1)  # Recruitment platform
+    Molecules Surface_DR5     DR5(loc~mem)             # Receptive pool
+    Molecules FLIP_Block      FADD(c!1).FLIP(b!1)      # Inhibition presence
+    # Molecules Caspase8_Active Caspase8(s~active)         # Effector drive (Removed: State not modeled)
+    Molecules Trimer_DR5    DR5(s~T,f!+)            # Active platform status
+end observables
+
+begin functions
+    # Sharp Hill switch for Caspase-8 activation at the DISC
+    v_burst() = k_c8_act_max * (Trimer_DR5 / (Km_disc + Trimer_DR5))^n_hill
+end functions
+
+begin reaction rules
+    ## RECEPTION Phase
+    # TRAIL binds DR5
+    TRAIL(b) + DR5(l) <-> TRAIL(b!1).DR5(l!1) k_bind_trail,0.1
+    
+    # Trimerization (Active signaling status)
+    DR5(l!+,s~U) -> DR5(l!+,s~T) k_trim
+    
+    ## DISC Stage
+    # DR5 clusters recruit FADD and partners
+    DR5(s~T,f) + FADD(d) <-> DR5(s~T,f!1).FADD(d!1) 2.0,0.5
+    FADD(d!+,c) + Caspase8(b) <-> FADD(d!+,c!1).Caspase8(b!1) 1.0,0.1
+    FADD(d!+,c) + FLIP(b) <-> FADD(d!+,c!1).FLIP(b!1) k_flip_inh,0.1
+    
+    # Caspase-8 Activation (Functional Rate)
+    0 -> Death_Signal() v_burst()
+    
+    ## CLEARANCE Phase
+    # Active trimers internalise and are degraded
+    # DeleteMolecules: Signal termination
+    DR5(l,f,s~T,loc~mem) -> DR5(l,f,s~T,loc~cyt) k_internal
+    DR5(loc~cyt) -> 0 k_deg DeleteMolecules
+    
+    # Reset
+    TRAIL(b!+) -> 0 k_trail_clear
+    Death_Signal() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

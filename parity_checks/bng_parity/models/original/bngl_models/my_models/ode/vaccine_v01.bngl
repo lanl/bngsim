@@ -1,0 +1,187 @@
+begin model
+begin parameters
+##################################
+# Table 1: adjustable parameters #
+##################################
+# start time of regional epidemic
+t0 33 # d
+t_delta 1
+# generate a time series vector to store different values.
+sigma t0 + t_delta # d (>t0)
+# steady-social social-distancing setpoint for 1st phase, generate a time series vector to store different values.
+P 0.87 # dimesionless
+#  generate a time series vector to store different values.
+U 1
+# eigenvalue that determines timescale for social-distancing dynamics, generate a time series vector to store different values.
+lambda 0.1 # /d
+# rate constant for transmission
+beta 2 # /d
+# fraction of symptomatic cases of mild disease detected
+fD 0.12 # dimensionless
+# parameter of negative binomial distribution
+r 12
+# rate constant from unvacinated to vacinated
+mu 0.1
+#############################
+# Table 2: fixed parameters #
+#############################
+# total population of Maricopa County, AZ
+S0 4500000 # intial number of susceptible individuals
+I0 1 # initial number of infected individuals with mild symptomatic disease
+#n=0,1,2,...
+# parameter characterizing protective effect of social distancing
+mb 0.1 # dimensionless
+# relative infectiousness of E vs. I
+rhoE 1.1 # dimensionless
+# relative infectiousness of A vs. I
+rhoA 0.9 # dimensionless
+# rate constant for progression through stages of the incubation period
+kL 0.94 # /d
+# rate constant for quarantine
+kQ 0.0038 # /d
+# rate constant for self-isolation
+jQ 0.4 # /d
+# fraction of exposed individuals who never develop symptoms
+fA 0.44 # dimensionless
+# fraction of symptomatic cases that progress to severe disease/hospitalization
+fH 0.054 # dimensionless
+# fraction of hospitalized patients who recover
+fR 0.79 # dimensionless
+# rate constant for A->R transition
+cA 0.26 # /d
+# rate constant for I->H or R transition
+cI 0.12 # /d
+# rate constant for H->D or R transition
+cH 0.17 # /d
+# rate constant for progression through stages of the vaccination period
+kV 0.33 # /d
+end parameters
+
+begin molecule types
+counter()
+S(social~M~P)
+E(social~M~P~Q,stage~1~2~3~4~5)
+A(social~M~P~Q)
+I(social~M~P~Q)
+V(stage~1~2~3~4~5~6)
+H()
+R(vaccinated~Y~N)
+D()
+end molecule types
+
+begin seed species #what are these?
+S(social~M) S0
+I(social~M) I0
+end seed species
+
+begin observables
+Molecules SM S(social~M)
+Molecules SP S(social~P)
+Molecules nStotal S()
+Molecules E2to5M E(social~M,stage~2) E(social~M,stage~3) E(social~M,stage~4) E(social~M,stage~5)
+Molecules E2to5P E(social~P,stage~2) E(social~P,stage~3) E(social~P,stage~4) E(social~P,stage~5)
+Molecules E2to5Q E(social~Q,stage~2) E(social~Q,stage~3) E(social~Q,stage~4) E(social~Q,stage~5)
+Molecules VAll V(stage~1) V(stage~2) V(stage~3) V(stage~4) V(stage~5) V(stage~6) R(vaccinated~Y)
+Molecules IM I(social~M)
+Molecules IP I(social~P)
+Molecules IQ I(social~Q)
+Molecules AM A(social~M)
+Molecules AP A(social~P)
+Molecules AQ A(social~Q)
+Molecules H H()
+Molecules R R(vaccinated~Y) R(vaccinated~N)
+Molecules D D()
+Molecules t counter()
+end observables
+
+begin functions
+phiM()=if(t>=t0,IM+rhoE*E2to5M+rhoA*AM,0)
+phiP()=IP+rhoE*E2to5P+rhoA*AP
+end functions
+
+begin reaction rules
+#social status: mixed, protected, quarantine 
+##vertical
+S(social~M)<->S(social~P) U*lambda*P, U*lambda*(1-P)   
+##same stage
+E(social~M,stage~1)<->E(social~P,stage~1) U*lambda*P, U*lambda*(1-P) 
+E(social~M,stage~2)<->E(social~P,stage~2) U*lambda*P, U*lambda*(1-P) 
+E(social~M,stage~3)<->E(social~P,stage~3) U*lambda*P, U*lambda*(1-P) 
+E(social~M,stage~4)<->E(social~P,stage~4) U*lambda*P, U*lambda*(1-P) 
+E(social~M,stage~5)<->E(social~P,stage~5) U*lambda*P, U*lambda*(1-P) 
+##same stage
+E(social~M,stage~2)->E(social~Q,stage~2) kQ
+E(social~M,stage~3)->E(social~Q,stage~3) kQ 
+E(social~M,stage~4)->E(social~Q,stage~4) kQ 
+E(social~M,stage~5)->E(social~Q,stage~5) kQ 
+##same stage
+E(social~P,stage~2)->E(social~Q,stage~2) kQ
+E(social~P,stage~3)->E(social~Q,stage~3) kQ 
+E(social~P,stage~4)->E(social~Q,stage~4) kQ 
+E(social~P,stage~5)->E(social~Q,stage~5) kQ 
+##late satges
+A(social~M)<->A(social~P) U*lambda*P, U*lambda*(1-P)
+I(social~M)<->I(social~P) U*lambda*P, U*lambda*(1-P)
+##quarantine
+A(social~M)->A(social~Q) kQ
+A(social~P)->A(social~Q) kQ
+I(social~M)->I(social~Q) kQ+jQ
+I(social~P)->I(social~Q) kQ+jQ
+#disease progression, 5 stages, fit by Erlang idstribution
+##disease transmission
+S(social~M)->E(social~M,stage~1) (beta/S0)*(phiM()+mb*phiP())
+S(social~P)->E(social~P,stage~1) (beta/S0)*(phiM()+mb*phiP())*mb
+E(social~M,stage~1)->E(social~M,stage~2) kL
+E(social~M,stage~2)->E(social~M,stage~3) kL
+E(social~M,stage~3)->E(social~M,stage~4) kL
+E(social~M,stage~4)->E(social~M,stage~5) kL
+E(social~P,stage~1)->E(social~P,stage~2) kL
+E(social~P,stage~2)->E(social~P,stage~3) kL
+E(social~P,stage~3)->E(social~P,stage~4) kL
+E(social~P,stage~4)->E(social~P,stage~5) kL
+E(social~Q,stage~2)->E(social~Q,stage~3) kL
+E(social~Q,stage~3)->E(social~Q,stage~4) kL
+E(social~Q,stage~4)->E(social~Q,stage~5) kL
+##developed to mild symtoms
+E(social~Q,stage~5)->A(social~Q) kL*fA
+E(social~M,stage~5)->A(social~M) kL*fA
+E(social~P,stage~5)->A(social~P) kL*fA
+##developed to severe symtoms
+E(social~Q,stage~5)->I(social~Q) kL*(1-fA)
+E(social~M,stage~5)->I(social~M) kL*(1-fA)
+E(social~P,stage~5)->I(social~P) kL*(1-fA)
+#vacination
+S(social~M)->V(stage~1) mu#time dependent variable, from actual data, proportional to S(social~M) S(social~P)?
+S(social~P)->V(stage~1) mu
+#immune response, 6 stages, fit by Erlang idstribution with IgG data
+##vaccinated protected
+V(stage~1)->V(stage~2) kV
+V(stage~2)->V(stage~3) kV
+V(stage~3)->V(stage~4) kV
+V(stage~4)->V(stage~5) kV
+V(stage~5)->V(stage~6) kV
+V(stage~6)->R(vaccinated~Y) kV
+R(vaccinated~N)->R(vaccinated~Y) mu
+##vaccinated but not protected
+V()->E(social~M,stage~1) (beta/S0)*(1-kV)
+V()->E(social~P,stage~1) (beta/S0)*(1-kV)
+#recovered
+A(social~M)->R(vaccinated~N) cA
+A(social~P)->R(vaccinated~N) cA
+A(social~Q)->R(vaccinated~N) cA
+I(social~M)->R(vaccinated~N) cI*(1-fH) 
+I(social~P)->R(vaccinated~N) cI*(1-fH)
+I(social~Q)->R(vaccinated~N) cI*(1-fH)
+H()->R(vaccinated~N) cH*fR
+#hospitalized
+I(social~P)->R(vaccinated~N) cI*fH
+I(social~Q)->R(vaccinated~N) cI*fH
+#death
+H()->D() cH*(1-fR)
+end reaction rules
+end model
+
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"PHX",method=>"ode",t_start=>0,t_end=>186,n_steps=>186,print_functions=>1})
+end actions

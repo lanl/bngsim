@@ -1,0 +1,38 @@
+# A_plus_A_mixed_2.bngl
+begin parameters
+t_end		30
+n_steps         100
+kp1		0.1
+km1		0.5
+kp2		0.1
+km2		0.5
+kph		0.1
+kd		0.04
+A_tot		10
+end parameters
+
+begin molecule types
+A(a,b~U~P)
+end molecule types
+
+begin species
+A(a,b~U)		A_tot
+end species
+
+begin reaction rules
+A(a,b~U) + A(a,b~U) <-> A(a!1,b~U).A(a!1,b~U) kp1,km1
+A(a,b~P) + A(a,b~P) <-> A(a!1,b~P).A(a!1,b~P) kp2,km2
+A(b~U) <-> A(b~P) kph,kd
+end reaction rules
+
+begin observables
+Species A_1   A(a)
+Species AU_1   A(a,b~U)
+Species AP_1   A(a,b~P)
+Species AAU_1   A(a!1,b~U).A(a!1,b~U)
+Species AAP_1   A(a!1,b~P).A(a!1,b~P)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>100})
+end actions

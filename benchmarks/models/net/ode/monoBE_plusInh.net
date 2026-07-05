@@ -1,0 +1,63 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 pi               2*acos(0)  # Constant
+    2 NA               6.02214076e23  # Constant
+    3 Vcyt             1e-12  # Constant
+    4 kf               1e6/(NA*Vcyt)  # ConstantExpression
+    5 kr               0.01  # Constant
+    6 RAF_total        2e5  # Constant
+    7 inh_I_total      0  # Constant
+    8 inh_II_total     602  # Constant
+    9 inh_Ihalf_total  602  # Constant
+   10 b                5  # Constant
+   11 c                5  # Constant
+   12 gamma            1  # Constant
+   13 b1               gamma*b  # ConstantExpression
+   14 b2               b  # ConstantExpression
+   15 c1               gamma*c  # ConstantExpression
+   16 c2               c  # ConstantExpression
+   17 KD_I             pi  # ConstantExpression
+   18 a11_I            1  # Constant
+   19 a21_I            1000  # Constant
+   20 a12_I            1000  # Constant
+   21 a22_I            1000  # Constant
+   22 KD_II            pi  # ConstantExpression
+   23 a11_II           1000  # Constant
+   24 a21_II           1  # Constant
+   25 a12_II           1000  # Constant
+   26 a22_II           1000  # Constant
+   27 KD_Ihalf         1000  # Constant
+   28 a11_Ihalf        1000  # Constant
+   29 a21_Ihalf        1000  # Constant
+   30 a12_Ihalf        1  # Constant
+   31 a22_Ihalf        1000  # Constant
+   32 _rateLaw1        1  # Constant
+   33 _rateLaw2        kr*b1  # ConstantExpression
+   34 _rateLaw3        kf*b2  # ConstantExpression
+   35 _rateLaw4        kf*c1  # ConstantExpression
+   36 _rateLaw5        kf*c2  # ConstantExpression
+end parameters
+begin species
+    1 counter() 0
+    2 RAF(ATPBS,DFG~OUT,aC~OUT) RAF_total
+    3 inh_I() inh_I_total
+    4 inh_II() inh_II_total
+    5 inh_Ihalf() inh_Ihalf_total
+    6 RAF(ATPBS,DFG~IN,aC~OUT) 0
+    7 RAF(ATPBS,DFG~OUT,aC~IN) 0
+    8 RAF(ATPBS,DFG~IN,aC~IN) 0
+end species
+begin reactions
+    1 0 1 _rateLaw1 #_R1
+    2 2 6 _rateLaw3 #_R3
+    3 2 7 _rateLaw5 #_R5
+    4 7 8 _rateLaw2 #_R2
+    5 6 2 kr #_reverse__R3
+    6 6 8 _rateLaw4 #_R4
+    7 7 2 kr #_reverse__R5
+    8 8 7 kr #_reverse__R2
+    9 8 6 kr #_reverse__R4
+end reactions
+begin groups
+    1 RAF_active           8
+end groups

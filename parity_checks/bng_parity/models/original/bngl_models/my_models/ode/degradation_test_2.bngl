@@ -1,0 +1,90 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23
+V 1e-12
+
+kf 1e6/(NA*V)
+kr 0.01
+
+kpUb .2
+kmUb .1
+
+kdeg 0.1
+
+ksynth 1e2
+kdeg_constitutive 0.01
+
+end parameters
+
+begin molecule types
+
+A(b,c,K~0~Ub)
+B(a)
+C(a)
+E3()
+
+end molecule types
+
+begin seed species
+
+A(b,c,K~0) 1e5
+B(a) 1e5
+C(a) 1e5
+E3() 0
+
+end seed species
+
+
+begin observables
+
+Molecules Atot A()
+Molecules Btot B()
+Molecules Ctot C()
+
+Molecules AB_bonds A(b!1).B(a!1)
+Molecules AC_bonds A(c!1).C(a!1)
+
+Molecules A_Ub A(K~Ub)
+
+end observables
+
+begin reaction rules
+
+A(b)+B(a)<->A(b!1).B(a!1) kf,kr
+A(c)+C(a)<->A(c!1).C(a!1) kf,kr
+
+E3()+A(K~0)<->E3()+A(K~Ub) kpUb,kmUb
+
+A(b,c,K~Ub)->0 kdeg
+A(b!1,c,K~Ub).B(a!1)->B(a) kdeg
+A(b,c!1,K~Ub).C(a!1)->C(a) kdeg
+A(b!1,c!2,K~Ub).B(a!1).C(a!2)->B(a)+C(a) kdeg
+
+0->A(b,c,K~0) ksynth
+A(b,c,K~0)->0 kdeg_constitutive
+
+#0->B(a) ksynth
+#B(a)->0 kdeg_constitutive
+
+#0->C(a) ksynth
+#C(a)->0 kdeg_constitutive
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({suffix=>"equilibrate",method=>"ode",t_start=>0,t_end=>100000,n_steps=>100})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("E3()",1)
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+
+
+end actions

@@ -1,0 +1,231 @@
+begin model
+
+#@title: Steric effects on ligand-receptor binding (Hlavacek et al., 1999)
+
+#@description: |
+#  Dimensionless kinetic model of multivalent ligand-receptor
+#  binding with steric hindrance. A multivalent ligand with n=20
+#  equivalent binding sites interacts with monovalent cell-surface
+#  receptors. Bound receptors cover a circular area a on the
+#  ligand surface, sterically excluding nearby sites from further
+#  binding. The approximate insertion probability (Eq. 10) gives
+#  the fraction of unbound sites available for receptor binding:
+#
+#    P_i(A) = (1 - i/n)(1 - ia/A)(1 - 3a/(A - ia))^i
+#
+#  with a/A = 0.01 (receptor footprint is 1% of ligand surface)
+#  and gamma = 1 (circular receptor footprint). The steric
+#  hindrance factor H(i) = (1 - ia/A)(1 - 3a/(A-ia))^i reduces
+#  the number of available sites nu(i) = (n-i)*H(i) below the
+#  equivalent-site value (n-i).
+#
+#  Variables are dimensionless: x_i = L_i/R_T (surface-bound
+#  ligand normalized by total receptor density), tau = k_{-x}*t
+#  (time scaled by reverse cross-linking rate). Free ligand l
+#  and free receptor r are computed from conservation laws.
+#  ODE only — dimensionless variables are incompatible with
+#  stochastic simulation.
+#
+#  Outputs alpha(2) and alpha(10): fractions of receptors in
+#  aggregates of >= 2 and >= 10, quantifying receptor
+#  cross-linking.
+
+#@keyword: |
+#  steric effects, multivalent ligand, receptor aggregation,
+#  ligand-receptor binding, insertion probability, steric
+#  hindrance, cross-linking, dimensionless
+
+#@reference: |
+#  Hlavacek WS, Posner RG, Perelson AS (1999). Steric effects
+#  on multivalent ligand-receptor binding: exclusion of ligand
+#  sites by bound cell surface receptors. Biophys J
+#  76:3031-3043. doi:10.1016/S0006-3495(99)77456-4
+
+begin parameters
+
+  #@note: |
+  #  Dimensionless parameters from Fig. 8 in Hlavacek et al.
+  #  (1999). Time is in units of 1/k_{-x}. Surface species
+  #  x_i = L_i/R_T; free ligand l = L_0/L_T; free receptor
+  #  r = R/R_T.
+
+  # Exposure valence (sites exposed to receptors)
+  n  20  # dimensionless
+
+  # Scaled ligand concentration: v*K*L_T
+  vKLT  1  # dimensionless
+
+  # Scaled cross-linking affinity: K_x*R_T
+  KxRT  10  # dimensionless
+
+  # Surface-to-volume conversion: C*R_T/L_T
+  CRT_LT  10  # dimensionless
+
+  # Ratio of unbinding rate constants: k_r/k_{-x}
+  kr_kmx  1  # dimensionless
+
+  # Receptor footprint area ratio: a/A (Eq. 10)
+  aA  0.01  # dimensionless
+
+  # Available sites nu(i) = (n-i)*H(i) for i = 1,...,19
+  # H(i) = (1 - i*aA)*(1 - 3*aA/(1 - i*aA))^i
+  # (Eq. 10 with gamma = 1, circular receptor)
+  nu_1   (n-1)*(1-1*aA)*(1-3*aA/(1-1*aA))^1    # dimensionless
+  nu_2   (n-2)*(1-2*aA)*(1-3*aA/(1-2*aA))^2    # dimensionless
+  nu_3   (n-3)*(1-3*aA)*(1-3*aA/(1-3*aA))^3    # dimensionless
+  nu_4   (n-4)*(1-4*aA)*(1-3*aA/(1-4*aA))^4    # dimensionless
+  nu_5   (n-5)*(1-5*aA)*(1-3*aA/(1-5*aA))^5    # dimensionless
+  nu_6   (n-6)*(1-6*aA)*(1-3*aA/(1-6*aA))^6    # dimensionless
+  nu_7   (n-7)*(1-7*aA)*(1-3*aA/(1-7*aA))^7    # dimensionless
+  nu_8   (n-8)*(1-8*aA)*(1-3*aA/(1-8*aA))^8    # dimensionless
+  nu_9   (n-9)*(1-9*aA)*(1-3*aA/(1-9*aA))^9    # dimensionless
+  nu_10  (n-10)*(1-10*aA)*(1-3*aA/(1-10*aA))^10  # dimensionless
+  nu_11  (n-11)*(1-11*aA)*(1-3*aA/(1-11*aA))^11  # dimensionless
+  nu_12  (n-12)*(1-12*aA)*(1-3*aA/(1-12*aA))^12  # dimensionless
+  nu_13  (n-13)*(1-13*aA)*(1-3*aA/(1-13*aA))^13  # dimensionless
+  nu_14  (n-14)*(1-14*aA)*(1-3*aA/(1-14*aA))^14  # dimensionless
+  nu_15  (n-15)*(1-15*aA)*(1-3*aA/(1-15*aA))^15  # dimensionless
+  nu_16  (n-16)*(1-16*aA)*(1-3*aA/(1-16*aA))^16  # dimensionless
+  nu_17  (n-17)*(1-17*aA)*(1-3*aA/(1-17*aA))^17  # dimensionless
+  nu_18  (n-18)*(1-18*aA)*(1-3*aA/(1-18*aA))^18  # dimensionless
+  nu_19  (n-19)*(1-19*aA)*(1-3*aA/(1-19*aA))^19  # dimensionless
+
+end parameters
+
+begin molecule types
+  # Ligand bound state: component b tracks number of bound
+  # receptors (1-20). Free ligand (0 bound) is implicit,
+  # computed from conservation law l = 1 - CRT_LT*sum(x_i).
+  Lig(b~1~2~3~4~5~6~7~8~9~10~11~12~13~14~15~16~17~18~19~20)
+end molecule types
+
+begin seed species
+  Lig(b~1)  0  # dimensionless
+end seed species
+
+begin observables
+  # Surface density of ligand bound at i sites (x_i = L_i/R_T)
+  Molecules  Obs_L1   Lig(b~1)
+  Molecules  Obs_L2   Lig(b~2)
+  Molecules  Obs_L3   Lig(b~3)
+  Molecules  Obs_L4   Lig(b~4)
+  Molecules  Obs_L5   Lig(b~5)
+  Molecules  Obs_L6   Lig(b~6)
+  Molecules  Obs_L7   Lig(b~7)
+  Molecules  Obs_L8   Lig(b~8)
+  Molecules  Obs_L9   Lig(b~9)
+  Molecules  Obs_L10  Lig(b~10)
+  Molecules  Obs_L11  Lig(b~11)
+  Molecules  Obs_L12  Lig(b~12)
+  Molecules  Obs_L13  Lig(b~13)
+  Molecules  Obs_L14  Lig(b~14)
+  Molecules  Obs_L15  Lig(b~15)
+  Molecules  Obs_L16  Lig(b~16)
+  Molecules  Obs_L17  Lig(b~17)
+  Molecules  Obs_L18  Lig(b~18)
+  Molecules  Obs_L19  Lig(b~19)
+  Molecules  Obs_L20  Lig(b~20)
+  # Total surface-bound ligand (all states)
+  Molecules  Obs_L_tot  Lig()
+end observables
+
+begin functions
+  # Helper functions: weighted sums of bound states for
+  # computing receptor occupancy (sum of i*x_i)
+  r_b_lo() = Obs_L1 + 2*Obs_L2 + 3*Obs_L3 + 4*Obs_L4 + 5*Obs_L5
+  r_b_md() = 6*Obs_L6 + 7*Obs_L7 + 8*Obs_L8 + 9*Obs_L9 + 10*Obs_L10
+  r_b_hi() = 11*Obs_L11 + 12*Obs_L12 + 13*Obs_L13 + 14*Obs_L14
+  r_b_vh() = 15*Obs_L15 + 16*Obs_L16 + 17*Obs_L17 + 18*Obs_L18
+  r_b_xx() = 19*Obs_L19 + 20*Obs_L20
+
+  # Free receptor fraction: r = 1 - sum(i*x_i) (Eq. 17)
+  r_free() = 1 - r_b_lo() - r_b_md() - r_b_hi() - r_b_vh() - r_b_xx()
+
+  # Free ligand fraction: l = 1 - CRT_LT*sum(x_i) (Eq. 16)
+  l_free() = 1 - CRT_LT*Obs_L_tot
+
+  # First binding rate from solution (zeroth-order creation)
+  fn_bind() = kr_kmx*vKLT*r_free()*l_free()
+
+  # Fraction of receptors in aggregates of 2+ (Eq. 18)
+  alpha_2() = 1 - r_free() - Obs_L1
+
+  # Fraction of receptors in aggregates of 10+ (Eq. 18)
+  alpha_10() = 10*Obs_L10 + r_b_hi() + r_b_vh() + r_b_xx()
+end functions
+
+begin reaction rules
+  # Initial binding: solution ligand attaches to cell surface.
+  # Zeroth-order creation; rate = (k_r/k_{-x})(vKL_T)*r*l.
+  # See Eq. 15, u_0 forward term.
+  0 -> Lig(b~1)  fn_bind()
+
+  # Reverse initial binding: ligand detaches from surface.
+  # BNG multiplies by [Lig(b~1)].
+  Lig(b~1) -> 0  kr_kmx
+
+  # Forward cross-linking: receptor binds available site on
+  # surface-adsorbed ligand. Rule rate = nu_i*KxRT*r_free();
+  # BNG multiplies by [Lig(b~i)], giving total rate
+  # nu(i)*KxRT*r*x_i. See Eq. 15, u_i forward term.
+  Lig(b~1)  -> Lig(b~2)   nu_1*KxRT*r_free()
+  Lig(b~2)  -> Lig(b~3)   nu_2*KxRT*r_free()
+  Lig(b~3)  -> Lig(b~4)   nu_3*KxRT*r_free()
+  Lig(b~4)  -> Lig(b~5)   nu_4*KxRT*r_free()
+  Lig(b~5)  -> Lig(b~6)   nu_5*KxRT*r_free()
+  Lig(b~6)  -> Lig(b~7)   nu_6*KxRT*r_free()
+  Lig(b~7)  -> Lig(b~8)   nu_7*KxRT*r_free()
+  Lig(b~8)  -> Lig(b~9)   nu_8*KxRT*r_free()
+  Lig(b~9)  -> Lig(b~10)  nu_9*KxRT*r_free()
+  Lig(b~10) -> Lig(b~11)  nu_10*KxRT*r_free()
+  Lig(b~11) -> Lig(b~12)  nu_11*KxRT*r_free()
+  Lig(b~12) -> Lig(b~13)  nu_12*KxRT*r_free()
+  Lig(b~13) -> Lig(b~14)  nu_13*KxRT*r_free()
+  Lig(b~14) -> Lig(b~15)  nu_14*KxRT*r_free()
+  Lig(b~15) -> Lig(b~16)  nu_15*KxRT*r_free()
+  Lig(b~16) -> Lig(b~17)  nu_16*KxRT*r_free()
+  Lig(b~17) -> Lig(b~18)  nu_17*KxRT*r_free()
+  Lig(b~18) -> Lig(b~19)  nu_18*KxRT*r_free()
+  Lig(b~19) -> Lig(b~20)  nu_19*KxRT*r_free()
+
+  # Reverse cross-linking: receptor dissociates from
+  # surface-adsorbed ligand. Rate constant = (i+1) in
+  # dimensionless units; BNG multiplies by [Lig(b~{i+1})].
+  # See Eq. 15, u_i reverse term.
+  Lig(b~2)  -> Lig(b~1)   2
+  Lig(b~3)  -> Lig(b~2)   3
+  Lig(b~4)  -> Lig(b~3)   4
+  Lig(b~5)  -> Lig(b~4)   5
+  Lig(b~6)  -> Lig(b~5)   6
+  Lig(b~7)  -> Lig(b~6)   7
+  Lig(b~8)  -> Lig(b~7)   8
+  Lig(b~9)  -> Lig(b~8)   9
+  Lig(b~10) -> Lig(b~9)   10
+  Lig(b~11) -> Lig(b~10)  11
+  Lig(b~12) -> Lig(b~11)  12
+  Lig(b~13) -> Lig(b~12)  13
+  Lig(b~14) -> Lig(b~13)  14
+  Lig(b~15) -> Lig(b~14)  15
+  Lig(b~16) -> Lig(b~15)  16
+  Lig(b~17) -> Lig(b~16)  17
+  Lig(b~18) -> Lig(b~17)  18
+  Lig(b~19) -> Lig(b~18)  19
+  Lig(b~20) -> Lig(b~19)  20
+
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 20 species, 40 reactions
+
+  #@protocol: |
+  #  Time course of receptor aggregation from all-free initial
+  #  conditions (l=1, r=1, x_i=0). Output: alpha(2) and
+  #  alpha(10) vs dimensionless time tau = k_{-x}*t.
+
+  #@figure: Fig. 8a,b (broken line) in Hlavacek et al. (1999)
+
+  simulate({method=>"ode",suffix=>"ode",\
+    t_start=>0,t_end=>2.5,n_steps=>500})
+end actions

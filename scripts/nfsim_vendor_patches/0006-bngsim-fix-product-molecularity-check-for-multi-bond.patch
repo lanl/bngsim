@@ -1,0 +1,269 @@
+From bf3aa5d425b429739e487c7cd741b5fcf64688d2 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Sat, 23 May 2026 01:52:11 -0600
+Subject: [PATCH 06/14] bngsim: fix product-molecularity check for multi-bond
+ ring-opening
+
+TransformationSet::checkMolecularity enforces product-side molecularity for
+unimolecular unbinding rules (the Issue #48 carry): a dissociation
+"A.B -> A + B" must only fire when breaking the bond actually separates the
+match into different connected components. The check tested each deleted bond
+in isolation via canReachExcludingBond, excluding a single bond and asking
+whether the partners stayed connected.
+
+That wrongly blocks rules that delete several bonds at once to open a cyclic
+complex. A symmetric two-bond homodimer dissociation
+(M(h!1,f!2).M(h!2,f!1) -> M(h,f) + M(h,f)) removes both ring bonds together;
+each bond alone leaves the partners connected through the other, so the
+per-bond test returns false and the reverse reaction never fires. The dimer
+becomes a kinetic trap and the system over-assembles relative to the network
+ODE and to upstream NFsim (internal#57).
+
+Gather every bond the rule's UNBINDING transforms will delete and exclude the
+whole set at once (canReachExcludingBonds). A pair is judged separated only if
+it is unreachable after all the rule's bonds are removed. Single-bond ring
+dissociations that genuinely fail molecularity (internal#54/#55) stay
+blocked, since their lone bond's removal still leaves the partners connected
+through the rest of the cycle.
+---
+ .../transformations/transformationSet.cpp     | 150 +++++++++++-------
+ .../transformations/transformationSet.hh      |  16 +-
+ 2 files changed, 100 insertions(+), 66 deletions(-)
+
+diff --git a/src/NFreactions/transformations/transformationSet.cpp b/src/NFreactions/transformations/transformationSet.cpp
+index 449cb59..52cc743 100644
+--- a/src/NFreactions/transformations/transformationSet.cpp
++++ b/src/NFreactions/transformations/transformationSet.cpp
+@@ -474,47 +474,63 @@ bool TransformationSet::addAddMolecule( MoleculeCreator *mc )
+ 
+ 
+ 
+-bool TransformationSet::canReachExcludingBond(Molecule *mol1, Molecule *mol2, int excludeComponentIndex)
++bool TransformationSet::canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
++		const std::vector< std::pair<Molecule *, int> > &excludedBonds)
+ {
+-	// Perform a BFS from mol2 to see if mol1 is reachable while excluding
+-	// the specific bond at excludeComponentIndex on mol2.
+-	// Returns true if mol1 can be reached, false otherwise.
+-	
+-	int excludeComponentIndexMol2 = mol1->getBondedMoleculeBindingSiteIndex(excludeComponentIndex);
+-	
+-	queue <Molecule *> q;
+-	list <Molecule *> visited;
+-	
++	// Perform a BFS from mol2 to see if mol1 is reachable while refusing to
++	// traverse any of the bonds in excludedBonds. Each excluded bond is recorded
++	// as both of its (molecule, component-index) half-edges, so the bond is
++	// skipped regardless of which endpoint the BFS reaches first.
++	// Returns true if mol1 can still be reached, false otherwise.
++	//
++	// Excluding the full set of bonds that the firing rule deletes (rather than
++	// one bond at a time) is what lets a multi-bond ring-opening dissociation be
++	// recognized as genuinely separating its products: each individual bond may
++	// leave the partners connected, while removing all of them does not (#57).
++
++	// Use a static queue for efficiency (reusing the BFS infrastructure)
++	static queue <Molecule *> q;
++	static list <Molecule *> visited;
++
++	// Clear queues and visited list
++	while(!q.empty()) q.pop();
++	visited.clear();
+ 	// Start BFS from mol2
+ 	q.push(mol2);
+ 	visited.push_back(mol2);
+ 	mol2->setVisitedMolecule(true);
+ 
+ 	bool found = false;
+-	
++
+ 	while(!q.empty()) {
+ 		Molecule *current = q.front();
+ 		q.pop();
+-		
++
+ 		// Check if we reached mol1
+ 		if (current == mol1) {
+ 			found = true;
+ 			break;
+ 		}
+-		
++
+ 		// Explore neighbors through bonds
+ 		int numComponents = current->getMoleculeType()->getNumOfComponents();
+ 		for (int c = 0; c < numComponents; ++c) {
+-			// Skip the excluded bond from both endpoints.
+-			if ((current == mol1 && c == excludeComponentIndex) ||
+-			    (current == mol2 && c == excludeComponentIndexMol2)) {
++			// Skip any half-edge belonging to a bond the rule will delete.
++			bool isExcluded = false;
++			for (unsigned int e = 0; e < excludedBonds.size(); ++e) {
++				if (excludedBonds[e].first == current && excludedBonds[e].second == c) {
++					isExcluded = true;
++					break;
++				}
++			}
++			if (isExcluded) {
+ 				continue;
+ 			}
+-			
++
+ 			// Check if this component is bonded
+ 			if (current->isBindingSiteBonded(c)) {
+ 				Molecule *neighbor = current->getBondedMolecule(c);
+-				
++
+ 				// Check if we've already visited this neighbor
+ 				if (!neighbor->getVisitedMolecule()) {
+ 					// Haven't visited this neighbor yet
+@@ -687,54 +703,66 @@ bool TransformationSet::checkMolecularity( MappingSet ** mappingSets )
+ 		// Issue #48: NFsim does not enforce product molecularity for unimolecular unbinding rules
+ 		if ( n_reactants == 1 && complex_bookkeeping && n_product_patterns > 1 )
+ 		{
+-			// Check each transformation for unbinding that would violate product molecularity
++			// First pass: gather every bond this rule's UNBINDING transforms will
++			// delete. The connectivity test below must reflect the post-reaction
++			// graph with ALL of them removed at once. Testing each bond in
++			// isolation wrongly blocks multi-bond ring-opening dissociations
++			// (e.g. a symmetric two-bond homodimer splitting into two monomers):
++			// each single bond's removal leaves the partners connected through
++			// the rule's other deleted bond, even though removing both genuinely
++			// separates the products (#57).
++			std::vector< std::pair<Molecule *, int> > excludedBonds;       // half-edges
++			std::vector< std::pair<Molecule *, Molecule *> > brokenPairs;  // endpoints to test
+ 			for ( unsigned int t = 0; t < getNumOfTransformations(0); ++t )
+ 			{
+ 				Transformation * transform = getTransformation(0, t);
+-				if ( transform->getType() == TransformationFactory::UNBINDING )
++				if ( transform->getType() != TransformationFactory::UNBINDING )
++					continue;
++
++				UnbindingTransform * unbindingTransform =
++					static_cast<UnbindingTransform *>( transform );
++
++				Mapping * mapping = mappingSets[0]->get(t);
++				if (mapping == NULL) {
++					continue;
++				}
++
++				// Get the molecule that will be unbound
++				Molecule * mol = mapping->getMolecule();
++				if (mol == NULL) {
++					continue;
++				}
++				int componentIndex = unbindingTransform->getComponentIndex();
++
++				// Get the molecule bonded at this site
++				if ( !mol->isBindingSiteBonded(componentIndex) )
+ 				{
+-					UnbindingTransform * unbindingTransform = 
+-						static_cast<UnbindingTransform *>( transform );
+-					
+-					Mapping * mapping = mappingSets[0]->get(t);
+-					if (mapping == NULL) {
+-						continue;
+-					}
++					// Site is not bonded, so this won't actually unbind anything
++					continue;
++				}
+ 
+-					// Get the molecule that will be unbound
+-					Molecule * mol = mapping->getMolecule();
+-					if (mol == NULL) {
+-						continue;
+-					}
+-					int componentIndex = unbindingTransform->getComponentIndex();
+-					
+-					// Get the molecule bonded at this site
+-					if ( !mol->isBindingSiteBonded(componentIndex) )
+-					{
+-						// Site is not bonded, so this won't actually unbind anything
+-						continue;
+-					}
+-					
+-					Molecule * bondedMol = mol->getBondedMolecule(componentIndex);
+-					if ( bondedMol == NULL )
+-					{
+-						// This shouldn't happen, but skip if it does
+-						continue;
+-					}
+-					
+-					// Check if bondedMol can reach mol through alternative paths
+-					// (i.e., excluding the bond being broken)
+-					if ( !canReachExcludingBond(mol, bondedMol, componentIndex) )
+-					{
+-						// Good: the molecules will be in different complexes after unbinding
+-						continue;
+-					}
+-					else
+-					{
+-						// Bad: the molecules remain connected through other bonds
+-						// This violates the product-side molecularity constraint
+-						return false;
+-					}
++				Molecule * bondedMol = mol->getBondedMolecule(componentIndex);
++				if ( bondedMol == NULL )
++				{
++					// This shouldn't happen, but skip if it does
++					continue;
++				}
++
++				int partnerIndex = mol->getBondedMoleculeBindingSiteIndex(componentIndex);
++				excludedBonds.push_back( std::make_pair(mol, componentIndex) );
++				excludedBonds.push_back( std::make_pair(bondedMol, partnerIndex) );
++				brokenPairs.push_back( std::make_pair(mol, bondedMol) );
++			}
++
++			// Second pass: with every deleted bond removed, each unbound pair must
++			// end up in different connected components. If any pair is still
++			// mutually reachable, the products do not actually separate, which
++			// violates the product-side molecularity constraint -> refuse to fire.
++			for ( unsigned int b = 0; b < brokenPairs.size(); ++b )
++			{
++				if ( canReachExcludingBonds( brokenPairs[b].first, brokenPairs[b].second, excludedBonds ) )
++				{
++					return false;
+ 				}
+ 			}
+ 		}
+diff --git a/src/NFreactions/transformations/transformationSet.hh b/src/NFreactions/transformations/transformationSet.hh
+index 524615a..0f246bd 100644
+--- a/src/NFreactions/transformations/transformationSet.hh
++++ b/src/NFreactions/transformations/transformationSet.hh
+@@ -5,6 +5,8 @@
+ #include "../NFreactions.hh"
+ #include <algorithm>
+ #include <unordered_set>
++#include <vector>
++#include <utility>
+ 
+ using namespace std;
+ 
+@@ -340,15 +342,19 @@ namespace NFcore
+ 
+ 			/*!
+ 				Helper method to check if two molecules remain connected through alternative paths
+-				when a specific bond is removed. This is used to enforce product-side molecularity
+-				for unimolecular unbinding rules (Issue #48).
++				when a set of bonds is removed. This is used to enforce product-side molecularity
++				for unimolecular unbinding rules (Issue #48). The full set of bonds that the firing
++				rule will delete is excluded at once, so multi-bond ring-opening dissociations are
++				judged on the post-reaction graph rather than one bond in isolation (#57).
+ 				@param mol1 The molecule containing the binding site
+ 				@param mol2 The bonded partner molecule
+-				@param excludeComponentIndex The component index of the bond to exclude
++				@param excludedBonds The bonds to exclude, each recorded as both of its
++				       (molecule, component-index) half-edges
+ 				@return true if mol1 can be reached from mol2 through alternative paths, false otherwise
+-				@author Fix for Issue #48
++				@author Fix for Issue #48 / #57
+ 			*/
+-			bool canReachExcludingBond(Molecule *mol1, Molecule *mol2, int excludeComponentIndex);
++			bool canReachExcludingBonds(Molecule *mol1, Molecule *mol2,
++				const std::vector< std::pair<Molecule *, int> > &excludedBonds);
+ 
+ 			/*!	Remembers if the finalize function has been called	*/
+ 			bool finalized;
+-- 
+2.53.0
+

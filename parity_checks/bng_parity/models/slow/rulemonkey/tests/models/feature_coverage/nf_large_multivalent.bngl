@@ -1,0 +1,42 @@
+# Feature: network-free only — highly multivalent receptor (5 sites)
+# Tests: large complexes from high-valence molecules
+# Tier: network-free (NFsim reference only)
+# Expected: complex size distribution depends on valence and concentration
+# invariant: conserved R_total = 15
+# invariant: conserved L_total = 60
+
+begin model
+begin parameters
+    R_tot  15     # pentavalent receptor
+    L_tot  60     # monovalent ligand
+    kf     0.005  # /s, binding rate
+    kr     0.2    # /s, unbinding rate
+end parameters
+
+begin molecule types
+    R(s,s,s,s,s)
+    L(s)
+end molecule types
+
+begin seed species
+    R(s,s,s,s,s)  R_tot
+    L(s)          L_tot
+end seed species
+
+begin observables
+    Molecules  R_total     R()
+    Molecules  L_total     L()
+    Molecules  L_free      L(s)
+    Molecules  L_bound     L(s!+)
+    Molecules  R_free_s    R(s)
+    Species    R_complexes R(s!+)
+end observables
+
+begin reaction rules
+    R(s) + L(s) <-> R(s!1).L(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

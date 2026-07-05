@@ -1,0 +1,53 @@
+# Model: feature_functional_rates_volume.bngl
+# Description: Demonstrates rate laws that depend on compartment volume or density.
+#              Rate = k * [A] * [B] / Volume (for bimolecular in some conventions)
+#              Here we explicitly use Volume variable.
+
+begin model
+
+begin parameters
+    Vol 10.0
+    k_bi 0.01
+    k_uni 0.1
+end parameters
+
+begin molecule types
+    A()
+    B()
+    C()
+end molecule types
+
+begin compartments
+    Cell 3 Vol
+end compartments
+
+begin seed species
+    A()@Cell 100
+    B()@Cell 100
+    C()@Cell 0
+end seed species
+
+begin observables
+    Molecules Product C()@Cell
+end observables
+
+begin reaction rules
+    # Standard bimolecular reaction
+    # BNGL automatically scales by volume if compartments are used:
+    # Rate = k * (N_A * N_B) / (Vol * NA) typically.
+    # Here we show standard syntax.
+    A() + B() -> C() k_bi
+    
+    # What if we want rate to depend on crowding (Total Density)?
+    # Rate = k * [A] * VolumeFactor()
+    # Not easily shown without custom function.
+    
+    # 2. Reverse
+    C() -> A() + B() k_uni
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>400, n_steps=>200})

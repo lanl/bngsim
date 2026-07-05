@@ -1,0 +1,60 @@
+# Edge case: triple-symmetric homo-component (3 copies of one site)
+# Tests:  A(b,b,b) declares three identically-named components; pattern
+#         match must produce 3 embeddings per A.  Symmetry factor for
+#         the dimer rule is 1 (asymmetric: A and B are different
+#         types), but the pattern A(b!+) on the LHS of the saturation
+#         rule has 3 embeddings per A — the count_embeddings_single
+#         path must dedup correctly.  Most coverage uses 2-symmetric
+#         components (e.g., A(s,s)); 3-fold homotypic adds an extra
+#         layer of degeneracy that the same-component path
+#         (model.hpp:has_symmetric_components) and the
+#         FastMatchSlot specialization both have to honour.
+# Edge:   B is in deficit (B_tot=20 < 3*A_tot=60), so saturation never
+#         occurs and the embedding-count distribution stays broad.
+# Tier:   base
+# invariant: conserved A_total = 20
+# invariant: conserved B_total = 20
+
+begin model
+begin parameters
+    A_tot   20
+    B_tot   20
+    kf      0.02
+    kr      0.10
+    k_act   0.02   # /s, conversion rate of bound A to active state
+end parameters
+
+begin molecule types
+    # Three same-named sites on A — engine.cpp's
+    # has_symmetric_components() must catch this.
+    A(b,b,b,st~off~on)
+    B(a)
+end molecule types
+
+begin seed species
+    A(b,b,b,st~off)  A_tot
+    B(a)             B_tot
+end seed species
+
+begin observables
+    Molecules  A_total       A()
+    Molecules  B_total       B()
+    Molecules  B_free        B(a)
+    Molecules  AB_embeddings A(b!+)        # # of bound site embeddings
+    Species    A_any_bound   A(b!+)        # # of A species with at least one bond
+    Molecules  A_act         A(st~on)
+    Species    A_triple      A(b!+,b!+,b!+) # all three sites bound
+end observables
+
+begin reaction rules
+    A(b) + B(a) <-> A(b!1).B(a!1)  kf, kr
+    # State change targets the 'st' component, but the pattern requires
+    # one bound 'b' — engine must avoid double-counting the rule across
+    # the 3 b-embeddings (only one StateChange per matched A).
+    A(b!+,st~off) -> A(b!+,st~on)  k_act
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>50,n_steps=>100})
+end actions

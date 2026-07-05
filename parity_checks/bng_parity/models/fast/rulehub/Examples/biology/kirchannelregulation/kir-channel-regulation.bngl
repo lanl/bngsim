@@ -1,0 +1,82 @@
+begin model
+begin parameters
+    # Kir Channel Regulation: PIP2 modulation and G-protein potentiation.
+    # Advanced features: Hill kinetics for cooperative PIP2 binding and G-relay.
+    
+    # Lipid Modulation
+    k_pip2_bind 1.0    
+    k_pip2_max 5.0     # Maximum gating drive
+    Km_pip2 400        # Half-saturation for lipid-gating
+    n_pip2 3.0         # Highly cooperative opening
+    
+    # G-protein Relay
+    k_gbg_bind 2.0     # Recruitment of Gbeta-gamma
+    k_gbg_boost 4.0    # Potentiation factor
+    
+    # Conductivity
+    k_open 1.0         # Open probability base
+    k_close 0.5
+    
+    # Initials
+    Kir_tot 500
+    PIP2_init 600
+    Gprotein_tot 300
+end parameters
+
+begin molecule types
+    Kir(p,g,s~C~O)   # p: PIP2 site,g: Gbg site,s: gate state
+    PIP2(b)
+    Gbg(b)
+end molecule types
+
+begin seed species
+    Kir(p,g,s~C) Kir_tot
+    PIP2(b) PIP2_init
+    Gbg(b) Gprotein_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Conducting_Pool Kir(s~O)                  # Current-passing status
+    Molecules Fully_Modulated Kir(p!+,g!+)             # Peak activity status
+    Molecules Lipid_Occupancy Kir(p!+)                  # Gating readiness
+    Molecules G_Signal_Relay  Kir(g!+)                  # Modulation status
+    Molecules Lipid_Marker    PIP2()                   # Lipid precursor status
+    Molecules Free_PIP2       PIP2(b)                  # Gating effector pool
+    Molecules G_Bound_Kir     Kir(g!+)                 # Potentiated channel pool
+end observables
+
+begin functions
+    # Hill-driven opening based on PIP2 abundance (Functional Rate)
+    # Accelerated by G-beta-gamma recruitment
+    v_opening() = (k_pip2_max / 100) * (Free_PIP2 / (Km_pip2 + Free_PIP2))^n_pip2 * v_gbg_factor()
+    
+    # G-protein potentiation scale
+    v_gbg_factor() = if(G_Bound_Kir > 0,k_gbg_boost,1.0)
+end functions
+
+begin reaction rules
+    ## MODULATION Phase
+    # PIP2 binds Kir (Cooperative recruitment proxy)
+    Kir(p) + PIP2(b) <-> Kir(p!1).PIP2(b!1) k_pip2_bind,0.2
+    
+    # Gbeta-gamma recruitment
+    Kir(g) + Gbg(b) <-> Kir(g!1).Gbg(b!1) k_gbg_bind,0.5
+    
+    ## GATING Stage
+    # Opening (Functional Rate - Hill + Potentiation)
+    Kir(p!+,s~C) -> Kir(p!+,s~O) v_opening()
+    
+    # Closing
+    Kir(s~O) -> Kir(s~C) k_close
+    
+    ## RESET
+    PIP2(b!1).Kir(p!1) -> PIP2(b) + Kir(p) 5.0
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>5,n_steps=>300})
+end actions
+end model
+

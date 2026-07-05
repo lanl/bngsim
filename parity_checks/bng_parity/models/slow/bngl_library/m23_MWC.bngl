@@ -1,0 +1,232 @@
+begin model
+#@model_id: m23_MWC
+#@title: Monod-Wyman-Changeux allosteric model
+#@description: MWC allosteric model for a tetrameric protein with T and R conformational states, ligand binding at each subunit, and T/R isomerization. From Monod, Wyman & Changeux (1965) J Mol Biol 12:88-118.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Physical constants
+  N_A      6.02214076e23  # 1/mol  Avogadro
+  V_cyt    1e-12          # L  cell volume
+
+  # Dissociation constants (per molecule basis)
+  K_T      1e6/(N_A*V_cyt)    # 1/molecule  T-state dissociation
+  K_R      5e6/(N_A*V_cyt)    # 1/molecule  R-state dissociation
+
+  # Allosteric parameters
+  n_sub    4                   # dimensionless  tetramer subunits
+
+  # Allosteric equilibrium constant
+  L_0      0.1                # dimensionless  [R]/[T] at zero ligand
+
+  # Ligand-dependent isomerization constants
+  L_1      L_0*(K_R/K_T)^1    # dimensionless
+  L_2      L_0*(K_R/K_T)^2    # dimensionless
+  L_3      L_0*(K_R/K_T)^3    # dimensionless
+  L_4      L_0*(K_R/K_T)^4    # dimensionless
+
+  # Kinetic rate constants
+  k_off    0.1                # 1/s  universal off-rate
+
+  # T-state binding/unbinding
+  k_mT     k_off              # 1/s  per-site unbinding
+  k_pT     k_mT*K_T           # 1/(molecule*s)  per-site binding
+
+  # R-state binding/unbinding
+  k_mR     k_off              # 1/s  per-site unbinding
+  k_pR     k_mR*K_R           # 1/(molecule*s)  per-site binding
+
+  # Isomerization rate constants (T -> R forward, R -> T backward)
+  k_mL_0   k_off              # 1/s
+  k_pL_0   k_mL_0*L_0         # 1/s
+
+  k_mL_1   k_off              # 1/s
+  k_pL_1   k_mL_1*L_1         # 1/s
+
+  k_mL_2   k_off              # 1/s
+  k_pL_2   k_mL_2*L_2         # 1/s
+
+  k_mL_3   k_off              # 1/s
+  k_pL_3   k_mL_3*L_3         # 1/s
+
+  k_mL_4   k_off              # 1/s
+  k_pL_4   k_mL_4*L_4         # 1/s
+
+  # Statistical factors for binding (tetramer: available sites)
+  stat_4   4                  # 4 available sites
+  stat_3   3                  # 3 available sites
+  stat_2   2                  # 2 available sites
+  stat_1   1                  # 1 available site
+
+  # Combined rate constants (statistical factor * intrinsic rate)
+  kpT4     k_pT*stat_4        # binding T0->T1
+  kpT3     k_pT*stat_3        # binding T1->T2
+  kpT2     k_pT*stat_2        # binding T2->T3
+  kpT1     k_pT*stat_1        # binding T3->T4
+
+  kmT1     k_mT*stat_1        # unbinding T1->T0
+  kmT2     k_mT*stat_2        # unbinding T2->T1
+  kmT3     k_mT*stat_3        # unbinding T3->T2
+  kmT4     k_mT*stat_4        # unbinding T4->T3
+
+  kpR4     k_pR*stat_4        # binding R0->R1
+  kpR3     k_pR*stat_3        # binding R1->R2
+  kpR2     k_pR*stat_2        # binding R2->R3
+  kpR1     k_pR*stat_1        # binding R3->R4
+
+  kmR1     k_mR*stat_1        # unbinding R1->R0
+  kmR2     k_mR*stat_2        # unbinding R2->R1
+  kmR3     k_mR*stat_3        # unbinding R3->R2
+  kmR4     k_mR*stat_4        # unbinding R4->R3
+
+  # Initial amounts
+  P_0      100000             # molecules  total oligomer copies
+  S_0      100000             # molecules  total ligand copies
+
+  # Initial distribution between T and R at zero ligand
+  frac_T   1/(1 + L_0)        # fraction in T state
+  frac_R   L_0/(1 + L_0)      # fraction in R state
+end parameters
+
+begin molecule types
+  S()      # free ligand
+  P_T0()   # T-state, 0 ligands bound
+  P_T1()   # T-state, 1 ligand bound
+  P_T2()   # T-state, 2 ligands bound
+  P_T3()   # T-state, 3 ligands bound
+  P_T4()   # T-state, 4 ligands bound
+  P_R0()   # R-state, 0 ligands bound
+  P_R1()   # R-state, 1 ligand bound
+  P_R2()   # R-state, 2 ligands bound
+  P_R3()   # R-state, 3 ligands bound
+  P_R4()   # R-state, 4 ligands bound
+end molecule types
+
+begin seed species
+  S()     S_0                # molecules
+  P_T0()  P_0*frac_T         # molecules
+  P_T1()  0                  # molecules
+  P_T2()  0                  # molecules
+  P_T3()  0                  # molecules
+  P_T4()  0                  # molecules
+  P_R0()  P_0*frac_R         # molecules
+  P_R1()  0                  # molecules
+  P_R2()  0                  # molecules
+  P_R3()  0                  # molecules
+  P_R4()  0                  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_S     S()
+  Molecules  Obs_PT0   P_T0()
+  Molecules  Obs_PT1   P_T1()
+  Molecules  Obs_PT2   P_T2()
+  Molecules  Obs_PT3   P_T3()
+  Molecules  Obs_PT4   P_T4()
+  Molecules  Obs_PR0   P_R0()
+  Molecules  Obs_PR1   P_R1()
+  Molecules  Obs_PR2   P_R2()
+  Molecules  Obs_PR3   P_R3()
+  Molecules  Obs_PR4   P_R4()
+  Molecules  Obs_T_tot P_T0(),P_T1(),P_T2(),P_T3(),P_T4()
+  Molecules  Obs_R_tot P_R0(),P_R1(),P_R2(),P_R3(),P_R4()
+end observables
+
+begin reaction rules
+  # ===== T-state ligand binding/unbinding =====
+
+  # P_T0 + S -> P_T1  (4 sites available)
+  P_T0() + S() -> P_T1()  kpT4
+
+  # P_T1 -> P_T0 + S  (1 ligand unbinds)
+  P_T1() -> P_T0() + S()  kmT1
+
+  # P_T1 + S -> P_T2  (3 sites available)
+  P_T1() + S() -> P_T2()  kpT3
+
+  # P_T2 -> P_T1 + S  (2 ligands can unbind)
+  P_T2() -> P_T1() + S()  kmT2
+
+  # P_T2 + S -> P_T3  (2 sites available)
+  P_T2() + S() -> P_T3()  kpT2
+
+  # P_T3 -> P_T2 + S  (3 ligands can unbind)
+  P_T3() -> P_T2() + S()  kmT3
+
+  # P_T3 + S -> P_T4  (1 site available)
+  P_T3() + S() -> P_T4()  kpT1
+
+  # P_T4 -> P_T3 + S  (4 ligands can unbind)
+  P_T4() -> P_T3() + S()  kmT4
+
+  # ===== R-state ligand binding/unbinding =====
+
+  # P_R0 + S -> P_R1  (4 sites available)
+  P_R0() + S() -> P_R1()  kpR4
+
+  # P_R1 -> P_R0 + S  (1 ligand unbinds)
+  P_R1() -> P_R0() + S()  kmR1
+
+  # P_R1 + S -> P_R2  (3 sites available)
+  P_R1() + S() -> P_R2()  kpR3
+
+  # P_R2 -> P_R1 + S  (2 ligands can unbind)
+  P_R2() -> P_R1() + S()  kmR2
+
+  # P_R2 + S -> P_R3  (2 sites available)
+  P_R2() + S() -> P_R3()  kpR2
+
+  # P_R3 -> P_R2 + S  (3 ligands can unbind)
+  P_R3() -> P_R2() + S()  kmR3
+
+  # P_R3 + S -> P_R4  (1 site available)
+  P_R3() + S() -> P_R4()  kpR1
+
+  # P_R4 -> P_R3 + S  (4 ligands can unbind)
+  P_R4() -> P_R3() + S()  kmR4
+
+  # ===== T <-> R isomerization =====
+
+  # T0 <-> R0
+  P_T0() -> P_R0()  k_pL_0
+  P_R0() -> P_T0()  k_mL_0
+
+  # T1 <-> R1
+  P_T1() -> P_R1()  k_pL_1
+  P_R1() -> P_T1()  k_mL_1
+
+  # T2 <-> R2
+  P_T2() -> P_R2()  k_pL_2
+  P_R2() -> P_T2()  k_mL_2
+
+  # T3 <-> R3
+  P_T3() -> P_R3()  k_pL_3
+  P_R3() -> P_T3()  k_mL_3
+
+  # T4 <-> R4
+  P_T4() -> P_R4()  k_pL_4
+  P_R4() -> P_T4()  k_mL_4
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

@@ -1,0 +1,132 @@
+# test of Brandon's fitting results
+
+begin model
+
+# Reference:
+# 1. Monine MI et al. (2010) Biophys J 98: 48-56. <-- model and fitting results
+# 2. Posner RG et al. (2007) Org Lett 9: 3551-3554. <-- data
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# fraction of a cell to consider in a stochastic simulation
+f 0.001 # [=] dimensionless, from Table 1 in Ref 1
+
+chi=1.0/f
+
+# cell density
+cellDensity 1.0e9 # [=] cells per L (1e6 cells per ml), from Table 1 in Ref 1
+
+# volume of ECF surrounding a single cell (on average)
+Vref=f/cellDensity # [=] L, from Table 1 in Ref 1
+
+LTconc 7.0 # [=] nM
+
+RTref f*3.0e5 # [=] molecules per cell, from Table 1 in Ref 1
+LTref=LTconc*1.0e-9*(NA*Vref) # [=] ~4,200,000 molecules per cell, cf. Table 1 in Ref 1
+RTconc=RTref*1.0e9/(NA*Vref) # [=] nM
+
+# c = 3*K1*[free ligand]
+# beta = K2*[total receptor]
+
+# dissociation rate constants (settings are arbitrary)
+koff 0.01 # [=] /s, from Table 1 in Ref
+kr1=koff # [=] /s
+kr2=koff # [=] /s
+
+# MISHA's parameter settings
+
+inverse_alpha_m=1.0/0.816 # 1/alpha_m
+
+K1m 0.467 # [=] /nM, from Table 1 in Ref 1
+K2m 87.03 # [=] /nM, from Table 1 in Ref 1
+
+kf1m=K1m*1.0e9*kr1/(NA*Vref) # [=] /(molecule/cell)/s
+kf2m=K2m*1.0e9*kr2/(NA*Vref) # [=] /(molecule/cell)/s
+
+# BRANDON's parameter settings
+
+inverse_alpha_b=1.0/0.816 # 1/alpha_b
+
+K1b 0.2703 # [=] /nM, from Brandon
+K2b 51.87 # [=] /nM, from Brandon
+
+kf1b=K1b*1.0e9*kr1/(NA*Vref) # [=] /(molecule/cell)/s
+kf2b=K2b*1.0e9*kr2/(NA*Vref) # [=] /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+Lm(s,s,s)
+Rm(s,s)
+
+Lb(s,s,s)
+Rb(s,s)
+
+end molecule types
+
+begin seed species
+
+Lm(s,s,s) LTref
+Rm(s,s) RTref
+
+Lb(s,s,s) LTref
+Rb(s,s) RTref
+
+end  seed species
+
+begin observables
+
+Molecules Rm_total Rm()
+Molecules Lm_total Lm()
+Species Lm_free Lm(s,s,s)
+
+Molecules Rb_total Rb()
+Molecules Lb_total Lb()
+Species Lb_free Lb(s,s,s)
+
+end observables
+
+begin functions
+
+# from Eq (10) in Ref 1
+lambdam() (Lm_total-Lm_free)/(2.0*Rm_total) # [=] dimensionless, (0,1)
+FLm() inverse_alpha_m*(Lm_total-Lm_free)/(2.0*Rm_total) # FL = lambda/alpha or lambda = alpha*FL
+# I am multiplying by the inverse of alpha instead of dividing by alpha
+# to avoid a "divide by zero" error
+
+lambdab() (Lb_total-Lb_free)/(2.0*Rb_total) # [=] dimensionless, (0,1)
+FLb() inverse_alpha_b*(Lb_total-Lb_free)/(2.0*Rb_total) # FL = lambda/alpha or lambda = alpha*FL
+# I am multiplying by the inverse of alpha instead of dividing by alpha
+# to avoid a "divide by zero" error
+
+end functions
+
+begin reaction rules
+
+Lm(s,s,s)+Rm(s)->Lm(s!1,s,s).Rm(s!1) kf1m
+Lm(s!+,s)+Rm(s)->Lm(s!+,s!1).Rm(s!1) kf2m
+Lm(s!1).Rm(s!1)->Lm(s)+Rm(s) koff
+
+Lb(s,s,s)+Rb(s)->Lb(s!1,s,s).Rb(s!1) kf1b
+Lb(s!+,s)+Rb(s)->Lb(s!+,s!1).Rb(s!1) kf2b
+Lb(s!1).Rb(s!1)->Lb(s)+Rb(s) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+#simulate({t_start=>0,t_end=>100,n_steps=>100,method=>"nf",complex=>1,print_functions=>1})
+
+parameter_scan({parameter=>"LTconc",\
+                par_min=>0.005,par_max=>200.0,n_scan_pts=>10,log_scale=>1,\
+                method=>"nf",complex=>1,gml=>10000000,print_functions=>1,\
+                t_start=>0,t_end=>1000,n_steps=>10,\
+                steady_state=>1,get_final_state=>0})
+
+end actions

@@ -1,0 +1,37 @@
+begin model
+begin parameters
+    k_sense 0.5
+    k_adapt 0.1
+    k_recover 0.05
+    k_deg 0.02
+end parameters
+
+begin molecule types
+    Sensor(state~inactive~active)
+    Adapter()
+    Enzyme()
+end molecule types
+
+begin seed species
+    Sensor(state~inactive) 50
+end seed species
+
+begin observables
+    Molecules Active_sensor Sensor(state~active)
+    Molecules Adapter Adapter()
+    Molecules Enzyme Enzyme()
+end observables
+
+begin reaction rules
+    Sensor(state~inactive) -> Sensor(state~active) k_sense
+    Sensor(state~active) -> Sensor(state~inactive) k_recover
+    Sensor(state~active) -> Sensor(state~active) + Adapter() k_adapt
+    Adapter() -> Adapter() + Enzyme() k_adapt
+    Enzyme() -> 0 k_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>120,n_steps=>240})
+end actions
+end model

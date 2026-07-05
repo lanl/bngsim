@@ -1,0 +1,95 @@
+// Mueller2006_RepLeaky_n3.ant
+//
+// Source:
+//   Müller S, Hofbauer J, Endler L, Flamm C, Widder S, Schuster P (2006)
+//   "A generalized model of the repressilator."
+//   J Math Biol 53:905–937. doi:10.1007/s00285-006-0035-9
+//
+// Model:
+//   "RepLeaky" repressilator (leaky transcription, cooperative repression),
+//   rescaled form for free protein (x_i) and mRNA (y_i) concentrations,
+//   with n = 3 identical genes in a cycle.
+//   This is Eq. (52) specialized with F(x) from Eq. (23b) and M(x) from Eq. (53)
+//   in the paper.
+//
+// State variables (species):
+//   x1, x2, x3 : free protein concentrations (dimensionless)
+//   y1, y2, y3 : mRNA concentrations (dimensionless)
+//
+// Parameters:
+//   delta  : leakiness δ (ratio of repressed to unrepressed transcription)
+//   h      : Hill coefficient in s(x) = x^h / (1 + x^h)
+//   alpha  : combined production parameter α
+//   beta   : degradation ratio β = d_P / d_R
+//   gam    : binding parameter γ (strength of repressor binding)
+//            (Note: 'gamma' is reserved in Antimony for the gamma function)
+//
+// Dynamics:
+//   dx_i/dt = beta * (y_i - x_i) / M(x_i)
+//   dy_i/dt = alpha * f(x_{i-1}) - y_i
+//   with indices modulo 3, and
+//   s(x)  = x^h / (1 + x^h)
+//   f(x)  = (1 - delta) * (1 - s(x)) + delta
+//   M(x)  = 1 + gamma * h * x^(h-1) / (1 + x^h)^2
+
+model Mueller2006_RepLeaky_n3
+
+  // Compartment
+  compartment cell = 1;
+
+  // Species: free proteins and mRNAs
+  species x1 in cell;
+  species x2 in cell;
+  species x3 in cell;
+
+  species y1 in cell;
+  species y2 in cell;
+  species y3 in cell;
+
+  // Core parameters (dimensionless)
+  const delta = 1.0e-3;
+  const h     = 2;
+  const alpha = 2.0;
+  const beta  = 1.0;
+  const gam   = 1.0;
+
+  // Helper assignment rules
+  // s_i = x_i^h / (1 + x_i^h)
+  s1 := x1^h / (1 + x1^h);
+  s2 := x2^h / (1 + x2^h);
+  s3 := x3^h / (1 + x3^h);
+
+  // f_i = (1 - delta) * (1 - s_i) + delta
+  f1 := (1 - delta) * (1 - s1) + delta;
+  f2 := (1 - delta) * (1 - s2) + delta;
+  f3 := (1 - delta) * (1 - s3) + delta;
+
+  // M_i = 1 + gam * h * x_i^(h-1) / (1 + x_i^h)^2
+  M1 := 1 + gam * h * x1^(h - 1) / (1 + x1^h)^2;
+  M2 := 1 + gam * h * x2^(h - 1) / (1 + x2^h)^2;
+  M3 := 1 + gam * h * x3^(h - 1) / (1 + x3^h)^2;
+
+  // ODEs for n = 3 (indices modulo 3: 1←3, 2←1, 3←2)
+
+  // Proteins
+  x1' = beta * (y1 - x1) / M1;
+  x2' = beta * (y2 - x2) / M2;
+  x3' = beta * (y3 - x3) / M3;
+
+  // mRNAs
+  y1' = alpha * f3 - y1;  // gene 1 repressed by protein 3
+  y2' = alpha * f1 - y2;  // gene 2 repressed by protein 1
+  y3' = alpha * f2 - y3;  // gene 3 repressed by protein 2
+
+  // Initial conditions (not specified in the paper; chosen as a simple test case)
+  x1 = 0.1;
+  x2 = 0.2;
+  x3 = 0.3;
+
+  y1 = 0.1;
+  y2 = 0.1;
+  y3 = 0.1;
+
+end
+// @SIM T_START=0 T_END=10 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,15 @@
+// Model for first-order decay: S' = -k*S
+// This model is essentially the same as S1987_A1_exponential.
+// Recast into canonical S-system form: 
+// eps = 1.0 // slack
+// S' =  eps * (S^1)  -  (eps + k) * (S^1)
+
+model exp_decay()
+// Initial condition
+S = 10
+// Parameter
+k = 0.3
+// Equation
+S' = -k*S
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

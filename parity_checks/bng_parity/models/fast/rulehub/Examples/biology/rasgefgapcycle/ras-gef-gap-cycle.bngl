@@ -1,0 +1,79 @@
+begin model
+begin parameters
+    # Ras-GEF-GAP cycle with explicit nucleotide exchange.
+    # Advanced features: SAT kinetics and tagging (%1) for state tracking.
+    
+    # Nucleotide Dynamics
+    GTP_conc 1000
+    GDP_conc 1000
+    
+    # GEF-mediated Exchange (Active Drive)
+    k_gef_bind 1.0     # SOS binding to Ras
+    k_gef_exch 5.0     # Exchange rate (GDP -> GTP)
+    Km_gef 100         # Half-saturation for SOS activity
+    
+    # GAP-mediated Hydrolysis (Reset)
+    k_gap_bind 2.0     # RasGAP binding to active Ras
+    k_gap_hydro 10.0   # GTP hydrolysis rate
+    Km_gap 200         # Half-saturation for RasGAP activity
+    
+    # Initials
+    Ras_tot 1000
+    SOS_tot 20
+    RasGAP_tot 50
+end parameters
+
+begin molecule types
+    Ras(nuc~GDP~GTP,b)
+    SOS(b)
+    RasGAP(b)
+end molecule types
+
+begin seed species
+    Ras(nuc~GDP,b) Ras_tot
+    SOS(b) SOS_tot
+    RasGAP(b) RasGAP_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Ras       Ras(nuc~GTP)             # Signal-competent Ras
+    Molecules GEF_Complexes   Ras(b!1).SOS(b!1)        # Structural intermediate
+    Molecules GAP_Complexes   Ras(b!1).RasGAP(b!1)     # Clearance intermediate
+    Molecules Total_GTP_Ras   Ras(nuc~GTP)             # Flux metric
+    Molecules Exchange_Rate   Ras(nuc~GTP)             # Dynamic proxy
+end observables
+
+begin functions
+    # Saturable GEF activity (Simplifying the full enzyme cycle)
+    v_gef() = k_gef_exch * SOS_tot * GDP_conc / (Km_gef + GDP_conc)
+    
+    # Saturable GAP activity
+    v_gap() = k_gap_hydro * RasGAP_tot * GTP_conc / (Km_gap + GTP_conc)
+end functions
+
+begin reaction rules
+    ## ACTIVATION (GEF Phase)
+    # SOS binds Ras-GDP
+    SOS(b) + Ras(nuc~GDP,b) <-> SOS(b!1).Ras(nuc~GDP,b!1) k_gef_bind,0.5
+    
+    # Exchange GDP for GTP (Tagging %1 to track specific molecule through transition)
+    SOS(b!1).Ras(nuc~GDP,b!1)%1 -> SOS(b) + Ras(nuc~GTP,b)%1 k_gef_exch
+    
+    ## INACTIVATION (GAP Phase)
+    # RasGAP binds active Ras
+    RasGAP(b) + Ras(nuc~GTP,b) <-> RasGAP(b!1).Ras(nuc~GTP,b!1) k_gap_bind,0.5
+    
+    # Hydrolysis of GTP to GDP (Tagging %1)
+    RasGAP(b!1).Ras(nuc~GTP,b!1)%1 -> RasGAP(b) + Ras(nuc~GDP,b)%1 k_gap_hydro
+    
+    ## INTRINSIC RESET (Very slow)
+    Ras(nuc~GTP) -> Ras(nuc~GDP) 0.001
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model
+

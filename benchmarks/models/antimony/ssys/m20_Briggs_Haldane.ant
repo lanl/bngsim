@@ -1,0 +1,41 @@
+// Briggs GE, Haldane JB (1925) A note on the kinetics of enzyme action.
+//   Biochem J 19: 338-339.
+// Recasting:
+// States: S (substrate), ES (complex), P (product), Y (free enzyme)
+//   species S, ES, P, Y;
+//
+// Canonical S-system (each RHS is production monomial − degradation monomial)
+// S'  =  km1*ES        −  k1*S*Y
+//   S'  =  km1 * ES        -  k1 * S * Y;
+//
+// ES' =  k1*S*Y        −  (km1 + k2)*ES
+//   ES' =  k1 * S * Y      -  (km1 + k2) * ES;
+//
+// P'  =  (k2 + epsP)*ES −  epsP*ES   (ε-splitting keeps both coefficients > 0; net = k2*ES)
+//   epsP = 1.0;
+//   P'  =  (k2 + epsP) * ES -  epsP * ES;
+//
+// Y'  =  (km1 + k2)*ES  −  k1*S*Y    (so Y' = -ES' ⇒ Y + ES = Etot)
+//   Y'  =  (km1 + k2) * ES -  k1 * S * Y;
+//
+// Initial conditions (consistent with conservation)
+//   S  = 1.0;
+//   ES = 0.0;
+//   P  = 0.0;
+//   Y  = Etot - ES;   // = 1.0
+//
+model Briggs_Haldane()
+
+  species S, C, P
+  // enzyme conservation: E = E_T - C (implicit)
+  E_T = 1.0;
+  k_1 = 1.0; k_m_1 = 0.5; k_2 = 0.3;
+
+  // S' = -k_1*S*E + k_m_1*C   with E = E_T - C
+  S'  = -k_1*S*(E_T - C) + k_m_1*C;
+  C' =  k_1*S*(E_T - C) - (k_m_1 + k_2)*C;
+  P'  =  k_2*C;
+
+  S = 1.0; C = 0.0; P = 0.0;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

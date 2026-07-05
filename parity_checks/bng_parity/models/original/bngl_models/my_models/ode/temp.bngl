@@ -1,0 +1,50 @@
+begin model
+# Reference:
+# - Grau MD, Nougues JM, Puigjaner L (2000) Chem Eng Proc 39:141-148.
+begin parameters
+NA 6.02214076e23 # molecules per mole
+kB 1.380649e-23 # J/K
+R=NA*kB # J/(mol K)
+Ea_div_R 9156 # K, from p 145
+k0 8.13e11 # /M/s, from p 145 
+cA0 0.6 # M, from p 143
+cB0=(3/2)*cA0 # M, from pp 142, 143
+T0 293.07 # K, from Table 1 (Expt 1B)
+Tfinal 322.34 # K, from Table 1 (Expt 1B)
+DeltaTad=Tfinal-T0 # K, Eq (13)
+end parameters
+begin molecule types
+A() # Na2S2O3
+B() # H2O2
+P() # Na2S3O6 + Na2SO4
+S() # H2O
+end molecule types
+begin seed species
+A() cA0
+B() cB0
+end seed species
+begin observables
+Molecules cA A()
+Molecules cB B()
+Molecules cP1_plus_cP2 P()
+Molecules cS S()
+end observables
+begin functions
+conversion()=(cB0-cB)/cB0 # B is the limiting reagent.
+T()=T0+DeltaTad*conversion() # Eq (13)
+k()=k0*exp(-Ea_div_R/T()) # Eq (17)
+rate_correction()=1/cB # correction for BioNetGen's assumption of mass-action kinetics
+cP1()=cP1_plus_cP2/2 # [Na2S3O6]
+cP2()=cP1_plus_cP2/2 # [Na2SO4]
+end functions
+begin reaction rules
+# BioNetGen calculates the rate of this reaction as k*rate_correction*[A]*[B]^2 = k*[A]*[B] (Eq (1)).
+A()+B()+B()->P()+S()+S() k()*rate_correction()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>300,n_steps=>300,print_functions=>1})
+# Results for T vs. t look similar to those shown in Fig 3 (p 144).
+# Results for cA, cB, cP1 (or cP2) vs. t look similar to those shown in Fig 7 (p 145).
+end actions

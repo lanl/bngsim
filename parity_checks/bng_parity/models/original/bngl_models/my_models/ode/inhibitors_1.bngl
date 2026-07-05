@@ -1,0 +1,591 @@
+#---
+# File:
+#  Filename: inhibitors.bngl
+#  Created 30 May 2016
+#  Completed: TBA
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r3
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# Model: update of the models of Martin et al. (2013) and Szymanska et al. (2015)
+#  Contributors:
+#   - Joern Dengjel
+#   - Kristin E. Dittenhafer-Reed
+#   - William S. Hlavacek
+#   - Jeffrey P. MacKeigan
+#   - Katie R. Martin
+#   - Joshua L. Schipper
+#---
+
+#---
+# Cell lines:
+#  - HEK293 cells
+#  - U2OS cells
+#  - HeLa S3 cells
+#  - HeLa Kyoto cells
+#---
+
+#---
+# Compartments:
+#  ecf: extracellular fluid
+#  cyt: cytosol
+#---
+
+#---
+# References:
+#  - Aylett CHS, ..., Maier T (2016) Science 351: 48-52. [PMID: 26678875]
+#  - Banaszynski LA, ..., Wandless TJ (2005) J Am Chem Soc 127: 4715-4721. [PMID: 15796538]
+#  - Bierer BE, ..., Schreiber SL (1990) Proc Natl Acad Sci USA 87: 9231-9235. [PMID: 2123553]
+#  - Brown EJ, ..., Schreiber SL (1994) Nature 369: 756-758. [PMID: 8008069]
+#  - Chen J, ..., Schreiber SL (1995) Proc Natl Acad Sci USA 92: 4947-4951. [PMID: 7539137]
+#  - Cheng YC, Prusoff WH (1973) Biochem Pharmacol 22: 3099-3108. [PMID: 4202581]
+#  - Choi J, ..., Clardy J (1996) Science 273: 239-241. [PMID: 8662507]
+#  - Chresta CM, ..., Pass M (2010) Cancer Res 70: 288-298. [PMID: 20028854]
+#  - Fang BY, ..., Chen F (2016) Colloids Surf B Biointerfaces 140: 233-238. [PMID: 26764106]
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Kang SA, ..., Sabatini DM (2013) Science 341: 1236566 [PMID: 23888043]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Martin KR, ..., MacKeigan JP (2013) Autophagy 9: 74-92. [PMID: 23196898]
+#  - Sabatini DM, ..., Snyder SH (1994) Cell 78: 35-43. [PMID: 7518356]
+#  - Syzmanska P, ..., Lipniacki T (2015) PLOS ONE 10: e0116550. [PMID: 25761126]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of extracellular fluid surrounding a single cell on average (Vecf)
+#  comments:
+#   - We assume that cells have been grown in 15 cm culture dishes to 95% confluency.
+#   - For these conditions, we estimate a surface density of 1.25e5 adherent cells per cm^2 
+#     and a growth surface area of 140 cm^2 per dish. Thus, we estimate 1.7e7 cells per dish.
+#   - We assume that 0.25 mL of medium has been added to dishes for each square cm of growth surface.
+#     Thus, we estimate 35 mL of medium per dish.
+#   - The volume (L) of extracellular fluid per cell is (0.25e-3*140)/(1.25e5*140) = 2.0e-9 L per cell.
+Vecf 2.0e-9*f # L per cell
+
+Vecf_HEK293     = Vecf # L per cell
+Vecf_U2OS       = Vecf # L per cell
+Vecf_HeLa_S3    = Vecf # L per cell
+Vecf_HeLa_Kyoto = Vecf # L per cell
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; see Table S3.
+Vcyt 2.0e-12*f # L per cell
+
+Vcyt_HEK293     = Vcyt # L per cell
+Vcyt_U2OS       = Vcyt # L per cell
+Vcyt_HeLa_S3    = Vcyt # L per cell
+Vcyt_HeLa_Kyoto = Vcyt # L per cell
+
+#####################################
+# endogenous abundances of proteins #
+#####################################
+
+# protein abundances in HEK293 cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #1 (iBAQ1)
+
+FKBP1A_iBAQ1_HEK293 7.834383 # dimensionless
+MTOR_iBAQ1_HEK293   5.646002 # dimensionless
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_HEK293 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+FKBP1A_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^FKBP1A_iBAQ1_HEK293 # copies per cell
+MTOR_cpc_HEK293   = iBAQ_to_cpc_HEK293*10^MTOR_iBAQ1_HEK293 # copies per cell
+
+# protein abundances in U2OS cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #3 (iBAQ3)
+
+FKBP1A_iBAQ3_U2OS 7.828821 # dimensionless
+MTOR_iBAQ3_U2OS   6.296182 # dimensionless
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_U2OS 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+FKBP1A_cpc_U2OS = iBAQ_to_cpc_U2OS*10^FKBP1A_iBAQ3_U2OS # copies per cell
+MTOR_cpc_U2OS   = iBAQ_to_cpc_U2OS*10^MTOR_iBAQ3_U2OS # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  comments:
+#   - See Supplementary Table 1 (Kulak et al. 2014).
+
+FKBP1A_cpc_HeLa_S3 838853.3*f # copies per cell
+MTOR_cpc_HeLa_S3   47731.53*f # copies per cell
+
+# protein abundances in HeLa Kyoto cells
+#  comments:
+#   - See Table S3 (Hein et al., 2015).
+
+FKBP1A_cpc_HeLa_Kyoto   349764*f # copies per cell
+MTOR_cpc_HeLa_Kyoto      74960*f # copies per cell
+
+###################################################
+# cellular abundances of small-molecule compounds #
+###################################################
+
+# ATP concentration
+#  comments:
+#   - Fang et al. (2016) reported an ATP concentration of 3.7 mM in HeLa cells.
+#   - We will assume that the total concentration of ATP is 3.7 mM for all cell lines of interest.
+ATP_conc 3.7e-3 # M
+
+ATP_cpc_HEK293     = ATP_conc*(NA*Vcyt_HEK293)     # copies per cell
+ATP_cpc_U2OS       = ATP_conc*(NA*Vcyt_U2OS)       # copies per cell
+ATP_cpc_HeLa_S3    = ATP_conc*(NA*Vcyt_HeLa_S3)    # copies per cell
+ATP_cpc_HeLa_Kyoto = ATP_conc*(NA*Vcyt_HeLa_Kyoto) # copies per cell
+
+#########################################################################
+# concentrations of small-molecule compounds in the extracellular fluid #
+#########################################################################
+
+# AZD8055 concentation (nM)
+#  comments:
+#   - the initial external concentration of AZD8055
+#   - AZD8055 is an ATP-competitive inhibitor of MTOR (Chresta et al., 2010).
+#   - https://pubchem.ncbi.nlm.nih.gov/compound/azd8055
+#   - Martin et al. (2013) used a dose of 100 nM of AZD8055 to inhibit MTOR and induce autophagy.
+AZD8055_conc_nM 100 # nM
+AZD8055_conc=AZD8055_conc_nM*1e-9 # M
+
+AZD8055_cpc_HEK293     = AZD8055_conc*(NA*Vecf_HEK293)     # copies per cell
+AZD8055_cpc_U2OS       = AZD8055_conc*(NA*Vecf_U2OS)       # copies per cell 
+AZD8055_cpc_HeLa_S3    = AZD8055_conc*(NA*Vecf_HeLa_S3)    # copies per cell
+AZD8055_cpc_HeLa_Kyoto = AZD8055_conc*(NA*Vecf_HeLa_Kyoto) # copies per cell
+
+# affinities of AZD8055 and ATP for the ATP-binding site in MTOR
+#  comments:
+#   - affinity = 1/KD, where KD is the equilibrium dissociation constant
+#   - Using an in vitro kinase activity assay, Chresta et al. (2010) measured 
+#     IC50 values at different doses of ATP for AZD8055-mediated inhibition of 
+#     MTOR kinase domain-catalyzed phosphorylation of a peptide from RPS6KB1 (p70 S6K1).
+#   - See Figure 1B in Chresta et al. (2010).
+#   - KI = KD (for AZD8055 binding to MTOR) and KM (the Michaelis constant for ATP) were
+#     determined using Equation (5) in Cheng and Prusoff (1973): IC50 = KI*([ATP]/KM-1).
+#   - KM was determined to be 15 uM (from the x-intercept).
+#   - KI was determined to be 1.3 nM (from the slope = KI/KM).
+#   - Kang et al. (2013) measured kcat values for MTORC1 substrates between 2 and 5 per min
+#     (0.03 to 0.08 per s). 
+#   - We assume that the value of the dissociation rate constant for ATP binding to MTOR 
+#     is much larger than the value of kcat. Thus, KD for ATP binding to MTOR is approximately KM.
+#   - Chresta et al. (2010) observed that phosphorylation of S235/S236 in RPS6 was reduced by 50%
+#     at an AZD8055 concentration of approximately 30 nM. See Figure 2A.
+#   - We will assume an EC50 of 30 nM for MTORC1 substrates.
+#   - We will assume that the EC50 is determined by KI, KM, and the free fraction of ATP in a cell.
+KD_AZD8055_MTOR 1.3e-9 # M
+KD_ATP_MTOR 15e-6 # M
+EC50_AZD8055_MTORC1substrate 30e-9 # M
+freefractionATP=(KD_ATP_MTOR/ATP_conc)*(1+EC50_AZD8055_MTORC1substrate/KD_AZD8055_MTOR)
+
+# We set the abundances of MTOR(PIKK~0), MTOR(PIKK~ATP), and MTOR(PIKK~AZD8055) 
+# based on the following considerations:
+#  - The total abundances of ATP, AZD8055, and MTOR are conserved (on time scales of interest).
+#  - The number of copies of AZD8055 per cell is determined by the initial external
+#    concentration of AZD8055.
+#  - Transport of AZD8055 into and out of a cell is fast, such that
+#    the internal and external concentrations of *free* AZD8055 are identical.
+#  - Binding of ATP and AZD8055 to the ATP-binding site in MTOR is in equilibrium, such that
+#    [ATP]*[MTOR]=KD_ATP_MTOR*[ATP.MTOR] and 
+#    [AZD8055]*[MTOR]=KD_AZD8055_MTOR*[AZD8055.MTOR].
+#  - ATP is available in excess, such that MTOR does not significantly deplete the pool of free ATP.
+#  - Only a fraction of total ATP is free.
+# Given the assumptions above, the abundances of MTOR(PIKK~0), MTOR(PIKK~ATP), and MTOR(PIKK~AZD8055)
+# can be found by solving a quadratic equation: x^2+b*x+c=0, where x = [MTOR(PIKK~0)]/MTOR_cpc.
+# There are four dimensionless parameters (p1 to p4) that appear in the b and c parameters of the
+# quadratic equation. All of these parameters (p1, p2, p3, p4, b, and c) are defined below.
+
+# volume ratio Vecf:Vcyt (dimensionless)
+p1_HEK293     = Vecf_HEK293/Vcyt_HEK293        
+p1_U2OS       = Vecf_U2OS/Vcyt_U2OS           
+p1_HeLa_S3    = Vecf_HeLa_S3/Vcyt_HeLa_S3 
+p1_HeLa_Kyoto = Vecf_HeLa_Kyoto/Vcyt_HeLa_Kyoto 
+
+# [ATP]/KM (dimensionless)
+p2_HEK293     = freefractionATP*ATP_cpc_HEK293/(KD_ATP_MTOR*(NA*Vcyt_HEK293))    
+p2_U2OS       = freefractionATP*ATP_cpc_U2OS/(KD_ATP_MTOR*(NA*Vcyt_U2OS))           
+p2_HeLa_S3    = freefractionATP*ATP_cpc_HeLa_S3/(KD_ATP_MTOR*(NA*Vcyt_HeLa_S3))      
+p2_HeLa_Kyoto = freefractionATP*ATP_cpc_HeLa_Kyoto/(KD_ATP_MTOR*(NA*Vcyt_HeLa_Kyoto)) 
+
+# [AZD8055]/KI (dimensionless)
+p3_HEK293     = AZD8055_cpc_HEK293/(KD_AZD8055_MTOR*(NA*Vcyt_HEK293))        
+p3_U2OS       = AZD8055_cpc_U2OS/(KD_AZD8055_MTOR*(NA*Vcyt_U2OS))            
+p3_HeLa_S3    = AZD8055_cpc_HeLa_S3/(KD_AZD8055_MTOR*(NA*Vcyt_HeLa_S3))      
+p3_HeLa_Kyoto = AZD8055_cpc_HeLa_Kyoto/(KD_AZD8055_MTOR*(NA*Vcyt_HeLa_Kyoto)) 
+
+# abundance ratio [MTOR]:[AZD8055] (dimensionless)
+p4_HEK293     = MTOR_cpc_HEK293/AZD8055_cpc_HEK293       
+p4_U2OS       = MTOR_cpc_U2OS/AZD8055_cpc_U2OS        
+p4_HeLa_S3    = MTOR_cpc_HeLa_S3/AZD8055_cpc_HeLa_S3      
+p4_HeLa_Kyoto = MTOR_cpc_HeLa_Kyoto/AZD8055_cpc_HeLa_Kyoto 
+
+# dimensionless parameter -b in x^2+b*x+c=0
+minusb_HEK293     = (p4_HEK293-1)/(p4_HEK293*(1+p2_HEK293))-(1+p1_HEK293)/(p3_HEK293*p4_HEK293)
+minusb_U2OS       = (p4_U2OS-1)/(p4_U2OS*(1+p2_U2OS))-(1+p1_U2OS)/(p3_U2OS*p4_U2OS)
+minusb_HeLa_S3    = (p4_HeLa_S3-1)/(p4_HeLa_S3*(1+p2_HeLa_S3))-(1+p1_HeLa_S3)/(p3_HeLa_S3*p4_HeLa_S3)
+minusb_HeLa_Kyoto = (p4_HeLa_Kyoto-1)/(p4_HeLa_Kyoto*(1+p2_HeLa_Kyoto))-(1+p1_HeLa_Kyoto)/(p3_HeLa_Kyoto*p4_HeLa_Kyoto)
+
+# dimensionless parameter -c in x^2+b*x+c=0
+minusc_HEK293     = (1+p1_HEK293)/(p4_HEK293*p3_HEK293*(1+p2_HEK293))
+minusc_U2OS       = (1+p1_U2OS)/(p4_U2OS*p3_U2OS*(1+p2_U2OS))
+minusc_HeLa_S3    = (1+p1_HeLa_S3)/(p4_HeLa_S3*p3_HeLa_S3*(1+p2_HeLa_S3))
+minusc_HeLa_Kyoto = (1+p1_HeLa_Kyoto)/(p4_HeLa_Kyoto*p3_HeLa_Kyoto*(1+p2_HeLa_Kyoto))
+
+# solution of quadratic equation x^2+b*x+c=0
+
+# fraction of free PIKK
+fracPIKK_0_HEK293     = 0.5*minusb_HEK293+sqrt((0.25*minusb_HEK293^2)+minusc_HEK293) 
+fracPIKK_0_U2OS       = 0.5*minusb_U2OS+sqrt((0.25*minusb_U2OS^2)+minusc_U2OS) 
+fracPIKK_0_HeLa_S3    = 0.5*minusb_HeLa_S3+sqrt((0.25*minusb_HeLa_S3^2)+minusc_HeLa_S3) 
+fracPIKK_0_HeLa_Kyoto = 0.5*minusb_HeLa_Kyoto+sqrt((0.25*minusb_HeLa_Kyoto^2)+minusc_HeLa_Kyoto) 
+
+# fraction of PIKK bound to ATP
+fracPIKK_ATP_HEK293     = fracPIKK_0_HEK293*p2_HEK293
+fracPIKK_ATP_U2OS       = fracPIKK_0_U2OS*p2_U2OS
+fracPIKK_ATP_HeLa_S3    = fracPIKK_0_HeLa_S3*p2_HeLa_S3
+fracPIKK_ATP_HeLa_Kyoto = fracPIKK_0_HeLa_Kyoto*p2_HeLa_Kyoto
+
+# fraction of PIKK bound to AZD8055
+fracPIKK_AZD8055_HEK293     = fracPIKK_0_HEK293*p3_HEK293/(1+p1_HEK293+fracPIKK_0_HEK293*p4_HEK293*p3_HEK293)
+fracPIKK_AZD8055_U2OS       = fracPIKK_0_U2OS*p3_U2OS/(1+p1_U2OS+fracPIKK_0_U2OS*p4_U2OS*p3_U2OS)
+fracPIKK_AZD8055_HeLa_S3    = fracPIKK_0_HeLa_S3*p3_HeLa_S3/(1+p1_HeLa_S3+fracPIKK_0_HeLa_S3*p4_HeLa_S3*p3_HeLa_S3)
+fracPIKK_AZD8055_HeLa_Kyoto = fracPIKK_0_HeLa_Kyoto*p3_HeLa_Kyoto/(1+p1_HeLa_Kyoto+fracPIKK_0_HeLa_Kyoto*p4_HeLa_Kyoto*p3_HeLa_Kyoto)
+
+# fraction of free AZD8055 inside the cell
+fracAZD8055_in_HEK293     = 1/(1+p1_HEK293+fracPIKK_0_HEK293*p4_HEK293*p3_HEK293)
+fracAZD8055_in_U2OS       = 1/(1+p1_U2OS+fracPIKK_0_U2OS*p4_U2OS*p3_U2OS)
+fracAZD8055_in_HeLa_S3    = 1/(1+p1_HeLa_S3+fracPIKK_0_HeLa_S3*p4_HeLa_S3*p3_HeLa_S3)
+fracAZD8055_in_HeLa_Kyoto = 1/(1+p1_HeLa_Kyoto+fracPIKK_0_HeLa_Kyoto*p4_HeLa_Kyoto*p3_HeLa_Kyoto)
+
+# fraction of free AZD8055 outside the cell
+fracAZD8055_out_HEK293     = fracAZD8055_in_HEK293*p1_HEK293
+fracAZD8055_out_U2OS       = fracAZD8055_in_U2OS*p1_U2OS
+fracAZD8055_out_HeLa_S3    = fracAZD8055_in_HeLa_S3*p1_HeLa_S3
+fracAZD8055_out_HeLa_Kyoto = fracAZD8055_in_HeLa_Kyoto*p1_HeLa_Kyoto
+
+# fraction of AZD8055 bound to the ATP0-binding site in MTOR's kinase domain
+fracAZD8055_PIKK_HEK293     = fracPIKK_AZD8055_HEK293*p4_HEK293
+fracAZD8055_PIKK_U2OS       = fracPIKK_AZD8055_U2OS*p4_U2OS
+fracAZD8055_PIKK_HeLa_S3    = fracPIKK_AZD8055_HeLa_S3*p4_HeLa_S3
+fracAZD8055_PIKK_HeLa_Kyoto = fracPIKK_AZD8055_HeLa_Kyoto*p4_HeLa_Kyoto
+
+# rapamycin concentration (nM)
+#  comments:
+#   - the initial external concentration of rapamycin
+#   - Rapamycin, in complex with FKBP1A (aka FKBP12), binds the FRB domain in MTOR.
+#   - https://pubchem.ncbi.nlm.nih.gov/compound/5284616
+#   - Martin et al. (2013) used a dose of 100 nM of rapamycin to inhibit MTOR and induce autophagy.
+rapamycin_conc_nM 100 # nM 
+#   convert from nM to M
+rapamycin_conc=rapamycin_conc_nM*1e-9 # M
+
+rapamycin_cpc_HEK293     = rapamycin_conc*(NA*Vecf_HEK293)     # copies per cell
+rapamycin_cpc_U2OS       = rapamycin_conc*(NA*Vecf_U2OS)       # copies per cell
+rapamycin_cpc_HeLa_S3    = rapamycin_conc*(NA*Vecf_HeLa_S3)    # copies per cell
+rapamycin_cpc_HeLa_Kyoto = rapamycin_conc*(NA*Vecf_HeLa_Kyoto) # copies per cell
+
+# affinity of rapamycin for FKBP1A (aka FKBP12)
+#  comments:
+#   - affinity = 1/KD, where KD is the equilibrium dissociation constant
+#   - Banaszynski et al. (2005) measured a KD of 0.2 nM for binding of rapamycin to FKBP12.
+KD_FKBP1A_rapamycin 0.2e-9 # M
+
+# We set the abundances of FKBP1A(FKBP~0) and FKBP1A(FKBP~rapamycin)
+# based on the following considerations:
+#  - The total abundances of rapamycin and FKBP1A are conserved (on time scales of interest).
+#  - The number of copies of rapamycin per cell is determined by the initial external
+#    concentration of rapamycin.
+#  - Transport of rapamycin into and out of a cell is fast, such that
+#    the internal and external concentrations of *free* rapamycin are identical.
+#  - Binding of rapamycin to FKBP1A is in equilibrium, such that 
+#    [rapamycin]*[FKBP1A(FKBP~0)]=KD_FKBP1A_rapamycin*[FKBP1A(FKBP~rapamycin)].
+# Given the assumptions above, the abundances of FKBP1A(FKBP~0) and FKBP1A(FKBP~rapamycin)
+# can be found by solving a quadratic equation: y^2+d*y+e=0, where 
+# y=[FKBP1A(FKBP~0)]/FKBP1A_cpc. There are three dimensionless parameters
+# (p1, p5 and p6) that appear in the d and e parameters of the quadratic equation. The p1 
+# parameter (a volume ratio) is defined above. The p5, p6, d and e parameters are defined below.
+
+# [rapamycin]/KD (dimensionless)
+p5_HEK293     = rapamycin_cpc_HEK293/(KD_FKBP1A_rapamycin*(NA*Vcyt_HEK293))
+p5_U2OS       = rapamycin_cpc_U2OS/(KD_FKBP1A_rapamycin*(NA*Vcyt_U2OS))
+p5_HeLa_S3    = rapamycin_cpc_HeLa_S3/(KD_FKBP1A_rapamycin*(NA*Vcyt_HeLa_S3))
+p5_HeLa_Kyoto = rapamycin_cpc_HeLa_Kyoto/(KD_FKBP1A_rapamycin*(NA*Vcyt_HeLa_Kyoto))
+
+# abundance ratio [FKBP1A]:[rapamycin] (dimensionless)
+p6_HEK293     = FKBP1A_cpc_HEK293/rapamycin_cpc_HEK293
+p6_U2OS       = FKBP1A_cpc_U2OS/rapamycin_cpc_U2OS
+p6_HeLa_S3    = FKBP1A_cpc_HeLa_S3/rapamycin_cpc_HeLa_S3
+p6_HeLa_Kyoto = FKBP1A_cpc_HeLa_Kyoto/rapamycin_cpc_HeLa_Kyoto
+
+# dimensionless parameter -d in y^2+d*y+e=0
+minusd_HEK293     = 1-1/p6_HEK293-(1+p1_HEK293)/(p5_HEK293*p6_HEK293)
+minusd_U2OS       = 1-1/p6_U2OS-(1+p1_U2OS)/(p5_U2OS*p6_U2OS)
+minusd_HeLa_S3    = 1-1/p6_HeLa_S3-(1+p1_HeLa_S3)/(p5_HeLa_S3*p6_HeLa_S3)
+minusd_HeLa_Kyoto = 1-1/p6_HeLa_Kyoto-(1+p1_HeLa_Kyoto)/(p5_HeLa_Kyoto*p6_HeLa_Kyoto)
+
+# dimensionless parameter -e in y^2+d*y+e=0
+minuse_HEK293     = (1+p1_HEK293)/(p5_HEK293*p6_HEK293)
+minuse_U2OS       = (1+p1_U2OS)/(p5_U2OS*p6_U2OS)
+minuse_HeLa_S3    = (1+p1_HeLa_S3)/(p5_HeLa_S3*p6_HeLa_S3)
+minuse_HeLa_Kyoto = (1+p1_HeLa_Kyoto)/(p5_HeLa_Kyoto*p6_HeLa_Kyoto)
+
+# solution of quadratic equation y^2+d*y+e=0
+
+fracFKBP1A_0_HEK293     = 0.5*minusd_HEK293+sqrt((0.25*minusd_HEK293^2)+minuse_HEK293)
+fracFKBP1A_0_U2OS       = 0.5*minusd_U2OS+sqrt((0.25*minusd_U2OS^2)+minuse_U2OS)
+fracFKBP1A_0_HeLa_S3    = 0.5*minusd_HeLa_S3+sqrt((0.25*minusd_HeLa_S3^2)+minuse_HeLa_S3)
+fracFKBP1A_0_HeLa_Kyoto = 0.5*minusd_HeLa_Kyoto+sqrt((0.25*minusd_HeLa_Kyoto^2)+minuse_HeLa_Kyoto)
+
+
+
+#   total number of rapamycin molecules per cell
+total_rapamycin_cpc=rapamycin_conc*(NA*Vecf) # molecules per cell
+
+# Set FKBP1A(FKBP~0) and FKBP1A(FKBP~rapamycin) based on 
+#   1) the specified initial external rapamycin concentration,
+#   2) an assumption of rapid passive transport of rapamycin into and out of the cell,
+#      such that the internal and external concentrations of *free* rapamycin are identical;
+#   3) an assumption of rapamycin-FKBP12 binding equilibrium; and
+#   4) conservation of total FKBP1A and total rapamycin.
+#   NB: the cytosolic concentration of free rapamycin is buffered by the external rapamycin concentration.
+
+# volume ratio
+rho=Vecf/Vcyt # dimensionless
+
+# equilibrium association constant for rapamycin binding to FKBP12
+#   KD = 0.2 nM (Banaszynski et al., 2005)
+KD_rapa_FKBP12 0.2e-9*(NA*Vcyt) # M converted to molecule per cell
+Keq_rapamycin_FKBP12=1/KD_rapa_FKBP12 # /(molecule/cell) 
+
+# Here, we define several dimensionless parameters appearing in a quadratic equation, which we will solve.
+
+kappa_HeLa_Kyoto=Keq_rapamycin_FKBP12*FKBP1A_cpc_HeLa_Kyoto # dimensionless
+kappa_HeLa_S3=Keq_rapamycin_FKBP12*FKBP1A_cpc_HeLa_S3 # dimensionless
+kappa_U2OS=Keq_rapamycin_FKBP12*FKBP1A_cpc_U2OS # dimensionless
+
+# rapamycin:FKBP12 ratio
+lambda_HeLa_Kyoto=total_rapamycin_cpc/FKBP1A_cpc_HeLa_Kyoto # dimensionless
+lambda_HeLa_S3=total_rapamycin_cpc/FKBP1A_cpc_HeLa_S3 # dimensionless
+lambda_U2OS=total_rapamycin_cpc/FKBP1A_cpc_U2OS # dimensionless
+
+minus_c_HeLa_Kyoto=(1+rho)/kappa_HeLa_Kyoto
+minus_c_HeLa_S3=(1+rho)/kappa_HeLa_S3
+minus_c_U2OS=(1+rho)/kappa_U2OS
+
+minus_b_HeLa_Kyoto=1-lambda_HeLa_Kyoto-minus_c_HeLa_Kyoto
+minus_b_HeLa_S3=1-lambda_HeLa_S3-minus_c_HeLa_S3
+minus_b_U2OS=1-lambda_U2OS-minus_c_U2OS
+
+# Solve the following quadratic equation:
+#   F^2+F*(lambda-1+(1+rho)/kappa)-(1+rho)/kappa=0, 
+#     where F is FKBP12_free/FKBP12_total=fracFree_FKBP12,
+#     rho=Vecf/Vcyt,
+#     lambda=rapamycin_total/FKBP12_total, and
+#     kappa=(Keq_rapamycin_FKBP12_M*FKBP12_total)/(NA*Vcyt_L).
+fracFree_FKBP12_HeLa_Kyoto=0.5*(minus_b_HeLa_Kyoto+sqrt(minus_b_HeLa_Kyoto^2+4*minus_c_HeLa_Kyoto))
+fracFree_FKBP12_HeLa_S3=0.5*(minus_b_HeLa_S3+sqrt(minus_b_HeLa_S3^2+4*minus_c_HeLa_S3))
+fracFree_FKBP12_U2OS=0.5*(minus_b_U2OS+sqrt(minus_b_U2OS^2+4*minus_c_U2OS))
+
+###########################
+# parameters of rate laws #
+###########################
+
+# rate constants for FKBP12-bound rapamycin binding to the FRB domain in MTOR
+#  comments:
+#   - Banaszynski et al. (2005) measured a KD of 12 nM for rapamycin-FKBP12 interaction with the FRB domain.
+#   - The half-life for dissocation of the FRB domain from rapamycin-FKBP12 is roughly 60 s (Banaszynski et al., 2005).
+#     Thus, the dissociation rate constant is approximately 0.01 per s.
+KD_FRB_rapaFKBP 12e-9*(NA*Vcyt) # M converted to molecule/cell
+kr_FRB_rapaFKBP 0.01 # /s
+kf_FRB_rapaFKBP=kr_FRB_rapaFKBP/KD_FRB_rapaFKBP # /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+FKBP1A(FKBP~0~rapamycin)
+#---
+# FKBP1A: FK506-binding protein 1A (aka FKBP12, 12 kDa FK506-binding protein)
+#  Uniprot entry: http://www.uniprot.org/uniprot/P62942
+#  comments:
+#   - 108 amino acids (P62942-1)
+#   - FKBP1A binds rapamycin (Bierer et al., 1990).
+#   - The KD for binding of FKBP1A to rapamycin is 0.2 nM (Bierer et al., 1990; Banaszynski et al., 2005).
+#   - FKBP1A-rapamycin interacts with MTOR (Brown et al., 1994; Sabatini et al., 1994).
+#   - FKBP1A-rapamycin binds the FRB domain in MTOR (Chen et al., 1995). In the ternary complex,
+#     rapamycin simultaneously contacts both FKBP1A and the FRB domain (PDB ID: 1FAP) (Choi et al., 1996).
+#   - The KD for binding of the FKBP1A-rapamycin complex to the FRB domain is 12 nM (Banaszynski et al., 2005).
+#   - Binding of FKBP1A-rapamycin to the FRB domain likely inhibits MTOR's kinase activity by blocking access 
+#     of substrates to the catalytic cleft of MTOR's kinase domain (Aylett et al., 2016).
+#  states:
+#   - 0: free
+#   - rapamycin: bound to rapamycin (aka sirolimus), https://pubchem.ncbi.nlm.nih.gov/compound/5284616
+#---
+
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~0~ATP~AZD8055,FRB,LBE_FATC)
+#---
+# MTOR:
+#  components:
+#   PIKK:
+#    states:
+#     - 0: the ATP-binding site is free (inactive)
+#     - ATP: bound to ATP (uninhibited)
+#     - AZD8055: bound to the ATP-competitive inhibitor AZD8055 (inhibited), https://pubchem.ncbi.nlm.nih.gov/compound/azd8055
+#---     
+
+# debug
+FKBP12(FKBP~0~rapamycin)
+# debug
+
+end molecule types
+
+begin seed species
+
+# free FKBP12 and rapamycin-bound FKBP12
+FKBP1A(FKBP~0) fracFree_FKBP12_U2OS*FKBP1A_cpc_U2OS
+FKBP1A(FKBP~rapamycin) (1-fracFree_FKBP12_U2OS)*FKBP1A_cpc_U2OS
+
+# debug
+FKBP12(FKBP~0) fracFKBP1A_0_U2OS*FKBP1A_cpc_U2OS
+FKBP12(FKBP~rapamycin) (1-fracFKBP1A_0_U2OS)*FKBP1A_cpc_U2OS
+# debug
+
+# inactive free MTOR, uninhibited ATP-bound MTOR, and inhibited AZD8055-bound MTOR
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~0,FRB,LBE_FATC) fracPIKK_0_U2OS*MTOR_cpc_U2OS
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~ATP,FRB,LBE_FATC) fracPIKK_ATP_U2OS*MTOR_cpc_U2OS 
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~AZD8055,FRB,LBE_FATC) fracPIKK_AZD8055_U2OS*MTOR_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules FKBP1Atot FKBP1A()
+Molecules MTORtot MTOR()
+
+# debug
+Molecules rapa_freeFKBP12 FKBP12(FKBP~0!?)
+Molecules rapa_boundFKBP12 FKBP12(FKBP~rapamycin!?)
+Molecules MTOR_boundFKBP12 FKBP12(FKBP~rapamycin!+)
+# debug
+
+Molecules rapa_freeFKBP1A FKBP1A(FKBP~0!?)
+Molecules rapa_boundFKBP1A FKBP1A(FKBP~rapamycin!?)
+Molecules MTOR_boundFKBP1A FKBP1A(FKBP~rapamycin!+)
+Molecules boundFRB MTOR(FRB!+)
+Molecules freeFRB MTOR(FRB)
+
+Molecules PIKK_0 MTOR(PIKK~0)
+Molecules PIKK_ATP MTOR(PIKK~ATP)
+Molecules PIKK_AZD8055 MTOR(PIKK~AZD8055)
+
+end observables
+
+begin functions
+
+total_abundance_of_rapamycin_cpc() total_rapamycin_cpc
+initial_external_concentration_of_rapamycin_nM() total_rapamycin_cpc*1e9/(NA*Vecf)
+
+internal_abundance_of_free_rapamycin_cpc() KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A
+internal_concentration_of_free_rapamycin_nM() (KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A)*1e9/(NA*Vcyt)
+
+external_abundance_of_rapamycin_cpc() total_rapamycin_cpc-rapa_boundFKBP1A-(KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A)
+external_concentration_of_rapamycin_nM() (total_rapamycin_cpc-rapa_boundFKBP1A-(KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A))*1e9/(NA*Vecf)
+
+AZD8055_internal_conc_nM() 1e9*fracAZD8055_in_U2OS*AZD8055_cpc_U2OS/(NA*Vcyt_U2OS)
+AZD8055_external_conc_nM() 1e9*fracAZD8055_out_U2OS*AZD8055_cpc_U2OS/(NA*Vecf_U2OS)
+
+AZD8055_abundance() AZD8055_cpc_U2OS
+
+f_PIKK_0_formula() fracPIKK_0_U2OS*MTOR_cpc_U2OS
+f_PIKK_0_comp() (1-fracPIKK_ATP_U2OS-fracPIKK_AZD8055_U2OS)*MTOR_cpc_U2OS
+f_PIKK_ATP_formula() fracPIKK_ATP_U2OS*MTOR_cpc_U2OS
+f_PIKK_ATP_comp() (1-fracPIKK_0_U2OS-fracPIKK_AZD8055_U2OS)*MTOR_cpc_U2OS
+f_PIKK_AZD8055_formula() fracPIKK_AZD8055_U2OS*MTOR_cpc_U2OS
+f_PIKK_AZD8055_comp() (1-fracPIKK_0_U2OS-fracPIKK_ATP_U2OS)*MTOR_cpc_U2OS
+
+end functions
+
+begin reaction rules
+
+# rapamycin in complex with FKBP1A reversibly binds the FRB domain in MTOR 
+FKBP1A(FKBP~rapamycin)+MTOR(FRB)<->FKBP1A(FKBP~rapamycin!1).MTOR(FRB!1) kf_FRB_rapaFKBP,kr_FRB_rapaFKBP
+
+# debug
+FKBP12(FKBP~rapamycin)+MTOR(FRB)<->FKBP12(FKBP~rapamycin!1).MTOR(FRB!1) kf_FRB_rapaFKBP,kr_FRB_rapaFKBP
+# debug
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+#simulate({method=>"ode",t_start=>0,t_end=>120,n_steps=>120})
+#simulate({method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,t_start=>0,t_end=>120,n_steps=>120})
+
+saveParameters()
+
+resetParameters()
+parameter_scan({suffix=>"AZD8055",\
+                parameter=>"AZD8055_conc_nM",par_min=>1,par_max=>1.0e4,\
+                n_scan_pts=>40,log_scale=>1,\
+                print_functions=>1,\
+                method=>"ode",\
+                t_start=>0,t_end=>600,n_steps=>6})
+
+resetParameters()
+parameter_scan({suffix=>"rapamycin",\
+                parameter=>"rapamycin_conc_nM",par_min=>1e-3,par_max=>1.0e1,\
+                n_scan_pts=>40,log_scale=>1,\
+                print_functions=>1,\
+                method=>"ode",\ 
+                t_start=>0,t_end=>600,n_steps=>6})
+
+end actions

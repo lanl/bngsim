@@ -1,0 +1,74 @@
+begin model
+begin parameters
+    # SHP2 phosphatase regulation via autoinhibition and SH2 binding.
+    # Advanced features: MM kinetics and exclude_reactants.
+    
+    # Receptor-Phosphatase Interaction
+    k_bind_rtk 1.0    # SHP2 binds p-RTK
+    k_unbind 0.1
+    
+    # Activation (Relief of autoinhibition)
+    k_shp2_act 1.2     # Rate of opening when bound
+    k_shp2_reset 0.2   # Re-closing
+    
+    # Enzymatic Activity
+    v_max_shp2 5.0     # Catalytic capacity
+    Km_substrate 400    # Half-saturation for substrate dephosphorylation
+    
+    # Initials
+    RTK_P_tot 200
+    SHP2_tot 400
+    Substrate_P_init 1000
+end parameters
+
+begin molecule types
+    RTK(s~P,b)
+    SHP2(sh2,s~closed~open)
+    Substrate(s~U~P)
+end molecule types
+
+begin seed species
+    RTK(s~P,b) RTK_P_tot
+    SHP2(sh2,s~closed) SHP2_tot
+    Substrate(s~P) Substrate_P_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Enzyme    SHP2(s~open)             # Functional phosphatase pool
+    Molecules Recruited_SHP2   SHP2(sh2!+)              # Membrane localization status
+    Molecules Substrate_State  Substrate(s~U)           # Signaling output
+    Molecules Bound_RTK        RTK(b!+)                 # Sink metrics
+    Molecules Total_Inactive   SHP2(s~closed)           # Reservoir status
+    Molecules Active_Substrate Substrate(s~P)          # Dephosphorylation target
+end observables
+
+begin functions
+    # Michaelis-Menten rate for dephosphorylation
+    v_dephos() = (v_max_shp2 * Active_Enzyme) / (Km_substrate + Active_Substrate)
+end functions
+
+begin reaction rules
+    ## RECRUITMENT
+    # SHP2 binds p-RTK via SH2 domain
+    RTK(s~P,b) + SHP2(sh2) <-> RTK(s~P,b!1).SHP2(sh2!1) k_bind_rtk,k_unbind
+    
+    ## ACTIVATION (Gating)
+    # Binding to RTK relieves autoinhibition
+    SHP2(sh2!+,s~closed) -> SHP2(sh2!+,s~open) k_shp2_act
+    
+    ## ENZYMATIC ACTION
+    # Active SHP2 dephosphorylates substrate
+    # exclude_reactants: SHP2 cannot dephosphorylate if it's already complexed with its recruiter in a way that blocks active site (Simplified)
+    Substrate(s~P) -> Substrate(s~U) v_dephos()
+    
+    ## RECOVERY
+    SHP2(s~open) -> SHP2(s~closed) k_shp2_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>50,n_steps=>200})
+end actions
+end model
+

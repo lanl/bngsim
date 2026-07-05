@@ -1,0 +1,160 @@
+begin model
+
+begin parameters
+
+# fraction of a cell to consider in a (stochastic) simulation
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# cell density
+cellDensity 1e9 # cells per L
+Vecf=f/cellDensity # L per cell (1 nL)
+
+# volume of cytosol
+Vcyt 1e-12*f # L per cell (1 pL)
+
+###########################
+# abundances of molecules #
+###########################
+
+###############################################################
+# protein copy numbers for RBL-2H3 cells (rat mast cell line) #
+###############################################################
+
+# RBL protein copy numbers measured in Wilson lab by quantitative western
+#  (Avanika Mahajan, Mara P. Steinkamp, Bridget S. Wilson, personal communication) 
+Fcer1a_copyNum_RBL 3.0e5*f # molecules per cell (200,000 - 300,000 molecules/cell depending on duration of IgE priming)
+Lyn_copyNum_RBL    1.68e5*f # molecules per cell (+/- 20,000 molecules/cell)
+Fyn_copyNum_RBL    0.25e5*f # molecules per cell NB: Fyn mRNA is not detectable (Cedric Cleyrat, Bridget S. Wilson, personal communication)
+Syk_copyNum_RBL    0.89e5*f # molecules per cell
+Pag1_copyNum_RBL   0.85e5*f # molecules per cell
+Csk_copyNum_RBL   10.0e5*f # molecules per cell (+/- 150,000 molecules/cell)
+Ship1_copyNum_RBL  7.81156e5*f # molecules per cell
+
+# antigen properties
+# # molecular weight of DNP_{25}-BSA
+#mwt_DNP25BSA 66463+25*184 # g per mol
+valence 5 # dimensionless
+conc_MultiAg_nM 1 # nM
+conc_MultiAg=1e-9*conc_MultiAg_nM # M
+MonoAg_cpc=valence*conc_MultiAg*(NA*Vecf) # copies per cell (cpc)
+MonoAg_KD 1e-9*(NA*Vecf) # M converted to cpc
+R_cpc=Fcer1a_copyNum_RBL # cpc
+Beq=2*MonoAg_cpc*R_cpc/(MonoAg_cpc+R_cpc+MonoAg_KD+sqrt((MonoAg_cpc+R_cpc+MonoAg_KD)^2-4*MonoAg_cpc*R_cpc))
+
+###########################
+# parameters of rate laws #
+###########################
+
+kf_kinaseX 1e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s 
+kr_kinaseX 0.05 # /s
+kcat_kinaseX 0.2 # /s
+
+kphosphatase_pY65 1 # /s
+kphosphatase_pY76 1 # /s
+
+kf_adaptorX 1e6/(NA*Vcyt) # /M/s converted to /cpc/s
+kr_adaptorX 0.1 # /s
+
+kp_2nd_order 1e-5 # /cpc/s
+
+kf_SyktSH2 1e4/(NA*Vcyt) # /M/s converted to /cpc/s
+kr_SyktSH2 0.01 # /s
+
+end parameters
+
+begin molecule types
+
+Fcgamma(Y65~0~P,Y76~0~P)
+Lyn(PTK)
+Syk(nSH2,cSH2)
+kinaseX(PTK)
+adaptorX(SH2)
+AgIsPresent()
+
+end molecule types
+
+begin seed species
+
+Fcgamma(Y65~0,Y76~0) 2*Fcer1a_copyNum_RBL
+Lyn(PTK) Lyn_copyNum_RBL
+Syk(nSH2,cSH2) Syk_copyNum_RBL
+kinaseX(PTK) 2e5 # copies per cell
+adaptorX(SH2) 4e5 # copies per cell
+AgIsPresent() 0
+
+end seed species
+
+begin observables
+
+Molecules P0 Fcgamma(Y65~0,Y76~0)
+Molecules P1 Fcgamma(Y65~P!?,Y76~0)
+Molecules P2 Fcgamma(Y65~0,Y76~P!?)
+Molecules P12 Fcgamma(Y65~P!?,Y76~P!?)
+
+Molecules recruitedAdaptor adaptorX(SH2!+)
+Molecules RecruitedSyk Syk(nSH2!+,cSH2!+)
+
+Molecules BoolAg AgIsPresent()
+
+end observables
+
+begin functions
+
+Ag_dependent_phos()=kp_2nd_order*Beq*BoolAg
+
+end functions
+
+begin reaction rules
+
+# antigen-independent phosphorylation of gamma chain
+#  We assume specificity for Y65.
+kinaseX(PTK)+Fcgamma(Y65~0)<->kinaseX(PTK!1).Fcgamma(Y65~0!1) kf_kinaseX,kr_kinaseX
+kinaseX(PTK!1).Fcgamma(Y65~0!1)->kinaseX(PTK)+Fcgamma(Y65~P) kcat_kinaseX
+
+# phosphatase activity
+Fcgamma(Y65~P)->Fcgamma(Y65~0) kphosphatase_pY65
+Fcgamma(Y76~P)->Fcgamma(Y76~0) kphosphatase_pY76
+
+# recruitment of adaptor protein to phospho-gamma chain
+#  We assume recruitment to pY65.
+adaptorX(SH2)+Fcgamma(Y65~P)<->adaptorX(SH2!1).Fcgamma(Y65~P!1) kf_adaptorX,kr_adaptorX
+
+# antigen-dependent phosphorylation of gammma chain
+Fcgamma(Y65~0)->Fcgamma(Y65~P) Ag_dependent_phos()
+Fcgamma(Y76~0)->Fcgamma(Y76~P) Ag_dependent_phos()
+
+# recruitment of Syk to doubly phosphorylated Fcgamma
+Fcgamma(Y65~P,Y76~P)+Syk(nSH2,cSH2)<->Fcgamma(Y65~P!1,Y76~P!2).Syk(nSH2!2,cSH2!1) kf_SyktSH2,kr_SyktSH2
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibration (antigen is not present)
+setConcentration("AgIsPresent()",0)
+simulate({suffix=>"equil",method=>"ode",t_start=>0,t_end=>300,n_steps=>100,print_functions=>1})
+saveConcentrations()
+
+# dynamics after addition of Ag
+resetConcentrations()
+setConcentration("AgIsPresent()",1)
+simulate({suffix=>"AddAg",method=>"ode",t_start=>0,t_end=>30,n_steps=>300,print_functions=>1})
+
+# calculate steady-state dose-response curve
+resetConcentrations()
+setConcentration("AgIsPresent()",1)
+parameter_scan({method=>"ode",t_start=>0,t_end=>1000,n_steps=>10,print_functions=>1,\
+parameter=>"conc_MultiAg_nM",par_min=>0.001,par_max=>10,n_scan_pts=>50,log_scale=>1})
+
+end actions

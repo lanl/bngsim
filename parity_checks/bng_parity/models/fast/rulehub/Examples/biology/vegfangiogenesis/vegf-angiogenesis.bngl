@@ -1,0 +1,97 @@
+begin model
+begin parameters
+    # VEGF-mediated signaling in angiogenesis.
+    # Advanced features: Arrhenius-like binding and DeleteMolecules clearance.
+    
+    # Ligand-Receptor Dynamics
+    k_bind_max 1e-3    # Max binding rate
+    E_bind 15.0        # "Activation energy" proxy for binding/diffusion
+    R_const 8.314e-3
+    T_kelvin 310
+    
+    # Receptor Logic
+    k_dimer 1.5        # VEGFR2 dimerization
+    k_phos 0.8         # Autophosphorylation
+    
+    # Signal Relay (MAPK Drive)
+    k_erk_phos 2.0     # ERK activation
+    k_mig_max 1.5      # Migration output
+    Km_mig 400         # Half-saturation for migration
+    
+    # Clearance
+    k_endo 0.2         # Receptor internalisation
+    k_reset 0.1        # Dephosphorylation
+    
+    # Initials
+    VEGF_tot 100
+    VEGFR2_tot 500     # Signaling receptor
+    VEGFR1_tot 200     # Decoy receptor (Sink)
+    ERK_tot 1000
+end parameters
+
+begin molecule types
+    VEGF(r)
+    VEGFR2(l,d,s~U~P)
+    VEGFR1(l)
+    ERK(s~U~P)
+    Endothelial(state~Q~M)
+end molecule types
+
+begin seed species
+    VEGF(r) VEGF_tot
+    VEGFR2(l,d,s~U) VEGFR2_tot
+    VEGFR1(l) VEGFR1_tot
+    ERK(s~U) ERK_tot
+    Endothelial(state~Q) 100
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Signal    ERK(s~P)                 # Pro-angiogenic drive
+    Molecules Surface_VEGFR2   VEGFR2(l)                # Receptor availability
+    Molecules Migratory_Pool   Endothelial(state~M)     # Functional response
+    Molecules Decoy_Occupancy  VEGFR1(l!+)              # Sink metrics
+    Molecules Total_Complexes  VEGFR2(d!+)               # Wildcard: Dimer metrics
+end observables
+
+begin functions
+    # Arrhenius-like binding rate (Temperature/Environmental sensitivity demo)
+    v_bind() = k_bind_max * exp(-E_bind / (R_const * T_kelvin))
+end functions
+
+begin reaction rules
+    ## RECEPTION PHASE
+    # VEGF binds VEGFR2 (Active receptor)
+    VEGF(r) + VEGFR2(l) <-> VEGF(r!1).VEGFR2(l!1) v_bind(),0.05
+    
+    # VEGF binds VEGFR1 (Decoy/Sink)
+    VEGF(r) + VEGFR1(l) <-> VEGF(r!1).VEGFR1(l!1) v_bind(),0.01
+    
+    ## ACTIVATION
+    # VEGFR2 Dimerization
+    VEGFR2(l!+,d) + VEGFR2(l!+,d) <-> VEGFR2(l!+,d!1).VEGFR2(l!+,d!1) k_dimer,0.1
+    
+    # Autophosphorylation (Saturable/Dimer-dependent)
+    VEGFR2(d!1).VEGFR2(d!1,s~U) -> VEGFR2(d!1).VEGFR2(d!1,s~P) k_phos
+    
+    ## RELAY & RESPONSE
+    # p-VEGFR2 activates ERK
+    VEGFR2(s~P) + ERK(s~U) -> VEGFR2(s~P) + ERK(s~P) k_erk_phos
+    
+    # Active ERK induces migration
+    ERK(s~P) + Endothelial(state~Q) -> ERK(s~P) + Endothelial(state~M) k_mig_max * (Active_Signal/(Km_mig + Active_Signal))
+    
+    ## INTERNALISATION (Clearance)
+    # DeleteMolecules: Remove ligand-receptor complex once endocytosed
+    VEGF(r!1).VEGFR2(l!1) -> 0 k_endo DeleteMolecules
+    
+    ## RESET
+    ERK(s~P) -> ERK(s~U) k_reset
+    Endothelial(state~M) -> Endothelial(state~Q) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>400,n_steps=>200})
+end actions
+end model

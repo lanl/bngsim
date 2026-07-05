@@ -1,0 +1,262 @@
+begin model
+
+# A model for FGFR1 signal transduction via tyrosine kinase activation and #adaptor formation following binding of bFGF/heparin ligand to monomers, dimer #formation, autophosphorylation to disinhibit blocked peptide binding site, #follow on phosphorylation at the remaining 5 tyrosine phosphorylation sites and #then adaptor (SH2/PTB) binding to phosphorylated tyrosines.  Nonspecific #dimerization and phosphatase activity will be included.  Conservation of mass is #assumed and only one cell is considered.  Although ligand binding is #extracellular, compartments will not be considered.  
+
+#An equilibration simulation will be performed without phosphatase inhibition #will be performed and then added following network generation.
+
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cytoplasmic volume
+V 1.0e-12 # [=] L (1 pL)
+
+# copy numbers of bFGF, heparin, receptor, adaptors, phosphatase
+
+# Susan's line:
+#bFGFtot # 2 ng/ml has been reported
+#
+# Bill's suggested replacement
+cell_density 1e9 # cells per L
+Vecf=1/cell_density # L per cell
+FGF_mwt 18 # kDa <-- which isoform? molecular weights range from 18 to 34 kDa
+FGF_dose 2e-9 # g/ml
+bFGFtot=(FGF_dose/FGF_mwt)*(NA*Vecf) # copies per cell
+
+# Susan's line
+#heptot # should expect high concentration such that it is not rate limiting #because it exists in the extracellular matrix.
+#
+# Bill's suggested replacement: 
+heptot 1e6 # copies per cell
+
+Rtot 1.0e4 # [=] number per cell, from Geiger et al.
+Atot 1.0e5 # [=] number per cell, from Geiger, et al.
+Ptot 1.0e5 # [=] number per cell, from Geiger, et al.
+
+
+# equilibrium association constant for heparin binding to bFGF
+# Susan's line:
+# KdhepbFGF 
+#
+# Bill's suggested replacement:
+#KdhepbFGF 
+
+#equilibrium association constant for heparin-bFGF complex binding to monomer #receptor
+# Susan's line:
+#KdmonhepbFGF
+#
+# Bill's suggested replacement:
+#KdmonhepbFGF 
+
+# equilibrium association constant for receptor dimerization
+#   multiplied by receptor level (expressed in consistent units)
+KddimhepbFGF 0.02 # [=] dimensionless
+
+# reverse rate constant for receptor dimerization
+kr_dim 1.0 # [=] /s
+
+# forward rate constant for receptor dimerization (derived)
+# Susan's line:
+#kf_dim=kr_dim*KdimRtot/Rtot # [=] /(molecule/cell)/s
+#
+# Bill's suggested replacement:
+kf_dim=kr_dim*KddimhepbFGF/Rtot
+ 
+# pseudo first-order rate constants for phosphorylation 
+#   of receptor Y sites 1 and 2
+#   Autophosphorylation is assumed.
+p1_auto 1.0 # [=] /s
+p2_auto 0.5 # [=] /s
+
+# pseudo first-order rate constants for phosphorylation
+#   of receptor Y sites 1 and 2
+#   It is assumed that phosphorylation is mediated by non-specific kinases.
+p1_nonsp 0.05 # [=] /s
+p2_nonsp 0.05 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 3
+kf_a3 5.0e5/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a3 0.05 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 4
+kf_a4 2.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a4 0.2 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 5
+kf_a5 2.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a5 0.2 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 6
+kf_a6 2.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a6 0.2 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 7
+kf_a7 2.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a7 0.2 # [=] /s
+
+# parameters for dephosphorylation of receptor pY site 1
+#   by phosphatase via a Michaelis-Menten mechanism
+kp1 1.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+km1 0.1 # /s
+kcat1 2.0 # /s
+
+# parameters for dephosphorylation of receptor pY site 2
+#   by phosphatase via a Michaelis-Menten mechanism
+kp2 1.0e6/(NA*V) # [=] /(molecule/cell)/s (1e6 /M/s)
+km2 0.1 # [=] /s
+kcat2 0.5 # [=] /s
+
+
+# Bill's suggestion: define kf_com and kr_com and kf_lbind and kr_lbind
+kf_com 1e6/(NA*Vecf) # /M/s converted to /cpc/s
+kr_com 0.01 # /s
+kf_lbind 1e6/(NA*Vecf) # /M/s converted to /cpc/s
+kr_lbind 0.01 #/s
+
+end parameters
+
+begin molecule types
+
+# Heparin or heparin proteoglycan sulfate binds to bFGF and then, as a complex #binds an FGFR1 monomer.  
+
+h(f,R1)
+bFGF(h,R2)
+
+# receptor
+#   The receptor contains a ligand binding site, a binding site that mediates #dimerization and 7 tyrosines available for phosphorylation. Y1 and Y2 are #autophosphorylated and in turn phosphorylate Y3-Y7.
+
+R(l1,l2,dim,Y1~0~P,Y2~0~P,Y3~0~P,Y4~0~P,Y5~0~p,Y6~0~P,Y7~0~P)
+
+# adaptor1
+#   The adaptor contains an SH2 domain, 
+#     which recognizes receptor phosphotyrosines.  They will explicit in the
+#final models for each cell line that possesses FGFR1
+A1(SH2)
+
+# adaptor2
+# This adaptor contains PTB domain which recognizes certain phosphorylated #tyrosine in FGFR1
+A2(PTB)
+
+# phosphatase
+#   The cat site represents the catalytic domain of the phosphatase.
+P(cat)
+
+end molecule types
+
+begin seed species
+
+#Heparin is not rate limiting and of an infinite concentration
+
+# Susan's line:
+#h(f,R1) hot
+# 
+# Bill's suggested replacement:
+h(f,R1) heptot
+
+#bFGF is at a reported concentration of 2ng/ml
+
+bFGF(h,R2) bFGFtot
+
+# All receptors are initially unliganded, monomeric and unphosphorylated.
+# Susan's line:
+#R(l1,l2,dim,Y1~0,Y2~0,Y3~0~P,Y4~0~P,Y5~0~p,Y6~0~P,Y7~0~P) Rtot
+#
+# Bill's suggested replacement:
+R(l1,l2,dim,Y1~0,Y2~0,Y3~0,Y4~0,Y5~0,Y6~0,Y7~0) Rtot
+
+# All adaptors are initially free.  Concentrations will vary per cell line.
+# Susan's lines:
+#A1(SH2) A1tot
+#A2(PTB) A2tot
+# Bill's suggested replacements:
+A1(SH2) Atot
+A2(PTB) Atot
+
+# All phosphatases are initially free. Concentration will copy demonstration #model from SIG slides.  
+P(cat) Ptot
+
+end seed species
+
+begin observables
+#This section needs work.  
+
+# Number of receptors phosphorylated at site 1
+Molecules pY1 R(Y1~P)
+
+# Number of receptors phosphorylated at site 2
+Molecules pY2 R(Y2~P)
+
+end observables
+
+begin reaction rules
+
+#In the rules below, it is attempted to model heparin/bFGF/receptor binding and dimerization.  Heparin must first bind to bFGF.  The complex will then bind to the monomer at two separate sites.  It is presumed that a conformational change occurs such that dimerization with another complexed such monomer occurs.  
+
+#Heparin binds to bFGF
+# Susan's line:
+#h(f,R1)+bFGF(h,R2) -> h(f!1,R1).bFGF(h!1,R2) kf_com, kr_com
+#
+# Bill's suggested replacement:
+h(f,R1)+bFGF(h,R2) <-> h(f!1,R1).bFGF(h!1,R2) kf_com, kr_com
+
+#Heparin bFGF complex binds to monomer receptor
+h(f!1,R1).bFGF(h!1,R2)+R(l1,l2,dim) <-> h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim) kf_lbind, kr_lbind
+
+#Monomers dimerize
+
+# Susan's line:
+#h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim)+h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim)->h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim!4).h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim!4)
+#
+# Bill's suggested replacement:
+h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim)+h(f!15,R1!25).bFGF(h!15,R2!35).R(l1!25,l2!35,dim)->\
+h(f!1,R1!2).bFGF(h!1,R2!3).R(l1!2,l2!3,dim!4).h(f!15,R1!25).bFGF(h!15,R2!35).R(l1!25,l2!35,dim!4) kf_dim
+
+# spontaneous receptor dimerization
+R(dim)+R(dim)<->R(dim!5).R(dim!5) kf_dim,kr_dim
+
+# dimer-dependent receptor autophosphorylation
+# Susan's lines:
+#R(dim!5+,Y1~0)->R(dim!+,Y1~P) p1_auto
+#R(dim!5+,Y2~0)->R(dim!+,Y2~P) p2_auto
+#
+# Bill's suggested replacements:
+R(dim!+,Y1~0)->R(dim!+,Y1~P) p1_auto
+R(dim!+,Y2~0)->R(dim!+,Y2~P) p2_auto
+ 
+# non-specific dimer-independent receptor phosphorylation
+R(Y1~0)->R(Y1~P) p1_nonsp
+R(Y2~0)->R(Y2~P) p2_nonsp
+
+# reversible, phosphorylation-dependent recruitment of adaptor 
+#   to phosphorylated receptor sites
+
+
+# constitutive phosphatase activity affecting site 1 in the receptor
+#   The phosphatase is assumed to act as a Michaelis-Menten enzyme.
+P(cat)+R(Y1~P)<->P(cat!1).R(Y1~P!1) kp1,km1
+P(cat!1).R(Y1~P!1)->P(cat)+R(Y1~0) kcat1
+
+# constitutive phosphatase activity affecting site 1 in the receptor
+#   The phosphatase is assumed to act as a Michaelis-Menten enzyme.
+P(cat)+R(Y2~P)<->P(cat!1).R(Y2~P!1) kp2,km2
+P(cat!1).R(Y2~P!1)->P(cat)+R(Y2~0) kcat2
+
+# lines below were added by Bill
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+
+end actions

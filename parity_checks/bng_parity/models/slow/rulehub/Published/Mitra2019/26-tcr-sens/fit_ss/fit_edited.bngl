@@ -1,0 +1,178 @@
+#Modification of Mukhopadhyay/Dushek 2013 model for the Manz/Groves 2011 data
+#Enzymatic modifications of TCR zeta and ZAP-70 binding to fully phosphorylated ITAMs.
+
+# Manually generated best-fit model by pasting the best fit result into the original model file. 
+# Observables and actions edited to generate more data for analysis. 
+
+begin parameters
+
+ek_cat__FREE	52.5937700833519
+ek_off__FREE	1.88273929685532
+ek_on__FREE	0.001328777001654
+fk_cat__FREE	0.010553711248067
+fk_off__FREE	0.037371483665551
+fk_on__FREE	0.01903903175691
+mhc_off__FREE	0.123921962057375
+mhc_on__FREE	3.71462644349834
+zap_off1__FREE	5.96296008136283
+zap_on__FREE	0.001680468889969
+
+#pMHC binding
+mhc_on mhc_on__FREE
+mhc_off mhc_off__FREE
+
+#Kinase-substrate on rates
+ek_on ek_on__FREE # 1e-4
+
+#Kinase-substrate off rates
+ek_off ek_off__FREE # 10.0
+
+#Kinase catalysis rates
+ek_cat ek_cat__FREE # 10.0
+
+#Phosphatase-substrate on rates
+fk_on fk_on__FREE # 1e-4
+
+#Phosphatase-substrate off rates
+fk_off fk_off__FREE # 10.0
+
+#Phosphatase catalysis rates
+fk_cat fk_cat__FREE # 10.0
+
+#Binding parameters for ZAP-70 binding
+zap_on zap_on__FREE # 1.0
+
+zap_off1 zap_off1__FREE # 10
+zap_off2 zap_off1/10
+zap_off3 zap_off1/100
+
+#Total substrate (S_T), kinase (E_T), phosphatase (F_T), and ZAP-70 (Z_T) concentrations
+A_T 1
+S_T 50 # Groves claims "18-100s" of TCR per cluster; we assume 50.
+
+
+E_T 50
+F_T 50
+Z_T 50 # Was 5000; lowered for faster simulations.
+
+end parameters
+
+begin molecule types
+
+#Substrate
+#Attributes Y1, Y2, and Y3 each refer to individual ITAMs.
+#Each ITAM can be unphosphorylated (Y~U), phosphorylated on one tyrosine (Y~P), or doubly phosphorylated (Y~2P)
+
+tcr(b,Y1~U~P~2P,Y2~U~P~2P,Y3~U~P~2P)
+
+#Kinase
+lck(b)
+
+#Phosphatase
+cd45(b)
+
+#ZAP-70
+zap(b)
+
+#Antigen-presenting MHC
+pmhc(b)
+
+end molecule types
+
+begin seed species
+
+pmhc(b) A_T
+tcr(b,Y1~U,Y2~U,Y3~U) S_T
+lck(b) E_T
+cd45(b) F_T
+zap(b) Z_T
+
+end seed species
+
+begin reaction rules
+
+#LIGAND BINDING
+tcr(b) + pmhc(b) <-> tcr(b!1).pmhc(b!1) mhc_on, mhc_off
+
+#ITAM1 MODIFICATIONS
+
+#Modification of the original model: Require bound ligand for Lck to hit site 1
+lck(b) + tcr(b!+,Y1~U,Y2~U,Y3~U) -> lck(b!1).tcr(b!+,Y1~U!1,Y2~U,Y3~U) ek_on
+lck(b!1).tcr(Y1~U!1,Y2~U,Y3~U) -> lck(b) + tcr(Y1~U,Y2~U,Y3~U) ek_off
+lck(b!1).tcr(Y1~U!1,Y2~U,Y3~U) -> lck(b) + tcr(Y1~P,Y2~U,Y3~U) ek_cat
+
+cd45(b) + tcr(Y1~P,Y2~U,Y3~U) <-> cd45(b!1).tcr(Y1~P!1,Y2~U,Y3~U) fk_on, fk_off
+cd45(b!1).tcr(Y1~P!1,Y2~U,Y3~U) -> cd45(b) + tcr(Y1~U,Y2~U,Y3~U) fk_cat
+
+lck(b) + tcr(Y1~P,Y2~U,Y3~U) <-> lck(b!1).tcr(Y1~P!1,Y2~U,Y3~U) ek_on, ek_off
+lck(b!1).tcr(Y1~P!1,Y2~U,Y3~U) -> lck(b) + tcr(Y1~2P,Y2~U,Y3~U) ek_cat
+
+cd45(b) + tcr(Y1~2P,Y2~U,Y3~U) <-> cd45(b!1).tcr(Y1~2P!1,Y2~U,Y3~U) fk_on, fk_off
+cd45(b!1).tcr(Y1~2P!1,Y2~U,Y3~U) -> cd45(b) + tcr(Y1~P,Y2~U,Y3~U) fk_cat
+
+#ITAM2 MODIFICATIONS
+
+# Don't require bound ligand for Lck to hit site 2 (just require previous bound ligand)
+lck(b) + tcr(Y1~2P!?,Y2~U,Y3~U) <-> lck(b!1).tcr(Y1~2P!?,Y2~U!1,Y3~U) ek_on, ek_off
+lck(b!1).tcr(Y1~2P!?,Y2~U!1,Y3~U) -> lck(b) + tcr(Y1~2P!?,Y2~P,Y3~U) ek_cat
+
+cd45(b) + tcr(Y1~2P!?,Y2~P,Y3~U) <-> cd45(b!1).tcr(Y1~2P!?,Y2~P!1,Y3~U) fk_on, fk_off
+cd45(b!1).tcr(Y1~2P!?,Y2~P!1,Y3~U) -> cd45(b) + tcr(Y1~2P!?,Y2~U,Y3~U) fk_cat
+
+lck(b) + tcr(Y1~2P!?,Y2~P,Y3~U) <-> lck(b!1).tcr(Y1~2P!?,Y2~P!1,Y3~U) ek_on, ek_off
+lck(b!1).tcr(Y1~2P!?,Y2~P!1,Y3~U) -> lck(b) + tcr(Y1~2P!?,Y2~2P,Y3~U) ek_cat
+
+cd45(b) + tcr(Y1~2P!?,Y2~2P,Y3~U) <-> cd45(b!1).tcr(Y1~2P!?,Y2~2P!1,Y3~U) fk_on, fk_off
+cd45(b!1).tcr(Y1~2P!?,Y2~2P!1,Y3~U) -> cd45(b) + tcr(Y1~2P!?,Y2~P,Y3~U) fk_cat
+
+#ITAM3 MODIFICATIONS
+
+lck(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~U) <-> lck(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~U!1) ek_on, ek_off
+lck(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~U!1) -> lck(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~P) ek_cat
+
+cd45(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~P) <-> cd45(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~P!1) fk_on, fk_off
+cd45(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~P!1) -> cd45(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~U) fk_cat
+
+lck(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~P) <-> lck(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~P!1) ek_on, ek_off
+lck(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~P!1) -> lck(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~2P) ek_cat
+
+cd45(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~2P) <-> cd45(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~2P!1) fk_on, fk_off
+cd45(b!1).tcr(Y1~2P!?,Y2~2P!?,Y3~2P!1) -> cd45(b) + tcr(Y1~2P!?,Y2~2P!?,Y3~P) fk_cat
+
+#ZAP70 BINDING
+
+zap(b) + tcr(Y1~2P) <-> zap(b!1).tcr(Y1~2P!1) zap_on, zap_off1
+
+zap(b) + tcr(Y2~2P) <-> zap(b!1).tcr(Y2~2P!1) zap_on, zap_off2
+
+zap(b) + tcr(Y3~2P) <-> zap(b!1).tcr(Y3~2P!1) zap_on, zap_off3
+
+end reaction rules
+
+begin observables
+
+# Using Bound_ZAP as a downstream readout
+Molecules Bound_ZAP zap(b!+)
+Molecules Szero tcr(b~?,Y1~U!?,Y2~U!?,Y3~U!?)
+
+Molecules Sone tcr(b~?,Y1~P!?,Y2~U!?,Y3~U!?)
+
+Molecules Stwo tcr(b~?,Y1~2P!?,Y2~U!?,Y3~U!?)
+
+Molecules Sthree tcr(b~?,Y1~2P!?,Y2~P!?,Y3~U!?)
+
+Molecules Sfour tcr(b~?,Y1~2P!?,Y2~2P!?,Y3~U!?)
+
+Molecules Sfive tcr(b~?,Y1~2P!?,Y2~2P!?,Y3~P!?)
+
+Molecules Ssix tcr(b~?,Y1~2P!?,Y2~2P!?,Y3~2P!?)
+
+end observables
+
+
+# simulate({method=>"nf",t_start=>0,t_end=>3600,n_steps=>12}) # For debugging
+
+begin actions
+
+parameter_scan({method=>"nf",t_start=>0,t_end=>1200,n_steps=>20,parameter=>"A_T",par_min=>1,par_max=>6,n_scan_pts=>6,suffix=>"Ca"})
+end actions

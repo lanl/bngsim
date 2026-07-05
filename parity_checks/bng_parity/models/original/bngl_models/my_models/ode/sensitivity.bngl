@@ -1,0 +1,299 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+
+Vcyt 2e-12 # L per cell
+
+Etot 1e4 # copies per cell
+Stot 1e4 # copies per cell
+Itot 1e6 # copies per cell
+
+kp2 1e6/(NA*Vcyt) # /M/s
+km2 0.05 # /s
+
+# KM=(km1+kcat)/(kp1*eps)
+# kp1=1e4 => KM=10
+# kp1=1e6 => KM=0.1
+
+kp1_s 1e4/(NA*Vcyt) # /M/s
+kp1_r 1e6/(NA*Vcyt) # /M/s
+km1 0.9 # /s
+
+# effective concentration
+eps  1e-5*(NA*Vcyt) # M
+
+kcat 0.1 # /s
+
+pase 0.01 # /s
+
+phi 0.333 # dimensionless
+
+kp3 1e6/(NA*Vcyt) # /M/s
+km3 0 # /s
+
+end parameters
+
+begin molecule types
+
+# simple model
+
+Es(i,dock,cat)
+Ss(dock,sub~0~P)
+Is(site)
+
+Er(i,dock,cat)
+Sr(dock,sub~0~P)
+Ir(site)
+
+# more complex model
+
+E2s(i,dock,cat)
+S2s(dock,sub~0~P)
+I2s(site)
+
+E2r(i,dock,cat)
+S2r(dock,sub~0~P)
+I2r(site)
+
+# substrates compete with each other in this model
+
+E3(i,dock,cat)
+S3s(dock,sub~0~P)
+S3r(dock,sub~0~P)
+I3(site)
+
+# most complex model
+
+E4(i,dock,cat)
+S4s(dock,sub~0~P)
+S4r(dock,sub~0~P)
+I4(site)
+
+end molecule types
+
+begin seed species
+
+# model #1
+
+Es(i,dock,cat) Etot
+Ss(dock,sub~0) Stot
+Is(site) 0
+
+Er(i,dock,cat) Etot
+Sr(dock,sub~0) Stot
+Ir(site) 0
+
+# model #2
+
+E2s(i,dock,cat) Etot
+S2s(dock,sub~0) Stot
+I2s(site) 0
+
+E2r(i,dock,cat) Etot
+S2r(dock,sub~0) Stot
+I2r(site) 0
+
+# model #3
+
+E3(i,dock,cat) Etot
+S3s(dock,sub~0) Stot
+S3r(dock,sub~0) Stot
+I3(site) 0
+
+# model #4
+
+E4(i,dock,cat) Etot
+S4s(dock,sub~0) Stot
+S4r(dock,sub~0) Stot
+I4(site) 0
+
+end seed species
+
+begin observables
+
+Molecules pS_sensitive Ss(sub~P!?)
+Molecules pS_resistant Sr(sub~P!?)
+
+Molecules pS2_sensitive S2s(sub~P!?)
+Molecules pS2_resistant S2r(sub~P!?)
+
+Molecules pS3_sensitive S3s(sub~P!?)
+Molecules pS3_resistant S3r(sub~P!?)
+
+Molecules pS4_sensitive S4s(sub~P!?)
+Molecules pS4_resistant S4r(sub~P!?)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+###################################################################
+# simple model with inhibitor-sensitive and -resistant substrates #
+###################################################################
+
+# recruitment of substrate to vicinity of kinase
+Es(dock,cat)+Ss(dock,sub~0)<->Es(dock!1,cat).Ss(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+#  no steric hindrance
+Es(i,dock!1,cat).Ss(dock!1,sub~0)<->Es(i,dock!1,cat!2).Ss(dock!1,sub~0!2) kp1_s*eps,km1
+#  with steric hindrance because of inhibitor
+Es(i!+,dock!1,cat).Ss(dock!1,sub~0)<->Es(i!+,dock!1,cat!2).Ss(dock!1,sub~0!2) phi*kp1_s*eps,km1
+
+# direct association of substrate and kinase
+#E(i,dock,cat)+S(dock,sub~0)<->E(i,dock,cat!1).S(dock,sub~0!1) kp1,km1
+#E(i!+,dock,cat)+S(dock,sub~0)<->E(i!+,dock,cat!1).S(dock,sub~0!1) phi*kp1,km1
+
+# isomerization (NB: detailed balance)
+#E(dock,cat!1).S(dock,sub~0!1)<->E(dock!2,cat!1).S(dock!2,sub~0!1) kp2*eps,km2
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+#E(dock,cat!1).S(dock,sub~0!1)->E(dock,cat)+S(dock,sub~P) kcat
+Es(dock!1,cat!2).Ss(dock!1,sub~0!2)->Es(dock,cat)+Ss(dock,sub~P) kcat
+
+# dephosphorylation
+Ss(dock,sub~P)->Ss(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+Es(i,dock,cat)+Is(site)<->Es(i!1,dock,cat).Is(site!1) kp3,km3
+
+Er(i,dock,cat)+Ir(site)<->Er(i!1,dock,cat).Ir(site!1) kp3,km3
+Er(dock,cat)+Sr(dock,sub~0)<->Er(dock!1,cat).Sr(dock!1,sub~0) kp2,km2
+Er(i,dock!1,cat).Sr(dock!1,sub~0)<->Er(i,dock!1,cat!2).Sr(dock!1,sub~0!2) kp1_r*eps,km1
+Er(i!+,dock!1,cat).Sr(dock!1,sub~0)<->Er(i!+,dock!1,cat!2).Sr(dock!1,sub~0!2) phi*kp1_r*eps,km1
+Er(dock!1,cat!2).Sr(dock!1,sub~0!2)->Er(dock,cat)+Sr(dock,sub~P) kcat
+Sr(dock,sub~P)->Sr(dock,sub~0) pase
+Er(i,dock,cat)+Ir(site)<->Er(i!1,dock,cat).Ir(site!1) kp3,km3
+
+####################################################################
+# complex model with inhibitor-sensitive and -resistant substrates #
+####################################################################
+
+# recruitment of substrate to vicinity of kinase
+E2s(dock,cat)+S2s(dock,sub~0)<->E2s(dock!1,cat).S2s(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+#  no steric hindrance
+E2s(i,dock!1,cat).S2s(dock!1,sub~0)<->E2s(i,dock!1,cat!2).S2s(dock!1,sub~0!2) kp1_s*eps,km1
+#  with steric hindrance because of inhibitor
+E2s(i!+,dock!1,cat).S2s(dock!1,sub~0)<->E2s(i!+,dock!1,cat!2).S2s(dock!1,sub~0!2) phi*kp1_s*eps,km1
+
+# direct association of substrate and kinase
+E2s(i,dock,cat)+S2s(dock,sub~0)<->E2s(i,dock,cat!1).S2s(dock,sub~0!1) kp1_s,km1
+E2s(i!+,dock,cat)+S2s(dock,sub~0)<->E2s(i!+,dock,cat!1).S2s(dock,sub~0!1) phi*kp1_s,km1
+
+# isomerization (NB: detailed balance)
+E2s(dock,cat!1).S2s(dock,sub~0!1)<->E2s(dock!2,cat!1).S2s(dock!2,sub~0!1) kp2*eps,km2
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+E2s(dock,cat!1).S2s(dock,sub~0!1)->E2s(dock,cat)+S2s(dock,sub~P) kcat
+E2s(dock!1,cat!2).S2s(dock!1,sub~0!2)->E2s(dock,cat)+S2s(dock,sub~P) kcat
+
+# dephosphorylation
+S2s(dock,sub~P)->S2s(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+E2s(i,dock,cat)+I2s(site)<->E2s(i!1,dock,cat).I2s(site!1) kp3,km3
+
+E2r(dock,cat)+S2r(dock,sub~0)<->E2r(dock!1,cat).S2r(dock!1,sub~0) kp2,km2
+E2r(i,dock!1,cat).S2r(dock!1,sub~0)<->E2r(i,dock!1,cat!2).S2r(dock!1,sub~0!2) kp1_r*eps,km1
+E2r(i!+,dock!1,cat).S2r(dock!1,sub~0)<->E2r(i!+,dock!1,cat!2).S2r(dock!1,sub~0!2) phi*kp1_r*eps,km1
+E2r(i,dock,cat)+S2r(dock,sub~0)<->E2r(i,dock,cat!1).S2r(dock,sub~0!1) kp1_r,km1
+E2r(i!+,dock,cat)+S2r(dock,sub~0)<->E2r(i!+,dock,cat!1).S2r(dock,sub~0!1) phi*kp1_r,km1
+E2r(dock,cat!1).S2r(dock,sub~0!1)<->E2r(dock!2,cat!1).S2r(dock!2,sub~0!1) kp2*eps,km2
+E2r(dock,cat!1).S2r(dock,sub~0!1)->E2r(dock,cat)+S2r(dock,sub~P) kcat
+E2r(dock!1,cat!2).S2r(dock!1,sub~0!2)->E2r(dock,cat)+S2r(dock,sub~P) kcat
+S2r(dock,sub~P)->S2r(dock,sub~0) pase
+E2r(i,dock,cat)+I2r(site)<->E2r(i!1,dock,cat).I2r(site!1) kp3,km3
+
+###########################################################################
+# model in which substrates compete with each other for binding to enzyme #
+###########################################################################
+
+# recruitment of substrate to vicinity of kinase
+E3(dock,cat)+S3s(dock,sub~0)<->E3(dock!1,cat).S3s(dock!1,sub~0) kp2,km2
+E3(dock,cat)+S3r(dock,sub~0)<->E3(dock!1,cat).S3r(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+#  no steric hindrance
+E3(i,dock!1,cat).S3s(dock!1,sub~0)<->E3(i,dock!1,cat!2).S3s(dock!1,sub~0!2) kp1_s*eps,km1
+E3(i,dock!1,cat).S3r(dock!1,sub~0)<->E3(i,dock!1,cat!2).S3r(dock!1,sub~0!2) kp1_r*eps,km1
+#  with steric hindrance because of inhibitor
+E3(i!+,dock!1,cat).S3s(dock!1,sub~0)<->E3(i!+,dock!1,cat!2).S3s(dock!1,sub~0!2) phi*kp1_s*eps,km1
+E3(i!+,dock!1,cat).S3r(dock!1,sub~0)<->E3(i!+,dock!1,cat!2).S3r(dock!1,sub~0!2) phi*kp1_r*eps,km1
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+E3(dock!1,cat!2).S3s(dock!1,sub~0!2)->E3(dock,cat)+S3s(dock,sub~P) kcat
+E3(dock!1,cat!2).S3r(dock!1,sub~0!2)->E3(dock,cat)+S3r(dock,sub~P) kcat
+
+# dephosphorylation
+S3s(dock,sub~P)->S3s(dock,sub~0) pase
+S3r(dock,sub~P)->S3r(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+E3(i,dock,cat)+I3(site)<->E3(i!1,dock,cat).I3(site!1) kp3,km3
+
+######################
+# most complex model #
+######################
+
+# recruitment of substrate to vicinity of kinase
+E4(dock,cat)+S4s(dock,sub~0)<->E4(dock!1,cat).S4s(dock!1,sub~0) kp2,km2
+E4(dock,cat)+S4r(dock,sub~0)<->E4(dock!1,cat).S4r(dock!1,sub~0) kp2,km2
+
+# recruited substrate associates with kinase's catalytic site (isomerization)
+E4(i,dock!1,cat).S4s(dock!1,sub~0)<->E4(i,dock!1,cat!2).S4s(dock!1,sub~0!2) kp1_s*eps,km1
+E4(i,dock!1,cat).S4r(dock!1,sub~0)<->E4(i,dock!1,cat!2).S4r(dock!1,sub~0!2) kp1_r*eps,km1
+E4(i!+,dock!1,cat).S4s(dock!1,sub~0)<->E4(i!+,dock!1,cat!2).S4s(dock!1,sub~0!2) phi*kp1_s*eps,km1
+E4(i!+,dock!1,cat).S4r(dock!1,sub~0)<->E4(i!+,dock!1,cat!2).S4r(dock!1,sub~0!2) phi*kp1_r*eps,km1
+
+# direct association of substrate and kinase
+E4(i,dock,cat)+S4s(dock,sub~0)<->E4(i,dock,cat!1).S4s(dock,sub~0!1) kp1_s,km1
+E4(i,dock,cat)+S4r(dock,sub~0)<->E4(i,dock,cat!1).S4r(dock,sub~0!1) kp1_r,km1
+E4(i!+,dock,cat)+S4s(dock,sub~0)<->E4(i!+,dock,cat!1).S4s(dock,sub~0!1) phi*kp1_s,km1
+E4(i!+,dock,cat)+S4r(dock,sub~0)<->E4(i!+,dock,cat!1).S4r(dock,sub~0!1) phi*kp1_r,km1
+
+# isomerization (NB: detailed balance)
+E4(dock,cat!1).S4s(dock,sub~0!1)<->E4(dock!2,cat!1).S4s(dock!2,sub~0!1) kp2*eps,km2
+E4(dock,cat!1).S4r(dock,sub~0!1)<->E4(dock!2,cat!1).S4r(dock!2,sub~0!1) kp2*eps,km2
+
+# phosphorylation, followed by rapid dissociation of enzyme and substrate
+E4(dock,cat!1).S4s(dock,sub~0!1)->E4(dock,cat)+S4s(dock,sub~P) kcat
+E4(dock,cat!1).S4r(dock,sub~0!1)->E4(dock,cat)+S4r(dock,sub~P) kcat
+E4(dock!1,cat!2).S4s(dock!1,sub~0!2)->E4(dock,cat)+S4s(dock,sub~P) kcat
+E4(dock!1,cat!2).S4r(dock!1,sub~0!2)->E4(dock,cat)+S4r(dock,sub~P) kcat
+
+# dephosphorylation
+S4s(dock,sub~P)->S4s(dock,sub~0) pase
+S4r(dock,sub~P)->S4r(dock,sub~0) pase
+
+# inhibitor binding to enzyme's substrate docking site
+E4(i,dock,cat)+I4(site)<->E4(i!1,dock,cat).I4(site!1) kp3,km3
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",prefix=>"equil",t_start=>0,t_end=>3600,n_steps=>300,print_functions=>1})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("Is(site)","Itot")
+setConcentration("Ir(site)","Itot")
+setConcentration("I2s(site)","Itot")
+setConcentration("I2r(site)","Itot")
+setConcentration("I3(site)","Itot")
+setConcentration("I4(site)","Itot")
+simulate({method=>"ode",prefix=>"prod",t_start=>0,t_end=>3600,n_steps=>300,print_functions=>1})
+
+end actions

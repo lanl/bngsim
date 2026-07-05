@@ -1,0 +1,50 @@
+begin model
+begin parameters
+    k_detection 0.04
+    k_mavs 0.35
+    k_irf3 0.3
+    k_transcription 0.32
+    k_reset 0.08
+end parameters
+
+begin molecule types
+    ViralRNA(state~low~high)
+    RIGI(state~inactive~active)
+    MAVS(state~off~on)
+    IRF3(phos~U~P)
+    IFNB(state~off~on)
+end molecule types
+
+begin seed species
+    ViralRNA(state~low) 40
+    RIGI(state~inactive) 50
+    MAVS(state~off) 30
+    IRF3(phos~U) 80
+    IFNB(state~off) 60
+end seed species
+
+begin reaction rules
+    ViralRNA(state~low) -> ViralRNA(state~high) k_detection
+    ViralRNA(state~high) + RIGI(state~inactive) -> ViralRNA(state~high) + RIGI(state~active) k_detection
+    RIGI(state~active) + MAVS(state~off) -> RIGI(state~active) + MAVS(state~on) k_mavs
+    MAVS(state~on) + IRF3(phos~U) -> MAVS(state~on) + IRF3(phos~P) k_irf3
+    IRF3(phos~P) + IFNB(state~off) -> IRF3(phos~P) + IFNB(state~on) k_transcription
+    IFNB(state~on) -> IFNB(state~off) k_reset
+    IRF3(phos~P) -> IRF3(phos~U) k_reset
+    MAVS(state~on) -> MAVS(state~off) k_reset
+    RIGI(state~active) -> RIGI(state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_RIGI RIGI(state~active)
+    Molecules Active_MAVS MAVS(state~on)
+    Molecules Phospho_IRF3 IRF3(phos~P)
+    Molecules IFNB_On IFNB(state~on)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>50,n_steps=>200})
+end actions
+end model
+

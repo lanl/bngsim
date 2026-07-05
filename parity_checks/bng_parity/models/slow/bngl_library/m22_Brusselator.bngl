@@ -1,0 +1,80 @@
+begin model
+#@model_id: m22_Brusselator
+#@title: Brusselator oscillator
+#@description: Two-variable Brusselator chemical oscillator with cubic autocatalysis. From Prigogine & Lefever (1968) J Chem Phys 48:1695-1700.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  A        1.0            # molecules/time  constant source rate
+  B        3.0            # 1/time  coefficient (B+1 gives total removal rate)
+  Bp1      4.0            # 1/time  = B + 1
+end parameters
+
+begin molecule types
+  x()    # intermediate species x
+  y()    # intermediate species y
+end molecule types
+
+begin seed species
+  x()  1   # molecules
+  y()  1   # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_x  x()
+  Molecules  Obs_y  y()
+end observables
+
+begin functions
+  # x' = A - (B+1)*x + x^2*y
+  # Production term: x^2*y (autocatalytic)
+  autocatalysis() = Obs_x * Obs_x * Obs_y
+
+  # y' = B*x - x^2*y
+  # Production term: B*x
+  prod_y()        = B * Obs_x
+
+  # Consumption of y: x^2*y
+  consume_y()     = Obs_x * Obs_x * Obs_y
+end functions
+
+begin reaction rules
+  # x production: constant source A
+  0 -> x()  A
+
+  # x removal: (B+1)*x  (first-order)
+  x() -> 0  Bp1
+
+  # x production: x^2*y  (autocatalytic, functional rate)
+  0 -> x()  autocatalysis()
+
+  # y production: B*x
+  0 -> y()  prod_y()
+
+  # y consumption: x^2*y
+  y() -> 0  consume_y()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

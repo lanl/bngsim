@@ -1,0 +1,31 @@
+begin model
+begin parameters
+mu 5
+x0 2 
+y0 1
+end parameters
+begin molecule types
+x()
+y()
+end molecule types
+begin seed species
+x() x0
+y() y0
+end seed species
+begin observables
+Molecules xvar x()
+Molecules yvar y()
+end observables
+begin functions
+rate_x() = yvar
+rate_y() = mu*(1-xvar^2)*yvar - xvar
+end functions
+begin reaction rules
+0->x() rate_x()
+0->y() rate_y()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>50,n_steps=>500,print_functions=>1})
+end actions

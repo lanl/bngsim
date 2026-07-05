@@ -1,0 +1,11 @@
+# Pinned dependency set for showcase benchmark reproducibility.
+# Last validated: 2026-03-06
+# Note: use Antimony 3.1.2 wheel from
+# https://github.com/sys-bio/antimony/actions/runs/22922160697/
+# for the upstream SBML memory-fix build before it is on PyPI.
+libroadrunner==2.9.0
+amici==1.0.0
+antimony==3.1.1
+matplotlib==3.10.8
+dask==2026.1.2
+distributed==2026.1.2

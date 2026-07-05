@@ -1,0 +1,73 @@
+begin model
+begin parameters
+AA 100
+EC50_syn 5
+ksynmax 10
+EC50_deg 5
+kdegmax 0.1
+kass 1
+kdis 1
+kmat 0.5
+epsilon 1e-10
+end parameters
+begin molecule types
+BafA1()
+OM(s)
+PG(s)
+AP()
+end molecule types
+begin seed species
+BafA1() 0
+end seed species
+begin observables
+Molecules DFCP1_readout OM()
+Molecules WIPI_readout PG()
+Molecules LC3_readout PG() AP()
+Molecules freeOM OM(s)
+Molecules occupiedOM OM(s!+)
+Molecules PGs PG()
+Molecules APs AP()
+Molecules BafA1 BafA1()
+end observables
+begin functions
+ksyn()=ksynmax*(1-AA/(AA+EC50_syn))
+kdeg() if(BafA1>epsilon,0,kdegmax*(EC50_deg/(APs+EC50_deg)))
+percentAA() AA
+end functions
+begin reaction rules
+# zero-order constitutive assembly of omegasomes
+0->OM(s) kass
+# first-order disassembly of free omegasomes
+OM(s)->0 kdis
+# AA-controlled saturable omegasome-dependent synthesis of phagophores
+OM(s)->OM(s!1).PG(s!1) ksyn()
+# maturation of phagophores into autophagosomes, regeneration of free omegasomes
+OM(s!1).PG(s!1)->OM(s)+AP() kmat
+# saturable clearance of autophagosomes, +/- BafA1-mediated inhibition of degradation
+AP()->0 kdeg()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration to steady state
+# -BafA1, AA replete condition
+setParameter("AA",100)
+setConcentration("BafA1",0)
+simulate({suffix=>"equil",method=>"ode",t_end=>300,n_steps=>300,print_functions=>1})
+saveConcentrations()
+# +BafA1, AA replete condition
+resetConcentrations()
+setParameter("AA",100)
+setConcentration("BafA1",1)
+simulate({suffix=>"prod+BafA1",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+# -BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setConcentration("BafA1",0)
+simulate({suffix=>"prod+starve",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+# +BafA1, full AA starvation
+resetConcentrations()
+setParameter("AA",0)
+setConcentration("BafA1",1)
+simulate({suffix=>"prod+BafA1+starve",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+end actions

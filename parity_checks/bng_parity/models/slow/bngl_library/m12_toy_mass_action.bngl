@@ -1,0 +1,82 @@
+begin model
+#@model_id: m12_toy_mass_action
+#@title: Toy mass-action kinetics model
+#@description: Two-variable mass-action system from Voit (1988) pp. 223-224, demonstrating S-system recasting via product-rule splitting.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  a        0.15           # 1/time  net coefficient on X1*X2
+  b        0.03           # 1/time  coefficient on X1^2*X2
+  c        0.01           # 1/time  coefficient on X1^2
+  k        0.5            # 1/time  first-order decay of X2
+end parameters
+
+begin molecule types
+  X1()   # species 1
+  X2()   # species 2
+end molecule types
+
+begin seed species
+  X1()  1   # molecules
+  X2()  3   # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # X1' = a*X1*X2 - b*X1^2*X2 - c*X1^2
+  # Production: a*X1*X2
+  prod_X1()  = a * Obs_X1 * Obs_X2
+  # Consumption term 1: b*X1^2*X2
+  deg_X1a()  = b * Obs_X1 * Obs_X1 * Obs_X2
+  # Consumption term 2: c*X1^2
+  deg_X1b()  = c * Obs_X1 * Obs_X1
+
+  # X2' = X1 - k*X2
+  # Production of X2: X1 (zeroth-order in X2, first-order in X1)
+  prod_X2()  = Obs_X1
+end functions
+
+begin reaction rules
+  # X1 production: a*X1*X2
+  0 -> X1()  prod_X1()
+
+  # X1 consumption: b*X1^2*X2
+  X1() -> 0  deg_X1a()
+
+  # X1 consumption: c*X1^2
+  X1() -> 0  deg_X1b()
+
+  # X2 production from X1 (rate = X1 count)
+  0 -> X2()  prod_X2()
+
+  # X2 first-order decay: k*X2
+  X2() -> 0  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

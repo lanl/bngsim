@@ -1,0 +1,8 @@
+# Both the BioModels SBML (full keep-set, ~270 MB) and the curated SED-ML
+# protocols (~49 MB) are materialized locally and NEVER committed — they would
+# bloat git history permanently. Both are re-placed byte-for-byte by
+# materialize.py from local sources ($BIOMODELS_SBML_DIR / $BIOMODELS_SEDML_DIR,
+# the temp-biomodels mirror, PMC12677764). Local copies in a working checkout
+# are expected and correct; they just stay out of version control.
+*.xml
+*.sedml

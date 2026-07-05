@@ -1,0 +1,23 @@
+# SSA propensity test: A+B+C -> D (all distinct reactants)
+# Reactants: 1,2,3. stat_factor=1 (no symmetry).
+# propensity = k*nA*nB*nC
+# A(0)=5, B(0)=3, C(0)=0: propensity = k*5*3*0 = 0 → no reaction
+# (any zero species blocks the reaction)
+begin parameters
+    1 k1  1.0  # Constant
+end parameters
+begin species
+    1 A() 5
+    2 B() 3
+    3 C() 0
+    4 D() 0
+end species
+begin reactions
+    1 1,2,3 4 k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+    3 C_tot  3
+    4 D_tot  4
+end groups

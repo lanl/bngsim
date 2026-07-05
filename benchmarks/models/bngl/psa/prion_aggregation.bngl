@@ -1,0 +1,89 @@
+# Prion protein aggregation model
+# Reference: Rubenstein R et al. (2007) Biophys Chem 125: 360-367.
+# Benchmark source: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150: 244101.
+# Network: 104 species, 2809 reactions (with max_stoich PrP=>120)
+# Populations: 3 to 7500 molecules
+# Behavior: Nucleated polymerization with stochastic seeding
+
+begin model
+
+# The time unit is days.
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# volume
+Volume 1e-12 # L
+
+# Table 1
+a 0.047 # per day
+beta 2.92e-3 # per day
+b 0.0314 # per day
+lambda_model_parameter 30000 # per day
+d 4 # per day
+x_0=lambda_model_parameter/d # (=7500) dimensionless
+n 2 # dimensionless
+
+gamma 100 # per day
+
+epsilon 1e-10 # a small number (used to avoid a divide-by-zero error)
+
+end parameters
+
+begin molecule types
+
+PrP(a~C~Sc,x,y)
+
+end molecule types
+
+begin seed species
+
+PrP(a~C,x,y) x_0
+PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y) 3
+
+end seed species
+
+begin observables
+
+Species Species1 PrP(a~C,x,y)
+Species Species2 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y).PrP(a~Sc,x,y!1)
+Species Species15 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y!3).PrP(a~Sc,x!3,y!4).PrP(a~Sc,x!4,y!5).PrP(a~Sc,x!5,y!6).PrP(a~Sc,x!6,y!7).PrP(a~Sc,x!7,y!8).PrP(a~Sc,x!8,y!9).PrP(a~Sc,x!9,y!10).PrP(a~Sc,x!10,y!11).PrP(a~Sc,x!11,y!12).PrP(a~Sc,x!12,y!13).PrP(a~Sc,x!13,y).PrP(a~Sc,x,y!1)
+Species Species30 PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y!3).PrP(a~Sc,x!3,y!4).PrP(a~Sc,x!4,y!5).PrP(a~Sc,x!5,y!6).PrP(a~Sc,x!6,y!7).PrP(a~Sc,x!7,y!8).PrP(a~Sc,x!8,y!9).PrP(a~Sc,x!9,y!10).PrP(a~Sc,x!10,y!11).PrP(a~Sc,x!11,y!12).PrP(a~Sc,x!12,y!13).PrP(a~Sc,x!13,y!14).PrP(a~Sc,x!14,y!15).PrP(a~Sc,x!15,y!16).PrP(a~Sc,x!16,y!17).PrP(a~Sc,x!17,y!18).PrP(a~Sc,x!18,y!19).PrP(a~Sc,x!19,y!20).PrP(a~Sc,x!20,y!21).PrP(a~Sc,x!21,y!22).PrP(a~Sc,x!22,y!23).PrP(a~Sc,x!23,y!24).PrP(a~Sc,x!24,y!25).PrP(a~Sc,x!25,y!26).PrP(a~Sc,x!26,y!27).PrP(a~Sc,x!27,y!28).PrP(a~Sc,x!28,y).PrP(a~Sc,x,y!1)
+
+end observables
+
+begin reaction rules
+
+# PrPC synthesis
+0->PrP(a~C,x,y) lambda_model_parameter
+
+# PrPC degradation
+PrP(a~C,x,y)->0 d
+
+# clearance of PrPSc chains (slow)
+{MatchOnce}PrP(a~Sc)->0 a
+
+# PrPSc chain elongation
+PrP(a~Sc,y)+PrP(a~C,x,y)->PrP(a~Sc,y!1).PrP(a~Sc,x!1,y) beta
+
+# PrPSc chain breakage
+PrP(a~Sc,y!1).PrP(a~Sc,x!1)->PrP(a~Sc,y)+PrP(a~Sc,x) b
+
+# conformation change (Sc to C), n=2
+PrP(a~Sc,x,y)->PrP(a~C,x,y) gamma
+PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y)->PrP(a~C,x,y)+PrP(a~C,x,y) gamma
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1,check_iso=>1,max_stoich=>{PrP=>120}})
+
+# Stochastic simulation (t=10 days, 1000 output steps)
+simulate({method=>"ssa",t_start=>0,t_end=>10,n_steps=>1000})
+
+end actions

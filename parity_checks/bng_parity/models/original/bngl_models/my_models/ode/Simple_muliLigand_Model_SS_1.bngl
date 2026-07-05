@@ -1,0 +1,150 @@
+# Use local functions.
+#First, you want to define an observable that counts the number of ligands of any kind. Observable(scope) restricts evaluation to a species matched by a reactant-side pattern in a rule labeled with a "%scope:" prefix.
+#Second, you want to define a local function that evaluates to 0 (using an if-then-else statement) if the number of ligands is above a threshold.
+#Third, you want to use the local function to set the rate of ligand binding in your rule(s) to zero if a reactant already has the maximum number of ligands.
+##I'm pasting below snippets from one of my models that illustrate the three steps.
+begin model
+
+begin parameters
+
+#all k_off values are in (1/s) and all kon values are in (um^2/#rec.s)
+
+###Receptor-receptor dimerization rates in the absence of ligands
+
+#Receptor Homodimerization
+k1   1.00E-6 	#k_on for  R1-R1 dimerization
+k_1  3.00E-01	#k_off for R1-R1 dimerization
+k2   3.09E-6 	#k_on for  R2-R2 dimerization
+k_2  1.00E-01	#k_off for R2-R2 dimerization
+k3   3.09E-6 	#k_on for  R3-R3 dimerization
+k_3  1.00E-01	#k_off for R3-R3 dimerization
+
+
+k9   3.09E-6 	#k_on for  R2-R1 dimerization
+k_9  1.00E-01	#k_off for R2-R1 dimerization
+
+
+k4   1.00E-6 	#k_on for  R1-L1 dimerization
+k_4  3.00E-01	#k_off for R1-L1 dimerization
+k5   3.09E-6 	#k_on for  R2-L1 dimerization
+k_5  1.00E-01	#k_off for R2-L1 dimerization
+k6   3.09E-6 	#k_on for  R3-L1 dimerization
+k_6  1.00E-01	#k_off for R3-L1 dimerization
+
+k7   1.00E-6 	#k_on for  R1-L2 dimerization
+k_7  3.00E-01	#k_off for R1-L2 dimerization
+k8   3.09E-6 	#k_on for  R2-L2 dimerization
+k_8  1.00E-01	#k_off for R2-L2 dimerization
+
+
+
+end parameters
+
+begin molecule types
+# on the ligands: "D2" is the Receptor3 binding domain, "D1" is the Receptor1 and Receptor2 binding domain
+#  on the receptors: "a1" is the ligand binding sites,  "m" is the receptor-receptor dimerization domain for Receptor 1 and Receptor2
+# n is the Receptor 1 or 2 dimeriation site with Receptor3
+# All pof the ligands are bivalent towards Receptor1,2,3
+
+	Ligand1(D1,D1,D2,D2)	#Ligand1 binds Receptor3,Receptor1,Receptor2
+	
+	Ligand2(D1,D1,D2,D2)	#Ligand2 binds Receptor3,Receptor1
+	
+
+	Receptor1(a1,m,n) 
+	Receptor2(a1,m,n)  
+	Receptor3(a1,m,n) 
+	
+end molecule types
+
+begin seed species
+Ligand1(D1,D1,D2,D2) 1e6
+Ligand2(D1,D1,D2,D2) 1e6
+Receptor1(a1,m,n) 1e5
+Receptor2(a1,m,n) 1e5
+Receptor3(a1,m,n) 1e5
+
+end seed species
+
+begin observables
+
+
+Molecules Receptor1tot Receptor1()
+Molecules NumberOfLigands Ligand1() Ligand2() 
+Molecules NumberOfReceptors Receptor1() Receptor2() Receptor3()
+
+end observables
+
+
+begin functions
+##########################################################################################
+
+# local function used to determine appropriate rates for receptor crosslinking reactions #
+
+##########################################################################################
+
+
+
+# Boolean local function
+
+#  comments:
+
+#   - threshold T = 2
+
+#   - F if a receptor aggregate contains more than two receptors
+
+#   - T otherwise (i.e., if an aggregate contains just one or two receptors)
+
+#mobility(ptr) if(IgEtot(ptr)>threshold,0,1)
+
+end functions
+
+begin reaction rules
+
+
+	Receptor1(m) + Receptor1(m) <-> Receptor1(m!1).Receptor1(m!1)     k1, k_1
+	
+	Receptor2(m) + Receptor2(m) <-> Receptor2(m!1).Receptor2(m!1)     k2, k_2
+	
+	Receptor1(m) + Receptor2(m) <-> Receptor1(m!1).Receptor2(m!1)     k9, k_9
+
+	Receptor1(a1) + Ligand1(D2) <-> Receptor1(a1!1).Ligand1(D2!1)     k4, k_4
+
+	Receptor1(a1) + Ligand2(D2) <-> Receptor1(a1!1).Ligand2(D2!1)     k5, k_5
+
+	Receptor2(a1) + Ligand1(D2) <-> Receptor2(a1!1).Ligand1(D2!1)     k7, k_7
+
+	Receptor2(a1) + Ligand2(D2) <-> Receptor2(a1!1).Ligand2(D2!1)     k8, k_8
+
+
+#   Case 1 of (m-1) cases: reactant ligand is bound to 1 receptor site
+
+#     Case 1.A: reactant x is mobile or immobile and reactant y is mobile
+
+#BSA(DNP!+,DNP,DNP,DNP)+%y:IgE(Fab~0)->\
+
+#BSA(DNP!+,DNP!1,DNP,DNP).IgE(Fab~0!1) (nu1/(m-1))*kpx*mobility(y)
+
+#     Case 1.B: reactant x is mobile and reactant y is immobile
+
+#%x:BSA(DNP!+,DNP,DNP,DNP)+%y:IgE(Fab~0)->\
+
+#BSA(DNP!+,DNP!1,DNP,DNP).IgE(Fab~0!1) \
+
+#  FunctionProduct("(nu1/(m-1))*kpx*mobility(x)","(1-mobility(y))") # NB: tags must be referenced in order
+
+#     Case 1.C: reactant x is immobile and reactant y is immobile
+
+#%x:BSA(DNP!+,DNP,DNP,DNP)+%y:IgE(Fab~0)->\
+
+#BSA(DNP!+,DNP!1,DNP,DNP).IgE(Fab~0!1) \
+
+#  FunctionProduct("(nu1/(m-1))*sigma*kpx*(1-mobility(x))","(1-mobility(y))")
+
+end reaction rules
+
+end model 
+## actions ##
+generate_network({overwrite=>1,max_agg=>5,max_stoich=>{Receptor1=>2,Receptor2=>2,Receptor3=>2,Ligand1=>1,Ligand2=>1}})
+simulate_ode({t_end=>300,n_steps=>1000})
+

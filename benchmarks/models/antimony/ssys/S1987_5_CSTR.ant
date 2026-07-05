@@ -1,0 +1,60 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Section 5 - CSTR (Continuous Stirred Tank Reactor)
+//          Equations 28-39
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z1(0) = Z10, Z2(0) = Z20
+//
+// Original ODEs (Equation 28):
+//   dZ1/dt = -Z1 + A*(1-Z1)*exp[c*Z2/(c+Z2)]
+//   dZ2/dt = -Z2 + B*(1-Z1)*exp[c*Z2/(c+Z2)] - b*(Z2-a)
+//
+// NOTE: Parameter values below were not specified in the original paper
+//       and have been added for simulation purposes.
+//
+// Recast S-system (8 variables, Equation 36):
+//   After translation X1=Z1+1, X2=Z2+2 and decomposition steps,
+//   then replacing each variable by products of new variables:
+//
+//   dX1/dt = 2*A*X3^(-1)*X4*X5 - A*X1*X4*X5
+//   dX2/dt = C*X3^(-1) - (1+b)*X3
+//   dX3/dt = 2*A*X3^(-1)*X4*X5 - A*X1*X4*X5
+//   dX4/dt = 2*B*X3^(-1)*X5*X6 - B*X1*X2*X3^(-1)*X5*X6
+//   dX5/dt = c*X3*X4^(-2)*X5^(-2) - (1+b)*X3^2*X4^(-1)*X5*X6^(-2)*X7^(-2)
+//   dX6/dt = 2*B*X3*X4^2*X5^(-2)*X6^(-2) - B*X1*X2*X3*X4^2*X5^(-2)*X6^(-2)
+//   dX7/dt = (C/c)*X3^(-1) - ((1+b)/c)*X3*X5*X7^(-1)
+//   dX8/dt = (2*B/c)*X3*X5*X7^(-1) - (B/c)*X1*X2*X3*X5*X7^(-1)
+//
+//   where C = a*b + 2*(1+b)
+//
+// Constraints (6 constraints reduce 8D to 2D manifold):
+//   X5*X6 = exp[c*(X3*X4-2)/(c+X5*X6-2)]
+//   X7*X8 = (c+X5*X6-2)/c
+//   X1*X2 = old_X1, X3*X4 = old_X2, X5*X6 = old_X3, X7*X8 = old_X4
+//
+// Original variables reconstructed as:
+//   Z1(t) = X1(t)*X2(t) - 1
+//   Z2(t) = X3(t)*X4(t) - 2
+// =============================================================================
+
+model S1987_5_CSTR()
+    // Parameters (added for simulation - not in original paper)
+    A = 10.0    // Damköhler number for material balance
+    B = 10.0    // Damköhler number for energy balance  
+    c = 20.0    // Activation energy parameter
+    b = 0.5     // Heat transfer coefficient
+    a = 0.0     // Ambient temperature offset
+    
+    // Original ODEs for CSTR
+    Z1' = -Z1 + A*(1-Z1)*exp(c*Z2/(c+Z2))
+    Z2' = -Z2 + B*(1-Z1)*exp(c*Z2/(c+Z2)) - b*(Z2-a)
+    
+    // Initial conditions (added for simulation)
+    Z1 = 0.1
+    Z2 = 0.5
+end
+// @SIM T_START=0 T_END=6 N_STEPS=600 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

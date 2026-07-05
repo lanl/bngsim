@@ -1,0 +1,5856 @@
+{
+  "_meta": {
+    "source": "sbmlteam/sbml-test-suite",
+    "commit": "473e119dd57226c3a7a729d598f9007f06f781c3",
+    "describe": "3.4.0-36-g473e119dd",
+    "n_cases_total": 100,
+    "n_cases_dsmts_proper": 39,
+    "replicate_guidance": {
+      "min": 1000,
+      "recommended": 10000,
+      "sensitive": 100000,
+      "source": "stochastic/README.md"
+    },
+    "generated": "2026-05-06",
+    "notes": [
+      "Cases 00001-00039 are DSMTS proper (testType=StochasticTimeCourse) and ship dsmts-NNN-MM-{mean,sd}.csv.",
+      "Cases 00040+ are StatisticalDistribution tests that use the SBML 'distrib' package; only NNNNN-results.csv is available.",
+      "Suite metadata does not specify a per-case replicate count; use replicate_guidance corpus-wide.",
+      "_meta.source/commit record the pinned upstream this index was built from (provenance only; the pin lives in ../SUITE_PIN.json). run_dsmts.py defaults to the in-repo vendored copy under dsmts/cases/ (regenerate via vendor_dsmts_cases.py); the upstream checkout is not required at runtime."
+    ]
+  },
+  "cases": {
+    "00001": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00001/00001-results.csv",
+      "dsmts_mean_csv": "00001/dsmts-001-01-mean.csv",
+      "dsmts_sd_csv": "00001/dsmts-001-01-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00002": {
+      "synopsis": "Basic two-reaction system with local parameters.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "LocalParameters",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00002/00002-results.csv",
+      "dsmts_mean_csv": "00002/dsmts-001-02-mean.csv",
+      "dsmts_sd_csv": "00002/dsmts-001-02-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00003": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00003/00003-results.csv",
+      "dsmts_mean_csv": "00003/dsmts-001-03-mean.csv",
+      "dsmts_sd_csv": "00003/dsmts-001-03-sd.csv",
+      "is_dsmts_proper": true,
+      "y_test_noise_dominates": true,
+      "y_test_noise_dominates_note": "Heavy-tailed extinction regime: analytical kurtosis κ(X(47)) ≈ 71.4 → natural σ_Y ≈ 5.94, so the DSMTS ±5 Y threshold corresponds to <1σ of noise at t≥35. Mean (Z) test is well-behaved. Empirical σ_Y matches theory; mean Y across 20 independent N=50k samples is +0.63 (consistent with zero). See dev/investigations/sbml_ssa_phase5d_2026-05-07.md."
+    },
+    "00004": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00004/00004-results.csv",
+      "dsmts_mean_csv": "00004/dsmts-001-04-mean.csv",
+      "dsmts_sd_csv": "00004/dsmts-001-04-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00005": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00005/00005-results.csv",
+      "dsmts_mean_csv": "00005/dsmts-001-05-mean.csv",
+      "dsmts_sd_csv": "00005/dsmts-001-05-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00006": {
+      "synopsis": "Basic two-reaction system with boundary species",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "BoundaryCondition",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "Sink"
+        ],
+        "amount": [
+          "X",
+          "Sink"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "Sink-mean",
+          "Sink-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00006/00006-results.csv",
+      "dsmts_mean_csv": "00006/dsmts-001-06-mean.csv",
+      "dsmts_sd_csv": "00006/dsmts-001-06-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00007": {
+      "synopsis": "Basic two-reaction system with two species",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "Sink"
+        ],
+        "amount": [
+          "X",
+          "Sink"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "Sink-mean",
+          "Sink-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00007/00007-results.csv",
+      "dsmts_mean_csv": "00007/dsmts-001-07-mean.csv",
+      "dsmts_sd_csv": "00007/dsmts-001-07-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00008": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00008/00008-results.csv",
+      "dsmts_mean_csv": "00008/dsmts-001-08-mean.csv",
+      "dsmts_sd_csv": "00008/dsmts-001-08-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00009": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityCompartment",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00009/00009-results.csv",
+      "dsmts_mean_csv": "00009/dsmts-001-09-mean.csv",
+      "dsmts_sd_csv": "00009/dsmts-001-09-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00010": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00010/00010-results.csv",
+      "dsmts_mean_csv": "00010/dsmts-001-10-mean.csv",
+      "dsmts_sd_csv": "00010/dsmts-001-10-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00011": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "NonUnityCompartment",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00011/00011-results.csv",
+      "dsmts_mean_csv": "00011/dsmts-001-11-mean.csv",
+      "dsmts_sd_csv": "00011/dsmts-001-11-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00012": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00012/00012-results.csv",
+      "dsmts_mean_csv": "00012/dsmts-001-12-mean.csv",
+      "dsmts_sd_csv": "00012/dsmts-001-12-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00013": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00013/00013-results.csv",
+      "dsmts_mean_csv": "00013/dsmts-001-13-mean.csv",
+      "dsmts_sd_csv": "00013/dsmts-001-13-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00014": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00014/00014-results.csv",
+      "dsmts_mean_csv": "00014/dsmts-001-14-mean.csv",
+      "dsmts_sd_csv": "00014/dsmts-001-14-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00015": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00015/00015-results.csv",
+      "dsmts_mean_csv": "00015/dsmts-001-15-mean.csv",
+      "dsmts_sd_csv": "00015/dsmts-001-15-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00016": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00016/00016-results.csv",
+      "dsmts_mean_csv": "00016/dsmts-001-16-mean.csv",
+      "dsmts_sd_csv": "00016/dsmts-001-16-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00017": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00017/00017-results.csv",
+      "dsmts_mean_csv": "00017/dsmts-001-17-mean.csv",
+      "dsmts_sd_csv": "00017/dsmts-001-17-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00018": {
+      "synopsis": "Basic two-reaction system",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityCompartment",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00018/00018-results.csv",
+      "dsmts_mean_csv": "00018/dsmts-001-18-mean.csv",
+      "dsmts_sd_csv": "00018/dsmts-001-18-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00019": {
+      "synopsis": "Basic two-reaction system plus an assignment rule",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "AssignmentRule",
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "InitialValueReassigned",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "y"
+        ],
+        "amount": [
+          "X",
+          "y"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "y-mean",
+          "y-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00019/00019-results.csv",
+      "dsmts_mean_csv": "00019/dsmts-001-19-mean.csv",
+      "dsmts_sd_csv": "00019/dsmts-001-19-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00020": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00020/00020-results.csv",
+      "dsmts_mean_csv": "00020/dsmts-002-01-mean.csv",
+      "dsmts_sd_csv": "00020/dsmts-002-01-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00021": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00021/00021-results.csv",
+      "dsmts_mean_csv": "00021/dsmts-002-02-mean.csv",
+      "dsmts_sd_csv": "00021/dsmts-002-02-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00022": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "LocalParameters"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00022/00022-results.csv",
+      "dsmts_mean_csv": "00022/dsmts-002-03-mean.csv",
+      "dsmts_sd_csv": "00022/dsmts-002-03-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00023": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00023/00023-results.csv",
+      "dsmts_mean_csv": "00023/dsmts-002-04-mean.csv",
+      "dsmts_sd_csv": "00023/dsmts-002-04-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00024": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "BoundaryCondition",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "amount": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "Source-mean",
+          "Source-sd",
+          "Sink-mean",
+          "Sink-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00024/00024-results.csv",
+      "dsmts_mean_csv": "00024/dsmts-002-05-mean.csv",
+      "dsmts_sd_csv": "00024/dsmts-002-05-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00025": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "BoundaryCondition",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "amount": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "Source-mean",
+          "Source-sd",
+          "Sink-mean",
+          "Sink-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00025/00025-results.csv",
+      "dsmts_mean_csv": "00025/dsmts-002-06-mean.csv",
+      "dsmts_sd_csv": "00025/dsmts-002-06-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00026": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "BoundaryCondition",
+        "ConstantSpecies",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "amount": [
+          "X",
+          "Source",
+          "Sink"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd",
+          "Source-mean",
+          "Source-sd",
+          "Sink-mean",
+          "Sink-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00026/00026-results.csv",
+      "dsmts_mean_csv": "00026/dsmts-002-07-mean.csv",
+      "dsmts_sd_csv": "00026/dsmts-002-07-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00027": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "LocalParameters"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00027/00027-results.csv",
+      "dsmts_mean_csv": "00027/dsmts-002-08-mean.csv",
+      "dsmts_sd_csv": "00027/dsmts-002-08-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00028": {
+      "synopsis": "Basic two-reaction system with event.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "CSymbolTime",
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00028/00028-results.csv",
+      "dsmts_mean_csv": "00028/dsmts-002-09-mean.csv",
+      "dsmts_sd_csv": "00028/dsmts-002-09-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00029": {
+      "synopsis": "Basic two-reaction system with event.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "CSymbolTime",
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00029/00029-results.csv",
+      "dsmts_mean_csv": "00029/dsmts-002-10-mean.csv",
+      "dsmts_sd_csv": "00029/dsmts-002-10-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00030": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P",
+          "P2"
+        ],
+        "amount": [
+          "P",
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P-mean",
+          "P-sd",
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00030/00030-results.csv",
+      "dsmts_mean_csv": "00030/dsmts-003-01-mean.csv",
+      "dsmts_sd_csv": "00030/dsmts-003-01-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00031": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P",
+          "P2"
+        ],
+        "amount": [
+          "P",
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P-mean",
+          "P-sd",
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00031/00031-results.csv",
+      "dsmts_mean_csv": "00031/dsmts-003-02-mean.csv",
+      "dsmts_sd_csv": "00031/dsmts-003-02-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00032": {
+      "synopsis": "Basic two-reaction system with event.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "CSymbolTime",
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P",
+          "P2"
+        ],
+        "amount": [
+          "P",
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P-mean",
+          "P-sd",
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00032/00032-results.csv",
+      "dsmts_mean_csv": "00032/dsmts-003-03-mean.csv",
+      "dsmts_sd_csv": "00032/dsmts-003-03-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00033": {
+      "synopsis": "Basic two-reaction system with event.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P",
+          "P2"
+        ],
+        "amount": [
+          "P",
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P-mean",
+          "P-sd",
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00033/00033-results.csv",
+      "dsmts_mean_csv": "00033/dsmts-003-04-mean.csv",
+      "dsmts_sd_csv": "00033/dsmts-003-04-sd.csv",
+      "is_dsmts_proper": true,
+      "z_test_oracle_offset": true,
+      "z_test_oracle_offset_note": "DSMTS analytical expected mean has a known O(1/N) approximation error vs exact discrete SSA on this nonlinear-rate model with state-trigger reset. At N=100 monomer-equivalents the discrepancy is ~+1% in mean(P), producing ~28 Z-failures across t=15..28 and t=33..40 with peak Z=+4.5σ. An independent reference SSA (Python+numpy with PCG RNG, completely separate codebase from BNGsim) reproduces BNGsim's Z values to within sampling noise across 20 independent N=10k chunks at well-separated seed bases (Z_diff_mean range -0.46..+0.68, σ_diff ≈ 1.3, all within noise). σ_Z=1 by CLT confirmed empirically (σ_Z_emp ≈ 0.5..1.4 across t-points, mean ≈ 0.9). The 4σ Z signal is real but reflects an oracle-vs-discrete-SSA mismatch consistent with linear-noise / van-Kampen ω-expansion approximation O(1/N) bias, not a simulator bug. See dev/investigations/sbml_ssa_phase5e_2026-05-07.md."
+    },
+    "00034": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P2"
+        ],
+        "amount": [
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00034/00034-results.csv",
+      "dsmts_mean_csv": "00034/dsmts-003-05-mean.csv",
+      "dsmts_sd_csv": "00034/dsmts-003-05-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00035": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P2"
+        ],
+        "amount": [
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00035/00035-results.csv",
+      "dsmts_mean_csv": "00035/dsmts-003-06-mean.csv",
+      "dsmts_sd_csv": "00035/dsmts-003-06-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00036": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "P2"
+        ],
+        "amount": [
+          "P2"
+        ],
+        "concentration": [],
+        "output": [
+          "P2-mean",
+          "P2-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00036/00036-results.csv",
+      "dsmts_mean_csv": "00036/dsmts-003-07-mean.csv",
+      "dsmts_sd_csv": "00036/dsmts-003-07-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00037": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00037/00037-results.csv",
+      "dsmts_mean_csv": "00037/dsmts-004-01-mean.csv",
+      "dsmts_sd_csv": "00037/dsmts-004-01-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00038": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00038/00038-results.csv",
+      "dsmts_mean_csv": "00038/dsmts-004-02-mean.csv",
+      "dsmts_sd_csv": "00038/dsmts-004-02-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00039": {
+      "synopsis": "Basic two-reaction system.",
+      "test_type": "StochasticTimeCourse",
+      "component_tags": [
+        "Compartment",
+        "Parameter",
+        "Reaction",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonUnityStoichiometry"
+      ],
+      "packages_present": [],
+      "levels_declared": [
+        "2.1",
+        "2.2",
+        "2.3",
+        "2.4",
+        "2.5",
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l2v1",
+        "l2v2",
+        "l2v3",
+        "l2v4",
+        "l2v5",
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00039/00039-results.csv",
+      "dsmts_mean_csv": "00039/dsmts-004-03-mean.csv",
+      "dsmts_sd_csv": "00039/dsmts-004-03-sd.csv",
+      "is_dsmts_proper": true
+    },
+    "00040": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00040/00040-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00041": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "InitialAssignment",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "InitialValueReassigned",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00041/00041-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00042": {
+      "synopsis": "UniformDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00042/00042-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00043": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00043/00043-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00044": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00044/00044-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00045": {
+      "synopsis": "GammaDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00045/00045-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00046": {
+      "synopsis": "GammaDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -4.0,
+          4.0
+        ]
+      },
+      "results_csv": "00046/00046-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00047": {
+      "synopsis": "PoissonDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00047/00047-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00048": {
+      "synopsis": "CauchyDistribution with one argument test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00048/00048-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00049": {
+      "synopsis": "CauchyDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00049/00049-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00050": {
+      "synopsis": "ChiSquareDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00050/00050-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00051": {
+      "synopsis": "ChiSquareDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00051/00051-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00052": {
+      "synopsis": "Rayleigh Distribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00052/00052-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00053": {
+      "synopsis": "BernoulliDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00053/00053-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00054": {
+      "synopsis": "LaplaceDistribution test (one argument)",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00054/00054-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00055": {
+      "synopsis": "LaplaceDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -4.0,
+          4.0
+        ]
+      },
+      "results_csv": "00055/00055-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00056": {
+      "synopsis": "LogNormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "ln(X)-mean",
+          "ln(X)-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00056/00056-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00057": {
+      "synopsis": "BinomialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00057/00057-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00058": {
+      "synopsis": "BinomialDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00058/00058-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00059": {
+      "synopsis": "CauchyDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00059/00059-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00060": {
+      "synopsis": "ChiSquareDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00060/00060-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00061": {
+      "synopsis": "ExponentialDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00061/00061-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00062": {
+      "synopsis": "GammaDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00062/00062-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00063": {
+      "synopsis": "LaplaceDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -4.0,
+          4.0
+        ]
+      },
+      "results_csv": "00063/00063-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00064": {
+      "synopsis": "LogNormalDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "ln(X)-mean",
+          "ln(X)-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00064/00064-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00065": {
+      "synopsis": "PoissonDistribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -4.0,
+          4.0
+        ]
+      },
+      "results_csv": "00065/00065-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00066": {
+      "synopsis": "Rayleigh Distribution test with truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00066/00066-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00067": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00067/00067-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00068": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00068/00068-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00069": {
+      "synopsis": "NormalDistribution test with lower truncation",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00069/00069-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00070": {
+      "synopsis": "NormalDistribution test with upper truncation bound",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00070/00070-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00071": {
+      "synopsis": "NormalDistribution test with lower inclusive bound",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00071/00071-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00072": {
+      "synopsis": "NormalDistribution test with upper inclusive bound",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00072/00072-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00073": {
+      "synopsis": "NormalDistribution test with upper and lower bounds",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00073/00073-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00074": {
+      "synopsis": "NormalDistribution test with upper and lower bounds",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "InitialAssignment",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "InitialValueReassigned",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00074/00074-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00075": {
+      "synopsis": "NormalDistribution test with asymmetric bounds",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00075/00075-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00076": {
+      "synopsis": "NormalDistribution test with two-sided truncation greater than the mean",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00076/00076-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00077": {
+      "synopsis": "ExponentialDistribution test with a lower bound",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00077/00077-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00078": {
+      "synopsis": "ExponentialDistribution test with an upper bound",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00078/00078-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00079": {
+      "synopsis": "ExponentialDistribution test with bounded range",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00079/00079-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00080": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00080/00080-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00081": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "InitialAssignment",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "InitialValueReassigned",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00081/00081-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00082": {
+      "synopsis": "UniformDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00082/00082-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00083": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00083/00083-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00084": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00084/00084-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00085": {
+      "synopsis": "GammaDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00085/00085-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00086": {
+      "synopsis": "GammaDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00086/00086-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00087": {
+      "synopsis": "PoissonDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00087/00087-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00088": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00088/00088-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00089": {
+      "synopsis": "ExponentialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00089/00089-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00090": {
+      "synopsis": "BinomialDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00090/00090-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00091": {
+      "synopsis": "Normal Distribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00091/00091-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00092": {
+      "synopsis": "UniformDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00092/00092-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00093": {
+      "synopsis": "Uniform distribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00093/00093-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00094": {
+      "synopsis": "Gamma distribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00094/00094-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00095": {
+      "synopsis": "Gamma distribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -5.0,
+          5.0
+        ]
+      },
+      "results_csv": "00095/00095-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00096": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00096/00096-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00097": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00097/00097-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00098": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00098/00098-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00099": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00099/00099-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    },
+    "00100": {
+      "synopsis": "NormalDistribution test",
+      "test_type": "StatisticalDistribution",
+      "component_tags": [
+        "Compartment",
+        "EventNoDelay",
+        "Parameter",
+        "RateRule",
+        "Species"
+      ],
+      "test_tags": [
+        "Amount",
+        "HasOnlySubstanceUnits",
+        "NonConstantParameter"
+      ],
+      "packages_present": [
+        "distrib"
+      ],
+      "levels_declared": [
+        "3.1",
+        "3.2"
+      ],
+      "sbml_levels_present": [
+        "l3v1",
+        "l3v2"
+      ],
+      "settings": {
+        "start": 0.0,
+        "duration": 50.0,
+        "steps": 50,
+        "variables": [
+          "X"
+        ],
+        "amount": [
+          "X"
+        ],
+        "concentration": [],
+        "output": [
+          "X-mean",
+          "X-sd"
+        ],
+        "mean_range": [
+          -3.0,
+          3.0
+        ],
+        "sd_range": [
+          -3.0,
+          3.0
+        ]
+      },
+      "results_csv": "00100/00100-results.csv",
+      "dsmts_mean_csv": null,
+      "dsmts_sd_csv": null,
+      "is_dsmts_proper": false
+    }
+  }
+}

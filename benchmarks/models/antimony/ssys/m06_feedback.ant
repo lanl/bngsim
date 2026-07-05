@@ -1,0 +1,53 @@
+// Model for biochemical pathway with negative feedback
+// ODEs: 
+//   dX1/dt = a - c*X2 - b*X1
+//   dX2/dt = b*X1 - b*X2
+// ICs: X1(0)=0, X2(0)=0
+// Params: a=5 (M/s), b=1 (/s), c=4 (/s)
+//
+// Change of variables:
+//   X  := X1 + X2
+//   Y  := X2
+//
+// Then:
+//   X1 = X - Y
+//   X2 = Y
+//
+// In terms of (X, Y), the dynamics become:
+//
+//   X' = X1' + X2'
+//      = (a - c*X2 - b*X1) + (b*X1 - b*X2)
+//      = a - (b + c)*X2
+//      = a - (b + c)*Y
+//
+//   Y' = X2' = b*X1 - b*X2
+//      = b*(X - Y) - b*Y
+//      = b*X - 2*b*Y
+//
+// Both right-hand sides are in canonical S-system form.
+//
+model feedback()
+  // initial conditions
+  X_1 = 0.0 
+  X_2 = 0.0 
+
+  // parameters
+  a = 1
+  b = 0.2
+  c = 0.8
+
+  // reactions (mass-action style)
+  // 0 -> X_1  with rate a - c*X_2
+  J_1: ->  X_1; a - c*X_2
+
+  // X_1 -> X_2 with rate b*X_1
+  J_2: X_1 -> X_2; b*X_1
+
+  // X_2 -> 0  with rate b*X_2
+  J_3: X_2 ->   ; b*X_2
+  
+  // Analytic solution:
+  // X_1_analytic(t) = (a/(b+c)) * (1 + (sqrt(c/b)*sin(t*sqrt(b*c)) - cos(t*sqrt(b*c))) * exp(-b*t))
+  // X_2_analytic(t) = (a/(b+c)) * (1 - (sqrt(b/c)*sin(t*sqrt(b*c)) + cos(t*sqrt(b*c))) * exp(-b*t))
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

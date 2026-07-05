@@ -1,0 +1,170 @@
+begin model
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# fraction of cell to consider in a stochastic simulation
+f 1.0 # [=] dimensionless, 0<=f<=1
+
+# cytoplasmic volume
+#   A volume of 1 to 2 pL is typical for a mammalian cell.
+V f*1.5e-12 # [=] L (1.5 pL)
+
+# cell density (cells are growing in suspension)
+den 1.0e9 # [=] cells per L (1.0e6 cells per ml) 
+
+# volume of extracellular fluid surrounding a cell
+Vex=f/den
+
+# The quantities NA*V and NA*Vex will be used as unit conversion factors.
+#   NA*V converts a cytoplasmic concentration from M to molecules/cell.
+#   NA*Vex converts an extracellular concentration from M to molecules/cell.
+
+# ligand dose
+EGF_conc 1.0e-11 # [=] M (0.01 nM)
+EGF_total=EGF_conc*(NA*Vex) # [=] copies per cell (6,000 when f=1)
+
+# HeLa cell protein copy numbers measured by Mann and co-workers
+EGFR_total    92674*f # [=] molecules per cell
+ERK_total    603524*f # [=] molecules per cell [ERK]=[MAPK1]+[MAPK3]
+ADAM17_total   7618*f # [=] molecules per cell
+
+TGFA_total    25000*f # [=] molecules per cell (assumed)
+
+k_syn_A 22.85 # [=] molecules per cell per min
+k_tr_A 1e-3 # [=] /min
+k_deg_A 3e-3 # [=] /min
+
+k_syn_T 75.0 # [=] molecules per cell per min
+k_tr_T 1e-3 # [=] /s
+k_deg_T 3e-3 # [=] /s
+
+kpTACE 1e5*60*300/(NA*V) # [=] /(molecules/cell)/min
+kmTACE 1.0*60 # [=] /min
+kcatTACE 0.01*60 # [=] /min
+
+KD1 1.0e-9*(NA*Vex) # [=] molecules per cell
+km1 0.02*60 # [=] /min
+kp1=km1/KD1 # [=] /(molecule/cell)/min
+
+k_act 1e4*60*300/(NA*V) # [=] /min
+kd 0.05*60 # [=] /min
+
+kpEA 1e6*60/(NA*V) # [=] /(molecules/cell)/min
+kmEA 1*60 # [=] /min
+kcatEA 0.01*60 # [=] /min
+
+k_endo 0.001*60 # [=] /min
+
+end parameters
+
+begin molecule types
+EGF(EGFL)
+ERK(S~0~PP)
+EGFR(I_III)
+# TACE
+#   protease: catalytic domain
+#   ST: S/T residue(s): ERK substrate(s) 
+#   loc: location
+#     ~cytosol: cytosol
+#     ~PM: plasma membrane
+ADAM17(protease,ST~0~P,loc~cytosol~PM)
+# TGF-alpha
+#   cleaved by ADAM17 at aa 89-90
+#   sTGFA: soluble form (aa 24-89)
+#     EGFL: EGF-like domain
+#   TGFA: sTGFA precursor
+#     A89-V90: site of cleavage
+#     loc: location
+#       ~cytosol: cytosol
+#       ~PM: plasma membrane
+sTGFA(EGFL)
+TGFA(A89V90,loc~cytosol~PM)
+end molecule types
+
+begin seed species
+EGF(EGFL) 0
+EGFR(I_III) EGFR_total
+ERK(S~0) ERK_total
+ADAM17(protease,ST~0,loc~cytosol) ADAM17_total
+TGFA(A89V90,loc~cytosol) TGFA_total
+sTGFA(EGFL) 0
+end seed species
+
+begin observables
+Molecules ADAM17tot ADAM17()
+Molecules ADAM17cyt ADAM17(loc~cytosol)
+Molecules ADAM17pm ADAM17(loc~PM)
+Molecules TGFAtot TGFA()
+Molecules TGFAcyt TGFA(loc~cytosol)
+Molecules TGFApm TGFA(loc~PM)
+Molecules EGFtot EGF()
+Molecules sTGFAtot sTGFA()
+Molecules EGFRtot EGFR()
+Molecules boundEGFR EGFR(I_III!+)
+Molecules activatedERK ERK(S~PP!?)
+end observables
+
+begin functions
+fract_of_ADAM17_at_PM() ADAM17pm/ADAM17tot
+end functions
+
+
+begin reaction rules
+
+# synthesis, trafficking and degradation of ADAM17
+Rule01: 0->ADAM17(protease,ST~0,loc~cytosol) k_syn_A
+Rule02: ADAM17(ST~P,loc~cytosol)->ADAM17(ST~P,loc~PM) k_tr_A
+Rule03: ADAM17()->0 k_deg_A
+
+# synthesis, trafficking and degradation of TGFA
+Rule04: 0->TGFA(A89V90,loc~cytosol) k_syn_T
+Rule05: TGFA(loc~cytosol)->TGFA(loc~PM) k_tr_T
+Rule06: TGFA()->0 k_deg_T
+
+# ADAM17-mediated proteolytic cleavage of TGFA
+Rule07: ADAM17(protease,loc~PM)+TGFA(A89V90,loc~PM)->\
+ADAM17(protease!1,loc~PM).TGFA(A89V90!1,loc~PM) kpTACE
+
+Rule08: ADAM17(protease!1,loc~PM).TGFA(A89V90!1,loc~PM)->\
+ADAM17(protease,loc~PM)+TGFA(A89V90,loc~PM) kmTACE
+
+Rule09: ADAM17(protease!1,loc~PM).TGFA(A89V90!1,loc~PM)->\
+ADAM17(protease,loc~PM)+sTGFA(EGFL) kcatTACE
+
+# ligand-induced activation of EGFR
+Rule10: EGF(EGFL)+EGFR(I_III)<->EGF(EGFL!1).EGFR(I_III!1) kp1,km1
+Rule11: sTGFA(EGFL)+EGFR(I_III)<->sTGFA(EGFL!1).EGFR(I_III!1) kp1,km1
+
+# endocytosis/degradation
+Rule12: EGF(EGFL!1).EGFR(I_III!1)->0 5*k_endo
+Rule13: sTGFA(EGFL!1).EGFR(I_III!1)->0 k_endo
+
+# ERK activation/deactivation (simplified)
+Rule14: ERK(S~0)+EGFR(I_III!+)->ERK(S~PP)+EGFR(I_III!+) k_act
+Rule15: ERK(S~PP)->ERK(S~0) kd
+
+# ERK-mediated activation of ADAM17
+Rule16: ERK(S~PP)+ADAM17(ST~0,loc~cytosol)<->ERK(S~PP!1).ADAM17(ST~0!1,loc~cytosol) kpEA,kmEA
+Rule17: ERK(S~PP!1).ADAM17(ST~0!1,loc~cytosol)->ERK(S~PP)+ADAM17(ST~P,loc~cytosol) kcatEA
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibrate
+simulate({method=>"ode",t_start=>0,t_end=>1440,n_steps=>100})
+
+# production simulation
+setConcentration("EGF(EGFL)",6000)
+#simulate({continue=>1,method=>"ode",t_start=>1000,t_end=>1300,n_steps=>1200})
+
+simulate({method=>"ode",t_start=>0,t_end=>300,n_steps=>1200,print_functions=>1})
+
+end actions

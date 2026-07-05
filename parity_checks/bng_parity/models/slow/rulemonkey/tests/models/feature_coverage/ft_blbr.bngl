@@ -1,0 +1,46 @@
+# Feature: bivalent ligand + bivalent receptor cross-linking
+# Tests: symmetric bivalent-bivalent binding, aggregate formation
+# Covers: BLBR, rm_blbr, bench_blbr_* from existing corpus
+# Tier: base
+# Expected: ligand-receptor aggregates form; free species deplete
+# invariant: conserved L_total = 50
+# invariant: conserved R_total = 50
+
+begin model
+begin parameters
+    L_tot  50
+    R_tot  50
+    kf     0.005   # /s, binding rate
+    kr     0.1     # /s, unbinding rate
+end parameters
+
+begin molecule types
+    L(r,r)
+    R(l,l)
+end molecule types
+
+begin seed species
+    L(r,r)  L_tot
+    R(l,l)  R_tot
+end seed species
+
+begin observables
+    Molecules  L_total     L()
+    Molecules  R_total     R()
+    Molecules  L_free_r    L(r)
+    Molecules  R_free_l    R(l)
+    Molecules  L_bound     L(r!+)
+    Molecules  R_bound     R(l!+)
+    Species    Complexes   L(r!+)
+    Species    Free_L      L(r,r)
+    Species    Free_R      R(l,l)
+end observables
+
+begin reaction rules
+    L(r) + R(l) <-> L(r!1).R(l!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

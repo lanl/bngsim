@@ -1,0 +1,43 @@
+# Feature: local functions in rate laws (context-dependent rates)
+# Tests: rate depends on local molecular state via tagged reference
+# Tier: base
+# Expected: flip rate depends on local neighbor state (simplified 2-spin system)
+# Note: uses %tag notation for local function argument
+
+begin model
+setOption("SpeciesLabel","HNauty")
+begin parameters
+    k_base  1.0
+    J       0.5    # coupling strength
+end parameters
+
+begin molecule types
+    S(nbr,sp~up~dn)
+end molecule types
+
+begin seed species
+    S(nbr!1,sp~dn).S(nbr!1,sp~dn)  1
+end seed species
+
+begin observables
+    Molecules  S_up      S(sp~up)
+    Molecules  S_dn      S(sp~dn)
+    Molecules  S_total   S()
+    Molecules  NbrUp     S(nbr!0).S(nbr!0,sp~up)
+    Molecules  Aligned   S(nbr!1,sp~up).S(nbr!1,sp~up), S(nbr!1,sp~dn).S(nbr!1,sp~dn)
+end observables
+
+begin functions
+    # Local functions: flip rate depends on whether neighbor is up
+    flipUp(z) = k_base * exp(-J * (1 - NbrUp(z)))
+    flipDn(z) = k_base * exp(-J * NbrUp(z))
+end functions
+
+begin reaction rules
+    S%x(sp~dn) <-> S%x(sp~up)  flipUp(x), flipDn(x)
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

@@ -1,0 +1,90 @@
+begin model
+begin parameters
+    # Wnt/Beta-Catenin signaling (Canonical pathway).
+    # Advanced features: Explicit scaffolding (Destruction Complex) and wildcards.
+    
+    # Initials
+    Wnt_tot 100
+    Friz_tot 200
+    LRP_tot 200
+    Dvl_tot 300
+    Dest_Complex_tot 50
+    BetaCatenin_init 50
+    TCF_tot 100
+    
+    # Rates
+    k_bind_wnt 1e-3
+    k_act_dvl 1.0
+    k_inh_dc 5.0
+    k_synth_bc 10.0
+    k_bind_dc_bc 2.0
+    k_off_dc_bc 0.1
+    k_phos_bc 10.0
+    k_rel_bc 1.0
+    k_deg_bc 2.0
+    k_imp_bc 1.2
+    k_exp_bc 0.4
+    k_bind_tcf 3.0
+end parameters
+
+begin molecule types
+    Wnt(b)
+    Frizzled(b,d)
+    Dvl(b,s~U~A)
+    Dest_Complex(b_d,b_b,s~U~A) # s: U=Active, A=Inhibited/Inactive (Reused nomenclature)
+    BetaCatenin(b_dc,b_t,s~U~P,loc~cyt~nuc)
+    TCF(b_b)
+end molecule types
+
+begin seed species
+    Wnt(b) Wnt_tot
+    Frizzled(b,d) Friz_tot
+    Dvl(b,s~U) Dvl_tot
+    Dest_Complex(b_d,b_b,s~U) Dest_Complex_tot
+    BetaCatenin(b_dc,b_t,s~U,loc~cyt) BetaCatenin_init
+    TCF(b_b) TCF_tot
+end seed species
+
+begin observables
+    Molecules Active_Dvl Dvl(s~A)
+    Molecules Nuclear_BC BetaCatenin(loc~nuc)
+    Molecules Transcription_Active BetaCatenin(loc~nuc,b_t!1).TCF(b_b!1)
+end observables
+
+begin reaction rules
+    # Receptor
+    Wnt(b) + Frizzled(b,d) <-> Wnt(b!1).Frizzled(b!1,d) 1, 0.1
+    # Friz Activates Dvl (simplified recruitment)
+    Frizzled(b!+,d) + Dvl(b,s~U) <-> Frizzled(b!+,d!1).Dvl(b!1,s~A) k_act_dvl, 0.1
+    
+    # Inhibition of Destruction Complex
+    # Active Dvl binds Active DC (s~U) and makes it Inhibited (s~A) or segregates it.
+    Dvl(s~A) + Dest_Complex(b_d,s~U) <-> Dvl(s~A!1).Dest_Complex(b_d!1,s~A) k_inh_dc, 0.1
+    
+    # BCat Cycle
+    0 -> BetaCatenin(b_dc,b_t,s~U,loc~cyt) k_synth_bc
+    
+    # Bind to Active DC (s~U)
+    Dest_Complex(s~U,b_b) + BetaCatenin(b_dc,s~U,loc~cyt) <-> Dest_Complex(s~U,b_b!1).BetaCatenin(b_dc!1,s~U,loc~cyt) k_bind_dc_bc, k_off_dc_bc
+    
+    # Phos
+    Dest_Complex(b_b!1).BetaCatenin(b_dc!1,s~U) -> Dest_Complex(b_b!1).BetaCatenin(b_dc!1,s~P) k_phos_bc
+    
+    # Release
+    Dest_Complex(b_b!1).BetaCatenin(b_dc!1,s~P) -> Dest_Complex(b_b) + BetaCatenin(b_dc,s~P) k_rel_bc
+    
+    # Degrade
+    BetaCatenin(s~P) -> 0 k_deg_bc
+    
+    # Translocation
+    BetaCatenin(s~U,loc~cyt) <-> BetaCatenin(s~U,loc~nuc) k_imp_bc, k_exp_bc
+    
+    # Transcription
+    BetaCatenin(s~U,loc~nuc,b_t) + TCF(b_b) <-> BetaCatenin(s~U,loc~nuc,b_t!1).TCF(b_b!1) k_bind_tcf, 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>100})
+end actions
+end model

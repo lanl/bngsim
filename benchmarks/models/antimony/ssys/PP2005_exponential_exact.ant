@@ -1,0 +1,47 @@
+// Exact Exponential Recasting (1D → 1D)
+// Source: Papachristodoulou & Prajna, "Analysis of Non-polynomial Systems
+//         using the Sum of Squares Decomposition", Springer (2005), p. 2
+//
+// This paper explicitly cites Savageau & Voit (1987) as reference [14].
+//
+// Original 1st-order ODE with exponential:
+//   ẋ(t) = c·e^(-αx(t))
+//
+// ==============================================================================
+// EXACT RECASTING (dimension-preserving):
+// ==============================================================================
+// "In some cases the recasting is 'exact', in the sense that the transformed
+//  system has a polynomial vector field with the same dimension as the original
+//  system" (p. 2)
+//
+// Substitution:
+//   p(t) = c·e^(-αx(t))
+//
+// Derive dynamics for p using chain rule:
+//   dp/dt = c·(-α)·e^(-αx)·dx/dt = (-α)·(c·e^(-αx))·(c·e^(-αx))/c
+//         = (-α)·p·(p/c) = -α·p²/c
+//
+// Or if c = 1:
+//   dp/dt = -α·p²
+//
+// This is the same dimension as the original system (1D → 1D).
+//
+// Note: This is a rare case where recasting does NOT increase dimension.
+// Most recastings require auxiliary variables.
+// ==============================================================================
+
+model PP2005_exponential_exact()
+  // Variables
+  compartment cell = 1;var species x in cell
+
+  // Parameters
+  c := 1.0; alpha := 1.0
+  
+  // Original nonpolynomial ODE
+  // dx/dt = c·e^(-αx)
+  x' = c * exp(-alpha * x)
+  
+  // Initial condition
+  x = 0.0; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

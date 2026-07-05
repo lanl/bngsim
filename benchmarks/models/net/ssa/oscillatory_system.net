@@ -1,0 +1,44 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 Kd               25  # Constant
+    2 n                4  # Constant
+    3 kTranscription   10000  # Constant
+    4 kTranslation     0.1  # Constant
+    5 kExport          0.2  # Constant
+    6 kImport          0.1  # Constant
+    7 kDegRNAcyt       0.2  # Constant
+    8 kDegRNAnuc       10  # Constant
+    9 kDegProtCyt      0.1  # Constant
+   10 kDegProtNuc      8  # Constant
+   11 Km               10  # Constant
+end parameters
+begin functions
+    1 BooleanFunction() if((NucProt>=Kd),0,1)
+    2 HillFunction() (Kd^n)/((Kd^n)+(NucProt^n))
+    3 DegFunction() NucProt/(Km+NucProt)
+    4 _rateLaw1() kTranscription*BooleanFunction()
+    5 _rateLaw2() kDegProtNuc*DegFunction()
+end functions
+begin species
+    1 DNA() 2
+    2 mRNA(loc~NUCLEUS) 0
+    3 mRNA(loc~CYTOSOL) 0
+    4 Prot(loc~CYTOSOL) 0
+    5 Prot(loc~NUCLEUS) 0
+end species
+begin reactions
+    1 1 1,2 _rateLaw1 #_R1
+    2 2 3 kExport #_R2
+    3 2 0 kDegRNAnuc #_R6
+    4 3 3,4 kTranslation #_R3
+    5 3 0 kDegRNAcyt #_R5
+    6 4 5 kImport #_R4
+    7 4 0 kDegProtCyt #_R7
+    8 5 0 _rateLaw2 #_R8
+end reactions
+begin groups
+    1 NucProt              5
+    2 CytProt              4
+    3 NucRNA               2
+    4 CytRNA               3
+end groups

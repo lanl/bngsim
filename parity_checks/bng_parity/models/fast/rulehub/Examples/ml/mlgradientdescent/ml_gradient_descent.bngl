@@ -1,0 +1,103 @@
+# Gradient Descent Optimizer in BNGL
+# ====================================
+# Molecules represent position in a 2D optimization landscape.
+# The ODE dynamics ARE gradient descent with momentum.
+#
+# Minimizing the Rosenbrock function: f(x,y) = (1-x)^2 + 100*(y-x^2)^2
+# Famous "banana valley" test function for optimizers.
+#
+# Position encoded as shifted concentrations (to stay positive).
+# Velocity molecules implement momentum.
+
+begin model
+
+begin parameters
+    # Optimizer hyperparameters
+    lr          0.0001  # Learning rate (small for Rosenbrock)
+    momentum    0.9     # Momentum coefficient
+    
+    # Coordinate offset (keep concentrations positive)
+    off_x   5.0     # x = PosX - off_x
+    off_y   5.0     # y = PosY - off_y
+    
+    # Damping
+    vel_decay   0.1     # Velocity damping
+end parameters
+
+begin molecule types
+    PosX()      # x-coordinate (shifted)
+    PosY()      # y-coordinate (shifted)
+    VelX()      # x-velocity (momentum term)
+    VelY()      # y-velocity (momentum term)
+    Loss()      # Current loss value (for observing convergence)
+end molecule types
+
+begin seed species
+    # Start at (-1,-1) -> shifted to (4,4)
+    PosX()  4.0
+    PosY()  4.0
+    VelX()  5.0     # Need offset for velocity too
+    VelY()  5.0
+    Loss()  0
+end seed species
+
+begin observables
+    Molecules X_shifted  PosX()
+    Molecules Y_shifted  PosY()
+    Molecules Vx         VelX()
+    Molecules Vy         VelY()
+    Molecules LossVal    Loss()
+end observables
+
+begin functions
+    # Recover actual coordinates
+    x() = X_shifted - off_x
+    y() = Y_shifted - off_y
+    vx() = Vx - off_x      # Actual velocity
+    vy() = Vy - off_y
+    
+    # Rosenbrock function: f = (1-x)^2 + 100*(y - x^2)^2
+    rosenbrock() = (1 - x())^2 + 100*(y() - x()*x())^2
+    
+    # Gradient of Rosenbrock:
+    # df/dx = -2*(1-x) + 100*2*(y-x^2)*(-2x) = -2*(1-x) - 400*x*(y-x^2)
+    # df/dy = 100*2*(y-x^2) = 200*(y-x^2)
+    grad_x() = -2*(1 - x()) - 400*x()*(y() - x()*x())
+    grad_y() = 200*(y() - x()*x())
+    
+    # Momentum update: v_new = momentum * v_old - lr * gradient
+    target_vx() = momentum * vx() - lr * grad_x()
+    target_vy() = momentum * vy() - lr * grad_y()
+    
+    # Position update rate: dx/dt = velocity
+    # Corrective rate to drive velocity toward target
+    vx_correction() = 10 * (target_vx() - vx())
+    vy_correction() = 10 * (target_vy() - vy())
+end functions
+
+begin reaction rules
+    # === POSITION UPDATE: dx/dt = velocity ===
+    0 -> PosX()         if(vx() > 0,vx(),0)
+    PosX() -> 0         if(vx() < 0,-vx() / max(X_shifted,0.001),0)
+    
+    0 -> PosY()         if(vy() > 0,vy(),0)
+    PosY() -> 0         if(vy() < 0,-vy() / max(Y_shifted,0.001),0)
+    
+    # === VELOCITY UPDATE: momentum SGD ===
+    0 -> VelX()         if(vx_correction() > 0,vx_correction(),0)
+    VelX() -> 0         if(vx_correction() < 0,-vx_correction() / max(Vx,0.001),0)
+    
+    0 -> VelY()         if(vy_correction() > 0,vy_correction(),0)
+    VelY() -> 0         if(vy_correction() < 0,-vy_correction() / max(Vy,0.001),0)
+    
+    # === LOSS TRACKING ===
+    0 -> Loss()         rosenbrock()
+    Loss() -> 0         1.0     # Decay so it tracks current loss
+end reaction rules
+
+end model
+
+# Watch the optimizer navigate the banana valley to minimum at (1,1)
+# X_shifted should converge to 6.0 (= 1 + offset)
+# Y_shifted should converge to 6.0 (= 1 + offset)
+simulate({method=>"ode",t_end=>5000,n_steps=>300})

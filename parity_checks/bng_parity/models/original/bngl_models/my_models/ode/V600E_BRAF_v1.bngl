@@ -1,0 +1,325 @@
+# Filename: V600E_BRAF_v[versionNumber].bngl
+
+begin model
+
+# metadata
+
+#---
+# Header:
+#  Title: A model for oncogenic signaling by V600E BRAF
+#  Contributors: William S. Hlavacek, Boris N. Kholodenko, Walter Kolch, Richard G. Posner (alphabetical listing)
+#...
+
+#---
+# Cell line: (human) HeLa S3 cells (ATCC CCL-2.2)
+#...
+
+#---
+# Compartments:
+#  The model implicitly considers two compartments.
+#  cyt: the cytosol
+#  ipm: a thin layer adjacent to the inner leaflet of the plasma membrane
+#  Proteins tethered to the plasma membrane (e.g., RAF bound to RAS) interact in the "ipm" compartment.
+#...
+
+#---
+# References:
+#  Donovan S et al. (2002) Biochim Biophys Acta 1602: 23-45. [PMID: 11960693]
+#  Fujioka A et al. (2006) J Biol Chem 281: 8917-8926. [PMID: 16418172]
+#  Kulak NA et al. (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  Markevich NI et al. (2004) Syst Biol 1: 104-113. [PMID: 17052120]
+#  Stites EC et al. (2007) Science 318: 463-467. [PMID: 17947584]
+#  Tan CW et al. (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#...
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1.0 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell in culture (Tan et al., 2012).
+#   [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # L per cell
+
+# volume ratio D = Vcyt/Vipm 
+#   D is given as 250 in Table S1 in Stites et al. (2007), which references Markevich et al. (2004)
+#   as the source of this estimate.
+D 250 # dimensionless
+
+# volume of thin layer adjacent to inner leaflet of plasma membrane (Vipm)
+Vipm=Vcyt/D # = 0.0048e-12 L per cell
+
+###########################
+# abundances of molecules #
+###########################
+
+# protein copy numbers measured for HeLa S3 cells (ATCC CCL-2.2) by Kulak et al. (2014)
+#   See Supplementary Table S2 (an Excel spreadsheet).
+#   NB: measurements characterize whole cell lysate.
+BRAF_total     rint(4993*f) # molecules per cell
+RAF1_total    rint(35757*f) # molecules per cell
+MAP2K1_total rint(170516*f) # molecules per cell
+MAP2K2_total rint(325020*f) # molecules per cell
+MAPK1_total  rint(544669*f) # molecules per cell
+MAPK3_total   rint(58855*f) # molecules per cell
+HRAS_total   rint(131924*f) # molecules per cell 
+NRAS_total    rint(32806*f) # molecules per cell 
+
+# RAF1 is also known as CRAF
+CRAF_total=RAF1_total # = 35757 molecules per cell
+
+# MAP2K1 is also known as MEK1
+MEK1_total=MAP2K1_total # = 170516 molecules per cell
+
+# MAP2K2 is also known as MEK2
+MEK2_total=MAP2K2_total # = 325020 molecules per cell
+
+# MAPK1 is also known as ERK2
+ERK2_total=MAPK1_total # = 544669 molecules per cell
+
+# MAPK3 is also known as ERK1
+ERK1_total=MAPK3_total # = 58855 molecules per cell
+
+# MEK (both isoforms)
+MEK_total=MEK1_total+MEK2_total # = 495536 molecules per cell
+# ERK (both isoforms)
+ERK_total=ERK1_total+ERK2_total # = 603524 molecules per cell
+
+# Other copy number measurements of potential interest reported by Kulak et al. (2014)
+#EGFR_total    rint(92674*f) # molecules per cell
+#SHC1_total   rint(111966*f) # molecules per cell
+#GRB2_total   rint(628016*f) # molecules per cell
+#RASA1_total   rint(26455*f) # molecules per cell 
+#PTPN11_total rint(299893*f) # molecules per cell
+#SOS1_total     rint(7565*f) # molecules per cell
+#GAB1_total     rint(1531*f) # molecules per cell 
+#ARAF_total    rint(50606*f) # molecules per cell 
+
+# NB: A copy number for KRAS was not reported by Kulak et al. (2014).
+
+# To estimate the copy number of KRAS, we will use the estimate of 
+# total abundance of RAS made by Stites et al. (2007).
+# Stites et al. (2007) estimated that [RAS] = 0.4 uM; see Table S1, which references Fujioka et al. (2006).
+RAS_conc 0.4e-6 # M
+RAS_total=rint(RAS_conc*(NA*Vcyt)) # = 289063 molecules per cell 
+
+# We use [RAS]=[HRAS]+[KRAS]+[NRAS] to find the copy number of KRAS
+KRAS_total=RAS_total-(HRAS_total+NRAS_total) # = 124333 molecules per cell
+
+# levels of active RAS GEFs, GAPs and effectors in the basal steady state
+#   Estimated concentrations are taken from Table S1 in Stites et al. (2007).
+basalGEF_conc 0.2e-9 # M
+basalGAP_conc 0.06e-9 # M
+basalEFF_conc 0.4e-6 # M (this estimate is for all effectors, including BRAF and CRAF)
+
+basalGEF_total=rint(basalGEF_conc*(NA*Vcyt)) # = 144 molecules per cell
+basalGAP_total=rint(basalGAP_conc*(NA*Vcyt)) # = 43 molecules per cell
+# The formula below gives the copy number of non-BRAF/non-CRAF effectors
+basalEFF_total=rint(basalEFF_conc*(NA*Vcyt))-(BRAF_total+CRAF_total) # = 248313 molecules per cell
+
+###########################
+# parameters of rate laws #
+###########################
+
+# rate constant charaterizing the intrinsic GTPase activity of RAS
+#   This estimate is taken from Table S1 in Stites et al. (2007), which cites Donovan et al. (2002).
+# GTP hydrolysis
+khyd 3.5e-4 # [=] /s 
+
+# rate constants for binding of GDP/GTP to apo RAS and spontaneous release
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We assume that GDP and GTP concentrations are buffered (i.e., constant).
+# GDP-RAS interaction
+kaGDP 2.3e6 # /M/s 
+GDP_conc 18e-6 # M
+kaGDPxGDP=kaGDP*GDP_conc # = 41.4 /s
+kdGDP 1.1e-4 # /s 
+# GTP-RAS interaction
+kaGTP 2.2e6 # /M/s
+GTP_conc 180e-6 # M
+kaGTPxGTP=kaGTP*GTP_conc # = 396 /s
+kdGTP 2.5e-4 # /s 
+
+# NB: equilibration is slow because of small values for the rate constants khyd, kdGDP and kdGTP.
+
+# GEF parameters 
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We take the rate of GEF activity to be given by a rate law derived by Stites et al. (2007).
+kcatGDP 3.9 # /s
+kcatGTP 0.72 # /s
+KmGDP_SI_units 386e-6 # M
+KmGDP_cyt=KmGDP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGDP_ipm=KmGDP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+KmGTP_SI_units 300e-6 # M
+KmGTP_cyt=KmGTP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGTP_ipm=KmGTP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+
+# GAP parameters
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We take the rate of GAP activity to be given by the Michaelis-Menten rate law (Stites et al., 2007).
+kcatGAP 5.40 # [=]	/s	
+KmGAP_SI_units 0.23e-6 # M	
+KmGAP_cyt=KmGAP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGAP_ipm=KmGAP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+
+# effector parameters
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+kaEFF_SI_units 45e6 # [=] /M/s
+# Kd=kdEff/kaEff_SI_units=0.08e-6 M 
+kaEFF=kaEFF_SI_units/(NA*Vcyt)  # [=] /(molecule/cell)/s
+kdEFF 3.6 # [=] /s
+
+end parameters
+
+begin molecule types
+
+RAS(switch,G~0~GDP~GTP)
+basalGEF(GEF)
+basalGAP(GAP)
+basalEFF(ras)
+BRAF(RBD)
+CRAF(RBD)
+#EGF()
+#EGFR()
+#SHC1()
+#GRB2()
+#SOS1(GEF)
+#RASA1(GAP)
+
+end molecule types
+
+begin seed species
+
+RAS(switch,G~0) 0 # abundance is very low
+RAS(switch,G~GDP) RAS_total*(0.3128/0.4) # set close to steady-state value to avoid long equilibration
+RAS(switch,G~GTP) RAS_total*(0.0872/0.4) # set close to steady-state value to avoid long equilibration
+basalGEF(GEF) basalGEF_total
+basalGAP(GAP) basalGAP_total
+basalEFF(ras) basalEFF_total
+BRAF(RBD) BRAF_total
+CRAF(RBD) CRAF_total
+#EGF() EGF_total
+#EGFR() EGFR_total
+#SHC1() SHC1_total
+#GRB2() GRB2_total
+#SOS1(GEF) SOS1_total
+#RASA1(GAP) RASA1_total
+
+end seed species
+
+begin observables
+
+Molecules apoRAS RAS(G~0)
+Molecules GTP_loaded_RAS RAS(G~GTP)
+Molecules GDP_loaded_RAS RAS(G~GDP)
+Molecules RAS_bound_to_effectors RAS(switch!+)
+Molecules RAS_bound_to_BRAF RAS(switch!1).BRAF(RBD!1)
+Molecules RAS_bound_to_CRAF RAS(switch!1).CRAF(RBD!1)
+
+######################################################################
+# quantities defined below appear in functions - see functions block #
+######################################################################
+
+Molecules CatGEF basalGEF() # all basalGEF is catalytically active
+Molecules CatGAP basalGAP() # all basalGAP is catalytically active
+Molecules FreeRasGDP RAS(switch,G~GDP) # [RAS(switch,G~GDP)], concentration of free RasGDP (not bound to effectors)
+Molecules FreeRasGTP RAS(switch,G~GTP) # [RAS(switch,G~GTP)], concentration of free RasGTP (not bound to effectors)
+
+#Molecules CatSOS1 SOS1()
+#Molecules CatRASA1 RASA1()
+
+end observables
+
+begin functions
+
+# rate laws for basal GDP/GTP exchange and GAP-assisted GTP hydrolysis by GEFs and GAPs
+#   Each rate law is [substrate]*function
+#   These rate laws are taken from Stites et al. (2007).
+#   See Equations R3(A) and R5(A) on p 2 of the supporting online material.
+#   The rate law given by Equation R5(A) corresponds to the Michaelis-Menten rate law.
+
+# Rate law for GEF-assisted exchange of GDP for GTP, from Equation R3(A)
+R3f_cyt() kcatGDP*CatGEF*(1/KmGDP_cyt)/(1+(FreeRasGDP/KmGDP_cyt)+(FreeRasGTP/KmGTP_cyt))
+
+# Rate law for GEF-assisted exchange of GTP for GDP, from Equation R3(A)
+R3r_cyt() kcatGTP*CatGEF*(1/KmGTP_cyt)/(1+(FreeRasGDP/KmGDP_cyt)+(FreeRasGTP/KmGTP_cyt))
+
+# Rate law for GAP-assisated hydrolysis of GTP, from Equation R5(A)
+R5_cyt() kcatGAP*CatGAP*(1/KmGAP_cyt)/(1+(FreeRasGTP/KmGAP_cyt))
+
+# rate laws for SOS1-assisted GDP/GTP exchange and RASA1-assisted GTP hydrolysis 
+#R3f_ipm() kcatGDP*CatSOS1*(1/KmGDP_ipm)/(1+(FreeRasGDP/KmGDP_ipm)+(FreeRasGTP/KmGTP_ipm))
+#R3r_ipm() kcatGTP*CatSOS1*(1/KmGTP_ipm)/(1+(FreeRasGDP/KmGDP_ipm)+(FreeRasGTP/KmGTP_ipm))
+#R5_ipm() kcatGAP*CatRASA1*(1/KmGAP_ipm)/(1+(FreeRasGTP/KmGAP_ipm))
+
+end functions
+
+begin reaction rules
+
+# spontaneous capture/release of GDP when RAS is free
+RAS(switch,G~0)->RAS(switch,G~GDP) kaGDPxGDP
+RAS(switch,G~GDP)->RAS(switch,G~0) kdGDP
+
+# spontaneous capture/release of GTP when RAS is free
+RAS(switch,G~0)->RAS(switch,G~GTP) kaGTPxGTP
+RAS(switch,G~GTP)->RAS(switch,G~0) kdGTP
+
+# reversible binding of non-BRAF/non-CRAF effectors to GTP-loaded RAS
+RAS(switch,G~GTP)+basalEFF(ras)<->RAS(switch!1,G~GTP).basalEFF(ras!1) kaEFF,kdEFF
+
+# REPLACE THESE RULES
+RAS(switch,G~GTP)+BRAF(RBD)<->RAS(switch!1,G~GTP).BRAF(RBD!1) kaEFF,kdEFF
+RAS(switch,G~GTP)+CRAF(RBD)<->RAS(switch!1,G~GTP).CRAF(RBD!1) kaEFF,kdEFF
+
+# spontaneous GTP hydrolysis
+#   when RAS is free
+RAS(switch,G~GTP)->RAS(switch,G~GDP) khyd
+#   when RAS is bound to an effector (with fast release of effector after hydrolysis)
+RAS(switch!1,G~GTP).basalEFF(ras!1)->RAS(switch,G~GDP)+basalEFF(ras) khyd
+RAS(switch!1,G~GTP).BRAF(RBD!1)->RAS(switch,G~GDP)+BRAF(RBD) khyd
+RAS(switch!1,G~GTP).CRAF(RBD!1)->RAS(switch,G~GDP)+CRAF(RBD) khyd
+
+# GEF-assisted GDP/GTP exchange
+RAS(switch,G~GDP)->RAS(switch,G~GTP) R3f_cyt() # rate = [RAS(switch,G~GDP)]*R3f_cyt()
+RAS(switch,G~GTP)->RAS(switch,G~GDP) R3r_cyt() # rate = [RAS(switch,G~GTP)]*R3r_cyt()
+
+# The rules below could be added to account for (EGF-induced) recruitment of SOS1 to phospho-EGFR
+#RAS(switch,G~GDP)->RAS(switch,G~GTP) R3f_ipm() # rate = [RAS(switch,G~GDP)]*R3f_ipm()
+#RAS(switch,G~GTP)->RAS(switch,G~GDP) R3r_ipm() # rate = [RAS(switch,G~GTP)]*R3r_ipm()
+
+# GAP-assisted hydrolysis of GTP on RAS
+RAS(switch,G~GTP)->RAS(switch,G~GDP) R5_cyt() # rate = [RAS(switch,G~GTP)]*R5_cyt()
+
+# The rule below could be added to account for (EGF-induced) recruitment of RASA1 (p120 RasGAP) to phospho-EGFR
+#RAS(switch,G~GTP)->RAS(switch,G~GDP) R5_ipm() # rate = [RAS(switch,G~GTP)]*R5_ipm() 
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibrate (12,000 s = 200 min)
+simulate({method=>"ode",t_start=>0,t_end=>12000,n_steps=>120,print_functions=>1})
+saveConcentrations()
+
+# production simulation (continue=>1 means that t_start=>12000)
+setConcentration("basalGEF(GEF)",144*1e3) # increase GEF activity 1,000-fold
+simulate({continue=>1,method=>"ode",t_end=>24000,n_steps=>120,print_functions=>1})
+
+end actions

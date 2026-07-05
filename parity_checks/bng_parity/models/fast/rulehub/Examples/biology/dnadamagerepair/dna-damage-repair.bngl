@@ -1,0 +1,91 @@
+begin model
+begin parameters
+    # DNA damage sensing and repair pathway (ATM-CHK2-p53 axis)
+    
+    # Damage induction
+    k_damage 0.1       # DNA lesion formation (e.g. UV,ROS)
+    
+    # Sensing & Signaling
+    k_sense 1.5        # MRN complex sensing lesions
+    k_atm_act 10.0      # ATM activation by MRN/DNA complexes
+    k_chk2_phos 10.0    # Chk2 phosphorylation by active ATM
+    
+    # Effector activation
+    k_repair_rec 100.0   # Recruitment of PARP/Ligase complexes
+    k_repair_act 10.0   # Actual repair execution
+    
+    # Recovery
+    k_reset 0.05       # Phosphatase relay
+    k_turnover 0.02    # Basal protein degradation
+    
+    # Initials
+    DNA_intact 100
+    MRN_tot 50          # Sensor complex
+    ATM_tot 100         # Master kinase
+    Chk2_tot 150        # Transducer kinase
+    Repair_tot 80       # Effector machinery
+end parameters
+
+begin molecule types
+    DNA(state~intact~damaged~repaired)
+    MRN(b,r,state~U~A)
+    ATM(b,state~U~A)
+    Chk2(b,state~U~P)
+    RepairComplex(b,state~avail~engaged)
+end molecule types
+
+begin seed species
+    DNA(state~intact) DNA_intact
+    MRN(b,r,state~U) MRN_tot
+    ATM(b,state~U) ATM_tot
+    Chk2(b,state~U) Chk2_tot
+    RepairComplex(b,state~avail) Repair_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Lesion_Load     DNA(state~damaged)         # Unrepaired damage count
+    Molecules Active_Sensor   MRN(state~A)               # Detection signal
+    Molecules Kinase_Relay   ATM(state~A),Chk2(state~P) # Signaling intensity
+    Molecules Repair_In_Work RepairComplex(state~engaged) # Effector engagement
+    Molecules Final_Integrity DNA(state~repaired)        # Success metric
+end observables
+
+begin reaction rules
+    ## SENSING PHASE
+    # DNA damage occurs
+    DNA(state~intact) -> DNA(state~damaged) k_damage
+    
+    # MRN complex senses damage and becomes active
+    DNA(state~damaged) + MRN(b,state~U) <-> DNA(state~damaged!1).MRN(b!1,state~U) 1.0,0.1
+    DNA(state~damaged!1).MRN(b!1,state~U) -> DNA(state~damaged!1).MRN(b!1,state~A) k_sense  # Conformational activation
+    
+    ## SIGNALING PHASE
+    # Active MRN recruits and activates ATM
+    MRN(state~A,r) + ATM(state~U,b) <-> MRN(state~A,r!2).ATM(state~U,b!2) k_atm_act,0.1
+    MRN(state~A,r!2).ATM(state~U,b!2) -> MRN(state~A,r!2).ATM(state~A,b!2) 1.0
+    
+    # ATM phosphorylates Chk2
+    ATM(state~A) + Chk2(state~U) -> ATM(state~A) + Chk2(state~P) k_chk2_phos
+    
+    ## REPAIR PHASE
+    # Activated signaling recruits repair machinery
+    Chk2(state~P) + RepairComplex(state~avail,b) <-> Chk2(state~P!1).RepairComplex(state~avail,b!1) k_repair_rec,0.1
+    Chk2(state~P!1).RepairComplex(state~avail,b!1) -> Chk2(state~P!1).RepairComplex(state~engaged,b!1) 1.0
+    
+    # Engaged repair machinery fixes DNA
+    RepairComplex(state~engaged) + DNA(state~damaged) -> RepairComplex(state~engaged) + DNA(state~repaired) k_repair_act
+    
+    ## CLEARANCE
+    ATM(state~A) -> ATM(state~U) k_reset
+    Chk2(state~P) -> Chk2(state~U) k_reset
+    RepairComplex(state~engaged) -> RepairComplex(state~avail) k_reset
+    MRN(state~A) -> MRN(state~U) k_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>300})
+end actions
+end model
+

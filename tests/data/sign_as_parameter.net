@@ -1,0 +1,22 @@
+# Regression test: BNG2.pl accepts `sign` as a user parameter name (it
+# is not in BNG2.pl's %functions at bionetgen/bng2/Perl2/Expression.pm
+# lines 56-96), but bngsim's init_builtins() registers `sign` as an
+# ExprTk function alias for `sgn`. Pre-fix, define_variable("sign", ...)
+# would fail at registration with a confusing "duplicate name" error.
+# Post-fix, `sign` is in is_exprtk_reserved()'s mangling set, so the
+# user's parameter is registered under the mangled key `r_sign` and
+# expression rewriting handles the rest.
+#
+# Model: A --sign--> 0  (sign==1 here, so A(t) = 10*exp(-t))
+begin parameters
+    1 sign 1.0  # Constant
+end parameters
+begin species
+    1 A() 10
+end species
+begin reactions
+    1 1 0 sign #_R1
+end reactions
+begin groups
+    1 A_tot  1
+end groups

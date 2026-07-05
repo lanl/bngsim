@@ -1,0 +1,76 @@
+begin model
+#@model_id: Rosenfeld2002_NegativeAutoregulation_2D
+#@title: Negative autoregulation with explicit mRNA (Rosenfeld et al. 2002)
+#@description: Two-variable model of negative autoregulation: mRNA m and autorepressor protein x (TetR-GFP). Hill-type repression of transcription. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1016/S0022-2836(02)00994-4
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Repression threshold
+  k        1.0            # molecules (dimensionless)
+
+  # Degradation rates
+  a_p      0.6931471805599453   # 1/s (protein, = ln(2))
+  a_m      3.4657359027997265   # 1/s (mRNA, = 5*ln(2))
+
+  # Production parameters
+  b_p      1.0                  # 1/s (translation rate)
+  b_m      240.22650695910073   # molecules/s (maximal transcription rate)
+end parameters
+
+begin molecule types
+  # mRNA for autorepressed gene
+  m()
+  # Autorepressor protein (TetR-GFP)
+  x()
+end molecule types
+
+begin seed species
+  m()  1  # molecules (scaled from 0; use 1 to avoid zero)
+  x()  1  # molecules (scaled from 0; use 1 to avoid zero)
+end seed species
+
+begin observables
+  Molecules  Obs_m  m()
+  Molecules  Obs_x  x()
+end observables
+
+begin functions
+  # Transcription rate: b_m / (1 + x/k)
+  syn_m() = b_m / (1 + Obs_x / k)
+
+  # Translation rate: b_p * m
+  syn_x() = b_p * Obs_m
+end functions
+
+begin reaction rules
+  # mRNA dynamics: dm/dt = b_m/(1 + x/k) - a_m*m
+  # Transcription (repressed by x)
+  0 -> m()  syn_m()
+  # mRNA degradation
+  m() -> 0  a_m
+
+  # Protein dynamics: dx/dt = b_p*m - a_p*x
+  # Translation
+  0 -> x()  syn_x()
+  # Protein degradation
+  x() -> 0  a_p
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>6,n_steps=>400,complex=>1})
+end actions

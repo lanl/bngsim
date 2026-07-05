@@ -1,0 +1,185 @@
+# A simple model
+#
+
+begin model
+begin parameters
+
+	# simulation parameters
+
+	# fraction of a single cell to be considered in a stochastic simulation
+	#f 0.5 # [=] dimensionless, 0<f<=1
+	f 0.01 # [=] dimensionless, 0<f<=1
+
+	# physical constants
+
+	# Avogadro constant * 1.0e-9 mol/nmol
+	NA  6.02214e14 # [=] number of molecules per nmol
+
+	# amounts
+
+	# cell density
+	rho  2.0e9 # [=] number of cells per L
+	# volume of extracellular fluid around a single cell (derived)
+	V=f/rho # [=] L
+
+	# ligand concentration
+	L_conc  1.0 # [=] nM
+	# number of ligands per cell (derived)
+	L_num=L_conc*(NA*V) # [=] number of molecules per cell
+
+	# receptor copy number
+	R_num  f*1.0e5 # [=] number of molecules per cell
+
+	# binding parameters
+
+	# a free ligand reversibly binds a free receptor site
+
+	# equilibrium dissociation constant
+	#KD1 = KD1x
+	KD1  5.0 # [=] nM 
+	#KD1  5.05 # [=] nM 
+	
+	# reverse rate constant (derived)
+	#km1 = km1x
+	km1  0.1 # [=] /s
+	#km1  0.101 # [=] /s
+	
+	# forward rate constant (derived)
+	kp1=((km1/KD1)/(NA*V)) # [=] /nM/s converted to /(molecule/cell)/s
+
+	# receptor-receptor interaction
+	# dimensionless equilibrium association constant
+	#K2RT = K2RTx
+	K2RT  10.0 # [=] dimensionless
+	#K2RT  10.1 # [=] dimensionless
+	#   a value of 0.1 => weak crosslinking
+	#   a value of 1.0 => moderate crosslinking
+	#   a value of 10.0 => strong crosslinking
+	
+	# reverse rate constant (derived)
+	#km2 = km2x
+	km2  0.01 # [=] /s
+	#km2  0.0101 # [=] /s
+	
+	# forward rate constant (derived)
+	kp2=K2RT*km2/R_num # [=] /(molecule/cell)/s
+	
+	kp3=kp2*0.2
+
+	# phosphorylation rate constant
+	#kphos = kphosx
+	kphos  0.2 # [=] /s
+	#kphos  0.202 # [=] /s
+
+	# dephosphorylation rate constant
+	#kdephos = kdephosx
+	kdephos  0.1 # [=] /s
+	#kdephos  0.101 # [=] /s
+	
+	LigandState = 0
+
+end parameters
+
+
+begin molecule types
+	# ligand
+	L(r) 
+
+	# receptor
+	R(l,r,Y~0~P) 
+end molecule types
+
+
+begin seed species
+	L(r)  L_num
+	R(l,r,Y~0)  R_num
+end  seed species
+
+
+begin observables
+
+	# total number of ligands
+	#Molecules Ltot L()
+
+	# number of free ligands
+	Species freeL L(r) 
+	
+	# total number of receptors
+	#Molecules Rtot R()
+
+	# number of bound ligands = Ltot - freeL
+
+	# number of free receptors
+	#Species freeR R(l,r) 
+
+	# number of monomeric (unclustered) receptors
+	Species Rmon R==1 
+
+	# number of receptor dimers
+	Species Rdim R==2
+
+	# number of ligand-induced receptor aggregates
+	#   = number of receptor clusters
+	#   = number of complexes containing more than 1 receptor 
+	#Species n_agg_gt1 R>1
+
+	# number of ligand-receptor bonds
+	#   = number of ligand-occupied receptor sites
+	#   = number of receptor-occupied ligand sites
+	Molecules RLbonds L(r!1).R(l!1) # = R(l!+) = L(r!+)
+
+	# number of receptors in clusters = Rtot - R1
+
+	# average size of a receptor cluster (of size >1) 
+	#   = (# of receptors in clusters)/n_agg_gt1
+	#   = (Rtot - R1)/n_agg_gt1
+
+	# number of phosphorylated receptors
+	Molecules pR R(Y~P)
+
+end observables
+
+
+begin functions
+	lBinder() = kp1*LigandState
+end functions
+
+
+begin reaction rules
+
+	# ligand capture
+	#   a free ligand binds a receptor with a free site
+	L(r)+R(l)<->L(r!1).R(l!1) lBinder(),km1
+
+	# receptor dimerization
+	R(l!+,r)+R(l!+,r)->R(l!+,r!1).R(l!+,r!1) kp2
+
+	# receptor-receptor bond dissociation
+	R(r!1).R(r!1)->R(r)+R(r) km2
+	
+	# receptor dimerization (no ligand)
+	R(l,r) + R(l,r) -> R(l,r!1).R(l,r!1) kp3
+
+	# dimer-mediated receptor phosphorylation
+	R(r!+,Y~0)->R(r!+,Y~P) kphos
+
+	# dephosphorylation
+	R(Y~P)->R(Y~0) kdephos
+
+end reaction rules
+
+
+end model
+
+
+# actions
+
+#generate_network({overwrite=>1});
+#simulate_ode({t_start=>0,t_end=>60,n_steps=>60,seed=>1});
+#generate_network({overwrite=>1,max_iter=>1});
+#simulate_ssa({t_start=>0,t_end=>1200,n_steps=>120});
+#simulate_nf({t_start=>0,t_end=>1200,n_steps=>120,complex=>1});
+#writeXML({});
+
+simulate({method=>"nf",t_start=>0,t_end=>10,n_steps=>10});
+

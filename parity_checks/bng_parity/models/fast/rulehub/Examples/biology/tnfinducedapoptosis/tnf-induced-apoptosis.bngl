@@ -1,0 +1,50 @@
+begin model
+begin parameters
+    k_bind 0.02
+    k_unbind 0.002
+    k_activate 0.35
+    k_bid 0.3
+    k_casp3 0.32
+    k_reset 0.05
+end parameters
+
+begin molecule types
+    TNF(r)
+    TNFR(l,state~inactive~active)
+    Caspase8(state~inactive~active)
+    BID(state~cyto~truncated)
+    Caspase3(state~inactive~active)
+end molecule types
+
+begin seed species
+    TNF(r) 60
+    TNFR(l,state~inactive) 40
+    Caspase8(state~inactive) 50
+    BID(state~cyto) 70
+    Caspase3(state~inactive) 80
+end seed species
+
+begin reaction rules
+    TNF(r) + TNFR(l,state~inactive) <-> TNF(r!1).TNFR(l!1,state~inactive) k_bind,k_unbind
+    TNF(r!1).TNFR(l!1,state~inactive) -> TNF(r!1).TNFR(l!1,state~active) k_activate
+    TNFR(state~active) + Caspase8(state~inactive) -> TNFR(state~active) + Caspase8(state~active) k_activate
+    Caspase8(state~active) + BID(state~cyto) -> Caspase8(state~active) + BID(state~truncated) k_bid
+    BID(state~truncated) + Caspase3(state~inactive) -> BID(state~truncated) + Caspase3(state~active) k_casp3
+    Caspase3(state~active) -> Caspase3(state~inactive) k_reset
+    Caspase8(state~active) -> Caspase8(state~inactive) k_reset
+    BID(state~truncated) -> BID(state~cyto) k_reset
+    TNFR(l,state~active) -> TNFR(l,state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_TNFR TNFR(state~active)
+    Molecules Active_Caspase8 Caspase8(state~active)
+    Molecules Truncated_BID BID(state~truncated)
+    Molecules Active_Caspase3 Caspase3(state~active)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>200})
+end actions
+end model

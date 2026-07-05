@@ -1,0 +1,40 @@
+# Pre-equilibration / steady-state output-sensitivity test model (GH #210).
+#
+# Production / degradation with a condition switch (extra_deg) that turns on an
+# extra degradation channel in the measurement phase. Mirrors ADR-0052's
+# A_ss = k_prod/k_deg pattern: the measurement-phase initial value is *entirely*
+# the equilibration steady state, so a correct measurement-phase dA/dθ must seed
+# from the phase-1 steady-state sensitivity (carry_sensitivities=True).
+#
+#   $S  : clamped source, held at 1  (synthesis flux into A = k_prod*[S] = k_prod)
+#   A   : measured species
+#   Ad  : degraded sink (an ordinary species we do not measure)
+#
+# Reactions:
+#   R1: S  -> A    rate k_prod      (synthesis; S is clamped so it persists)
+#   R2: A  -> Ad   rate k_deg       (baseline degradation)
+#   R3: A  -> Ad   rate extra_deg   (condition: 0 in phase 1, >0 in phase 2)
+#
+# dA/dt = k_prod - (k_deg + extra_deg)*A.
+# Phase-1 steady state (extra_deg = 0): A_ss = k_prod/k_deg = 10.
+#   dA_ss/dk_prod = 1/k_deg            = 2.0
+#   dA_ss/dk_deg  = -k_prod/k_deg^2    = -20.0
+# Phase 2 (extra_deg = 2): A relaxes from A_ss toward k_prod/(k_deg+extra_deg).
+begin parameters
+    1 k_prod    5.0  # Constant
+    2 k_deg     0.5  # Constant
+    3 extra_deg 0.0  # Constant (condition switch)
+end parameters
+begin species
+    1 $S() 1.0
+    2 A()  0.0
+    3 Ad() 0.0
+end species
+begin reactions
+    1 1 2 k_prod      #_synthesis
+    2 2 3 k_deg       #_degrade
+    3 2 3 extra_deg   #_extra_degrade
+end reactions
+begin groups
+    1 A_tot  2
+end groups

@@ -1,0 +1,202 @@
+# https://github.com/RuleWorld/RuleHub/tree/master/Contributed/BNGL_book
+
+####################################################################
+#                                                                  #
+#        1         2         3         4         5         6       #
+#2345678901234567890123456789012345678901234567890123456789012345678
+
+begin model
+
+# A model for receptor tyrosine kinase (RTK) signaling
+# The receptor is phosphorylated at two Y sites in a basal steady state 
+#   due to a low level of receptor dimerization and dimer-dependent
+#   autophosphorylation in the absence of ligand and also due to non-specific
+#   kinase activity. Background phosphatase activity is high. An adaptor
+#   associates with the pY sites in the receptor. 
+#   Conservation of mass is assumed.
+#   Two compartments are implicit: the plasma membrane, where the receptor is
+#   found, and the cytosol. The adaptor, phosphatase, and a phosphatase inhibitor
+#   are considered to be able to freely diffuse in the cytosol.
+
+# An equilibration simulation (started at an arbitrary initial condition) 
+#   is performed to find the basal steady state in the absence of phosphatase
+#   inhibition.
+# The effect of adding a phosphatase inhibitor is then simulated.
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214076e23 # [=] molecules per mol
+
+# cytosolic volume
+Vcyt 1e-12 # L per cell
+
+# extracellular fluid volume 
+Vecf 1e-9 # L per cell
+
+# copy numbers of receptor, adaptor, phosphatase, and phosphatase inhibitor
+Rtot 1.0e4 # [=] number per cell
+Atot 1.0e5 # [=] number per cell
+Ptot 1.0e6 # [=] number per cell
+agonisttot 1.0e9 # [=] number per cell
+
+# equilibrium association constant for receptor dimerization
+#   multiplied by receptor level (expressed in consistent units)
+KdimRtot 0.02 # [=] dimensionless
+
+# reverse rate constant for receptor dimerization
+kr_dim 1.0 # [=] /s
+
+# forward rate constant for receptor dimerization (derived)
+kf_dim=kr_dim*KdimRtot/Rtot # [=] /(molecule/cell)/s
+
+# pseudo first-order rate constants for phosphorylation 
+#   of receptor Y sites 1 and 2
+#   Autophosphorylation is assumed.
+p1_auto 1.0 # [=] /s
+p2_auto 0.5 # [=] /s
+
+# pseudo first-order rate constants for phosphorylation
+#   of receptor Y sites 1 and 2
+#   It is assumed that phosphorylation is mediated by non-specific kinases.
+p1_nonsp 0.05 # [=] /s
+p2_nonsp 0.05 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 1
+kf_a1 5.0e5/(NA*Vcyt) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a1 0.05 # [=] /s
+
+# forward and reverse rate constants for adaptor binding 
+#   to receptor pY site 2
+kf_a2 2.0e6/(NA*Vcyt) # [=] /(molecule/cell)/s (1e6 /M/s)
+kr_a2 0.2 # [=] /s
+
+# parameters for dephosphorylation of receptor pY site 1
+#   by phosphatase via a Michaelis-Menten mechanism
+kp1 1.0e6/(NA*Vcyt) # [=] /(molecule/cell)/s (1e6 /M/s)
+km1 0.1 # /s
+kcat1 0.2 # /s
+
+# parameters for dephosphorylation of receptor pY site 2
+#   by phosphatase via a Michaelis-Menten mechanism
+kp2 1.0e6/(NA*Vcyt) # [=] /(molecule/cell)/s (1e6 /M/s)
+km2 0.1 # [=] /s
+kcat2 0.05 # [=] /s
+
+# non-specific phosphatase activity
+VM_div_KM_nonspecific 0.01 # /s
+
+# forward and reverse rate constants for agonist binding to phosphatase
+kf_agonist 1.0e5/(NA*Vecf) # [=] /(molecule/cell)/s (1e7 /M/s)
+kr_agonist 0.1 # [=] /s
+
+# allosteric activation factor
+phi 10 # dimensionless
+
+end parameters
+
+begin molecule types
+
+# receptor tyrosine kinase
+EGFR(II,Y1068~0~P,Y1148~0~P)
+
+# adaptors
+GRB2(SH2)
+SHC1(PTB)
+
+# protein tyrosine phosphatase
+PTPRJ(ecto,cat)
+
+# agonist peptide
+agonist(pep19)
+
+end molecule types
+
+begin seed species
+
+# All receptors are initially monomeric and unphosphorylated.
+EGFR(II,Y1068~0,Y1148~0) Rtot
+
+# All adaptors are initially free.
+GRB2(SH2) Atot
+SHC1(PTB) Atot
+
+# All phosphatases are initially free.
+PTPRJ(ecto,cat) Ptot
+
+# The amount of free agonist present initially is determined by the
+#   parameter agonisttot, which is adjusted in the actions block.
+agonist(pep19) agonisttot
+
+end seed species
+
+begin observables
+
+# Number of receptors phosphorylated at Y1068
+Molecules pY1068 EGFR(Y1068~P!?)
+
+# Number of receptors phosphorylated at Y1148
+Molecules pY1148 EGFR(Y1148~P!?)
+
+Molecules agonist_free_PTPRJ PTPRJ(ecto)
+Molecules agonist_bound_PTPRJ PTPRJ(ecto!+)
+
+end observables
+
+begin reaction rules
+
+# spontaneous receptor dimerization
+EGFR(II)+EGFR(II)<->EGFR(II!1).EGFR(II!1) kf_dim,kr_dim
+
+# dimer-dependent receptor autophosphorylation
+EGFR(II!+,Y1068~0)->EGFR(II!+,Y1068~P) p1_auto
+EGFR(II!+,Y1148~0)->EGFR(II!+,Y1148~P) p2_auto
+
+# non-specific dimer-independent receptor phosphorylation
+EGFR(Y1068~0)->EGFR(Y1068~P) p1_nonsp
+EGFR(Y1148~0)->EGFR(Y1148~P) p2_nonsp
+
+# reversible, phosphorylation-dependent recruitment of adaptor 
+#   to phosphorylated receptor sites
+GRB2(SH2)+EGFR(Y1068~P)<->GRB2(SH2!1).EGFR(Y1068~P!1) kf_a1,kr_a1
+SHC1(PTB)+EGFR(Y1148~P)<->SHC1(PTB!1).EGFR(Y1148~P!1) kf_a2,kr_a2
+
+# non-specific phosphatase activity
+EGFR(Y1068~P)->EGFR(Y1068~0) VM_div_KM_nonspecific
+EGFR(Y1148~P)->EGFR(Y1148~0) VM_div_KM_nonspecific
+
+# constitutive PTPRJ-specific phosphatase activity affecting pY1068 in the receptor
+#   The phosphatase is assumed to act as a Michaelis-Menten enzyme.
+PTPRJ(cat)+EGFR(Y1068~P)<->PTPRJ(cat!1).EGFR(Y1068~P!1) kp1,km1
+PTPRJ(ecto,cat!1).EGFR(Y1068~P!1)->PTPRJ(ecto,cat)+EGFR(Y1068~0) kcat1
+PTPRJ(ecto!+,cat!1).EGFR(Y1068~P!1)->PTPRJ(ecto!+,cat)+EGFR(Y1068~0) phi*kcat1
+
+# constitutive PTPRJ-specific phosphatase activity affecting pY1148 in the receptor
+#   The phosphatase is assumed to act as a Michaelis-Menten enzyme.
+PTPRJ(cat)+EGFR(Y1148~P)<->PTPRJ(cat!1).EGFR(Y1148~P!1) kp2,km2
+PTPRJ(ecto,cat!1).EGFR(Y1148~P!1)->PTPRJ(ecto,cat)+EGFR(Y1148~0) kcat2
+PTPRJ(ecto!+,cat!1).EGFR(Y1148~P!1)->PTPRJ(ecto!+,cat)+EGFR(Y1148~0) phi*kcat2
+
+# activation of PTPRJ phosphatase activity
+#   The agonist reversibly binds the phosphatase's ectodomain
+agonist(pep19)+PTPRJ(ecto)<->agonist(pep19!1).PTPRJ(ecto!1) kf_agonist,kr_agonist
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibrate (to find basal steady state)
+setConcentration("agonist(pep19)",0)
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+
+# simulate effect of phosphatase inhibition
+setConcentration("agonist(pep19)","agonisttot")
+simulate({method=>"ode",t_start=>100,t_end=>200,n_steps=>100,continue=>1})
+
+end actions
+# EOF

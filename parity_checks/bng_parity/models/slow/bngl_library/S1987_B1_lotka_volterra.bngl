@@ -1,0 +1,68 @@
+begin model
+#@model_id: S1987_B1_lotka_volterra
+#@title: Lotka-Volterra predator-prey
+#@description: Classic Lotka-Volterra equations dZ1/dt = 2*(Z1 - Z1*Z2), dZ2/dt = -(Z2 - Z1*Z2). From Savageau & Voit (1987) Problem B1. Uses pure mass-action rules for SSA efficiency.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+#@note: |
+#  Stochastic LV is known to exhibit population drift in the conserved quantity.
+#  Scale S=500 balances SSA noise suppression vs runtime.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+  S        500            # dimensionless; scale factor
+
+  a        2.0            # 1/s; prey growth rate
+  b_s      2.0/S          # 1/(molecules*s); scaled predation rate
+  c_s      1.0/S          # 1/(molecules*s); scaled predator growth rate
+  d        1.0            # 1/s; predator death rate
+end parameters
+
+begin molecule types
+  Z1()
+  Z2()
+end molecule types
+
+begin seed species
+  Z1()  500   # molecules (Z1(0)=1 scaled x500)
+  Z2()  1500  # molecules (Z2(0)=3 scaled x500)
+end seed species
+
+begin observables
+  Molecules  Obs_Z1  Z1()
+  Molecules  Obs_Z2  Z2()
+end observables
+
+begin reaction rules
+  # Prey self-replication (propensity = a * Z1)
+  Z1() -> Z1() + Z1()  a
+
+  # Predation: prey consumed by encounter with predator (propensity = b_s * Z1 * Z2)
+  Z1() + Z2() -> Z2()  b_s
+
+  # Predator growth from prey encounter (propensity = c_s * Z1 * Z2)
+  Z1() + Z2() -> Z1() + Z2() + Z2()  c_s
+
+  # Predator death (propensity = d * Z2)
+  Z2() -> 0  d
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

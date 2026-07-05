@@ -1,0 +1,24 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 kf     0.3  # Constant
+    2 kr     0.05  # Constant
+    3 Km     50  # Constant
+    4 scale  2.0  # Constant
+    5 A0     200  # Constant
+end parameters
+begin functions
+    1 satB() Btot/(Km+Btot)
+    2 ratio() (scale*Btot)/(Atot+1)
+end functions
+begin species
+    1 A() A0
+    2 B() 0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 2 1 kr #_reverse__R1
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+end groups

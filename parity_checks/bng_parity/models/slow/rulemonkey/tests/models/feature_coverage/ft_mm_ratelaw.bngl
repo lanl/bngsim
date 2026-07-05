@@ -1,0 +1,51 @@
+# Feature: Michaelis-Menten rate law (MM(kcat, Km))
+# Tests:  rule rate `MM(kcat, Km)` is parsed and applied via the QSS
+#         formula
+#             sFree = 0.5 * ((S - Km - E) + sqrt((S-Km-E)^2 + 4*Km*S))
+#             a     = kcat * sFree * E / (Km + sFree)
+#         where S = substrate (reactant 0), E = enzyme (reactant 1).
+#         Mirrors NFsim's MMRxnClass::update_a (reaction.cpp:172).
+#         Pre-2026-04-29, RM parsed the type but the engine never read
+#         mm_kcat / mm_Km, so propensity was 0 — the rule never fired.
+# Tier:   base
+# Expected: at saturation (S0 >> Km), conversion runs at kcat * E ≈ 5/s
+#         until S depletes; with S0=100, E0=5, kcat=1.0, Km=10, P_n
+#         crosses ~50 around t≈10 and approaches 100 by t≈25.
+# invariant: conserved Total_S = 100
+
+begin model
+begin parameters
+    E0    5
+    S0    100
+    kcat  1.0
+    Km    10.0
+end parameters
+
+begin molecule types
+    E()
+    S()
+    P()
+end molecule types
+
+begin seed species
+    E()  E0
+    S()  S0
+    P()  0
+end seed species
+
+begin observables
+    Molecules  S_n      S()
+    Molecules  P_n      P()
+    Molecules  E_n      E()
+    Molecules  Total_S  S(), P()
+end observables
+
+begin reaction rules
+    # Substrate listed FIRST, enzyme SECOND — NFsim's MM reactant order.
+    S() + E() -> P() + E()   MM(kcat, Km)
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

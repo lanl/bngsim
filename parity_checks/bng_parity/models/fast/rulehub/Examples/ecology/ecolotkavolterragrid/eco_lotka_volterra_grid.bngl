@@ -1,0 +1,62 @@
+# Model: eco_lotka_volterra_grid.bngl
+# Description: Classic Lotka-Volterra Predator-Prey dynamics.
+#              Prey grows exponentially, Predator eats Prey, Predator dies.
+#              Implemented on a 2-compartment grid to show migration effects.
+
+begin model
+
+begin parameters
+    # LV Parameters
+    k_grow 1.0
+    k_eat  0.1
+    k_die  0.5
+    
+    k_mig  0.1
+end parameters
+
+begin molecule types
+    Prey()
+    Pred()
+end molecule types
+
+begin compartments
+    Patch1 3 1.0
+    Patch2 3 1.0
+    # Connected linearly
+end compartments
+
+begin seed species
+    Prey()@Patch1 50
+    Pred()@Patch1 10
+    Prey()@Patch2 20
+    Pred()@Patch2 5
+end seed species
+
+begin observables
+    Molecules Prey1 Prey()@Patch1
+    Molecules Pred1 Pred()@Patch1
+    Molecules Prey2 Prey()@Patch2
+    Molecules Pred2 Pred()@Patch2
+end observables
+
+begin reaction rules
+    # Local Dynamics (Same in all patches)
+    # Prey Growth
+    Prey() -> Prey() + Prey() k_grow
+    
+    # Predation
+    Pred() + Prey() -> Pred() + Pred() k_eat
+    
+    # Predator Death
+    Pred() -> 0 k_die
+    
+    # Migration
+    Prey()@Patch1 <-> Prey()@Patch2 k_mig, k_mig
+    Pred()@Patch1 <-> Pred()@Patch2 k_mig, k_mig
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

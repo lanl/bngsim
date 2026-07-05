@@ -1,0 +1,37 @@
+# Expression output-sensitivity fixture (GH #198): unsupported constructs.
+#
+# Each global function exercises a construct whose output sensitivity must fail
+# loudly (#198): if(), comparison, logical, abs, min/max, floor/ceil,
+# round/rint. ``good()`` is a supported control, and ``trans()`` references an
+# unsupported function so it is transitively unsupported. The VALUE codegen
+# still compiles all of them (ternary / fabs / fmin / floor / round / >, etc.),
+# so the .so builds; only the derivative is rejected.
+begin parameters
+    1 k1  0.30
+    2 k2  0.15
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+    3 C() 0
+end species
+begin reactions
+    1 1 2 k1 #A_to_B
+    2 2 3 k2 #B_to_C
+end reactions
+begin groups
+    1 A_obs 1
+    2 BC2   2,2*3
+end groups
+begin functions
+    1 good() k1*A_obs
+    2 if_fn() if(A_obs>1,A_obs,0)
+    3 cmp_fn() A_obs*(A_obs>1)
+    4 abs_fn() abs(A_obs-5)
+    5 min_fn() min(A_obs,5)
+    6 max_fn() max(A_obs,5)
+    7 floor_fn() floor(A_obs)
+    8 ceil_fn() ceil(A_obs)
+    9 rint_fn() rint(A_obs)
+    10 trans() good()+abs_fn()
+end functions

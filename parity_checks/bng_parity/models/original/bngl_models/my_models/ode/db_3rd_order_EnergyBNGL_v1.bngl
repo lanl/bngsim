@@ -1,0 +1,88 @@
+begin model
+begin parameters
+NA 6.02214076e23 # /mol
+V 1e-12 # L
+Ainit 1e5 # molec
+fracA0 0.5 # dimensionless
+Binit 5e4 # molec
+# parameters for cBNGL version of model
+# NB: kf_bind1=2*kf_bind
+kf_bind1 2e14/(NA^2) # /M^2/s converted to /(molecule/L)^2/s
+kr_bind1 0.01 # /s
+kf_conf1 0.2 # /s
+kr_conf1 0.05 # /s
+kf_conf2 0.05 # /s
+kr_conf2 0.05 # /s
+kr_bind2 0.01 # /s
+# impose detailed balance
+kf_bind2=kr_bind2*(kf_bind1/kr_bind1)*(kf_conf1/kr_conf1)/(kf_conf2/kr_conf2)
+# parameters for eBNGL version of model
+kf_bind 1e14/(NA^2) # /M^2/s converted to /(molecule/L)^2/s
+kr_bind 0.01 # /s
+K_bind=kf_bind/kr_bind # /(molecule/L)^2
+kf_conf 0.2 # /s
+kr_conf 0.05 # /s 
+K_conf=kf_conf/kr_conf # dimensionless
+phi 1 # dimensionless
+E0_bind=-(1-phi)*ln(kf_bind)-phi*ln(kr_bind) 
+E0_conf=-(1-phi)*ln(kf_conf)-phi*ln(kr_conf) 
+end parameters
+begin compartments
+BatchReactor 3 V
+end compartments
+begin molecule types
+A0() # X(a,a,c~0)
+A1() # X(a,a,c~1)
+B() # Y(b)
+C() # X(a!1,a!2,c~0).Y(b!1).Y(b!2)
+D() # X(a!1,a!2,c~1).Y(b!1).Y(b!2)
+X(a,a,c~0~1)
+Y(b)
+end molecule types
+begin seed species
+A0()@BatchReactor fracA0*Ainit
+A1()@BatchReactor (1-fracA0)*Ainit
+B()@BatchReactor Binit
+X(a,a,c~0)@BatchReactor fracA0*Ainit
+X(a,a,c~1)@BatchReactor (1-fracA0)*Ainit
+Y(b)@BatchReactor Binit
+end seed species
+begin observables
+Species nA0 A0()
+Species nA1 A1()
+Species nB B()
+Species nC C()
+Species nD D()
+Species nA0_energy X(a,a,c~0) 
+Species nA1_energy X(a,a,c~1)
+Species nB_energy Y(b)
+Species nC_energy X(a!1,a!2,c~0).Y(b!1).Y(b!2)
+Species nD_energy X(a!1,a!2,c~1).Y(b!1).Y(b!2)
+end observables
+begin functions
+# none
+end functions
+begin energy patterns
+X(a!1,a!2,c~0).Y(b!1).Y(b!2) -ln(K_bind)
+X(a!1,a!2,c~1).Y(b!1).Y(b!2) -ln(K_bind)-ln(K_conf)
+end energy patterns
+begin reaction rules
+# cBNGL version of model
+A0()<->A1() kf_conf2,kr_conf2
+A0()+B()+B()<->C() kf_bind1,kr_bind1 # BNG adds a factor of 1/2 (because of symmetry)
+C()<->D() kf_conf1,kr_conf1
+D()<->A1()+B()+B() kr_bind2,kf_bind2 # BNG adds a factor of 1/2 (because of symmetry)
+# eBNGL version of model
+# NB: BioNetGen adds a factor of (1/2)*2.
+# The (1/2) part is because of symmetry X+Y+Y->
+# The 2 part is because there are 2 ways of adding 
+# 2 copies of Y to X to form XYY.
+X(a,a)+Y(b)+Y(b)<->X(a!1,a!2).Y(b!1).Y(b!2) Arrhenius(phi,E0_bind)
+X(c~0)<->X(c~1) Arrhenius(phi,E0_conf)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>40,n_steps=>200,\
+print_functions=>1})
+end actions

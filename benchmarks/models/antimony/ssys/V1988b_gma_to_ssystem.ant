@@ -1,0 +1,46 @@
+// =============================================================================
+// Source: Voit (1988) "New Nonlinear Methodologies for Modeling Molecular
+//         and Cellular Systems"
+//         Proc. IFAC Modelling and Control in Biomedical Systems, Venice, Italy
+// Example: GMA to S-system conversion via product rule (page 223)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+//
+// Original GMA (Generalized Mass Action) system:
+//   dX1/dt = γ1*X1*X2 - γ2*X1^2*X3
+//   dX2/dt = X1 - X2
+//
+// This is a Mass Action system (sum of power-law terms).
+// 
+// Recast S-system using product rule:
+//   Replace X1 with product X3*X4 where:
+//     dX3/dt = [γ1*X1*X2 - γ2*X1^2*X3] * X4^(-1)
+//     dX4/dt = [γ3*X1*X2^2 - γ4*X1^(-1)*X3^(-1)] * X4^(-1)
+//
+//   After eliminating X1, the S-system in (X2, X3, X4) is:
+//     dX2/dt = X3*X4 - X2
+//     dX3/dt = γ1*X2*X3 - γ2*X2^(-1)*X3^2*X4
+//     dX4/dt = γ3*X1^2*X4 - γ4*X2^(-1)*X3^(-1)
+//
+// This demonstrates the product rule for reducing sums to differences.
+//
+// NOTE: Using simplified original form for simulation.
+// =============================================================================
+
+model V1988b_gma_to_ssystem()
+    // Parameters
+    gamma1 = 1.0
+    gamma2 = 0.5
+    
+    // Original GMA system (sum of power-law terms)
+    X1' = gamma1*X1*X2 - gamma2*X1^2*X3
+    X2' = X1 - X2
+    X3' = 0  // X3 is constant auxiliary (for simplicity)
+    
+    // Initial conditions
+    X1 = 1.0
+    X2 = 1.0
+    X3 = 1.0
+end
+// @SIM T_START=0 T_END=6 N_STEPS=300 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

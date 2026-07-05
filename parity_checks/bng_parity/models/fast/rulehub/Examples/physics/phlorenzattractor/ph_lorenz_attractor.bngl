@@ -1,0 +1,90 @@
+# Lorenz Attractor in BNGL
+# =========================
+# The classic chaotic system encoded as molecular concentrations.
+# X,Y,Z molecules are just state variables.
+# The ODE system IS the Lorenz equations — no chemistry at all.
+#
+# dx/dt = sigma*(y - x)
+# dy/dt = x*(rho - z) - y
+# dz/dt = x*y - beta*z
+#
+# Trick: Since concentrations can't go negative,we use pairs:
+# Xp/Xn = positive/negative part of x. Actual x = Xp - Xn
+# This lets us encode arbitrary ODEs in BNGL's non-negative framework.
+
+begin model
+
+begin parameters
+    # Lorenz parameters (classic chaotic regime)
+    sigma   10.0
+    rho     28.0
+    beta    2.6667  # 8/3
+    
+    # Numerical trick: offset to keep concentrations positive
+    # We define X_shifted = X + offset,etc.
+    offset  50.0
+end parameters
+
+begin molecule types
+    # State variables (concentrations = Lorenz coordinates + offset)
+    LX()    # X coordinate (stored as X + offset to stay positive)
+    LY()    # Y coordinate  
+    LZ()    # Z coordinate
+end molecule types
+
+begin seed species
+    # Initial conditions: (1,1,1) shifted by offset
+    LX()  51.0     # x0 = 1 -> stored as 51
+    LY()  51.0     # y0 = 1
+    LZ()  51.0     # z0 = 1
+end seed species
+
+begin observables
+    Molecules X_raw  LX()
+    Molecules Y_raw  LY()
+    Molecules Z_raw  LZ()
+end observables
+
+begin functions
+    # Recover actual Lorenz coordinates from shifted concentrations
+    x() = X_raw - offset
+    y() = Y_raw - offset  
+    z() = Z_raw - offset
+    
+    # Lorenz equations as production/decay rates
+    # dx/dt = sigma*(y - x)
+    # Split into positive and negative parts:
+    dxdt_pos() = if(sigma*(y() - x()) > 0,sigma*(y() - x()),0)
+    dxdt_neg() = if(sigma*(y() - x()) < 0,-sigma*(y() - x()),0)
+    
+    # dy/dt = x*(rho - z) - y
+    dydt_pos() = if(x()*(rho - z()) - y() > 0,x()*(rho - z()) - y(),0)
+    dydt_neg() = if(x()*(rho - z()) - y() < 0,-(x()*(rho - z()) - y()),0)
+    
+    # dz/dt = x*y - beta*z
+    dzdt_pos() = if(x()*y() - beta*z() > 0,x()*y() - beta*z(),0)
+    dzdt_neg() = if(x()*y() - beta*z() < 0,-(x()*y() - beta*z()),0)
+end functions
+
+begin reaction rules
+    # The "reactions" ARE the Lorenz equations
+    # Production = positive part of derivative
+    # Degradation = negative part of derivative
+    
+    # dX/dt = sigma*(Y - X)
+    0 -> LX()      dxdt_pos()
+    LX() -> 0      dxdt_neg() / max(X_raw,0.001)  # per-capita rate
+    
+    # dY/dt = X*(rho - Z) - Y
+    0 -> LY()      dydt_pos()
+    LY() -> 0      dydt_neg() / max(Y_raw,0.001)
+    
+    # dZ/dt = X*Y - beta*Z
+    0 -> LZ()      dzdt_pos()
+    LZ() -> 0      dzdt_neg() / max(Z_raw,0.001)
+end reaction rules
+
+end model
+
+# Simulate the butterfly — X_raw and Y_raw trace the attractor
+simulate({method=>"ode",t_end=>50,n_steps=>5000})

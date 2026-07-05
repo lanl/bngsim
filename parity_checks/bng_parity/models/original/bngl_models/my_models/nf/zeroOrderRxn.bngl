@@ -1,0 +1,22 @@
+begin model
+begin parameters
+  beta 1.0
+  delta 0.01  
+end parameters
+begin molecule types
+  A()  
+end molecule types
+begin seed species
+  A() 0  
+end seed species
+begin reaction rules
+  0->A() beta
+  A()->0 delta
+end reaction rules
+begin observables
+  Molecules A A()
+end observables
+end model
+begin actions
+  simulate({method=>"nf",t_end=>24*60*6,n_steps=>1000});
+end actions

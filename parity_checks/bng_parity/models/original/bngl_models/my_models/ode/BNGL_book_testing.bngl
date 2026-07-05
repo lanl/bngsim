@@ -1,0 +1,28 @@
+begin model
+
+begin seed species
+A 100
+B 100
+C 0
+end seed species
+
+begin observables
+
+Molecules Ctot C
+
+end observables
+
+begin reaction rules
+
+Linelabel: A+B->C 10
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100})
+
+end actions

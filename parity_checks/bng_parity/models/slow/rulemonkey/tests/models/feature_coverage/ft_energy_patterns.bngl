@@ -1,0 +1,49 @@
+# Feature: energy patterns block (Boltzmann-weighted rates)
+# Tests: energy-based simulation with pattern-to-energy mapping
+# Tier: base
+# Expected: equilibrium populations follow Boltzmann distribution
+# Note: simpler than isingspin_localfcn — just 4 molecules in a linear chain
+
+begin model
+setOption("SpeciesLabel","HNauty")
+begin parameters
+    Gf_active    0.5   # energy cost of active state
+    Gf_mismatch  0.8   # energy cost of adjacent mismatch
+    Eact         1.0   # baseline activation energy
+    phi          0.5   # distribution parameter
+end parameters
+
+begin molecule types
+    M(l,r,st~off~on)
+end molecule types
+
+begin seed species
+    M(l,r!1,st~off).M(l!1,r!2,st~off).M(l!2,r!3,st~off).M(l!3,r,st~off)  1
+end seed species
+
+begin energy patterns
+    M(st~on)                           Gf_active
+    M(r!0,st~on).M(l!0,st~off)        Gf_mismatch
+    M(r!0,st~off).M(l!0,st~on)        Gf_mismatch
+end energy patterns
+
+begin observables
+    Molecules  M_on       M(st~on)
+    Molecules  M_off      M(st~off)
+    Molecules  M_total    M()
+    Molecules  Mismatch   M(r!0,st~on).M(l!0,st~off), M(r!0,st~off).M(l!0,st~on)
+end observables
+
+begin functions
+    flipOn(z)  = exp(-(Eact + phi*Gf_active + phi*(M_off(z))*Gf_mismatch + (phi-1)*(M_on(z))*Gf_mismatch))
+    flipOff(z) = exp(-(Eact + (phi-1)*Gf_active + phi*(M_on(z))*Gf_mismatch + (phi-1)*(M_off(z))*Gf_mismatch))
+end functions
+
+begin reaction rules
+    M%x(st~off) <-> M%x(st~on)   flipOn(x), flipOff(x)
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>500,n_steps=>100})
+end actions

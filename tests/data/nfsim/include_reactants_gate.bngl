@@ -1,0 +1,40 @@
+# Regression fixture for internal#60 / RuleWorld/nfsim#63.
+#
+# include_reactants(1, A(p~P)) restricts the binding rule so that ONLY
+# phosphorylated A may bind B. With k_phos = 0, no A is ever phosphorylated,
+# so a selector-aware NFsim MUST keep AB_total == 0 for all time.
+#
+# If the vendored NFsim drops selector enforcement (the pre-43f635dd state),
+# A(s,p~U) binds B(s) freely and AB_total grows away from 0 — a silently
+# incorrect trajectory. The companion test asserts AB_total == 0, so such a
+# regression fails loudly.
+#
+# XML is regenerated with: BNG2.pl include_reactants_gate.bngl
+begin model
+begin parameters
+    N       100
+    kf      0.01
+    k_phos  0.0     # no phosphorylation — no A should ever qualify
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,p~U)  N
+    B(s)      N
+end seed species
+
+begin observables
+    Molecules  AB_total  A(s!1).B(s!1)
+    Molecules  A_phos    A(p~P)
+end observables
+
+begin reaction rules
+    A(s) + B(s) -> A(s!1).B(s!1)  kf  include_reactants(1,A(p~P))
+end reaction rules
+end model
+
+writeXML()

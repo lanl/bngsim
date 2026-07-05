@@ -1,0 +1,70 @@
+begin model
+begin parameters
+A0 1
+B0 1
+X0 1
+nA 5
+lambdaA 0.94 # /d
+nB 7
+lambdaB 0.8 # /d
+end parameters
+begin molecule types
+count()
+counter()
+A(s~1~2~3~4~5)
+B(s~1~2~3~4~5~6~7)
+X(a~1~2~3~4~5,b~1~2~3~4~5~6~7)
+end molecule types
+begin seed species
+count() 0
+counter() 0
+A(s~1) A0
+B(s~1) B0
+X(a~1,b~1) X0
+end seed species
+begin observables
+Molecules Ainit A(s~1)
+Molecules Afinal A(s~5)
+Molecules Binit B(s~1)
+Molecules Bfinal B(s~7)
+Molecules AandB X(a~1,b~7) X(a~2,b~7) X(a~3,b~7) X(a~4,b~7)
+Molecules fA count()
+Molecules t counter()
+end observables
+begin functions
+CDF_A()=1-exp(-lambdaA*t)*(1+lambdaA*t+(1/2)*(lambdaA*t)^2+(1/6)*(lambdaA*t)^3)
+CDF_A_complement()=exp(-lambdaA*t)*(1+lambdaA*t+(1/2)*(lambdaA*t)^2+(1/6)*(lambdaA*t)^3)
+CDF_B()=1-exp(-lambdaB*t)*(1+lambdaB*t+(1/2)*(lambdaB*t)^2+(1/6)*(lambdaB*t)^3+(1/24)*(lambdaB*t)^4+(1/120)*(lambdaB*t)^5)
+P_AandB()=CDF_A_complement()*CDF_B()
+end functions
+begin reaction rules
+0->counter() 1
+A(s~1)->A(s~2) lambdaA
+A(s~2)->A(s~3) lambdaA
+A(s~3)->A(s~4) lambdaA
+A(s~4)->A(s~5) lambdaA
+B(s~1)->B(s~2) lambdaB
+B(s~2)->B(s~3) lambdaB
+B(s~3)->B(s~4) lambdaB
+B(s~4)->B(s~5) lambdaB
+B(s~5)->B(s~6) lambdaB
+B(s~6)->B(s~7) lambdaB
+X(a~1)->X(a~2) lambdaA
+X(a~2)->X(a~3) lambdaA
+X(a~3)->X(a~4) lambdaA
+X(a~4)->X(a~5) lambdaA
+X(b~1)->X(b~2) lambdaB
+X(b~2)->X(b~3) lambdaB
+X(b~3)->X(b~4) lambdaB
+X(b~4)->X(b~5) lambdaB
+X(b~5)->X(b~6) lambdaB
+X(a~1,b~6)->X(a~1,b~7)+count() lambdaB
+X(a~2,b~6)->X(a~2,b~7)+count() lambdaB
+X(a~3,b~6)->X(a~3,b~7)+count() lambdaB
+X(a~4,b~6)->X(a~4,b~7)+count() lambdaB
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>20,n_steps=>100,print_functions=>1})
+end actions

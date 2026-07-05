@@ -1,0 +1,59 @@
+# Model: mt_pascal_triangle.bngl
+# Description: Generates Pascal's Triangle coefficients using a rule-based approach.
+#              Demonstrates combinatoric logic and local state updates.
+#              Row(n) yields coefficients for (a+b)^n.
+
+begin model
+
+begin parameters
+    # Growth rate
+    k_grow 1.0
+end parameters
+
+begin molecule types
+    # Row(n) where n is the row number
+    # Pos(k) where k is the position in the row
+    Node(row~r0~r1~r2~r3~r4,pos~p0~p1~p2~p3~p4)
+end molecule types
+
+begin seed species
+    # Row 0: 1
+    Node(row~r0,pos~p0) 1.0
+end seed species
+
+begin observables
+    # Observables for Row 4 (1, 4, 6, 4, 1)
+    Molecules R4_0 Node(row~r4,pos~p0)
+    Molecules R4_1 Node(row~r4,pos~p1)
+    Molecules R4_2 Node(row~r4,pos~p2)
+    Molecules R4_3 Node(row~r4,pos~p3)
+    Molecules R4_4 Node(row~r4,pos~p4)
+end observables
+
+begin reaction rules
+    # Row 0 -> Row 1
+    Node(row~r0,pos~p0) -> Node(row~r0,pos~p0) + Node(row~r1,pos~p0) + Node(row~r1,pos~p1) k_grow
+    
+    # Row 1 -> Row 2
+    Node(row~r1,pos~p0) -> Node(row~r1,pos~p0) + Node(row~r2,pos~p0) k_grow
+    Node(row~r1,pos~p0) + Node(row~r1,pos~p1) -> Node(row~r1,pos~p0) + Node(row~r1,pos~p1) + Node(row~r2,pos~p1) k_grow
+    Node(row~r1,pos~p1) -> Node(row~r1,pos~p1) + Node(row~r2,pos~p2) k_grow
+
+    # Row 2 -> Row 3
+    Node(row~r2,pos~p0) -> Node(row~r2,pos~p0) + Node(row~r3,pos~p0) k_grow
+    Node(row~r2,pos~p0) + Node(row~r2,pos~p1) -> Node(row~r2,pos~p0) + Node(row~r2,pos~p1) + Node(row~r3,pos~p1) k_grow
+    Node(row~r2,pos~p1) + Node(row~r2,pos~p2) -> Node(row~r2,pos~p1) + Node(row~r2,pos~p2) + Node(row~r3,pos~p2) k_grow
+    Node(row~r2,pos~p2) -> Node(row~r2,pos~p2) + Node(row~r3,pos~p3) k_grow
+
+    # Row 3 -> Row 4
+    Node(row~r3,pos~p0) -> Node(row~r3,pos~p0) + Node(row~r4,pos~p0) k_grow
+    Node(row~r3,pos~p0) + Node(row~r3,pos~p1) -> Node(row~r3,pos~p0) + Node(row~r3,pos~p1) + Node(row~r4,pos~p1) k_grow
+    Node(row~r3,pos~p1) + Node(row~r3,pos~p2) -> Node(row~r3,pos~p1) + Node(row~r3,pos~p2) + Node(row~r4,pos~p2) k_grow
+    Node(row~r3,pos~p2) + Node(row~r3,pos~p3) -> Node(row~r3,pos~p2) + Node(row~r3,pos~p3) + Node(row~r4,pos~p3) k_grow
+    Node(row~r3,pos~p3) -> Node(row~r3,pos~p3) + Node(row~r4,pos~p4) k_grow
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>50})

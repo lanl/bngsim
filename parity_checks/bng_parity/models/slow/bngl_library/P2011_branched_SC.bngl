@@ -1,0 +1,126 @@
+begin model
+#@model_id: P2011_branched_SC
+#@title: Branched network with SC kinetics (Pozo et al. 2011, Eq. 2)
+#@description: Four-metabolite branched pathway with saturable-cooperative (SC) kinetics, feedback inhibition of X3 on v2, and feedforward activation of X1 on v5. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1186/1752-0509-5-137
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # External substrate (fixed)
+  X5       1000           # molecules  (1.0 * scale)
+
+  # Enzyme activity modulation (all at basal level)
+  k1       1.0            # dimensionless
+  k2       1.0            # dimensionless
+  k3       1.0            # dimensionless
+  k4       1.0            # dimensionless
+  k5       1.0            # dimensionless
+  k6       1.0            # dimensionless
+
+  # Vmax values (scaled to molecule space)
+  Vmax1    20.0           # 1/s  (v1 Vmax coefficient)
+  Vmax2    40.0           # 1/s  (v2 Vmax coefficient)
+  Vmax3    7.5            # 1/s  (v3 Vmax coefficient)
+  Vmax4    12.0           # 1/s  (v4 Vmax coefficient)
+  Vmax5    16.0           # 1/s  (v5 Vmax coefficient)
+  Vmax6    8.0            # 1/s  (v6 Vmax coefficient)
+
+  # Hill coefficient for v3
+  n3       2.5            # dimensionless  (cooperativity)
+
+  # SC half-saturation constant for v3 (in molecule^2.5 space)
+  K3_half  0.25           # dimensionless  (Km^n for v3, in conc units)
+
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+  X3()
+  X4()
+end molecule types
+
+begin seed species
+  X1()  1000  # molecules  (1.0 * scale)
+  X2()  800   # molecules  (0.8 * scale)
+  X3()  1200  # molecules  (1.2 * scale)
+  X4()  1000  # molecules  (1.0 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+  Molecules  Obs_X4  X4()
+end observables
+
+begin functions
+  # Descaled concentrations
+  x1() = Obs_X1 * inv_s
+  x2() = Obs_X2 * inv_s
+  x3() = Obs_X3 * inv_s
+  x4() = Obs_X4 * inv_s
+  x5() = X5 * inv_s
+
+  # v1: SC import from X5
+  # v1 = 20*k1*X5/(X5+1)
+  func_v1() = Vmax1 * k1 * x5() / (x5() + 1)
+
+  # v2: SC conversion X1->X2 with X3 inhibition
+  # v2 = 40*k2*(X1/(X1+1))*(1/(1+X3))
+  func_v2() = Vmax2 * k2 * x1() / (x1() + 1) / (1 + x3())
+
+  # v3: cooperative SC conversion X2->X3
+  # v3 = 7.5*k3*X2^2.5/(X2^2.5+0.25)
+  func_v3() = Vmax3 * k3 * x2()^n3 / (x2()^n3 + K3_half)
+
+  # v4: SC export of X3
+  # v4 = 12*k4*X3/(X3+1)
+  func_v4() = Vmax4 * k4 * x3() / (x3() + 1)
+
+  # v5: SC feedforward branch X2->X4 activated by X1
+  # v5 = 16*k5*(X1/(X1+1))*(X2/(X2+1))
+  func_v5() = Vmax5 * k5 * x1() / (x1() + 1) * x2() / (x2() + 1)
+
+  # v6: SC export of X4
+  # v6 = 8*k6*X4/(X4+1)
+  func_v6() = Vmax6 * k6 * x4() / (x4() + 1)
+end functions
+
+begin reaction rules
+  # X1: dX1/dt = v1 - v2
+  0 -> X1()  func_v1()*scale
+  X1() -> 0  func_v2()*scale
+
+  # X2: dX2/dt = v2 - v3 - v5
+  0 -> X2()  func_v2()*scale
+  X2() -> 0  func_v3()*scale
+  X2() -> 0  func_v5()*scale
+
+  # X3: dX3/dt = v3 - v4
+  0 -> X3()  func_v3()*scale
+  X3() -> 0  func_v4()*scale
+
+  # X4: dX4/dt = v5 - v6
+  0 -> X4()  func_v5()*scale
+  X4() -> 0  func_v6()*scale
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>1,n_steps=>100})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>1,n_steps=>100})
+end actions

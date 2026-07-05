@@ -1,0 +1,67 @@
+# Model: process_kinetic_proofreading_tcr.bngl
+# Description: Implements the Kinetic Proofreading model for T-Cell Receptor (TCR) discrimination.
+#              Ligand binding induces a series of phosphorylation steps (0->1->...->N).
+#              Only the fully phosphorylated state triggers signaling.
+#              Fast dissociation of low-affinity ligands prevents completion of the steps (proofreading).
+
+begin model
+
+begin parameters
+    # Ligand-Receptor Kinetics
+    kon  1.0
+    koff 0.1  # High affinity (Changeto1.0forlowaffinity)
+    
+    # Phosphorylation Rate
+    kp   0.5
+    
+    # Dephosphorylation Rate (Reset)
+    kdp  2.0
+    
+    # Initial
+    L_tot 100
+    TCR_tot 50
+end parameters
+
+begin molecule types
+    L(t)
+    TCR(l,p~0~1~2~3) # 3 steps of phosphorylation
+end molecule types
+
+begin seed species
+    L(t)    L_tot
+    TCR(l,p~0) TCR_tot
+end seed species
+
+begin observables
+    Molecules Bound_TCR     TCR(l!+)
+    Molecules Signaling_TCR TCR(l!+,p~3) # Only fully modified signals
+end observables
+
+begin reaction rules
+    # 1. Ligand Binding/Unbinding
+    # Binding allows phosphorylation
+    TCR(l,p~0) + L(t) <-> TCR(l!1,p~0).L(t!1) kon, koff
+    TCR(l,p~1) + L(t) <-> TCR(l!1,p~1).L(t!1) kon, koff
+    TCR(l,p~2) + L(t) <-> TCR(l!1,p~2).L(t!1) kon, koff
+    TCR(l,p~3) + L(t) <-> TCR(l!1,p~3).L(t!1) kon, koff
+    
+    # 2. Kinetic Proofreading Steps (Phosphorylation)
+    # Only happens when BOUND
+    TCR(l!+,p~0) -> TCR(l!+,p~1) kp
+    TCR(l!+,p~1) -> TCR(l!+,p~2) kp
+    TCR(l!+,p~2) -> TCR(l!+,p~3) kp
+    
+    # 3. Dephosphorylation (Reset)
+    # Happens when DISSOCIATED (orevenwhenboundifphosphataseisrobust,butusuallyproofreadingimpliesresetuponunbinding)
+    # Here, we assume phosphatase acts on free TCR
+    TCR(l,p~1) -> TCR(l,p~0) kdp
+    TCR(l,p~2) -> TCR(l,p~0) kdp # Fast reset to 0? Or stepwise? usually fast.
+    TCR(l,p~3) -> TCR(l,p~0) kdp
+    
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>50,n_steps=>200})

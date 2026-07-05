@@ -1,0 +1,36 @@
+# Feature: Species vs Molecules observable types
+# Tests: different counting semantics for species vs molecule observables
+# Tier: base
+# Expected: for dimers A.A, Molecules counts 2 per dimer, Species counts 1
+
+begin model
+begin parameters
+    A_tot  80
+    kf     0.005   # /s, dimerization rate
+    kr     0.1     # /s, dissociation rate
+end parameters
+
+begin molecule types
+    A(s)
+end molecule types
+
+begin seed species
+    A(s)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_mol     A()
+    Species    A_spec    A()
+    Molecules  A_free    A(s)
+    Molecules  A_bound   A(s!+)
+    Species    Dimers    A(s!1).A(s!1)
+end observables
+
+begin reaction rules
+    A(s) + A(s) <-> A(s!1).A(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>50,n_steps=>100})
+end actions

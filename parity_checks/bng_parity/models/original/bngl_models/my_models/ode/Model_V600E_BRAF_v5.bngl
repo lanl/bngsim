@@ -1,0 +1,1023 @@
+# Filename: Model_V600E_BRAF_v[versionNumber].bngl
+
+begin model
+
+# metadata
+
+#---
+# Header:
+#  Title: A model for oncogenic signaling by V600E BRAF
+#  Contributors: William S. Hlavacek, Boris N. Kholodenko, Walter Kolch, Richard G. Posner (alphabetical listing)
+#...
+
+#---
+# Cell lines: 
+#  - (human) HeLa S3 cells (ATCC CCL-2.2)
+#  - (human) HEK293 cells
+#  - (human) MCF7 cells
+#...
+
+#---
+# Compartments:
+#  The model implicitly considers two compartments.
+#  cyt: the cytosol
+#  ipm: a thin layer adjacent to the inner leaflet of the plasma membrane
+#  Proteins tethered to the plasma membrane (e.g., RAF bound to RAS) interact in the "ipm" compartment.
+#...
+
+#---
+# References:
+#  Baljuls A et al. (2013) Mol BioSyst 9: 551-558. [PMID: 23212737]
+#  Donovan S et al. (2002) Biochim Biophys Acta 1602: 23-45. [PMID: 11960693]
+#  Fujioka A et al. (2006) J Biol Chem 281: 8917-8926. [PMID: 16418172]
+#  Kiel C et al. (2014) J Proteome Res 13: 300-313. [PMID: 24313378]
+#  Kulak NA et al. (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  Markevich NI et al. (2004) Syst Biol 1: 104-113. [PMID: 17052120]
+#  Rajakulendran T et al. (2009) Nature 461: 542-545. [PMID: 19727074]
+#  Stites EC et al. (2007) Science 318: 463-467. [PMID: 17947584]
+#  Tan CW et al. (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#...
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1.0 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell in culture (Tan et al., 2012).
+#   [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # L per cell
+
+# volume ratio D = Vcyt/Vipm 
+#   D is given as 250 in Table S1 in Stites et al. (2007), which references Markevich et al. (2004)
+#   as the source of this estimate.
+D 250 # dimensionless
+
+# volume of thin layer adjacent to inner leaflet of plasma membrane (Vipm)
+Vipm=Vcyt/D # = 0.0048e-12 L per cell
+
+###########################
+# abundances of molecules #
+###########################
+
+# protein copy numbers measured for HeLa S3 cells (ATCC CCL-2.2) by Kulak et al. (2014)
+#   See Supplementary Table S2 (an Excel spreadsheet).
+#   NB: measurements characterize whole cell lysate.
+
+#################
+# HeLa S3 cells #
+#################
+
+#ARAF_total_HeLa    rint(50606*f) # molecules per cell 
+BRAF_total_HeLa     rint(4993*f) # molecules per cell
+RAF1_total_HeLa    rint(35757*f) # molecules per cell
+MAP2K1_total_HeLa rint(170516*f) # molecules per cell
+MAP2K2_total_HeLa rint(325020*f) # molecules per cell
+MAPK1_total_HeLa  rint(544669*f) # molecules per cell
+MAPK3_total_HeLa   rint(58855*f) # molecules per cell
+HRAS_total_HeLa   rint(131924*f) # molecules per cell 
+KRAS_total_HeLa    rint(70990*f) # molecules per cell
+NRAS_total_HeLa    rint(32806*f) # molecules per cell 
+
+# Other HeLa copy number measurements of potential interest reported by Kulak et al. (2014)
+#EGFR_total_HeLa    rint(92674*f) # molecules per cell
+#SHC1_total_HeLa   rint(111966*f) # molecules per cell
+#GRB2_total_HeLa   rint(628016*f) # molecules per cell
+#RASA1_total_HeLa   rint(26455*f) # molecules per cell 
+#PTPN11_total_HeLa rint(299893*f) # molecules per cell
+#SOS1_total_HeLa     rint(7565*f) # molecules per cell (SOS2_total = 144 molecules per cell)
+#GAB1_total_HeLa     rint(1531*f) # molecules per cell 
+
+# RAF1 is also known as CRAF
+CRAF_total_HeLa=RAF1_total_HeLa # = 35757 molecules per cell
+
+RAS_total_HeLa=HRAS_total_HeLa+KRAS_total_HeLa+NRAS_total_HeLa # = 235720 molecules per cell
+
+# Stites et al. (2007) estimated that [RAS] = 0.4 uM; see Table S1, which references Fujioka et al. (2006).
+# RAS_conc 0.4e-6 # M
+# RAS_total=rint(RAS_conc*(NA*Vcyt)) # = 289063 molecules per cell 
+
+# MAP2K1 is also known as MEK1
+MEK1_total_HeLa=MAP2K1_total_HeLa # = 170516 molecules per cell
+
+# MAP2K2 is also known as MEK2
+MEK2_total_HeLa=MAP2K2_total_HeLa # = 325020 molecules per cell
+
+# MAPK1 is also known as ERK2
+ERK2_total_HeLa=MAPK1_total_HeLa # = 544669 molecules per cell
+
+# MAPK3 is also known as ERK1
+ERK1_total_HeLa=MAPK3_total_HeLa # = 58855 molecules per cell
+
+# MEK (both isoforms)
+MEK_total_HeLa=MEK1_total_HeLa+MEK2_total_HeLa # = 495536 molecules per cell
+# ERK (both isoforms)
+ERK_total_HeLa=ERK1_total_HeLa+ERK2_total_HeLa # = 603524 molecules per cell
+
+# protein copy number estimates of Kiel et al. (2014) for HEK293 cells and MCF7 cells
+#   See "Final copy numbers" (dark blue) columns in "Summary" sheet of Table S2 (Excel spreadsheet)
+
+################
+# HEK293 cells #
+################
+
+#ARAF_total_HEK293 rint(2.3e5*f)  # molecules per cell
+BRAF_total_HEK293 rint(7.47e4*f) # molecules per cell
+CRAF_total_HEK293 rint(2.76e4*f) # molecules per cell (CRAF= RAF1)
+HRAS_total_HEK293 rint(3.11e4*f) # molecules per cell
+KRAS_total_HEK293 rint(1.1e5*f)  # molecules per cell
+NRAS_total_HEK293 rint(3.16e5*f) # molecules per cell
+MEK1_total_HEK293 rint(8.45e5*f) # molecules per cell (MEK1 = MAP2K1)
+MEK2_total_HEK293 rint(5.82e5*f) # molecules per cell (MEK2 = MAP2K2)
+ERK1_total_HEK293 rint(7.52e4*f) # molecules per cell (ERK1 = MAPK3)
+ERK2_total_HEK293 rint(2.96e5*f) # molecules per cell (ERK2 = MAPK1)
+
+# Other HEK293 copy number measurements of potential interest reported by Kiel et al. (2014)
+#EGFR_total_HEK293   rint(5.40e4*f) # molecules per cell
+#SHC1_total_HEK293   rint(5.6e4*f) # molecules per cell
+#GRB2_total_HEK293   rint(4.53e5*f) # molecules per cell
+#RASA1_total_HEK293  rint(1.21e5*f) # molecules per cell (RASA1 = p120 RasGAP)
+#PTPN11_total_HEK293 rint(5.22e5*f) # molecules per cell (PTPN11 = SHP2)
+#SOS1_total_HEK293   rint(4.09e4*f) # molecules per cell
+#GAB1_total_HEK293   rint(3.71e4*f) # molecules per cell
+
+RAS_total_HEK293=HRAS_total_HEK293+KRAS_total_HEK293+NRAS_total_HEK293 # = 4.571e5 molecules per cell
+MEK_total_HEK293=MEK1_total_HEK293+MEK2_total_HEK293 # = 1.427e6 molecules per cell
+ERK_total_HEK293=ERK1_total_HEK293+ERK2_total_HEK293 # = 3.712e5 molecules per cell
+
+##############
+# MCF7 cells #
+##############
+
+# MCF7 cells
+#ARAF_total_MCF7 rint(6.21e5*f) # molecules per cell
+BRAF_total_MCF7 rint(5.90e4*f) # molecules per cell
+CRAF_total_MCF7 rint(1.28e5*f) # molecules per cell (CRAF = RAF1)
+# Kiel et al. (2014) did not report copy numbers for individual isoforms of RAS in MCF7 cells.
+#   Only the abundance of RAS (all isoforms) is reported.
+RAS_total_MCF7 rint(1.03e6*f)  # molecules per cell 
+MEK1_total_MCF7 rint(2.61e5*f) # molecules per cell (MEK1 = MAP2K1)
+MEK2_total_MCF7 rint(2.42e5*f) # molecules per cell (MEK2 = MAP2K2)
+ERK1_total_MCF7 rint(1.58e5*f) # molecules per cell (ERK1 = MAPK3)
+ERK2_total_MCF7 rint(2.07e5*f) # molecules per cell (ERK2 = MAPK1)
+
+# Other MCF7 copy number measurements of potential interest reported by Kiel et al. (2014)
+#EGFR_total_MCF7   rint(1.51e5*f) # molecules per cell
+#SHC1_total_MCF7   rint(3.38e5*f) # molecules per cell
+#GRB2_total_MCF7   rint(2.57e5*f) # molecules per cell
+#RASA1_total_MCF7  rint(4.53e5*f) # molecules per cell (RASA1 = p120 RasGAP)
+#PTPN11_total_MCF7 rint(2.42e6*f) # molecules per cell (PTPN11 = SHP2)
+#SOS1_total_MCF7   rint(2.77e5*f) # molecules per cell
+#GAB1_total_MCF7   rint(2.03e4*f) # molecules per cell
+
+MEK_total_MCF7=MEK1_total_MCF7+MEK2_total_MCF7 # = 5.03e5 molecules per cell
+ERK_total_MCF7=ERK1_total_MCF7+ERK2_total_MCF7 # = 3.65e5 molecules per cell
+
+##########################################################################################################
+# abundances of RAS GEFs, GAPs and effectors (other than BRAF and CRAF) active in the basal steady state #
+##########################################################################################################
+
+# levels of active RAS GEFs, GAPs and effectors in the basal steady state
+#   Estimated concentrations are taken from Table S1 in Stites et al. (2007).
+basalGEF_conc 0.2e-9 # M
+basalGAP_conc 0.06e-9 # M
+basalEFF_conc 0.4e-6 # M (this estimate is for all effectors, including BRAF and CRAF)
+
+basalGEF_total=rint(basalGEF_conc*(NA*Vcyt)) # = 144 molecules per cell
+basalGAP_total=rint(basalGAP_conc*(NA*Vcyt)) # = 43 molecules per cell
+# The formula below gives the copy number of non-BRAF/non-CRAF effectors
+basalEFF_total=rint(basalEFF_conc*(NA*Vcyt))-(BRAF_total_HeLa+CRAF_total_HeLa) # = 248313 molecules per cell
+
+# NB: basalEFF_total depends on the cell line-specific copy numbers of BRAF and CRAF.
+
+###########################
+# parameters of rate laws #
+###########################
+
+#---
+# Rate constants:
+#   One should specify a rate constant for a bimolecular association reaction under the assumption
+#   that the reaction is of the form A+B->product(s) and that association is mediated 
+#   by one and only one binding site in A and by one and only one binding site in B. 
+#   BioNetGen automatically adds symmetry numbers and statistical factors as needed to correct for
+#   indistinguishable reactants (A+A->product(s) reactions) and reation path degeneracy (multiple binding sites).
+#....
+
+# rate constant charaterizing the intrinsic GTPase activity of RAS
+#   This estimate is taken from Table S1 in Stites et al. (2007), which cites Donovan et al. (2002).
+# GTP hydrolysis
+khyd 3.5e-4 # [=] /s 
+
+# rate constants for binding of GDP/GTP to apo RAS and spontaneous release
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We assume that GDP and GTP concentrations are buffered (i.e., constant).
+# GDP-RAS interaction
+kaGDP 2.3e6 # /M/s 
+GDP_conc 18e-6 # M
+kaGDPxGDP=kaGDP*GDP_conc # = 41.4 /s
+kdGDP 1.1e-4 # /s 
+# GTP-RAS interaction
+kaGTP 2.2e6 # /M/s
+GTP_conc 180e-6 # M
+kaGTPxGTP=kaGTP*GTP_conc # = 396 /s
+kdGTP 2.5e-4 # /s 
+
+# NB: equilibration is slow because of small values for the rate constants khyd, kdGDP and kdGTP.
+
+# GEF parameters 
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We take the rate of GEF activity to be given by a rate law derived by Stites et al. (2007).
+kcatGDP 3.9 # /s
+kcatGTP 0.72 # /s
+KmGDP_SI_units 386e-6 # M
+KmGDP_cyt=KmGDP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGDP_ipm=KmGDP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+KmGTP_SI_units 300e-6 # M
+KmGTP_cyt=KmGTP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGTP_ipm=KmGTP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+
+# GAP parameters
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+#   We take the rate of GAP activity to be given by the Michaelis-Menten rate law (Stites et al., 2007).
+kcatGAP 5.40 # [=]	/s	
+KmGAP_SI_units 0.23e-6 # M	
+KmGAP_cyt=KmGAP_SI_units*(NA*Vcyt) # molecules per cell (the reactor is the cytosol)
+KmGAP_ipm=KmGAP_cyt/D # molecules per cell (the reactor is the thin layer adjacent to the inner plasma membrane)
+
+# effector parameters
+#   Estimates are taken from Table S1 in Stites et al. (2007).
+kaEFF_SI_units 45e6 # [=] /M/s
+# Kd=kdEff/kaEff_SI_units=0.08e-6 M 
+kaEFF=kaEFF_SI_units/(NA*Vcyt)  # [=] /(molecule/cell)/s
+kdEFF 3.6 # [=] /s
+
+# KD, on and off rate constants, and modifying factors for RasGTP interaction with the RBD in CRAF
+KD1 0.13e-6*(NA*Vcyt) # M converted to molecules per cell, from Table 2 (Filchtinski et al., 2010)
+#KD1_RBDinRaf1_RasGDP 46e-6*(NA*Vcyt) # M converted to molecules per cell, from Table 2 (Filchtinski et al., 2010)
+km1 4.34 # /s, from Table 2 (Wohlgemuth et al., 2005)
+kp1=km1/KD1 # /(molecule/cell)/s [=33.4 /uM/s]
+#  The parameters below are introduced to capture the effect of ERK-mediated phosphorylation of S642 in CRAF.
+ERK_effect_on_kp1 0.2 # dimensionless
+ERK_effect_on_km1 5 # dimensionless
+
+# KD, on and off rate constants, and modifying factors for RasGTP interaction with the RBD in BRAF
+#   The KD for BRAF RBD binding to RasGTP is smaller than that for CRAF RBD binding to RasGTP (by 1/3).
+KD2 (1/3)*0.13e-6*(NA*Vcyt) # M converted to molecules per cell (one-third smaller than for CRAF - see above)
+km2 4.34 # /s (same as for CRAF - see above)
+kp2=km2/KD2 # /(molecule/cell)/s [=100 /uM/s]
+#  The parameters below are introduced to capture the effect of ERK-mediated phosphorylation of T753 in BRAF.
+ERK_effect_on_kp2 0.4444 # dimensionless
+ERK_effect_on_km2 2.25 # dimensionless
+
+# parameters characterizing reversible CRAF homodimerization
+KD_CCd1_ipm 5e-9 # M (5 nM; 5 to 15 nM according to Boris' notes)
+p2_CRAF 15 # dimensionless (10 to 20 according to Boris' notes)
+KD_CCd1_cyt=KD_CCd1_ipm*p2_CRAF*p2_CRAF # M (1125 nM; 1000 to 4000 nM according to Boris' notes)
+kCCd_1_cyt 0.01 # /s (arbitrary)
+kCCd_1_ipm=kCCd_1_cyt/p2_CRAF # /s
+kCCd1_cyt=kCCd_1_cyt/(KD_CCd1_cyt*NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kCCd1_ipm=p2_CRAF*kCCd1_cyt # /(molecule/cell)/s
+p3_CRAF 2.25 # dimensionless (2.25 to 7 according to Boris' notes)
+ERK_effect_on_kCCd1=1/p3_CRAF # dimensionless
+ERK_effect_on_kCCd_1=p3_CRAF # dimensionless
+
+# parameters characterizing reversible BRAF homodimerization
+KD_BBd1_ipm 5e-9 # M (5 nM; 5 to 10 nM according to Boris' notes)
+p2_BRAF=p2_CRAF # dimensionless (10 to 20 according to Boris' notes)
+KD_BBd1_cyt=KD_BBd1_ipm*p2_BRAF*p2_BRAF # M (500 nM; 500 to 2000 nM according to Boris' notes)
+kBBd_1_cyt 0.01 # /s (arbitrary)
+kBBd_1_ipm=kBBd_1_cyt/p2_BRAF # /s
+kBBd1_cyt=kBBd_1_cyt/(KD_BBd1_cyt*NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kBBd1_ipm=p2_BRAF*kBBd1_cyt # /(molecule/cell)/s
+p3_BRAF=p3_CRAF # dimensionless (2.25 to 7 according to Boris' notes)
+ERK_effect_on_kBBd1=1/p3_BRAF # dimensionless
+ERK_effect_on_kBBd_1=p3_BRAF # dimensionless
+
+end parameters
+
+begin molecule types
+
+#---
+# Molecules: RAS (regulated by basalGEF, basalGAP, and basalEFF), BRAF, CRAF, MEK and ERK
+#...
+
+# pool of RAS GEFs active in the basal steady state
+basalGEF(GEF)
+
+# pool of RAS GAPs active in the basal steady state
+basalGAP(GAP)
+
+# pool of RAS effectors (excluding BRAF and CRAF) competent to bind RasGTP in the basal steady state
+basalEFF(ras)
+
+RAS(switch,G~0~GDP~GTP)
+#---
+# RAS:
+#  description: 
+#   - member of the Ras family of small GTPases
+#   - HRAS, KRAS and NRAS
+#   - gene product of human homolog of v-ras (rat sarcoma) oncogene
+#  UniProt entry (KRAS): http://www.uniprot.org/uniprot/P01116
+#  comments: 
+#   - There are three isoforms of RAS (HRAS, KRAS and NRAS), which we take to be equivalent.
+#   - HRAS, KRAS and NRAS each contain a nearly identical G domain.
+#   - The three RAS isoforms have distinct C-terminal hypervariable regions (HVRs).
+#  components:
+#   switch: 
+#    description: switch I and/or II region(s)
+#    Pfam entry: http://pfam.xfam.org/family/PF00071
+#    comments: 
+#     - The switch I region is disordered when RAS is bound to GDP.
+#     - The switch I region is ordered when RAS is bound to GTP.
+#     - The (ordered) switch I region interacts directly with the Raf-like RBD.
+#   G:
+#    description: G motifs (G1 through G5)
+#    internal states:
+#     - 0: apo RAS
+#     - GDP: GDP-loaded RAS, GDP refers to guanine diphosphate
+#     - GTP: GTP-loaded RAS, GTP refers to guanine triphosphate
+#    Pfam entry: http://pfam.xfam.org/family/PF00071
+#    comments:
+#     - the guanine nucleotide binding site in RAS is discontinuous
+#     - the G motifs (G1 through G5) contact the guanine nucleotide
+#     - G1 is the P-loop (G....GK[TS]): 10-GAGGVGKS-17 in KRAS
+#     - G2 is T35, which is part of switch I: T35 in KRAS
+#     - G3 is D..G, where G60 is part of switch II: 57-DTAG-60 in KRAS
+#     - G4 is NK.D: 116-NKCD-119 in KRAS
+#     - G5 is SAK: 145-SAK-147 in KRAS
+#...
+
+########################################################################
+# TO DO: change nomenclature from 'Dm' to 'DIF' - see annotation below #
+########################################################################
+CRAF(RBD,S259~0~P,S338~0~P,Dm,S642~0~P,MEKB,cI)
+#---
+# CRAF:
+#  description: 
+#   - RAF1 (http://www.genenames.org)
+#   - member of the Raf family of serine/threonine-specific protein kinases
+#   - gene product of human homolog of v-raf (rapidly accelerated fibrosarcoma) oncogene
+#  UniProt entry: http://www.uniprot.org/uniprot/P04049
+#  comments:
+#   - There are three isoforms of RAF (ARAF, BRAF and CRAF).
+#   - KSR1 and KSR2 are closely related to the RAF proteins, but lack an RBD.
+#  components:
+#   RBD: 
+#    description: Raf-like Ras binding domain
+#    Pfam entry: http://pfam.xfam.org/family/RBD 
+#    comments:
+#     - RBD directly interacts with the switch I region in GTP-loaded RAS.
+#   S259:
+#    description: amino acid residue 259 in RAF1 (serine)
+#    internal states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#    comments:
+#     - Phosphorylation of S259 inhibits CRAF activity.
+#     - Phosphorylated S259 (pS259) interacts with 14-3-3 proteins (YWHAZ).
+#     - RAF proteins contain at least two phosphorylation-dependent binding sites for 14-3-3 proteins.
+#     - A second binding site encompasses S621.
+#     - A potential third phosphorylation-dependent binding site encompasses S233.
+#     - Simultaneous 14-3-3 binding of pS259 and pS621 is believed to stabilize RAF autoinhibition.
+#     - PKA and AKT (a.k.a. PKB) catalyze phosphorylation of S259.
+#   S338:
+#    description: amino acid residue 338 in RAF1 (serine)
+#    internal states:
+#     - 0: unmodified
+#     - P: phosphorylated
+#    comments:
+#     - S338 is part of the negatively charged (N-) region, which must be phosphorylated for full kinase activity.
+#     - S338 is part of a 4-residue submotif (338-SSYY-341) in the N- region.
+#     - This submotif is immediately upstream of (N-terminal to) the kinase domain.
+#     - Phosphorylation of S338 and Y341 are important for activation of CRAF kinase activity.
+#     - Y341 is phosphorylated by Src-family protein kinases (e.g., SRC).
+#     - S338 is phosphorylated by casein kinase 2 (CK2).
+#     - Phosphorylation of S338 by CK2 requires priming phosphorylation of Y341.
+#     - CK2 is constitutively active.
+#     - pS338 is dephosphorylated by PP5.
+#     - S338 is phosphorylated by p21-activated kinases (PAKs), such as PAK1.
+#   DIF:
+#    description: dimerization interface
+#    comments: 
+#     - DIF mediates formation of a side-by-side dimer of RAF/KSR kinases (Rajakulendran et al., 2009).
+#     - Baljuls et al. (2013) used 'DIF' to refer to the dimerization interface.
+#     - R401 is an important component of the dimerization interface.
+#     - An arginine-to-histidine mutation (R401H) reduces dimerization and kinase activation. 
+#  S642: 
+#   description: amino acid residue 642 in RAF1 (serine)
+#   internal states:
+#    - 0: unmodified
+#    - P: phosphorylated
+#   comments: 
+#    - S642 is one of several ERK substrates in CRAF that are involved in ERK-mediated negative feedback regulation of CRAF.
+#    - ERK targets in CRAF are dephosphorylated by PP2A in a way that depends on PIN1.
+#  MEKB: The alphaG helix and the activation segment of the kinase domain mediate face-to-face binding to MEK.
+#  I1: ??
+#...
+
+BRAF(RBD,S365~0~P,Dm,T753~0~P,MEKB,bI)
+#---
+# BRAF:
+#  description: 
+#   - member of the Raf family of serine/threonine-specific protein kinases
+#   - gene product of human homolog of v-raf (rapidly accelerated fibrosarcoma) oncogene
+#  UniProt entry: http://www.uniprot.org/uniprot/P15056
+#  comments:
+#   - There are three isoforms of RAF (ARAF, BRAF and CRAF).
+#   - KSR1 and KSR2 are closely related to the RAF proteins, but lack an RBD.
+#  components:
+#   RBD: 
+#    description: Raf-like Ras binding domain
+#    Pfam entry: http://pfam.xfam.org/family/RBD 
+#    comments:
+#     - RBD directly interacts with the switch I region in GTP-loaded RAS.
+#   S365:
+#    description: 
+#     - amino acid residue 365 in BRAF (serine)
+#     - corresponds to S259 in RAF1
+#    internal states:
+#     - 0: unmodified
+#     - P: phosphorylated (we assume that S365 can only be phosphorylated by BRAF is monomeric and in the cytosol)
+#    comments:
+#     - Phosphorylation of S365 inhibits BRAF activity.
+#     - Phosphorylated S365 (pS365) interacts with 14-3-3 proteins, such as YWHAZ (14-3-3 zeta).
+#     - RAF proteins contain at least two phosphorylation-dependent binding sites for 14-3-3 proteins.
+#     - A second binding site encompasses S***.
+#     - A potential third phosphorylation-dependent binding site encompasses S***.
+#     - Simultaneous 14-3-3 binding of pS365 and pS*** is believed to stabilize RAF autoinhibition.
+#     - PKA and AKT (a.k.a. PKB) catalyze phosphorylation of S365.
+#   DIF:
+#    description: dimerization interface
+#    comments: 
+#     - DIF mediates formation of a side-by-side dimer of RAF/KSR kinases (Rajakulendran et al., 2009).
+#     - Baljuls et al. (2013) used 'DIF' to refer to the dimerization interface.
+#     - R*** (corresponding to R401 in CRAF) is an important component of the dimerization interface.
+#     - Mutation to this arginine to histidine reduces dimerization and kinase activation. 
+#  T753: 
+#   description: 
+#    - amino acid residue T753 in BRAF (serine)
+#    - this residue is functionally similar to S642 in RAF1
+#   internal states:
+#    - 0: unmodified
+#    - P: phosphorylated
+#   comments: 
+#    - T753 is one of several ERK substrates in BRAF that are involved in ERK-mediated negative feedback regulation of BRAF.
+#    - ERK targets in BRAF are dephosphorylated by PP2A in a way that depends on PIN1.
+#  MEKB: The alphaG helix and the activation segment of the kinase domain mediate face-to-face binding to MEK.
+#  I2: the binding site of a small-molecule inhibitor (an ATP mimic) of the BRAF kinase
+#...
+
+# Other molecules that could be added to the model
+#EGF(EGFL)
+#EGFR(I_III,II,Y~0~P)
+#SHC1(PTB)
+#GRB2(nSH3,SH2,cSH3)
+#SOS1(GEF)
+#RASA1(GAP)
+
+end molecule types
+
+begin seed species
+
+basalGEF(GEF) basalGEF_total
+basalGAP(GAP) basalGAP_total
+basalEFF(ras) basalEFF_total
+
+RAS(switch,G~0) 0 # abundance is very low
+RAS(switch,G~GDP) RAS_total_HeLa*(0.3128/0.4) # set close to steady-state value to avoid long equilibration
+RAS(switch,G~GTP) RAS_total_HeLa*(0.0872/0.4) # set close to steady-state value to avoid long equilibration
+
+# monomeric CRAF with S642~0 and S338~0
+CRAF(RBD,S259~0,S338~0,Dm,S642~0,MEKB,cI) 5000
+# monomeric CRAF with S642~0 and S338~P
+CRAF(RBD,S259~0,S338~P,Dm,S642~0,MEKB,cI) 5000
+# monomeric CRAF with S642~P and S338~0
+CRAF(RBD,S259~0,S338~0,Dm,S642~P,MEKB,cI) 5000
+# monomeric CRAF with S642~P and S338~P
+CRAF(RBD,S259~0,S338~P,Dm,S642~P,MEKB,cI) 5000
+# homodimeric CRAF with S642~0 S642~0 and S338~P (at both copies)
+CRAF(RBD,S259~0,S338~P,Dm!1,S642~0,MEKB,cI).CRAF(RBD,S259~0,S338~P,Dm!1,S642~0,MEKB,cI) 2500
+# homodimeric CRAF with S642~0 S642~P and S338~P (at both copies)
+CRAF(RBD,S259~0,S338~P,Dm!1,S642~0,MEKB,cI).CRAF(RBD,S259~0,S338~P,Dm!1,S642~P,MEKB,cI) 2500
+# homodimeric CRAF with S642~P S642~P and S338~P (at both copies)
+CRAF(RBD,S259~0,S338~P,Dm!1,S642~P,MEKB,cI).CRAF(RBD,S259~0,S338~P,Dm!1,S642~P,MEKB,cI) 2500
+
+# monomeric BRAF with T753~0
+BRAF(RBD,S365~0,Dm,T753~0,MEKB,bI) 5000
+# monomeric BRAF with T753~P
+BRAF(RBD,S365~0,Dm,T753~P,MEKB,bI) 5000
+# homodimeric BRAF with T753~0 T753~0
+BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,bI).BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,bI) 2500
+# homodimeric BRAF with T753~0 T753~P
+BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,bI).BRAF(RBD,S365~0,Dm!1,T753~P,MEKB,bI) 2500
+# homodimeric BRAF with T753~P T753~P
+BRAF(RBD,S365~0,Dm!1,T753~P,MEKB,bI).BRAF(RBD,S365~0,Dm!1,T753~P,MEKB,bI) 2500
+
+# heterodimeric CRAF with S642~0
+#CRAF(RBD,S259~0,S338~0,Dm!1,S642~0,MEKB,cI).BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,bI) 2500
+# heterodimeric CRAF with S642~P
+#CRAF(RBD,S259~0,S338~0,Dm!1,S642~P,MEKB,cI).BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,bI) 2500
+
+#EGF(EGFL) EGF_total
+#EGFR(I_III,II,Y~0~P) EGFR_total
+#SHC1(PTB) SHC1_total
+#GRB2(nSH3,SH2,cSH3) GRB2_total
+#SOS1(GEF) SOS1_total
+#RASA1(GAP) RASA1_total
+
+end seed species
+
+begin observables
+
+###########
+# outputs #
+###########
+
+Molecules apoRAS RAS(G~0)
+Molecules GTP_loaded_RAS RAS(G~GTP)
+Molecules GDP_loaded_RAS RAS(G~GDP)
+Molecules RAS_bound_to_effectors RAS(switch!+)
+#Molecules RAS_bound_to_BRAF RAS(switch!1).BRAF(RBD!1)
+#Molecules RAS_bound_to_CRAF RAS(switch!1).CRAF(RBD!1)
+
+Molecules Ras_CRAF RAS(switch!1).CRAF(RBD!1)
+Molecules Ras_CRAF_S642_0 RAS(switch!1).CRAF(RBD!1,S642~0)
+Molecules Ras_CRAF_S642_P RAS(switch!1).CRAF(RBD!1,S642~P)
+Molecules Ras_CRAF_DmCRAF RAS(switch!1).CRAF(RBD!1,Dm!2).CRAF(Dm!2)
+Molecules Ras_CRAF_DmBRAF RAS(switch!1).CRAF(RBD!1,Dm!2).BRAF(Dm!2)
+
+Molecules Ras_BRAF RAS(switch!1).BRAF(RBD!1)
+Molecules Ras_BRAF_T753_0 RAS(switch!1).BRAF(RBD!1,T753~0)
+Molecules Ras_BRAF_T753_P RAS(switch!1).BRAF(RBD!1,T753~P)
+Molecules Ras_BRAF_DmBRAF RAS(switch!1).BRAF(RBD!1,Dm!2).BRAF(Dm!2)
+Molecules Ras_BRAF_DmCRAF RAS(switch!1).BRAF(RBD!1,Dm!2).CRAF(Dm!2)
+
+Molecules monomer_RASGTP_BRAF RAS(switch!1).BRAF(RBD!1,Dm)
+Molecules monomer_cytosolic_BRAF BRAF(RBD,Dm)
+Species homodimer_BRAF_RAS_xlinked RAS(switch!1).BRAF(RBD!1,Dm!2).BRAF(RBD!3,Dm!2).RAS(switch!3)
+Species homodimer_BRAF_no_RAS_xlinking RAS(switch!1).BRAF(RBD!1,Dm!2).BRAF(RBD,Dm!2) BRAF(RBD,Dm!1).BRAF(RBD,Dm!1)
+Molecules monomer_RASGTP_CRAF RAS(switch!1).CRAF(RBD!1,Dm)
+Molecules monomer_cytosolic_CRAF CRAF(RBD,Dm)
+Species homodimer_CRAF_RAS_xlinked RAS(switch!1).CRAF(RBD!1,Dm!2).CRAF(RBD!3,Dm!2).RAS(switch!3)
+Species homodimer_CRAF_no_RAS_xlinking RAS(switch!1).CRAF(RBD!1,Dm!2).CRAF(RBD,Dm!2) CRAF(RBD,Dm!1).CRAF(RBD,Dm!1)
+
+######################################################################
+# quantities defined below appear in functions - see functions block #
+######################################################################
+
+Molecules CatGEF basalGEF() # all basalGEF is catalytically active
+Molecules CatGAP basalGAP() # all basalGAP is catalytically active
+Molecules FreeRasGDP RAS(switch,G~GDP) # [RAS(switch,G~GDP)], concentration of free RasGDP (not bound to effectors)
+Molecules FreeRasGTP RAS(switch,G~GTP) # [RAS(switch,G~GTP)], concentration of free RasGTP (not bound to effectors)
+
+#Molecules CatSOS1 SOS1()
+#Molecules CatRASA1 RASA1()
+
+end observables
+
+begin functions
+
+#---
+# Rate laws for basal GEF-assisted GDP/GTP exchange and basal GAP-assisted GTP hydrolysis are defined below.
+#   Each rate law has the form [substrate]*function, where [substrate] is the abundance of the species 
+#     matched by a rule and 'function' is the function listed after the rule in the 'reaction rules' block.
+#   The rate laws are taken from Stites et al. (2007).
+#   See Equations R3(A) and R5(A) on p 2 of the supporting online material.
+#   The rate law given by Equation R5(A) corresponds to the Michaelis-Menten rate law.
+#...
+
+# Rate law for GEF-assisted exchange of GDP for GTP, from Equation R3(A) in Stites et al. (2007)
+R3f_cyt() kcatGDP*CatGEF*(1/KmGDP_cyt)/(1+(FreeRasGDP/KmGDP_cyt)+(FreeRasGTP/KmGTP_cyt))
+
+# Rate law for GEF-assisted exchange of GTP for GDP, from Equation R3(A) in Stites et al. (2007)
+R3r_cyt() kcatGTP*CatGEF*(1/KmGTP_cyt)/(1+(FreeRasGDP/KmGDP_cyt)+(FreeRasGTP/KmGTP_cyt))
+
+# Rate law for GAP-assisated hydrolysis of GTP, from Equation R5(A) in Stites et al. (2007)
+R5_cyt() kcatGAP*CatGAP*(1/KmGAP_cyt)/(1+(FreeRasGTP/KmGAP_cyt))
+
+# rate laws for SOS1-assisted GDP/GTP exchange and RASA1-assisted GTP hydrolysis 
+#R3f_ipm() kcatGDP*CatSOS1*(1/KmGDP_ipm)/(1+(FreeRasGDP/KmGDP_ipm)+(FreeRasGTP/KmGTP_ipm))
+#R3r_ipm() kcatGTP*CatSOS1*(1/KmGTP_ipm)/(1+(FreeRasGDP/KmGDP_ipm)+(FreeRasGTP/KmGTP_ipm))
+#R5_ipm() kcatGAP*CatRASA1*(1/KmGAP_ipm)/(1+(FreeRasGTP/KmGAP_ipm))
+
+end functions
+
+begin reaction rules
+
+#---
+# Line continuation:
+# '\' indicates line continuation
+#...
+
+###########################
+# basal regulation of RAS #
+###########################
+
+# spontaneous capture/release of GDP when RAS is free
+RAS(switch,G~0)->RAS(switch,G~GDP) kaGDPxGDP
+RAS(switch,G~GDP)->RAS(switch,G~0) kdGDP
+
+# spontaneous capture/release of GTP when RAS is free
+RAS(switch,G~0)->RAS(switch,G~GTP) kaGTPxGTP
+RAS(switch,G~GTP)->RAS(switch,G~0) kdGTP
+
+# reversible binding of non-BRAF/non-CRAF effectors to GTP-loaded RAS
+RAS(switch,G~GTP)+basalEFF(ras)<->RAS(switch!1,G~GTP).basalEFF(ras!1) kaEFF,kdEFF
+
+# spontaneous GTP hydrolysis
+#   when RAS is free
+RAS(switch,G~GTP)->RAS(switch,G~GDP) khyd
+#   when RAS is bound to an effector (with fast release of effector after hydrolysis)
+RAS(switch!1,G~GTP).basalEFF(ras!1)->RAS(switch,G~GDP)+basalEFF(ras) khyd
+RAS(switch!1,G~GTP).BRAF(RBD!1)->RAS(switch,G~GDP)+BRAF(RBD) khyd
+RAS(switch!1,G~GTP).CRAF(RBD!1)->RAS(switch,G~GDP)+CRAF(RBD) khyd
+
+# GEF-assisted GDP/GTP exchange
+RAS(switch,G~GDP)->RAS(switch,G~GTP) R3f_cyt() # rate = [RAS(switch,G~GDP)]*R3f_cyt()
+RAS(switch,G~GTP)->RAS(switch,G~GDP) R3r_cyt() # rate = [RAS(switch,G~GTP)]*R3r_cyt()
+
+# The two rules below could be added to account for (EGF-induced) recruitment of SOS1 to phospho-EGFR
+#RAS(switch,G~GDP)->RAS(switch,G~GTP) R3f_ipm() # rate = [RAS(switch,G~GDP)]*R3f_ipm()
+#RAS(switch,G~GTP)->RAS(switch,G~GDP) R3r_ipm() # rate = [RAS(switch,G~GTP)]*R3r_ipm()
+
+# GAP-assisted hydrolysis of GTP on RAS
+RAS(switch,G~GTP)->RAS(switch,G~GDP) R5_cyt() # rate = [RAS(switch,G~GTP)]*R5_cyt()
+
+# The rule below could be added to account for (EGF-induced) recruitment of RASA1 (p120 RasGAP) to phospho-EGFR
+#RAS(switch,G~GTP)->RAS(switch,G~GDP) R5_ipm() # rate = [RAS(switch,G~GTP)]*R5_ipm() 
+
+################################################
+# direct recruitment of CRAF to GTP-loaded RAS #
+################################################
+
+# Rule set I
+
+# I. RAS(switch)+CRAF(RBD)<->RAS(switch!1).CRAF(RBD) kp1,km1
+#   A. Cytosolic CRAF associates with plasma membrane-associated GTP-loaded RAS
+#     Cytosolic CRAF can associate with GTP-loaded RAS as a 1) monomer, 2) homodimer, or 3) heterodimer.
+#     Association requires that S259 in monomeric CRAF be unmodified.
+#     Association requires that both copies of S259 in homodimeric CRAF be unmodified.
+#     Association requires that S259 in CRAF and S365 in BRAF both be unmodified if CRAF is in a CRAF-BRAF heterodimer.
+#     The rate of association depends on whether CRAF is phosphorylated by ERK (at S642).
+#       Association is a) fast if CRAF is NOT phosphorylated by ERK (at S642).
+#       Association is b) slow if CRAF is phosphorylated by ERK (at S642).
+#     1. monomeric CRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA1a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm,S642~0)->\
+RAS(switch!1,G~GTP).CRAF(RBD!1,S259~0,Dm,S642~0) kp1
+#       b. slow
+RuleIA1b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm,S642~P)->\
+RAS(switch!1,G~GTP).CRAF(RBD!1,S259~0,Dm,S642~P) kp1*ERK_effect_on_kp1
+#     2. homodimeric CRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA2a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,Dm!1) kp1
+#       b. slow
+RuleIA2b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,Dm!1) kp1*ERK_effect_on_kp1
+#     3. CRAF is in a heterodimer with BRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA3a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~0).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~0).BRAF(RBD,S365~0,Dm!1) kp1
+#       b. slow
+RuleIA3b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~P).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~P).BRAF(RBD,S365~0,Dm!1) kp1*ERK_effect_on_kp1
+#   B. CRAF dissociates from RAS
+#     RAS can be either 1) GTP- or 2) GDP-loaded
+#     The rate of dissociation depends on whether CRAF is phosphorylated by ERK (at S642).
+#       Dissociation is a) slow if CRAF is NOT phosphorylated by ERK (at S642).
+#       Dissociation is b) fast if CRAF is phosphorylated by ERK (at S642).
+#     1. GTP-loaded RAS
+#       a. slow (no acceleration as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIB1a: RAS(switch!1,G~GTP).CRAF(RBD!1,S642~0)->RAS(switch,G~GTP)+CRAF(RBD,S642~0) km1
+#       b. fast
+RuleIB1b: RAS(switch!1,G~GTP).CRAF(RBD!1,S642~P)->RAS(switch,G~GTP)+CRAF(RBD,S642~P) km1*ERK_effect_on_km1
+
+# NB: there is no rule for dissociation of CRAF from GDP-loaded RAS.
+# If GTP is hydrolyzed to GDP while CRAF is bound to RAS, it is likely that CRAF will be almost immediately released.
+# Thus, for simplicity, CRAF release is included in the rule for hydrolysis of GTP on CRAF-bound RAS.
+
+# NB: so far, there is no rule that permits a RAF homo- or heterdimer to crosslink two copies of RAS.
+
+################################################
+# direct recruitment of BRAF to GTP-loaded RAS #
+################################################
+
+# Rule set II
+
+# II. RAS(switch)+BRAF(RBD)<->RAS(switch!1).BRAF(RBD) kp2,km2
+#   A. Cytosolic BRAF associates with plasma membrane-associated GTP-loaded RAS
+#     Cytosolic BRAF can associate with GTP-loaded RAS as a 1) monomer, 2) homodimer, or 3) heterodimer.
+#     Association requires that S365 in monomeric CRAF be unmodified.
+#     Association requires that both copies of S365 in homodimeric CRAF be unmodified.
+#     Association requires that S365 in BRAF and S259 in CRAF both be unmodified if BRAF is in a BRAF-cRAF heterodimer.
+#     The rate of association depends on whether BRAF is phosphorylated by ERK (at T753).
+#       Association is a) fast if BRAF is NOT phosphorylated by ERK (at T753).
+#       Association is b) slow if BRAF is phosphorylated by ERK (at T753).
+#     1. monomeric BRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of T753 in BRAF)
+RuleIIA1a: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm,T753~0)->\
+RAS(switch!1,G~GTP).BRAF(RBD!1,S365~0,Dm,T753~0) kp2
+#       b. slow
+RuleIIA1b: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm,T753~P)->\
+RAS(switch!1,G~GTP).BRAF(RBD!1,S365~0,Dm,T753~P) kp2*ERK_effect_on_kp2
+#     2. homodimeric BRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of T753 in BRAF)
+RuleIIA2a: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm!1,T753~0).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).BRAF(RBD!2,S365~0,Dm!1,T753~0).BRAF(RBD,S365~0,Dm!1) kp2
+#       b. slow
+RuleIIA2b: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm!1,T753~P).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).BRAF(RBD!2,S365~0,Dm!1,T753~P).BRAF(RBD,S365~0,Dm!1) kp2*ERK_effect_on_kp2
+#     3. BRAF is in a heterodimer with CRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of T753 in BRAF)
+RuleIIA3a: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm!1,T753~0).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).BRAF(RBD!2,S365~0,Dm!1,T753~0).CRAF(RBD,S259~0,Dm!1) kp2
+#       b. slow
+RuleIIA3b: RAS(switch,G~GTP)+BRAF(RBD,S365~0,Dm!1,T753~P).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).BRAF(RBD!2,S365~0,Dm!1,T753~P).CRAF(RBD,S259~0,Dm!1) kp2*ERK_effect_on_kp2
+#   B. BRAF dissociates from RAS
+#     RAS can be either 1) GTP- or 2) GDP-loaded
+#     The rate of dissociation depends on whether BRAF is phosphorylated by ERK (at T753).
+#       Dissociation is a) slow if BRAF is NOT phosphorylated by ERK (at T753).
+#       Dissociation is b) fast if BRAF is phosphorylated by ERK (at T753).
+#     1. GTP-loaded RAS
+#       a. slow (no acceleration as a result of ERK-mediated phosphorylation of T753 in BRAF)
+RuleIIB1a: RAS(switch!1,G~GTP).BRAF(RBD!1,T753~0)->RAS(switch,G~GTP)+BRAF(RBD,T753~0) km2
+#       b. fast
+RuleIIB1b: RAS(switch!1,G~GTP).BRAF(RBD!1,T753~P)->RAS(switch,G~GTP)+BRAF(RBD,T753~P) km2*ERK_effect_on_km2
+
+# NB: there is no rule for dissociation of BRAF from GDP-loaded RAS.
+# If GTP is hydrolyzed to GDP while BRAF is bound to RAS, it is likely that BRAF will be almost immediately released.
+# Thus, for simplicity, BRAF release is included in the rule for hydrolysis of GTP on BRAF-bound RAS.
+
+#########################
+# CRAF homodimerization #
+#########################
+
+# Rule set III (reversible homodimerization of CRAF)
+
+####################################################################
+# forward parts of Rules 1_11, 1_12, 1_13 and 1_14 in Boris' notes #
+####################################################################
+
+# Rule subset III.A (CRAF homodimerization when both copies of CRAF are localized to the plasma membrane)
+
+# III.A: CRAF(RBD!+,Dm)+CRAF(RBD!+,Dm)->CRAF(RBD!+,Dm!1).CRAF(RBD!+,Dm!1) kCCd1_ipm
+#   A. RasGTP-bound CRAF associates with RasGTP-bound CRAF 
+#     Both copies of CRAF are localized to the plasma membrane.
+#     One copy must be phosphorylated at S338.
+#     There are three cases: 1) neither copy of CRAF is phosphorylated by ERK,
+#                            2) only one copy of CRAF is phosphorylated by ERK, and
+#                            3) both copies of CRAF are phosphorylated by ERK.
+# Rule III.A.1 (forward part of Rule 1_11)
+#   S338 is phosphorylated in at least one of the two dimerization partners and 
+#   S642 is NOT phosphorylated in either.
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~0)+CRAF(RBD!+,S259~0,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~0).CRAF(RBD!+,S259~0,Dm!1,S642~0) kCCd1_ipm
+# Rules III.A.2
+#   S338 is phosphorylated in at least one of the two dimerization partners and 
+#   S642 is phosphorylated in one but not both of the dimerization partners.
+#   The rules below accomplish what was intended by the forward parts of Rules 1_12 and 1_13 in Boris' notes.
+#   Importantly, the rules below do NOT overlap. (Boris' rules overlap.)
+CRAF(RBD!+,S259~0,S338~0,Dm,S642~P)+CRAF(RBD!+,S259~0,S338~P,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,S338~0,Dm!1,S642~P).CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~0) kCCd1_ipm*ERK_effect_on_kCCd1
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~P)+CRAF(RBD!+,S259~0,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~P).CRAF(RBD!+,S259~0,Dm!1,S642~0) kCCd1_ipm*ERK_effect_on_kCCd1
+# Rule III.A.3 (forward part of Rule 1_14)
+#   S338 is phosphorylated in at least one of the two dimerization partners and 
+#   S642 is phosphorylated in both.
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~P)+CRAF(RBD!+,S259~0,Dm,S642~P)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~P).CRAF(RBD!+,S259~0,Dm!1,S642~P) kCCd1_ipm*(ERK_effect_on_kCCd1*ERK_effect_on_kCCd1)
+
+####################################################################
+# forward parts of Rules 1_15, 1_16, 1_17 and 1_18 in Boris' notes # <-- check for rule overlap and modify Boris' rules as needed
+####################################################################
+
+# Rule subset III.B (CRAF homodimerization when at least one free copy of CRAF is localized to the cytosol)
+
+# III.B: CRAF(Dm)+CRAF(RBD,Dm)->CRAF(Dm!1).CRAF(RBD,Dm!1) kCCd1_cyt
+#   B. Cytosolic or RasGTP-bound CRAF associates with cytosolic CRAF
+#     One or both copies are localized to the cytosol.
+#     At least one copy is phosphorylated at S338.
+#     There are three class of ERK phosphorylation: 1) neither copy of CRAF is phosphorylated by ERK,
+#                                                   2) only one copy of CRAF is phosphorylated by ERK, and
+#                                                   3) both copies of CRAF are phosphorylated by ERK.
+# Rule III.B.1
+#   The two rules below accomplish what was intended by Rule 1_15 (forward part)
+#   Below is Rule 1_15, which is incomplete.
+CRAF(S259~0,Dm,S642~0)+CRAF(RBD,S259~0,S338~P,Dm,S642~0)->\
+CRAF(S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,S338~P,Dm!1,S642~0) kCCd1_cyt
+#   The rule below captures a case that is ignored by the rule above.
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~0)+CRAF(RBD,S259~0,S338~0,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~0).CRAF(RBD,S259~0,S338~0,Dm!1,S642~0) kCCd1_cyt
+# Rule III.B.2
+#   The four rules below accomplish what was intended by Rules 1_16 and 1_17 (forward parts)
+CRAF(S259~0,Dm,S642~0)+CRAF(RBD,S259~0,S338~P,Dm,S642~P)->\
+CRAF(S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,S338~P,Dm!1,S642~P) kCCd1_cyt*ERK_effect_on_kCCd1
+CRAF(S259~0,S338~P,Dm,S642~0)+CRAF(RBD,S259~0,S338~0,Dm,S642~P)->\
+CRAF(S259~0,S338~P,Dm!1,S642~0).CRAF(RBD,S259~0,S338~0,Dm!1,S642~P) kCCd1_cyt*ERK_effect_on_kCCd1
+CRAF(RBD!+,S259~0,Dm,S642~P)+CRAF(RBD,S259~0,S338~P,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,S338~P,Dm!1,S642~0) kCCd1_cyt*ERK_effect_on_kCCd1
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~P)+CRAF(RBD,S259~0,S338~0,Dm,S642~0)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~P).CRAF(RBD,S259~0,S338~0,Dm!1,S642~0) kCCd1_cyt*ERK_effect_on_kCCd1
+# Rule III.B.3
+#   The two rules below accomplish what was intended by Rule 1_18 (forward part)
+#   Below is Rule 1_18, which is incomplete.
+CRAF(S259~0,Dm,S642~P)+CRAF(RBD,S259~0,S338~P,Dm,S642~P)->\
+CRAF(S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,S338~P,Dm!1,S642~P) kCCd1_cyt*(ERK_effect_on_kCCd1*ERK_effect_on_kCCd1)
+#   The rule below captures a case that is ignored by the rule above.
+CRAF(RBD!+,S259~0,S338~P,Dm,S642~P)+CRAF(RBD,S259~0,S338~0,Dm,S642~P)->\
+CRAF(RBD!+,S259~0,S338~P,Dm!1,S642~P).CRAF(RBD,S259~0,S338~0,Dm!1,S642~P) kCCd1_cyt*(ERK_effect_on_kCCd1*ERK_effect_on_kCCd1)
+
+####################################################################
+# reverse parts of Rules 1_11, 1_12, 1_13 and 1_14 in Boris' notes #
+####################################################################
+
+# Rule subset III.C (dissociation of CRAF homodimers when a CRAF homodimer crosslinks two copies of RAS)
+
+# Rule III.C.1 (reverse part of Rule 1_11)
+CRAF(RBD!+,Dm!1,S642~0).CRAF(RBD!+,Dm!1,S642~0)->\
+CRAF(RBD!+,Dm,S642~0)+CRAF(RBD!+,Dm,S642~0) kCCd_1_ipm
+# Rule III.C.2
+#   The rule below corresponds to the reverse parts of Rules 1_12 and 1_13 in Boris' notes.
+CRAF(RBD!+,Dm!1,S642~0).CRAF(RBD!+,Dm!1,S642~P)->\
+CRAF(RBD!+,Dm,S642~0)+CRAF(RBD!+,Dm,S642~P) kCCd_1_ipm*ERK_effect_on_kCCd_1
+# Rule III.C.3 (reverse part of Rule 1_14)
+CRAF(RBD!+,Dm!1,S642~P).CRAF(RBD!+,Dm!1,S642~P)->\
+CRAF(RBD!+,Dm,S642~P)+CRAF(RBD!+,Dm,S642~P) kCCd_1_ipm*(ERK_effect_on_kCCd_1*ERK_effect_on_kCCd_1 )
+
+####################################################################
+# reverse parts of Rules 1_15, 1_16, 1_17 and 1_18 in Boris' notes # <-- check for rule overlap and modify Boris' rules as needed
+####################################################################
+
+# Rule subset III.D (dissociation of CRAF homodimers when there is no crosslinking of RAS)
+
+# Rule III.D.1
+#   The rule below accomplishes what was intended by Rule 1_15 (reverse part)
+CRAF(Dm!1,S642~0).CRAF(RBD,Dm!1,S642~0)->\
+CRAF(Dm,S642~0)+CRAF(RBD,Dm,S642~0) kCCd_1_cyt
+# Rule III.D.2 
+#   The three rules below accomplishe what was intended by Rules 1_16 and 1_17 (reverse parts)
+CRAF(RBD!+,Dm!1,S642~0).CRAF(RBD,Dm!1,S642~P)->\
+CRAF(RBD!+,Dm,S642~0)+CRAF(RBD,Dm,S642~P) kCCd_1_cyt*ERK_effect_on_kCCd_1
+CRAF(RBD!+,Dm!1,S642~P).CRAF(RBD,Dm!1,S642~0)->\
+CRAF(RBD!+,Dm,S642~P)+CRAF(RBD,Dm,S642~0) kCCd_1_cyt*ERK_effect_on_kCCd_1
+CRAF(RBD,Dm!1,S642~0).CRAF(RBD,Dm!1,S642~P)->\
+CRAF(RBD,Dm,S642~0)+CRAF(RBD,Dm,S642~P) kCCd_1_cyt*ERK_effect_on_kCCd_1
+# Rule III.D.3
+#   The rule below acomplishes what was intended by Rule 1_18 (reverse part)
+CRAF(Dm!1,S642~P).CRAF(RBD,Dm!1,S642~P)->\
+CRAF(Dm,S642~P)+CRAF(RBD,Dm,S642~P) kCCd_1_cyt*(ERK_effect_on_kCCd_1*ERK_effect_on_kCCd_1)
+
+# NB: Rule_1_11a in Boris' notes is NOT included above, because S259~P should never be present in a CRAF homodimer.
+#   We are assuming that S259 in CRAF is only phosphorylated when CRAF is both monomeric and localized to the cytosol.
+
+# NB: Rule_1_11b in Boris' notes is NOT included above, because S338~P should never be dephosphorylated when CRAF is dimeric.
+#   We are assuming that at least one copy of CRAF must be phosphorylated at S338 in order for CRAF homodimerization to occur.
+
+#########################
+# BRAF homodimerization #
+#########################
+
+# Rule set IV
+
+##############################################################
+# forward parts of Rules 2_11, 2_12 and 2_13 in Boris' notes #
+##############################################################
+
+# Rule subset IV.A
+
+# IV.A: BRAF(RBD!+,Dm)+BRAF(RBD!+,Dm)->BRAF(RBD!+,Dm!1).BRAF(RBD!+,Dm!1) kBBd1_ipm
+#   A. RasGTP-bound BRAF associates with RasGTP-bound BRAF 
+#     Both copies of BRAF are localized to the plasma membrane.
+#     There are three cases: 1) neither copy of BRAF is phosphorylated by ERK,
+#                            2) only one copy of BRAF is phosphorylated by ERK, and
+#                            3) both copies of BRAF are phosphorylated by ERK.
+# IV.A.1: this rule corresponds to the forward part of Rule_2_11 in Boris' notes
+BRAF(RBD!+,S365~0,Dm,T753~0)+BRAF(RBD!+,S365~0,Dm,T753~0)->\
+BRAF(RBD!+,S365~0,Dm!1,T753~0).BRAF(RBD!+,S365~0,Dm!1,T753~0) kBBd1_ipm
+# IV.A.2: this rule corresponds to the forward part of Rule_2_12 in Boris' notes
+BRAF(RBD!+,S365~0,Dm,T753~0)+BRAF(RBD!+,S365~0,Dm,T753~P)->\
+BRAF(RBD!+,S365~0,Dm!1,T753~0).BRAF(RBD!+,S365~0,Dm!1,T753~P) kBBd1_ipm*ERK_effect_on_kBBd1
+# IV.A.3: this rule corresponds to the forward part of Rule_2_13 in Boris' notes
+BRAF(RBD!+,S365~0,Dm,T753~P)+BRAF(RBD!+,S365~0,Dm,T753~P)->\
+BRAF(RBD!+,S365~0,Dm!1,T753~P).BRAF(RBD!+,S365~0,Dm!1,T753~P) kBBd1_ipm*(ERK_effect_on_kBBd1*ERK_effect_on_kBBd1)
+
+####################################################################
+# forward parts of Rules 2_14, 2_15, 2_16 and 2_17 in Boris' notes #
+####################################################################
+
+# Rule subset IV.B
+
+# IV.B: BRAF(Dm)+BRAF(RBD,Dm)->BRAF(Dm!1).BRAF(RBD,Dm!1) kpBBd1_cyt
+#   B. Cytosolic or RasGTP-bound BRAF associates with cytosolic BRAF
+#     One or both copies are localized to the cytosol.
+#     There are three cases: 1) neither copy of BRAF is phosphorylated by ERK,
+#                            2) only one copy of BRAF is phosphorylated by ERK, and
+#                            3) both copies of BRAF are phosphorylated by ERK.
+# IV.B.1: this rule corresponds to the forward part of Rule 2_14 in Boris' notes
+BRAF(S365~0,Dm,T753~0)+BRAF(RBD,S365~0,Dm,T753~0)->\
+BRAF(S365~0,Dm!1,T753~0).BRAF(RBD,S365~0,Dm!1,T753~0) kBBd1_cyt
+# IV.B.2: these three rules accomplish what was intended by the forward parts of Rules 2_15 and 2_16 in Boris' notes
+#   Importantly, the rules below do NOT overlap. (Boris' rules overlap.)
+BRAF(RBD!+,S365~0,Dm,T753~0)+BRAF(RBD,S365~0,Dm,T753~P)->\
+BRAF(RBD!+,S365~0,Dm!1,T753~0).BRAF(RBD,S365~0,Dm!1,T753~P) kBBd1_cyt*ERK_effect_on_kBBd1
+BRAF(RBD!+,S365~0,Dm,T753~P)+BRAF(RBD,S365~0,Dm,T753~0)->\
+BRAF(RBD!+,S365~0,Dm!1,T753~P).BRAF(RBD,S365~0,Dm!1,T753~0) kBBd1_cyt*ERK_effect_on_kBBd1
+BRAF(RBD,S365~0,Dm,T753~0)+BRAF(RBD,S365~0,Dm,T753~P)->\
+BRAF(RBD,S365~0,Dm!1,T753~0).BRAF(RBD,S365~0,Dm!1,T753~P) kBBd1_cyt*ERK_effect_on_kBBd1
+# IV.B.3: this rules corresponds to the forward part of Rule 2_17 in Boris' notes
+BRAF(S365~0,Dm,T753~P)+BRAF(RBD,S365~0,Dm,T753~P)->\
+BRAF(S365~0,Dm!1,T753~P).BRAF(RBD,S365~0,Dm!1,T753~P) kBBd1_cyt*(ERK_effect_on_kBBd1*ERK_effect_on_kBBd1)
+
+############################################################
+# reverse parts of Rules 2_11 through 2_17 in Boris' notes #
+############################################################
+
+# Rule subset IV.C (lumping all dissociation reaction rules for BRAF homodimers together)
+
+# IV.C: BRAF(Dm!1).BRAF(Dm!1)->BRAF(Dm)+BRAF(Dm) kpBBd_1
+#   C. Dissociation of BRAF homodimers
+#     The rate of dissociation depends whether a BRAF homodimer crosslinks two copies RAS according to Boris' notes. 
+#     There are two cases:
+#       1) both copies of BRAF are bound to RasGTP (and therefore crosslink two copies of RAS) or
+#       2) at least one copy of BRAF is NOT bound to RasGTP.
+#     The rate of dissociation also depends on ERK phosphorylation status according to Boris' notes, with three cases:
+#       a) neither copy of BRAF is phosphorylated by ERK,
+#       b) only one copy of BRAF is phosphoyrlated by ERK, and
+#       c) both copies of BRAF are phosphorylated by ERK.
+# IV.C.1.a: this rule corresponds to the reverse part of Rule_2_11 in Boris' notes
+#   slow rate of dissociation
+BRAF(RBD!+,Dm!1,T753~0).BRAF(RBD!+,Dm!1,T753~0)->\
+BRAF(RBD!+,Dm,T753~0)+BRAF(RBD!+,Dm,T753~0) kBBd_1_ipm
+# IV.C.1.b: this rule corresponds to the reverse part of Rule_2_12 in Boris' notes
+#   intermediate rate of dissociation
+BRAF(RBD!+,Dm!1,T753~0).BRAF(RBD!+,Dm!1,T753~P)->\
+BRAF(RBD!+,Dm,T753~0)+BRAF(RBD!+,Dm,T753~P) kBBd_1_ipm*ERK_effect_on_kBBd_1
+# IV.C.1.c: this rule corresponds to the reverse part of Rule_2_13 in Boris' notes
+#   fast rate of dissociation
+BRAF(RBD!+,Dm!1,T753~P).BRAF(RBD!+,Dm!1,T753~P)->\
+BRAF(RBD!+,Dm,T753~P)+BRAF(RBD!+,Dm,T753~P) kBBd_1_ipm*(ERK_effect_on_kBBd_1*ERK_effect_on_kBBd_1)
+# IV.C.2.a: this rule corresponds to the reverse part of Rule_2_14 in Boris' notes
+#   slow rate of dissociation
+BRAF(Dm!1,T753~0).BRAF(RBD,Dm!1,T753~0)->\
+BRAF(Dm,T753~0)+BRAF(RBD,Dm,T753~0) kBBd_1_cyt
+# IV.C.2.b: these three rules accomplish what was intended by the reverse parts of Rules 2_15 and 2_16 in Boris' notes
+#   Importantly, the rules below do NOT overlap. (Boris' rules overlap.)
+#   intermediate rate of dissociation
+BRAF(RBD!+,Dm!1,T753~0).BRAF(RBD,Dm!1,T753~P)->\
+BRAF(RBD!+,Dm,T753~0)+BRAF(RBD,Dm,T753~P) kBBd_1_cyt*ERK_effect_on_kBBd_1
+BRAF(RBD!+,Dm!1,T753~P).BRAF(RBD,Dm!1,T753~0)->\
+BRAF(RBD!+,Dm,T753~P)+BRAF(RBD,Dm,T753~0) kBBd_1_cyt*ERK_effect_on_kBBd_1
+BRAF(RBD,Dm!1,T753~0).BRAF(RBD,Dm!1,T753~P)->\
+BRAF(RBD,Dm,T753~0)+BRAF(RBD,Dm,T753~P) kBBd_1_cyt*ERK_effect_on_kBBd_1
+# IV.C.2.c: this rule corresponds to the reverse part of Rule_2_17 in Boris' notes
+#   fast rate of dissociation
+BRAF(Dm!1,T753~P).BRAF(RBD,Dm!1,T753~P)->\
+BRAF(Dm,T753~P)+BRAF(RBD,Dm,T753~P) kBBd_1_cyt*(ERK_effect_on_kBBd_1*ERK_effect_on_kBBd_1)
+
+# NB: Rule_2_11a in Boris' notes is NOT included above, because S365~P should never be present in a BRAF homodimer.
+#   We are assuming that S365 in BRAF is only phosphorylated when BRAF is both monomeric and localized to the cytosol.
+
+################################
+# BRAF-CRAF heterodimerization #
+################################
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate reaction network implied by rules
+generate_network({overwrite=>1})
+
+# equilibrate (12,000 s = 200 min)
+simulate({suffix=>"equilibration",method=>"ode",t_start=>0,t_end=>12000,n_steps=>360,print_functions=>1})
+saveConcentrations()
+
+resetConcentrations()
+setConcentration("basalGEF(GEF)",144*1e3) # increase GEF activity 1,000-fold
+simulate({suffix=>"production",method=>"ode",t_start=>0,t_end=>1200,n_steps=>120})
+
+# network-free approach or direct (stochastic) simulation
+#simulate({method=>"nf",complex=>1,gml=>1000000,t_start=>0,t_end=>1,n_steps=>100})
+
+# production simulation (continue=>1 means that t_start=>12000)
+#setConcentration("basalGEF(GEF)",144*1e3) # increase GEF activity 1,000-fold
+#simulate({continue=>1,method=>"ode",t_end=>24000,n_steps=>120,print_functions=>1})
+
+end actions

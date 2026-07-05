@@ -1,0 +1,44 @@
+# Feature: trivalent ligand + bivalent receptor aggregation
+# Tests: asymmetric multivalent cross-linking, branching aggregates
+# Covers: tlbr, basicTLBR, bench_tlbr_* from existing corpus
+# Tier: base
+# Expected: large aggregates form from trivalent-bivalent cross-linking
+# invariant: conserved L_total = 30
+# invariant: conserved R_total = 50
+
+begin model
+begin parameters
+    L_tot  30
+    R_tot  50
+    kf     0.005   # /s, binding rate
+    kr     0.1     # /s, unbinding rate
+end parameters
+
+begin molecule types
+    L(r,r,r)
+    R(l,l)
+end molecule types
+
+begin seed species
+    L(r,r,r)  L_tot
+    R(l,l)    R_tot
+end seed species
+
+begin observables
+    Molecules  L_total     L()
+    Molecules  R_total     R()
+    Molecules  L_free_r    L(r)
+    Molecules  R_free_l    R(l)
+    Molecules  L_bound     L(r!+)
+    Molecules  R_bound     R(l!+)
+    Species    Complexes   L(r!+)
+end observables
+
+begin reaction rules
+    L(r) + R(l) <-> L(r!1).R(l!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

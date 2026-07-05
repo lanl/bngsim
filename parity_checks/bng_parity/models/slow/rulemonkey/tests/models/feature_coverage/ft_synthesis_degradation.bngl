@@ -1,0 +1,39 @@
+# Feature: molecule synthesis (Src -> Src + A) and degradation (A -> Trash)
+# Tests: molecule creation, molecule deletion, birth-death steady state
+# Tier: base
+# Expected: A_total approaches k_birth/k_death = 50 at steady state
+
+begin model
+begin parameters
+    k_birth  0.5    # /s, production rate
+    k_death  0.01   # /s, degradation rate per molecule
+end parameters
+
+begin molecule types
+    Src()
+    A()
+    Trash()
+end molecule types
+
+begin seed species
+    Src()    1
+    A()      0
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total    A()
+    Molecules  Src_total  Src()
+end observables
+
+begin reaction rules
+    # Synthesis: source produces A
+    Src() -> Src() + A()   k_birth
+    # Degradation: A is destroyed
+    A() -> Trash()         k_death
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>500,n_steps=>100})
+end actions

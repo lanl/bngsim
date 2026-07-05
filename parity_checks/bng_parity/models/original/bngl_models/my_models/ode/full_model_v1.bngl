@@ -1,0 +1,158 @@
+begin model
+begin parameters
+KAT__FREE 203.94805832981712
+RT_ref__FREE 133231828968.737
+area_ref__FREE 8095151.218256237
+c__FREE 408.08504615007126
+kf_ref__FREE 7.105155320079943e-10
+kr__FREE 0.11790152309866526
+N_ref__FREE 127635956145.06621
+p__FREE 5097.30371992663
+tau__FREE 0.14979033600959665
+# adjustable parameters
+KAT KAT__FREE
+RT_ref RT_ref__FREE
+area_ref area_ref__FREE
+c c__FREE
+kf_ref kf_ref__FREE
+kr kr__FREE
+N_ref N_ref__FREE
+p p__FREE
+tau tau__FREE
+# cohort body weight
+# BW_T1 5.24 # kg
+# BW_C1 5.32 # kg
+# BW_T2 8.09 # kg
+# BW_C2 7.67 # kg
+BW 5.32 # kg
+# reference body weight
+BWref 8.07 # kg
+# literature number of CD4+ T cells in animals with an average body weight of 3.821 kg
+T0lit 3.5e9 # cells (total)
+# scale by body weight to obtain cohort-specific initial number of target cells
+T0 = T0lit*(BW/3.821) # cells (total)
+# steady-state number of target cells during persistent infection
+Tss = tau*T0 # cells (total)
+# scale by body weight to obtain cohort-specific total number of viral receptors on FDCs
+RT = RT_ref*(BW/BWref)
+# lifetime of a target cell
+lT 22 # d
+# rate constant for target cell death
+mu = 1/lT # /d
+# rate constant for generation of target cells
+lmbda = mu*T0
+# rate constant for death of infected cells
+delta 1.5 # /d
+# contact rate constant
+beta = c*delta/(p*Tss)
+# body weight-dependent rate constant for virion-receptor association
+kf = kf_ref*(BWref/BW)
+# rate constant for virion-receptor dissociation for singly-bound virions
+koff 8600 # /d
+# rate constant for virion-receptor dissociation for crosslinked virions
+kmx = koff
+# dimensionless equilibrium crosslinking constant
+# choose KXRT such that 1/kr = (1/koff)*((1+KXRT)^10-1)/(10*KXRT) 
+KXRT 3.3536 # dimensionless
+# crosslinking rate constant
+kpx = kmx*KXRT/RT # /d
+# correction
+Delta_RT = 6.3*RT
+end parameters
+begin molecule types
+T()
+I()
+V()
+R()
+B01()
+B02()
+B03()
+B04()
+B05()
+B06()
+B07()
+B08()
+B09()
+B10()
+T_simple()
+I_simple()
+V_simple()
+R_simple()
+B_simple()
+end molecule types
+begin seed species
+T() T0
+I() 1
+V() 0
+R() RT+Delta_RT
+B01() 0
+B02() 0
+B03() 0
+B04() 0
+B05() 0
+B06() 0
+B07() 0
+B08() 0
+B09() 0
+B10() 0
+T_simple() T0
+I_simple() 1
+V_simple() 0
+R_simple() RT
+B_simple() 0
+end seed species
+begin observables
+Molecules T T()
+Molecules T_simple T_simple()
+Molecules I I()
+Molecules I_simple I_simple()
+Molecules V V()
+Molecules V_simple V_simple()
+Molecules R R()
+Molecules R_simple R_simple()
+Molecules B B01() B02() B03() B04() B05() B06() B07() B08() B09() B10()
+Molecules B_simple B_simple()
+end observables
+begin functions
+#t_1() = (1/koff)*((1+KXRT)^10-1)/(10*KXRT)
+#k_r_par()=kr
+#k_r_fun()=1/t_1()
+end functions
+begin reaction rules
+# generation of target cells
+0->T() lmbda
+0->T_simple() lmbda
+# death of target cells
+T()->0 mu
+T_simple()->0 mu
+# infection
+T()+V()->I()+V() beta
+T_simple()+V_simple()->I_simple()+V_simple() beta
+# death of infected cells
+I()->0 delta
+I_simple()->0 delta
+# generation of virus by infected cells
+I()->I()+V() p
+I_simple()->I_simple()+V_simple() p
+# clearance of virus
+V()->0 c
+V_simple()->0 c
+# capture/release of virions by viral receptors on FDCs
+V()+R()<->B01() kf,koff
+V_simple()+R_simple()<->B_simple() kf,kr
+# reversible crosslinking
+B01()+R()<->B02() 9*kpx,2*kmx
+B02()+R()<->B03() 8*kpx,3*kmx
+B03()+R()<->B04() 7*kpx,4*kmx
+B04()+R()<->B05() 6*kpx,5*kmx
+B05()+R()<->B06() 5*kpx,6*kmx
+B06()+R()<->B07() 4*kpx,7*kmx
+B07()+R()<->B08() 3*kpx,8*kmx
+B08()+R()<->B09() 2*kpx,9*kmx
+B09()+R()<->B10() 1*kpx,10*kmx
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>42,n_steps=>840,print_functions=>1})
+end actions

@@ -1,0 +1,60 @@
+# Model: nfsim_coarse_graining.bngl
+# Description: Models the fusion of droplets (coarse-grained particles).
+#              Small droplets fuse to form larger ones.
+#              Demonstrates how to model aggregation where the size attribute is tracked.
+#              (Note: Explicit size tracking of large aggregates requires infinite rules or NFsim attributes)
+#              Here we use a simplified Size state (1, 2, 4, 8...).
+
+begin model
+
+begin parameters
+    k_fuse 0.1
+    k_fission 0.01
+end parameters
+
+begin molecule types
+    Droplet(size~1~2~4~8~16~32~64) # Powers of 2 for simplicity
+end molecule types
+
+begin seed species
+    Droplet(size~1) 1000
+end seed species
+
+begin observables
+    Molecules Size_1 Droplet(size~1)
+    Molecules Size_2 Droplet(size~2)
+    Molecules Size_Large Droplet(size~16)
+end observables
+
+begin reaction rules
+    # Fusion Rules (Coarse Graining)
+    # 1+1 -> 2
+    Droplet(size~1) + Droplet(size~1) -> Droplet(size~2) k_fuse
+
+    # 2+2 -> 4
+    Droplet(size~2) + Droplet(size~2) -> Droplet(size~4) k_fuse
+
+    # 4+4 -> 8
+    Droplet(size~4) + Droplet(size~4) -> Droplet(size~8) k_fuse
+
+    # 8+8 -> 16
+    Droplet(size~8) + Droplet(size~8) -> Droplet(size~16) k_fuse
+
+    # 16+16 -> 32
+    Droplet(size~16) + Droplet(size~16) -> Droplet(size~32) k_fuse
+
+    # Fission (Splitting)
+    Droplet(size~32) -> Droplet(size~16) + Droplet(size~16) k_fission
+end reaction rules
+
+end model
+
+## Actions ##
+#generate_network({overwrite=>1})
+#simulate({method=>"nf", t_end=>400, n_steps=>200})
+
+
+begin actions
+simulate({method=>"nf",t_end=>400,n_steps=>200})
+
+end actions

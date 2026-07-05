@@ -1,0 +1,120 @@
+begin model
+begin parameters
+# total population of US
+S0 331e6 
+S0_ 331e6 # NB: this setting should be the same as for S0!
+# fraction 0<f<1
+#  Try 1e-2 (relatively slow NFsim calculations, no discernable time offset)
+#      1e-4 (relatively fast NFsim calculations, discernable time offset because of stochasticity)
+f 0.0001 # dimensionless
+# subpopulation
+s0 = f*S0_
+# rate constant for emigration/travel and death for causes unrelated to infection
+#  There are 7755 deaths per day.
+#  There are approximately 60.5 M departures for international travel per year.
+mu (7755 + (60.5e6/365))/S0_ # /d
+# rate constant for birth/immigration/travel
+#  We assume the initial population is at steady state.
+lambda = mu*S0 # /d
+lambda_prime = mu*s0
+# basic reproduction number
+R0 3 # dimensionless
+# infection fatality rate (IFR)
+#  The fraction of infections that lead to death.
+IFR 0.003 # dimensionless
+# average duration of infectiousness
+infectiousness_duration 7 # d
+# rate constant for death caused by infection
+delta = IFR/infectiousness_duration # /d
+# rate constant for recovery from infection
+gamma = (1-IFR)/infectiousness_duration # /d
+# expected duration of immunity
+immunity_duration 6*(362.25/12) # d
+# rate constant for loss of immunity
+rho = 1/immunity_duration # /d
+# fraction of population influx consisting of infected persons
+phi 0.01 # dimensionless
+# rate constant for disease transmission
+beta = R0*(mu+gamma+delta)/(lambda/mu) # /d
+beta_prime = R0*(mu+gamma+delta)/(lambda_prime/mu) # /d
+end parameters
+begin molecule types
+S()
+I()
+R()
+s()
+i()
+r()
+S_int()
+I_int()
+R_int()
+end molecule types
+begin seed species
+S() S0
+I() 0
+R() 0
+s() s0
+i() 0
+r() 0
+S_int() 1
+I_int() 0
+R_int() 0
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules s s()
+Molecules i i()
+Molecules r r()
+Molecules S_int S_int()
+Molecules I_int I_int()
+Molecules R_int R_int()
+end observables
+begin functions
+#report_lambda()=lambda
+report_lambda_prime_phi()=lambda_prime*phi
+s_int()=s/s0
+i_int()=i/s0
+r_int()=r/s0
+end functions
+begin reaction rules
+# model for entire population (extensive variables)
+0->S() lambda*(1-phi)
+0->I() lambda*phi
+S()->0 mu
+I()->0 mu+delta
+R()->0 mu
+S()+I()->I()+I() beta
+I()->R() gamma
+R()->S() rho
+# model for subpopulation (extensive variables)
+0->s() lambda_prime*(1-phi)
+0->i() lambda_prime*phi
+s()->0 mu
+i()->0 mu+delta
+r()->0 mu
+s()+i()->i()+i() beta_prime
+i()->r() gamma
+r()->s() rho
+# model with intensive variables
+0->S_int() (lambda/S0)*(1-phi) # (lambda_prime/s0)*(1-phi)
+0->I_int() (lambda/S0)*phi # (lambda_prime/s0)*phi
+S_int()->0 mu
+I_int()->0 mu+delta
+R_int()->0 mu
+S_int()+I_int()->I_int()+I_int() beta*S0 # beta_prime*s0
+I_int()->R_int() gamma
+R_int()->S_int() rho
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({suffix=>"deterministic",method=>"ode",t_start=>0,t_end=>730,n_steps=>730,print_functions=>1})
+resetConcentrations()
+setParameter("S0",1) # This setting avoids an expensive NFsim simulation. (We only want to simulate the subpopulation dynamics.)
+# NB: only look at s, i, and r simulation outputs! 
+# NB: the start of the epidemic varies because of stochasticity!
+simulate({suffix=>"stochastic",method=>"nf",t_start=>0,t_end=>730,n_steps=>730,print_functions=>1,gml=>2147483647,get_final_state=>0})
+end actions

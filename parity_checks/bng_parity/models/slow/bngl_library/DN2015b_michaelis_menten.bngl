@@ -1,0 +1,55 @@
+begin model
+#@model_id: DN2015b_michaelis_menten
+#@title: Michaelis-Menten kinetics recasting (Daniels & Nemenman 2015, Eq. 6)
+#@description: Single-substrate Michaelis-Menten consumption dx1/dt = -A*x1/(B+x1). Converted from Antimony to BNGL with population variables.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1371/journal.pone.0119821
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  A        1.0            # 1/s  (Vmax)
+  B        0.5            # dimensionless  (Km in concentration units)
+  scale    1000           # dimensionless  (concentration-to-molecule scaling)
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  x1()
+end molecule types
+
+begin seed species
+  x1()  1000  # molecules  (1.0 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_x1  x1()
+end observables
+
+begin functions
+  # Descaled concentration
+  x1_conc() = Obs_x1 * inv_s
+  # Michaelis-Menten consumption rate (in concentration/s), scaled to molecules/s
+  consumption_x1() = A * x1_conc() / (B + x1_conc()) * scale
+end functions
+
+begin reaction rules
+  # Consumption: dx1/dt = -A*x1/(B+x1)
+  x1() -> 0  consumption_x1()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

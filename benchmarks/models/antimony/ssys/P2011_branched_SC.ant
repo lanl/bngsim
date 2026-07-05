@@ -1,0 +1,70 @@
+// Branched Network with SC (Saturable and Cooperative) Kinetics
+// Source: Pozo et al., "Steady-state global optimization of metabolic non-linear
+//         dynamic models through recasting into power-law canonical models"
+//         BMC Systems Biology 5:137 (2011)
+//         Equation (2), Figure 1
+//
+// Network structure (Figure 1):
+//   X5 -> X1 -> X2 -> X3 -> (output via v4)
+//                  \-> X4 -> (output via v6)
+//   X3 inhibits reaction 2 (feedback)
+//   X1 activates reaction 5 (feedforward)
+//
+// Original SC model (Eq. 2) - 4 dependent variables with SC kinetics:
+// ==============================================================================
+// dX1/dt = 20*k1*X5^1/(X5^1+1) - 40*k2*X1^1*X3^(-1)/[(X1^1+1)(X3^(-1)+1)]
+// dX2/dt = 40*k2*X1^1*X3^(-1)/[(X1^1+1)(X3^(-1)+1)] - 7.5*k3*X2^2.5/(X2^2.5+0.25)
+//          - 16*k5*X1^1*X2^1/[(X1^1+1)(X2^1+1)]
+// dX3/dt = 7.5*k3*X2^2.5/(X2^2.5+0.25) - 12*k4*X3^1/(X3^1+1)
+// dX4/dt = 16*k5*X1^1*X2^1/[(X1^1+1)(X2^1+1)] - 8*k6*X4^1/(X4^1+1)
+//
+// SC formalism: v = V*X^n / (K + X^n)
+// where n can represent cooperativity
+// ==============================================================================
+
+model P2011_branched_SC()
+  // State variables
+  compartment cell = 1
+  var species X1 in cell
+  var species X2 in cell
+  var species X3 in cell
+  var species X4 in cell
+
+  // External (fixed) variable
+  X5 = 1.0
+
+  // Enzyme activity modulation parameters (k_r = 1 at basal level)
+  k1 = 1.0
+  k2 = 1.0
+  k3 = 1.0
+  k4 = 1.0
+  k5 = 1.0
+  k6 = 1.0
+
+  // Reaction rates with SC form
+  v1 := 20 * k1 * X5 / (X5 + 1)
+
+  // FIXED: avoid (1/X3)/(1/X3+1) cancellable singularity
+  // (1/X3)/(1/X3+1) == 1/(1+X3) algebraically, but is numerically safer this way.
+  v2 := 40 * k2 * (X1 / (X1 + 1)) * (1 / (1 + X3))
+
+  v3 := 7.5 * k3 * X2^2.5 / (X2^2.5 + 0.25)
+  v4 := 12 * k4 * X3 / (X3 + 1)
+  v5 := 16 * k5 * X1 / (X1 + 1) * X2 / (X2 + 1)
+  v6 := 8 * k6 * X4 / (X4 + 1)
+
+  // ODEs
+  X1' = v1 - v2
+  X2' = v2 - v3 - v5
+  X3' = v3 - v4
+  X4' = v5 - v6
+
+  // Initial conditions (basal steady state)
+  X1 = 1.0
+  X2 = 0.8
+  X3 = 1.2
+  X4 = 1.0
+end
+
+// @SIM T_START=0 T_END=1 N_STEPS=100 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

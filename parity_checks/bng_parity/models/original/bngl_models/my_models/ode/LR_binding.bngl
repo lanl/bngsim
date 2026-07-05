@@ -1,0 +1,159 @@
+begin model
+
+# Model for IGF1 interaction with IGF1R
+
+# References:
+# Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+
+begin parameters
+
+a1_perMpers__FREE__ 2.8e5 # /M/s
+a2_perMpers__FREE__ 1.5e4 # /M/s
+d1__FREE__ 5e-2 # /s
+d2__FREE__ 1.9e-4 # /s
+d1prime__FREE__ 1.9e-5 # /s
+d2prime__FREE__ 1.3e-2 # /s
+kcr__FREE__ 5.6e-3 # /s kcr = a1prime
+
+# fraction of cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers, 
+#   and rate constants for zero-order processes.
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214076e23 # [=] molecules per mol
+
+# volume of extracellular fluid per cell
+#   Assumptions:
+#    - 15 cm culture dishes (cells 95% confluent)
+#    - 1.2e5 cells per cm^2
+#    - growth surface area of 140 cm^2
+#    - 1.7e7 cells per dish
+#    - 0.25 mL of medium per square cm of growth surface
+#    - 35 mL of medium per dish
+Vecf_default 2.1e-9*f # [=] L per cell
+
+dilution 1.0
+Vecf=dilution*Vecf_default
+
+IGF1_hot_conc 14e-12 # [=] M (7 pM or 24 pM, p. 8 of Kiselyov et al., 2009)
+
+IGF1_cold_conc 0 # [=] M
+
+# copies of IGF1 per cell
+IGF1_hot_total=IGF1_hot_conc*(NA*Vecf)
+
+IGF1R_total 20000*f # [=] copies per cell (two copies of IGF1R per dimer)
+
+# Rate constants. 
+a1_perMpers	a1_perMpers__FREE__		# /M/s
+a1=a1_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+a2_perMpers	a2_perMpers__FREE__		# /M/s
+a2=a2_perMpers/(NA*Vecf)	# [=] /M/s converted to /(molecule/cell)/s
+# reverse rate constant for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+d1	d1__FREE__	# [=] /s
+
+# reverse rate constant for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+d2	d2__FREE__		# [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime	d1prime__FREE__			
+#   Release of ligand from Site 2
+d2prime	d2prime__FREE__ 			
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+kcr kcr__FREE__ # [=] /s
+a1prime=kcr	# [=] /s
+a2prime=(a2*a1prime*d1*d2prime)/(a1*d1prime*d2)	# [=] /s [By applying the detailed balance constraint]
+
+
+end parameters
+
+begin molecule types
+
+# ligand (insulin-like growth factor 1)
+#  ds: dimerization surface (this site is not functional in IGF1, as it is in insulin)
+#  hs: hexamerization surface
+IGF1(ds,hs)
+
+# receptor (IGF1 receptor)
+#  S1: Site 1
+#  S2: Site 2
+#  C: cysteine residues involved in disulfide bonds of the receptor dimer
+IGF1R(S1,S2,C)
+
+end molecule types
+
+begin seed species
+
+IGF1(ds,hs) IGF1_hot_total
+IGF1R(S1,S2,C!0).IGF1R(S1,S2,C!0) 0.5*IGF1R_total
+
+end  seed species
+
+begin observables
+
+Molecules L IGF1(ds,hs)
+Species R IGF1R(S1,S2,C!0).IGF1R(S1,S2,C!0)
+Species B1 IGF1(ds!1,hs).IGF1R(S1!1,S2,C!0).IGF1R(S1,S2,C!0)
+Species B2 IGF1(ds,hs!2).IGF1R(S1,S2,C!0).IGF1R(S1,S2!2,C!0)
+Species C11 IGF1(ds!1,hs).IGF1R(S1!1,S2,C!0).IGF1R(S1!2,S2,C!0).IGF1(ds!2,hs)
+Species C12 IGF1(ds!1,hs).IGF1R(S1!1,S2!2,C!0).IGF1R(S1,S2,C!0).IGF1(ds,hs!2)
+Species C22 IGF1(ds,hs!1).IGF1R(S1,S2!1,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds,hs!2)
+Species X0 IGF1(ds!1,hs!2).IGF1R(S1!1,S2,C!0).IGF1R(S1,S2!2,C!0)
+Species X1 IGF1(ds!1,hs!2).IGF1R(S1!1,S2,C!0).IGF1R(S1!3,S2!2,C!0).IGF1(ds!3,hs)
+Species X2 IGF1(ds!1,hs!2).IGF1R(S1!1,S2!4,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds,hs!4)
+
+end observables
+
+begin functions
+
+
+end functions
+
+
+begin reaction rules
+
+# Free IGF1 reversibly binds a free copy of Site 1 in dimeric IGF1R.
+IGF1(ds,hs)+IGF1R(S1,C!0).IGF1R(S2,C!0)<->IGF1(ds!1,hs).IGF1R(S1!1,C!0).IGF1R(S2,C!0) a1,d1
+#   This rules stipulates that ligand binds S1 in R1 only if S2 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S1 in R1 and S2 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S1 in R1 and S2 in R2 can only accomodate a single ligand.
+# Free IGF1 reversibly binds a free copy of Site 2 in dimeric IGF1R.
+
+IGF1(ds,hs)+IGF1R(S2,C!0).IGF1R(S1,C!0)<->IGF1(ds,hs!1).IGF1R(S2!1,C!0).IGF1R(S1,C!0) a2,d2
+#   This rules stipulates that ligand binds S2 in R1 only if S1 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S2 in R1 and S1 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S2 in R1 and S1 in R2 can only accomodate a single ligand.
+
+# IGF1 bound at Site 1 in R1 reversibly crosslinks Site 1 in R1 and Site 2 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 2 in R1 and Site 1 in R2.
+IGF1R(S1!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2!2,C!0).IGF1(ds!1,hs!2) a2prime,d2prime
+
+# IGF1 bound at Site 2 in R1 reversibly crosslinks Site 2 in R1 and Site 1 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 1 in R1 and Site 2 in R2.
+IGF1R(S2!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S2!1,C!0).IGF1R(S1!2,S2,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+IGF1R(S1,S2!1,C!0).IGF1R(S1,S2!+,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S1,S2!1,C!0).IGF1R(S1!2,S2!+,C!0).IGF1(ds!2,hs!1) a1prime,d1prime
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>172800,n_steps=>1200,print_functions=>1})
+#writeLaTeXfile()
+
+end actions

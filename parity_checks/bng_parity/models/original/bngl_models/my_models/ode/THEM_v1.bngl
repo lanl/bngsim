@@ -1,0 +1,272 @@
+# THEM.bngl
+
+begin model
+
+# This BNGL file specifies the transient hapten exposure model (THEM) of Xu et al. (1998).
+
+# References:
+#  1. Xu K, Goldstein B, et al. (1998) J Immunol 160: 3225-3235.
+#  2. Erickson J, et al. (1987) Biophys J 52: 657-662.
+#  3. Goldstein B, et al. (1989) Biophys J 56: 955-966.
+#  4. Mahajan A, et al. (2014) ACS Chem Biol 9: 1508-1519.
+#  5. Andrews NL, et al. (2009) Immunity 31: 469-479.
+#  6. The Plasma Proteins: Structure, Function, and Genetic Control, 2nd Edition,
+#     Vol 1, p 141 and p 147, Putnam FW (Editor), Academic Press, New York (1975).
+#  7. Poljak RJ, et al. (1975) PNAS 70: 3305-3310. See p 3307.
+#  8. Hlavacek WS, et al. (1999) Biophys J 76: 3031-3043.
+#  9. Hlavacek WS, et al. (1999) Biophys J 76: 2421-2431.
+# 10. Mechai N, et al. (1999) J Colloid Interface Sci 218: 167-175.
+# 11. Roosen-Runge F, et al. (2010) Biochim Biophys Acta 1804: 68-75.
+# 12. Berg HC, Purcell EM (1977) Biophys J 20: 193-219.
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+f 1 # [=] dimensionless, 0 < f <= 1
+
+# ratio (circumference:diameter)
+pi 3.14159 # [=] dimensionless
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cell density
+#   Cells are in suspension.
+#   A cell density of 10^6 cells per mL is reported in Fig 1 of Ref 1.
+cellDensity 1.0e6 # [=] cells per mL or cells per cm^3
+
+# volume of extracellular fluid surrounding a single cell (on average)
+#   1 nL per cell
+V=f/cellDensity # [=] cm^3/cell
+
+# cell radius (for an RBL-2H3 cell)
+#   A spherical cell is assumed (for simplicity).
+#   The radius of an RBL cell is estimated to be 4 um in Refs 2 and 3.
+cellRadius 4.0e-4 # [=] cm
+
+# number of antigen-specific FITC-labeled IgE per RBL cell
+#   A receptor concentration of 0.5 nM is reported in Fig 1 of Ref 1.
+rConc 0.5e-12 # [=] mol per cm^3
+RT=rConc*(NA*V) # [=] molecules per cell
+
+# number of antigen-specific Fab arms per cell
+#  There are two Fab arms (antigen-combining sites) per IgE.
+FT=2.0*RT # [=] molecule per cell
+
+# diffusion coefficient of an unclustered IgE receptor (Fc&epsilon;RI) in plasma membrane
+#   A value of 0.0823 um^2/s was reported in Ref 5.
+DR_mobile 0.0823e-8 # [=] cm^2/s
+
+# diffusion coefficent of clustered, immobilized IgE receptors
+#   In Ref 5, immobility is associated with a diffusion coefficient less than 0.01 um^2/s.
+DR_immobile 0.0
+
+# valence of multivalent ligand (antigen)
+#   The ligand is DNP-conjugated BSA (bovine serum albumin) (Ref 1).
+#   There are 15 DNP groups per BSA (on average).
+n 15 # [=] dimensionless
+
+# maximum number of Fab arms that can attach to a given ligand
+#   The value of this parameter is unknown, but it can be estimated - see comments below.
+m 5 # [=] dimensionless, 0 < m <= n
+
+# diffusion coefficient of the multivalent ligand, DNP_{15}-BSA, in water
+#   This parameter was determined for BSA in Refs 10 and 11.
+DL 5.0e-7 # [=] cm^2/s
+
+# multivalent ligand (DNP_{15}-BSA) concentration
+#   A DNP-BSA concentration of 11 nM is considered in Fig 1 of Ref 1. 
+lConc 11.0e-12 # [=] mol per cm^3
+LT=lConc*(NA*V) # [=] molecules per cell
+
+# THEM parameters that characterize hapten exposure 
+#   rate constant for transition from the buried to the exposed hapten state
+#     A value of 9.1e-5 /s is reported in Fig 3 in Ref 1
+lambda_plus 9.1e-5 # [=] /s
+#   rate constant for transition from the exposed to the buried hapten state
+#     A value of 7.5e-4 /s is reported in Fig 3 in Ref 1
+lambda_minus 7.5e-4 # [=] /s
+
+# equilibrium constant for hapten exposure
+#   lambda = 0.12, for rate constants given above
+lambda=lambda_plus/lambda_minus # [=] dimensionless
+
+# THEM parameters that characterize multivalent ligand-bivalent receptor interaction
+#   rate constant for capture of free ligand
+#     A value of 9.2e6 /M/s [= 9.2e9 cm^2/(mol s)] is reported in Fig 3 in Ref 1.
+kp1THEM 9.2e9/(NA*V) # [=] /(molecule/cell)/s
+#   rate constant for release of ligand
+#     A value of 0.012 /s is reported in Fig 3 in Ref 1.
+km1THEM 1.2e-2 # [=] /s
+#   forward rate constant for receptor crosslinking by a tethered ligand
+#     The quantity kp2THEM*FT is reported to have a value of 0.11 /s in Fig 3 in Ref 1.
+kp2THEM=1.1e-1/FT # [=] /(molecule/cell)/s
+#   reverse rate constant
+#     A value of 0.012 /s is reported in Fig 3 in Ref 1.
+#     Note that km1THEM = km2THEM = koffTHEM.
+km2THEM 1.2e-2 # [=] /s
+
+# km1THEM = km2THEM = koffTHEM
+koffTHEM 1.2e-2 # [=] /s
+
+# diffusion coefficient of competitive, monovalent ligand, DCT, in water
+# diffusion coefficient of DCT (estimate of Erickson et al., 1987)
+DM 1e-9 # cm^2/s
+
+# monovalent ligand concentration
+#   The monovalent ligand is DCT.
+#   In Fig 1 in Ref 1, a DCT concentration of 77 uM is considered.
+#   In the inset of this figure, a DCT concentration of 5.6 nM is considered.
+DCT_Fig1 77.0e-9 # [=] mol per cm^3
+DCT_Inset 5.6e-12 # [=] mol per cm^3
+
+# we set mConc equal to either DCT_Fig1 or DCT_Inset
+mConc 77.0e-9 # [=] mol per cm^2
+MT=mConc*(NA*V) # [=] molecules per cell
+
+# rate constants for monovalent ligand-receptor site interaction
+#   The ligand is DCT; the receptor site is an IgE Fab arm (an antigen-combining site in IgE).
+#   forward rate constant
+#     A value of 2.0e7 /M/s [= 2.0e10 cm^2/(mol s)] is reported in Fig 2 in Ref 1.
+kpM 2.0e10/(NA*V) # [=] /(molecule/cell)/s
+#   reverse rate constant
+#     A value of 1.1e-2 /s is reported in Fig 2 in Ref 1.
+kmM 1.1e-2 # [=] /s
+
+# parameters of the measurement model - see Eq 4 in Ref 1
+#   Maximum fluorescence
+#     This quantity is obtained by reading Fig 3C in Ref 1; 
+#     it corresponds to the "relative fluorescence" at time t = 0.
+Fmax 96.6 # [=] a.u.
+#   Minimum fluorescence
+#     This quantity is obtained by calculation (based on THEM and parameter values of Ref 1) 
+#     and by reading Fig 3C in Ref 1.
+#     Three intermediate quantities must be known.
+#     The first is the calculated fractional occupancy of Fab sites, fb, at time t = 2000 s:
+#     fb = 4.07878/6.02214 = 0.677297.
+#     The second is the "relative fluorescence" at time t = 2000 s: 63.8 (a.u.).
+#     The third is the "relative fluorescence" at time t = 0 (i.e., Fmax).
+Fmin 48.2 # [=] a.u.
+
+# parameters of the alternative (or extended) measurement model
+#   This measurement model incorporates the effect of DCT on fluorescence of FITC-labeled IgE.
+# fluorescence when all Fab sites are free
+F_free 96.6 # [=] a.u.
+# fluorescence when all Fab sites are bound to DNP-BSA
+F_multi 48.2 # [=] a.u.
+# fluorescence when all Fab sites are bound to DCT
+F_mono 67.6 # [=] a.u.
+
+end parameters
+
+begin molecule types
+
+# representation of monovalent DNP ligand (DCT) in THEM
+#   DNP: hapten
+DCT(DNP)
+
+# representation of multivalent DNP ligand (DNP_{15}-BSA) in THEM
+#   DNP~hidden: hidden hapten
+#   DNP~exposed: exposed hapten 
+BSA(DNP~hidden~exposed,DNP~hidden~exposed)
+
+# In THEM, the ligand is assumed to behave as if there are only two DNP groups per BSA.
+
+# receptor binding site
+#   Fab: DNP-specific Fab arm in cell-surface IgE
+receptorSite(Fab)
+# In THEM, only antigen-combining sites are tracked.
+
+end molecule types
+
+begin seed species
+
+DCT(DNP) 0 # The copy number may be set to MT in the actions block.
+
+# All ligand is initially free.
+# We assume that initially there is an equilibrium distribution of hapten exposure states.
+BSA(DNP~hidden,DNP~hidden) LT/((1+lambda)*(1+lambda)) # from Eq 12a in Ref 1
+BSA(DNP~hidden,DNP~exposed) 2*lambda*LT/((1+lambda)*(1+lambda)) # from Eq 12b in Ref 1
+BSA(DNP~exposed,DNP~exposed) lambda*lambda*LT/((1+lambda)*(1+lambda)) # from Eq 12c in Ref 1
+
+receptorSite(Fab) FT
+
+end  seed species
+
+begin observables
+
+#Species freeBSA BSA(DNP,DNP)
+#Species boundBSA BSA(DNP~exposed!+,DNP) BSA(DNP~exposed!+,DNP~exposed!+)
+#Molecules freeFab receptorSite(Fab)
+#Molecules boundFab receptorSite(Fab!+)
+
+Molecules Nbonds receptorSite(Fab!+)
+
+# The observables defined below are used in functions.
+
+Molecules freeFab receptorSite(Fab)
+Molecules BSA_bnd_Fab receptorSite(Fab!1).BSA(DNP~exposed!1)
+Molecules DCT_bnd_Fab receptorSite(Fab!1).DCT(DNP!1)
+
+end observables
+
+begin functions
+
+# measurement model for THEM
+#   fb = Nbonds/FT = (Fmax1-F1)/(Fmax1-Fmin1)
+F1() Fmax-(Fmax-Fmin)*Nbonds/FT
+
+F1alt() F_free*(freeFab/FT)+F_multi*(BSA_bnd_Fab/FT)+F_mono*(DCT_bnd_Fab/FT)
+
+end functions
+
+begin reaction rules
+
+#####################################
+# Rules for DCT interactions (THEM) #
+#####################################
+
+# monovalent ligand-receptor interaction
+#   THEM:
+DCT(DNP)+receptorSite(Fab)<->DCT(DNP!1).receptorSite(Fab!1) kpM,kmM
+
+#########################################
+# Rules for DNP-BSA interactions (THEM) #
+#########################################
+
+# multivalent ligand-receptor interaction
+#   hapten exposure/burying
+BSA(DNP~hidden)<->BSA(DNP~exposed) lambda_plus,lambda_minus
+#   capture of free DNP-BSA ligand
+BSA(DNP~exposed,DNP)+receptorSite(Fab)->\
+BSA(DNP~exposed!1,DNP).receptorSite(Fab!1) kp1THEM
+#   receptor crosslinking
+receptorSite(Fab!1).BSA(DNP~exposed!1,DNP~exposed)+receptorSite(Fab)->\
+receptorSite(Fab!1).BSA(DNP~exposed!1,DNP~exposed!2).receptorSite(Fab!2) kp2THEM
+#   dissociation of a ligand-receptor bond
+receptorSite(Fab!1).BSA(DNP~exposed!1)->receptorSite(Fab)+BSA(DNP~exposed) koffTHEM
+
+end reaction rules
+
+end model
+
+begin actions
+
+# simulate experiment of Fig 1 in Ref 1 
+# t0 = 0 <- experiment started
+# t1 = 263 s <- DNP-BSA added
+# t2 = 2093 s <- DCT added
+# t3 = 3533 s <- experiment stopped
+generate_network({overwrite=>1})
+setParameter("mConc",0.0)
+setParameter("kp1THEM",0.0)
+simulate({method=>"ode",print_functions=>1,\
+          t_start=>0,t_end=>263,n_steps=>10})
+setParameter("kp1THEM",1.52770e-8)
+simulate({continue=>1,method=>"ode",print_functions=>1,\
+          t_start=>263,t_end=>2093,n_steps=>200})
+setConcentration("DCT(DNP)",46370478000)
+simulate({continue=>1,method=>"ode",print_functions=>1,\
+          t_start=>2093,t_end=>3533,n_steps=>200})
+
+end actions

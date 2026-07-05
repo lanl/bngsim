@@ -1,0 +1,331 @@
+begin model
+
+#@title: |
+#  IgE receptor signaling with history-dependent responses
+#  (Harmon et al., 2017)
+
+#@description: |
+#  ODE model of FcεRI signaling in mast cells under pulsed
+#  antigen stimulation, from Harmon et al. (2017)
+#  Supplementary Data S1. Multivalent antigen (DF3) binds
+#  IgE-FcεRI, triggering receptor phosphorylation, Syk
+#  recruitment (positive signal), Ship1 recruitment with
+#  cofactor X (negative signal), PIP3 dynamics, and
+#  degranulation. Timescale separation between fast Syk
+#  activation/deactivation and slow Ship1/X dynamics
+#  produces history-dependent responses: short quiescence
+#  intervals yield desensitization; long intervals yield
+#  priming (hyperdegranulation). Parameters were fit to
+#  on-device degranulation data (Fig. 4) using BioNetFit.
+
+#@keyword: |
+#  IgE, FcεRI, mast cell, Syk, Ship1, PIP3,
+#  degranulation, desensitization, priming,
+#  pulse wash, history dependence, timescale separation,
+#  antigen receptor signaling, ODE, mass action,
+#  fitted parameters
+
+#@reference: |
+#  Harmon B, Chylek LA, Liu Y, Mitra ED, Mahajan A,
+#  Saada EA, Schudel BR, Holowka DA, Baird BA, Wilson BS,
+#  Hlavacek WS, Singh AK (2017). Timescale separation of
+#  positive and negative signaling creates history-dependent
+#  responses to IgE receptor stimulation. Sci Rep 7:15586.
+#  doi:10.1038/s41598-017-15568-2
+
+#@note: |
+#  Original filename: model.bngl (Supplementary Data S1).
+#  Authors: Chylek LA, Mitra E, Hlavacek WS.
+#  Parameters with __FREE__ suffix were estimated by
+#  BioNetFit fitting to experimental degranulation data.
+#  Time unit is minutes (converted from seconds via T=60).
+#  Antigen held at constant concentration via $ prefix in
+#  seed species; pulses implemented by setConcentration in
+#  the actions block.
+
+begin parameters
+
+  # --- Fitted parameters (BioNetFit 1.0) ---
+  X_tot__FREE__     6.13331088e+00   # dimensionless
+  k_Xoff__FREE__    1.91394890e-06   # /s
+  k_Xon__FREE__     9.39816993e+04   # /M/s
+  kase__FREE__      3.76143208e+00   # /s
+  kdegX__FREE__     3.19130252e-04   # /s
+  kdegran__FREE__   1.88893284e+05   # /M/s
+  km_Ship1__FREE__  1.43154204e-03   # /s
+  km_Syk__FREE__    2.87783197e-01   # /s
+  km_x__FREE__      1.12185442e-01   # /s
+  koff__FREE__      4.45671503e-03   # /s
+  kp_Ship1__FREE__  1.10810534e+04   # /M/s
+  kp_Syk__FREE__    2.65462642e+05   # /M/s
+  kp_x__FREE__      7.81553987e+05   # /M/s
+  kpten__FREE__     9.95093271e-03   # /s
+  ksynth1__FREE__   1.84930114e-02   # /s
+  pase__FREE__      1.60206452e-01   # /s
+
+  # --- System geometry and scaling ---
+  # System size scaling factor
+  f  1  # dimensionless
+
+  # Avogadro constant
+  NA  6.02214076e23  # /mol
+
+  # Time unit conversion factor (s to min)
+  T  60  # s/min
+
+  # Microfluidic channel volume
+  Vchannel  500e-9  # L/channel
+
+  # Cells per channel
+  Nchannel  1000  # cells/channel
+
+  # Extracellular fluid volume per cell
+  Vecf  f*(Vchannel/Nchannel)  # L/cell
+
+  # Cytosolic volume (sphere, diameter 17.9 um)
+  Vcyt  f*3e-12  # L/cell
+
+  # --- Antigen concentrations ---
+  # Condition 0: no antigen (wash)
+  Ag_tot_0  0  # molecules/cell
+
+  # Condition 1: 10 nM DF3
+  Ag_conc1  10e-9  # M
+  Ag_tot_1  Ag_conc1*(NA*Vecf)  # molecules/cell
+
+  # --- Protein abundances ---
+  # IgE-FcεRI antigen receptor
+  R_tot  f*3e5  # molecules/cell
+
+  # Protein tyrosine kinase Syk
+  Syk_tot  f*3e5  # molecules/cell
+
+  # Lipid phosphatase Ship1
+  Ship1_tot  f*3e5  # molecules/cell
+
+  # Hypothetical Ship1 cofactor X
+  X_tot  X_tot__FREE__*Ship1_tot  # molecules/cell
+
+  # β-hexosaminidase (degranulation marker)
+  H_tot  1e6  # molecules/cell
+
+  # --- Rate constants (converted to /min) ---
+  # Antigen capture (diffusion-limited, 1e7 /M/s)
+  kon  1e7*T/(NA*Vecf)  # /molecule/min
+
+  # Antigen release
+  koff  koff__FREE__*T  # /min
+
+  # Receptor phosphorylation (pseudo-first-order)
+  kase  kase__FREE__*T  # /min
+
+  # Receptor dephosphorylation (pseudo-first-order)
+  pase  pase__FREE__*T  # /min
+
+  # Syk recruitment to phosphorylated receptor
+  kp_Syk  kp_Syk__FREE__*T/(NA*Vcyt)  # /molecule/min
+  km_Syk  km_Syk__FREE__*T  # /min
+
+  # Ship1 recruitment to phosphorylated receptor
+  kp_Ship1  kp_Ship1__FREE__*T/(NA*Vcyt)  # /molecule/min
+  km_Ship1  km_Ship1__FREE__*T  # /min
+
+  # Cofactor X activation by phosphorylated receptor
+  k_Xon  k_Xon__FREE__*T/(NA*Vcyt)  # /molecule/min
+  k_Xoff  k_Xoff__FREE__*T  # /min
+
+  # X-Ship1 interaction
+  kp_x  kp_x__FREE__*T/(NA*Vcyt)  # /molecule/min
+  km_x  km_x__FREE__*T  # /min
+
+  # PIP3 synthesis by activated Syk
+  ksynth1  ksynth1__FREE__*T  # /min
+
+  # PIP3 clearance by activated Ship1 (diffusion-limited)
+  kdeg1  1e7*T/(NA*Vcyt)  # /molecule/min
+
+  # PIP3 basal degradation by PTEN
+  kpten  kpten__FREE__*T  # /min
+
+  # Degranulation driven by PIP3
+  kdegran  kdegran__FREE__*T/(NA*Vcyt)  # /molecule/min
+
+  # Proteasomal degradation of activated X
+  kdegX  kdegX__FREE__*T  # /min
+
+end parameters
+
+begin molecule types
+  # Multivalent antigen (DNP-conjugated BSA)
+  Ag(DNP)
+  # IgE-FcεRI antigen receptor
+  #   IgE: antigen-binding site
+  #   Yb: β-chain ITAM (0=unphosphorylated, P=phosphorylated)
+  #   Yg: γ-chain ITAMs (0=unphosphorylated, P=phosphorylated)
+  R(IgE,Yb~0~P,Yg~0~P)
+  # Protein tyrosine kinase Syk
+  Syk(tSH2)
+  # Lipid phosphatase Ship1
+  Ship1(SH2,x)
+  # Hypothetical Ship1 cofactor X
+  X(s~on~off)
+  # Phosphatidylinositol (3,4,5)-trisphosphate
+  PIP3()
+  # β-hexosaminidase (degranulation marker)
+  #   loc: in=granule, out=secreted
+  H(loc~in~out)
+end molecule types
+
+begin seed species
+  # $ prefix: held at constant concentration
+  $Ag(DNP)            Ag_tot_1   # molecules/cell
+  R(IgE,Yb~0,Yg~0)   R_tot      # molecules/cell
+  Syk(tSH2)           Syk_tot    # molecules/cell
+  Ship1(SH2,x)        Ship1_tot  # molecules/cell
+  X(s~off)            X_tot      # molecules/cell
+  PIP3()              0          # molecules/cell
+  H(loc~in)           H_tot      # molecules/cell
+end seed species
+
+begin observables
+  # Antigen
+  Molecules  Ag_total              Ag()
+  Molecules  Ag_free               Ag(DNP)
+  # Receptor states
+  Molecules  R_bound               R(IgE!+)
+  Molecules  R_free                R(IgE)
+  Molecules  RP                    R(Yg~P!?)
+  Molecules  R0                    R(Yg~0)
+  # Signaling intermediates
+  Molecules  actSyk                Syk(tSH2!+)
+  Molecules  actShip1              Ship1(SH2!+,x!+)
+  Molecules  Ship1_total           Ship1()
+  Molecules  PIP3_total            PIP3()
+  # Cofactor X
+  Molecules  Xall                  X()
+  Molecules  X_on_free             X(s~on)
+  Molecules  X_on_free_or_bound    X(s~on!?)
+  Molecules  XShip1                X(s~on!1).Ship1(x!1)
+  # Degranulation readout
+  Molecules  degranulation         H(loc~out)
+end observables
+
+begin reaction rules
+
+  # Antigen-receptor binding (one-step effective mechanism)
+  Ag(DNP) + R(IgE) <-> Ag(DNP!1).R(IgE!1)  kon, koff
+
+  # Receptor phosphorylation (Lyn-mediated, requires Ag)
+  R(IgE!+,Yb~0,Yg~0) -> R(IgE!+,Yb~P,Yg~P)  kase
+
+  # Receptor dephosphorylation (pseudo-first-order)
+  R(Yb~P,Yg~P) -> R(Yb~0,Yg~0)  pase
+
+  # Syk recruitment to γ-chain phospho-ITAM
+  R(Yg~P) + Syk(tSH2) <-> R(Yg~P!1).Syk(tSH2!1) \
+    kp_Syk, km_Syk
+
+  # Ship1 recruitment to β-chain phospho-ITAM
+  R(Yb~P) + Ship1(SH2) <-> R(Yb~P!1).Ship1(SH2!1) \
+    kp_Ship1, km_Ship1
+
+  # Receptor-mediated activation of cofactor X
+  R(Yb~P!?) + X(s~off) -> R(Yb~P!?) + X(s~on)  k_Xon
+
+  # Deactivation of cofactor X
+  X(s~on) -> X(s~off)  k_Xoff
+
+  # PIP3 synthesis by receptor-recruited Syk
+  Syk(tSH2!+) -> Syk(tSH2!+) + PIP3()  ksynth1
+
+  # Activated X binds Ship1
+  X(s~on) + Ship1(x) <-> X(s~on!1).Ship1(x!1)  kp_x, km_x
+
+  # PIP3 clearance by membrane-associated Ship1-X complex
+  Ship1(SH2!+,x!+) + PIP3() -> Ship1(SH2!+,x!+)  kdeg1
+
+  # Basal PIP3 degradation (PTEN)
+  PIP3() -> 0  kpten
+
+  # Proteasomal degradation of activated X (free)
+  X(s~on) -> 0  kdegX
+
+  # Proteasomal degradation of activated X (Ship1-bound)
+  X(s~on!1).Ship1(x!1) -> Ship1(x)  kdegX
+
+  # PIP3-driven degranulation
+  PIP3() + H(loc~in) -> PIP3() + H(loc~out)  kdegran
+
+end reaction rules
+
+end model
+
+begin actions
+
+  #@note: |
+  #  Pulse/wash protocol from Harmon et al. (2017) Fig. 4.
+  #  Each trial: 5-min DF3 pulse (S1), variable quiescence
+  #  interval I (Ag=0), then 5-min DF3 pulse (S2).
+  #  saveConcentrations/resetConcentrations are used to
+  #  branch from the post-S1 state for each I value.
+
+  generate_network({overwrite=>1})  # 23 species, 86 reactions
+
+  #@figure: Fig. 4 in Harmon et al. (2017)
+
+  # S1: first 5-min pulse of 10 nM DF3
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  simulate({suffix=>"p1_5",method=>"ode",\
+    t_end=>5,n_steps=>50})
+  saveConcentrations()
+
+  # --- I = 5 min ---
+  setConcentration("Ag(DNP)","Ag_tot_0")
+  simulate({suffix=>"p2_5",method=>"ode",\
+    t_end=>5,n_steps=>50})
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  setConcentration("H(loc~out)",0)
+  simulate({suffix=>"p3_5",method=>"ode",\
+    t_end=>5,n_steps=>50})
+
+  # --- I = 30 min ---
+  resetConcentrations()
+  setConcentration("Ag(DNP)","Ag_tot_0")
+  simulate({suffix=>"p2_30",method=>"ode",\
+    t_end=>30,n_steps=>300})
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  setConcentration("H(loc~out)",0)
+  simulate({suffix=>"p3_30",method=>"ode",\
+    t_end=>5,n_steps=>50})
+
+  # --- I = 60 min ---
+  resetConcentrations()
+  setConcentration("Ag(DNP)","Ag_tot_0")
+  simulate({suffix=>"p2_60",method=>"ode",\
+    t_end=>60,n_steps=>600})
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  setConcentration("H(loc~out)",0)
+  simulate({suffix=>"p3_60",method=>"ode",\
+    t_end=>5,n_steps=>50})
+
+  # --- I = 120 min ---
+  resetConcentrations()
+  setConcentration("Ag(DNP)","Ag_tot_0")
+  simulate({suffix=>"p2_120",method=>"ode",\
+    t_end=>120,n_steps=>1200})
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  setConcentration("H(loc~out)",0)
+  simulate({suffix=>"p3_120",method=>"ode",\
+    t_end=>5,n_steps=>50})
+
+  # --- I = 240 min ---
+  resetConcentrations()
+  setConcentration("Ag(DNP)","Ag_tot_0")
+  simulate({suffix=>"p2_240",method=>"ode",\
+    t_end=>240,n_steps=>2400})
+  setConcentration("Ag(DNP)","Ag_tot_1")
+  setConcentration("H(loc~out)",0)
+  simulate({suffix=>"p3_240",method=>"ode",\
+    t_end=>5,n_steps=>50})
+
+end actions

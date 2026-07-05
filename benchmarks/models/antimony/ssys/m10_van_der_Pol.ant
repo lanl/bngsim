@@ -1,0 +1,44 @@
+// van der Pol oscillator
+// This model is essentially the same as S1987_E2_van_der_pol().
+// van der Pol B (1926) On relaxation-oscillations.
+//   The London, Edinburgh, and Dublin Philosophical Magazine
+//   and Journal of Science 2: 978-992.
+// This model is essentially the same as S1987_E2_van_der_pol.
+// ODEs:
+//   x' = y
+//   y' = mu*(1 - x^2)*y - x
+// ICs: x(0)=2, y(0)=1
+// Params: mu=5
+// 
+// Recast:
+// slack
+//   eps1 = 1; eps2 = 1; eps3 = 1; eps4 = 1;
+//
+// x' = y
+//   X1' = (eps1 + 1)*X2*X3*X4  -  eps1*X2*X3*X4;
+//
+// choose X2' = - X1 * X3^(-1) * X4^(-1)  (with ε-splitting)
+//   X2' =  eps2*X1*(X3^(-1))*(X4^(-1))  -  (eps2 + 1)*X1*(X3^(-1))*(X4^(-1));
+//
+// X3' =  mu*X3          (ε-split)
+//   X3' = (eps3 + mu)*X3  -  eps3*X3;
+//
+// X4' = - mu*X1^2*X4    (ε-split)
+//   X4' =  eps4*X1^2*X4    -  (eps4 + mu)*X1^2*X4;
+//
+// ICs
+//   X1 = 2;
+//   X2 = 1;  X3 = 1;  X4 = 1;
+model van_der_Pol()
+  // initial conditions
+  x = 2
+  y = 1
+
+  // parameter
+  mu = 5
+
+  // flows (mass-action-style reactions with general rate laws)
+  R1:  -> x; y
+  R2:  -> y; mu*(1 - x^2)*y - x
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

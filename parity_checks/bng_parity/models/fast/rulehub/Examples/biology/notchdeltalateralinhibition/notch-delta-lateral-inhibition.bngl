@@ -1,0 +1,49 @@
+begin model
+begin parameters
+    # Notch-Delta Lateral Inhibition
+    # Pattern formation via juxtacrine signaling between neighboring cells.
+    
+    k_bind 0.01      # Delta-Notch binding
+    k_unbind 0.002   # Dissociation
+    k_signal 0.2     # Notch cleavage/Activation
+    k_decay 0.05     # Active Notch degradation
+end parameters
+
+begin molecule types
+    CellNotch(state~inactive~active)
+    CellDelta(level~low~high)
+end molecule types
+
+begin seed species
+    CellNotch(state~inactive) 1
+    CellDelta(level~low) 1
+end seed species
+
+begin observables
+    Molecules Active_notch CellNotch(state~active)
+    Molecules High_delta CellDelta(level~high)
+end observables
+
+begin reaction rules
+    # 1. Receiver Activation
+    # Delta on neighbor binds Notch on cell
+    CellNotch(state~inactive) + CellDelta(level~high) <-> CellNotch(state~active) + CellDelta(level~high) k_bind,k_unbind
+    
+    # 2. Signal Transduction
+    # Active Notch suppresses Delta expression (Lateral Inhibition)
+    # (Simplified: Active Notch promotes low Delta state)
+    CellNotch(state~active) -> CellNotch(state~inactive) k_decay
+    
+    # 3. Delta Dynamics
+    # Default to high Delta in absence of inhibition
+    CellDelta(level~low) -> CellDelta(level~high) k_signal
+    
+    # Inhibition: Active Notch suppresses Delta
+    CellNotch(state~active) + CellDelta(level~high) -> CellNotch(state~active) + CellDelta(level~low) k_signal
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>1000,n_steps=>300})
+end actions
+end model

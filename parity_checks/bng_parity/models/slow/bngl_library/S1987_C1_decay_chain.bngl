@@ -1,0 +1,100 @@
+begin model
+#@model_id: S1987_C1_decay_chain
+#@title: Radioactive decay chain (10 species)
+#@description: Linear decay chain dZ1/dt = -Z1, dZi/dt = Z(i-1) - Zi (i=2..9), dZ10/dt = Z9. From Savageau & Voit (1987) Problem C1.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  k        1.0            # 1/s; first-order transfer/decay rate
+end parameters
+
+begin molecule types
+  Z1()
+  Z2()
+  Z3()
+  Z4()
+  Z5()
+  Z6()
+  Z7()
+  Z8()
+  Z9()
+  Z10()
+end molecule types
+
+begin seed species
+  Z1()   100  # molecules (Z1(0)=1 scaled x100)
+  Z2()     0  # molecules
+  Z3()     0  # molecules
+  Z4()     0  # molecules
+  Z5()     0  # molecules
+  Z6()     0  # molecules
+  Z7()     0  # molecules
+  Z8()     0  # molecules
+  Z9()     0  # molecules
+  Z10()    0  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Z1   Z1()
+  Molecules  Obs_Z2   Z2()
+  Molecules  Obs_Z3   Z3()
+  Molecules  Obs_Z4   Z4()
+  Molecules  Obs_Z5   Z5()
+  Molecules  Obs_Z6   Z6()
+  Molecules  Obs_Z7   Z7()
+  Molecules  Obs_Z8   Z8()
+  Molecules  Obs_Z9   Z9()
+  Molecules  Obs_Z10  Z10()
+end observables
+
+begin reaction rules
+  # Z1 -> Z2 (first-order transfer)
+  Z1() -> Z2()  k
+
+  # Z2 -> Z3
+  Z2() -> Z3()  k
+
+  # Z3 -> Z4
+  Z3() -> Z4()  k
+
+  # Z4 -> Z5
+  Z4() -> Z5()  k
+
+  # Z5 -> Z6
+  Z5() -> Z6()  k
+
+  # Z6 -> Z7
+  Z6() -> Z7()  k
+
+  # Z7 -> Z8
+  Z7() -> Z8()  k
+
+  # Z8 -> Z9
+  Z8() -> Z9()  k
+
+  # Z9 -> Z10 (terminal accumulation)
+  Z9() -> Z10()  k
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

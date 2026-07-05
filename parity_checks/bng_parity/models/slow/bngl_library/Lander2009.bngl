@@ -1,0 +1,94 @@
+begin model
+#@model_id: lander2009_oe_p1_feedback
+#@title: Cell lineage with feedback on INP replication (Lander 2009)
+#@description: Three-stage cell lineage model (stem X0 -> INP X1 -> ORN X2) with negative feedback from ORNs onto INP replication probability p1. Models regeneration after ORN ablation. Species scaled x1000 for SSA.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1371/journal.pbio.1000015
+#@note: |
+#  Original species are normalized cell counts (0..~1 range).
+#  Scaled x100 for integer molecule counts (reduced from 1000 for SSA performance).
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Scaling factor
+  scale    100            # dimensionless
+
+  # Cell lineage parameters
+  p_0      0.5            # dimensionless, stem-cell replication prob
+  p_1      0.942          # dimensionless, baseline INP replication prob
+  v_0      0.506          # 1/time, stem-cell division rate
+  v_1      1.0            # 1/time, INP division rate
+  d        0.0138         # 1/time, ORN death rate
+  g        0.0449         # dimensionless, feedback gain
+end parameters
+
+begin molecule types
+  X0()
+  X1()
+  X2()
+end molecule types
+
+begin seed species
+  X0()  100   # molecules (1.0 * 100)
+  X1()  79    # molecules (0.7916 * 100 ~ 79)
+  X2()  1     # molecules (0 * 100, use 1 for SSA)
+end seed species
+
+begin observables
+  Molecules  Obs_X0  X0()
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # Rescaled concentrations
+  X0_c() = Obs_X0 / scale
+  X1_c() = Obs_X1 / scale
+  X2_c() = Obs_X2 / scale
+
+  # Effective INP replication probability with feedback
+  p1_eff() = p_1 / (1 + g * X2_c())
+
+  # X0: dX0/dt = (2*p_0 - 1)*v_0*X0
+  # For p_0 = 0.5, this is zero (neutral drift). Include for generality.
+  prod_X0() = (2*p_0 - 1) * v_0 * X0_c() * scale
+  # When (2*p_0-1) = 0, production is 0 and no consumption needed
+  # For general case: if 2*p_0 > 1, net production; else net consumption
+
+  # X1: dX1/dt = 2*(1-p_0)*v_0*X0 + (2*p1_eff - 1)*v_1*X1
+  prod_X1() = 2*(1 - p_0)*v_0*X0_c()*scale + if(2*p1_eff()-1 > 0, (2*p1_eff()-1)*v_1*X1_c()*scale, 0)
+  cons_X1() = if(2*p1_eff()-1 < 0, (1-2*p1_eff())*v_1*X1_c()*scale, 0)
+
+  # X2: dX2/dt = 2*(1-p1_eff)*v_1*X1 - d*X2
+  prod_X2() = 2*(1 - p1_eff())*v_1*X1_c()*scale
+  cons_X2() = d * X2_c() * scale
+end functions
+
+begin reaction rules
+  # Stem cells (net zero for p_0=0.5, but included for generality)
+  0 -> X0()  prod_X0()
+
+  # INPs
+  0 -> X1()  prod_X1()
+  X1() -> 0  cons_X1()
+
+  # ORNs
+  0 -> X2()  prod_X2()
+  X2() -> 0  cons_X2()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>12,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>12,n_steps=>400})
+end actions

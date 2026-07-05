@@ -1,0 +1,23 @@
+{
+  "_comment": "Canonical pin for the SBML Test Suite. Resolves the version ambiguity across the repo (VERSION.txt said 3.3.0, jobs.yaml said 3.4.0, an old README path said cf38585): our results were generated against the exact commit below. `git describe` is authoritative; the in-tree VERSION.txt lags. Every SBML-Test-Suite reference (harness + benchmarks/suites/sbml_test_suite) points here.",
+  "source": "sbmlteam/sbml-test-suite",
+  "url": "https://github.com/sbmlteam/sbml-test-suite",
+  "commit": "473e119dd57226c3a7a729d598f9007f06f781c3",
+  "describe": "3.4.0-36-g473e119dd",
+  "nearest_tag": "3.4.0",
+  "commit_date": "2025-08-07",
+  "license": "LGPL-2.1-or-later",
+  "components": {
+    "semantic": {
+      "cases": 1824,
+      "committed": false,
+      "note": "External corpus (not committed). Check out this commit and point $SBML_TEST_SUITE_DIR at <checkout>/cases/semantic. Run via harness/sbml_test_suite/run_sbml_test_suite.py or benchmarks/suites/sbml_test_suite/run.py. Fetch a pinned checkout with fetch_semantic_suite.py."
+    },
+    "dsmts_proper": {
+      "cases": 39,
+      "committed": true,
+      "note": "The 39 DSMTS-proper stochastic cases are vendored under dsmts/cases/ and hashed in dsmts/dsmts_manifest.json (verified byte-identical to upstream at this commit). run_dsmts.py is hermetic — no external checkout needed."
+    }
+  },
+  "attribution": "LGPL-2.1-or-later requires the upstream LICENSE/NOTICE to travel with the vendored DSMTS cases. Satisfied: the SBML Test Suite licensing terms are vendored at dsmts/LICENSE.txt and the full GNU LGPL v2.1 at dsmts/COPYING.txt, and DSMTS is listed in the top-level NOTICE."
+}

@@ -1,0 +1,28 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem A2 - Riccati equation (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z(0) = 1
+//
+// Original ODE:
+//   dZ/dt = -Z^(3/2)
+//
+// Recast S-system:
+//   Already in S-system form (single power-law term)
+//   dX1/dt = 0 - X1^(3/2)
+//
+// This is a special case of the Riccati equation.
+// =============================================================================
+
+model S1987_A2_riccati()
+    // Already in S-system canonical form
+    Z' = -Z^(3/2)
+    
+    // Initial condition
+    Z = 1
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

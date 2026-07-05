@@ -1,0 +1,81 @@
+begin model
+begin parameters
+    # RANKL-RANK-OPG signaling in bone remodeling.
+    # Advanced features: Hill kinetics and decoy receptor logic.
+    
+    # Ligand-Receptor Interactions
+    k_bind_rank 1e-4    # RANKL binding to RANK
+    k_bind_opg 5e-4     # RANKL binding to OPG (Decoy,often higher affinity)
+    
+    # Intracellular Relay
+    k_traf6_rec 1.0     # TRAF6 recruitment to active RANK
+    k_nfat_act_max 2.0  # Max NFAT activation
+    Km_nfat 300         # Half-saturation for NFAT activation
+    n_hill 3.0          # Cooperativity in transcription factor activation
+    
+    # Initials
+    RANKL_tot 100
+    RANK_tot 200
+    OPG_tot 150         # Regulatory decoy
+    NFAT_tot 500
+    TRAF6_tot 300
+end parameters
+
+begin molecule types
+    RANKL(r)
+    RANK(l,s~U~P,t)
+    OPG(l)
+    NFAT(s~U~P)
+    TRAF6(b)
+end molecule types
+
+begin seed species
+    RANKL(r) RANKL_tot
+    RANK(l,s~U,t) RANK_tot
+    OPG(l) OPG_tot
+    NFAT(s~P) NFAT_tot
+    TRAF6(b) TRAF6_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_NFAT      NFAT(s~U)                # Osteoclast differentiation drive
+    Molecules Rank_Occupancy   RANK(l!+)                # Receptor engage metrics
+    Molecules OPG_Sequestration OPG(l!+)               # Decoy effectiveness
+    Molecules TRAF6_Complexes  RANK(t!1).TRAF6(b!1)     # Signaling scafold
+    Molecules Total_RANKL      RANKL()                  # Mass balance
+end observables
+
+begin functions
+    # Hill-like activation for NFAT (Representing complex nuclear translocation/dephosphorylation)
+    v_nfat() = k_nfat_act_max * (TRAF6_Complexes^n_hill) / (Km_nfat^n_hill + TRAF6_Complexes^n_hill)
+end functions
+
+begin reaction rules
+    ## EXTRACELLULAR GATING
+    # RANKL binds RANK
+    RANKL(r) + RANK(l) <-> RANKL(r!1).RANK(l!1) k_bind_rank,0.1
+    
+    # RANKL binds OPG (Decoy/Neutralization)
+    RANKL(r) + OPG(l) <-> RANKL(r!1).OPG(l!1) k_bind_opg,0.05
+    
+    ## RECEPTOR SIGNALING
+    # Ligand-bound RANK recruits TRAF6
+    RANK(l!+,t) + TRAF6(b) <-> RANK(l!+,t!1).TRAF6(b!1) k_traf6_rec,0.2
+    
+    ## TRANSCRIPTIONAL DRIVE
+    # TRAF6 complex induces NFAT activation (Functional Rate)
+    # Wildcard: Any RANK-TRAF6 complex works (!+)
+    NFAT(s~P) -> NFAT(s~U) v_nfat()
+    
+    ## RECOVERY
+    NFAT(s~U) -> NFAT(s~P) 0.1
+    RANK(l!1).RANKL(r!1) -> RANK(l) + RANKL(r) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

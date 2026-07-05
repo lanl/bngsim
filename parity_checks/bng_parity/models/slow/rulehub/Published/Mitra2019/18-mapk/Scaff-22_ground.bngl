@@ -1,0 +1,80 @@
+begin parameters
+
+# For "ground truth" model, use median values such that hierarchy H1 occurs, as shown in Table 3.
+# A somewhat arbitrary choice, but will do for this synthetic problem
+
+# For search space, use the larger search space considered in the paper, which is the base value +- 1 order of magnitude.
+# Comments indicate search space
+
+# Using the noise-added synthetic data, the target objective for fitting should be 15885 with the norm_sos objective function. 
+
+a	4.9e-6 # 1e-6 1e-4
+p2R1	10.5e-6 # 1e-6 1e-4
+p2R2	6.3e-6 # 1e-6 1e-4
+p3R1	16.2e-6 # 1e-6 1e-4
+p3R2	6.6e-6 # 1e-6 1e-4		
+pscaff	97.7 # 10 1000
+d1	0.1 # 0.01 1
+d2	100 # 10 1000
+u	0.14 # 0.01 1
+u2R1	0.12 # 0.01 1
+u2R2	0.15 # 0.01 1
+u3R1	0.11	# 0.01 1
+u3R2	0.13 # 0.01 1
+Atot	10e5
+Btot	10e5		
+Ctot	5*10e5
+Stot	10e5
+
+S 1e-3
+end parameters
+
+begin molecule types
+MAP3K(s,S~I~A)
+MAP2K(s,R1~Y~Yp,R2~Y~Yp)
+MAPK(s,R1~Y~Yp,R2~Y~Yp)
+Scaff(map3k,map2k,mapk)
+end molecule types
+
+begin seed species
+MAP3K(s,S~I)	Atot
+MAP2K(s,R1~Y,R2~Y)	Btot
+MAPK(s,R1~Y,R2~Y)	Ctot
+Scaff(map3k,map2k,mapk)	Stot
+end seed species
+
+begin observables
+
+Molecules MAPKP MAPK(R1~Y,R2~Yp) MAPK(R1~Yp,R2~Y)
+Molecules MAP2KP MAP2K(R1~Yp,R2~Y) MAP2K(R1~Y,R2~Yp)
+Molecules MAPKPP MAPK(R1~Yp,R2~Yp)
+Molecules MAP2KPP MAP2K(R1~Yp,R2~Yp)
+
+end observables
+
+begin reaction rules
+MAP3K(s,S~I) -> MAP3K(s,S~A) S
+MAP3K(s,S~A) + Scaff(map3k) <-> MAP3K(s!1,S~A).Scaff(map3k!1) a, d1
+MAP3K(s!1,S~I).Scaff(map3k!1) -> MAP3K(s,S~I) + Scaff(map3k) d2
+MAP2K(s,R1~Y,R2~Y) + Scaff(map2k) <-> MAP2K(s!1,R1~Y,R2~Y).Scaff(map2k!1) a, d1
+MAP2K(s,R1~Yp,R2~Y) + Scaff(map2k) <-> MAP2K(s!1,R1~Yp,R2~Y).Scaff(map2k!1) a, d1
+MAP2K(s,R1~Y,R2~Yp) + Scaff(map2k) <-> MAP2K(s!1,R1~Y,R2~Yp).Scaff(map2k!1) a, d1
+MAP2K(s,R1~Yp,R2~Yp) + Scaff(map2k) <-> MAP2K(s!1,R1~Yp,R2~Yp).Scaff(map2k!1) a, d1
+MAPK(s,R1~Y,R2~Y) + Scaff(mapk) <-> MAPK(s!1,R1~Y,R2~Y).Scaff(mapk!1) a, d1
+MAPK(s,R1~Yp,R2~Y) + Scaff(mapk) <-> MAPK(s!1,R1~Yp,R2~Y).Scaff(mapk!1) a, d1
+MAPK(s,R1~Y,R2~Yp) + Scaff(mapk) <-> MAPK(s!1,R1~Y,R2~Yp).Scaff(mapk!1) a, d1
+MAPK(s!1,R1~Yp,R2~Yp).Scaff(mapk!1) -> MAPK(s,R1~Yp,R2~Yp) + Scaff(mapk) d2
+MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Y) -> MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Yp) pscaff
+MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Y) -> MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Yp) pscaff
+MAPK(s!1,R1~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> MAPK(s!1,R1~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
+MAPK(s!1,R2~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> MAPK(s!1,R2~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
+MAP3K(S~A) -> MAP3K(S~I) u
+MAP2K(R1~Yp) -> MAP2K(R1~Y) u
+MAP2K(R2~Yp) -> MAP2K(R2~Y) u
+MAPK(R1~Yp) -> MAPK(R1~Y) u
+MAPK(R2~Yp) -> MAPK(R2~Y) u
+end reaction rules
+
+generate_network({overwrite=>1})
+# simulate_ode({t_start=>0,t_end=>1000,n_steps=>100,suffix=>"Scaff-22_S1"});
+parameter_scan({parameter=>"S",method=>"ode",t_end=>1000,par_min=>1e-3,par_max=>1,n_scan_pts=>7,log_scale=>1,suffix=>"doseresp"})

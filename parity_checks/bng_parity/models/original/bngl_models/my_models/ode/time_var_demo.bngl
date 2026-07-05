@@ -1,0 +1,38 @@
+begin parameters
+  k 10    # max value of the input function 
+  kmL 10  # off rate of ligand-receptor binding
+  tick 100 # clock tick rate
+end parameters
+
+begin molecule types
+  A(l~u~b)  #receptor with ligand-binding site represented by a component: u=unbound, b=bound
+  ticks()   # the time variable
+  Null()    # dummy variable for synth/deg reactions
+end molecule types
+
+begin seed species
+  A(l~u)  100
+  ticks()  0
+  $Null() 1
+end seed species
+
+begin observables
+  Molecules Abound A(l~b)
+  Molecules t_obs ticks() # Exposes value of ticks to functions
+end observables
+
+begin functions
+  Lig_func() k*(1+cos(t_obs/tick))
+end functions
+
+begin reaction rules
+  Null() -> ticks()  tick
+  A(l~u) <-> A(l~b)  Lig_func(), kmL
+end reaction rules
+
+#actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({method=>"ode",suffix=>"ode",t_end=>50,n_output_steps=>500,verbose=>1})
+resetConcentrations()
+simulate({method=>"ssa",suffix=>"ssa",t_end=>50,n_output_steps=>500,verbose=>1})

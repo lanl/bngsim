@@ -1,0 +1,587 @@
+# Created: 18-Feb-2022
+# [PII REMOVED]
+begin model
+#---
+# About: Two models are defined below.
+#  - Both models are intended to be consistent with the compartmental model
+#    of Lin et al. (2021), which describes COVID-19 transmission dynamics.
+#  - The first model is specified in terms of building blocks labeled 
+#    S, E, A, I, H, D, and R.
+#     - The building blocks represent distinct populations.
+#     - Some of the populations have population features, which have 
+#       multiple possible values.
+#  - The second model is specified in terms of a single building block,
+#    which is labeled Person.
+#     - This building block is used to represent populations of persons
+#       in different states.
+#     - A Person has multiple person features, which each have multiple 
+#       possible values.
+#---
+#---
+# References:
+#  - Lin YT et al. (2021) Emerg Infect Dis 27: 767-778.
+#    https://pubmed.ncbi.nlm.nih.gov/33622460/
+#---
+begin parameters
+#######################################
+# fixed population-secific parameters #
+#######################################
+# total population (NYC-specific estimate)
+S0 19216182 # dimensionless
+#############################################
+# adjustable population-specific parameters #
+#############################################
+# start time of the local epidemic (NYC-specific estimate)
+t0 33 # d 
+# rate constant for disease transmission (NYC-specific estimate)
+beta 2 # /d 
+# fraction of new symptomatic infections detected (NYC-specific estimate)
+fD 0.12 # dimensionless
+# start time of social distancing (NYC-specific estimate)
+#  NB: sigma >= t0.
+#  Consider choosing sigma to correspond to the first day for which
+#  the cumulative number of detected cases was 200 or more. 
+sigma 33 # d
+# quasi-stationary setpoint fraction of population practicing
+#  social distancing during the initial social-distancing period
+p0 0.87 # dimensionless
+# eigenvalue (a sum of rate constants) that determines the time scale
+#  for establishment of a quasi-stationary state during the
+#  initial social-distancing period
+lambda0 0.1 # /d
+# start time of 1st social-distancing period *after* the initial
+#  social-distancing period
+#  NB: tau1 > sigma.
+tau1 142 # d
+# setpoint fraction
+p1 0.81 # dimensionless
+# eigenvalue
+lambda1  0.1 # /d
+# start time of 2nd social-distancing period *after* the initial
+#  social-distancing period
+#  NB: tau2 > tau1. 
+tau2 240 # d
+# setpoint fraction
+p2 0.37 # dimensionless
+# eigenvalue
+lambda2  0.1 # /d
+##############################
+# fixed universal parameters #
+##############################
+# initial number of infectious persons
+I0 1 # dimensionless
+# reporting period
+#  (delta_t=1 => daily case reports)
+delta_t 1 # d 
+# parameter characterizing protective effect of social distancing
+mb 0.1 # dimensionless
+# relative infectiousness of E vs. I
+rhoE 1.1 # dimensionless
+# relative infectiousness of A vs. I
+rhoA 0.9 # dimensionless
+# rate constant for progression through stages of the incubation period
+kL 0.94 # /d
+# rate constant for quarantine
+kQ 0.0038 # /d
+# rate constant for self-isolation
+jQ 0.4 # /d
+# fraction of exposed individuals who never develop symptoms
+fA 0.44 # dimensionless
+# fraction of symptomatic cases that progress to severe disease
+fH 0.054 # dimensionless
+# fraction of hospitalized patients who recover
+fR 0.79 # dimensionless
+# rate constant for A->R transition
+cA 0.26 # /d
+# rate constant for I->H or R transition
+cI 0.12 # /d
+# rate constant for H->D or R transition
+cH 0.17 # /d
+end parameters
+begin molecule types
+# time tracker
+#  We need to track time to account for changes in social distancing
+#  and emergence of new SARS-CoV-2 variants.
+counter()
+S(NPI~0~SD~Q)
+#---
+# S: susceptible population
+#  comments:
+#   - The entire population (less I0) is initially susceptible.
+#  population features:
+#   NPI: non-pharmaceutical intervention (NPI) adopted
+#    comments:
+#     - Persons in the S, E, A, I, and R compartments may
+#       change their behavior to prevent disease transmission. 
+#    possible feature values:
+#     - 0: none
+#     - SD: social distancing
+#     - Q: quarantine or self-isolation
+#     comments:
+#      - Persons in the NPI~0 state are mixing/socializing freely.
+#        They do not take precautions to prevent disease transmission.
+#      - Persons in the NPI~SD state take precautions to prevent
+#        disease transmission.
+#      - Persons in the NPI~Q state are separated from susceptible persons.
+#        They are incapable of transmitting disease. 
+#---
+E(stage~1~2~3~4~5,NPI~0~SD~Q)
+#---
+# E: exposed population in the incubation period of disease progression
+#  population features:
+#   stage: incubation period stage
+#    comments: 
+#     - The incubation period is divided into 5 stages.
+#     - Exposed persons do not have symptoms 
+#       throughout the incubation period.
+#     - Exposed persons are infectious except in the first stage 
+#       of the incubation period.
+#    possible feature values:
+#     - 1: 1st stage of the incubation period
+#     - 2: 2nd stage of the incubation period
+#     - 3: 3rd stage of the incubation period
+#     - 4: 4th stage of the incubation period
+#     - 5: 5th stage of the incubation period
+#     comments:
+#      - Exposed persons in the first stage of the incubation period
+#        are ineligible for quarantine (because virus cannot be detected).
+#   NPI: non-pharmaceutical intervention (NPI) adopted
+# 	 possible feature values:
+#     - 0: none
+#     - SD: social distancing
+#     - Q: quarantine or self-isolation
+#---
+A(NPI~0~SD~Q)
+#---
+# A: asymptomatic population
+#  comments:
+#   - Asymptomatic persons have passed through the incubation period.
+#   - Asympotmatic persons are infectious.
+#   - Asymptomatic persions will never develop symptoms.
+#  population feature values:
+#   NPI: non-pharmaceutical intervention (NPI) adopted
+#    possible feature values:
+#     - 0: none
+#     - SD: social distancing
+#     - Q: quarantine or self-isolation
+#---
+I(NPI~0~SD~Q)
+#---
+# I: population with mild symptomatic disease
+#  comments:
+#   - Symptomatic persons are more likely to self-isolate than
+#     pre-symptomatic or asymptomatic persons because of symptom awareness.
+#  population features:
+#    NPI: non-pharmaceutical intervention (NPI) adopted
+#     possible feature values:
+#      - 0: none
+#      - SD: social distancing
+#      - Q: quarantine or self-isolation
+#---
+H()
+#---
+# H: population with severe disease
+#  comments:
+#   - Persons with severe disease are in hospital or isolated at home.
+#     Consequently, they are unable to transmit disease. 
+#---
+R(NPI~0~SD~Q)
+#---
+# R: recovered population
+#  population features:
+#   NPI: non-pharmaceutical intervention (NPI) adopted
+#    possible feature values:
+#     - 0: none
+#     - SD: social distancing
+#     - Q: quarantine or self-isolation
+#---
+D()
+#---
+# D: deceased population
+#---
+Person(NPI~0~SD~Q,virus~0~1,disease~0~E1~E2~E3~E4~E5~A~I~H~D~R,immune~0~HC~C)
+#---
+# Person: a person in the population
+#  comment:
+#   - Current person features do not allow for tracking of vaccinations.
+#   - A feature labeled vaccine with values ~0~1~2~3 could be added to track
+#     the number of vaccine doses that a person has received. 
+#   - A feature labeled response with values ~V1~V2~V3~V4~V5~V6 could be 
+#     added to track immune response to vaccination. (Antibody response
+#     to vaccination takes about 2 weeks.)
+#  features: 
+#   NPI: non-pharmaceutical intervention (NPI) adopted
+#    possible feature values:
+#     - 0: none
+#     - SD: social distancing
+#     - Q: quarantine or self-isolation
+#   virus: infection status
+#    possible feature values:
+#     - 0: uninfected
+#     - 1: infected
+#    comments:
+#     - The set of virus feature values can be extended in the future
+#       to consider different viral variants.
+#     - Consider adding Alpha, Delta, and Omicron as possible feature values.
+#   disease: state of disease progression
+#    possible feature values:
+#     - 0: no disease, never infected
+#     - E1: exposed and in the 1st stage of the incubation period
+#     - E2: exposed and in the 2nd stage of the incubation period
+#     - E3: exposed and in the 3rd stage of the incubation period
+#     - E4: exposed and in the 4th stage of the incubation period
+#     - E5: exposed and in the 5th stage of the incubation period
+#     - A: asymptomatic disease
+#     - I: mild symptomatic disease
+#     - H: severe disease (hospitalized or isolated-at-home)
+#     - D: deceased
+#     - R: recovered
+#     comments:
+#      - The R feature value could be replaced with a set of values
+#        (e.g., R_1, R_Alpha, R_Delta, and R_Omicron)
+#        to track the type of infection (viral variant) that a person
+#        most recently recovered from. 
+#   immune: state of immunity
+#    possible feature values:
+#     - 0: no immunity
+#     - HC: humoral and cellular immunity are both present
+#     - C: only cellular immunity is present
+#    comments:
+#     - Persons in the immune~0 state are susceptible to infection.
+#     - The vast majority of persons in the immune~HC state have
+#       sterilizing immunity (i.e., protection from infection).
+#     - The immune~HC state is transient. 
+#     - Persons in the immune~C state may be susceptible to infection.
+#     - Persons in the immune~C state are protected against severe disease.
+#---
+end molecule types
+begin seed species
+counter() 0
+S(NPI~0) S0-I0
+I(NPI~0) I0
+Person(NPI~0,virus~0,disease~0,immune~0) S0-I0
+Person(NPI~0,virus~1,disease~I,immune~0) I0
+end seed species
+begin observables
+Molecules S S()
+Molecules E E()
+Molecules A A()
+Molecules I I()
+Molecules H H()
+Molecules R R()
+Molecules D D()
+Molecules Mixing S(NPI~0) E(NPI~0) A(NPI~0) I(NPI~0) R(NPI~0)
+Molecules Protected S(NPI~SD) E(NPI~SD) A(NPI~SD) I(NPI~SD) R(NPI~SD)
+Molecules Isolated E(NPI~Q) A(NPI~Q) I(NPI~Q) H()
+Molecules Einf_M E(stage~2,NPI~0) E(stage~3,NPI~0) E(stage~4,NPI~0) E(stage~5,NPI~0)
+Molecules A_M A(NPI~0)
+Molecules I_M I(NPI~0)
+Molecules Einf_P E(stage~2,NPI~SD) E(stage~3,NPI~SD) E(stage~4,NPI~SD) E(stage~5,NPI~SD)
+Molecules A_P A(NPI~SD)
+Molecules I_P I(NPI~SD)
+Molecules E5 E(stage~5) # E(stage~5,NPI~0) E(stage~5,NPI~SD)
+Molecules t counter()
+Molecules Einf_M_ Person(NPI~0,disease~E2) Person(NPI~0,disease~E3) Person(NPI~0,disease~E4) Person(NPI~0,disease~E5)
+Molecules Einf_P_ Person(NPI~SD,disease~E2) Person(NPI~SD,disease~E3) Person(NPI~SD,disease~E4) Person(NPI~SD,disease~E5)
+Molecules A_M_ Person(NPI~0,disease~A)
+Molecules A_P_ Person(NPI~SD,disease~A)
+Molecules I_M_ Person(NPI~0,disease~I)
+Molecules I_P_ Person(NPI~SD,disease~I)
+Molecules A_ Person(disease~A)
+Molecules I_ Person(disease~I)
+Molecules H_ Person(disease~H)
+Molecules R_ Person(disease~R)
+Molecules D_ Person(disease~D)
+Molecules E5_ Person(disease~E5)
+end observables
+begin functions
+# Set the values of the rate constants kQ, jQ, and cI to 0 if t<t0. 
+# (We want [I] to remain constant at I0 until t=t0.)
+kQfunc()=if(t>=t0,kQ,0)
+jQfunc()=if(t>=t0,jQ,0)
+cIfunc()=if(t>=t0,cI,0)
+# effective population of infectious persons with NPI~0 state (mixing)
+#  The effective population size is set to 0 if t<t0. 
+phiM()=if(t>=t0,rhoE*Einf_M+rhoA*A_M+I_M,0)
+# effective population of infectious persons with NPI~SD state (protected)
+phiP()=rhoE*Einf_P+rhoA*A_P+I_P
+# social-distancing indicator function
+#  - 0: - social distancing
+#  - 1: + social distancing 
+U()=if(t>=sigma,1,0)
+# social-distancing eigenvalues
+#  Lambda() is a step function.
+#  Currently, Lambda() provides eigenvalues for 3 social-distancing periods.
+Lambda()=if(t>=sigma && t<tau1,lambda0,\
+         if(t>=tau1 && t<tau2,lambda1,\
+         if(t>=tau2,lambda2,\
+         0)))
+# social-distancing setpoint fractions
+#  P() is a step function.
+#  Currently, P() provides setpoint fractions for 3 social-distancing periods.
+P()=if(t>=sigma && t<tau1,p0,\
+    if(t>=tau1 && t<tau2,p1,\
+    if(t>=tau2,p2,\
+    0)))
+# The formula below assumes no reinfection.
+CumNum_symptomatic_cases()=(1-fA)*(A+I+H+R+D)
+CumNum_symptomatic_cases_()=(1-fA)*(A_+I_+H_+R_+D_)
+# first-order Taylor series approximation of C(t)-C(t-delta_t)
+#  = delta_t*accumulation_rate
+ApproxNewCasesDaily()=delta_t*((1-fA)*kL*E5)
+ApproxNewCasesDetectedDaily()=fD*delta_t*((1-fA)*kL*E5) 
+ApproxNewCasesDetectedDaily_()=fD*delta_t*((1-fA)*kL*E5_) 
+Data_DailyCases()=if(t<=38,0,\
+                  if(t<=39,1,\
+                  if(t<=40,0,\
+                  if(t<=41,1,\
+                  if(t<=42,9,\
+                  if(t<=43,11,\
+                  if(t<=44,22,\
+                  if(t<=45,45,\
+                  if(t<=46,17,\
+                  if(t<=47,36,\
+                  if(t<=48,31,\
+                  if(t<=49,44,\
+                  if(t<=50,109,\
+                  if(t<=51,95,\
+                  if(t<=52,189,\
+                  if(t<=53,122,\
+                  if(t<=54,218,\
+                  if(t<=55,425,\
+                  if(t<=56,1012,\
+                  if(t<=57,1774,\
+                  if(t<=58,2952,\
+                  if(t<=59,3258,\
+                  if(t<=60,4817,\
+                  if(t<=61,5711,\
+                  if(t<=62,4805,\
+                  if(t<=63,7413,\
+                  if(t<=64,5941,\
+                  if(t<=65,5688,\
+                  if(t<=66,8771,\
+                  if(t<=67,6266,\
+                  if(t<=68,7721,\
+                  if(t<=69,8707,\
+                  if(t<=70,8153,\
+                  if(t<=71,8996,\
+                  if(t<=72,10329,\
+                  if(t<=73,12274,\
+                  if(t<=74,8122,\
+                  if(t<=75,9304,\
+                  if(t<=76,8314,\
+                  if(t<=77,9568,\
+                  if(t<=78,10765,\
+                  if(t<=79,10794,\
+                  if(t<=80,10160,\
+                  if(t<=81,8435,\
+                  if(t<=82,6548,\
+                  if(t<=83,7402,\
+                  if(t<=84,11755,\
+                  if(t<=85,8631,\
+                  if(t<=86,7532,\
+                  if(t<=87,7249,\
+                  if(t<=88,6199,\
+                  if(t<=89,4867,\
+                  if(t<=90,4324,\
+                  if(t<=91,5659,\
+                  if(t<=92,6341,\
+                  if(t<=93,8286,\
+                  if(t<=94,10683,\
+                  if(t<=95,6013,\
+                  if(t<=96,4077,\
+                  if(t<=97,3285,\
+                  if(t<=98,4718,\
+                  if(t<=99,4702,\
+                  if(t<=100,3879,\
+                  if(t<=101,4559,\
+                  if(t<=102,3699,\
+                  if(t<=103,2524,\
+                  if(t<=104,2302,\
+                  if(t<=105,2746,\
+                  if(t<=106,3526,\
+                  if(t<=107,2873,\
+                  if(t<=108,2715,\
+                  if(t<=109,2138,\
+                  if(t<=110,1610,\
+                  if(t<=111,1438,\
+                  if(t<=112,2123,\
+                  if(t<=113,2364,\
+                  if(t<=114,2759,\
+                  if(t<=115,2185,\
+                  if(t<=116,1901,\
+                  if(t<=117,1241,\
+                  if(t<=118,1479,\
+                  if(t<=119,1478,\
+                  if(t<=120,2078,\
+                  0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+phiM_()=if(t>=t0,rhoE*Einf_M_+rhoA*A_M_+I_M_,0)
+phiP_()=rhoE*Einf_P_+rhoA*A_P_+I_P_
+end functions
+begin reaction rules
+# increment time
+0->counter() 1
+########################################
+# EID model in near original BNGL form #
+########################################
+# disease transmission
+S(NPI~0)->E(stage~1,NPI~0) (beta/S0)*(phiM()+mb*phiP())
+S(NPI~SD)->E(stage~1,NPI~SD) mb*(beta/S0)*(phiM()+mb*phiP())
+# social distancing
+S(NPI~0)<->S(NPI~SD) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E(NPI~0)<->E(NPI~SD) U()*Lambda()*P(),U()*Lambda()*(1-P())
+A(NPI~0)<->A(NPI~SD) U()*Lambda()*P(),U()*Lambda()*(1-P())
+I(NPI~0)<->I(NPI~SD) U()*Lambda()*P(),U()*Lambda()*(1-P())
+R(NPI~0)<->R(NPI~SD) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# testing-driven quarantine
+E(stage~2,NPI~0)->E(stage~2,NPI~Q) kQ
+E(stage~3,NPI~0)->E(stage~3,NPI~Q) kQ
+E(stage~4,NPI~0)->E(stage~4,NPI~Q) kQ
+E(stage~5,NPI~0)->E(stage~5,NPI~Q) kQ
+E(stage~2,NPI~SD)->E(stage~2,NPI~Q) kQ
+E(stage~3,NPI~SD)->E(stage~3,NPI~Q) kQ
+E(stage~4,NPI~SD)->E(stage~4,NPI~Q) kQ
+E(stage~5,NPI~SD)->E(stage~5,NPI~Q) kQ
+A(NPI~0)->A(NPI~Q) kQ
+A(NPI~SD)->A(NPI~Q) kQ
+I(NPI~0)->I(NPI~Q) kQfunc()
+I(NPI~SD)->I(NPI~Q) kQ
+# progression through stages of the incubation period
+E(stage~1)->E(stage~2) kL
+E(stage~2)->E(stage~3) kL
+E(stage~3)->E(stage~4) kL
+E(stage~4)->E(stage~5) kL
+# entry into the immune clearance phase without generation of symptoms
+E(stage~5,NPI~0)->A(NPI~0) kL*fA
+E(stage~5,NPI~SD)->A(NPI~SD) kL*fA
+E(stage~5,NPI~Q)->A(NPI~Q) kL*fA
+# entry into the immune clearance phase *with* generation of mild symptoms
+E(stage~5,NPI~0)->I(NPI~0) kL*(1-fA)
+E(stage~5,NPI~SD)->I(NPI~SD) kL*(1-fA)
+E(stage~5,NPI~Q)->I(NPI~Q) kL*(1-fA)
+# self-isolation because of symptom awareness
+I(NPI~0)->I(NPI~Q) jQfunc()
+I(NPI~SD)->I(NPI~Q) jQ
+# immune clearance, recovery from asymptomatic infection
+A(NPI~0)->R(NPI~0) cA
+A(NPI~SD)->R(NPI~SD) cA
+A(NPI~Q)->R(NPI~0) cA*(1-P())
+A(NPI~Q)->R(NPI~SD) cA*P()
+# immune clearance, recovery from mild symptomatic infection
+I(NPI~0)->R(NPI~0) cIfunc()*(1-fH)
+I(NPI~SD)->R(NPI~SD) cI*(1-fH)
+I(NPI~Q)->R(NPI~0) cI*(1-fH)*(1-P())
+I(NPI~Q)->R(NPI~SD) cI*(1-fH)*P()
+# progression from mild to severe disease & hospitalization/isolation-at-home
+I()->H() cIfunc()*fH
+# recovery from severe disease
+H()->R(NPI~0) cH*fR*(1-P())
+H()->R(NPI~SD) cH*fR*P()
+# progression from severe disease to death
+H()->D() cH*(1-fR)
+##########################
+# Reformulated EID model #
+##########################
+# disease transmission
+#  Only persons who are *not* currently infected (virus~0) 
+#  and lacking immunity (immune~0) are susceptible to infection. 
+Person(NPI~0,virus~0,disease~0,immune~0)->\
+Person(NPI~0,virus~1,disease~E1,immune~0) (beta/S0)*(phiM_()+mb*phiP_())
+Person(NPI~SD,virus~0,disease~0,immune~0)->\
+Person(NPI~SD,virus~1,disease~E1,immune~0) mb*(beta/S0)*(phiM_()+mb*phiP_())
+# social distancing
+#  NB: Persons with an NPI~Q, disease~H or disease~D state do not traffic
+#  between mixing (NPI~0) and protected-by-social-distancing (NPI~SD) states.
+Person(NPI~0,disease~0)<->\
+Person(NPI~SD,disease~0) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~E1)<->\
+Person(NPI~SD,disease~E1) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~E2)<->\
+Person(NPI~SD,disease~E2) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~E3)<->\
+Person(NPI~SD,disease~E3) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~E4)<->\
+Person(NPI~SD,disease~E4) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~E5)<->\
+Person(NPI~SD,disease~E5) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~A)<->\
+Person(NPI~SD,disease~A) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~I)<->\
+Person(NPI~SD,disease~I) U()*Lambda()*P(),U()*Lambda()*(1-P())
+Person(NPI~0,disease~R)<->\
+Person(NPI~SD,disease~R) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# testing-driven quarantine
+#  NB: only infectious persons are eligibile for quarantine.
+#  Persons with severe disease (disease~H) are taken to be quarantined.
+Person(NPI~0,disease~E2)->Person(NPI~Q,disease~E2) kQ
+Person(NPI~0,disease~E3)->Person(NPI~Q,disease~E3) kQ
+Person(NPI~0,disease~E4)->Person(NPI~Q,disease~E4) kQ
+Person(NPI~0,disease~E5)->Person(NPI~Q,disease~E5) kQ
+Person(NPI~SD,disease~E2)->Person(NPI~Q,disease~E2) kQ
+Person(NPI~SD,disease~E3)->Person(NPI~Q,disease~E3) kQ
+Person(NPI~SD,disease~E4)->Person(NPI~Q,disease~E4) kQ
+Person(NPI~SD,disease~E5)->Person(NPI~Q,disease~E5) kQ
+Person(NPI~0,disease~A)->Person(NPI~Q,disease~A) kQ
+Person(NPI~SD,disease~A)->Person(NPI~Q,disease~A) kQ
+Person(NPI~0,disease~I)->Person(NPI~Q,disease~I) kQfunc()
+Person(NPI~SD,disease~I)->Person(NPI~Q,disease~I) kQ
+# progression through stages of the incubation period
+Person(disease~E1)->Person(disease~E2) kL
+Person(disease~E2)->Person(disease~E3) kL
+Person(disease~E3)->Person(disease~E4) kL
+Person(disease~E4)->Person(disease~E5) kL
+# entry into the immune clearance phase without generation of symptoms
+Person(disease~E5)->Person(disease~A) kL*fA
+# entry into the immune clearance phase *with* generation of mild symptoms
+Person(disease~E5)->Person(disease~I) kL*(1-fA)
+# self-isolation because of symptom awareness
+Person(NPI~0,disease~I)->Person(NPI~Q,disease~I) jQfunc()
+Person(NPI~SD,disease~I)->Person(NPI~Q,disease~I) jQ
+# immune clearance, recovery from asymptomatic infection
+#  NB: recovery means viral clearance (virus~0) and acquisition
+#  of sterilizing immunity (immune~HC).
+Person(NPI~0,virus~1,disease~A,immune~0)->\
+Person(NPI~0,virus~0,disease~R,immune~HC) cA
+Person(NPI~SD,virus~1,disease~A,immune~0)->\
+Person(NPI~SD,virus~0,disease~R,immune~HC) cA
+Person(NPI~Q,virus~1,disease~A,immune~0)->\
+Person(NPI~0,virus~0,disease~R,immune~HC) cA*(1-P())
+Person(NPI~Q,virus~1,disease~A,immune~0)->\
+Person(NPI~SD,virus~0,disease~R,immune~HC) cA*P()
+# immune clearance, recovery from mild symptomatic infection
+#  NB: recovery means viral clearance (virus~0) and acquisition
+#  of sterilizing immunity (immune~HC).
+Person(NPI~0,virus~1,disease~I)->\
+Person(NPI~0,virus~0,disease~R,immune~HC) cIfunc()*(1-fH)
+Person(NPI~SD,virus~1,disease~I)->\
+Person(NPI~SD,virus~0,disease~R,immune~HC) cI*(1-fH)
+Person(NPI~Q,virus~1,disease~I)->\
+Person(NPI~0,virus~0,disease~R,immune~HC) cI*(1-fH)*(1-P())
+Person(NPI~Q,virus~1,disease~I)->\
+Person(NPI~SD,virus~0,disease~R,immune~HC) cI*(1-fH)*P()
+# progression from mild to severe disease & hospitalization/isolation-at-home
+#  NB: persons with severe disease are quarantined. 
+Person(NPI~0,disease~I)->Person(NPI~Q,disease~H) cIfunc()*fH
+Person(NPI~SD,disease~I)->Person(NPI~Q,disease~H) cI*fH
+Person(NPI~Q,disease~I)->Person(NPI~Q,disease~H) cI*fH
+# recovery from severe disease
+#  NB: recovery means viral clearance (virus~0) and acquisition
+#  of sterilizing immunity (immune~HC).
+Person(NPI~Q,virus~1,disease~H,immune~0)->\
+Person(NPI~0,virus~0,disease~R,immune~HC) cH*fR*(1-P())
+Person(NPI~Q,virus~1,disease~H,immune~0)->\
+Person(NPI~SD,virus~0,disease~R,immune~HC) cH*fR*P()
+# progression from severe disease to death
+Person(disease~H)->Person(disease~D) cH*(1-fR)
+# loss of sterilizing immunity
+#  NB: persons may acquire sterilizing immunity (immune~HC) through
+#  recovery from infection or vaccination. 
+# Person(virus~0,immune~HC)->Person(virus~0,immune~C) k_LoSI
+# vaccination
+#  Rules can be added to capture the effects of (repeated) vaccination.
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"NYC",method=>"ode",t_end=>365,n_steps=>365,print_functions=>1})
+end actions

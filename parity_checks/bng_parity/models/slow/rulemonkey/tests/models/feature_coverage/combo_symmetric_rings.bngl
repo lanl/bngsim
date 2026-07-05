@@ -1,0 +1,47 @@
+# Feature combination: symmetric binding sites + ring closure
+# Tests: intramolecular bond formation with symmetric sites
+# Bug pattern: disjoint+symmetric miscounting (rm_tlbr_rings)
+# Tier: combinations
+# Expected: R(l,l) dimers can form both open chains and closed rings
+# invariant: conserved R_total = 30
+# invariant: conserved L_total = 40
+
+begin model
+begin parameters
+    R_tot  30
+    L_tot  40
+    kf     0.01    # /s, intermolecular binding
+    kr     0.1     # /s, unbinding
+    kf_ring 0.5    # /s, intramolecular ring closure
+    kr_ring 0.1    # /s, ring opening
+end parameters
+
+begin molecule types
+    R(l,l)
+    L(r,r)
+end molecule types
+
+begin seed species
+    R(l,l)  R_tot
+    L(r,r)  L_tot
+end seed species
+
+begin observables
+    Molecules  R_total     R()
+    Molecules  L_total     L()
+    Molecules  R_free_l    R(l)
+    Molecules  L_free_r    L(r)
+    Molecules  R_bound     R(l!+)
+    Molecules  L_bound     L(r!+)
+    Species    RL_complex  R(l!+)
+end observables
+
+begin reaction rules
+    # Intermolecular binding
+    R(l) + L(r) <-> R(l!1).L(r!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100,param=>"-bscb -utl 5"})
+end actions

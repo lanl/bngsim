@@ -1,0 +1,173 @@
+begin model
+
+#@title: Cooperative binding of anti-IgE 23G3 to IgE-FcεRI, with rings (Posner et al., 2004)
+
+#@description: |
+#  Network-free (NFsim) kinetic model of bivalent ligand (23G3
+#  antibody) binding cooperatively to bivalent cell-surface receptor
+#  (IgE-FcεRI). This variant uses parameters from the "+rings"
+#  column of Table 1 in Posner et al. (2004), where the equilibrium
+#  theory of Wofsy and Goldstein (1987) includes ring (cyclic
+#  aggregate) formation with ring closure constant J2 = 3.4. In
+#  NFsim, ring closure occurs naturally when the two ends of a
+#  linear chain react via the cross-linking rule; the effective
+#  ring closure propensity is emergent from the simulation dynamics
+#  rather than independently parameterized.
+#
+#  Compared to the base model (-rings), KxST is reduced from 2.5
+#  to 1.9, reflecting the redistribution of cross-linked receptor
+#  between linear chains and cyclic aggregates in the fitting
+#  procedure. The binding curve (Fig. 3a) is indistinguishable
+#  between the two parameterizations.
+
+#@keyword: |
+#  bivalent ligand, bivalent receptor, cooperative binding, negative
+#  cooperativity, cross-linking, ring closure, cyclic dimer,
+#  IgE, FcεRI, mast cell, aggregation, network-free, NFsim,
+#  anti-IgE, 23G3, RBL-2H3
+
+#@reference: |
+#  Posner RG, Paar JM, Licht A, Pecht I, Conrad DH, Hlavacek WS
+#  (2004). Interaction of a monoclonal IgE-specific antibody with
+#  cell-surface IgE-FcεRI: characterization of equilibrium binding
+#  and secretory response. Biochemistry 43:11352-11360.
+#  doi:10.1021/bi049686o
+#
+#  Wofsy C, Goldstein B (1987). The effect of co-operativity on the
+#  equilibrium binding of symmetric bivalent ligands to antibodies:
+#  theoretical results with application to histamine release from
+#  basophils. Mol Immunol 24:151-161.
+#  doi:10.1016/0161-5890(87)90091-2
+
+#@note: |
+#  Network generation is not feasible because bivalent-bivalent
+#  cross-linking produces an unbounded set of chain species.
+#  NFsim (network-free simulation) is used instead.
+#
+#  In NFsim with complex=>1, intramolecular cross-linking (ring
+#  closure) can occur when the free arm at one end of a chain
+#  reacts with a free epitope at the other end of the same chain.
+#  The ring closure rate is governed by the same cross-linking
+#  rate constant kxf, so the effective ring closure propensity
+#  is not independently adjustable. The "+rings" parameters from
+#  Table 1 (K=0.097, KxST=1.9, H=0.39) were obtained by fitting
+#  the Wofsy-Goldstein equilibrium theory with J2 as a free
+#  parameter.
+
+begin parameters
+
+  # Physical constants
+  NA         6.02214076e23  # /mol
+
+  # Experimental conditions (Posner et al. 2004)
+  C_cells    1e6            # cells/mL (cell concentration in assay)
+  R_per_cell 3e5            # molecules/cell (FcεRI per RBL-2H3 cell)
+  V_cell     1e-9           # L/cell (= 1/C_cells in L)
+
+  # SSA/NFsim scaling
+  f          0.003          # dimensionless (subvolume fraction)
+  V_sim      V_cell*f       # L (simulation volume)
+
+  # Scaled molecule counts
+  RT         R_per_cell*f   # molecules (= 900)
+
+  # Scanned parameter: total 23G3 antibody concentration
+  AT_nM      1              # nM (total intact 23G3 concentration)
+
+  # Total ligand count (depends on AT_nM)
+  LT         AT_nM*1e-9*NA*V_sim  # molecules
+
+  # Equilibrium constants (Table 1, +rings column)
+  # Differences from base model: K=0.097 (vs 0.098), KxST=1.9 (vs 2.5)
+  K          0.097          # /nM
+  KxST       1.9            # dimensionless
+  H          0.39           # dimensionless
+
+  # Kinetic rate constants
+  kr         10             # /s (reverse rate, solution unbinding)
+  kxr        10             # /s (reverse rate, cross-link unbinding)
+
+  # Forward rate for solution binding (single-site, population-based)
+  kf         K*1e9*kr/(NA*V_sim)       # /(molecule*s)
+
+  # Forward rate for cross-linking (single-site, population-based)
+  kxf        KxST/(2*RT)*kxr           # /(molecule*s)
+
+end parameters
+
+begin molecule types
+  L(r1,r2)
+  # Bivalent ligand (23G3 intact antibody): two IgE-binding arms
+  R(l1,l2)
+  # Bivalent receptor (IgE bound to FcεRI): two 23G3 epitopes
+end molecule types
+
+begin seed species
+  L(r1,r2)  LT  # molecules
+  R(l1,l2)  RT  # molecules
+end seed species
+
+begin observables
+  # Total ligand count
+  Molecules  Obs_L_tot       L()
+  # Receptor epitopes bound (each counts one occupied site)
+  Molecules  Obs_R_l1_bound  R(l1!+)
+  Molecules  Obs_R_l2_bound  R(l2!+)
+  # Receptors with both sites free (unaggregated, no ligand)
+  Molecules  Obs_R_free      R(l1,l2)
+end observables
+
+begin functions
+  # Fraction of 23G3 epitopes bound (ordinate of Fig. 3a)
+  frac_bound() = (Obs_R_l1_bound + Obs_R_l2_bound) / (2*RT)
+
+  # Dimensional conversions (uncomment for concentration output)
+# L_conc_nM() = Obs_L_tot / (NA * V_sim * 1e-9)  # nM
+end functions
+
+begin reaction rules
+
+  # ================================================================
+  # Solution binding: free ligand from solution binds receptor site
+  # ================================================================
+  # L has both arms free (r1, r2 unbound).
+  #
+  # --- No cooperativity: both receptor sites free ---
+  L(r1,r2) + R(l1,l2) <-> L(r1!1,r2).R(l1!1,l2)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1,r2!1).R(l1!1,l2)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1!1,r2).R(l1,l2!1)  kf, kr
+  L(r1,r2) + R(l1,l2) <-> L(r1,r2!1).R(l1,l2!1)  kf, kr
+  #
+  # --- Cooperativity: one receptor site already bound ---
+  L(r1,r2) + R(l1!+,l2) <-> L(r1!1,r2).R(l1!+,l2!1)  H*kf, kr
+  L(r1,r2) + R(l1!+,l2) <-> L(r1,r2!1).R(l1!+,l2!1)  H*kf, kr
+  L(r1,r2) + R(l1,l2!+) <-> L(r1!1,r2).R(l1!1,l2!+)  H*kf, kr
+  L(r1,r2) + R(l1,l2!+) <-> L(r1,r2!1).R(l1!1,l2!+)  H*kf, kr
+
+  # ================================================================
+  # Cross-linking: membrane-tethered ligand arm binds receptor site
+  # ================================================================
+  # L has one arm bound; free arm binds a different receptor.
+  # In NFsim with complex tracking, this rule also enables ring
+  # closure when the target receptor is in the same chain.
+  #
+  # --- No cooperativity: both receptor sites free ---
+  L(r1!+,r2) + R(l1,l2) <-> L(r1!+,r2!1).R(l1!1,l2)  kxf, kxr
+  L(r1!+,r2) + R(l1,l2) <-> L(r1!+,r2!1).R(l1,l2!1)  kxf, kxr
+  L(r1,r2!+) + R(l1,l2) <-> L(r1!1,r2!+).R(l1!1,l2)  kxf, kxr
+  L(r1,r2!+) + R(l1,l2) <-> L(r1!1,r2!+).R(l1,l2!1)  kxf, kxr
+  #
+  # --- Cooperativity: one receptor site already bound ---
+  L(r1!+,r2) + R(l1!+,l2) <-> L(r1!+,r2!1).R(l1!+,l2!1)  H*kxf, kxr
+  L(r1!+,r2) + R(l1,l2!+) <-> L(r1!+,r2!1).R(l1!1,l2!+)  H*kxf, kxr
+  L(r1,r2!+) + R(l1!+,l2) <-> L(r1!1,r2!+).R(l1!+,l2!1)  H*kxf, kxr
+  L(r1,r2!+) + R(l1,l2!+) <-> L(r1!1,r2!+).R(l1!1,l2!+)  H*kxf, kxr
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>10,n_steps=>10})
+end actions

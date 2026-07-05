@@ -1,0 +1,40 @@
+begin model
+begin parameters
+BW 1
+RT=10*BW
+kf 1
+kr 1
+end parameters
+begin molecule types
+R()
+B()
+counter()
+end molecule types
+begin seed species
+R() RT
+B() 0
+counter() 0
+end seed species
+begin observables
+Molecules R R()
+Molecules B B()
+Molecules t counter()
+end observables
+begin functions
+BWfunc()=BW
+RTfunc()=RT
+end functions
+begin reaction rules
+0->counter() 1
+R()<->B() kf,kr
+end reaction rules
+end model
+begin actions
+generate_network({})
+saveConcentrations()
+setParameter("BW",5)
+simulate({suffix=>"run1",method=>"ode",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+resetConcentrations()
+setParameter("BW",10)
+simulate({suffix=>"run2",method=>"ode",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+end actions

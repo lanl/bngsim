@@ -1,0 +1,110 @@
+begin model
+begin parameters
+S0 1.5e5
+I0 1
+beta 2/S0
+gamma 0.1
+kp 1
+ki 1.2
+kc 2
+kl 5e-3
+end parameters
+begin molecule types
+# classic SIR model has persons in S, I, and R states
+person(state~S~I~R)
+# model with multiple internal infection & immunity states
+p(\
+v~0~E1~E2~E3~E4~E5~I1~I2~I3~I4~H1~H2~H3~D,\
+vflag~0~1,\
+i~N~P1~P2~P3~P4~P5~P6~S,\
+iflag~0~1)
+# v (0->E{1-5}->I{1-4}->H{1-3}->D) indicates viral infection state
+# i (N->P{1-6}->S) indicates immunity state
+# vflag: 0, uninfected; 1, infected
+# iflag: 0, absence of sterilizing immunity; 1, presence of sterilizing immunity
+end molecule types
+begin seed species
+# initial condition (classic SIR model)
+person(state~S) S0
+person(state~I) I0
+# initial condition (model with internal infection & immunity states)
+p(v~0,vflag~0,i~N,iflag~0) S0
+p(v~I1,vflag~1,i~P3,iflag~0) I0
+end seed species
+begin observables
+# readouts of classic SIR model
+Molecules S_ person(state~S)
+Molecules I_ person(state~I)
+Molecules R_ person(state~R)
+# readouts of model with internal infection & immunity states
+Molecules S p(v~0,i~N) # susceptible (no immunity)
+Molecules E p(v~E1,iflag~0) p(v~E2,iflag~0) p(v~E3,iflag~0) p(v~E4,iflag~0) p(v~E5,iflag~0) # presymptomatic
+Molecules Einf p(v~E2,iflag~0) p(v~E3,iflag~0) p(v~E4,iflag~0) p(v~E5,iflag~0)
+Molecules A p(v~E1,iflag~1) p(v~E2,iflag~1) p(v~E3,iflag~1) p(v~E4,iflag~1) p(v~E5,iflag~1) # asymptomatic
+Molecules Ainf p(v~E2,iflag~1) p(v~E3,iflag~1) p(v~E4,iflag~1) p(v~E5,iflag~1)
+Molecules I p(v~I1) p(v~I2) p(v~I3) p(v~I4) # symptomatic (mild illness)
+Molecules R p(v~0,i~S) # recovered
+Molecules H p(v~H1) p(v~H2) p(v~H3) # hospitalized or at-home (severe illness)
+Molecules D p(v~D) # deceased
+end observables
+begin functions
+# force of infection (classic SIR model)
+rate_()=beta*I
+# force of infection (model with internal infection & immunity states)
+rate()=beta*(Einf+Ainf+I) # total infectious persons = E + A + I 
+end functions
+begin reaction rules
+# classic SIR model
+person(state~S)->person(state~I) rate_()
+person(state~I)->person(state~R) gamma
+# model with internal infection & immunity states
+# infection of persons lacking sterilizing immunity
+p(v~0,vflag~0,iflag~0)->p(v~E1,vflag~1,iflag~0) rate()
+# disease progression S->E->I->H->D (depends on absence of sterilizing immunity)
+p(v~E1,iflag~0)->p(v~E2,iflag~0) kp
+p(v~E2,iflag~0)->p(v~E3,iflag~0) kp
+p(v~E3,iflag~0)->p(v~E4,iflag~0) kp
+p(v~E4,iflag~0)->p(v~E5,iflag~0) kp
+p(v~E5,iflag~0)->p(v~I1,iflag~0) kp
+p(v~I1,iflag~0)->p(v~I2,iflag~0) kp
+p(v~I2,iflag~0)->p(v~I3,iflag~0) kp
+p(v~I3,iflag~0)->p(v~I4,iflag~0) kp
+p(v~I4,iflag~0)->p(v~H1,iflag~0) kp
+p(v~H1,iflag~0)->p(v~H2,iflag~0) kp
+p(v~H2,iflag~0)->p(v~H3,iflag~0) kp
+p(v~H3,iflag~0,vflag~1)->p(v~D,iflag~0,vflag~0) kp
+# priming of the immune system (depends on presence of viral infection)
+p(i~N,vflag~1)->p(i~P1,vflag~1) ki
+p(i~P1,vflag~1)->p(i~P2,vflag~1) ki
+p(i~P2,vflag~1)->p(i~P3,vflag~1) ki
+p(i~P3,vflag~1)->p(i~P4,vflag~1) ki
+p(i~P4,vflag~1)->p(i~P5,vflag~1) ki
+p(i~P5,vflag~1)->p(i~P6,vflag~1) ki
+p(i~P6,vflag~1,iflag~0)->p(i~S,vflag~1,iflag~1) ki
+# immune clearance (depends on sterilizing immunity)
+p(v~H3,iflag~1)->p(v~H2,iflag~1) kc
+p(v~H2,iflag~1)->p(v~H1,iflag~1) kc
+p(v~H1,iflag~1)->p(v~I4,iflag~1) kc
+p(v~I4,iflag~1)->p(v~I3,iflag~1) kc
+p(v~I3,iflag~1)->p(v~I2,iflag~1) kc
+p(v~I2,iflag~1)->p(v~I1,iflag~1) kc
+p(v~I1,iflag~1)->p(v~E5,iflag~1) kc
+p(v~E5,iflag~1)->p(v~E4,iflag~1) kc
+p(v~E4,iflag~1)->p(v~E3,iflag~1) kc
+p(v~E3,iflag~1)->p(v~E2,iflag~1) kc
+p(v~E2,iflag~1)->p(v~E1,iflag~1) kc
+p(v~E1,iflag~1,vflag~1)->p(v~0,iflag~1,vflag~0) kc
+# slow loss of immunity (in the absence of viral infection)
+p(i~S,vflag~0,iflag~1)->p(i~P6,vflag~0,iflag~0) kl
+p(i~P6,vflag~0)->p(i~P5,vflag~0) kl
+p(i~P5,vflag~0)->p(i~P4,vflag~0) kl
+p(i~P4,vflag~0)->p(i~P3,vflag~0) kl
+p(i~P3,vflag~0)->p(i~P2,vflag~0) kl
+p(i~P2,vflag~0)->p(i~P1,vflag~0) kl
+p(i~P1,vflag~0)->p(i~N,vflag~0) kl
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>200}) #,print_functions=>1})
+end actions

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3" level="3" version="1">
+  <model id="fractional_init">
+    <ListOfParameters>
+      <Parameter id="n_init" type="Constant" value="1.9"/>
+    </ListOfParameters>
+    <ListOfMoleculeTypes>
+      <MoleculeType id="X"/>
+    </ListOfMoleculeTypes>
+    <ListOfCompartments>
+    </ListOfCompartments>
+    <ListOfSpecies>
+      <Species id="S1" concentration="n_init" name="X()">
+        <ListOfMolecules>
+          <Molecule id="S1_M1" name="X"/>
+        </ListOfMolecules>
+      </Species>
+    </ListOfSpecies>
+    <ListOfReactionRules>
+    </ListOfReactionRules>
+    <ListOfObservables>
+      <Observable id="O1" name="X_total" type="Molecules">
+        <ListOfPatterns>
+          <Pattern id="O1_P1">
+            <ListOfMolecules>
+              <Molecule id="O1_P1_M1" name="X"/>
+            </ListOfMolecules>
+          </Pattern>
+        </ListOfPatterns>
+      </Observable>
+    </ListOfObservables>
+  </model>
+</sbml>

@@ -1,0 +1,30 @@
+begin model
+begin parameters
+  kf    0.3
+  kr    0.05
+  Km    50
+  scale 2.0
+  A0    200
+end parameters
+begin molecule types
+  A()
+  B()
+end molecule types
+begin species
+  A()  A0
+  B()  0
+end species
+begin observables
+  Molecules Atot A()
+  Molecules Btot B()
+end observables
+begin functions
+  satB()  = Btot/(Km + Btot)
+  ratio() = scale*Btot/(Atot + 1)
+end functions
+begin reaction rules
+  A() <-> B()  kf, kr
+end reaction rules
+end model
+generate_network({overwrite=>1})
+writeSBML()

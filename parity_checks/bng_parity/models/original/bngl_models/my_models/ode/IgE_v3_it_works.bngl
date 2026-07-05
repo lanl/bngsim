@@ -1,0 +1,188 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molecules per mole
+
+cell_density 1e9 # cells per L
+Vecf=1/cell_density # L/cell
+Vcyt 1e-12 # L/cell
+
+IgE_dimer_conc 1e-9 # M
+IgE_dimer_tot=IgE_dimer_conc*(NA*Vecf) # copies per cell
+
+R_tot 3e5 # copies per cell
+Lyn_tot 3e5 # copies per cell
+Syk_tot 3e5 # copies per cell
+
+kf 1e8/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr 2e-1 # /s
+
+KxRT 300 # dimensionless
+kmx=kr # /s
+kpx=KxRT*kmx/R_tot
+
+kpL 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kmL 0.01 # /s
+
+fLyn 0
+
+kPP 1 # /s
+kdp 0.1 # /s
+# approximation becomes better as kPP decreases
+
+kpSyk 1e6/(NA*Vcyt)
+kmSyk 0.01 
+
+end parameters
+
+begin molecule types
+
+# n - natural
+# r - restructured
+
+# covalently crosslinked IgE dimer
+nDim(Fc,Fc)
+rDim()
+
+# high-affinity IgE receptor
+nR(a,b,g~0~PP)
+rR(a~0~1~X,b~0~ULyn_cis~ULyn_trans~ULyn_both,g~0~PP~PPSyk)
+
+nLyn(U)
+rLyn()
+
+nSyk(tSH2)
+rSyk()
+
+end molecule types
+
+begin seed species
+
+nDim(Fc,Fc) IgE_dimer_tot
+nR(a,b!1,g~0).nLyn(U!1) fLyn*R_tot
+nR(a,b,g~0) (1-fLyn)*R_tot
+nLyn(U) Lyn_tot-fLyn*R_tot
+nSyk(tSH2) Syk_tot
+
+rDim() IgE_dimer_tot
+rR(a~0,b~ULyn_cis,g~0) fLyn*R_tot
+rR(a~0,b~0,g~0) (1-fLyn)*R_tot
+rLyn() Lyn_tot-fLyn*R_tot
+rSyk() Syk_tot
+
+end seed species
+
+begin observables
+
+Molecules n_freeR nR(a)
+#Molecules n_monomeric_ligand_bound_R nR(a!1).nDim(Fc!1,Fc)
+#Molecules n_all_ligand_bound_R nR(a!+)
+#Molecules n_monomeric_R nR(a) nR(a!1).nDim(Fc!1,Fc)
+Molecules n_R_in_dimers nR(a!1).nDim(Fc!1,Fc!2).nR(a!2)
+Molecules n_Rtot nR()
+Molecules n_R_bound_Lyn nR(b!1).nLyn(U!1)
+Molecules n_R_gPP nR(g~PP)
+Molecules n_dimericR_bound_Lyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!+)
+Species n_dimers_with_b0g0_ULyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!3).nR(a!3,b,g~0)
+Molecules n_denom nR(a!1,b,g~0).nDim(Fc!1,Fc!2).nR(a!2,b) nR(a!1,b,g~0).nDim(Fc!1,Fc!2).nR(a!2,b!3).nLyn(U!3) 
+Molecules n_freeLyn_obs nLyn(U)
+Species n_doubleLyn nR(a!1,b!2).nLyn(U!2).nDim(Fc!1,Fc!3).nR(a!3,b!4).nLyn(U!4)
+Molecules n_freeSyk nSyk(tSH2)
+Molecules n_recruitedSyk nSyk(tSH2!+)
+
+Molecules r_freeR rR(a~0)
+#Molecules r_monomeric_ligand_bound_R rR(a~1)
+#Molecules r_all_ligand_bound_R rR(a~1) rR(a~X)
+#Molecules r_monomeric_R rR(a~0) rR(a~1)
+Molecules r_R_in_dimers rR(a~X)
+Molecules r_Rtot rR()
+#Molecules r_Rtot_alt rR(a~0) rR(a~1) rR(a~X)
+Molecules r_R_bound_Lyn rR(b~ULyn_cis) rR(b~ULyn_both)
+Molecules r_dimericR_bound_Lyn rR(a~X,b~ULyn_cis) rR(a~X,b~ULyn_both)
+Molecules r_RgPP rR(g~PP)
+Molecules r_freeLyn_obs rLyn()
+Molecules r_doubleLyn_times2 rR(b~ULyn_both)
+Molecules r_freeSyk rSyk()
+Molecules r_recruitedSyk rR(g~PPSyk)
+
+Molecules r_XP rR(a~X,b~0,g~PP)
+Molecules r_XO rR(a~X,b~0,g~0)
+
+end observables
+
+begin functions
+
+exact_func()=if(n_denom>0,n_dimers_with_b0g0_ULyn/n_denom,0)
+func_kPP()=if(r_R_in_dimers>1,(r_dimericR_bound_Lyn/r_R_in_dimers),0)
+
+freeLyn()=r_freeLyn_obs
+r_doubleLyn()=r_doubleLyn_times2/2
+
+end functions
+
+begin reaction rules
+
+# rules for naturally formulated model
+
+nR(a)+nDim(Fc,Fc)<->nR(a!1).nDim(Fc!1,Fc) kf,kr
+nR(a)+nR(a!1).nDim(Fc!1,Fc)<->nR(a!2).nR(a!1).nDim(Fc!1,Fc!2) kpx,kmx
+
+nR(b)+nLyn(U)<->nR(b!1).nLyn(U!1) kpL,kmL
+
+nR(a!1,b!2).nDim(Fc!1,Fc!3).nLyn(U!2).nR(a!3,g~0)->\
+nR(a!1,b!2).nDim(Fc!1,Fc!3).nLyn(U!2).nR(a!3,g~PP) kPP
+
+nR(g~PP)->nR(g~0) kdp
+
+nR(g~PP)+nSyk(tSH2)<->nR(g~PP!1).nSyk(tSH2!1) kpSyk,kmSyk
+
+# rules for restructured model
+
+rR(a~0)+rDim()<->rR(a~1) 2*kf,kr
+
+rR(a~0,b~0)+rR(a~1,b~0)->rR(a~X,b~0)+rR(a~X,b~0) kpx
+rR(a~0,b~ULyn_cis)+rR(a~1,b~0)->rR(a~X,b~ULyn_cis)+rR(a~X,b~ULyn_trans) kpx
+rR(a~0,b~0)+rR(a~1,b~ULyn_cis)->rR(a~X,b~ULyn_trans)+rR(a~X,b~ULyn_cis) kpx
+rR(a~0,b~ULyn_cis)+rR(a~1,b~ULyn_cis)->rR(a~X,b~ULyn_both)+rR(a~X,b~ULyn_both) kpx
+
+rR(a~X,b~0)->rR(a~0,b~0) kmx
+rR(a~X,b~ULyn_cis)->rR(a~0,b~ULyn_cis) kmx
+rR(a~X,b~ULyn_trans)->rR(a~0,b~0) kmx
+rR(a~X,b~ULyn_both)->rR(a~0,b~ULyn_cis) kmx
+
+rR(a~X,b~0)->rR(a~1,b~0) kmx
+rR(a~X,b~ULyn_cis)->rR(a~1,b~ULyn_cis) kmx
+rR(a~X,b~ULyn_trans)->rR(a~1,b~0) kmx
+rR(a~X,b~ULyn_both)->rR(a~1,b~ULyn_cis) kmx
+
+rR(a~0,b~0)+rLyn()<->rR(a~0,b~ULyn_cis) kpL,kmL
+rR(a~1,b~0)+rLyn()<->rR(a~1,b~ULyn_cis) kpL,kmL
+
+rR(a~X,b~0)+rLyn()<->rR(a~X,b~ULyn_cis) kpL,kmL
+rR(a~X,b~0)<->rR(a~X,b~ULyn_trans) kpL*freeLyn(),kmL
+rR(a~X,b~ULyn_cis)<->rR(a~X,b~ULyn_both) kpL*freeLyn(),kmL
+rR(a~X,b~ULyn_trans)+rLyn()<->rR(a~X,b~ULyn_both) kpL,kmL
+
+# approximate - works nicely  when kPP is much smaller than kdp but not when kPP is much larger than kdp
+# compare func_kPP() and exact_func()
+#rR(a~X,g~0)->rR(a~X,g~PP) kPP*func_kPP()
+ 
+# exact
+rR(a~X,b~ULyn_trans,g~0)->rR(a~X,b~ULyn_trans,g~PP) kPP
+rR(a~X,b~ULyn_both,g~0)->rR(a~X,b~ULyn_both,g~PP) kPP
+
+rR(g~PP)->rR(g~0) kdp
+
+rR(g~PP)+rSyk()<->rR(g~PPSyk) kpSyk,kmSyk
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>60,n_steps=>300,print_functions=>1})
+
+end actions

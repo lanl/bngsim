@@ -1,0 +1,112 @@
+begin model
+# A minimal model of a reaction cycle
+begin parameters
+########################
+# BACKGROUND KNOWLEDGE #
+########################
+#  Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+# cytoplasmic volume
+V 1e-12 # L per cell
+# measured equilibrium dissociation constant for CaM binding to Ca2+
+KD 1600e-9 # M
+# measured rate constant for dissociation of Ca2+ from CaM
+koff 6.41e-3 # /s
+# rate constant for Ca2+ binding to CaM
+kon=koff/KD # /M/s
+# typical rate constant for protein-protein association
+kf 1e6 # /M/s
+# typical rate constant for protein-protein dissociation
+kr 0.01 # /s
+# typical equilibrium association constant for protein-protein binding
+K=kon/koff # /M
+# free Ca2+ concentration
+free_ion_conc 100e-9 # M
+# abundance of calmodulin
+CaM_total 1e7 # copies per cell (11354804 copies per cell)
+CaM_conc=CaM_total/(NA*V) # M
+# abundance of KRAS
+KRAS_total 1e5 # copies per cell (assumption)
+KRAS_conc=KRAS_total/(NA*V) # M
+##############################################################################
+# SPECIFICATION OF RATE CONSTANTS IN RULES (kf1,kr1,kf2,kr2,kf3,kr3,kf4,kr4) #
+##############################################################################
+# binding parameters for interaction of Ca2+-bound CaM with KRAS
+kf1=kf/(NA*V) # /M/s converted to /(molecule/cell)/s
+kr1=kr # /s
+K1=kf1/kr1 # /(molecule/cell)
+# binding parameters for interaction of Ca2+-free CaM with KRAS
+#  We want K2<<K1 because CaM interaction with KRAS should be Ca2+ dependent.
+kf2=(kf/30)/(NA*V) # /M/s converted to /(molecule/cell)/s
+kr2=30*kr # /s
+K2=kf2/kr2 # /(molecule/cell), K2 is 900-fold smaller than K1.
+# binding parameters for interaction of Ca2+ with KRAS-free CaM
+#  We will assume that [Ca2+] is constant.
+kf3=kon*free_ion_conc # /s 
+kr3=koff # /s
+K3=kf3/kr3 # dimensionless
+# binding parameters for interaction of Ca2+ with KRAS-bound CaM
+#  We need to respect a detailed balance constraint, namely, K1*K3=K2*K4.
+K4=K1*K3/K2 # dimensionless <=== DETAILED BALANCE CONSTRAINT
+# Let's assume that kf4=kf3, i.e., binding of Ca2+ to CaM is independent
+# of whether CaM is bound to or free of KRAS.
+kf4=kf3 # /s <=== ASSUMPTION (arbitary)
+kr4=kf4/K4 # /s <=== DERIVED from assumed kf4 value and K4, which is constrained to equal K1*K3/K2
+# Detailed balance eliminates 1 degree of freedom.
+# In this example, kr4 cannot be specified independently after the other rate constants are assigned values.
+end parameters
+begin molecule types
+CaM(EF~0~1,linker)
+KRAS(HVR)
+end molecule types
+begin seed species
+CaM(EF~0,linker) CaM_total*1/(1+K3)
+CaM(EF~1,linker) CaM_total*K3/(1+K3)
+KRAS(HVR) KRAS_total
+end seed species
+begin observables
+Molecules cyt_CaM_no_calcium CaM(EF~0,linker)
+Molecules cyt_CaM_calcium CaM(EF~1,linker)
+Molecules free_KRAS KRAS(HVR)
+Molecules KRAS_CaM_no_calcium CaM(EF~0,linker!1).KRAS(HVR!1)
+Molecules KRAS_CaM_calcium CaM(EF~1,linker!1).KRAS(HVR!1)
+end observables
+begin functions
+CaM_all()=cyt_CaM_no_calcium+cyt_CaM_calcium+KRAS_CaM_no_calcium+KRAS_CaM_calcium
+# The equilibrium relations below should all equal 1 at equilibrium.
+equil_relation_K1()=if(KRAS_CaM_calcium>0,K1*cyt_CaM_calcium*free_KRAS/KRAS_CaM_calcium,1)
+equil_relation_K2()=if(KRAS_CaM_no_calcium>0,K2*cyt_CaM_no_calcium*free_KRAS/KRAS_CaM_no_calcium,1)
+equil_relation_K3()=K3*cyt_CaM_no_calcium/cyt_CaM_calcium
+equil_relation_K4()=if(KRAS_CaM_calcium>0,K4*KRAS_CaM_no_calcium/KRAS_CaM_calcium,1)
+# K1*K3/(K2*K4) should equal 1.
+one()=(kf1/kr1)*(kf3/kr3)/((kf2/kr2)*(kf4/kr4))
+# At equilibrium, flux_f_1() should equal flux_r_1()
+flux_f_1()=kf1*cyt_CaM_calcium*free_KRAS
+flux_r_1()=kr1*KRAS_CaM_calcium
+# At equilibrium flux_f_3() should equal flux_r_3()
+flux_f_3()=kf3*cyt_CaM_no_calcium # kf3 incorportates [Ca2+]
+flux_r_3()=kr3*cyt_CaM_calcium
+# At equilibrium flux_f_2() should equal flux_r_2()
+flux_f_2()=kf2*cyt_CaM_no_calcium*free_KRAS
+flux_r_2()=kr2*KRAS_CaM_no_calcium
+# At equilibrium flux_f_4() should equal flux_r_4()
+flux_f_4()=kf4*KRAS_CaM_no_calcium # kf4 incorporates [Ca2+]
+flux_r_4()=kr4*KRAS_CaM_calcium
+end functions
+begin reaction rules
+# Rule 1: Ca2+-bound CaM reversibly binds KRAS
+CaM(EF~1,linker)+KRAS(HVR)<->CaM(EF~1,linker!1).KRAS(HVR!1) kf1,kr1
+# Rule 2: Ca2+-free CaM reversibly binds KRAS
+CaM(EF~0,linker)+KRAS(HVR)<->CaM(EF~0,linker!1).KRAS(HVR!1) kf2,kr2
+# Rule 3: KRAS-free CaM reversibly binds Ca2+
+#  We will treat the CaM->CaM:Ca2+ reaction as a first-order process. 
+#  This is justifiable if [Ca2+] is constant.
+CaM(EF~0,linker)<->CaM(EF~1,linker) kf3,kr3
+# Rule 4: KRAS-bound CaM reversibly binds Ca2+
+CaM(EF~0,linker!1).KRAS(HVR!1)<->CaM(EF~1,linker!1).KRAS(HVR!1) kf4,kr4
+end reaction rules
+end model
+begin actions
+# We want to simulate for a time sufficient to reach equilibrium.
+simulate({method=>"ode",t_end=>1000,n_steps=>1000,print_functions=>1})
+end actions

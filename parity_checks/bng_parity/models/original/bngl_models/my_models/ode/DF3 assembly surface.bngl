@@ -1,0 +1,141 @@
+# Here we only have polymerization at the cell surface and not in extracellular fluid
+begin model
+begin parameters
+f 0.01 # dimensionless 0<f<=1
+ 
+NA 6.02214e23 # Avogadro constant, molecules per mol
+ 
+# cell density when cells are in suspension
+cellDensity 2e9 # cells per L
+ 
+# volume of extracellular fluid surrounding a single cell on average in suspension
+Vecf=f/cellDensity # L per cell
+ 
+kp2  2.0*1.9e6 # /M/s
+km2  59.0 # /s
+ 
+kp3  5.4e6 # /M/s
+km3  110.0 # /s
+ 
+kp4  210.0 # /s
+km4  4.2e-4 # /s
+ 
+# initial dose of DF3
+DF3conc_nM 1.0 # nM
+DF3conc=1e-9*DF3conc_nM # M
+DF3_cpc=DF3conc*(NA*Vecf) # cpc
+ 
+#  copies per cell of monovalent receptors
+IgE_cpc f*3e5 # cpc
+ 
+# scaling the rate of association for DF3 formation when receptor bound
+sigma = 1 # dimensionless
+ 
+# rate constants for ligand capture and release
+koff 0.01 # /s
+ 
+# equilibrium constant
+keq 3e7 # dimensionless
+kon=koff*keq/(NA*Vecf) # /cpc/s
+end parameters
+
+begin molecule types
+DF1(DNP,f~1~2,f~1~2,conformation~T~N)
+IgE(Fab)
+end molecule types
+
+begin seed species
+DF1(DNP,f~1!1,f~2!2,conformation~N).DF1(DNP,f~1!2,f~2!3,conformation~N).DF1(DNP,f~1!1,f~2!3,conformation~N) DF3_cpc
+IgE(Fab) IgE_cpc
+end seed species
+
+begin observables
+Species Iconc DF1(DNP,f~1,f~2)
+Species Dconc DF1(DNP,f~1,f~2!1).DF1(DNP,f~1!1,f~2)
+Species Tconc DF1(DNP,f~1!1,f~2!2,conformation~T).DF1(DNP,f~1!2,f~2!3,conformation~T).DF1(DNP,f~1!1,f~2!3,conformation~T)
+Species Nconc DF1(DNP,f~1!1,f~2!2,conformation~N).DF1(DNP,f~1!2,f~2!3,conformation~N).DF1(DNP,f~1!1,f~2!3,conformation~N)
+end observables
+
+
+begin reaction rules
+# Binding of ligand to receptors
+# monomer binding
+DF1(DNP,f~1,f~2) + IgE(Fab) -> DF1(DNP!1,f~1,f~2).IgE(Fab!1) kon
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) -> DF1(DNP,f~1,f~2) + IgE(Fab) koff
+
+# dimer binding
+DF1(DNP,f~1,f~2!1).DF1(DNP,f~1!1,f~2) + IgE(Fab) -> DF1(DNP!2,f~1,f~2!1).DF1(DNP,f~1!1,f~2).IgE(Fab!2) kon
+DF1(DNP!2,f~1,f~2!1).DF1(DNP,f~1!1,f~2).IgE(Fab!2) -> DF1(DNP,f~1,f~2!1).DF1(DNP,f~1!1,f~2) + IgE(Fab) koff
+
+DF1(DNP,f~1,f~2!1).DF1(DNP,f~1!1,f~2) + IgE(Fab) -> DF1(DNP,f~1,f~2!1).DF1(DNP!2,f~1!1,f~2).IgE(Fab!2) kon
+DF1(DNP,f~1,f~2!1).DF1(DNP!2,f~1!1,f~2).IgE(Fab!2) -> DF1(DNP,f~1,f~2!1).DF1(DNP,f~1!1,f~2) + IgE(Fab) koff
+
+# trimer binding
+DF1(DNP,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3) + IgE(Fab) -> \
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4) kon
+
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4) -> \
+DF1(DNP,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3) + IgE(Fab) koff
+
+
+# Polymerization at surface
+# Two receptor bound monomers bind
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP!2,f~1,f~2).IgE(Fab!2) -> DF1(DNP!1,f~1,f~2!3).IgE(Fab!1).DF1(DNP!2,f~1!3,f~2).IgE(Fab!2) kp2*sigma
+DF1(DNP!1,f~1,f~2!3).IgE(Fab!1).DF1(DNP!2,f~1!3,f~2).IgE(Fab!2) -> DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP!2,f~1,f~2).IgE(Fab!2) km2
+
+# Receptor bound dimer and receptor bound monomer bind
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP!2,f~1,f~2!3).IgE(Fab!2).DF1(DNP,f~1!3,f~2) -> \
+DF1(DNP!1,f~1!4,f~2!5).IgE(Fab!1).DF1(DNP!2,f~1!4,f~2!3).IgE(Fab!2).DF1(DNP,f~1!3,f~2!5) kp3*sigma
+
+DF1(DNP!1,f~1!4,f~2!5).IgE(Fab!1).DF1(DNP!2,f~1!4,f~2!3).IgE(Fab!2).DF1(DNP,f~1!3,f~2!5) -> \
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP!2,f~1,f~2!3).IgE(Fab!2).DF1(DNP,f~1!3,f~2) km3
+
+
+# Receptor bound monomer and free monomer bind
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2) -> DF1(DNP!1,f~1,f~2!2).IgE(Fab!1).DF1(DNP,f~1!2,f~2) kp2*sigma
+DF1(DNP!1,f~1,f~2!2).IgE(Fab!1).DF1(DNP,f~1!2,f~2) -> DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2) km2
+
+
+# Receptor bound dimer and free monomer bind
+DF1(DNP!1,f~1,f~2!2).DF1(DNP,f~1!2,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2) -> DF1(DNP!1,f~1!3,f~2!2).DF1(DNP,f~1!2,f~2!4).DF1(DNP,f~1!3,f~2!4).IgE(Fab!1) kp3*sigma
+DF1(DNP!1,f~1!3,f~2!2).DF1(DNP,f~1!2,f~2!4).DF1(DNP,f~1!3,f~2!4).IgE(Fab!1) -> DF1(DNP!1,f~1,f~2!2).DF1(DNP,f~1!2,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2) km3
+
+
+# Receptor bound monomer and free dimer bind
+DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2!2).DF1(DNP,f~1!2,f~2) -> DF1(DNP!1,f~1!3,f~2!4).DF1(DNP,f~1!3,f~2!2).DF1(DNP,f~1!2,f~2!4).IgE(Fab!1) kp3*sigma
+DF1(DNP!1,f~1!3,f~2!4).DF1(DNP,f~1!3,f~2!2).DF1(DNP,f~1!2,f~2!4).IgE(Fab!1) -> DF1(DNP!1,f~1,f~2).IgE(Fab!1) + DF1(DNP,f~1,f~2!2).DF1(DNP,f~1!2,f~2) km3
+
+
+# receptor bound dimer binds second receptor
+DF1(DNP!1,f~1,f~2!2).DF1(DNP,f~1!2,f~2).IgE(Fab!1) + IgE(Fab) -> DF1(DNP!1,f~1,f~2!2).DF1(DNP!3,f~1!2,f~2).IgE(Fab!1).IgE(Fab!3) kon*sigma 
+DF1(DNP!1,f~1,f~2!2).DF1(DNP!3,f~1!2,f~2).IgE(Fab!1).IgE(Fab!3) -> DF1(DNP!1,f~1,f~2!2).DF1(DNP,f~1!2,f~2).IgE(Fab!1) + IgE(Fab) koff
+
+
+# receptor bound trimer binds seconds receptor
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4) + IgE(Fab) -> DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5) kon*sigma
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5) -> DF1(DNP!4,f~1!1,f~2!2).DF1(DNP,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4) + IgE(Fab) koff
+
+
+# receptor bound trimer binds third receptor
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5) + IgE(Fab) -> \
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP!6,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5).IgE(Fab!6) kon*sigma
+
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP!6,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5).IgE(Fab!6) -> \
+DF1(DNP!4,f~1!1,f~2!2).DF1(DNP!5,f~1!2,f~2!3).DF1(DNP,f~1!1,f~2!3).IgE(Fab!4).IgE(Fab!5) + IgE(Fab) koff
+
+
+# dimer binding two receptors and monomer binding one receptor bind
+DF1(DNP!1,f~1,f~2!3).DF1(DNP!2,f~1!3,f~2).IgE(Fab!1).IgE(Fab!2) + DF1(DNP!4,f~1,f~2).IgE(Fab!4) -> \
+DF1(DNP!1,f~1!5,f~2!3).DF1(DNP!2,f~1!3,f~2!6).DF1(DNP!4,f~1!5,f~2!6).IgE(Fab!1).IgE(Fab!2).IgE(Fab!4) kp3*sigma
+
+DF1(DNP!1,f~1!5,f~2!3).DF1(DNP!2,f~1!3,f~2!6).DF1(DNP!4,f~1!5,f~2!6).IgE(Fab!1).IgE(Fab!2).IgE(Fab!4) -> \
+DF1(DNP!1,f~1,f~2!3).DF1(DNP!2,f~1!3,f~2).IgE(Fab!1).IgE(Fab!2) + DF1(DNP!4,f~1,f~2).IgE(Fab!4) km3
+
+
+end reaction rules
+end model
+
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>3600,n_steps=>3600})
+end actions

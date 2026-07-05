@@ -1,0 +1,47 @@
+begin model
+  begin parameters
+    # forward and reverse rate constants
+    kf 2e-3 # /nM/s
+    kr 1e-2 # /s
+    KD=kr/kf # nM
+    # initial concentrations
+    M0 10 # nM
+    D0 0 # nM
+    MT=M0+2*D0 # nM
+    # constants in equation for abundance of dimer as a function of time    
+    delta=sqrt((MT+KD/2)^2-MT^2)
+    Deq=((MT+KD/2)-delta)/2    
+    kappa=kf*delta 
+  end parameters
+  begin molecule types
+    # monomer
+    M(site)
+    counter()
+  end molecule types
+  begin seed species
+    # initial conditions
+    M(site) M0
+    M(site!1).M(site!1) D0
+  end seed species
+  begin observables
+    # simulation outputs
+    Molecules M_numerical M(site)
+    Species D_numerical M(site!1).M(site!1)
+    # time (s)
+    Molecules t counter()
+  end observables
+  begin functions
+    D_analytical()=Deq+(delta*(D0-Deq)*exp(-2*kappa*t))/(delta+(D0-Deq)*(exp(-2*kappa*t)-1))
+    M_analytical()=MT-2*D_analytical()
+#     D_equilibrium()=Deq
+  end functions
+  begin reaction rules
+    # M + M <-> D
+    M(site)+M(site)<->M(site!1).M(site!1) kf,kr
+    0->counter() 1
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_start=>0,t_end=>200,n_steps=>100,print_functions=>1})
+end actions

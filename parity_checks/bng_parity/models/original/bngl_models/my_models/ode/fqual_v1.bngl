@@ -1,0 +1,83 @@
+begin model
+begin parameters
+# model for y1(xi) and y2(xi) at condition xi
+# y1(xi) = a*xi^2 - b*xi + c
+a 0.5 # parabola, quadratic coefficient
+b 3.0 # parabola, linear coefficient
+c 5.0 # parabola, constant coefficient
+# y2(xi) = d*xi+e
+d 1.0 # line, slope
+e 1.5 # line, intercept
+# measurement conditions xi, i=1,...,5
+x1 0.0
+x2 2.5
+x3 5.0
+x4 7.5
+x5 10.0
+# observations
+# y1(xi)>y2(xi) predicts zi = 1
+# y1(xi)<y2(xi) predicts zi = 0
+z1 1 # model predicts this observation correctly
+z2 1 # model predicts this observation incorrectly
+z3 0 # model predicts this observation correctly
+z4 0 # model predicts this observation incorrectly
+z5 1 # model predicts this observation correctly
+logsmin=-2 # log10(min(s))
+logsmax=2  # log10(max(s))
+end parameters
+begin molecule types
+counter()
+end molecule types
+begin seed species
+counter() 0
+end seed species
+begin observables
+Molecules t counter() # dummy variable
+end observables
+begin functions
+# transform dummy variable t into likelihood parameter s
+# si = s for all i 
+s()=10^(logsmin+t*(logsmax-logsmin))
+#y1=a*x^2-b*x+c
+#y2=d*x+e
+# formulation of fqual function of Mitra et al. (2018)
+# g functions are formulated for consistency with z values 
+g1()=-(a*x1^2-b*x1+c)+(d*x1+e)
+g2()=-(a*x2^2-b*x2+c)+(d*x2+e)
+g3()=(a*x3^2-b*x3+c)-(d*x3+e)
+g4()=(a*x4^2-b*x4+c)-(d*x4+e)
+g5()=-(a*x5^2-b*x5+c)+(d*x5+e)
+fqual()=(1/s())*(max(0,g1())+max(0,g2())+max(0,g3())+max(0,g4())+max(0,g5()))
+# new formulation of likelihood function
+delta1()=(a*x1^2-b*x1+c)-(d*x1+e)
+delta2()=(a*x2^2-b*x2+c)-(d*x2+e)
+delta3()=(a*x3^2-b*x3+c)-(d*x3+e)
+delta4()=(a*x4^2-b*x4+c)-(d*x4+e)
+delta5()=(a*x5^2-b*x5+c)-(d*x5+e)
+# approximate formula obtained by assuming |deltai/si|>>1 for all i
+# The approximate likelihood is equivalent to fqual of Mitra et al. (2018)
+Fqual_approx()=(1/s())*(\
+(max(0,-delta1())+(1-z1)*delta1())+\
+(max(0,-delta2())+(1-z2)*delta2())+\
+(max(0,-delta3())+(1-z3)*delta3())+\
+(max(0,-delta4())+(1-z4)*delta4())+\
+(max(0,-delta5())+(1-z5)*delta5()))
+# exact formula
+Fqual_exact()=(\
+(ln(1+exp(-delta1()/s()))+(1-z1)*delta1()/s())+\
+(ln(1+exp(-delta2()/s()))+(1-z2)*delta2()/s())+\
+(ln(1+exp(-delta3()/s()))+(1-z3)*delta3()/s())+\
+(ln(1+exp(-delta4()/s()))+(1-z4)*delta4()/s())+\
+(ln(1+exp(-delta5()/s()))+(1-z5)*delta5()/s())) 
+end functions
+begin reaction rules
+0->counter() 1 # increment counter
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# As the dummy varaible t varies from 0 to 1, 
+# the likelihood parameter s varies from smin=10^log10smin to smax=10^log10smax.
+# Note that there is an optimal s that minimizes Fqual_exact. 
+simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>100,print_functions=>1})
+end actions

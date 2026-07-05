@@ -1,0 +1,86 @@
+begin model
+begin parameters
+    # PARP1-mediated DNA damage sensing and repair.
+    # Advanced features: DeleteMolecules,tagging,and NAD+ depletion logic.
+    
+    # DNA Damage
+    k_damage 0.2       # Basal damage rate (DSB production)
+    k_genotoxic 5.0    # High genotoxic stress peak
+    
+    # PARP1 Detection
+    k_parp_bind 2.0    # Rapid PARP1 recruitment to DSB
+    k_parp_act 1.5     # Activation of PAR catalysis
+    
+    # Metabolic Cost
+    k_nad_cons 5.0     # NAD+ consumption during PARylation
+    Km_nad 500         # Half-saturation for NAD+ dependency
+    
+    # Repair Delivery
+    k_repair 0.8       # PAR-mediated repair factor recruitment
+    k_parg 0.3         # PARG-mediated PAR degradation
+    
+    # Initials
+    PARP1_tot 500
+    DNA_sites 1000     # Healthy sites
+    NAD_tot 2000       # Energy reservoir
+end parameters
+
+begin molecule types
+    DNA(state~H~D,b)
+    PARP1(b,s~U~P)
+    PAR(b)
+    NAD()
+end molecule types
+
+begin seed species
+    DNA(state~H,b) DNA_sites
+    PARP1(b,s~U) PARP1_tot
+    NAD() NAD_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Damaged_Sites   DNA(state~D)              # Stress level
+    Molecules Bound_PARP1     PARP1(b!1).DNA(b!1)       # Recognition complex
+    Molecules PAR_Chain      PAR()                    # PARYlation level
+    Molecules NAD_Pool       NAD()                    # Metabolic substrate status
+    Molecules Repaired_Units  DNA(state~H)              # Recovery tracker
+end observables
+
+begin functions
+    # NAD+ dependent PARylation rate
+    v_parylate() = k_parp_act * NAD_Pool / (Km_nad + NAD_Pool)
+end functions
+
+begin reaction rules
+    ## DAMAGE PHASE
+    # Genotoxic insult creates DSB (Tagging %1 to track site)
+    DNA(state~H)%1 -> DNA(state~D)%1 k_damage
+    
+    ## RECOGNITION
+    # PARP1 binds Damaged site
+    PARP1(b) + DNA(state~D,b) <-> PARP1(b!1).DNA(state~D,b!1) k_parp_bind,0.1
+    
+    ## SIGNALING (PARylation)
+    # Bound PARP1 produces PAR chains (Consumes NAD+)
+    PARP1(b!+) + NAD() -> PARP1(b!+) + PAR(b) v_parylate()
+    
+    ## REPAIR PHASE
+    # PAR chains recruit machinery (Simplified direct repair)
+    # DeleteMolecules: Clear the temporary PAR signal once repair is done
+    DNA(state~D) + PAR(b) -> DNA(state~H) k_repair DeleteMolecules
+    
+    ## CLEARANCE
+    # PARG-mediated degradation of chains
+    PAR(b) -> 0 k_parg
+    
+    # Resynthesis of NAD+ (Slow recovery)
+    0 -> NAD() 5.0
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1,max_stoich=>{PAR=>20}})
+    simulate({method=>"ode",t_end=>60,n_steps=>400})
+end actions
+end model
+

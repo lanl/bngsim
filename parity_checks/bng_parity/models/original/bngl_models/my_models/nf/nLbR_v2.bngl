@@ -1,0 +1,116 @@
+begin model
+
+begin parameters
+
+f 0.01 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+
+cellDensity 1e9 # cells per L
+
+Vecf (1/cellDensity)*f # L per cell
+
+Lconc_nM 0.1 # nM
+Lconc=1e-9*Lconc_nM #
+Lcpc=Lconc*(NA*Vecf) # copies per cell
+
+Rcpc 3e5*f # copies per cell
+
+kf 1e6/(NA*Vecf) # /M/s
+kr 0.01 # /s
+
+KXRT 10 # dimensionless
+
+kmx=kr # /s
+kpx=KXRT*kmx/Rcpc # /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+L0(s,s,s,s,s)
+R0(s,s)
+L(s1,s2,s3,s4,s5)
+R(s,s)
+end molecule types
+
+begin seed species
+L0(s,s,s,s,s) Lcpc
+R0(s,s) Rcpc
+L(s1,s2,s3,s4,s5) Lcpc
+R(s,s) Rcpc
+end seed species
+
+begin observables
+Species freeL0 L0(s,s,s,s,s)
+Molecules freeL L(s1,s2,s3,s4,s5)
+Species freeR0 R0(s,s)
+Species freeR R(s,s)
+#Molecules LRbonds L(s1!1).R(s!1) L(s2!2).R(s!2) L(s3!3).R(s!3)
+end observables
+
+begin functions
+surfaceL0() Lcpc-freeL0
+surfaceL() Lcpc-freeL
+end functions
+
+begin reaction rules
+
+# Model 0
+
+# capture/release of free ligand
+L0(s,s,s,s,s)+R0(s)<->L0(s!1,s,s,s,s).R0(s!1) kf,kr
+
+# ligand-mediated receptor crosslinking
+L0(s!+,s)+R0(s)<->L0(s!+,s!1).R0(s!1) kpx,kmx
+
+# Model 1
+
+# capture/release of free ligand
+#L(s1,s2,s3,s4,s5)+R(s)<->L(s1!1,s2,s3,s4,s5).R(s!1) kf,kr
+#L(s1,s2,s3,s4,s5)+R(s)<->L(s1,s2!1,s3,s4,s5).R(s!1) kf,kr
+#L(s1,s2,s3,s4,s5)+R(s)<->L(s1,s2,s3!1,s4,s5).R(s!1) kf,kr
+#L(s1,s2,s3,s4,s5)+R(s)<->L(s1,s2,s3,s4!1,s5).R(s!1) kf,kr
+#L(s1,s2,s3,s4,s5)+R(s)<->L(s1,s2,s3,s4,s5!1).R(s!1) kf,kr
+
+
+# ligand-mediated receptor crosslinking
+#  s1!+
+#L(s1!+,s2)+R(s)<->L(s1!+,s2!1).R(s!1) kpx,kmx
+#L(s1!+,s3)+R(s)<->L(s1!+,s3!1).R(s!1) kpx,kmx
+#L(s1!+,s4)+R(s)<->L(s1!+,s4!1).R(s!1) kpx,kmx
+#L(s1!+,s5)+R(s)<->L(s1!+,s5!1).R(s!1) kpx,kmx
+
+#  s2!+
+#L(s2!+,s1)+R(s)<->L(s2!+,s1!1).R(s!1) kpx,kmx
+#L(s2!+,s3)+R(s)<->L(s2!+,s3!1).R(s!1) kpx,kmx
+#L(s2!+,s4)+R(s)<->L(s2!+,s4!1).R(s!1) kpx,kmx
+#L(s2!+,s5)+R(s)<->L(s2!+,s5!1).R(s!1) kpx,kmx
+
+#  s3!+
+#L(s3!+,s1)+R(s)<->L(s3!+,s1!1).R(s!1) kpx,kmx
+#L(s3!+,s2)+R(s)<->L(s3!+,s2!1).R(s!1) kpx,kmx
+#L(s3!+,s4)+R(s)<->L(s3!+,s4!1).R(s!1) kpx,kmx
+#L(s3!+,s5)+R(s)<->L(s3!+,s5!1).R(s!1) kpx,kmx
+
+#  s4!+
+#L(s4!+,s1)+R(s)<->L(s4!+,s1!1).R(s!1) kpx,kmx
+#L(s4!+,s2)+R(s)<->L(s4!+,s2!1).R(s!1) kpx,kmx
+#L(s4!+,s3)+R(s)<->L(s4!+,s3!1).R(s!1) kpx,kmx
+#L(s4!+,s5)+R(s)<->L(s4!+,s5!1).R(s!1) kpx,kmx
+
+#  s5!+
+#L(s5!+,s1)+R(s)<->L(s5!+,s1!1).R(s!1) kpx,kmx
+#L(s5!+,s2)+R(s)<->L(s5!+,s2!1).R(s!1) kpx,kmx
+#L(s5!+,s3)+R(s)<->L(s5!+,s3!1).R(s!1) kpx,kmx
+#L(s5!+,s4)+R(s)<->L(s5!+,s4!1).R(s!1) kpx,kmx
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,print_functions=>1,\
+t_start=>0,t_end=>1200,n_steps=>120})
+
+end actions

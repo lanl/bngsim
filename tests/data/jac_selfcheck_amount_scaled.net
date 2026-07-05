@@ -1,0 +1,51 @@
+# Synthetic reproducer for GH #168.
+#
+# The analytical-Jacobian FD self-validation gate
+# (NetworkModel::set_functional_jacobian, src/model.cpp) spuriously REJECTS a
+# CORRECT analytical Jacobian for amount-scaled models, then falls back to the
+# finite-difference Jacobian.
+#
+# Trigger conditions (all present below):
+#   1. tiny, amount-scaled species magnitudes (~1e-12), as produced when an SBML
+#      compartmental model (concentration x small volume) is converted to .net;
+#   2. a per-capita rate-law idiom `if(X > 1e-300, <expr>/X, 0)` where X is also
+#      the reaction's mass-action reactant (the `/X` and the mass-action `*X`
+#      cancel), so the true rate is k*[A] and the true d(rate)/d[A] = k;
+#   3. small enough that the dense exhaustive self-check runs
+#      (n_species <= BNGSIM_JAC_SELFCHECK_DENSE_MAX, default 4096).
+#
+# fdeg = if(obs_A>1e-300, (k*(obs_A/V))*V/obs_A, 0) == k   (obs_A cancels).
+# Reaction A->B with rate fdeg and mass-action reactant A  => rate = k*[A].
+# True J[B][A] = d(k*[A])/d[A] = k = 2.0 (analytical computes this exactly).
+#
+# The self-check FD step is h = 1e-5*max(|y_A|,1.0) = 1e-5 (the max(...,1.0)
+# floor; |y_A| ~ 1e-12). The downward half y_A - h < 0 drops obs_A below the
+# 1e-300 guard => fdeg returns 0 on that side => central FD reads k/2 = 1.0.
+# analytical(2.0) vs FD(1.0) is an exact 2x mismatch => the gate rejects the
+# (correct) analytical Jacobian.
+#
+# Expected NOW (buggy): Model.from_net(...).prepare_analytical_jacobian() leaves
+#   _core.analytical_jacobian_complete == False  (and BNGSIM_JAC_DEBUG=1 prints an
+#   FD-mismatch with analytical = 2 x fd).
+# Expected AFTER the fix: analytical_jacobian_complete == True.
+# Cross-check that the analytical Jacobian is genuinely correct:
+#   BNGSIM_JAC_SELFCHECK_DENSE_MAX=0 BNGSIM_JAC_SELFCHECK_SAMPLE=0 attaches it
+#   (finiteness-only gate) -> complete == True today, proving the gate is at fault.
+begin parameters
+    1 k  2.0      # Constant
+    2 V  1.0e-12  # Constant
+end parameters
+begin species
+    1 A() 1.0e-12
+    2 B() 5.0e-13
+end species
+begin groups
+    1 obs_A  1
+    2 obs_B  2
+end groups
+begin functions
+    1 fdeg() (if((obs_A) > 1e-300, ((k * (obs_A / V)) * V) / (obs_A), 0))
+end functions
+begin reactions
+    1 1 2 fdeg #A->B per-capita guarded; effective rate = k*[A]
+end reactions

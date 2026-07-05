@@ -1,0 +1,38 @@
+From 5d207e05255f66b5d9eb167350049158b7ff260a Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Tue, 9 Jun 2026 12:36:15 -0600
+Subject: [PATCH 14/14] bngsim: restore stepTo cache compatibility hook
+
+---
+ src/NFcore/NFcore.hh | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
+index 594b9b4..e0359b5 100644
+--- a/src/NFcore/NFcore.hh
++++ b/src/NFcore/NFcore.hh
+@@ -431,6 +431,10 @@ namespace NFcore
+ 			 * will not output anything to file (so must be done manually) and returns the current time
+ 			 * of the simulation, which will always be less than the stopping time */
+ 			double stepTo(double stoppingTime);
++			void invalidateStepToCache() {
++				pendingStepEventValid = false;
++				pendingStepEventTime = 0.0;
++			}
+ 
+ 			void singleStep();
+ 
+@@ -638,10 +642,6 @@ namespace NFcore
+ 			double recompute_A_tot();
+ 			double getNextRxn();
+ 			double getMaxCpuTime() const { return max_cpu_time; };
+-			void invalidateStepToCache() {
+-				pendingStepEventValid = false;
+-				pendingStepEventTime = 0.0;
+-			}
+ 
+ 
+ 			///////////////////////////////////////////////////////////////////////////
+-- 
+2.53.0
+

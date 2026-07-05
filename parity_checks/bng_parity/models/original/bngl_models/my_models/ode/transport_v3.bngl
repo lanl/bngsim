@@ -1,0 +1,93 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # number of molecules per mole (exact value)
+Ab_mwt 150e3 # Da (g/mol), IgG
+Ab_specificDose 10e-3 # g per kg of body weight
+bodyMass 80 # kg
+Ab_dose=(Ab_specificDose*bodyMass/Ab_mwt) # moles
+#spVB 54e-3 # L per kg (rhesus)
+specificVB 70e-3 # L per kg (human)
+VB=specificVB*bodyMass # L
+densityECF 1 # kg/L (1 g/cm^3 for water)
+fracECF 0.2 # dimensionless, 20% of body weight is ECF
+VE=bodyMass*fracECF/densityECF # L 
+VL=VE-VB # L
+nu 125e-3 # L per hour (rate of circulation of lymph into blood)
+# rate constant for first-order Ab clearance in blood (7 d half-life)
+cB ln(2)/(7*24) # /hour
+# rate constant for first-order Ab clearance in lymph
+cL=cB # /hour
+# Ab dosing schedule
+tau1 0 # hours
+tau2 168 # hours, 1*7*24 # hours (at 3 weeks)
+tau3 336 # hours, 2*7*24 (at 6 weeks)
+# dosing time
+Delta_t 4 # hours
+# total dose administered over the dosing time
+D=Ab_dose
+# rate of dosing
+dosing_rate=D/Delta_t
+#
+sigma 1 # NB: this parameter setting is adjusted in the actions block.
+end parameters
+begin molecule types
+A(loc~B~L)
+counter()
+end molecule types
+begin seed species
+A(loc~B) 0 # Ab_dose # mol
+A(loc~L) 0
+counter() 0
+end seed species
+begin observables
+Molecules AB A(loc~B)
+Molecules AL A(loc~L)
+Molecules t counter()
+end observables
+begin functions
+#vol_blood()=VB
+#vol_lymph()=VL
+#vol_ECF()=VE
+Ab_total_amount()=AB+AL
+ConcAb_in_Blood()=AB/VB
+ConcAb_in_Lymph()=AL/VL
+print_sigma()=if(t>=tau1 && t<=tau1+Delta_t,dosing_rate,\
+              if(t>=tau2 && t<=tau2+Delta_t,dosing_rate,\
+              if(t>=tau3 && t<=tau3+Delta_t,dosing_rate,\
+              0)))
+#print_tau1()=tau1
+#print_tau2()=tau2
+#print_tau3()=tau3
+end functions
+begin reaction rules
+# track time
+0->counter() 1
+# infusion
+0->A(loc~B) sigma*dosing_rate
+# clearance
+A(loc~B)->0 cB
+A(loc~L)->0 cL
+# transport
+A(loc~B)->A(loc~L) nu/VB
+A(loc~L)->A(loc~B) nu/VL
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# Dose #1
+setParameter("sigma",1) # tau1=0, Delta_t=4 hours
+simulate({method=>"ode",t_start=>0,t_end=>4,n_steps=>4,print_functions=>1})
+setParameter("sigma",0)
+simulate({continue=>1,method=>"ode",t_start=>4,t_end=>168,n_steps=>164,print_functions=>1})
+# Dose #2
+setParameter("sigma",1) # tau2=168 hours (1 week), Delta_t=4 hours
+simulate({continue=>1,method=>"ode",t_start=>168,t_end=>172,n_steps=>4,print_functions=>1})
+setParameter("sigma",0)
+simulate({continue=>1,method=>"ode",t_start=>172,t_end=>336,n_steps=>164,print_functions=>1})
+# Dose #3
+setParameter("sigma",1) # tau3=336 hours (2 weeks), Deta_t=4 hours
+simulate({continue=>1,method=>"ode",t_start=>336,t_end=>340,n_steps=>4,print_functions=>1})
+setParameter("sigma",0)
+simulate({continue=>1,method=>"ode",t_start=>340,t_end=>504,n_steps=>164,print_functions=>1})
+end actions

@@ -1,0 +1,41 @@
+# Feature: mid-simulation perturbation (setConcentration workflow)
+# Tests: system response to sudden concentration change via two-phase simulation
+# Note: BNG2.pl generates XML with modified concentrations between phases;
+#   the runner tests this by generating two XMLs (before/after perturbation)
+#   and comparing RM's response to NFsim's response for the second phase.
+# Tier: base
+# Expected: A-B binding reaches equilibrium, then B is spiked, new equilibrium reached
+
+begin model
+begin parameters
+    A_tot   100
+    B_tot   100
+    B_spike 200
+    kf      0.01   # /s, binding rate
+    kr      0.1    # /s, unbinding rate
+end parameters
+
+begin molecule types
+    A(s)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s)  A_tot
+    B(s)  B_tot + B_spike
+end seed species
+
+begin observables
+    Molecules  A_free  A(s)
+    Molecules  B_free  B(s)
+    Molecules  AB      A(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

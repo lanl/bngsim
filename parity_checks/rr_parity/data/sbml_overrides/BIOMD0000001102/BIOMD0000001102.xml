@@ -1,0 +1,1574 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" version="4">
+  <model metaid="_64e88ec5-ad0f-492b-9767-d5598ec8c6c0" name="Burbano2023 - HGFsignaling_in_FattyLiverDisease">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+     <p>Chronic liver diseases are worldwide on the rise. Due to the rapidly increasing incidence, in particular in Western countries, non-alcoholic fatty liver disease (NAFLD) is gaining importance. As the disease progresses it can develop into hepatocellular carcinoma. Lipid accumulation in hepatocytes has been identified as the characteristic structural change in NAFLD development, but the molecular mechanisms responsible for disease development remained unresolved. Here, we uncover a strong downregulation of the PI3K-AKT pathway and an upregulation of the MAPK pathway in primary hepatocytes from a preclinical model fed with a Western diet (WD). Dynamic pathway modeling of hepatocyte growth factor (HGF) signal transduction combined with global proteomics identifies that an elevated basal MET phosphorylation rate is the main driver of altered signaling leading to increased proliferation of WD-hepatocytes. Model-adaptation to patient-derived hepatocytes reveals a patient-specific variability in basal MET phosphorylation, which correlates with the outcome of patients after liver surgery. Thus, dysregulated basal MET phosphorylation could be an indicator for the health status of the liver and thereby inform on the risk of a patient to suffer from liver failure after surgery.</p>
+  </body>
+    </notes>
+    <annotation>
+	<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+        <rdf:Description rdf:about="#_64e88ec5-ad0f-492b-9767-d5598ec8c6c0">
+          <bqmodel:isDescribedBy>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/pubmed:38216754"/>
+	<rdf:li rdf:resource="http://identifiers.org/doi:10.1038/s44320-023-00007-4"/>
+	</rdf:Bag>
+	</bqmodel:isDescribedBy>
+	<bqbiol:hasProperty>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/mamo/MAMO_0000046"/>
+	</rdf:Bag>
+	</bqbiol:hasProperty>
+	
+	<bqmodel:is>
+	<rdf:Bag>
+	<rdf:li rdf:resource="https://identifiers.org/biomodels.db:MODEL2306280002"/>
+	<rdf:li rdf:resource="https://identifiers.org/biomodels.db:BIOMD0000001102"/>
+	</rdf:Bag>
+	</bqmodel:is>
+	</rdf:Description>
+	
+	
+	
+	
+	
+	
+	
+	
+	</rdf:RDF>
+	</annotation>
+      <listOfUnitDefinitions>
+      <unitDefinition id="time">
+        <listOfUnits>
+          <unit exponent="1" kind="second" multiplier="60" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment id="cytoplasm" size="1"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species compartment="cytoplasm" id="MET" initialAmount="1" name="MET"/>
+      <species compartment="cytoplasm" id="HGF" initialAmount="1" name="HGF"/>
+      <species compartment="cytoplasm" id="pMET" initialAmount="1" name="pMET"/>
+      <species compartment="cytoplasm" id="MEK" initialAmount="1" name="MEK"/>
+      <species compartment="cytoplasm" id="pMEK" initialAmount="1" name="pMEK"/>
+      <species compartment="cytoplasm" id="ERK" initialAmount="1" name="ERK"/>
+      <species compartment="cytoplasm" id="pERK" initialAmount="1" name="pERK"/>
+      <species compartment="cytoplasm" id="PI3K" initialAmount="1" name="PI3K"/>
+      <species compartment="cytoplasm" id="PI3K_atMembrane" initialAmount="1" name="PI3K_atMembrane"/>
+      <species compartment="cytoplasm" id="AKT" initialAmount="1" name="AKT"/>
+      <species compartment="cytoplasm" id="pAKT_T308" initialAmount="1" name="pAKT_T308"/>
+      <species compartment="cytoplasm" id="pAKT_T308_S473" initialAmount="1" name="pAKT_T308_S473"/>
+      <species compartment="cytoplasm" id="mTOR_free" initialAmount="1" name="mTOR_free"/>
+      <species compartment="cytoplasm" id="Mapkap1_free" initialAmount="1" name="Mapkap1_free"/>
+      <species compartment="cytoplasm" id="mTORC2" initialAmount="1" name="mTORC2"/>
+      <species compartment="cytoplasm" id="pTSC" initialAmount="1" name="pTSC"/>
+      <species compartment="cytoplasm" id="TSC" initialAmount="1" name="TSC"/>
+      <species compartment="cytoplasm" id="Rptor_free" initialAmount="1" name="Rptor_free"/>
+      <species compartment="cytoplasm" id="mTORC1" initialAmount="1" name="mTORC1"/>
+      <species compartment="cytoplasm" id="S6K" initialAmount="1" name="S6K"/>
+      <species compartment="cytoplasm" id="pS6K" initialAmount="1" name="pS6K"/>
+      <species compartment="cytoplasm" id="S6" initialAmount="1" name="S6"/>
+      <species compartment="cytoplasm" id="pS6" initialAmount="1" name="pS6"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_phospho_MET" value="0.1"/>
+      <parameter id="k_phospho_MET_basal" value="0.133333333333333"/>
+      <parameter id="k_pMET_degradation" value="0.166666666666667"/>
+      <parameter id="k_MET_expression" value="0.2"/>
+      <parameter id="k_MET_degradation" value="0.233333333333333"/>
+      <parameter id="k_phospho_MEK" value="0.266666666666667"/>
+      <parameter id="k_dephospho_pMEK" value="0.3"/>
+      <parameter id="k_phospho_ERK" value="0.333333333333333"/>
+      <parameter id="k_dephospho_pERK" value="0.366666666666667"/>
+      <parameter id="k_recruit_PI3K_MET" value="0.4"/>
+      <parameter id="k_inhibit_IRS1_S6K" value="0.433333333333333"/>
+      <parameter id="k_release_PI3K" value="0.466666666666667"/>
+      <parameter id="k_phospho_AKT_T308" value="0.5"/>
+      <parameter id="k_phospho_AKT_S473" value="0.533333333333333"/>
+      <parameter id="k_dephospho_pAKT_S473" value="0.566666666666667"/>
+      <parameter id="k_dephospho_pAKT_T308" value="0.6"/>
+      <parameter id="k_build_mTORC2" value="0.633333333333333"/>
+      <parameter id="k_inhibit_mTORC2_S6K" value="0.666666666666667"/>
+      <parameter id="k_dissociate_mTORC2" value="0.7"/>
+      <parameter id="k_dephospho_TSC" value="0.733333333333333"/>
+      <parameter id="k_phospho_TSC_ERK" value="0.766666666666667"/>
+      <parameter id="k_phospho_TSC_AKT" value="0.8"/>
+      <parameter id="k_build_mTORC1" value="0.833333333333333"/>
+      <parameter id="k_dissociate_mTORC1" value="0.866666666666667"/>
+      <parameter id="k_phospho_S6K" value="0.9"/>
+      <parameter id="k_dephospho_S6K" value="0.933333333333333"/>
+      <parameter id="k_phospho_S6" value="0.966666666666667"/>
+      <parameter id="k_dephospho_pS6" value="1"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="pMET">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MET </ci>
+              <ci> k_phospho_MET_basal </ci>
+            </apply>
+            <ci> k_pMET_degradation </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pMEK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MEK </ci>
+              <ci> MET </ci>
+              <ci> k_phospho_MEK </ci>
+              <ci> k_phospho_MET_basal </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_pMEK </ci>
+              <ci> k_pMET_degradation </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pERK">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> ERK </ci>
+              <ci> MEK </ci>
+              <ci> MET </ci>
+              <ci> k_phospho_ERK </ci>
+              <ci> k_phospho_MEK </ci>
+              <ci> k_phospho_MET_basal </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_pERK </ci>
+              <ci> k_dephospho_pMEK </ci>
+              <ci> k_pMET_degradation </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="PI3K_atMembrane">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MET </ci>
+              <ci> PI3K </ci>
+              <ci> k_dephospho_S6K </ci>
+              <ci> k_dissociate_mTORC1 </ci>
+              <ci> k_phospho_MET_basal </ci>
+              <ci> k_recruit_PI3K_MET </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_pMET_degradation </ci>
+              <ci> k_release_PI3K </ci>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pAKT_T308">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> AKT </ci>
+              <ci> MET </ci>
+              <ci> PI3K </ci>
+              <ci> k_dephospho_S6K </ci>
+              <ci> k_dissociate_mTORC1 </ci>
+              <ci> k_phospho_AKT_T308 </ci>
+              <ci> k_phospho_MET_basal </ci>
+              <ci> k_recruit_PI3K_MET </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_pAKT_T308 </ci>
+              <ci> k_pMET_degradation </ci>
+              <ci> k_release_PI3K </ci>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pAKT_T308_S473">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> AKT </ci>
+              <apply>
+                <power/>
+                <ci> MET </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <ci> Mapkap1_free </ci>
+              <apply>
+                <power/>
+                <ci> PI3K </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <ci> k_build_mTORC2 </ci>
+              <apply>
+                <power/>
+                <ci> k_dephospho_S6K </ci>
+                <cn type="integer"> 3 </cn>
+              </apply>
+              <apply>
+                <power/>
+                <ci> k_dissociate_mTORC1 </ci>
+                <cn type="integer"> 3 </cn>
+              </apply>
+              <ci> k_phospho_AKT_S473 </ci>
+              <ci> k_phospho_AKT_T308 </ci>
+              <apply>
+                <power/>
+                <ci> k_phospho_MET_basal </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <apply>
+                <power/>
+                <ci> k_recruit_PI3K_MET </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <ci> mTOR_free </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_pAKT_S473 </ci>
+              <ci> k_dephospho_pAKT_T308 </ci>
+              <ci> k_dissociate_mTORC2 </ci>
+              <apply>
+                <power/>
+                <ci> k_pMET_degradation </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <apply>
+                <power/>
+                <ci> k_release_PI3K </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> Rptor_free </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> S6K </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_build_mTORC1 </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_inhibit_IRS1_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_inhibit_mTORC2_S6K </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_phospho_S6K </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> mTOR_free </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> TSC </ci>
+                        <ci> k_phospho_TSC_ERK </ci>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> ERK </ci>
+                            <ci> MEK </ci>
+                            <ci> MET </ci>
+                            <ci> k_phospho_ERK </ci>
+                            <ci> k_phospho_MEK </ci>
+                            <ci> k_phospho_MET_basal </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> k_dephospho_pERK </ci>
+                            <ci> k_dephospho_pMEK </ci>
+                            <ci> k_pMET_degradation </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                      <ci> k_dephospho_TSC </ci>
+                    </apply>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> Rptor_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_build_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_inhibit_IRS1_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_phospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> mTOR_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> TSC </ci>
+                        <ci> k_phospho_TSC_ERK </ci>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> ERK </ci>
+                            <ci> MEK </ci>
+                            <ci> MET </ci>
+                            <ci> k_phospho_ERK </ci>
+                            <ci> k_phospho_MEK </ci>
+                            <ci> k_phospho_MET_basal </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> k_dephospho_pERK </ci>
+                            <ci> k_dephospho_pMEK </ci>
+                            <ci> k_pMET_degradation </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                      <ci> k_dephospho_TSC </ci>
+                    </apply>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <cn type="integer"> 2 </cn>
+                  <apply>
+                    <power/>
+                    <ci> Rptor_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_build_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_inhibit_mTORC2_S6K </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_phospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> mTOR_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> TSC </ci>
+                        <ci> k_phospho_TSC_ERK </ci>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> ERK </ci>
+                            <ci> MEK </ci>
+                            <ci> MET </ci>
+                            <ci> k_phospho_ERK </ci>
+                            <ci> k_phospho_MEK </ci>
+                            <ci> k_phospho_MET_basal </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> k_dephospho_pERK </ci>
+                            <ci> k_dephospho_pMEK </ci>
+                            <ci> k_pMET_degradation </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                      <ci> k_dephospho_TSC </ci>
+                    </apply>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <cn type="integer"> 2 </cn>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_dephospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_dissociate_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_dephospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_dissociate_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_inhibit_mTORC2_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> k_dephospho_S6K </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_dissociate_mTORC1 </ci>
+                    <cn type="integer"> 3 </cn>
+                  </apply>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="mTORC2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> MET </ci>
+              <ci> Mapkap1_free </ci>
+              <ci> PI3K </ci>
+              <ci> k_build_mTORC2 </ci>
+              <apply>
+                <power/>
+                <ci> k_dephospho_S6K </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <apply>
+                <power/>
+                <ci> k_dissociate_mTORC1 </ci>
+                <cn type="integer"> 2 </cn>
+              </apply>
+              <ci> k_phospho_MET_basal </ci>
+              <ci> k_recruit_PI3K_MET </ci>
+              <ci> mTOR_free </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dissociate_mTORC2 </ci>
+              <ci> k_pMET_degradation </ci>
+              <ci> k_release_PI3K </ci>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> Rptor_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_build_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_inhibit_mTORC2_S6K </ci>
+                  <apply>
+                    <power/>
+                    <ci> k_phospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> mTOR_free </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> TSC </ci>
+                        <ci> k_phospho_TSC_ERK </ci>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> ERK </ci>
+                            <ci> MEK </ci>
+                            <ci> MET </ci>
+                            <ci> k_phospho_ERK </ci>
+                            <ci> k_phospho_MEK </ci>
+                            <ci> k_phospho_MET_basal </ci>
+                          </apply>
+                          <apply>
+                            <times/>
+                            <ci> k_dephospho_pERK </ci>
+                            <ci> k_dephospho_pMEK </ci>
+                            <ci> k_pMET_degradation </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                      <ci> k_dephospho_TSC </ci>
+                    </apply>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                  <ci> k_inhibit_IRS1_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> Rptor_free </ci>
+                  <ci> S6K </ci>
+                  <ci> k_build_mTORC1 </ci>
+                  <ci> k_dephospho_S6K </ci>
+                  <ci> k_dissociate_mTORC1 </ci>
+                  <ci> k_inhibit_mTORC2_S6K </ci>
+                  <ci> k_phospho_S6K </ci>
+                  <ci> mTOR_free </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> TSC </ci>
+                      <ci> k_phospho_TSC_ERK </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> ERK </ci>
+                          <ci> MEK </ci>
+                          <ci> MET </ci>
+                          <ci> k_phospho_ERK </ci>
+                          <ci> k_phospho_MEK </ci>
+                          <ci> k_phospho_MET_basal </ci>
+                        </apply>
+                        <apply>
+                          <times/>
+                          <ci> k_dephospho_pERK </ci>
+                          <ci> k_dephospho_pMEK </ci>
+                          <ci> k_pMET_degradation </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> k_dephospho_TSC </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <apply>
+                    <power/>
+                    <ci> k_dephospho_S6K </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> k_dissociate_mTORC1 </ci>
+                    <cn type="integer"> 2 </cn>
+                  </apply>
+                </apply>
+              </apply>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pTSC">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> TSC </ci>
+              <ci> k_phospho_TSC_ERK </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> ERK </ci>
+                  <ci> MEK </ci>
+                  <ci> MET </ci>
+                  <ci> k_phospho_ERK </ci>
+                  <ci> k_phospho_MEK </ci>
+                  <ci> k_phospho_MET_basal </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k_dephospho_pERK </ci>
+                  <ci> k_dephospho_pMEK </ci>
+                  <ci> k_pMET_degradation </ci>
+                </apply>
+              </apply>
+            </apply>
+            <ci> k_dephospho_TSC </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="mTORC1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> Rptor_free </ci>
+              <ci> k_build_mTORC1 </ci>
+              <ci> mTOR_free </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> TSC </ci>
+                  <ci> k_phospho_TSC_ERK </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> ERK </ci>
+                      <ci> MEK </ci>
+                      <ci> MET </ci>
+                      <ci> k_phospho_ERK </ci>
+                      <ci> k_phospho_MEK </ci>
+                      <ci> k_phospho_MET_basal </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> k_dephospho_pERK </ci>
+                      <ci> k_dephospho_pMEK </ci>
+                      <ci> k_pMET_degradation </ci>
+                    </apply>
+                  </apply>
+                </apply>
+                <ci> k_dephospho_TSC </ci>
+              </apply>
+            </apply>
+            <ci> k_dissociate_mTORC1 </ci>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pS6K">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> Rptor_free </ci>
+              <ci> S6K </ci>
+              <ci> k_build_mTORC1 </ci>
+              <ci> k_phospho_S6K </ci>
+              <ci> mTOR_free </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> TSC </ci>
+                  <ci> k_phospho_TSC_ERK </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> ERK </ci>
+                      <ci> MEK </ci>
+                      <ci> MET </ci>
+                      <ci> k_phospho_ERK </ci>
+                      <ci> k_phospho_MEK </ci>
+                      <ci> k_phospho_MET_basal </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> k_dephospho_pERK </ci>
+                      <ci> k_dephospho_pMEK </ci>
+                      <ci> k_pMET_degradation </ci>
+                    </apply>
+                  </apply>
+                </apply>
+                <ci> k_dephospho_TSC </ci>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_S6K </ci>
+              <ci> k_dissociate_mTORC1 </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="pS6">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <divide/>
+            <apply>
+              <times/>
+              <ci> Rptor_free </ci>
+              <ci> S6 </ci>
+              <ci> S6K </ci>
+              <ci> k_build_mTORC1 </ci>
+              <ci> k_phospho_S6 </ci>
+              <ci> k_phospho_S6K </ci>
+              <ci> mTOR_free </ci>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> TSC </ci>
+                  <ci> k_phospho_TSC_ERK </ci>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> ERK </ci>
+                      <ci> MEK </ci>
+                      <ci> MET </ci>
+                      <ci> k_phospho_ERK </ci>
+                      <ci> k_phospho_MEK </ci>
+                      <ci> k_phospho_MET_basal </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> k_dephospho_pERK </ci>
+                      <ci> k_dephospho_pMEK </ci>
+                      <ci> k_pMET_degradation </ci>
+                    </apply>
+                  </apply>
+                </apply>
+                <ci> k_dephospho_TSC </ci>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k_dephospho_S6K </ci>
+              <ci> k_dephospho_pS6 </ci>
+              <ci> k_dissociate_mTORC1 </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+      <initialAssignment symbol="k_MET_expression">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <plus/>
+            <apply>
+              <times/>
+              <ci> MET </ci>
+              <ci> k_MET_degradation </ci>
+            </apply>
+            <apply>
+              <times/>
+              <ci> MET </ci>
+              <ci> k_phospho_MET_basal </ci>
+            </apply>
+          </apply>
+        </math>
+            </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfReactions>
+      <reaction id="HGFinducedMETphosphorylationNISS" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MET" stoichiometry="1"/>
+          <speciesReference species="HGF" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMET" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_MET </ci>
+              <ci> MET </ci>
+              <ci> HGF </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="basalMETphosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MET" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMET" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_MET_basal </ci>
+              <ci> MET </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="pMETdegradation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pMET" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_pMET_degradation </ci>
+              <ci> pMET </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="METexpression" reversible="false">
+        <listOfProducts>
+          <speciesReference species="MET" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_MET_expression </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="METdegradation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MET" stoichiometry="1"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_MET_degradation </ci>
+              <ci> MET </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="METinducedMEKphosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="MEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pMET"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_MEK </ci>
+              <ci> MEK </ci>
+              <ci> pMET </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="MEKdephosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pMEK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="MEK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_pMEK </ci>
+              <ci> pMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="MEKinducedERKphosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="ERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pMEK"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_ERK </ci>
+              <ci> ERK </ci>
+              <ci> pMEK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="ERKdephosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pERK" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="ERK" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_pERK </ci>
+              <ci> pERK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="PI3KactivationinhibitedbypS6K" reversible="false">
+        <listOfReactants>
+          <speciesReference species="PI3K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="PI3K_atMembrane" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pMET"/>
+          <modifierSpeciesReference species="pS6K"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_recruit_PI3K_MET </ci>
+              <ci> PI3K </ci>
+              <ci> pMET </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <apply>
+                    <times/>
+                    <ci> k_inhibit_IRS1_S6K </ci>
+                    <ci> pS6K </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="PI3Kinactivation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="PI3K_atMembrane" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="PI3K" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_release_PI3K </ci>
+              <ci> PI3K_atMembrane </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="PhosphorylationofAKTatT308" reversible="false">
+        <listOfReactants>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT_T308" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="PI3K_atMembrane"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_AKT_T308 </ci>
+              <ci> AKT </ci>
+              <ci> PI3K_atMembrane </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="PhosphorylationofAKTatS473" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pAKT_T308" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT_T308_S473" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="mTORC2"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_AKT_S473 </ci>
+              <ci> pAKT_T308 </ci>
+              <ci> mTORC2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="DephosphorylationofAKTatS473" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pAKT_T308_S473" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pAKT_T308" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_pAKT_S473 </ci>
+              <ci> pAKT_T308_S473 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="DephosphorylationofAKTatT308" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pAKT_T308" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="AKT" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_pAKT_T308 </ci>
+              <ci> pAKT_T308 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="mTORC2complexformationinhibitedbypS6K" reversible="false">
+        <listOfReactants>
+          <speciesReference species="mTOR_free" stoichiometry="1"/>
+          <speciesReference species="Mapkap1_free" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="mTORC2" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="PI3K_atMembrane"/>
+          <modifierSpeciesReference species="pS6K"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_build_mTORC2 </ci>
+              <ci> mTOR_free </ci>
+              <ci> Mapkap1_free </ci>
+              <ci> PI3K_atMembrane </ci>
+              <apply>
+                <divide/>
+                <cn type="integer"> 1 </cn>
+                <apply>
+                  <plus/>
+                  <cn type="integer"> 1 </cn>
+                  <apply>
+                    <times/>
+                    <ci> k_inhibit_mTORC2_S6K </ci>
+                    <ci> pS6K </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="mTORC2complexdissociation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="mTORC2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="mTOR_free" stoichiometry="1"/>
+          <speciesReference species="Mapkap1_free" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dissociate_mTORC2 </ci>
+              <ci> mTORC2 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="TSCdephosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pTSC" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="TSC" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_TSC </ci>
+              <ci> pTSC </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="TSCphosphorylationbypERK" reversible="false">
+        <listOfReactants>
+          <speciesReference species="TSC" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pTSC" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pERK"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_TSC_ERK </ci>
+              <ci> TSC </ci>
+              <ci> pERK </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="TSCphosphorylationbypAKT" reversible="false">
+        <listOfReactants>
+          <speciesReference species="TSC" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pTSC" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pAKT_T308"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_TSC_AKT </ci>
+              <ci> TSC </ci>
+              <ci> pAKT_T308 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="mTORC1complexformation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="mTOR_free" stoichiometry="1"/>
+          <speciesReference species="Rptor_free" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="mTORC1" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pTSC"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_build_mTORC1 </ci>
+              <ci> mTOR_free </ci>
+              <ci> Rptor_free </ci>
+              <ci> pTSC </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="mTORC1complexdissociation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="mTORC1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="mTOR_free" stoichiometry="1"/>
+          <speciesReference species="Rptor_free" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dissociate_mTORC1 </ci>
+              <ci> mTORC1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6KphosphorylationbymTORC1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S6K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pS6K" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="mTORC1"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_S6K </ci>
+              <ci> S6K </ci>
+              <ci> mTORC1 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6Kdephosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pS6K" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="S6K" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_S6K </ci>
+              <ci> pS6K </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6phosphorylationbypS6K" reversible="false">
+        <listOfReactants>
+          <speciesReference species="S6" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="pS6" stoichiometry="1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="pS6K"/>
+        </listOfModifiers>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_phospho_S6 </ci>
+              <ci> S6 </ci>
+              <ci> pS6K </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="S6dephosphorylation" reversible="false">
+        <listOfReactants>
+          <speciesReference species="pS6" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="S6" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> k_dephospho_pS6 </ci>
+              <ci> pS6 </ci>
+              <ci> cytoplasm </ci>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>

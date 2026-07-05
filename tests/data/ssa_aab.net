@@ -1,0 +1,20 @@
+# SSA propensity test: A+A+B -> C (mixed repeated + distinct reactants)
+# Reactants: 1,1,2. stat_factor=0.5 (from BNG2.pl for the AA symmetry).
+# A(0)=1, B(0)=10: propensity = 0.5*k*1*(1-1)*10 = 0 → no reaction
+# A(0)=2, B(0)=10: propensity = 0.5*k*2*1*10 = 10*k → fires
+begin parameters
+    1 k1  1.0  # Constant
+end parameters
+begin species
+    1 A() 1
+    2 B() 10
+    3 C() 0
+end species
+begin reactions
+    1 1,1,2 3 0.5*k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+    3 C_tot  3
+end groups

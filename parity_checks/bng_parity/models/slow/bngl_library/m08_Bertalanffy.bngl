@@ -1,0 +1,66 @@
+begin model
+#@model_id: m08_Bertalanffy
+#@title: Von Bertalanffy growth with linear loss
+#@description: Growth model x' = p*x^(2/3) - q*x. Production follows a 2/3 power law; loss is first-order. Asymptote mmax = (p/q)^3 = 42.875.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        100            # dimensionless scaling factor (x0=10 -> 1000 molecules)
+
+  p        7              # molecules^(1/3)/s  growth rate coefficient
+  a_exp    0.666666666666667  # dimensionless  growth exponent (2/3)
+  q        2              # 1/s  linear loss rate
+
+  x_init   10*f           # molecules  initial count of x
+end parameters
+
+begin molecule types
+  x()
+end molecule types
+
+begin seed species
+  x()  x_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_x  x()
+end observables
+
+begin functions
+  # Growth propensity: p * x^(2/3)
+  # The scaling factor f changes the effective rate:
+  # In scaled units, production = p * (x_scaled)^(2/3)
+  # We need to account for f: original x = x_scaled/f
+  # p * (x_scaled/f)^(2/3) * f = p * f^(1/3) * x_scaled^(2/3)
+  # But since we keep the same ODE form, we use:
+  rate_growth() = p * f^(1-a_exp) * Obs_Tot_x^a_exp
+end functions
+
+begin reaction rules
+  # Growth: 0 -> x with power-law rate p*x^(2/3)
+  0 -> x()  rate_growth()
+
+  # Linear loss: x -> 0 at rate q (first-order)
+  x() -> 0  q
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

@@ -1,0 +1,65 @@
+# Model: nfsim_aggregation_gelation.bngl
+# Description: Models the formation of large aggregates (Gelation) from monomers.
+#              Monomers have multiple binding sites, allowing branching and network formation.
+#              This leads to a percolation transition (Sol -> Gel).
+#              Best simulated with NFsim as the number of species explodes (combinatorial complexity).
+
+begin model
+
+begin parameters
+    k_bind 1.0
+    k_break 0.1
+    M_tot 500
+end parameters
+
+begin molecule types
+    M(a,b,c) # Trivalent monomer
+end molecule types
+
+begin seed species
+    M(a,b,c) M_tot
+end seed species
+
+begin observables
+    Molecules Monomers M(a,b,c)
+    Molecules Dimers   M(a!1).M(a!1) # Just one bond type pattern
+    # To detect Gel, we usually look at the Largest Cluster Size (NFsim metric)
+    # or depletion of free sites.
+    Molecules Free_Sites M(a) # + M(b) + M(c) - tedious to write all
+end observables
+
+begin reaction rules
+    # Binding Rules
+    # Sites a, b, c are equivalent? Let's assume they are.
+    # To reduce rules, we could use symmetric sites if BNGL supported M(s~1~2~3).
+    # But explicit sites a,b,c is standard.
+
+    # Bind a-a
+    M(a) + M(a) <-> M(a!1).M(a!1) k_bind, k_break
+    # Bind a-b
+    M(a) + M(b) <-> M(a!1).M(b!1) k_bind, k_break
+    # Bind a-c
+    M(a) + M(c) <-> M(a!1).M(c!1) k_bind, k_break
+    # Bind b-b
+    M(b) + M(b) <-> M(b!1).M(b!1) k_bind, k_break
+    # Bind b-c
+    M(b) + M(c) <-> M(b!1).M(c!1) k_bind, k_break
+    # Bind c-c
+    M(c) + M(c) <-> M(c!1).M(c!1) k_bind, k_break
+
+    # Only intermolecular binding?
+    # Intramolecular (cyclization) is also possible with these rules unless restricted.
+end reaction rules
+
+end model
+
+## Actions ##
+# Use NFsim for this one efficiently
+#generate_network({overwrite=>1, max_iter=>1}) # Don't generate full network
+#simulate({method=>"nf", t_end=>50, n_steps=>200, gml=>1000000}) # gml limit
+
+
+begin actions
+simulate({method=>"nf",t_end=>50,n_steps=>200})
+
+end actions

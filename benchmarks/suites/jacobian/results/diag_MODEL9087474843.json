@@ -1,0 +1,105 @@
+{
+  "model": "MODEL9087474843",
+  "T": 100.0,
+  "N": 200,
+  "runs": {
+    "analytical/default": {
+      "wall": 0.781654662991059,
+      "stats": {
+        "n_steps": 451,
+        "n_rhs_evals": 605,
+        "n_jac_evals": 60,
+        "n_err_test_fails": 14,
+        "n_nonlin_iters": 602,
+        "steady_state_reached": 0
+      }
+    },
+    "analytical/tight": {
+      "wall": 0.40396509200218134,
+      "stats": {
+        "n_steps": 1103,
+        "n_rhs_evals": 1227,
+        "n_jac_evals": 96,
+        "n_err_test_fails": 11,
+        "n_nonlin_iters": 1225,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/default": {
+      "wall": 1.2588002019911073,
+      "stats": {
+        "n_steps": 461,
+        "n_rhs_evals": 593,
+        "n_jac_evals": 52,
+        "n_err_test_fails": 6,
+        "n_nonlin_iters": 590,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/tight": {
+      "wall": 0.3829966909979703,
+      "stats": {
+        "n_steps": 1073,
+        "n_rhs_evals": 1202,
+        "n_jac_evals": 95,
+        "n_err_test_fails": 13,
+        "n_nonlin_iters": 1200,
+        "steady_state_reached": 0
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "label": "analytical_default vs fd_default (the speedup-mode pair)",
+      "max_abs": 1.9144581111518733e-06,
+      "peak": 2000.0,
+      "peak_rel": 9.572290555759365e-10,
+      "max_elt_rel": 0.011438231389995968,
+      "at": {
+        "t_idx": 19,
+        "species": "CaMKII_PSD_slash_CaMKII_minus_PSD",
+        "a": 3.817417284697293,
+        "b": 3.8174191991554043
+      }
+    },
+    {
+      "label": "analytical_tight vs fd_tight (do they converge together?)",
+      "max_abs": 2.1740441447093417e-08,
+      "peak": 2000.0,
+      "peak_rel": 1.087022072354671e-11,
+      "max_elt_rel": 6.405021975887165e-06,
+      "at": {
+        "t_idx": 45,
+        "species": "CaMKII_PSD_slash_tot_CaMKII_PSD",
+        "a": 6.187515807699895,
+        "b": 6.187515785959453
+      }
+    },
+    {
+      "label": "analytical: default vs tight (is analytical converging?)",
+      "max_abs": 1.9946013933846984e-06,
+      "peak": 2000.0,
+      "peak_rel": 9.973006966923492e-10,
+      "max_elt_rel": 0.009140960616837213,
+      "at": {
+        "t_idx": 19,
+        "species": "CaMKII_PSD_slash_CaMKII_minus_PSD",
+        "a": 3.817417284697293,
+        "b": 3.8174192792986865
+      }
+    },
+    {
+      "label": "fd: default vs tight (is fd converging?)",
+      "max_abs": 9.009515800073586e-07,
+      "peak": 2000.0,
+      "peak_rel": 4.5047579000367934e-10,
+      "max_elt_rel": 0.006861115058520003,
+      "at": {
+        "t_idx": 34,
+        "species": "CaMKII_PSD_slash_CaMKII_minus_PSD",
+        "a": 4.004983915132085,
+        "b": 4.004983014180505
+      }
+    }
+  ]
+}

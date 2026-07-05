@@ -1,0 +1,42 @@
+begin model
+begin parameters
+V0 1e12 # initial viral load
+c 1 # rate constant for viral clearance
+delta 0.1 # rate constant for death of infected cells
+end parameters
+begin molecule types
+counter()
+Inorm() # normalized number of productively infected cells
+V() # infectious virus
+N() # non-infectious virus 
+end molecule types
+begin seed species
+Inorm() 1
+V() V0
+N() 0
+end seed species
+begin observables
+Molecules t counter()
+Molecules Inorm Inorm()
+Molecules V V()
+Molecules N N()
+end observables
+begin functions
+pI()=c*V0*Inorm
+V_plus_N()=V+N
+Inorm_eqn()=exp(-delta*t)
+V_eqn()=V0*exp(-c*t)
+N_eqn()=(c*V0/(c-delta))*(exp(-delta*t)-exp(-c*t))
+end functions
+begin reaction rules
+0->counter() 1
+Inorm()->0 delta
+V()->0 c
+0->N() pI()
+N()->0 c
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100,print_functions=>1})
+end actions

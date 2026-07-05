@@ -1,0 +1,66 @@
+begin model
+#@model_id: m14_Michaelis_Menten_prod_deg
+#@title: Michaelis-Menten production and degradation
+#@description: Single-variable model with Michaelis-Menten production (constant input) and Michaelis-Menten degradation. From Marin-Sanguino et al. (2007).
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters (concentrations scaled by 100 for SSA)
+  scale    100            # dimensionless
+  V_1      1.0            # molecules/time  Vmax for production
+  K_1      1.0            # dimensionless  Km for production (unscaled)
+  V_2      0.8            # 1/time  Vmax for degradation
+  K_2      100            # molecules  Km for degradation (1.0 * scale)
+  X_0      1.0            # dimensionless  constant input (unscaled)
+
+  # Constant production rate: V_1*X_0/(K_1 + X_0) * scale
+  v_prod   50             # molecules/time  = 1.0*1.0/(1.0+1.0)*100
+end parameters
+
+begin molecule types
+  X1()   # metabolite
+end molecule types
+
+begin seed species
+  X1()  10   # molecules  (0.1 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+end observables
+
+begin functions
+  # Degradation: V_2*X1/(K_2 + X1)  (Michaelis-Menten)
+  deg_X1() = V_2 * Obs_X1 / (K_2 + Obs_X1)
+end functions
+
+begin reaction rules
+  # Constant-rate production (Michaelis-Menten with constant substrate)
+  0 -> X1()  v_prod
+
+  # Michaelis-Menten degradation
+  X1() -> 0  deg_X1()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

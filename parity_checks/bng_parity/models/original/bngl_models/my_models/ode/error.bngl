@@ -1,0 +1,62 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# Boltzmann constant
+kB 1.380649e-23 # J/K
+# gas constant
+R=NA*kB # J/(mol K)
+# reference volume
+Vref 1e-18 # L (1 attoliter)
+# scaling factor (determines system size, i.e., the subvolume)
+scale 1 # dimensionless NB: value is reset in actions block!
+# subvolume of batch reactor 
+V=scale*Vref # L
+# reference temperature
+Tref 273.15 # K
+# temperature
+T=70+Tref # C converted to K
+# initial initiator concentration
+I20=2.58e-2*(NA*V) # M converted to number of molecules in reactor subvolume
+# rate constant for thermal decomposition of initiator
+kd=1.05e15*exp(-15430/T) # /s
+end parameters
+begin molecule types
+delta()
+I(N)
+tim()
+end molecule types
+begin seed species
+delta() I20
+I(N!1).I(N!1) I20
+tim() 0
+end seed species
+begin observables
+Species Initiator_I2_ODE delta()
+Species Initiator_I2_SSA I(N!1).I(N!1)
+Molecules t tim()
+end observables
+begin functions
+scale_factor()=scale
+initiator_analytical()=I20*exp(-kd*t)
+end functions
+begin reaction rules
+# ODE model
+0->tim() 1
+# thermal decomposition of initiator
+delta()->0 2*kd
+# Stochastic model
+# decomposition of initiator
+I(N!1).I(N!1)->0 kd # kd*[initiator](t)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+setParameter("scale",100)
+simulate({suffix=>"ODE",method=>"ode",t_start=>0,t_end=>2400,n_steps=>240,print_functions=>1})
+resetConcentrations()
+setParameter("scale",100)
+simulate({suffix=>"SSA",method=>"nf",t_start=>0,t_end=>2400,n_steps=>240,print_functions=>1,get_final_state=>0,gml=>2.147e9})
+end actions

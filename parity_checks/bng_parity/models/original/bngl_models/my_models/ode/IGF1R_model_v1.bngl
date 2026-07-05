@@ -1,0 +1,401 @@
+# Filename: IGF1R_model_v[version_number].bngl
+
+begin model
+
+# HeLa cell-specific model for IGF1R signaling (two equivalent versions)
+#   Version 1 is a natural (and naive) specification of the model.
+#   Version 2 is a compressed and fragmented specification of the model.
+
+# Refernences:
+# Farooq A, ..., Zhou MM (1999) J Biol Chem 274:6114-6121 [PMID:10037694]
+# Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+# Koytiger G, ..., MacBeath G (2013) Mol Cell Proteomics 12:1204-1213 [PMID:23358503]
+# Kulak NA, ..., Mann M (2014) Nat Methods 11:319-324 [PMID:24487582]
+# Tan CW, ..., Burgess AW (2012) PLOS ONE 7:e31882 [PMID:22363759]
+
+begin parameters
+
+# fraction of cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers, 
+#   and rate constants for zero-order processes.
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# volume of extracellular fluid per cell
+#   Assumptions:
+#    - 15 cm culture dishes (cells 95% confluent)
+#    - 1.2e5 cells per cm^2
+#    - growth surface area of 140 cm^2
+#    - 1.7e7 cells per dish
+#    - 0.25 mL of medium per square cm of growth surface
+#    - 35 mL of medium per dish
+Vecf 2.1e-9*f # [=] L per cell
+
+# cytoplasmic volume
+#   1.2 pL is a typical cytoplasmic volume 
+#   for a non-dividing mammalian cell in culture (Tan et al., 2012).
+#   [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max 1.87 pL] 
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+IGF1_conc_nM 0.01 # [=] nM
+IGF1_conc=IGF1_conc_nM*1.0e-9 # [=] M
+
+# copies of IGF1 per cell
+IGF1_total=IGF1_conc*(NA*Vecf)
+
+# The following copy number settings are based 
+#   on the data of Kulak et al. (2014) for HeLa S3 cells (ATCC CCL-2.2).
+IGF1R_total  14810*f # [=] copies per cell (NB: two copies of IGF1R per dimer)
+IRS1_total    1329*f # [=] copies per cell
+SHC1_total  111966*f # [=] copies per cell
+PIK3R1_total   448*f # [=] copies per cell
+PIK3R2_total 16715*f # [=] copies per cell
+PIK3R3_total  2060*f # [=] copies per cell
+
+# There are p46, p52 and p66 isoforms of SHC1.
+#   p46/p52 and p66 are synthesized from different transcripts.
+#   p46, p52 and p66 differ in their N-terminal regions.
+#   p46 and p52 activate mitogenic signaling, whereas p66 inhibits mitogenic signaling.
+#   p46 and p66 phosphorylated at S36 localize to mitochondria;
+#     p52 and p66 not phosphorylated at S36 are cytoplasmic.  
+p52_fraction 1.0 # dimensionless, 0 <= p52_fraction <= 1
+p52SHC1_total=p52_fraction*SHC1_total # [=] copies per cell
+
+# rate constants for IGF1 interaction with dimeric IGF1R (5 independent parameters)
+#   The values specified below are those reported by Kiselyov et al. (2009).
+#     See Table 1 (Kiselyov et al., 2009).
+
+# rate constants for ligand capture/release reactions
+#   KD1=d1/a1=9.2 nM - 9.09 nM is the Site 1 KD reported in Table 1 (Kiselyov et al., 2009)
+#   KD2=d2/a2=483 nM -  490 nM is the Site 2 KD reported in Table 1 (Kiselyov et al., 2009)
+
+# forward and reverse rate constants for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+a1 3.47e5/(NA*Vecf) # [=] /M/s converted to /(molecule/cell)/s
+d1 3.2e-3 # [=] /s
+# forward and reverse rate constants for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+a2 8.7e3/(NA*Vecf) # [=] /M/s convereted to /(molecule/cell)/s
+d2 4.2e-3 # [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+#   Kiselyov et al. (2009) assumed that the rate constant for crosslinking has the same value 
+#     as that determined for insulin-insulin receptor interaction. Furthermore, as a simplification,
+#     a single rate constant is used to characterize both of the two possible crosslinking reactions.
+#   Kiselyov et al. (2009) reported that setting d1prime=d1 and d2prime=d2 is a reasonable simplification.
+#     See discussion on pp. 8 and 9 (Kiselyov et al., 2009).
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+kcr 0.33 # [=] /s
+
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime=d1 # [=] /s
+#   Release of ligand from Site 2
+d2prime=d2 # [=] /s
+
+# rate constant for autophosphorylation
+kp 0.5 # [=] /s
+# rate constant for pseudo first-order dephosphorylation by phosphatases considered implicitly
+kdp 0.1 # [=] /s
+
+# KD measurements for phosphotyrosine-SH2/PTB domain interactions (Koytiger et al., 2013)
+KD_IGF1R_pY980_SHC1_PTB 0.9560e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R1_SH2_NC 0.5632e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R2_SH2_NC 0.9415e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R3_SH2_NC 0.5870e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+
+# Measured SHC1 (PTB):IRS1 (PTB) ratio of affinities for binding NPxpY motif in INSR (Farooq et al., 1999)
+#   SHC1's affinity for the NPxpY motif in INSR is ~20-fold greater than IRS1's affinity for this site.
+#   We will assume that this ratio is preserved for the NPxpY motif in IGF1R.
+#   Y999 in INSR corresponds to Y980 in IGF1R.
+#   ratio := KD_INSR_pY999_IRS1_PTB / KD_INSR_pY999_SHC1_PTB = 87.07/4.22
+ratio 2.0 # [=] dimensionless
+
+KD_IGF1R_pY980_IRS1_PTB=ratio*KD_IGF1R_pY980_SHC1_PTB # [=] molecules per cell
+
+# A typical association rate constant for a protein-protein interaction is 1e6 /M/s.
+kon_universal 1.0e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+
+# Find dissociation rate constants consistent with measured KD values and assumed
+#   universal association rate constant.
+#   KD=koff/kon => koff_[ID]=kon_universal*KD_[ID]
+koff_IGF1R_pY980_IRS1_PTB=kon_universal*KD_IGF1R_pY980_IRS1_PTB # [=] /s
+koff_IGF1R_pY980_SHC1_PTB=kon_universal*KD_IGF1R_pY980_SHC1_PTB # [=] /s
+koff_IGF1R_pY1346_PIK3R1_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R1_SH2_NC # [=] /s
+koff_IGF1R_pY1346_PIK3R2_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R2_SH2_NC # [=] /s
+koff_IGF1R_pY1346_PIK3R3_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R3_SH2_NC # [=] /s
+
+end parameters
+
+begin molecule types
+
+# Version 1 - uncompressed (natural or naive rules and molecule types)
+
+IGF1(ds,hs)
+IGF1R(S1,S2,C,Y980~0~P,Y1165~0~P,Y1346~0~P)
+IRS1(PTB)
+p52SHC1(PTB)
+#PIK3R1(tSH2)
+#PIK3R2(tSH2)
+#PIK3R3(tSH2)
+
+# Version 2 - compressed & fragmented (rules and molecules types optimal for minimizing size of implied network)
+
+# We will use a prefix (c) to refer to molecule types in the compressed & fragmented model.
+# We introduce uniquely named ligand and receptor molecule types for each Y site in IGF1R of interest.
+
+# ligand
+#   The component r represents either ds or hs depending on context.
+#     If ligand is bound to S1, then r represents ds.
+#     If ligand is bound to S2, then r represents hs.
+cL_Y980(r)
+cL_Y1165(r)
+
+# receptor
+#   The receptor is taken to be dimeric.
+#   Only one of the two monomer chains in a receptor dimer are explicitly represented.
+#     The other monomer chain is implicit.
+#   The component S1 represents Site 1 in Binding Pocket 1.
+#     S1 is taken to have the following states:
+#       0: S2 in the adjacent receptor is free
+#       1: S2 is the adjacent receptor is occupied
+#       X: S1 is bound to S2 in the adjacent receptor
+#   The component S2 represents Site 2 in Binding Pocekt 2.
+#     S2 is taken to have the following states:
+#       0: S1 in the adjacent receptor is free
+#       1: S1 is the adjacent receptor is occupied
+#       X: S2 is bound to S1 in the adjacent receptor
+cR_Y980(S1~0~1~X,S2~0~1~X,Y980~0~P)
+cR_Y1165(S1~0~1~X,S2~0~1~X,Y1165~0~P)
+
+cIRS1_Y980(PTB)
+cp52SHC1_Y980(PTB)
+
+end molecule types
+
+begin seed species
+
+# Version 1
+
+IGF1(ds,hs) IGF1_total
+IGF1R(S1,S2,C!0,Y980~0,Y1165~0,Y1346~0).IGF1R(S1,S2,C!0,Y980~0,Y1165~0,Y1346~0) 0.5*IGF1R_total
+p52SHC1(PTB) p52SHC1_total
+IRS1(PTB) IRS1_total
+#PIK3R1(tSH2) PIK3R1_total
+#PIK3R2(tSH2) PIK3R2_total
+#PIK3R3(tSH2) PIK3R3_total
+
+# Version 2
+
+cL_Y980(r) IGF1_total
+cR_Y980(S1~0,S2~0,Y980~0) 0.5*IGF1R_total
+cL_Y1165(r) IGF1_total
+cR_Y1165(S1~0,S2~0,Y1165~0) 0.5*IGF1R_total
+cIRS1_Y980(PTB) IRS1_total
+cp52SHC1_Y980(PTB) p52SHC1_total
+
+end  seed species
+
+begin observables
+
+# Version 1
+
+#Species IGF1_free IGF1(ds,hs)
+#Molecules IGF1_bound IGF1(ds!+,hs) IGF1(ds,hs!+) IGF1R(S1!1).IGF1(ds!1,hs!2).IGF1R(S2!2)
+#Molecules IGF1_all IGF1()
+#Species ligandFree_dimerIGF1R IGF1R(S1,S2,C!0).IGF1R(S1,S2,C!0)
+Species dimerIGF1R_ligandActivated IGF1R(S1!+).IGF1R(S2!+)
+#Species total_IGFR_dimers IGF1R()
+
+#Species dimerIGF1R_phosActivationLoop IGF1R(Y1165~P)
+
+Molecules pY980 IGF1R(Y980~P)
+Molecules pY1165 IGF1R(Y1165~P)
+#Molecules pY1346 IGF1R(Y1346~P)
+
+Molecules p52SHC1_recruited p52SHC1(PTB!+)
+Molecules IRS1_recruited IRS1(PTB!+)
+#Molecules p85_recruited PIK3R1(tSH2!+) PIK3R2(tSH2!+) PIK3R3(tSH2!+)
+
+# Version 2
+
+#Species free_cLigand_Y980 cL_Y980(r)
+#Molecules bound_cLigand_Y980 cL_Y980(r!+)
+#Molecules total_cLigand_Y980 cL_Y980()
+#Molecules free_cReceptor_Y980 cR_Y980(S1~0,S2~0)
+Molecules activated_cReceptor_Y980 cR_Y980(S1~X!?) cR_Y980(S2~X!?)
+Molecules activated_cReceptor_Y1165 cR_Y1165(S1~X!?) cR_Y1165(S2~X!?)
+
+#Molecules total_cReceptor_Y980 cR_Y980()
+
+Molecules pY980_alt cR_Y980(Y980~P) cR_Y980(Y980~P)
+Molecules pY1165_alt cR_Y1165(Y1165~P) cR_Y1165(Y1165~P)
+
+Molecules p52SHC1_recruit_alt cp52SHC1_Y980(PTB!+) cp52SHC1_Y980(PTB!+) 
+Molecules pIRS1_recruit_alt cIRS1_Y980(PTB!+) cIRS1_Y980(PTB!+) 
+
+end observables
+
+begin reaction rules
+
+# Version 1
+
+# Free IGF1 reversibly binds a free copy of Site 1 in dimeric IGF1R.
+IGF1(ds,hs)+IGF1R(S1,C!0).IGF1R(S2,C!0)<->IGF1(ds!1,hs).IGF1R(S1!1,C!0).IGF1R(S2,C!0) a1,d1
+#   This rules stipulates that ligand binds S1 in R1 only if S2 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S1 in R1 and S2 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S1 in R1 and S2 in R2 can only accomodate a single ligand.
+# Free IGF1 reversibly binds a free copy of Site 2 in dimeric IGF1R.
+IGF1(ds,hs)+IGF1R(S2,C!0).IGF1R(S1,C!0)<->IGF1(ds,hs!1).IGF1R(S2!1,C!0).IGF1R(S1,C!0) a2,d2
+#   This rules stipulates that ligand binds S2 in R1 only if S1 in R2 is free, because
+#   a steric constraint prevents simultaneous occupation of S2 in R1 and S1 in R2 by two different ligands. 
+#   In other words, the ligand binding pocket comprising S2 in R1 and S1 in R2 can only accomodate a single ligand.
+
+# IGF1 bound at Site 1 in R1 reversibly crosslinks Site 1 in R1 and Site 2 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 2 in R1 and Site 1 in R2.
+IGF1R(S1!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,C!0).IGF1R(S1,S2!2,C!0).IGF1(ds!1,hs!2) kcr,d2prime
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2,C!0).IGF1(ds!1,hs)<->\
+IGF1R(S1!1,S2,C!0).IGF1R(S1!+,S2!2,C!0).IGF1(ds!1,hs!2) kcr,d2prime
+
+# IGF1 bound at Site 2 in R1 reversibly crosslinks Site 2 in R1 and Site 1 in R2. 
+#   Crosslinking is contingent on absence of a crosslink connecting Site 1 in R1 and Site 2 in R2.
+IGF1R(S2!1,C!0).IGF1R(S1,S2,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S2!1,C!0).IGF1R(S1!2,S2,C!0).IGF1(ds!2,hs!1) kcr,d1prime
+IGF1R(S1,S2!1,C!0).IGF1R(S1,S2!+,C!0).IGF1(ds,hs!1)<->\
+IGF1R(S1,S2!1,C!0).IGF1R(S1!2,S2!+,C!0).IGF1(ds!2,hs!1) kcr,d1prime
+
+# autophosphorylation and dephosphorylation 
+
+IGF1R(S1!+,C!0,Y980~0).IGF1R(S2!+,C!0)->IGF1R(S1!+,C!0,Y980~P).IGF1R(S2!+,C!0) kp
+IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y980~0)->IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y980~P) kp
+IGF1R(Y980~P)->IGF1R(Y980~0) kdp
+
+IGF1R(S1!+,C!0,Y1165~0).IGF1R(S2!+,C!0)->IGF1R(S1!+,C!0,Y1165~P).IGF1R(S2!+,C!0) kp
+IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y1165~0)->IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y1165~P) kp
+IGF1R(Y1165~P)->IGF1R(Y1165~0) kdp
+
+#IGF1R(S1!+,C!0,Y1346~0).IGF1R(S2!+,C!0)->IGF1R(S1!+,C!0,Y1346~P).IGF1R(S2!+,C!0) kp
+#IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y1346~0)->IGF1R(S1!+,C!0).IGF1R(S2!+,C!0,Y1346~P) kp
+#IGF1R(Y1346~P)->IGF1R(Y1346~0) kdp
+
+# recruitment
+
+IGF1R(Y980~P)+IRS1(PTB)<->IGF1R(Y980~P!1).IRS1(PTB!1) \
+kon_universal,koff_IGF1R_pY980_IRS1_PTB
+
+IGF1R(Y980~P)+p52SHC1(PTB)<->IGF1R(Y980~P!1).p52SHC1(PTB!1) \
+kon_universal,koff_IGF1R_pY980_SHC1_PTB
+
+#IGF1R(Y1346~P)+PIK3R1(tSH2)<->IGF1R(Y1346~P!1).PIK3R1(tSH2!1) \
+#kon_universal,koff_IGF1R_pY1346_PIK3R1_SH2_NC
+
+#IGF1R(Y1346~P)+PIK3R2(tSH2)<->IGF1R(Y1346~P!1).PIK3R2(tSH2!1) \
+#kon_universal,koff_IGF1R_pY1346_PIK3R2_SH2_NC
+
+#IGF1R(Y1346~P)+PIK3R3(tSH2)<->IGF1R(Y1346~P!1).PIK3R3(tSH2!1) \
+#kon_universal,koff_IGF1R_pY1346_PIK3R3_SH2_NC
+
+# Version 2
+
+########
+# Y980 #
+########
+
+# Binding pocket 1 encompassing site S1 in a receptor captures free ligand
+#   Capture may happen in two ways: ligand may bind either S1 or S2 in the binding pocket.
+#     Ligand binds S1 in Binding pocket 1
+cR_Y980(S1~0)+cL_Y980(r)<->cR_Y980(S1~0!1).cL_Y980(r!1) a1,d1 # <-- parameters for IGF1 (ds) binding Site 1
+#     Ligand binds S2 in Binding pocket 1 (S2 is represented implicitly)
+#       ! here does not mean that S1 is bound but rather that Binding pocket 1 is occupied.
+cR_Y980(S1~0)+cL_Y980(r)<->cR_Y980(S1~1!1).cL_Y980(r!1) a2,d2 # <-- parameters for IGF1 (hs) binding Site 2
+
+# Binding pocket 2 encompassing site S2 in a receptor captures free ligand
+#   Capture may happen in two ways: ligand may bind either S2 or S1 in the binding pocket.
+#     Ligand binds S2 in Binding pocket 2
+cR_Y980(S2~0)+cL_Y980(r)<->cR_Y980(S2~0!1).cL_Y980(r!1) a2,d2 # <-- parameters for IGF1 (hs) binding Site 2
+#     Ligand binds S1 in Binding pocket 2 (S1 is represented implicitly)
+#       ! here does not mean that S2 is bound but rather that Binding pocket 2 is occupied.
+cR_Y980(S2~0)+cL_Y980(r)<->cR_Y980(S2~1!1).cL_Y980(r!1) a1,d1 # <-- parameters for IGF1 (ds) binding Site 1
+
+# Sites S1 and S2 in Binding pocket 1 become crosslinked (in one of two ways)
+#   Ligand anchored at S1 binds S2 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S1~0!+,S2~0!?)->cR_Y980(S1~X!+,S2~0!?) kcr
+cR_Y980(S1~0!+,S2~1!?)->cR_Y980(S1~X!+,S2~1!?) kcr
+#   Ligand anchored at S2 binds S1 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S1~1!+,S2~0!?)->cR_Y980(S1~X!+,S2~0!?) kcr
+cR_Y980(S1~1!+,S2~1!?)->cR_Y980(S1~X!+,S2~1!?) kcr
+#   Reverse reactions
+cR_Y980(S1~X!+)->cR_Y980(S1~0!+) d2prime
+cR_Y980(S1~X!+)->cR_Y980(S1~1!+) d1prime
+
+# Sites S2 and S1 in Binding pocket 2 become crosslinked (in one of two ways)
+#   Ligand anchored at S2 binds S1 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S2~0!+,S1~0!?)->cR_Y980(S2~X!+,S1~0!?) kcr
+cR_Y980(S2~0!+,S1~1!?)->cR_Y980(S2~X!+,S1~1!?) kcr
+#   Ligand anchored at S1 binds S2 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S2~1!+,S1~0!?)->cR_Y980(S2~X!+,S1~0!?) kcr
+cR_Y980(S2~1!+,S1~1!?)->cR_Y980(S2~X!+,S1~1!?) kcr
+cR_Y980(S2~X!+)->cR_Y980(S2~0!+) d1prime
+cR_Y980(S2~X!+)->cR_Y980(S2~1!+) d2prime
+
+#########
+# Y1165 #
+#########
+
+cR_Y1165(S1~0)+cL_Y1165(r)<->cR_Y1165(S1~0!1).cL_Y1165(r!1) a1,d1
+cR_Y1165(S1~0)+cL_Y1165(r)<->cR_Y1165(S1~1!1).cL_Y1165(r!1) a2,d2
+cR_Y1165(S2~0)+cL_Y1165(r)<->cR_Y1165(S2~0!1).cL_Y1165(r!1) a2,d2
+cR_Y1165(S2~0)+cL_Y1165(r)<->cR_Y1165(S2~1!1).cL_Y1165(r!1) a1,d1
+cR_Y1165(S1~0!+,S2~0!?)->cR_Y1165(S1~X!+,S2~0!?) kcr
+cR_Y1165(S1~0!+,S2~1!?)->cR_Y1165(S1~X!+,S2~1!?) kcr
+cR_Y1165(S1~1!+,S2~0!?)->cR_Y1165(S1~X!+,S2~0!?) kcr
+cR_Y1165(S1~1!+,S2~1!?)->cR_Y1165(S1~X!+,S2~1!?) kcr
+cR_Y1165(S1~X!+)->cR_Y1165(S1~0!+) d2prime
+cR_Y1165(S1~X!+)->cR_Y1165(S1~1!+) d1prime
+cR_Y1165(S2~0!+,S1~0!?)->cR_Y1165(S2~X!+,S1~0!?) kcr
+cR_Y1165(S2~0!+,S1~1!?)->cR_Y1165(S2~X!+,S1~1!?) kcr
+cR_Y1165(S2~1!+,S1~0!?)->cR_Y1165(S2~X!+,S1~0!?) kcr
+cR_Y1165(S2~1!+,S1~1!?)->cR_Y1165(S2~X!+,S1~1!?) kcr
+cR_Y1165(S2~X!+)->cR_Y1165(S2~0!+) d1prime
+cR_Y1165(S2~X!+)->cR_Y1165(S2~1!+) d2prime
+
+#############################################
+# autophosphorylation and dephosphorylation #
+#############################################
+
+cR_Y980(S1~X!?,Y980~0)->cR_Y980(S1~X!?,Y980~P) kp
+cR_Y980(S2~X!?,Y980~0)->cR_Y980(S2~X!?,Y980~P) kp
+cR_Y980(Y980~P)->cR_Y980(Y980~0) kdp
+
+cR_Y1165(S1~X!?,Y1165~0)->cR_Y1165(S1~X!?,Y1165~P) kp
+cR_Y1165(S2~X!?,Y1165~0)->cR_Y1165(S2~X!?,Y1165~P) kp
+cR_Y1165(Y1165~P)->cR_Y1165(Y1165~0) kdp
+
+#########################################################
+# recruitment of signaling proteins to phosphotyrosines #
+#########################################################
+
+cR_Y980(Y980~P)+cIRS1_Y980(PTB)<->cR_Y980(Y980~P!1).cIRS1_Y980(PTB!1) \
+kon_universal,koff_IGF1R_pY980_IRS1_PTB
+
+cR_Y980(Y980~P)+cp52SHC1_Y980(PTB)<->cR_Y980(Y980~P!1).cp52SHC1_Y980(PTB!1) \
+kon_universal,koff_IGF1R_pY980_SHC1_PTB
+
+end reaction rules
+
+end model
+
+# actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>12000,n_steps=>300})
+#parameter_scan({parameter=>"IGF1_conc_nM",par_min=>0.001,par_max=>100,n_scan_pts=>100,log_scale=>1,\
+#                method=>"ode",t_start=>0,t_end=>120000,n_steps=>10})
+
+

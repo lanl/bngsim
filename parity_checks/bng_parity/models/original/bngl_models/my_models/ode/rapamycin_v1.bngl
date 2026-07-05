@@ -1,0 +1,280 @@
+#---
+# File:
+#  Filename: rapamycin_v1.bngl
+#  Created 17 May 2016 (v1)
+#  Completed: 18 May 2016 (v1)
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r3
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# Model:
+#  Title: Autophagy induction
+#  Contributors:
+#   - Joern Dengjel
+#   - Kristin E. Dittenhafer-Reed
+#   - William S. Hlavacek
+#   - Jeffrey P. MacKeigan
+#   - Katie R. Martin
+#---
+
+#---
+# Cell lines:
+#  - HeLa Kyoto cells
+#  - HeLa S3 cells
+#  - U2OS cells
+#---
+
+#---
+# Compartments:
+#  ecf: extracellular fluid
+#  cyt: cytosol
+#---
+
+#---
+# References:
+#  - Aylett CHS, ..., Maier T (2016) Science 351: 48-52. [PMID: 26678875]
+#  - Banaszynski LA, ..., Wandless TJ (2005) J Am Chem Soc 127: 4715-4721. [PMID: 15796538]
+#  - Bierer BE, ..., Schreiber SL (1990) Proc Natl Acad Sci USA 87: 9231-9235. [PMID: 2123553]
+#  - Brown EJ, ..., Schreiber SL (1994) Nature 369: 756-758. [PMID: 8008069]
+#  - Chen J, ..., Schreiber SL (1995) Proc Natl Acad Sci USA 92: 4947-4951. [PMID: 7539137]
+#  - Choi J, ..., Clardy J (1996) Science 273: 239-241. [PMID: 8662507]
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Sabatini DM, ..., Snyder SH (1994) Cell 78: 35-43. [PMID: 7518356]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#    and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of extracellular fluid surrounding a single cell on average (Vecf)
+#  comments:
+#   - We assume that cells have been grown in 15 cm culture dishes to 95% confluency.
+#   - For these conditions, we estimate a surface density of 1.25e5 adherent cells per cm^2 
+#     and a growth surface area of 140 cm^2 per dish. Thus, we estimate 1.7e7 cells per dish.
+#   - We assume that 0.25 mL of medium has been added to dishes for each square cm of growth surface.
+#     Thus, we estimate 35 mL of medium per dish.
+#   - The volume (L) of extracellular fluid per cell is (0.25e-3*140)/(1.25e5*140) = 2.0e-9 L per cell.
+Vecf 2.0e-9*f # L per cell
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; see Table S3.
+Vcyt 2.0e-12*f # L per cell
+
+#####################################
+# endogenous abundances of proteins #
+#####################################
+
+# protein abundances in HeLa Kyoto cells
+#  Table S3 (Hein et al., 2015)
+
+FKBP1A_cpc_HeLa_Kyoto rint(349764*f) # copies per cell
+MTOR_cpc_HeLa_Kyoto   rint( 74960*f) # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  Supplementary Table 1 (Kulak et al. 2014)
+
+FKBP1A_cpc_HeLa_S3 rint(838853.3*f) # copies per cell
+MTOR_cpc_HeLa_S3   rint(47731.53*f) # copies per cell
+
+# protein abundances in U2OS cells
+#  Supplemental Table 3 (Geiger et al., 2012)
+#  In this table, abundance is reported as log10(iBAQ value).
+
+FKBP1A_iBAQ3_U2OS 7.828821 # dimensionless
+MTOR_iBAQ3_U2OS   6.296182 # dimensionless
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  The iBAQ value of a protein is proportional to its molar abundance.
+iBAQ_to_cpc 0.02*f
+
+# convert from log10(iBAQ) to copies per cell
+FKBP1A_cpc_U2OS=iBAQ_to_cpc*10^FKBP1A_iBAQ3_U2OS
+MTOR_cpc_U2OS=iBAQ_to_cpc*10^MTOR_iBAQ3_U2OS
+
+#########################################################################
+# concentrations of small-molecule compounds in the extracellular fluid #
+#########################################################################
+
+# total rapamycin abundance
+initial_external_rapamycin_conc_nM 100 # nM (100 nM is a typical dose) <-- scan this parameter to obtain a rapamycin dose-response curve
+#   convert from nM to M
+initial_external_rapamycin_conc=initial_external_rapamycin_conc_nM*1e-9 # M
+#   total number of rapamycin molecules per cell
+total_rapamycin_cpc=initial_external_rapamycin_conc*(NA*Vecf) # molecules per cell
+
+# Set FKBP1A(FKBP~0) and FKBP1A(FKBP~rapamycin) based on 
+#   1) the specified initial external rapamycin concentration,
+#   2) an assumption of rapid passive transport of rapamycin into and out of the cell,
+#      such that the internal and external concentrations of *free* rapamycin are identical;
+#   3) an assumption of rapamycin-FKBP12 binding equilibrium; and
+#   4) conservation of total FKBP1A and total rapamycin.
+#   NB: the cytosolic concentration of free rapamycin is buffered by the external rapamycin concentration.
+
+# volume ratio
+rho=Vecf/Vcyt # dimensionless
+
+# equilibrium association constant for rapamycin binding to FKBP12
+#   KD = 0.2 nM (Banaszynski et al., 2005)
+KD_rapa_FKBP12 0.2e-9*(NA*Vcyt) # M converted to molecule per cell
+Keq_rapamycin_FKBP12=1/KD_rapa_FKBP12 # /(molecule/cell) 
+
+# We define dimensionless parameters/variables appearing in a quadratic equation, which we will solve.
+
+kappa_HeLa_Kyoto=Keq_rapamycin_FKBP12*FKBP1A_cpc_HeLa_Kyoto # dimensionless
+kappa_HeLa_S3=Keq_rapamycin_FKBP12*FKBP1A_cpc_HeLa_S3 # dimensionless
+kappa_U2OS=Keq_rapamycin_FKBP12*FKBP1A_cpc_U2OS # dimensionless
+
+# rapamycin:FKBP12 ratio
+lambda_HeLa_Kyoto=total_rapamycin_cpc/FKBP1A_cpc_HeLa_Kyoto # dimensionless
+lambda_HeLa_S3=total_rapamycin_cpc/FKBP1A_cpc_HeLa_S3 # dimensionless
+lambda_U2OS=total_rapamycin_cpc/FKBP1A_cpc_U2OS # dimensionless
+
+minus_c_HeLa_Kyoto=(1+rho)/kappa_HeLa_Kyoto
+minus_c_HeLa_S3=(1+rho)/kappa_HeLa_S3
+minus_c_U2OS=(1+rho)/kappa_U2OS
+
+minus_b_HeLa_Kyoto=1-lambda_HeLa_Kyoto-minus_c_HeLa_Kyoto
+minus_b_HeLa_S3=1-lambda_HeLa_S3-minus_c_HeLa_S3
+minus_b_U2OS=1-lambda_U2OS-minus_c_U2OS
+
+# Solve the following quadratic equation:
+#   F^2+F*(lambda-1+(1+rho)/kappa)-(1+rho)/kappa=0, 
+#     where F is FKBP12_free/FKBP12_total=fracFree_FKBP12,
+#     rho=Vecf/Vcyt,
+#     lambda=rapamycin_total/FKBP12_total, and
+#     kappa=(Keq_rapamycin_FKBP12_M*FKBP12_total)/(NA*Vcyt_L).
+fracFree_FKBP12_HeLa_Kyoto=0.5*(minus_b_HeLa_Kyoto+sqrt(minus_b_HeLa_Kyoto^2+4*minus_c_HeLa_Kyoto))
+fracFree_FKBP12_HeLa_S3=0.5*(minus_b_HeLa_S3+sqrt(minus_b_HeLa_S3^2+4*minus_c_HeLa_S3))
+fracFree_FKBP12_U2OS=0.5*(minus_b_U2OS+sqrt(minus_b_U2OS^2+4*minus_c_U2OS))
+
+# AZD8055 (MTOR catalytic inhibitor, competes with ATP)
+
+###########################
+# parameters of rate laws #
+###########################
+
+# rate constants for FKBP12-bound rapamycin binding to the FRB domain in MTOR
+#  Banaszynski et al. (2005) measured a KD of 12 nM for rapamycin-FKBP12 interaction with the FRB domain.
+KD_rapa 12e-9*(NA*Vcyt) # M converted to molecule/cell
+#  The half-life for dissocation of the FRB domain from rapamycin-FKBP12 is roughly 60 s (Banaszynski et al., 2005).
+#  Thus, the dissociation rate constant is around 0.01 /s.
+kr_rapa 0.01 # /s
+kf_rapa=kr_rapa/KD_rapa # /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+FKBP1A(FKBP~0~rapamycin)
+#---
+# FKBP1A: FK506-binding protein 1A (aka FKBP12, 12 kDa FK506-binding protein)
+#  Uniprot entry: http://www.uniprot.org/uniprot/P62942
+#  comments:
+#   - 108 amino acids (P62942-1)
+#   - FKBP1A binds rapamycin (Bierer et al., 1990).
+#   - The KD for binding of FKBP1A to rapamycin is 0.2 nM (Bierer et al., 1990; Banaszynski et al., 2005).
+#   - FKBP1A-rapamycin interacts with MTOR (Brown et al., 1994; Sabatini et al., 1994).
+#   - FKBP1A-rapamycin binds the FRB domain in MTOR (Chen et al., 1995). In the ternary complex,
+#     rapamycin simultaneously contacts both FKBP1A and the FRB domain (PDB ID: 1FAP) (Choi et al., 1996).
+#   - The KD for binding of the FKBP1A-rapamycin complex to the FRB domain is 12 nM (Banaszynski et al., 2005).
+#   - Binding of FKBP1A-rapamycin to the FRB domain likely inhibits MTOR's kinase activity by blocking access 
+#     of substrates to the catalytic cleft of MTOR's kinase domain (Aylett et al., 2016).
+#  states:
+#   - 0: free
+#   - rapamycin: bound to rapamycin (aka sirolimus), https://pubchem.ncbi.nlm.nih.gov/compound/5284616
+#---
+
+# This molecule type definition below was taken from the MTORC1_assembly_v1.bngl file (17-May-2016).
+MTOR(HEAT_horn,HEAT_step,HEAT_bridge,FAT,PIKK,FRB,LBE,FATC)
+
+end molecule types
+
+begin seed species
+
+MTOR(HEAT_horn,HEAT_step,HEAT_bridge,FAT,PIKK,FRB,LBE,FATC) MTOR_cpc_U2OS
+
+# rapamycin-FKBP12 complex
+FKBP1A(FKBP~0) fracFree_FKBP12_U2OS*FKBP1A_cpc_U2OS
+FKBP1A(FKBP~rapamycin) (1-fracFree_FKBP12_U2OS)*FKBP1A_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules FKBP1Atot FKBP1A()
+Molecules MTORtot MTOR()
+
+Molecules rapa_freeFKBP1A FKBP1A(FKBP~0!?)
+Molecules rapa_boundFKBP1A FKBP1A(FKBP~rapamycin!?)
+Molecules MTOR_boundFKBP1A FKBP1A(FKBP~rapamycin!+)
+Molecules boundFRB MTOR(FRB!+)
+Molecules freeFRB MTOR(FRB)
+
+end observables
+
+begin functions
+
+total_abundance_of_rapamycin_cpc() total_rapamycin_cpc
+initial_external_concentration_of_rapamycin_nM() total_rapamycin_cpc*1e9/(NA*Vecf)
+
+internal_abundance_of_free_rapamycin_cpc() KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A
+internal_concentration_of_free_rapamycin_nM() (KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A)*1e9/(NA*Vcyt)
+
+external_abundance_of_rapamycin_cpc() total_rapamycin_cpc-rapa_boundFKBP1A-(KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A)
+external_concentration_of_rapamycin_nM() (total_rapamycin_cpc-rapa_boundFKBP1A-(KD_rapa_FKBP12*rapa_boundFKBP1A/rapa_freeFKBP1A))*1e9/(NA*Vecf)
+
+end functions
+
+begin reaction rules
+
+############################################################################
+# rapamycin in complex with FKBP1A reversibly binds the FRB domain in MTOR #
+############################################################################
+
+FKBP1A(FKBP~rapamycin)+MTOR(FRB)<->FKBP1A(FKBP~rapamycin!1).MTOR(FRB!1) kf_rapa,kr_rapa
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+
+end actions

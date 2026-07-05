@@ -1,0 +1,56 @@
+# Edge case: synthesise a NEW molecule and bond it to an EXISTING one
+# Tests:  the rule "A(b) -> A(b!1).B(a!1)  k" creates a B and bonds it
+#         to A.  Operations: AddMolecule(B), AddBond(reactant A.b,
+#         product B.a).  This exercises the mixed-mode AddBond path
+#         where one endpoint is a reactant (existing) component
+#         (resolved via reactant_id_map) and the other is a product
+#         (newly-added) component (resolved via product_id_map and
+#         the `product_mol_a` / `product_comp_a` fields).
+#         edg_synth_bonded_complex covers the BOTH-new combination;
+#         this is the third combination ON TOP OF ordinary AddBond
+#         (BOTH-existing).
+# Edge:   zero-order on the LHS by virtue of A() being non-consumed
+#         (A(b!1) on RHS keeps A); only B is created.  Reverse rule
+#         destroys the dimer cleanly.
+# Tier:   base
+# invariant: conserved A_total = 25
+
+begin model
+begin parameters
+    A_tot   25
+    k_syn   0.30   # /s, synthesise B and bond to free A
+    k_split 0.10   # /s, break + delete B
+    Trash_in 0
+end parameters
+
+begin molecule types
+    A(b)
+    B(a)
+    Trash()
+end molecule types
+
+begin seed species
+    A(b)      A_tot
+    B(a)      0
+    $Trash()  Trash_in
+end seed species
+
+begin observables
+    Molecules  A_total  A()
+    Molecules  B_total  B()
+    Molecules  A_free   A(b)
+    Molecules  A_bound  A(b!+)
+    Molecules  AB       A(b!1).B(a!1)
+end observables
+
+begin reaction rules
+    # Synthesise B and bond it to free A in one shot.
+    A(b) -> A(b!1).B(a!1)              k_syn
+    # Reverse: break the bond AND delete B in one shot.
+    A(b!1).B(a!1) -> A(b) + Trash()    k_split  DeleteMolecules
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

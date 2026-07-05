@@ -1,0 +1,112 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+V 1.2e-12 # liters per cell
+
+PTENP1_copyNum 10000 # Copies per cell
+PTEN_copyNum 10000 # Copies per cell
+miR22_copyNum 1000 # Copies per cell
+otherTargets_copyNum 0 # Copies per cell
+#MYCBP_copyNum 1000 # Copies per cell
+
+
+kp1 1e6/(NA*V) # /M/sec
+km1 0.001 # /sec
+kp1prime 5e5/(NA*V) # /M/s converted to /(molecule/cell)/s
+km1prime 0.5 # /s
+kp2 1e6/(NA*V) # /M/sec
+km2 0.1 # /sec
+kp3 1e6/(NA*V) # /M/sec
+km3 0.1 # /sec
+ksynth 1 # molecule per s
+kdeg_slow 0.001 # /s
+kdeg_fast 0.01 # /s
+
+SNP_factor 0 # dimensionless (0, 0.5 or 1), homozygous WT PTENP1 => 0, heterozygous PTENP1 => 0.5, homozygous SNP PTENP1 => 1
+
+end parameters
+
+begin molecule types
+
+PTENP1(x)
+PTENP1_SNP(x_SNP)
+PTEN(x)
+miR22(y)
+otherTargets(u)
+#MYCBP(z)
+
+end molecule types
+
+begin seed species
+
+PTENP1(x) 0 #0.5*PTENP1_copyNum # PTENP1_copyNum for wild type (no SNP), 0.5*PTENP1_copyNum for heterozygous case, 0 for homozygous case
+PTENP1_SNP(x_SNP) 0 #0.5*PTENP1_copyNum # 0 for wild type (no SNP), 0.5*PTENP1_copyNum for heterozygous case, PTENP1_copyNum for homozygous case 
+PTEN(x) 0 # PTEN_copyNum
+miR22(y) miR22_copyNum
+otherTargets(u) otherTargets_copyNum
+#MYCBP(z) MYCBP_copyNum
+
+end seed species
+
+begin observables
+
+Molecules free_miR22 miR22(y)
+
+Molecules PTEN_abundance PTEN()
+Molecules PTENP1_WT_abundance PTENP1()
+Molecules PTENP1_SNP_abundance PTENP1_SNP()
+#Molecules MYCBP_abundance MYCBP()
+Molecules miR22_bound_to_PTENP1 miR22(y!1).PTENP1(x!1)
+Molecules miR22_bound_to_PTENP1_SNP miR22(y!1).PTENP1_SNP(x_SNP!1)
+Molecules miR22_bound_to_PTEN miR22(y!1).PTEN(x!1)
+#Molecules miR22_bound_to_MYCBP miR22(y!1).MYCBP(z!1)
+Molecules miR22_bound_to_otherTargets miR22(y!1).otherTargets(u!1)
+
+end observables
+
+begin functions
+
+controllability_PTEN() (kdeg_fast/kdeg_slow)*free_miR22*(kp1/(kdeg_fast+km1))
+
+end functions
+
+begin reaction rules
+
+# interactions of miR-22 with transcripts
+miR22(y)+PTENP1(x)<->miR22(y!1).PTENP1(x!1) kp1,km1
+miR22(y)+PTENP1_SNP(x_SNP)<->miR22(y!1).PTENP1_SNP(x_SNP!1) kp1prime,km1prime
+miR22(y)+PTEN(x)<->miR22(y!1).PTEN(x!1) kp1,km1
+#miR22(y)+MYCBP(z)<->miR22(y!1).MYCBP(z!1) kp2,km2
+miR22(y)+otherTargets(u)<->miR22(y!1).otherTargets(u!1) kp3,km3
+
+# mRNA synthesis
+0->PTENP1(x) (1-SNP_factor)*ksynth
+0->PTENP1_SNP(x_SNP) SNP_factor*ksynth
+0->PTEN(x) ksynth
+#0->MYCBP(z) ksynth
+
+# mRNA degeradation
+PTENP1(x)->0 kdeg_slow
+PTENP1_SNP(x_SNP)->0 kdeg_slow
+PTEN(x)->0 kdeg_slow
+#MYCBP(z)->0 kdeg_slow
+PTENP1(x!1).miR22(y!1)->miR22(y) kdeg_fast
+PTENP1_SNP(x_SNP!1).miR22(y!1)->miR22(y) kdeg_fast
+PTEN(x!1).miR22(y!1)->miR22(y) kdeg_fast
+#MYCBP(z!1).miR22(y!1)->miR22(y) kdeg_fast
+
+# degradation
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+writeMfile()
+simulate({method=>"ode",t_start=>0,t_end=>6000,n_steps=>600,print_functions=>1})
+
+end actions

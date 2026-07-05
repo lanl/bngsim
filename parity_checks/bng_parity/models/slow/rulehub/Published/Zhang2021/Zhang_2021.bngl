@@ -1,0 +1,760 @@
+begin model
+
+begin parameters
+  # Tie Module
+  Tie2_0        1
+  Tie1_0        1
+  Tie1Tie2_0    1 
+  Ang1_4_0      1
+  Ang2_2_0      1
+  Ang2_3_0      1
+  Ang2_4_0      1
+  VEPTP_0       1
+  sTie2_0       1  
+  sTie1_0       1               
+  
+  PTEN_0    1
+  PIP2_0    1
+  PI3K_0    1
+  Akt_0     1
+  PDK1_0    1
+
+  RhoA_0        1
+  mDia_0        1
+  Src_0         1 
+  VECadherin_0  1
+  ABIN2_0       1
+
+
+  # Affinities
+  kD_ang1         1 # nM
+  kD_ang2         1 # nM
+
+  # Ang1 Kinetics
+  koffang1tie2    1   # s-1
+  konang1tie2     koffang1tie2/kD_ang1
+
+  # Ang2 Kinetics
+  koffang2tie2    1   # s-1
+  konang2tie2     koffang2tie2/kD_ang2
+
+  # Diffusion Limits
+  kontie2diff     1
+  kofftie2diff    1
+
+  konstie2diff    1
+  koffstie2diff   1
+
+
+  # kinteic parameters
+  # Ang1 Binding
+  konang1tie2_1   konang1tie2  # nM-1s-1
+  koffang1tie2_1  koffang1tie2 # s-1
+  konang1tie2_2   kontie2diff   # nM-1s-1
+  koffang1tie2_2  kofftie2diff  # s-1
+  konang1tie2_3   kontie2diff   # nM-1s-1
+  koffang1tie2_3  kofftie2diff  # s-1
+  konang1tie2_4   kontie2diff   # nM-1s-1
+  koffang1tie2_4  kofftie2diff  # s-1
+
+  # Ang2 Binding
+  konang2_2tie2_1   konang2tie2    # nM-1s-1
+  koffang2_2tie2_1  koffang2tie2   # s-1
+  konang2_2tie2_2   kontie2diff     # nM-1s-1
+  koffang2_2tie2_2  kofftie2diff    # s-1
+
+  konang2_3tie2_1   konang2tie2    # nM-1s-1
+  koffang2_3tie2_1  koffang2tie2   # s-1
+  konang2_3tie2_2   kontie2diff     # nM-1s-1
+  koffang2_3tie2_2  kofftie2diff    # s-1
+  konang2_3tie2_3   kontie2diff     # nM-1s-1
+  koffang2_3tie2_3  kofftie2diff    # s-1
+
+  konang2_4tie2_1   konang2tie2    # nM-1s-1
+  koffang2_4tie2_1  koffang2tie2   # s-1
+  konang2_4tie2_2   kontie2diff     # nM-1s-1
+  koffang2_4tie2_2  kofftie2diff    # s-1
+  konang2_4tie2_3   kontie2diff     # nM-1s-1
+  koffang2_4tie2_3  kofftie2diff    # s-1
+  konang2_4tie2_4   kontie2diff     # nM-1s-1
+  koffang2_4tie2_4  kofftie2diff    # s-1
+
+  # Phosphorylation
+  kpang1tie2       1    # s-1
+  kdpang1tie2      1 # s-1
+  kpang2tie2       1    # s-1
+  kdpang2tie2      1 # s-1
+
+  # Tie2 Junctional Localization
+  ksjang1tie2   1
+  kjsang1tie2   1
+  ksjang2tie2   1
+  kjsang2tie2   1
+
+  # Tie1 Junctional Localization
+  ksjtie1     1
+  kjstie1     1
+
+  # Tie1Tie2 binding at Junction
+  konang1tie1tie2_4_j     1
+  koffang1tie1tie2_4_j    1
+  konang2tie1tie2_4_j     1
+  koffang2tie1tie2_4_j    1
+  
+  # Tie1 phosphorylation at Junction
+  kptie1ang1_j        1
+  kdpatie1ang1_j      1
+  kptie1ang2_j        1
+  kdpatie1ang2_j      1
+
+
+  # Dephosphorylation
+  konveptp          1 # ?, nM -1 s-1
+  koffveptp         1    # ?, s-1
+  kactveptp_ang1    1 # s-1
+  kactveptp_ang2  	1
+
+
+  kintang1dptie   1
+  kintang1ptie    1
+
+  kintang2dptie   1
+  kintang2ptie    1
+
+  # Internalization
+  kintang1tie2_1      kintang1dptie # s-1
+  kintang1tie2_2      kintang1dptie # s-1
+  kintang1tie2_3      kintang1dptie # s-1
+  kintang1tie2_4      kintang1dptie # s-1
+  kintang1p1tie2_4    kintang1ptie # s-1
+  kintang1p2tie2_4    kintang1ptie # s-1
+  kintang1p3tie2_4    kintang1ptie # s-1
+  kintang1p4tie2_4    kintang1ptie # s-1
+
+
+  kintang2_2tie2_1    kintang2dptie # s-1
+  kintang2_2tie2_2    kintang2dptie # s-1
+
+  kintang2_3tie2_1    kintang2dptie # s-1
+  kintang2_3tie2_2    kintang2dptie # s-1
+  kintang2_3tie2_3    kintang2dptie # s-1
+
+  kintang2_4tie2_1    kintang2dptie # s-1
+  kintang2_4tie2_2    kintang2dptie # s-1
+  kintang2_4tie2_3    kintang2dptie # s-1
+  kintang2_4tie2_4    kintang2dptie # s-1
+  kintang2_4p1tie2_4  kintang2ptie # s-1
+  kintang2_4p2tie2_4  kintang2ptie # s-1
+  kintang2_4p3tie2_4  kintang2ptie # s-1
+  kintang2_4p4tie2_4  kintang2ptie # s-1
+
+
+
+  # Degradation and Replenishment
+  kdegptie2         1 # s-1, fit
+  krectie2          1 # recycling, fit!
+  ksyntie2          1      # nM s-1
+  ksyntie1        	1 #nM s-1
+
+
+  # Binding to sTie2
+  # Ang1 Binding
+  konang1stie2_1   konang1tie2  # nM-1s-1
+  koffang1stie2_1  koffang1tie2 # s-1
+  konang1stie2_2   konstie2diff  # nM-1s-1
+  koffang1stie2_2  koffstie2diff # s-1
+  konang1stie2_3   konstie2diff  # nM-1s-1
+  koffang1stie2_3  koffstie2diff # s-1
+  konang1stie2_4   konstie2diff  # nM-1s-1
+  koffang1stie2_4  koffstie2diff # s-1
+
+  # Ang2 Binding
+  konang2_2stie2_1   konang2tie2    # nM-1s-1
+  koffang2_2stie2_1  koffang2tie2   # s-1
+  konang2_2stie2_2   konstie2diff    # nM-1s-1
+  koffang2_2stie2_2  koffstie2diff   # s-1
+
+  konang2_3stie2_1   konang2tie2    # nM-1s-1
+  koffang2_3stie2_1  koffang2tie2   # s-1
+  konang2_3stie2_2   konstie2diff    # nM-1s-1
+  koffang2_3stie2_2  koffstie2diff   # s-1
+  konang2_3stie2_3   konstie2diff    # nM-1s-1
+  koffang2_3stie2_3  koffstie2diff   # s-1
+
+  konang2_4stie2_1   konang2tie2    # nM-1s-1
+  koffang2_4stie2_1  koffang2tie2   # s-1
+  konang2_4stie2_2   konstie2diff    # nM-1s-1
+  koffang2_4stie2_2  koffstie2diff   # s-1
+  konang2_4stie2_3   konstie2diff    # nM-1s-1
+  koffang2_4stie2_3  koffstie2diff   # s-1
+  konang2_4stie2_4   konstie2diff    # nM-1s-1
+  koffang2_4stie2_4  koffstie2diff   # s-1
+
+  # heterodimerization
+  kontie1tie2     1
+  kofftie1tie2    1
+
+  # Binding to Tie1Tie2
+  konang1_4tie1tie2   koffang1tie2/kD_ang1    # nM-1s-1
+  koffang1_4tie1tie2  koffang1tie2    # s-1
+  kdissang1tie1tie2   1   #??
+
+  koffang2_2tie1tie2  koffang2tie2
+  konang2_2tie1tie2   koffang2tie2/kD_ang2
+  koffang2_3tie1tie2  koffang2tie2
+  konang2_3tie1tie2   koffang2tie2/kD_ang2
+  koffang2_4tie1tie2  koffang2tie2
+  konang2_4tie1tie2   koffang2tie2/kD_ang2
+
+  # Cleavage and Degradation
+  kcleavetie2       1
+  kcleavetie1       1
+  kdegsTie2         1
+  kdegstie1         1
+
+  # Akt Activation
+  kactPI3KTie2      1
+  kinactPI3KTie2    1
+
+  kPIP2gen          1
+
+  kmPIP2PI3K        1
+  kcatPI3KPIP2      1
+
+  kmPIP3PTEN        1
+  kcatPTENPIP3      1
+
+  konPDK1PIP3       1
+  koffPDK1PIP3      1
+  konAKTPIP3        1
+  koffAKTPIP3       1
+
+  kpmTORAKT         1
+  kpAKTPDK1         1
+  kdp473AKTPPase    1
+  kdp308AKTPPase    1
+
+  # rhoa,mdia
+  kprhoa        0.1
+  kdprhoa       0.1
+
+  konrhoamdia   0.1
+  koffrhoamdia  0.1
+
+  konmdiasrc    0.1
+  koffmdiasrc   0.1
+  
+  kpsrc         0.1
+  kdpsrc        0.1
+  
+  kpvecad       0.1
+  kdpvecad      0.1
+  kintvecad     0.1
+  krecvecad     0.1
+  kdegvecad     0.1
+
+  kactabin2     0.1
+  kinactabin2   0.1
+end parameters
+
+
+begin molecule types
+  Tie2(tie1bs,loc~s~i~j~sol,veptpbs,pY~p~dp,ang1bs,ang2bs)
+  Tie1(pY~dp~p,tie2bs,loc~s~i~j~sol)
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs)
+  Ang2_2(tie2bs,tie2bs)
+  Ang2_3(tie2bs,tie2bs,tie2bs)
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs)
+  VEPTP(tie2bs)
+  
+  PTEN(PIP3docking)
+  PI(PIsite~3P~4P)
+  PI3K(state~active~inactive)
+  Akt(PHakt,T308~S~pS,S473~S~pS)
+  PDK1(PHpdk1,aktbd)
+
+  RhoA(G~GDP~GTP,mDiabs) 
+  mDia(RhoAbs,srcbs)
+  Src(mDiabs,Y1~Y~pY)
+  VECadherin(S665~S~pS,c~j~i)
+  ABIN2(state~inactive~active)
+  
+  I()
+  Trash()
+end molecule types
+
+begin seed species
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) Tie2_0
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) Ang1_4_0
+  Ang2_2(tie2bs,tie2bs) Ang2_2_0
+  Ang2_3(tie2bs,tie2bs,tie2bs) Ang2_3_0
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) Ang2_4_0
+  VEPTP(tie2bs) VEPTP_0
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs,ang2bs) sTie2_0
+  Tie1(pY~dp,loc~sol,tie2bs) sTie1_0
+  Tie1(pY~dp,loc~s,tie2bs) Tie1_0
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) Tie1Tie2_0
+  
+  PTEN(PIP3docking)            PTEN_0
+  PI(PIsite~3P)                PIP2_0
+  PI3K(state~inactive)  PI3K_0
+  Akt(PHakt,T308~S,S473~S)   Akt_0
+  PDK1(PHpdk1,aktbd)    PDK1_0
+
+  RhoA(G~GDP,mDiabs)      RhoA_0
+  mDia(RhoAbs,srcbs)      mDia_0
+  Src(mDiabs,Y1~Y)        Src_0
+  VECadherin(S665~S,c~j)  VECadherin_0
+  ABIN2(state~inactive)  ABIN2_0
+
+  I() 1
+  Trash() 1
+end seed species
+
+begin observables
+  Molecules pTie2 Tie2(pY~p)								#1 
+  Molecules intTie2 Tie2(loc~i)                             #2 
+  Molecules surfTie2 Tie2(loc~s)                            #3 
+  Molecules psurfTie2 Tie2(loc~s,pY~p)                      #4 
+  Molecules pintTie2 Tie2(loc~i,pY~p)                       #5 
+  Molecules totalTie2 Tie2                                  #6 
+  Molecules sTie2 Tie2(loc~sol)                             #7 
+  Molecules Tie1Tie2 Tie1(pY~dp,loc~s,tie2bs!+)             #8 
+  Molecules surfTie1 Tie1(pY~dp,loc~s,tie2bs)               #9 
+  Molecules sTie1 Tie1(loc~sol)                             #10
+  Molecules jTie2 Tie2(loc~j)                               #11
+  Molecules tsurfTie1 Tie1(loc~s)                           #12
+  Molecules jTie1 Tie1(loc~j)                               #13
+  Molecules freepip2 PI(PIsite~3P)                          #14
+  Molecules freepip3 PI(PIsite~4P)                          #15
+  Molecules ppAkt Akt(T308~pS,S473~pS)                      #16
+  Molecules freeSrc Src(mDiabs)                             #17
+  Molecules pSrc Src(Y1~pY)                                 #18
+  Molecules pVECadherin VECadherin(S665~pS)                 #19
+  Molecules aABIN2 ABIN2(state~active)                      #20
+  Molecules totalAkt Akt                                    #21
+  Molecules RhoAGTP RhoA(G~GTP)  							#22
+  Molecules RhoAmDia mDia(RhoAbs!+)							#23
+  Molecules mDiaSrc Src(mDiabs!+) 							#24
+  Molecules totalTie1 Tie1							        #25
+end observables
+
+# Ang/Tie Binding: Rules 1-13
+begin reaction rules
+  # Ang1 Binding (ligand-induced)
+  # 1
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs) konang1tie2_1,koffang1tie2_1
+
+  # 2
+  Ang1_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs) + Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs) konang1tie2_2,koffang1tie2_2
+
+  # 3
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs) konang1tie2_3,koffang1tie2_3
+
+  # 4
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!4,ang2bs) konang1tie2_4,koffang1tie2_4
+
+  # Ang2 Binding
+  # dimer
+  # 5
+  Ang2_2(tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_2(tie2bs!1,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_2tie2_1,koffang2_2tie2_1
+
+  # 6
+  Ang2_2(tie2bs!1,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_2(tie2bs!1,tie2bs!2).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_2tie2_2,koffang2_2tie2_2
+
+  # trimer
+  # 7
+  Ang2_3(tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_3tie2_1,koffang2_3tie2_1
+
+  # 8
+  Ang2_3(tie2bs!1,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_3tie2_2,koffang2_3tie2_2
+
+  # 9
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs!3).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs) konang2_3tie2_3,koffang2_3tie2_3
+
+  # tetramer
+  # 10
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_4tie2_1,koffang2_4tie2_1
+
+  # 11
+  Ang2_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) + Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_4tie2_2,koffang2_4tie2_2
+
+  # 12
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs) konang2_4tie2_3,koffang2_4tie2_3
+
+  # 13
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs) + \
+  Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!4,ang1bs) konang2_4tie2_4,koffang2_4tie2_4
+end reaction rules
+
+# Tie2 Activation: Rules 14-15
+begin reaction rules
+  # 14
+  Ang1_4(tie2bs!1,tie2bs!+,tie2bs!+,tie2bs!+).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!+,tie2bs!+,tie2bs!+).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs)  kpang1tie2,kdpang1tie2
+
+  # 15
+  Ang2_4(tie2bs!1,tie2bs!+,tie2bs!+,tie2bs!+).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs!1) <-> \
+  Ang2_4(tie2bs!1,tie2bs!+,tie2bs!+,tie2bs!+).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs,ang2bs!1)  kpang2tie2,kdpang2tie2
+end reaction rules
+
+# Tie1/Tie2 Junctional Localization and Interactions: Rules 16-22
+begin reaction rules
+  #16
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!4,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!4,ang2bs)  ksjang1tie2,kjsang1tie2
+
+  # 17
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!4,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!4,ang1bs) ksjang2tie2,kjsang2tie2
+
+  # 18
+  Tie1(pY~dp,tie2bs,loc~s) <-> Tie1(pY~dp,tie2bs,loc~j) ksjtie1,kjstie1
+
+  # Tie1 Tie2 Binding at Junction
+  # 19
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!4,ang2bs) \
+  + Tie1(pY~dp,tie2bs,loc~j) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!4,ang2bs).Tie1(pY~dp,tie2bs!5,loc~j) konang1tie1tie2_4_j, koffang1tie1tie2_4_j
+
+  # 20
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!4,ang1bs) \
+  + Tie1(pY~dp,tie2bs,loc~j) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!4,ang1bs).Tie1(pY~dp,tie2bs!5,loc~j) konang2tie1tie2_4_j, koffang2tie1tie2_4_j
+
+
+  # Tie1 Tie2 Cross Phosphorylation at Junction
+  # 21
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!4,ang2bs).Tie1(pY~dp,tie2bs!5,loc~j) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang1bs!4,ang2bs).Tie1(pY~p,tie2bs!5,loc~j) kptie1ang1_j, kdpatie1ang1_j
+  # 22
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!4,ang1bs).Tie1(pY~dp,tie2bs!5,loc~j) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs!5,loc~j,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~j,veptpbs,pY~p,ang2bs!4,ang1bs).Tie1(pY~p,tie2bs!5,loc~j) kptie1ang2_j, kdpatie1ang2_j
+end reaction rules
+
+# VEPTP Dephosphorylation: Rules 23-25
+begin reaction rules
+  # Tie2 Dephosphorylation (by VE-PTP)
+  # 23
+  Tie2(tie1bs,loc~j,veptpbs,pY~p) + VEPTP(tie2bs) <-> \
+  Tie2(tie1bs,loc~j,veptpbs!1,pY~p).VEPTP(tie2bs!1) konveptp,koffveptp
+
+  # 24
+  Tie2(tie1bs,loc~j,veptpbs!1,ang1bs!+,ang2bs,pY~p).VEPTP(tie2bs!1) -> \
+  Tie2(tie1bs,loc~j,veptpbs,ang1bs!+,ang2bs,pY~dp) + VEPTP(tie2bs) kactveptp_ang1
+
+  # 25
+  Tie2(tie1bs,loc~j,veptpbs!1,ang2bs!+,ang1bs,pY~p).VEPTP(tie2bs!1) -> \
+  Tie2(tie1bs,loc~j,veptpbs,ang2bs!+,ang1bs,pY~dp) + VEPTP(tie2bs) kactveptp_ang2
+end reaction rules
+
+# Internalization, Recycling, Turnover, Synthesis: Rules 26-50
+begin reaction rules
+  # Ang1
+  # 26
+  Ang1_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1tie2_1  
+
+  # 27
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1tie2_2
+
+  # 28
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1tie2_3
+  
+  # 29
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!4,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1tie2_4
+
+  # 30
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!4,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1p1tie2_4
+
+  # 31
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!4,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1p2tie2_4
+
+  # 32
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!4,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) kintang1p3tie2_4
+
+  # 33
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!1,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!2,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!3,ang2bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang1bs!4,ang2bs) -> \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang1bs,ang2bs) kintang1p4tie2_4
+  
+  # Ang2_2
+  # 34
+  Ang2_2(tie2bs!1,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) -> \
+  Ang2_2(tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_2tie2_1  
+
+  # 35
+  Ang2_3(tie2bs!1,tie2bs!2).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) -> \
+  Ang2_2(tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_2tie2_2
+
+  # Ang2_3
+  # 36
+  Ang2_3(tie2bs!1,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) -> \
+  Ang2_3(tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_3tie2_1  
+
+  # 37
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) -> \
+  Ang2_3(tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_3tie2_2
+
+  # 38
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs!3).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs) -> \
+  Ang2_3(tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_3tie2_3  
+
+  # Ang2_4
+  # 39
+  Ang2_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4tie2_1  
+
+  # 40
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4tie2_2
+
+  # 41
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4tie2_3
+
+  # 42
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!4,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4tie2_4
+
+  # 43
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!4,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4p1tie2_4
+
+  # 44
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!4,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4p2tie2_4
+
+  # 45
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang2bs!4,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang2bs,ang1bs) kintang2_4p3tie2_4
+
+  # 46
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!1,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!2,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!3,ang1bs).Tie2(tie1bs,loc~s,veptpbs,pY~p,ang2bs!4,ang1bs) -> \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) + Tie2(tie1bs,loc~i,veptpbs,pY~p,ang2bs,ang1bs) kintang2_4p4tie2_4
+
+  # Recycling of Internalized Tie2
+  # 47
+  Tie2(tie1bs,loc~i,veptpbs,pY~dp,ang1bs,ang2bs) -> Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) krectie2
+
+  # Degradation and Synthesis
+  # 48
+  Tie2(loc~i,pY~p) -> Trash() kdegptie2
+
+  # 49
+  I() -> I() + Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) ksyntie2
+  
+  # 50
+  I() -> I() + Tie1(pY~dp,tie2bs,loc~s) ksyntie1
+end reaction rules
+
+# Soluble Tie2 Binding: Rules 51-63
+begin reaction rules
+  # Ang1 Binding
+  # 51
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs) konang1tie2_1,koffang1tie2_1
+
+  # 52
+  Ang1_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs) + Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!2,ang2bs) konang1tie2_2,koffang1tie2_2
+
+  # 53
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!2,ang2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!3,ang2bs) konang1tie2_3,koffang1tie2_3
+
+  # 54
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!3,ang2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs,ang2bs) <-> \
+  Ang1_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!1,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!2,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!3,ang2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang1bs!4,ang2bs) konang1tie2_4,koffang1tie2_4
+
+  # Ang2 Binding
+  # dimer
+  # 55
+  Ang2_2(tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_2(tie2bs!1,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_2tie2_1,koffang2_2tie2_1
+
+  # 56
+  Ang2_2(tie2bs!1,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_2(tie2bs!1,tie2bs!2).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_2tie2_2,koffang2_2tie2_2
+
+  # trimer
+  # 57
+  Ang2_3(tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_3tie2_1,koffang2_3tie2_1
+
+  # 58
+  Ang2_3(tie2bs!1,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_3tie2_2,koffang2_3tie2_2
+
+  # 59
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_3(tie2bs!1,tie2bs!2,tie2bs!3).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!3,ang1bs) konang2_3tie2_3,koffang2_3tie2_3
+
+  # tetramer
+  # 60
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) konang2_4tie2_1,koffang2_4tie2_1
+
+  # 61
+  Ang2_4(tie2bs!1,tie2bs,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs) + Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs) konang2_4tie2_2,koffang2_4tie2_2
+
+  #62
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!3,ang1bs) konang2_4tie2_3,koffang2_4tie2_3
+
+  # 63
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!3,ang1bs) + \
+  Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs,ang1bs) <-> \
+  Ang2_4(tie2bs!1,tie2bs!2,tie2bs!3,tie2bs!4).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!1,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!2,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!3,ang1bs).Tie2(tie1bs,loc~sol,veptpbs,pY~dp,ang2bs!4,ang1bs) konang2_4tie2_4,koffang2_4tie2_4
+end reaction rules
+
+# Tie1:Tie2 Heterodimers: Rules 64-69
+begin reaction rules 
+  # Heterodimerization
+  # 64
+  Tie1(pY~dp,loc~s,tie2bs) + Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) <-> Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) kontie1tie2, kofftie1tie2
+
+  # Ang1 binding to Tie1:Tie2
+  # 65
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) + \
+  Ang1_4(tie2bs,tie2bs,tie2bs,tie2bs) <-> \
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Ang1_4(tie2bs!2,tie2bs,tie2bs,tie2bs) konang1_4tie1tie2, koffang1_4tie1tie2
+
+  # 66
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Ang1_4(tie2bs!2,tie2bs,tie2bs,tie2bs) -> \
+  Tie1(pY~dp,loc~s,tie2bs) + Tie2(tie1bs,loc~s,veptpbs,pY~dp,ang1bs!2,ang2bs).Ang1_4(tie2bs!2,tie2bs,tie2bs,tie2bs) kdissang1tie1tie2
+
+  # Ang2 binding to Tie1:Tie2
+  # 67
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) + \
+  Ang2_2(tie2bs,tie2bs) <-> \
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs!2).Ang2_2(tie2bs!2,tie2bs) konang2_2tie1tie2, koffang2_2tie1tie2
+
+  # 68
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) + \
+  Ang2_3(tie2bs,tie2bs,tie2bs) <-> \
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs!2).Ang2_3(tie2bs!2,tie2bs,tie2bs) konang2_3tie1tie2, koffang2_3tie1tie2
+
+  # 69
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs) + \
+  Ang2_4(tie2bs,tie2bs,tie2bs,tie2bs) <-> \
+  Tie1(pY~dp,loc~s,tie2bs!1).Tie2(tie1bs!1,loc~s,veptpbs,pY~dp,ang1bs,ang2bs!2).Ang2_4(tie2bs!2,tie2bs,tie2bs,tie2bs) konang2_4tie1tie2, koffang2_4tie1tie2
+end reaction rules
+
+# Receptor Cleavage and Clearance: Rules 70-73
+begin reaction rules 
+  # Tie1 and Tie2 Cleavage and Degradation
+  # 70
+  Tie2(tie1bs,loc~s,veptpbs,ang1bs,ang2bs) -> Tie2(tie1bs,loc~sol,veptpbs,ang1bs,ang2bs) kcleavetie2
+
+  # 71
+  Tie1(pY~dp,tie2bs,loc~s) -> Tie1(pY~dp,tie2bs,loc~sol) kcleavetie1
+
+  # 72
+  Tie2(tie1bs,loc~sol,veptpbs,ang1bs,ang2bs) -> Trash() kdegsTie2
+
+  # 73
+  Tie1(pY~dp,tie2bs,loc~sol) -> Trash() kdegstie1
+end reaction rules
+
+# Downstream Signaling - Akt: Rules 74-84
+begin reaction rules  
+  # PI3K, Akt
+  # 74, 75
+  PI3K(state~inactive) + Tie2(loc~j,pY~p) -> PI3K(state~active) + Tie2(loc~j,pY~p) kactPI3KTie2
+  PI3K(state~active) -> PI3K(state~inactive)   kinactPI3KTie2
+
+  # 76
+  PI(PIsite~3P) -> Trash() kPIP2gen
+
+  # 77
+  PI3K(state~active) + PI(PIsite~3P)  -> PI3K(state~active) + PI(PIsite~4P)  kcatPI3KPIP2/(kmPIP2PI3K+freepip2)
+
+  # 78
+  PTEN(PIP3docking) + PI(PIsite~4P) -> PTEN(PIP3docking) + PI(PIsite~3P)  kcatPTENPIP3/(kmPIP3PTEN+freepip3)
+
+  # 79
+  PDK1(PHpdk1) + PI(PIsite~4P) <-> PDK1(PHpdk1!1).PI(PIsite~4P!1) konPDK1PIP3,koffPDK1PIP3
+  
+  # 80
+  Akt(PHakt) + PI(PIsite~4P) <-> Akt(PHakt!1).PI(PIsite~4P!1) konAKTPIP3,koffAKTPIP3
+
+  # 81
+  Akt(PHakt!+,S473~S) -> Akt(PHakt!+,S473~pS)  kpmTORAKT
+
+  # 82
+  Akt(PHakt!+,S473~pS,T308~S) + PDK1(PHpdk1!+) -> \
+  PDK1(PHpdk1!+) + Akt(PHakt!+,S473~pS,T308~pS) kpAKTPDK1
+
+  # 83, 84
+  Akt(S473~pS) ->   Akt(S473~S)   kdp473AKTPPase
+  Akt(T308~pS) ->   Akt(T308~S)   kdp308AKTPPase
+end reaction rules
+
+# Downstream Signaling - RhoA, mDia: Rules 85-94
+begin reaction rules
+  # 85,86
+  RhoA(G~GDP,mDiabs) + Tie2(loc~j,pY~p) ->  RhoA(G~GTP,mDiabs) + Tie2(loc~j,pY~p)  kprhoa
+  RhoA(G~GTP,mDiabs) -> RhoA(G~GDP,mDiabs)  kdprhoa
+
+  # 87,88
+  RhoA(G~GTP,mDiabs)  + mDia(RhoAbs,srcbs) <-> RhoA(G~GTP,mDiabs!1).mDia(RhoAbs!1,srcbs) konrhoamdia,koffrhoamdia
+  Src(mDiabs,Y1~Y) + RhoA(G~GTP,mDiabs!1).mDia(RhoAbs!1,srcbs) <-> Src(mDiabs!2,Y1~Y).RhoA(G~GTP,mDiabs!1).mDia(RhoAbs!1,srcbs!2) konmdiasrc,koffmdiasrc
+
+  # 89
+  Src(mDiabs,Y1~Y) <-> Src(mDiabs,Y1~pY) kpsrc, kdpsrc  
+  
+  # 90,91,92
+  VECadherin(S665~S,c~j) + Src(mDiabs,Y1~pY) <-> VECadherin(S665~pS,c~j) + Src(mDiabs,Y1~pY) kpvecad, kdpvecad
+  VECadherin(S665~pS,c~j) <-> VECadherin(S665~pS,c~i) kintvecad,krecvecad
+  VECadherin(S665~pS,c~i) -> Trash() kdegvecad
+
+  # 93,94
+  ABIN2(state~inactive) + Tie2(loc~j,pY~p) -> ABIN2(state~active) + Tie2(loc~j,pY~p) kactabin2
+  ABIN2(state~active) -> ABIN2(state~inactive)  kinactabin2
+end reaction rules
+
+end model
+
+## actions ##
+generate_network({overwrite=>1})
+writeSBML({})

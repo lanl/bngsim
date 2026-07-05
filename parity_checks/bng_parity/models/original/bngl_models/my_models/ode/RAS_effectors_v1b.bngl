@@ -1,0 +1,293 @@
+# filename: RAS_effectors_v1b.bngl
+# revision history:
+#  - created on 31-Oct-2016 (v1)
+#  - small edit on 01-Nov-2016 (v1b)
+
+begin model
+
+# Abbreviations:
+#  - cpc, copies per cell
+#  - RBD, Ras-binding domain
+#  - RA, Ras association domain
+
+# References:
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723.
+
+begin parameters
+
+# fraction of a cell to consider in a (stochastic) simulation
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# cytoplasmic volume
+Vcyt 1e-12*f # L per cell (Hein et al., 2015)
+
+# protein copy numbers in HeLa Kyoto cells (Hein et al., 2015)
+HRAS_cpc   1128*f # cpc
+KRAS_cpc 146936*f # cpc
+NRAS_cpc  63920*f # cpc
+
+ARAF_cpc  32680*f # cpc
+BRAF_cpc  19164*f # cpc
+RAF1_cpc   2067*f # cpc
+
+MLLT4_cpc   522*f # cpc
+
+RASSF1_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+RASSF2_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+RASSF4_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+RASSF5_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+RASSF9_cpc 5099*f # cpc
+
+PIK3CA_cpc 3820*f # cpc
+PIK3CD_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+PIK3CG_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+
+PLCE1_cpc     0*f # cpc, no value reported by Hein et al. (2015)
+
+RALGDS_cpc    0*f # cpc, no value reported by Hein et al. (2015)
+RGL1_cpc      0*f # cpc, no value reported by Hein et al. (2015)
+RGL2_cpc   8395*f # cpc
+RGL3_cpc   1733*f # cpc
+
+RASIP1_cpc 3622*f # cpc
+
+RGS12_cpc     0*f # cpc, no value reported by Hein et al. (2015)
+RGS14_cpc     0*f # cpc, no value reported by Hein et al. (2015)
+
+RIN1_cpc  26894*f # cpc
+RIN2_cpc      0*f # cpc, no value reported by Hein et al. (2015)
+RIN3_cpc      0*f # cpc, no value reported by Hein et al. (2015)
+
+TIAM1_cpc     0*f # cpc, no value reported by Hein et al. (2015)
+
+# fraction of total KRAS protein in the 4A and 4B alternative splice forms
+fracKRAS4B 1.0 # dimensionless
+fracKRAS4A=(1-fracKRAS4B) # dimensionless
+
+# binding parameters
+
+# RAF
+KD_RAF 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RAF 0.01 # /s
+kf_RAF=kr_RAF/KD_RAF # /(molecule/cell)/s
+
+# AF6
+KD_AF6 1e-6*(NA*Vcyt) # M converted to cpc
+kr_AF6 0.01 # /s
+kf_AF6=kr_AF6/KD_AF6 # /(molecule/cell)/s
+
+# RASSF
+KD_RASSF 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RASSF 0.01 # /s
+kf_RASSF=kr_RASSF/KD_RASSF # /(molecule/cell)/s
+
+# PIK3C
+KD_PIK3C 1e-6*(NA*Vcyt) # M converted to cpc
+kr_PIK3C 0.01 # /s
+kf_PIK3C=kr_PIK3C/KD_PIK3C # /(molecule/cell)/s
+
+# PLCE1
+KD_PLCE1 1e-6*(NA*Vcyt) # M converted to cpc
+kr_PLCE1 0.01 # /s
+kf_PLCE1=kr_PLCE1/KD_PLCE1 # /(molecule/cell)/s
+
+# RalGEF
+KD_RalGEF 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RalGEF 0.01 # /s
+kf_RalGEF=kr_RalGEF/KD_RalGEF # /(molecule/cell)/s
+
+# RASIP1
+KD_RASIP1 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RASIP1 0.01 # /s
+kf_RASIP1=kr_RASIP1/KD_RASIP1 # /(molecule/cell)/s
+
+# RGS
+KD_RGS 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RGS 0.01 # /s
+kf_RGS=kr_RGS/KD_RGS # /(molecule/cell)/s
+
+# RIN
+KD_RIN 1e-6*(NA*Vcyt) # M converted to cpc
+kr_RIN 0.01 # /s
+kf_RIN=kr_RIN/KD_RIN # /(molecule/cell)/s
+
+# TIAM1
+KD_TIAM1 1e-6*(NA*Vcyt) # M converted to cpc
+kr_TIAM1 0.01 # /s
+kf_TIAM1=kr_TIAM1/KD_TIAM1 # /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+# RAS
+#  ~0: Apo RAS
+#  ~GDP: GDP-bound RAS
+#  ~GTP: GTP-bound RAS
+RAS(G~0~GDP~GTP)
+#HRAS(G~0~GDP~GTP)
+#KRAS4A(G~0~GDP~GTP)
+#KRAS4B(G~0~GDP~GTP)
+#NRAS(G~0~GDP~GTP)
+
+# RAF
+RAF(RBD)
+#ARAF(RBD)
+#BRAF(RBD)
+#CRAF(RBD) # aka RAF1
+
+AF6(RA) # aka MLLT4
+
+# RASSF
+RASSF(RA)
+#RASSF1(RA)
+#RASSF2(RA)
+#RASSF4(RA)
+#RASSF5(RA)
+#RASSF9(RA)
+
+# PIK3C (p110 catalytic subunit of PI3K)
+PIK3C(RBD)
+#PIK3CA(RBD) # alpha isoform
+#PIK3CD(RBD) # delta isoform
+#PIK3CG(RBD) # gamma isoform
+
+PLCE1(RA) # aka PLCepsilon1
+
+# Ral GEFs
+RalGEF(RA)
+#RALGDS(RA)
+#RGL1(RA)
+#RGL2(RA)
+#RGL3(RA)
+
+RASIP1(RA)
+
+# RGS
+RGS(RBD)
+#RGS12(RBD)
+#RGS14(RBD)
+
+# RIN
+RIN(RA)
+#RIN1(RA)
+#RIN2(RA)
+#RIN3(RA)
+
+TIAM1(RBD)
+
+end molecule types
+
+begin seed species
+
+RAS(G~GTP) HRAS_cpc+KRAS_cpc+NRAS_cpc
+#HRAS(G~GTP) HRAS_cpc
+#KRAS4A(G~GTP) fracKRAS4A*KRAS_cpc
+#KRAS4B(G~GTP) fracKRAS4B*KRAS_cpc
+#NRAS(G~GTP) NRAS_cpc
+RAF(RBD) ARAF_cpc+BRAF_cpc+RAF1_cpc
+#ARAF(RBD) ARAF_cpc
+#BRAF(RBD) BRAF_cpc
+#CRAF(RBD) RAF1_cpc
+AF6(RA) MLLT4_cpc
+RASSF(RA) RASSF1_cpc+RASSF2_cpc+RASSF4_cpc+RASSF5_cpc+RASSF9_cpc
+#RASSF1(RA) RASSF1_cpc
+#RASSF2(RA) RASSF2_cpc
+#RASSF4(RA) RASSF4_cpc
+#RASSF5(RA) RASSF5_cpc
+#RASSF9(RA) RASSF9_cpc
+PIK3C(RBD) PIK3CA_cpc+PIK3CD_cpc+PIK3CG_cpc
+#PIK3CA(RBD) PIK3CA_cpc
+#PIK3CD(RBD) PIK3CD_cpc
+#PIK3CG(RBD) PIK3CG_cpc
+PLCE1(RA) PLCE1_cpc
+RalGEF(RA) RALGDS_cpc+RGL1_cpc+RGL2_cpc+RGL3_cpc
+#RALGDS(RA) RALGDS_cpc
+#RGL1(RA) RGL1_cpc
+#RGL2(RA) RGL2_cpc
+#RGL3(RA) RGL3_cpc
+RASIP1(RA) RASIP1_cpc
+RGS(RBD) RGS12_cpc+RGS14_cpc
+#RGS12(RBD) RGS12_cpc
+#RGS14(RBD) RGS14_cpc
+RIN(RA) RIN1_cpc+RIN2_cpc+RIN3_cpc
+#RIN1(RA) RIN1_cpc
+#RIN2(RA) RIN2_cpc
+#RIN3(RA) RIN3_cpc
+TIAM1(RBD) TIAM1_cpc
+
+end seed species
+
+begin observables
+
+Molecules freeRasGTP RAS(G~GTP)
+Molecules boundRasGTP RAS(G~GTP!+)
+
+Molecules freeRAF RAF(RBD)
+Molecules boundRAF RAF(RBD!+)
+
+Molecules freeAF6 AF6(RA)
+Molecules boundAF6 AF6(RA!+)
+
+Molecules freeRASSF RASSF(RA)
+Molecules boundRASSF RASSF(RA!+)
+
+Molecules freePIK3C PIK3C(RBD)
+Molecules boundPIK3C PIK3C(RBD!+)
+
+Molecules freePLCE1 PLCE1(RA)
+Molecules boundPLCE1 PLCE1(RA!+)
+
+Molecules freeRalGEF RalGEF(RA)
+Molecules boundRalGEF RalGEF(RA!+)
+
+Molecules freeRASIP1 RASIP1(RA)
+Molecules boundRASIP1 RASIP1(RA!+)
+
+Molecules freeRGS RGS(RBD)
+Molecules boundRGS RGS(RBD!+)
+
+Molecules freeRIN RIN(RA)
+Molecules boundRIN RIN(RA!+)
+
+Molecules freeTIAM1 TIAM1(RBD)
+Molecules boundTIAM1 TIAM1(RBD!+)
+
+end observables
+
+begin functions
+
+freeEffectors()=freeRAF+freeAF6+freeRASSF+freePIK3C+freePLCE1+freeRalGEF+freeRASIP1+freeRGS+freeRIN+freeTIAM1
+boundEffectors()=boundRAF+boundAF6+boundRASSF+boundPIK3C+boundPLCE1+boundRalGEF+boundRASIP1+boundRGS+boundRIN+boundTIAM1
+
+end functions
+
+begin reaction rules
+
+# proteins that interact with GTP-loaded RAS
+RAS(G~GTP)+RAF(RBD)<->RAS(G~GTP!1).RAF(RBD!1) kf_RAF,kr_RAF
+RAS(G~GTP)+AF6(RA)<->RAS(G~GTP!1).AF6(RA!1) kf_AF6,kr_AF6
+RAS(G~GTP)+RASSF(RA)<->RAS(G~GTP!1).RASSF(RA!1) kf_RASSF,kr_RASSF
+RAS(G~GTP)+PIK3C(RBD)<->RAS(G~GTP!1).PIK3C(RBD!1) kf_PIK3C,kr_PIK3C
+RAS(G~GTP)+PLCE1(RA)<->RAS(G~GTP!1).PLCE1(RA!1) kf_PLCE1,kr_PLCE1
+RAS(G~GTP)+RalGEF(RA)<->RAS(G~GTP!1).RalGEF(RA!1) kf_RalGEF,kr_RalGEF
+RAS(G~GTP)+RASIP1(RA)<->RAS(G~GTP!1).RASIP1(RA!1) kf_RASIP1,kr_RASIP1
+RAS(G~GTP)+RGS(RBD)<->RAS(G~GTP!1).RGS(RBD!1) kf_RGS,kr_RGS
+RAS(G~GTP)+RIN(RA)<->RAS(G~GTP!1).RIN(RA!1) kf_RIN,kr_RIN
+RAS(G~GTP)+TIAM1(RBD)<->RAS(G~GTP!1).TIAM1(RBD!1) kf_TIAM1,kr_TIAM1
+
+# proteins that interact with GDP-loaded RAS
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>300,n_steps=>100,print_functions=>1})
+
+end actions

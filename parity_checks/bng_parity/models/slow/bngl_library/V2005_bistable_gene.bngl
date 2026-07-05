@@ -1,0 +1,99 @@
+begin model
+#@model_id: V2005_bistable_gene
+#@title: Bistable gene expression system (Voit 2005)
+#@description: Four-variable bistable gene expression system with sigmoidal (Hill) induction, fractional power-law kinetics, and linear degradation. Variables represent mRNA (X1), protein (X2), metabolite (X3), and inducer (X4). Converted from Antimony to BNGL with functional rates.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: Voit (2005) IEE Proc. Syst. Biol. 152(4):207-213
+#@note: |
+#  System has two stable steady states and one unstable saddle.
+#  All rate laws involve fractional exponents or Hill functions -- functional rates throughout.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L  (reference volume)
+  f        1.0            # dimensionless
+
+  q1       4.0            # molecules/time  (basal expression level)
+  q2       8.0            # molecules/time  (maximal additional expression)
+  q3       4.0            # molecules  (switch point for Hill function)
+  n        4              # dimensionless  (Hill coefficient)
+  k_deg1   0.5            # 1/time^(1/2)  (X1 degradation coefficient)
+  k_prod2  1.0            # 1/time^(1/2)  (X2 production coefficient)
+  k_deg2   5.0            # 1/time^(1/2)  (X2 degradation coefficient)
+  k_prod3  2.0            # 1/time  (X3 production rate from X2)
+  k_deg3   3.0            # 1/time  (X3 first-order degradation)
+  k_prod4  3.0            # 1/time  (X4 production rate from X3)
+  k_deg4   12.0           # 1/time^(3/4)  (X4 degradation coefficient)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+  X3()
+  X4()
+end molecule types
+
+begin seed species
+  X1()  10  # molecules (from 10.0)
+  X2()  5   # molecules (from 5.0)
+  X3()  3   # molecules (from 3.0)
+  X4()  1   # molecules (from 1.0)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+  Molecules  Obs_X4  X4()
+end observables
+
+begin functions
+  # Sigmoidal induction: q1 + q2*X4^n / (q3^n + X4^n)
+  sigma() = q1 + q2 * Obs_X4^n / (q3^n + Obs_X4^n)
+  # Production of X1: sigma * X3^0.5
+  prod_X1() = sigma() * (Obs_X3 + 1e-8)^0.5
+  # Degradation of X1: 0.5 * X1^0.5
+  deg_X1() = k_deg1 * (Obs_X1 + 1e-8)^0.5
+  # Production of X2: X1^0.5
+  prod_X2() = k_prod2 * (Obs_X1 + 1e-8)^0.5
+  # Degradation of X2: 5*X2^0.5
+  deg_X2() = k_deg2 * (Obs_X2 + 1e-8)^0.5
+  # Production of X3: 2*X2 (linear)
+  prod_X3() = k_prod3 * Obs_X2
+  # Production of X4: 3*X3 (linear)
+  prod_X4() = k_prod4 * Obs_X3
+  # Degradation of X4: 12*X4^0.75
+  deg_X4() = k_deg4 * (Obs_X4 + 1e-8)^0.75
+end functions
+
+begin reaction rules
+  # X1 production: sigma(X4) * X3^0.5
+  0 -> X1()  prod_X1()
+  # X1 degradation: 0.5 * X1^0.5
+  X1() -> 0  deg_X1()
+  # X2 production: X1^0.5
+  0 -> X2()  prod_X2()
+  # X2 degradation: 5 * X2^0.5
+  X2() -> 0  deg_X2()
+  # X3 production: 2 * X2 (linear)
+  0 -> X3()  prod_X3()
+  # X3 degradation: first-order
+  X3() -> 0  k_deg3
+  # X4 production: 3 * X3 (linear)
+  0 -> X4()  prod_X4()
+  # X4 degradation: 12 * X4^0.75
+  X4() -> 0  deg_X4()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>3,n_steps=>300})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>3,n_steps=>300})
+end actions

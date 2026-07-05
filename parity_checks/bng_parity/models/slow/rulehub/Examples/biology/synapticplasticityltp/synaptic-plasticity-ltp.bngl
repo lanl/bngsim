@@ -1,0 +1,82 @@
+begin model
+begin parameters
+    # Initial Concentrations
+    Glu_init 0
+    NMDA_init 50
+    CaMKII_init 80
+    AMPAR_init 100
+    Calcium_init 0
+
+    # Rate Constants
+    k_bind_glu   0.05    # Glutamate binding to NMDAR
+    k_unbind_glu 0.5     # Glutamate unbinding
+    k_open_nmda  2.0     # Channel opening
+    k_close_nmda 0.1     # Channel closing
+    
+    k_ca_influx  5.0     # Ca2+ entry through NMDAR
+    k_ca_pump    1.5     # Ca2+ extrusion/buffering
+    
+    k_camkii_act 0.8     # Ca2+-dependent activation
+    k_camkii_deact 0.2   # Deactivation (phosphatase)
+    
+    k_ampar_ins  0.6     # CaMKII-driven exocytosis
+    k_ampar_endo 0.05    # Basal endocytosis
+    
+    # Stimulation Protocol Parameters
+    Glu_input    100.0   # Controlled by stimulus rule
+end parameters
+
+begin molecule types
+    Glutamate(r)
+    NMDA(l,channel~closed~open)
+    Calcium(b)
+    CaMKII(ca,state~inactive~active)
+    AMPAR(loc~intra~surf)   # Intracellular vs Surface
+    GluSource()
+end molecule types
+
+begin seed species
+    Glutamate(r) 0
+    NMDA(l,channel~closed) 50
+    Calcium(b) 10
+    GluSource() 1000
+    CaMKII(ca,state~inactive) CaMKII_init
+    AMPAR(loc~surf) 20      # Basal surface level
+    AMPAR(loc~intra) 80     # Reserve pool
+end seed species
+
+begin observables
+    Molecules Open_NMDAR      NMDA(channel~open)
+    Molecules Cytosolic_Ca    Calcium()
+    Molecules Active_CaMKII   CaMKII(state~active)
+    Molecules Surface_AMPAR   AMPAR(loc~surf)        # LTP readout
+end observables
+
+begin reaction rules
+    # 1. Glutamate Release
+    GluSource() -> GluSource() + Glutamate(r) Glu_input
+    Glutamate(r) -> 0 10.0 # Rapid clearance
+    
+    Glutamate(r) + NMDA(l,channel~closed) <-> Glutamate(r!1).NMDA(l!1,channel~closed) k_bind_glu, k_unbind_glu
+    Glutamate(r!1).NMDA(l!1,channel~closed) -> Glutamate(r!1).NMDA(l!1,channel~open) k_open_nmda
+    Glutamate(r!1).NMDA(l!1,channel~open) -> Glutamate(r!1).NMDA(l!1,channel~closed) k_close_nmda
+
+    # 2. Calcium Influx (Flux through open channels)
+    NMDA(channel~open) -> NMDA(channel~open) + Calcium(b) k_ca_influx
+    Calcium(b) -> 0 k_ca_pump
+
+    # 3. CaMKII Activation
+    Calcium(b) + CaMKII(ca,state~inactive) <-> Calcium(b!1).CaMKII(ca!1,state~active) k_camkii_act, k_camkii_deact
+
+    # 4. AMPAR Trafficking (LTP Expression)
+    CaMKII(state~active) + AMPAR(loc~intra) -> CaMKII(state~active) + AMPAR(loc~surf) k_ampar_ins
+    
+    # Constitutive recycling
+    AMPAR(loc~surf) -> AMPAR(loc~intra) k_ampar_endo
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>300})
+end actions
+end model

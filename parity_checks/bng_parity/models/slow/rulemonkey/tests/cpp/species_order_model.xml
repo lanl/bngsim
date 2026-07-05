@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Hand-authored regression model for issue #13: a molecule X with a
+     stateful component p~0~1 and a stateless component y, so an exact
+     species pattern can be written in two component orders that denote
+     the same species ("X(p~0,y)" vs "X(y,p~0)").  Seeded with X(p~0,y);
+     a single state-change rule X(p~0) -> X(p~1) keeps the model loadable
+     and lets add/set produce the X(p~1,y) species too. -->
+<sbml xmlns="http://www.sbml.org/sbml/level3" level="3" version="1">
+  <model id="species_order">
+    <ListOfParameters>
+      <Parameter id="X_tot" type="Constant" value="5000" expr="5000"/>
+      <Parameter id="k" type="Constant" value="0.1" expr="0.1"/>
+    </ListOfParameters>
+    <ListOfMoleculeTypes>
+      <MoleculeType id="X">
+        <ListOfComponentTypes>
+          <ComponentType id="p">
+            <ListOfAllowedStates>
+              <AllowedState id="0"/>
+              <AllowedState id="1"/>
+            </ListOfAllowedStates>
+          </ComponentType>
+          <ComponentType id="y"/>
+        </ListOfComponentTypes>
+      </MoleculeType>
+    </ListOfMoleculeTypes>
+    <ListOfCompartments>
+    </ListOfCompartments>
+    <ListOfSpecies>
+      <Species id="S1" concentration="X_tot" name="X(p~0,y)">
+        <ListOfMolecules>
+          <Molecule id="S1_M1" name="X">
+            <ListOfComponents>
+              <Component id="S1_M1_C1" name="p" state="0" numberOfBonds="0"/>
+              <Component id="S1_M1_C2" name="y" numberOfBonds="0"/>
+            </ListOfComponents>
+          </Molecule>
+        </ListOfMolecules>
+      </Species>
+    </ListOfSpecies>
+    <ListOfReactionRules>
+      <ReactionRule id="RR1" name="_R1" symmetry_factor="1">
+        <ListOfReactantPatterns>
+          <ReactantPattern id="RR1_RP1">
+            <ListOfMolecules>
+              <Molecule id="RR1_RP1_M1" name="X">
+                <ListOfComponents>
+                  <Component id="RR1_RP1_M1_C1" name="p" state="0" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+          </ReactantPattern>
+        </ListOfReactantPatterns>
+        <ListOfProductPatterns>
+          <ProductPattern id="RR1_PP1">
+            <ListOfMolecules>
+              <Molecule id="RR1_PP1_M1" name="X">
+                <ListOfComponents>
+                  <Component id="RR1_PP1_M1_C1" name="p" state="1" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+          </ProductPattern>
+        </ListOfProductPatterns>
+        <RateLaw id="RR1_RateLaw" type="Ele" totalrate="0">
+          <ListOfRateConstants>
+            <RateConstant value="k"/>
+          </ListOfRateConstants>
+        </RateLaw>
+        <Map>
+          <MapItem sourceID="RR1_RP1_M1" targetID="RR1_PP1_M1"/>
+          <MapItem sourceID="RR1_RP1_M1_C1" targetID="RR1_PP1_M1_C1"/>
+        </Map>
+        <ListOfOperations>
+          <StateChange site="RR1_RP1_M1_C1" finalState="1"/>
+        </ListOfOperations>
+      </ReactionRule>
+    </ListOfReactionRules>
+    <ListOfObservables>
+      <Observable id="O1" name="X0" type="Species">
+        <ListOfPatterns>
+          <Pattern id="O1_P1" matchOnce="1">
+            <ListOfMolecules>
+              <Molecule id="O1_P1_M1" name="X">
+                <ListOfComponents>
+                  <Component id="O1_P1_M1_C1" name="p" state="0" numberOfBonds="0"/>
+                  <Component id="O1_P1_M1_C2" name="y" numberOfBonds="0"/>
+                </ListOfComponents>
+              </Molecule>
+            </ListOfMolecules>
+          </Pattern>
+        </ListOfPatterns>
+      </Observable>
+    </ListOfObservables>
+    <ListOfFunctions>
+    </ListOfFunctions>
+  </model>
+</sbml>

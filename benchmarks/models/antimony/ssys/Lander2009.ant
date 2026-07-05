@@ -1,0 +1,75 @@
+// Lander2009_OE_p1_feedback.ant
+//
+// Source:
+//   Lander AD, Gokoffski KK, Wan FYM, Nie Q, Calof AL (2009)
+//   "Cell lineages and the logic of proliferative control."
+//   PLoS Biol 7(1):e1000015. doi:10.1371/journal.pbio.1000015
+//
+// Model type:
+//   Unbranched 3-stage cell lineage (stem -> INP -> ORN) with
+//   negative feedback from ORNs onto the INP replication probability p1.
+//   This corresponds to the OE example with feedback on p1 in Fig. 3D/E.
+//
+// State variables (species):
+//   X_0 : stem cells (Sox2+/Mash1+), normalized to initial stem-cell pool
+//   X_1 : INPs (transit-amplifying Ngn1+ progenitors)
+//   X_2 : ORNs (terminally differentiated neurons)
+//
+// Parameters (from Fig. 3E caption, with v_1 set as time scale):
+//   p_0   : stem-cell replication probability
+//   p_1   : baseline INP replication probability
+//   v_0   : stem-cell division rate (v_0/v_1 = 0.506)
+//   v_1   : INP division rate (set to 1.0)
+//   d     : ORN death rate (d/v_1 = 0.0138)
+//   g     : feedback gain on p_1 (p_1eff = p_1 / (1 + g*X_2))
+//
+// Scenario:
+//   Regeneration after ORN ablation.
+//   At t = 0, ORNs are removed (X_2 = 0), stem pool normalized (X_0 = 1),
+//   and X_1 is near its steady-state value for this parameter set.
+
+model Lander2009_OE_p1_feedback
+
+  // Compartments
+  compartment tissue = 1;
+
+  // Species: cell numbers (scaled)
+  species X_0 in tissue;
+  species X_1 in tissue;
+  species X_2 in tissue;
+
+  // Parameters (Fig. 3E)
+  const p_0 = 0.5;
+  const p_1 = 0.942;
+  const v_0 = 0.506;
+  const v_1 = 1.0;
+  const d   = 0.0138;
+  const g   = 0.0449;
+
+  // Effective INP replication probability (feedback from ORNs)
+  p_1eff := p_1/(1 + g*X_2);
+
+  // ODEs (rate rules)
+  // X_0: stem cells
+  X_0' = (2*p_0 - 1)*v_0*X_0;
+
+  // X_1: INPs
+  X_1' = 2*(1 - p_0)*v_0*X_0 + (2*p_1eff - 1)*v_1*X_1;
+
+  // X_2: ORNs
+  X_2' = 2*(1 - p_1eff)*v_1*X_1 - d*X_2;
+
+  // Initial conditions
+  // X_0 normalized to 1 (initial stem-cell pool)
+  X_0 = 1;
+
+  // X_1 chosen near steady state for this parameter set
+  // (approximate solution of steady-state equations with feedback)
+  X_1 = 0.7916;
+
+  // ORNs ablated at t = 0 (regeneration experiment)
+  X_2 = 0;
+
+end
+// @SIM T_START=0 T_END=12 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

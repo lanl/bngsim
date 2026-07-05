@@ -1,0 +1,105 @@
+begin model
+#@model_id: Xiong2018_ContactKilling_Inhibitor
+#@title: Three-variable contact killing with inhibitor (Xiong et al. 2018)
+#@description: Well-mixed ODE version of the rescaled three-variable model for bacterial coexistence with contact-dependent killing and a growth inhibitor. Converted from Antimony to BNGL with carrying capacity scaled to K=1000 molecules.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts; carrying capacity K=1000
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1016/j.bpj.2018.02.012
+#@note: |
+#  Original model uses rescaled densities (0-1 range). Here we scale by K=1000
+#  to get integer molecule counts. Rates adjusted accordingly.
+
+begin parameters
+  NA        6.02214076e23  # 1/mol
+  V_ref     1.0            # L
+  f         1.0            # dimensionless
+
+  K         1000           # molecules; carrying capacity (=1 in original)
+  K_A       1000           # molecules; inhibitor scale
+
+  # Model parameters
+  gamma_1   4.5            # 1/s; growth rate of strain 1
+  delta     0.01           # 1/s; natural death rate
+  kappa     0.03           # 1/s; contact-killing rate
+  gamma_A   0.04           # 1/s; inhibitor production rate
+  delta_A   0.02           # 1/s; inhibitor decay rate
+end parameters
+
+begin molecule types
+  # Strain 1 density (rescaled to molecules)
+  n1()
+  # Strain 2 density (rescaled to molecules)
+  n2()
+  # Inhibitor concentration (rescaled to molecules)
+  A()
+end molecule types
+
+begin seed species
+  n1()  400  # molecules (0.4 * K)
+  n2()  400  # molecules (0.4 * K)
+  A()   1    # molecules (near 0; use 1 for SSA)
+end seed species
+
+begin observables
+  Molecules  Obs_n1  n1()
+  Molecules  Obs_n2  n2()
+  Molecules  Obs_A   A()
+end observables
+
+begin functions
+  # Rescaled concentrations (0-1 range)
+  n1_frac() = Obs_n1 / K
+  n2_frac() = Obs_n2 / K
+  A_frac()  = Obs_A / K_A
+
+  # Logistic vacancy clamped to prevent negative propensities
+  vacancy() = max(1 - n1_frac() - n2_frac(), 0)
+
+  # Strain 1 growth: (gamma_1/(1+A)) * n1 * (1 - n1 - n2) * K
+  growth_n1() = (gamma_1 / (1 + A_frac())) * n1_frac() * vacancy() * K
+
+  # Strain 2 growth: n2 * (1 - n1 - n2) * K
+  growth_n2() = n2_frac() * vacancy() * K
+
+  # Contact-killing: kappa * n1 * n2 / K
+  kill_n1() = kappa * Obs_n1 * Obs_n2 / K
+
+  # Inhibitor production: gamma_A * n1
+  prod_A() = gamma_A * Obs_n1
+end functions
+
+begin reaction rules
+  # n1 growth (inhibitor-modulated logistic)
+  0 -> n1()  growth_n1()
+  # n1 natural death
+  n1() -> 0  delta
+  # n1 contact-dependent killing by strain 2
+  n1() -> 0  kill_n1()
+
+  # n2 logistic growth
+  0 -> n2()  growth_n2()
+  # n2 natural death
+  n2() -> 0  delta
+
+  # Inhibitor production by strain 1
+  0 -> A()  prod_A()
+  # Inhibitor decay
+  A() -> 0  delta_A
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>100,n_steps=>500})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>100,n_steps=>500})
+end actions

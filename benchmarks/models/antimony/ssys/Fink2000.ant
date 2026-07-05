@@ -1,0 +1,122 @@
+// Fink2000_BK_CaWave_WellMixed.ant
+//
+// Source:
+//   Fink CC, Slepchenko B, Moraru II, Watras J, Schaff JC, Loew LM (2000)
+//   "An image-based model of calcium waves in differentiated
+//    neuroblastoma cells."
+//   Biophys J 79:163–183.
+//
+// This is a spatially lumped (well-mixed) ODE version of the
+// image-based PDE model described in the Appendix:
+//   - InsP3 dynamics: Eqs. (1–2)
+//   - Ca2+ dynamics: Eq. (3)
+//   - IP3R channel flux: Eq. (4)
+//   - h-gate dynamics: Eq. (5)
+//   - SERCA pump: Eq. (6)
+//   - ER leak: Eq. (7)
+// with parameter values from Tables 2–4.
+//
+// State variables:
+//   Ca   : cytosolic free [Ca2+] (µM)
+//   IP3  : cytosolic [InsP3]      (µM)
+//   h    : IP3R inactivation gate (0–1)
+//
+// Geometry, diffusion, detailed buffering, and explicit membrane
+// boundary conditions are collapsed into effective parameters.
+//
+
+model Fink2000_BK_CaWave_WellMixed
+
+  // Compartment
+  compartment cyt = 1;
+
+  // Species (state variables)
+  species Ca  in cyt;
+  species IP3 in cyt;
+  species h   in cyt;
+
+  // -------------------------
+  // Parameters (from Tables 2–4)
+  // -------------------------
+
+  // InsP3 production & degradation (Eqs. 1–2)
+  const J_0     = 20.86;
+  const k_0     = 1.188;
+  const k_degr  = 0.14;
+  const IP3_0   = 0.16;
+
+  // IP3R channel (Eq. 4)
+  const J_max   = 3500;
+  const K_IP3   = 0.8;
+  const K_act   = 0.3;
+  const K_inh   = 0.2;
+  const k_on    = 2.7;
+
+  // SERCA pump (Eq. 6)
+  const V_max   = 3.75;
+  const K_p     = 0.27;
+
+  // ER leak (Eq. 7)
+  const L      = 0.1;
+  const Ca_ER  = 400;
+
+  // Effective ER density scaling (a = a0 * f; here f≈1 averaged)
+  const a      = 1.41;
+
+  // Plasma membrane extrusion (Eq. 9 → lumped)
+  const g_0    = 8.0;
+  const Ca_c   = 0.2;
+  const eps_pm = 0.01;
+
+  // -------------------------
+  // Helper functions
+  // -------------------------
+
+  // IP3R steady activation term m_inf(IP3, Ca)
+  m_inf := (IP3/(IP3 + K_IP3)) * (Ca/(Ca + K_act));
+
+  // IP3R channel flux (Li–Rinzel–type form; Eq. 4)
+  J_channel := J_max * m_inf * h^3 * (1 - Ca/Ca_ER);
+
+  // SERCA pump flux (Eq. 6)
+  J_pump := V_max * Ca^2 / (Ca^2 + K_p^2);
+
+  // ER leak flux (Eq. 7)
+  J_leak := L * (1 - Ca/Ca_ER);
+
+  // Plasma membrane extrusion, with threshold Ca_c (Eq. 9 lumped)
+  // Smooth approximation of max(0, g_0*(Ca - Ca_c)) using sqrt
+  // This is C∞ smooth and matches the original within eps_pm
+  J_pm := 0.5 * g_0 * ((Ca - Ca_c) + sqrt((Ca - Ca_c)^2 + eps_pm^2));
+
+  // Time-dependent InsP3 production at the membrane (Eqs. 1–2 lumped)
+  J_prod_IP3 := J_0 * exp(-k_0 * time);
+
+  // -------------------------
+  // ODEs
+  // -------------------------
+
+  // Cytosolic InsP3
+  IP3' = J_prod_IP3 - k_degr * (IP3 - IP3_0);
+
+  // IP3R inactivation gate h (Eq. 5)
+  h'   = k_on * (K_inh - (Ca + K_inh)*h);
+
+  // Cytosolic Ca2+ (Eq. 3 without diffusion; buffers folded into a)
+  Ca'  = a * (J_channel - J_pump + J_leak) - J_pm;
+
+  // -------------------------
+  // Initial conditions
+  // -------------------------
+  // From Table 3 and text:
+  //   Ca(0) = 0.05 µM
+  //   IP3(0) = IP3_0 = 0.16 µM
+  //   h(0) = K_inh / (Ca(0) + K_inh) ≈ 0.8
+
+  Ca  = 0.05;
+  IP3 = IP3_0;
+  h   = 0.8;
+
+end
+// @SIM T_START=0 T_END=2 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,65 @@
+begin model
+begin parameters
+    # mTOR Signaling Pathway
+    # Regulates cell growth, protein synthesis, and autophagy.
+    
+    # Activation Rates
+    k_rheb 0.3    # Rheb activation (GEF activity)
+    k_mtor 0.4    # mTORC1 activation by Rheb
+    k_s6k 0.35    # S6K phosphorylation (protein synthesis)
+    k_ampk 0.2    # AMPK activation (energy sensor)
+    
+    # Reset Rates
+    k_reset 0.06  # Dephosphorylation/Turnover
+end parameters
+
+begin molecule types
+    Rheb(state~GDP~GTP)           # Ras homolog enriched in brain
+    MTORC1(state~inactive~active) # Mechanistic target of rapamycin complex 1
+    S6K(phos~U~P)                 # Ribosomal protein S6 kinase
+    AMPK(state~off~on)            # AMP-activated protein kinase
+end molecule types
+
+begin seed species
+    Rheb(state~GDP) 50
+    MTORC1(state~inactive) 35
+    S6K(phos~U) 80
+    AMPK(state~off) 40
+end seed species
+
+begin reaction rules
+    # 1. Rheb Activation
+    Rheb(state~GDP) -> Rheb(state~GTP) k_rheb
+    
+    # 2. mTORC1 Activation
+    # Active Rheb turns on mTORC1
+    Rheb(state~GTP) + MTORC1(state~inactive) -> Rheb(state~GTP) + MTORC1(state~active) k_mtor
+    
+    # 3. Downstream Signaling (Protein Synthesis)
+    MTORC1(state~active) + S6K(phos~U) -> MTORC1(state~active) + S6K(phos~P) k_s6k
+    
+    # 4. Energy Stress Response (AMPK)
+    AMPK(state~off) -> AMPK(state~on) k_ampk
+    
+    # 5. Inhibition by AMPK
+    # Active AMPK shuts down Rheb (GAP activity)
+    AMPK(state~on) + Rheb(state~GTP) -> AMPK(state~on) + Rheb(state~GDP) k_ampk
+    
+    # 6. Reset Mechanisms
+    S6K(phos~P) -> S6K(phos~U) k_reset
+    MTORC1(state~active) -> MTORC1(state~inactive) k_reset
+    AMPK(state~on) -> AMPK(state~off) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_Rheb Rheb(state~GTP)
+    Molecules Active_MTORC1 MTORC1(state~active)
+    Molecules Phospho_S6K S6K(phos~P)
+    Molecules Active_AMPK AMPK(state~on)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>200})
+end actions
+end model

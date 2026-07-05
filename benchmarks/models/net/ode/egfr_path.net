@@ -1,0 +1,123 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 EGF_tot       1.2e6  # Constant
+    2 Rec_tot       1.8e5  # Constant
+    3 Grb2_tot      1.0e5  # Constant
+    4 Shc_tot       2.7e5  # Constant
+    5 SOS_tot       1.3e4  # Constant
+    6 Grb2_SOS_tot  4.9e4  # Constant
+    7 kp1           1.667e-06  # Constant
+    8 km1           0.06  # Constant
+    9 kp2           5.556e-06  # Constant
+   10 km2           0.1  # Constant
+   11 kp3           1  # Constant
+   12 km3           9  # Constant
+   13 kp14          6  # Constant
+   14 km14          0.06  # Constant
+   15 km16          0.005  # Constant
+   16 kp9           1.666e-6  # Constant
+   17 km9           0.05  # Constant
+   18 kp10          5.556e-06  # Constant
+   19 km10          0.06  # Constant
+   20 kp11          2.5e-06  # Constant
+   21 km11          0.03  # Constant
+   22 kp13          5e-05  # Constant
+   23 km13          0.6  # Constant
+   24 kp15          5e-07  # Constant
+   25 km15          0.3  # Constant
+   26 kp17          1.667e-06  # Constant
+   27 km17          0.1  # Constant
+   28 kp18          5e-07  # Constant
+   29 km18          0.3  # Constant
+   30 kp19          5.556e-06  # Constant
+   31 km19          0.0214  # Constant
+   32 kp20          1.333e-07  # Constant
+   33 km20          0.12  # Constant
+   34 kp24          5e-06  # Constant
+   35 km24          0.0429  # Constant
+   36 kp21          1.667e-06  # Constant
+   37 km21          0.01  # Constant
+   38 kp23          1.167e-05  # Constant
+   39 km23          0.1  # Constant
+   40 kp12          5.556e-08  # Constant
+   41 km12          0.0015  # Constant
+   42 kp22          1.667e-05  # Constant
+   43 km22          0.064  # Constant
+   44 loop1         ((kp9/km9)*(kp10/km10))/((kp11/km11)*(kp12/km12))  # ConstantExpression
+   45 loop2         ((kp15/km15)*(kp17/km17))/((kp21/km21)*(kp18/km18))  # ConstantExpression
+   46 loop3         ((kp18/km18)*(kp19/km19))/((kp22/km22)*(kp20/km20))  # ConstantExpression
+   47 loop4         ((kp12/km12)*(kp23/km23))/((kp22/km22)*(kp21/km21))  # ConstantExpression
+   48 loop5         ((kp15/km15)*(kp24/km24))/((kp20/km20)*(kp23/km23))  # ConstantExpression
+end parameters
+begin species
+    1 EGF() EGF_tot
+    2 Grb2() 1.001633417249e+05
+    3 Grb2_Sos() 4.883665827505e+04
+    4 Shc() 2.700000000000e+05
+    5 ShcP() -9.410199457854e-22
+    6 ShcP_Grb2() -2.564716665777e-21
+    7 ShcP_Grb2_Sos() -6.720483262892e-21
+    8 Sos() 1.316334172495e+04
+    9 R() 1.800000000000e+05
+   10 RA() 0.000000000000e+00
+   11 R2() 0.000000000000e+00
+   12 RP() 0.000000000000e+00
+   13 R_Sh() 0.000000000000e+00
+   14 R_ShP() 0.000000000000e+00
+   15 R_Sh_G() 0.000000000000e+00
+   16 R_Sh_G_S() 0.000000000000e+00
+   17 R_G() 0.000000000000e+00
+   18 R_G_S() 0.000000000000e+00
+end species
+begin reactions
+    1 1,9 10 kp1 #_R1
+    2 10 1,9 km1 #_reverse__R1
+    3 10,10 11 0.5*kp2 #_R2
+    4 11 10,10 km2 #_reverse__R2
+    5 11 12 kp3 #_R3
+    6 12 11 km3 #_reverse__R3
+    7 2,12 17 kp9 #_R4
+    8 17 2,12 km9 #_reverse__R4
+    9 8,17 18 kp10 #_R5
+   10 18 8,17 km10 #_reverse__R5
+   11 3,12 18 kp11 #_R6
+   12 18 3,12 km11 #_reverse__R6
+   13 4,12 13 kp13 #_R7
+   14 13 4,12 km13 #_reverse__R7
+   15 13 14 kp14 #_R8
+   16 14 13 km14 #_reverse__R8
+   17 5,12 14 kp15 #_R9
+   18 14 5,12 km15 #_reverse__R9
+   19 2,14 15 kp17 #_R10
+   20 15 2,14 km17 #_reverse__R10
+   21 6,12 15 kp18 #_R11
+   22 15 6,12 km18 #_reverse__R11
+   23 8,15 16 kp19 #_R12
+   24 16 8,15 km19 #_reverse__R12
+   25 7,12 16 kp20 #_R13
+   26 16 7,12 km20 #_reverse__R13
+   27 3,14 16 kp24 #_R14
+   28 16 3,14 km24 #_reverse__R14
+   29 2,5 6 kp21 #_R15
+   30 6 2,5 km21 #_reverse__R15
+   31 3,5 7 kp23 #_R16
+   32 7 3,5 km23 #_reverse__R16
+   33 5 4 km16 #_R17
+   34 2,8 3 kp12 #_R18
+   35 3 2,8 km12 #_reverse__R18
+   36 6,8 7 kp22 #_R19
+   37 7 6,8 km22 #_reverse__R19
+end reactions
+begin groups
+    1 Dimers               2*11,2*12,2*13,2*14,2*15,2*16,2*17,2*18
+    2 Sos_act              16,18
+    3 RP                   12,13,14,15,16,17,18
+    4 Shc_Grb              6,7,15,16
+    5 Shc_Grb_Sos          7,16
+    6 R_Grb2               15,16,17,18
+    7 R_Shc                13
+    8 R_ShcP               14,15,16
+    9 Shc_P                5,6,7,14,15,16
+   10 R_G_S                18
+   11 R_S_G_S              16
+end groups

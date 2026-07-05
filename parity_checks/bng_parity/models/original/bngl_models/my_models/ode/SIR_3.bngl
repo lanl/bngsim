@@ -1,0 +1,63 @@
+begin model
+begin parameters
+f 0.01 # dimensionless
+size 10*f # blocks
+S0_intensive 1000 # per block
+I0_intensive 10 # per block
+S0_extensive S0_intensive*size
+I0_extensive I0_intensive*size
+beta_intensive 0.001 # new infections per unit time per (infected person per block)
+beta_extensive = beta_intensive/size # (beta_extensive = beta_intensive/size) *S_*I_ = beta_intensive*S*I  per d per block * # / block * # /block = per d per block
+
+# beta_intensive*S*I = (block per d per #)*(#/block)*(#/block) => # per d per block  1000*1*.001 = 1
+# beta_extensive (per d) S0__extensive I_extensive = (0.001/10)*1000*1 = 0.1
+
+gamma 0.005 # /d
+end parameters
+begin molecule types
+S()
+I()
+R()
+S_()
+I_()
+R_()
+end molecule types
+begin seed species
+S() S0_intensive
+I() I0_intensive # infected person per block
+R() 0
+S_() S0_extensive
+I_() I0_extensive
+R_() 0 
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules S_ S_()
+Molecules I_ I_()
+Molecules R_ R_()
+end observables
+begin functions
+I_plus_R()=I+R
+S_int_from_ext()=S_/size
+I_int_from_ext()=I_/size
+R_int_from_ext()=R_/size
+rate()=beta_intensive*I
+end functions
+begin reaction rules
+S()->I() rate()
+#S()+I()->I()+I() beta_intensive # rate = beta_intensive*[S]*[I] = beta * NS * NI => beta = beta_intensive*[S]*[I}/(NS*NI)
+#  2 new infections per infected person per city block
+I()->R() gamma
+S_()+I_()->I_()+I_() beta_extensive
+I_()->R_() gamma
+end reaction rules
+end model
+begin actions
+saveConcentrations()
+generate_network({overwrite=>1})
+simulate({suffix=>"ode",method=>"ode",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1})
+resetConcentrations()
+simulate({suffix=>"nfs",method=>"nf",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1,gml=>2147483647})
+end actions

@@ -1,0 +1,61 @@
+# Model: wacky_black_hole.bngl
+# Description: Models a "Black Hole" in a space of "Mass" particles.
+#              The Black Hole (BH) grows by consuming Mass (M) particles.
+#              Demonstrates runaway growth (snowball effect) where rate depends on BH size.
+
+begin model
+
+begin parameters
+    G_const 0.01 # Gravitational constant (simulated rate)
+    M_init  1000 # Initial Mass in Universe
+    BH_init 1    # Initial Black Hole Seed
+end parameters
+
+begin molecule types
+    M()             # Mass Particle
+    BH(m)           # Black Hole with mass attribute 'm' (represented by complex size or count)
+    # Actually, simpler to just have BH eat M
+end molecule types
+
+begin seed species
+    M() M_init
+    BH(m) BH_init
+end seed species
+
+begin observables
+    Molecules Universe_Mass M()
+    Molecules Singularity_Mass BH() # Count of BH particles?
+    # If we want BH to grow in size, we can make it a polymer or aggregate.
+    # BH + M -> BH.M (complex)
+    Molecules BH_Size BH() # Total count of BH + accreted mass
+end observables
+
+begin functions
+    # Accretion Rate depends on Mass of Singularity
+    # Rate ~ k * [M] * Mass_BH^Power
+    # Effective k = k_base * (Singularity_Mass)^0.5 (example power)
+    
+    k_accrete() = G_const * (Singularity_Mass + 0.1)^1.0 # Linear for now, can be non-linear
+    
+    # Hawking Radiation Rate
+    # Rate ~ 1 / Mass^2
+    k_evap() = 1.0 / (Singularity_Mass^2 + 1.0)
+end functions
+
+begin reaction rules
+    # Accretion
+    # BH + M -> BH + BH
+    # Rate constant is modulated by total mass of BH
+    # Note: 'Singularity_Mass' is the observable count of BH particles
+    BH(m) + M() -> BH(m) + BH(m) k_accrete()
+    
+    # Hawking Radiation
+    # BH -> M
+    BH(m) -> M() k_evap()
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>200})

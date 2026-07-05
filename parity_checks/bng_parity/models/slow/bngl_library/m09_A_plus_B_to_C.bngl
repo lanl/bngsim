@@ -1,0 +1,70 @@
+begin model
+#@model_id: m09_A_plus_B_to_C
+#@title: Irreversible bimolecular reaction A + B -> C
+#@description: Mass-action bimolecular reaction A + B -> C with rate kf*A*B. Decomposed into separate consumption and production rules with functional rates.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless scaling factor
+
+  k_f      0.01           # 1/(s*molecule)  forward rate constant
+
+  A_init   10*f           # molecules  initial count of A
+  B_init   8*f            # molecules  initial count of B
+  C_init   0              # molecules  initial count of C
+end parameters
+
+begin molecule types
+  A()
+  B()
+  C()
+end molecule types
+
+begin seed species
+  A()  A_init  # molecules
+  B()  B_init  # molecules
+  C()  C_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_A  A()
+  Molecules  Obs_Tot_B  B()
+  Molecules  Obs_Tot_C  C()
+end observables
+
+begin functions
+  # Reaction propensity: k_f * A * B
+  rate_rxn() = k_f * Obs_Tot_A * Obs_Tot_B
+end functions
+
+begin reaction rules
+  # A consumption: rate = k_f*A*B, first-order in A -> functional rate k_f*B
+  A() -> 0  k_f*Obs_Tot_B
+
+  # B consumption: rate = k_f*A*B, first-order in B -> functional rate k_f*A
+  B() -> 0  k_f*Obs_Tot_A
+
+  # C production: rate = k_f*A*B (zeroth-order synthesis with functional rate)
+  0 -> C()  rate_rxn()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

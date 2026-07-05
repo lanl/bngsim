@@ -1,0 +1,75 @@
+# Model: ml_hopfield.bngl
+# Description: Implements a 3-neuron Hopfield Network (Associative Memory).
+#              Weights are encoded in pairwise cross-production rules.
+#              Initial state is a corrupted pattern; simulation converges to a stored memory.
+#              Demonstrates attractor dynamics in a rule-based system.
+
+begin model
+
+begin parameters
+    # Hebbian weights for pattern [1,-1,1]
+    # W_ij = s_i * s_j
+    W12 -1.0
+    W13 1.0
+    W23 -1.0
+    
+    Tau 1.0
+    Gain 5.0
+end parameters
+
+begin molecule types
+    Neuron(id~1~2~3)
+end molecule types
+
+begin seed species
+    # Corrupted pattern: [1,1,1] (Target is [1,-1,1])
+    Neuron(id~1) 1.0
+    Neuron(id~2) 0.8  # Corrupted (should be -1)
+    Neuron(id~3) 1.0
+end seed species
+
+begin observables
+    Molecules S1 Neuron(id~1)
+    Molecules S2 Neuron(id~2)
+    Molecules S3 Neuron(id~3)
+end observables
+
+begin functions
+    # Activation: tanh(sum(W_ij * S_j))
+    # We use concentration values in [-1,1] range.
+    # Note: BNGL concentrations are non-negative. We shift to [0,2] or use two molecules.
+    # To keep it simple,we'll use [0,1] logic with shifted weights.
+    
+    # Net input to Neuron i
+    Net1() = (W12 * (2*S2-1)) + (W13 * (2*S3-1))
+    Net2() = (W12 * (2*S1-1)) + (W23 * (2*S3-1))
+    Net3() = (W13 * (2*S1-1)) + (W23 * (2*S2-1))
+    
+    # Target state: Sigmoid(Gain * Net)
+    Target1() = 1 / (1 + exp(-Gain * Net1()))
+    Target2() = 1 / (1 + exp(-Gain * Net2()))
+    Target3() = 1 / (1 + exp(-Gain * Net3()))
+    
+    # ODE Rates
+    dS1_dt() = (Target1() - S1) / Tau
+    dS2_dt() = (Target2() - S2) / Tau
+    dS3_dt() = (Target3() - S3) / Tau
+end functions
+
+begin reaction rules
+    # Attractor dynamics
+    U1: 0 -> Neuron(id~1) if(dS1_dt()>0,dS1_dt(),0)
+    D1: Neuron(id~1) -> 0 if(dS1_dt()<0,-dS1_dt(),0)
+    
+    U2: 0 -> Neuron(id~2) if(dS2_dt()>0,dS2_dt(),0)
+    D2: Neuron(id~2) -> 0 if(dS2_dt()<0,-dS2_dt(),0)
+    
+    U3: 0 -> Neuron(id~3) if(dS3_dt()>0,dS3_dt(),0)
+    D3: Neuron(id~3) -> 0 if(dS3_dt()<0,-dS3_dt(),0)
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>100})

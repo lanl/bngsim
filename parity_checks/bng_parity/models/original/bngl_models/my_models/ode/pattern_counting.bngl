@@ -1,0 +1,47 @@
+begin model
+begin parameters
+NA 6.02214076e23
+V 1e-12
+kf 1e6/(NA*V)
+kr 0.01
+end parameters
+begin molecule types
+x(a,a,b)
+p(b,label~1~2)
+z(a,a,b~0~q1~q2)
+q(label~1~2)
+end molecule types
+begin seed species
+x(a,a,b) 1e4
+p(b,label~1) 1e4
+p(b,label~2) 1e4
+z(a,a,b~0) 1e4
+q(label~1) 1e4
+q(label~2) 1e4
+end seed species
+begin observables
+Molecules dist1_p1p2 p(b!1,label~1).p(b!2,label~2).x(a!3,b!1).x(a!3,b!2)
+Molecules dist1_q1q2 z(a!1,b~q1).z(a!1,b~q2)
+Species P122 p(b!1,label~1).p(b!2,label~2).p(b!3,label~2).x(a,a!4,b!1).x(a!4,a!5,b!2).x(a!5,a,b!3)
+Species P212 p(b!1,label~2).p(b!2,label~1).p(b!3,label~2).x(a,a!4,b!1).x(a!4,a!5,b!2).x(a!5,a,b!3)
+Species P112 p(b!1,label~1).p(b!2,label~1).p(b!3,label~2).x(a,a!4,b!1).x(a!4,a!5,b!2).x(a!5,a,b!3)
+Species P121 p(b!1,label~1).p(b!2,label~2).p(b!3,label~1).x(a,a!4,b!1).x(a!4,a!5,b!2).x(a!5,a,b!3)
+Species P120 p(b!1,label~1).p(b!2,label~2).x(a,a!3,b!1).x(a!3,a!4,b!2).x(a!4,a,b) 
+Species P210 p(b!1,label~2).p(b!2,label~1).x(a,a!3,b!1).x(a!3,a!4,b!2).x(a!4,a,b)
+Species P12 p(b!1,label~1).p(b!2,label~2).x(a,a!3,b!1).x(a,a!3,b!2)
+end observables
+begin functions
+dist1_p1p2_alt()=1*P122+2*P212+1*P112+2*P121+1*P120+1*P210+1*P12
+end functions
+begin reaction rules
+x(a)+x(a)<->x(a!1).x(a!1) kf,kr
+x(b)+p(b)<->x(b!1).p(b!1) kf,kr
+z(a)+z(a)<->z(a!1).z(a!1) kf,kr
+z(b~0)+q(label~1)<->z(b~q1) kf,kr
+z(b~0)+q(label~2)<->z(b~q2) kf,kr
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1,max_stoich=>{x=>3,z=>3}})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100,print_functions=>1})
+end actions

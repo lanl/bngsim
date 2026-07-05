@@ -1,0 +1,62 @@
+// Unbranched Metabolic Pathway with Michaelis-Menten Kinetics
+// Source: Irvine, "Efficient Solution of Nonlinear Models Expressed in
+//         S-System Canonical Form"
+//         Math. Comput. Modelling 11:123-128 (1988)
+//         Equations (8)-(9)
+//
+// The paper references Savageau & Voit (1986/1987) for the recasting algorithm.
+//
+// Original System (Eq. 8) - 9 equations with Michaelis-Menten kinetics:
+//   V₀ = Vm₀·Xc·Kc⁻¹·K₁ / (K₁ + Xc·Kc⁻¹·K₁ + X₉)  [end-product inhibition]
+//   Vᵢ = Vmᵢ·Xᵢ / (Xᵢ + Kᵢ)                       [Michaelis-Menten, i=1..9]
+//   dXᵢ/dt = Vᵢ₋₁ - Vᵢ                            [i=1..9]
+//
+// ==============================================================================
+// EXACT RECASTING TO S-SYSTEM (Eq. 9):
+// ==============================================================================
+// Introduce auxiliary variables:
+//   X₁₀ = K₁ + Xc·Kc⁻¹·K₁ + X₉  (denominator of V₀)
+//   Xⱼ = Xⱼ₋₁₀ + Kⱼ₋₁₀         (denominators of Vᵢ, j=11..19)
+//
+// The recast S-system (9 → 19 variables):
+//   dX₁/dt = Vm₀·Xc·Kc⁻¹·K₁·X₁₀⁻¹ - Vm₁·X₁·X₁₁⁻¹
+//   dXᵢ/dt = Vmᵢ₋₁·Xᵢ₋₁·Xᵢ₊₉⁻¹ - Vmᵢ·Xᵢ·Xᵢ₊₁₀⁻¹   [i=2..9]
+//   dX₁₀/dt = dX₉/dt
+//   dXⱼ/dt = dXⱼ₋₁₀/dt                            [j=11..19]
+//
+// Key result from Table VI:
+//   - Cost of recasting: ~2x more equations
+//   - Benefit with ESSYNS: 3-24x faster than RKF45 direct
+//   - Net improvement: 10x faster at 10⁻¹² tolerance
+// ==============================================================================
+
+model I1988_metabolic_pathway()
+  // Metabolic intermediates (original 9 variables)
+  compartment cell = 1;var species X1 in cell; var species X2 in cell; var species X3 in cell; var species X4 in cell; var species X5 in cell; var species X6 in cell; var species X7 in cell; var species X8 in cell; var species X9 in cell
+
+  // Parameters
+  Xc = 1.0; Kc = 1.0; K1 = 0.1
+  
+  // Michaelis-Menten parameters
+  Vm0 = 10.0; Vm1 = 5.0; Vm2 = 5.0; Vm3 = 5.0; Vm4 = 5.0; Vm5 = 5.0; Vm6 = 5.0; Vm7 = 5.0; Vm8 = 5.0; Vm9 = 5.0; K_1 = 0.5; K_2 = 0.5; K_3 = 0.5; K_4 = 0.5; K_5 = 0.5; K_6 = 0.5; K_7 = 0.5; K_8 = 0.5; K_9 = 0.5
+  
+  // Reaction rates (Michaelis-Menten with end-product inhibition on V0)
+  V0 := Vm0 * Xc / Kc * K1 / (K1 + Xc / Kc * K1 + X9);
+  V1 := Vm1 * X1 / (X1 + K_1);
+  V2 := Vm2 * X2 / (X2 + K_2);
+  V3 := Vm3 * X3 / (X3 + K_3);
+  V4 := Vm4 * X4 / (X4 + K_4);
+  V5 := Vm5 * X5 / (X5 + K_5);
+  V6 := Vm6 * X6 / (X6 + K_6);
+  V7 := Vm7 * X7 / (X7 + K_7);
+  V8 := Vm8 * X8 / (X8 + K_8);
+  V9 := Vm9 * X9 / (X9 + K_9);
+  
+  // Original ODEs (Eq. 8)
+  X1' = V0 - V1; X2' = V1 - V2; X3' = V2 - V3; X4' = V3 - V4; X5' = V4 - V5; X6' = V5 - V6; X7' = V6 - V7; X8' = V7 - V8; X9' = V8 - V9
+  
+  // Initial conditions
+  X1 = 1.0; X2 = 1.0; X3 = 1.0; X4 = 1.0; X5 = 1.0; X6 = 1.0; X7 = 1.0; X8 = 1.0; X9 = 1.0;
+end
+// @SIM T_START=0; T_END=4; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

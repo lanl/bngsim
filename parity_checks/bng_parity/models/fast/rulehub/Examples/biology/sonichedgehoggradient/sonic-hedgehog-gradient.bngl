@@ -1,0 +1,79 @@
+begin model
+begin parameters
+    # Sonic Hedgehog (Shh) morphogen gradient formation.
+    # Advanced features: Conditional functions and specific bond tracking.
+    
+    # Diffusion & Transport
+    k_prod 20.0        # Source production rate
+    k_diff 0.5         # Effective diffusion rate to target
+    
+    # Receptor-Mediated Clearance (Patched1)
+    k_bind_ptc 1e-3    # Shh binding to Ptc1
+    k_endo 0.2         # Endocytosis/Degradation of ligand
+    
+    # Decay
+    k_deg_free 0.05    # Basal extracellular decay
+    
+    # Thresholds
+    Shh_high 500
+    Shh_low 100
+    k_prod_current 20.0  # Current production rate
+end parameters
+
+begin molecule types
+    Shh(loc~source~target,b)
+    Ptc1(b)
+end molecule types
+
+begin seed species
+    Shh(loc~source,b) 100
+    Shh(loc~target,b) 0
+    Ptc1(b) 500        # Receptors in target field
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Morphogen_Peak   Shh(loc~source)          # Peak concentration
+    Molecules Morphogen_Drive  Shh(loc~target)          # Available distal signal
+    Molecules Bound_Shh        Shh(b!+)                 # Sequestration status
+    Molecules Ptc1_Occupancy   Ptc1(b!+)                # Receptor engage metrics
+    Molecules Total_Endo_Signal Shh(b!1).Ptc1(b!1)      # Flux reading
+end observables
+
+begin functions
+    v_prod() = k_prod_current
+end functions
+
+begin reaction rules
+    ## PRODUCTION
+    # Pulsatile Shh source
+    0 -> Shh(loc~source,b) v_prod()
+    
+    ## TRANSPORT
+    # Spreading from source to target
+    Shh(loc~source,b) -> Shh(loc~target,b) k_diff
+    
+    ## RECEPTION & CLEARANCE
+    # Shh binds Ptc1 in the target field
+    Shh(loc~target,b) + Ptc1(b) <-> Shh(loc~target,b!1).Ptc1(b!1) k_bind_ptc,0.05
+    
+    # Receptor-mediated endocytosis (Clears the gradient)
+    Shh(b!1).Ptc1(b!1) -> Ptc1(b) k_endo
+    
+    ## BASAL DECAY
+    Shh(b) -> 0 k_deg_free
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Approximate oscillation with 4 phases
+    simulate({method=>"ode",t_end=>50,n_steps=>100})
+    setParameter("k_prod_current",2.0)
+    simulate({method=>"ode",t_end=>100,n_steps=>100,continue=>1})
+    setParameter("k_prod_current",20.0)
+    simulate({method=>"ode",t_end=>150,n_steps=>100,continue=>1})
+    setParameter("k_prod_current",2.0)
+    simulate({method=>"ode",t_end=>200,n_steps=>100,continue=>1})
+end actions
+end model
+

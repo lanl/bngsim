@@ -1,0 +1,77 @@
+begin model
+#@model_id: m11_Monod_chemostat
+#@title: Monod chemostat model
+#@description: Microbial growth in a chemostat with Monod kinetics for substrate-limited growth. Based on Savageau (1988) Eq. (19).
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Concentrations scaled by 1000 to get integer molecule counts for SSA
+  scale    1000           # dimensionless
+  alpha1   0.2            # 1/time  max specific growth rate
+  beta2    0.1            # 1/time  growth/yield coefficient
+  X_r      2000           # molecules  reservoir substrate (2.0 * scale)
+  Ks       1000           # molecules  Monod half-saturation (1.0 * scale)
+end parameters
+
+begin molecule types
+  X1()   # biomass
+  X2()   # substrate
+end molecule types
+
+begin seed species
+  X1()  100   # molecules  (0.1 * scale)
+  X2()  100   # molecules  (0.1 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # Monod growth propensity: alpha1 * X1 * X2 / (X2 + Ks)
+  growth()    = alpha1 * Obs_X1 * Obs_X2 / (Obs_X2 + Ks)
+
+  # Substrate consumption: beta2 * X1 * X2 / (X2 + Ks)
+  consume()   = beta2 * Obs_X1 * Obs_X2 / (Obs_X2 + Ks)
+end functions
+
+begin reaction rules
+  # Biomass growth (Monod kinetics)
+  0 -> X1()  growth()
+
+  # Biomass dilution/washout (first-order, D=1)
+  X1() -> 0  1.0
+
+  # Substrate inflow from reservoir (zeroth-order, D*X_r = 1*X_r)
+  0 -> X2()  X_r
+
+  # Substrate dilution/washout (first-order, D=1)
+  X2() -> 0  1.0
+
+  # Substrate consumption by biomass growth
+  X2() -> 0  consume()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

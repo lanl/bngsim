@@ -1,0 +1,459 @@
+begin model
+
+#The processes considered in this model are as follows:
+# - recruitment of the Rab5GEF SIN1 to endocytosed pEGFR
+# - recruitment of the Rab5GEF SIN1 to GTP-loaded RAB5 on endocytic vesicles 
+#   (positive feedback)
+# - GDI1-chaperoned trafficking of RAB5 between
+#   endomembrane and endocytic vesicle surfaces through the cytosol
+# - SIN1-mediated GDP/GTP exchange on RAB5
+# - SGSM3-assisted hydrolysis of GTP to GDP on RAB5 
+
+#The references cited are as follows:
+# - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+# - Schmick M, ..., Bastiaens PIH (2014) Cell 157: 459-471. [PMID: 24725411]
+# - Stites EC, ..., Ravichandran KS (2007) Science 318: 463-467. [PMID: 17947584]
+# - Villasenor R, ..., Zerial M (2015) eLife 4: e06156. [PMID: 25650738]
+# - Wiley HS (2003) Exp Cell Res 284: 78-88. [PMID: 12648467]
+
+begin parameters
+
+#fraction of a cell to be considered in a (stochastic) simulation
+# The value of f can be set to a value less than 1 to speed up simulation.
+f 0.001 #dimensionless, 0<f<=1
+
+#ratio of a circle's circumference to its diameter
+pi 3.14159 #dimensionless
+
+#Avogadro constant
+na 6.02214e23 #molecules per mol
+
+#compartment sizes
+# The compartments of possible concern include the following:
+#  - extracellular fluid (EX)
+#  - plasma membrane (PM)
+#  - clathrin-coated pit (CP) 
+#  - clathrin-coated vesicle (CV)
+#  - cytosol (CY)
+#  - endocytic vesicle (EV)
+#  - thin layer (TL) surrounding a vesicle in which surface reactions occur
+#  - early endosome (EE)
+#  - endomembrane (EM), non-vesicular surfaces to which Rab proteins traffic
+#    The EM compartment likely acts to buffer the amount of RAB5/7 in the cytosol.
+
+#volume of extracellular fluid surrounding a single cell
+vecf 1e-9*f #L per cell
+
+#cytoplasmic volume
+vcyt 1e-12*f #L per cell
+
+#cell diameter
+dcell 1.4e-4 #dm (14 um)
+
+#height of thin layer adjacent to a vesicle membrane in which surface reactions occur
+# comments:
+#  - The volume of the thin-layer reaction compartment is approximately
+#    areaEV*h/2, assuming a spherical vesicle with diameter >> h.
+h 1e-7  #dm (10 nm)
+
+#diameter of a clathrin-coated vesicle (CCV) after shedding of its protein coat
+# Villasenor et al. (2015)
+dccv 9e-7 #dm (90 nm)
+
+#initial area of a newly born endocytic vesicle
+area_newEV pi*dccv*dccv # dm^2 (2.5e-12 dm^2)
+
+#number of EGFR per CCV
+# Villasenor et al. (2015)
+nEGFR_per_CCV 8 #copies per CCV
+
+#ratio of total endomembrane surface area to plasma membrane surface area
+# Schmick et al. (2014)
+ratio_EM_PM 200 #dimensionless
+
+#area of endomembrane (EM) surfaces
+area_totEM pi*dcell*dcell*ratio_EM_PM*f #dm^2 (1.2e-5 dm^2, ~5e6 times larger than a new EV)
+
+#fraction of EM surfaces available for GDI1-mediated insertion of Rab proteins
+# We will assume that 1% of the total surface area is accesible.
+area_accEM area_totEM*(1/100) # dm^2
+
+#A fully mature early endosome (EE) in HeLa cells has a diameter of ~500 nm.
+#Thus, it consists of ~30 CCVs, from (500/90)^2, and there are about 240 copies of EGFR per EE.
+
+#abundances of molecules
+
+#EGF dose
+conc_EGF_nM 1  #nM
+cpc_EGF conc_EGF_nM*1e-9*(na*vecf) #copies per cell
+
+#protein copy numbers in HeLa S3 (ATCC CCL-2.2) cells (Kulak et al., 2014)
+cpc_EGFR     92674*f #copies per cell
+cpc_GDI1    267197*f #copies per cell
+cpc_RAB5A    68671*f #copies per cell
+cpc_RAB5B    54667*f #copies per cell
+cpc_RAB5C   832850*f #copies per cell
+cpc_RAB5 cpc_RAB5A+cpc_RAB5B+cpc_RAB5C #copies per cell
+cpc_RAB7A  1843126*f #copies per cell
+cpc_RAB7B        0*f #copies per cell #no value reported by Kulak et al. (2014)
+cpc_RAB7 cpc_RAB7A+cpc_RAB7B #copies per cell
+cpc_RIN1     65438*f #copies per cell
+cpc_RABGEF1  52504*f #copies per cell
+cpc_RABEP1   64253*f #copies per cell
+cpc_MON1A      946*f #copies per cell
+cpc_MON1B     1858*f #copies per cell
+cpc_MON1 cpc_MON1A+cpc_MON1B #copies per cell
+cpc_CCZ1     63932*f #copies per cell
+cpc_USP6NL    1818*f #copies per cell
+cpc_SGSM3     4583*f #copies per cell
+cpc_TBC1D5   50903*f #copies per cell
+cpc_TBC1D15 174798*f #copies per cell
+
+#parameters of rate laws
+
+#rate constants for GDI-chaperoned trafficking of RAB5/7 in and out of membranes
+k_insertion 1e8 #per dm^2 per s
+k_extraction 0.05 #per s
+
+#rate constants for free GDI interaction with GDP-loaded RAB5/7
+kf_GDI_RAB 1e6/(na*vcyt) #per M per s converted to /(molecule/cell)/s
+kr_GDI_RAB 0.1 #per s
+
+#zero-order rate constant for EV (CCV) generation
+# Wiley (2003)
+# +EGF
+k_in 5*f  #vesicles per cell per s
+# -EGF
+#k_in:0.5*f; #vesicles per cell per s
+
+#rate constants for EGFR pTyr-RIN1 SH2 domain interaction
+kf_pTyr_SH2 1e6/(na*vcyt) #per M per s converted to /(molecule/cell)/s
+kr_pTyr_SH2 0.1 #per s
+
+#rate constants for interaction of GTP-loaded RAB5 with RIN1
+# Recruitment of RIN1 to Rab5GTP provides positive feedback.
+kf_RAB5_RIN1 2e7/(na*vcyt) #per M per s converted to /(molecule/cell)/s
+kr_RAB5_RIN1 0.05 #per s
+
+#parameters for GEF-mediated GDP/GTP exchange on vesicle surfaces
+# The GEF and Rab protein are colocalized on an EV surface.
+# Stites et al. (2007)
+kcatGDP 3.9 #per s
+kcatGTP 0.72 #per s
+vesicle_KmGDP 386e-6*(na*h/2) #M converted to molecules per dm^2 of vesicle area
+vesicle_KmGTP 300e-6*(na*h/2) #M converted to molecules per dm^2 of vesicle area
+
+#GAP parameters
+# The GAP is cytosolic; the Rab protein is on an EV surface.
+# Stites et al. (2007)
+kcatGAP 5.40  #per s
+cytosol_KmGAP 0.23e-6*(na*vcyt) #M converted to molecules per cell
+
+#rate constant for fusion
+k_fusion 5e5/(na*vcyt) #per M per s converted to /(molecules/cell)/s
+
+end parameters
+
+begin molecule types
+
+EGFR(Y~0~P)
+# Y~P binds SH2 in RIN1
+
+GDI1(domainI,loc~CY~EM~EV)
+# domainI binds G~GDP in RAB5
+
+RAB5(G~GDP~GTP,loc~CY~EM~EV)
+# G~GDP binds domainI in GDI1
+# G~GTP binds RA in RIN1
+
+RIN1(SH2,RA)
+# SH2 binds Y~P in EGFR
+# RA binds G~GTP in RAB5
+# RIN1 contains a RabGEF domain, VPS9, which is considered implicitly.
+
+SGSM3()
+# SGSM3 contains a RabGAP doamin,TBC, which is considered implicitly.
+
+end molecule types
+
+#begin compartments
+
+#PM
+# contains EGFR
+# source of EGFR-containing endocytic vesicles
+
+#CY
+# contains solubilized RAB5, meaning RAB5 in complex with GDI1
+# contains free GDI1
+# contains free RIN1
+# contains free SGSM3
+
+#EV
+# contains EGFR
+# contains RAB5, possibly in complex with GDI1 or RIN1
+# capable of fusing with a second EV
+
+#EM
+# contains RAB5, possibly in complex with GDI1
+
+#end compartments
+
+begin observables
+
+#We need to use SESSL to specify simulation outputs.
+#The sandbox tool generates plots corresponding to .cdat files.
+
+Molecules RAB5total RAB5()
+Molecules EGFRtotal EGFR()
+Molecules RIN1total RIN1()
+Molecules GDI1total GDI1()
+Molecules SGSM3total SGSM3()
+
+Molecules GDI1_at_EM GDI1(loc~EM)
+Molecules GDI1_in_CY GDI1(loc~CY)
+Molecules GDI1_at_EV GDI1(loc~EV)
+
+Molecules freeGDI1_in_CY GDI1(domainI)
+
+Molecules RAB5_at_EM RAB5(loc~EM)
+Molecules RAB5_in_CY RAB5(loc~CY)
+Molecules RAB5_at_EV RAB5(loc~EV)
+
+Molecules GDI1_RAB5_bonds GDI1(domainI!1).RAB5(G~GDP!1)
+Molecules GDI1_RAB5_bonds_at_EM GDI1(domainI!1,loc~EM).RAB5(G~GDP!1,loc~EM)
+Molecules GDI1_RAB5_bonds_in_CY GDI1(domainI!1,loc~CY).RAB5(G~GDP!1,loc~CY)
+Molecules GDI1_RAB5_bonds_at_EV GDI1(domainI!1,loc~EV).RAB5(G~GDP!1,loc~EV)
+
+Molecules freeEGFR_at_EV EGFR(Y~P)
+Molecules freeRIN1_in_CY RIN1(SH2,RA)
+
+Molecules EGFR_RIN1_bonds EGFR(Y~P!1).RIN1(SH2!1)
+Molecules RAB5_RIN1_bonds RAB5(G~GTP!1).RIN1(RA!1)
+
+Molecules Rab5GDP RAB5(G~GDP!?)
+Molecules Rab5GTP RAB5(G~GTP!?)
+
+Molecules freeRAB5_at_EV RAB5(G,loc~EV)
+
+# observables used in functions
+
+Molecules RIN1_at_EV RIN1(SH2!+,RA) RIN1(SH2,RA!+)
+Molecules SGSM3_in_CY SGSM3()
+Molecules FreeRab5GDP_at_EV RAB5(G~GDP,loc~EV)
+Molecules FreeRab5GTP_at_EV RAB5(G~GTP,loc~EV)
+
+end observables
+
+begin functions
+
+#The functions below can be used to model fission.
+
+# create a copy of the given species with the given amount
+#new :: species -> num -> species;
+#new x n = (n)(name(x))(att(x))[sub(x)];
+# the amount, name, attributes, and sub species of the result species are determined by functions
+
+# split the given solution into two equally divided parts
+#split :: sol -> num -> tuple;
+#split [] r2 = <[],[]>;
+#split oneElement + restElements r2 = <new(oneElement,l) + restL, new(oneElement,r) + restR> 
+#	where l = toInt(amount(oneElement)*r2),
+#	      r = amount(oneElement) - l, 
+#	      <restL,restR> = split(restElements,r2);
+
+R3f_RIN1() kcatGDP*RIN1_at_EV*(1/(vesicle_KmGDP*area_newEV*11))\
+          /(1+(FreeRab5GDP_at_EV/(vesicle_KmGDP*area_newEV*11))+(FreeRab5GTP_at_EV/(vesicle_KmGTP*area_newEV*11)))
+R3r_RIN1() kcatGTP*RIN1_at_EV*(1/(vesicle_KmGTP*area_newEV*11))\
+          /(1+(FreeRab5GDP_at_EV/(vesicle_KmGDP*area_newEV*11))+(FreeRab5GTP_at_EV/(vesicle_KmGTP*area_newEV*11)))
+
+R5f_SGSM3() kcatGAP*SGSM3_in_CY*(1/(cytosol_KmGAP))/(1+(FreeRab5GTP_at_EV/(cytosol_KmGAP)))
+
+end functions
+
+begin seed species
+
+EGFR(Y~P) cpc_EGFR
+RAB5(G~GDP,loc~EM) cpc_RAB5
+RIN1(SH2,RA) cpc_RIN1
+GDI1(domainI,loc~CY) cpc_GDI1
+SGSM3() cpc_SGSM3
+
+#GDI1(0); #GDI1(string) <-'domainI' or 'domainI!1'
+#RAB5(1); #RAB5(string) <-'G~GDP' or 'G~GDP!1' or 'G~GTP' or 'G~GTP!3'
+#EGFR(0); #EGFR(string) <-'Y~0' or 'Y~P' or 'Y~P!2'
+#RIN1(0); #RIN1(string,string) <-('SH2' or 'SH2!2') and ('RA' or 'RA!3')
+#SGSM3(0);
+#PM(0);
+#CY(0);
+#EV(1); #EV(num) <-size, an integer multiplier of the global parameter area_newEV
+#EM(0);
+#GDI1_RAB5();
+#EGFR_RIN1();
+#RAB5_RIN1();
+
+
+#>>INIT[1 PM[cpc_EGFR EGFR] + 
+#       1 CY[cpc_GDI1 GDI1+ cpc_RIN1 RIN1 + cpc_SGSM3 SGSM3] + 
+#       1 EM[cpc_RAB5 RAB5('G~GDP')]];
+
+end seed species
+
+begin reaction rules
+
+#######################################
+##example of bimolecular association reaction using links
+## Use of links makes simulations very slow.
+#
+#EGFR(2); #EGFR(string,link)
+#RIN1(2); #RIN1(string,link)
+#>>INIT[cpc_EGFR EGFR('Y~P',free) + cpc_nRIN1 RIN1('SH2',free)];
+##EGFR(Y~P)+RIN1(SH2)<->EGFR(Y~P!1).RIN1(SH2!1) kf_pTyr_SH2,kr_pTyr_SH2
+##association
+#EGFR('Y~P',free):egfr+RIN1('SH2',free):rin1->
+#EGFR('Y~P!1',x)+RIN1('SH2!1',x) @kf_pTyr_SH2*#egfr*#rin1 where x=nu();
+##dissociation
+#EGFR('Y~P!1',x)+RIN1('SH2!1',x)->
+#EGFR('Y~P',free)+RIN1('SH2',free) @if(x!=free) then kr_pTyr_SH2 else 0;
+#######################################
+
+#insertion of GDI1-bound RAB5 (in CY) into EM
+#CY[GDI1_RAB5:gdi1_rab5+cy?]+EM[em?]->
+#CY[cy?]+EM[GDI1_RAB5+em?] @k_insertion*area_accEM*#gdi1_rab5;
+#extraction of GDI1-bound RAB5 from EM (to CY)
+#EM[GDI1_RAB5:gdi1_rab5+em?]+CY[cy?]->
+#EM[em?]+CY[GDI1_RAB5+cy?] @k_extraction*#gdi1_rab5;
+
+GDI1(domainI!1,loc~CY).RAB5(G~GDP!1,loc~CY)->\
+GDI1(domainI!1,loc~EM).RAB5(G~GDP!1,loc~EM) k_insertion*area_accEM
+
+GDI1(domainI!1,loc~EM).RAB5(G~GDP!1,loc~EM)->\
+GDI1(domainI!1,loc~CY).RAB5(G~GDP!1,loc~CY) k_extraction
+
+#reversible recruitment of free GDI1 in CY to RAB5 in EM
+# association
+#CY[GDI1:gdi1+cy?]+EM[RAB5('G~GDP'):rab5gdp+em?]->
+#CY[cy?]+EM[GDI1_RAB5+em?] @kf_GDI_RAB*#gdi1*#rab5gdp;
+# dissociation (release of GDI1)
+#EM[GDI1_RAB5:gdi1_rab5+em?]+CY[cy?]->
+#EM[RAB5('G~GDP')+em?]+CY[GDI1+cy?] @kr_GDI_RAB*#gdi1_rab5;
+
+GDI1(domainI,loc~CY)+RAB5(G~GDP,loc~EM)<->\
+GDI1(domainI!1,loc~EM).RAB5(G~GDP!1,loc~EM) kf_GDI_RAB,kr_GDI_RAB
+
+#internalization of EGFR
+#PM[nEGFR_per_CCV EGFR+pm?]+CY[cy?]->
+#PM[pm?]+CY[1 EV(1)[nEGFR_per_CCV EGFR]+cy?] @k_in;
+
+#insertion of GDI1-bound RAB5 (in CY) into EV
+#CY[GDI1_RAB5:gdi1_rab5+EV(size)[ev?]+cy?]->
+#CY[EV(size)[GDI1_RAB5+ev?]+cy?] @k_insertion*area_newEV*size*#gdi1_rab5;
+#extraction of GDI1-bound RAB5 from EV (to CY)
+#CY[EV(size)[GDI1_RAB5:gdi1_rab5+ev?]+cy?]->
+#CY[GDI1_RAB5+EV(size)[ev?]+cy?] @k_extraction*#gdi1_rab5;
+
+GDI1(domainI!1,loc~CY).RAB5(G~GDP!1,loc~CY)->\
+GDI1(domainI!1,loc~EV).RAB5(G~GDP!1,loc~EV) k_insertion*area_newEV*11 # 11 was largest EV in ML Rules sim
+
+GDI1(domainI!1,loc~EV).RAB5(G~GDP!1,loc~EV)->\
+GDI1(domainI!1,loc~CY).RAB5(G~GDP!1,loc~CY) k_extraction
+
+#reversible recruitment of free GDI1 in CY to RAB5 in EV
+# association
+#CY[GDI1:gdi1+EV(size)[RAB5('G~GDP'):rab5gdp+ev?]+cy?]->
+#CY[EV(size)[GDI1_RAB5+ev?]+cy?] @kf_GDI_RAB*#gdi1*#rab5gdp;
+# dissociation (release of GDI1)
+#CY[EV(size)[GDI1_RAB5:gdi1_rab5+ev?]+cy?]->
+#CY[GDI1+EV(size)[RAB5('G~GDP')+ev?]+cy?] @kr_GDI_RAB*#gdi1_rab5;
+
+GDI1(domainI,loc~CY)+RAB5(G~GDP,loc~EV)<->\
+GDI1(domainI!1,loc~EV).RAB5(G~GDP!1,loc~EV) kf_GDI_RAB,kr_GDI_RAB
+
+#reversible recruitment of RIN1 to internalized EGFR in EV
+# association
+#CY[EV(size)[EGFR:egfr+ev?]+RIN1:rin1+cy?]->
+#CY[EV(size)[EGFR_RIN1+ev?]+cy?] @kf_pTyr_SH2*#egfr*#rin1;
+# dissociation (release of RIN1)
+#CY[EV(size)[EGFR_RIN1:egfr_rin1+ev?]+cy?]->
+#CY[EV(size)[EGFR+ev?]+RIN1+cy?] @kr_pTyr_SH2*#egfr_rin1;
+
+EGFR(Y~P)+RIN1(SH2,RA)<->EGFR(Y~P!1).RIN1(SH2!1,RA) kf_pTyr_SH2,kr_pTyr_SH2
+
+#EGFR-bound RIN1 mediates GDP/GTP exchange on RAB5 in EV
+# RAB5.GDP->RAB5.GTP
+#CY[EV(size)[EGFR_RIN1:egfr_rin1+RAB5('G~GDP'):rab5gdp+ev?]+cy?]->
+#CY[EV(size)[EGFR_RIN1+RAB5('G~GTP')+ev?]+cy?] 
+#@kcatGDP*#egfr_rin1*#rab5gdp*(1/(vesicle_KmGDP*area_newEV*size))/
+#(1+(#rab5gdp/(vesicle_KmGDP*area_newEV*size))+(#rab5gdp/(vesicle_KmGTP*area_newEV*size)));
+# RAB5.GTP->RAB5.GDP
+#CY[EV(size)[EGFR_RIN1:egfr_rin1+RAB5('G~GTP'):rab5gtp+ev?]+cy?]->
+#CY[EV(size)[EGFR_RIN1+RAB5('G~GDP')+ev?]+cy?] 
+#@kcatGTP*#egfr_rin1*#rab5gtp*(1/(vesicle_KmGTP*area_newEV*size))/
+#(1+(#rab5gtp/(vesicle_KmGDP*area_newEV*size))+(#rab5gtp/(vesicle_KmGTP*area_newEV*size)));
+
+# GDP/GTP exchange mediated by EGFR-bound and Rab5GTP-bound RIN1
+RAB5(G~GDP,loc~EV)->RAB5(G~GTP,loc~EV) R3f_RIN1() # rate = [RAB5(G~GDP)]*R3f_RIN1()
+RAB5(G~GTP,loc~EV)->RAB5(G~GDP,loc~EV) R3r_RIN1() # rate = [RAB5(G~GTP)]*R3r_RIN1()
+
+#vesicle fusion
+#CY[EV(size1)[ev1?]+EV(size2)[ev2?]+cy?]->
+#CY[EV(size1+size2)[ev1?+ev2?]+cy?] @k_fusion;
+
+#vesicle fission
+# The rate constant for fission is set to 0 here.
+#CY[EV(size)[ev?]+cy?]->CY[EV(size*r)[x]+EV(size*(1-r))[y]+cy?] @0*size where r=unif(0,1), <x,y> = split(ev?,r);
+
+#SGSM3-assisted hydrolysis of GTP on RAB5 in EV
+#CY[SGSM3:sgsm3+EV(size)[RAB5('G~GTP'):rab5gtp+ev?]+cy?]->
+#CY[SGSM3+EV(size)[RAB5('G~GDP')+ev?]+cy?] @kcatGAP*#sgsm3*#rab5gtp/(cytosol_KmGAP+#rab5gtp);
+
+RAB5(G~GTP,loc~EV)->RAB5(G~GDP,loc~EV) R5f_SGSM3() # rate = [RAB5(G~GTP)]*R5f_SGSM3()
+
+#reversible recruitment of RIN1 to GTP-loaded RAB5 in EV (positive feedback)
+# association
+#CY[RIN1:rin1+EV(size)[RAB5('G~GTP'):rab5gtp+ev?]+cy?]->
+#CY[EV(size)[RAB5_RIN1+ev?]+cy?] @kf_RAB5_RIN1*#rin1*#rab5gtp;
+# dissociation (release of RIN1)
+#CY[EV(size)[RAB5_RIN1:rab5_rin1+ev?]+cy?]->
+#CY[RIN1+EV(size)[RAB5('G~GTP')+ev?]+cy?] @kr_RAB5_RIN1*#rab5_rin1;
+
+RAB5(G~GTP,loc~EV)+RIN1(SH2,RA)<->RAB5(G~GTP!1,loc~EV).RIN1(SH2,RA!1) kf_RAB5_RIN1,kr_RAB5_RIN1
+
+#RAB5-bound RIN1 mediates GDP/GTP exchange on RAB5 in EV
+# RAB5.GDP->RAB5.GTP
+#CY[EV(size)[RAB5_RIN1:rab5_rin1+RAB5('G~GDP'):rab5gdp+ev?]+cy?]->
+#CY[EV(size)[RAB5_RIN1+RAB5('G~GTP')+ev?]+cy?] 
+#@kcatGDP*#rab5_rin1*#rab5gdp*(1/(vesicle_KmGDP*area_newEV*size))/
+#(1+(#rab5gdp/(vesicle_KmGDP*area_newEV*size))+(#rab5gdp/(vesicle_KmGTP*area_newEV*size)));
+# RAB5.GTP->RAB5.GDP
+#CY[EV(size)[RAB5_RIN1:rab5_rin1+RAB5('G~GTP'):rab5gtp+ev?]+cy?]->
+#CY[EV(size)[RAB5_RIN1+RAB5('G~GDP')+ev?]+cy?] 
+#@kcatGTP*#rab5_rin1*#rab5gtp*(1/(vesicle_KmGTP*area_newEV*size))/
+#(1+(#rab5gtp/(vesicle_KmGDP*area_newEV*size))+(#rab5gtp/(vesicle_KmGTP*area_newEV*size)));
+
+# see BNGL rule above
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+simulate({suffix=>"deterministic",method=>"ode",t_start=>0,t_end=>3600,n_steps=>360})
+resetConcentrations()
+simulate({suffix=>"stochastic",method=>"nf",complex=>1,get_final_state=>0,gml=>1000000,\
+          t_start=>0,t_end=>3600,n_steps=>360})
+
+#End Time: 3600.0
+#Interval: 1.0
+#Visualization: T
+#Attributes: T
+#Hierarchies: T
+#Reals: T
+#Save Directly: F
+
+#We need to use SESSL to specify simulation protocols.
+
+end actions

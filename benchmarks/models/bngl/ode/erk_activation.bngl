@@ -1,0 +1,191 @@
+# ERK activation model (EGFR/RAS/MAPK signaling cascade)
+# Reference: Kochanczyk M et al. (2017) Sci Rep 7: 38244.
+# Benchmark source: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150: 244101.
+# Network: 34 species, 65 reactions
+# Populations: 6,000 to 3,000,000 molecules
+# Behavior: Oscillatory/bistable ERK pulses; large populations make exact SSA
+#   impractical (billions of events). Use PSA with poplevel for efficient simulation.
+
+begin model
+
+begin parameters
+  
+# The time unit is s.
+  
+  EGF  20             # EGF ligand concentration [pg/ml]
+  ERKpp_SOS1_FB  1.0  # strength of the ERK~PP--SOS negative feedback
+  ERKpp_MEK_FB   1.0  # strength of the ERK~PP--MEK negative feedback
+  ERKpp_RAF1_FB  1.0  # strength of the ERK~PP--RAF negative feedback
+  RAS_t0_active  0    # initial condition: fraction of RAS active at t=0
+  
+  # Protein abundances (copy numbers per cell)
+  EGFR_tot   3e5
+  RAS_tot    6e4
+  SOS_tot    1e5
+  RasGAP_tot 6e3
+  RAF_tot    5e5
+  MEK_tot    2e5
+  ERK_tot    3e6
+  EKAR3_tot  1e6
+  ERKTR_tot  1e6
+  
+  # Kinetic rates
+  a1   5e-5*EGF
+  d1   1e-2
+  b1   1e-5
+  u1a  1e-2
+  u1b  1e+2
+  b2a  1e-6
+  u2a  1
+  b2b  1e-7
+  u2b  1
+  k2a  1e-4
+  k2b  1e-5
+  b3   1e-5
+  u3   1e-2
+  k3   1e+2
+  a2   1e-7
+  d2   1e-2
+  p1   1e-7
+  q1   1e-2
+  p2   3e-6
+  q2   1e-2
+  p3   3e-9*ERKpp_SOS1_FB
+  q3   3e-4
+  p4   6e-10*ERKpp_MEK_FB
+  q4   3e-4
+  q5   1e+2
+  p6   6e-10*ERKpp_RAF1_FB
+  q6   3e-4
+  a0_ekar3  3e-9
+  d0_ekar3  1e-3
+  a0_erktr  1e-9
+  d0_erktr  2e-3
+
+end parameters
+
+
+begin molecule types
+  EGFR(egf~I~A,sos)
+  SOS(rem,egfr,S~U~P~PP~PPP~PPPP)
+  RAS(sos,g~GDP~GTP)
+  RasGAP(ras)
+  RAF(S~A~I~P)
+  MEK(T292~U~P,S~U~P~PP)
+  ERK(S~U~P~PP)
+  EKAR3(act~I~A)
+  ERKTR(act~I~A)
+end molecule types
+
+
+begin seed species
+  EGFR(egf~I,sos)    EGFR_tot
+  RAS(sos,g~GDP)     RAS_tot *(1 - RAS_t0_active)
+  RAS(sos,g~GTP)     RAS_tot * RAS_t0_active
+  SOS(rem,egfr,S~U)  SOS_tot
+  RasGAP(ras)        RasGAP_tot
+  RAF(S~I)           RAF_tot
+  MEK(T292~U,S~U)    MEK_tot
+  ERK(S~U)           ERK_tot
+  EKAR3(act~I)       EKAR3_tot  
+  ERKTR(act~I)       ERKTR_tot  
+end seed species
+
+begin observables
+  Molecules EGFR_active EGFR(egf~A)
+  Molecules RAS_GTP RAS(g~GTP)
+  Molecules RAF_active RAF(S~A)
+  Molecules MEK_PP MEK(S~PP)
+  Molecules ERK_PP ERK(S~PP)
+  Molecules EKAR3_active EKAR3(act~A)
+  Molecules ERKTR_active ERKTR(act~A)
+end observables
+
+begin reaction rules
+
+  EGFR(egf~I) <-> EGFR(egf~A)  a1,d1
+
+  EGFR(egf~A,sos) + SOS(rem,egfr,S~U)    <-> \
+  EGFR(egf~A,sos!1).SOS(rem,egfr!1,S~U) b1,u1a
+
+  EGFR(egf~I,sos!1).SOS(rem,egfr!1) -> \
+  EGFR(egf~I,sos) + SOS(rem,egfr)   u1b
+
+  SOS(rem,egfr!+) + RAS(sos,g~GTP)     <-> \
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GTP) b2a,u2a
+
+  SOS(rem,egfr!+) + RAS(sos,g~GDP)     <-> \
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GDP) b2b,u2b
+
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GTP) + RAS(sos,g~GDP) -> \
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GTP) + RAS(sos,g~GTP) k2a
+
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GDP) + RAS(sos,g~GDP) -> \
+  SOS(rem!1,egfr!+).RAS(sos!1,g~GDP) + RAS(sos,g~GTP) k2b
+
+  RasGAP(ras) + RAS(sos,g~GTP)   -> \
+  RasGAP(ras!1).RAS(sos,g~GTP!1) b3
+
+  RasGAP(ras!1).RAS(sos,g~GTP!1) -> \
+  RasGAP(ras!1).RAS(sos,g~GDP!1) k3
+
+  RasGAP(ras!1).RAS(sos,g~GDP!1) -> \
+  RasGAP(ras) + RAS(sos,g~GDP)   u3
+
+  RAS(sos,g~GTP) + RAF(S~I)  ->  \
+  RAS(sos,g~GTP) + RAF(S~A)  a2
+
+  RAF(S~A) -> RAF(S~I)  d2        
+
+  RAF(S~A) + MEK(S~U)   ->  RAF(S~A) + MEK(S~P)   p1*2
+  RAF(S~A) + MEK(S~P)   ->  RAF(S~A) + MEK(S~PP)  p1
+
+  MEK(S~PP) -> MEK(S~P)  q1*2     
+  MEK(S~P)  -> MEK(S~U)  q1 
+
+  MEK(S~PP) + ERK(S~U)  ->  MEK(S~PP) + ERK(S~P)  p2*2
+  MEK(S~PP) + ERK(S~P)   ->  MEK(S~PP) + ERK(S~PP)  p2
+
+  ERK(S~PP) -> ERK(S~P)   q2*2
+  ERK(S~P)  -> ERK(S~U)   q2
+
+  ERK(S~PP) + SOS(egfr,S~U)  ->  ERK(S~PP) + SOS(egfr,S~P)  p3*4
+  ERK(S~PP) + SOS(egfr,S~P)   ->  ERK(S~PP) + SOS(egfr,S~PP)  p3*3
+  ERK(S~PP) + SOS(egfr,S~PP)   ->  ERK(S~PP) + SOS(egfr,S~PPP)  p3*2
+  ERK(S~PP) + SOS(egfr,S~PPP)   ->  ERK(S~PP) + SOS(egfr,S~PPPP)  p3
+
+  SOS(egfr,S~P)   -> SOS(egfr,S~U)   q3
+  SOS(egfr,S~PP)  -> SOS(egfr,S~P)   q3*2
+  SOS(egfr,S~PPP) -> SOS(egfr,S~PP)  q3*3
+  SOS(egfr,S~PPPP)-> SOS(egfr,S~PPP) q3*4
+
+  ERK(S~PP) + MEK(T292~U)  ->  ERK(S~PP) + MEK(T292~P)  p4
+
+  MEK(T292~P) -> MEK(T292~U)  q4
+
+  MEK(T292~P,S~PP) ->  MEK(T292~P,S~P)  q5*2
+  MEK(T292~P,S~P)  ->  MEK(T292~P,S~U)  q5
+
+  ERK(S~PP) + RAF(S~A)  ->  ERK(S~PP) + RAF(S~P)  p6
+  ERK(S~PP) + RAF(S~I)  ->  ERK(S~PP) + RAF(S~P)  p6
+  RAF(S~P) -> RAF(S~I)  q6 
+
+  ERK(S~PP) + EKAR3(act~I)  -> ERK(S~PP) + EKAR3(act~A)      a0_ekar3
+  EKAR3(act~A) -> EKAR3(act~I)  d0_ekar3
+
+  ERK(S~PP) + ERKTR(act~I)  -> ERK(S~PP) + ERKTR(act~A)       a0_erktr
+  ERKTR(act~A) -> ERKTR(act~I)   d0_erktr
+
+end reaction rules
+
+end model
+
+begin actions
+  
+generate_network({overwrite=>1})
+
+# PSA simulation recommended due to large populations (up to 3×10⁶)
+# Exact SSA is impractical; use PSA with poplevel
+simulate({method=>"ode",t_start=>0,t_end=>8640,n_steps=>1000})
+
+end actions

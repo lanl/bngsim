@@ -1,0 +1,50 @@
+# Model: meta_formal_molecular_clock.bngl
+# Description: Demonstrates Timescale Separation with a Stiff/Fast subsystem and a Sloppy/Slow subsystem.
+#              Rapid equilibrium of Fast species dictates the effective rate of Slow process.
+#              Example: Quasi-Steady-State Approximation (QSSA) validity.
+
+begin model
+
+begin parameters
+    # Fast Rates (Timescale ~ 0.01s)
+    k_fast_f 100.0
+    k_fast_r 100.0
+    
+    # Slow Rates (Timescale ~ 10s)
+    k_slow   0.1
+end parameters
+
+begin molecule types
+    FastA()
+    FastB()
+    SlowC()
+    SlowD()
+end molecule types
+
+begin seed species
+    FastA() 100
+    FastB() 0
+    SlowC() 50
+    SlowD() 0
+end seed species
+
+begin observables
+    Molecules Fast_Pool FastA()
+    Molecules Slow_Product SlowD()
+end observables
+
+begin reaction rules
+    # Fast Reversible Equilibrium
+    FastA() <-> FastB() k_fast_f, k_fast_r
+    
+    # Slow Irreversible Step coupled to FastB
+    # FastB catalyzes C -> D
+    FastB() + SlowC() -> FastB() + SlowD() k_slow
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>1000}) 
+# Note: ODE solver handles stiffness (e.g. CVODE). SSA would be slow.

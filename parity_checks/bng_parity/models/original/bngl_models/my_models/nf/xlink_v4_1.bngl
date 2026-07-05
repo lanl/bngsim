@@ -1,0 +1,86 @@
+begin model
+begin parameters
+  NA 6.02214076e23 # molecules per mole
+  Vcyt 1e-12 # L per cell
+  cell_density 1e9 # cells per L
+  Vecf=1/cell_density # L per cell
+  kf 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+  kr 0.01 # /s
+  KXRT 100 # dimensionless
+  RT 1e5 # molecules per cell
+  kmx=kr # /s
+  kpx=KXRT*kmx/RT # /(molecule/cell)/s
+  CD28_cpc 1e5
+  TCR_cpc 1e5
+  PD1_cpc 1e5
+  biAb1_conc 1e-9 # M
+  biAb2_conc 1e-9 # M
+  biAb3_conc 1e-9 # M
+  biAb1_cpc=biAb1_conc*(NA*Vecf) # M converted to molecule/cell
+  biAb2_cpc=biAb2_conc*(NA*Vecf) # M converted to molecule/cell
+  biAb3_cpc=biAb3_conc*(NA*Vecf) # M converted to molecule/cell
+end parameters
+begin molecule types
+  CD28(Ag,dim)
+  TCR(CD3,CD3)
+  PD1(Ag)
+  biAb1(Fab_CD3,Fab_CD28)
+  biAb2(Fab_CD3,Fab_PD1)
+  biAb3(Fab_PD1,Fab_CD28)
+end molecule types
+begin compartments
+end compartments
+begin species
+  CD28(Ag,dim!0).CD28(Ag,dim!0) CD28_cpc/2
+  TCR(CD3,CD3) TCR_cpc
+  PD1(Ag) PD1_cpc
+  biAb1(Fab_CD3,Fab_CD28) biAb1_cpc
+  biAb2(Fab_CD3,Fab_PD1) biAb2_cpc
+  biAb3(Fab_PD1,Fab_CD28) biAb3_cpc
+end species
+begin observables
+  Species TCR1 TCR==1
+  Species TCR2 TCR==2
+  Species TCR3 TCR==3
+  Species TCR4 TCR==4
+  Molecules biAb1_free biAb1(Fab_CD3,Fab_CD28)
+  Molecules biAb2_free biAb2(Fab_CD3,Fab_PD1)
+  Molecules biAb3_free biAb3(Fab_PD1,Fab_CD28)
+  Species TCR_free TCR(CD3,CD3)
+  Species CD28_free CD28(Ag,dim!0).CD28(Ag,dim!0)
+  Molecules TCR_CD28_links TCR(CD3!1).biAb1(Fab_CD3!1,Fab_CD28!2).CD28(Ag!2)
+  Molecules TCR_PD1_links TCR(CD3!1).biAb2(Fab_CD3!1,Fab_PD1!2).PD1(Ag!2)
+  Molecules PD1_CD28_links PD1(Ag!1).biAb3(Fab_PD1!1,Fab_CD28!2).CD28(Ag!2)
+  Molecules CD28_TCR_PD1 CD28(Ag!1).biAb1(Fab_CD3!2,Fab_CD28!1).TCR(CD3!2,CD3!3).biAb2(Fab_CD3!3,Fab_PD1!4).PD1(Ag!4)
+end observables
+begin functions
+end functions
+begin reaction rules
+# capture of bi-specific antibody 1 by CD28 and TCR
+  biAb1(Fab_CD3,Fab_CD28)+CD28(Ag)<->biAb1(Fab_CD3,Fab_CD28!1).CD28(Ag!1) kf,kr
+  biAb1(Fab_CD3,Fab_CD28)+TCR(CD3)<->biAb1(Fab_CD3!1,Fab_CD28).TCR(CD3!1) kf,kr 
+# capture of bi-specific antibody 2 by PD1 and TCR
+  biAb2(Fab_CD3,Fab_PD1)+PD1(Ag)<->biAb2(Fab_CD3,Fab_PD1!1).PD1(Ag!1) kf,kr
+  biAb2(Fab_CD3,Fab_PD1)+TCR(CD3)<->biAb2(Fab_CD3!1,Fab_PD1).TCR(CD3!1) kf,kr
+# capture of bi-specific antibody 3 by PD1 and CD28
+  biAb3(Fab_PD1,Fab_CD28)+PD1(Ag)<->biAb3(Fab_PD1!1,Fab_CD28).PD1(Ag!1) kf,kr
+  biAb3(Fab_PD1,Fab_CD28)+CD28(Ag)<->biAb3(Fab_PD1,Fab_CD28!1).CD28(Ag!1) kf,kr
+# crosslinking of TCR and CD28
+  biAb1(Fab_CD3,Fab_CD28!1).CD28(Ag!1)+TCR(CD3)<->\
+  biAb1(Fab_CD3!2,Fab_CD28!1).CD28(Ag!1).TCR(CD3!2) kpx,kmx
+  biAb1(Fab_CD3!1,Fab_CD28).TCR(CD3!1)+CD28(Ag)<->\
+  biAb1(Fab_CD3!1,Fab_CD28!2).TCR(CD3!1).CD28(Ag!2) kpx,kmx
+# crosslinking of TCR and PD-1
+  biAb2(Fab_CD3,Fab_PD1!1).PD1(Ag!1)+TCR(CD3)<->\
+  biAb2(Fab_CD3!2,Fab_PD1!1).PD1(Ag!1).TCR(CD3!2) kpx,kmx
+  biAb2(Fab_CD3!1,Fab_PD1).TCR(CD3!1)+PD1(Ag)<->\
+  biAb2(Fab_CD3!1,Fab_PD1!2).TCR(CD3!1).PD1(Ag!2) kpx,kmx
+# crosslinking of PD-1 and CD28
+  biAb3(Fab_PD1!+,Fab_CD28)+CD28(Ag)<->biAb3(Fab_PD1!+,Fab_CD28!1).CD28(Ag!1) kpx,kmx
+  biAb3(Fab_PD1,Fab_CD28!+)+PD1(Ag)<->biAb3(Fab_PD1!1,Fab_CD28!+).PD1(Ag!1) kpx,kmx
+end reaction rules
+end model
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100,print_functions=>1,\
+complex=>1,gml=>2147483647,get_final_state=>0})
+end actions

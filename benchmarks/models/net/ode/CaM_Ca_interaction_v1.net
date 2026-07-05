@@ -1,0 +1,36 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA                 6.02214076e23  # Constant
+    2 V_cyt              2e-12  # Constant
+    3 pi                 2*asin(1)  # Constant
+    4 t_delay            300  # Constant
+    5 period             300  # Constant
+    6 free_ion_conc_min  10  # Constant
+    7 free_ion_conc_max  100  # Constant
+    8 KD                 1600  # Constant
+    9 koff               6.41e-3  # Constant
+   10 kon                koff/KD  # ConstantExpression
+   11 CaM_total          11354804  # Constant
+   12 _InitialConc1      (CaM_total*KD)/(free_ion_conc_min+KD)  # ConstantExpression
+   13 _InitialConc2      (CaM_total*free_ion_conc_min)/(free_ion_conc_min+KD)  # ConstantExpression
+   14 _rateLaw1          1  # Constant
+end parameters
+begin functions
+    1 free_ion_conc() if((t>=t_delay),(free_ion_conc_min+(((free_ion_conc_max-free_ion_conc_min)/2)*(1+sin((pi*((3/2)+((2*(t-t_delay))/period))))))),free_ion_conc_min)
+    2 kon_eff() kon*free_ion_conc()
+end functions
+begin species
+    1 counter() 0
+    2 CaM(EF~0) _InitialConc1
+    3 CaM(EF~1) _InitialConc2
+end species
+begin reactions
+    1 0 1 _rateLaw1 #_R1
+    2 2 3 kon_eff #_R2
+    3 3 2 koff #_reverse__R2
+end reactions
+begin groups
+    1 t                    1
+    2 CaM_0                2
+    3 CaM_1                3
+end groups

@@ -1,0 +1,164 @@
+// DeYoungKeizer1992_IP3R_SinglePool_Reduced.ant
+//
+// Source:
+//   De Young GW, Keizer J (1992)
+//   "A single-pool inositol 1,4,5-trisphosphate-receptor-based model
+//    for agonist-stimulated oscillations in Ca2+ concentration."
+//   Proc Natl Acad Sci USA 89:9895–9899.
+//
+// Model type:
+//   Single IP3-sensitive Ca2+ pool (ER) + cytosolic Ca2+,
+//   with De Young–Keizer IP3R subunit kinetics reduced using
+//   a rapid equilibrium approximation for IP3 binding (Eqs. 3a–3d).
+//
+// State variables (species):
+//   Ca   : cytosolic free Ca2+ concentration [Ca2+]_c (µM)
+//   x000 : fraction of IP3R subunits with no ligands bound (S_000)
+//   x001 : fraction with only inhibitory Ca2+ bound (S_001)
+//   x010 : fraction with only activating Ca2+ bound (S_010)
+//   x011 : fraction with both Ca2+ sites bound (S_011); here algebraic
+//          via conservation (sum over all 8 subunit states = 1).
+//
+// IP3 binding is assumed fast:
+//   x1ik = ([IP3]/d_j) * x0ik,  j = 1 or 3
+// so all IP3-bound states are expressed in terms of x000, x001, x010, x011.
+// Channel open state is S_110, which obeys
+//   x110 = ([IP3]/d1) * x010
+// and the single-channel open probability is x110^3.
+//
+// Ca2+ fluxes:
+//   J1 = c1 * ( v1 * x110^3 + v2 ) * (Ca_ER - Ca)
+//        (IP3R-mediated flux + leak from ER to cytosol)
+//   J2 = v3 * Ca^2 / (Ca^2 + k3^2)
+//        (ATP-driven Ca2+ uptake into ER)
+//   Ca_ER is determined by conservation:
+//     c0 = c1 * [Ca2+]_ER + [Ca2+]_c  →  Ca_ER = (c0 - Ca)/c1
+//
+// Cytosolic Ca2+ dynamics:
+//   dCa/dt = J1 - J2
+//
+// Subunit kinetics (reduced 4-state system):
+//   dx000/dt = -V1 - V3
+//   dx001/dt =  V1 - V4
+//   dx010/dt =  V3 - V2
+//   x011 from conservation (no ODE)
+// with
+//   V1 = a4 * (Ca * x000 - d4 * x001)
+//   V2 = a4 * (Ca * x010 - d4 * x011)
+//   V3 = a5 * (Ca * x000 - d5 * x010)
+//   V4 = a5 * (Ca * x001 - d5 * x011)
+//
+// Parameter values (Table 1, all in µM or s^-1):  [Ca2+] in µM.
+//   c_0 = 2.0       (total Ca2+ in ER+cytosol, in cytosolic vol units)
+//   c_1 = 0.185     (ER volume / cytosolic volume)
+//   v_1 = 6.0       (max IP3R-mediated Ca2+ flux, s^-1)
+//   v_2 = 0.11      (Ca2+ leak flux constant, s^-1)
+//   v_3 = 0.9       (max Ca2+ uptake by pump, µM s^-1)
+//   k_3 = 0.1       (Ca2+ activation constant of pump, µM)
+//
+// Receptor kinetic parameters (a_i in µM^-1 s^-1, d_i in µM):
+//   a1 = 400.0      (IP3 binding, not used explicitly in reduced system)
+//   a2 = 0.2        (Ca2+ inhibition site, fast binding in full model)
+//   a3 = 400.0      (IP3 binding, not used explicitly here)
+//   a_4 = 0.2       (Ca2+ inhibition kinetics in reduced system)
+//   a_5 = 20.0      (Ca2+ activation kinetics)
+//   d_1 = 0.13      (IP3 dissociation constant, low Ca2+ inhibition)
+//   d_2 = 1.049     (Ca2+ inhibition, high-IP3 context; not used here)
+//   d_3 = 0.9434    (IP3 dissociation constant, high Ca2+ inhibition)
+//   d_4 = 0.1445    (Ca2+ inhibition dissociation)
+//   d_5 = 0.08234   (Ca2+ activation dissociation)
+//
+// For illustration, [IP3] is fixed in the oscillatory range:
+//   IP3 = 0.5 µM, giving oscillations like Fig. 4A in the paper.
+
+model DeYoungKeizer1992_IP3R_SinglePool_Reduced
+
+  // Compartment (dimensionless; all concentrations in µM)
+  compartment cyt = 1;
+
+  // Species
+  species Ca   in cyt;
+  species x000 in cyt;
+  species x001 in cyt;
+  species x010 in cyt;
+
+  // --------------------
+  // Parameters
+  // --------------------
+  // Ca2+ pool & flux parameters
+  const c_0 = 2.0;
+  const c_1 = 0.185;
+  const v_1 = 6.0;
+  const v_2 = 0.11;
+  const v_3 = 0.9;
+  const k_3 = 0.1;
+
+  // Receptor kinetic parameters (reduced system)
+  const a_4 = 0.2;
+  const a_5 = 20.0;
+  const d_1 = 0.13;
+  const d_3 = 0.9434;
+  const d_4 = 0.1445;
+  const d_5 = 0.08234;
+
+  // Fixed IP3 concentration (oscillatory regime)
+  const IP3 = 0.5;
+
+  // --------------------
+  // Algebraic helper variables
+  // --------------------
+
+  // ER Ca2+ from conservation c_0 = c_1 * Ca_ER + Ca
+  Ca_ER := (c_0 - Ca)/c_1;
+
+  // IP3-bound subunit states via rapid equilibrium:
+  // x_110 = (IP3/d_1) * x010  → open subunit fraction
+  x_110 := (IP3/d_1) * x010;
+
+  // Overall channel open probability (all 3 subunits in S_110)
+  p_open := x_110^3;
+
+  // Ca2+ fluxes
+  J_1 := c_1 * ( v_1 * p_open + v_2 ) * (Ca_ER - Ca);
+  J_2 := v_3 * Ca^2 / (Ca^2 + k_3^2);
+
+  // Subunit state x011 via full-state conservation:
+  // Sum over all 8 states = 1, with x1ik = (IP3/d_j) x0ik.
+  // Total = (1 + IP3/d_1)*(x000 + x010) + (1 + IP3/d_3)*(x001 + x011) = 1.
+  x_011 := (1 - (x000*(1 + IP3/d_1) + x001*(1 + IP3/d_3) + x010*(1 + IP3/d_1))) / (1 + IP3/d_3);
+
+  // Receptor Ca2+-dependent transition fluxes
+  V_1 := a_4 * (Ca * x000 - d_4 * x001);
+  V_2 := a_4 * (Ca * x010 - d_4 * x_011);
+  V_3 := a_5 * (Ca * x000 - d_5 * x010);
+  V_4 := a_5 * (Ca * x001 - d_5 * x_011);
+
+  // --------------------
+  // ODEs
+  // --------------------
+
+  // Cytosolic Ca2+
+  Ca'   = J_1 - J_2;
+
+  // Subunit states (IP3-unbound; IP3-bound ones slaved via equilibrium)
+  x000' = - V_1 - V_3;
+  x001' =   V_1 - V_4;
+  x010' =   V_3 - V_2;
+  // x011 has no explicit ODE; it is set algebraically via conservation.
+
+  // --------------------
+  // Initial conditions
+  // --------------------
+  // These are reasonable, not unique; any normalized distribution with
+  // 0 <= x000,x001,x010,x011 <= 1 is acceptable. They’re chosen so that
+  // x011 lies between 0 and 1 and p_open > 0 at t=0.
+
+  Ca   = 0.1;
+  x000 = 0.05;
+  x001 = 0.02;
+  x010 = 0.05;
+  // x011 is computed from the conservation rule above.
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

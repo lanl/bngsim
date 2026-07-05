@@ -1,0 +1,171 @@
+# testing the effective valence idea
+
+# We consider a ligand with 5 binding sites.
+# All free binding sites are available until the ligand is bound 3 times.
+# After a ligand is bound 3 times, the remaining 2 binding sites become unavailable.
+# The model is written 3 different ways.
+
+# References
+# 1. Berg HC, Purcell EM (1977) Biophys J 20: 193-219.
+# 2. Erickson J et al. (1986) Mol Immunol 72: 769-781.
+# 3. Erickson J et al. (1987) Biophys J 52: 657-662.
+# 4. Faeder JR et al. (2003) J Immunol 170: 3769-3781.
+
+begin model
+
+begin parameters
+
+# ratio (circumference:diameter)
+pi 3.14159 # dimensionless
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# density of cells in suspension
+cellDensity 1.0e6 # [=] cells per cm^3
+
+# volume of extracellular fluid per cell (derived)
+Vex=1.0/cellDensity # [=] cm^3 (1 nL)
+
+# cell radius under the assumption of a spherical cell - from Faeder et al. (2003)
+a 7.0e-4 # [=] cm (7 micron)
+
+# total amount of ligand per cell for a ligand concentration of 1 nM
+ligandTotal 1.0e-12*(NA*Vex) # [=] number per cell (~6e5/cell)
+
+# diffusion coefficient of ligand in water (from Ref 3)
+D 5.64e-6 # [=] cm^2/s (0.0564 micron^2/s)
+
+
+# total amount of receptor per cell - from Faeder et al. (2003)
+receptorTotal 4.0e5 # [=] number per cell
+
+# single-site equilibrium association constant 
+#   for ligand binding to a receptor site - from Erickson et al. (1986)
+Keq 1.4e12 # [=] cm^3/mol
+
+# single-site reaction-limited association rate constant - from Erickson et al. (1987)
+kon 1.12e11 # [=] (cm^3/mol)/s
+
+# dissociation rate constant (derived)
+koff=kon/Keq # [=] /s (0.08 /s)
+
+# dimensionless equilibrium crosslinking constant
+KxRT 10 # [=] dimensionless
+kmx=koff # [=] /s (derived)
+kpx=kmx*KxRT/receptorTotal # [=] /(molecule/cell)/s (derived)
+
+# valence
+n 5
+
+# exp(-factor)=0.65
+factor 0.43
+
+end parameters
+
+begin molecule types
+
+L(bnd~0~1~2~3) # internal states from 0 to n
+R()
+
+Lig(s,s,s)
+Rec(s)
+
+Lfast(bnd~0~1~2~3)
+Rfast()
+
+end molecule types
+
+begin seed species
+
+L(bnd~0) ligandTotal
+R() receptorTotal
+
+Lig(s,s,s) ligandTotal
+Rec(s) receptorTotal
+
+Lfast(bnd~0) ligandTotal
+Rfast() receptorTotal
+
+end  seed species
+
+begin observables
+
+Molecules freeR R()
+Molecules freeL L(bnd~0)
+Molecules B1 L(bnd~1)
+Molecules B2 L(bnd~2)
+Molecules B3 L(bnd~3)
+Molecules Ltot L(bnd~0) L(bnd~1) L(bnd~2) L(bnd~3)
+
+Molecules freeRec Rec(s)
+Species freeLig Lig(s,s,s)
+Species Bnd1 Lig(s!+,s,s)
+Species Bnd2 Lig(s!+,s!+,s)
+Species Bnd3 Lig(s!+,s!+,s!+)
+Molecules Ligtot Lig()
+Molecules Nbonds Lig(s!1).Rec(s!1)
+
+Molecules freeRfast Rfast()
+Molecules freeLfast Lfast(bnd~0)
+Molecules B1fast Lfast(bnd~1)
+Molecules B2fast Lfast(bnd~2)
+Molecules B3fast Lfast(bnd~3)
+
+end observables
+
+begin functions
+
+# apparent forward and reverse rate constants (from Ref 1)
+#   The terms NA*Vex and NA are unit conversion factors.
+kf() (kon/(NA*Vex))/(1.0+(freeRec*n*kon/NA)/(4.0*pi*D*a))
+kr() koff/(1.0+(freeRec*n*kon/NA)/(4.0*pi*D*a))
+
+Rtot() freeR+B1+2*B2+3*B3
+
+# nu(i) = (n - i)*H(i)
+#   n is the total number of ligand sites (ligand valence)
+#   i is the number of ligand sites bound
+#   H(i) is a function that corrects for steric effects
+#     H(i) = 1 in the absence of steric effects
+#   nu(i) is the number of available ligand sites
+# We will assume H(i) = exp(-factor*i)
+# h = exp(-factor), where factor = 0.43
+# Thus, nu(i) = (n - i)*h**i, where h = 0.65
+
+H(x) exp(-factor*Nbonds(x))
+
+end functions
+
+begin reaction rules
+
+######## model version #1 (diffusion limited ligand capture)
+
+L(bnd~0)+R()<->L(bnd~1) 5*kf(),1*kr()
+
+# reversible receptor xlinking reactions
+L(bnd~1)+R()<->L(bnd~2) 4*kpx,2*kmx
+L(bnd~2)+R()<->L(bnd~3) 3*kpx,3*kmx
+
+######## model version #2 (diffusion limited ligand capture, steric effects)
+
+Lig(s,s,s)+Rec(s)<->Lig(s!1,s,s).Rec(s!1) (5/3)*kf(),kr()
+%x:Lig(s!+,s,s)+Rec(s)<->Lig(s!+,s!1,s).Rec(s!1) (4/2)*kpx*H(x),kmx
+%x:Lig(s!+,s!+,s)+Rec(s)<->Lig(s!+,s!+,s!1).Rec(s!1) (3/1)*kpx*H(x),kmx
+
+######## model version #3 (no diffusion limitation, no steric effects)
+
+Lfast(bnd~0)+Rfast()<->Lfast(bnd~1) 5*kon/(NA*Vex),1*koff
+Lfast(bnd~1)+Rfast()<->Lfast(bnd~2) 4*kpx,2*kmx
+Lfast(bnd~2)+Rfast()<->Lfast(bnd~3) 3*kpx,3*kmx
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate_ode({t_start=>0,t_end=>60,n_steps=>200,print_functions=>1})
+
+end actions

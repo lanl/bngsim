@@ -1,0 +1,45 @@
+# Feature combination: shorthand pattern embedding (multi-site counting)
+# Tests: correct embedding count for patterns with shorthand notation
+# Bug pattern: example3_fit embedding over-count (8f22ea9)
+# Tier: combinations
+# Expected: binding rate accounts for correct number of available sites
+# invariant: conserved R_total = 20
+# invariant: conserved L_total = 60
+
+begin model
+begin parameters
+    R_tot  20
+    L_tot  60
+    kf     0.005   # /s, per-site binding rate
+    kr     0.1     # /s, unbinding rate
+end parameters
+
+begin molecule types
+    R(s,s,s)
+    L(s)
+end molecule types
+
+begin seed species
+    R(s,s,s)  R_tot
+    L(s)      L_tot
+end seed species
+
+begin observables
+    Molecules  R_total    R()
+    Molecules  L_total    L()
+    Molecules  L_free     L(s)
+    Molecules  L_bound    L(s!+)
+    Molecules  R_0bound   R(s,s,s)
+    Molecules  R_1bound   R(s!+,s,s)
+    Molecules  R_2bound   R(s!+,s!+,s)
+    Molecules  R_3bound   R(s!+,s!+,s!+)
+end observables
+
+begin reaction rules
+    R(s) + L(s) <-> R(s!1).L(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

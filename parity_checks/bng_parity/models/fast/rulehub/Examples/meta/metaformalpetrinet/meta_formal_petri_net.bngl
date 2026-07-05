@@ -1,0 +1,53 @@
+# Model: meta_formal_petri_net.bngl
+# Description: Explicitly models a Place-Transition Petri Net structure using BNGL.
+#              Places are species (Token Holders). Transitions are reaction rules consuming tokens.
+#              Demonstrates the equivalence between reaction networks and Petri nets.
+
+begin model
+
+begin parameters
+    rate_t1 1.0
+    rate_t2 0.5
+end parameters
+
+begin molecule types
+    # Place(id, tokens) ? 
+    # Simpler: Each Place is a unique species.
+    # Count(n) -> N tokens?
+    # BNGL species count IS the token count.
+    
+    P1()
+    P2()
+    P3()
+    P4()
+end molecule types
+
+begin seed species
+    P1() 10 # 10 Tokens in Place 1
+    P2() 0
+    P3() 5
+    P4() 0
+end seed species
+
+begin observables
+    Molecules Tokens_P1 P1()
+    Molecules Tokens_P2 P2()
+    Molecules Tokens_P3 P3()
+    Molecules Tokens_P4 P4()
+end observables
+
+begin reaction rules
+    # Transition T1: P1 + P3 -> P2
+    P1() + P3() -> P2() rate_t1
+    
+    # Transition T2: P2 -> P4 + P3 (Recycles P3)
+    P2() -> P4() + P3() rate_t2
+    
+    # Conservation: P3 is catalyst?
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

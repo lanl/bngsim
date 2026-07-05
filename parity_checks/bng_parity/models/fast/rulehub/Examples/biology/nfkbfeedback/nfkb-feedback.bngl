@@ -1,0 +1,114 @@
+begin model
+begin parameters
+    # TNFalpha-induced NF-kB signaling with IkappaB-alpha feedback.
+    # Advanced features: TotalRate for IKK and pulsatile stimulation.
+    
+    # Upstream Induction
+    k_ikk_act 1.0      # IKK activation by TNF (Agonist)
+    k_ikk_reset 0.2    # IKK inactivation
+    
+    # NF-kB Cycle
+    k_nuc_import 0.8   # Nuclear entry of liberated NF-kB
+    k_nuc_export 0.2   # Exit
+    
+    # IkappaB-alpha Feedback
+    k_ikb_synth 1.5    # NF-kB induced IkB synthesis
+    k_ikb_bind 5.0     # Rapid sequestration of NF-kB by IkB
+    k_ikb_deg 2.0      # IKK-mediated degradation
+    
+    # A20 Feedback (Regulates IKK)
+    k_a20_synth 0.1
+    k_a20_inh 2.0
+    
+    # Initials
+    NFkB_tot 1000
+    IkB_init 800       # Mostly bound initially
+    IKK_tot 200
+    A20_init 0
+    
+    # Pulse Control
+    TNF_Stim 0.1
+end parameters
+
+begin molecule types
+    NFkB(b,loc~cyt~nuc)
+    IkB(b,s~U~P)
+    IKK(s~inactive~active)
+    A20()
+end molecule types
+
+begin seed species
+    NFkB(b,loc~cyt) NFkB_tot
+    IkB(b,s~U) IkB_init
+    IKK(s~inactive) IKK_tot
+    A20() A20_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Nuclear_NFkB    NFkB(loc~nuc)            # Transcriptional driver
+    Molecules Active_IKK      IKK(s~active)            # Upstream kinase trigger
+    Molecules Total_IkB       IkB()                    # Negative regulator mass
+    Molecules NFkB_complex    NFkB(b!1).IkB(b!1)       # Latent reservoir status
+    Molecules A20_Feedback    A20()                    # Adaptive suppression status
+end observables
+
+begin functions
+    # Stimulus Function (Controlled by Parameter now)
+    v_stim() = TNF_Stim
+end functions
+
+begin reaction rules
+    ## ACTIVATION
+    # Pulsatile stimulus activates IKK (TotalRate: drive-dependent)
+    IKK(s~inactive) -> IKK(s~active) k_ikk_act * TNF_Stim TotalRate
+    
+    # IKK phosphorylates/degrades IkB in NFkB complexes
+    # Wildcard: Any NFkB-bound IkB is targeted (!+)
+    NFkB(b!1).IkB(b!1) + IKK(s~active) -> NFkB(b) + IKK(s~active) k_ikb_deg
+    
+    ## RELAY & TRANSPORT
+    # Free NFkB translocates to nucleus
+    NFkB(b,loc~cyt) -> NFkB(b,loc~nuc) k_nuc_import
+    
+    # Nuclear NFkB induces IkB synthesis (Feedback 1)
+    NFkB(loc~nuc) -> NFkB(loc~nuc) + IkB(b,s~U) k_ikb_synth
+    
+    # Nuclear NFkB induces A20 synthesis (Feedback 2)
+    NFkB(loc~nuc) -> NFkB(loc~nuc) + A20() k_a20_synth
+    
+    ## SEQUESTRATION & EXPORT
+    # Cytosolic IkB binds NFkB
+    NFkB(b,loc~cyt) + IkB(b,s~U) -> NFkB(b!1,loc~cyt).IkB(b!1,s~U) k_ikb_bind
+    
+    # IkB exports NFkB (Simplified)
+    NFkB(loc~nuc) -> NFkB(loc~cyt) k_nuc_export
+    
+    ## NEGATIVE CONTROL
+    # A20 inhibits active IKK
+    A20() + IKK(s~active) -> A20() + IKK(s~inactive) k_a20_inh
+    
+    ## RESET
+    IKK(s~active) -> IKK(s~inactive) k_ikk_reset
+    A20() -> 0 0.05
+    IkB(s~U) -> 0 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-80)
+    simulate({method=>"ode",t_end=>80,n_steps=>200})
+    # Phase 2: Pulse 1 (80-105) - High TNF
+    setParameter("TNF_Stim",2.0)
+    simulate({method=>"ode",t_end=>105,n_steps=>200,continue=>1})
+    # Phase 3: Reset 1 (105-155) - Low TNF
+    setParameter("TNF_Stim",0.1)
+    simulate({method=>"ode",t_end=>155,n_steps=>200,continue=>1})
+    # Phase 4: Pulse 2 (155-170) - High TNF
+    setParameter("TNF_Stim",2.0)
+    simulate({method=>"ode",t_end=>170,n_steps=>200,continue=>1})
+    # Phase 5: Reset 2 (170-800) - Low TNF
+    setParameter("TNF_Stim",0.1)
+    simulate({method=>"ode",t_end=>800,n_steps=>400,continue=>1})
+end actions
+end model

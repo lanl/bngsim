@@ -1,0 +1,273 @@
+#################
+# file metadata #
+#################
+
+#---
+# Filename/version: filamentation_blue_v1.bngl
+# Date created: 
+#  - v1: 08-Apr-2023
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# Software:
+#  - BioNetGen version 2.5.1
+#  - NFsim version 1.12.1
+#  - RuleBender version 2.1.0
+#---
+
+begin model
+
+##################
+# model metadata #
+##################
+
+#---
+# Title: A model for in vitro assembly and disassembly of filaments consisting of 
+#        fluorophore-labeled DNA oligonucleotide duplexes and dimers of SgrAI (Streptomyces griseus)
+#
+# Contributors:
+#  - William S. Hlavacek
+#  - Nancy C. Horton
+#
+# Inputs:
+#  - total SgrAI dimer concentration
+#  - total Flo-labeled activator DNA oligonucleotide duplex concentration
+#  - total Rox-labeled reporter DNA oligonucleotide duplex concentration
+#
+# Outputs:
+#  - FRET signal vs. time
+# 
+# Proteins:
+#   ========================= ========================= ===================================================
+#  | Name                    | UniProt nomenclature    | Link                                              |
+#   ========================= ========================= ===================================================
+#  | SgrAI                   | SgraIR                  | https://www.uniprot.org/uniprotkb/Q9F6L0/entry    |
+#   ========================= ========================= ===================================================
+#
+# Oligonucleotide sequences:
+#   ========================= 
+#  | Name                    | 
+#   =========================  
+#  | Flo-labeled 40-1        |
+#  | Rox-labeled 40-1        | 
+#   ========================= 
+# 
+# Compartments:
+#  - tube: reaction mixture in a plastic tube
+#
+# References:
+#  - Park CK et al. (2018) J Biol Chem 293: 14585-14598. [PubMed: https://pubmed.ncbi.nlm.nih.gov/30068553/]
+#---
+
+begin parameters
+
+# fraction of volume to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1e-11 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+
+# volume of reaction mixture in tube (150 mL)
+V 0.15*f # L per tube
+
+# total abundances of reactants in Reaction 2 (Data Set 1)
+#  See Reaction 2 in Table 2 and Figure 6A (blue) (Park et al., 2018).
+# initial concentration of SgrAI dimer
+SgrAI_nM 350 # nM
+# initial concentration of DNA oligonucleotide Flo-40-1 duplex
+Flo_40_1_nM 150 # nM
+# initial concentration of DNA oligonucleotide Rox-40-1 duplex
+Rox_40_1_nM 100 # nM
+# unit conversions
+SgrAI_total = SgrAI_nM*1e-9*(NA*V) # nM converted to molecules per tube
+Flo_40_1_total = Flo_40_1_nM*1e-9*(NA*V) # nM converted to molecules per tube
+Rox_40_1_total = Rox_40_1_nM*1e-9*(NA*V) # nM converted to molecules per tube
+
+# equilibrium dissociation constant for SgrAI dimer binding to DNA oligonucleotide 40-1 duplex 
+#  in the absence of divalent cations
+KD2 = 2.3e-9*(NA*V) # M converted to molecule per tube
+# rate constant for SgrAI-DNA association (guess := 3 /uM/s)
+#vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv----################################
+kp2_uMs 3 # /uM/s                        # ADJUSTABLE PARAMETER SETTING #
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----################################
+kp2 = kp2_uMs*1e6/(NA*V) # /uM/s converted to /(molecule/tube)/s
+# rate constant for SgrAI-DNA dissociation
+km2 = kp2*KD2 # /s
+
+# rate constant for SgrAI:DNA-SgrAI:DNA association (guess := 1.7 /uM/s, estimate for 4BM model, Table 6)
+#vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv----################################
+kp4_uMs 0.5 # /uM/s                      # ADJUSTABLE PARAMETER SETTING #
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----################################
+kp4 = kp4_uMs*1e6/(NA*V) # /uM/s converted to /(molecule/tube)/s
+# rate constant for SgrAI:DNA-SgrAI:DNA dissociation (guess := 1.08 /min, estimate for 4BM model, Table 6)
+#vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv----################################
+km4_min 0.01 # /min                      # ADJUSTABLE PARAMETER SETTING #
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----################################
+km4 = km4_min/60 # convert /min to /s
+
+# estimated distance-dependent FRET efficiencies (Table 4)
+eff_a 0.20 # dimensionless
+eff_b 0.12 # dimensionless
+eff_c 0.96 # dimensionless
+
+# baseline fluorescence (guess := 0.7525)
+#vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv----################################
+F_baseline 0.7525 # dimensionless        # ADJUSTABLE PARAMETER SETTING #
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----################################
+# scaling factor (guess := 0.2657/Rox_40_1_total)
+#vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv----################################
+F_mult 0.2657 # dimensionless            # ADJUSTABLE PARAMETER SETTING #
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^----################################
+F_scaling_factor = F_mult/Rox_40_1_total # dimensionless
+
+end parameters
+
+begin molecule types
+
+S(dbs,fd,fd)
+#---
+# S: SgrAI dimer
+#  components:
+#   dbs: DNA-binding site
+#    comment: Each SgrAI dimer can bind one DNA duplex.
+#   fd: filamentation domain 
+#    comment: There are two identical copies of the filamentation domain per SgrAI dimer.
+#---
+
+D(label~Flo~Rox,prs)
+#---
+# D: DNA oligonucleotide (40-1) duplex 
+#  components:
+#   label: fluorphore conjugated to the 5' end of each oligo that serves as a FRET donor or acceptor
+#    states:
+#     - Flo: fluorscein (FRET donor)
+#     - Rox: rhodamine-X (FRET acceptor)
+#   prs: primary recognition site (5'-CA/CCGGTG-3')
+#---
+
+end molecule types
+
+begin seed species
+
+S(dbs,fd,fd) SgrAI_total
+D(label~Flo,prs) Flo_40_1_total
+D(label~Rox,prs) Rox_40_1_total
+
+end seed species
+
+begin observables
+
+# calculate number of FRET pairs at distance 1 in a filament (nearest neighbors)
+Molecules dist1 D(label~Rox,prs!1).D(label~Flo,prs!2).S(dbs!1,fd!3).S(dbs!2,fd!3)
+
+# calculate number of FRET pairs at distance 2 in a filament (next nearest neighbors)
+Molecules dist2 D(label~Rox,prs!1).S(dbs!1,fd!2).S(fd!2,fd!3).S(dbs!4,fd!3).D(label~Flo,prs!4)
+
+# calculate number of FRET pairs at distance 3 in a filament
+Molecules dist3 D(label~Rox,prs!1).S(dbs!1,fd!2).S(fd!2,fd!3).S(fd!3,fd!4).S(dbs!5,fd!4).D(label~Flo,prs!5)
+
+# calculate concentration of the dimer containing a FRET pair
+#Species RF D(label~Rox,prs!1).D(label~Flo,prs!2).S(dbs!1,fd!3,fd).S(dbs!2,fd!3,fd)
+
+# calculate concentrations of all trimers that contain a FRET pair 
+#Species RFF D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Flo,prs!3).S(dbs!1,fd!4,fd).S(dbs!2,fd!4,fd!5).S(dbs!3,fd!5,fd)
+#Species FRF D(label~Flo,prs!1).D(label~Rox,prs!2).D(label~Flo,prs!3).S(dbs!1,fd!4,fd).S(dbs!2,fd!4,fd!5).S(dbs!3,fd!5,fd)
+#Species RRF D(label~Rox,prs!1).D(label~Rox,prs!2).D(label~Flo,prs!3).S(dbs!1,fd!4,fd).S(dbs!2,fd!4,fd!5).S(dbs!3,fd!5,fd)
+#Species RFR D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Rox,prs!3).S(dbs!1,fd!4,fd).S(dbs!2,fd!4,fd!5).S(dbs!3,fd!5,fd)
+
+# calculate concentrations of all tetramers that contain a FRET pair
+#Species RFFF D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Flo,prs!3).D(label~Flo,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species FRFF D(label~Flo,prs!1).D(label~Rox,prs!2).D(label~Flo,prs!3).D(label~Flo,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species RRFF D(label~Rox,prs!1).D(label~Rox,prs!2).D(label~Flo,prs!3).D(label~Flo,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species FRRF D(label~Flo,prs!1).D(label~Rox,prs!2).D(label~Rox,prs!3).D(label~Flo,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species RFRF D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Rox,prs!3).D(label~Flo,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species RFFR D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Flo,prs!3).D(label~Rox,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species FRRR D(label~Flo,prs!1).D(label~Rox,prs!2).D(label~Rox,prs!3).D(label~Rox,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+#Species RFRR D(label~Rox,prs!1).D(label~Flo,prs!2).D(label~Rox,prs!3).D(label~Rox,prs!4).S(dbs!1,fd!5,fd).S(dbs!2,fd!5,fd!6).S(dbs!3,fd!6,fd!7).S(dbs!4,fd!7,fd)
+
+# calculate quantities needed to determine the distribution of filament lengths
+Species monomers S==1
+Species dimers S==2 
+Species trimers S==3
+Species tetramers S==4
+#Species pentamers S==5 # should be 0 with max_stoich=>{S=>4} network generation setting
+#Species hexamers S==6
+#Species heptamers S==7 
+#Species octamers S==8
+
+end observables
+
+begin functions
+# fluorescence
+F() = F_baseline + F_scaling_factor*(eff_a*dist1 + eff_b*dist2 + eff_c*dist3)
+
+# check 
+# consistency was verified up to tetramers (4/8/23)
+#dist1_alt() =  RF + RFF + RRF + 2*FRF + 2*RFR + RFFF + 2*FRFF +   RRFF + 2*FRRF + 3*RFRF + 2*RFFR + FRRR + 2*RFRR 
+#dist2_alt() =       RFF + RRF                 + RFFF +   FRFF + 2*RRFF + 2*FRRF          + 2*RFFR + FRRR +   RFRR
+#dist3_alt() =                                   RFFF          +   RRFF          +   RFRF          + FRRR
+
+end functions
+
+begin reaction rules
+ 
+# reversible SgrAI-DNA binding
+# DNA only associates with and dissociates from non-filamentous SgrAI
+S(dbs,fd,fd)+D(prs)<->S(dbs!1,fd,fd).D(prs!1) kp2,km2
+
+# reversible filamentation of SgrAI:DNA complexes
+S(dbs!+,fd)+S(dbs!+,fd)<->S(dbs!+,fd!1).S(dbs!+,fd!1) kp4,km4
+
+end reaction rules
+
+end model
+
+begin actions
+
+#######################################################
+# deterministic simulation of Reaction 2 (Data Set 1) #
+#######################################################
+
+# The network generated with max_stoich=>{S=>2} will have   8 species and   10 unidirectional reactions;     40 ms. 
+# The network generated with max_stoich=>{S=>3} will have  14 species and   26 unidirectional reactions;    230 ms.
+# The network generated with max_stoich=>{S=>4} will have  24 species and   78 unidirectional reactions;   1300 ms. 
+# The network generated with max_stoich=>{S=>5} will have  44 species and  206 unidirectional reactions;   4600 ms.
+# The network generated with max_stoich=>{S=>6} will have  80 species and  532 unidirectional reactions;  36 s.
+# The network generated with max_stoich=>{S=>7} will have 152 species and 1300 unidirectional reactions; 547 s.
+generate_network({overwrite=>1,max_stoich=>{S=>4}}) # only filaments up to size 4 are considered in the 4BM model of Park et al. (2018)
+
+saveConcentrations()
+simulate({suffix=>"rxn2_ODE",method=>"ode",t_start=>0,t_end=>100,n_steps=>10000,print_functions=>1})
+
+# simulate Reaction 4 (Data Set 1), see Table 2 and Figure 6A (red)
+#resetConcentrations()
+#setParameter("SgrAI_nM",200)    # [SgrAI] = 350 nM
+#setParameter("Flo_40_1_nM",50)  # [Flo-40-1] = 150 nM
+#setParameter("Rox_40_1_nM",100) # [Rox-40-1] = 100 nM
+#simulate({suffix=>"rxn4_ODE",method=>"ode",t_start=>0,t_end=>100,n_steps=>10000,print_functions=>1})
+
+####################################################
+# stochastic simulation of Reaction 2 (Data Set 1) #
+####################################################
+
+# NB: stochastic simulation requires use of extensive units. 
+# The reaction compartment considered is the reaction mixture volume in a tube (f=1) or a subvolume (f<1).
+
+#resetConcentrations()
+#simulate({suffix=>"rxn2_stoch",method=>"nf",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1,\
+#          complex=>1,gml=>2147483647,get_final_state=>0})
+
+# simulate Reaction 4 (Data Set 1), see Table 2 and Figure 6A (red)
+#resetConcentrations()
+#setParameter("SgrAI_nM",200)    # [SgrAI] = 350 nM
+#setParameter("Flo_40_1_nM",50)  # [Flo-40-1] = 150 nM
+#setParameter("Rox_40_1_nM",100) # [Rox-40-1] = 100 nM
+#simulate({suffix=>"rxn4_stoch",method=>"nf",t_start=>0,t_end=>100,n_steps=>10000,print_functions=>1,\
+#          complex=>1,gml=>2147483647,get_final_state=>0})
+          
+end actions

@@ -1,0 +1,39 @@
+# Model: feature_symmetry_factors_cyclic.bngl
+# Description: Demonstrates a cyclic reaction network where symmetry factors are important.
+#              A <-> B <-> C <-> A
+#              Checks if detailed balance holds (product of forward rates = product of reverse rates)
+#              and how BNGL handles symmetric species.
+
+begin model
+
+begin parameters
+    k_f 1.0
+    k_r 1.0
+end parameters
+
+begin molecule types
+    X(s~A~B~C)
+end molecule types
+
+begin seed species
+    X(s~A) 100
+end seed species
+
+begin observables
+    Molecules A X(s~A)
+    Molecules B X(s~B)
+    Molecules C X(s~C)
+end observables
+
+begin reaction rules
+    # Cyclic loop
+    X(s~A) <-> X(s~B) k_f, k_r
+    X(s~B) <-> X(s~C) k_f, k_r
+    X(s~C) <-> X(s~A) k_f, k_r
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>20, n_steps=>100})

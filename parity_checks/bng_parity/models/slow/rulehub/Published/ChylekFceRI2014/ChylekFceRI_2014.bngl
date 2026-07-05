@@ -1,0 +1,746 @@
+# References:
+# Xu K, Goldstein B, Holowka D, Baird B. Kinetics of multivalent antigen DNP-BSA binding to IgE-Fc epsilon RI in relationship to the stimulated tyrosine phosphorylation of Fc epsilon RI. J Immunol. (1998) 160:3225-35.
+# Faeder JR, Hlavacek WS, Reischl I, Blinov ML, Metzger H, Redondo A, Wofsy C, Goldstein B. Investigation of early events in Fc epsilon RI-mediated signaling using a detailed mathematical model. J Immunol. (2003) 170:3769-81.
+# Barua D, Hlavacek WS, Lipniacki T. A computational model for early events in B cell antigen receptor signaling: analysis of the roles of Lyn and Fyn. J Immunol. (2012) 189:646-58.
+# Lenoci L, Duvernay M, Satchell S, DiBenedetto E, Hamm HE. Mathematical model of PAR1-mediated activation of human platelets. Mol Biosyst.7:1129-37. (2011)
+
+
+begin molecule types
+
+# Residue numbers, where applicable, are given for rat proteins. 
+
+# The ligand is DNP-BSA and is taken to have two virtual haptens. 
+# Each hapten has two possible states, buried (b) or exposed (e).
+Lig(hap~b~e,hap~b~e) 
+
+# The receptor is a complex of FceRI and an IgE antibody.
+# The "fab" components represent the two fab arms of hapten-specific IgE. 
+# b_Y218 and b_Y224 are tyrosines in the ITAM of the beta subunit.
+# b_Y224 is non-canonical, located between the two canonical tyrosines of the ITAM.
+# Y65 and Y76 are tyrosines in the ITAM of the gamma subunit and are lumped as a single site. 
+# Only one (of the two) gamma chains is considered, as a simplification. 
+Rec(fab,fab,b_Y218~0~P,b_Y224~0~P,g_Y65_Y76~0~P)
+
+# Lyn is an SFK with a unique domain (U), an SH2 domain, and an SH3 domain.
+# Y397 is located in the kinase activation loop, and Y508 is the inhibitory C-terminal tyrosine. 
+Lyn(U,SH3,SH2,Y397~0~P,Y508~0~P)
+
+# Fyn is an SFK with a unique domain (U), an SH2 domain, and an SH3 domain.
+# Y420 is located in the kinase activation loop, and Y531 is the inhibitory C-terminal tyrosine. 
+Fyn(U,SH3,SH2,PTK,Y420~0~P,Y531~0~P)
+
+# Syk is a kinase with tandem SH2 domains, which are lumped as a single site.
+# Y346 is located in Interdomain B. 
+# Y519 and Y520 are located in the activation loop of the kinase domain. These tyrosines are lumped as a single site.
+Syk(tSH2,Y346~0~P,PTK,Y519_Y520~0~P)
+
+# Pag1 is an adaptor protein with two proline-rich sequences (PRS1 and PRS2) and multiple phosphosites.
+# Y165 and Y183 are lumped as a single site, as are Y386 and Y409.
+# PRS1 represents the PRIP motif starting at P136. 
+# PRS2 represents the PPVP motif starting at P255.
+Pag1(PRS1,Y165_Y183~0~P,PRS2,Y317~0~P,Y386_Y409~0~P)
+
+# Csk is a kinase with an SH2 domain. 
+Csk(SH2)
+
+# Lat is an adaptor protein with multiple tyrosine residues that undergo phosphorylation, of which we focus on Y136 and Y175
+Lat(Y136~0~P,Y175~0~P)
+
+# Phospholipase C gamma 1 (Plcg1)
+Plcg1(SH2,SH3,PLC,Y783~0~P)
+
+# Grb2 is an adaptor protein with an SH2 domain and two SH3 domains, of which we consider the C-terminal domain. 
+Grb2(SH2,cSH3)
+
+# Gab2 is an adaptor protein
+Gab2(PRS,Y441~0~P)
+
+# Grap2 is an adaptor protein
+Grap2(SH2,SH3)
+
+# Lcp2 is an adaptor protein
+Lcp2(RxxK,PRS)
+
+# PI 3-kinase is a heterodimeric lipid kinase that can phosphorylate the 3 position of an inositol ring.
+# Its p85 subunit contains an SH2 domain.
+Pi3k(p85_SH2,PI3Kc)
+
+# Btk is a Tec family kinase
+Btk(PH,PTK)
+
+# Inpp5d is an inositol phosphatase. It is also known as Ship1. 
+# It contains an SH2 domain, a C2 domain that can bind lipid species, and an inositol polyphosphate phosphatase catalytic domain (IPP) 
+Inpp5d(SH2,IPP,C2)
+
+# Phosphatidylinositol 3,4-bisphosphate, or PtdIns(3,4)P2, is a phospholipid.
+# The "bind" component is a virtual site for protein interactions.
+PI34P2(bind)
+
+# Phosphatidylinositol 4,5-bisphosphate, or PtdIns(4,5)P2, is a phospholipid.
+# The "bind" component is a virtual site for protein interactions.
+PI45P2(bind)
+
+# Phosphatidylinositol 3,4,5-trisphosphate, or PtdIns(3,4,5)P3, is a phospholipid.
+# The "bind" component is a virtual site for protein interactions.
+PI345P3(bind)
+
+# Inositol 1,4,5-trisphosphate
+IP3()
+
+# Diacyl glycerol
+DAG()
+
+# Sink
+Sink()
+
+PI4P()
+end molecule types 
+
+
+begin parameters
+NA		6.022e23		# Avogadro's number; molecules/mole.
+celldensity	1e9			# Cells/L
+Fx     		0.02	 	  	# Fraction of cell volume to simuate; unitless. 
+ECFvol          1/(celldensity)		# Extracellular volume; L/cell.
+simECFvol       ECFvol*Fx		# Simulated fraction of extracellular volume; L. 
+Cellvol         1.4e-12			# Cytoplasmic volume; L. Value from Faeder et al. 
+simCellvol	Cellvol*Fx		# Simulated fraction of cell volume; L.  
+ProteinTot	3e5			# Protein copy number per cell. 
+SimProteinTot	Fx*ProteinTot		# Simulated fraction of protein copy number. 
+LigTot		5e4
+SimLigTot	Fx*LigTot
+
+
+# Exposure of hapten, forward rate constant. (Xu et al, Table I.)
+lambda_p	1.7e-2	# /s
+
+# Exposure of hapten, reverse rate constant.
+# From lambda_p and ratio of forward and reverse rate constants. (Xu et al.) 
+lambda_m	5.4e-2 # /s
+
+# Ligand binding from solution, forward rate constant (Xu et al.). Set in rnf file. 
+kfl	 	0	# 8e6/(NA*simECFvol) /M/s  
+
+# Crosslinking by ligand, forward rate constant (Xu et al.). 
+kxl	        1.3/SimProteinTot #/M/s 
+
+# Ligand binding, reverse rate constant. (Xu et al.)
+krl		1.4e-1  #/s
+
+# Lyn binding receptor through unique domain, forward rate constant (Faeder et al.)
+kfRecLyn1	4.2e7/(NA*simCellvol)  #/M/s
+
+# Lyn binding receptor through unique domain, reverse rate constant (Faeder et al.)
+krRecLyn1	20 #/s
+
+# Lyn binding through SH2 domain, forward rate constant (Faeder et al.)
+kfRecLyn2	kfRecLyn1 #/M/s
+
+# Lyn binding through SH2 domain, reverse rate constant (Faeder et al.)
+krRecLyn2	0.12 #/s
+
+# Receptor phosphorylation (beta chain) by Lyn (Faeder et al.)
+kpLynB1	   	30 #/s
+
+# Receptor phosphorylation (beta chain) by activated Lyn (Faeder et al.)
+kpLynB2	   	100 #/s
+
+# Receptor phosphorylation (gamma chain) by Lyn (Faeder et al.)
+kpLynG1	   1 #/s
+
+# Receptor phosphorylation (gamma chain) by activated Lyn (Faeder et al.)
+kpLynG2 	3 #/s
+
+# Autoinhibitory Lyn intramolecular bond, forward rate constant (Barua et al.) 
+kfLynIn		10 #/s
+
+# Autoinhibitory Lyn intramolecular bond, reverse rate constant (Barua et al.) 
+krLynIn		3e-4 #/s
+
+# Binding of Syk SH2 domains to dually-phosphorylated ITAM, forward rate constant (Faeder et al.)
+kfRecSyk	5.1e7/(NA*simCellvol)  #/M/s
+
+# Binding of Syk SH2 domains to dually-phosphorylated ITAM, reverse rate constant (Faeder et al.)
+krRecSyk	0.13 #/s
+
+
+kpSykSyk0	100
+kpSykSykP	200
+kpLynSyk1	30
+kpLynSyk2	100
+kfPagLynSH3	8.4e6/(NA*simCellvol)
+krPagLynSH3	30
+kfPagLynSH3_2	1e3	
+kfPagLynSH2	2.5e7/(NA*simCellvol)
+kfPagLynSH2_2	1e3
+krPagLyn2point	30
+kpLynPag	1000
+kfCskPag	2.5e4/(NA*simCellvol)
+krCskPag	3e-3
+kpCskLyn	1000
+eff		5
+kfRecFyn1	kfRecLyn1
+krRecFyn1	krRecLyn1
+kfRecFyn2	kfRecLyn2
+krRecFyn2	krRecLyn2
+kfFynIn		kfLynIn
+krFynIn		krLynIn
+kpFynB1		kpLynB1/eff
+kpFynB2		kpLynB2/eff
+kpFynG1		kpLynG1/eff
+kpFynG2		kpLynG2/eff
+kpFynSyk1	kpLynSyk1/eff
+kpFynSyk2	kpLynSyk2/eff
+kfPagFynSH3	kfPagLynSH3
+krPagFynSH3	krPagLynSH3
+kfPagFynSH3_2	kfPagLynSH3_2
+kfPagFynSH2	kfPagLynSH2
+kfPagFynSH2_2	kfPagLynSH2_2
+krPagFyn2point	krPagLyn2point
+kpFynPag	kpLynPag/eff
+kpCskFyn	kpCskLyn
+
+kfSykLat 	kfRecLyn1
+krSykLat 	krRecLyn1
+kpSykLat1	kpSykSyk0
+
+kpSykLat2	kpSykSykP
+
+KD_LatPlcg	62e-9
+krLatPlcg	krRecLyn2
+kfLatPlcg 	(krLatPlcg/KD_LatPlcg)/(NA*simCellvol)
+
+
+# Parameters for IP3 generation are taken from Lenoci et al (2011) 
+kfPlcgPip2 	1e9/(NA*simCellvol)
+krPlcgPip2 	1
+kcPlcgP 	3.2e2
+kcPlcg0 	kcPlcgP/50
+
+
+krLatGrb2 	krRecLyn2
+kfLatGrb2 	2.5e8/(NA*simCellvol)
+
+KD_Grb2Gab2	8e-6
+krGrb2Gab2	krRecLyn2
+kfGrb2Gab2 	(krGrb2Gab2/KD_Grb2Gab2)/(NA*simCellvol)
+
+kfFynGab2 kfSykLat
+krFynGab2 krSykLat
+kpFynGab2 kpFynB1
+
+kfGab2Pi3k kfRecLyn2
+krGab2Pi3k krRecLyn2
+
+kfPi3kPip2	kfPlcgPip2
+krPi3kPip2 	krPlcgPip2
+kpPi3k 		kcPlcgP
+kfBtkPip3 	1.4e6/(NA*simCellvol)
+krBtkPip3	1
+kfBtkPlcg 	kfSykLat
+krBtkPlcg 	krSykLat
+kpBtkPlcg 	kpSykSykP
+kfShipRec 	kfRecLyn2/5
+krShipRec 	krRecLyn2/5
+kfShipPip3 	kfPlcgPip2
+krShipPip3 	krPlcgPip2
+kdpShipPip3 	kcPlcgP	
+kfShipPip2  	kfBtkPip3
+krShipPip2 	krBtkPip3
+kfLatGrap2	6.6e6/(NA*simCellvol)
+krLatGrap2	1
+
+KD_Grb2Gab2	8e-6
+krGrb2Gab2	1
+kfGrb2Gab2	(1/KD_Grb2Gab2)/(NA*simCellvol)
+
+kfGrap2Lcp2	9.5e6/(NA*simCellvol)
+krGrap2Lcp2	0.06
+
+KD_Lcp2Plcg1	1e-6
+krLcp2Plcg1	1
+kfLcp2Plcg1	(krLcp2Plcg1/KD_Lcp2Plcg1)/(NA*simCellvol)
+
+kPten 1
+
+kfP5  1
+krP5 1
+p		1e-3
+dp 		5
+end parameters
+
+begin seed species
+Lig(hap~b,hap~b) SimLigTot
+Rec(fab,fab,b_Y218~0,b_Y224~0,g_Y65_Y76~0) SimProteinTot
+Lyn(U,SH2,SH3,Y397~0,Y508~0) SimProteinTot
+Fyn(U,SH2,SH3,Y420~0,PTK,Y531~0) SimProteinTot
+Syk(tSH2,Y346~0,PTK,Y519_Y520~0) SimProteinTot
+Pag1(PRS1,PRS2,Y317~0,Y165_Y183~0,Y386_Y409~0) SimProteinTot
+Csk(SH2) SimProteinTot
+Lat(Y136~0,Y175~0) SimProteinTot
+Plcg1(SH2,SH3,PLC,Y783~0) SimProteinTot
+Grb2(SH2,cSH3) SimProteinTot
+Gab2(PRS,Y441~0) SimProteinTot
+PI45P2(bind) SimProteinTot
+Pi3k(PI3Kc,p85_SH2) SimProteinTot
+Btk(PH,PTK) SimProteinTot
+Inpp5d(SH2,C2,IPP) SimProteinTot 
+Grap2(SH2,SH3) SimProteinTot
+Lcp2(RxxK,PRS) SimProteinTot
+PI4P()	       SimProteinTot
+Sink()	       SimProteinTot
+end seed species
+
+begin reaction rules
+
+
+# Haptens are transiently exposed. 
+Lig(hap~b) <-> Lig(hap~e) lambda_p,lambda_m
+
+# Binding from solution when a hapten is exposed. Does not depend on state of second hapten. 
+Lig(hap~e,hap~e) + Rec(fab) -> Lig(hap~e,hap~e!1).Rec(fab!1) kfl
+Lig(hap~b,hap~e) + Rec(fab) -> Lig(hap~b,hap~e!1).Rec(fab!1) kfl
+
+# Receptor crosslinking when both haptens are exposed. 
+Lig(hap~e,hap~e!1).Rec(fab!1) + Rec(fab) -> \
+Lig(hap~e!2,hap~e!1).Rec(fab!1).Rec(fab!2) kxl
+
+# Dissociation of hapten from receptor site
+Lig(hap~e!1).Rec(fab!1) -> Lig(hap~e) + Rec(fab) krl
+
+# Lyn unique domain binds receptor 
+Rec(b_Y218~0) + Lyn(U,SH3,SH2) -> \
+Rec(b_Y218~0!1).Lyn(U!1,SH3,SH2) kfRecLyn1
+
+# Lyn unique domain dissociates from receptor 
+Rec(b_Y218~0!1).Lyn(U!1) -> \
+Rec(b_Y218~0) + Lyn(U) krRecLyn1
+
+# Lyn SH2 domain binds receptor 
+Rec(b_Y218~P) + Lyn(U,SH3,SH2) -> \
+Rec(b_Y218~P!1).Lyn(U,SH3,SH2!1) kfRecLyn2
+
+# Lyn SH2 domain dissociates from receptor 
+Rec(b_Y218~P!1).Lyn(SH2!1) ->\
+Rec(b_Y218~P) + Lyn(SH2) krRecLyn2
+
+# Lyn SH2 domain binds Lyn pY508, forming an intramolecular bond  
+Lyn(U,SH3,SH2,Y508~P) -> \
+Lyn(U,SH3,SH2!1,Y508~P!1) kfLynIn
+
+# Lyn SH2 dissociates from Lyn pY508
+Lyn(SH2!1,Y508~P!1) -> \
+Lyn(SH2,Y508~P) krLynIn
+
+## Lyn phosphorylates Y218 in the beta subunit of the receptor. 
+# Lyn bound by its unqiue domain
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~0) -> \
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~P) kpLynB1
+
+# Lyn bound by its SH2 domain
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~0) -> \
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~P) kpLynB2
+
+## Lyn phosphorylates Y224 in the beta subunit of the receptor. 
+# Lyn bound by its unqiue domain
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~0) ->\
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~P) kpLynB1
+
+# Lyn bound by its SH2 domain
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~0) ->\
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~P) kpLynB2
+
+## Lyn phosphorylates Y65 and Y76 in the gamma subunit of the receptor. 
+# Lyn bound by its unqiue domain
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~0) ->\
+Lyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P) kpLynG1
+
+# Lyn bound by its SH2 domain
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~0) ->\
+Lyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P) kpLynG2
+
+# Syk binds the dually phosphorylated gamma subunit of the receptor 
+Syk(tSH2) + Rec(g_Y65_Y76~P) <-> Syk(tSH2!1).Rec(g_Y65_Y76~P!1) kfRecSyk,krRecSyk
+
+## Lyn phosphorylates Syk
+# Lyn bound by its unique domain 
+Lyn(U!1).Rec(fab!2,b_Y218~0!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~0) ->\
+Lyn(U!1).Rec(fab!2,b_Y218~0!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~P)  kpLynSyk1
+
+# Lyn bound by its SH2 domain 
+Lyn(SH2!1).Rec(fab!2,b_Y218~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~0) ->\
+Lyn(SH2!1).Rec(fab!2,b_Y218~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~P)  kpLynSyk2
+
+## Syk trans-phosphorylates the activation loop tyrosine of another Syk molecule 
+# Syk unphosphorlyated on activation loop
+Syk(tSH2!1,Y519_Y520~0).Rec(fab!2,g_Y65_Y76~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y519_Y520~0) ->\
+Syk(tSH2!1,Y519_Y520~0).Rec(fab!2,g_Y65_Y76~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y519_Y520~P) kpSykSyk0
+
+# Syk phosphorylated on activation loop 
+Syk(tSH2!1,Y519_Y520~P).Rec(fab!2,g_Y65_Y76~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y519_Y520~0) ->\
+Syk(tSH2!1,Y519_Y520~P).Rec(fab!2,g_Y65_Y76~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y519_Y520~P) kpSykSykP
+
+## SH3 domain of Lyn binds PRS2 in Pag1
+# Association when Lyn is free 
+Lyn(U,SH3,SH2) + Pag1(PRS2,Y386_Y409) -> \ 
+Lyn(U,SH3!1,SH2).Pag1(PRS2!1,Y386_Y409) kfPagLynSH3
+
+# Association when Lyn is tethered to Pag1 by an SH2 domain-pY interaction
+# Lyn, already tethered in Pag1 by SH2, binds Pag1 via SH3 domain
+Lyn(U,SH3,SH2!2).Pag1(PRS2,Y386_Y409~P!2) -> \ 
+Lyn(U,SH3!1,SH2!2).Pag1(PRS2!1,Y386_Y409~P!2) kfPagLynSH3_2
+
+# Dissociation of Lyn SH3
+Lyn(SH3!1,SH2).Pag1(PRS2!1,Y386_Y409) -> \ 
+Lyn(SH3,SH2) + Pag1(PRS2,Y386_Y409)  krPagLynSH3
+
+
+# SH2 domain of Lyn binds a pY docking site in Pag1
+# Association when Lyn is free 
+Lyn(U,SH3,SH2) + Pag1(PRS2,Y386_Y409~P) -> \ 
+Lyn(U,SH3,SH2!2).Pag1(PRS2,Y386_Y409~P!2) kfPagLynSH2
+
+# Association when Lyn is tethered to Pag1 via an SH3 domain-PRS interaction
+Lyn(U,SH3!1,SH2).Pag1(PRS2!1,Y386_Y409~P) -> \ 
+Lyn(U,SH3!1,SH2!2).Pag1(PRS2!1,Y386_Y409~P!2) kfPagLynSH2_2
+
+# Dissociation of Lyn from Pag1, breaking two-point attachment 
+# Because association of the Lyn SH3 domain with Pag1 PRS2 is rapid (relative to the lifetime of a pY-SH2 bond) when Lyn is tethered by its SH2 domain, 
+# we omit dissociation of the SH2 domain alone, as a simplification. 
+Lyn(SH3!1,SH2!2).Pag1(PRS2!1,Y386_Y409~P!2) -> \ 
+Lyn(SH3,SH2) + Pag1(PRS2,Y386_Y409~P)  krPagLyn2point
+
+# Lyn phosphorylates Y386 and Y409 in Pag1
+Lyn(SH3!1,Y508).Pag1(PRS2!1,Y386_Y409~0) -> \
+Lyn(SH3!1,Y508).Pag1(PRS2!1,Y386_Y409~P) kpLynPag                
+
+# Lyn phosphorylates Y165 and Y183 in Pag1                      
+Lyn(SH3,SH2!1,Y508).Pag1(Y165_Y183~0,Y386_Y409~P!1) -> \ 
+Lyn(SH3,SH2!1,Y508).Pag1(Y165_Y183~P,Y386_Y409~P!1) kpLynPag  
+
+Lyn(SH3!2,SH2!1,Y508).Pag1(PRS2!2,Y165_Y183~0,Y386_Y409~P!1) -> \ 
+Lyn(SH3!2,SH2!1,Y508).Pag1(PRS2!2,Y165_Y183~P,Y386_Y409~P!1) kpLynPag  
+
+Lyn(SH3!1,SH2,Y508).Pag1(PRS2!1,Y165_Y183~0) -> \ 
+Lyn(SH3!1,SH2,Y508).Pag1(PRS2!1,Y165_Y183~P) kpLynPag  
+
+Lyn(SH2!1,Y508).Pag1(Y317~0,Y386_Y409~P!1) -> \ 
+Lyn(SH2!1,Y508).Pag1(Y317~P,Y386_Y409~P!1) kpLynPag 
+
+# Lyn phosphorylates Y317 in Pag1                      
+Lyn(SH3,SH2!1,Y508).Pag1(Y317~0,Y386_Y409~P!1) -> \ 
+Lyn(SH3,SH2!1,Y508).Pag1(Y317~P,Y386_Y409~P!1) kpLynPag  
+
+Lyn(SH3!2,SH2!1,Y508).Pag1(PRS2!2,Y317~0,Y386_Y409~P!1) -> \ 
+Lyn(SH3!2,SH2!1,Y508).Pag1(PRS2!2,Y317~P,Y386_Y409~P!1) kpLynPag  
+
+Lyn(SH3!1,SH2,Y508).Pag1(PRS2!1,Y317~0) -> \ 
+Lyn(SH3!1,SH2,Y508).Pag1(PRS2!1,Y317~P) kpLynPag  
+
+
+# SH2 domain of Csk binds pY317 docking site in Pag1
+Csk(SH2) + Pag1(Y317~P) <-> \
+Csk(SH2!3).Pag1(Y317~P!3) kfCskPag,krCskPag
+
+# Csk cis phosphorylates Y508 in Lyn
+Lyn(SH3,SH2!1,Y508~0).Pag1(Y386_Y409~P!1,Y317~P!2).Csk(SH2!2) ->\
+Lyn(SH3,SH2!1,Y508~P).Pag1(Y386_Y409~P!1,Y317~P!2).Csk(SH2!2) kpCskLyn
+
+Lyn(SH3!1,SH2,Y508~0).Pag1(PRS2!1,Y317~P!2).Csk(SH2!2) ->\
+Lyn(SH3!1,SH2,Y508~P).Pag1(PRS2!1,Y317~P!2).Csk(SH2!2) kpCskLyn
+
+Lyn(SH3!1,SH2!3,Y508~0).Pag1(PRS2!1,Y386_Y409~P!3,Y317~P!2).Csk(SH2!2) ->\
+Lyn(SH3!1,SH2!3,Y508~P).Pag1(PRS2!1,Y386_Y409~P!3,Y317~P!2).Csk(SH2!2) kpCskLyn
+
+# Fyn unique domain binds receptor 
+Rec(b_Y218~0) + Fyn(U,SH3,SH2) ->\
+Rec(b_Y218~0!1).Fyn(U!1,SH3,SH2) kfRecFyn1
+
+# Fyn unique domain dissociates from receptor 
+Rec(b_Y218~0!1).Fyn(U!1) ->\
+Rec(b_Y218~0) + Fyn(U) krRecFyn1
+
+# Fyn SH2 domain binds receptor 
+Rec(b_Y218~P) + Fyn(U,SH3,SH2) ->\
+Rec(b_Y218~P!1).Fyn(U,SH3,SH2!1) kfRecFyn2
+
+# Fyn SH2 domain dissociates from receptor 
+Rec(b_Y218~P!1).Fyn(SH2!1) ->\
+Rec(b_Y218~P) + Fyn(SH2) krRecFyn2
+
+# Fyn SH2 domain binds Fyn pY531, forming an intramolecular bond  
+Fyn(U,SH3,SH2,Y531~P) -> Fyn(U,SH3,SH2!1,Y531~P!1) kfFynIn
+
+# Fyn SH2 domain dissociates from pY531
+Fyn(SH2!1,Y531~P!1) ->\
+Fyn(SH2,Y531~P) krFynIn
+
+# Fyn phosphorylates Y218 in the beta subunit of the receptor 
+# Fyn bound by its unique domain
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~0) ->\
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~P) kpFynB1
+
+# Fyn bound by its SH2 domain 
+Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~0) -> Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y218~P) kpFynB2
+
+# Fyn phosphorylates Y224 in the beta subunit of the receptor 
+# Fyn bound by its unique domain
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~0) ->\
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~P) kpFynB1
+
+# Fyn bound by its SH2 domain 
+Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~0) -> Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,b_Y224~P) kpFynB2
+
+# Fyn phosphorylates Y65 and Y76 in the gamma subunit of the receptor 
+# Fyn bound by its unique domain
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~0) ->\
+Fyn(U!1).Rec(b_Y218~0!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P) kpFynG1
+
+# Fyn bound by its SH2 domain 
+Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~0) ->\
+Fyn(SH2!1).Rec(b_Y218~P!1,fab!2).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P) kpFynG2
+
+## Fyn phosphorylates Syk
+# Fyn bound by its unique domain 
+Fyn(U!1).Rec(fab!2,b_Y218~0!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~0) ->\
+Fyn(U!1).Rec(fab!2,b_Y218~0!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~P)  kpFynSyk1
+
+# Fyn bound by its SH2 domain 
+Fyn(SH2!1).Rec(fab!2,b_Y218~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~0) ->\
+Fyn(SH2!1).Rec(fab!2,b_Y218~P!1).Lig(hap~e!2,hap~e!3).Rec(fab!3,g_Y65_Y76~P!4).Syk(tSH2!4,Y346~P)  kpFynSyk2
+
+## SH3 domain of Fyn binds PRS1 in Pag1
+# Association when Fyn is free 
+Fyn(U,SH3,SH2) + Pag1(PRS1,Y165_Y183) -> \ 
+Fyn(U,SH3!1,SH2).Pag1(PRS1!1,Y165_Y183) kfPagFynSH3
+
+# Association when Fyn is tethered to Pag1 via an SH2 domain-pY interaction
+Fyn(U,SH3,SH2!2).Pag1(PRS1,Y165_Y183~P!2) -> \ 
+Fyn(U,SH3!1,SH2!2).Pag1(PRS1!1,Y165_Y183~P!2) kfPagFynSH3_2
+
+# Dissociation of Fyn SH3 
+Fyn(SH3!1,SH2).Pag1(PRS1!1,Y165_Y183) -> \ 
+Fyn(SH3,SH2) + Pag1(PRS1,Y165_Y183)  krPagFynSH3
+
+## SH2 domain of Fyn binds a pY in Pag1
+# Association when Fyn is free
+Fyn(U,SH3,SH2) + Pag1(PRS1,Y165_Y183~P) -> \ 
+Fyn(U,SH3,SH2!2).Pag1(PRS1,Y165_Y183~P!2) kfPagFynSH2
+
+# Association when Fyn is tethered to Pag1 via SH3 domain-PRS interaction
+Fyn(U,SH3!1,SH2).Pag1(PRS1!1,Y165_Y183~P) -> \ 
+Fyn(U,SH3!1,SH2!2).Pag1(PRS1!1,Y165_Y183~P!2) kfPagFynSH2_2
+
+# Dissociation of Fyn from Pag1, breaking two-point attachment 
+Fyn(SH3!1,SH2!2).Pag1(PRS1!1,Y165_Y183~P!2) -> \ 
+Fyn(SH3,SH2) + Pag1(PRS1,Y165_Y183~P)  krPagFyn2point
+
+# Fyn phosphorylates Y386 and Y409 in Pag1
+Fyn(SH3,SH2!1,Y531).Pag1(Y386_Y409~0,Y165_Y183~P!1) -> \ 
+Fyn(SH3,SH2!1,Y531).Pag1(Y386_Y409~P,Y165_Y183~P!1) kpFynPag
+
+Fyn(SH3!2,SH2!1,Y531).Pag1(PRS1!2,Y386_Y409~0,Y165_Y183~P!1) -> \ 
+Fyn(SH3!2,SH2!1,Y531).Pag1(PRS1!2,Y386_Y409~P,Y165_Y183~P!1) kpFynPag
+
+Fyn(SH3!1,SH2,Y531).Pag1(PRS1!1,Y386_Y409~0) -> \ 
+Fyn(SH3!1,SH2,Y531).Pag1(PRS1!1,Y386_Y409~P) kpFynPag
+
+# Fyn phosphorylates Y317 in Pag1
+Fyn(SH3,SH2!1,Y531).Pag1(Y317~0,Y165_Y183~P!1) -> \ 
+Fyn(SH3,SH2!1,Y531).Pag1(Y317~P,Y165_Y183~P!1) kpFynPag
+
+Fyn(SH3!2,SH2!1,Y531).Pag1(PRS1!2,Y317~0,Y165_Y183~P!1) -> \ 
+Fyn(SH3!2,SH2!1,Y531).Pag1(PRS1!2,Y317~P,Y165_Y183~P!1) kpFynPag
+
+Fyn(SH3!1,SH2,Y531).Pag1(PRS1!1,Y317~0) -> \ 
+Fyn(SH3!1,SH2,Y531).Pag1(PRS1!1,Y317~P) kpFynPag
+
+# Csk cis phosphorylates Y531 in Fyn
+Fyn(SH3,SH2!1,Y531~0).Pag1(Y165_Y183~P!1,Y317~P!2).Csk(SH2!2) ->\
+Fyn(SH3,SH2!1,Y531~P).Pag1(Y165_Y183~P!1,Y317~P!2).Csk(SH2!2) kpCskFyn
+
+Fyn(SH3!1,SH2,Y531~0).Pag1(PRS1!1,Y317~P!2).Csk(SH2!2) ->\
+Fyn(SH3!1,SH2,Y531~P).Pag1(PRS1!1,Y317~P!2).Csk(SH2!2) kpCskFyn
+
+Fyn(SH3!1,SH2!3,Y531~0).Pag1(PRS1!1,Y165_Y183~P!3,Y317~P!2).Csk(SH2!2) ->\
+Fyn(SH3!1,SH2!3,Y531~P).Pag1(PRS1!1,Y165_Y183~P!3,Y317~P!2).Csk(SH2!2) kpCskFyn
+
+
+# Syk phosphorylates Lat Y136
+Syk(tSH2!+,PTK) + Lat(Y136~0) -> Syk(tSH2!+,PTK!1).Lat(Y136~0!1) kfSykLat
+Syk(PTK!1).Lat(Y136~0!1) -> Syk(PTK) + Lat(Y136~0) krSykLat
+Syk(PTK!1,Y519_Y520~P).Lat(Y136~0!1) -> Syk(PTK,Y519_Y520~P) + Lat(Y136~P) kpSykLat2
+Syk(PTK!1,Y519_Y520~0).Lat(Y136~0!1) -> Syk(PTK,Y519_Y520~0) + Lat(Y136~P) kpSykLat1
+
+
+# Lat pY136 binds Plcg1
+Lat(Y136~P) + Plcg1(SH2) <-> Lat(Y136~P!1).Plcg1(SH2!1) kfLatPlcg,krLatPlcg
+
+# Syk phosphorylates Lat Y175
+Syk(tSH2!+,PTK) + Lat(Y175~0) -> Syk(tSH2!+,PTK!1).Lat(Y175~0!1) kfSykLat
+Syk(PTK!1).Lat(Y175~0!1) -> Syk(PTK) + Lat(Y175~0) krSykLat
+Syk(PTK!1,Y519_Y520~P).Lat(Y175~0!1) -> Syk(PTK,Y519_Y520~P) + Lat(Y175~P) kpSykLat2
+Syk(PTK!1,Y519_Y520~0).Lat(Y175~0!1) -> Syk(PTK,Y519_Y520~0) + Lat(Y175~P) kpSykLat1
+
+# Lat pY175 binds Grb2
+Lat(Y175~P) + Grb2(SH2) <-> Lat(Y175~P!1).Grb2(SH2!1) kfLatGrb2,krLatGrb2
+
+# Lat pY175 binds Grap2
+Lat(Y175~P) + Grap2(SH2) <-> Lat(Y175~P!1).Grap2(SH2!1) kfLatGrap2,krLatGrap2
+
+# Grap2 binds Lcp2
+Grap2(SH3) + Lcp2(RxxK) <-> Grap2(SH3!1).Lcp2(RxxK!1) kfGrap2Lcp2,krGrap2Lcp2
+
+# Grb2 binds Gab2
+Grb2(cSH3) + Gab2(PRS) <-> Grb2(cSH3!1).Gab2(PRS!1) kfGrb2Gab2,krGrb2Gab2
+
+# Lcp2 binds Plcg1
+Lcp2(PRS) + Plcg1(SH3) <-> Lcp2(PRS!1).Plcg1(SH3!1) kfLcp2Plcg1,krLcp2Plcg1
+
+# Fyn phosphorylates Gab2
+Fyn(U!+,SH2,PTK) + Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~0) ->\
+Fyn(U!+,SH2,PTK!3).Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~0!3)  kfFynGab2
+
+Rec(b_Y218~P!4).Fyn(U,SH2!4,PTK) + Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~0) ->\
+Rec(b_Y218~P!4).Fyn(U,SH2!4,PTK!3).Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~0!3)  kfFynGab2
+
+Fyn(PTK!1).Gab2(Y441~0!1) -> Fyn(PTK) + Gab2(Y441~0) krFynGab2
+
+Fyn(PTK!1).Gab2(Y441~0!1) -> Fyn(PTK) + Gab2(Y441~P) kpFynGab2
+
+# Gab2 binds PI 3-kinase
+Gab2(Y441~P) + Pi3k(p85_SH2) <-> Gab2(Y441~P!1).Pi3k(p85_SH2!1) kfGab2Pi3k,krGab2Pi3k
+
+# PI 3-kinase generates PIP3
+Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~P!3).Pi3k(p85_SH2!3,PI3Kc) + PI45P2(bind) ->\
+Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~P!3).Pi3k(p85_SH2!3,PI3Kc!4).PI45P2(bind!4) kfPi3kPip2
+
+Pi3k(PI3Kc!1).PI45P2(bind!1) -> Pi3k(PI3Kc) + PI45P2(bind) krPi3kPip2
+
+Pi3k(PI3Kc!1).PI45P2(bind!1) -> Pi3k(PI3Kc) + PI345P3(bind) + PI45P2(bind) kpPi3k 
+Pi3k(PI3Kc!1).PI45P2(bind!1) -> Pi3k(PI3Kc) + PI345P3(bind) kpPi3k DeleteMolecules
+
+
+# Btk binds PIP3
+Btk(PH) + PI345P3(bind) <-> Btk(PH!1).PI345P3(bind!1) kfBtkPip3,krBtkPip3
+
+# Btk phosphorylates Plcg1
+Btk(PH!+,PTK) + Plcg1(SH2!+,Y783~0) -> Btk(PH!+,PTK!1).Plcg1(SH2!+,Y783~0!1) kfBtkPlcg
+Btk(PTK!1).Plcg1(Y783~0!1) -> Btk(PTK) + Plcg1(Y783~0) krBtkPlcg
+Btk(PTK!1).Plcg1(Y783~0!1) -> Btk(PTK) + Plcg1(Y783~P) kpBtkPlcg
+
+# Inpp5d binds phosphorylated Y224 in the beta subunit of the receptor
+Inpp5d(SH2,C2) + Rec(b_Y224~P) -> Inpp5d(SH2!1,C2).Rec(b_Y224~P!1) kfShipRec
+Inpp5d(IPP,C2!+) + Rec(b_Y224~P) -> Inpp5d(IPP!1,C2!+).Rec(b_Y224~P!1) 100*kfShipRec
+Inpp5d(SH2!1).Rec(b_Y224~P!1) -> Inpp5d(SH2) + Rec(b_Y224~P) krShipRec
+
+Inpp5d(SH2!+,IPP) + PI345P3(bind) <-> Inpp5d(SH2!+,IPP!1).PI345P3(bind!1) kfShipPip3,krShipPip3
+Inpp5d(SH2!+,IPP!1).PI345P3(bind!1) -> Inpp5d(SH2!+,IPP) 0.01*kdpShipPip3 DeleteMolecules
+
+PI345P3(bind) + Sink() -> Sink() 0.001*kdpShipPip3 DeleteMolecules
+
+# Other lipid reactions
+PI345P3(bind) -> PI45P2(bind) kPten DeleteMolecules 
+PI4P() -> PI45P2(bind) kfP5 DeleteMolecules 
+PI45P2(bind) -> PI4P() krP5 DeleteMolecules
+# Nonspecific phosphorylation and dephosphorylation
+
+Rec(b_Y218~0) -> Rec(b_Y218~P) p
+Rec(b_Y218~P) -> Rec(b_Y218~0) dp
+
+Rec(b_Y224~0) -> Rec(b_Y224~P) p
+Rec(b_Y224~P) -> Rec(b_Y224~0) dp
+
+Rec(g_Y65_Y76~0) -> Rec(g_Y65_Y76~P) p
+Rec(g_Y65_Y76~P) -> Rec(g_Y65_Y76~0) dp
+
+Lyn(Y508~0) -> Lyn(Y508~P) p
+Lyn(Y508~P) -> Lyn(Y508~0) dp
+
+Fyn(Y531~0) -> Fyn(Y531~P) p 
+Fyn(Y531~P) -> Fyn(Y531~0) dp 
+
+Syk(Y346~0) -> Syk(Y346~P) p 
+Syk(Y346~P) -> Syk(Y346~0) dp 
+
+Syk(Y519_Y520~0) -> Syk(Y519_Y520~P) p
+Syk(Y519_Y520~P) -> Syk(Y519_Y520~0) dp
+
+Pag1(Y317~0) -> Pag1(Y317~P) p 
+Pag1(Y317~P) -> Pag1(Y317~0) dp 
+
+Pag1(Y165_Y183~0) -> Pag1(Y165_Y183~P) p
+Pag1(Y165_Y183~P) -> Pag1(Y165_Y183~0) dp
+
+Pag1(Y386_Y409~0) -> Pag1(Y386_Y409~P) p
+Pag1(Y386_Y409~P) -> Pag1(Y386_Y409~0) dp 
+
+Gab2(Y441~0) -> Gab2(Y441~P) p
+Gab2(Y441~P) -> Gab2(Y441~0) dp
+
+Lat(Y136~0) -> Lat(Y136~P) p
+Lat(Y136~P) -> Lat(Y136~0) dp
+
+Lat(Y175~0) -> Lat(Y175~P) p
+Lat(Y175~P) -> Lat(Y175~0) dp
+
+Plcg1(Y783~0) -> Plcg1(Y783~P) p
+Plcg1(Y783~P) -> Plcg1(Y783~0) dp
+
+
+end reaction rules 
+
+begin observables
+Molecules Lat_pY136 Lat(Y136~P!?)
+Molecules Lat_pY175 Lat(Y175~P!?)
+Molecules Rec_pY218 Rec(b_Y218~P!?)
+Molecules Rec_pY224 Rec(b_Y224~P!?)
+Molecules Rec_pY65_Y76 Rec(g_Y65_Y76~P!?)
+Molecules Syk_pY346 Syk(Y346~P!?)
+Molecules Gab2_pY441 Gab2(Y441~P!?)
+Molecules PI3K_recruited Lat(Y175~P!1).Grb2(SH2!1,cSH3!2).Gab2(PRS!2,Y441~P!3).Pi3k(p85_SH2!3)
+Molecules PI345P3	PI345P3(bind!?)
+
+Molecules Plcg1_pY783	Plcg1(Y783~P!?)
+Molecules LynUbound Lyn(U!+)
+Molecules LynSH2bound	Lyn(SH2!+)
+Molecules Shipbound Inpp5d(SH2!+)
+Molecules Plc_pip2 Plcg1(PLC!1).PI45P2(bind!1) 
+Molecules Lat_Plc Lat(Y136~P!1).Plcg1(SH2!1)
+
+
+Molecules IP3	IP3()
+Molecules PI34P2	PI34P2(bind!?)
+Molecules PI45P2	PI45P2(bind!?)
+
+Molecules Pag_Y165 Pag1(Y165_Y183~P!?)
+Molecules Pag_Y409 Pag1(Y386_Y409~P!?)
+Molecules LynIn	  Lyn(SH2!1,Y508~P!1)
+Molecules FynIn Fyn(SH2!1,Y531~P!1)
+Molecules Lyn_pY508 Lyn(Y508~P!?)
+Molecules Fyn_pY508 Fyn(Y531~P!?)
+
+Molecules Btk_recruited Btk(PH!+)
+# Free ligand
+Molecules LigFree  Lig(hap,hap)
+
+# Crosslinked receptor dimer 
+Molecules Crosslinks Lig(hap~e!1,hap~e!2).Rec(fab!1).Rec(fab!2)
+
+# Ligand with both haptens buried
+Molecules DNP_exposed_0_of_2	   Lig(hap~b!?,hap~b!?)
+
+# Ligand with one hapten exposed
+Molecules  DNP_exposed_1_of_2	   Lig(hap~b!?,hap~e!?)
+
+# Ligand with both haptens exposed
+Molecules  DNP_exposed_2_of_2	   Lig(hap~e!?,hap~e!?)
+
+# Total ligand
+Molecules LigTotal Lig(hap!?,hap!?)
+
+Molecules Syk_pY519_520 Syk(Y519_Y520~P)
+
+end observables
+
+writeXML();

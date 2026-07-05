@@ -1,0 +1,59 @@
+# Edge case: synthesis-from-zero of a pre-bonded multi-molecule complex
+# Tests:  the rule "0 -> A(b!1).B(a!1)  k" carries TWO AddMolecule ops
+#         AND an AddBond whose BOTH endpoints reference newly-added
+#         (product-pattern) molecules.  Hits the dual product_mol_a /
+#         product_mol_b resolution path in fire_rule (model.hpp:118-128
+#         and the corresponding engine.cpp branch).  Most of the
+#         feature-coverage suite synthesises a single bare molecule
+#         (Src() -> Src()+A()); the bond-between-two-new-molecules path
+#         has no fast-path coverage today.
+# Edge:   companion zero-order DESTRUCTION rule with DeleteMolecules
+#         deletes the entire bound dimer at once (not per-molecule
+#         deletion), exercising the multi-molecule reactant pattern
+#         + complex-degradation fire path.
+# Tier:   base
+# Expected: AB_dimer rises to k_syn/k_deg = 25 at steady state.
+
+begin model
+begin parameters
+    k_syn   2.5   # /s, dimer synthesis rate (zero-order)
+    k_deg   0.1   # /s, dimer degradation rate per dimer
+    kf      0.0   # disable rebinding so the zero-order paths dominate
+    kr      0.0
+end parameters
+
+begin molecule types
+    A(b)
+    B(a)
+    Trash()
+end molecule types
+
+begin seed species
+    A(b)      0
+    B(a)      0
+    $Trash()  0
+end seed species
+
+begin observables
+    Molecules  A_total    A()
+    Molecules  B_total    B()
+    Molecules  AB_dimer   A(b!1).B(a!1)
+    Molecules  A_free     A(b)
+    Molecules  B_free     B(a)
+end observables
+
+begin reaction rules
+    # Synthesise the bonded dimer in one shot.
+    0 -> A(b!1).B(a!1)  k_syn
+    # Degrade the bonded dimer in one shot (DeleteMolecules destroys
+    # both reactant molecules; without it BNG2 would interpret this as
+    # whole-species deletion, which we want).
+    A(b!1).B(a!1) -> Trash() + Trash()  k_deg  DeleteMolecules
+    # Inert binding pair (kept off so the dynamics are pure source-sink).
+    A(b) + B(a) <-> A(b!1).B(a!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>80})
+end actions

@@ -1,0 +1,79 @@
+# Model: ml_svm.bngl
+# Description: Implements a Linear Support Vector Machine (SVM).
+#              Hyperplane Weights (W1, W2) and Bias (B) are distinct molecule types.
+#              Data points are constant parameters.
+#              Training logic uses gradient descent on Hinge Loss.
+
+begin model
+
+begin parameters
+    # Data Set (x1,x2,label)
+    # Class 1
+    P1x 1.0
+    P1y 1.0
+    P1l 1.0
+    # Class -1
+    P2x 5.0
+    P2y 5.0
+    P2l_abs 1.0
+    
+    # Training parameters
+    Eta 0.005
+    Lambda 0.01
+    Tau 1.0
+end parameters
+
+begin molecule types
+    W1()
+    W2()
+    B()
+end molecule types
+
+begin seed species
+    W1() 0.1
+    W2() 0.1
+    B() 0.0
+end seed species
+
+begin observables
+    Molecules ObsW1 W1()
+    Molecules ObsW2 W2()
+    Molecules ObsB  B()
+end observables
+
+begin functions
+    # Inlined calculations for better performance/reliability
+    # Point 1: Class 1 (1.0, 1.0, label=1.0)
+    # Point 2: Class -1 (5.0, 5.0, label=-1.0)
+    
+    # dB_dt = -Eta * (GradB1 + GradB2) * 0.5
+    # GradB1 = -1 * 1 / (1 + exp(-10 * (1 - (ObsW1 * 1.0 + ObsW2 * 1.0 + ObsB))))
+    # GradB2 = -(-1) * 1 / (1 + exp(-10 * (1 - (-1.0 * (ObsW1 * 5.0 + ObsW2 * 5.0 + ObsB)))))
+    
+    # Let's just use the original structure but check the signs
+    dB_dt() = ((-Eta)/2) * ( -1/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P1x)+(ObsW2*P1y)+ObsB)*1.0))))) + 1/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P2x)+(ObsW2*P2y)+ObsB)*(-P2l_abs)))))) )
+    
+    dW1_dt() = -Eta * (Lambda * ObsW1 + ( (-P1l*P1x)/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P1x)+(ObsW2*P1y)+ObsB)*P1l))))) + (-(-P2l_abs)*P2x)/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P2x)+(ObsW2*P2y)+ObsB)*(-P2l_abs)))))) )/2)
+    dW2_dt() = -Eta * (Lambda * ObsW2 + ( (-P1l*P1y)/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P1x)+(ObsW2*P1y)+ObsB)*P1l))))) + (-(-P2l_abs)*P2y)/(1+exp(min(50,max(-50,-10*(1-((ObsW1*P2x)+(ObsW2*P2y)+ObsB)*(-P2l_abs)))))) )/2)
+
+    rateU1() = 0.5 * (dW1_dt() + sqrt(dW1_dt()^2 + 1e-4))
+    rateD1() = 0.5 * (-dW1_dt() + sqrt((-dW1_dt())^2 + 1e-4))
+    rateU2() = 0.5 * (dW2_dt() + sqrt(dW2_dt()^2 + 1e-4))
+    rateD2() = 0.5 * (-dW2_dt() + sqrt((-dW2_dt())^2 + 1e-4))
+    rateUB() = 0.5 * (dB_dt() + sqrt(dB_dt()^2 + 1e-4))
+    rateDB() = 0.5 * (-dB_dt() + sqrt((-dB_dt())^2 + 1e-4))
+end functions
+
+begin reaction rules
+    R1: 0 -> W1() rateU1()
+    R2: W1() -> 0 rateD1()
+    R3: 0 -> W2() rateU2()
+    R4: W2() -> 0 rateD2()
+    R5: 0 -> B() rateUB()
+    R6: B() -> 0 rateDB()
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>0.1,n_steps=>10})

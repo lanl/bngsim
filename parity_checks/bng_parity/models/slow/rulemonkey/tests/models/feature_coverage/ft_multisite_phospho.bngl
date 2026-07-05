@@ -1,0 +1,63 @@
+# Feature: multi-site phosphorylation with competing kinase/phosphatase
+# Tests: multiple independent phosphorylation sites on one substrate
+# Covers: e2-e9 (2-9 site models) from existing corpus
+# Tier: base
+# Expected: each site reaches independent phosphorylation equilibrium
+
+begin model
+begin parameters
+    E_tot   20
+    F_tot   20
+    S_tot   200
+
+    kOn     0.005   # /s, enzyme binding
+    kOff    3.0     # /s, enzyme unbinding
+    kCat    5.0     # /s, catalytic rate
+end parameters
+
+begin molecule types
+    E(s)
+    F(s)
+    S(p1~U~P,p2~U~P,p3~U~P,p4~U~P)
+end molecule types
+
+begin seed species
+    E(s)                        E_tot
+    F(s)                        F_tot
+    S(p1~U,p2~U,p3~U,p4~U)     S_tot
+end seed species
+
+begin observables
+    Molecules  Efree   E(s)
+    Molecules  Ffree   F(s)
+    Molecules  Sp1     S(p1~P)
+    Molecules  Sp2     S(p2~P)
+    Molecules  Sp3     S(p3~P)
+    Molecules  Sp4     S(p4~P)
+end observables
+
+begin reaction rules
+    # Kinase phosphorylation of each site
+    E(s) + S(p1~U) <-> E(s!1).S(p1~U!1)  kOn, kOff
+    E(s!1).S(p1~U!1) -> E(s) + S(p1~P)   kCat
+    E(s) + S(p2~U) <-> E(s!1).S(p2~U!1)  kOn, kOff
+    E(s!1).S(p2~U!1) -> E(s) + S(p2~P)   kCat
+    E(s) + S(p3~U) <-> E(s!1).S(p3~U!1)  kOn, kOff
+    E(s!1).S(p3~U!1) -> E(s) + S(p3~P)   kCat
+    E(s) + S(p4~U) <-> E(s!1).S(p4~U!1)  kOn, kOff
+    E(s!1).S(p4~U!1) -> E(s) + S(p4~P)   kCat
+    # Phosphatase dephosphorylation of each site
+    F(s) + S(p1~P) <-> F(s!1).S(p1~P!1)  kOn, kOff
+    F(s!1).S(p1~P!1) -> F(s) + S(p1~U)   kCat
+    F(s) + S(p2~P) <-> F(s!1).S(p2~P!1)  kOn, kOff
+    F(s!1).S(p2~P!1) -> F(s) + S(p2~U)   kCat
+    F(s) + S(p3~P) <-> F(s!1).S(p3~P!1)  kOn, kOff
+    F(s!1).S(p3~P!1) -> F(s) + S(p3~U)   kCat
+    F(s) + S(p4~P) <-> F(s!1).S(p4~P!1)  kOn, kOff
+    F(s!1).S(p4~P!1) -> F(s) + S(p4~U)   kCat
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

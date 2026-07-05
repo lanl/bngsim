@@ -1,0 +1,108 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molcules/mol
+cellDensity 1e9 # cells/L
+Vecf=1/cellDensity # L/cell
+
+kf 1e7/(NA*Vecf) # /M/s converted to /(molecules/cell)/s
+
+kr 0.01 # /s
+
+LT 0.1e-9*(NA*Vecf) # M converted to molecules/cell
+# LT = 6022141 copies per cell for LT = 10 nM
+
+RT 1e6 # copies per cell
+
+kdeg_slow 1e-3 # /s
+kdeg_intermediate 3.16227e-2 # /s
+kdeg_fast 1 # /s
+
+ksynth_slow=kdeg_slow*LT # molecules/s
+ksynth_intermediate=kdeg_intermediate*LT # molecules/s
+ksynth_fast=kdeg_fast*LT # molecules/s
+
+end parameters
+
+begin molecule types
+L(s)
+R(s)
+Lfixed(s)
+Rfixed(s)
+Lslow(s)
+Rslow(s)
+Lintermediate(s)
+Rintermediate(s)
+Lfast(s)
+Rfast(s)
+end molecule types
+
+begin seed species
+
+L(s) LT # copies per cell
+R(s) RT
+
+$Lfixed(s) LT
+Rfixed(s) RT
+
+Lslow(s) LT
+Rslow(s) RT
+
+Lintermediate(s) LT
+Rintermediate(s) RT
+
+Lfast(s) LT
+Rfast(s) RT
+
+end seed species
+
+begin observables
+
+Species L_free L(s)
+Species Lfixed_free Lfixed(s)
+Species Lslow_free Lslow(s)
+Species Lintermediate_free Lintermediate(s)
+Species Lfast_free Lfast(s)
+
+Species R_free R(s)
+Species Rfixed_free Rfixed(s)
+Species Rslow_free Rslow(s)
+Species Rintermediate_free Rintermediate(s)
+Species Rfast_free Rfast(s)
+
+Species L_bound L(s!+)
+Species Lfixed_bound Lfixed(s!+)
+Species Lslow_bound Lslow(s!+)
+Species Lintermediate_bound Lintermediate(s!+)
+Species Lfast_bound Lfast(s!+)
+
+end observables
+
+begin reaction rules
+
+L(s)+R(s)<->L(s!1).R(s!1) kf,kr
+Lfixed(s)+Rfixed(s)<->Lfixed(s!1).Rfixed(s!1) kf,kr
+Lslow(s)+Rslow(s)<->Lslow(s!1).Rslow(s!1) kf,kr
+Lintermediate(s)+Rintermediate(s)<->Lintermediate(s!1).Rintermediate(s!1) kf,kr
+Lfast(s)+Rfast(s)<->Lfast(s!1).Rfast(s!1) kf,kr
+
+0->Lslow(s) ksynth_slow
+Lslow(s)->0 kdeg_slow
+
+0->Lintermediate(s) ksynth_intermediate
+Lintermediate(s)->0 kdeg_intermediate
+
+0->Lfast(s) ksynth_fast
+Lfast(s)->0 kdeg_fast
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>300,n_steps=>300})
+
+end actions

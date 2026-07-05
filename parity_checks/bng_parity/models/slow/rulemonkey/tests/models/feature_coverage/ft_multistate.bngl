@@ -1,0 +1,39 @@
+# Feature: component with many states (>=4), sequential transitions
+# Tests: multi-state component handling, ordered state progression
+# Tier: base
+# Expected: population flows from S0 through S1, S2, S3 to S4 over time
+
+begin model
+begin parameters
+    A_tot   60
+    k_fwd   0.02   # /s, forward transition rate
+    k_rev   0.005  # /s, reverse transition rate
+end parameters
+
+begin molecule types
+    A(st~S0~S1~S2~S3~S4)
+end molecule types
+
+begin seed species
+    A(st~S0)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_S0  A(st~S0)
+    Molecules  A_S1  A(st~S1)
+    Molecules  A_S2  A(st~S2)
+    Molecules  A_S3  A(st~S3)
+    Molecules  A_S4  A(st~S4)
+end observables
+
+begin reaction rules
+    A(st~S0) <-> A(st~S1)  k_fwd, k_rev
+    A(st~S1) <-> A(st~S2)  k_fwd, k_rev
+    A(st~S2) <-> A(st~S3)  k_fwd, k_rev
+    A(st~S3) <-> A(st~S4)  k_fwd, k_rev
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>300,n_steps=>100})
+end actions

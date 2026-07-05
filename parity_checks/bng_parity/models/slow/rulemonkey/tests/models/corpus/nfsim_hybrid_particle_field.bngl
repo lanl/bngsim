@@ -1,0 +1,63 @@
+# Model: nfsim_hybrid_particle_field.bngl
+# Description: A pseudo-simulation of a particle moving in a field.
+#              The 'Field' is represented by a grid of immobile species encoding a gradient.
+#              The 'Particle' moves and its rate depends on the local Field value.
+
+begin model
+
+begin parameters
+    k_diff 1.0 # Base diffusion rate
+    Bias   0.5 # Bias towards higher field
+end parameters
+
+begin molecule types
+    Field(next,prev,f,val~0~1~2) # Immobile field at location x
+    Particle(f)                # Mobile particle bound to field site f
+end molecule types
+
+begin seed species
+    # Combined Field and Particle
+    Particle(f!1).Field(next!2,prev,val~0,f!1).Field(next!3,prev!2,val~1,f).Field(next,prev!3,val~2,f) 1
+    # Links: F--F--F
+    # Particle starts at Field 0
+end seed species
+
+begin observables
+    Molecules P_at_0 Particle(f!1).Field(f!1,val~0)
+    Molecules P_at_2 Particle(f!1).Field(f!1,val~2)
+end observables
+
+begin reaction rules
+    # Movement 0 -> 1 (Uphill)
+    # P(x!1).F(x!1,next!2,val~0).F(x!2,val~1) -> P(x!2).F(...)
+    # Rate enhanced by Bias?
+
+    # Generic Rule is hard without wildcards for neighbors.
+    # Specific transitions:
+
+    # 0 -> 1
+    Particle(f!1).Field(f!1,val~0,next!2).Field(prev!2,val~1,f) -> \
+    Particle(f!3).Field(f,val~0,next!2).Field(prev!2,val~1,f!3) k_diff * (1+Bias)
+
+    # 1 -> 0 (Downhill)
+    Particle(f!1).Field(f!1,val~1,prev!2).Field(next!2,val~0,f) -> \
+    Particle(f!3).Field(f,val~1,prev!2).Field(next!2,val~0,f!3) k_diff * (1-Bias)
+
+    # 1 -> 2 (Uphill)
+    Particle(f!1).Field(f!1,val~1,next!2).Field(prev!2,val~2,f) -> \
+    Particle(f!3).Field(f,val~1,next!2).Field(prev!2,val~2,f!3) k_diff * (1+Bias)
+
+end reaction rules
+
+end model
+
+## Actions ##
+#generate_network({overwrite=>1})
+#simulate({method=>"nf",t_end=>10,n_steps=>50})
+
+
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>50})
+
+end actions

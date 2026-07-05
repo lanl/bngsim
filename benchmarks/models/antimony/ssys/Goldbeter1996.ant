@@ -1,0 +1,72 @@
+// Goldbeter1991_MinimalMitoticOscillator_Fig3.ant
+//
+// Goldbeter (1991) minimal mitotic oscillator
+// Parameter set chosen to yield sustained oscillations (Fig. 3-style set).
+//
+// Notes on units:
+// - C is in µM, time in minutes.
+// - v_i is µM/min.
+// - In the cyclin degradation term V_d * X * C/(K_d + C), V_d must have units µM/min
+//   for dimensional consistency (common in published parameterizations).
+// - M and X are fractions (0..1); K_1..K_4 are dimensionless “reduced” Michaelis constants.
+
+model Goldbeter1991_MinimalMitoticOscillator_Fig3
+
+  // Compartment
+  compartment cell = 1;
+
+  // State variables
+  species C in cell;
+  species M in cell;
+  species X in cell;
+
+  // ------------------------------------------------------------------
+  // Oscillatory parameter set (Fig. 3-style)
+  // ------------------------------------------------------------------
+
+  // Cyclin synthesis and degradation
+  const v_i  = 0.025;
+  const V_d  = 0.25;
+  const K_d  = 0.02;
+  const k_d  = 0.01;
+
+  // cdc2 activation–inactivation cycle
+  const V_M1 = 3.0;
+  const K_c  = 0.5;
+  const K_1  = 0.005;
+  const V_2  = 1.5;
+  const K_2  = 0.005;
+
+  // Protease activation–inactivation cycle
+  const V_M3 = 1.0;
+  const K_3  = 0.005;
+  const V_4  = 0.5;
+  const K_4  = 0.005;
+
+  // Helper expressions
+  V_1 := V_M1 * C / (K_c + C);
+  V_3 := V_M3 * M;
+
+  // ------------------------------------------------------------------
+  // ODEs
+  // ------------------------------------------------------------------
+
+  // Cyclin
+  C' = v_i - V_d * X * C / (K_d + C) - k_d * C;
+
+  // Active cdc2 kinase
+  M' = V_1 * (1 - M) / (K_1 + 1 - M) - V_2 * M / (K_2 + M);
+
+  // Active cyclin protease
+  X' = V_3 * (1 - X) / (K_3 + 1 - X) - V_4 * X / (K_4 + X);
+
+  // ------------------------------------------------------------------
+  // Initial conditions
+  // ------------------------------------------------------------------
+  C = 0.01;
+  M = 0.01;
+  X = 0.01;
+
+end
+// @SIM T_START=0 T_END=80 N_STEPS=800 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

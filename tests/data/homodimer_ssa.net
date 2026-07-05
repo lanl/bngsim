@@ -1,0 +1,17 @@
+# Regression test for Fix #2: SSA propensity for repeated reactants
+# 2A -> C with stat_factor 0.5 (homodimerization)
+# A(0)=1: propensity should be 0 (can't pick 2 from 1)
+begin parameters
+    1 k1  1.0  # Constant
+end parameters
+begin species
+    1 A() 1
+    2 C() 0
+end species
+begin reactions
+    1 1,1 2 0.5*k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 C_tot  2
+end groups

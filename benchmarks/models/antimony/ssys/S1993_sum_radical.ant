@@ -1,0 +1,43 @@
+// Sum with Radical Term - Reductive Recasting
+// Source: Savageau, "Finding Multiple Roots of Nonlinear Algebraic Equations
+//         Using S-System Methodology"
+//         Appl. Math. Comput. 55:187-199 (1993)
+//         Equations (4)-(7)
+//
+// This paper cites Savageau & Voit (1987) as reference [12].
+//
+// Original ODE (Eq. 4):
+//   dX₁/dt + X₁² - √X₁ = 0
+//
+// Which can be rewritten as:
+//   dX₁/dt = √X₁ - X₁²
+//
+// ==============================================================================
+// EXACT RECASTING via Reductive Method (Eq. 5-7):
+// ==============================================================================
+// The equation has terms with BOTH signs and multiple terms.
+// The reductive recasting introduces X₁ = X₂·X₃ and differentiates.
+//
+// After differentiation and association (reductive step), the recast S-system:
+//
+//   dX₂/dt = α₁₂·X₂^(1/2) - X₂²        (Eq. 6)
+//   dX₃/dt = α₁₂·X₃^(1/2) - X₃²        (Eq. 7)
+//
+// where the product X₂·X₃ approaches the steady state of X₁.
+//
+// This demonstrates "reductive recasting" - decomposing a single equation
+// with multiple terms into multiple S-system equations.
+// ==============================================================================
+
+model S1993_sum_radical()
+  // Variables
+  compartment cell = 1;var species X1 in cell
+
+  // Original ODE with radical term
+  // dX₁/dt = √X₁ - X₁²
+  X1' = sqrt(X1) - X1^2
+  
+  // Initial condition
+  X1 = 0.5; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

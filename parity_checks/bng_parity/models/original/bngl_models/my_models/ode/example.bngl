@@ -1,0 +1,99 @@
+begin model
+# [PII REMOVED]
+# Date: 28-Aug-2024
+# In this file, I define two models for antibody interaction with influenza HA molecules.
+# In Model 1, there are steric effects on Ab-Ag binding. See reaction rules below for a description of the steric effects.
+# In Model 2, there are *NO* steric effects on Ab-Ag binding.
+# Summary of results (considering only nominal parameter settings): 
+#  - Kinetics of Ab-Ag interaction are slowed by steric effects, i.e., steady state is reached faster w/o steric effects.
+#  - Steric effects reduce the probability of neutralization, meaning that 
+#    the probability that all HA molecules on a given virion are bound to an antibody is reduced when steric effects are present.
+begin parameters
+# Avogadro constant (exact value)
+NA 6.02214076e23 # /mol
+# density of virions in respiratory mucus during infection
+dens_virion 3e9 # /L
+# volume of fluid surrounding a single virion (on average)
+V = 1/dens_virion # L
+# number of copies of HA per virion
+HA_total 500 # number per virion
+# molecular weight of IgG antibody 
+# NB: we ignore IgA for simplicity.
+mwt 1.5e5 # g/mol
+# mucosal density of antibody specific for epitope 1 in HA
+dens_Ab1 0.02 # g/L
+# mucosal density of antibody specific for epitope 2 in HA
+dens_Ab2 0.01 # g/L
+# mucosal density of antibody specific for epitope 3 in HA
+dens_Ab3 0.03 # g/L
+# number of antibodies in fluid surrounding a single virion
+Ab1_total = dens_Ab1*V*NA/mwt # number per virion
+Ab2_total = dens_Ab2*V*NA/mwt # number per virion
+Ab3_total = dens_Ab3*V*NA/mwt # number per virion
+# NB: there are millions of antibodies present for every virion
+# Ab-Ag binding parameters
+kf 1e6/(NA*V) # /M/s converted to /(molecule/virion)/s
+kr 0.01 # /s
+# KD = kr/kf = 10 nM
+end parameters
+begin molecule types
+# Model 1 (+ steric effects)
+HA(e1,e2,e3) # Let us consider 3 epitopes in HA: e1, e2, and e3.
+Ab1(Fab) # antibody specific for epitope 1 in HA
+Ab2(Fab) # antibody specific for epitope 2 in HA
+Ab3(Fab) # antibody specific for epitope 3 in HA
+# NB: we do not explicitly consider the polyvalency of antibodies for simplicity.
+# Model 2 (- steric effects)
+HA_(e1,e2,e3)
+Ab1_(Fab)
+Ab2_(Fab)
+Ab3_(Fab)
+end molecule types
+begin seed species
+# all Ag and Ab molecules are initially free
+# Model 1
+HA(e1,e2,e3) HA_total
+Ab1(Fab) Ab1_total
+Ab2(Fab) Ab2_total
+Ab3(Fab) Ab3_total
+# Model 2
+HA_(e1,e2,e3) HA_total
+Ab1_(Fab) Ab1_total
+Ab2_(Fab) Ab2_total
+Ab3_(Fab) Ab3_total
+end seed species
+begin observables
+Molecules boundAb2 Ab2(Fab!+) # number of epitope 2-specific Ab bound to HA
+Molecules boundAb2_ Ab2_(Fab!+) # same as above but without steric effects
+Molecules free_HA HA(e1,e2,e3) # number of HA molecules that are entirely free of antibody
+Molecules free_HA_ HA_(e1,e2,e3) # same as above but without steric effects
+end observables
+begin functions
+# probability that a virion's HA molecules are *all* bound to an antibody w/ and w/o steric effects
+prob_all_HA_on_virion_are_bound() = ((HA_total-free_HA)/HA_total)^HA_total # without steric effects
+prob_without_steric_effects() = ((HA_total-free_HA_)/HA_total)^HA_total # with steric effects
+end functions
+begin reaction rules
+# Model 1 (+ steric effects)
+#  rules for Ab-Ag interaction w/ steric hindrance
+#   If e1 is bound, e2 is unavailable.
+#   If e2 is bound, e1 and e3 are unavailable.
+#   If e3 is bound, e2 is unavailable.
+HA(e1,e2)+Ab1(Fab)->HA(e1!1,e2).Ab1(Fab!1) kf
+HA(e1!1).Ab1(Fab!1)->HA(e1)+Ab1(Fab) kr
+HA(e1,e2,e3)+Ab2(Fab)->HA(e1,e2!1,e3).Ab2(Fab!1) kf
+HA(e2!1).Ab2(Fab!1)->HA(e2)+Ab2(Fab) kr
+HA(e2,e3)+Ab3(Fab)->HA(e2,e3!1).Ab3(Fab!1) kf
+HA(e3!1).Ab3(Fab!1)->HA(e3)+Ab3(Fab) kr
+# Model 2 (- steric effects)
+#  rules for Ab-Ag interaction w/o steric hindrance
+HA_(e1)+Ab1_(Fab)<->HA_(e1!1).Ab1_(Fab!1) kf,kr
+HA_(e2)+Ab2_(Fab)<->HA_(e2!1).Ab2_(Fab!1) kf,kr
+HA_(e3)+Ab3_(Fab)<->HA_(e3!1).Ab3_(Fab!1) kf,kr
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1}) # generate list of reactions from rules; the list defines a system of coupled ODEs
+# simulate 10 min of Ab-Ag interaction via numerical integration of ODEs
+simulate({suffix=>"kinetics",method=>"ode",t_start=>0,t_end=>600,n_steps=>600,print_functions=>1})
+end actions

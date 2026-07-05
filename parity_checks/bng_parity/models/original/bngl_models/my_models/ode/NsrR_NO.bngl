@@ -1,0 +1,48 @@
+begin model
+begin parameters
+NA 6.02214076e23 # molec/mol
+V 1e-12 # L
+k1 1e6/(NA*V) # /s
+k2 1e6/(NA*V) # /s
+k3 1e6/(NA*V) # /s
+k4 1e6/(NA*V) # /s
+kd 1e6/(NA*V) # /s
+NsrR_init 1e-6*(NA*V) # molec
+NO_init 1e-6*(NA*V) # molec
+end parameters
+begin molecule types
+NsrR(dim,s1~0~NO,s2~0~NO,s3~0~NO,s4~0~NO)
+NO()
+end molecule types
+begin seed species
+NsrR(dim,s1~0,s2~0,s3~0,s4~0) NsrR_init
+NO() NO_init
+end seed species
+begin observables
+Molecules monoNsrR NsrR(dim,s1~0,s2~0,s3~0,s4~0)
+Molecules monoNsrRB NsrR(dim,s1~NO,s2~0,s3~0,s4~0)
+Molecules monoNsrRC NsrR(dim,s1~NO,s2~NO,s3~0,s4~0)
+Molecules monoNsrRD NsrR(dim,s1~NO,s2~NO,s3~NO,s4~0)
+Molecules monoNsrRE NsrR(dim,s1~NO,s2~NO,s3~NO,s4~NO)
+end observables
+begin functions
+end functions
+begin reaction rules
+# dimerization of NsrR
+NsrR(dim)+NsrR(dim)->NsrR(dim!1).NsrR(dim!1) kd
+# +NO reactions of monomeric NsrR
+NsrR(dim,s1~0)+NO()->NsrR(dim,s1~NO) k1
+NsrR(dim,s1~NO,s2~0)+NO()->NsrR(dim,s1~NO,s2~NO) k2
+NsrR(dim,s2~NO,s3~0)+NO()->NsrR(dim,s2~NO,s3~NO) k3
+NsrR(dim,s3~NO,s4~0)+NO()->NsrR(dim,s3~NO,s4~NO) k4
+# +NO reactions of dimeric NsrR, which cause dimer breakup
+NsrR(dim!1).NsrR(dim!1,s1~0)+NO()->NsrR(dim)+NsrR(dim,s1~NO) k1
+NsrR(dim!1).NsrR(dim!1,s1~NO,s2~0)+NO()->NsrR(dim)+NsrR(dim,s1~NO,s2~NO) k2
+NsrR(dim!1).NsrR(dim!1,s2~NO,s3~0)+NO()->NsrR(dim)+NsrR(dim,s2~NO,s3~NO) k3
+NsrR(dim!1).NsrR(dim!1,s3~NO,s4~0)+NO()->NsrR(dim)+NsrR(dim,s3~NO,s4~NO) k4
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>25,n_steps=>250})
+end actions

@@ -1,0 +1,92 @@
+begin model
+begin parameters
+NA 6.02214076e23 # molec per mol
+f 1 # dimensionless
+cellDensity 1e9 # cells per L
+Vecf=1/cellDensity # L per cell
+Lconc 1e-9 # M
+Ltot=Lconc*(NA*Vecf) # molec per cell
+K1 5e6/(NA*Vecf) # /M converted to /(molec per cell)
+K2 5e8/(NA*Vecf) # /M converted to /(molec per cell)
+Xtot 1e4 # molec per cell
+r1 0.75 # dimensionless
+r2=1-r1 # dimensionless
+R1tot=r1*Xtot # molec per cell
+R2tot=r2*Xtot # molec per cell
+kappa 2e-16*(NA*Vecf) # M/(molec per cm^2) converted to cm^2 per cell
+S 4.7e-6 # cm^2 per cell (corresponds to a cell diameter of ~12 microns)
+Kx1R1tot=kappa*K1*r1*Xtot/S # dimensionless
+Kx2R2tot=kappa*K2*r2*Xtot/S # dimensionless
+Kx1=kappa*K1/S # /(molec per cell)
+Kx2=kappa*K2/S # /(molec per cell)
+K11=kappa*K1/S # /(molec per cell)
+K21=kappa*K1/S # /(molec per cell)
+K12=kappa*K2/S # /(molec per cell)
+K22=kappa*K2/S # /(molec per cell)
+#delta11=4*K1*Ltot*K11*Xtot/((1+2*K1*Ltot)*(1+2*K1*Ltot))
+#delta12=4*K1*Ltot*K12*Xtot/((1+2*K1*Ltot)*(1+2*K2*Ltot))
+#delta21=4*K2*Ltot*K21*Xtot/((1+2*K2*Ltot)*(1+2*K1*Ltot))
+#delta22=4*K2*Ltot*K22*Xtot/((1+2*K2*Ltot)*(1+2*K2*Ltot))
+koff 0.1 # /s
+kr1=koff # /s
+kr2=kr1*(K1/K2) # /s
+kmx1=kr1 # /s
+kmx2=kr2 # /s
+kf1=kr1*K1 # /(molec per cell)/s
+kf2=kr2*K2 # /(molec per cell)/s
+kpx1=kmx1*Kx1 # /(molec per cell)/s
+kpx2=kmx2*Kx2 # /(molec per cell)/s
+end parameters
+begin molecule types
+L(s,s)
+R1(s,s)
+R2(s,s)
+end molecule types
+begin seed species
+L(s,s) Ltot
+R1(s,s) R1tot
+R2(s,s) R2tot
+end seed species
+begin observables
+Species Lfree L(s,s)
+Species R1free R1(s,s)
+Species R2free R2(s,s)
+Species npoly L(s!+,s!+)
+Species W1 R1(s,s) L(s,s!1).R1(s!1,s) L(s,s!1).R1(s!1,s!2).L(s!2,s)
+Species W2 R2(s,s) L(s,s!1).R2(s!1,s) L(s,s!1).R2(s!1,s!2).L(s!2,s)
+end observables
+begin functions
+avg_L_per_poly()=if(npoly>0,(Ltot-Lfree)/npoly,0)
+Lfree_concM()=Lfree/(NA*Vecf)
+w1_BNG()=W1/Xtot
+w2_BNG()=W2/Xtot
+w1_eq8()=(R1free/Xtot)*(1+2*K1*Lfree)^2
+w2_eq8()=(R2free/Xtot)*(1+2*K2*Lfree)^2
+#r1_setting()=r1
+#r2_setting()=r2
+#delta11()=4*K1*Lfree*K11*Xtot/((1+2*K1*Lfree)*(1+2*K1*Lfree))
+#delta12()=4*K1*Lfree*K12*Xtot/((1+2*K1*Lfree)*(1+2*K2*Lfree))
+#delta21()=4*K2*Lfree*K21*Xtot/((1+2*K2*Lfree)*(1+2*K1*Lfree))
+#delta22()=4*K2*Lfree*K22*Xtot/((1+2*K2*Lfree)*(1+2*K2*Lfree))
+#r1_eq13()=(W1/Xtot)*(1+(delta11()*(W1/Xtot)+delta12()*(W2/Xtot))/(1-(delta11()*(W1/Xtot)+delta22()*(W2/Xtot))))^2
+#r2_eq13()=(W2/Xtot)*(1+(delta21()*(W1/Xtot)+delta22()*(W2/Xtot))/(1-(delta11()*(W1/Xtot)+delta22()*(W2/Xtot))))^2
+xpoly_BNG()=1-(W1/Xtot)-(W2/Xtot)
+xpoly_eq14()=1-(R1free/Xtot)*(1+2*K1*Lfree)^2-(R2free/Xtot)*(1+2*K2*Lfree)^2
+end functions
+begin reaction rules
+L(s,s)+R1(s)<->L(s,s!1).R1(s!1) kf1,kr1
+L(s,s)+R2(s)<->L(s,s!1).R2(s!1) kf2,kr2
+L(s!+,s)+R1(s)<->L(s!+,s!1).R1(s!1) kpx1,kmx1
+L(s!+,s)+R2(s)<->L(s!+,s!1).R2(s!1) kpx2,kmx2
+end reaction rules
+end model
+begin actions
+saveConcentrations()
+#generate_network({overwrite=>1,max_agg=>10})
+#simulate({suffix=>"ode",method=>"ode",t_start=>0,t_end=>1200,n_steps=>120,print_functions=>1})
+#parameter_scan({method=>"nf",t_end=>3000,n_steps=>100,print_functions=>1,\
+#                gml=>2147483647,get_final_state=>0,\
+#                parameter=>"Lconc",par_min=>"1e-10",par_max=>"1e-8",n_scan_pts=>20,log_scale=>1})
+# resetConcentrations()
+simulate({suffix=>"nf",method=>"nf",t_start=>0,t_end=>1200,n_steps=>120,print_functions=>1,gml=>2147483647,get_final_state=>0})
+end actions

@@ -1,0 +1,115 @@
+begin model
+#@model_id: S1987_C3_parabolic_pde
+#@title: Parabolic PDE discretization (10 species)
+#@description: Diffusion chain from parabolic PDE dZi/dt = Z(i-1) - 2*Zi + Z(i+1) with zero-flux boundaries. From Savageau & Voit (1987) Problem C3.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  k_hop    1.0            # 1/s; hopping rate between adjacent sites
+end parameters
+
+begin molecule types
+  Z1()
+  Z2()
+  Z3()
+  Z4()
+  Z5()
+  Z6()
+  Z7()
+  Z8()
+  Z9()
+  Z10()
+end molecule types
+
+begin seed species
+  Z1()   100  # molecules (Z1(0)=1 scaled x100)
+  Z2()     0  # molecules
+  Z3()     0  # molecules
+  Z4()     0  # molecules
+  Z5()     0  # molecules
+  Z6()     0  # molecules
+  Z7()     0  # molecules
+  Z8()     0  # molecules
+  Z9()     0  # molecules
+  Z10()    0  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Z1   Z1()
+  Molecules  Obs_Z2   Z2()
+  Molecules  Obs_Z3   Z3()
+  Molecules  Obs_Z4   Z4()
+  Molecules  Obs_Z5   Z5()
+  Molecules  Obs_Z6   Z6()
+  Molecules  Obs_Z7   Z7()
+  Molecules  Obs_Z8   Z8()
+  Molecules  Obs_Z9   Z9()
+  Molecules  Obs_Z10  Z10()
+end observables
+
+begin reaction rules
+  # Diffusion modeled as hopping reactions between adjacent sites.
+  # dZi/dt = Z(i-1) - 2*Zi + Z(i+1) decomposes into:
+  #   Zi hops right to Z(i+1) at rate k_hop
+  #   Zi hops left to Z(i-1) at rate k_hop
+  # Boundary: Z1 has no left neighbor, Z10 has no right neighbor.
+
+  # Z1 <-> Z2
+  Z1() -> Z2()  k_hop
+  Z2() -> Z1()  k_hop
+
+  # Z2 <-> Z3
+  Z2() -> Z3()  k_hop
+  Z3() -> Z2()  k_hop
+
+  # Z3 <-> Z4
+  Z3() -> Z4()  k_hop
+  Z4() -> Z3()  k_hop
+
+  # Z4 <-> Z5
+  Z4() -> Z5()  k_hop
+  Z5() -> Z4()  k_hop
+
+  # Z5 <-> Z6
+  Z5() -> Z6()  k_hop
+  Z6() -> Z5()  k_hop
+
+  # Z6 <-> Z7
+  Z6() -> Z7()  k_hop
+  Z7() -> Z6()  k_hop
+
+  # Z7 <-> Z8
+  Z7() -> Z8()  k_hop
+  Z8() -> Z7()  k_hop
+
+  # Z8 <-> Z9
+  Z8() -> Z9()  k_hop
+  Z9() -> Z8()  k_hop
+
+  # Z9 <-> Z10
+  Z9()  -> Z10()  k_hop
+  Z10() -> Z9()   k_hop
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>6,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>6,n_steps=>400,complex=>1})
+end actions

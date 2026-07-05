@@ -1,0 +1,88 @@
+begin model
+begin parameters
+    # JNK MAPK Signaling: Scaffold-mediated activation and feedback.
+    # Advanced features: saturable dephosphorylation and exclude_reactants for scaffolds.
+    
+    # Cascade Relay
+    k_mkk7_act 1.0     # Upstream stress drive
+    k_jnk_phos 2.0     # MKK7-mediated activation
+    
+    # Scaffold (JIP1) Hub
+    k_jip_bind_mkk 5.0 # MKK7 recruitment
+    k_jip_bind_jnk 5.0 # JNK recruitment
+    k_scaff_boost 10.0 # Proximity acceleration
+    
+    # Recovery (MKP Axis)
+    k_mkp_max 3.0      # Peak dephosphorylation speed
+    Km_jnk 250         # Threshold for phosphatases
+    
+    # Feedback Control
+    k_jnk_fb 0.5       # JNK feedback on upstream drive
+    k_reset 0.05
+    
+    # Initials
+    JNK_tot 1000
+    MKK7_tot 200
+    JIP1_tot 150       # Scaffolding protein
+end parameters
+
+begin molecule types
+    JNK(s~U~P,b,loc~cyt~nuc)
+    MKK7(s~off~on,b)
+    JIP1(b1,b2)       # b1: MKK,b2: JNK
+end molecule types
+
+begin seed species
+    JNK(s~U,b,loc~cyt) JNK_tot
+    MKK7(s~on,b) MKK7_tot
+    JIP1(b1,b2) JIP1_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_JNK      JNK(s~P)                 # Primary stress signal
+    Molecules Scaffold_Hub    JIP1(b1!+,b2!+)          # Full signaling cluster
+    Molecules MKK7_Driver     MKK7(s~on)               # Upstream activity
+    Molecules Cyto_JNK        JNK(s~U,b)               # Reservoir capacity
+    Molecules Total_pJNK      JNK(s~P)                 # Global signal pool
+end observables
+
+begin functions
+    # Saturable JNK dephosphorylation (Functional Rate)
+    v_dephos() = k_mkp_max * (Total_pJNK / (Km_jnk + Total_pJNK))
+end functions
+
+begin reaction rules
+    ## ASSEMBLY Phase
+    # JIP1 recruits MKK7 and JNK
+    JIP1(b1) + MKK7(b) <-> JIP1(b1!1).MKK7(b!1) k_jip_bind_mkk,0.2
+    JIP1(b2) + JNK(b) <-> JIP1(b2!1).JNK(b!1) k_jip_bind_jnk,0.2
+    
+    ## ACTIVATION Stage
+    # Scaffold-mediated activation (Highly accelerated)
+    # exclude_reactants not needed here as it's a conformational relay
+    JIP1(b1!1,b2!2).MKK7(s~on,b!1).JNK(s~U,b!2) -> JIP1(b1!1,b2!2).MKK7(s~on,b!1).JNK(s~P,b!2) k_scaff_boost
+    
+    # Global activation (Non-scaffolded)
+    MKK7(s~on,b) + JNK(s~U,b) -> MKK7(s~on,b) + JNK(s~P,b) k_jnk_phos
+    
+    # Nucleocytoplasmic transport
+    JNK(loc~cyt) <-> JNK(loc~nuc) 1.0,0.5
+    
+    ## RECOVERY Phase
+    # Saturable dephosphorylation (MKP Axis)
+    JNK(s~P) -> JNK(s~U) v_dephos()
+    
+    ## FEEDBACK Stage
+    # JNK can feedback on MKK7 activity (Simplified as direct reset inhibition)
+    JNK(s~P) + MKK7(s~on) -> JNK(s~P) + MKK7(s~off) k_jnk_fb
+    
+    # Basal resets
+    MKK7(s~off) -> MKK7(s~on) 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model

@@ -1,0 +1,187 @@
+begin model
+
+#@title: |
+#  Symmetric bivalent hapten-receptor cross-linking with
+#  monovalent inhibitor (Dembo and Goldstein, 1978)
+
+#@description: |
+#  Network-free (NFsim) kinetic model of symmetric bivalent
+#  hapten binding to bivalent cell-surface antibody (IgE) in
+#  the presence of a monovalent hapten competitor. Extends
+#  the primary no-rings model by adding a monovalent hapten
+#  (B) that competes for receptor binding sites but cannot
+#  cross-link receptors.
+#
+#  Three species: bivalent hapten (L, two identical sites),
+#  monovalent hapten (B, one site), and bivalent receptor
+#  (R, two identical sites). Four processes: (1) bivalent
+#  hapten capture; (2) receptor cross-linking by tethered
+#  bivalent hapten; (3) monovalent hapten binding to a free
+#  receptor site; (4) bond dissociation (any hapten-receptor
+#  bond breaks).
+#
+#  Monovalent hapten occupies receptor sites without forming
+#  cross-links, thereby inhibiting cross-link formation.
+#  Dembo and Goldstein (1978) show that:
+#  - The maximum of x_poly shifts to higher bivalent hapten
+#    concentration: A_max = 1/H + B/2 (Eq. 19b)
+#  - x_poly is always reduced by monovalent hapten (Eq. 20b)
+#  - At large bivalent hapten concentration, x_poly becomes
+#    independent of monovalent hapten (Eq. 20a)
+#  - The cross-linking curve retains its symmetry about
+#    A_max when plotted vs log(A)
+#
+#  See Dembo and Goldstein (1978) Fig. 6 for the effect of
+#  monovalent hapten on cross-linking curves.
+#
+#  Default: monovalent hapten at 10x bivalent hapten count,
+#  demonstrating substantial inhibition of cross-linking.
+
+#@keyword: |
+#  bivalent hapten, monovalent hapten, bivalent receptor,
+#  cross-linking, inhibition, competition, aggregation,
+#  prozone effect, mass action, network-free, NFsim, IgE,
+#  basophil, histamine release
+
+#@reference: |
+#  Dembo M, Goldstein B (1978). Theory of equilibrium binding
+#  of symmetric bivalent haptens to cell surface antibody:
+#  application to histamine release from basophils. J Immunol
+#  121:345-353. doi:10.4049/jimmunol.121.1.345
+#
+#  Perelson AS, DeLisi C (1980). Receptor clustering on a cell
+#  surface. I. Theory of receptor cross-linking by ligands
+#  bearing two chemically identical functional groups. Math
+#  Biosci 48:71-110. doi:10.1016/0025-5564(80)90017-6
+
+#@note: |
+#  Network generation is not feasible because bivalent-
+#  bivalent cross-linking produces an unbounded set of chain
+#  species. NFsim is used with -bscb (block same-complex
+#  binding, which implies complex bookkeeping).
+#
+#  The monovalent hapten (B) is held at constant total
+#  concentration (excess assumption, Dembo assumption d).
+#  It binds receptor sites with the same single-site affinity
+#  as the bivalent hapten. Monovalent hapten cannot cross-
+#  link because it has only one binding site.
+#
+#  Mapping to Dembo and Goldstein (1978) notation:
+#    A = bivalent hapten concentration (here L)
+#    B = monovalent hapten concentration (here B)
+#    b = H*B (dimensionless monovalent concentration)
+#    a_max = 1 + b/2 (shifted peak position)
+
+begin parameters
+
+  # Physical constants
+  NA  6.02214076e23  # /mol
+
+  # Experimental conditions
+  V_cell  1e-9  # L/cell
+  R_per_cell  3e5  # molecules/cell
+
+  # SSA/NFsim scaling
+  f  0.01  # dimensionless
+  V_sim  V_cell*f  # L
+
+  # Scaled molecule counts
+  RT  R_per_cell*f  # molecules (= 3000)
+
+  # Total bivalent hapten (ligand)
+  LT_per_cell  3e6  # molecules/cell
+  LT  LT_per_cell*f  # molecules
+
+  # Total monovalent hapten (inhibitor)
+  # Default: 10x bivalent hapten concentration
+  BT_per_cell  3e7  # molecules/cell
+  BT  BT_per_cell*f  # molecules
+
+  # Single-site kinetic rate constants
+  # Same affinity for monovalent and bivalent hapten
+  kon  1e6  # /M/s
+  koff  0.01  # /s
+
+  # Dimensionless cross-linking propensity
+  KxRT  5  # dimensionless
+
+  # Stochastic rate constants (single-site, per molecule pair)
+  # Bivalent hapten capture
+  kf  kon/(NA*V_sim)  # /(molecule*s)
+  # Cross-linking
+  kxf  KxRT/RT*koff  # /(molecule*s)
+  # Monovalent hapten binding (same affinity as bivalent)
+  kf_mono  kon/(NA*V_sim)  # /(molecule*s)
+
+end parameters
+
+begin molecule types
+  # Bivalent hapten (ligand): two identical receptor-binding sites
+  L(r,r)
+  # Monovalent hapten (inhibitor): one receptor-binding site
+  B(r)
+  # Bivalent receptor (antibody/IgE): two identical hapten-binding sites
+  R(l,l)
+end molecule types
+
+begin seed species
+  L(r,r)  LT  # molecules
+  B(r)    BT  # molecules
+  R(l,l)  RT  # molecules
+end seed species
+
+begin observables
+  # Free bivalent hapten (both sites unbound)
+  Species    Obs_Free_L        L(r,r)
+  # Free monovalent hapten (unbound)
+  Species    Obs_Free_B        B(r)
+  # Free receptor (both sites unbound)
+  Species    Obs_Free_R        R(l,l)
+  # Total bivalent hapten-receptor bonds
+  Molecules  Obs_Bonds_LR      L(r!1).R(l!1)
+  # Total monovalent hapten-receptor bonds
+  Molecules  Obs_Bonds_BR      B(r!1).R(l!1)
+  # Free receptor sites (on any receptor)
+  Molecules  Obs_Free_R_sites  R(l)
+end observables
+
+begin reaction rules
+
+  # ================================================================
+  # Bivalent hapten capture: free bivalent hapten binds receptor
+  # ================================================================
+  R_capture:  L(r,r) + R(l) -> L(r!1,r).R(l!1)  kf
+
+  # ================================================================
+  # Cross-linking: tethered bivalent hapten arm binds DIFFERENT
+  # complex
+  # ================================================================
+  R_crosslink:  L(r!+,r) + R(l) -> L(r!+,r!1).R(l!1)  kxf
+
+  # ================================================================
+  # Bivalent hapten bond dissociation
+  # ================================================================
+  R_dissoc:  L(r!1).R(l!1) -> L(r) + R(l)  koff
+
+  # ================================================================
+  # Monovalent hapten binding: free monovalent hapten binds
+  # receptor site
+  # ================================================================
+  # Monovalent hapten competes for the same receptor sites as
+  # bivalent hapten but cannot form cross-links. See Dembo and
+  # Goldstein (1978) Eq. (1).
+  R_mono_bind:  B(r) + R(l) -> B(r!1).R(l!1)  kf_mono
+
+  # ================================================================
+  # Monovalent hapten dissociation
+  # ================================================================
+  R_mono_dissoc:  B(r!1).R(l!1) -> B(r) + R(l)  koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",gml=>1000000,t_end=>3000,n_steps=>300})
+end actions

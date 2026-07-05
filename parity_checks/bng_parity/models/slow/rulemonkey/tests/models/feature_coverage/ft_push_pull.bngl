@@ -1,0 +1,53 @@
+# Feature: push-pull enzyme kinetics (phosphorylation/dephosphorylation cycle)
+# Tests: competing kinase and phosphatase on same substrate
+# Covers: e1-e9, PushPull from existing corpus
+# Tier: base
+# Expected: steady-state phosphorylation level set by kinase/phosphatase balance
+
+begin model
+begin parameters
+    E_tot   30
+    F_tot   30
+    S_tot   300
+
+    kOnE    0.007   # /s, kinase binding
+    kOffE   3.0     # /s, kinase unbinding
+    kCatE   5.0     # /s, phosphorylation catalytic rate
+
+    kOnF    0.007   # /s, phosphatase binding
+    kOffF   3.0     # /s, phosphatase unbinding
+    kCatF   5.1     # /s, dephosphorylation catalytic rate
+end parameters
+
+begin molecule types
+    E(s)
+    F(s)
+    S(p~U~P)
+end molecule types
+
+begin seed species
+    E(s)     E_tot
+    F(s)     F_tot
+    S(p~U)   S_tot
+end seed species
+
+begin observables
+    Molecules  Efree  E(s)
+    Molecules  Ffree  F(s)
+    Molecules  Sp     S(p~P)
+    Molecules  Su     S(p~U)
+end observables
+
+begin reaction rules
+    # Kinase cycle
+    E(s) + S(p~U) <-> E(s!1).S(p~U!1)  kOnE, kOffE
+    E(s!1).S(p~U!1) -> E(s) + S(p~P)   kCatE
+    # Phosphatase cycle
+    F(s) + S(p~P) <-> F(s!1).S(p~P!1)  kOnF, kOffF
+    F(s!1).S(p~P!1) -> F(s) + S(p~U)   kCatF
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

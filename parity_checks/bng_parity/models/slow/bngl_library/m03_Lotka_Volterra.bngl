@@ -1,0 +1,75 @@
+begin model
+#@model_id: m03_Lotka_Volterra
+#@title: Classic Lotka-Volterra predator-prey
+#@description: Predator-prey model with X' = a*X - b*X*Y, Y' = c*X*Y - d*Y. Decomposed into production and consumption terms with functional rates.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        100            # dimensionless scaling factor (X0=Y0=1 -> 100 molecules)
+
+  a        1.1            # 1/s  prey growth rate
+  b        0.4/f          # 1/(s*molecule)  predation rate (scaled)
+  c        0.1/f          # 1/(s*molecule)  predator growth from prey (scaled)
+  d        0.4            # 1/s  predator death rate
+
+  X_init   1*f            # molecules  initial prey count
+  Y_init   1*f            # molecules  initial predator count
+end parameters
+
+begin molecule types
+  X()
+  Y()
+end molecule types
+
+begin seed species
+  X()  X_init  # molecules
+  Y()  Y_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_X  X()
+  Molecules  Obs_Tot_Y  Y()
+end observables
+
+begin functions
+  # Prey consumption rate: b*X*Y / X = b*Y (per-capita predation on prey)
+  rate_prey_death() = b*Obs_Tot_Y
+
+  # Predator production rate: c*X*Y -> zeroth-order synthesis with functional rate
+  rate_pred_birth() = c*Obs_Tot_X*Obs_Tot_Y
+end functions
+
+begin reaction rules
+  # Prey production: a*X (first-order growth)
+  0 -> X()  a
+
+  # Prey consumption: b*X*Y -> first-order in X with functional rate b*Y
+  X() -> 0  rate_prey_death()
+
+  # Predator production: c*X*Y (zeroth-order synthesis with functional rate)
+  0 -> Y()  rate_pred_birth()
+
+  # Predator consumption: d*Y (first-order death)
+  Y() -> 0  d
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

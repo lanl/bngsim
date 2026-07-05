@@ -1,0 +1,24 @@
+# Deliberately non-identifiable toy for FIM identifiability tests (GH #202).
+#
+# A --keff--> B with keff = k1 + k2 a derived (ConstantExpression) rate
+# constant. Because A depends on k1 and k2 ONLY through their sum, the output
+# sensitivities obey dA/dk1 == dA/dk2 at every time point, so the Fisher
+# Information Matrix over (k1, k2) is rank-1: the [1, -1] eigen-direction has a
+# zero eigenvalue (practically non-identifiable / sloppy). Only the sum k1+k2
+# is identifiable from the trajectory.
+begin parameters
+    1 k1    0.05  # Constant
+    2 k2    0.05  # Constant
+    3 keff  k1+k2  # ConstantExpression
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 keff  #_R1
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups

@@ -1,0 +1,56 @@
+# Edge case: A + A bimolecular self-dimerisation
+# Tests:  two reactant patterns of the same molecule type and same
+#         component name (A(s) + A(s) -> A(s!1).A(s!1)).  RM marks
+#         this rule with rule.same_components=true and applies a
+#         symmetry_factor of 1/2 to avoid double-counting the (i,j)
+#         pair vs (j,i).  This is a classic NFsim/BNG2 trip-hazard;
+#         the corpus has A_plus_A.bngl which covers it without any
+#         state component.  Here we add a state on each side so that
+#         the count_2mol_1bond_fc fast path (component+state filter)
+#         engages, plus an asymmetric reverse rule that targets only
+#         one of the two embeddings of the dimer.
+# Edge:   reverse rule A(s!1,p~U).A(s!1) -> A(s,p~U) + A(s) breaks the
+#         dimer ONLY when one specific A in the pair has p~U; this
+#         exercises the partial-symmetric-pattern dedup path that has
+#         been a recurring source of bugs (msite_S{800,3200}, fceri_ji).
+# Tier:   base
+# invariant: conserved A_total = 40
+
+begin model
+begin parameters
+    A_tot   40
+    kf      0.02   # /s, dimerisation
+    kr      0.10   # /s, dissociation (only when one subunit is U)
+    k_phos  0.05   # /s, U->P transition
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+end molecule types
+
+begin seed species
+    A(s,p~U)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_total     A()
+    Molecules  A_free      A(s)
+    Molecules  A_phos      A(p~P)
+    Molecules  A_bound     A(s!+)
+    Species    A_dimer     A(s!1).A(s!1)
+end observables
+
+begin reaction rules
+    # Identical reactant patterns — RM must apply 1/2 symmetry factor.
+    A(s) + A(s) -> A(s!1).A(s!1)   kf
+    # Asymmetric break: the U subunit drives the dissociation; this
+    # selects only one of the two embeddings of A(s!1).A(s!1).
+    A(s!1,p~U).A(s!1) -> A(s,p~U) + A(s)   kr
+    # Slow background phosphorylation — keeps both U and P populations alive.
+    A(p~U) -> A(p~P)   k_phos
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60,param=>"-bscb"})
+end actions

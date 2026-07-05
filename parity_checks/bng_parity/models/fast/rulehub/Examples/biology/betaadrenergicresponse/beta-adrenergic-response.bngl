@@ -1,0 +1,109 @@
+begin model
+begin parameters
+    # Beta-adrenergic signaling: GPCR pathway and desensitization.
+    # Advanced features: MoveConnected and Hill-like cAMP drive.
+    
+    # Activation
+    k_bind_epi 1e-3    # Epinephrine binding
+    k_g_act 2.0        # Gs activation (GEF)
+    k_ac_act 1.5       # AC activation
+    
+    # cAMP Dynamics
+    k_camp_max 20.0    # Peak cAMP rate
+    Km_camp 200        # Structural constraint
+    n_hill 2.0         # Cooperativity in cyclase activation
+    
+    # Desensitization (GRK/Arrestin)
+    k_grk_phos 0.5     # Occupancy-dependent phosphorylation
+    k_arr_bind 2.0     # Arrestin binding to pR
+    k_internal 0.8     # Complex sequestration
+    
+    # Recovery
+    k_reset 0.1        # Dephosphorylation
+    k_pde_deg 0.2      # cAMP degradation
+    k_recycle 0.05     # Receptor return
+    
+    # Initials
+    BetaR_tot 500
+    Gs_tot 800
+    AC_tot 100
+    Arr_tot 200
+    cAMP_init 0
+end parameters
+
+begin molecule types
+    Epi(r)
+    BetaR(l,g,s~U~P,loc~cyt~mem)
+    Gs(r,s~GDP~GTP)
+    AC(g,s~off~on)
+    Arr(b)
+    cAMP()
+end molecule types
+
+begin seed species
+    Epi(r) 0
+    BetaR(l,g,s~U,loc~mem) BetaR_tot
+    Gs(r,s~GDP) Gs_tot
+    AC(g,s~off) AC_tot
+    Arr(b) Arr_tot
+    cAMP() cAMP_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Signal_Peak      cAMP()                   # Secondary messenger readout
+    Molecules Active_GS        Gs(s~GTP)                # Relay driver intensity
+    Molecules Surface_Availability BetaR(loc~mem)      # Receptor density
+    Molecules Desensitized_Frac BetaR(s~P)              # Inhibition status
+    Molecules Sequest_Complex  BetaR(s!1).Arr(b!1)      # Arrestin-bound metrics
+    Molecules Active_AC        AC(s~on)                 # Cyclase status
+end observables
+
+begin functions
+    # Hill-like cAMP production from active Adenylyl Cyclase
+    v_camp() = k_camp_max * (Active_AC^n_hill) / (Km_camp^n_hill + Active_AC^n_hill)
+end functions
+
+begin reaction rules
+    ## RECEPTION & G-PROTEIN COUPLING
+    # Epinephrine binds BetaR
+    Epi(r) + BetaR(l) <-> Epi(r!1).BetaR(l!1) k_bind_epi,0.1
+    
+    # Bound BetaR activates Gs (Exchange)
+    # MoveConnected: Gs moves between states while complexed (Simplified)
+    BetaR(l!+,g) + Gs(r,s~GDP) -> BetaR(l!+,g) + Gs(r,s~GTP) k_g_act
+    
+    ## CYCLASE ACTIVATION
+    # Active Gs activates AC
+    Gs(s~GTP) + AC(s~off) -> Gs(s~GTP) + AC(s~on) k_ac_act
+    
+    # AC produces cAMP (Functional Rate)
+    0 -> cAMP() v_camp()
+    
+    ## DESENSITIZATION
+    # Ligand-bound BetaR is phosphorylated by GRK
+    BetaR(l!+,s~U) -> BetaR(l!+,s~P) k_grk_phos
+    
+    # p-BetaR recruits Arrestin (Blocks G-protein access)
+    BetaR(s~P,g) + Arr(b) <-> BetaR(s~P!1,g).Arr(b!1) k_arr_bind,0.2
+    
+    # Internalisation (Spatial move)
+    BetaR(loc~mem,s~P!1).Arr(b!1) -> BetaR(loc~cyt,s~P!1).Arr(b!1) k_internal
+    
+    ## RECOVERY
+    cAMP() -> 0 k_pde_deg
+    Gs(s~GTP) -> Gs(s~GDP) 0.5
+    AC(s~on) -> AC(s~off) 0.2
+    BetaR(l,g,loc~cyt) -> BetaR(l,g,loc~mem,s~U) k_recycle
+    BetaR(s~P) -> BetaR(s~U) k_reset
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    
+    # Simple stimulatory simulation for parity
+    setConcentration("Epi(r)", 100)
+    simulate({method=>"ode",t_end=>200,n_steps=>200})
+end actions
+end model
+

@@ -1,0 +1,68 @@
+# Model: feature_local_functions_explicit.bngl
+# Description: Demonstrates the use of Local Functions within reaction rules.
+#              Local functions can access properties of the specific reactants involved in a rule match.
+#              However, standard BNGL 'functions' block are global.
+#              "Local functions" usually refers to rate laws defined as functions of reactant attributes.
+#              Here we show a function rate law that depends on a global observable or complex expression.
+
+begin model
+
+begin parameters
+    k_base 1.0
+    K_mk   50.0 # Saturation constant
+end parameters
+
+begin molecule types
+    S()
+    P()
+    E()
+end molecule types
+
+begin seed species
+    S() 100
+    E() 10
+    P() 0
+end seed species
+
+begin observables
+    Molecules S_conc S()
+    Molecules P_conc P()
+end observables
+
+begin functions
+    # Function of observable
+    MM_Rate() = k_base * S_conc / (K_mk + S_conc)
+    RateLaw() = k_base / (1.0 + P_conc)
+end functions
+
+begin reaction rules
+    # Rule using the function
+    # E acts as catalyst but we just use it in the rate law for demonstration
+    # S -> P Rate Law: MM_Rate()
+    # Note: If we use MM_Rate() which has units of rate (conc/time or counts/time),
+    # and the rule is S -> P which is 1st order in S, we need to be careful.
+    # If we want Rate = MM_Rate(), then mass action S cancels out?
+    # BNGL uses the value of the function as the rate constant k.
+    # So Propensity = k * [S].
+    # If we want Propensity = MM_Rate(), we can set rule as:
+    # 0 -> P MM_Rate() 
+    # But this doesn't consume S.
+    
+    # To consume S with specific propensity, we can use 0 -> P + S_consumption...
+    # Or just S -> P with rate k = MM_Rate() / [S] ? Unstable if S=0.
+    
+    # Standard usage: Modulating a rate constant.
+    # E + S -> E + P  k_base
+    # Let's make rate depend on P (Product Inhibition):
+    # k_eff = k_base / (1 + [P])
+    
+    E() + S() -> E() + P() RateLaw()
+end reaction rules
+
+
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ssa", t_end=>20, n_steps=>100})

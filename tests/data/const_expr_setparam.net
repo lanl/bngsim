@@ -1,0 +1,18 @@
+# Regression test for set_param on ConstantExpression parameters.
+# Mimics T1 polynomial model: d = d__FREE (ConstantExpression).
+# Bug: set_param("d", 27) was silently overwritten by re-evaluation.
+# After fix: set_param("d", 27) detaches expression, d stays at 27.
+begin parameters
+    1 d__FREE    70.0  # Constant
+    2 d          d__FREE  # ConstantExpression
+    3 _rateLaw1  1  # Constant
+end parameters
+begin species
+    1 counter() 0
+end species
+begin reactions
+    1 0 1 _rateLaw1 #_R1
+end reactions
+begin groups
+    1 x  1
+end groups

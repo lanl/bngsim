@@ -1,0 +1,59 @@
+begin model
+begin parameters
+    # Rate Constants
+    k_unfold      0.04    # Protein unfolding rate (stress)
+    k_chaperone   0.3     # Chaperone binding/refolding
+    k_perk        0.5     # PERK activation
+    k_translation 0.25    # Chaperone induction
+    k_recovery    0.08    # Deactivation/Recovery
+end parameters
+
+begin molecule types
+    UnfoldedProtein(level~low~high)
+    PERK(state~inactive~active)
+    EIF2A(phos~U~P)
+    Chaperone(level~basal~induced)
+end molecule types
+
+begin seed species
+    # Initial State
+    UnfoldedProtein(level~low) 40
+    PERK(state~inactive) 30
+    EIF2A(phos~U) 100
+    Chaperone(level~basal) 50
+end seed species
+
+begin reaction rules
+    # 1. Stress: Accumulation of Unfolded Proteins
+    UnfoldedProtein(level~low) -> UnfoldedProtein(level~high) k_unfold
+    
+    # 2. PERK Activation by Unfolded Proteins
+    UnfoldedProtein(level~high) + PERK(state~inactive) -> UnfoldedProtein(level~high) + PERK(state~active) k_perk
+    
+    # 3. eIF2a Phosphorylation (Translational Attenuation)
+    PERK(state~active) + EIF2A(phos~U) -> PERK(state~active) + EIF2A(phos~P) k_perk
+    
+    # 4. Adaptive Response: Chaperone Induction
+    EIF2A(phos~P) + Chaperone(level~basal) -> EIF2A(phos~P) + Chaperone(level~induced) k_translation
+    
+    # 5. Protein Refolding / Stress Resolution
+    Chaperone(level~induced) + UnfoldedProtein(level~high) -> Chaperone(level~induced) + UnfoldedProtein(level~low) k_chaperone
+    
+    # 6. Recovery / Reset
+    EIF2A(phos~P) -> EIF2A(phos~U) k_recovery
+    PERK(state~active) -> PERK(state~inactive) k_recovery
+    Chaperone(level~induced) -> Chaperone(level~basal) k_recovery
+end reaction rules
+
+begin observables
+    Molecules Active_PERK       PERK(state~active)
+    Molecules Phospho_EIF2A     EIF2A(phos~P)
+    Molecules Induced_Chaperone Chaperone(level~induced)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>70,n_steps=>240})
+end actions
+end model
+

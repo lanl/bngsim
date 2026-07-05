@@ -1,0 +1,22 @@
+begin model
+begin parameters
+X0 1
+k 0.5
+end parameters
+begin molecule types
+X()
+end molecule types
+begin seed species
+X() X0
+end seed species
+begin observables
+Molecules X X()
+end observables
+begin reaction rules
+0->X() k
+end reaction rules
+end model
+begin actions
+generate_network({})
+simulate({suffix=>"lindat",method=>"ode",t_end=>10,n_steps=>10})
+end actions

@@ -1,0 +1,44 @@
+# Feature: stiff system with widely separated timescales
+# Tests: fast binding/unbinding equilibrium with slow state change
+# Covers: stiff from existing corpus
+# Tier: base
+# Expected: fast equilibrium for binding; slow approach to final phospho state
+
+begin model
+begin parameters
+    A_tot   200
+    B_tot   200
+    kf      0.01    # /s, fast binding (relative to k_slow)
+    kr      1.0     # /s, fast unbinding (100x faster than k_slow, Kd = 100)
+    k_slow  0.01    # /s, slow state change when bound
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,p~U)  A_tot
+    B(s)      B_tot
+end seed species
+
+begin observables
+    Molecules  A_free   A(s)
+    Molecules  B_free   B(s)
+    Molecules  AB       A(s!1).B(s!1)
+    Molecules  Ap       A(p~P)
+    Molecules  Au       A(p~U)
+end observables
+
+begin reaction rules
+    # Fast binding/unbinding (timescale ~1s)
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+    # Slow phosphorylation only when bound (timescale ~100s)
+    A(s!+,p~U) -> A(s!+,p~P)  k_slow
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

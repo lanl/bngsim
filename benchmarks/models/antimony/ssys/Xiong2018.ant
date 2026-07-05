@@ -1,0 +1,73 @@
+// Xiong2018_ThreeVariable_ContactKilling_Inhibitor.ant
+//
+// Source:
+//   Xiong L, Cooper R, Tsimring LS (2018)
+//   "Coexistence and Pattern Formation in Bacterial Mixtures
+//    with Contact-Dependent Killing."
+//   Biophys J 114:1741–1750.
+//   This Antimony file uses the rescaled three-variable model
+//   from the Supporting Material (Eqs. S21–S23) with diffusion
+//   terms dropped (spatially homogeneous ODE version).
+//
+//   Equations (well-mixed; no ∇² terms):
+//     dn_1/dt = (gamma_1/(1 + A))*n_1*(1 - n_1 - n_2) - delta*n_1 - kappa*n_1*n_2
+//     dn_2/dt = n_2*(1 - n_1 - n_2) - delta*n_2
+//     dA/dt   = gamma_A*n_1 - delta_A*A
+//
+//   n_1, n_2 : rescaled local densities of strains 1 and 2 (0–1 range)
+//   A        : rescaled inhibitor concentration
+//
+//   Parameter set from Movies 1–2 and Fig. S5/S6 of the SI:
+//     gamma_1 = 4.5
+//     delta   = 0.01
+//     kappa   = 0.03
+//     gamma_A = 0.04
+//     delta_A = 0.02
+//   (gamma_2 has been scaled to 1 in these variables.)
+//
+//   The paper uses random spatial initial conditions; here we pick
+//   concrete homogeneous ICs inside the carrying capacity (n_1 + n_2 < 1)
+//   for ODE testing.
+//------------------------------------------------------------------
+
+model Xiong2018_ThreeVariable_ContactKilling_Inhibitor
+
+  // Compartment (dimensionless volume)
+  compartment env = 1;
+
+  // State variables (species)
+  species n_1 in env;
+  species n_2 in env;
+  species A   in env;
+
+  // Parameters (rescaled, from SI)
+  const gamma_1 = 4.5;
+  const delta   = 0.01;
+  const kappa   = 0.03;
+
+  const gamma_A = 0.04;
+  const delta_A = 0.02;
+
+  // ODEs (spatially uniform three-variable model)
+
+  // Strain 1: logistic growth with inhibition by A,
+  // natural death, and contact-dependent killing by strain 2.
+  n_1' = (gamma_1/(1 + A)) * n_1 * (1 - n_1 - n_2) - delta * n_1 - kappa * n_1 * n_2;
+
+  // Strain 2: logistic growth with same carrying capacity and death rate.
+  // (No direct effect of A in the base three-variable model.)
+  n_2' = n_2 * (1 - n_1 - n_2) - delta * n_2;
+
+  // Inhibitor A: produced by strain 1, decays linearly.
+  A'   = gamma_A * n_1 - delta_A * A;
+
+  // Initial conditions
+  // Paper uses random spatial ICs; here we choose homogeneous values
+  // within the carrying capacity for a concrete ODE test case.
+  n_1 = 0.4;
+  n_2 = 0.4;
+  A   = 0.0;
+
+end
+// @SIM T_START=0 T_END=100 N_STEPS=500 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

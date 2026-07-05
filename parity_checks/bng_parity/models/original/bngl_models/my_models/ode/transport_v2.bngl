@@ -1,0 +1,47 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # number of molecules per mole (exact value)
+Ab_mwt 150e3 # Da (g/mol), IgG
+Ab_specificDose 10e-3 # g per kg of body weight
+bodyMass 80 # kg
+Ab_dose=(Ab_specificDose*bodyMass/Ab_mwt) # moles
+#spVB 54e-3 # L per kg (rhesus)
+specificVB 70e-3 # L per kg (human)
+VB=specificVB*bodyMass # L
+densityECF 1 # kg/L (1 g/cm^3 for water)
+fracECF 0.2 # dimensionless, 20% of body weight is ECF
+VE=bodyMass*fracECF/densityECF # L 
+VL=VE-VB # L
+nu 125e-3 # L per hour (rate of circulation of lymph into blood)
+end parameters
+begin molecule types
+A(loc~B~L)
+end molecule types
+begin seed species
+A(loc~B) Ab_dose/VB # M
+A(loc~L) 0
+end seed species
+begin observables
+Molecules AB A(loc~B)
+Molecules AL A(loc~L)
+end observables
+begin functions
+vol_blood()=VB
+vol_lymph()=VL
+vol_ECF()=VE
+AT()=AB*VB+AL*VL
+nAB()=AB*VB
+nAL()=AL*VL
+end functions
+begin reaction rules
+A(loc~B)->0 nu/VB
+0->A(loc~L) nu*AB/VL
+A(loc~L)->0 nu/VL
+0->A(loc~B) nu*AL/VB
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({suffix=>"equil",method=>"ode",t_end=>120,n_steps=>240,print_functions=>1})
+end actions

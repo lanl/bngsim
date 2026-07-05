@@ -1,0 +1,5 @@
+# Results are machine-specific, not committed
+results/
+models/bng_sbml/
+models/amici_cache/
+__pycache__/

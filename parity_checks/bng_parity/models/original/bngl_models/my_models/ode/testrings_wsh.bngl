@@ -1,0 +1,83 @@
+begin model
+
+begin parameters
+
+ka_1 1
+kd_1 0.1
+
+ka_2 1
+kd_2 0.01
+
+
+
+end parameters
+
+begin molecule types
+
+A(a_1,a_2)
+B(b_1,b_2)
+
+X(a,b)
+Y(a,b)
+
+end molecule types
+
+begin seed species
+
+A(a_1,a_2)  10000
+B(b_1,b_2)  10000
+
+X(a,b) 10000
+Y(a,b) 10000
+
+end seed species
+
+begin functions
+end functions
+
+begin observables
+
+#Molecules A_unbound	A(a_1,a_2)		
+#Molecules B_unbound	B(b_1,b_2)
+#Molecules A_B_1		A(a_1!1,a_2).B(b_1!1,b_2)
+#Molecules A_B_2		A(a_1,a_2!2).B(b_1,b_2!2)
+Molecules A_B_ring 	A(a_1!1,a_2!2).B(b_1!1,b_2!2)
+
+Molecules X_Y_ring X(a!1,b!2).Y(a!1,b!2)
+
+
+end observables
+
+begin reaction rules
+
+A(a_1,a_2) + B(b_1,b_2) <-> A(a_1!1,a_2).B(b_1!1,b_2)	ka_1,kd_1
+A(a_1,a_2) + B(b_1,b_2) <-> A(a_1,a_2!2).B(b_1,b_2!2) ka_1,kd_1
+A(a_1!1,a_2).B(b_1!1,b_2) <-> A(a_1!1,a_2!2).B(b_1!1,b_2!2) ka_2,kd_2
+A(a_1,a_2!2).B(b_1,b_2!2) <-> A(a_1!1,a_2!2).B(b_1!1,b_2!2) ka_2,kd_2
+
+
+X(a,b)+Y(a,b)->X(a!1,b).Y(a!1,b) ka_1
+X(a,b)+Y(a,b)->X(a,b!1).Y(a,b!1) ka_1
+
+X(a!1,b).Y(a!1,b)->X(a!1,b!2).Y(a!1,b!2) ka_2
+X(a,b!1).Y(a,b!1)->X(a!2,b!1).Y(a!2,b!1) ka_2
+
+X(a!1).Y(a!1)->X(a)+Y(a) kd_1
+X(b!1).Y(b!1)->X(b)+Y(b) kd_1
+
+X(a!1,b!2).Y(a!1,b!2)->X(a!1,b).Y(a!1,b) kd_2
+X(a!2,b!1).Y(a!2,b!1)->X(a,b!1).Y(a,b!1) kd_2
+
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+
+saveConcentrations()
+
+simulate({suffix=>"ode",method=>"ode",t_start=>0,t_end=>10,n_steps=>100})
+
+resetConcentrations()
+
+simulate({suffix=>"nf",method=>"nf",t_start=>0,t_end=>10,n_steps=>100,complex=>1})

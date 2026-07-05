@@ -1,0 +1,24 @@
+# bngsim — SBML Test Suite unsupported-tag manifest (GH #241).
+#
+# GENERATED from bngsim._sbml_unsupported.manifest_text() by
+# testrunner/gen_manifest.py — do not edit by hand; a unit test
+# (test_sbml_unsupported_manifest.py) asserts this file matches the SSOT.
+#
+# Each tag marks a construct/test-type bngsim refuses under ODE, so the
+# official grading reports those cases as 'Unsupported' rather than
+# 'Error'. Reasons:
+#   CSymbolDelay: delay() turns the system into a delay-differential equation (DDE); bngsim has no DDE solver
+#   AlgebraicRule: a non-empty AlgebraicRule is a DAE constraint defining a variable implicitly; bngsim has no DAE solver
+#   FastReaction, MultipleFastReactions: fast="true" declares a fast-equilibrium constraint; bngsim has no fast-equilibrium constraint solver
+#   fbc: flux-balance (FluxBalanceSteadyState) cases are not TimeCourse; bngsim is a time-course ODE engine
+#
+# NOT declared (documented honest NoMatch, not a capability gap): CSymbolAvogadro (SI-exact constant), RandomEventExecution (supported reproducibly-per-seed).
+#
+# Paste-ready comma-joined form for the runner UI:
+#   AlgebraicRule, CSymbolDelay, FastReaction, MultipleFastReactions, fbc
+
+AlgebraicRule
+CSymbolDelay
+FastReaction
+MultipleFastReactions
+fbc

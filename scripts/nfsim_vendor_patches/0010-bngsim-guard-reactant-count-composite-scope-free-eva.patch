@@ -1,0 +1,29 @@
+From e8abbaa44172bf650eccf778824485a930e1efd7 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Tue, 9 Jun 2026 12:28:07 -0600
+Subject: [PATCH 10/14] bngsim: guard reactant-count composite scope-free eval
+
+---
+ src/NFfunction/compositeFunction.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/NFfunction/compositeFunction.cpp b/src/NFfunction/compositeFunction.cpp
+index a5e5999..52a088b 100644
+--- a/src/NFfunction/compositeFunction.cpp
++++ b/src/NFfunction/compositeFunction.cpp
+@@ -497,8 +497,10 @@ double CompositeFunction::evaluateOn(Molecule **molList, int *scope, int *curRea
+ 
+ 
+ 	//3 update reactant counts as need be
+-	if(n_reactants<this->n_reactantCounts) {
+-		cerr<<"Not given enough reactants for this composite function!"<<this->name<<endl;
++	if(this->n_reactantCounts>0 && (curReactantCounts==0 || n_reactants<this->n_reactantCounts)) {
++		throw std::runtime_error("Composite function '"+this->name+"' depends on reactant "
++			"counts (reactant_N()) but was evaluated without a valid reactant-count "
++			"context; it has no scope-free scalar value.");
+ 	}
+ 	for(int r=0; r<n_reactantCounts; r++) {
+ 		reactantCount[r]=curReactantCounts[r];
+-- 
+2.53.0
+

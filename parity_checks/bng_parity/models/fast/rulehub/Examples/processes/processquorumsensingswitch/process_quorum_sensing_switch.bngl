@@ -1,0 +1,73 @@
+# Model: process_quorum_sensing_switch.bngl
+# Description: Models Quorum Sensing (Autoinduction) where cells secrete a signaling molecule (AI).
+#              When AI accumulates to a threshold concentration, it binds a Receptor (R) which
+#              activates the production of more AI (positive feedback) and downstream targets (Light).
+#              Demonstrates population-density dependent switching.
+
+begin model
+
+begin parameters
+    # Production
+    k_basal 0.1   # Low basal production of AI
+    k_auto  5.0   # High production when Activated
+    
+    # Binding
+    k_on    1.0
+    k_off   0.1
+    
+    # Degradation/Loss (Diffusing away)
+    k_deg   0.2
+    
+    # Threshold behavior
+    # We model a single "Representative Cell" in a Volume.
+    # Cell Density is inversely proportional to Volume per cell? 
+    # Or simplified: We just model [AI] in the shared medium.
+end parameters
+
+begin molecule types
+    Gene_AI(state~Off~On)   # Gene for Autoinducer synthase
+    AI(r)                    # Autoinducer
+    R(ai)                   # Receptor (LuxR type)
+    Gene_Light(state~Off~On) # Target gene (Luciferase)
+end molecule types
+
+begin seed species
+    Gene_AI(state~Off) 1
+    Gene_Light(state~Off) 1
+    R(ai) 10
+    AI(r) 0
+end seed species
+
+begin observables
+    Molecules Light_Gene_On Gene_Light(state~On)
+    Molecules AI_Conc       AI()
+    Molecules Active_Receptor R(ai!+)
+end observables
+
+begin reaction rules
+    # 1. Basal Production of AI
+    Gene_AI(state~Off) -> Gene_AI(state~Off) + AI(r) k_basal
+    
+    # 2. Binding of AI to Receptor
+    R(ai) + AI(r) <-> R(ai!1).AI(r!1) k_on, k_off
+    
+    # 3. Activation of Genes by Receptor-AI Complex
+    # R-AI binds Promoters to turn them On
+    # Gene_AI activation (Positive Feedback)
+    Gene_AI(state~Off) + R(ai!+) <-> Gene_AI(state~On) + R(ai!+) 1.0, 0.1
+    
+    # Gene_Light activation
+    Gene_Light(state~Off) + R(ai!+) <-> Gene_Light(state~On) + R(ai!+) 1.0, 0.1
+    
+    # 4. Auto-induced Production of AI
+    Gene_AI(state~On) -> Gene_AI(state~On) + AI(r) k_auto
+    
+    # 5. Degradation of AI
+    AI(r) -> 0 k_deg
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>200})

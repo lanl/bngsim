@@ -1,0 +1,59 @@
+# Feature: multi-mol Molecules observable whose pattern reaches a
+#          symmetric-component partner via a NON-symmetric bond endpoint.
+# Tests:   the BFS extension in count_multi_molecule_embeddings must
+#          branch over every symmetric embedding consistent with the
+#          walked bond, not commit to the first match.
+# Bug pattern: r07 / basicmodels v07 — `Molecules full B-R-A(r,r)-R-B`
+#          under-counted by exactly factor 2 because R(a,b,b) embeddings
+#          reached via the unique `a` bond left both b-slot choices valid
+#          (and the old code dropped one).
+# Tier: base
+# Expected: RM Molecules count for the 5-mol palindrome matches NFsim
+# invariant: conserved R_total = 100
+# invariant: conserved A_total = 50
+# invariant: conserved B_total = 200
+
+begin model
+begin parameters
+    A_tot  50
+    R_tot  100
+    B_tot  200
+    kf     1.0
+    kr     1.0
+end parameters
+
+begin molecule types
+    A(r,r)
+    R(a,b,b)
+    B(c)
+end molecule types
+
+begin seed species
+    A(r,r)    A_tot
+    R(a,b,b)  R_tot
+    B(c)      B_tot
+end seed species
+
+begin observables
+    Molecules  A_total   A()
+    Molecules  R_total   R()
+    Molecules  B_total   B()
+    Molecules  RA_bond   R(a!1).A(r!1)
+    Molecules  RB_bond   R(b!1).B(c!1)
+    # The shape that triggers the bug: 5-mol palindromic Molecules pattern,
+    # sym center A(r,r), sym partner R(a,b,b) reached via unique-a bond.
+    Molecules  full      B(c!1).R(b!1,a!2).A(r!2,r!3).R(b!4,a!3).B(c!4)
+    # Species count is unaffected by the bug (deduped by complex), so
+    # serves as a cross-check anchor.
+    Species    s_full    B(c!1).R(b!1,a!2).A(r!2,r!3).R(b!4,a!3).B(c!4)
+end observables
+
+begin reaction rules
+    R(b) + B(c) <-> R(b!1).B(c!1)  kf, kr
+    R(a) + A(r) <-> R(a!1).A(r!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>20,n_steps=>100,param=>"-bscb"})
+end actions

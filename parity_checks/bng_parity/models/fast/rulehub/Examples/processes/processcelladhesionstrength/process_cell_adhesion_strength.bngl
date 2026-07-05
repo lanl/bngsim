@@ -1,0 +1,60 @@
+# Model: process_cell_adhesion_strength.bngl
+# Description: Models the formation of cell-cell adhesion complexes (e.g.,Cadherins).
+#              Receptors on one cell bind ligands/receptors on another cell.
+#              Formation of clusters increases strength (Avidity).
+#              Simplified to cluster formation dynamics.
+
+begin model
+
+begin parameters
+    # Rates
+    k_bind  1.0
+    k_break 0.1
+    
+    # Lateral Interaction (Clustering)
+    k_cluster 2.0
+    k_uncluster 0.1
+    
+    R_tot 50
+end parameters
+
+begin molecule types
+    # Cell 1 Cadherin (C1) and Cell 2 Cadherin (C2)
+    # They bind each other (trans) and cluster (cis)
+    C1(trans,cis)
+    C2(trans)
+end molecule types
+
+begin seed species
+    C1(trans,cis) R_tot
+    C2(trans) R_tot
+end seed species
+
+begin observables
+    Molecules Adhesions     C1(trans!+)
+    Molecules Clusters      C1(cis!+)
+    Molecules Large_Cluster C1(cis!+,trans!+) # Bound and clustered
+end observables
+
+begin reaction rules
+    # 1. Trans Binding (Adhesion)
+    # C1 on Cell 1 binds C2 on Cell 2
+    C1(trans) + C2(trans) <-> C1(trans!1).C2(trans!1) k_bind, k_break
+    
+    # 2. Cis Clustering (Lateral)
+    # C1 binds neighbor C1 if both are engaged? Or just freely cluster.
+    # Let's say Trans-binding promotes Cis-clustering (Cooperativity)
+    # C1(trans!+) + C1(trans!+) <-> Cluster
+    
+    # Simple Cis binding
+    C1(cis) + C1(cis) <-> C1(cis!1).C1(cis!1) k_cluster, k_uncluster
+    
+    # Note: Real adhesion involves zippering.
+    # C1(trans!1).C2(trans!1) + C1(trans!2).C2(trans!2) -> Cluster
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>20,n_steps=>100})

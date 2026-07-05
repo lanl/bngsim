@@ -1,0 +1,72 @@
+begin model
+#@model_id: P2011_linear_pathway_MM
+#@title: Linear pathway with Michaelis-Menten kinetics and competitive inhibition (Pozo 2011)
+#@description: Two-variable metabolic pathway with MM kinetics. X1 is produced from fixed X3 with competitive inhibition by X2, and consumed by a second MM step. X2 is produced from X1 and consumed by a Hill-type (n=2) reaction. Converted from Antimony to BNGL with population variables.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1186/1752-0509-5-137
+#@note: |
+#  Michaelis-Menten and Hill-type rates require functional rate expressions.
+#  X3 is an external fixed substrate.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L  (reference volume)
+  f        1.0            # dimensionless
+
+  V1       10.0           # concentration/s  (Vmax for reaction 1)
+  V2       5.0            # concentration/s  (Vmax for reaction 2)
+  V3       5.0            # concentration/s  (Vmax for reaction 3)
+  K1       0.5            # concentration  (Km for reaction 1)
+  K2       0.5            # concentration  (Km for reaction 2)
+  K3       0.5            # concentration  (Km for reaction 3, Hill)
+  Ki       1.0            # concentration  (inhibition constant)
+  X3       1.0            # concentration  (fixed external substrate)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+end molecule types
+
+begin seed species
+  X1()  1  # molecules (scaled from 1.0 concentration)
+  X2()  1  # molecules (scaled from 1.0 concentration)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+end observables
+
+begin functions
+  # Production of X1: V1*X3 / (K1*(1 + Ki/X2) + X3) -- MM with competitive inhibition
+  prod_X1() = V1 * X3 / (K1 * (1 + Ki / (Obs_X2 + 1e-8)) + X3)
+  # Consumption of X1 / Production of X2: V2*X1 / (K2 + X1) -- standard MM
+  flux_12() = V2 * Obs_X1 / (K2 + Obs_X1)
+  # Consumption of X2: V3*X2^2 / (K3^2 + X2^2) -- Hill-type (n=2)
+  cons_X2() = V3 * Obs_X2^2 / (K3^2 + Obs_X2^2)
+end functions
+
+begin reaction rules
+  # Production of X1 from external X3 (MM with competitive inhibition by X2)
+  0 -> X1()  prod_X1()
+  # Consumption of X1 / production of X2 (standard MM)
+  X1() -> 0  flux_12()
+  0 -> X2()  flux_12()
+  # Consumption of X2 (Hill-type, n=2)
+  X2() -> 0  cons_X2()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

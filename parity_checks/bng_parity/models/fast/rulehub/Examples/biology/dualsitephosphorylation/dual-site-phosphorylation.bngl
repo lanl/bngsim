@@ -1,0 +1,74 @@
+begin model
+begin parameters
+    # Dual-site phosphorylation: Requires two sequential modifications for activity.
+    # Exhibits ultrasensitivity and bistability in specific contexts.
+    
+    # Kinase kinetics (Writing)
+    k_bind_k 1.0       # Kinase binding to substrate
+    k_unbind_k 0.1     # Kinase dissociation
+    k_phos_1 0.5       # 1st phosphorylation rate (U -> P1)
+    k_phos_2 0.8       # 2nd phosphorylation rate (P1 -> PP)
+    
+    # Phosphatase kinetics (Eraser)
+    k_bind_p 1.0       # Phosphatase binding
+    k_unbind_p 0.1
+    k_dephos_1 0.4     # 1st dephosphorylation (PP -> P1)
+    k_dephos_2 0.4     # 2nd dephosphorylation (P1 -> U)
+    
+    # Cooperative influence (Allosteric proxy)
+    k_coop 2.0         # Speed-up of second modification
+    
+    # Initials
+    Kinase_tot 50      # The writer
+    Phosphatase_tot 50 # The eraser
+    Substrate_tot 200  # The target
+end parameters
+
+begin molecule types
+    Kinase(b,state~off~on)
+    Phosphatase(b,state~off~on)
+    Substrate(y1~U~P,y2~U~P,b)
+end molecule types
+
+begin seed species
+    Kinase(b,state~on) Kinase_tot
+    Phosphatase(b,state~on) Phosphatase_tot
+    Substrate(y1~U,y2~U,b) Substrate_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Unmodified     Substrate(y1~U,y2~U)       # Basal state
+    Molecules Mono_Phos      Substrate(y1~P,y2~U),Substrate(y1~U,y2~P) # Primed
+    Molecules Fully_Phos     Substrate(y1~P,y2~P)       # ACTIVE species
+    Molecules Kinase_Bound   Substrate(b!+)              # Enzyme-substrate proxy
+    Molecules Phos_Level     Substrate(y1~P),Substrate(y2~P) # Total stoichiometry
+end observables
+
+begin reaction rules
+    ## PHOSPHORYLATION CHAIN
+    # Kinase binds substrate
+    Kinase(state~on,b) + Substrate(b) <-> Kinase(state~on,b!1).Substrate(b!1) k_bind_k,k_unbind_k
+    
+    # Phosphorylation at site y1
+    Kinase(b!1).Substrate(b!1,y1~U) -> Kinase(b,state~on) + Substrate(b,y1~P) k_phos_1
+    
+    # Phosphorylation at site y2
+    Kinase(b!1).Substrate(b!1,y2~U) -> Kinase(b,state~on) + Substrate(b,y2~P) k_phos_1
+    
+    # Accelerated second phosphorylation (The "Ultrasensitivity" requirement)
+    Kinase(b!1).Substrate(b!1,y1~P,y2~U) -> Kinase(b,state~on) + Substrate(b,y1~P,y2~P) k_phos_2*k_coop
+    Kinase(b!1).Substrate(b!1,y1~U,y2~P) -> Kinase(b,state~on) + Substrate(b,y1~P,y2~P) k_phos_2*k_coop
+    
+    ## DEPHOSPHORYLATION CHAIN
+    # Phosphatase removes phosphates (Stochastic preference proxy)
+    Phosphatase(state~on) + Substrate(y1~P) -> Phosphatase(state~on) + Substrate(y1~U) k_dephos_2
+    Phosphatase(state~on) + Substrate(y2~P) -> Phosphatase(state~on) + Substrate(y2~U) k_dephos_2
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>5,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,156 @@
+// McMillen2002_RelaxationOscillator.ant
+//
+// Source:
+//   McMillen D, Kopell N, Hasty J, Collins JJ (2002)
+//   "Synchronizing genetic relaxation oscillators by intercell signaling."
+//   Proc Natl Acad Sci USA 99(2):679–684. doi:10.1073/pnas.0226422999
+//
+// Model:
+//   Single genetic relaxation oscillator with quorum-sensing feedback,
+//   dimensionless form (Eqs. 4–7). Variables:
+//     x : CII (autocatalytic activator)
+//     y : FtsH (protease for CII)
+//     l : LuxI (AI synthase)
+//     a : intracellular autoinducer (AI)
+//   Time τ is already nondimensionalized.
+//
+// For a single synchronized oscillator we approximate
+//   a_e = Q * a
+// so that the intracellular AI dynamics reduce to the same form
+// used for a synchronized population in the paper.
+//
+// ============================================================================
+// PATHOLOGICAL CASE: MANIFOLD DRIFT IN RECAST
+// ============================================================================
+//
+// The S-system recast of this model exhibits severe manifold drift.
+// While the recast is algebraically exact (passes symbolic and numerical
+// pointwise validation), trajectory integration diverges over time.
+//
+// ROOT CAUSE: LIFTED RATIONAL FUNCTIONS
+//
+// The original ODEs contain rational Hill-type terms:
+//   - (1 + alpha*x^4) / (1 + x^4)   (PRE promoter activation)
+//   - (1 + beta*a^2) / (1 + a^2)    (lux promoter activation)
+//
+// S-system recasting lifts these denominators to auxiliary variables:
+//   - Y_1 := 1 + x^4        (denominator of PRE Hill term)
+//   - Y_2 := 1 + a^2        (denominator of lux Hill term)
+//
+// Each auxiliary gets an ODE derived via chain rule:
+//   - Y_1' = 4*x^3 * x'     (correct derivative of 1 + x^4)
+//   - Y_2' = 2*a * a'       (correct derivative of 1 + a^2)
+//
+// THE MANIFOLD DRIFT PROBLEM:
+//
+// The algebraic constraints Y_1 = 1 + x^4 and Y_2 = 1 + a^2 define
+// constraint manifolds in the extended state space. On these manifolds,
+// the original and recast dynamics are EXACTLY equivalent.
+//
+// However, numerical integration accumulates small errors at each timestep.
+// These errors cause the trajectory to drift OFF the constraint manifold:
+//   - Y_1 ≠ 1 + x^4 (deviation grows with time)
+//   - Y_2 ≠ 1 + a^2 (deviation grows with time)
+//
+// Once off the manifold, the recast dynamics no longer match the original.
+// This is classic "MANIFOLD DRIFT" - a well-known problem in differential-
+// algebraic systems (DAEs) when constraints are differentiated.
+//
+// VALIDATION RESULTS:
+//    - Symbolic equivalence: PASS (Δ ≡ 0 on the constraint manifold)
+//    - Numerical pointwise: PASS (max error ~1e-16 when constraints enforced)
+//    - Trajectory comparison: FAIL (99% error by t=7.67 due to drift)
+//
+// MITIGATION STRATEGIES (not implemented in ssys):
+//    1. ASSIGNMENT RULES: Output Y_1 := 1 + x^4 as algebraic constraints
+//       instead of ODEs. This prevents drift but changes the model structure.
+//    2. MANIFOLD PROJECTION: Periodically re-project the trajectory back
+//       onto the constraint manifold during integration.
+//    3. DAE SOLVERS: Use differential-algebraic equation solvers that
+//       enforce algebraic constraints natively (e.g., IDA from SUNDIALS).
+//    4. STABILIZATION: Add drift-correction terms to the auxiliary ODEs
+//       that push the trajectory back toward the manifold.
+//
+// REFERENCES:
+//    - Ascher, U. M., & Petzold, L. R. (1998). Computer Methods for ODEs
+//      and DAEs. SIAM. Chapter 10: Differential-Algebraic Equations.
+//    - Hairer, E., & Wanner, G. (1996). Solving ODEs II: Stiff and DAE
+//      Problems. Springer. Chapter VII: Constrained Systems.
+//
+// ============================================================================
+
+//----------------------------
+// Model
+//----------------------------
+model McMillen2002_RelaxationOscillator
+
+  // Compartment
+  compartment cell = 1;
+
+  // Species (dimensionless concentrations)
+  species x in cell;
+  species y in cell;
+  species l in cell;
+  species a in cell;
+
+  // Parameters (dimensionless; from parameter discussion in the paper)
+  // Hill nonlinearities
+  const alpha  = 600;
+  const beta   = 10;
+
+  // Production / copy-number prefactors
+  const m_x    = 10;
+  const m_y    = 1;
+  const mu_x   = 50;
+  const mu_l   = 50;
+
+  // Degradation / dilution rates
+  const gamma_x  = 0.5;
+  const gamma_y  = 0.5;
+  const gamma_l  = 25;
+  const gamma_a  = 0.2;
+
+  // Proteolytic degradation of x by y
+  const gamma_xy = 5;
+
+  // AI synthesis / transport
+  const mu_a   = 0.4;
+  const D_a    = 120;
+  const Q      = 0.6;
+
+  // Effective extracellular AI level for a synchronized population
+  a_e := Q * a;
+
+  //----------------------------
+  // ODEs (dimensionless time τ)
+  //----------------------------
+  // Note: Hill functions f(x) and g(a) are inlined directly
+  // f(x) = (1 + alpha*x^4) / (1 + x^4)  (PRE promoter activated by CII)
+  // g(a) = (1 + beta*a^2) / (1 + a^2)   (lux promoter activated by AI)
+
+  // CII (x)
+  x' = m_x * (1 + alpha*x^4) / (1 + x^4) - gamma_xy * x * y - gamma_x * x + mu_x * (1 + beta*a^2) / (1 + a^2);
+
+  // FtsH (y)
+  y' = m_y * (1 + alpha*x^4) / (1 + x^4) - gamma_y * y;
+
+  // LuxI (l)
+  l' = mu_l * (1 + alpha*x^4) / (1 + x^4) - gamma_l * l;
+
+  // Intracellular AI (a)
+  // Exchange with extracellular AI ~ D_a * (a_e - a)
+  a' = mu_a * l - D_a * (a - a_e) - gamma_a * a;
+
+  //----------------------------
+  // Initial conditions
+  //----------------------------
+  // The paper does not fix specific numeric ICs; here we choose a simple
+  // non-negative state that reliably converges to the relaxation limit cycle.
+  x = 0;
+  y = 0;
+  l = 0;
+  a = 0;
+
+end
+// @SIM T_START=0 T_END=0.1 N_STEPS=100 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

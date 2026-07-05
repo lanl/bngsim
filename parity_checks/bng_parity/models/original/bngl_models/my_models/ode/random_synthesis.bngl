@@ -1,0 +1,39 @@
+begin model
+begin parameters
+k_synth 1 # molecule per s
+k_fast 100 # /s
+k_faster 10000 # /s
+end parameters
+begin molecule types
+X(a~0~1,b~0~1,c~0~1,new~T~F)
+end molecule types
+begin seed species
+X(a~0,b~0,c~0,new~F) 0
+end seed species
+begin observables
+Molecules Xa0b0c0 X(a~0,b~0,c~0,new~F)
+Molecules Xa1b0c0 X(a~1,b~0,c~0,new~F)
+Molecules Xa0b1c0 X(a~0,b~1,c~1,new~F)
+Molecules Xa0b0c1 X(a~0,b~0,c~1,new~F)
+Molecules Xa1b1c0 X(a~1,b~1,c~0,new~F)
+Molecules Xa1b0c1 X(a~1,b~0,c~1,new~F)
+Molecules Xa0b1c1 X(a~0,b~1,c~1,new~F)
+Molecules Xa1b1c1 X(a~1,b~1,c~1,new~F)
+end observables
+begin functions
+end functions
+begin reaction rules
+# synthesis
+0->X(a~0,b~0,c~0,new~T) k_synth
+# randomize the internal state of newly synthesized X
+X(a~0,new~T)<->X(a~1,new~T) k_faster,k_faster
+X(b~0,new~T)<->X(b~1,new~T) k_faster,k_faster
+X(c~0,new~T)<->X(c~1,new~T) k_faster,k_faster
+# switch the state of X from new~T to new~F
+X(new~T)->X(new~F) k_fast
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>1000,print_functions=>1})
+end actions

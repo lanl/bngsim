@@ -1,0 +1,71 @@
+// =============================================================================
+// Source: Savageau (1988) "Introduction to S-Systems and the Underlying
+//         Power-Law Formalism"
+//         Math. Comput. Modelling 11:546-551
+// Recasting Example 1: Monod chemostat -> Recasting method 1 (Equations 19-20)
+// Recasting Example 2: Monod chemostat -> Recasting method 2 (Equation 21)
+// =============================================================================
+// Time horizon: t ∈ [0, 20] (added for simulation)
+//
+// Original Monod equations (Equation 19):
+//   dX1/dt = α1 * X1 * X2 / (X2 + 1) - X1
+//   dX2/dt = (Xr - X2) - β2 * X1 * X2 / (X2 + 1)
+//
+// where:
+//   X1 = cell concentration
+//   X2 = substrate concentration (normalized by Ks)
+//   Xr = reservoir substrate concentration (normalized)
+//   α1 = exponential growth rate constant
+//   β2 = α1 / yield coefficient Y
+//   Time normalized with respect to dilution rate D
+//
+// Recast S-system method 1 (Equation 20):
+//   Define: X3 = X2 + 1, X4 = Xr - X2
+//   X(0) = (X10, X20, X20+1, Xr-X20)
+//
+//   dX1/dt = α1*X1*X2*X3^(-1) - X1
+//   dX2/dt = X4 - β2*X1*X2*X3^(-1)
+//   dX3/dt = X4 - β2*X1*X2*X3^(-1)
+//   dX4/dt = β2*X1*X2*X3^(-1) - X4
+//
+// Advantages of this method (from paper):
+//   - Original variables X1, X2 retained
+//   - Behavior on 2D plane corresponds to 2D manifold in 4D space
+//   - Nonzero stable steady state preserved as rest point
+//
+// Recast S-system method 2 (Equation 21):
+//   Define: X4 = X2 (replaces X2)
+//           X5 = auxiliary for X2
+//           X6 = (X2+1)^(-1), X7 = auxiliary for X6
+//   X(0) = (X10, X20, 1, (X20+1)^(-1), 1)
+//
+//   dX1/dt = α1*X1*X4*X5*X6*X7 - X1
+//   dX4/dt = Xr*X5^(-1) - X4
+//   dX5/dt = -β2*X1*X5*X6*X7
+//   dX6/dt = β2*X1*X4*X5*X6^2*X7 - X6*X6^2*X7
+//   dX7/dt = X4*X5*X6*X7^2
+//
+// Note: Method 2 uses systematic "product rule" decomposition but:
+//   - Has one extra variable
+//   - Original X2 not explicitly present
+//   - Nonzero steady state becomes a "stable trajectory"
+//
+// NOTE: Parameter values added for simulation.
+// =============================================================================
+
+model S1988_Monod_chemostat()
+    // Parameters
+    alpha1 = 2.0   // Exponential growth rate constant
+    beta2 = 4.0    // α1 / yield coefficient Y
+    Xr = 5.0       // Reservoir substrate concentration (normalized)
+    
+    // Original Monod equations
+    X1' = alpha1 * X1 * X2 / (X2 + 1) - X1
+    X2' = (Xr - X2) - beta2 * X1 * X2 / (X2 + 1)
+    
+    // Initial conditions
+    X1 = 0.1   // Cell concentration
+    X2 = 4.0   // Substrate concentration
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

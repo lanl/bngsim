@@ -1,0 +1,75 @@
+begin model
+#@model_id: m04_mass_action_branch
+#@title: Branched mass-action pathway
+#@description: Branched biochemical pathway A->B, B->C, B->D, D->B with mass-action kinetics. All reactions are first-order.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless scaling factor
+
+  k_1      0.1            # 1/s  A -> B rate
+  k_2      0.2            # 1/s  B -> C rate
+  k_3      0.15           # 1/s  B -> D rate
+  k_4      0.3            # 1/s  D -> B rate
+
+  A_init   5*f            # molecules  initial count of A
+  B_init   0              # molecules  initial count of B
+  C_init   0              # molecules  initial count of C
+  D_init   0              # molecules  initial count of D
+end parameters
+
+begin molecule types
+  A()
+  B()
+  C()
+  D()
+end molecule types
+
+begin seed species
+  A()  A_init  # molecules
+  B()  B_init  # molecules
+  C()  C_init  # molecules
+  D()  D_init  # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_Tot_A  A()
+  Molecules  Obs_Tot_B  B()
+  Molecules  Obs_Tot_C  C()
+  Molecules  Obs_Tot_D  D()
+end observables
+
+begin reaction rules
+  # A -> B  first-order
+  A() -> B()  k_1
+
+  # B -> C  first-order
+  B() -> C()  k_2
+
+  # B -> D  first-order
+  B() -> D()  k_3
+
+  # D -> B  first-order
+  D() -> B()  k_4
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

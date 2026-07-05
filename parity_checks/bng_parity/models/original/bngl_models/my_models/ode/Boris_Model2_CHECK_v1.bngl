@@ -1,0 +1,56 @@
+begin model
+# Reference:
+# - Kholodenko BN (2015) Cell Rep 12:1939-1949.
+begin parameters
+f 1 # from caption of Figure 2(C)
+g1 1 # The value of g1 will be changed in the actions block
+g2 10 # from caption of Figure 2(C)
+alpha 0.1 # value reported in caption of Figure 1; calculations of Figure 2 are reported to use the same value
+lambda 10 # value reported in Supplemental Experimental Procedures, Section 1 (see Eq. (S1.10))
+rho 0.5 # value reported in Supplemental Experimental Procedures, Seciton 1 (see Eq. (S1.10))
+kappa 1 # monomer activity is normalized
+end parameters
+begin molecule types
+I() # I/KD2=I/IC50=h
+end molecule types
+begin seed species
+I() 0
+end seed species
+begin observables
+Molecules I I()
+end observables
+begin functions
+h()=I
+A()=2*alpha*(1+h()*(1/f+1/(f*g1)+h()/(f*g1*g2))) # from Eq. (S2.4), Section 2 of Supplemental Experimental Procedures
+B()=1+h() # from Eq. (S2.4), Section 2 of Supplemental Experimental Procedures
+r_zeroI()=(sqrt(1+8*alpha)-1)/(4*alpha) # from special case of Eq. (S2.4), h=0, and quadratic formula
+r1r2_zeroI()=r_zeroI()^2*alpha # first equation in Section 2.2 of Supplemental Experimental Procedures (first line of Eq. (S2.2))
+Activity_zeroI()=lambda*r1r2_zeroI()+kappa*r_zeroI() # steady-state RAF activity in absence of inhibitor
+r_ss()=(-B()+sqrt(B()^2+4*A()))/(2*A()) # from Eq. (S2.4) and quadratic formula
+ri_ss()=r_ss()*h() # second line in Eq. (S2.2)
+r1r2_ss()=r_ss()^2*alpha # first line in Eq. (S2.2)
+r1ir2_ss()=(r_ss()^2*h()*alpha/f) # third line in Eq. (S2.2)
+r1r2i_ss()=((r_ss()^2*h()*alpha)/(g1*f)) # fourth line in Eq. (S2.2)
+r1ir2i_ss()=((r_ss()^2*h()^2*alpha)/(f*g1*g2)) # fifth line in Eq. (S2.2)
+Act_uninhibitedMonomers()=kappa*(r_ss())
+Act_partiallyInhibitedDimers()=rho*lambda*(r1ir2_ss()+r1r2i_ss())
+Act_uninhibitedDimers()=lambda*(r1r2_ss())
+Normalized_Kinase_Activity()=(Act_uninhibitedMonomers()+Act_partiallyInhibitedDimers()+Act_uninhibitedDimers())/Activity_zeroI()
+end functions
+begin reaction rules
+0->I() 1 # increment I (from 0 to 5 - see actions block); time corresponds to h
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+setParameter("g1",0.01) # g1 value reported in caption of Figure 2(C) for red curve
+simulate({suffix=>"red",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h)
+resetConcentrations()
+setParameter("g1",0.05) # g1 value reported in caption of Figure 2(C) for blue curve
+simulate({suffix=>"blue",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h)
+resetConcentrations()
+setParameter("g1",1) # g1 value reported in caption of Figure 2(C) for black curve
+simulate({suffix=>"black",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h)
+end actions

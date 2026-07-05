@@ -1,0 +1,54 @@
+// Semiconductor Electron-Hole/Exciton Oscillations
+// Source: Hernandez-Bermejo, Fairen & Brenig, "Algebraic recasting of nonlinear
+//         systems of ODEs into universal formats"
+//         J. Phys. A: Math. Gen. 31:2415-2430 (1998)
+//         Section 3.3, Equations (29)-(36)
+//
+// Original model from Cuerno & Velarde (1988) for sustained time-oscillations
+// in electron-hole pairs (x1) and excitons (x2) in an intrinsic semiconductor.
+//
+// Physical processes:
+//   photogeneration: gamma -> e + h (rate g)
+//   stimulated exciton production: e + h + x2 -> 2x2 (rate c)
+//   radiative decay: x2 -> gamma (rate k with high-order kinetics)
+//
+// Original system (Eq. 29):
+//   x1' = g - c*x1^2*x2
+//   x2' = c*x1^2*x2 - k*x2/(1 + q*x2)^m
+//
+// ==============================================================================
+// EXACT RECASTING TO QP FORM (Eq. 30):
+// ==============================================================================
+// Introduce x3 = (1 + q*x2)^(-1) to handle the saturable decay term.
+// QP system (3 variables, 4 quasimonomials):
+//   X1' = X1*[g*X1^(-1) - c*X1*X2]
+//   X2' = X2*[c*X1^2 - k*X3^m]
+//   X3' = X3*[-c*q*X1^2*X2*X3 + q*k*X2*X3^(m+1)]
+//
+// Can be further reduced to Lotka-Volterra form (6 variables).
+// ==============================================================================
+
+model HBF1998_semiconductor_exciton()
+  // State variables
+  compartment cell = 1
+  var species x1 in cell
+  var species x2 in cell
+
+  // Parameters
+  g = 1.0
+  c = 0.5
+  k = 1.0
+  q = 0.5
+  m = 2
+  
+  // ORIGINAL ODEs (Eq. 29)
+  // High-order kinetics model with saturable decay
+  x1' = g - c * x1^2 * x2
+  x2' = c * x1^2 * x2 - k * x2 / (1 + q * x2)^m
+  
+  // Initial conditions
+  x1 = 1.0
+  x2 = 0.5
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,42 @@
+// =============================================================================
+// Source: Voit (1992) "Symmetries of S-Systems"
+//         Math. Biosci. 109:19-31
+// Example: Blasius equation - exact recasting (pages 28-30)
+// =============================================================================
+// Time horizon: t ∈ [0, 10]
+//
+// Original Blasius equation (third-order ODE from boundary layer theory):
+//   Y''' = b * Y * Y''
+//
+// This is a fundamental equation in fluid dynamics describing
+// laminar boundary layer flow over a flat plate.
+//
+// Recast as first-order S-system:
+//   Define: X0 = x (independent variable), X1 = Y, X2 = Y', X3 = Y''
+//
+//   dX1/dX0 = X2
+//   dX2/dX0 = X3
+//   dX3/dX0 = b * X1 * X3
+//
+// Note: Parameter b is typically -1/2 for classical Blasius.
+//
+// Symmetry: Admits one-parameter transformation:
+//   Z0 = ρ^(-c)*X0, Z1 = ρ^c*X1, Z2 = ρ^(2c)*X2, Z3 = ρ^(3c)*X3
+// =============================================================================
+
+model V1992_blasius_equation()
+    // Parameter (classical Blasius uses b = -1/2)
+    b = -0.5
+    
+    // First-order system equivalent to Y''' = b*Y*Y''
+    Y' = Yp
+    Yp' = Ypp
+    Ypp' = b * Y * Ypp
+    
+    // Initial conditions (typical boundary layer)
+    Y = 0.0     // Y(0) = 0
+    Yp = 0.0    // Y'(0) = 0
+    Ypp = 0.33  // Y''(0) ≈ 0.33 (shooting parameter)
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

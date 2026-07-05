@@ -1,0 +1,66 @@
+# Edge case: 3-component repressilator-style oscillator
+# Tests:  three coupled negative-feedback loops produce sustained
+#         oscillations under stochastic dynamics.  Functional rate
+#         laws use Hill-form repression (n=4) of one species's
+#         production by another.  The model exercises:
+#           - global (non-local) functions used as rates,
+#           - Hill-form rationals (sensitive to numeric precision),
+#           - a tightly coupled rate-recompute path on EVERY event.
+#         A rate-staleness or observable-staleness bug shows up as
+#         dampened oscillations (RM under-amplitude) or missed cycles.
+# Edge:   the constants are set so the system has clearly delimited
+#         peaks within t_end=40, but populations stay small (~0..40)
+#         to keep run time low.  No rule has multi-mol patterns; the
+#         stress is on the rate-evaluation feedback loop.
+# Tier:   base
+
+begin model
+begin parameters
+    n_hill  4
+    K_hill  10
+    k_prod  6.0   # /s, max production
+    k_deg   0.4   # /s, degradation per molecule
+end parameters
+
+begin molecule types
+    A()
+    B()
+    C()
+    Src()
+    Trash()
+end molecule types
+
+begin seed species
+    Src()     1
+    A()       8     # asymmetric initial conditions — break the symmetry
+    B()       0
+    C()       0
+    $Trash()  0
+end seed species
+
+begin observables
+    Molecules  A_n   A()
+    Molecules  B_n   B()
+    Molecules  C_n   C()
+end observables
+
+begin functions
+    # Each protein represses the production of the next in the cycle.
+    rA() = k_prod / (1 + (C_n/K_hill)^n_hill)
+    rB() = k_prod / (1 + (A_n/K_hill)^n_hill)
+    rC() = k_prod / (1 + (B_n/K_hill)^n_hill)
+end functions
+
+begin reaction rules
+    Src() -> Src() + A()  rA()
+    Src() -> Src() + B()  rB()
+    Src() -> Src() + C()  rC()
+    A() -> Trash()  k_deg
+    B() -> Trash()  k_deg
+    C() -> Trash()  k_deg
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>200})
+end actions

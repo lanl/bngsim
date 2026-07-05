@@ -1,0 +1,158 @@
+# filename: trafficking.bngl
+
+begin model
+
+begin parameters
+
+# scaling factor
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# number of cells per well (24-well plate)
+Ncells 5e5 # cells per well
+
+# volume of medium per well
+Vmedium 400e-6 # L (dm^3) per well (400 uL)
+
+# volume of extracellular fluid per cell
+Vecf=f*(Vmedium/Ncells) # L per cell (0.8 nL per cell)
+
+# total abundance of IgE
+IgE_dose 4000 # ng/ml (4 ug/ml)
+
+# molecular weight of IgE
+mwt_IgE 190000 # g per mol
+
+L0=(IgE_dose*1e-6/mwt_IgE)*(NA*Vecf) # cpc
+
+# number of humanized IgE receptors per hRBL cell
+#  in the absence of IgE
+R0 f*78700 # cpc
+
+# binding parameters for IgE interaction with IgE receptor
+#  dissociation rate constant
+kr 1.53e-5*3600 # /s converted to /hr
+#  association rate constant
+kf 6.23e3*3600/(NA*Vecf) # /M/s converted to /cpc/hr
+KD=kr/kf # cpc
+
+# IgE receptor trafficking parameters
+#  internalization rate constant
+ki 1 # /hr
+#  externalization rate constant
+ke=ki*R0 # cpc/hr
+
+end parameters
+
+begin molecule types
+
+# Alexa Fluor 488-labeled human IgE (ligand)
+L(s)
+
+# humanized IgE receptor on hRBL cells
+R(s)
+
+counter()
+
+end molecule types
+
+begin seed species
+
+# initial total abundances of (free) ligand and (free) receptor per cell
+L(s) L0
+R(s) R0
+
+end seed species
+
+begin observables
+
+Molecules Rtot R()
+Molecules Rfree R(s)
+Molecules Rbound R(s!+)
+
+Molecules t counter()
+
+end observables
+
+begin functions
+
+# polynomial fitting function
+R_vs_t_poly4()=-9.415587e-3*t^4+2.332495e0*t^3-2.872500e2*t^2+2.067233e4*t+2.278584e4
+
+# time-dependent fluorescence of cell surface-bound IgE
+FL()=Rtot-Rfree
+
+# fluorescence of cell surface-bound IgE at steady state
+FL_ss()=(L0*R0/KD)/(1+R0/KD)
+
+#R_ss()=R0+(L0*R0/KD)
+#L0_out()=L0
+#R0_out()=R0
+#KD_out()=KD
+
+end functions
+
+begin reaction rules
+
+# reversible ligand-receptor binding
+L(s)+R(s)<->L(s!1).R(s!1) kf,kr
+
+# externalization of IgE receptor
+0->R(s) ke
+
+# internalization of IgE receptor
+R(s)->0 ki
+
+0->counter() 1
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+saveConcentrations()
+
+simulate({suffix=>"sims",method=>"ode",t_start=>0,t_end=>100,n_steps=>200,print_functions=>1})
+
+resetConcentrations()
+setParameter("ki",1)
+simulate({suffix=>"A",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",0.8)
+#simulate({suffix=>"B",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",0.9)
+#simulate({suffix=>"C",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.0)
+#simulate({suffix=>"D",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.1)
+#simulate({suffix=>"E",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.2)
+#simulate({suffix=>"F",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.3)
+#simulate({suffix=>"G",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.4)
+#simulate({suffix=>"H",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+#resetConcentrations()
+#setParameter("ki",1.5)
+#simulate({suffix=>"I",method=>"ode",sample_times=>[2,24,48,72,96],print_functions=>1})
+
+end actions

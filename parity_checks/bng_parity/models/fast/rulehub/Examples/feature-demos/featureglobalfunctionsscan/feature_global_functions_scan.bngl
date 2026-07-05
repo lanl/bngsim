@@ -1,0 +1,59 @@
+# Model: feature_global_functions_scan.bngl
+# Description: Demonstrates the use of Global Functions that depend on the built-in 'time' variable.
+#              This allows creating dynamic inputs (e.g., sine waves) for the system.
+
+begin model
+
+begin parameters
+    # Amplitude and Frequency of input signal
+    Amp   100
+    Freq  0.5
+    Phase 0
+    k_resp 0.1
+    k_decay 0.1
+    t 0 # Time variable
+end parameters
+
+begin molecule types
+    Signal()
+    Response()
+end molecule types
+
+begin seed species
+    Signal() 0
+    Response() 0
+end seed species
+
+begin observables
+    Molecules Input Signal()
+    Molecules Output Response()
+end observables
+
+begin functions
+    # Time-dependent stimulus function
+    # Note: 'time' is a reserved variable in BNGL simulations
+    Stimulus() = Amp * (sin(Freq * t + Phase) + 1.0) / 2.0
+end functions
+
+begin reaction rules
+    # 1. Drive Signal based on Function
+    # We want [Signal] to track Stimulus(). 
+    # This is tricky with reaction rules.
+    # Approach A: Synthesis rate = Stimulus()
+    # 0 -> Signal() Stimulus()
+    # Signal() -> 0 k_fast
+    # Result: [Signal] ~ Stimulus()/k_fast
+    
+    0 -> Signal() Stimulus()
+    Signal() -> 0 1.0 # Fast decay to track input
+    
+    # 2. System Response to Signal
+    Signal() -> Signal() + Response() k_resp
+    Response() -> 0 k_decay
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>500})

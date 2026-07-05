@@ -1,0 +1,45 @@
+begin model
+begin parameters
+    # Flux Rates
+    k_gly         2.0    # Glycolytic flux (Glucose -> ATP)
+    k_branch      0.8    # Branch point to biomass (e.g., PPP)
+    k_atp_use     0.5    # Cellular energy demand
+    k_biomass_use 0.3    # Anabolic consumption
+end parameters
+
+begin molecule types
+    Glucose()
+    ATP()
+    Biomass()
+end molecule types
+
+begin seed species
+    Glucose() 100
+end seed species
+
+begin observables
+    Molecules Glucose_pool Glucose()
+    Molecules ATP_pool     ATP()
+    Molecules Biomass      Biomass()
+end observables
+
+begin reaction rules
+    # 1. Glycolysis (Catabolism)
+    # Glucose oxidation produces ATP
+    Glucose() -> ATP() k_gly
+    
+    # 2. Biosynthesis (Anabolism)
+    # Branch pathway uses Glucose for biomass precursors
+    Glucose() -> Biomass() k_branch
+    
+    # 3. Consumption / Turnover
+    ATP() -> 0 k_atp_use
+    Biomass() -> 0 k_biomass_use
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>40,n_steps=>120})
+end actions
+end model
+

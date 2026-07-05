@@ -1,0 +1,94 @@
+begin model
+begin parameters
+    # EGFRvIII in Glioblastoma: Constitutive AKT drive and escape from decay.
+    # Advanced features: Michaelis-Menten constitutive drive and DeleteMolecules evasion.
+    
+    # Constitutive Activation
+    k_vIII_act_max 2.0  # Peak constitutive phosphorylation
+    Km_vIII 100         # Threshold for kinase drive
+    
+    # PI3K/AKT Relay (The oncogenic engine)
+    k_pi3k_rec 1.5      # Recruitment to active vIII
+    k_akt_act_max 10.0  # Characteristic high AKT drive
+    Km_akt 400          # High threshold survival gate
+    n_hill 3.5          # Ultra-sensitive survival switch
+    
+    # Persistence (Evasion of degradation)
+    k_esc_deg 0.05      # Internalization rate (Low for mutant)
+    k_internal_WT 0.5   # Comparison (for WT simulation)
+    k_lys_deg 0.02      # Lysosomal decay
+    
+    # Negative Feedback
+    k_ptp1b_inh 0.8     # Phosphatase-mediated reset
+    k_reset 0.05
+    
+    # Initials
+    vIII_tot 500
+    PI3K_tot 200
+    AKT_tot 1000
+    PTP1B_tot 100
+end parameters
+
+begin molecule types
+    EGFRvIII(b,s~U~P,loc~mem~cyt)
+    PI3K(b)
+    AKT(s~U~P)
+    Oncogenic_Output()
+end molecule types
+
+begin seed species
+    EGFRvIII(b,s~U,loc~mem) vIII_tot
+    PI3K(b) PI3K_tot
+    AKT(s~U) AKT_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Survival_Burst Oncogenic_Output()       # Final cancerous drive
+    Molecules Total_pAKT     AKT(s~P)                 # Sustained survival effector
+    Molecules vIII_Platform EGFRvIII(s~P!1).PI3K(b!1)      # Active signaling machinery
+    Molecules Mem_vIII      EGFRvIII(loc~mem)         # Surface persistence
+    Molecules Active_vIII    EGFRvIII(s~P)            # Phospho-oncoprotein status
+    Molecules vIII_Substrate EGFRvIII(s~U,loc~mem)   # Available kinase pool
+end observables
+
+begin functions
+    # Constitutive Michaelis-Menten drive (Independent of ligands)
+    v_vIII_act() = k_vIII_act_max * (vIII_Substrate / (Km_vIII + vIII_Substrate))
+    
+    # Sharp survival switch
+    v_cancer_drive() = k_akt_act_max * (Total_pAKT^n_hill) / (Km_akt^n_hill + Total_pAKT^n_hill)
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # Constitutive autophosphorylation (Functional Rate)
+    EGFRvIII(s~U,loc~mem) -> EGFRvIII(s~P,loc~mem) v_vIII_act()
+    
+    ## ONCOGENIC RELAY Stage
+    # p-vIII recruits PI3K
+    EGFRvIII(s~P) + PI3K(b) <-> EGFRvIII(s~P!1).PI3K(b!1) k_pi3k_rec,0.2
+    
+    # Active complex drives AKT (Functional Rate - Hill)
+    EGFRvIII(s!1).PI3K(b!1) + AKT(s~U) -> EGFRvIII(s!1).PI3K(b!1) + AKT(s~P) 5.0
+    0 -> Oncogenic_Output() v_cancer_drive()
+    
+    ## EVASION Stage
+    # vIII internalizes slowly (Persistent surface signal)
+    EGFRvIII(loc~mem) -> EGFRvIII(loc~cyt) k_esc_deg
+    
+    # Lysosomal degradation (DeleteMolecules: final removal)
+    EGFRvIII(loc~cyt) -> 0 k_lys_deg DeleteMolecules
+    
+    ## RESET
+    EGFRvIII(s~P) -> EGFRvIII(s~U) k_ptp1b_inh
+    AKT(s~P) -> AKT(s~U) k_reset
+    Oncogenic_Output() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

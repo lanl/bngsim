@@ -1,0 +1,190 @@
+#################
+# file metadata #
+#################
+
+#---
+# Filename/version: cleavage_mechanism_v1.bngl
+# Date created: 
+#  - v1: 06-Apr-2023
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# Software:
+#  - BioNetGen version 2.5.1
+#  - NFsim version 1.12.1
+#  - RuleBender version 2.1.0
+#---
+
+begin model
+
+##################
+# model metadata #
+##################
+
+#---
+# Title: A mechanistic model for cleavage of DNA oligonucleotide duplexes by SgrAI (Streptomyces griseus) in vitro
+#
+# Contributors:
+#  - William S. Hlavacek
+#  - Nancy C. Horton
+#
+# Inputs:
+#  - total SgrAI dimer concentration
+#  - total Flo-labeled activator DNA oligonucleotide duplex concentration
+#  - total Rho-labeled reporter DNA oligonucleotide duplex concentration
+#  - total unlabeled pre-cleaved annealed/hybridized oligonucleotide concentration 
+#    (sticky ends join the two restriction fragments) 
+#  - time at which SgrAI is added
+#
+# Outputs:
+#  - total cut Rho-labeled reporter oligonucleotide concentration
+#  - total cut and released Rho-labeled reporter oligonucleotide concentration
+# 
+# Proteins:
+#   ========================= ========================= ===================================================
+#  | Name                    | UniProt nomenclature    | Link                                              |
+#   ========================= ========================= ===================================================
+#  | SgrAI                   | SgraIR                  | https://www.uniprot.org/uniprotkb/Q9F6L0/entry    |
+#   ========================= ========================= ===================================================
+#
+# Oligonucleotide sequences:
+#   ========================= ========================= 
+#  | Name                    | Sequence                |
+#   ========================= ========================= 
+#  | F-DNA                   | 5'-CR/CCGGYG-3'         |
+#  | R-DNA                   | 5'-CC/CCGGYG-3'         |
+#  |                         | 5'-XR/CCGGYG-3'         |
+#  | PC-top                  |                         |
+#  | PC-bot                  |                         |
+#   ========================= ========================= 
+#  comments: 
+#   - R: A or G
+#   - Y: C or T
+#   - X: A, G, or T 
+# 
+# Compartments:
+#  - tube: polypropylene (microcentrifuge) tube
+#
+# References:
+#  - Alayev A, ..., Holz MK (2015) Oncogene doi: 10.1038/onc.2015.414 [PMID: 26522726]
+#  - Avruch J, ..., Kikkawa U (2009) Biochem Soc Trans 37: 223-226. [PMID: 19143636]
+#---
+
+begin parameters
+
+# fraction of volume to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+
+# volume of reaction mixture in tube
+V 500e-6*f # L per tube
+
+end parameters
+
+begin molecule types
+# DNA oligonucleotide duplex
+#  top fragment
+pFtop(p,sticky~0~cut) # F: fragment, sticky: sticky end
+#  bottom fragment
+pFbot(p,sticky~0~cut)
+sFtop(s,sticky~0~cut)
+sFbot(s,sticky~0~cut)
+# SgrAI dimer
+D(d,d,ft,fb,c~R~T) # d: D-D interface, f: D-F interface, c: conformation
+#---
+# D: dimeric SgrAI 
+#  comments:
+#   - Blah
+#   - Blah
+#  components:
+#   d: binding site responsible for filamentation (two identical copies per SgrAI dimer)
+#   ft: binding site for top restriction fragment
+#   fb: binding site for bottom restriction fragment
+#   c: conformation
+#    states:
+#     - R: relaxed
+#     - T: tense
+#---
+end molecule types
+
+begin seed species
+pFtop(p,sticky~0!0).pFbot(p,sticky~0!0) 1
+sFtop(s,sticky~0!0).sFbot(s,sticky~0!0) 1
+D(d,d,ft,fb,c~R) 1
+end seed species
+
+begin observables
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+ 
+# reactions of DNA oligonucleotide duplex with primary recognition sequence
+# top fragment + dimer
+pFtop(p,sticky~0!0).pFbot(p,sticky~0!0)+D(d,d,ft,fb,c~R)<->\
+pFtop(p!1,sticky~0!0).pFbot(p,sticky~0!0).D(d,d,ft!1,fb,c~R) 1,1
+# bottom fragment + dimer
+pFtop(p,sticky~0!0).pFbot(p,sticky~0!0)+D(d,d,ft,fb,c~R)<->\
+pFtop(p,sticky~0!0).pFbot(p!2,sticky~0!0).D(d,d,ft,fb!2,c~R) 1,1
+# R to T transitions
+# tethered bottom fragment + dimer
+pFtop(p!1,sticky~0!0).pFbot(p,sticky~0!0).D(d,d,ft!1,fb,c~R)<->\
+pFtop(p!1,sticky~0!0).pFbot(p!2,sticky~0!0).D(d,d,ft!1,fb!2,c~T) 1,1
+# tethered top fragment + dimer
+pFtop(p,sticky~0!0).pFbot(p!2,sticky~0!0).D(d,d,ft,fb!2,c~R)<->\
+pFtop(p!1,sticky~0!0).pFbot(p!2,sticky~0!0).D(d,d,ft!1,fb!2,c~T) 1,1
+
+# reactions of DNA oligonucleotide duplex with secondary recognition sequence
+# top fragment + dimer
+sFtop(s,sticky~0!0).sFbot(s,sticky~0!0)+D(d,d,ft,fb,c~R)<->\
+sFtop(s!1,sticky~0!0).sFbot(s,sticky~0!0).D(d,d,ft!1,fb,c~R) 1,1
+# bottom fragment + dimer
+sFtop(s,sticky~0!0).sFbot(s,sticky~0!0)+D(d,d,ft,fb,c~R)<->\
+sFtop(s,sticky~0!0).sFbot(s!2,sticky~0!0).D(d,d,ft,fb!2,c~R) 1,1
+# R to T transitions
+# tethered bottom fragment + dimer
+sFtop(s!1,sticky~0!0).sFbot(s,sticky~0!0).D(d,d,ft!1,fb,c~R)<->\
+sFtop(s!1,sticky~0!0).sFbot(s!2,sticky~0!0).D(d,d,ft!1,fb!2,c~T) 1,1
+# tethered top fragment + dimer
+sFtop(s,sticky~0!0).sFbot(s!2,sticky~0!0).D(d,d,ft,fb!2,c~R)<->\
+sFtop(s!1,sticky~0!0).sFbot(s!2,sticky~0!0).D(d,d,ft!1,fb!2,c~T) 1,1
+
+# filament assembly (via homotypic interfaces) and disassembly
+D(d,c~T)+D(d,c~T)<->D(d!1,c~T).D(d!1,c~T) 1,1
+
+# enzymatic activity
+# primary recognition sequence
+pFtop(p!1,sticky~0!0).pFbot(p!2,sticky~0!0).D(ft!1,fb!2,c~T)->\
+pFtop(p!1,sticky~cut!0).pFbot(p!2,sticky~cut!0).D(ft!1,fb!2,c~T) 1
+# secondary recognition sequence
+sFtop(s!1,sticky~0!0).sFbot(s!2,sticky~0!0).D(ft!1,fb!2,c~T)->\
+sFtop(s!1,sticky~cut!0).sFbot(s!2,sticky~cut!0).D(ft!1,fb!2,c~T) 1
+
+# annealing
+pFtop(p,sticky~cut)+pFbot(p,sticky~cut)<->pFtop(p,sticky~cut!0).pFbot(p,sticky~cut!0) 1,1
+sFtop(s,sticky~cut)+sFbot(s,sticky~cut)<->sFtop(s,sticky~cut!0).sFbot(s,sticky~cut!0) 1,1
+
+end reaction rules
+
+end model
+
+begin actions
+
+# stochastic simulation
+# NB: stochastic simulation requires use of extensive units. 
+# The reaction compartment considered is the reaction mixture volume in a tube (f=1) or a subvolume (f<1).
+simulate({suffix=>"stoch",method=>"nf",t_start=>0,t_end=>500,n_steps=>500,print_functions=>1,\
+          complex=>1,gml=>2147483647,get_final_state=>0})
+
+end actions

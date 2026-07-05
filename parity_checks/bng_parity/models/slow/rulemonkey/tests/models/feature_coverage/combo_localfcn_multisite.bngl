@@ -1,0 +1,48 @@
+# Feature combination: local functions + multi-site phosphorylation
+# Tests: phosphorylation rate depends on local state of other sites
+# Tier: combinations
+# Expected: cooperative phosphorylation — later sites phosphorylate faster
+
+begin model
+begin parameters
+    S_tot    30
+    E_tot    10
+    k_base   0.01   # /s, base catalytic rate
+    k_coop   0.05   # /s, cooperativity boost per phospho site
+    kfE      0.1    # /s, enzyme-substrate binding
+    krE      0.5    # /s, enzyme-substrate unbinding
+end parameters
+
+begin molecule types
+    E(s)
+    S(e,p1~U~P,p2~U~P,p3~U~P)
+end molecule types
+
+begin seed species
+    E(s)                  E_tot
+    S(e,p1~U,p2~U,p3~U)  S_tot
+end seed species
+
+begin observables
+    Molecules  E_free    E(s)
+    Molecules  S_total   S()
+    Molecules  S_p1      S(p1~P)
+    Molecules  S_p2      S(p2~P)
+    Molecules  S_p3      S(p3~P)
+    Molecules  S_0P      S(p1~U,p2~U,p3~U)
+    Molecules  ES        E(s!1).S(e!1)
+end observables
+
+begin reaction rules
+    # Enzyme binds substrate
+    E(s) + S(e) <-> E(s!1).S(e!1)  kfE, krE
+    # Phosphorylation of each site (independent, enzyme must be bound)
+    E(s!1).S(e!1,p1~U) -> E(s) + S(e,p1~P)   k_base
+    E(s!1).S(e!1,p2~U) -> E(s) + S(e,p2~P)   k_base
+    E(s!1).S(e!1,p3~U) -> E(s) + S(e,p3~P)   k_base
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>200,n_steps=>100})
+end actions

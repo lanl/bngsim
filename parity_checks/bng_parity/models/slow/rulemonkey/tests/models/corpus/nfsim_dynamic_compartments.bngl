@@ -1,0 +1,51 @@
+# Model: nfsim_dynamic_compartments.bngl
+# Description: Mocks the growth and division of cells (dynamic compartments).
+#              Tracks 'Cell' molecules that grow in 'Volume' (attribute) and then split.
+#              Demonstrates population dynamics with internal states.
+
+begin model
+
+begin parameters
+    k_grow 1.0
+    k_div  0.5
+    Target_Vol 4
+end parameters
+
+begin molecule types
+    Cell(vol~1~2~4~8)
+end molecule types
+
+begin seed species
+    Cell(vol~1) 10
+end seed species
+
+begin observables
+    Molecules Cells      Cell()
+    Molecules LargeCells Cell(vol~4)
+end observables
+
+begin reaction rules
+    # Growth
+    Cell(vol~1) -> Cell(vol~2) k_grow
+    Cell(vol~2) -> Cell(vol~4) k_grow
+    Cell(vol~4) -> Cell(vol~8) k_grow
+
+    # Division (Splitting)
+    # Large cell splits into two small ones
+    Cell(vol~8) -> Cell(vol~4) + Cell(vol~4) k_div
+    # Or asymmetric
+    # Cell(vol~8) -> Cell(vol~1) + Cell(vol~1) ?
+
+end reaction rules
+
+end model
+
+## Actions ##
+#generate_network({overwrite=>1})
+#simulate({method=>"nf", t_end=>20, n_steps=>100})
+
+
+begin actions
+simulate({method=>"nf",t_end=>20,n_steps=>100})
+
+end actions

@@ -1,0 +1,42 @@
+begin model
+begin parameters
+S0 1e5
+I0 1
+beta 2e-5 # /d
+gamma 0.25 # /d
+k_leave 1e-2 # /d
+k_return 0.25 # /d
+end parameters
+begin molecule types
+S(loc~in~out)
+I(loc~in~out)
+R(loc~in~out)
+end molecule types
+begin seed species
+S(loc~in) S0
+I(loc~in) I0
+end seed species
+begin observables
+Molecules S S()
+Molecules I I()
+Molecules R R()
+Molecules Sick_Traveler I(loc~out)
+end observables
+begin functions
+end functions
+begin reaction rules
+# infection
+S(loc~in)+I(loc~in)->I(loc~in)+I(loc~in) beta
+# recovery
+I(loc~in)->R(loc~in) gamma
+I(loc~out)->R(loc~out) gamma
+# travel
+S(loc~in)<->S(loc~out) k_leave,k_return
+I(loc~in)<->I(loc~out) k_leave,k_return
+R(loc~in)<->R(loc~out) k_leave,k_return
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1})
+end actions

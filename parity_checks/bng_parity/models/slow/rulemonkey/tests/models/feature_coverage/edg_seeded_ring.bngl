@@ -1,0 +1,67 @@
+# Edge case: pre-formed RING complex declared in seed species
+# Tests:  ListOfSpecies bond resolution must handle a complete ring
+#         (every molecule connected to two others through TWO bonds).
+#         A 3-cycle in seed species is the simplest case where the
+#         bond-pair resolver has no "loose end" to start from.  RM's
+#         load_model resolves bonds via XML id pairs
+#         (simulator.cpp:638-657); if the pair-resolution traversal
+#         relies on a particular tree shape, it would either drop a
+#         bond or mis-orient one.  We add a state-transition rule
+#         that DOES fire so the network is non-trivial and ODE
+#         reference is meaningful: each A in the ring carries a
+#         flippable spin, and one rule cycles spins regardless of
+#         topology.  The strict-`+` break rule remains as a probe of
+#         the same-complex check (it must REFUSE to fire on any A
+#         in a ring because both bond endpoints stay connected).
+# Edge:   we mix pre-formed 3-cycles with free monomers so the
+#         simulator sees both ring and chain topologies live.  Spin
+#         transitions must reach the rings AND the monomers; bond
+#         break must work only on the (currently absent) free dimer
+#         population.  In ODE, the spin variable splits the species
+#         population into 2^N within-ring conformers — keeps the
+#         network finite and small (HNauty canonicalisation dedup).
+# Tier:   base
+
+begin model
+setOption("SpeciesLabel","HNauty")
+begin parameters
+    A_ring   3      # pre-formed 3-cycles (= 9 bonded molecules)
+    A_mono   12     # free monomer A's
+    k_flip   0.20   # /s, spin-flip rate (uniform up<->dn)
+    kr_break 0.5
+end parameters
+
+begin molecule types
+    A(l,r,sp~up~dn)
+end molecule types
+
+begin seed species
+    # Triangle ring with all spins down — the canonical loose-end-free seed.
+    A(l!1,r!2,sp~dn).A(l!2,r!3,sp~dn).A(l!3,r!1,sp~dn)   A_ring
+    # Free monomers as a baseline population.
+    A(l,r,sp~dn)                                          A_mono
+end seed species
+
+begin observables
+    Molecules  A_total      A()
+    Molecules  A_up         A(sp~up)
+    Molecules  A_dn         A(sp~dn)
+    Molecules  A_free_l     A(l)
+    Molecules  A_bound_l    A(l!+)
+    Species    Mono         A(l,r)
+end observables
+
+begin reaction rules
+    # Spin transitions — fire on every A regardless of bonds.
+    A(sp~dn) <-> A(sp~up)   k_flip, k_flip
+    # Strict-`+` break — REFUSES on the closed ring (bond break
+    # leaves all 3 molecules connected via the other two bonds).
+    # In the seed there are zero free dimers so this never fires
+    # but RM's generation/observation paths must not break.
+    A(l,r!1).A(l!1,r) -> A(l,r) + A(l,r)   kr_break
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>20,n_steps=>40,param=>"-bscb"})
+end actions

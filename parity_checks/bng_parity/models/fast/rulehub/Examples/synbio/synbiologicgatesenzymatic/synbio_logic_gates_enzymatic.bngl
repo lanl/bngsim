@@ -1,0 +1,64 @@
+# Model: synbio_logic_gates_enzymatic.bngl
+# Description: Implements AND and OR logic gates using enzymatic reactions.
+#              Inputs I1 and I2.
+#              AND: Requires both I1 and I2 to form active complex.
+#              OR: Requires either I1 or I2.
+
+begin model
+
+begin parameters
+    I1_conc 10
+    I2_conc 10
+end parameters
+
+begin molecule types
+    I1(gate)
+    I2(gate)
+    GateAND(i1,i2)
+    GateOR()
+    OutAND()
+    OutOR()
+end molecule types
+
+begin seed species
+    I1(gate) 0
+    I2(gate) 0
+    GateAND(i1,i2) 100
+    GateOR() 0 # Simplified
+end seed species
+
+begin observables
+    Molecules Input1 I1(gate)
+    Molecules Input2 I2(gate)
+    Molecules Output_AND OutAND()
+    Molecules Output_OR  OutOR()
+end observables
+
+begin reaction rules
+    # AND Gate
+    # Gate binds I1 and I2. Only fully bound Gate produces Output.
+    GateAND(i1,i2) + I1(gate) <-> GateAND(i1!1,i2).I1(gate!1) 1.0,0.1
+    GateAND(i1,i2) + I2(gate) <-> GateAND(i1,i2!1).I2(gate!1) 1.0,0.1
+    # Bind second one
+    # Note: Correct patterns needed for sequential or random order.
+    # GateAND(i1!+, i2!+) -> GateAND(...) + OutAND()
+    
+    # Production
+    GateAND(i1!1,i2!2).I1(gate!1).I2(gate!2) -> GateAND(i1!1,i2!2).I1(gate!1).I2(gate!2) + OutAND() 1.0
+    
+    # OR Gate (Simpler)
+    # I1 -> OutOR
+    I1(gate) -> I1(gate) + OutOR() 1.0
+    # I2 -> OutOR
+    I2(gate) -> I2(gate) + OutOR() 1.0
+    
+    # Decay
+    OutAND() -> 0 0.1
+    OutOR() -> 0 0.1
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

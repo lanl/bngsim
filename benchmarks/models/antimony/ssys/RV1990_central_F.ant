@@ -1,0 +1,59 @@
+// Central F-Distribution - Original Form
+// Source: Rust & Voit, "Statistical Densities, Cumulatives, Quantiles, and Power..."
+//         JASA 85(410):572-578 (1990)
+//         Equation (10)
+//
+// Both papers explicitly cite Savageau & Voit (1987).
+//
+// Central F density with v1 numerator and v2 denominator degrees of freedom:
+//   g(v1, v2, 0; t) = C * t^((v1/2)-1) * (v2 + v1*t)^(-(v1+v2)/2)
+//
+// Differentiating:
+//   g'(t) = ((v1/2)-1)/t * g(t) - (v1(v1+v2)/2)/(v2 + v1*t) * g(t)
+//
+// Problem: The SUM (v2 + v1*t) in denominator is not S-system compatible.
+//
+// ==============================================================================
+// EXACT RECASTING TO S-SYSTEM (Eq. 10):
+// ==============================================================================
+// Define auxiliary variables:
+//   X1 = t
+//   X2 = v2 + v1*t   (the troublesome sum term)
+//   X3 = t * g(v1, v2, 0; t)  (product form to handle all v1 > 0)
+//   X4 = G(v1, v2, 0; t)  (cumulative)
+//
+// Recast S-system (1 -> 4 variables):
+//   X1' = 1
+//   X2' = v1
+//   X3' = (v1/2) * X1^(-1) * X3 - (v1(v1+v2)/2) * X2^(-1) * X3
+//   X4' = X1^(-1) * X3
+//
+// The pdf is: g(v1, v2, 0; t) = X1^(-1) * X3
+// ==============================================================================
+
+model RV1990_central_F()
+  // ORIGINAL ODE (not S-system form due to sum in denominator)
+  compartment cell = 1
+  var species t in cell
+  var species g_var in cell
+  var species G in cell
+
+  // Parameters
+  v1 = 11
+  v2 = 200
+  
+  // ORIGINAL ODEs
+  // g'(t) = ((v1/2)-1)/t * g - (v1(v1+v2)/2)/(v2 + v1*t) * g
+  // Note: (v2 + v1*t) is a SUM - not S-system compatible
+  t' = 1
+  g_var' = (v1 / 2 - 1) / t * g_var - (v1 * (v1 + v2) / 2) / (v2 + v1 * t) * g_var
+  G' = g_var
+  
+  // Initial conditions at t = 1
+  // For F(11, 200): f(1) and F(1) from tables
+  t = 1.0
+  g_var = 0.95
+  G = 0.55
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

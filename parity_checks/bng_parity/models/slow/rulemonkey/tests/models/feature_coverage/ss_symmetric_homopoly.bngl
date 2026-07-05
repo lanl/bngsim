@@ -1,0 +1,37 @@
+# Stress: symmetric homodimer-capable monomer — rings and chains of one species
+# Tests: disjoint+symmetric embedding counts under heavy bond formation
+# Bug pattern: RM/NFsim divergence on symmetric self-pairing (rm_tlbr_rings, project_rm_tlbr_rings)
+# Tier: stress (network-free; NFsim reference only)
+# Target: ~15-30s RM, single molecule type with two symmetric sites
+# invariant: conserved P_total = 200
+
+begin model
+begin parameters
+    P_tot  200
+    kf     0.005   # /s, self-binding — moderate rate to limit ring frequency
+    kr     0.2     # /s, unbinding — high enough to disfavor rings
+end parameters
+
+begin molecule types
+    P(s,s)
+end molecule types
+
+begin seed species
+    P(s,s)  P_tot
+end seed species
+
+begin observables
+    Molecules  P_total     P()
+    Molecules  P_free_s    P(s)
+    Molecules  P_bound     P(s!+)
+    Species    Chains      P(s!+)
+end observables
+
+begin reaction rules
+    P(s) + P(s) <-> P(s!1).P(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>300,n_steps=>100,param=>"-bscb -utl 5"})
+end actions

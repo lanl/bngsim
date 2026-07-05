@@ -1,0 +1,4973 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level2/version4" level="2" metaid="_4dde7d9d-d1c4-410f-9ff4-3bdcc962cb7c" version="4">
+  <model id="MODEL1510190002" name="Flis2015 - Plant clock gene circuit (P2011.3.1 PLM_1041 ver 1)" metaid="COPASI1">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+        <pre> cL_m_degr, param m1, modified to ensure light rate > dark rate.</pre>
+      </body>
+    </notes>
+    <annotation>
+      <COPASI xmlns="http://www.copasi.org/static/sbml">
+        <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="#COPASI1">
+            <dcterms:created>
+              <rdf:Description>
+                <dcterms:W3CDTF>2011-08-18T14:47:18Z</dcterms:W3CDTF>
+              </rdf:Description>
+            </dcterms:created>
+          </rdf:Description>
+        </rdf:RDF>
+      </COPASI>
+      <listOfParameterHistories xmlns="http://www.uk.ac.ed.csbe.sbsivisual/parameter/ns">
+        <parameterHistory min="1.3" initialstep="222.16921921318874" max="10.0" use="Yes" id="n1"/>
+        <parameterHistory min="0.32" initialstep="0.14781624266764" max="1.28" use="Yes" id="n2"/>
+        <parameterHistory min="0.05" initialstep="0.19147180651461" max="0.58" use="Yes" id="n3"/>
+        <parameterHistory min="0.035" initialstep="0.00070000000000" max="0.14" use="Yes" id="n4"/>
+        <parameterHistory min="0.115" initialstep="0.023" max="0.46" use="No" id="n5"/>
+        <parameterHistory min="10.0" initialstep="2.0" max="40.0" use="No" id="n6"/>
+        <parameterHistory min="0.1" initialstep="0.01524692323802" max="0.4" use="Yes" id="n7"/>
+        <parameterHistory min="0.25" initialstep="17.49892365611364" max="1.0" use="Yes" id="n8"/>
+        <parameterHistory min="0.1" initialstep="0.19490434071382" max="0.6" use="Yes" id="n9"/>
+        <parameterHistory min="0.2" initialstep="1.96954297377795" max="0.8" use="Yes" id="n10"/>
+        <parameterHistory min="0.3" initialstep="2.36528118607607" max="1.2" use="Yes" id="n11"/>
+        <parameterHistory min="6.25" initialstep="0.57167238509218" max="25.0" use="Yes" id="n12"/>
+        <parameterHistory min="0.65" initialstep="7.76559489743437" max="2.6" use="Yes" id="n13"/>
+        <parameterHistory min="0.05" initialstep="0.01" max="0.2" use="No" id="n14"/>
+        <parameterHistory min="0.02" initialstep="0.01948606990681" max="0.2" use="Yes" id="g1"/>
+        <parameterHistory min="0.0010" initialstep="0.01258776033442" max="0.02" use="Yes" id="g2"/>
+        <parameterHistory min="0.3" initialstep="0.06" max="1.2" use="No" id="g3"/>
+        <parameterHistory min="0.0020" initialstep="0.13138428589700" max="0.02" use="Yes" id="g4"/>
+        <parameterHistory min="0.075" initialstep="0.00424300369371" max="0.3" use="Yes" id="g5"/>
+        <parameterHistory min="0.15" initialstep="0.07768965785819" max="0.6" use="Yes" id="g6"/>
+        <parameterHistory min="0.3" initialstep="0.98119982393908" max="1.2" use="Yes" id="g7"/>
+        <parameterHistory min="0.0050" initialstep="0.00195272687675" max="0.04" use="Yes" id="g8"/>
+        <parameterHistory min="0.15" initialstep="10.72626124220787" max="0.6" use="Yes" id="g9"/>
+        <parameterHistory min="0.25" initialstep="0.02473569207289" max="1.0" use="Yes" id="g10"/>
+        <parameterHistory min="0.1" initialstep="2.12140528402982" max="1.4" use="Yes" id="g11"/>
+        <parameterHistory min="0.1" initialstep="0.02" max="0.4" use="No" id="g12"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="g13"/>
+        <parameterHistory min="0.0020" initialstep="0.00160518948258" max="0.02" use="Yes" id="g14"/>
+        <parameterHistory min="0.2" initialstep="0.39017639075176" max="0.8" use="Yes" id="g15"/>
+        <parameterHistory min="0.15" initialstep="0.01193649975589" max="0.6" use="Yes" id="g16"/>
+        <parameterHistory min="0.3" initialstep="0.10063641584321" max="1.0" use="Yes" id="m1"/>
+        <parameterHistory min="0.2" initialstep="0.17464302107647" max="0.5" use="Yes" id="m2"/>
+        <parameterHistory min="0.1" initialstep="1.42220812123823" max="0.4" use="Yes" id="m3"/>
+        <parameterHistory min="0.1" initialstep="0.02" max="0.4" use="No" id="m4"/>
+        <parameterHistory min="0.15" initialstep="0.03" max="0.6" use="No" id="m5"/>
+        <parameterHistory min="0.15" initialstep="0.18999475238655" max="0.6" use="Yes" id="m6"/>
+        <parameterHistory min="0.1" initialstep="19.96996369515332" max="1.0" use="Yes" id="m7"/>
+        <parameterHistory min="0.2" initialstep="0.12421654058641" max="0.8" use="Yes" id="m8"/>
+        <parameterHistory min="0.55" initialstep="61.87241032621105" max="2.2" use="Yes" id="m9"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="m10"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="m11"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="m12"/>
+        <parameterHistory min="0.16" initialstep="0.032" max="0.64" use="No" id="m13"/>
+        <parameterHistory min="0.4" initialstep="26.65693046772261" max="0.8" use="Yes" id="m14"/>
+        <parameterHistory min="0.35" initialstep="0.07" max="1.4" use="No" id="m15"/>
+        <parameterHistory min="0.5" initialstep="0.28514128062784" max="1.0" use="Yes" id="m16"/>
+        <parameterHistory min="0.25" initialstep="0.05" max="1.0" use="No" id="m17"/>
+        <parameterHistory min="0.75" initialstep="0.75818560602628" max="3.4" use="Yes" id="m18"/>
+        <parameterHistory min="0.1" initialstep="0.32158979224306" max="1.0" use="Yes" id="m19"/>
+        <parameterHistory min="0.3" initialstep="0.06" max="1.2" use="No" id="m20"/>
+        <parameterHistory min="0.04" initialstep="0.0080" max="0.16" use="No" id="m21"/>
+        <parameterHistory min="0.05" initialstep="0.03904864895381" max="0.2" use="Yes" id="m22"/>
+        <parameterHistory min="0.5" initialstep="0.28573055689488" max="2.0" use="Yes" id="m23"/>
+        <parameterHistory min="0.02" initialstep="0.00186057187273" max="0.5" use="Yes" id="m24"/>
+        <parameterHistory min="0.9" initialstep="0.18" max="3.6" use="No" id="m25"/>
+        <parameterHistory min="0.25" initialstep="0.05" max="1.0" use="No" id="m26"/>
+        <parameterHistory min="0.05" initialstep="0.01" max="0.2" use="No" id="m27"/>
+        <parameterHistory min="10.0" initialstep="2.0" max="40.0" use="No" id="m28"/>
+        <parameterHistory min="2.5" initialstep="0.06855635603282" max="10.0" use="Yes" id="m29"/>
+        <parameterHistory min="1.5" initialstep="0.71225919364008" max="6.0" use="Yes" id="m30"/>
+        <parameterHistory min="0.15" initialstep="0.03" max="0.6" use="No" id="m31"/>
+        <parameterHistory min="0.1" initialstep="0.02" max="0.4" use="No" id="m32"/>
+        <parameterHistory min="6.5" initialstep="1.3" max="26.0" use="No" id="m33"/>
+        <parameterHistory min="0.5" initialstep="26.06707060130546" max="1.0" use="Yes" id="m34"/>
+        <parameterHistory min="0.1" initialstep="1.26867727305757" max="0.6" use="Yes" id="m35"/>
+        <parameterHistory min="0.05" initialstep="0.02970202147427" max="0.2" use="Yes" id="m36"/>
+        <parameterHistory min="0.4" initialstep="0.03354922794960" max="1.6" use="Yes" id="m37"/>
+        <parameterHistory min="0.25" initialstep="0.05" max="1.0" use="No" id="m38"/>
+        <parameterHistory min="0.05" initialstep="0.01696567263799" max="0.6" use="Yes" id="m39"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="a"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="b"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="c"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="d"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="e"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="f"/>
+        <parameterHistory min="0.065" initialstep="0.28017532992451" max="0.26" use="Yes" id="p1"/>
+        <parameterHistory min="0.135" initialstep="0.27850503394139" max="0.54" use="Yes" id="p2"/>
+        <parameterHistory min="0.05" initialstep="0.41477408423433" max="0.2" use="Yes" id="p3"/>
+        <parameterHistory min="0.28" initialstep="0.00640758695048" max="1.12" use="Yes" id="p4"/>
+        <parameterHistory min="1.0" initialstep="11.77207283482474" max="8.0" use="Yes" id="p5"/>
+        <parameterHistory min="0.3" initialstep="0.06" max="1.2" use="No" id="p6"/>
+        <parameterHistory min="0.15" initialstep="0.03" max="0.6" use="No" id="p7"/>
+        <parameterHistory min="0.3" initialstep="0.02548808525410" max="1.2" use="Yes" id="p8"/>
+        <parameterHistory min="0.4" initialstep="0.06886702281419" max="1.6" use="Yes" id="p9"/>
+        <parameterHistory min="0.27" initialstep="17.74062779902006" max="1.08" use="Yes" id="p10"/>
+        <parameterHistory min="0.255" initialstep="0.01057957694262" max="1.02" use="Yes" id="p11"/>
+        <parameterHistory min="0.5" initialstep="21.29653350073298" max="6.8" use="Yes" id="p12"/>
+        <parameterHistory min="0.05" initialstep="0.18315301730279" max="0.2" use="Yes" id="p13"/>
+        <parameterHistory min="0.07" initialstep="4.43628949967813" max="0.28" use="Yes" id="p14"/>
+        <parameterHistory min="1.5" initialstep="0.3" max="6.0" use="No" id="p15"/>
+        <parameterHistory min="0.31" initialstep="3.02488596445988" max="1.24" use="Yes" id="p16"/>
+        <parameterHistory min="2.4" initialstep="202.16558147718513" max="17.0" use="Yes" id="p17"/>
+        <parameterHistory min="2.0" initialstep="40.54641337713431" max="8.0" use="Yes" id="p18"/>
+        <parameterHistory min="0.5" initialstep="0.05317323653063" max="2.0" use="Yes" id="p19"/>
+        <parameterHistory min="0.05" initialstep="1.02160412955110" max="0.2" use="Yes" id="p20"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="p21"/>
+        <parameterHistory min="0.25" initialstep="0.05" max="1.0" use="No" id="p22"/>
+        <parameterHistory min="0.185" initialstep="0.92305664012677" max="0.74" use="Yes" id="p23"/>
+        <parameterHistory min="5.0" initialstep="13.83441222753513" max="20.0" use="Yes" id="p24"/>
+        <parameterHistory min="4.0" initialstep="0.8" max="16.0" use="No" id="p25"/>
+        <parameterHistory min="0.15" initialstep="0.03" max="0.6" use="No" id="p26"/>
+        <parameterHistory min="0.4" initialstep="15.44479724425043" max="1.6" use="Yes" id="p27"/>
+        <parameterHistory min="1.0" initialstep="0.2" max="4.0" use="No" id="p28"/>
+        <parameterHistory min="0.05" initialstep="0.01" max="0.2" use="No" id="p29"/>
+        <parameterHistory min="0.1" initialstep="2.36931276938372" max="1.8" use="Yes" id="p30"/>
+        <parameterHistory min="0.05" initialstep="0.01" max="0.2" use="No" id="p31"/>
+        <parameterHistory min="0.3" initialstep="0.17873705611272" max="1.5" use="Yes" id="q1"/>
+        <parameterHistory min="0.4" initialstep="0.04333805511641" max="3.0" use="Yes" id="q2"/>
+        <parameterHistory min="1.4" initialstep="0.06580280467875" max="5.6" use="Yes" id="q3"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="L"/>
+        <parameterHistory min="0.0" initialstep="1.0" max="100.0" use="No" id="D"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="E34"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="Gn"/>
+        <parameterHistory min="0.5" initialstep="0.1" max="2.0" use="No" id="EGn"/>
+        <parameterHistory min="0.0" initialstep="0.05" max="100.0" use="No" id="step1"/>
+        <parameterHistory min="0.0" initialstep="1.0" max="100.0" use="No" id="offsetStep1"/>
+        <parameterHistory min="0.999" initialstep="0.1" max="1.001" use="No" id="amplitudeStep1"/>
+        <parameterHistory min="0.0" initialstep="1.0" max="100.0" use="No" id="phaseStep1"/>
+        <parameterHistory min="11.988" initialstep="1.2" max="12.012" use="No" id="pulseDurationStep1"/>
+        <parameterHistory min="23.976" initialstep="2.4" max="24.024" use="No" id="cyclePeriodStep1"/>
+        <parameterHistory min="0.04995" initialstep="0.0050" max="0.05005" use="No" id="rampDurationStep1"/>
+      </listOfParameterHistories>
+      <plasmo:dbinfo xmlns:plasmo="http://www.uk.ac.ed.csbe.sbsi.plasmo/ns" plasmo:id="PLM_71" plasmo:version="1"/>
+      <listOfConfigs xmlns="http://www.uk.ac.ed.csbe.sbsivisual/configpage/ns">
+        <popSize>10</popSize>
+        <MAXRG>50000</MAXRG>
+        <targeted_costfunctionvalue>0.01</targeted_costfunctionvalue>
+        <ckPointFreq>-1</ckPointFreq>
+        <MAXCOST>10000</MAXCOST>
+        <MaxNoChange>100</MaxNoChange>
+        <seed>-1</seed>
+        <mutantProbability>0.4</mutantProbability>
+        <atol>1.0E-14</atol>
+        <restartFreq>51</restartFreq>
+        <mu>0.7</mu>
+        <reltol>1.0E-6</reltol>
+        <numBest>10</numBest>
+        <printfreq>2</printfreq>
+        <setupType>SobolSelect</setupType>
+        <out_interval>0.1</out_interval>
+        <interval>0.01</interval>
+        <MaxSimilarity>95</MaxSimilarity>
+        <MAX_NUMGEN>10</MAX_NUMGEN>
+        <sobolseed>-1</sobolseed>
+        <t_init>0.0</t_init>
+        <t_final>356.0</t_final>
+        <verbose>-1</verbose>
+        <maxTimes>1000000</maxTimes>
+        <numGen>10</numGen>
+        <PSONumGen>0</PSONumGen>
+        <FFTWeight>10.0</FFTWeight>
+        <X2Weight>1.0</X2Weight>
+      </listOfConfigs>
+	<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+	<rdf:Description rdf:about="#COPASI1">
+	<bqmodel:is>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/biomodels.db/MODEL1510190002"/>
+	</rdf:Bag>
+	</bqmodel:is>
+	</rdf:Description>
+	</rdf:RDF>
+	</annotation>
+      <listOfFunctionDefinitions>
+      <functionDefinition id="function_4_cLUX_m_trscr" name="function_4_cLUX_m_trscr" metaid="_9b887add-4b87-4bbf-a36d-6198c3b0a107">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cEC </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g2 </ci>
+            </bvar>
+            <bvar>
+              <ci> g6 </ci>
+            </bvar>
+            <bvar>
+              <ci> n13 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> n13 </ci>
+                      <ci> g2 </ci>
+                    </apply>
+                    <apply>
+                      <plus/>
+                      <ci> cEC </ci>
+                      <ci> g2 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g6 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <power/>
+                    <ci> cL </ci>
+                    <ci> e </ci>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g6 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cL_degr_1" name="function_4_cL_degr_1" metaid="_9a264493-5a28-432a-85e4-fed5c71a55ee">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> c </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> g3 </ci>
+            </bvar>
+            <bvar>
+              <ci> m3 </ci>
+            </bvar>
+            <bvar>
+              <ci> p3 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> m3 </ci>
+                  <ci> cL </ci>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p3 </ci>
+                    <apply>
+                      <power/>
+                      <ci> cL </ci>
+                      <ci> c </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <ci> cL </ci>
+                      <ci> c </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g3 </ci>
+                      <ci> c </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cL_modif_1" name="function_4_cL_modif_1" metaid="_339061cf-9b5b-4d7e-9e60-3a096dec2187">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> c </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> g3 </ci>
+            </bvar>
+            <bvar>
+              <ci> p3 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> p3 </ci>
+                  <apply>
+                    <power/>
+                    <ci> cL </ci>
+                    <ci> c </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <power/>
+                    <ci> cL </ci>
+                    <ci> c </ci>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g3 </ci>
+                    <ci> c </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cLm_degr_1" name="function_4_cLm_degr_1" metaid="_15378297-70ba-45a6-ab7b-2e863d43ef9a">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cLm </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m4 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m4 </ci>
+                <ci> cLm </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP9_m_degr_1" name="function_4_cP9_m_degr_1" metaid="_585bccd7-aae1-4009-aefb-106f7caf7a10">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cP9_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m12 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m12 </ci>
+                <ci> cP9_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP9_trsl_1" name="function_4_cP9_trsl_1" metaid="_370e637a-3f59-4662-9101-66d08dee019d">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cP9_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p8 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p8 </ci>
+                <ci> cP9_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP7_m_trscr_1" name="function_4_cP7_m_trscr_1" metaid="_588f06dd-d076-4188-8f40-7993584358e1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> cLm </ci>
+            </bvar>
+            <bvar>
+              <ci> cP9 </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> f </ci>
+            </bvar>
+            <bvar>
+              <ci> g10 </ci>
+            </bvar>
+            <bvar>
+              <ci> g11 </ci>
+            </bvar>
+            <bvar>
+              <ci> n8 </ci>
+            </bvar>
+            <bvar>
+              <ci> n9 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> n8 </ci>
+                    <apply>
+                      <power/>
+                      <apply>
+                        <plus/>
+                        <ci> cLm </ci>
+                        <ci> cL </ci>
+                      </apply>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <apply>
+                        <plus/>
+                        <ci> cLm </ci>
+                        <ci> cL </ci>
+                      </apply>
+                      <ci> e </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g10 </ci>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> n9 </ci>
+                    <apply>
+                      <power/>
+                      <ci> cP9 </ci>
+                      <ci> f </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <ci> cP9 </ci>
+                      <ci> f </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g11 </ci>
+                      <ci> f </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP7_m_degr_1" name="function_4_cP7_m_degr_1" metaid="_60bbb314-59be-4373-a28a-05e45209c671">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cP7_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m14 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m14 </ci>
+                <ci> cP7_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP7_trsl_1" name="function_4_cP7_trsl_1" metaid="_2edcd57a-ba89-4ec5-8177-24ab9fd300c7">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cP7_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p9 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p9 </ci>
+                <ci> cP7_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cNI_m_trscr_1" name="function_4_cNI_m_trscr_1" metaid="ba307a7a-1581-4bc3-b9d3-6cdcb43b022b">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> b </ci>
+            </bvar>
+            <bvar>
+              <ci> cLm </ci>
+            </bvar>
+            <bvar>
+              <ci> cP7 </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g12 </ci>
+            </bvar>
+            <bvar>
+              <ci> g13 </ci>
+            </bvar>
+            <bvar>
+              <ci> n10 </ci>
+            </bvar>
+            <bvar>
+              <ci> n11 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> n10 </ci>
+                    <apply>
+                      <power/>
+                      <ci> cLm </ci>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <ci> cLm </ci>
+                      <ci> e </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g12 </ci>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> n11 </ci>
+                    <apply>
+                      <power/>
+                      <ci> cP7 </ci>
+                      <ci> b </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <ci> cP7 </ci>
+                      <ci> b </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g13 </ci>
+                      <ci> b </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cNI_m_degr_1" name="function_4_cNI_m_degr_1" metaid="e1e18fd4-c5a2-46a0-b7c8-e6e21b53e75a">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cNI_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m16 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m16 </ci>
+                <ci> cNI_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cNI_trsl_1" name="function_4_cNI_trsl_1" metaid="_1255872e-95d3-40ae-90d9-26eb8d046e6e">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cNI_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p10 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p10 </ci>
+                <ci> cNI_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cT_m_trscr" name="function_4_cT_m_trscr" metaid="_20fb0ede-4756-49cb-918f-791d532ddcea">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cEC </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g4 </ci>
+            </bvar>
+            <bvar>
+              <ci> g5 </ci>
+            </bvar>
+            <bvar>
+              <ci> n2 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> n2 </ci>
+                      <ci> g4 </ci>
+                    </apply>
+                    <apply>
+                      <plus/>
+                      <ci> cEC </ci>
+                      <ci> g4 </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g5 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <power/>
+                    <ci> cL </ci>
+                    <ci> e </ci>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g5 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cT_m_degr_1" name="function_4_cT_m_degr_1" metaid="_6d99f930-a74c-478d-b60d-0e7332f81914">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cT_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m5 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m5 </ci>
+                <ci> cT_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cT_trsl_1" name="function_4_cT_trsl_1" metaid="_5d5aed2a-4edb-40ad-8def-34aeba1a87ca">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cT_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p4 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p4 </ci>
+                <ci> cT_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE4_m_degr_1" name="function_4_cE4_m_degr_1" metaid="_3ea2980a-597b-49d5-b5eb-07cb3d3d22eb">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE4_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m34 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m34 </ci>
+                <ci> cE4_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE4_trsl_1" name="function_4_cE4_trsl_1" metaid="_5d68b297-c0a6-4c5e-9d52-e57b228123ec">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE4_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p23 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p23 </ci>
+                <ci> cE4_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE4_degr_1" name="function_4_cE4_degr_1" metaid="_28d702ad-9794-4732-9196-7c7d7a8e1229">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE4 </ci>
+            </bvar>
+            <bvar>
+              <ci> cLUX </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m35 </ci>
+            </bvar>
+            <bvar>
+              <ci> m36 </ci>
+            </bvar>
+            <bvar>
+              <ci> m37 </ci>
+            </bvar>
+            <bvar>
+              <ci> p21 </ci>
+            </bvar>
+            <bvar>
+              <ci> p25 </ci>
+            </bvar>
+            <bvar>
+              <ci> p26 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> m35 </ci>
+                    <ci> cE4 </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> p25 </ci>
+                    <ci> cE4 </ci>
+                    <ci> cE3n </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p21 </ci>
+                    <ci> p25 </ci>
+                    <ci> cE4 </ci>
+                    <ci> cE3n </ci>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <times/>
+                      <ci> p26 </ci>
+                      <ci> cLUX </ci>
+                    </apply>
+                    <ci> p21 </ci>
+                    <apply>
+                      <times/>
+                      <ci> m37 </ci>
+                      <ci> cCOP1d </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> m36 </ci>
+                      <ci> cCOP1n </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3_m_trscr_1" name="function_4_cE3_m_trscr_1" metaid="_70a433c3-f6ab-490c-9f33-f6b275051689">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g16 </ci>
+            </bvar>
+            <bvar>
+              <ci> n3 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> n3 </ci>
+                  <apply>
+                    <power/>
+                    <ci> g16 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <power/>
+                    <ci> cL </ci>
+                    <ci> e </ci>
+                  </apply>
+                  <apply>
+                    <power/>
+                    <ci> g16 </ci>
+                    <ci> e </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3_m_degr_1" name="function_4_cE3_m_degr_1" metaid="_6eb71a3a-d871-4def-8d4a-bcf7cdb362c6">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE3_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m26 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m26 </ci>
+                <ci> cE3_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3_trsl_1" name="function_4_cE3_trsl_1" metaid="_9c6d7c4a-f8db-42b5-a953-bf8944cd2d86">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE3_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p16 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p16 </ci>
+                <ci> cE3_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3_degr_1" name="function_4_cE3_degr_1" metaid="_7724dbc4-e0ab-404a-8b9a-456c09d16ac0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1c </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3 </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m9 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m9 </ci>
+                <ci> cE3 </ci>
+                <ci> cCOP1c </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3n_import_1" name="function_4_cE3n_import_1" metaid="_679a77eb-b536-4552-9289-434e74d26c43">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE3 </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p19 </ci>
+            </bvar>
+            <bvar>
+              <ci> p20 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> p19 </ci>
+                  <ci> cE3 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> p20 </ci>
+                  <ci> cE3n </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cE3n_degr_1" name="function_4_cE3n_degr_1" metaid="ec588967-67a1-4320-9abe-251d41094b36">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE4 </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> cLUX </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m19 </ci>
+            </bvar>
+            <bvar>
+              <ci> m29 </ci>
+            </bvar>
+            <bvar>
+              <ci> m30 </ci>
+            </bvar>
+            <bvar>
+              <ci> m36 </ci>
+            </bvar>
+            <bvar>
+              <ci> m37 </ci>
+            </bvar>
+            <bvar>
+              <ci> p17 </ci>
+            </bvar>
+            <bvar>
+              <ci> p21 </ci>
+            </bvar>
+            <bvar>
+              <ci> p25 </ci>
+            </bvar>
+            <bvar>
+              <ci> p26 </ci>
+            </bvar>
+            <bvar>
+              <ci> p28 </ci>
+            </bvar>
+            <bvar>
+              <ci> p29 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <minus/>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <times/>
+                      <ci> m29 </ci>
+                      <ci> cE3n </ci>
+                      <ci> cCOP1n </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> m30 </ci>
+                      <ci> cE3n </ci>
+                      <ci> cCOP1d </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> p25 </ci>
+                      <ci> cE4 </ci>
+                      <ci> cE3n </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <divide/>
+                    <apply>
+                      <times/>
+                      <ci> p21 </ci>
+                      <ci> p25 </ci>
+                      <ci> cE4 </ci>
+                      <ci> cE3n </ci>
+                    </apply>
+                    <apply>
+                      <plus/>
+                      <apply>
+                        <times/>
+                        <ci> p26 </ci>
+                        <ci> cLUX </ci>
+                      </apply>
+                      <ci> p21 </ci>
+                      <apply>
+                        <times/>
+                        <ci> m37 </ci>
+                        <ci> cCOP1d </ci>
+                      </apply>
+                      <apply>
+                        <times/>
+                        <ci> m36 </ci>
+                        <ci> cCOP1n </ci>
+                      </apply>
+                    </apply>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p17 </ci>
+                    <ci> cE3n </ci>
+                    <ci> p28 </ci>
+                    <ci> cG </ci>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <ci> p29 </ci>
+                    <ci> m19 </ci>
+                    <apply>
+                      <times/>
+                      <ci> p17 </ci>
+                      <ci> cE3n </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cLUX_m_degr_1" name="function_4_cLUX_m_degr_1" metaid="c58c53c6-c642-47d1-8ae3-8a553a0a3685">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cLUX_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m34 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m34 </ci>
+                <ci> cLUX_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cLUX_trsl_1" name="function_4_cLUX_trsl_1" metaid="_2bbc9909-31a8-494d-88db-f84a26980b94">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cLUX_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p27 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p27 </ci>
+                <ci> cLUX_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cLUX_degr_1" name="function_4_cLUX_degr_1" metaid="_064d4568-94cc-4e79-b302-548810563ac5">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE4 </ci>
+            </bvar>
+            <bvar>
+              <ci> cLUX </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m36 </ci>
+            </bvar>
+            <bvar>
+              <ci> m37 </ci>
+            </bvar>
+            <bvar>
+              <ci> m39 </ci>
+            </bvar>
+            <bvar>
+              <ci> p21 </ci>
+            </bvar>
+            <bvar>
+              <ci> p25 </ci>
+            </bvar>
+            <bvar>
+              <ci> p26 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> m39 </ci>
+                  <ci> cLUX </ci>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p26 </ci>
+                    <ci> cLUX </ci>
+                    <ci> p25 </ci>
+                    <ci> cE4 </ci>
+                    <ci> cE3n </ci>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <times/>
+                      <ci> p26 </ci>
+                      <ci> cLUX </ci>
+                    </apply>
+                    <ci> p21 </ci>
+                    <apply>
+                      <times/>
+                      <ci> m37 </ci>
+                      <ci> cCOP1d </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> m36 </ci>
+                      <ci> cCOP1n </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1c_trsl_1" name="function_4_cCOP1c_trsl_1" metaid="_8f6fa63a-fcf1-47e0-ba5a-ea6b42c629be">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> n5 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <ci> n5 </ci>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1n_import_1" name="function_4_cCOP1n_import_1" metaid="_7d51caa4-ccd3-4356-9698-1f452845ef7d">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1c </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p6 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p6 </ci>
+                <ci> cCOP1c </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_m_degr_1" name="function_4_cG_m_degr_1" metaid="_4f478f19-71ac-4dda-a191-81f2cc94200f">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cG_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m18 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m18 </ci>
+                <ci> cG_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cL_m_degr_L" name="function_4_cL_m_degr_L" metaid="COPASI10">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI10">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2013-06-02T14:16:44Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> m1 </ci>
+            </bvar>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> m2 </ci>
+            </bvar>
+            <bvar>
+              <ci> cL_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> m1 </ci>
+                    <ci> L </ci>
+                  </apply>
+                  <ci> m2 </ci>
+                </apply>
+                <ci> cL_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_trsl_1" name="function_4_cG_trsl_1" metaid="_466e559b-7031-44af-a529-577dcfc45b40">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cG_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p11 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p11 </ci>
+                <ci> cG_m </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_degr_1" name="function_4_cG_degr_1" metaid="_84a86416-d7f2-456f-ad79-866e2d344b8e">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m19 </ci>
+            </bvar>
+            <bvar>
+              <ci> p17 </ci>
+            </bvar>
+            <bvar>
+              <ci> p28 </ci>
+            </bvar>
+            <bvar>
+              <ci> p29 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> m19 </ci>
+                    <ci> cG </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> p28 </ci>
+                    <ci> cG </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p29 </ci>
+                    <ci> p28 </ci>
+                    <ci> cG </ci>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <ci> p29 </ci>
+                    <ci> m19 </ci>
+                    <apply>
+                      <times/>
+                      <ci> p17 </ci>
+                      <ci> cE3n </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cZTL_trsl_1" name="function_4_cZTL_trsl_1" metaid="_46f974d9-bfa2-4667-bb23-ad86ffdaf780">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p14 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <ci> p14 </ci>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cZTL_degr_1" name="function_4_cZTL_degr_1" metaid="_4e627f78-a6dd-4521-9eb1-8050d15e851d">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cZTL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m20 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m20 </ci>
+                <ci> cZTL </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cZG_degr_1" name="function_4_cZG_degr_1" metaid="_0fb0b089-e389-46e3-baa4-0404683c4054">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cZG </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m21 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m21 </ci>
+                <ci> cZG </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_cE3_assoc_1" name="function_4_cG_cE3_assoc_1" metaid="_9b227a06-4c74-4c79-8990-32467bf6ea1e">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cE3 </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p17 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p17 </ci>
+                <ci> cE3 </ci>
+                <ci> cG </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cEG_degr_1" name="function_4_cEG_degr_1" metaid="_823184a8-c283-459b-a28d-0794ca30988c">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1c </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cEG </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m10 </ci>
+            </bvar>
+            <bvar>
+              <ci> m19 </ci>
+            </bvar>
+            <bvar>
+              <ci> m9 </ci>
+            </bvar>
+            <bvar>
+              <ci> p17 </ci>
+            </bvar>
+            <bvar>
+              <ci> p18 </ci>
+            </bvar>
+            <bvar>
+              <ci> p28 </ci>
+            </bvar>
+            <bvar>
+              <ci> p29 </ci>
+            </bvar>
+            <bvar>
+              <ci> p31 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> m9 </ci>
+                    <ci> cEG </ci>
+                    <ci> cCOP1c </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> p18 </ci>
+                    <ci> cEG </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> p31 </ci>
+                    <apply>
+                      <plus/>
+                      <apply>
+                        <times/>
+                        <ci> p18 </ci>
+                        <ci> cEG </ci>
+                      </apply>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> p17 </ci>
+                          <ci> cE3n </ci>
+                          <ci> p28 </ci>
+                          <ci> cG </ci>
+                        </apply>
+                        <apply>
+                          <plus/>
+                          <ci> p29 </ci>
+                          <ci> m19 </ci>
+                          <apply>
+                            <times/>
+                            <ci> p17 </ci>
+                            <ci> cE3n </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <times/>
+                      <ci> m9 </ci>
+                      <ci> cCOP1n </ci>
+                    </apply>
+                    <apply>
+                      <times/>
+                      <ci> m10 </ci>
+                      <ci> cCOP1d </ci>
+                    </apply>
+                    <ci> p31 </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cEC_form_1" name="function_4_cEC_form_1" metaid="_279f8381-6ece-4c2f-9403-5a8b225a9b15">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE4 </ci>
+            </bvar>
+            <bvar>
+              <ci> cLUX </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m36 </ci>
+            </bvar>
+            <bvar>
+              <ci> m37 </ci>
+            </bvar>
+            <bvar>
+              <ci> p21 </ci>
+            </bvar>
+            <bvar>
+              <ci> p25 </ci>
+            </bvar>
+            <bvar>
+              <ci> p26 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <divide/>
+                <apply>
+                  <times/>
+                  <ci> p26 </ci>
+                  <ci> cLUX </ci>
+                  <ci> p25 </ci>
+                  <ci> cE4 </ci>
+                  <ci> cE3n </ci>
+                </apply>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> p26 </ci>
+                    <ci> cLUX </ci>
+                  </apply>
+                  <ci> p21 </ci>
+                  <apply>
+                    <times/>
+                    <ci> m37 </ci>
+                    <ci> cCOP1d </ci>
+                  </apply>
+                  <apply>
+                    <times/>
+                    <ci> m36 </ci>
+                    <ci> cCOP1n </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="stepFunction" name="tanh() step function" metaid="_281cb493-7f24-4709-9d10-9feaddbd0438">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> t </ci>
+            </bvar>
+            <bvar>
+              <ci> offset </ci>
+            </bvar>
+            <bvar>
+              <ci> amplitude </ci>
+            </bvar>
+            <bvar>
+              <ci> phase </ci>
+            </bvar>
+            <bvar>
+              <ci> pulseDuration </ci>
+            </bvar>
+            <bvar>
+              <ci> cyclePeriod </ci>
+            </bvar>
+            <bvar>
+              <ci> rampDuration </ci>
+            </bvar>
+            <apply>
+              <plus/>
+              <apply>
+                <minus/>
+                <apply>
+                  <plus/>
+                  <ci> offset </ci>
+                  <apply>
+                    <times/>
+                    <cn> 0.5 </cn>
+                    <ci> amplitude </ci>
+                    <apply>
+                      <plus/>
+                      <cn> 1 </cn>
+                      <apply>
+                        <tanh/>
+                        <apply>
+                          <divide/>
+                          <apply>
+                            <times/>
+                            <ci> cyclePeriod </ci>
+                            <apply>
+                              <minus/>
+                              <apply>
+                                <divide/>
+                                <apply>
+                                  <plus/>
+                                  <ci> t </ci>
+                                  <ci> phase </ci>
+                                </apply>
+                                <ci> cyclePeriod </ci>
+                              </apply>
+                              <apply>
+                                <floor/>
+                                <apply>
+                                  <divide/>
+                                  <apply>
+                                    <plus/>
+                                    <ci> t </ci>
+                                    <ci> phase </ci>
+                                  </apply>
+                                  <ci> cyclePeriod </ci>
+                                </apply>
+                              </apply>
+                            </apply>
+                          </apply>
+                          <ci> rampDuration </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <cn> 0.5 </cn>
+                  <ci> amplitude </ci>
+                  <apply>
+                    <plus/>
+                    <cn> 1 </cn>
+                    <apply>
+                      <tanh/>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <minus/>
+                          <apply>
+                            <times/>
+                            <ci> cyclePeriod </ci>
+                            <apply>
+                              <minus/>
+                              <apply>
+                                <divide/>
+                                <apply>
+                                  <plus/>
+                                  <ci> t </ci>
+                                  <ci> phase </ci>
+                                </apply>
+                                <ci> cyclePeriod </ci>
+                              </apply>
+                              <apply>
+                                <floor/>
+                                <apply>
+                                  <divide/>
+                                  <apply>
+                                    <plus/>
+                                    <ci> t </ci>
+                                    <ci> phase </ci>
+                                  </apply>
+                                  <ci> cyclePeriod </ci>
+                                </apply>
+                              </apply>
+                            </apply>
+                          </apply>
+                          <ci> pulseDuration </ci>
+                        </apply>
+                        <ci> rampDuration </ci>
+                      </apply>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <apply>
+                <times/>
+                <cn> 0.5 </cn>
+                <ci> amplitude </ci>
+                <apply>
+                  <plus/>
+                  <cn> 1 </cn>
+                  <apply>
+                    <tanh/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <minus/>
+                        <apply>
+                          <times/>
+                          <ci> cyclePeriod </ci>
+                          <apply>
+                            <minus/>
+                            <apply>
+                              <divide/>
+                              <apply>
+                                <plus/>
+                                <ci> t </ci>
+                                <ci> phase </ci>
+                              </apply>
+                              <ci> cyclePeriod </ci>
+                            </apply>
+                            <apply>
+                              <floor/>
+                              <apply>
+                                <divide/>
+                                <apply>
+                                  <plus/>
+                                  <ci> t </ci>
+                                  <ci> phase </ci>
+                                </apply>
+                                <ci> cyclePeriod </ci>
+                              </apply>
+                            </apply>
+                          </apply>
+                        </apply>
+                        <ci> cyclePeriod </ci>
+                      </apply>
+                      <ci> rampDuration </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cL_m_trscr" name="function_4_cL_m_trscr" metaid="_5914771f-2e49-4bd2-b1c2-5a7694c76b82">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> a </ci>
+            </bvar>
+            <bvar>
+              <ci> cNI </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> cP7 </ci>
+            </bvar>
+            <bvar>
+              <ci> cP9 </ci>
+            </bvar>
+            <bvar>
+              <ci> cT </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> g1 </ci>
+            </bvar>
+            <bvar>
+              <ci> n1 </ci>
+            </bvar>
+            <bvar>
+              <ci> q1 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> L </ci>
+                  <ci> q1 </ci>
+                  <ci> cP </ci>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <ci> n1 </ci>
+                    <apply>
+                      <power/>
+                      <ci> g1 </ci>
+                      <ci> a </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <apply>
+                        <plus/>
+                        <ci> cP9 </ci>
+                        <ci> cP7 </ci>
+                        <ci> cNI </ci>
+                        <ci> cT </ci>
+                      </apply>
+                      <ci> a </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g1 </ci>
+                      <ci> a </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cL_trsl" name="function_4_cL_trsl" metaid="_4fdd6ad6-d802-4d1e-bb1e-99b9f0ffdf9a">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cL_m </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p1 </ci>
+            </bvar>
+            <bvar>
+              <ci> p2 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> cL_m </ci>
+                <apply>
+                  <plus/>
+                  <apply>
+                    <times/>
+                    <ci> p1 </ci>
+                    <ci> L </ci>
+                  </apply>
+                  <ci> p2 </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP_trsl" name="function_4_cP_trsl" metaid="da77cbd2-11a3-4aad-aa3d-904a58f023a2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p7 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> p7 </ci>
+                <ci> D </ci>
+                <apply>
+                  <minus/>
+                  <cn> 1 </cn>
+                  <ci> cP </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP_degr" name="function_4_cP_degr" metaid="d37e531b-b484-462f-89a4-e36f73f4a340">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m11 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m11 </ci>
+                <ci> cP </ci>
+                <ci> L </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP9_m_trscr_1" name="function_4_cP9_m_trscr_1" metaid="_1dd359f5-bdd3-4a35-a6be-7922b58201ac">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cEC </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g8 </ci>
+            </bvar>
+            <bvar>
+              <ci> g9 </ci>
+            </bvar>
+            <bvar>
+              <ci> n4 </ci>
+            </bvar>
+            <bvar>
+              <ci> n7 </ci>
+            </bvar>
+            <bvar>
+              <ci> q3 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> L </ci>
+                  <ci> q3 </ci>
+                  <ci> cP </ci>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <apply>
+                      <plus/>
+                      <ci> n4 </ci>
+                      <apply>
+                        <divide/>
+                        <apply>
+                          <times/>
+                          <ci> n7 </ci>
+                          <apply>
+                            <power/>
+                            <ci> cL </ci>
+                            <ci> e </ci>
+                          </apply>
+                        </apply>
+                        <apply>
+                          <plus/>
+                          <apply>
+                            <power/>
+                            <ci> cL </ci>
+                            <ci> e </ci>
+                          </apply>
+                          <apply>
+                            <power/>
+                            <ci> g9 </ci>
+                            <ci> e </ci>
+                          </apply>
+                        </apply>
+                      </apply>
+                    </apply>
+                    <ci> g8 </ci>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <ci> cEC </ci>
+                    <ci> g8 </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP9_degr" name="function_4_cP9_degr" metaid="e05b561a-3e47-45b2-b51d-48aabf9135ba">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cP9 </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m13 </ci>
+            </bvar>
+            <bvar>
+              <ci> m22 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <apply>
+                  <plus/>
+                  <ci> m13 </ci>
+                  <apply>
+                    <times/>
+                    <ci> m22 </ci>
+                    <ci> D </ci>
+                  </apply>
+                </apply>
+                <ci> cP9 </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cP7_degr" name="function_4_cP7_degr" metaid="_66063498-7108-4ec6-bd4b-7a1084dac9df">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cP7 </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m15 </ci>
+            </bvar>
+            <bvar>
+              <ci> m23 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <apply>
+                  <plus/>
+                  <ci> m15 </ci>
+                  <apply>
+                    <times/>
+                    <ci> m23 </ci>
+                    <ci> D </ci>
+                  </apply>
+                </apply>
+                <ci> cP7 </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cNI_degr" name="function_4_cNI_degr" metaid="_7a6f47b3-ea32-46be-a9cc-b4189d4ab0fa">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cNI </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m17 </ci>
+            </bvar>
+            <bvar>
+              <ci> m24 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <apply>
+                  <plus/>
+                  <ci> m17 </ci>
+                  <apply>
+                    <times/>
+                    <ci> m24 </ci>
+                    <ci> D </ci>
+                  </apply>
+                </apply>
+                <ci> cNI </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cT_degr" name="function_4_cT_degr" metaid="f2d4e038-a464-4605-8b54-4f4e7a318440">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cT </ci>
+            </bvar>
+            <bvar>
+              <ci> cZG </ci>
+            </bvar>
+            <bvar>
+              <ci> cZTL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m6 </ci>
+            </bvar>
+            <bvar>
+              <ci> m7 </ci>
+            </bvar>
+            <bvar>
+              <ci> m8 </ci>
+            </bvar>
+            <bvar>
+              <ci> p5 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <apply>
+                    <plus/>
+                    <ci> m6 </ci>
+                    <apply>
+                      <times/>
+                      <ci> m7 </ci>
+                      <ci> D </ci>
+                    </apply>
+                  </apply>
+                  <ci> cT </ci>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <times/>
+                      <ci> p5 </ci>
+                      <ci> cZTL </ci>
+                    </apply>
+                    <ci> cZG </ci>
+                  </apply>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> m8 </ci>
+                  <ci> cT </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1c_degr" name="function_4_cCOP1c_degr" metaid="e762b879-68a8-45d4-b1a7-29c0e6e46a09">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1c </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m27 </ci>
+            </bvar>
+            <bvar>
+              <ci> p15 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m27 </ci>
+                <ci> cCOP1c </ci>
+                <apply>
+                  <plus/>
+                  <cn> 1 </cn>
+                  <apply>
+                    <times/>
+                    <ci> p15 </ci>
+                    <ci> L </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1n_degr" name="function_4_cCOP1n_degr" metaid="dd5df0c9-f274-4ef6-9c98-62e5b39a489b">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m27 </ci>
+            </bvar>
+            <bvar>
+              <ci> p15 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m27 </ci>
+                <ci> cCOP1n </ci>
+                <apply>
+                  <plus/>
+                  <cn> 1 </cn>
+                  <apply>
+                    <times/>
+                    <ci> p15 </ci>
+                    <ci> L </ci>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1d_activ" name="function_4_cCOP1d_activ" metaid="_8c678120-7eb3-41e4-aa00-580d73b23c52">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> n14 </ci>
+            </bvar>
+            <bvar>
+              <ci> n6 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> n6 </ci>
+                  <ci> L </ci>
+                  <ci> cP </ci>
+                  <ci> cCOP1n </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> n14 </ci>
+                  <ci> cCOP1n </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cCOP1d_degr" name="function_4_cCOP1d_degr" metaid="COPASI11">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI11">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2013-06-02T14:19:29Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> m31 </ci>
+            </bvar>
+            <bvar>
+              <ci> m33 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <times/>
+                <ci> m31 </ci>
+                <apply>
+                  <plus/>
+                  <cn> 1 </cn>
+                  <apply>
+                    <times/>
+                    <ci> m33 </ci>
+                    <ci> D </ci>
+                  </apply>
+                </apply>
+                <ci> cCOP1d </ci>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_m_trscr_1" name="function_4_cG_m_trscr_1" metaid="b9ca1482-4f86-47cd-a3d8-4b040ed88141">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cEC </ci>
+            </bvar>
+            <bvar>
+              <ci> cL </ci>
+            </bvar>
+            <bvar>
+              <ci> cP </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> e </ci>
+            </bvar>
+            <bvar>
+              <ci> g14 </ci>
+            </bvar>
+            <bvar>
+              <ci> g15 </ci>
+            </bvar>
+            <bvar>
+              <ci> n12 </ci>
+            </bvar>
+            <bvar>
+              <ci> q2 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> L </ci>
+                  <ci> q2 </ci>
+                  <ci> cP </ci>
+                </apply>
+                <apply>
+                  <divide/>
+                  <apply>
+                    <times/>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> n12 </ci>
+                        <ci> g14 </ci>
+                      </apply>
+                      <apply>
+                        <plus/>
+                        <ci> cEC </ci>
+                        <ci> g14 </ci>
+                      </apply>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g15 </ci>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                  <apply>
+                    <plus/>
+                    <apply>
+                      <power/>
+                      <ci> cL </ci>
+                      <ci> e </ci>
+                    </apply>
+                    <apply>
+                      <power/>
+                      <ci> g15 </ci>
+                      <ci> e </ci>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cG_cZTL_assoc" name="function_4_cG_cZTL_assoc" metaid="b59ee9f4-92bb-4def-9c5f-b7f803855e3a">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> D </ci>
+            </bvar>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> cZG </ci>
+            </bvar>
+            <bvar>
+              <ci> cZTL </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> p12 </ci>
+            </bvar>
+            <bvar>
+              <ci> p13 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> p12 </ci>
+                  <ci> L </ci>
+                  <ci> cZTL </ci>
+                  <ci> cG </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> p13 </ci>
+                  <ci> D </ci>
+                  <ci> cZG </ci>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+      <functionDefinition id="function_4_cEC_degr" name="function_4_cEC_degr" metaid="_0d572364-6384-4547-9b03-271b16c24d6c">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <lambda>
+            <bvar>
+              <ci> L </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1d </ci>
+            </bvar>
+            <bvar>
+              <ci> cCOP1n </ci>
+            </bvar>
+            <bvar>
+              <ci> cE3n </ci>
+            </bvar>
+            <bvar>
+              <ci> cEC </ci>
+            </bvar>
+            <bvar>
+              <ci> cEG </ci>
+            </bvar>
+            <bvar>
+              <ci> cG </ci>
+            </bvar>
+            <bvar>
+              <ci> d </ci>
+            </bvar>
+            <bvar>
+              <ci> def </ci>
+            </bvar>
+            <bvar>
+              <ci> g7 </ci>
+            </bvar>
+            <bvar>
+              <ci> m10 </ci>
+            </bvar>
+            <bvar>
+              <ci> m19 </ci>
+            </bvar>
+            <bvar>
+              <ci> m32 </ci>
+            </bvar>
+            <bvar>
+              <ci> m36 </ci>
+            </bvar>
+            <bvar>
+              <ci> m37 </ci>
+            </bvar>
+            <bvar>
+              <ci> m9 </ci>
+            </bvar>
+            <bvar>
+              <ci> p17 </ci>
+            </bvar>
+            <bvar>
+              <ci> p18 </ci>
+            </bvar>
+            <bvar>
+              <ci> p24 </ci>
+            </bvar>
+            <bvar>
+              <ci> p28 </ci>
+            </bvar>
+            <bvar>
+              <ci> p29 </ci>
+            </bvar>
+            <bvar>
+              <ci> p31 </ci>
+            </bvar>
+            <apply>
+              <divide/>
+              <apply>
+                <plus/>
+                <apply>
+                  <times/>
+                  <ci> m36 </ci>
+                  <ci> cCOP1n </ci>
+                  <ci> cEC </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> m37 </ci>
+                  <ci> cCOP1d </ci>
+                  <ci> cEC </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> m32 </ci>
+                  <ci> cEC </ci>
+                  <apply>
+                    <plus/>
+                    <cn> 1 </cn>
+                    <apply>
+                      <divide/>
+                      <apply>
+                        <times/>
+                        <ci> p24 </ci>
+                        <ci> L </ci>
+                        <apply>
+                          <power/>
+                          <apply>
+                            <plus/>
+                            <apply>
+                              <divide/>
+                              <apply>
+                                <times/>
+                                <ci> p28 </ci>
+                                <ci> cG </ci>
+                              </apply>
+                              <apply>
+                                <plus/>
+                                <ci> p29 </ci>
+                                <ci> m19 </ci>
+                                <apply>
+                                  <times/>
+                                  <ci> p17 </ci>
+                                  <ci> cE3n </ci>
+                                </apply>
+                              </apply>
+                            </apply>
+                            <apply>
+                              <divide/>
+                              <apply>
+                                <plus/>
+                                <apply>
+                                  <times/>
+                                  <ci> p18 </ci>
+                                  <ci> cEG </ci>
+                                </apply>
+                                <apply>
+                                  <divide/>
+                                  <apply>
+                                    <times/>
+                                    <ci> p17 </ci>
+                                    <ci> cE3n </ci>
+                                    <ci> p28 </ci>
+                                    <ci> cG </ci>
+                                  </apply>
+                                  <apply>
+                                    <plus/>
+                                    <ci> p29 </ci>
+                                    <ci> m19 </ci>
+                                    <apply>
+                                      <times/>
+                                      <ci> p17 </ci>
+                                      <ci> cE3n </ci>
+                                    </apply>
+                                  </apply>
+                                </apply>
+                              </apply>
+                              <apply>
+                                <plus/>
+                                <apply>
+                                  <times/>
+                                  <ci> m9 </ci>
+                                  <ci> cCOP1n </ci>
+                                </apply>
+                                <apply>
+                                  <times/>
+                                  <ci> m10 </ci>
+                                  <ci> cCOP1d </ci>
+                                </apply>
+                                <ci> p31 </ci>
+                              </apply>
+                            </apply>
+                          </apply>
+                          <ci> d </ci>
+                        </apply>
+                      </apply>
+                      <apply>
+                        <plus/>
+                        <apply>
+                          <power/>
+                          <apply>
+                            <plus/>
+                            <apply>
+                              <divide/>
+                              <apply>
+                                <times/>
+                                <ci> p28 </ci>
+                                <ci> cG </ci>
+                              </apply>
+                              <apply>
+                                <plus/>
+                                <ci> p29 </ci>
+                                <ci> m19 </ci>
+                                <apply>
+                                  <times/>
+                                  <ci> p17 </ci>
+                                  <ci> cE3n </ci>
+                                </apply>
+                              </apply>
+                            </apply>
+                            <apply>
+                              <divide/>
+                              <apply>
+                                <plus/>
+                                <apply>
+                                  <times/>
+                                  <ci> p18 </ci>
+                                  <ci> cEG </ci>
+                                </apply>
+                                <apply>
+                                  <divide/>
+                                  <apply>
+                                    <times/>
+                                    <ci> p17 </ci>
+                                    <ci> cE3n </ci>
+                                    <ci> p28 </ci>
+                                    <ci> cG </ci>
+                                  </apply>
+                                  <apply>
+                                    <plus/>
+                                    <ci> p29 </ci>
+                                    <ci> m19 </ci>
+                                    <apply>
+                                      <times/>
+                                      <ci> p17 </ci>
+                                      <ci> cE3n </ci>
+                                    </apply>
+                                  </apply>
+                                </apply>
+                              </apply>
+                              <apply>
+                                <plus/>
+                                <apply>
+                                  <times/>
+                                  <ci> m9 </ci>
+                                  <ci> cCOP1n </ci>
+                                </apply>
+                                <apply>
+                                  <times/>
+                                  <ci> m10 </ci>
+                                  <ci> cCOP1d </ci>
+                                </apply>
+                                <ci> p31 </ci>
+                              </apply>
+                            </apply>
+                          </apply>
+                          <ci> d </ci>
+                        </apply>
+                        <apply>
+                          <power/>
+                          <ci> g7 </ci>
+                          <ci> d </ci>
+                        </apply>
+                      </apply>
+                    </apply>
+                  </apply>
+                </apply>
+              </apply>
+              <ci> def </ci>
+            </apply>
+          </lambda>
+        </math>
+            </functionDefinition>
+    </listOfFunctionDefinitions>
+    <listOfUnitDefinitions>
+      <unitDefinition id="volume" name="volume" metaid="b8d5ba82-001c-4ce2-b896-493b6b1b1d0c">
+        <listOfUnits>
+          <unit scale="-6" metaid="_84243fff-7a97-4b9f-9a51-61f7bb732e70" kind="litre"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="time" name="time" metaid="_98291c72-a664-48c6-957f-c041e3abdae6">
+        <listOfUnits>
+          <unit metaid="a6aa8472-d84b-4e55-9502-6250995192de" multiplier="3600" kind="second"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="substance" name="substance" metaid="_22cc8193-94ae-4099-9875-266c0f175295">
+        <listOfUnits>
+          <unit scale="-9" metaid="cc45cf58-402b-48ea-82af-200fa1c1fb41" kind="mole"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment id="def" name="def" metaid="_0657fe3b-b407-4a66-a923-bea6cc3283b0" size="1"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="cCOP1c" initialConcentration="0.3269" name="cCOP1c" metaid="_94e019ff-8dc7-492c-a9cf-00601e2114cb" compartment="def"/>
+      <species id="cCOP1d" initialConcentration="0.2566" name="cCOP1d" metaid="f9dbcbe2-157d-4811-811c-4a2f62f1c166" compartment="def"/>
+      <species id="cCOP1n" initialConcentration="0.65" name="cCOP1n" metaid="_55bc583f-aee1-4ffd-a66b-86f6c35e1bec" compartment="def"/>
+      <species id="cE3" initialConcentration="0.1503" name="cE3" metaid="_251662fa-5d26-4077-8daf-ef8d59c7f6b0" compartment="def"/>
+      <species id="cE3_m" initialConcentration="0.2991" name="cE3_m" metaid="b1af6701-8e70-4d3b-b885-c2b9ccb02fb8" compartment="def"/>
+      <species id="cE3n" initialConcentration="0.0286" name="cE3n" metaid="_0571a65c-d753-4501-940f-cc6b8a04b0b2" compartment="def"/>
+      <species id="cE4" initialConcentration="0.207" name="cE4" metaid="_7754a3f3-78ac-4f13-8085-35aee5529dd4" compartment="def"/>
+      <species id="cE4_m" initialConcentration="0.1012" name="cE4_m" metaid="_71ff18e6-65ef-4bff-b8be-a5323bd6c841" compartment="def"/>
+      <species id="cEC" initialConcentration="0.0709" name="cEC" metaid="_263d4b0b-358a-4374-9bee-da202e579cb5" compartment="def"/>
+      <species id="cEG" initialConcentration="0.0041" name="cEG" metaid="dd53103d-524b-46fb-b720-ee127a8ac41a" compartment="def"/>
+      <species id="cG" initialConcentration="0.0196" name="cG" metaid="_7d35f994-1a96-46f4-b53a-fa92e2bc3f4b" compartment="def"/>
+      <species id="cG_m" initialConcentration="0.1017" name="cG_m" metaid="_68cd6c47-2f27-4ee3-bd3f-dfdb4dcde1d6" compartment="def"/>
+      <species id="cL" initialConcentration="0.506" name="cL" metaid="_8070298e-d8a2-4cf7-8a54-b9975917215f" compartment="def"/>
+      <species id="cLUX" initialConcentration="0.576" name="cLUX" metaid="d949ad11-b235-454b-87fa-3837b8be7b75" compartment="def"/>
+      <species id="cLUX_m" initialConcentration="0.1012" name="cLUX_m" metaid="_3e07c15f-0672-401b-8387-732a0fd4fd39" compartment="def"/>
+      <species id="cL_m" initialConcentration="1.0151" name="cL_m" metaid="f3a01ba2-e900-467a-bdb5-edd567c1d624" compartment="def"/>
+      <species id="cLm" initialConcentration="0.0788" name="cLm" metaid="_6e50fb2d-2c19-4152-8552-95faa4a0abaf" compartment="def"/>
+      <species id="cNI" initialConcentration="0.0697" name="cNI" metaid="fe1a5f78-29dd-4a17-92aa-96ac163ca188" compartment="def"/>
+      <species id="cNI_m" initialConcentration="0.0731" name="cNI_m" metaid="_0c732428-8fde-442c-ac2d-810363feb35b" compartment="def"/>
+      <species id="cP" initialConcentration="0.956" name="cP" metaid="cfc9d697-3e88-4f82-881e-547d36465013" compartment="def"/>
+      <species id="cP7" initialConcentration="0.1167" name="cP7" metaid="_6fad44fb-2515-4b27-a350-10bb1aa4954f" compartment="def"/>
+      <species id="cP7_m" initialConcentration="0.4016" name="cP7_m" metaid="dee64cba-43ed-4007-83b5-9d7ced03eb88" compartment="def"/>
+      <species id="cP9" initialConcentration="0.0238" name="cP9" metaid="_251276a8-15f1-48cf-8230-197d74da389d" compartment="def"/>
+      <species id="cP9_m" initialConcentration="0.0658" name="cP9_m" metaid="_0c3a80fb-d44f-4ae0-b8e9-070e65db5c4f" compartment="def"/>
+      <species id="cT" initialConcentration="0.0435" name="cT" metaid="_53c3b4eb-c051-4042-9a8d-d71467c37bf9" compartment="def"/>
+      <species id="cT_m" initialConcentration="0.0977" name="cT_m" metaid="f9352556-44fc-42d2-a217-d7ea225c8997" compartment="def"/>
+      <species id="cZG" initialConcentration="0.0755" name="cZG" metaid="_8cbfe59b-d5f3-4396-b24d-6a8fe5b6f042" compartment="def"/>
+      <species id="cZTL" initialConcentration="0.2505" name="cZTL" metaid="_76ab4a4f-218f-4e1c-8da4-4252a128d02c" compartment="def"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="n1" name="n1" metaid="cbe1a392-8d15-40a2-b6e8-364830e2a4a8" value="222.169219213189"/>
+      <parameter id="n2" name="n2" metaid="_8f63e31a-d486-4ced-9f4b-06737b69de17" value="0.14781624266764"/>
+      <parameter id="n3" name="n3" metaid="f4b8e674-dfb8-433e-81d0-3890e7dbb01d" value="0.19147180651461"/>
+      <parameter id="n4" name="n4" metaid="_409beccb-162e-4e77-93dc-f256658db3ad" value="0.0007"/>
+      <parameter id="n5" name="n5" metaid="_6a04f30c-14f3-4d14-96ff-78469d4c73ec" value="0.23"/>
+      <parameter id="n6" name="n6" metaid="_8a0862d7-e292-45d2-b08d-fec445b58cfb" value="20"/>
+      <parameter id="n7" name="n7" metaid="_26765fc9-1121-4299-905a-7d8a307c7bf7" value="0.01524692323802"/>
+      <parameter id="n8" name="n8" metaid="_370b1e41-280f-4986-b65a-7662f636b70d" value="17.4989236561136"/>
+      <parameter id="n9" name="n9" metaid="_96072fa9-6953-4113-a89a-421b9b5ef534" value="0.19490434071382"/>
+      <parameter id="n10" name="n10" metaid="_3ff9d2a5-72a4-45ae-9376-e52eaa018be4" value="1.96954297377795"/>
+      <parameter id="n11" name="n11" metaid="_3c0910a9-2832-4272-9c13-7441fa9c94b5" value="2.36528118607607"/>
+      <parameter id="n12" name="n12" metaid="_39b71c7c-4aba-4c8c-bcc3-5af2ce383c66" value="0.57167238509218"/>
+      <parameter id="n13" name="n13" metaid="_064904a1-6cfd-419f-b6ae-62e37621e53f" value="7.76559489743437"/>
+      <parameter id="n14" name="n14" metaid="_8be5a6ad-88f7-4eeb-883c-6ca79bc5bdad" value="0.1"/>
+      <parameter id="g1" name="g1" metaid="_9f1d343c-19ae-4439-acf1-fd606e24a9fb" value="0.01948606990681"/>
+      <parameter id="g2" name="g2" metaid="a4f98137-afc9-4cb8-bf6f-913d2ecee005" value="0.01258776033442"/>
+      <parameter id="g3" name="g3" metaid="c3e004b7-086b-4f0b-9a6b-89d29bfb1ba5" value="0.6"/>
+      <parameter id="g4" name="g4" metaid="d0746975-50b0-43f2-bd23-0df9472ad0a9" value="0.131384285897"/>
+      <parameter id="g5" name="g5" metaid="_3c32b296-349c-46b5-ba9d-88976048bd1a" value="0.00424300369371"/>
+      <parameter id="g6" name="g6" metaid="_906c82b3-8397-4066-8ae1-c0d1c48d52b3" value="0.07768965785819"/>
+      <parameter id="g7" name="g7" metaid="dd199994-3864-4f37-9440-a0c71c6ff51b" value="0.98119982393908"/>
+      <parameter id="g8" name="g8" metaid="_200ac7ad-d70e-4c18-881b-fe9483b6dedb" value="0.00195272687675"/>
+      <parameter id="g9" name="g9" metaid="dd7b7008-8fa6-419b-ad9d-625b2b6d09bf" value="10.7262612422079"/>
+      <parameter id="g10" name="g10" metaid="COPASI2" value="0.02473569207289">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI2">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T14:59:52Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="g11" name="g11" metaid="_6799eb14-a9d4-47d9-b1cd-38992764907f" value="2.12140528402982"/>
+      <parameter id="g12" name="g12" metaid="_280a778f-a35e-4c9a-89f4-9e7dd0898374" value="0.2"/>
+      <parameter id="g13" name="g13" metaid="b994b76a-844d-4144-970e-ffeb57b5accc" value="1"/>
+      <parameter id="g14" name="g14" metaid="_135f9d2f-7e5a-41ac-9750-d088f995ee8a" value="0.00160518948258"/>
+      <parameter id="g15" name="g15" metaid="ce804e41-a424-425d-81b6-1545699bf957" value="0.39017639075176"/>
+      <parameter id="g16" name="g16" metaid="_0e866de1-c6ab-405d-9286-48e7cbd4956f" value="0.01193649975589"/>
+      <parameter id="m1" name="m1" metaid="_8c3be376-0341-4f46-91ef-b89512c325ed" value="0.10063641584321"/>
+      <parameter id="m2" name="m2" metaid="b02f1da8-4f51-428f-a91c-83429d043333" value="0.17464302107647"/>
+      <parameter id="m3" name="m3" metaid="_31435879-5b2a-4300-99c4-051b9344edbb" value="1.42220812123823"/>
+      <parameter id="m4" name="m4" metaid="_8b1df979-0b38-40cc-acc5-a4fa2ca1b6e0" value="0.2"/>
+      <parameter id="m5" name="m5" metaid="_219ff099-e265-452e-b3de-0de8eed4f34b" value="0.3"/>
+      <parameter id="m6" name="m6" metaid="b5cd846e-5e41-4465-bd16-31fc1b3936ed" value="0.18999475238655"/>
+      <parameter id="m7" name="m7" metaid="_2cb6abb7-9eb3-4830-863e-7594b6ef4351" value="19.9699636951533"/>
+      <parameter id="m8" name="m8" metaid="aac76c58-1da7-43dd-bf12-7252d78848f0" value="0.12421654058641"/>
+      <parameter id="m9" name="m9" metaid="_246ca42f-7d0c-42a4-b9b7-499a2bf744ee" value="61.8724103262111"/>
+      <parameter id="m10" name="m10" metaid="_354ad28e-061c-460f-869d-d5dfafce120e" value="1"/>
+      <parameter id="m11" name="m11" metaid="_68096400-866e-4442-aec0-cf13bedd35a4" value="1"/>
+      <parameter id="m12" name="m12" metaid="_8ac62212-b255-4838-9fdf-137cc9a24523" value="1"/>
+      <parameter id="m13" name="m13" metaid="f0d2fefe-4ca2-4080-bfb8-314866c72f92" value="0.32"/>
+      <parameter id="m14" name="m14" metaid="_3d0aa12f-9bbe-47c5-8c48-d40a0b523d63" value="26.6569304677226"/>
+      <parameter id="m15" name="m15" metaid="_3cb5902d-6304-4cc6-8b22-2401a33b3d7b" value="0.7"/>
+      <parameter id="m16" name="m16" metaid="_293103fb-6a0a-4c0f-9778-2b53882c469c" value="0.28514128062784"/>
+      <parameter id="m17" name="m17" metaid="_6bc19ec7-62e3-4703-b731-facf2f34af19" value="0.5"/>
+      <parameter id="m18" name="m18" metaid="c8cfd209-3ea9-4e20-ac18-fa1f9f5e0290" value="0.75818560602628"/>
+      <parameter id="m19" name="m19" metaid="_20a4c6f5-6a66-4f07-a8c7-75a7b637ca05" value="0.32158979224306"/>
+      <parameter id="m20" name="m20" metaid="b371baa7-2b06-4717-8f80-2620d69ffb81" value="0.6"/>
+      <parameter id="m21" name="m21" metaid="_340ebbcd-0ff9-45d0-a7c9-d36ec41c5836" value="0.08"/>
+      <parameter id="m22" name="m22" metaid="_655f8fc2-303a-4dc2-92b2-5f83add995b0" value="0.03904864895381"/>
+      <parameter id="m23" name="m23" metaid="COPASI3" value="0.28573055689488">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI3">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T15:12:55Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="m24" name="m24" metaid="_6c9a6dd0-f9fa-435d-b3b4-004032bea3ac" value="0.00186057187273"/>
+      <parameter id="m25" name="m25" metaid="c25c9fae-43c2-4254-8782-6e95564d9ccf" value="1.8"/>
+      <parameter id="m26" name="m26" metaid="_914f88d1-0a80-46c8-a777-43c47285bd9d" value="0.5"/>
+      <parameter id="m27" name="m27" metaid="d53523da-b88d-4a33-be6f-7a7b52ddd65f" value="0.1"/>
+      <parameter id="m28" name="m28" metaid="_97798d45-2a09-45a1-8761-c2390a7c1e18" value="20"/>
+      <parameter id="m29" name="m29" metaid="_7a8aca47-ad0c-4e82-a461-8d42054eac7c" value="0.06855635603282"/>
+      <parameter id="m30" name="m30" metaid="c1ccdc38-8a3e-4d0d-a9e1-a99f8abb4c09" value="0.71225919364008"/>
+      <parameter id="m31" name="m31" metaid="aa6c0998-bdf3-4d38-b2d0-35eddc3dc93e" value="0.3"/>
+      <parameter id="m32" name="m32" metaid="_0f0beadf-39f3-4a3c-a5a2-c54c6c9653e1" value="0.2"/>
+      <parameter id="m33" name="m33" metaid="_87fc314f-1e68-4762-9b44-d8af07dc815a" value="13"/>
+      <parameter id="m34" name="m34" metaid="_2d95381f-021f-4803-aeb9-ea97d6deb7bf" value="26.0670706013055"/>
+      <parameter id="m35" name="m35" metaid="_1ab2d7eb-7a0f-4958-bcc1-42380ee310f3" value="1.26867727305757"/>
+      <parameter id="m36" name="m36" metaid="_1a96f2b6-d233-4e47-873e-39f32a20d1dd" value="0.02970202147427"/>
+      <parameter id="m37" name="m37" metaid="_72384e0c-6ab8-4ce3-872b-19ff04554983" value="0.0335492279496"/>
+      <parameter id="m38" name="m38" metaid="_0e1ae741-da3b-49b8-befa-a928802db27e" value="0.5"/>
+      <parameter id="m39" name="m39" metaid="_14042899-d01c-4b3b-a8a5-79033c6a8663" value="0.01696567263799"/>
+      <parameter id="a" name="a" metaid="_1bef63ad-c5a5-4c0e-9825-a889561b09c5" value="2"/>
+      <parameter id="b" name="b" metaid="_5597cb20-4c07-49ff-8623-533d0815bba9" value="2"/>
+      <parameter id="c" name="c" metaid="_187013bb-2f02-40bb-8625-f657b98d3165" value="2"/>
+      <parameter id="d" name="d" metaid="COPASI4" value="2">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI4">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T14:51:31Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="e" name="e" metaid="_828ceb31-679a-4de0-9bab-54db4420cd2a" value="2"/>
+      <parameter id="f" name="f" metaid="a9b62b02-625b-4e46-9706-5a393d73d249" value="2"/>
+      <parameter id="p1" name="p1" metaid="d00f52bb-d162-49f3-b5d9-4323fbeb49fe" value="0.28017532992451"/>
+      <parameter id="p2" name="p2" metaid="_7d93cc31-0eb2-4106-aa38-67d07891aeac" value="0.27850503394139"/>
+      <parameter id="p3" name="p3" metaid="_6bdb5ab3-519c-4b3d-9faa-efb6e9220011" value="0.41477408423433"/>
+      <parameter id="p4" name="p4" metaid="_2dc88225-0bdd-4344-8331-409d1652761a" value="0.00640758695048"/>
+      <parameter id="p5" name="p5" metaid="_2a7df78d-4fdc-42c9-ae34-f50d586804f8" value="11.7720728348247"/>
+      <parameter id="p6" name="p6" metaid="d8463d4f-67a7-47ab-b8d2-52d0561afd68" value="0.6"/>
+      <parameter id="p7" name="p7" metaid="b940a14c-a6ec-4543-82cc-c99a4f346d6f" value="0.3"/>
+      <parameter id="p8" name="p8" metaid="_204096f7-ca2b-47ed-856e-3ba34584c8d8" value="0.0254880852541"/>
+      <parameter id="p9" name="p9" metaid="_37236521-c75b-4889-b733-f52ca877d01f" value="0.06886702281419"/>
+      <parameter id="p10" name="p10" metaid="c9d70674-d556-4f84-844a-409f9ca27398" value="17.7406277990201"/>
+      <parameter id="p11" name="p11" metaid="_617a4489-3048-44fc-a184-e43fb460ced6" value="0.01057957694262"/>
+      <parameter id="p12" name="p12" metaid="_8529a21e-a43e-495a-95fd-ed6044df9b4a" value="21.296533500733"/>
+      <parameter id="p13" name="p13" metaid="_293aabfc-34d2-4b6e-8776-29bd6fcb9db5" value="0.18315301730279"/>
+      <parameter id="p14" name="p14" metaid="d7a24606-3261-4c7a-8f72-2c1f9daba2e5" value="4.43628949967813"/>
+      <parameter id="p15" name="p15" metaid="b65ae72f-cf57-411c-8144-2f6104e8cc93" value="3"/>
+      <parameter id="p16" name="p16" metaid="fb8d00e0-2557-47f6-a88f-cd7c70fbec6b" value="3.02488596445988"/>
+      <parameter id="p17" name="p17" metaid="_72f573c9-2510-43e0-842b-3ea4ca46b0b0" value="202.165581477185"/>
+      <parameter id="p18" name="p18" metaid="e7374c92-803a-4ba2-b2f2-956422b093c4" value="40.5464133771343"/>
+      <parameter id="p19" name="p19" metaid="ba3923eb-3d92-4d5d-b00e-4f260ef53d31" value="0.05317323653063"/>
+      <parameter id="p20" name="p20" metaid="ed6f9051-18a5-462e-b6dc-3d7202ca0750" value="1.0216041295511"/>
+      <parameter id="p21" name="p21" metaid="c15887b7-f0a4-4bb4-92d6-16ca73f5d6f7" value="1"/>
+      <parameter id="p22" name="p22" metaid="df29d078-d706-4b30-90ae-02b600d8778b" value="0.5"/>
+      <parameter id="p23" name="p23" metaid="_391bc03b-3373-4a00-85e7-493ce44d0154" value="0.92305664012677"/>
+      <parameter id="p24" name="p24" metaid="c095a1e8-88bc-4819-8b47-4acfbe4e088b" value="13.8344122275351"/>
+      <parameter id="p25" name="p25" metaid="_982c8af1-bd7e-45d1-bc22-b042790beb13" value="8"/>
+      <parameter id="p26" name="p26" metaid="c9641de8-a723-4ea3-88ec-f33e08de623a" value="0.3"/>
+      <parameter id="p27" name="p27" metaid="e3703de2-60cf-468c-ad36-645fa8d0f1ac" value="15.4447972442504"/>
+      <parameter id="p28" name="p28" metaid="b2deca19-b766-448e-aef3-be3d2af86178" value="2"/>
+      <parameter id="p29" name="p29" metaid="_89a3f84f-9f61-4e50-be09-84d36e0b1a67" value="0.1"/>
+      <parameter id="p30" name="p30" metaid="_56380f87-4d85-4a37-b99a-1150acd2c944" value="2.36931276938372"/>
+      <parameter id="p31" name="p31" metaid="_545433a0-7074-470d-9df3-470916c76691" value="0.1"/>
+      <parameter id="q1" name="q1" metaid="_9d7c8ca0-feae-4669-a5d2-8c1bacd626a8" value="0.17873705611272"/>
+      <parameter id="q2" name="q2" metaid="_60821f03-8f0b-4674-a55f-e9cb3fc00fdb" value="0.04333805511641"/>
+      <parameter id="q3" name="q3" metaid="_2ffb2357-3717-4604-a304-73ce3e164c1f" value="0.06580280467875"/>
+      <parameter id="L" constant="false" name="L" metaid="COPASI5" value="0.5">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI5">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T14:55:15Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="D" constant="false" name="D" metaid="COPASI6" value="0.5">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI6">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T15:00:12Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="E34" name="E34" metaid="_9efd930e-d4b5-4079-a7d3-8c86cd7e64ac" value="1"/>
+      <parameter id="Gn" name="Gn" metaid="COPASI7" value="1">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI7">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T14:48:55Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="EGn" name="EGn" metaid="COPASI8" value="1">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI8">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2011-08-18T14:47:43Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+            </parameter>
+      <parameter id="step1" constant="false" name="Lightstep" metaid="_7892fcb2-46c8-4f3d-90ec-ddbea0bf8b60" value="0.5"/>
+      <parameter id="offsetStep1" constant="false" name="offsetStep1" metaid="_632cd60b-5337-4eb8-b5fa-28ba4c791df1" value="0"/>
+      <parameter id="amplitudeStep1" constant="false" name="amplitudeStep1" metaid="_5f775632-03f7-4abf-b319-2b2c8a62f59e" value="1"/>
+      <parameter id="phaseStep1" name="phaseStep1" metaid="_962564c3-e76c-4258-9154-b81724107502" value="0"/>
+      <parameter id="pulseDurationStep1" name="pulseDurationStep1" metaid="f165866c-04a7-43f3-a6c9-4f6bbf3102d2" value="12"/>
+      <parameter id="cyclePeriodStep1" name="cyclePeriodStep1" metaid="_9fbc8f0a-8803-4881-ad7a-19273ce2105a" value="24"/>
+      <parameter id="rampDurationStep1" name="rampDurationStep1" metaid="cf99e5b8-225b-44e2-89a7-71e9aa0320e6" value="0.05"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule metaid="_472ed5dc-2b62-4649-b9c5-6164aa1f2468" variable="step1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <ci> stepFunction </ci>
+            <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+            <ci> offsetStep1 </ci>
+            <ci> amplitudeStep1 </ci>
+            <ci> phaseStep1 </ci>
+            <ci> pulseDurationStep1 </ci>
+            <ci> cyclePeriodStep1 </ci>
+            <ci> rampDurationStep1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule metaid="_9e9ae373-c21e-4ef3-a4b9-e586ce2fbef7" variable="L">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> step1 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule metaid="b79b9e6a-60d2-447e-a85d-8edcad0a96f4" variable="D">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <minus/>
+            <cn> 1 </cn>
+            <ci> L </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="cL_m_trscr" name="cL_m_trscr" metaid="b61e5c96-6bfe-426d-96ee-94cd35c5b51e" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cL_m" metaid="ad38c651-8efc-4c49-815a-8fb6b31710b2"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cNI" metaid="_08255abd-3909-4ea9-bebf-2c6a0f3f4040"/>
+          <modifierSpeciesReference species="cP" metaid="_9b79af9d-c50b-422d-83ac-10c20a41bd2d"/>
+          <modifierSpeciesReference species="cP7" metaid="b4bb322b-02dd-45e0-9a44-aee742ca5bcd"/>
+          <modifierSpeciesReference species="cP9" metaid="b1919d55-5831-464d-ae3d-9dec73bd1e3d"/>
+          <modifierSpeciesReference species="cT" metaid="bf3c5ca6-22a6-4d87-ac9b-c57d5ee9037a"/>
+          <modifierSpeciesReference species="cNI" metaid="_00028e7d-c178-4ad0-a9ce-a641f76dca32"/>
+          <modifierSpeciesReference species="cP" metaid="_0947ea46-9a08-4d7f-b88a-42e2e6be8366"/>
+          <modifierSpeciesReference species="cP7" metaid="_41030988-2c34-4979-b1fc-744d38d5e074"/>
+          <modifierSpeciesReference species="cP9" metaid="_1d33e78a-f48b-462e-99fb-74a93029e52a"/>
+          <modifierSpeciesReference species="cT" metaid="_0cbfb1ef-fd7f-4db2-b89f-cdbaec294107"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_984f2a16-95df-41da-9a3b-163c53ce5e07">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cL_m_trscr </ci>
+                <ci> L </ci>
+                <ci> a </ci>
+                <ci> cNI </ci>
+                <ci> cP </ci>
+                <ci> cP7 </ci>
+                <ci> cP9 </ci>
+                <ci> cT </ci>
+                <ci> def </ci>
+                <ci> g1 </ci>
+                <ci> n1 </ci>
+                <ci> q1 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cL_m_degr" name="cL_m_degr" metaid="COPASI9" reversible="false">
+        <annotation>
+          <COPASI xmlns="http://www.copasi.org/static/sbml">
+            <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+              <rdf:Description rdf:about="#COPASI9">
+                <dcterms:created>
+                  <rdf:Description>
+                    <dcterms:W3CDTF>2013-06-02T14:18:18Z</dcterms:W3CDTF>
+                  </rdf:Description>
+                </dcterms:created>
+              </rdf:Description>
+            </rdf:RDF>
+          </COPASI>
+        </annotation>
+              <listOfReactants>
+          <speciesReference species="cL_m" metaid="_6eddc754-f50b-4682-bc0c-3236b1105d9c"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL_m" metaid="e777696b-abd3-4cec-b2df-8d3f31e661fc"/>
+        </listOfModifiers>
+        <kineticLaw metaid="a4e7ad7c-8991-4b1a-bcce-9d1768c99fde">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cL_m_degr_L </ci>
+                <ci> m1 </ci>
+                <ci> L </ci>
+                <ci> m2 </ci>
+                <ci> cL_m </ci>
+                <ci> def </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cL_trsl" name="cL_trsl" metaid="_807b4f23-a720-44fa-a5e8-eb8f07c75a1b" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cL" metaid="_1afa6902-3803-4bdc-8bd9-8f1c5242b072"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL_m" metaid="_2ee966be-a48a-4264-b7ec-b2573a6532b1"/>
+          <modifierSpeciesReference species="cL_m" metaid="_6d2b62b2-e486-47ae-984c-3c3fc4fd3478"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_8f9c3e45-5a57-4318-8888-1b72d56e2e73">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cL_trsl </ci>
+                <ci> L </ci>
+                <ci> cL_m </ci>
+                <ci> def </ci>
+                <ci> p1 </ci>
+                <ci> p2 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cL_degr" name="cL_degr" metaid="faf81fcb-81a5-4d9d-abe9-d3f088c850f5" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cL" metaid="_5a11397c-ff74-4321-bdf7-ad6d5d3334db"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL" metaid="dfa4c1ec-d33a-43bc-a51c-46bb11dd4cc0"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_206bb122-9b90-422a-b4a2-bc25be98ed65">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cL_degr_1 </ci>
+                <ci> c </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> g3 </ci>
+                <ci> m3 </ci>
+                <ci> p3 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cL_modif" name="cL_modif" metaid="_803c00f0-853e-4346-aa5e-f27b4963271e" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cLm" metaid="e10fe6fe-5d2f-46e6-b46c-b109615c41b1"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL" metaid="_84f46b25-64fe-4343-88cb-49b7a5b33ae9"/>
+          <modifierSpeciesReference species="cL" metaid="f1a04840-1aa7-4d29-8b83-b8a1f8945f48"/>
+        </listOfModifiers>
+        <kineticLaw metaid="ab1c0496-7648-4fc2-8725-a31897867ff1">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cL_modif_1 </ci>
+                <ci> c </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> g3 </ci>
+                <ci> p3 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cLm_degr" name="cLm_degr" metaid="adbbc2e4-6c0f-42f1-b083-fa51dd749633" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cLm" metaid="eff471e4-b34a-4763-a372-a27dd115a26a"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cLm" metaid="_081c1425-82c4-425a-a304-04b484ab0ef4"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_501a16b2-a5cb-4233-9f58-2c4c5f48ed3c">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLm_degr_1 </ci>
+                <ci> cLm </ci>
+                <ci> def </ci>
+                <ci> m4 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP_trsl" name="cP_trsl" metaid="d64c101a-e485-4a11-b1da-ce504fd90c91" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cP" metaid="_9c979a8e-015f-4f59-8246-74e83b51353c"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP" metaid="c32ba193-6a31-46bb-bdc3-7ea0a1114012"/>
+        </listOfModifiers>
+        <kineticLaw metaid="e9908422-97f4-4a45-b46c-772d03a608f2">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP_trsl </ci>
+                <ci> D </ci>
+                <ci> cP </ci>
+                <ci> def </ci>
+                <ci> p7 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP_degr" name="cP_degr" metaid="_9c36cbc4-8c62-4a4e-a004-64f6c4936eb6" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cP" metaid="fc3c7bab-ea96-4395-945e-a676dfcda9bb"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP" metaid="_510ec596-c72f-4591-bf49-34dcbcf47db8"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_409529ca-0a32-4b14-84f4-d938dace4304">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP_degr </ci>
+                <ci> L </ci>
+                <ci> cP </ci>
+                <ci> def </ci>
+                <ci> m11 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP9_m_trscr" name="cP9_m_trscr" metaid="_534e983c-6a90-416e-8c3d-9150e9b855e2" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cP9_m" metaid="_940831d6-90e0-43ca-946c-39c77572197f"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cEC" metaid="e48629ac-1be0-4858-bbe5-bae98c365977"/>
+          <modifierSpeciesReference species="cL" metaid="bcdd7d5b-967f-48d4-a051-08335871888d"/>
+          <modifierSpeciesReference species="cP" metaid="_69a8ca82-f53a-4408-8449-2c10abe10b3f"/>
+          <modifierSpeciesReference species="cEC" metaid="_3e917221-42ae-45a4-b2ee-46d33d237f55"/>
+          <modifierSpeciesReference species="cL" metaid="_8d72994c-597f-497c-b02c-59fa2d55d797"/>
+          <modifierSpeciesReference species="cP" metaid="_64f27444-b9b4-423d-b39d-783c34bcda37"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_664a7619-3349-49f2-b729-11a06d37c1ad">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP9_m_trscr_1 </ci>
+                <ci> L </ci>
+                <ci> cEC </ci>
+                <ci> cL </ci>
+                <ci> cP </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g8 </ci>
+                <ci> g9 </ci>
+                <ci> n4 </ci>
+                <ci> n7 </ci>
+                <ci> q3 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP9_m_degr" name="cP9_m_degr" metaid="_7885a0f8-7be8-41b2-8d09-7651574a669c" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cP9_m" metaid="_7bf2790d-b1cf-480f-b57a-e37d1f4f13fb"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP9_m" metaid="_5b9b2f88-0bbd-4aaa-9e4e-30f48031a0c7"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_5095d874-61fd-4d74-afe7-27d5dcb1b68b">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP9_m_degr_1 </ci>
+                <ci> cP9_m </ci>
+                <ci> def </ci>
+                <ci> m12 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP9_trsl" name="cP9_trsl" metaid="_086f3285-2bae-4223-beda-dbc35fb3678f" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cP9" metaid="b98e6df2-acae-4cb7-951f-f96d35719bb6"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP9_m" metaid="_3234fd4a-8e4e-4c0e-b3b1-3e605590551f"/>
+          <modifierSpeciesReference species="cP9_m" metaid="_26e234a3-81ff-42c7-95a2-439c17688438"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_839ed1ae-8dad-46ed-94b2-a2aee2236372">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP9_trsl_1 </ci>
+                <ci> cP9_m </ci>
+                <ci> def </ci>
+                <ci> p8 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP9_degr" name="cP9_degr" metaid="b73b6145-60c9-4adf-b6e2-558c9b14d87e" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cP9" metaid="_2a0cc1c3-f9c8-4a12-a64d-97a2dd97b32b"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP9" metaid="_2528bc90-06be-408b-b0f9-4688ee13ed98"/>
+        </listOfModifiers>
+        <kineticLaw metaid="c9f0410a-2899-4add-92a5-b0d96beca727">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP9_degr </ci>
+                <ci> D </ci>
+                <ci> cP9 </ci>
+                <ci> def </ci>
+                <ci> m13 </ci>
+                <ci> m22 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP7_m_trscr" name="cP7_m_trscr" metaid="b788217a-305a-4c3d-bc6a-4d176c8edb79" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cP7_m" metaid="_84c1b50a-613b-4602-b8e5-5f11fb25f5c4"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL" metaid="ce2aa62d-2870-496c-b321-f6fef90708f5"/>
+          <modifierSpeciesReference species="cLm" metaid="a498b217-1727-4c3e-830b-5f8261c2e4bd"/>
+          <modifierSpeciesReference species="cP9" metaid="_033721ac-8fa0-4ec3-8ccf-d1c06a9cee64"/>
+          <modifierSpeciesReference species="cL" metaid="_95f056a1-feef-413f-8e36-0473d4c489f8"/>
+          <modifierSpeciesReference species="cLm" metaid="ccd26664-e179-4bc2-89ff-ee06734db041"/>
+          <modifierSpeciesReference species="cP9" metaid="_34705946-3488-48e0-bd8f-5e370d25294d"/>
+        </listOfModifiers>
+        <kineticLaw metaid="afa03e68-4f41-4f8d-b47b-40c83c58f01b">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP7_m_trscr_1 </ci>
+                <ci> cL </ci>
+                <ci> cLm </ci>
+                <ci> cP9 </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> f </ci>
+                <ci> g10 </ci>
+                <ci> g11 </ci>
+                <ci> n8 </ci>
+                <ci> n9 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP7_m_degr" name="cP7_m_degr" metaid="_2f7d9118-4211-480c-a183-dcae8ecf7a12" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cP7_m" metaid="d3b3fec1-3421-425f-b709-dcd24bc6ae5a"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP7_m" metaid="_28cc796f-79ab-4002-8921-64240db846b1"/>
+        </listOfModifiers>
+        <kineticLaw metaid="b6ef8aba-eeb8-4f25-ac7c-25c2bb8bdcfd">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP7_m_degr_1 </ci>
+                <ci> cP7_m </ci>
+                <ci> def </ci>
+                <ci> m14 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP7_trsl" name="cP7_trsl" metaid="_7f25746e-8ba8-4f10-8c4c-190852fbe37c" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cP7" metaid="_3bd461ca-f676-425d-91a7-6ceb80b0f8b0"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP7_m" metaid="_91250590-4d41-497a-8017-fcd6b4bd1c29"/>
+          <modifierSpeciesReference species="cP7_m" metaid="ec8fdca4-f6f7-4ebc-9028-d16c92246608"/>
+        </listOfModifiers>
+        <kineticLaw metaid="eef03a6d-6115-4c9c-aff7-571972c747dc">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP7_trsl_1 </ci>
+                <ci> cP7_m </ci>
+                <ci> def </ci>
+                <ci> p9 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cP7_degr" name="cP7_degr" metaid="f369d6f0-7bf2-459f-9262-c5c31a4e59e0" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cP7" metaid="_143fe3d4-0b3d-4de0-a2ab-af361a5e717e"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP7" metaid="_327a77e4-a8bc-48b6-91b3-e82ed50c2303"/>
+        </listOfModifiers>
+        <kineticLaw metaid="b9ab882c-c9ba-48fe-ba70-e229ff4c859a">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cP7_degr </ci>
+                <ci> D </ci>
+                <ci> cP7 </ci>
+                <ci> def </ci>
+                <ci> m15 </ci>
+                <ci> m23 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cNI_m_trscr" name="cNI_m_trscr" metaid="cf29be47-2b2a-4220-bc37-01e22b0a2671" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cNI_m" metaid="_0e04cf40-0159-415d-8c1f-e7ae14576d21"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cLm" metaid="_1bef277c-f38a-4410-b952-4a8fc860fb04"/>
+          <modifierSpeciesReference species="cP7" metaid="eb9ed0e1-5bb1-4d70-9a13-69926060e4cb"/>
+          <modifierSpeciesReference species="cLm" metaid="_1021215d-11d5-4928-b6f3-cc76e8293948"/>
+          <modifierSpeciesReference species="cP7" metaid="_8f036d6c-1cf9-413a-923f-559672d8dcb9"/>
+        </listOfModifiers>
+        <kineticLaw metaid="c7a3fb70-fac2-40d4-b79c-528024f7990f">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cNI_m_trscr_1 </ci>
+                <ci> b </ci>
+                <ci> cLm </ci>
+                <ci> cP7 </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g12 </ci>
+                <ci> g13 </ci>
+                <ci> n10 </ci>
+                <ci> n11 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cNI_m_degr" name="cNI_m_degr" metaid="_231dc9bf-1cfb-41ac-bde5-e6f871d76a80" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cNI_m" metaid="f0512be7-359b-4e5a-ab9a-6976c8d51da7"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cNI_m" metaid="c3a2c00a-ab9e-4594-9085-b557a9f1977b"/>
+        </listOfModifiers>
+        <kineticLaw metaid="d72e8cd0-5134-43d4-8e25-d48711089d36">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cNI_m_degr_1 </ci>
+                <ci> cNI_m </ci>
+                <ci> def </ci>
+                <ci> m16 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cNI_trsl" name="cNI_trsl" metaid="_1071df07-1a2e-424b-9929-013a3a229f70" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cNI" metaid="fe2507d1-7ee3-42d1-9fcb-0ad2bdd5c331"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cNI_m" metaid="b1f2400b-16c4-40fa-a313-c7ffea49df1e"/>
+          <modifierSpeciesReference species="cNI_m" metaid="ec2256b2-c08c-4fb2-8748-55de8d1591e3"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_440e04c2-f58f-48e1-9fc0-a2b7751a33d4">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cNI_trsl_1 </ci>
+                <ci> cNI_m </ci>
+                <ci> def </ci>
+                <ci> p10 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cNI_degr" name="cNI_degr" metaid="_8bb6e20c-082f-4a3a-ac1a-09236fc1ec51" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cNI" metaid="_1d0a6be3-2bd4-49da-a3c5-d19f86b6db03"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cNI" metaid="b7cfe859-9841-43c4-86ba-84a94d299adb"/>
+        </listOfModifiers>
+        <kineticLaw metaid="a54c719b-e116-4b55-b4cc-ca061d49f9c0">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cNI_degr </ci>
+                <ci> D </ci>
+                <ci> cNI </ci>
+                <ci> def </ci>
+                <ci> m17 </ci>
+                <ci> m24 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cT_m_trscr" name="cT_m_trscr" metaid="ef0faff6-781f-43a4-b0f6-27cbb386a429" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cT_m" metaid="_06c837d6-449a-4ab1-932b-3e9fa876a9c5"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cEC" metaid="b8a5a7b8-b126-474f-9d3b-f26a15c2fa83"/>
+          <modifierSpeciesReference species="cL" metaid="_446f35d4-0142-4f3f-9af0-ca99ad55e8c6"/>
+          <modifierSpeciesReference species="cEC" metaid="ff56b689-0979-4a25-8735-9574f9f37bb8"/>
+          <modifierSpeciesReference species="cL" metaid="_611766ff-3f08-4398-81ed-aa0842a7829c"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_1bb5bcdf-771c-46ea-823f-69c5273066b3">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cT_m_trscr </ci>
+                <ci> cEC </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g4 </ci>
+                <ci> g5 </ci>
+                <ci> n2 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cT_m_degr" name="cT_m_degr" metaid="b2974e2d-8b02-4aec-a40b-a60b0309ef53" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cT_m" metaid="_2b68c30c-eab7-4d4d-aabd-dafe6d6995b0"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cT_m" metaid="_755fbc5d-5b5a-48d3-93ee-69c66346a873"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_75c3feb4-5002-41c8-ad39-9ea012e651ae">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cT_m_degr_1 </ci>
+                <ci> cT_m </ci>
+                <ci> def </ci>
+                <ci> m5 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cT_trsl" name="cT_trsl" metaid="_1c933b11-0cf6-4c1f-98c3-541430fd9bf3" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cT" metaid="_8373027f-2850-430c-9a5a-17c3f3863bb7"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cT_m" metaid="fa4b471d-6a16-4ce5-8ae2-dca2ce78c8dc"/>
+          <modifierSpeciesReference species="cT_m" metaid="_625695fc-8037-4e47-94be-168b0cd383e5"/>
+        </listOfModifiers>
+        <kineticLaw metaid="fd6837a2-eafa-4f25-ab6d-688aa8967290">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cT_trsl_1 </ci>
+                <ci> cT_m </ci>
+                <ci> def </ci>
+                <ci> p4 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cT_degr" name="cT_degr" metaid="_5b066089-be4f-4c58-96e8-67c724cba4cb" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cT" metaid="_376cd000-ca5c-438d-a9be-8dfb23420535"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cZG" metaid="_98742290-dc7e-4abe-8937-f3d7da9d7d42"/>
+          <modifierSpeciesReference species="cZTL" metaid="_08ff29a6-92f0-4a6b-88d2-1c85abe01e36"/>
+          <modifierSpeciesReference species="cT" metaid="_79c50205-579c-45f3-a971-be1dfc381eee"/>
+          <modifierSpeciesReference species="cZG" metaid="_61aa978d-218b-4757-ba30-e9c5a96e8dda"/>
+          <modifierSpeciesReference species="cZTL" metaid="c6c107cb-acd3-4984-ab8e-38b86f633655"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_28d1d0cc-75df-43a7-b99c-efacba43cbd1">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cT_degr </ci>
+                <ci> D </ci>
+                <ci> cT </ci>
+                <ci> cZG </ci>
+                <ci> cZTL </ci>
+                <ci> def </ci>
+                <ci> m6 </ci>
+                <ci> m7 </ci>
+                <ci> m8 </ci>
+                <ci> p5 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE4_m_trscr" name="cE4_m_trscr" metaid="ef36f6c7-3832-4797-81a2-c2091d1cee62" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cE4_m" metaid="_9dae389e-b301-4d52-add1-965cba950dca"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cEC" metaid="_0913eac5-f5d9-408e-aed7-c13c8010b482"/>
+          <modifierSpeciesReference species="cL" metaid="a48a6fae-50dc-4dfa-a212-11fcc0a9c81b"/>
+          <modifierSpeciesReference species="cEC" metaid="_679ebc7b-d4e1-4d31-b364-485398732956"/>
+          <modifierSpeciesReference species="cL" metaid="_5d9b4ace-41c7-489a-bf01-056296dfa5b1"/>
+        </listOfModifiers>
+        <kineticLaw metaid="d0cd9ebd-75c8-4706-8cd2-0f68535e9b3b">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLUX_m_trscr </ci>
+                <ci> cEC </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g2 </ci>
+                <ci> g6 </ci>
+                <ci> n13 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE4_m_degr" name="cE4_m_degr" metaid="_1be393ae-0bb3-48de-8283-112cd6a543be" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE4_m" metaid="_85e4f8d6-4cdb-4c5f-93d7-5ca2eb348dbb"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE4_m" metaid="_97937608-48c7-4618-9ab4-6e8c71b0fb49"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_909515b5-8b51-4eb4-af2f-15a8662218cc">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE4_m_degr_1 </ci>
+                <ci> cE4_m </ci>
+                <ci> def </ci>
+                <ci> m34 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE4_trsl" name="cE4_trsl" metaid="_2667c40b-ab79-484c-9276-4c4a4b0919af" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cE4" metaid="a86eaae2-7c8e-4e5a-993f-6101886ed70a"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE4_m" metaid="c9760610-5942-4ea2-97a0-db0d931a1d7b"/>
+          <modifierSpeciesReference species="cE4_m" metaid="_0ae5a061-b636-41a3-813d-5580fa842f35"/>
+        </listOfModifiers>
+        <kineticLaw metaid="aa1d9d01-8f16-49a4-8efe-e152a5035103">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE4_trsl_1 </ci>
+                <ci> cE4_m </ci>
+                <ci> def </ci>
+                <ci> p23 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE4_degr" name="cE4_degr" metaid="bc9aa2e0-60d4-4b86-9766-95866e10c557" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE4" metaid="_24aeb19a-dfbf-4e54-9286-1186fad814c4"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="adc4897e-4676-413f-9c8a-9e0ce4d0f342"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_1bbc78a5-d914-4ed1-a1e7-b0a4fc679186"/>
+          <modifierSpeciesReference species="cE3n" metaid="_06247699-160e-45b5-90e6-4b242568a32b"/>
+          <modifierSpeciesReference species="cLUX" metaid="_49938d09-b77e-434f-83e9-7a4f9a60d5f8"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_25c1f0f0-6cab-4675-908c-ee975c833773"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_2c29cb07-9246-4796-8c2e-e8b228853f96"/>
+          <modifierSpeciesReference species="cE3n" metaid="d4b4e381-b860-46c3-92b5-71fa885a3bfd"/>
+          <modifierSpeciesReference species="cE4" metaid="ce2e6896-2b96-4dea-b6d4-7a12ee5ce978"/>
+          <modifierSpeciesReference species="cLUX" metaid="_2c6a2040-c531-405a-aeb7-baaa40d5a869"/>
+        </listOfModifiers>
+        <kineticLaw metaid="efa7fcf4-d569-40a2-be24-484865117f36">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE4_degr_1 </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cE4 </ci>
+                <ci> cLUX </ci>
+                <ci> def </ci>
+                <ci> m35 </ci>
+                <ci> m36 </ci>
+                <ci> m37 </ci>
+                <ci> p21 </ci>
+                <ci> p25 </ci>
+                <ci> p26 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3_m_trscr" name="cE3_m_trscr" metaid="_8802eeb1-796d-4bdb-88ce-4e9f6f083c1b" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cE3_m" metaid="_819960e5-60fc-40f9-81ac-84138a6669d6"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cL" metaid="f4128c1b-085a-4c16-a2a0-b0751d60e18e"/>
+          <modifierSpeciesReference species="cL" metaid="e44a02c4-8d98-4131-985e-5594afced510"/>
+        </listOfModifiers>
+        <kineticLaw metaid="f489e9ef-0bde-4a3e-8c92-581cf8c5768c">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3_m_trscr_1 </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g16 </ci>
+                <ci> n3 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3_m_degr" name="cE3_m_degr" metaid="_2a5a4753-2014-4e4b-84be-f4a385566207" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE3_m" metaid="bcbc97b9-6177-495c-bb14-c435a676dfee"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE3_m" metaid="ba95c71c-67c9-4490-97b0-5584fa593fa6"/>
+        </listOfModifiers>
+        <kineticLaw metaid="f58973ef-74b5-484b-9029-47e8d480a594">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3_m_degr_1 </ci>
+                <ci> cE3_m </ci>
+                <ci> def </ci>
+                <ci> m26 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3_trsl" name="cE3_trsl" metaid="ddc79e14-3b81-4e93-aa99-82d05bbf42eb" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cE3" metaid="d3cf89c5-a6e4-4f78-8ace-6a71c4c803b5"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE3_m" metaid="e5c0a44f-a1c2-4c43-a221-3c94a55d79c2"/>
+          <modifierSpeciesReference species="cE3_m" metaid="_891e6905-dabf-4e4d-984a-d31d30d7b8bf"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_6d263fb7-b688-4dcc-96b5-849b54666ec0">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3_trsl_1 </ci>
+                <ci> cE3_m </ci>
+                <ci> def </ci>
+                <ci> p16 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3_degr" name="cE3_degr" metaid="b00be18d-e406-49e4-bf7d-1e227debe876" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE3" metaid="_0e236829-364a-4cd9-a97e-82634bda4a01"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1c" metaid="fd79f6c6-fe67-4ce0-a66a-a5f553fda673"/>
+          <modifierSpeciesReference species="cCOP1c" metaid="_2d497cba-982c-44df-82ac-ed781af937b5"/>
+          <modifierSpeciesReference species="cE3" metaid="a984d0f2-2903-4cba-a917-9b7d8cb862ad"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_922e5125-bb54-46e5-ae20-f9e575dd226b">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3_degr_1 </ci>
+                <ci> cCOP1c </ci>
+                <ci> cE3 </ci>
+                <ci> def </ci>
+                <ci> m9 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3n_import" name="cE3n_import" metaid="cbfc0d9e-1e92-47bc-80b5-305b56196d66" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE3" metaid="b676957b-7b6f-4599-8ebc-ff79b4c0b0b0"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cE3n" metaid="_13c9e0ec-31ce-4c39-8215-afc7b732ad12"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE3" metaid="_305e9b8a-04c0-4f58-9003-02f83dbb076f"/>
+          <modifierSpeciesReference species="cE3n" metaid="_6887782b-2429-4449-aa2c-da4583dc12c2"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_77ac45a0-6866-4ac2-9b2e-643ea45cc246">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3n_import_1 </ci>
+                <ci> cE3 </ci>
+                <ci> cE3n </ci>
+                <ci> def </ci>
+                <ci> p19 </ci>
+                <ci> p20 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cE3n_degr" name="cE3n_degr" metaid="cbe2e4e9-ee93-43a9-8629-55470a405c5d" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE3n" metaid="c20ea9f3-16d4-4abf-bdb3-35a0d5b50986"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="bf64ba1c-c384-4f52-9fbd-74a5fb12b5a5"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_468b907e-e10f-4f4a-ad2f-651c83a07c75"/>
+          <modifierSpeciesReference species="cE4" metaid="d4987e09-2746-4080-9b04-5c1be546f33f"/>
+          <modifierSpeciesReference species="cG" metaid="_22f6507c-bd95-4326-b354-f25dca009788"/>
+          <modifierSpeciesReference species="cLUX" metaid="_216fc81c-0d26-4c03-b42a-7c064e14900e"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="a2041b4c-3ba7-455c-90dc-3d0f216b2f23"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="d6be4afc-64a8-4643-9356-c37eefe269c4"/>
+          <modifierSpeciesReference species="cE3n" metaid="_5da1a5f6-c329-4a7b-b9b7-746561a198cf"/>
+          <modifierSpeciesReference species="cE4" metaid="_8b62a3a6-4a35-4ff8-a70e-8c0cdf2ea4cf"/>
+          <modifierSpeciesReference species="cG" metaid="_09478af3-1bc8-41b4-8a51-177a6e4d85eb"/>
+          <modifierSpeciesReference species="cLUX" metaid="cf1ca579-64bf-47a6-a1b1-797351f25f97"/>
+        </listOfModifiers>
+        <kineticLaw metaid="e56e7bb8-dd12-4967-8bbf-d05b99d7247a">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cE3n_degr_1 </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cE4 </ci>
+                <ci> cG </ci>
+                <ci> cLUX </ci>
+                <ci> def </ci>
+                <ci> m19 </ci>
+                <ci> m29 </ci>
+                <ci> m30 </ci>
+                <ci> m36 </ci>
+                <ci> m37 </ci>
+                <ci> p17 </ci>
+                <ci> p21 </ci>
+                <ci> p25 </ci>
+                <ci> p26 </ci>
+                <ci> p28 </ci>
+                <ci> p29 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cLUX_m_trscr" name="cLUX_m_trscr" metaid="efe4c988-8ce7-4652-9f15-531ddbad27c9" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cLUX_m" metaid="_16aecac0-d361-44fe-b622-b28d533f3649"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cEC" metaid="_72839149-c56a-4631-a3a5-c84a77047ae1"/>
+          <modifierSpeciesReference species="cL" metaid="af6e2dfa-2d7a-4f7a-8698-9e4cb1c7af76"/>
+          <modifierSpeciesReference species="cEC" metaid="bfd55b81-1a3f-4ecd-aa25-a3734fc3ee46"/>
+          <modifierSpeciesReference species="cL" metaid="_48904669-b0ee-4220-bc11-3c0565160be9"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_9a05e4bd-6f84-4bd0-9970-4a75ce500f6f">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLUX_m_trscr </ci>
+                <ci> cEC </ci>
+                <ci> cL </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g2 </ci>
+                <ci> g6 </ci>
+                <ci> n13 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cLUX_m_degr" name="cLUX_m_degr" metaid="_69194aa9-bc1e-4c26-9b0e-2a223b1e1583" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cLUX_m" metaid="_25f74c99-64cf-4d15-9866-e0aae8c67083"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cLUX_m" metaid="_97fb57c7-9167-41f1-9998-e5597343c18b"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_309a6b27-027c-4703-a31c-c35b24a00e25">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLUX_m_degr_1 </ci>
+                <ci> cLUX_m </ci>
+                <ci> def </ci>
+                <ci> m34 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cLUX_trsl" name="cLUX_trsl" metaid="_8cc8f0da-11a0-4b06-822d-5b840681143f" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cLUX" metaid="_1f87ee2f-508b-4bdf-b860-efe884581ccf"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cLUX_m" metaid="ef7af6ac-536f-4796-819a-2e2f75ea7250"/>
+          <modifierSpeciesReference species="cLUX_m" metaid="a301ae79-5309-4c45-a0d1-2d0dac58ca6d"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_0165a308-2aed-401b-bc6d-a28641562ab5">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLUX_trsl_1 </ci>
+                <ci> cLUX_m </ci>
+                <ci> def </ci>
+                <ci> p27 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cLUX_degr" name="cLUX_degr" metaid="_9a724c54-8484-41cd-9f98-5cb4003054b1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cLUX" metaid="_421cf62e-2aa6-4153-a886-f3f7901f7484"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="b838f934-4794-4cb5-ae1c-a627637be05c"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_0a7439c6-aeb1-4eab-b15e-c90193d5ab07"/>
+          <modifierSpeciesReference species="cE3n" metaid="e0a32765-c786-4091-a014-5f44bfe85c44"/>
+          <modifierSpeciesReference species="cE4" metaid="fe624657-35ed-4158-9f95-b14eb8eb89cc"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_832a9f8e-f880-4316-8b95-eb29fada2d5f"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="b5a44410-f61a-47a4-be7f-2bf60923804a"/>
+          <modifierSpeciesReference species="cE3n" metaid="_87b5e655-b238-4dea-b0b2-cdfb1058bd40"/>
+          <modifierSpeciesReference species="cE4" metaid="_113f313b-fa18-40e7-8cc3-929deaa93988"/>
+          <modifierSpeciesReference species="cLUX" metaid="fbc19c50-4a13-4726-98f2-c225a7ff2502"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_307e4706-9c86-4832-9358-076f08d58403">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cLUX_degr_1 </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cE4 </ci>
+                <ci> cLUX </ci>
+                <ci> def </ci>
+                <ci> m36 </ci>
+                <ci> m37 </ci>
+                <ci> m39 </ci>
+                <ci> p21 </ci>
+                <ci> p25 </ci>
+                <ci> p26 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1c_trsl" name="cCOP1c_trsl" metaid="_1364260f-f5e4-4bec-a77e-70373407c068" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cCOP1c" metaid="_7ebe813a-32fd-4cb8-aadf-f1bcb9329184"/>
+        </listOfProducts>
+        <kineticLaw metaid="_3daa2776-d510-47f0-a2fe-7479c67754f3">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1c_trsl_1 </ci>
+                <ci> def </ci>
+                <ci> n5 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1c_degr" name="cCOP1c_degr" metaid="ff150368-d177-4aa7-8f21-8ae55f3a9199" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cCOP1c" metaid="_5d3ff8ca-22b5-4928-9bbb-4c9b50399289"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1c" metaid="_5f24b501-f1d1-44e1-b53e-e8fcb2023b11"/>
+        </listOfModifiers>
+        <kineticLaw metaid="c663cfcc-7235-41b0-b195-71a0845870b7">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1c_degr </ci>
+                <ci> L </ci>
+                <ci> cCOP1c </ci>
+                <ci> def </ci>
+                <ci> m27 </ci>
+                <ci> p15 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1n_import" name="cCOP1n_import" metaid="_3a3ac979-dbd6-43ea-b17f-10b61fbba64b" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cCOP1c" metaid="_2a1b41c1-2e34-448e-9bc6-efb9ab5815ef"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cCOP1n" metaid="ab246a48-a5d9-4658-a923-67737aaaee32"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1c" metaid="acb9df3a-2f7f-4bce-a33e-18753f9286bb"/>
+        </listOfModifiers>
+        <kineticLaw metaid="c9c7d23c-ec7b-4318-986e-365333a52a75">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1n_import_1 </ci>
+                <ci> cCOP1c </ci>
+                <ci> def </ci>
+                <ci> p6 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1n_degr" name="cCOP1n_degr" metaid="_94d196a0-7745-4a65-acdd-0428b97dc0ef" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cCOP1n" metaid="_2453f40d-d0ec-4f39-92af-ffb6b7b2d0f4"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1n" metaid="d32a5a1c-02ec-409d-b728-2d9454655877"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_16d8d9ee-9579-41e3-8e55-021e5ecc568d">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1n_degr </ci>
+                <ci> L </ci>
+                <ci> cCOP1n </ci>
+                <ci> def </ci>
+                <ci> m27 </ci>
+                <ci> p15 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1d_activ" name="cCOP1d_activ" metaid="_7d2d9cdc-b6ca-4f9a-a4b2-36072a87be90" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cCOP1n" metaid="_4f23edca-a2aa-4743-a7c0-fd3972810c49"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cCOP1d" metaid="b2c64f7e-afa2-4c71-bea4-989ed3335f0e"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cP" metaid="d07d37fd-989a-4598-9538-3cf674015673"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_1f80c9b8-1760-404c-a7cf-a3226bd85192"/>
+          <modifierSpeciesReference species="cP" metaid="e1a6d154-79ca-422a-9765-61230c425bca"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_1940f4c3-3b32-41d3-af0a-5dabbf6da58e">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1d_activ </ci>
+                <ci> L </ci>
+                <ci> cCOP1n </ci>
+                <ci> cP </ci>
+                <ci> def </ci>
+                <ci> n14 </ci>
+                <ci> n6 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cCOP1d_degr" name="cCOP1d_degr" metaid="_1e51052c-c971-4da1-90c9-47207f5b2d5a" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cCOP1d" metaid="_1697edb0-1afa-47cd-964e-43093a7003e8"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="bc40334d-4c07-4687-9ee1-b7647e968dc3"/>
+        </listOfModifiers>
+        <kineticLaw metaid="adb14248-66e3-42b6-99ce-a129a1011759">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cCOP1d_degr </ci>
+                <ci> D </ci>
+                <ci> cCOP1d </ci>
+                <ci> def </ci>
+                <ci> m31 </ci>
+                <ci> m33 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_m_trscr" name="cG_m_trscr" metaid="eddff739-de3b-4026-bced-42be32aab6d9" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cG_m" metaid="_8e7cfecf-e78f-4149-ae8f-625f47cc347e"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cEC" metaid="_349c5b17-77c9-4953-bcb9-9d259a3c163f"/>
+          <modifierSpeciesReference species="cL" metaid="_062fbe7c-1b3b-48e9-bfda-ea2d4ef5d51c"/>
+          <modifierSpeciesReference species="cP" metaid="_9abbb48e-ac9e-4834-89fa-d34f11a2f965"/>
+          <modifierSpeciesReference species="cEC" metaid="_9a2f643f-3b11-4d90-8eca-88d940d55d7c"/>
+          <modifierSpeciesReference species="cL" metaid="_9ed09aa6-c0dd-4b7f-9cf6-d2076af4b1ab"/>
+          <modifierSpeciesReference species="cP" metaid="_9d2e770c-f4eb-4199-974b-9474ec7cfd53"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_4335179e-6bcd-449b-91f5-f0feec1041df">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_m_trscr_1 </ci>
+                <ci> L </ci>
+                <ci> cEC </ci>
+                <ci> cL </ci>
+                <ci> cP </ci>
+                <ci> def </ci>
+                <ci> e </ci>
+                <ci> g14 </ci>
+                <ci> g15 </ci>
+                <ci> n12 </ci>
+                <ci> q2 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_m_degr" name="cG_m_degr" metaid="f454c9dc-0c70-40bb-ae78-41bc42ce8ed9" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cG_m" metaid="b7961c39-85a6-43a1-8e8f-d25fe9894b13"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cG_m" metaid="f4f20ba3-0bf8-429c-b67b-de06c93bbe1e"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_604556fb-3945-4d83-952c-c7655c5cc638">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_m_degr_1 </ci>
+                <ci> cG_m </ci>
+                <ci> def </ci>
+                <ci> m18 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_trsl" name="cG_trsl" metaid="_302eb072-421c-4405-8761-03f804dfef6e" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cG" metaid="cd9af521-e42f-4596-b266-d787e0ad5cc5"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cG_m" metaid="ad5fcdca-ded6-434e-8cc0-e80ab7c2484c"/>
+          <modifierSpeciesReference species="cG_m" metaid="f61c3cd9-2661-4e68-9a03-1af94b99690b"/>
+        </listOfModifiers>
+        <kineticLaw metaid="bf8727a0-fde5-4d28-a923-bfc44f866740">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_trsl_1 </ci>
+                <ci> cG_m </ci>
+                <ci> def </ci>
+                <ci> p11 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_degr" name="cG_degr" metaid="eec7024d-6496-40c2-99db-a86480b6c6cf" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cG" metaid="_783092c1-fb13-4ecf-bf0d-cd60a6c7ecee"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE3n" metaid="_2059d880-69fe-4c31-aea7-29f541240b7f"/>
+          <modifierSpeciesReference species="cE3n" metaid="_994520f4-f33a-4d6a-9416-3903bee91c34"/>
+          <modifierSpeciesReference species="cG" metaid="_597af669-5f45-4e6f-96f4-e4c4b71fd427"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_19ef0b35-87c2-4d43-a554-e809f4370e83">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_degr_1 </ci>
+                <ci> cE3n </ci>
+                <ci> cG </ci>
+                <ci> def </ci>
+                <ci> m19 </ci>
+                <ci> p17 </ci>
+                <ci> p28 </ci>
+                <ci> p29 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_cZTL_assoc" name="cG_cZTL_assoc" metaid="f0dd2e56-5a64-465a-8d54-c788a0df0180">
+        <listOfReactants>
+          <speciesReference species="cG" metaid="_53b37f0d-0be2-4ea0-8852-a5d09cc90825"/>
+          <speciesReference species="cZTL" metaid="_278a5f03-cbcb-461c-83f2-8af0c14177c1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cZG" metaid="edb906c0-88ca-4fe8-ae4c-442952843d5b"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cG" metaid="e5d24f51-6419-41dc-b57f-b2fe0e42bb30"/>
+          <modifierSpeciesReference species="cZG" metaid="f875e9b4-1a48-4546-8ce7-d4984320b71d"/>
+          <modifierSpeciesReference species="cZTL" metaid="_663f6a45-53f7-4092-90cc-e13cf6d2382b"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_2bff09c9-215f-43cd-b629-9e8e9f9beee5">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_cZTL_assoc </ci>
+                <ci> D </ci>
+                <ci> L </ci>
+                <ci> cG </ci>
+                <ci> cZG </ci>
+                <ci> cZTL </ci>
+                <ci> def </ci>
+                <ci> p12 </ci>
+                <ci> p13 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cZTL_trsl" name="cZTL_trsl" metaid="e7fb029f-cb4d-4fc6-9932-b3bfff657c26" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cZTL" metaid="b3cd0b10-edc4-4391-90ae-5ac79be676ca"/>
+        </listOfProducts>
+        <kineticLaw metaid="_1851ec6e-b63c-4345-b0d2-8428a169ab57">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cZTL_trsl_1 </ci>
+                <ci> def </ci>
+                <ci> p14 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cZTL_degr" name="cZTL_degr" metaid="_693479fb-aa12-497d-b719-1fa6ee61dcec" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cZTL" metaid="f998807a-1922-4b53-b50a-558434d1d07b"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cZTL" metaid="_1394aa59-91e5-464c-bc45-3889eaca1481"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_4cbf5952-6754-4a27-8a19-b14939e058df">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cZTL_degr_1 </ci>
+                <ci> cZTL </ci>
+                <ci> def </ci>
+                <ci> m20 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cZG_degr" name="cZG_degr" metaid="_46e4029d-ab2a-4646-a0b7-01710e254e24" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cZG" metaid="_1bc7b1c9-0dd0-4705-9944-23591e73bb26"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cZG" metaid="_54f89555-e0e0-4840-bfb3-d37929370da4"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_01ca5f72-993c-4885-9416-b0cb57334a07">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cZG_degr_1 </ci>
+                <ci> cZG </ci>
+                <ci> def </ci>
+                <ci> m21 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cG_cE3_assoc" name="cG_cE3_assoc" metaid="e35855ec-183a-4f1c-93e2-a44c47ae2f46" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cE3" metaid="_4cfb7e51-286b-46a2-b1f2-5c41750a55d0"/>
+          <speciesReference species="cG" metaid="f3e16791-4794-4c43-ba59-82c40f6d3387"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference species="cEG" metaid="_63cb2673-ff8b-482f-a9d5-fff2a272a2e4"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cE3" metaid="_872783a0-9a34-42d9-9477-f25b4f9751ac"/>
+          <modifierSpeciesReference species="cG" metaid="_43a65f53-8d4e-49c8-b40d-72d5dc6f952d"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_14e6bb8c-84ee-41aa-9cd5-edfd2c5ea1df">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cG_cE3_assoc_1 </ci>
+                <ci> cE3 </ci>
+                <ci> cG </ci>
+                <ci> def </ci>
+                <ci> p17 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cEG_degr" name="cEG_degr" metaid="a302e643-1880-462f-9719-e3d10eb3f3ef" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cEG" metaid="_7ed10bae-b6c4-45bf-a602-55d60a921450"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1c" metaid="_4bd8a36b-1419-4d40-9c28-a1226d60ac9a"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_7285193a-a273-41b2-8e81-7e3ed610b6b4"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="c6d305fd-541f-477c-a1cb-491737558bbb"/>
+          <modifierSpeciesReference species="cE3n" metaid="_376f8318-2cea-4a33-a9c1-e60ad5602747"/>
+          <modifierSpeciesReference species="cG" metaid="a3d9cc51-b0e9-4852-88a7-c83a668be01c"/>
+          <modifierSpeciesReference species="cCOP1c" metaid="a5dd4213-bfd9-4eae-adfa-c4539a9e726d"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_986c3cd2-a194-4015-bedd-ef9e628902c4"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_17c33c53-809c-466f-9515-8528f32d85f8"/>
+          <modifierSpeciesReference species="cE3n" metaid="f55bb5c3-c200-42d7-b32d-36443fdc309b"/>
+          <modifierSpeciesReference species="cEG" metaid="_94c699fc-62af-43db-ad71-93b294f8c9a7"/>
+          <modifierSpeciesReference species="cG" metaid="a234106b-d546-49f6-913c-974be412f449"/>
+        </listOfModifiers>
+        <kineticLaw metaid="_86176085-5c70-4a91-a62a-4c2e2a1c6207">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cEG_degr_1 </ci>
+                <ci> cCOP1c </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cEG </ci>
+                <ci> cG </ci>
+                <ci> def </ci>
+                <ci> m10 </ci>
+                <ci> m19 </ci>
+                <ci> m9 </ci>
+                <ci> p17 </ci>
+                <ci> p18 </ci>
+                <ci> p28 </ci>
+                <ci> p29 </ci>
+                <ci> p31 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cEC_form" name="cEC_form" metaid="a992d1c6-6ee9-40c8-8e2b-6b7681c11683" reversible="false">
+        <listOfProducts>
+          <speciesReference species="cEC" metaid="_06311302-7e27-47a0-8a53-0b2b9e12be38"/>
+        </listOfProducts>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="_23dd0a89-5171-487b-b220-0be82eadea01"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_68001d68-664c-44f5-9290-312180832b89"/>
+          <modifierSpeciesReference species="cE3n" metaid="_282132f2-2653-4f31-833e-372395ddc069"/>
+          <modifierSpeciesReference species="cE4" metaid="_6222ebb6-cec7-4f40-a12e-1c66464ca2bc"/>
+          <modifierSpeciesReference species="cLUX" metaid="_5827cd15-8793-45df-ae92-6d431ea5f6e7"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_9b245140-e56f-4084-a45e-f8b473fafcda"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="a4fd012f-47df-4b5a-84f8-b64c361840c7"/>
+          <modifierSpeciesReference species="cE3n" metaid="_0fe63989-cc38-414f-9481-099403e3a2d5"/>
+          <modifierSpeciesReference species="cE4" metaid="e167158a-2e08-4cf1-9a21-29ce592ef010"/>
+          <modifierSpeciesReference species="cLUX" metaid="e984145b-2cb4-4731-98ac-4428f05479a1"/>
+        </listOfModifiers>
+        <kineticLaw metaid="d708b7da-13e5-4e23-893f-3c4833570238">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cEC_form_1 </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cE4 </ci>
+                <ci> cLUX </ci>
+                <ci> def </ci>
+                <ci> m36 </ci>
+                <ci> m37 </ci>
+                <ci> p21 </ci>
+                <ci> p25 </ci>
+                <ci> p26 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction id="cEC_degr" name="cEC_degr" metaid="_1eac28e9-52d2-47e1-a422-009fae6dfdb5" reversible="false">
+        <listOfReactants>
+          <speciesReference species="cEC" metaid="a713ca76-fc65-424a-827c-25ca607aa574"/>
+        </listOfReactants>
+        <listOfModifiers>
+          <modifierSpeciesReference species="cCOP1d" metaid="_66607646-924b-4480-843e-5092494262d9"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_95285c4d-941a-40e3-a84c-5ae4d9d6abed"/>
+          <modifierSpeciesReference species="cE3n" metaid="bf1d883a-9049-4f61-9f61-f7e48a19ef04"/>
+          <modifierSpeciesReference species="cEG" metaid="_05ba285b-3a79-46e3-94ac-95f73becbf7f"/>
+          <modifierSpeciesReference species="cG" metaid="_2be6779b-96c0-401d-9e49-e87698bda995"/>
+          <modifierSpeciesReference species="cCOP1d" metaid="_7307e11a-aca6-4459-ad7f-15c2c0e21cf9"/>
+          <modifierSpeciesReference species="cCOP1n" metaid="_3ffc7801-99e9-49de-a192-ac9607add714"/>
+          <modifierSpeciesReference species="cE3n" metaid="_891866fa-e3b2-405d-b959-f65e8d223d31"/>
+          <modifierSpeciesReference species="cEC" metaid="f25289f5-fc86-4a47-a52e-d2115d975815"/>
+          <modifierSpeciesReference species="cEG" metaid="_29e10d22-a1fc-4204-b8e0-0c4bbde96791"/>
+          <modifierSpeciesReference species="cG" metaid="acd4ff12-1d40-4fb2-bf77-de538803fe43"/>
+        </listOfModifiers>
+        <kineticLaw metaid="ceae05ef-f682-407a-bec0-7cc1b180faf6">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> def </ci>
+              <apply>
+                <ci> function_4_cEC_degr </ci>
+                <ci> L </ci>
+                <ci> cCOP1d </ci>
+                <ci> cCOP1n </ci>
+                <ci> cE3n </ci>
+                <ci> cEC </ci>
+                <ci> cEG </ci>
+                <ci> cG </ci>
+                <ci> d </ci>
+                <ci> def </ci>
+                <ci> g7 </ci>
+                <ci> m10 </ci>
+                <ci> m19 </ci>
+                <ci> m32 </ci>
+                <ci> m36 </ci>
+                <ci> m37 </ci>
+                <ci> m9 </ci>
+                <ci> p17 </ci>
+                <ci> p18 </ci>
+                <ci> p24 </ci>
+                <ci> p28 </ci>
+                <ci> p29 </ci>
+                <ci> p31 </ci>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="event_1" name="event_0" metaid="_2424012e-efcd-468a-9e0f-cada5a4832bf">
+        <trigger metaid="_43ce1836-b110-471e-9cff-e472b1188591">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 314 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment metaid="bbeac850-2ef2-4780-b170-e87b871fb61f" variable="offsetStep1">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 1 </cn>
+            </math>
+                    </eventAssignment>
+          <eventAssignment metaid="db96eec6-f5d8-40c8-b863-8f96222bc765" variable="amplitudeStep1">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <cn> 0 </cn>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>

@@ -1,0 +1,263 @@
+begin model
+# This is the JNK model from Fey et al. Science Signal. Dec. 2015
+#
+# Remarks:
+# Rules  25 and 26 generate 72 reactions, wich is double the number from PotterWheel, because the reverse reactoins are counted seperately
+# scale_t is a somehwat artificial time scaling parameter that facilitates the parameter optimisation, for example in sutuations where the dose response fits well, but the timing is wrong.
+
+# Annotated to try to check equivalence to PottersWheel rules. - EDM 18.07.23
+# Fixed errors, and confirmed equivalent output to naive matlab implementation
+
+
+begin parameters
+ZAK0__FREE 1.0207015221503735
+f1_ZAKtoMKK7P__FREE 5.468706518197282
+f3_MKK7byZAK__FREE 64.65379785593414
+k3_JNKbyMKK4__FREE 0.38169114830594664
+k3_JNKbyMKK7__FREE 3.0008640474604227
+k3_MKK4byZAK__FREE 0.2612326849034393
+k3_MKK7byJNK__FREE 4.983945741425265
+k3_MKK7byZAK__FREE 0.012830055257028143
+scale_ppJNK__FREE 1.1502266205097047
+scale_ppMKK4__FREE 1.0234716807199158
+scale_ppMKK7__FREE 1.1267893164908775
+scale_t__FREE 4.631501157036357
+# the estimated parameters are indicated by the lower and upper bounds used in the comments. These bounds were used as constraints for the parameter estimation.
+scale_t			scale_t__FREE		# 1		5
+ANI				300 			#not estimated
+k3_ZAKbyU1		0.005 			#not estimated
+K1_U1toZAK		10 				#not estimated
+d3_ZAK			0.5 			#not estimated
+D1_ZAK			10 				#not estimated
+k3_MKK4byZAK	k3_MKK4byZAK__FREE		# 0.01	1
+K1_ZAKtoMKK4	0.1 			#not estimated
+d3_MKK4			0.25 			#not estimated
+D1_MKK4			1 				#not estimated
+k3_MKK7byZAK	k3_MKK7byZAK__FREE		# 0.005	0.5
+K1_ZAKtoMKK7	0.1 			#not estimated
+f3_MKK7byZAK	f3_MKK7byZAK__FREE		# 1		100
+d3_MKK7			0.5 			#not estimated
+D1_MKK7			1 				#not estimated
+k3_JNKbyMKK4	k3_JNKbyMKK4__FREE		# 0.1	5
+K1_MKK4toJNK	1 				#not estimated
+k3_JNKbyMKK7	k3_JNKbyMKK7__FREE		# 0.1	5
+K1_MKK7toJNK	0.1 			#not estimated
+f3_JNKbyMKK7	1 				#not estimated
+d3_JNK			0.5 			#not estimated
+D1_JNK			1 				#not estimated
+k3_MKK7byJNK	k3_MKK7byJNK__FREE 	# 0.1 	5
+K1_JNKtoMKK7	1 				#not estimated
+inh_JNK			1 #dummy parameter describing the JNK inhibitor: 1 - control; 0 - JNK inhibitor
+d3_MKK7byJNKPT	0.5 			#not estimated
+D1_JNKPTtoMKK7	1 				#not estimated
+k1_ZAKtoMKK7	1000 			#not estimated
+f1_ZAKtoMKK7P	f1_ZAKtoMKK7P__FREE 	# 1		20
+k1_ZAKtoJNK		1000 			#not estimated
+K1_ZAKtoJNK		1 				#not estimated
+k3_MKK4byAKT	10 				#not estimated
+K1_AKTtoMKK4	1 				#not estimated
+k3_MKK7byAKT	100 				#not estimated
+K1_AKTtoMKK7	1 				#not estimated
+d3_MKK4byAKTPT	10 				#not estimated
+D1_AKTPTtoMKK4	1 				#not estimated
+d3_MKK7byAKTPT	10 				#not estimated
+D1_AKTPTtoMKK7	1 				#not estimated
+scale_ppMKK4	scale_ppMKK4__FREE 	# 0.5 	2
+scale_ppMKK7	scale_ppMKK7__FREE		# 0.5 	2
+scale_ppJNK		scale_ppJNK__FREE		# 0.5 	2
+pAKT 			0			# Set to 0 for cell data, but 0.5*mRNA_value in patient-specific models.
+end parameters
+
+begin molecule types
+ZAK(Y~0~P~PP,KK,K)
+# PW: <1:|p|pp>ZAK_<2:@>_<3:@> where 1 is site Y state, 2 is thing bound to KK, and 3 is thing bound to K
+MKK4(Y~0~P~PP,KKK,AKT~0~P)
+# PW: <1:|p|pp>MKK4<2:|i> where 1 is site Y state, 2 i = AKT~P, and KKK does not appear.
+MKK7(Y~0~P~PP,KKK,AKT~0~P,FB~0~P)
+# PW: <1:|p|pp>MKK7<2:|i|P> where 1 is site Y state, 2 i = AKT~P, 2 P = FB~P, Illegal to have both AKT~P and FB~P
+# MKK7 can also appear as at site 2 of a ZAK species, implicitly implementing site KKK.
+JNK(Y~0~P~PP,KKK)
+# PW: <1:|p|pp>JNK, where 1 is site Y state.
+# JNK may appear at site 3 of a ZAK species, implicitly implementing site KKK
+
+# PW has some other garbage molecules that don't appear in rules.
+end molecule types
+
+begin seed species
+# the total protein concentration of ZAK was estimated, the comment indicated the upper and lower bounds for the parameter estimation
+ZAK(Y~0,KK,K) ZAK0__FREE		# 1		20
+MKK4(Y~0,KKK,AKT~0) 1 		#not estimated, but set to 0.5 in the MKK4 knowdown condition. Remark: These are measured values from Fig. S2C
+MKK7(Y~0,KKK,AKT~0,FB~0) 1 	#not estimated, but set to 0.0 in the MKK7 knowdown condition. Remark: These are measured values from Fig. S2C
+JNK(Y~0,KKK) 1 				#not estimated
+end seed species
+
+begin observables
+
+# Sanity check observables - should be 0. Confirmed.
+Molecules shouldbe0     MKK7(KKK!+,FB~0)
+Molecules shouldbe0_2   MKK7(AKT~P,FB~P)
+# Molecules shouldbe0_3	MKK4(AKT~P,Y~P),MKK4(AKT~P,Y~PP) # Not 0! Breaks an observable below
+# Molecules shouldbe0_4	MKK7(AKT~P,Y~P),MKK7(AKT~P,Y~PP) # Not 0! Breaks an observable below
+
+Molecules    ppZAK		ZAK(Y~PP)
+#observables used for fitting
+#   Remark: To fit the observables to the Western Blot data, each observable should be multiplied by the corresponsing scaling parameter.
+#           e.g. y_ppMKK4 = scale_ppMKK4*ppMKK4
+Molecules    ppMKK4		MKK4(Y~PP,AKT~0)	# Fixed error: In PW, AKT~P doesn't count
+Molecules    ppMKK7		MKK7(Y~PP,AKT~0)	# Fixed error: In PW, AKT~P doesn't count
+Molecules    ppJNK		JNK(Y~PP)	#OK
+#observables used in the rate laws
+#Kinase activities
+Molecules	a_ZAK		ZAK(Y~PP)				#Concentration of active ZAK		#OK
+Molecules	a_MKK4		MKK4(Y~PP,AKT~0)		#Concentration of active MKK4		#OK
+Molecules	a_MKK7		MKK7(Y~PP,KKK,AKT~0)	#Concentration of free active MKK7	#OK
+Molecules	a_JNK		JNK(Y~PP)				#Concentration of active JNK		#OK
+#Substrate sets
+Molecules	s_ZAKbyU1	ZAK(Y~0),ZAK(Y~P)		#OK (?! is @ equivalent to <@> in PW?)
+Molecules	s_MKKbyZAK	MKK4(Y~0,AKT~0),MKK4(Y~P,AKT~0) #MKK4(Y~0),MKK4(Y~P),MKK7(Y~0,KKK),MKK7(Y~P,KKK)	#OK
+Molecules	s_JNKbyMKK4	JNK(Y~0),JNK(Y~P)				#Active MKK4 can phosphorylate both free and scaffolded JNK	#OK
+Molecules	s_JNKbyMKK7	JNK(Y~0,KKK),JNK(Y~P,KKK)		#Free MKK7 only act on free JNK	#OK
+Molecules	s_MKK7byJNK	MKK7(FB~0)				#total concentration of JNK substrates	#OK
+Molecules	s_MKKbyAKT	MKK4(AKT~0),MKK7(KKK,AKT~0,FB~0)	#AKT acts on all free forms of MKK4 and MKK7 # !!! Fixed Error In PW, does not include MKK7(FB~P)
+Molecules	s_ZAKbyPT	ZAK(Y~P),ZAK(Y~PP) #OK
+Molecules	s_MKK4byPT	MKK4(Y~P,AKT~0),MKK4(Y~PP,AKT~0) #!!! Fixed Error In PW, MKK4(Y~P,AKT~P) is not included
+Molecules	s_MKK7byPT	MKK7(Y~P,AKT~0),MKK7(Y~PP,AKT~0) #!!! Fixed Error In PW, MKK7(Y~P,AKT~P) is not included
+Molecules	s_JNKbyPT	JNK(Y~P),JNK(Y~PP) #OK
+Molecules	s_MKK7byJNKPT	MKK7(FB~P,KKK)	# !!! Fixed Error - In PW, does not include MKK7 bound to ZAK
+Molecules	s_MKKbyAKTPT	MKK4(AKT~P),MKK7(AKT~P) #OK
+end observables
+
+begin functions
+y_ppMKK4()=scale_ppMKK4*ppMKK4
+y_ppMKK7()=scale_ppMKK7*ppMKK7
+y_ppJNK()=scale_ppJNK*ppJNK
+
+
+end functions
+
+begin reaction rules
+# Checking rule equivalence
+# Checked rates (fixed 1 error)
+
+# Phosphorylation of ZAK by the input
+# 2 rules = R01
+ZAK(Y~0) -> ZAK(Y~P)  k3_ZAKbyU1*ANI/(K1_U1toZAK+s_ZAKbyU1)*scale_t  #Rate ?!! PW Adds multiplication by U1, which is undefined. Naive matlab sets it to 1
+ZAK(Y~P) -> ZAK(Y~PP) k3_ZAKbyU1*ANI/(K1_U1toZAK+s_ZAKbyU1)*scale_t
+
+# 2 rules = R02
+ZAK(Y~PP) -> ZAK(Y~P) d3_ZAK/(D1_ZAK+s_ZAKbyPT)*scale_t
+ZAK(Y~P) -> ZAK(Y~0)  d3_ZAK/(D1_ZAK+s_ZAKbyPT)*scale_t
+
+# 5 Phoshorylation of MKK4 by ZAK
+#    Remark: in the SciSig model, this only happens when MKK4 is not phosph. at the AKT site
+# 2 rules = R03
+MKK4(Y~0,AKT~0) -> MKK4(Y~P,AKT~0)  k3_MKK4byZAK*a_ZAK/(K1_ZAKtoMKK4+s_MKKbyZAK)*scale_t
+MKK4(Y~P,AKT~0) -> MKK4(Y~PP,AKT~0) k3_MKK4byZAK*a_ZAK/(K1_ZAKtoMKK4+s_MKKbyZAK)*scale_t
+# 2 rules = R04
+MKK4(Y~PP,AKT~0) -> MKK4(Y~P,AKT~0) d3_MKK4/(D1_MKK4+s_MKK4byPT)*scale_t # Rate !!! Fixed error: Changed * to /
+MKK4(Y~P,AKT~0) -> MKK4(Y~0,AKT~0)  d3_MKK4/(D1_MKK4+s_MKK4byPT)*scale_t
+# 9 Phosphorylation of free MKK7 by ZAK
+#    Remark: in the SciSig model, this only happens when MKK7 is not phosph. at the AKT site
+# 2 rules = R05
+MKK7(Y~0,KKK,AKT~0) -> MKK7(Y~P,KKK,AKT~0)  k3_MKK7byZAK*a_ZAK/(K1_ZAKtoMKK7+s_MKKbyZAK)*scale_t
+MKK7(Y~P,KKK,AKT~0) -> MKK7(Y~PP,KKK,AKT~0) k3_MKK7byZAK*a_ZAK/(K1_ZAKtoMKK7+s_MKKbyZAK)*scale_t
+# 11 Phosphorylation of scaffolded MKK7 by scaffolded ppZAK
+
+# 2 rules ?= R06 : !!! different. In PW, only goes with MKK7P May be moot because only MKK7P can bind at KKK.
+MKK7(Y~0,KKK!1).ZAK(Y~PP,KK!1) -> MKK7(Y~P,KKK) + ZAK(Y~PP,KK)  k3_MKK7byZAK*f3_MKK7byZAK*scale_t
+MKK7(Y~P,KKK!1).ZAK(Y~PP,KK!1) -> MKK7(Y~PP,KKK) + ZAK(Y~PP,KK) k3_MKK7byZAK*f3_MKK7byZAK*scale_t
+
+# 13 Dephosphorylation of MKK7 (free and scaffolded forms)
+#MKK7(Y~PP) -> MKK7(Y~P) d3_MKK7/(D1_MKK7+s_MKK7byPT)
+#MKK7(Y~P) -> MKK7(Y~0)  d3_MKK7/(D1_MKK7+s_MKK7byPT)
+# 2 rules = R07
+MKK7(Y~PP,KKK,AKT~0) -> MKK7(Y~P,KKK,AKT~0) d3_MKK7/(D1_MKK7+s_MKK7byPT)*scale_t
+MKK7(Y~P,KKK,AKT~0) -> MKK7(Y~0,KKK,AKT~0)  d3_MKK7/(D1_MKK7+s_MKK7byPT)*scale_t
+# 2 rules = R08
+MKK7(Y~PP,KKK!+,FB~P) -> MKK7(Y~P,KKK!+,FB~P) d3_MKK7/(D1_MKK7+s_MKK7byPT)*scale_t
+MKK7(Y~P,KKK!+,FB~P) -> MKK7(Y~0,KKK!+,FB~P)  d3_MKK7/(D1_MKK7+s_MKK7byPT)*scale_t
+# 15 Phosphorylation of free and scaffolded JNK by MKK4
+# 2 rules = R09 + R11
+JNK(Y~0) -> JNK(Y~P)  k3_JNKbyMKK4*a_MKK4/(K1_MKK4toJNK+s_JNKbyMKK4)*scale_t
+JNK(Y~P) -> JNK(Y~PP) k3_JNKbyMKK4*a_MKK4/(K1_MKK4toJNK+s_JNKbyMKK4)*scale_t
+# 17 Phosphorylation of free JNK by free MKK7 and scaffolded JNK by scaffolded MKK7
+
+# 2 rules = R10
+JNK(Y~0,KKK) -> JNK(Y~P,KKK)  k3_JNKbyMKK7*a_MKK7/(K1_MKK7toJNK+s_JNKbyMKK7)*scale_t
+JNK(Y~P,KKK) -> JNK(Y~PP,KKK)  k3_JNKbyMKK7*a_MKK7/(K1_MKK7toJNK+s_JNKbyMKK7)*scale_t
+
+# 2 rules ?= R13 !!! In PW, require MKK7P. May be moot because only MKK7P can bind at KKK.
+JNK(Y~0,KKK!1).ZAK(K!1,KK!2).MKK7(Y~PP,KKK!2) -> JNK(Y~P,KKK) + ZAK(K,KK!2).MKK7(Y~PP,KKK!2)  k3_JNKbyMKK7*f3_JNKbyMKK7*scale_t
+JNK(Y~P,KKK!1).ZAK(K!1,KK!2).MKK7(Y~PP,KKK!2) -> JNK(Y~PP,KKK) + ZAK(K,KK!2).MKK7(Y~PP,KKK!2)  k3_JNKbyMKK7*f3_JNKbyMKK7*scale_t
+# 21 Dephosphorylation of JNK (free and scaffolded forms)
+# 2 rules = R14 + R15
+JNK(Y~PP) -> JNK(Y~P) d3_JNK/(D1_JNK+s_JNKbyPT)*scale_t
+JNK(Y~P) -> JNK(Y~0)  d3_JNK/(D1_JNK+s_JNKbyPT)*scale_t
+# 23 Feedback phosphorylation of MKK7 by JNK
+#    Remark: in the SciSignal model this only hapens for free MKK7, we could change that here...
+#    Remark: in the SciSignal model this only hapens for MKK7 that is not phos. at the AKT site, we could change that here...
+# 1 rule = R16
+MKK7(FB~0,KKK,AKT~0) -> MKK7(FB~P,KKK,AKT~0) inh_JNK*k3_MKK7byJNK*a_JNK/(K1_JNKtoMKK7+s_MKK7byJNK)*scale_t
+# 1 rule = R17
+MKK7(FB~P,KKK,AKT~0) -> MKK7(FB~0,KKK,AKT~0) d3_MKK7byJNKPT/(D1_JNKPTtoMKK7+s_MKK7byJNKPT)*scale_t
+# 25 Scaffolding: ZAK associates with feedback-phosphorylated MKK7
+#    Remark: in the SciSignal model this only hapens when MKK7 is not phosphorylated by AKT
+
+# 1 rule = R18
+ZAK(KK) + MKK7(FB~P,KKK,AKT~0) <-> ZAK(KK!1).MKK7(FB~P,KKK!1,AKT~0) k1_ZAKtoMKK7*f1_ZAKtoMKK7P*scale_t,k1_ZAKtoMKK7*K1_ZAKtoMKK7*scale_t
+# 26 Scaffolding: ZAK associates with JNK
+# 1 rule = R19
+ZAK(K) + JNK(KKK) <-> ZAK(K!1).JNK(KKK!1) k1_ZAKtoJNK*scale_t,k1_ZAKtoJNK*K1_ZAKtoJNK*scale_t
+# 27 Negative crosstalk: inhibitory phosphorylation of MKK4 and MKK7 by AKT
+#    Remark: in the SciSignal model this only hapens for free MKK4 and free MKK7, we could change that here...
+#    Remark: in the SciSignal model this only hapens for MKK7 that is not FB phosph., we could change that here...
+# 1 rule = R20
+MKK4(AKT~0,KKK) -> MKK4(AKT~P,KKK) k3_MKK4byAKT*pAKT/(K1_AKTtoMKK4+s_MKKbyAKT)*scale_t
+# 1 rule = R21
+MKK7(AKT~0,KKK,FB~0) -> MKK7(AKT~P,KKK,FB~0) k3_MKK7byAKT*pAKT/(K1_AKTtoMKK7+s_MKKbyAKT)*scale_t
+# 1 rule = R22
+MKK4(AKT~P,KKK) -> MKK4(AKT~0,KKK) d3_MKK4byAKTPT/(D1_AKTPTtoMKK4+s_MKKbyAKTPT)*scale_t
+# 1 rule = R23
+MKK7(AKT~P,KKK,FB~0) -> MKK7(AKT~0,KKK,FB~0) d3_MKK7byAKTPT/(D1_AKTPTtoMKK7+s_MKKbyAKTPT)*scale_t
+end reaction rules
+
+#begin functions
+#k_func(kcat,KM,E_tot,SubstrateFun)	kcat*E_tot/(KM + SubstrateFun)
+#end functions
+
+end model
+
+
+begin actions
+
+generate_network({overwrite=>1})
+
+setParameter("ANI",0)
+simulate({method=>"ode",t_start=>-100,t_end=>0,n_steps=>20,suffix=>"equil"})
+saveConcentrations()
+
+setParameter("ANI",300)
+simulate({method=>"ode",t_start=>0,t_end=>60,n_steps=>12,suffix=>"tc",print_functions=>1})
+resetConcentrations()
+
+parameter_scan({method=>"ode",t_start=>0,t_end=>30,n_steps=>1,parameter=>"ANI",\
+par_scan_vals=>[3,10,30,100,300,1000],suffix=>"dr_contr",print_functions=>1})
+
+setConcentration("MKK4(Y~0,KKK,AKT~0)",0.5)
+saveConcentrations()
+parameter_scan({method=>"ode",t_start=>0,t_end=>30,n_steps=>1,parameter=>"ANI",\
+par_scan_vals=>[30,100,300,1000],suffix=>"dr_simkk4",print_functions=>1})
+
+setConcentration("MKK4(Y~0,KKK,AKT~0)",1)
+setConcentration("MKK7(Y~0,KKK,AKT~0,FB~0)",0)
+saveConcentrations()
+parameter_scan({method=>"ode",t_start=>0,t_end=>30,n_steps=>1,parameter=>"ANI",\
+par_scan_vals=>[30,100,300,1000],suffix=>"dr_simkk7",print_functions=>1})
+
+setConcentration("MKK7(Y~0,KKK,AKT~0,FB~0)",1)
+setParameter("inh_JNK",0)
+saveConcentrations()
+parameter_scan({method=>"ode",t_start=>0,t_end=>30,n_steps=>1,parameter=>"ANI",\
+par_scan_vals=>[3,10,30,100,300,1000],suffix=>"dr_jnkinh",print_functions=>1})
+#writeMfile()
+end actions

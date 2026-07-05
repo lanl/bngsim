@@ -1,0 +1,117 @@
+begin model
+
+# A model for ligand-receptor binding with diffusion effects
+# The ligand is monovalent.
+# The receptor is bivalent.
+
+# References
+# 1. Berg HC, Purcell EM (1977) Biophys J 20: 193-219.
+# 2. Faeder JR et al. (2003) J Immunol 170: 3769-3781.
+# 3. Erickson J et al. (1987) Biophys J 52: 657-662.
+# 4. Erickson J et al. (1986) Mol Immunol 72: 769-781.
+
+# Reaction scheme: L+R<->B1, L+B1<->B2
+# At equilibrium, [B1]=2*Keq*[L]*[R] and [B2]=(1/2)*Keq*[L]*[B1]
+# We assume conservation of ligand and receptor.
+# Diffusion effects are captured using the approximate theory of Ref 1.
+
+begin parameters
+
+# ratio (circumference:diameter)
+pi  3.14159 # dimensionless
+
+# Avogadro constant
+NA  6.02214e23 # [=] molecules per mol
+
+# density of cells in suspension
+cellDensity  1.0e6 # [=] cells per cm^3
+
+# volume of extracellular fluid per cell (derived)
+V=1.0/cellDensity # cm^3 (1 nL)
+
+# cell radius under the assumption of a spherical cell (from Ref 2)
+a  7.0e-4 # [=] cm
+
+# total amount of ligand per cell for a ligand concentration of 1 nM
+ligandTotal  1.0e-12*NA*V # [=] number per cell (~6e5 per cell)
+
+# diffusion coefficient of ligand in water (from Ref 3)
+D  5.64e-6 # [=] cm^2/s (0.0564 micron^2/s)
+
+# total amount of receptor per cell (from Ref 2)
+receptorTotal  4.0e5 # [=] number per cell
+
+# single-site equilibrium association constant 
+#   for ligand binding to a receptor site (from Ref 4)
+Keq  1.4e12 # [=] cm^3/mol
+
+# single-site reaction-limited association rate constant (from Ref 3)
+kon  1.12e11 # [=] (cm^3/mol)/s
+
+# dissociation rate constant (derived)
+koff=kon/Keq # [=] /s (0.08 /s)
+
+end parameters
+
+begin molecule types
+
+# The ligand is DCT, a monovalent DNP ligand
+DCT(DNP)
+
+# The receptor is DNP-specific cell-surface IgE, 
+#   which has two Ag-combining sites (one per Fab arm).
+sIgE(Fab,Fab)
+
+end molecule types
+
+begin seed species
+
+# All ligands are initially free
+DCT(DNP)  ligandTotal
+
+# All receptors are initially free
+sIgE(Fab,Fab)  receptorTotal
+
+end seed species
+
+begin observables
+
+# number of free ligands per cell
+Molecules DCTfree DCT(DNP) 
+
+# number of free receptor sites per cell
+Molecules Fabfree sIgE(Fab) 
+
+# number of ligand-receptor bonds per cell
+Molecules Nbonds DCT(DNP!1).sIgE(Fab!1)
+
+# number of singly-bound receptors per cell
+Species B1 DCT(DNP!1).sIgE(Fab!1,Fab)
+
+# number of doubly-bound receptors per cell
+Species B2 DCT(DNP!1).sIgE(Fab!1,Fab!2).DCT(DNP!2)
+
+end observables
+
+begin functions
+
+# apparent forward and reverse rate constants (from Ref 1)
+kf()  (kon/(NA*V))/(1.0+(Fabfree*kon/NA)/(4.0*pi*D*a))
+kr()  koff/(1.0+(Fabfree*kon/NA)/(4.0*pi*D*a))
+
+end functions
+
+begin reaction rules
+
+DCT(DNP)+sIgE(Fab)<->DCT(DNP!1).sIgE(Fab!1) kf(),kr()
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>120,n_steps=>120})
+
+end actions

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lanl/bngsim/provenance/manifest.schema.json",
+  "title": "bngsim corpus manifest",
+  "description": "Unified per-model provenance manifest (punchlist item 1h). One receipt per model: source, pinned upstream version, sha256 of the tested bytes, patch ledger, license. See manifest_schema.md.",
+  "type": "object",
+  "required": ["schema_version", "corpus", "records"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "corpus": {
+      "type": "string",
+      "description": "Family / sub-corpus key, e.g. 'bng_parity', 'rr_parity/sedml', 'biomodels'."
+    },
+    "generated": {
+      "type": "string",
+      "description": "ISO date (YYYY-MM-DD) the manifest was written. Date only — no wall-clock, so regeneration is reproducible.",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "upstream_pin": {
+      "type": "object",
+      "description": "Optional corpus-level pin summary when every record shares one upstream version. Per-record origin is authoritative.",
+      "additionalProperties": true
+    },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["id", "source", "origin", "sha256", "license"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable identifier, unique within the manifest (accession or relpath)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Upstream key (controlled vocabulary).",
+          "enum": [
+            "rulehub", "rulemonkey", "bngl_models", "bngl_library", "curated",
+            "biomodels", "temp-biomodels", "dsmts", "sbml-test-suite",
+            "d2d", "petab"
+          ]
+        },
+        "origin": { "$ref": "#/$defs/origin" },
+        "sha256": {
+          "type": "string",
+          "description": "Lowercase hex sha256 of the exact bytes tested against.",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "vendored": {
+          "type": ["string", "null"],
+          "description": "Repo-relative path if committed to git; null if gitignored/fetched."
+        },
+        "license": { "$ref": "#/$defs/license" },
+        "patched": {
+          "type": "boolean",
+          "description": "True iff repairs is non-empty."
+        },
+        "repairs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/repair" }
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "$comment": "patched:true requires at least one repair entry.",
+          "if": { "properties": { "patched": { "const": true } }, "required": ["patched"] },
+          "then": { "properties": { "repairs": { "minItems": 1 } }, "required": ["repairs"] }
+        }
+      ]
+    },
+    "origin": {
+      "type": "object",
+      "required": ["kind"],
+      "oneOf": [
+        {
+          "$comment": "git: a versioned repo; pin = commit.",
+          "properties": {
+            "kind": { "const": "git" },
+            "repo": { "type": "string" },
+            "commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+            "path": { "type": "string" }
+          },
+          "required": ["kind", "repo", "commit", "path"],
+          "additionalProperties": false
+        },
+        {
+          "$comment": "rest-accession: a database with per-model versions; pin = version + snapshot.",
+          "properties": {
+            "kind": { "const": "rest-accession" },
+            "service": { "type": "string" },
+            "accession": { "type": "string" },
+            "version": { "type": "string" },
+            "url": { "type": "string" },
+            "snapshot": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+          },
+          "required": ["kind", "service", "accession", "version", "snapshot"],
+          "additionalProperties": false
+        },
+        {
+          "$comment": "url: a single immutable direct download (commit-pinned raw URL, release asset, DOI).",
+          "properties": {
+            "kind": { "const": "url" },
+            "url": { "type": "string" },
+            "retrieved": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+          },
+          "required": ["kind", "url"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "license": {
+      "type": "object",
+      "required": ["spdx"],
+      "properties": {
+        "spdx": {
+          "type": "string",
+          "description": "SPDX identifier, or 'unknown' when the upstream states none."
+        },
+        "notice": {
+          "type": ["string", "null"],
+          "description": "Repo-relative path to a LICENSE/NOTICE that must travel with the copy, or null for public-domain grants (CC0)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "repair": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "issue": { "type": "string" },
+        "reason": { "type": "string" },
+        "edits": { "type": "integer", "minimum": 0 },
+        "patch_file": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

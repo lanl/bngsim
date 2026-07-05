@@ -1,0 +1,48 @@
+# Edge case: branched aggregates from a tetravalent monomer
+# Tests:  A(c,c,c,c) — four homotypic sites — produces densely
+#         branched aggregates under self-binding.  Each A node has
+#         degree up to 4 (vs. degree 2 in linear polymers covered
+#         elsewhere).  RM's product-mol BFS short-circuit (P7 sprint)
+#         was tuned for tree complexes; degree-4 internal nodes shape
+#         the partner-mol BFS depth differently.  The cycle-bond
+#         counter must also handle the higher-degree case correctly
+#         when a closing bond turns a tree branch into a cycle.
+# Edge:   small populations (10 monomers) keep the network finite for
+#         ODE generation, but the topology shape is dense enough to
+#         exercise non-trivial connectivity bookkeeping.
+# Tier:   base
+# invariant: conserved A_total = 10
+
+begin model
+begin parameters
+    A_tot   10
+    kf      0.04
+    kr      0.20
+end parameters
+
+begin molecule types
+    A(c,c,c,c)
+end molecule types
+
+begin seed species
+    A(c,c,c,c)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_total      A()
+    Molecules  A_free_c     A(c)
+    Molecules  A_bound_c    A(c!+)
+    Species    A_mono       A(c,c,c,c)
+    Species    A_dimer      A(c!1,c,c,c).A(c!1,c,c,c)
+end observables
+
+begin reaction rules
+    # Self-binding on the symmetric tetravalent component.  bscb keeps
+    # bonds inter-complex; ring formation is suppressed.
+    A(c) + A(c) <-> A(c!1).A(c!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60,param=>"-bscb"})
+end actions

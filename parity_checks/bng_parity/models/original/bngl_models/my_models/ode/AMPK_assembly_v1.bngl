@@ -1,0 +1,491 @@
+#---
+# File:
+#  Filename: AMPK_assembly_v1.bngl
+#  Created: 5 June 2016 (v1)
+#  Completed: June 6
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r3
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# Model:
+#  Title: a model for assembly of AMPK
+#  Contributors:
+#   - Joern Dengjel
+#   - Kristin E. Dittenhafer-Reed
+#   - William S. Hlavacek
+#   - Jeffrey P. MacKeigan
+#   - Katie R. Martin
+#   - Joshua L. Schipper
+#---
+
+#---
+# Cell lines:
+#  - HEK293 cells
+#  - U2OS cells
+#  - HeLa S3 cells
+#  - HeLa Kyoto cells
+#---
+
+#---
+# Compartments:
+#  cyt: cytosol
+#---
+
+#---
+# References:
+#  - Calabrese MF, ... Kurumbail RG (2014) Structure 22: 1161-1172. [PMID: 25066137]
+#  - Chen L, ..., Wu JW (2009) Nature 459: 1146-1149. [PMID: 19474788]
+#  - Chen L, ..., Wu JW (2013) Nature 498: E8-E10. [PMID: 23765502]
+#  - Crawford RM, ..., Mehta A (2006) Mol Cell Biol 26: 5921-5931. [PMID: 16847342]
+#  - Egan DF, ..., Shaw RJ (2015) Mol Cell 59: 285-297. [PMID: 26118643]
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Hallows KR, ..., Foskett JK (2000) J Clin Invest 105: 1711-1721. [PMID: 10862786]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Iseli TJ, ..., Stapleton D (2005) J Biol Chem 280: 13395-13400. [PMID: 15695819]
+#  - Iseli TJ, ..., Kemp BE (2008) J Biol Chem 283: 4799-4807. [PMID: 18079111]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Kuramoto N, ..., Moss SJ (2007) Neuron 53: 233-247. [PMID: 17224405]
+#  - Li X, ..., Melcher K (2015) Cell Res 25: 50-66. [PMID: 25412657]
+#  - Loffler AS, ..., Stork B (2011) Autophagy 7: 696-706. [PMID: 21460634]
+#  - Long X, ..., Avruch J (2005) Curr Biol 15: 702-713. [PMID: 15854902]
+#  - Martin KR, ..., MacKeigan JP (2013) Autophagy 9: 74-92. [PMID: 23196898]
+#  - Oakhill JS, ..., Kemp BE (2010) Proc Natl Acad Sci USA 107: 19237-19241. [PMID: 20974912]
+#  - Syzmanska P, ..., Lipniacki T (2015) PLOS ONE 10: e0116550. [PMID: 25761126]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#  - Viana R, ..., Sanz P (2007) J Biol Chem 282: 16117-16125. [PMID: 17403675]
+#  - Xiao B, ..., Gamblin SJ (2007) Nature 449: 496-500. [PMID: 17851531]
+#  - Xiao B, ..., Gamblin SJ (2011) Nature 472: 230-233. [PMID: 21399626]
+#  - Xiao B, ..., Gamblin SJ (2013) Nat Commun 4: 3017. [PMID: 24352254]
+#  - Xin FJ, ..., Wu JW (2013) Cell Res 23: 1237-1240. [PMID: 23999859]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; see Table S3.
+Vcyt_HEK293     = 2e-12 # L per cell
+Vcyt_U2OS       = 2e-12 # L per cell
+Vcyt_HeLa_S3    = 2e-12 # L per cell
+Vcyt_HeLa_Kyoto = 2e-12 # L per cell
+
+# cell-line specific setting of cytosolic volume
+Vcyt=Vcyt_U2OS # L (dm^3) per cell
+
+#####################################
+# endogenous abundances of proteins #
+#####################################
+
+# protein abundances in HEK293 cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #1 (iBAQ1)
+
+PRKAA1_iBAQ1_HEK293 6.435781 # dimensionless
+PRKAA2_iBAQ1_HEK293 5.735918 # dimensionless
+
+PRKAB1_iBAQ1_HEK293 5.892807 # dimensionless
+PRKAB2_iBAQ1_HEK293 4.961397 # dimensionless
+
+PRKAG1_iBAQ1_HEK293 6.630153 # dimensionless
+#PRKAG2_iBAQ1_HEK293 # no value reported for Experiment #1 by Geiger et al. (2012)
+#PRKAG3_iBAQ1_HEK293 # no value reported by Geiger et al. (2012) for any of the three experiments
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_HEK293 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+PRKAA1_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^PRKAA1_iBAQ1_HEK293 # copies per cell
+PRKAA2_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^PRKAA2_iBAQ1_HEK293 # copies per cell
+PRKAB1_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^PRKAB1_iBAQ1_HEK293 # copies per cell
+PRKAB2_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^PRKAB2_iBAQ1_HEK293 # copies per cell
+PRKAG1_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^PRKAG1_iBAQ1_HEK293 # copies per cell
+PRKAG2_cpc_HEK293 = 0*f # iBAQ_to_cpc_HEK293*10^PRKAG2_iBAQ1_HEK293 # copies per cell
+PRKAG3_cpc_HEK293 = 0*f # iBAQ_to_cpc_HEK293*10^PRKAG3_iBAQ1_HEK293 # copies per cell
+
+# protein abundances in U2OS cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #3 (iBAQ3)
+
+PRKAA1_iBAQ3_U2OS 7.114377 # dimensionless
+PRKAA2_iBAQ3_U2OS 5.672477 # dimensionless
+
+PRKAB1_iBAQ3_U2OS 6.875038 # dimensionless
+PRKAB2_iBAQ3_U2OS 6.491054 # dimensionless
+
+PRKAG1_iBAQ3_U2OS 7.321536 # dimensionless
+PRKAG2_iBAQ3_U2OS 4.459619 # dimensionless
+#PRKAG3_iBAQ3_U2OS # no value reported by Geiger et al. (2012) for any of the three experiments
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_U2OS 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+PRKAA1_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAA1_iBAQ3_U2OS # copies per cell
+PRKAA2_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAA2_iBAQ3_U2OS # copies per cell
+PRKAB1_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAB1_iBAQ3_U2OS # copies per cell
+PRKAB2_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAB2_iBAQ3_U2OS # copies per cell
+PRKAG1_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAG1_iBAQ3_U2OS # copies per cell
+PRKAG2_cpc_U2OS = iBAQ_to_cpc_U2OS*10^PRKAG2_iBAQ3_U2OS # copies per cell
+PRKAG3_cpc_U2OS = 0*f # iBAQ_to_cpc_U2OS*10^PRKAG3_iBAQ3_U2OS # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  comments:
+#   - See Supplementary Table 1 (Kulak et al. 2014).
+
+PRKAA1_cpc_HeLa_S3 158810.1*f # copies per cell
+PRKAA2_cpc_HeLa_S3 625.1614*f # copies per cell
+
+PRKAB1_cpc_HeLa_S3 62313.53*f # copies per cell
+PRKAB2_cpc_HeLa_S3 12931.39*f # copies per cell
+
+PRKAG1_cpc_HeLa_S3 249191.7*f # copies per cell 
+PRKAG2_cpc_HeLa_S3 936.8852*f # copies per cell   
+PRKAG3_cpc_HeLa_S3        0*f # no value reported by Kulak et al. (2014)
+
+# protein abundances in HeLa Kyoto cells
+#  comments:
+#   - See Table S3 (Hein et al., 2015).
+
+PRKAA1_cpc_HeLa_Kyoto 147133*f # copies per cell
+PRKAA2_cpc_HeLa_Kyoto      0*f # no value reported by Hein et al. (2015)
+
+PRKAB1_cpc_HeLa_Kyoto 277161*f # copies per cell
+PRKAB2_cpc_HeLa_Kyoto  12909*f # copies per cell 
+
+PRKAG1_cpc_HeLa_Kyoto  96958*f # copies per cell  
+PRKAG2_cpc_HeLa_Kyoto      0*f # no value reported by Hein et al. (2015) 
+PRKAG3_cpc_HeLa_Kyoto      0*f # no value reported by Hein et al. (2015)
+
+###################################################
+# cellular abundances of small-molecule compounds #
+###################################################
+
+# ATP concentration
+#  comments:
+#   - Fang et al. (2016) reported an ATP concentration of 3.7 mM in HeLa cells.
+#   - We will assume that the total concentration of ATP is 3.7 mM for all cell lines of interest.
+ATP_conc 3.7e-3 # M
+
+ATP_cpc_HEK293     = ATP_conc*(NA*Vcyt_HEK293)     # copies per cell
+ATP_cpc_U2OS       = ATP_conc*(NA*Vcyt_U2OS)       # copies per cell
+ATP_cpc_HeLa_S3    = ATP_conc*(NA*Vcyt_HeLa_S3)    # copies per cell
+ATP_cpc_HeLa_Kyoto = ATP_conc*(NA*Vcyt_HeLa_Kyoto) # copies per cell
+
+#########################################################################
+# concentrations of small-molecule compounds in the extracellular fluid #
+#########################################################################
+
+
+###########################
+# parameters of rate laws #
+###########################
+
+# rate constants for AMPK assembly reactions
+#   beta subunit reversibly binds the alpha subunit
+kf_BA_AMPK 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_BA_AMPK 0.001 # /s
+#   beta subunit reversibly binds the gamma subunit
+kf_BG_AMPK 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_BG_AMPK 0.005 # /s
+
+end parameters
+
+begin molecule types
+
+# AMPK subunits
+
+PRKAA1(T183~0~P,CTD)
+#---
+# PRKAA1: 5'-AMP-activated protein kinase (AMPK) catalytic subunit alpha-1
+#  UniProt entry: http://www.uniprot.org/uniprot/Q13131
+#  comments:
+#   - 559 amino acids (Q13131-1)
+#   - isoform 1 (of 2) of the catalytic subunit of AMPK (AMPKalpha) 
+#   - contains a CAMK-family serine/threonine-specific kinase domain
+#   - The N-lobe of the kinase domain interacts with the carbohydrate-binding module
+#     in AMPKbeta.
+#   - The activation loop threonine is T183 in PRKAA1 (corresponds to T172 in PRKAA2).
+#   - contains an autoinhibitory domain (AID)
+#   - contains RIM1 and RIM2 motifs in the linker region, where
+#     RIM stands for "regulatory subunit interaction motif."
+#   - RIM1 interacts with CBS2 in AMPKgamma (when Site 3 in AMPKgamma is bound to AMP).
+#   - RIM2 interacts with AMP docked to Site 3 in AMPKgamma.
+#   - contains a C-terminal domain (CTD)
+#   - contains a S/T-rich loop
+#   - contains an AKT substrate (S486 in PRKAA1) within the S/T-rich loop
+#   - A fragment of rat Prkaa1 (aa 289–550), which contains the AID, multiple Ulk1 substrates 
+#     and the C-terminal domain, associates with an AMPK substrate; this protein is
+#     bound by fragment aa 289-550 away from the sites phosphorylated by AMPK (Kuramoto et al., 2007).
+#   - A fragment of rat Prkaa1 (aa 407-550) associates with an AMPK substrate (Hallows et al., 2000).
+#   - AMPKalpha binds an AMPK substrate (Crawford et al., 2006); a glutamic acid in the substrate is
+#     important for the interaction.
+#  components:
+#   CAMK: Ca2+/calmodulin-dependent kinase (CAMK) domain (aa 27-279)
+#   T183: activation-loop threonine 183 (correponds to T172 in PRKAA2)
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, EFLR(pT)SCGS
+#   AID: autoinhibitory domain (AID) (aa 302-281, from UniProt)
+#    comments:
+#     - also referred to as the autoinhibitory sequence (AIS)
+#     - folds into a compact three-helix bundle,
+#       the same fold as a ubiquitin-associated (UBA) domain
+#     - The C-terminal end of the AID overlaps with the N-terminal end of RIM1.
+#   RIM1: regulatory subunit interaction motif 1 (RIM1) (aa 343-353)
+#    comments:
+#     - RIMNEAKDFYL (aa 343-353 in PRKAA1)
+#     - See Xin et al. (2013).
+#   RIM2: regulatory subunit interaction motif 2 (RIM2) (aa 369-379)
+#    comments:
+#     - RPHPERVPFLV (aa 369-379 in PRKAA1)
+#     - See Xin et al. (2013) and Chen et al. (2013).
+#   CTD: C-terminal domain (CTD)
+#    comments:
+#     - A fragment from the C-terminal end of AMPKalpha, aa 314-474 in PRKAA1, is
+#       competent for binding to AMPKbeta (Iseli et al., 2005). 
+#     - See the structure of human AMPK reported by Li et al. (2015).
+#     - PRKAA1 contains a conserved sequence (aa 406-503) found in yeast homologs of AMPKalpha.
+#       http://pfam.xfam.org/family/PF16579.2
+#     - The conserved sequence is sometimes called the C-terminal adenylate sensor domain; 
+#       it overlaps with the kinase associated domain 1 (KA1) sequence.
+#   STloop: serine/threonine-rich loop
+#---
+
+PRKAA2(T172~0~P,CTD)
+
+PRKAB1(CTD_alpha,CTD_gamma)
+#---
+# PRKAB1: 5'-AMP-activated protein kinase (AMPK) subunit beta-1
+#  UniProt entry: http://www.uniprot.org/uniprot/Q9Y478
+#  comments:
+#   - 269 amino acids, 2-270 (Q9Y478-1)
+#   - isoform 1 (of 2) of the non-catalytic scaffold subunit of AMPK (AMPKbeta)
+#   - AMPKbeta is a scaffold protein that bridges AMPKalpha (the catalytic subunit) 
+#     and AMPKgamma (the non-catalytic AMP/ADP/ATP-binding regulatory subunit).
+#   - contains an N-myristoylation motif (MGNxxS): aa 1-6 (MGNTSS)
+#   - myristoylated at G2 (after removal of the initiator methionine) 
+#     (Oakhill et al., 2010)
+#   - contains a non-conserved sequence linking G2~Myr to a carbohydrate-binding module
+#   - contains a carbohydrate-binding module (CBM or CBM48), which contacts the N-lobe
+#     of the AMPKalpha kinase domain: aa 68-163 (aka the glycogen-binding domain)
+#   - Phosphorylated S108 in the CBM interacts with two conserved lysines in the N-lobe
+#     of the AMPKalpha kinase domain (Xiao et al., 2013).
+#   - The cleft between the CBM and N-lobe of the AMPKalpha kinase domain forms the
+#     allosteric drug and metabolite (ADaM) binding site. The ADaM site binds salicylate, 
+#     which activates AMPK (Chen et al., 2009; Calabrese et al., 2014).
+#   - contains a linker connecting the CBM to a C-terminal domain
+#   - contains a C-terminal domain (CTD), which forms the core of the AMPK heterotrimer
+#   - The CTD in AMPKbeta (aa 186-270 in PRKAB1) is responsible for interaction with 
+#     AMPKalpha and AMPKgamma; the last 25 aa of the CTD (aa 246-270 in PRKAB1) is 
+#     responsible for interaction with AMPKgamma (Iseli et al., 2005). See also
+#     Xiao et al. (2007) and Iseli et al. (2008).
+#   - Two beta-strands in AMPKbeta (V248-R256 in PRKAB1) and (Y261-P269 in PRKAB1),
+#     located at the C-terminal end of the CTD, form a beta-sheet with a beta-strand
+#     in AMPKgamma (S45-D52 in PRKAG1), located at the N-terminal end of the CBS1 domain
+#     (Xiao et al., 2007). See also Iseli et al. (2008).
+#   - The phosphorylated activation loop in AMP-bound (but not ATP-bound) AMPK is shielded 
+#     from phosphatases by AMPKbeta (Xiao et al., 2011).
+#  components:
+#   CTD_alpha: the part of the C-terminal domain (CTD) that interacts with AMPKalpha
+#    comments: 
+#     - The isolated CTD, aa 186-270 in PRKAB1, is sufficient for interaction of AMPK beta
+#       with both AMPKalpha and AMPKgamma (Iseli et al., 2005). 
+#     - See Li et al. (2015) and PDB entry 4RER.
+#   CTD_gamma: the part of the C-terminal domain (CTD) that interacts wihh AMPKgamma
+#    comments:
+#     - The last 25 amino acids of the CTD, aa 246-270 in PRKAB1, are sufficient for
+#       interaction of AMPKbeta with AMPKgamma (Iseli et al., 2005).
+#     - See also Xiao et al. (2007) and Iseli et al. (2008).
+#--- 
+
+PRKAB2(CTD_alpha,CTD_gamma)
+
+PRKAG1(CBS1,Site3~0~P)
+#---
+# PRKAG1: 5'-AMP-activated protein kinase (AMPK) subunit gamma-1
+#  UniProt entry: http://www.uniprot.org/uniprot/P54619
+#  comments:
+#   - 331 amino acids (P54619-1)
+#   - isoform 1 (of 3) of the non-catalytic regulatory subunit of AMPK (AMPKgamma)
+#   - AMPKgamma binds AMP, ADP and ATP.
+#   - AMPKgamma mediates allosteric regulation of the kinase domain in AMPKalpha;
+#     it also regulates phosphorylation and dephosphorylation of the activation-loop 
+#     threonine (T183 in PRKAA1, T172 in PRKAA2).
+#   - contains an N-terminal extension (the shortest of the three gamma isoforms)
+#   - contains four tandem cystathionine beta-synthase repeats (CBS1, CBS2, CBS3, and CBS4)
+#   - Two CBS repeats form a Bateman domain.
+#   - The adenine ring of AMP sits in a hydrophobic pocket of a CBS repeat.
+#   - A conserved aspartate residue found in CBS repeats interacts with the 2' and 3'-hydroxyl 
+#     groups of the ribose moiety in AMP.
+#   - The conserved aspartic acids in CSB1, CBS3 and CBS4 are D90, D245 and D317 in PRKAG1.
+#   - In CBS2, the conserved aspartate is replaced by arginine (R171).
+#   - The four CBS repeats assemble into a disk-shaped structure.
+#   - CBS1 and CBS2 together comprise a Bateman domain.
+#   - The N-terminal part of CBS1 interacts with the C-terminal domain of AMPKbeta.
+#   - CBS2 cannot bind adenine nucleotides.
+#   - CBS2 interacts with the RIM1 motif in AMPKalpha (when Site 3 is bound to AMP).
+#   - CBS3 and CBS4 together comprise a Bateman domain.
+#   - CBS1, CBS3 and CBS4 are competent for binding adenine nucleotides.
+#   - CBS3 (or rather Site 3, the cleft between CBS3 and CBS4) is the critical AMP binding site.
+#   - Adenine nucleotides compete for binding to Site 3.
+#   - The RIM2 motif in AMPKalpha clamps down on AMP when AMP occupies Site 3.
+#   - CBS4 is constitutively associated with AMP
+#  components:
+#   CBS1: cystathionine beta-synthase repeat 1 (CBS1)
+#    comments:
+#     - A beta-strand at the N-terminal end of CBS1 (aa 45-52 in PRKAG1) forms a beta-sheet
+#       with two beta-strands located at the C terminus of AMPKbeta (Xiao et al., 2007).
+#     - See also Viana et al. (2007) and Iseli et al. (2008).
+#     - CBS1 and CBS2 together comprise one of the two Bateman domains in AMPKgamma.
+#   Site3: Site 3
+#    states:
+#     - 0: unmodified
+#     - P: phosphorylated, at S260 (and/or T262) and/or S269
+#    comments:
+#     - Site 3 is an adenine nucleotide binding site located in the cleft between CBS3 and CBS4
+#       (Xiao et al., 2007).
+#     - Loffler et al. (2011) identified substrates of ULK1 in each AMPK subunit, including
+#       S260/T262 and S269, which are located in the sequence of the Bateman domain formed by 
+#       CBS3 and CBS4.
+#     - The sequences surrounding S260 [NNLDV(pS)VTKA] and S269 [ALQHR(pS)HYFE] arguably match 
+#       the ULK1 consensus phosphorylation motif defined by Egan et al. (2015).
+#     - Loffler et al. (2011) reported that ULK1 phosphorylation of AMPK inhibits AMPK activity 
+#       (or activation).
+#---
+
+PRKAG2(CBS1,Site3~0~P)
+PRKAG3(CBS1,Site3~0~P)
+
+# add AMP:ATP ratio (and AMP:ATP ratio determined binding of AMP to Site 3 in AMPKgamma)
+# add constitutively active LKB1
+# add constitutively active Tloop phosphatases
+# add AMP-induced allosteric activation of AMPK kinase activity
+# add AMP-induced shielding of pT172/pT183 from phosphatases
+# add (monomeric, cytosolic) RPTOR(S792~0~P) as a substrate of AMPK
+# parameterize the model for the a1b1g1>a1b2g1>a2b1g1>a2b2g1 isoforms of AMPK
+# add (hypothetical) substrate-docking domain to AMPKalpha subunit.
+# add docking of AMPK to ULK1 at S758.
+# add ULK1-mediated phosphorylation of Site 3 in AMPKgamma
+# assume that phosphorylation of Site 3 disrupts Site 3 interaction with AMP
+# add AMPK-mediated phosphorylation of S317 and S556 in ULK1.
+
+end molecule types
+
+begin seed species
+
+PRKAA1(T183~0,CTD) 0.9*PRKAA1_cpc_U2OS
+PRKAA1(T183~P,CTD) 0.1*PRKAA1_cpc_U2OS
+PRKAA2(T172~0,CTD) 0.9*PRKAA2_cpc_U2OS
+PRKAA2(T172~P,CTD) 0.1*PRKAA2_cpc_U2OS
+PRKAB1(CTD_alpha,CTD_gamma) PRKAB1_cpc_U2OS
+PRKAB2(CTD_alpha,CTD_gamma) PRKAB2_cpc_U2OS
+PRKAG1(CBS1,Site3~0) PRKAG1_cpc_U2OS
+PRKAG2(CBS1,Site3~0) PRKAG2_cpc_U2OS
+PRKAG3(CBS1,Site3~0) PRKAG3_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules PRKAA1tot PRKAA1()
+Molecules PRKAA2tot PRKAA2()
+Molecules PRKAB1tot PRKAB1()
+Molecules PRKAB2tot PRKAB2()
+Molecules PRKAG1tot PRKAG1()
+Molecules PRKAG2tot PRKAG2()
+Molecules PRKAG3tot PRKAG3()
+
+Molecules AMPK_a1b1g1 PRKAA1(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG1(CBS1!2)
+Molecules AMPK_a2b1g1 PRKAA2(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG1(CBS1!2)
+Molecules AMPK_a1b2g1 PRKAA1(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG1(CBS1!2)
+Molecules AMPK_a2b2g1 PRKAA2(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG1(CBS1!2)
+
+Molecules AMPK_a1b1g2 PRKAA1(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG2(CBS1!2)
+Molecules AMPK_a2b1g2 PRKAA2(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG2(CBS1!2)
+Molecules AMPK_a1b2g2 PRKAA1(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG2(CBS1!2)
+Molecules AMPK_a2b2g2 PRKAA2(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG2(CBS1!2)
+
+Molecules AMPK_a1b1g3 PRKAA1(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG3(CBS1!2)
+Molecules AMPK_a2b1g3 PRKAA2(CTD!1).PRKAB1(CTD_alpha!1,CTD_gamma!2).PRKAG3(CBS1!2)
+Molecules AMPK_a1b2g3 PRKAA1(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG3(CBS1!2)
+Molecules AMPK_a2b2g3 PRKAA2(CTD!1).PRKAB2(CTD_alpha!1,CTD_gamma!2).PRKAG3(CBS1!2)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+#################
+# AMPK assembly #
+#################
+
+# AMPK assembly/disassembly
+#   The beta subunit reversibly binds the alpha subunit.
+PRKAB1(CTD_alpha)+PRKAA1(CTD)<->PRKAB1(CTD_alpha!1).PRKAA1(CTD!1) kf_BA_AMPK,kr_BA_AMPK
+PRKAB2(CTD_alpha)+PRKAA1(CTD)<->PRKAB2(CTD_alpha!1).PRKAA1(CTD!1) kf_BA_AMPK,kr_BA_AMPK
+PRKAB1(CTD_alpha)+PRKAA2(CTD)<->PRKAB1(CTD_alpha!1).PRKAA2(CTD!1) kf_BA_AMPK,kr_BA_AMPK
+PRKAB2(CTD_alpha)+PRKAA2(CTD)<->PRKAB2(CTD_alpha!1).PRKAA2(CTD!1) kf_BA_AMPK,kr_BA_AMPK
+#   The beta subunit reverisbly binds the gamma subunit.
+PRKAB1(CTD_gamma)+PRKAG1(CBS1)<->PRKAB1(CTD_gamma!1).PRKAG1(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+PRKAB2(CTD_gamma)+PRKAG1(CBS1)<->PRKAB2(CTD_gamma!1).PRKAG1(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+PRKAB1(CTD_gamma)+PRKAG2(CBS1)<->PRKAB1(CTD_gamma!1).PRKAG2(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+PRKAB2(CTD_gamma)+PRKAG2(CBS1)<->PRKAB2(CTD_gamma!1).PRKAG2(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+PRKAB1(CTD_gamma)+PRKAG3(CBS1)<->PRKAB1(CTD_gamma!1).PRKAG3(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+PRKAB2(CTD_gamma)+PRKAG3(CBS1)<->PRKAB2(CTD_gamma!1).PRKAG3(CBS1!1) kf_BG_AMPK,kr_BG_AMPK
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100})
+
+end actions

@@ -1,0 +1,39 @@
+begin model
+  begin parameters
+    kpX 1
+    kmX 1
+    kpY 1
+    kmY 1
+    kpZ 1
+    kmZ 1
+    RTOT 100
+  end parameters
+  begin molecule types
+    X(S~0~1)
+    Y(S~0~1)
+    Z(S~0~1)
+  end molecule types
+  begin seed species
+    X(S~0) RTOT
+    Y(S~0) RTOT
+    Z(S~0) RTOT
+  end seed species
+  begin observables
+    Species X1 X(S~1)
+    Species Y1 Y(S~1)
+    Species Z1 Z(S~1)
+  end observables
+  begin functions
+    R111()=(X1/RTOT)*(Y1/RTOT)*(Z1/RTOT)*RTOT
+  end functions
+  begin reaction rules
+    X(S~0)<->X(S~1) kpX,kmX
+    Y(S~0)<->Y(S~1) kpY,kmY
+    Z(S~0)<->Z(S~1) kpZ,kmZ
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_end=>10,n_steps=>100,\
+            print_functions=>1})
+end actions

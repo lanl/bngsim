@@ -1,0 +1,1697 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" layout:required="false" level="3" render:required="false" version="1" xmlns:layout="http://www.sbml.org/sbml/level3/version1/layout/version1" xmlns:render="http://www.sbml.org/sbml/level3/version1/render/version1">
+  <model areaUnits="area" extentUnits="substance" id="Dual_G_protein_Model" lengthUnits="length" metaid="COPASI0" name="Dual G protein Model" substanceUnits="substance" timeUnits="time" volumeUnits="volume">
+    <annotation>
+      <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:vCard4="http://www.w3.org/2006/vcard/ns#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+        <rdf:Description rdf:about="#COPASI0">
+	<dcterms:created rdf:parseType="Resource">
+	<dcterms:W3CDTF>2023-06-07T14:25:52Z</dcterms:W3CDTF>
+	</dcterms:created>
+	<dcterms:modified rdf:parseType="Resource">
+	<dcterms:W3CDTF>2023-06-07T14:25:52Z</dcterms:W3CDTF>
+	</dcterms:modified>
+	<bqmodel:is>
+	<rdf:Bag>
+	<rdf:li rdf:resource="https://identifiers.org/biomodels.db:MODEL2306210001"/>
+	</rdf:Bag>
+	</bqmodel:is>
+	<bqbiol:hasProperty>
+	<rdf:Bag>
+	<rdf:li rdf:resource="http://identifiers.org/mamo/MAMO_0000046"/>
+	</rdf:Bag>
+	</bqbiol:hasProperty>
+	<bqmodel:isDescribedBy>
+	<rdf:Bag>
+	<rdf:li rdf:resource="https://identifiers.org/pubmed:40392940"/>
+	</rdf:Bag>
+	</bqmodel:isDescribedBy>
+	</rdf:Description>
+	
+	
+	
+      </rdf:RDF>
+      <copasi:COPASI xmlns:copasi="http://www.copasi.org/static/sbml">
+        <rdf:RDF xmlns:dcterms="http://purl.org/dc/terms/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+          <rdf:Description rdf:about="#COPASI0">
+            <dcterms:created>
+              <rdf:Description>
+                <dcterms:W3CDTF>2023-06-07T14:25:52Z</dcterms:W3CDTF>
+              </rdf:Description>
+            </dcterms:created>
+          </rdf:Description>
+        </rdf:RDF>
+      </copasi:COPASI>
+    </annotation>
+      <listOfUnitDefinitions>
+      <unitDefinition id="length" name="length">
+        <listOfUnits>
+          <unit exponent="1" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="area" name="area">
+        <listOfUnits>
+          <unit exponent="2" kind="metre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="volume" name="volume">
+        <listOfUnits>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="time" name="time">
+        <listOfUnits>
+          <unit exponent="1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="substance" name="substance">
+        <listOfUnits>
+          <unit exponent="1" kind="mole" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="unit_0" name="l/(mol*s)">
+        <listOfUnits>
+          <unit exponent="-1" kind="mole" multiplier="1" scale="0"/>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+          <unit exponent="-1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="unit_1" name="1/(s)">
+        <listOfUnits>
+          <unit exponent="-1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="unit_2" name="1">
+        <listOfUnits>
+          <unit exponent="0" kind="dimensionless" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="unit_3" name="l/(mol*mol*s)">
+        <listOfUnits>
+          <unit exponent="-2" kind="mole" multiplier="1" scale="0"/>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+          <unit exponent="-1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+      <unitDefinition id="unit_4" name="l/(s)">
+        <listOfUnits>
+          <unit exponent="1" kind="litre" multiplier="1" scale="0"/>
+          <unit exponent="-1" kind="second" multiplier="1" scale="0"/>
+        </listOfUnits>
+      </unitDefinition>
+    </listOfUnitDefinitions>
+    <listOfCompartments>
+      <compartment constant="true" id="compartment" metaid="COPASI1" name="compartment" size="1" spatialDimensions="3" units="volume"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="L" initialConcentration="0" metaid="COPASI2" name="L" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRi" initialConcentration="0" metaid="COPASI3" name="LRi" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="Ri" initialConcentration="4.15E-10" metaid="COPASI4" name="Ri" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="Ra" initialConcentration="0" metaid="COPASI5" name="Ra" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRa" initialConcentration="0" metaid="COPASI6" name="LRa" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G1" initialConcentration="4.15E-10" metaid="COPASI7" name="G1" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="RiG1" initialConcentration="0" metaid="COPASI8" name="RiG1" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRiG1" initialConcentration="0" metaid="COPASI9" name="LRiG1" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="RaG1" initialConcentration="0" metaid="COPASI10" name="RaG1" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRaG1" initialConcentration="0" metaid="COPASI11" name="LRaG1" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G2" initialConcentration="4.15E-10" metaid="COPASI12" name="G2" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="RiG2" initialConcentration="0" metaid="COPASI13" name="RiG2" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRiG2" initialConcentration="0" metaid="COPASI14" name="LRiG2" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="RaG2" initialConcentration="0" metaid="COPASI15" name="RaG2" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="LRaG2" initialConcentration="0" metaid="COPASI16" name="LRaG2" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G1aGTP" initialConcentration="0" metaid="COPASI17" name="G1aGTP" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="Gbg" initialConcentration="0" metaid="COPASI18" name="Gbg" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G2aGTP" initialConcentration="0" metaid="COPASI19" name="G2aGTP" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G1aGDP" initialConcentration="0" metaid="COPASI20" name="G1aGDP" substanceUnits="substance"/>
+      <species boundaryCondition="false" compartment="compartment" constant="false" hasOnlySubstanceUnits="false" id="G2aGDP" initialConcentration="0" metaid="COPASI21" name="G2aGDP" substanceUnits="substance"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter constant="true" id="kL" metaid="COPASI22" name="kL+" units="unit_0" value="13600000"/>
+      <parameter constant="true" id="kL_0" metaid="COPASI23" name="kL-" units="unit_1" value="3.61"/>
+      <parameter constant="true" id="kact" metaid="COPASI24" name="kact+" units="unit_1" value="3.84E-6"/>
+      <parameter constant="true" id="kact_0" metaid="COPASI25" name="kact-" units="unit_1" value="25.4"/>
+      <parameter constant="true" id="kG1" metaid="COPASI26" name="kG1+" units="unit_0" value="16000000"/>
+      <parameter constant="true" id="kG1_0" metaid="COPASI27" name="kG1-" units="unit_1" value="5.33E-5"/>
+      <parameter constant="true" id="kG2" metaid="COPASI28" name="kG2+" units="unit_0" value="16000000"/>
+      <parameter constant="true" id="kG2_0" metaid="COPASI29" name="kG2-" units="unit_1" value="5.33E-5"/>
+      <parameter constant="true" id="alpha" metaid="COPASI30" name="alpha+" units="unit_2" value="2580"/>
+      <parameter constant="true" id="alpha_0" metaid="COPASI31" name="alpha-" units="unit_2" value="0.0102"/>
+      <parameter constant="true" id="beta1" metaid="COPASI32" name="beta1+" units="unit_2" value="0.785"/>
+      <parameter constant="true" id="beta1_0" metaid="COPASI33" name="beta1-" units="unit_2" value="5240000"/>
+      <parameter constant="true" id="beta2" metaid="COPASI34" name="beta2+" units="unit_2" value="0.785"/>
+      <parameter constant="true" id="beta2_0" metaid="COPASI35" name="beta2-" units="unit_2" value="5240000"/>
+      <parameter constant="true" id="gamma1" metaid="COPASI36" name="gamma1+" units="unit_2" value="0.0986"/>
+      <parameter constant="true" id="gamma1_0" metaid="COPASI37" name="gamma1-" units="unit_2" value="0.0135"/>
+      <parameter constant="true" id="gamma2" metaid="COPASI38" name="gamma2+" units="unit_2" value="0.0986"/>
+      <parameter constant="true" id="gamma2_0" metaid="COPASI39" name="gamma2-" units="unit_2" value="0.0135"/>
+      <parameter constant="true" id="k_GDA1" metaid="COPASI40" name="k_GDA1+" units="unit_3" value="548690100"/>
+      <parameter constant="true" id="k_GDA1_0" metaid="COPASI41" name="k_GDA1-" units="unit_0" value="1E-10"/>
+      <parameter constant="true" id="k_GDA2" metaid="COPASI42" name="k_GDA2+" units="unit_3" value="548690100"/>
+      <parameter constant="true" id="k_GDA2_0" metaid="COPASI43" name="k_GDA2-" units="unit_0" value="1E-10"/>
+      <parameter constant="true" id="k_hyd1" metaid="COPASI44" name="k_hyd1+" units="unit_4" value="0.515"/>
+      <parameter constant="true" id="k_hyd1_0" metaid="COPASI45" name="k_hyd1-" units="unit_1" value="2E-5"/>
+      <parameter constant="true" id="k_hyd2" metaid="COPASI46" name="k_hyd2+" units="unit_4" value="0.515"/>
+      <parameter constant="true" id="k_hyd2_0" metaid="COPASI47" name="k_hyd2-" units="unit_1" value="2E-5"/>
+      <parameter constant="true" id="k_GRA1" metaid="COPASI48" name="k_GRA1+" units="unit_0" value="242000000"/>
+      <parameter constant="true" id="k_GRA1_0" metaid="COPASI49" name="k_GRA1-" units="unit_1" value="1E-10"/>
+      <parameter constant="true" id="k_GRA2" metaid="COPASI50" name="k_GRA2+" units="unit_0" value="242000000"/>
+      <parameter constant="true" id="k_GRA2_0" metaid="COPASI51" name="k_GRA2-" units="unit_1" value="1E-10"/>
+      <parameter constant="false" id="k01" metaid="COPASI52" name="k01+" units="unit_0" value="13600000"/>
+      <parameter constant="false" id="k01_0" metaid="COPASI53" name="k01-" units="unit_0" value="3.61"/>
+      <parameter constant="false" id="k02" metaid="COPASI54" name="k02+" units="unit_0" value="3.84E-6"/>
+      <parameter constant="false" id="k02_0" metaid="COPASI55" name="k02-" units="unit_0" value="25.4"/>
+      <parameter constant="false" id="k03" metaid="COPASI56" name="k03+" units="unit_0" value="0.0099072"/>
+      <parameter constant="false" id="k03_0" metaid="COPASI57" name="k03-" units="unit_0" value="0.25908"/>
+      <parameter constant="false" id="k04" metaid="COPASI58" name="k04+" units="unit_0" value="3.5088E10"/>
+      <parameter constant="false" id="k04_0" metaid="COPASI59" name="k04-" units="unit_0" value="0.036822"/>
+      <parameter constant="false" id="k05" metaid="COPASI60" name="k05+" units="unit_0" value="16000000"/>
+      <parameter constant="false" id="k05_0" metaid="COPASI61" name="k05-" units="unit_0" value="5.33E-5"/>
+      <parameter constant="false" id="k06" metaid="COPASI62" name="k06+" units="unit_0" value="1577600"/>
+      <parameter constant="false" id="k06_0" metaid="COPASI63" name="k06-" units="unit_0" value="7.1955E-7"/>
+      <parameter constant="false" id="k07" metaid="COPASI64" name="k07+" units="unit_0" value="12560000"/>
+      <parameter constant="false" id="k07_0" metaid="COPASI65" name="k07-" units="unit_0" value="279.292"/>
+      <parameter constant="false" id="k08" metaid="COPASI66" name="k08+" units="unit_0" value="1238416"/>
+      <parameter constant="false" id="k08_0" metaid="COPASI67" name="k08-" units="unit_0" value="3.770442"/>
+      <parameter constant="false" id="k09" metaid="COPASI68" name="k09+" units="unit_0" value="16000000"/>
+      <parameter constant="false" id="k09_0" metaid="COPASI69" name="k09-" units="unit_0" value="5.33E-5"/>
+      <parameter constant="false" id="k10" metaid="COPASI70" name="k10+" units="unit_0" value="1577600"/>
+      <parameter constant="false" id="k10_0" metaid="COPASI71" name="k10-" units="unit_0" value="7.1955E-7"/>
+      <parameter constant="false" id="k11" metaid="COPASI72" name="k11+" units="unit_0" value="12560000"/>
+      <parameter constant="false" id="k11_0" metaid="COPASI73" name="k11-" units="unit_0" value="279.292"/>
+      <parameter constant="false" id="k12" metaid="COPASI74" name="k12+" units="unit_0" value="1238416"/>
+      <parameter constant="false" id="k12_0" metaid="COPASI75" name="k12-" units="unit_0" value="3.770442"/>
+      <parameter constant="false" id="k13" metaid="COPASI76" name="k13+" units="unit_0" value="1340960"/>
+      <parameter constant="false" id="k13_0" metaid="COPASI77" name="k13-" units="unit_0" value="0.048735"/>
+      <parameter constant="false" id="k14" metaid="COPASI78" name="k14+" units="unit_0" value="3.0144E-6"/>
+      <parameter constant="false" id="k14_0" metaid="COPASI79" name="k14-" units="unit_0" value="133096000"/>
+      <parameter constant="false" id="k15" metaid="COPASI80" name="k15+" units="unit_0" value="0.007777152"/>
+      <parameter constant="false" id="k15_0" metaid="COPASI81" name="k15-" units="unit_0" value="1.3575792E6"/>
+      <parameter constant="false" id="k16" metaid="COPASI82" name="k16+" units="unit_0" value="3.4596768E9"/>
+      <parameter constant="false" id="k16_0" metaid="COPASI83" name="k16-" units="unit_0" value="0.000497097"/>
+      <parameter constant="false" id="k17" metaid="COPASI84" name="k17+" units="unit_0" value="1340960"/>
+      <parameter constant="false" id="k17_0" metaid="COPASI85" name="k17-" units="unit_0" value="0.048735"/>
+      <parameter constant="false" id="k18" metaid="COPASI86" name="k18+" units="unit_0" value="3.0144E-6"/>
+      <parameter constant="false" id="k18_0" metaid="COPASI87" name="k18-" units="unit_0" value="133096000"/>
+      <parameter constant="false" id="k19" metaid="COPASI88" name="k19+" units="unit_0" value="0.007777152"/>
+      <parameter constant="false" id="k19_0" metaid="COPASI89" name="k19-" units="unit_0" value="1.3575792E6"/>
+      <parameter constant="false" id="k20" metaid="COPASI90" name="k20+" units="unit_0" value="3.4596768E9"/>
+      <parameter constant="false" id="k20_0" metaid="COPASI91" name="k20-" units="unit_0" value="0.000497097"/>
+      <parameter constant="false" id="k21" metaid="COPASI92" name="k21+" units="unit_0" value="548690100"/>
+      <parameter constant="false" id="k21_0" metaid="COPASI93" name="k21-" units="unit_0" value="1E-10"/>
+      <parameter constant="false" id="k22" metaid="COPASI94" name="k22+" units="unit_0" value="548690100"/>
+      <parameter constant="false" id="k22_0" metaid="COPASI95" name="k22-" units="unit_0" value="1E-10"/>
+      <parameter constant="false" id="k23" metaid="COPASI96" name="k23+" units="unit_0" value="7.40731635E6"/>
+      <parameter constant="false" id="k23_0" metaid="COPASI97" name="k23-" units="unit_0" value="9.86E-12"/>
+      <parameter constant="false" id="k24" metaid="COPASI98" name="k24+" units="unit_0" value="7.40731635E6"/>
+      <parameter constant="false" id="k24_0" metaid="COPASI99" name="k24-" units="unit_0" value="9.86E-12"/>
+      <parameter constant="false" id="k25" metaid="COPASI100" name="k25+" units="unit_0" value="0.515"/>
+      <parameter constant="false" id="k25_0" metaid="COPASI101" name="k25-" units="unit_0" value="2E-5"/>
+      <parameter constant="false" id="k26" metaid="COPASI102" name="k26+" units="unit_0" value="0.515"/>
+      <parameter constant="false" id="k26_0" metaid="COPASI103" name="k26-" units="unit_0" value="2E-5"/>
+      <parameter constant="false" id="k27" metaid="COPASI104" name="k27+" units="unit_0" value="242000000"/>
+      <parameter constant="false" id="k27_0" metaid="COPASI105" name="k27-" units="unit_0" value="1E-10"/>
+      <parameter constant="false" id="k28" metaid="COPASI106" name="k28+" units="unit_0" value="242000000"/>
+      <parameter constant="false" id="k28_0" metaid="COPASI107" name="k28-" units="unit_0" value="1E-10"/>
+      <parameter constant="true" id="LigandConcAdded" metaid="COPASI108" name="LigandConcAdded" value="1E-6"/>
+      <parameter constant="false" id="v_Gtot1" metaid="COPASI109" name="v_Gtot1" value="4.15E-10"/>
+      <parameter constant="false" id="v_Gtot2" metaid="COPASI110" name="v_Gtot2" value="4.15E-10"/>
+      <parameter constant="false" id="v_Gtot_Total" metaid="COPASI111" name="v_Gtot_Total" value="8.3E-10"/>
+      <parameter constant="false" id="v_Gtot1_at_L" metaid="COPASI112" name="v_Gtot1_at_L" value="1"/>
+      <parameter constant="false" id="v_Gtot2_at_L" metaid="COPASI113" name="v_Gtot2_at_L" value="1"/>
+      <parameter constant="false" id="v_Gtot_Total_at_L" metaid="COPASI114" name="v_Gtot_Total_at_L" value="1"/>
+      <parameter constant="true" id="TRUPATH_Sys_Max" metaid="COPASI115" name="TRUPATH_Sys_Max" value="1.389682"/>
+      <parameter constant="false" id="v_Simulated_TRUPATH_G1" metaid="COPASI116" name="v_Simulated_TRUPATH_G1" value="-1.38968199942328"/>
+      <parameter constant="false" id="v_Simulated_TRUPATH_G2" metaid="COPASI117" name="v_Simulated_TRUPATH_G2" value="-1.38968199942328"/>
+      <parameter constant="false" id="v_Simulated_TRUPATH_Total" metaid="COPASI118" name="v_Simulated_TRUPATH_Total" value="-1.67431566126092E9"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="k28_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GRA2_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k28">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GRA2 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k02_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kact_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k03">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact </ci>
+            <ci> alpha </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k05">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kG1 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k06_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1_0 </ci>
+            <ci> gamma1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Gtot1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <plus/>
+            <ci> G1 </ci>
+            <ci> RiG1 </ci>
+            <ci> LRiG1 </ci>
+            <ci> RaG1 </ci>
+            <ci> LRaG1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k06">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1 </ci>
+            <ci> gamma1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k05_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kG1_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k08_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1_0 </ci>
+            <ci> beta1_0 </ci>
+            <ci> gamma1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k10_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2_0 </ci>
+            <ci> gamma2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k04">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL </ci>
+            <ci> alpha </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k13_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL_0 </ci>
+            <ci> gamma1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k13">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL </ci>
+            <ci> gamma1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k04_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL_0 </ci>
+            <ci> alpha_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k08">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1 </ci>
+            <ci> beta1 </ci>
+            <ci> gamma1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k14">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact </ci>
+            <ci> beta1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k07">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1 </ci>
+            <ci> beta1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k09_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kG2_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k09">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kG2 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k07_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG1_0 </ci>
+            <ci> beta1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k10">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2 </ci>
+            <ci> gamma2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k11">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2 </ci>
+            <ci> beta2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k11_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2_0 </ci>
+            <ci> beta2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k12">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2 </ci>
+            <ci> beta2 </ci>
+            <ci> gamma2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k12_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kG2_0 </ci>
+            <ci> beta2_0 </ci>
+            <ci> gamma2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k14_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact_0 </ci>
+            <ci> beta1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k15">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact </ci>
+            <ci> alpha </ci>
+            <ci> beta1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k15_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact_0 </ci>
+            <ci> alpha_0 </ci>
+            <ci> beta1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k16">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL </ci>
+            <ci> alpha </ci>
+            <ci> gamma1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k16_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL_0 </ci>
+            <ci> alpha_0 </ci>
+            <ci> gamma1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k17">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL </ci>
+            <ci> gamma2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k17_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL_0 </ci>
+            <ci> gamma2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k18">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact </ci>
+            <ci> beta2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k18_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact_0 </ci>
+            <ci> beta2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k19">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact </ci>
+            <ci> alpha </ci>
+            <ci> beta2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Gtot2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <plus/>
+            <ci> G2 </ci>
+            <ci> RiG2 </ci>
+            <ci> LRiG2 </ci>
+            <ci> RaG2 </ci>
+            <ci> LRaG2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Gtot_Total">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <plus/>
+            <ci> v_Gtot1 </ci>
+            <ci> v_Gtot2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k01_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kL_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k02">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kact </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Simulated_TRUPATH_Total">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <ci> v_Gtot_Total </ci>
+                <ci> v_Gtot_Total_at_L </ci>
+              </apply>
+              <ci> v_Gtot_Total </ci>
+            </apply>
+            <ci> TRUPATH_Sys_Max </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Simulated_TRUPATH_G1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <ci> v_Gtot1 </ci>
+                <ci> v_Gtot1_at_L </ci>
+              </apply>
+              <ci> v_Gtot1_at_L </ci>
+            </apply>
+            <ci> TRUPATH_Sys_Max </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="v_Simulated_TRUPATH_G2">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <apply>
+              <divide/>
+              <apply>
+                <minus/>
+                <ci> v_Gtot2 </ci>
+                <ci> v_Gtot2_at_L </ci>
+              </apply>
+              <ci> v_Gtot2_at_L </ci>
+            </apply>
+            <ci> TRUPATH_Sys_Max </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k01">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> kL </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k03_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact_0 </ci>
+            <ci> alpha_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k20_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL_0 </ci>
+            <ci> alpha_0 </ci>
+            <ci> gamma2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k21">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GDA1 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k21_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GDA1_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k22">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GDA2 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k22_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GDA2_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k23">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> k_GDA1 </ci>
+            <ci> gamma1_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k23_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> k_GDA1_0 </ci>
+            <ci> gamma1 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k24">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> k_GDA2 </ci>
+            <ci> gamma2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k24_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> k_GDA2_0 </ci>
+            <ci> gamma2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k25">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_hyd1 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k25_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_hyd1_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k26">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_hyd2 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k26_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_hyd2_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k27">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GRA1 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k27_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <ci> k_GRA1_0 </ci>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k19_0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kact_0 </ci>
+            <ci> alpha_0 </ci>
+            <ci> beta2_0 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+      <assignmentRule variable="k20">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">        
+          <apply>
+            <times/>
+            <ci> kL </ci>
+            <ci> alpha </ci>
+            <ci> gamma2 </ci>
+          </apply>
+        </math>
+            </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction fast="false" id="Ligand_Binding_Receptor" metaid="COPASI123" name="Ligand Binding Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="Ri" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRi" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k01 </ci>
+                  <ci> L </ci>
+                  <ci> Ri </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k01_0 </ci>
+                  <ci> LRi </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Receptor_Activation" metaid="COPASI124" name="Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="Ri" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k02 </ci>
+                  <ci> Ri </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k02_0 </ci>
+                  <ci> Ra </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Bound_Receptor_Activation" metaid="COPASI125" name="Ligand-Bound Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRi" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k03 </ci>
+                  <ci> LRi </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k03_0 </ci>
+                  <ci> LRa </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Binding_Active_Receptor" metaid="COPASI126" name="Ligand Binding Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k04 </ci>
+                  <ci> L </ci>
+                  <ci> Ra </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k04_0 </ci>
+                  <ci> LRa </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Binding_Inactive_Receptor" metaid="COPASI127" name="G protein1 Binding Inactive Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="Ri" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RiG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k05 </ci>
+                  <ci> Ri </ci>
+                  <ci> G1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k05_0 </ci>
+                  <ci> RiG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Binding_Ligand_Bound__Inactive_Receptor" metaid="COPASI128" name="G protein1 Binding Ligand-Bound, Inactive Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRi" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRiG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k06 </ci>
+                  <ci> LRi </ci>
+                  <ci> G1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k06_0 </ci>
+                  <ci> LRiG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Binding_Active_Receptor" metaid="COPASI129" name="G protein1 Binding Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RaG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k07 </ci>
+                  <ci> Ra </ci>
+                  <ci> G1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k07_0 </ci>
+                  <ci> RaG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Binding_Ligand_Bound__Active_Receptor" metaid="COPASI130" name="G protein1 Binding Ligand-Bound, Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k08 </ci>
+                  <ci> LRa </ci>
+                  <ci> G1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k08_0 </ci>
+                  <ci> LRaG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Binding_Inactive_Receptor" metaid="COPASI131" name="G protein2 Binding Inactive Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="Ri" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RiG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k09 </ci>
+                  <ci> Ri </ci>
+                  <ci> G2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k09_0 </ci>
+                  <ci> RiG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Binding_Ligand_Bound__Inactive_Receptor" metaid="COPASI132" name="G protein2 Binding Ligand-Bound, Inactive Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRi" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRiG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k10 </ci>
+                  <ci> LRi </ci>
+                  <ci> G2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k10_0 </ci>
+                  <ci> LRiG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Binding_Active_Receptor" metaid="COPASI133" name="G protein2 Binding Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RaG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k11 </ci>
+                  <ci> Ra </ci>
+                  <ci> G2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k11_0 </ci>
+                  <ci> RaG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Binding_Ligand_Bound__Active_Receptor" metaid="COPASI134" name="G protein2 Binding Ligand-Bound, Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k12 </ci>
+                  <ci> LRa </ci>
+                  <ci> G2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k12_0 </ci>
+                  <ci> LRaG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Binding_G_protein1_Bound_Receptor" metaid="COPASI135" name="Ligand Binding G protein1-Bound Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="RiG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRiG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k13 </ci>
+                  <ci> L </ci>
+                  <ci> RiG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k13_0 </ci>
+                  <ci> LRiG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Bound_Receptor_Activation" metaid="COPASI136" name="G protein1-Bound Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="RiG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RaG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k14 </ci>
+                  <ci> RiG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k14_0 </ci>
+                  <ci> RaG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Bound__G_protein1_Bound_Receptor_Activation" metaid="COPASI137" name="Ligand-Bound, G protein1-Bound Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRiG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k15 </ci>
+                  <ci> LRiG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k15_0 </ci>
+                  <ci> LRaG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Binding_Active__G_protein1_Bound_Receptor" metaid="COPASI138" name="Ligand Binding Active, G protein1-Bound Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="RaG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k16 </ci>
+                  <ci> L </ci>
+                  <ci> RaG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k16_0 </ci>
+                  <ci> LRaG1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Binding_G_protein2_Bound_Receptor" metaid="COPASI139" name="Ligand Binding G protein2-Bound Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="RiG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRiG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k17 </ci>
+                  <ci> L </ci>
+                  <ci> RiG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k17_0 </ci>
+                  <ci> LRiG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Bound_Receptor_Activation" metaid="COPASI140" name="G protein2-Bound Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="RiG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="RaG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k18 </ci>
+                  <ci> RiG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k18_0 </ci>
+                  <ci> RaG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Bound__G_protein2_Bound_Receptor_Activation" metaid="COPASI141" name="Ligand-Bound, G protein2-Bound Receptor Activation" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRiG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k19 </ci>
+                  <ci> LRiG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k19_0 </ci>
+                  <ci> LRaG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Ligand_Binding_Active__G_protein2_Bound_Receptor" metaid="COPASI142" name="Ligand Binding Active, G protein2-Bound Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="L" stoichiometry="1"/>
+          <speciesReference constant="true" species="RaG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRaG2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k20 </ci>
+                  <ci> L </ci>
+                  <ci> RaG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k20_0 </ci>
+                  <ci> LRaG2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Activation_by_Active_Receptor" metaid="COPASI143" name="G protein1 Activation by Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="RaG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1aGTP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k21 </ci>
+                  <ci> RaG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k21_0 </ci>
+                  <ci> Ra </ci>
+                  <ci> G1aGTP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Activation_by_Active_Receptor" metaid="COPASI144" name="G protein2 Activation by Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="RaG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="Ra" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2aGTP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k22 </ci>
+                  <ci> RaG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k22_0 </ci>
+                  <ci> Ra </ci>
+                  <ci> G2aGTP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein1_Activation_by_Ligand_Bound__Active_Receptor" metaid="COPASI145" name="G protein1 Activation by Ligand-Bound, Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRaG1" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+          <speciesReference constant="true" species="G1aGTP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k23 </ci>
+                  <ci> LRaG1 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k23_0 </ci>
+                  <ci> LRa </ci>
+                  <ci> G1aGTP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="G_protein2_Activation_by_Ligand_Bound__Active_Receptor" metaid="COPASI146" name="G protein2 Activation by Ligand-Bound, Active Receptor" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="LRaG2" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="LRa" stoichiometry="1"/>
+          <speciesReference constant="true" species="G2aGTP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k24 </ci>
+                  <ci> LRaG2 </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k24_0 </ci>
+                  <ci> LRa </ci>
+                  <ci> G2aGTP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Galpha_protein1_Hydrolysis" metaid="COPASI147" name="Galpha protein1 Hydrolysis" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="G1aGTP" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="G1aGDP" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k25 </ci>
+                  <ci> G1aGTP </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k25_0 </ci>
+                  <ci> G1aGDP </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Galpha_protein2_Hydrolysis" metaid="COPASI148" name="Galpha protein2 Hydrolysis" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="G2aGTP" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="G2aGDP" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k26 </ci>
+                  <ci> G2aGTP </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k26_0 </ci>
+                  <ci> G2aGDP </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Reformation_of_G_protein1" metaid="COPASI149" name="Reformation of G protein1" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="G1aGDP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="G1" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k27 </ci>
+                  <ci> G1aGDP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k27_0 </ci>
+                  <ci> G1 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+      <reaction fast="false" id="Reformation_of_G_protein2" metaid="COPASI150" name="Reformation of G protein2" reversible="true">
+        <listOfReactants>
+          <speciesReference constant="true" species="G2aGDP" stoichiometry="1"/>
+          <speciesReference constant="true" species="Gbg" stoichiometry="1"/>
+        </listOfReactants>
+        <listOfProducts>
+          <speciesReference constant="true" species="G2" stoichiometry="1"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <times/>
+              <ci> compartment </ci>
+              <apply>
+                <minus/>
+                <apply>
+                  <times/>
+                  <ci> k28 </ci>
+                  <ci> G2aGDP </ci>
+                  <ci> Gbg </ci>
+                </apply>
+                <apply>
+                  <times/>
+                  <ci> k28_0 </ci>
+                  <ci> G2 </ci>
+                </apply>
+              </apply>
+            </apply>
+          </math>
+                </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="Ligand_Addition" metaid="COPASI119" name="Ligand Addition" useValuesFromTriggerTime="false">
+        <trigger initialValue="true" persistent="false">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 1000000 </cn>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="L">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <ci> LigandConcAdded </ci>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event id="Gtot1_Measurement_before_Ligand_Addition" metaid="COPASI120" name="Gtot1 Measurement before Ligand Addition" useValuesFromTriggerTime="false">
+        <trigger initialValue="true" persistent="false">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <apply>
+                <minus/>
+                <cn> 1000000 </cn>
+                <cn> 1 </cn>
+              </apply>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="v_Gtot1_at_L">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <ci> v_Gtot1 </ci>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event id="Gtot2_Measurement_before_Ligand_Addition" metaid="COPASI121" name="Gtot2 Measurement before Ligand Addition" useValuesFromTriggerTime="false">
+        <trigger initialValue="true" persistent="false">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <apply>
+                <minus/>
+                <cn> 1000000 </cn>
+                <cn> 1 </cn>
+              </apply>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="v_Gtot2_at_L">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <ci> v_Gtot2 </ci>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+      <event id="Gtot_Total_Measurement_before_Ligand_Addition" metaid="COPASI122" name="Gtot_Total Measurement before Ligand Addition" useValuesFromTriggerTime="false">
+        <trigger initialValue="true" persistent="false">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">          
+            <apply>
+              <gt/>
+              <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <apply>
+                <minus/>
+                <cn> 1000000 </cn>
+                <cn> 1 </cn>
+              </apply>
+            </apply>
+          </math>
+                </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="v_Gtot_Total_at_L">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">            
+              <ci> v_Gtot_Total </ci>
+            </math>
+                    </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>

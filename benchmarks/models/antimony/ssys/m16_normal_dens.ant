@@ -1,0 +1,21 @@
+// Recasting
+//   species X1, F            // X1 = t + c ; F = f
+//   c = 1.0                  // shift > 0 to keep X1>0
+//
+// Canonical S-system (difference of power-law monomials)
+//   X1' = 1                  // = 1*X1^0  - 0
+//   F'  = c*F - X1*F         // = (c)*X1^0*F^1  - (1)*X1^1*F^1
+//
+// ICs corresponding to t=0, f(0)=1/sqrt(2*pi)
+//   X1 = c
+//   F  = 1/sqrt(2*pi)
+model normal_dens()
+  // f'(t) = -t f(t); t is the independent variable
+  species t, f
+  t' = 1                   // march along the abscissa
+  f' = -t * f              // original linear ODE
+  // ICs (example)
+  t = 0
+  f = 1/sqrt(2*pi)        
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

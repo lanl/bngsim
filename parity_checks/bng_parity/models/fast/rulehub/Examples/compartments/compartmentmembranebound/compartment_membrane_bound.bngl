@@ -1,0 +1,57 @@
+# Model: compartment_membrane_bound.bngl
+# Description: Models the adsorption/desorption of a cytosolic protein to the plasma membrane.
+#              This highlights the dimensional change from 3D (Solution) to 2D (Membrane).
+
+begin model
+
+begin parameters
+    # Geometry
+    Vol_Sol 100
+    Area_Mem 20    # Surface area
+    
+    # Rate Constants
+    # kon units: 1/(M*s) roughly, but here depends on volume scaling
+    # koff units: 1/s
+    kon  0.1
+    koff 1.0
+    
+    # Initial
+    P_init 1000
+    Lipid_init 500 # Membrane binding sites
+end parameters
+
+begin molecule types
+    P(l)   # Protein in solution
+    Lipid(p) # Lipid anchor in membrane
+end molecule types
+
+begin compartments
+    Sol 3 Vol_Sol
+    Mem 2 Area_Mem Sol
+end compartments
+
+begin seed species
+    P(l)@Sol     P_init
+    Lipid(p)@Mem Lipid_init
+end seed species
+
+begin observables
+    Molecules Free_Protein   P(l)@Sol
+    Molecules Bound_Protein  P(l!1).Lipid(p!1) # Implicitly @Mem because Lipid is @Mem
+    Molecules Free_Sites     Lipid(p)@Mem
+end observables
+
+begin reaction rules
+    # Membrane Recruitment
+    # P moves from 3D Sol to 2D Mem upon binding
+    # P(l)@Sol + Lipid(p)@Mem <-> P(l!1)@Mem.Lipid(p!1)@Mem
+    # Note: BioNetGen handles the compartment assignment for the complex automatically
+    # if one component is grounded in the membrane.
+    P(l)@Sol + Lipid(p)@Mem <-> P(l!1)@Mem.Lipid(p!1)@Mem kon, koff
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>20, n_steps=>200})

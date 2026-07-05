@@ -1,0 +1,84 @@
+// Bergman1989_MinimalGlucoseModel.ant
+//
+// Source model:
+//   Bergman RN (1989)
+//   "Toward physiological understanding of glucose tolerance:
+//    Minimal-model approach." Diabetes 38(12):1512–1527.
+//   (Lilly Lecture 1989; describes the glucose minimal model,
+//    glucose effectiveness SG, and insulin sensitivity SI.)
+//   Typical values reported for humans:
+//     SG ≈ 0.021 min^-1
+//     SI ≈ 5×10^-4 min^-1 (µU/mL)^-1
+//
+// Model summary:
+//   G(t)  : plasma glucose concentration (mg/dL)
+//   I(t)  : plasma insulin concentration (µU/mL)
+//   X(t)  : "remote" insulin effect compartment (min^-1)
+//   G_b   : basal glucose
+//   I_b   : basal insulin
+//
+//   dG/dt = - (p_1 + X) * (G - G_b)
+//   dX/dt = - p_2 * X + p_3 * (I - I_b)
+//   (classic Bergman minimal model form; I(t) is treated as
+//    measured input in the original work)
+//
+// Parameters chosen here:
+//   p_1 = S_G = 0.021 min^-1 (mean glucose effectiveness in humans)
+//   S_I = p_3/p_2 ≈ 5×10^-4 min^-1 (µU/mL)^-1 (mean insulin sensitivity)
+//   p_2 = 0.025 min^-1  (remote insulin decay; τ ≈ 40 min)
+//   p_3 = S_I * p_2 = 1.25e-5 min^-2 (µU/mL)^-1
+//
+//   G_b = 90 mg/dL (typical fasting plasma glucose)
+//   I_b = 10 µU/mL (typical fasting insulin)
+//
+// Initial conditions used here:
+//   G(0) = 180 mg/dL   (IV glucose bolus; ~90 mg/dL above basal)
+//   X(0) = 0 min^-1    (no initial remote insulin effect)
+//   I(0) = I_b          (start at basal insulin)
+//
+// Note:
+//   In practice, I(t) during an FSIGT is taken from measured data
+//   (glucose + tolbutamide / insulin injections) and used as an
+//   external input. Here we keep a trivial constant I(t) ODE for a
+//   self-contained ODE system; for real fits, you’d override I(t)
+//   with your experimental time course.
+
+model Bergman1989_MinimalGlucoseModel
+
+  // Compartment
+  compartment plasma = 1;
+
+  // Species: state variables
+  species G in plasma;
+  species X in plasma;
+  species I in plasma;
+
+  // Basal (fasting) levels
+  const G_b = 90;
+  const I_b = 10;
+
+  // Minimal model parameters
+  const p_1 = 0.021;
+  const p_2 = 0.025;
+  const p_3 = 1.25e-5;
+
+  // ODEs
+  // Glucose dynamics: deviation from basal (G - G_b)
+  G' = - (p_1 + X) * (G - G_b);
+
+  // Remote insulin effect dynamics
+  X' = - p_2 * X + p_3 * (I - I_b);
+
+  // Insulin dynamics
+  // In the original minimal model, I(t) comes from data.
+  // Here we keep insulin at basal as a placeholder:
+  I' = 0;
+
+  // Initial conditions
+  G = 180;
+  X = 0.01;
+  I = I_b;
+
+end
+// @SIM T_START=0 T_END=200 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

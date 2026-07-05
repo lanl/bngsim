@@ -1,0 +1,65 @@
+begin model
+begin parameters
+a 0.061982316168408984
+b 4.082378262912279e-1
+c 0.027206941385495106
+#a 0.001
+#b 0.01
+#c 0.005
+XT 100
+AAmax 12
+AA 100 # this setting may be changed in actions block
+#sigma=max(0,(AAmax-AA)/AAmax)
+#alpha=a+b*sigma
+# calculation initial condition AA=100
+X0init=(c/(a+c))*XT
+X1init=(a/(a+c))*XT
+end parameters
+begin molecule types
+X0()
+X1()
+counter()
+end molecule types
+begin seed species
+X0() X0init # nutrient replete condition
+X1() X1init # nutrient replete condition
+counter() 0
+end seed species
+begin observables
+Molecules Xtot X0() X1()
+Molecules X0 X0()
+Molecules X1 X1()
+Molecules t counter() # time
+end observables
+begin functions
+alpha()=a+b*max(0,(AAmax-AA)/AAmax)
+X1_analytical()=(alpha()/(alpha()+c))*XT-((alpha()/(alpha()+c))*XT-(a/(a+c))*XT)*exp(-t*(alpha()+c))
+X1_approx()=(alpha()/(alpha()+c))*XT-((alpha()/(alpha()+c))*XT-(a/(a+c))*XT)*(1-t*(alpha()+c))
+end functions
+begin reaction rules
+0->counter() 1 # time
+X0()<->X1() alpha(),c
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+setParameter("AA",0)
+simulate({suffix=>"AA=0",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+resetConcentrations()
+setParameter("AA",1)
+simulate({suffix=>"AA=1",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",5)
+#simulate({suffix=>"AA=5",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",7)
+#simulate({suffix=>"AA=7",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",10)
+#simulate({suffix=>"AA=10",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",100)
+#simulate({suffix=>"AA=100",method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+end actions

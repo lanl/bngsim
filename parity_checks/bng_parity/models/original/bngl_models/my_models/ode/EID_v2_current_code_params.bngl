@@ -1,0 +1,308 @@
+begin model
+begin parameters
+# reporting period (1 d)
+delta_t 1 # d
+n 2 # three distinct periods of social distancing
+##################################
+# Table 1: adjustable parameters #
+##################################
+t0__FREE 33
+sigma__FREE 33    # used for n>=0
+p0__FREE 0.88     # used for n>=0
+lambda0__FREE 0.08 # used for n>=0
+tau1__FREE 142    # used for n>=1
+p1__FREE 0.85     # used for n>=1
+lambda1__FREE 0.85 # used for n>=1
+tau2__FREE 340    # used for n>=2
+p2__FREE 0.75     # used for n>=2
+lambda2__FREE 0.05 # used for n>=2
+beta__FREE 1.075
+fD__FREE 1 
+r__FREE 12
+##################################
+# start time of regional epidemic
+t0 t0__FREE # d
+# start time of 1st social-distancing period
+sigma sigma__FREE # d (>t0)
+# steady-state social-distancing setpoint for 1st phase
+p0 p0__FREE # dimesionless
+# eigenvalue that determines timescale for social-distancing dynamics
+lambda0 lambda0__FREE # /d
+# start time of 2nd social-distancing period
+tau1 tau1__FREE # d (>sigma)
+# steady-state social-distancing setpoint for 2nd phase
+p1 p1__FREE # dimensionless
+# eigenvalue that determines timescale for social-distancing dynamics
+lambda1 lambda1__FREE # /d
+# start time of 3rd social-distancing period
+tau2 tau2__FREE # d (>tau1)
+# steady-state social-distancing setpoint for 3rd phase
+p2 p2__FREE # dimensionless
+# eigenvalue that determines timescale for social-distancing dynamics
+lambda2 lambda2__FREE # /d
+# rate constant for transmission
+beta beta__FREE # /d
+# fraction of symptomatic cases of mild disease detected
+fD fD__FREE # dimensionless
+# parameter of negative binomial distribution
+r r__FREE
+#############################
+# Table 2: fixed parameters #
+#############################
+# total population of NYC metropolitan area
+S0 19216182 # intial number of susceptible individuals
+I0 1 # initial number of infected individuals with mild symptomatic disease
+#n=0,1,2,...
+# parameter characterizing protective effect of social distancing
+mb 0.1 # dimensionless
+# relative infectiousness of E vs. I
+rhoE 1.1 # dimensionless
+# relative infectiousness of A vs. I
+rhoA 0.9 # dimensionless
+# rate constant for progression through stages of the incubation period
+kL 0.94 # /d
+# rate constant for quarantine
+kQ 0.0038 # /d
+# rate constant for self-isolation
+jQ 0.4 # /d
+# fraction of exposed individuals who never develop symptoms
+fA 0.44 # dimensionless
+# fraction of symptomatic cases that progress to severe disease/hospitalization
+fH 0.054 # dimensionless
+# fraction of hospitalized patients who recover
+fR 0.79 # dimensionless
+# rate constant for A->R transition
+cA 0.26 # /d
+# rate constant for I->H or R transition
+cI 0.12 # /d
+# rate constant for H->D or R transition
+cH 0.17 # /d
+end parameters
+begin molecule types
+counter()
+S(state~M~P)
+E1(state~M~P~Q)
+E2(state~M~P~Q)
+E3(state~M~P~Q)
+E4(state~M~P~Q)
+E5(state~M~P~Q)
+A(state~M~P~Q)
+I(state~M~P~Q)
+H()
+R()
+D()
+end molecule types
+begin seed species
+counter() 0
+S(state~M) S0
+I(state~M) I0
+end seed species
+begin observables
+Molecules SM S(state~M)
+Molecules SP S(state~P)
+Molecules nStotal S()
+Molecules E1M E1(state~M) 
+Molecules E1P E1(state~P)
+Molecules E2M E2(state~M) 
+Molecules E3M E3(state~M) 
+Molecules E4M E4(state~M) 
+Molecules E5M E5(state~M)
+Molecules E2P E2(state~P) 
+Molecules E3P E3(state~P) 
+Molecules E4P E4(state~P) 
+Molecules E5P E5(state~P)
+Molecules E2to5Q E2(state~Q) E3(state~Q) E4(state~Q) E5(state~Q)
+Molecules nE5_MP E5(state~M) E5(state~P)
+Molecules IM I(state~M)
+Molecules IP I(state~P)
+Molecules IQ I(state~Q)
+Molecules AM A(state~M)
+Molecules AP A(state~P)
+Molecules AQ A(state~Q)
+Molecules H H()
+Molecules R R()
+Molecules D D()
+Molecules t counter()
+end observables
+begin functions
+U()=if(t>=sigma,1,0)
+Lambda()=if(t>=sigma && t<tau1,lambda0,\
+         if(t>=tau1 && t<tau2,lambda1,\
+         if(t>=tau2,lambda2,\
+         0)))
+P()=if(t>=sigma && t<tau1,p0,\
+    if(t>=tau1 && t<tau2,p1,\
+    if(t>=tau2,p2,\
+    0)))
+kQfunc()=if(t>=t0,kQ,0)
+jQfunc()=if(t>=t0,jQ,0)
+cIfunc()=if(t>=t0,cI,0)
+phiM()=if(t>=t0,IM+rhoE*(E2M+E3M+E4M+E5M)+rhoA*AM,0)
+phiP()=IP+rhoE*(E2P+E3P+E4P+E5P)+rhoA*AP
+CumNum_symptomatic_cases()=IM+IP+IQ+H+(1-fA)*R+D
+CumNum_detected_cases()=fD*(IM+IP+IQ+H+(1-fA)*R+D)
+CumNum_all_cases()=IM+IP+IQ+AM+AP+AQ+H+R+D
+# first-order Taylor series approximation of C(t)-C(t-delta_t)
+#  = delta_t*accumulation_rate
+ApproxNewCasesDaily()=delta_t*((1-fA)*kL*nE5_MP)
+ApproxNewCasesDetectedDaily()=fD*delta_t*((1-fA)*kL*nE5_MP) 
+Data_DailyCases()=if(t<=38,0,\
+                  if(t<=39,1,\
+                  if(t<=40,0,\
+                  if(t<=41,1,\
+                  if(t<=42,9,\
+                  if(t<=43,11,\
+                  if(t<=44,22,\
+                  if(t<=45,45,\
+                  if(t<=46,17,\
+                  if(t<=47,36,\
+                  if(t<=48,31,\
+                  if(t<=49,44,\
+                  if(t<=50,109,\
+                  if(t<=51,95,\
+                  if(t<=52,189,\
+                  if(t<=53,122,\
+                  if(t<=54,218,\
+                  if(t<=55,425,\
+                  if(t<=56,1012,\
+                  if(t<=57,1774,\
+                  if(t<=58,2952,\
+                  if(t<=59,3258,\
+                  if(t<=60,4817,\
+                  if(t<=61,5711,\
+                  if(t<=62,4805,\
+                  if(t<=63,7413,\
+                  if(t<=64,5941,\
+                  if(t<=65,5688,\
+                  if(t<=66,8771,\
+                  if(t<=67,6266,\
+                  if(t<=68,7721,\
+                  if(t<=69,8707,\
+                  if(t<=70,8153,\
+                  if(t<=71,8996,\
+                  if(t<=72,10329,\
+                  if(t<=73,12274,\
+                  if(t<=74,8122,\
+                  if(t<=75,9304,\
+                  if(t<=76,8314,\
+                  if(t<=77,9568,\
+                  if(t<=78,10765,\
+                  if(t<=79,10794,\
+                  if(t<=80,10160,\
+                  if(t<=81,8435,\
+                  if(t<=82,6548,\
+                  if(t<=83,7402,\
+                  if(t<=84,11755,\
+                  if(t<=85,8631,\
+                  if(t<=86,7532,\
+                  if(t<=87,7249,\
+                  if(t<=88,6199,\
+                  if(t<=89,4867,\
+                  if(t<=90,4324,\
+                  if(t<=91,5659,\
+                  if(t<=92,6341,\
+                  if(t<=93,8286,\
+                  if(t<=94,10683,\
+                  if(t<=95,6013,\
+                  if(t<=96,4077,\
+                  if(t<=97,3285,\
+                  if(t<=98,4718,\
+                  if(t<=99,4702,\
+                  if(t<=100,3879,\
+                  if(t<=101,4559,\
+                  if(t<=102,3699,\
+                  if(t<=103,2524,\
+                  if(t<=104,2302,\
+                  if(t<=105,2746,\
+                  if(t<=106,3526,\
+                  if(t<=107,2873,\
+                  if(t<=108,2715,\
+                  if(t<=109,2138,\
+                  if(t<=110,1610,\
+                  if(t<=111,1438,\
+                  if(t<=112,2123,\
+                  if(t<=113,2364,\
+                  if(t<=114,2759,\
+                  if(t<=115,2185,\
+                  if(t<=116,1901,\
+                  if(t<=117,1241,\
+                  if(t<=118,1479,\
+                  if(t<=119,1478,\
+                  if(t<=120,2078,\
+                  0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+end functions
+begin reaction rules
+# increment time
+0->counter() 1
+# disease transmission
+S(state~M)->E1(state~M) (beta)*(phiM()+mb*phiP())/nStotal
+S(state~P)->E1(state~P) mb*(beta)*(phiM()+mb*phiP())/nStotal
+# social distancing
+S(state~M)<->S(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E1(state~M)<->E1(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E2(state~M)<->E2(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E3(state~M)<->E3(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E4(state~M)<->E4(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+E5(state~M)<->E5(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+A(state~M)<->A(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+I(state~M)<->I(state~P) U()*Lambda()*P(),U()*Lambda()*(1-P())
+# quarantine because of testing and contact tracing
+E2(state~M)->E2(state~Q) kQ
+E2(state~P)->E2(state~Q) kQ
+E3(state~M)->E3(state~Q) kQ
+E3(state~P)->E3(state~Q) kQ
+E4(state~M)->E4(state~Q) kQ
+E4(state~P)->E4(state~Q) kQ
+E5(state~M)->E5(state~Q) kQ
+E5(state~P)->E5(state~Q) kQ
+A(state~M)->A(state~Q) kQ
+A(state~P)->A(state~Q) kQ
+I(state~M)->I(state~Q) kQfunc()
+I(state~P)->I(state~Q) kQ
+# self-isolation because of symptom awareness
+I(state~M)->I(state~Q) jQfunc()
+I(state~P)->I(state~Q) jQ
+# incubation
+E1(state~M)->E2(state~M) kL
+E1(state~P)->E2(state~P) kL
+E2(state~M)->E3(state~M) kL
+E2(state~P)->E3(state~P) kL
+E2(state~Q)->E3(state~Q) kL
+E3(state~M)->E4(state~M) kL
+E3(state~P)->E4(state~P) kL
+E3(state~Q)->E4(state~Q) kL
+E4(state~M)->E5(state~M) kL
+E4(state~P)->E5(state~P) kL
+E4(state~Q)->E5(state~Q) kL
+E5(state~M)->A(state~M) kL*fA
+E5(state~P)->A(state~P) kL*fA
+E5(state~Q)->A(state~Q) kL*fA
+E5(state~M)->I(state~M) kL*(1-fA)
+E5(state~P)->I(state~P) kL*(1-fA)
+E5(state~Q)->I(state~Q) kL*(1-fA)
+# imnmune clearance & recovery from mild disease
+A(state~M)->R() cA
+A(state~P)->R() cA
+A(state~Q)->R() cA
+I(state~M)->R() cIfunc()*(1-fH)
+I(state~P)->R() cI*(1-fH)
+I(state~Q)->R() cI*(1-fH)
+# progression to severe disease & hospitalization/isolation-at-home
+I(state~M)->H() cIfunc()*fH
+I(state~P)->H() cI*fH
+I(state~Q)->H() cI*fH
+# recovery from severe disease
+H()->R() cH*fR
+# progression from severe disease to death
+H()->D() cH*(1-fR)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+writeMfile() # write MATLAB M-file (EID.m)
+# simulate the regional epidemic in the NYC metropolitan area
+resetConcentrations()
+simulate({suffix=>"NYC",method=>"ode",t_start=>0,t_end=>365,n_steps=>365,\
+print_functions=>1})
+end actions

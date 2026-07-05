@@ -1,0 +1,104 @@
+begin model
+# Question: Does CaM associate with HRAS and NRAS? Or just KRAS?
+# References:
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+begin parameters
+# NB: rate constants need to be introduced.
+# NB: add empirical copy numbers for HeLa Kyoto cells (or other cell types/lines of interest).
+# Avogadro constant (NA)
+NA 6.02214076e23 # molecules per mole (exact value)
+# volume of the cytosol (V_cyt)
+#  comments:
+#   - Hein et al. (2015) assumed a cytoplasmic volume of 2 pL for HeLa Kyoto cells.  
+V_cyt 2e-12 # L 
+# copy numbers
+KRAS_cpc 1e5 # copies per cell
+CaM_cpc 1e5 # copies per cell
+PI3K_cpc 1e5 # copies per cell
+end parameters
+begin molecule types
+KRas4B(G~GDP~GTP,HVR~0~P)
+#---
+# KRas4B: KRAS isoform 2
+#  components:
+#   G: G domain
+#    states:
+#     - GDP: GDP bound
+#     - GTP: GTP bound
+#   HVR: hypervariable region, which contains S181
+#    states:
+#     - 0: S181
+#     - P: pS181
+#---
+CaM(EF~0~1,linker,Y99~0~P)
+#---
+# CaM: calmodulin
+#  components:
+#   EF: EF hands
+#    states:
+#     - 0: Ca2+ free
+#     - 1: Ca2+ bound
+#   linker: disordered region linking the two globular domains
+#   Y99: tyrosine 99
+#    states:
+#     - 0: unphosphorylated
+#     - P: phosphorylated
+#---
+PI3K(nSH2_p85,cSH2_p85,RBD_p110)
+#---
+# PI3K: phosphatidylinositol 3-kinase
+#  components:
+#   nSH2_p85: N-terminal SH2 domain in the regulatory subunit (p85)
+#   cSH2_p85: C-terminal SH2 domain in the regulatory subunit (p85)
+#   RBD_p110: Ras binding domain (RBD) in the catalytic subunit (p110)
+end molecule types
+begin seed species
+KRas4B(G~GTP,HVR~0) KRAS_cpc
+CaM(EF~1,linker,Y99~P) CaM_cpc
+PI3K(nSH2_p85,cSH2_p85,RBD_p110) PI3K_cpc
+end seed species
+begin observables
+# NB: Define additional simulation outputs here.
+Molecules autoinhibited_PI3K PI3K(nSH2_p85!1,RBD_p110!1)
+Molecules activated_PI3K KRas4B(G~GTP!1).PI3K(RBD_p110!1) 
+end observables
+begin functions
+end functions
+begin reaction rules
+# NB: The rules need to be written carefully so as to disallow chain propagation. 
+# NB: The rules below do not fully capture KRAS-PI3K association. This needs to be fixed.
+# NB: The rules below omit consideration of two ways that the 3-cycle can form and break up. This needs to be fixed.
+# NB: Replace 1's and 1e6/(NA*V_cyt)'s with rate constants.
+# KRas4B-CaM(-PI3K) interaction
+#  - association
+KRas4B(G~GTP,HVR~0)+CaM(EF~1,linker,Y99~?)->KRas4B(G~GTP,HVR~0!1).CaM(EF~1,linker!1,Y99~?) 1e6/(NA*V_cyt)
+KRas4B(G~GTP,HVR~0)+CaM(EF~1,linker,Y99~P!1).PI3K(nSH2_p85,cSH2_p85!1,RBD_p110)->\
+KRas4B(G~GTP,HVR~0!2).CaM(EF~1,linker!2,Y99~P!1).PI3K(nSH2_p85,cSH2_p85!1,RBD_p110) 1e6/(NA*V_cyt)
+KRas4B(G~GTP,HVR~0)+CaM(EF~1,linker,Y99~P!1).PI3K(nSH2_p85!2,cSH2_p85!1,RBD_p110!2)->\
+KRas4B(G~GTP,HVR~0!3).CaM(EF~1,linker!3,Y99~P!1).PI3K(nSH2_p85!2,cSH2_p85!1,RBD_p110!2) 1e6/(NA*V_cyt)
+#  - dissociation
+KRas4B(HVR~0!1).CaM(linker!1)->KRas4B(HVR~0)+CaM(linker) 1
+# CaM-PI3K interaction
+#  - association in the cytosol
+CaM(EF~1,linker,Y99~P)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+CaM(EF~1,linker,Y99~P!1).PI3K(nSH2_p85,cSH2_p85!1,RBD_p110) 1e6/(NA*V_cyt)
+CaM(EF~1,linker,Y99~P)+PI3K(nSH2_p85!1,cSH2_p85,RBD_p110!1)->\
+CaM(EF~1,linker,Y99~P!2).PI3K(nSH2_p85!1,cSH2_p85!2,RBD_p110!1) 1e6/(NA*V_cyt)
+#  - recruitment of PI3K to the plasma membrane by KRas4B-CaM complex
+CaM(linker!+,Y99~P)+PI3K(nSH2_p85,cSH2_p85,RBD_p110)->\
+CaM(linker!+,Y99~P!1).PI3K(nSH2_p85,cSH2_p85!1,RBD_p110) 1e6/(NA*V_cyt)
+CaM(linker!+,Y99~P)+PI3K(nSH2_p85!1,cSH2_p85,RBD_p110!1)->\
+CaM(linker!+,Y99~P!2).PI3K(nSH2_p85!1,cSH2_p85!2,RBD_p110!1) 1e6/(NA*V_cyt)
+#  - dissociation
+CaM(Y99~P!1).PI3K(cSH2_p85!1)->CaM(Y99~P)+PI3K(cSH2_p85) 1
+# allosteric activation of PI3K by KRas4B
+#  - reversible cycle formation
+KRas4B(G~GTP,HVR~0!1).CaM(linker!1,Y99~P!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110)<->\
+KRas4B(G~GTP!3,HVR~0!1).CaM(linker!1,Y99~P!2).PI3K(nSH2_p85,cSH2_p85!2,RBD_p110!3) 1,1
+# PI3K autoinhibition
+PI3K(nSH2_p85,RBD_p110)<->PI3K(nSH2_p85!1,RBD_p110!1) 1,1
+end reaction rules
+end model
+begin actions
+simulate({method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+end actions

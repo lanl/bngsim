@@ -1,0 +1,68 @@
+# Edge case: Fixed species ($) with several competing consumer rules
+# Tests:  $E is a clamped enzyme.  Three substrates compete for E
+#         through three independent catalytic rules; each rule fires
+#         many times per timestep.  RM's post-event replenishment
+#         (replenish_fixed_species) must:
+#           - hold E at exactly E_tot at every observable sample,
+#           - re-instantiate molecules with the right state filter
+#             (E declares no states, so any-state matches), and
+#           - co-exist with the multi-rule update path that touches
+#             E on every fire.
+#         Two-rule Fixed cases are covered by ft_clamped_species and
+#         ft_clamped_species_strict; this is the first three-rule
+#         case, and the substrates are deliberately diverse so the
+#         full propensity vector recomputes after each E-touch event.
+# Edge:   Trash() is a separate Fixed sink — a SECOND distinct Fixed
+#         MoleculeType in the model, exercising the
+#         "multiple Fixed species, different types" path.  RM
+#         currently allows this; the Tier-0 refusal triggers only on
+#         duplicate Fixed within the SAME MoleculeType.
+# Tier:   base
+# invariant: conserved E_tot_obs = 5
+
+begin model
+begin parameters
+    E_tot   5
+    S_tot   30
+    k1      0.20  # E + S1 -> E + P1
+    k2      0.10  # E + S2 -> E + P2
+    k3      0.05  # E + S3 -> E + P3
+end parameters
+
+begin molecule types
+    E(s)
+    S1(x)
+    S2(x)
+    S3(x)
+    P()
+    Trash()
+end molecule types
+
+begin seed species
+    $E(s)      E_tot
+    S1(x)      S_tot
+    S2(x)      S_tot
+    S3(x)      S_tot
+    P()        0
+    $Trash()   0
+end seed species
+
+begin observables
+    Molecules  E_tot_obs   E()
+    Molecules  S1_n        S1()
+    Molecules  S2_n        S2()
+    Molecules  S3_n        S3()
+    Molecules  Total_S     S1(), S2(), S3()
+    Molecules  P_n         P()
+end observables
+
+begin reaction rules
+    E(s) + S1(x) -> E(s) + P()   k1
+    E(s) + S2(x) -> E(s) + P()   k2
+    E(s) + S3(x) -> E(s) + P()   k3
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>80})
+end actions

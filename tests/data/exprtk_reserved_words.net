@@ -1,0 +1,27 @@
+# Regression test for issue #18: BNGL parameters whose names collide with
+# ExprTk reserved words (const, true, false) must load and simulate
+# correctly. ExprTk rejects add_variable() for these names; bngsim mangles
+# them to "r_<name>" internally and rewrites references in compiled
+# expressions. See bngsim/src/expression.cpp.
+#
+# This .net mirrors the output of BNG2.pl on the reproducer in issue #18:
+# the rate law (k*const)+true-false becomes a synthetic _rateLaw1 expression
+# parameter, which is what exercises the expression-side rewrite path.
+#
+# Effective rate: 0.5*2 + 0 - 0 = 1.0  →  A(t) = 100 * exp(-t).
+begin parameters
+    1 const      2     # Constant
+    2 true       0     # Constant
+    3 false      0     # Constant
+    4 k          0.5   # Constant
+    5 _rateLaw1  ((k*const)+true)-false   # ConstantExpression
+end parameters
+begin species
+    1 A() 100
+end species
+begin reactions
+    1 1 0 _rateLaw1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+end groups

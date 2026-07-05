@@ -1,0 +1,135 @@
+# Fourier Series Synthesizer in BNGL
+# ====================================
+# Each "harmonic" is a molecule whose concentration oscillates at a
+# specific frequency. Summing harmonics reconstructs target waveforms.
+#
+# Implementation: pairs of molecules (Sin_n,Cos_n) act as oscillators
+# via cross-coupled production/decay (like a harmonic oscillator ODE).
+# The "Output" molecule sums weighted harmonics = Fourier synthesis.
+#
+# Target: Square wave approximation using first 5 harmonics.
+# Square wave = (4/pi) * sum_{n=1,3,5,...} sin(n*w*t) / n
+
+begin model
+
+begin parameters
+    # Fundamental frequency
+    omega   1.0     # rad/time
+    
+    # Fourier coefficients for square wave (4/pi * 1/n for odd n)
+    a1  1.2732      # 4/pi * 1/1
+    a3  0.4244      # 4/pi * 1/3
+    a5  0.2546      # 4/pi * 1/5
+    a7  0.1819      # 4/pi * 1/7
+    a9  0.1415      # 4/pi * 1/9
+    
+    # Oscillator coupling strength
+    k   1.0
+    
+    # Offset to keep everything positive
+    amp_offset  2.0
+end parameters
+
+begin molecule types
+    # Oscillator pairs: (S,C) for sin/cos at each harmonic
+    S1
+    C1
+    S3
+    C3
+    S5
+    C5
+    S7
+    C7
+    S9
+    C9
+    
+    # Output waveform
+    Wave
+end molecule types
+
+begin seed species
+    # Initialize: sin starts at 0+offset; cos starts at 0 (no offset)
+    # For sin(w*t): S(0)=0,C(0)=0
+    S1() 2.0    C1() 0.0    # S1 = 0+offset, C1 = 0
+    S3() 2.0    C3() 3.0
+    S5() 2.0    C5() 3.0
+    S7() 2.0    C7() 3.0
+    S9() 2.0    C9() 3.0
+    Wave() 2.0
+end seed species
+
+begin observables
+    Molecules Sin1  S1()
+    Molecules Cos1  C1()
+    Molecules Sin3  S3()
+    Molecules Sin5  S5()
+    Molecules Sin7  S7()
+    Molecules Sin9  S9()
+    Molecules Output Wave()
+end observables
+
+begin functions
+    # Recover actual sin/cos values from shifted concentrations
+    s1() = Sin1 - amp_offset
+    c1() = Cos1 - amp_offset
+    s3() = Sin3 - amp_offset
+    c3() = Cos1 - amp_offset  
+    s5() = Sin5 - amp_offset
+    s7() = Sin7 - amp_offset
+    s9() = Sin9 - amp_offset
+    
+    # Harmonic oscillator dynamics:
+    # d(sin)/dt = omega * cos
+    # d(cos)/dt = -omega * sin
+    # For nth harmonic,frequency = n*omega
+    
+    # Derivatives for each harmonic pair
+    ds1() = 1*omega * c1()
+    dc1() = -1*omega * s1()
+    
+    ds3() = 3*ds1() - 12*s1()*s1()*ds1()
+    ds5() = 5*omega * (Cos1 - amp_offset)
+    ds7() = 7*omega * (Cos1 - amp_offset)
+    ds9() = 9*omega * (Cos1 - amp_offset)
+    
+    # Fourier sum: weighted sum of sin harmonics
+    # square_wave(t) ≈ a1*sin(wt) + a3*sin(3wt) + a5*sin(5wt) + ...
+    fourier_sum() = a1*s1() + a3*s3() + a5*s5() + a7*s7() + a9*s9() + amp_offset
+    
+    # Drive Wave toward fourier_sum
+    wave_correction() = 10 * (fourier_sum() - Output)
+end functions
+
+begin reaction rules
+    # === HARMONIC OSCILLATORS ===
+    # Each (S,C) pair implements d(sin)/dt = n*w*cos,d(cos)/dt = -n*w*sin
+    
+    # Fundamental (n=1)
+    0 -> S1()   if(ds1() > 0,ds1(),0)
+    S1() -> 0   if(ds1() < 0,-ds1()/max(Sin1,0.001),0)
+    0 -> C1()   if(dc1() > 0,dc1(),0)
+    C1() -> 0   if(dc1() < 0,-dc1()/max(Cos1,0.001),0)
+    
+    # 3rd harmonic: d(S3)/dt = 3*omega*cos(3*omega*t)
+    # Uses sin(3x) = 3*sin(x) - 4*sin^3(x) identity
+    0 -> S3()   if(ds3() > 0,ds3(),0)
+    S3() -> 0   if(ds3() < 0,-ds3()/max(Sin3,0.001),0)
+    
+    0 -> S5()   if(ds5() > 0,ds5(),0)
+    S5() -> 0   if(ds5() < 0,-ds5()/max(Sin5,0.001),0)
+    
+    0 -> S7()   if(ds7() > 0,ds7(),0)
+    S7() -> 0   if(ds7() < 0,-ds7()/max(Sin7,0.001),0)
+    
+    0 -> S9()   if(ds9() > 0,ds9(),0)
+    S9() -> 0   if(ds9() < 0,-ds9()/max(Sin9,0.001),0)
+    
+    # === OUTPUT WAVEFORM ===
+    0 -> Wave()     if(wave_correction() > 0,wave_correction(),0)
+    Wave() -> 0     if(wave_correction() < 0,-wave_correction()/max(Output,0.001),0)
+end reaction rules
+
+end model
+
+# Watch harmonics build up a square wave
+simulate({method=>"ode",t_end=>20,n_steps=>2000})

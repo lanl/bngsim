@@ -1,0 +1,20 @@
+# Regression test for issue #41:
+# .net loader must recognize the `$` clamp marker when the species carries a
+# `@compartment::` prefix (e.g. `@CP::$Sink()` from cBNGL models compiled by
+# BNG2.pl). Without the fix, the loader stores the name as `@CP::$Sink()` and
+# treats Sink() as a free state variable, so the X -> Sink flux integrates into
+# Sink instead of leaving Sink clamped at its IC.
+begin parameters
+    1 k         1.0  # Constant
+end parameters
+begin species
+    1 @CP::X() 100
+    2 @CP::$Sink() 0
+end species
+begin reactions
+    1 1 2 k #_R1
+end reactions
+begin groups
+    1 X_obs                1
+    2 Sink_obs             2
+end groups

@@ -1,0 +1,65 @@
+# Model: compartment_organelle_exchange.bngl
+# Description: Models vesicular transport of a protein cargo between Endoplasmic Reticulum (ER) and Golgi.
+#              Demonstrates a pulse-chase like dynamic where protein is synthesized in ER and moves to Golgi.
+
+begin model
+
+begin parameters
+    # Volumes
+    Vol_CP  100
+    Vol_ER  10   # ER Lumen
+    Vol_Golgi 5  # Golgi Lumen
+    
+    # Rates
+    k_synth 10.0  # Synthesis rate (into ER)
+    k_export 0.5  # ER -> Golgi
+    k_secrete 0.2 # Golgi -> CP (Secreted)
+    
+    # Stop synthesis after some time? Modeled as degradation of mRNA (implied)
+    # or just constant synthesis for steady state
+end parameters
+
+begin molecule types
+    Cargo()
+end molecule types
+
+begin compartments
+    CP     3  Vol_CP
+    ER_M   2  1.0     CP
+    ER     3  Vol_ER  ER_M
+    Golgi_M 2 1.0     CP
+    Golgi  3  Vol_Golgi Golgi_M
+end compartments
+
+begin seed species
+    # Start Empty
+    Cargo()@ER 0
+end seed species
+
+begin observables
+    Molecules ER_Pool    Cargo()@ER
+    Molecules Golgi_Pool Cargo()@Golgi
+    Molecules Secreted   Cargo()@CP
+end observables
+
+begin reaction rules
+    # 1. Synthesis into ER
+    # Zero-order synthesis
+    0 -> Cargo()@ER k_synth
+    
+    # 2. ER to Golgi Transport
+    # Simplified vesicular transport step
+    Cargo()@ER -> Cargo()@Golgi k_export
+    
+    # 3. Secretion from Golgi
+    Cargo()@Golgi -> Cargo()@CP k_secrete
+    
+    # 4. Degradation in CP (turnover)
+    Cargo()@CP -> 0 0.1
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

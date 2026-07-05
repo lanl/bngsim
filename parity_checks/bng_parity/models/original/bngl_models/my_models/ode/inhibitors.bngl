@@ -1,0 +1,45 @@
+begin model
+begin parameters
+NA 6.02214076e23 # molecules per mole
+V 1e-12 # L
+kf1_homeostasis 0.05 # /s
+kr1_homeostasis 0.025 # /s
+kf1 0
+kr1 0
+LCK_cpc 1e4 # molecules per cell
+end parameters
+begin molecule types
+LCK(Y192~0~P)
+end molecule types
+# dX0/dt = -kf1*X0 + kr1*Xp
+# dXp/dt = kf1*X0 - kr1*Xp
+# 0 = kf1*(XT-Xp) - kr1*Xp => Xp/XT = kf1/(kf1+kr1)
+begin seed species
+LCK(Y192~P) LCK_cpc*(kf1_homeostasis/(kf1_homeostasis+kr1_homeostasis))
+LCK(Y192~0) LCK_cpc*(kr1_homeostasis/(kf1_homeostasis+kr1_homeostasis))
+end seed species
+begin observables
+Molecules LCKp LCK(Y192~P)
+Molecules LCK0 LCK(Y192~0)
+end observables
+begin functions
+LCK_total()=LCK_cpc
+end functions
+begin reaction rules
+LCK(Y192~0)<->LCK(Y192~P) kf1,kr1
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+# simulate addition of excess pan phosphatase inhibitor
+resetConcentrations()
+setParameter("kf1",0.05)
+setParameter("kr1",0)
+simulate({suffix=>"P_inh",method=>"ode",t_start=>0,t_end=>120,n_steps=>120,print_functions=>1})
+# simulate addition of excess pan kinase inhibitor
+resetConcentrations()
+setParameter("kf1",0)
+setParameter("kr1",0.025)
+simulate({suffix=>"K_inh",method=>"ode",t_start=>0,t_end=>120,n_steps=>120,print_functions=>1})
+end actions

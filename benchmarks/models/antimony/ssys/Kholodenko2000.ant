@@ -1,0 +1,111 @@
+// Kholodenko2000_MAPK_8species.ant
+//
+// Source:
+//   Kholodenko BN (2000)
+//   "Negative feedback and ultrasensitivity can bring about oscillations
+//    in the mitogen-activated protein kinase cascades."
+//   Eur J Biochem 267(6):1583–1588. PMID:10712587
+//
+// Implementation based on the curated SBML model BIOMD0000000010
+// (BioModels) and the Morpheus MAPK_SBML.xml import.
+//
+// Species (all dimensionless concentration units):
+//   MKKK,    MKKK_P   : level-1 kinase (unphosphorylated / phosphorylated)
+//   MKK,     MKK_P,
+//   MKK_PP             : level-2 kinase (0,1,2 phosphates)
+//   MAPK,    MAPK_P,
+//   MAPK_PP           : level-3 kinase (0,1,2 phosphates)
+//
+// Dynamics:
+//   Michaelis–Menten-type activation/deactivation at each level,
+//   with negative feedback from MAPK_PP on activation of MKKK
+//   via the factor (1 + (MAPK_PP / Ki)^n) in the V1 term.
+//
+// This is the classic 8-ODE cascade used to demonstrate
+// ultrasensitivity + negative feedback → sustained oscillations.
+
+model Kholodenko2000_MAPK_8species
+
+  // Compartment
+  compartment cyt = 1;
+
+  // Species
+  species MKKK    in cyt;
+  species MKKK_P  in cyt;
+  species MKK     in cyt;
+  species MKK_P   in cyt;
+  species MKK_PP  in cyt;
+  species MAPK    in cyt;
+  species MAPK_P  in cyt;
+  species MAPK_PP in cyt;
+
+  // Parameters (from BIOMD0000000010 / Morpheus MAPK_SBML.xml)
+
+  // Top level (MKKK)
+  const V1  = 2.5;
+  const K1  = 10;
+  const V2  = 0.25;
+  const KK2 = 8;
+  const Ki  = 9;
+  const n   = 1;
+
+  // Middle level (MKK)
+  const k3  = 0.025;
+  const KK3 = 15;
+  const k4  = 0.025;
+  const KK4 = 15;
+  const V5  = 0.75;
+  const KK5 = 15;
+  const V6  = 0.75;
+  const KK6 = 15;
+
+  // Bottom level (MAPK)
+  const k7  = 0.025;
+  const KK7 = 15;
+  const k8  = 0.025;
+  const KK8 = 15;
+  const V9  = 0.5;
+  const KK9 = 15;
+  const V10 = 0.5;
+  const KK10 = 15;
+
+  // Compartment "volume" factor (just 1 here)
+  const uVol = 1;
+
+  // Helper: feedback term denominator 1 + (MAPK_PP / Ki)^n
+  fb_den := 1 + (MAPK_PP / Ki)^n;
+
+  // ODEs
+
+  // Level 1: MKKK / MKKK_P
+  MKKK'   = - V1 * MKKK / (fb_den * (K1 + MKKK)) + V2 * MKKK_P / (KK2 + MKKK_P);
+
+  MKKK_P' =   V1 * MKKK / (fb_den * (K1 + MKKK)) - V2 * MKKK_P / (KK2 + MKKK_P);
+
+  // Level 2: MKK, MKK_P, MKK_PP
+  MKK'    = - k3 * MKKK_P * MKK / (KK3 + MKK) + V6 * MKK_P / (KK6 + MKK_P);
+
+  MKK_P'  = k3 * MKKK_P * MKK / (KK3 + MKK) - uVol * k4 * MKKK_P * MKK_P / (KK4 + MKK_P) + uVol * V5 * MKK_PP / (KK5 + MKK_PP) - V6 * MKK_P / (KK6 + MKK_P);
+
+  MKK_PP' =   k4 * MKKK_P * MKK_P / (KK4 + MKK_P) - V5 * MKK_PP / (KK5 + MKK_PP);
+
+  // Level 3: MAPK, MAPK_P, MAPK_PP
+  MAPK'   = - k7 * MKK_PP * MAPK / (KK7 + MAPK) + V10 * MAPK_P / (KK10 + MAPK_P);
+
+  MAPK_P' = k7 * MKK_PP * MAPK / (KK7 + MAPK) - k8 * MKK_PP * MAPK_P / (KK8 + MAPK_P) + uVol * V9 * MAPK_PP / (KK9 + MAPK_PP) - V10 * MAPK_P / (KK10 + MAPK_P);
+
+  MAPK_PP'=   k8 * MKK_PP * MAPK_P / (KK8 + MAPK_P) - V9 * MAPK_PP / (KK9 + MAPK_PP);
+
+  // Initial conditions (from BIOMD0000000010 / Morpheus MAPK_SBML.xml)
+  MKKK    = 90;
+  MKKK_P  = 10;
+  MKK     = 280;
+  MKK_P   = 10;
+  MKK_PP  = 10;
+  MAPK    = 280;
+  MAPK_P  = 10;
+  MAPK_PP = 10;
+
+end
+// @SIM T_START=0 T_END=200 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

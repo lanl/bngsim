@@ -1,0 +1,47 @@
+# Feature: receptor heterogeneity (two receptor subtypes with different affinities)
+# Tests: different molecule types competing for same ligand
+# Covers: bench_blbr_heterogeneity_goldstein1980 from existing corpus
+# Tier: base
+# Expected: high-affinity receptor dominates binding at low ligand
+
+begin model
+begin parameters
+    L_tot    40
+    Rhi_tot  30
+    Rlo_tot  30
+    kf_hi    0.02    # /s, high-affinity binding
+    kr_hi    0.05    # /s, high-affinity unbinding (Kd = 2.5)
+    kf_lo    0.005   # /s, low-affinity binding
+    kr_lo    0.2     # /s, low-affinity unbinding (Kd = 40)
+end parameters
+
+begin molecule types
+    L(r)
+    Rhi(l)
+    Rlo(l)
+end molecule types
+
+begin seed species
+    L(r)     L_tot
+    Rhi(l)   Rhi_tot
+    Rlo(l)   Rlo_tot
+end seed species
+
+begin observables
+    Molecules  L_free       L(r)
+    Molecules  L_bound      L(r!+)
+    Molecules  Rhi_free     Rhi(l)
+    Molecules  Rlo_free     Rlo(l)
+    Molecules  LRhi         L(r!1).Rhi(l!1)
+    Molecules  LRlo         L(r!1).Rlo(l!1)
+end observables
+
+begin reaction rules
+    L(r) + Rhi(l) <-> L(r!1).Rhi(l!1)  kf_hi, kr_hi
+    L(r) + Rlo(l) <-> L(r!1).Rlo(l!1)  kf_lo, kr_lo
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

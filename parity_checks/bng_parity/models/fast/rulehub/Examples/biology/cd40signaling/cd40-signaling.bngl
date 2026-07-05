@@ -1,0 +1,99 @@
+begin model
+begin parameters
+    # CD40 Signaling: B-cell activation and TRAF-mediated relay.
+    # Advanced features: TotalRate for IKK assembly and DeleteMolecules clearance.
+    
+    # Recognition
+    k_bind_l 1e-3      # CD40L binding
+    k_traf_rec 1.2     # TRAF recruitment
+    
+    # Canonical Pathway (IKK)
+    k_ikk_synth 1.0    # IKK complex assembly
+    k_nfkb_trigger 2.0 # Nuclear translocation
+    
+    # Non-canonical Pathway (NIK)
+    k_nik_stab 0.8     # NIK stabilization (triggered by CD40)
+    k_p100_proc 1.5    # NIK-mediated p100 processing
+    
+    # Regulation & Clearance
+    k_traf_deg 2.5     # Activated TRAF degradation (Feedback)
+    k_reset 0.1        # Basal recovery
+    
+    # Initials
+    CD40_tot 500
+    CD40L_tot 100
+    TRAF_tot 300
+    IKK_pool 200
+    NFkB_tot 120
+    NIK_basal 10
+    RELB_tot 100
+end parameters
+
+begin molecule types
+    CD40(l,t)
+    CD40L(r)
+    TRAF(b,s~U~A)
+    IKK(s~off~on)
+    NIK(s~U~S)         # Unstable vs Stable
+    NFkB(loc~cyt~nuc)
+    RelB(loc~cyt~nuc)  # Non-canonical effector
+end molecule types
+
+begin seed species
+    CD40(l,t) CD40_tot
+    CD40L(r) CD40L_tot
+    TRAF(b,s~U) TRAF_tot
+    IKK(s~off) IKK_pool
+    NFkB(loc~cyt) NFkB_tot
+    NIK(s~U) NIK_basal
+    RelB(loc~cyt) RELB_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Canonical_NFB   NFkB(loc~nuc)            # Fast inflammatory relay
+    Molecules NonCanonical_NFB RelB(loc~nuc)            # Sustained developmental relay
+    Molecules Active_IKK       IKK(s~on)                # Kinase status
+    Molecules NIK_Stabilized   NIK(s~S)                 # Regulatory node
+    Molecules TRAF_Sequest     CD40(t!1).TRAF(b!1)      # Surface engagement
+end observables
+
+begin reaction rules
+    ## RECEPTION Phase
+    # CD40-CD40L binding
+    CD40(l) + CD40L(r) <-> CD40(l!1).CD40L(r!1) k_bind_l,0.1
+    
+    # TRAF recruitment
+    CD40(l!1,t).CD40L(r!1) + TRAF(b,s~U) <-> CD40(l!1,t!2).CD40L(r!1).TRAF(b!2,s~U) k_traf_rec,0.1
+    
+    ## CANONICAL SIGNALING (IKK)
+    # CD40-TRAF complex drives IKK assembly (TotalRate: drive-dependent)
+    CD40(t!1).TRAF(b!1) + IKK(s~off) -> CD40(t!1).TRAF(b!1) + IKK(s~on) k_ikk_synth TotalRate
+    
+    # IKK triggers NFkB import
+    IKK(s~on) + NFkB(loc~cyt) -> IKK(s~on) + NFkB(loc~nuc) k_nfkb_trigger
+    
+    ## NON-CANONICAL SIGNALING (NIK)
+    # CD40 activation stabilizes NIK
+    CD40(l!+) + NIK(s~U) -> CD40(l!+) + NIK(s~S) k_nik_stab
+    
+    # Stable NIK triggers RelB import
+    NIK(s~S) + RelB(loc~cyt) -> NIK(s~S) + RelB(loc~nuc) k_p100_proc
+    
+    ## REGULATION Phase (Clearance)
+    # DeleteMolecules: Degrade signaling TRAF to terminate signal
+    CD40(l!?,t!1).TRAF(b!1,s~U) -> CD40(l,t) k_traf_deg DeleteMolecules
+    
+    # Basal reset
+    NFkB(loc~nuc) -> NFkB(loc~cyt) k_reset
+    RelB(loc~nuc) -> RelB(loc~cyt) k_reset
+    NIK(s~S) -> NIK(s~U) 0.5
+    IKK(s~on) -> IKK(s~off) 0.2
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

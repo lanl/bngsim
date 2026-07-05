@@ -1,0 +1,36 @@
+begin model
+begin parameters
+kf 1
+kr 1
+end parameters
+begin molecule types
+BSA(K1~0~DNP,K2~0~DNP,K3~0~DNP,K4~0~DNP,K5~0~DNP)
+IgE(Fab)
+end molecule types
+begin seed species
+BSA(K1~DNP,K2~DNP,K3~DNP,K4~DNP,K5~DNP) 1
+IgE(Fab) 10000
+end seed species
+begin observables
+Molecules BSA_0 BSA(K1~DNP,K2~DNP,K3~DNP,K4~DNP,K5~DNP)
+Molecules BSA_1 BSA(K1~DNP!+,K2~DNP,K3~DNP,K4~DNP,K5~DNP) BSA(K1~DNP,K2~DNP!+,K3~DNP,K4~DNP,K5~DNP) BSA(K1~DNP,K2~DNP,K3~DNP!+,K4~DNP,K5~DNP) BSA(K1~DNP,K2~DNP,K3~DNP,K4~DNP!+,K5~DNP) BSA(K1~DNP,K2~DNP,K3~DNP,K4~DNP,K5~DNP!+)
+Molecules BSA_4 BSA(K1~DNP!+,K2~DNP,K3~DNP!+,K4~DNP!+,K5~DNP!+) BSA(K1~DNP,K2~DNP!+,K3~DNP!+,K4~DNP!+,K5~DNP!+)
+end observables
+begin functions
+end functions
+begin reaction rules
+BSA(K1~DNP,K2~DNP)+IgE(Fab)->BSA(K1~DNP,K2~DNP!1).IgE(Fab!1) kf
+BSA(K1~DNP,K2~DNP)+IgE(Fab)->BSA(K1~DNP,K2~DNP!1).IgE(Fab!1) kf
+BSA(K1~DNP!1).IgE(Fab!1)->BSA(K1~DNP)+IgE(Fab) kr
+BSA(K2~DNP!1).IgE(Fab!1)->BSA(K2~DNP)+IgE(Fab) kr
+BSA(K3~DNP)+IgE(Fab)<->BSA(K3~DNP!1).IgE(Fab!1) kf,kr
+BSA(K4~DNP)+IgE(Fab)<->BSA(K4~DNP!1).IgE(Fab!1) kf,kr
+BSA(K5~DNP)+IgE(Fab)<->BSA(K5~DNP!1).IgE(Fab!1) kf,kr
+end reaction rules
+end model
+
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",print_functions=>1,\
+  	      t_start=>0,t_end=>3000,n_steps=>300})
+end actions

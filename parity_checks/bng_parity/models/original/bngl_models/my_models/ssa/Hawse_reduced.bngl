@@ -1,0 +1,87 @@
+# Translation of Boolean model in Reduced Boolean T-Cell model.txt to BNGL format within the GSP (Gillespie) update mode.
+begin model
+begin parameters
+end parameters
+begin molecule types
+   tcr(state~0~1)
+   tcr_low(state~0~1)
+   tcr_high(state~0~1)
+   mek1(state~0~1)
+   pip3(state~0~1)
+   pten_total(state~0~1)
+   pten_active(state~0~1)
+   akt(state~0~1)
+   foxo1(state~0~1)
+   ck2(state~0~1)
+   mtorc2(state~0~1)
+   nedd4(state~0~1)
+end molecule types
+begin seed species
+   tcr(state~0) 1
+   tcr_low(state~0) 1
+   tcr_high(state~1) 1
+   mek1(state~0) 1
+   pip3(state~0) 1
+   pten_total(state~1) 1
+   pten_active(state~0) 1
+   akt(state~0) 1
+   foxo1(state~1) 1
+   ck2(state~0) 1
+   mtorc2(state~0) 1
+   nedd4(state~0) 1
+end seed species
+begin observables
+   Molecules TCR tcr(state~1)
+   Molecules TCR_LOW tcr_low(state~1)
+   Molecules TCR_HIGH tcr_high(state~1)
+   Molecules MEK1 mek1(state~1)
+   Molecules PIP3 pip3(state~1)
+   Molecules PTEN_TOTAL pten_total(state~1)
+   Molecules PTEN_ACTIVE pten_active(state~1)
+   Molecules AKT akt(state~1)
+   Molecules FOXO1 foxo1(state~1)
+   Molecules CK2 ck2(state~1)
+   Molecules MTORC2 mtorc2(state~1)
+   Molecules NEDD4 nedd4(state~1)
+end observables
+begin functions
+   tcr_func() if(TCR_LOW>0.5 || TCR_HIGH>0.5, 1, 0)
+   ck2_func() if(TCR_HIGH>0.5, 1, 0)
+   mek1_func() if(TCR>0.5, 1, 0)
+   pip3_func() if(TCR>0.5 && PTEN_ACTIVE<0.5, 1, 0)
+   mtorc2_func() if(TCR>0.5 && AKT<0.5, 1, 0)
+   akt_func() if(PIP3>0.5 && MTORC2>0.5, 1, 0)
+   pten_total_func() if(FOXO1>0.5 && NEDD4<0.5, 1, 0)
+   pten_active_func() if(PTEN_TOTAL>0.5 && MEK1>0.5 && CK2<0.5, 1, 0)
+   foxo1_func() if(AKT<0.5, 1, 0)
+   nedd4_func() if(TCR_HIGH>0.5, 1, 0)
+end functions
+begin reaction rules
+   R1: tcr(state) -> tcr(state~1) if(tcr_func()>0.5,1,0)
+   R2: tcr(state) -> tcr(state~0) if(tcr_func()<0.5,1,0)
+   R3: ck2(state) -> ck2(state~1) if(ck2_func()>0.5,1,0)
+   R4: ck2(state) -> ck2(state~0) if(ck2_func()<0.5,1,0)
+   R5: mek1(state) -> mek1(state~1) if(mek1_func()>0.5,1,0)
+   R6: mek1(state) -> mek1(state~0) if(mek1_func()<0.5,1,0)
+   R7: pip3(state) -> pip3(state~1) if(pip3_func()>0.5,1,0)
+   R8: pip3(state) -> pip3(state~0) if(pip3_func()<0.5,1,0)
+   R9: mtorc2(state) -> mtorc2(state~1) if(mtorc2_func()>0.5,1,0)
+   R10: mtorc2(state) -> mtorc2(state~0) if(mtorc2_func()<0.5,1,0)
+   R11: akt(state) -> akt(state~1) if(akt_func()>0.5,1,0)
+   R12: akt(state) -> akt(state~0) if(akt_func()<0.5,1,0)
+   R13: pten_total(state) -> pten_total(state~1) if(pten_total_func()>0.5,1,0)
+   R14: pten_total(state) -> pten_total(state~0) if(pten_total_func()<0.5,1,0)
+   R15: pten_active(state) -> pten_active(state~1) if(pten_active_func()>0.5,1,0)
+   R16: pten_active(state) -> pten_active(state~0) if(pten_active_func()<0.5,1,0)
+   R17: foxo1(state) -> foxo1(state~1) if(foxo1_func()>0.5,1,0)
+   R18: foxo1(state) -> foxo1(state~0) if(foxo1_func()<0.5,1,0)
+   R19: nedd4(state) -> nedd4(state~1) if(nedd4_func()>0.5,1,0)
+   R20: nedd4(state) -> nedd4(state~0) if(nedd4_func()<0.5,1,0)
+end reaction rules
+end model
+
+ generate_network({overwrite=>1})
+
+# Simulate for 30 time units, outputting every time unit.
+ simulate({method=>"ssa",t_end=>30,n_steps=>30,print_CDAT=>0,verbose=>1})
+#parameter_scan({parameter=>"x",par_min=>1,par_max=>1000,n_scan_pts=>100,method=>"ssa",t_end=>30,n_steps=>300,log_scale=>0})

@@ -1,0 +1,94 @@
+begin model
+begin parameters
+    # Enhanced EGFR Signaling: Combinatorial complexity with multiple phosphorylation sites.
+    # Advanced features: Wildcards (!+, !?) and component states.
+    
+    # Binding
+    k_lig_bind 1.0
+    k_lig_off  0.1
+    k_dimer    0.5
+    k_dimer_off 0.05
+    
+    # Phosphorylation (Trans-activation)
+    k_phos 2.0
+    k_dephos 0.5
+    
+    # Adaptor Recruitment
+    k_grb2_bind 1.5
+    k_grb2_off 0.2
+    k_shc_bind 1.0
+    k_shc_off 0.2
+    
+    # Initials
+    EGF_tot 100
+    EGFR_tot 200
+    Grb2_tot 150
+    Shc_tot 100
+end parameters
+
+begin molecule types
+    EGF(r)
+    # EGFR has two specific tyrosine sites
+    EGFR(l,d,Y1068~U~P,Y1173~U~P)
+    Grb2(SH2,SH3)   # Binds Y1068
+    Shc(PTB,Y317~U~P) # Binds Y1173
+end molecule types
+
+begin seed species
+    EGF(r) EGF_tot
+    EGFR(l,d,Y1068~U,Y1173~U) EGFR_tot
+    Grb2(SH2,SH3) Grb2_tot
+    Shc(PTB,Y317~U) Shc_tot
+end seed species
+
+begin observables
+    Molecules Bound_EGFR     EGFR(l!+)
+    Molecules Dimers         EGFR(d!+)
+    
+    # Wildcard usage: Check phosphorylation regardless of binding status (!?)
+    Molecules pY1068         EGFR(Y1068~P!?)
+    Molecules pY1173         EGFR(Y1173~P!?)
+    
+    # Combinatorial: Phosphorylated on ANY site
+    Molecules Total_Phos     EGFR(Y1068~P!?), EGFR(Y1173~P!?)
+    
+    Molecules Grb2_Recruited Grb2(SH2!+)
+    Molecules Shc_Recruited  Shc(PTB!+)
+end observables
+
+begin reaction rules
+    # 1. Ligand Binding
+    EGF(r) + EGFR(l,d) <-> EGF(r!1).EGFR(l!1,d) k_lig_bind,k_lig_off
+    
+    # 2. Dimerization
+    # Only ligand-bound receptors dimerize
+    # Don't care about phosphorylation state of Y sites yet (implicit wildcards on Y states)
+    EGF(r!1).EGFR(l!1,d) + EGF(r!2).EGFR(l!2,d) <-> EGF(r!1).EGFR(l!1,d!3).EGF(r!2).EGFR(l!2,d!3) k_dimer,k_dimer_off
+    
+    # 3. Trans-Phosphorylation
+    # Active dimer phosphorylates its sites
+    # Use wildcards to indicate we don't care if the OTHER site is phosphorylated
+    # d!1 means part of a dimer
+    EGFR(d!1).EGFR(d!1,Y1068~U) -> EGFR(d!1).EGFR(d!1,Y1068~P) k_phos
+    EGFR(d!1).EGFR(d!1,Y1173~U) -> EGFR(d!1).EGFR(d!1,Y1173~P) k_phos
+    
+    # 4. Dephosphorylation
+    # Access limited: Only dephosphorylate if UNBOUND (no adaptor)
+    EGFR(Y1068~P) -> EGFR(Y1068~U) k_dephos
+    EGFR(Y1173~P) -> EGFR(Y1173~U) k_dephos
+    
+    # 5. Adaptor Recruitment
+    # Grb2 binds pY1068
+    # Use !? on d and l to show independence of those sites (though biologically linked)
+    # Actually standard BNG implies independence unless specified.
+    EGFR(Y1068~P) + Grb2(SH2) <-> EGFR(Y1068~P!1).Grb2(SH2!1) k_grb2_bind,k_grb2_off
+    
+    # Shc binds pY1173
+    EGFR(Y1173~P) + Shc(PTB) <-> EGFR(Y1173~P!1).Shc(PTB!1) k_shc_bind,k_shc_off
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model

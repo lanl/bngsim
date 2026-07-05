@@ -1,0 +1,63 @@
+begin model
+
+begin parameters
+
+ITAM_copyNum 1
+Syk_copyNum 1
+
+koff_nSH2_cY 0.1 # /s
+koff_cSH2_nY 0.5 # /s
+
+Kx_nY_cSH2 1 # dimensionless
+Kx_cY_nSH2 1 # dimensionless
+
+kmx_nY_cSH2=koff_cSH2_nY
+kmx_cY_nSH2=koff_nSH2_cY
+
+kpx_nY_cSH2=Kx_nY_cSH2*kmx_nY_cSH2
+kpx_cY_nSH2=Kx_cY_nSH2*kmx_cY_nSH2
+
+end parameters
+
+begin molecule types
+
+ITAM(nY~0~P,cY~0~P)
+Syk(nSH2,cSH2)
+
+end molecule types
+
+begin seed species
+
+ITAM(nY~P!1,cY~P!2).Syk(nSH2!2,cSH2!1) ITAM_copyNum
+
+end seed species
+
+begin observables
+
+Molecules freeSyk Syk(nSH2,cSH2)
+Molecules boundSyk Syk(nSH2!+,cSH2) Syk(nSH2,cSH2!+) Syk(nSH2!+,cSH2!+)
+
+end observables
+
+begin functions
+
+end functions
+
+begin reaction rules
+
+ITAM(cY~P!1).Syk(nSH2!1,cSH2)->ITAM(cY~P)+Syk(nSH2,cSH2) koff_nSH2_cY
+ITAM(nY~P!1).Syk(nSH2,cSH2!1)->ITAM(nY~P)+Syk(nSH2,cSH2) koff_cSH2_nY
+
+ITAM(nY~P,cY~P!1).Syk(nSH2!1,cSH2)<->ITAM(nY~P!2,cY~P!1).Syk(nSH2!1,cSH2!2) kpx_nY_cSH2,kmx_nY_cSH2
+ITAM(nY~P!1,cY~P).Syk(nSH2,cSH2!1)<->ITAM(nY~P!1,cY~P!2).Syk(nSH2!2,cSH2!1) kpx_cY_nSH2,kmx_cY_nSH2
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>60,n_steps=>120})
+
+end actions

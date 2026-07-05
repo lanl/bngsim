@@ -1,0 +1,250 @@
+# filename: TCR_model.bngl
+# availability: https://github.com/RuleWorld/RuleHub/tree/master/Contributed/Lin2019
+# compatibility: BioNetGen version 2.4 or higher
+# contributors: Yen Ting Lin, Song Feng, and William S. Hlavacek
+# date: 19 March 2019
+# This file provides an updated formulation of the model of Lipniacki et al. (2008),
+# which is compatible with current BNGL conventions. 
+# We have confirmed that this formulation is consistent with the original formulation.
+# The actions section at bottom defines various simulations, including that of Fig. 2(c) 
+# in Lin et al. (2019).
+# References:
+#  - Lipniacki T, Hat B, Faeder JR, Hlavacek WS (2008) J Theor Biol 254: 110-122. 
+#    https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2577002/
+#  - Lin YT, Feng S, Hlavacek WS (2019) Scaling methods for accelerating
+#    kinetic Monte Carlo simulations of chemical reaction networks.
+#    LA-UR-19-22745
+#    https://arxiv.org/abs/1903.08615
+
+begin model
+
+begin parameters
+
+# The time unit is s.
+
+# universal static scaling factor (used in standard scaling)
+lambda 1 # dimensionless, 0<lambda<=1, lambda=1 => no scaling
+
+# These settings agree with Table 1 in Lipniacki et al. (2008).
+N1	30*lambda
+N2	0*lambda
+
+TCR	30000*lambda
+LCK	100000*lambda
+ZAP	100000*lambda
+MEK	100000*lambda
+ERK	300000*lambda
+SHP	300000*lambda
+
+b1	0.3/TCR
+b2	0.3/TCR
+d1	0.05
+d2	1
+lb	0.3/LCK
+ly1	5/SHP
+ly2	0.3
+ls1	0.1
+ls2	0.5/ERK
+
+tp	0.05
+
+s0  1e-5
+s1	30/SHP
+s2	0.0006
+s3	0.05
+
+z0  2e-6
+z1	5/ZAP
+z2	0.02
+m1	5/MEK
+m2	0.02
+e1	5/ERK
+e2	0.02
+
+end parameters
+
+begin molecule types
+pMHC(p~ag~en)
+TCR(ab,ITAM~U~P~PP,lck,shp)
+Lck(tcr,Y~U~P,S~U~P)
+SHP(tcr,Y~U~P)
+ZAP(Y~U~P)
+MEK(S~U~P~PP)
+ERK(S~U~P~PP)
+end molecule types
+
+begin seed species
+pMHC(p~ag)	N1
+pMHC(p~en)	0
+TCR(ab,ITAM~U,lck,shp)	TCR
+Lck(tcr,Y~U,S~U) 	LCK
+SHP(tcr,Y~U)	SHP
+ZAP(Y~U)	ZAP
+MEK(S~U)	MEK
+ERK(S~U)	ERK
+end seed species
+
+begin observables
+Species Species7 MEK(S~U)
+Species Species15 MEK(S~P)
+end observables
+
+begin functions
+scaledUpSpecies7() Species7/lambda
+scaledUpSpecies15() Species15/lambda
+end functions
+
+
+begin reaction rules
+
+# pMHC binding to TCR:
+TCR(ab,shp)+pMHC(p~ag)->TCR(ab!1,shp).pMHC(p~ag!1) b1
+TCR(ab,shp)+pMHC(p~en)->TCR(ab!1,shp).pMHC(p~en!1) b2
+
+#recruitment of Lck to TCR bound to pMHC:
+#All unbound Lck is unphosphorylated
+TCR(ab!+,lck,shp)+Lck(tcr)->TCR(ab!+,lck!1,shp).Lck(tcr!1) lb
+
+#Lck phosphorylation on Y:
+# What is phosphorylating Lck?
+TCR(lck!1,shp).Lck(tcr!1,Y~U)->TCR(lck!1,shp).Lck(tcr!1,Y~P) ly2
+
+#Lck phosphorylation on S:
+ERK(S~PP)+TCR(lck!1,shp).Lck(tcr!1,S~U)->ERK(S~PP)+TCR(lck!1,shp).Lck(tcr!1,S~P) ls2
+
+#Lck dephosphorylation on S:
+Lck(tcr!+,S~P)->Lck(tcr!+,S~U) ls1
+
+#TCR phosphorylation by Lck:
+TCR(ITAM~U,lck!1,shp).Lck(tcr!1,Y~P)->TCR(ITAM~P,lck!1,shp).Lck(tcr!1,Y~P) tp
+TCR(ITAM~P,lck!1,shp).Lck(tcr!1,Y~P)->TCR(ITAM~PP,lck!1,shp).Lck(tcr!1,Y~P) tp
+
+#Spontaneous ZAP phosphorylation:
+ZAP(Y~U)->ZAP(Y~P) z0
+
+#ZAP phosphorylation:
+TCR(ITAM~PP)+ZAP(Y~U)->TCR(ITAM~PP)+ZAP(Y~P) z1
+
+#ZAP dephosphorylation:
+ZAP(Y~P)->ZAP(Y~U) z2
+
+#MEK phosphorylation by ZAP 
+ZAP(Y~P)+MEK(S~U)->ZAP(Y~P)+MEK(S~P) m1
+ZAP(Y~P)+MEK(S~P)->ZAP(Y~P)+MEK(S~PP) m1
+
+#MEK dephosphorylation:
+MEK(S~P)->MEK(S~U) m2
+MEK(S~PP)->MEK(S~U) m2
+
+#ERK phosphorylation by MEK:
+MEK(S~PP)+ERK(S~U)->MEK(S~PP)+ERK(S~P) e1
+MEK(S~PP)+ERK(S~P)->MEK(S~PP)+ERK(S~PP) e1
+
+#ERK dephosphorylation:
+ERK(S~P)->ERK(S~U) e2
+ERK(S~PP)->ERK(S~U) e2
+
+#Spontaneous phosphorylation of SHP
+SHP(Y~U)->SHP(Y~P) s0
+
+#SHP phosphorylation by Lck:
+# All SHP(Y~U) is unbound, all LckYP is bound to TCR
+Lck(Y~P,S~U)+SHP(Y~U)->Lck(Y~P,S~U)+SHP(Y~P) s1
+
+#pMH dissociation from TCR not associated with Lck and simultaneous dephosphorylation
+pMHC(p~ag!1).TCR(ab!1,ITAM~U,lck)->pMHC(p~ag)+TCR(ab,ITAM~U,lck) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~P,lck)->pMHC(p~ag)+TCR(ab,ITAM~U,lck) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~PP,lck)->pMHC(p~ag)+TCR(ab,ITAM~U,lck) d1
+pMHC(p~en!1).TCR(ab!1,ITAM~U,lck)->pMHC(p~en)+TCR(ab,ITAM~U,lck) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~P,lck)->pMHC(p~en)+TCR(ab,ITAM~U,lck) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~PP,lck)->pMHC(p~en)+TCR(ab,ITAM~U,lck) d2
+
+#pMHC dissociation causes Lck dissociation and simultaneous dephosphorylation:
+pMHC(p~ag!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+pMHC(p~ag!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~ag)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d1
+
+pMHC(p~en!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~U,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~P,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~U,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~U,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~P,S~U)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+pMHC(p~en!1).TCR(ab!1,ITAM~PP,lck!2).Lck(tcr!2,Y~P,S~P)->pMHC(p~en)+TCR(ab,ITAM~U,lck)+Lck(tcr,Y~U,S~U) d2
+
+#Recruitment of phosphorylated SHP to receptor complex without Lck:
+TCR(ITAM~U,lck,shp)+SHP(tcr,Y~P)->TCR(ITAM~U,lck,shp!1).SHP(tcr!1,Y~P) ly1
+TCR(ITAM~P,lck,shp)+SHP(tcr,Y~P)->TCR(ITAM~U,lck,shp!1).SHP(tcr!1,Y~P) ly1
+TCR(ITAM~PP,lck,shp)+SHP(tcr,Y~P)->TCR(ITAM~U,lck,shp!1).SHP(tcr!1,Y~P) ly1
+
+#Recruitment of phosphorylated SHP to receptor complex with Lck:
+#Phosphorylation of Lck on S inhibits this reaction
+TCR(ITAM~U,lck!1,shp).Lck(tcr!1,Y~U,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+TCR(ITAM~U,lck!1,shp).Lck(tcr!1,Y~P,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+TCR(ITAM~P,lck!1,shp).Lck(tcr!1,Y~U,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+TCR(ITAM~P,lck!1,shp).Lck(tcr!1,Y~P,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+TCR(ITAM~PP,lck!1,shp).Lck(tcr!1,Y~U,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+TCR(ITAM~PP,lck!1,shp).Lck(tcr!1,Y~P,S~U)+SHP(tcr,Y~P)->TCR(ITAM~U,lck!1,shp!2).Lck(tcr!1,Y~U,S~U).SHP(tcr!2,Y~P) ly1
+
+#SHP dissociation from TCR with dephosphorylation:
+TCR(shp!1).SHP(tcr!1,Y~P)->TCR(shp)+SHP(tcr,Y~U) s2
+
+#SHP dissociation from TCR without dephosphorylation:
+TCR(shp!1).SHP(tcr!1,Y~P)->TCR(shp)+SHP(tcr,Y~P) s3
+
+#free SHP dephosphorylation:
+SHP(tcr,Y~P)->SHP(tcr,Y~U) s2
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate reaction network
+#  - The output of this command is a BNG-NET file (TCR_model.net).
+generate_network({overwrite=>1})
+
+saveParameters()
+saveConcentrations()
+
+# perform a deterministic simulation
+#  - Simulation results for outputs defined as 
+#    observables and functions are reported in a GDAT file (TCR_model_ODE.gdat).
+#  - Simluation results for all chemical species concentrations are 
+#    reported in a CDAT file if print_CDAT=>1 (TCR_model_ODE.cdat).
+simulate({suffix=>"ODE",method=>"ode",print_CDAT=>0,t_start=>0,t_end=>10000,n_steps=>1000})
+ 
+# perform an exact stochastic simulation - results are shown in Fig. 2(c)
+resetConcentrations()
+simulate({suffix=>"exact",method=>"ssa",print_CDAT=>0,t_start=>0,t_end=>10000,n_steps=>1000})
+
+# perform a stochastic simulation using standard scaling ($\lambda=0.1$) 
+#   - Results are shown in Fig. 5(a) and (c).
+setParameter("lambda",0.1)
+resetConcentrations()
+simulate({suffix=>"std_scaling",method=>"ssa",print_CDAT=>0,t_start=>0,t_end=>250,n_steps=>100,\
+          print_functions=>1})
+
+# perform a stochastic simulation using partial scaling ($N_c=100$) 
+#  - Results are shown in Fig. 5(b) and (d).
+resetParameters()
+resetConcentrations()
+simulate({suffix=>"partial_scaling",method=>"ssa",poplevel=>100,print_CDAT=>0,\
+          t_start=>0,t_end=>250,n_steps=>100})
+
+end actions

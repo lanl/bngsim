@@ -1,0 +1,84 @@
+# Model: compartment_endocytosis.bngl
+# Description: Models receptor-mediated endocytosis where a surface receptor binds a ligand
+#              and is internalized into an endosome.
+#              Demonstrates basic compartment structure (EC -> PM -> CP -> EN).
+
+begin model
+
+begin parameters
+    # --- Geometries ---
+    # Volumes (arbitrary units, e.g. um^3)
+    Vol_EC  1000
+    Vol_CP  100
+    Vol_EN  10
+    
+    # Surface Areas (scaling factors for membrane reactions, effectively width)
+    # Often set to 1 or ratio for simple models
+    Width_PM 1
+    Width_EN 0.1
+    
+    # --- Kinetic Rates ---
+    kon     0.1   # Binding rate
+    koff    0.01  # Unbinding rate
+    k_int   0.05  # Internalization rate
+    k_rec   0.02  # Recycling rate
+    k_deg   0.005 # Degradation in endosome
+    
+    # Initial Amounts
+    L0      1000
+    R0      200
+end parameters
+
+begin molecule types
+    L(r)       # Ligand
+    R(l)       # Receptor
+    T(c)       # Transporter/Adapter for internalization (simplified as property of R here)
+end molecule types
+
+begin compartments
+    # Name  Dim  Size  Parent
+    EC      3    Vol_EC
+    PM      2    Width_PM  EC
+    CP      3    Vol_CP    PM
+    EN      2    Width_EN  CP  # Endosomal Membrane inside Cytoplasm
+    # Note: Lumen of endosome would be a 3D compartment inside EN, omitted for simplicity
+end compartments
+
+begin seed species
+    L(r)@EC  L0
+    R(l)@PM  R0
+end seed species
+
+begin observables
+    Molecules Surface_R      R(l)@PM
+    Molecules Internalized_R R(l)@EN
+    Molecules Surface_L      L(r)@PM  # Bound ligand on surface
+    Molecules Free_L         L(r)@EC
+end observables
+
+begin reaction rules
+    # 1. Ligand Binding on Surface
+    # L in EC binds R in PM
+    # Note: L moves from 3D to Surface
+    R(l)@PM + L(r)@EC <-> R(l!1)@PM.L(r!1)@PM kon,koff
+    
+    # 2. Internalization
+    # Receptor-Ligand complex moves from Plasma Membrane (PM) to Endosomal Membrane (EN)
+    # Simplified representation: R and L jump compartments
+    R(l!1)@PM.L(r!1)@PM -> R(l!1)@EN.L(r!1)@EN k_int
+    
+    # 3. Recycling
+    # Empty Receptor returns to surface
+    # (Separation of L and R in endosome not modeled explicitly)
+    R(l)@EN -> R(l)@PM k_rec
+    
+    # 4. Degradation
+    # Ligand in endosome is degraded
+    R(l!1)@EN.L(r!1)@EN -> R(l)@EN k_deg
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>800, n_steps=>200})

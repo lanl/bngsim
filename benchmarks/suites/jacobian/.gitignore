@@ -1,0 +1,6 @@
+# Scratch run logs and ad-hoc probe dumps (the committed artifacts are the
+# results/*.json + results/*.md the runners write deterministically).
+_*.log
+_*.json
+results/_*
+results/_diag/

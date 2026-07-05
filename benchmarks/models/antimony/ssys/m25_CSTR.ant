@@ -1,0 +1,52 @@
+// This model is essentially the same as S1987_5_CSTR().
+// Recast:
+// Derived constant needed for exact matching:
+//   C = a*b + 2*(1 + b)
+// States
+//   species X1, X2, X3, X4, X5, X6, X7, X8;
+// S-system ODEs (each RHS is a difference of power-law monomials)
+//   dX1/dt = 1/X2 - X1
+//   dX2/dt = 2 A X5 X6 / X1 - A X2 X5 X6
+//   dX3/dt = C/X4 - (1 + b) X3
+//   dX4/dt = 2 B X5 X6 / X3 - B X1 X2 X5 X6 / X3
+//   dX5/dt = C X5 / (X7^2 X8^2) - (1 + b) X3 X4 X5 /(X7^2 X8^2)
+//   dX6/dt = 2 B X5 X6^2 / (X7^2 X8^2) - B X1 X2 X5 X6^2 / (X7^2 X8^2)
+//   dX7/dt = (C / c)/X8 - [(1 + b) / c] X3 X4 / X8
+//   dX8/dt = (2 B / c) X5 X6 / X7 - (B / c) X1 X2 X5 X6 / X7
+// Initial conditions (as given)
+//   X1 = 1;
+//   X2 = Z10 + 1;
+//   X3 = 1;
+//   X4 = Z20 + 2;
+//   X5 = 1;
+//   X6 = exp(c*Z20/(c + Z20));
+//   X7 = 1;
+//   X8 = (c + Z20)/c;
+// Observables: original variables
+//   var Z1, Z2;
+//   Z1 := X1*X2 - 1;
+//   Z2 := X3*X4 - 2;
+//
+model CSTR()
+
+  // Parameters
+  A   = 1;
+  B   = 1;
+  a   = 0.5;
+  b   = 1;
+  c   = 1;
+  Z10 = 0.2;
+  Z20 = 0.2;
+
+  species Z1, Z2;
+
+  // Original ODEs consistent with the S-system you provided:
+  Z1' = -Z1 + A*(1 - Z1)*exp(c*Z2/(c + Z2));
+  Z2' = -Z2 + B*(1 - Z1)*exp(c*Z2/(c + Z2)) - b*(Z2 - a);
+
+  // Initial conditions
+  Z1 = Z10;
+  Z2 = Z20;
+
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

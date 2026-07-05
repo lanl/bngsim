@@ -1,0 +1,71 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole
+# density of Jurkat T cells in suspension
+cellDensity 1e9 # cells per L
+# volume of extracellular fluid (ECF) surrounding each cell on average
+Vecf=1/cellDensity # L per cell
+# number of T cell receptors per cell
+TCR_cpc 1e5 # molecules per cell
+# number of CD28 polypeptide chains per cell
+CD28_cpc 1e5 # molecules per cell
+# concentration of bispecific Ab recognizing CD3 in TCR and CD28
+Ab_conc 1e-9 # M
+Ab_cpc=Ab_conc*(NA*Vecf) # M converted to molecules per cell
+# rate constants for bispecific Ab binding to CD3 in TCR and CD28
+kf 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr 0.01 # /s
+KXRT 10 # dimensionless
+RT 1e5 # molecules per cell
+kmx=kr # /s
+kpx=kmx*KXRT/RT # /(molecule/cell)/s
+end parameters
+begin molecule types
+TCR(CD3,CD3)
+CD28(Ag,Ag)
+Ab(aCD3,aCD28)
+end molecule types
+begin seed species
+# T cell receptor (TCR)
+TCR(CD3,CD3) TCR_cpc
+# CD28 homodimer
+CD28(Ag,Ag) CD28_cpc/2
+# bispecific IgG antibody
+Ab(aCD3,aCD28) Ab_cpc
+end seed species
+begin observables
+Species TCR_free TCR(CD3,CD3)
+Species TCR_unagg TCR(CD3,CD3) TCR(CD3,CD3!1).Ab(aCD3!1,aCD28) Ab(aCD3!1,aCD28).TCR(CD3!1,CD3!2).Ab(aCD3!2,aCD28)
+Species CD28_free CD28(Ag,Ag)
+Species CD28_unagg CD28(Ag,Ag) CD28(Ag,Ag!1).Ab(aCD3,aCD28!1) Ab(aCD3,aCD28!1).CD28(Ag!1,Ag!2).Ab(aCD3,aCD28!2)
+Molecules Ab_free Ab(aCD3,aCD28)
+Molecules xlinks Ab(aCD3!+,aCD28!+)
+Species TCR1 TCR==1
+Species TCR2 TCR==2
+Species TCR3 TCR==3
+Species TCR4 TCR==4
+end observables
+begin functions
+frac_TCR_in_poly()=(TCR_cpc-TCR_unagg)/TCR_cpc
+frac_CD28_in_poly()=(CD28_cpc/2-CD28_unagg)/(CD28_cpc/2)
+frac_Ab_bound()=(Ab_cpc-Ab_free)/Ab_cpc
+end functions
+begin reaction rules
+# antibody capture
+Ab(aCD3,aCD28)+TCR(CD3)<->Ab(aCD3!1,aCD28).TCR(CD3!1) kf,kr
+Ab(aCD3,aCD28)+CD28(Ag)<->Ab(aCD3,aCD28!1).CD28(Ag!1) kf,kr
+# crosslinking
+Ab(aCD3,aCD28!+)+TCR(CD3)<->Ab(aCD3!1,aCD28!+).TCR(CD3!1) kpx,kmx
+Ab(aCD3!+,aCD28)+CD28(Ag)<->Ab(aCD3!+,aCD28!1).CD28(Ag!1) kpx,kmx
+end reaction rules
+end model
+begin actions
+saveConcentrations()
+resetConcentrations()
+generate_network({overwrite=>1,max_stoich=>{TCR=>3,CD28=>3}})
+simulate({suffix=>"ode",method=>"ode",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1})
+resetConcentrations()
+simulate({suffix=>"nfsim",method=>"nf",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1,\
+complex=>1,gml=>2147483647,get_final_state=>0})
+end actions

@@ -1,0 +1,100 @@
+begin model
+#@model_id: MS2007_tryptophan_operon
+#@title: Tryptophan operon in E. coli (Marin-Sanguino et al. 2007, Eq. 41-42)
+#@description: Three-variable model of the trp operon: mRNA (X1), enzyme (X2), tryptophan (X3) with complex rational kinetics including repression, feedback inhibition, and dilution. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1186/1742-4682-4-38
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Independent variables (constant parameters)
+  X4       0.00312        # 1/s  (dilution rate)
+  X5       544            # dimensionless  (repressor binding constant)
+  X6       228            # dimensionless  (feedback inhibition constant)
+
+  # Molecule scaling factor -- all concentrations multiplied by scale
+  scale    1000           # dimensionless
+  inv_s    0.001          # 1/molecules  (1/scale)
+end parameters
+
+begin molecule types
+  X1()
+  X2()
+  X3()
+end molecule types
+
+begin seed species
+  X1()  185      # molecules  (0.18465 * scale, rounded)
+  X2()  7987     # molecules  (7.9868 * scale, rounded)
+  X3()  1418000  # molecules  (1418 * scale)
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+end observables
+
+begin functions
+  # Descaled concentrations (original units)
+  x1() = Obs_X1 * inv_s
+  x2() = Obs_X2 * inv_s
+  x3() = Obs_X3 * inv_s
+
+  # v1: mRNA transcription with triple repression term
+  # v1 = X3/((X5+X3)*(1+X3)*(1.9+X3))
+  func_v1() = x3() / ((X5 + x3()) * (1 + x3()) * (1.9 + x3()))
+
+  # v2: mRNA dilution: X4*X1
+  func_v2() = X4 * x1()
+
+  # v3: enzyme production: 1 + 0.9*X1
+  func_v3() = 1 + 0.9 * x1()
+
+  # v4: enzyme dilution: X4*X2
+  func_v4() = X4 * x2()
+
+  # v5: tryptophan biosynthesis: X2*X6^2/(X6^2+X3^2)
+  func_v5() = x2() * X6 * X6 / (X6 * X6 + x3() * x3())
+
+  # v6: tryptophan consumption: 0.0022*X3*X4
+  func_v6() = 0.0022 * x3() * X4
+
+  # v7: tryptophan export/saturable: X3/(1.75+X3)
+  func_v7() = x3() / (1.75 + x3())
+
+  # v8: tryptophan degradation: 0.005*X3/(1/X4 + 0.437*X3)
+  func_v8() = 0.005 * x3() / (1 / X4 + 0.437 * x3())
+end functions
+
+begin reaction rules
+  # X1 (mRNA): dX1/dt = v1 - v2
+  0 -> X1()  func_v1()*scale
+  X1() -> 0  func_v2()*scale
+
+  # X2 (enzyme): dX2/dt = v3 - v4
+  0 -> X2()  func_v3()*scale
+  X2() -> 0  func_v4()*scale
+
+  # X3 (tryptophan): dX3/dt = v5 - v6 - v7 - v8
+  0 -> X3()  func_v5()*scale
+  X3() -> 0  func_v6()*scale
+  X3() -> 0  func_v7()*scale
+  X3() -> 0  func_v8()*scale
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>400,n_steps=>800})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>400,n_steps=>800})
+end actions

@@ -1,0 +1,41 @@
+// =============================================================================
+// Source: Voit (1992) "Symmetries of S-Systems"
+//         Math. Biosci. 109:19-31
+// Example: Second-order ODE with logarithm - exact recasting (page 28)
+// =============================================================================
+// Time horizon: t ∈ [0, 10]
+//
+// Original second-order ODE (in paper's notation, s is physical time starting at 1):
+//   Z'' = Z' * Z' - 2*[1 + ln(s)] * s^(-2) * Z
+//
+// To avoid singularity at t=0, we use shifted time variable:
+//   tau = t + 1  (so at simulation t=0, tau=1, and ln(1)=0 is well-defined)
+//
+// Recast as S-system (in shifted coordinates):
+//   Define: X0 = tau, X1 = 1 + ln(tau), X2 = Z, X3 = dZ/dt
+//
+//   d(tau)/dt = 1
+//   dX1/dt = tau^(-1)
+//   dZ/dt = Zp
+//   dZp/dt = Z^(-1)*Zp^2 - 2*tau^(-2)*(1+ln(tau))*Z
+//
+// This demonstrates recasting of equations with logarithmic terms.
+//
+// Symmetry: Scaling Z and dZ/dt by same factor leaves equation unaltered.
+// =============================================================================
+
+model V1992_log_ode()
+    // Second-order ODE: Z'' = Z'*Z'/Z - 2*[1+ln(tau)]*tau^(-2)*Z
+    // Using shifted time tau = t + 1 to avoid ln(0) singularity
+    
+    tau' = 1                                       // tau = t + 1
+    Z' = Zp
+    Zp' = Zp*Zp/Z - 2*(1 + ln(tau))*tau^(-2)*Z
+    
+    // Initial conditions at t=0 (which corresponds to tau=1, s=1 in original)
+    tau = 1.0   // tau(0) = 1, so ln(tau) = 0
+    Z = 1.0     // Z(0) = 1
+    Zp = 0.5    // Z'(0) = 0.5
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

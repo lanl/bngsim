@@ -1,0 +1,754 @@
+#########################################################################################################
+# RAS EFFECTORS (COMPLETE VERSION - RAS ISOFORMS INCLUDED)
+#########################################################################################################
+#---
+# Filename: Ras_effectors_v2.bngl
+# Created: 
+#  - v1: Sept 2018
+#  - v2: Oct 23, 2018 after fitting to Margarit data for SOS GEF allosteric activity
+#
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#---
+#
+#
+# References:
+# - Bos, Rehmann, Wittinghofer. Cell (2007).
+# - Nakhaeizadeh et al. PLoS ONE (2016).
+# - Smith,...., Ikura. Nat Comm (2017).
+# - Smith & Ikura. Nat Chem Biol (2014).
+# - Kulak, ..., Mann. Nat Methods (2014).  
+# - Hein et al. Cell (2015).
+# - Margarit et al. Cell (2003).
+# - Gremer et al. Human Mutation (2010).
+# - Freedman et al PNAS (2006).
+
+begin model
+
+########################################################################################################
+
+begin parameters
+
+#### General parameters ####
+# fraction of cell to consider in stochastic simulations
+f	1	# dimensionless
+
+# Avogadro constant
+NA	6.02214e23	# molecules per mol	
+
+# Volume of extracellular fluid surrounding a single cell on average (Vecf)
+# comments:
+# 	- We assume that cells have been grown in 15 cm culture dishes to 95% confluency.
+# 	- For these conditions, we estimate a surface density of 1.25e5 adherent cells per cm^2 
+#	and a growth surface area of 140 cm^2 per dish. Thus, we estimate 1.7e7 cells per dish.
+#	- We assume that 0.25 mL of medium has been added to dishes for each square cm of growth surface.
+#	Thus, we estimate 35 mL of medium per dish.
+#	- The volume (L) of extracellular fluid per cell is (0.25e-3*140)/(1.25e5*140) = 2.0e-9 L per cell.
+Vecf	2.0e-9*f	# L (dm^3) per cell
+
+# Volume of cytosol (Vcyt)
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - Consider 1.2 pL to be a typical volume for a non-dividing mammalian cell
+#     in culture based on the volume assays of Tan et al. (2012) for 5 mammalian cell 
+#     lines (HEK293T, MDCK, Caco-2, SW480, and SW480APC):
+#     median=1.16 pL, avg=1.36 pL, min=1.15 pL, and max=1.87 pL.
+Vcyt       1.2e-12*f	# L (dm^3) per cell
+
+##### Copy numbers #####
+
+# From HeLa Kyoto cells, from Hein et al Cell 2015
+HRAS_total	1128*f		# [=] copies per cell
+KRAS_total	146936*f	# [=] copies per cell
+NRAS_total	63920*f		# [=] copies per cell
+SOS1_total	6102*f		# [=] copies per cell
+SOS2_total	0*f		# [=] copies per cell
+NF1_total	8142*f		# [=] copies per cell
+RASA1_total	29317*f		# [=] copies per cell
+RASA2_total	7515*f		# [=] copies per cell
+ARAF_total	32680*f		# [=] copies per cell
+BRAF_total	19164*f		# [=] copies per cell
+CRAF_total	2067*f		# [=] copies per cell
+AFADIN_total	522*f		# [=] copies per cell
+RASSF1_total	0*f		# [=] copies per cell
+RASSF2_total	0*f		# [=] copies per cell
+RASSF4_total	0*f		# [=] copies per cell
+RASSF5_total	0*f		# [=] copies per cell
+RASSF9_total	5099*f		# [=] copies per cell
+PIK3CA_total	3820*f		# [=] copies per cell
+PIK3CD_total	0*f		# [=] copies per cell
+PIK3CG_total	0*f		# [=] copies per cell
+PLCE1_total	0*f		# [=] copies per cell
+RALGDS_total	0*f		# [=] copies per cell
+RGL1_total	0*f		# [=] copies per cell
+RGL2_total	8395*f		# [=] copies per cell
+RGL3_total	1733*f		# [=] copies per cell
+RASIP1_total	3622*f		# [=] copies per cell
+RGS12_total	0*f		# [=] copies per cell
+RGS14_total	0*f		# [=] copies per cell
+RIN1_total	26894*f		# [=] copies per cell
+RIN2_total	0*f		# [=] copies per cell
+RIN3_total	0*f		# [=] copies per cell
+TIAM1_total	0*f		# [=] copies per cell
+
+# Assume GTP/GDP ratio of 10
+# Q: What is good assumption for concentration of GDP or GTP?
+# A: Stites 2007 Science used 180 uM GTP, 18 uM GDP. They cite Traut (1994) Mol Cell Biol	
+GDP_total 	18e-6*NA*Vcyt	# [=] 18 uM to molecules per cell
+GTP_total	10*GDP_total	# [=] molecules per cell
+
+##### Kinetic parameters for Ras activation #####
+
+# GDP to GTP conversion by something like NKP kinase, not explicitly considered
+# # this will unfortunately be different for every model. Depends on:
+# 	- the intrinsic hydrolysis rate
+# 	- GAP-mediated hydrolysis rate
+# 	- Concentration of Ras-GTP
+# 	- Concentration of RAS-GTP bound to GAP
+# 	- Concentration of GDP
+ksynGTP 9.44066464729e-6 # /s (1e-6 /s holds fairly stable levels, but doesn't reach steady state)
+
+# GTP/GDP binding/unbinding to Ras
+# values from Table 1 in Erickson et al 2018 Seminars in Cancer Biol
+# either the average of all values or average for values specific to that isoform
+# # values for HRAS were obtained by fitting to Margarit data
+kaGTPKRAS 7.1e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+kaGTPHRAS 9.63e6/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+kaGTPNRAS 1.4e8/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+
+kdGTPKRAS 1.1e-3 	# /s
+kdGTPHRAS 1.73e-4 	# /s
+kdGTPNRAS 1e-4 		# /s
+
+kaGDPKRAS 2.7e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+kaGDPHRAS 3.3e6/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+kaGDPNRAS 5.1e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) 
+
+kdGDPKRAS 8.2e-5 # /s
+kdGDPHRAS 4.59e-4 # /s
+kdGDPNRAS 4.2e-4 # /s
+
+
+# intrinstic GTPase activity
+# Average of the values for specific isoforms gives:
+khydKRAS 9.2e-3 # /s from data measured by Andy Stephen (NIH/NCI) on Pilot 2 project 
+khydHRAS 2.4e-4 # /s
+khydNRAS 3.4e-4 # /s
+
+# GEF activity
+# detailed balance constraint on GEF nucleotide exchange and binding/unbinding to Ras
+# Values obtained by fitting to Margarit 2003 data
+# Assuming kdGEF from RasGDP = kdGEF from RasGTP and kaGEF to RasGDP = kaGEF to RasGTP:
+# kaGTP*kdGDP*kdGTPGEF*kaGDPGEF = kdGTP*kaGDP*kaGTPGEF*kdGDPGEF
+kdGDPGEF 0.37			# /s For GEF=SOS w/o allosteric activation (Freedman et al PNAS 2006)
+kdGTPGEF=kdGDPGEF		# /s Assumed ~ kdGDPGEF
+kaGTPGEF 3658007/(NA*Vcyt)	# /(M*s) converted to /(molecules*s)	 Erickson Ras review Table 1	
+#kaGDPGEF=kdGTP*kaGDP*kaGTPGEF*kdGDPGEF/(kaGTP*kdGDP*kdGTPGEF)
+kaGDPGEFKRAS=kdGTPKRAS*kaGDPKRAS*kaGTPGEF*kdGDPGEF/(kaGTPKRAS*kdGDPKRAS*kdGTPGEF)
+kaGDPGEFHRAS=kdGTPHRAS*kaGDPHRAS*kaGTPGEF*kdGDPGEF/(kaGTPHRAS*kdGDPHRAS*kdGTPGEF)
+kaGDPGEFNRAS=kdGTPNRAS*kaGDPNRAS*kaGTPGEF*kdGDPGEF/(kaGTPNRAS*kdGDPNRAS*kdGTPGEF)
+
+kaGEF 660297/(NA*Vcyt)	# /(M*s) converted to /(molecules*s). Obtained by fitting to Margarit data.
+kdGEF 20		# /s obtained by fitting to Margarit data (matches Lenzen et al 1998 Biochemistry, for RASGRF1)
+
+# Allosteric boost in GEF activity
+# Addition of RasGTP increases GEF activity by (value obtained by fitting to Margarit data)
+# Addition of RasGDP increases GEF activity by (value obtained by fitting to Margarit data)
+phi	8193	# dimensionless
+phi_GDP	4.5	# dimensionless
+
+# GAP activity
+# Approximations from values in Erickson Ras review Table 1 
+kaGAP_HRAS 5.3e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) Ahmadian et al 1997 Biochemistry
+kaGAP_KRAS 5.2e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) Ahmadian et al 1997 Biochemistry
+kaGAP_NRAS 3.7e7/(NA*Vcyt)	# /(M*s) converted to /(molecules*s) Ahmadian et al 1997 Biochemistry
+
+kdGAP 20		# /s, assume same as kdGEF
+khydGAP_HRAS	5.4	# /s for NF1, Ahmadian et al 1997 Biochemistry
+khydGAP_KRAS	6.9	# /s for NF1, Ahmadian et al 1997 Biochemistry
+khydGAP_NRAS	8.7	# /s for NF1, Ahmadian et al 1997 Biochemistry
+
+# TODO! Check out Fig 5 in Dovovan et al: Table had binding affinities for p120GAP and NF1 for some HRAS mutants
+
+##### Dissociation constants for effectors binding RAS #####
+KD_afadin_HRAS	17.8e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Smith, Nat Comm 2017)
+KD_CRAF_HRAS	0.094e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_CRAF_KRAS	0.142e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_CRAF_NRAS	0.048e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RASSF5_HRAS	0.238e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RASSF5_KRAS	0.421e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RASSF5_NRAS	0.442e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RALGDS_HRAS	2.5e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RALGDS_KRAS	1.39e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_RALGDS_NRAS	2.84e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PLCE1_HRAS	3.7e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PLCE1_KRAS	8.9e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PLCE1_NRAS	5.36e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PIK3CA_HRAS	84.3e-6*(NA*Vcyt) # [=] M converted to molecules per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PIK3CA_KRAS	204.7e-6*(NA*Vcyt) # [=] M converted to molec per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PIK3CA_NRAS	145e-6*(NA*Vcyt) # [=] M converted to molec per cell (Nakhaeizadeh, PLOS ONE 2016)
+KD_PIK3CG_NRAS	2.9e-6*(NA*Vcyt) # [=] M converted to molec per cell (Nakhaeizadeh, PLOS ONE 2016 Table 1)
+KD_PIK3CG_HRAS	0.3e-6*(NA*Vcyt) # [=] M converted to molec per cell (Rubio et al 1999, 1997)
+KD_RASSF1_HRAS	39e-6*(NA*Vcyt) # [=] M converted to molec per cell (Nakhaeizadeh, PLOS ONE 2016 Table 1) 
+KD_RGL1_HRAS	1.73e-6*(NA*Vcyt) # [=] M converted to molec per cell (Smith, Nat Chem Biol 2014)
+KD_ARAF_HRAS	0.81e-6*(NA*Vcyt) # [=] M converted to molec per cell (Smith, Nat Chem Biol 2014)
+KD_ARAF_KRAS	0.34e-6*(NA*Vcyt) # [=] M converted to molec per cell (Mazhab-Jafari 2015 PNAS)
+KD_RGS14_HRAS	14e-6*(NA*Vcyt) # [=] M converted to molec per cell (Smith, Nat Chem Biol 2014 Table S3)
+KD_RIN1_HRAS	0.8e-6*(NA*Vcyt) # [=] M converted to molec per cell (Smith, Nat Chem Biol 2014 Table S3)
+KD_BRAF_HRAS	0.04e-6*(NA*Vcyt) # [=] M converted to molec per cell (Smith, Nat Chem Biol 2014 Table S3)
+
+# Missing effector Kd values
+KD_afadin_KRAS	0
+KD_afadin_NRAS	0
+KD_PIK3CG_KRAS	0 # Evidence in Rubio et al 1999
+KD_RASSF1_NRAS	0
+KD_RASSF1_KRAS	0
+KD_RGL1_NRAS	0
+KD_RGL1_KRAS	0
+KD_ARAF_NRAS	0
+KD_RGS14_NRAS	0
+KD_RGS14_KRAS	0
+KD_RIN1_NRAS	0
+KD_RIN1_KRAS	0
+KD_BRAF_NRAS	0
+KD_BRAF_KRAS	0
+KD_RASSF2_NRAS	0
+KD_RASSF2_KRAS	0
+KD_RASSF2_HRAS	0
+KD_RASSF4_NRAS	0
+KD_RASSF4_KRAS	0
+KD_RASSF4_HRAS	0
+KD_RASSF9_NRAS	0
+KD_RASSF9_KRAS	0
+KD_RASSF9_HRAS	0
+KD_PIK3CD_NRAS	0
+KD_PIK3CD_KRAS	0
+KD_PIK3CD_HRAS	0
+KD_RGL2_NRAS	0
+KD_RGL2_KRAS	0
+KD_RGL2_HRAS	0
+KD_RGL3_NRAS	0
+KD_RGL3_KRAS	0
+KD_RGL3_HRAS	0
+KD_RASIP1_NRAS	0
+KD_RASIP1_KRAS	0
+KD_RASIP1_HRAS	0
+KD_RGS12_NRAS	0
+KD_RGS12_KRAS	0
+KD_RGS12_HRAS	0
+KD_RIN2_NRAS	0
+KD_RIN2_KRAS	0
+KD_RIN2_HRAS	0
+KD_RIN3_NRAS	0
+KD_RIN3_KRAS	0
+KD_RIN3_HRAS	0
+KD_TIAM1_NRAS	0
+KD_TIAM1_KRAS	0
+KD_TIAM1_HRAS	0
+
+##### Dissociation rate constants #####
+#   Assume universal association rate constant
+#   KD=koff/kon => koff_[ID]=kon_universal*KD_[ID]
+# A typical association rate constant for a protein-protein interaction is 1e6 /M/s.
+# Kiel et al 2008 PLOS Comp Biol says Ras-effector complex formation is driven by high association rate constants and moderate dissociation rate constants. For this universal kon and Kd values in the uM range, koff ~ 0.05 - 205 /s
+kon_universal 1.0e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+
+koff_AFADIN_HRAS = kon_universal*KD_afadin_HRAS	# [=] /s
+koff_AFADIN_KRAS = kon_universal*KD_afadin_KRAS	# [=] /s
+koff_AFADIN_NRAS = kon_universal*KD_afadin_NRAS	# [=] /s
+
+koff_CRAF_NRAS = kon_universal*KD_CRAF_NRAS	# [=] /s
+koff_CRAF_KRAS = kon_universal*KD_CRAF_KRAS	# [=] /s
+koff_CRAF_HRAS = kon_universal*KD_CRAF_HRAS	# [=] /s
+
+koff_RASSF5_HRAS = kon_universal*KD_RASSF5_HRAS	# [=] /s
+koff_RASSF5_KRAS = kon_universal*KD_RASSF5_KRAS	# [=] /s
+koff_RASSF5_NRAS = kon_universal*KD_RASSF5_NRAS	# [=] /s
+
+koff_RALGDS_KRAS = kon_universal*KD_RALGDS_KRAS	# [=] /s
+koff_RALGDS_HRAS = kon_universal*KD_RALGDS_HRAS	# [=] /s
+koff_RALGDS_NRAS = kon_universal*KD_RALGDS_NRAS	# [=] /s
+
+koff_PLCE1_HRAS = kon_universal*KD_PLCE1_HRAS	# [=] /s
+koff_PLCE1_KRAS = kon_universal*KD_PLCE1_KRAS	# [=] /s
+koff_PLCE1_NRAS = kon_universal*KD_PLCE1_NRAS	# [=] /s
+
+koff_PIK3CA_HRAS = kon_universal*KD_PIK3CA_HRAS	# [=] /s
+koff_PIK3CA_KRAS = kon_universal*KD_PIK3CA_KRAS	# [=] /s
+koff_PIK3CA_NRAS = kon_universal*KD_PIK3CA_NRAS	# [=] /s
+
+koff_PIK3CG_NRAS = kon_universal*KD_PIK3CG_NRAS	# [=] /s
+koff_PIK3CG_KRAS = kon_universal*KD_PIK3CG_KRAS	# [=] /s
+koff_PIK3CG_HRAS = kon_universal*KD_PIK3CG_HRAS	# [=] /s
+
+koff_RASSF1_HRAS = kon_universal*KD_RASSF1_HRAS # [=] /s
+koff_RASSF1_KRAS = kon_universal*KD_RASSF1_KRAS # [=] /s
+koff_RASSF1_NRAS = kon_universal*KD_RASSF1_NRAS # [=] /s
+
+koff_RGL1_HRAS = kon_universal*KD_RGL1_HRAS	# [=] /s
+koff_RGL1_KRAS = kon_universal*KD_RGL1_KRAS	# [=] /s
+koff_RGL1_NRAS = kon_universal*KD_RGL1_NRAS	# [=] /s
+
+koff_ARAF_HRAS = kon_universal*KD_ARAF_HRAS	# [=] /s
+koff_ARAF_KRAS = kon_universal*KD_ARAF_KRAS	# [=] /s
+koff_ARAF_NRAS = kon_universal*KD_ARAF_NRAS	# [=] /s
+
+koff_RGS14_HRAS = kon_universal*KD_RGS14_HRAS	# [=] /s
+koff_RGS14_KRAS = kon_universal*KD_RGS14_KRAS	# [=] /s
+koff_RGS14_NRAS = kon_universal*KD_RGS14_NRAS	# [=] /s
+
+koff_RIN1_HRAS = kon_universal*KD_RIN1_HRAS	# [=] /s
+koff_RIN1_KRAS = kon_universal*KD_RIN1_KRAS	# [=] /s
+koff_RIN1_NRAS = kon_universal*KD_RIN1_NRAS	# [=] /s
+
+koff_BRAF_HRAS = kon_universal*KD_BRAF_HRAS	# [=] /s
+koff_BRAF_KRAS = kon_universal*KD_BRAF_KRAS	# [=] /s
+koff_BRAF_NRAS = kon_universal*KD_BRAF_NRAS	# [=] /s
+
+koff_RASSF2_HRAS = kon_universal*KD_RASSF2_HRAS # [=] /s
+koff_RASSF2_KRAS = kon_universal*KD_RASSF2_KRAS # [=] /s
+koff_RASSF2_NRAS = kon_universal*KD_RASSF2_NRAS # [=] /s
+
+koff_RASSF4_HRAS = kon_universal*KD_RASSF4_HRAS # [=] /s
+koff_RASSF4_KRAS = kon_universal*KD_RASSF4_KRAS # [=] /s
+koff_RASSF4_NRAS = kon_universal*KD_RASSF4_NRAS # [=] /s
+
+koff_RASSF9_HRAS = kon_universal*KD_RASSF9_HRAS # [=] /s
+koff_RASSF9_KRAS = kon_universal*KD_RASSF9_KRAS # [=] /s
+koff_RASSF9_NRAS = kon_universal*KD_RASSF9_NRAS # [=] /s
+
+koff_PIK3CD_NRAS = kon_universal*KD_PIK3CD_NRAS	# [=] /s
+koff_PIK3CD_KRAS = kon_universal*KD_PIK3CD_KRAS	# [=] /s
+koff_PIK3CD_HRAS = kon_universal*KD_PIK3CD_HRAS	# [=] /s
+
+koff_RGL2_HRAS = kon_universal*KD_RGL2_HRAS	# [=] /s
+koff_RGL2_KRAS = kon_universal*KD_RGL2_KRAS	# [=] /s
+koff_RGL2_NRAS = kon_universal*KD_RGL2_NRAS	# [=] /s
+
+koff_RGL3_HRAS = kon_universal*KD_RGL3_HRAS	# [=] /s
+koff_RGL3_KRAS = kon_universal*KD_RGL3_KRAS	# [=] /s
+koff_RGL3_NRAS = kon_universal*KD_RGL3_NRAS	# [=] /s
+
+koff_RASIP1_HRAS = kon_universal*KD_RASIP1_HRAS # [=] /s
+koff_RASIP1_KRAS = kon_universal*KD_RASIP1_KRAS # [=] /s
+koff_RASIP1_NRAS = kon_universal*KD_RASIP1_NRAS # [=] /s
+
+koff_RGS12_HRAS = kon_universal*KD_RGS12_HRAS	# [=] /s
+koff_RGS12_KRAS = kon_universal*KD_RGS12_KRAS	# [=] /s
+koff_RGS12_NRAS = kon_universal*KD_RGS12_NRAS	# [=] /s
+
+koff_RIN2_HRAS = kon_universal*KD_RIN2_HRAS	# [=] /s
+koff_RIN2_KRAS = kon_universal*KD_RIN2_KRAS	# [=] /s
+koff_RIN2_NRAS = kon_universal*KD_RIN2_NRAS	# [=] /s
+
+koff_RIN3_HRAS = kon_universal*KD_RIN3_HRAS	# [=] /s
+koff_RIN3_KRAS = kon_universal*KD_RIN3_KRAS	# [=] /s
+koff_RIN3_NRAS = kon_universal*KD_RIN3_NRAS	# [=] /s
+
+koff_TIAM1_HRAS = kon_universal*KD_TIAM1_HRAS	# [=] /s
+koff_TIAM1_KRAS = kon_universal*KD_TIAM1_KRAS	# [=] /s
+koff_TIAM1_NRAS = kon_universal*KD_TIAM1_NRAS	# [=] /s
+
+end parameters
+
+########################################################################################################
+
+begin molecule types
+
+##### RAS Isoforms #####
+HRAS(G~apo~GDP~GTP,switch)
+NRAS(G~apo~GDP~GTP,switch)
+KRAS(G~apo~GDP~GTP,switch)
+# G domain binds GTP/GDP
+# RAS is active when GTP-bound
+# RAS can only bind one GAP, GEF, or effector at a time
+# switch I interacts with GAPs/effectors
+# switch II interacts with GEFs
+
+##### Guanine Nucleotides #####
+GDP() 
+GTP() 
+
+##### GEF ##### 
+# # TO DO: other RAS GEFs could be added, see Bos et al Cell 2007
+SOS(all,cat)
+# all = allosteric site. GEF activity enhanced when Ras-GTP bound here
+# cat = catalytic site. Location of GEF activity (nucleotide dissociation) 
+
+##### GAP #####
+NF1(RasGAP) 
+# NF accounts for only 20-30% of total GAP activity in bone marrow cells (Bollag et al 1996)
+# TO DO: consider adding other GAPs
+
+##### Ras effectors #####
+# contain Ras-binding (RB) or Ras-association (RA) domains (Nakhaeizadeh, PLOS One 2016)
+
+# RAF
+ARAF(RB)
+BRAF(RB)
+CRAF(RB) # aka RAF1
+
+# Actin filament (F-actin)
+AFADIN(RA1) # encoded by MLLT4/AF6 gene
+# Kd of binding to HRAS = 17.8 uM (Smith, Nature Communications 2017).
+
+# RASSF
+RASSF1(RA) # aka RDA32
+RASSF2(RA)
+RASSF4(RA)
+RASSF5(RA) # aka NORE1
+RASSF9(RA)
+
+# PIK3C (p110 catalytic subunit of PI3K)
+PIK3CA(RB) # alpha isoform
+PIK3CD(RB) # delta isoform
+PIK3CG(RB) # gamma isoform
+# Rubio et al 1999: "The binding site for HRAS-GTP on p110gamma resides between AA 123 and 740 
+
+# PLCE1 (aka PLCε1)
+PLCE1(RA,RasGEF)
+# actually had two RA sites (RA1, RA2) but Kd data doesnt necessarily indicate which one, so we'll simplify
+
+# RAL GEFs
+RALGDS(RA)
+RGL1(RA)
+RGL2(RA)
+RGL3(RA)
+
+# RASIP1
+RASIP1(RA)
+
+# RGS
+RGS12(RB)
+RGS14(RB)
+
+# RIN
+RIN1(RA)
+RIN2(RA)
+RIN3(RA)
+
+# TIAM1
+TIAM1(RB)
+
+
+end molecule types
+
+########################################################################################################
+
+#begin functions
+
+#end functions
+
+########################################################################################################
+
+begin seed species
+
+GTP()			GTP_total - (KRAS_total+HRAS_total+NRAS_total)*0.1 # free GTP is total minus the amount that is bound to RAS
+GDP()			GDP_total - (KRAS_total+HRAS_total+NRAS_total)*0.9 # free GDP is total minus the amount that is bound to RAS
+KRAS(G~GDP,switch)	KRAS_total*0.9		
+HRAS(G~GDP,switch)	HRAS_total*0.9	
+NRAS(G~GDP,switch)	NRAS_total*0.9
+KRAS(G~GTP,switch)	KRAS_total*0.1		
+HRAS(G~GTP,switch)	HRAS_total*0.1	
+NRAS(G~GTP,switch)	NRAS_total*0.1		
+SOS(all,cat)		SOS1_total		
+NF1(RasGAP)		NF1_total		
+ARAF(RB)		ARAF_total	
+BRAF(RB)		BRAF_total	
+CRAF(RB)		CRAF_total	
+AFADIN(RA1)		AFADIN_total	
+RASSF1(RA)		RASSF1_total	
+RASSF2(RA)		RASSF2_total	
+RASSF4(RA)		RASSF4_total	
+RASSF5(RA)		RASSF5_total	
+RASSF9(RA)		RASSF9_total	
+PIK3CA(RB)		PIK3CA_total	
+PIK3CD(RB)		PIK3CD_total	
+PIK3CG(RB)		PIK3CG_total	
+PLCE1(RA,RasGEF)	PLCE1_total	
+RALGDS(RA)		RALGDS_total	
+RGL1(RA)		RGL1_total	
+RGL2(RA)		RGL2_total	
+RGL3(RA)		RGL3_total	
+RASIP1(RA)		RASIP1_total	
+RGS12(RB)		RGS12_total	
+RGS14(RB)		RGS14_total	
+RIN1(RA)		RIN1_total	
+RIN2(RA)		RIN2_total	
+RIN3(RA)		RIN3_total	
+TIAM1(RB)		TIAM1_total	
+
+
+end seed species
+
+########################################################################################################
+
+begin observables
+
+# Ratio of Ras-GTP to Ras-GDP in cells is about 1 to 10 in normal cells (Bollag et al 1996 Nature Genetics): 10% RAS-GTP
+# This ratio increases in leukemia to 1 in 5 (Bollag et al 1996 Nature Genetics): 20% RAS-GTP
+# Donovan et al 2002 Biochimica et Biophysica Act also has a table with some % binding info:
+# % of RAS that is GTP bound for Pro-61 = 16%, Trp-61 = 24%, His-61=32%, Arg-61=36%, Lys-61=61%, Leu-61=54%, Gln-61=1%
+Molecules	RAS_switch_free		KRAS(switch),HRAS(switch),NRAS(switch)
+Molecules	RASGTP_free			KRAS(switch,G~GTP),HRAS(switch,G~GTP),NRAS(switch,G~GTP)
+Molecules	GEF_bound_RASGTP	SOS(cat!1).KRAS(switch!1,G~GTP),SOS(cat!1).HRAS(switch!1,G~GTP),SOS(cat!1).NRAS(switch!1,G~GTP)
+Molecules	GAP_bound_RASGTP	NF1(RasGAP!1).KRAS(switch!1,G~GTP),NF1(RasGAP!1).HRAS(switch!1,G~GTP),NF1(RasGAP!1).NRAS(switch!1,G~GTP)
+Molecules	GTP_bound_RAS		KRAS(G~GTP),HRAS(G~GTP),NRAS(G~GTP) 
+Molecules	GDP_bound_RAS		KRAS(G~GDP),HRAS(G~GDP),NRAS(G~GDP)
+Molecules	RAS_bound_SOS_allo	SOS(all!1).KRAS(switch!1,G~GTP),SOS(all!1).HRAS(switch!1,G~GTP),SOS(all!1).NRAS(switch!1,G~GTP) 
+Molecules	GTP_free		GTP()
+Molecules	GDP_free		GDP()
+Molecules	GTP_all GTP(), KRAS(G~GTP),HRAS(G~GTP),NRAS(G~GTP)
+Molecules	GDP_all GDP(), KRAS(G~GDP),HRAS(G~GDP),NRAS(G~GDP)
+Molecules	RAS_all KRAS(),HRAS(),NRAS()
+
+Molecules	ARAF_recruited		ARAF(RB!+)
+Molecules	BRAF_recruited		BRAF(RB!+)
+Molecules	CRAF_recruited		CRAF(RB!+)
+Molecules	AFADIN_recruited	AFADIN(RA1!+)
+Molecules	RASSF1_recruited	RASSF1(RA!+)
+Molecules	RASSF2_recruited	RASSF2(RA!+)
+Molecules	RASSF4_recruited	RASSF4(RA!+)
+Molecules	RASSF5_recruited	RASSF5(RA!+)
+Molecules	RASSF9_recruited	RASSF9(RA!+)
+Molecules	PIK3CA_recruited	PIK3CA(RB!+)
+Molecules	PIK3CD_recruited	PIK3CD(RB!+)
+Molecules	PIK3CG_recruited	PIK3CG(RB!+)
+Molecules	PLCE1_recruited		PLCE1(RA!+)
+Molecules	RALGDS_recruited	RALGDS(RA!+)
+Molecules	RGL1_recruited		RGL1(RA!+)
+Molecules	RGL2_recruited		RGL2(RA!+)
+Molecules	RGL3_recruited		RGL3(RA!+)
+Molecules	RASIP1_recruited	RASIP1(RA!+)
+Molecules	RGS12_recruited		RGS12(RB!+)
+Molecules	RGS14_recruited		RGS14(RB!+)
+Molecules	RIN1_recruited		RIN1(RA!+)
+Molecules	RIN2_recruited		RIN2(RA!+)
+Molecules	RIN3_recruited		RIN3(RA!+)
+Molecules	TIAM1_recruited		TIAM1(RB!+)
+
+
+end observables
+
+########################################################################################################
+
+begin functions
+
+ratio_GTP_GDP() GTP_all/GDP_all # this should be around 10
+perc_activated_RAS() GTP_bound_RAS/RAS_all # this should be around 5-10% in normal cells and 20-60% in cells with oncogenic RAS
+
+end functions
+
+########################################################################################################
+
+begin reaction rules
+
+# GDP to GTP conversion (by things like NDP kinase, not explicitly considered here)
+GDP() -> GTP() ksynGTP
+
+##### GTP/GDP binding apo RAS #####
+KRAS(G~apo,switch) + GTP() <-> KRAS(G~GTP,switch) kaGTPKRAS,kdGTPKRAS
+KRAS(G~apo,switch) + GDP() <-> KRAS(G~GDP,switch) kaGDPKRAS,kdGDPKRAS
+HRAS(G~apo,switch) + GTP() <-> HRAS(G~GTP,switch) kaGTPHRAS,kdGTPHRAS
+HRAS(G~apo,switch) + GDP() <-> HRAS(G~GDP,switch) kaGDPHRAS,kdGDPHRAS
+NRAS(G~apo,switch) + GTP() <-> NRAS(G~GTP,switch) kaGTPNRAS,kdGTPNRAS
+NRAS(G~apo,switch) + GDP() <-> NRAS(G~GDP,switch) kaGDPNRAS,kdGDPNRAS
+
+##### Intrinsic GTPase activity by RAS #####
+KRAS(G~GTP,switch) -> KRAS(G~GDP,switch) khydKRAS
+HRAS(G~GTP,switch) -> HRAS(G~GDP,switch) khydHRAS
+NRAS(G~GTP,switch) -> NRAS(G~GDP,switch) khydNRAS
+
+##### GAP activity #####
+# GTP hydrolysis to GDP by the Ras-GAP NF1
+# binding of GAP to RAS
+KRAS(G~GTP,switch) + NF1(RasGAP) <-> KRAS(G~GTP,switch!0).NF1(RasGAP!0) kaGAP_KRAS, kdGAP
+HRAS(G~GTP,switch) + NF1(RasGAP) <-> HRAS(G~GTP,switch!0).NF1(RasGAP!0) kaGAP_HRAS, kdGAP
+NRAS(G~GTP,switch) + NF1(RasGAP) <-> NRAS(G~GTP,switch!0).NF1(RasGAP!0) kaGAP_NRAS, kdGAP
+
+# Hydrolysis catalyzed by GAP
+# Q: Includes dissociation of GAP? Or should this be separate?
+KRAS(G~GTP,switch!0).NF1(RasGAP!0) -> KRAS(G~GDP,switch) + NF1(RasGAP) khydGAP_KRAS
+HRAS(G~GTP,switch!0).NF1(RasGAP!0) -> HRAS(G~GDP,switch) + NF1(RasGAP) khydGAP_HRAS
+NRAS(G~GTP,switch!0).NF1(RasGAP!0) -> NRAS(G~GDP,switch) + NF1(RasGAP) khydGAP_NRAS
+
+##### GEF activity #####
+# Binding/unbinding of GEF to Ras
+# Q: should GEF be able to bind to Ras(G~apo)? Yes.
+# Assuming whether or not SOS is allosterically activated doesnt matter
+KRAS(G~GDP,switch) + SOS(cat) <-> KRAS(G~GDP,switch!1).SOS(cat!1) kaGEF,kdGEF
+KRAS(G~GTP,switch) + SOS(cat) <-> KRAS(G~GTP,switch!1).SOS(cat!1) kaGEF,kdGEF
+HRAS(G~GDP,switch) + SOS(cat) <-> HRAS(G~GDP,switch!1).SOS(cat!1) kaGEF,kdGEF
+HRAS(G~GTP,switch) + SOS(cat) <-> HRAS(G~GTP,switch!1).SOS(cat!1) kaGEF,kdGEF
+NRAS(G~GDP,switch) + SOS(cat) <-> NRAS(G~GDP,switch!1).SOS(cat!1) kaGEF,kdGEF
+NRAS(G~GTP,switch) + SOS(cat) <-> NRAS(G~GTP,switch!1).SOS(cat!1) kaGEF,kdGEF
+HRAS(G~apo,switch) + SOS(cat) <-> HRAS(G~GTP,switch!1).SOS(cat!1) kaGEF,kdGEF
+NRAS(G~apo,switch) + SOS(cat) <-> NRAS(G~GDP,switch!1).SOS(cat!1) kaGEF,kdGEF
+NRAS(G~apo,switch) + SOS(cat) <-> NRAS(G~GTP,switch!1).SOS(cat!1) kaGEF,kdGEF
+
+# GEF promotes nucleotide dissociation. 
+# Nucleotides are allowed to re-associate with the Ras-GEF complex. 
+# Q: does GEF promote dissociation of both GTP and GDP? We assume it does.
+KRAS(G~GDP,switch!1).SOS(cat!1) <-> KRAS(G~apo,switch!1).SOS(cat!1) + GDP() kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(cat!1) <-> KRAS(G~apo,switch!1).SOS(cat!1) + GTP() kdGTPGEF,kaGTPGEF
+HRAS(G~GDP,switch!1).SOS(cat!1) <-> HRAS(G~apo,switch!1).SOS(cat!1) + GDP() kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(cat!1) <-> HRAS(G~apo,switch!1).SOS(cat!1) + GTP() kdGTPGEF,kaGTPGEF
+NRAS(G~GDP,switch!1).SOS(cat!1) <-> NRAS(G~apo,switch!1).SOS(cat!1) + GDP() kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(cat!1) <-> NRAS(G~apo,switch!1).SOS(cat!1) + GTP() kdGTPGEF,kaGTPGEF
+
+##### SOS positive feedback #####
+# RasGTP binds to SOS allosteric site
+KRAS(G~GTP,switch) + SOS(all) <-> KRAS(G~GTP,switch!1).SOS(all!1) kaGEF,kdGEF
+HRAS(G~GTP,switch) + SOS(all) <-> HRAS(G~GTP,switch!1).SOS(all!1) kaGEF,kdGEF
+NRAS(G~GTP,switch) + SOS(all) <-> NRAS(G~GTP,switch!1).SOS(all!1) kaGEF,kdGEF
+# RasGDP binds to SOS allosteric site
+KRAS(G~GDP,switch) + SOS(all) <-> KRAS(G~GDP,switch!1).SOS(all!1) kaGEF,kdGEF
+HRAS(G~GDP,switch) + SOS(all) <-> HRAS(G~GDP,switch!1).SOS(all!1) kaGEF,kdGEF
+NRAS(G~GDP,switch) + SOS(all) <-> NRAS(G~GDP,switch!1).SOS(all!1) kaGEF,kdGEF
+
+# RasGTP bound to SOS allosteric site increases GEF activity by factor phi
+# KRAS as substrate
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+# HRAS as substrate
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+# NRAS as substrate
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GDP() phi*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GTP,switch!0) + GTP() phi*kdGTPGEF,kaGTPGEF
+
+# RasGDP bound to SOS allosteric site increases GEF activity by factor phi
+# KRAS as substrate
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+KRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFKRAS
+KRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> KRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+# HRAS as substrate
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+HRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFHRAS
+HRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> HRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+# NRAS as substrate
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).KRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).HRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+NRAS(G~GDP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GDP() phi_GDP*kdGDPGEF,kaGDPGEFNRAS
+NRAS(G~GTP,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) <-> NRAS(G~apo,switch!1).SOS(all!0,cat!1).NRAS(G~GDP,switch!0) + GTP() phi_GDP*kdGTPGEF,kaGTPGEF
+
+###### Effectors binding RAS-GTP ######
+# KRAS binding effectors
+KRAS(G~GTP,switch) + ARAF(RB) <-> KRAS(G~GTP,switch!0).ARAF(RB!0) kon_universal,koff_ARAF_KRAS 
+KRAS(G~GTP,switch) + BRAF(RB) <-> KRAS(G~GTP,switch!0).BRAF(RB!0) kon_universal,koff_BRAF_KRAS  
+KRAS(G~GTP,switch) + CRAF(RB) <-> KRAS(G~GTP,switch!0).CRAF(RB!0) kon_universal,koff_CRAF_KRAS  
+KRAS(G~GTP,switch) + AFADIN(RA1) <-> KRAS(G~GTP,switch!0).AFADIN(RA1!0) kon_universal,koff_AFADIN_KRAS  
+KRAS(G~GTP,switch) + RASSF1(RA) <-> KRAS(G~GTP,switch!0).RASSF1(RA!0) kon_universal,koff_RASSF1_KRAS  
+KRAS(G~GTP,switch) + RASSF2(RA) <-> KRAS(G~GTP,switch!0).RASSF2(RA!0) kon_universal,koff_RASSF2_KRAS  
+KRAS(G~GTP,switch) + RASSF4(RA) <-> KRAS(G~GTP,switch!0).RASSF4(RA!0) kon_universal,koff_RASSF4_KRAS  
+KRAS(G~GTP,switch) + RASSF5(RA) <-> KRAS(G~GTP,switch!0).RASSF5(RA!0) kon_universal,koff_RASSF5_KRAS  
+KRAS(G~GTP,switch) + RASSF9(RA) <-> KRAS(G~GTP,switch!0).RASSF9(RA!0) kon_universal,koff_RASSF9_KRAS 
+KRAS(G~GTP,switch) + PIK3CA(RB) <-> KRAS(G~GTP,switch!0).PIK3CA(RB!0) kon_universal,koff_PIK3CA_KRAS  
+KRAS(G~GTP,switch) + PIK3CD(RB) <-> KRAS(G~GTP,switch!0).PIK3CD(RB!0) kon_universal,koff_PIK3CD_KRAS  
+KRAS(G~GTP,switch) + PIK3CG(RB) <-> KRAS(G~GTP,switch!0).PIK3CG(RB!0) kon_universal,koff_PIK3CG_KRAS  
+KRAS(G~GTP,switch) + PLCE1(RA) <-> KRAS(G~GTP,switch!0).PLCE1(RA!0) kon_universal,koff_PLCE1_KRAS  
+KRAS(G~GTP,switch) + RALGDS(RA) <-> KRAS(G~GTP,switch!0).RALGDS(RA!0) kon_universal,koff_RALGDS_KRAS  
+KRAS(G~GTP,switch) + RGL1(RA) <-> KRAS(G~GTP,switch!0).RGL1(RA!0) kon_universal,koff_RGL1_KRAS  
+KRAS(G~GTP,switch) + RGL2(RA) <-> KRAS(G~GTP,switch!0).RGL2(RA!0) kon_universal,koff_RGL2_KRAS  
+KRAS(G~GTP,switch) + RGL3(RA) <-> KRAS(G~GTP,switch!0).RGL3(RA!0) kon_universal,koff_RGL3_KRAS  
+KRAS(G~GTP,switch) + RASIP1(RA) <-> KRAS(G~GTP,switch!0).RASIP1(RA!0) kon_universal,koff_RASIP1_KRAS  
+KRAS(G~GTP,switch) + RGS12(RB) <-> KRAS(G~GTP,switch!0).RGS12(RB!0) kon_universal,koff_RGS12_KRAS  
+KRAS(G~GTP,switch) + RGS14(RB) <-> KRAS(G~GTP,switch!0).RGS14(RB!0) kon_universal,koff_RGS14_KRAS  
+KRAS(G~GTP,switch) + RIN1(RA) <-> KRAS(G~GTP,switch!0).RIN1(RA!0) kon_universal,koff_RIN1_KRAS  
+KRAS(G~GTP,switch) + RIN2(RA) <-> KRAS(G~GTP,switch!0).RIN2(RA!0) kon_universal,koff_RIN2_KRAS  
+KRAS(G~GTP,switch) + RIN3(RA) <-> KRAS(G~GTP,switch!0).RIN3(RA!0) kon_universal,koff_RIN3_KRAS  
+KRAS(G~GTP,switch) + TIAM1(RB) <-> KRAS(G~GTP,switch!0).TIAM1(RB!0) kon_universal,koff_TIAM1_KRAS
+# HRAS binding effectors
+HRAS(G~GTP,switch) + ARAF(RB) <-> HRAS(G~GTP,switch!0).ARAF(RB!0) kon_universal,koff_ARAF_HRAS 
+HRAS(G~GTP,switch) + BRAF(RB) <-> HRAS(G~GTP,switch!0).BRAF(RB!0) kon_universal,koff_BRAF_HRAS  
+HRAS(G~GTP,switch) + CRAF(RB) <-> HRAS(G~GTP,switch!0).CRAF(RB!0) kon_universal,koff_CRAF_HRAS  
+HRAS(G~GTP,switch) + AFADIN(RA1) <-> HRAS(G~GTP,switch!0).AFADIN(RA1!0) kon_universal,koff_AFADIN_HRAS  
+HRAS(G~GTP,switch) + RASSF1(RA) <-> HRAS(G~GTP,switch!0).RASSF1(RA!0) kon_universal,koff_RASSF1_HRAS  
+HRAS(G~GTP,switch) + RASSF2(RA) <-> HRAS(G~GTP,switch!0).RASSF2(RA!0) kon_universal,koff_RASSF2_HRAS  
+HRAS(G~GTP,switch) + RASSF4(RA) <-> HRAS(G~GTP,switch!0).RASSF4(RA!0) kon_universal,koff_RASSF4_HRAS  
+HRAS(G~GTP,switch) + RASSF5(RA) <-> HRAS(G~GTP,switch!0).RASSF5(RA!0) kon_universal,koff_RASSF5_HRAS  
+HRAS(G~GTP,switch) + RASSF9(RA) <-> HRAS(G~GTP,switch!0).RASSF9(RA!0) kon_universal,koff_RASSF9_HRAS 
+HRAS(G~GTP,switch) + PIK3CA(RB) <-> HRAS(G~GTP,switch!0).PIK3CA(RB!0) kon_universal,koff_PIK3CA_HRAS  
+HRAS(G~GTP,switch) + PIK3CD(RB) <-> HRAS(G~GTP,switch!0).PIK3CD(RB!0) kon_universal,koff_PIK3CD_HRAS  
+HRAS(G~GTP,switch) + PIK3CG(RB) <-> HRAS(G~GTP,switch!0).PIK3CG(RB!0) kon_universal,koff_PIK3CG_HRAS  
+HRAS(G~GTP,switch) + PLCE1(RA) <-> HRAS(G~GTP,switch!0).PLCE1(RA!0) kon_universal,koff_PLCE1_HRAS  
+HRAS(G~GTP,switch) + RALGDS(RA) <-> HRAS(G~GTP,switch!0).RALGDS(RA!0) kon_universal,koff_RALGDS_HRAS  
+HRAS(G~GTP,switch) + RGL1(RA) <-> HRAS(G~GTP,switch!0).RGL1(RA!0) kon_universal,koff_RGL1_HRAS  
+HRAS(G~GTP,switch) + RGL2(RA) <-> HRAS(G~GTP,switch!0).RGL2(RA!0) kon_universal,koff_RGL2_HRAS  
+HRAS(G~GTP,switch) + RGL3(RA) <-> HRAS(G~GTP,switch!0).RGL3(RA!0) kon_universal,koff_RGL3_HRAS  
+HRAS(G~GTP,switch) + RASIP1(RA) <-> HRAS(G~GTP,switch!0).RASIP1(RA!0) kon_universal,koff_RASIP1_HRAS  
+HRAS(G~GTP,switch) + RGS12(RB) <-> HRAS(G~GTP,switch!0).RGS12(RB!0) kon_universal,koff_RGS12_HRAS  
+HRAS(G~GTP,switch) + RGS14(RB) <-> HRAS(G~GTP,switch!0).RGS14(RB!0) kon_universal,koff_RGS14_HRAS  
+HRAS(G~GTP,switch) + RIN1(RA) <-> HRAS(G~GTP,switch!0).RIN1(RA!0) kon_universal,koff_RIN1_HRAS  
+HRAS(G~GTP,switch) + RIN2(RA) <-> HRAS(G~GTP,switch!0).RIN2(RA!0) kon_universal,koff_RIN2_HRAS  
+HRAS(G~GTP,switch) + RIN3(RA) <-> HRAS(G~GTP,switch!0).RIN3(RA!0) kon_universal,koff_RIN3_HRAS  
+HRAS(G~GTP,switch) + TIAM1(RB) <-> HRAS(G~GTP,switch!0).TIAM1(RB!0) kon_universal,koff_TIAM1_HRAS
+# NRAS binding effectors
+NRAS(G~GTP,switch) + ARAF(RB) <-> NRAS(G~GTP,switch!0).ARAF(RB!0) kon_universal,koff_ARAF_NRAS 
+NRAS(G~GTP,switch) + BRAF(RB) <-> NRAS(G~GTP,switch!0).BRAF(RB!0) kon_universal,koff_BRAF_NRAS  
+NRAS(G~GTP,switch) + CRAF(RB) <-> NRAS(G~GTP,switch!0).CRAF(RB!0) kon_universal,koff_CRAF_NRAS  
+NRAS(G~GTP,switch) + AFADIN(RA1) <-> NRAS(G~GTP,switch!0).AFADIN(RA1!0) kon_universal,koff_AFADIN_NRAS  
+NRAS(G~GTP,switch) + RASSF1(RA) <-> NRAS(G~GTP,switch!0).RASSF1(RA!0) kon_universal,koff_RASSF1_NRAS  
+NRAS(G~GTP,switch) + RASSF2(RA) <-> NRAS(G~GTP,switch!0).RASSF2(RA!0) kon_universal,koff_RASSF2_NRAS  
+NRAS(G~GTP,switch) + RASSF4(RA) <-> NRAS(G~GTP,switch!0).RASSF4(RA!0) kon_universal,koff_RASSF4_NRAS  
+NRAS(G~GTP,switch) + RASSF5(RA) <-> NRAS(G~GTP,switch!0).RASSF5(RA!0) kon_universal,koff_RASSF5_NRAS  
+NRAS(G~GTP,switch) + RASSF9(RA) <-> NRAS(G~GTP,switch!0).RASSF9(RA!0) kon_universal,koff_RASSF9_NRAS 
+NRAS(G~GTP,switch) + PIK3CA(RB) <-> NRAS(G~GTP,switch!0).PIK3CA(RB!0) kon_universal,koff_PIK3CA_NRAS  
+NRAS(G~GTP,switch) + PIK3CD(RB) <-> NRAS(G~GTP,switch!0).PIK3CD(RB!0) kon_universal,koff_PIK3CD_NRAS  
+NRAS(G~GTP,switch) + PIK3CG(RB) <-> NRAS(G~GTP,switch!0).PIK3CG(RB!0) kon_universal,koff_PIK3CG_NRAS  
+NRAS(G~GTP,switch) + PLCE1(RA) <-> NRAS(G~GTP,switch!0).PLCE1(RA!0) kon_universal,koff_PLCE1_NRAS  
+NRAS(G~GTP,switch) + RALGDS(RA) <-> NRAS(G~GTP,switch!0).RALGDS(RA!0) kon_universal,koff_RALGDS_NRAS  
+NRAS(G~GTP,switch) + RGL1(RA) <-> NRAS(G~GTP,switch!0).RGL1(RA!0) kon_universal,koff_RGL1_NRAS  
+NRAS(G~GTP,switch) + RGL2(RA) <-> NRAS(G~GTP,switch!0).RGL2(RA!0) kon_universal,koff_RGL2_NRAS  
+NRAS(G~GTP,switch) + RGL3(RA) <-> NRAS(G~GTP,switch!0).RGL3(RA!0) kon_universal,koff_RGL3_NRAS  
+NRAS(G~GTP,switch) + RASIP1(RA) <-> NRAS(G~GTP,switch!0).RASIP1(RA!0) kon_universal,koff_RASIP1_NRAS  
+NRAS(G~GTP,switch) + RGS12(RB) <-> NRAS(G~GTP,switch!0).RGS12(RB!0) kon_universal,koff_RGS12_NRAS  
+NRAS(G~GTP,switch) + RGS14(RB) <-> NRAS(G~GTP,switch!0).RGS14(RB!0) kon_universal,koff_RGS14_NRAS  
+NRAS(G~GTP,switch) + RIN1(RA) <-> NRAS(G~GTP,switch!0).RIN1(RA!0) kon_universal,koff_RIN1_NRAS  
+NRAS(G~GTP,switch) + RIN2(RA) <-> NRAS(G~GTP,switch!0).RIN2(RA!0) kon_universal,koff_RIN2_NRAS  
+NRAS(G~GTP,switch) + RIN3(RA) <-> NRAS(G~GTP,switch!0).RIN3(RA!0) kon_universal,koff_RIN3_NRAS  
+NRAS(G~GTP,switch) + TIAM1(RB) <-> NRAS(G~GTP,switch!0).TIAM1(RB!0) kon_universal,koff_TIAM1_NRAS  
+
+
+end reaction rules
+
+########################################################################################################
+
+end model
+
+# actions
+
+generate_network({overwrite=>1});
+
+# initialize
+saveConcentrations();
+
+# 1000 s = 17 min
+simulate_ode({suffix=>"ode",t_start=>0,t_end=>10800,n_steps=>12,steady_state=>0,print_end=>0,print_functions=>1});
+
+

@@ -1,0 +1,29 @@
+// =============================================================================
+// Related: test_models1/m01_exp_decay.ant
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem A1 - Negative exponential decay (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z(0) = 1
+//
+// Original ODE:
+//   dZ/dt = -Z
+//
+// Recast S-system:
+//   Already in S-system form (single term, no recasting needed)
+//   dX1/dt = 0 - X1  (or equivalently: dX1/dt = -X1)
+//
+// Solution: Z(t) = exp(-t)
+// =============================================================================
+
+model S1987_A1_exponential()
+    // Already in S-system canonical form
+    Z' = -Z
+    
+    // Initial condition
+    Z = 1
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

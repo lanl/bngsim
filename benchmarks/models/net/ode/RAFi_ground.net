@@ -1,0 +1,57 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 K1        0.04  # Constant
+    2 K2        20  # Constant
+    3 K3        4000  # Constant
+    4 K5        0.1  # Constant
+    5 K4        (K1*K3)/K2  # ConstantExpression
+    6 K6        (K4*K5)/K2  # ConstantExpression
+    7 kf1       1  # Constant
+    8 kf2       10  # Constant
+    9 kf3       10  # Constant
+   10 kf4       1  # Constant
+   11 kf5       10  # Constant
+   12 kf6       1  # Constant
+   13 kr1       ((1/2)*kf1)/K1  # ConstantExpression
+   14 kr2       kf2/K2  # ConstantExpression
+   15 kr3       (2*kf3)/K3  # ConstantExpression
+   16 kr4       kf4/K4  # ConstantExpression
+   17 kr5       (kf5/K5)/2  # ConstantExpression
+   18 kr6       ((1/2)*kf6)/K6  # ConstantExpression
+   19 Rtot      50  # Constant
+   20 Ifree     1  # Constant
+   21 Itot      (Ifree*((((((((((((((((((((((((8*(Ifree^4))*K1)*(K3^2))*(K5^2))+(((((8*(Ifree^3))*K1)*(K3^2))*(K5^2))*Rtot))+((((16*(Ifree^3))*K1)*(K3^2))*K5))+(((((12*(Ifree^2))*K1)*(K3^2))*K5)*Rtot))+(((8*(Ifree^2))*K1)*(K3^2)))+((((16*(Ifree^2))*K1)*K3)*K5))-(((Ifree^2)*(K2^2))*K3))+((((2*(Ifree^2))*K2)*K3)*K5))+((((4*Ifree)*K1)*(K3^2))*Rtot))+(((((8*Ifree)*K1)*K3)*K5)*Rtot))+(((16*Ifree)*K1)*K3))-((2*Ifree)*(K2^2)))+(((Ifree*K2)*K3)*sqrt(((((((((((8*(Ifree^2))*K1)*K3)*K5)*Rtot)+((Ifree^2)*(K2^2)))+((((8*Ifree)*K1)*K3)*Rtot))+((2*Ifree)*K2))+((8*K1)*Rtot))+1))))-((((2*Ifree)*K3)*K5)*sqrt(((((((((((8*(Ifree^2))*K1)*K3)*K5)*Rtot)+((Ifree^2)*(K2^2)))+((((8*Ifree)*K1)*K3)*Rtot))+((2*Ifree)*K2))+((8*K1)*Rtot))+1))))+(((2*Ifree)*K3)*K5))+(((4*K1)*K3)*Rtot))+(8*K1))+((2*K2)*sqrt(((((((((((8*(Ifree^2))*K1)*K3)*K5)*Rtot)+((Ifree^2)*(K2^2)))+((((8*Ifree)*K1)*K3)*Rtot))+((2*Ifree)*K2))+((8*K1)*Rtot))+1))))-(2*K2))-(K3*sqrt(((((((((((8*(Ifree^2))*K1)*K3)*K5)*Rtot)+((Ifree^2)*(K2^2)))+((((8*Ifree)*K1)*K3)*Rtot))+((2*Ifree)*K2))+((8*K1)*Rtot))+1))))+K3))/((8*K1)*((((((((Ifree^4)*(K3^2))*(K5^2))+(((2*(Ifree^3))*(K3^2))*K5))+((Ifree^2)*(K3^2)))+(((2*(Ifree^2))*K3)*K5))+((2*Ifree)*K3))+1))  # ConstantExpression
+end parameters
+begin functions
+    1 Ybar() ((RI+RIR)+(2*RIRI))/Rtot
+    2 Activity() RR+RIR
+end functions
+begin species
+    1 R(i,r) Rtot
+    2 I(r) Itot
+    3 R(i,r!1).R(i,r!1) 0
+    4 I(r!1).R(i!1,r) 0
+    5 I(r!1).R(i!1,r!2).R(i,r!2) 0
+    6 I(r!1).I(r!2).R(i!1,r!3).R(i!2,r!3) 0
+end species
+begin reactions
+    1 1,1 3 0.5*kf1 #_R1
+    2 1,2 4 kf2 #_R2
+    3 3 1,1 kr1 #_reverse__R1
+    4 4 1,2 kr2 #_reverse__R2
+    5 2,3 5 2*kf3 #_R3
+    6 1,4 5 kf4 #_R4
+    7 4,4 6 0.5*kf6 #_R6
+    8 5 2,3 kr3 #_reverse__R3
+    9 5 1,4 kr4 #_reverse__R4
+   10 2,5 6 kf5 #_R5
+   11 6 2,5 2*kr5 #_reverse__R5
+   12 6 4,4 kr6 #_reverse__R6
+end reactions
+begin groups
+    1 I                    2
+    2 RI                   4
+    3 RIR                  5
+    4 RIRI                 6
+    5 RR                   3
+end groups

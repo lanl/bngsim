@@ -1,0 +1,41 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem B5 - Euler's rigid body equations (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Initial conditions: Z1(0) = 0, Z2(0) = 1, Z3(0) = 1
+//
+// Original ODEs (Euler's equations without external forces):
+//   dZ1/dt = Z2*Z3
+//   dZ2/dt = -Z1*Z3
+//   dZ3/dt = -0.51*Z1*Z2
+//
+// Recast S-system (4 variables):
+//   Since Z1 and Z2 become negative, translation is needed.
+//   Define: X1 = Z1 + p, X2 = Z2 + q, X3 = Z3, X4 auxiliary
+//   where p = q = 2
+//   X(0) = (p, 1+q, 1, 1) = (2, 3, 1, 1)
+//
+//   dX1/dt = X2*X3*X4 - q*X3*X4
+//   dX2/dt = p*X3*X4 - X1*X3*X4
+//   dX3/dt = 0.51*p*X2*X3^(-1) - 0.51*p*q*X3^(-1)
+//   dX4/dt = 0.51*q*X1*X3^(-1) - 0.51*X1*X2*X3^(-1)
+//
+// These are Euler's equations of motion for a rigid body.
+// =============================================================================
+
+model S1987_B5_rigid_body()
+    // Euler's equations for rigid body motion
+    Z1' = Z2*Z3
+    Z2' = -Z1*Z3
+    Z3' = -0.51*Z1*Z2
+    
+    // Initial conditions
+    Z1 = 0
+    Z2 = 1
+    Z3 = 1
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

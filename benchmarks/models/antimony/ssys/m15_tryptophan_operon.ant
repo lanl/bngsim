@@ -1,0 +1,96 @@
+// This model is essentially the same as MS2007_tryptophan_operon.
+//
+// Exact GMA (power-law) recast of the original trp-operon ODEs.
+// There is no exact recasting of the original model into canonical S-system form.
+//
+// ===== Independent constants =====
+//   cX4 = 0.003;
+//   cX5 = 1.0;
+//   cX6 = 2000.0;
+//   cX7 = 1000.0;
+//
+// ===== Derived constants (assignment rules) =====
+//   cX6sq := cX6^2;
+//   X8    := 1 + cX5;        // 1 + cX5
+//   X11   := 0.9 + cX4;
+//   X12   := 0.02 + cX4;
+//   X15   := 1 - 7.5*cX4;
+//   alpha5 := 0.0022 * cX5;
+//
+// ===== Dynamic states =====
+//   species X1, X2, X3;           // original species
+//   species X9, X10, X13, X14;    // ancillaries depending on X3
+//
+// ===== ODEs for original species (all terms are monomials) =====
+  // v1 = (X3+1)/(1+(1+cX5)X3)  =  X9 * X10^(-1)
+  // v2 = (0.9 + cX4) * X1      =  X11 * X1
+  // v3 = X1
+  // v4 = (0.02 + cX4) * X2     =  X12 * X2
+  // v5 = (X3^2 cX6^2)/(cX6^2 + X3^2) = cX6^2 * X3^2 * X13^(-1)
+  // v6 = cX4 * X3
+  // v7 = 0.0022 * cX5 * X3 / (1+X3)  = alpha5 * X3 * X9^(-1)
+  // v8 = (1 - 7.5*cX4) * X3 * cX7 / (X3 + 0.005) = (X15*cX7) * X3 * X14^(-1)
+//
+//   X1' =  (X9 * (X10^(-1))) - (X11 * X1);
+//   X2' =  (X11 * X1)        - (1 * X1);
+//   X3' = alpha5*X3*(X9^(-1)) + (X15*cX7)*X3*(X14^(-1)) - X1 - X12*X2 - cX6sq*(X3^2)*(X13^(-1)) - cX4*X3;
+//
+// ===== Ancillary identity ODEs (exact via chain rule) =====
+  // X9  = X3 + 1        => X9'  = X3'
+  // X10 = 1 + X8*X3     => X10' = X8 * X3'
+  // X14 = X3 + 0.005    => X14' = X3'
+  // X13 = cX6^2 + X3^2  => X13' = 2*X3*X3'
+//
+//   X9' = alpha5*X3*(X9^(-1)) + (X15*cX7)*X3*(X14^(-1)) - X1 - X12*X2 - cX6sq*(X3^2)*(X13^(-1)) - cX4*X3;
+//
+//   X10' = X8*(alpha5*X3*(X9^(-1)) + (X15*cX7)*X3*(X14^(-1)) - X1 - X12*X2 - cX6sq*(X3^2)*(X13^(-1)) - cX4*X3);
+//
+//   X14' = alpha5*X3*(X9^(-1)) + (X15*cX7)*X3*(X14^(-1)) - X1 - X12*X2 - cX6sq*(X3^2)*(X13^(-1)) - cX4*X3;
+//
+//   X13' = 2*X3*(alpha5*X3*(X9^(-1)) + (X15*cX7)*X3*(X14^(-1)) - X1 - X12*X2 - cX6sq*(X3^2)*(X13^(-1)) - cX4*X3);
+//
+// ===== Initial conditions (match your original) =====
+//   X1 = 0.185;
+//   X2 = 7.99;
+//   X3 = 100.0;
+//   X9  = X3 + 1;
+//   X10 = 1 + X8*X3;
+//   X13 = cX6sq + X3^2;
+//   X14 = X3 + 0.005;
+//
+model tryptophan_operon()
+
+  // Tryptophan operon model (ORIGINAL ODE form before ancillary-variable recast)
+  // Source: Marin-Sanguino et al. (2007), Fig. 4 and Eqs. (41–42).
+  // States: X1 (mRNA), X2 (enzyme), X3 (tryptophan).
+  // X4–X7 are treated as independent (constant) variables affecting the rates.
+
+  species X_1, X_2, X_3;
+
+  // Independent variables (constants)
+  X_4 = 0.05;     // regulator
+  X_5 = 0.5;       // auxiliary factor
+  X_6 = 50.0;    // saturation scale
+  X_7 = 150.0;    // growth/excretion factor
+  tau = 0.1;
+
+  // Dynamics via original rational-rate definitions (Eq. 42)
+  // v1 = (X_3 + 1) / (1 + (1 + X_5) * X_3)
+  // v2 = (0.9 + X_4) * X_1
+  // v3 = X_1
+  // v4 = (0.02 + X_4) * X_2
+  // v5 = (X_3^2 * X_6^2) / (X_6^2 + X_3^2)
+  // v6 = X_3 * X_4
+  // v7 = 0.0022 * X_3 * X_5 / (1 + X_3)
+  // v8 = (1 - 7.5*X_4) * X_3 * X_7 / (X_3 + 0.005)
+
+  X_1' = tau*((X_3 + 1)/(1 + (1 + X_5)*X_3) - (0.9 + X_4)*X_1);
+  X_2' = tau*((0.9 + X_4)*X_1 - (X_1));
+  X_3' = tau*(-(X_1) - (0.02 + X_4)*X_2 - ((X_3^2 * X_6^2)/(X_6^2 + X_3^2)) - (X_3*X_4) + (0.0022 * X_3 * X_5)/(1 + X_3) + ((1 - 7.5*X_4) * X_3 * X_7)/(X_3 + 0.005));
+
+  // Initial conditions
+  X_1 = 2;
+  X_2 = 12;
+  X_3 = 25.0;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

@@ -1,0 +1,117 @@
+begin model
+#@model_id: Mueller2006_RepLeaky_n3
+#@title: Generalized repressilator with leaky transcription (Mueller et al. 2006)
+#@description: Three-gene repressilator with leaky transcription and cooperative repression. Dimensionless rescaled form with explicit mRNA and protein species. Converted from Antimony to BNGL.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1007/s00285-006-0035-9
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Core parameters (dimensionless)
+  delta    1.0e-3         # leakiness
+  h        2              # Hill coefficient
+  alpha    2.0            # combined production parameter
+  beta     1.0            # degradation ratio d_P/d_R
+  gam      1.0            # binding parameter gamma
+end parameters
+
+begin molecule types
+  # Free proteins
+  x1()
+  x2()
+  x3()
+  # mRNAs
+  y1()
+  y2()
+  y3()
+end molecule types
+
+begin seed species
+  x1()  1  # molecules (scaled from 0.1)
+  x2()  1  # molecules (scaled from 0.2)
+  x3()  1  # molecules (scaled from 0.3)
+  y1()  1  # molecules (scaled from 0.1)
+  y2()  1  # molecules (scaled from 0.1)
+  y3()  1  # molecules (scaled from 0.1)
+end seed species
+
+begin observables
+  Molecules  Obs_x1  x1()
+  Molecules  Obs_x2  x2()
+  Molecules  Obs_x3  x3()
+  Molecules  Obs_y1  y1()
+  Molecules  Obs_y2  y2()
+  Molecules  Obs_y3  y3()
+end observables
+
+begin functions
+  # s_i = x_i^h / (1 + x_i^h)
+  s1() = Obs_x1^h / (1 + Obs_x1^h)
+  s2() = Obs_x2^h / (1 + Obs_x2^h)
+  s3() = Obs_x3^h / (1 + Obs_x3^h)
+
+  # f_i = (1 - delta)*(1 - s_i) + delta  (repression function)
+  f1() = (1 - delta) * (1 - s1()) + delta
+  f2() = (1 - delta) * (1 - s2()) + delta
+  f3() = (1 - delta) * (1 - s3()) + delta
+
+  # M_i = 1 + gam * h * x_i^(h-1) / (1 + x_i^h)^2  (quasi-steady-state correction)
+  M1() = 1 + gam * h * Obs_x1^(h - 1) / (1 + Obs_x1^h)^2
+  M2() = 1 + gam * h * Obs_x2^(h - 1) / (1 + Obs_x2^h)^2
+  M3() = 1 + gam * h * Obs_x3^(h - 1) / (1 + Obs_x3^h)^2
+
+  # Protein production rates: beta * y_i / M_i
+  prod_x1() = beta * Obs_y1 / M1()
+  prod_x2() = beta * Obs_y2 / M2()
+  prod_x3() = beta * Obs_y3 / M3()
+
+  # Protein degradation rates: beta * x_i / M_i
+  deg_x1() = beta * Obs_x1 / M1()
+  deg_x2() = beta * Obs_x2 / M2()
+  deg_x3() = beta * Obs_x3 / M3()
+
+  # mRNA production rates
+  prod_y1() = alpha * f3()
+  prod_y2() = alpha * f1()
+  prod_y3() = alpha * f2()
+end functions
+
+begin reaction rules
+  # Protein dynamics: dx_i/dt = beta*(y_i - x_i)/M_i
+  # Production: beta*y_i/M_i
+  0 -> x1()  prod_x1()
+  0 -> x2()  prod_x2()
+  0 -> x3()  prod_x3()
+
+  # Degradation: beta*x_i/M_i
+  x1() -> 0  deg_x1()
+  x2() -> 0  deg_x2()
+  x3() -> 0  deg_x3()
+
+  # mRNA dynamics: dy_i/dt = alpha*f_{i-1} - y_i
+  # Production: alpha*f_{i-1}
+  0 -> y1()  prod_y1()
+  0 -> y2()  prod_y2()
+  0 -> y3()  prod_y3()
+
+  # mRNA degradation (rate 1)
+  y1() -> 0  1.0
+  y2() -> 0  1.0
+  y3() -> 0  1.0
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>400})
+end actions

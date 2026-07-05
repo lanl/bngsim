@@ -1,0 +1,29 @@
+# Saturation rate law test — rewritten as Functional
+# Original used "Sat k3 K4", now uses functional _rateLaw1 = k3/(K4+G)
+# which gives identical rate: k3 * Ga * PLC / (K4 + Ga)
+#
+# Ga --Sat(k3,K4)--> degraded, catalyzed by PLC
+begin parameters
+    1 k1     100  # Constant
+    2 k3     1.52  # Constant
+    3 K4     114.418  # Constant
+    4 Ga_0   6.022  # Constant
+    5 PLC_0  6.022  # Constant
+end parameters
+begin species
+    1 Null() 1
+    2 Ga() Ga_0
+    3 PLC() PLC_0
+end species
+begin functions
+    1 _rateLaw1() k3/(K4+G)
+end functions
+begin reactions
+    1 1 1,2 k1 #Rule1
+    2 2,3 3 _rateLaw1 #Rule3
+end reactions
+begin groups
+    1 G    2
+    2 P    3
+    3 NULL 1
+end groups

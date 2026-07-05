@@ -1,0 +1,44 @@
+# Feature: seed species with pre-formed bonded complexes
+# Tests: ListOfSpecies containing multi-molecule bonded patterns
+# Tier: base
+# Expected: pre-formed AB dimers dissociate and re-equilibrate
+# invariant: conserved A_total = 80
+# invariant: conserved B_total = 80
+# invariant: balance A_bound = B_bound
+
+begin model
+begin parameters
+    AB_tot   30    # pre-formed A-B dimers at t=0
+    A_free   50    # free A
+    B_free   50    # free B
+    kf       0.005
+    kr       0.2
+end parameters
+
+begin molecule types
+    A(b)
+    B(a)
+end molecule types
+
+begin seed species
+    A(b!1).B(a!1)  AB_tot
+    A(b)           A_free
+    B(a)           B_free
+end seed species
+
+begin observables
+    Molecules  A_total    A()
+    Molecules  B_total    B()
+    Molecules  A_bound    A(b!+)
+    Molecules  B_bound    B(a!+)
+    Species    AB_dimer   A(b!1).B(a!1)
+end observables
+
+begin reaction rules
+    A(b) + B(a) <-> A(b!1).B(a!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>50,n_steps=>50})
+end actions

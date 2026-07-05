@@ -1,0 +1,131 @@
+# Music Sequencer / Chord Synthesizer in BNGL
+# ==============================================
+# Oscillator molecules whose concentrations trace waveforms.
+# Frequencies correspond to musical notes (A=440Hz scaled down).
+# Time-dependent functions switch between chords in a progression.
+#
+# Chord progression: Am -> F -> C -> G (classic pop progression)
+# Each chord activates different oscillator frequencies.
+# The output "Mix" molecule sums active voices = the audio signal.
+
+begin model
+
+begin parameters
+    # Note frequencies
+    fA 1.000
+    fB 1.122
+    fC 1.189
+    fD 1.335
+    fE 1.498
+    fF 1.587
+    fG 1.782
+    
+    # Timing
+    beat 4.0
+    amp 50.0
+    offset 50.0
+    t 0
+end parameters
+
+begin molecule types
+    V1s()
+    V1c()
+    V2s()
+    V2c()
+    V3s()
+    V3c()
+    Mix()
+    ChordPhase()
+    Timer()
+end molecule types
+
+begin seed species
+    V1s() 50
+    V1c() 100
+    V2s() 50
+    V2c() 100
+    V3s() 50
+    V3c() 100
+    Mix() 50
+    ChordPhase() 0
+    Timer() 0
+end seed species
+
+begin observables
+    Molecules Voice1 V1s()
+    Molecules V1c    V1c()
+    Molecules Voice2 V2s()
+    Molecules V2c    V2c()
+    Molecules Voice3 V3s()
+    Molecules V3c    V3c()
+    Molecules Output Mix()
+    Molecules ObsTime Timer()
+end observables
+
+begin functions
+    # Chord selection via tiered nested if-logic (avoiding mod/floor and &&)
+    # progression: 0-4=Am, 4-8=F, 8-12=C, 12-16=G...
+    
+    is_Am() = if(ObsTime < 4, 1, if(ObsTime >= 16, if(ObsTime < 20, 1, 0), 0))
+    is_F()  = if(ObsTime >= 4, if(ObsTime < 8, 1, if(ObsTime >= 20, if(ObsTime < 24, 1, 0), 0)), 0)
+    is_C()  = if(ObsTime >= 8, if(ObsTime < 12, 1, if(ObsTime >= 24, if(ObsTime < 28, 1, 0), 0)), 0)
+    is_G()  = if(ObsTime >= 12, if(ObsTime < 16, 1, if(ObsTime >= 28, if(ObsTime < 32, 1, 0), 0)), 0)
+    
+    freq1() = is_Am()*fA + is_F()*fF + is_C()*fC + is_G()*fG
+    freq2() = is_Am()*fC + is_F()*fA + is_C()*fE + is_G()*fB
+    freq3() = is_Am()*fE + is_F()*fC + is_C()*fG + is_G()*fD
+    
+    s1() = Voice1 - offset
+    c1() = V1c - offset
+    s2() = Voice2 - offset
+    c2() = V2c - offset
+    s3() = Voice3 - offset
+    c3() = V3c - offset
+    
+    ds1() = freq1() * c1()
+    dc1() = -freq1() * s1()
+    ds2() = freq2() * c2()
+    dc2() = -freq2() * s2()
+    ds3() = freq3() * c3()
+    dc3() = -freq3() * s3()
+    
+    mix_target() = offset + (s1() + s2() + s3()) * amp / 3
+    mix_corr() = 20 * (mix_target() - Output)
+    
+    rateV1sU() = if(ds1() > 0, ds1(), 0)
+    rateV1sD() = if(ds1() < 0, -ds1()/max(Voice1,0.01), 0)
+    rateV1cU() = if(dc1() > 0, dc1(), 0)
+    rateV1cD() = if(dc1() < 0, -dc1()/max(V1c,0.01), 0)
+    rateV2sU() = if(ds2() > 0, ds2(), 0)
+    rateV2sD() = if(ds2() < 0, -ds2()/max(Voice2,0.01), 0)
+    rateV2cU() = if(dc2() > 0, dc2(), 0)
+    rateV2cD() = if(dc2() < 0, -dc2()/max(V2c,0.01), 0)
+    rateV3sU() = if(ds3() > 0, ds3(), 0)
+    rateV3sD() = if(ds3() < 0, -ds3()/max(Voice3,0.01), 0)
+    rateV3cU() = if(dc3() > 0, dc3(), 0)
+    rateV3cD() = if(dc3() < 0, -dc3()/max(V3c,0.01), 0)
+    rateMixU() = if(mix_corr() > 0, mix_corr(), 0)
+    rateMixD() = if(mix_corr() < 0, -mix_corr()/max(Output,0.01), 0)
+end functions
+
+begin reaction rules
+    0 -> V1s() rateV1sU()
+    V1s() -> 0 rateV1sD()
+    0 -> V1c() rateV1cU()
+    V1c() -> 0 rateV1cD()
+    0 -> V2s() rateV2sU()
+    V2s() -> 0 rateV2sD()
+    0 -> V2c() rateV2cU()
+    V2c() -> 0 rateV2cD()
+    0 -> V3s() rateV3sU()
+    V3s() -> 0 rateV3sD()
+    0 -> V3c() rateV3cU()
+    V3c() -> 0 rateV3cD()
+    0 -> Mix() rateMixU()
+    Mix() -> 0 rateMixD()
+    0 -> Timer() 1
+end reaction rules
+
+end model
+
+simulate({method=>"ode",t_end=>32,n_steps=>4000})

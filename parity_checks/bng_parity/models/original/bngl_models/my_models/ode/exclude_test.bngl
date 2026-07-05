@@ -1,0 +1,82 @@
+begin model
+
+begin parameters
+
+k 1
+
+end parameters
+
+begin molecule types
+
+DF3(DNP~1~2~3,DNP~1~2~3,DNP~1~2~3)
+IgE(Fab~0~1,Fab~0~1)
+
+end molecule types
+
+begin seed species
+
+# unicyclic aggregate
+DF3(DNP~1,DNP~2!5,DNP~3!1).IgE(Fab~0!1,Fab~0!2).DF3(DNP~1!2,DNP~2!3,DNP~3!4).IgE(Fab~0!3,Fab~1!5).IgE(Fab~0!4,Fab~0!6).DF3(DNP~1!6,DNP~2!7,DNP~3).IgE(Fab~0!7,Fab~0!8).DF3(DNP~1!8,DNP~2!9,DNP~3).IgE(Fab~0!9,Fab~0!10).DF3(DNP~1!10,DNP~2!11,DNP~3).IgE(Fab~0!11,Fab~0) 3e2
+# bicyclic aggregate
+#DF3(DNP~1!6,DNP~2!5,DNP~3!1).IgE(Fab~0!1,Fab~0!2).DF3(DNP~1!2,DNP~2!3,DNP~3!4).IgE(Fab~0!3,Fab~1!5).IgE(Fab~0!4,Fab~0!6) 2e2
+
+# trees
+# 0 0 (should be detected by TestPattern1)
+#DF3(DNP~1,DNP~2!1,DNP~3).IgE(Fab~0!1,Fab~1!2).DF3(DNP~1!2,DNP~2!3,DNP~3).IgE(Fab~0!3,Fab~0) 1 # 5
+# 0 !+ (should be detected by TestPattern1)
+#DF3(DNP~1,DNP~2!1,DNP~3).IgE(Fab~0!1,Fab~1!2).DF3(DNP~1!2,DNP~2!3,DNP~3!4).IgE(Fab~0!3,Fab~0).IgE(Fab~0!4,Fab~0) 1 # 6
+# !+ 0 (should be detected by TestPattern2)
+#IgE(Fab~0,Fab~0!4).DF3(DNP~1,DNP~2!1,DNP~3!4).IgE(Fab~0!1,Fab~1!2).DF3(DNP~1!2,DNP~2!3,DNP~3).IgE(Fab~0!3,Fab~0) 1 # 13
+# !+ !+ (should be detected by TestPattern3)
+#IgE(Fab~0,Fab~0!5).DF3(DNP~1,DNP~2!1,DNP~3!5).IgE(Fab~0!1,Fab~1!2).DF3(DNP~1!2,DNP~2!3,DNP~3!6).IgE(Fab~0!3,Fab~0).IgE(Fab~0!6,Fab~0) 1 # 17
+
+# long chain
+DF3(DNP~1,DNP~2,DNP~3!1).IgE(Fab~1!1,Fab~0!2).DF3(DNP~1!2,DNP~2!3,DNP~3).IgE(Fab~0!3,Fab~0!4).DF3(DNP~1!4,DNP~2!5,DNP~3).IgE(Fab~0!5,Fab~0!6).DF3(DNP~1!6,DNP~2!7,DNP~3).IgE(Fab~0!7,Fab~0) 5e2
+
+end seed species
+
+begin observables
+
+Species Ring DF3(DNP~?!4,DNP~?!1).IgE(Fab~?!1,Fab~?!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~?!3,Fab~?!4) # =3?
+
+Species Ring_notReversed DF3(DNP~?!4,DNP~?!1).IgE(Fab~0!1,Fab~0!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~0!3,Fab~1!4) 
+Species Ring_reversed DF3(DNP~?!4,DNP~?!1).IgE(Fab~0!1,Fab~0!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~0!3,Fab~0!4) 
+
+#Species TestPattern1 DF3(DNP~?,DNP~?!1,DNP~?).IgE(Fab~?!1,Fab~?!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~?!3,Fab~?) # =0? (no trees) or 11?
+#Species TestPattern2 DF3(DNP~?,DNP~?!1,DNP~?!+).IgE(Fab~?!1,Fab~?!2).DF3(DNP~?!2,DNP~?!3,DNP~?).IgE(Fab~?!3,Fab~?) # =0? (no trees) or 13?
+#Species TestPattern3 DF3(DNP~?,DNP~?!1,DNP~?!5).IgE(Fab~?!5).IgE(Fab~?!1,Fab~?!2).DF3(DNP~?!2,DNP~?!3,DNP~?!6).IgE(Fab~?!6).IgE(Fab~?!3,Fab~?) # =0? (no trees) or 17?
+
+#Species E222 IgE(Fab~?!1).DF3(DNP~?!1,DNP~?!2).IgE(Fab~?!2,Fab~?!3).DF3(DNP~?!3,DNP~?!4).IgE(Fab~?!4,Fab~?!5).DF3(DNP~?!5,DNP~?!6).IgE(Fab~?!6)
+#Species E23 IgE(Fab~?!1).DF3(DNP~?!1,DNP~?!2).IgE(Fab~?!2,Fab~?!3).DF3(DNP~?!3,DNP~?!4,DNP~?!5).IgE(Fab~?!4).IgE(Fab~?!5)
+#Species E32 IgE(Fab~?!1).DF3(DNP~?!1,DNP~?!2,DNP~?!3).IgE(Fab~?!2).IgE(Fab~?!3,Fab~?!4).DF3(DNP~?!4,DNP~?!5).IgE(Fab~?!5)
+Species I22 IgE(Fab~1!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2).IgE(Fab~0!2,Fab~0!3).DF3(DNP~?!3,DNP~?!4).IgE(Fab~0!4)
+Species I3 IgE(Fab~1!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2,DNP~?!3).IgE(Fab~0!2).IgE(Fab~0!3) 
+
+end observables
+
+begin functions
+
+
+end functions
+
+begin reaction rules
+
+# I22 (chain)
+IgE(Fab~1!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2).IgE(Fab~0!2,Fab~0!3).DF3(DNP~?!3,DNP~?!4).IgE(Fab~0!4)->\
+IgE(Fab~0!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2).IgE(Fab~0!2,Fab~0!3).DF3(DNP~?!3,DNP~?!4).IgE(Fab~0!4) 1 \
+exclude_reactants(1,IgE(Fab~1!1,Fab~0!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~0!3,Fab~0!4).DF3(DNP~?!4,DNP~?!1))
+# I3 (tree) <-- This pattern captures products containing a ring proximal to the tagged bond.
+IgE(Fab~1!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2,DNP~?!3).IgE(Fab~0!2).IgE(Fab~0!3)->\
+IgE(Fab~0!+,Fab~0!1).DF3(DNP~?!1,DNP~?!2,DNP~?!3).IgE(Fab~0!2).IgE(Fab~0!3) 1 \
+exclude_reactants(1,IgE(Fab~1!1,Fab~0!2).DF3(DNP~?!2,DNP~?!3).IgE(Fab~0!3,Fab~0!4).DF3(DNP~?!4,DNP~?!1))
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>1000,print_functions=>1})
+
+end actions

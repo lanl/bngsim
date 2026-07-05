@@ -1,0 +1,40 @@
+begin model
+# references:
+# - Hlavacek WS, Wofsy C, Perelson AS (1999) PNAS 96:14681-6.
+begin parameters
+kr 0.1 # /s
+kmx=kr # /s
+KXRT 1.1427	# dimensionless, see Row 2 in Table 1 of Hlavacek et al. (1999)
+RT 1000	# arbitrary
+kpx=KXRT*kmx/RT	# /arbitrary/s 
+end parameters
+begin molecule types
+CR2(e)
+HIV(C3,mult~0~1~2~3~4~5~6~7~8~9)
+end molecule types
+begin seed species
+CR2(e!1).HIV(C3!1,mult~1) RT
+end seed species
+begin observables
+Molecules Vbnd HIV(C3!+)
+end observables
+begin functions
+end functions
+begin reaction rules
+# escape
+CR2(e!1).HIV(C3!1,mult~1)->CR2(e)+HIV(C3,mult~0) kr
+# reversible crosslinking
+HIV(C3!+,mult~1)+CR2(e)<->HIV(C3!+,mult~2) 8*kpx,2*kmx
+HIV(C3!+,mult~2)+CR2(e)<->HIV(C3!+,mult~3) 7*kpx,3*kmx
+HIV(C3!+,mult~3)+CR2(e)<->HIV(C3!+,mult~4) 6*kpx,4*kmx
+HIV(C3!+,mult~4)+CR2(e)<->HIV(C3!+,mult~5) 5*kpx,5*kmx
+HIV(C3!+,mult~5)+CR2(e)<->HIV(C3!+,mult~6) 4*kpx,6*kmx
+HIV(C3!+,mult~6)+CR2(e)<->HIV(C3!+,mult~7) 3*kpx,7*kmx
+HIV(C3!+,mult~7)+CR2(e)<->HIV(C3!+,mult~8) 2*kpx,8*kmx
+HIV(C3!+,mult~8)+CR2(e)<->HIV(C3!+,mult~9) 1*kpx,9*kmx
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>10,print_functions=>1})
+end actions

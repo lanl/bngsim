@@ -1,0 +1,83 @@
+# Model: ph_nbody_gravity.bngl
+# Description: Simulates the orbital mechanics of N-body gravity.
+#              Each body (Star,Planet) has molecules representing x,y,vx,vy.
+#              Acceleration is computed via 1/r^2 functions.
+#              Demonstrates physics simulation in a rule-based language.
+
+begin model
+
+begin parameters
+    G 1.0           # Gravitational constant
+    M_Sun 100.0     # Mass of Central star
+    M_Earth 1.0     # Mass of Planet
+    X_Earth 10.0    # Initial separation
+    V_Earth 3.16    # Initial orbital velocity (sqrt(G*M/R))
+    DT 0.1
+end parameters
+
+begin molecule types
+    Body(i~Sun~Earth,t~X~Y~VX~VY)
+end molecule types
+
+begin seed species
+    # Sun (Stationary at origin)
+    Body(i~Sun,t~X) 0.0
+    Body(i~Sun,t~Y) 0.0
+    
+    # Earth
+    Body(i~Earth,t~X) X_Earth
+    Body(i~Earth,t~Y) 0.0
+    Body(i~Earth,t~VX) 0.0
+    Body(i~Earth,t~VY) V_Earth
+end seed species
+
+begin observables
+    Molecules Ex Body(i~Earth,t~X)
+    Molecules Ey Body(i~Earth,t~Y)
+    Molecules EVx Body(i~Earth,t~VX)
+    Molecules EVy Body(i~Earth,t~VY)
+end observables
+
+begin functions
+    # Distance
+    R2() = Ex*Ex + Ey*Ey
+    R()  = sqrt(R2())
+    
+    # Acceleration components (toward Sun at 0,0)
+    # a = -G*M / R^2 * (unit_vector)
+    AX() = -G * M_Sun * Ex / (R()*R()*R())
+    AY() = -G * M_Sun * Ey / (R()*R()*R())
+    
+    # Differential Updates
+    dEX_dt()  = EVx
+    dEY_dt()  = EVy
+    dEVx_dt() = AX()
+    dEVy_dt() = AY()
+end functions
+
+begin reaction rules
+    # --- Integration (dx/dt = v,dv/dt = a) ---
+    
+    # X-Position
+    Up_X: 0 -> Body(i~Earth,t~X) if(dEX_dt()>0,dEX_dt(),0)
+    Dn_X: Body(i~Earth,t~X) -> 0 if(dEX_dt()<0,-dEX_dt(),0)
+    
+    # Y-Position
+    Up_Y: 0 -> Body(i~Earth,t~Y) if(dEY_dt()>0,dEY_dt(),0)
+    Dn_Y: Body(i~Earth,t~Y) -> 0 if(dEY_dt()<0,-dEY_dt(),0)
+    
+    # X-Velocity
+    Up_VX: 0 -> Body(i~Earth,t~VX) if(dEVx_dt()>0,dEVx_dt(),0)
+    Dn_VX: Body(i~Earth,t~VX) -> 0 if(dEVx_dt()<0,-dEVx_dt(),0)
+    
+    # Y-Velocity
+    Up_VY: 0 -> Body(i~Earth,t~VY) if(dEVy_dt()>0,dEVy_dt(),0)
+    Dn_VY: Body(i~Earth,t~VY) -> 0 if(dEVy_dt()<0,-dEVy_dt(),0)
+end reaction rules
+
+end model
+
+# --- Actions ---
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>20,n_steps=>1000})
+# Note: Use small n_steps or stiff solver to capture the orbit.

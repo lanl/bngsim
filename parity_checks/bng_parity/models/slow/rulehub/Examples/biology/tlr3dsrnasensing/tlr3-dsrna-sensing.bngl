@@ -1,0 +1,120 @@
+begin model
+begin parameters
+    # TLR3-mediated dsRNA sensing and TRIF pathway activation.
+    # Advanced features: Compartments (Endosome/Cytosol/Nucleus) and complex formation.
+    
+    # Volumes
+    Vol_EC 100
+    Vol_Cyt 50
+    Vol_End 1
+    Vol_Nuc 10
+    
+    # Sensing & Dimerization
+    k_bind_rna 0.01    # dsRNA binding to TLR3
+    k_dimer_max 1.5    # Max receptor dimerization
+    Km_dimer 200       # Half-saturation for dimerization
+    
+    # Signaling Relay
+    k_trif_rec 0.8     # TRIF recruitment to dimerized TLR3
+    k_irf3_act 1.2     # IRF3 activation by TRIF
+    
+    # Transport
+    k_import 2.0       # IRF3 nuclear entry
+    k_export 0.5       # IRF3 nuclear exit
+    
+    # Negative Feedback
+    k_sarm_synth 0.1   # SARM induction (Negative regulator)
+    k_sarm_inh 2.0     # SARM prevents TRIF recruitment
+    
+    # Initials
+    dsRNA_tot 100
+    TLR3_tot 500
+    TRIF_tot 800
+    IRF3_tot 400
+    SARM_init 5
+end parameters
+
+begin compartments
+    EC  3  Vol_EC
+    PM  2  1  EC
+    Cyt 3  Vol_Cyt PM
+    End_M 2 1 Cyt
+    End 3  Vol_End End_M
+    Nuc_M 2 1 Cyt
+    Nuc 3  Vol_Nuc Nuc_M
+end compartments
+
+begin molecule types
+    dsRNA(b)
+    TLR3(l,d,t)
+    TRIF(b,s~U~P)
+    IRF3(s~U~P)
+    SARM(b)
+end molecule types
+
+begin seed species
+    dsRNA(b)@End_M dsRNA_tot
+    TLR3(l,d,t)@End_M TLR3_tot
+    TRIF(b,s~U)@Cyt TRIF_tot
+    IRF3(s~U)@Cyt IRF3_tot
+    SARM(b)@Cyt SARM_init
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_TLR3     TLR3(d!+)@End_M          # Any dimerized receptor
+    Molecules TRIF_Bound      TLR3(t!1).TRIF(b!1)      # Active signaling platform (Implicit loc)
+    Molecules Pathogen_Sense  dsRNA(b!+)@End_M           # Target recognition status
+    Molecules Nucleark_IRF3   IRF3(s~P)@Nuc            # Final Antiviral output
+    Molecules Cyto_IRF3       IRF3(s~P)@Cyt            # Intermediate
+    Molecules Regulator_Load  SARM()@Cyt               # Feedback status
+end observables
+
+begin functions
+    # Saturable dimerization rate promoted by RNA occupancy
+    v_dimer() = k_dimer_max * (Pathogen_Sense / Vol_End) / (Km_dimer + (Pathogen_Sense / Vol_End))
+end functions
+
+begin reaction rules
+    ## RECOGNITION
+    # dsRNA binds TLR3 monomer (End lumen binds End_M receptor)
+    # dsRNA stays in End, TLR3 stays in End_M
+    dsRNA(b)@End_M + TLR3(l)@End_M <-> dsRNA(b!1)@End_M.TLR3(l!1)@End_M k_bind_rna,0.1
+    
+    # Occupied TLR3 dimerizes (Functional Rate)
+    # Both in End_M
+    TLR3(l!+,d)@End_M + TLR3(l!+,d)@End_M <-> TLR3(l!+,d!1)@End_M.TLR3(l!+,d!1)@End_M v_dimer(),0.1
+    
+    ## RELAY
+    # Dimerized TLR3 recruits TRIF (Cytosol binds End_M)
+    # TRIF stays in Cyt while bound (Surface binding logic)
+    TLR3(d!+,t)@End_M + TRIF(b)@Cyt <-> TLR3(d!+,t!1)@End_M.TRIF(b!1)@Cyt k_trif_rec,0.2
+    
+    # Active TRIF platform activates IRF3 (Cyt)
+    # Catalysis: TRIF@Cyt (bound to TLR3) hits IRF3@Cyt
+    TRIF(s~U,b!+)@Cyt + IRF3(s~U)@Cyt -> TRIF(s~U,b!+)@Cyt + IRF3(s~P)@Cyt k_irf3_act
+    
+    ## TRANSPORT
+    # p-IRF3 moves to Nucleus
+    IRF3(s~P)@Cyt <-> IRF3(s~P)@Nuc k_import,k_export
+    
+    ## FEEDBACK
+    # Nuclear IRF3 induces SARM (Creation in Cyt)
+    IRF3(s~P)@Nuc -> IRF3(s~P)@Nuc + SARM(b)@Cyt k_sarm_synth
+    
+    # SARM binds TLR3 and blocks TRIF (Sequestration)
+    # SARM stays in Cyt
+    SARM(b)@Cyt + TLR3(t)@End_M <-> SARM(b!1)@Cyt.TLR3(t!1)@End_M k_sarm_inh,0.1
+    
+    ## CLEARANCE
+    IRF3(s~P)@Nuc -> IRF3(s~U)@Cyt 0.05
+    # Dissociation/Reset
+    dsRNA(b!1)@End_M.TLR3(l!1)@End_M -> dsRNA(b)@End_M + TLR3(l)@End_M 0.01
+    SARM()@Cyt -> 0 0.02
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>200,n_steps=>400})
+end actions
+end model

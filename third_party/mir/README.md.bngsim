@@ -1,0 +1,51 @@
+# MIR (vendored) — in-process micro-JIT for the codegen RHS
+
+This is a pruned vendor copy of [MIR](https://github.com/vnmakarov/mir) by
+Vladimir Makarov, pinned at commit `99c65079` (MIT-licensed; see `LICENSE`).
+MIR's own `README.md` is preserved alongside this file.
+
+## Why it's here (GH #78)
+
+bngsim's codegen backend emits good native-quality C for the ODE RHS
+(`bngsim/python/bngsim/_codegen.py`), but pays a heavy *compile latency*:
+`cc -O3` as a subprocess plus `dlopen` costs ~80 ms–seconds. That latency is
+why the codegen threshold sits at N≥256 species and leaves the intermediate
+band on the slower ExprTk-bytecode path.
+
+MIR ships **c2mir**, a C11 frontend, so the *same C source `_codegen.py`
+already emits* can be JIT-compiled in-process in ~1–2 ms — no subprocess, no
+`.so`, no `dlopen`. It is a single ~1 MB C library (no LLVM, no Rust toolchain),
+targeting x86-64 and aarch64 (Apple Silicon).
+
+## What is built
+
+Three translation units, gated behind the `BNGSIM_ENABLE_MIR` CMake option
+(default OFF):
+
+- `mir.c`        — MIR core (loader, linker, interpreter; `#include`s the
+                   host target backend, e.g. `mir-x86_64.c`/`mir-aarch64.c`)
+- `mir-gen.c`    — the optimizing JIT code generator
+- `c2mir/c2mir.c`— the C11 → MIR frontend
+
+Include dirs: this directory and `c2mir/`.
+
+## The header-free-source rule
+
+c2mir's bundled preprocessor cannot parse the platform SDK `<math.h>` /
+`<stdlib.h>` — they use compiler-specific extensions (on macOS c2mir reports
+*"Unsupported compiler detected"* and chokes on the SDK `math.h`).
+
+Because bngsim *generates* the C it JITs, the JIT path sidesteps this entirely:
+it strips the `#include <...>` lines from the generated source and prepends
+`extern` declarations for the libc/libm symbols the RHS can call (`pow`, `exp`,
+`sqrt`, `log`, `fabs`, `fmax`, `fmin`, `memset`, …). MIR resolves those externals
+at link time through the import resolver, which calls `dlsym(RTLD_DEFAULT, name)`.
+See `bngsim/include/bngsim/mir_jit.hpp`.
+
+## Refreshing
+
+Use `bngsim/scripts/vendor_mir.py` — it prunes the tree from a MIR checkout at
+the pinned commit in `VENDOR.json` and re-anchors the per-file checksums.
+`--summary` previews, `--check` is the offline tripwire that the checked-in tree
+still matches `VENDOR.json`. See `bngsim/scripts/MIR_VENDORING.md` for the full
+refresh + MIR-on build/validation flow.

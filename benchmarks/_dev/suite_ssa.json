@@ -1,0 +1,125 @@
+{
+  "description": "SSA benchmark suite: 10 models suitable for both exact SSA and PSA testing",
+  "models": [
+    {
+      "name": "gene_expression_hill",
+      "net_file": "models/net/ssa/gene_expression_hill.net",
+      "bngl_file": "models/bngl/ssa/gene_expression_hill.bngl",
+      "species": 2,
+      "reactions": 4,
+      "t_end": 3600,
+      "n_steps": 360,
+      "notes": "Positive autoregulation with Hill function; bimodal protein distribution"
+    },
+    {
+      "name": "simple_system",
+      "net_file": "models/net/ssa/simple_system.net",
+      "bngl_file": "models/bngl/ssa/simple_system.bngl",
+      "species": 4,
+      "reactions": 4,
+      "t_end": 5,
+      "n_steps": 200,
+      "notes": "Enzyme-substrate binding with phosphorylation/dephosphorylation"
+    },
+    {
+      "name": "flagellar_motor",
+      "net_file": "models/net/ssa/flagellar_motor.net",
+      "bngl_file": "models/bngl/ssa/flagellar_motor.bngl",
+      "species": 4,
+      "reactions": 4,
+      "t_end": 0.5,
+      "n_steps": 200,
+      "notes": "CheY-driven motor switching via global functions"
+    },
+    {
+      "name": "gene_expr_3stage",
+      "net_file": "models/net/ssa/gene_expr_3stage.net",
+      "bngl_file": "models/bngl/ssa/gene_expr_3stage.bngl",
+      "species": 6,
+      "reactions": 6,
+      "t_end": 200000000,
+      "n_steps": 10000,
+      "notes": "Bursty promoter switching; analytically tractable equilibrium distribution"
+    },
+    {
+      "name": "oscillatory_system",
+      "net_file": "models/net/ssa/oscillatory_system.net",
+      "bngl_file": "models/bngl/ssa/oscillatory_system.bngl",
+      "species": 5,
+      "reactions": 8,
+      "t_end": 50,
+      "n_steps": 400,
+      "notes": "Negative-feedback oscillations with functional rates (Boolean, MM degradation)"
+    },
+    {
+      "name": "gene_expression",
+      "net_file": "models/net/ssa/gene_expression.net",
+      "bngl_file": "models/bngl/ssa/gene_expression.bngl",
+      "species": 10,
+      "reactions": 14,
+      "t_end": 60000,
+      "n_steps": 1000,
+      "notes": "Two-state gene model with constitutive and regulated transcription"
+    },
+    {
+      "name": "erk_activation",
+      "net_file": "models/net/ssa/erk_activation.net",
+      "bngl_file": "models/bngl/ssa/erk_activation.bngl",
+      "species": 34,
+      "reactions": 65,
+      "t_end": 8640,
+      "n_steps": 1000,
+      "notes": "Populations up to 3e6; exact SSA is O(billions of events) per replicate. Also in PSA suite. Treat as 'large' for replicate sweeps."
+    },
+    {
+      "name": "tcr_signaling",
+      "net_file": "models/net/ssa/tcr_signaling.net",
+      "bngl_file": "models/bngl/ssa/tcr_signaling.bngl",
+      "species": 37,
+      "reactions": 97,
+      "t_end": 300,
+      "n_steps": 1000,
+      "notes": "Bistable stochastic switching in TCR activation (also in PSA suite)"
+    },
+    {
+      "name": "prion_aggregation",
+      "net_file": "models/net/ssa/prion_aggregation.net",
+      "bngl_file": "models/bngl/ssa/prion_aggregation.bngl",
+      "species": 104,
+      "reactions": 2809,
+      "t_end": 10,
+      "n_steps": 1000,
+      "notes": "Nucleated polymerization; 2809 reactions make SSA slow. Generated SBML is .gitignored — regenerate via benchmarks/suites/sbml_roundtrip/run.py."
+    },
+    {
+      "name": "egfr_net",
+      "net_file": "models/net/ssa/egfr_net.net",
+      "bngl_file": "models/bngl/ssa/egfr_net.bngl",
+      "species": 356,
+      "reactions": 3749,
+      "t_end": 30,
+      "n_steps": 120,
+      "notes": "EGFR signaling cascade (Blinov 2006)"
+    },
+    {
+      "name": "multisite_phos",
+      "net_file": "models/net/ssa/multisite_phos.net",
+      "bngl_file": "models/bngl/ssa/multisite_phos.bngl",
+      "species": 1026,
+      "reactions": 7680,
+      "t_end": 1.5,
+      "n_steps": 300,
+      "notes": "5-site distributive phosphorylation; combinatorial explosion"
+    },
+    {
+      "name": "fceri_gamma",
+      "net_file": "models/net/ssa/fceri_gamma.net",
+      "bngl_file": "models/bngl/ssa/fceri_gamma.bngl",
+      "species": 3744,
+      "reactions": 58276,
+      "t_end": 100,
+      "n_steps": 100,
+      "notes": "FcεRI receptor aggregation and Syk activation"
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+begin model
+begin parameters
+    # Complement System: Pathogen opsonization and the Alternative Pathway.
+    # Advanced features: DeleteMolecules for factor cleavage and Hill kinetics for MAC.
+    
+    # AP Initiation (Tick-over & Surface stabilization)
+    k_tickover 0.5    # C3(H2O) formation
+    k_bind_surf 1.0     # C3b covalent attachment
+    
+    # Amplification (Convertase Relay)
+    k_c3_conv_max 50.0  # Max C3 cleavage by convertase
+    k_bind_fb 20.0       # Factor B recruitment
+    k_act_fd 5.0        # Factor D catalytic trigger
+    
+    # Terminal Pathway (Lysis)
+    k_mac_max 10.0      # Membrane Attack Complex assembly
+    Km_c5b 800          # Threshold for MAC formation
+    n_hill 4.0          # Non-linear pore formation threshold
+    
+    # Regulation (Factor H/I)
+    k_inh_fh 1.5        # Factor H dissociation
+    k_inh_fi 2.0        # Factor I cleavage (Inactivation)
+    
+    # Initials
+    C3_tot 5000
+    FB_tot 500
+    FD_tot 50
+    C5_tot 1000
+    Pathogen_sites 500
+end parameters
+
+begin molecule types
+    C3(s~U~b~i,loc~free~surf)
+    FB(b,s~U~Bb)
+    C5(s~U~b)
+    MAC()
+    Surf(b)
+end molecule types
+
+begin seed species
+    C3(s~U,loc~free) C3_tot
+    FB(b,s~U) FB_tot
+    C5(s~U) C5_tot
+    Surf(b) Pathogen_sites
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Opsonization_C3b C3(s~b)                  # Phagocytosis flag
+    Molecules C5b_Active      C5(s~b)                  # C5b status
+    Molecules MAC_Intensity   MAC()                    # Final lytic effector
+    Molecules C3_Convertase   C3(s~b!1).FB(b!1,s~Bb)     # Amplification node
+    Molecules C5_Generated    C5(s~b)                  # Terminal trigger relay
+    Molecules FB_Consumed     FB(b!+,s~Bb)                 # Resource depletion
+end observables
+
+begin functions
+    # Sharp Hill switch for MAC formation (Lysis trigger)
+    v_mac() = k_mac_max * (C5b_Active^n_hill) / (Km_c5b^n_hill + (C5b_Active^n_hill))
+end functions
+
+begin reaction rules
+    ## INITIATION Phase
+    # Tickover: C3 -> C3b (Fluid phase)
+    C3(s~U,loc~free) -> C3(s~b,loc~free) k_tickover
+    
+    # Surface attachment (Opsonization)
+    C3(s~b,loc~free) + Surf(b) <-> C3(s~b,loc~surf!1).Surf(b!1) k_bind_surf,0.1
+    
+    ## AMPLIFICATION Phase
+    # C3b recruits Factor B
+    C3(s~b) + FB(s~U,b) <-> C3(s~b!1).FB(s~U,b!1) k_bind_fb,0.5
+    
+    # Factor D cleaves B -> Bb (Active Convertase)
+    C3(s~b!1).FB(s~U,b!1) -> C3(s~b!1).FB(s~Bb,b!1) k_act_fd
+    
+    # Convertase cleaves more C3 (Negative feedback on C3 reservoir)
+    C3(s~b!1).FB(s~Bb,b!1) + C3(s~U,loc~free) -> C3(s~b!1).FB(s~Bb,b!1) + C3(s~b,loc~free) k_c3_conv_max
+    
+    ## TERMINAL Phase
+    # C3bBb also acts as C5 convertase (Simplified)
+    C3(s~b!1).FB(s~Bb,b!1) + C5(s~U) -> C3(s~b!1).FB(s~Bb,b!1) + C5(s~b) 1.0
+    
+    # C5b triggers MAC formation (Functional Rate - Hill)
+    0 -> MAC() v_mac()
+    
+    ## REGULATION Stage
+    # Factor I cleaves C3b to iC3b (Inactive)
+    # DeleteMolecules: Final removal of the active signaling factor
+    C3(s~b) -> C3(s~i) k_inh_fi
+    
+    # Reset
+    FB(s~Bb) -> 0 0.1
+    C5(s~b) -> 0 0.1
+    MAC() -> 0 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>300})
+end actions
+end model
+

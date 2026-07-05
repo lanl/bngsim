@@ -1,0 +1,77 @@
+begin model
+#@model_id: lipniacki2006_autorepression_2d
+#@title: Autorepressive gene regulation (Lipniacki 2006)
+#@description: Two-variable deterministic limit of stochastic autorepressive gene expression. Normalized mRNA (x) and protein (y) with rational negative feedback. Species scaled x1000 for SSA.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1016/j.jtbi.2005.05.032
+#@note: |
+#  Original variables are dimensionless (near 0..1 range).
+#  Scaled x1000 for integer molecule counts.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Scaling factor
+  scale    1000           # dimensionless
+
+  # Model parameters (dimensionless)
+  n_gene   1.0            # gene copy number
+  c_k      6.0            # dimensionless
+  b_k      3.0            # dimensionless
+  r_k      0.2            # dimensionless, protein/mRNA ratio rate
+end parameters
+
+begin molecule types
+  Xm()
+  Yp()
+end molecule types
+
+begin seed species
+  Xm()  1   # molecules (0 * 1000, use 1 for SSA)
+  Yp()  1   # molecules (0 * 1000, use 1 for SSA)
+end seed species
+
+begin observables
+  Molecules  Obs_Xm  Xm()
+  Molecules  Obs_Yp  Yp()
+end observables
+
+begin functions
+  # Rescaled concentrations
+  x_c() = Obs_Xm / scale
+  y_c() = Obs_Yp / scale
+
+  # dx/dt = -x + n*c/(c + b*y)
+  prod_Xm() = n_gene * c_k / (c_k + b_k * y_c()) * scale
+  cons_Xm() = x_c() * scale
+
+  # dy/dt = r*(x - y)
+  prod_Yp() = r_k * x_c() * scale
+  cons_Yp() = r_k * y_c() * scale
+end functions
+
+begin reaction rules
+  # mRNA
+  0 -> Xm()  prod_Xm()
+  Xm() -> 0  cons_Xm()
+
+  # Protein
+  0 -> Yp()  prod_Yp()
+  Yp() -> 0  cons_Yp()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

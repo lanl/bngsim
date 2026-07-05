@@ -1,0 +1,146 @@
+// LevBarOr2000_p53_Mdm2.ant
+//
+// Source:
+//   Lev Bar-Or R, Maya R, Segel LA, Alon U, Levine AJ, Oren M (2000)
+//   "Generation of oscillations by the p53–Mdm2 feedback loop:
+//    A theoretical and experimental study."
+//   Proc Natl Acad Sci USA 97(21):11250–11255.
+//   doi:10.1073/pnas.210171597
+//
+// Model summary (Eqs. 1–7):
+//   p53(t)       : p53 protein level (arbitrary units, scaled to basal)
+//   Mdm2(t)      : Mdm2 protein level (arbitrary units, scaled to basal)
+//   I(t)         : intermediary for delayed p53-dependent Mdm2 induction
+//   signal(t)    : p53-activating damage signal
+//   threshold(t) : delayed threshold that damps inhibition of degradation
+//
+// ODEs (with '·' written as '*'):
+//   dp53/dt = source_p53
+//             - p53 * Mdm2 * degradation
+//             - dp53 * p53                      (Eq. 1)
+//
+//   dMdm2/dt = p1
+//              + p2max * I^n / (Km^n + I^n)    (Hill-type Mdm2 induction)
+//              - dMdm2 * Mdm2                  (Eq. 2)
+//
+//   dI/dt = activity * p53 - kdelay * I        (Eq. 3)
+//
+//   activity = c1 * signal / (1 + c2 * Mdm2 * p53)   (Eq. 4)
+//
+//   d(signal)/dt = - repair * signal          (Eq. 5)
+//
+//   degradation = degradation_basal - (kdeg * signal - threshold)   (Eq. 6)
+//
+//   d(threshold)/dt = - kdamp * threshold * signal0,
+//   with threshold(0) = kdeg * signal0, signal0 = signal(t=0).      (Eq. 7)
+//
+// Parameter set and initial conditions are taken from the Fig. 2 caption.
+//
+//   source_p53      = 0.5
+//   dp53            = 2.5e-4
+//   p1              = 2.35e-3
+//   p2max           = 0.03
+//   n               = 50
+//   Km              = 25
+//   dMdm2           = 0.05
+//   c1              = 1.52e-2
+//   c2              = 0.01
+//   kdelay          = 1.52e-2
+//   repair          = 1.0e-4
+//   degradation_basal = 2.0
+//   kdeg            = 1.93
+//   kdamp           = 0.05
+//
+//   p53(0)          = 5.3
+//   Mdm2(0)         = 0.047
+//   signal(0)       = 1.0
+//   I(0)            = 0.0   (not specified; taken as zero)
+//   threshold(0)    = kdeg * signal(0) = 1.93
+//
+// All variables are dimensionless; time is in minutes (Fig. 2 axes).
+
+model LevBarOr2000_p53_Mdm2
+
+  // Compartment
+  compartment cell = 1;
+
+  // Species (state variables)
+  species p53       in cell;
+  species Mdm2      in cell;
+  species I         in cell;
+  species signal    in cell;
+  species threshold in cell;
+
+  // ------------------------
+  // Parameters
+  // ------------------------
+
+  // p53 synthesis & degradation
+  const source_p53        = 0.5;
+  const d_p53             = 2.5e-4;
+
+  // Mdm2 production & degradation
+  const p_1               = 2.35e-3;
+  const p_2max            = 0.03;
+  const n                 = 50;
+  const K_m               = 25;
+  const d_Mdm2            = 0.05;
+
+  // Activity / delay parameters
+  const c_1               = 1.52e-2;
+  const c_2               = 0.01;
+  const k_delay           = 1.52e-2;
+
+  // Damage signal decay
+  const repair            = 1.0e-4;
+
+  // Degradation modulation
+  const degradation_basal = 2.0;
+  const k_deg             = 1.93;
+  const k_damp            = 0.05;
+
+  // Initial damage level used as constant signal_0 in Eq. 7
+  const signal_0          = 1.0;
+
+  // ------------------------
+  // Helper expressions (algebraic rules)
+  // ------------------------
+
+  // p53 transcriptional activity
+  activity := c_1 * signal / (1 + c_2 * Mdm2 * p53);
+
+  // Effective p53 degradation strength
+  degradation := degradation_basal - (k_deg * signal - threshold);
+
+  // ------------------------
+  // ODEs
+  // ------------------------
+
+  // p53 protein
+  p53' = source_p53 - p53 * Mdm2 * degradation - d_p53 * p53;
+
+  // Mdm2 protein (Hill function inlined: I^n / (K_m^n + I^n))
+  Mdm2' = p_1 + p_2max * I^n / (K_m^n + I^n) - d_Mdm2 * Mdm2;
+
+  // Intermediary I (delayed p53-dependent Mdm2 induction)
+  I' = activity * p53 - k_delay * I;
+
+  // Damage signal
+  signal' = - repair * signal;
+
+  // Threshold damping the inhibition of p53 degradation
+  threshold' = - k_damp * threshold * signal_0;
+
+  // ------------------------
+  // Initial conditions (Fig. 2)
+  // ------------------------
+
+  p53       = 5.3;
+  Mdm2      = 0.047;
+  signal    = signal_0;
+  I         = 0.0;
+  threshold = k_deg * signal_0;
+
+end
+// @SIM T_START=0 T_END=400 N_STEPS=800 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,107 @@
+begin model
+begin parameters
+    # NFAT Signaling: Calcium-dependent nuclear translocation.
+    # Advanced features: MoveConnected for complex translocation and SAT feedback.
+    
+    # Activation
+    k_ca_flux 1.5      # Stimulation
+    k_cam_bind 1e-3    # CaM binding
+    k_can_act 1.2      # Calcineurin activation
+    Ca_Stim 0.5       # Basal calcium level
+    
+    # NFAT Dynamics
+    k_nfat_dephos 5.0  # CaN-mediated (Fast)
+    k_import 1.0       # Entry rate
+    k_export 0.2       # Basal export
+    
+    # Re-phosphorylation (Nuclear export drive)
+    k_dyrk_phos 0.8    # DYRK-mediated (Nuclear kinase)
+    k_gsk3_phos 0.5    # GSK3-mediated
+    
+    # Feedback (RCAN1)
+    k_rcan_synth 0.5   # NFAT-induced production
+    Km_rcan 150        # Saturation threshold
+    k_can_inh 2.0      # RCAN1 inhibits CaN
+    
+    # Initials
+    Ca_tot 200
+    CaN_tot 100
+    NFAT_tot 500
+    RCAN_tot 10
+    DYRK_nuc 50
+end parameters
+
+begin molecule types
+    Ca()
+    CaM(s~U~A)
+    CaN(b,s~off~on)
+    NFAT(b,s~U~P,loc~cyt~nuc)
+    RCAN1(b)
+end molecule types
+
+begin seed species
+    Ca() 10
+    CaM(s~U) 100
+    CaN(b,s~off) CaN_tot
+    NFAT(b,s~P,loc~cyt) NFAT_tot
+    RCAN1(b) RCAN_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Nuclear_Factor   NFAT(loc~nuc)           # Transcription drive
+    Molecules Active_NFAT      NFAT(loc~nuc,s~U)      # Feedback drive status
+    Molecules Phospho_NFAT     NFAT(s~P)                # Inactive/Exported reservoir
+    Molecules Active_CaN       CaN(s~on)                # Phosphatase relay intensity
+    Molecules Feedback_Protein RCAN1()                  # Inhibitor levels
+    Molecules NFAT_CaN_Binding NFAT(b!1).CaN(b!1)       # Complex formation status
+end observables
+
+begin functions
+    # Saturable production of RCAN1 feedback inhibitor
+    v_feedback() = k_rcan_synth * (Active_NFAT / (Km_rcan + Active_NFAT))
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # Calcium activates CaN (via CaM proxy)
+    Ca() + CaN(b,s~off) <-> Ca() + CaN(b,s~on) 1.0,0.1
+    
+    # Active CaN binds and dephosphorylates NFAT
+    CaN(b,s~on) + NFAT(b,s~P,loc~cyt) <-> CaN(b!1,s~on).NFAT(b!1,s~P,loc~cyt) 2.0,0.5
+    CaN(b!1,s~on).NFAT(b!1,s~P) -> CaN(b,s~on) + NFAT(b,s~U) k_nfat_dephos
+    
+    ## TRANSLOCATION
+    # MoveConnected: Dephosphorylated NFAT (and any bound partner) enters nucleus
+    NFAT(b,s~U,loc~cyt) <-> NFAT(b,s~U,loc~nuc) k_import,k_export MoveConnected
+    
+    ## NUCLEAR DYNAMICS & EXPORT
+    # Nuclear kinases re-phosphorylate NFAT (Export trigger)
+    NFAT(b,s~U,loc~nuc) -> NFAT(b,s~P,loc~nuc) k_dyrk_phos
+    NFAT(b,loc~nuc,s~P) -> NFAT(b,loc~cyt,s~P) 5.0 # Rapid exclusion
+    
+    ## FEEDBACK
+    # Nuclear NFAT induces RCAN1 (Functional Rate)
+    0 -> RCAN1(b) v_feedback()
+    
+    # RCAN1 inhibits CaN
+    RCAN1(b) + CaN(b,s~on) <-> RCAN1(b!1).CaN(b!1,s~on) k_can_inh,0.1
+    
+    ## RESET
+    Ca() -> 0 0.1
+    RCAN1(b) -> 0 0.05
+    0 -> Ca() Ca_Stim
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-20)
+    simulate({method=>"ode",t_end=>20,n_steps=>40})
+    # Phase 2: Stimulus (20-80)
+    setParameter("Ca_Stim",5.0)
+    simulate({method=>"ode",t_end=>80,n_steps=>120,continue=>1})
+    # Phase 3: Recovery (80-150)
+    setParameter("Ca_Stim",0.5)
+    simulate({method=>"ode",t_end=>150,n_steps=>140,continue=>1})
+end actions
+end model

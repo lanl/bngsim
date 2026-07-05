@@ -1,0 +1,65 @@
+// Rosenfeld2002_NegativeAutoregulation_2D.ant
+//
+// Source:
+//   Rosenfeld N, Elowitz MB, Alon U (2002)
+//   "Negative autoregulation speeds the response times
+//    of transcription networks."
+//   J Mol Biol 323(5):785–793. doi:10.1016/S0022-2836(02)00994-4
+//
+// 2D model with explicit mRNA:
+//   m(t) : mRNA for autorepressed gene
+//   x(t) : autorepressor protein (TetR–GFP)
+//
+//   dm/dt = b_m / (1 + x/k) - a_m * m
+//   dx/dt = b_p * m        - a_p * x
+//
+// Parameters chosen so that in the fast-mRNA limit (a_m ≫ a_p)
+// the system reduces to the 1D model
+//   dx/dt = b2 / (1 + x/k) - a * x
+// with
+//   a  = ln(2)    ≈ 0.6931
+//   k  = 1
+//   b_2 = 100*a   ≈ 69.31
+//
+// Mapping:
+//   a_p = a
+//   a_m = 5*a
+//   b_p = 1
+//   b_m = b_2 * a_m
+// so that b_p * b_m / a_m = b_2.
+//
+// Initial conditions: no mRNA, no protein at induction.
+
+model Rosenfeld2002_NegativeAutoregulation_2D
+
+  // Compartment
+  compartment cell = 1;
+
+  // State variables
+  species m in cell;
+  species x in cell;
+
+  // Core parameters
+  const k   = 1.0;
+  const a_p = 0.6931471805599453;
+  const a_m = 3.4657359027997265;
+  const b_2 = 69.31471805599453;
+
+  // Derived parameters for 2D model
+  const b_p = 1.0;
+  const b_m = 240.22650695910073;
+
+  // ODEs
+  // mRNA: transcription repressed by x, first-order decay
+  m' = b_m / (1 + x/k) - a_m * m;
+
+  // Protein: produced from mRNA, diluted/degraded
+  x' = b_p * m - a_p * x;
+
+  // Initial conditions: OFF at induction
+  m = 0;
+  x = 0;
+
+end
+// @SIM T_START=0 T_END=6 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

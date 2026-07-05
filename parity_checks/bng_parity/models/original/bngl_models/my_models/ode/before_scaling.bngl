@@ -1,0 +1,45 @@
+begin model
+  begin parameters
+    NA 6.02214076e23
+    V 1e-9
+    LT 1e-9*(NA*V)
+    RT 1e5
+    kp1 2.8e5/(NA*V)
+    km1 5e-2
+    kp2 1.5e4/(NA*V)
+    km2 1.9e-4
+    lp1 5.6e-3
+    lm1 1.9e-5
+    lp2 5.2e1
+    lm2 1.3e-2
+    kp 0.5
+    kdp 0.1
+  end parameters
+  begin molecule types
+    L()
+    R(P~0~1~2~x,P~0~1~2~x,Y~0~P,Y~0~P)
+  end molecule types
+  begin seed species
+    L() LT
+    R(P~0,P~0,Y~0,Y~0) RT
+  end seed species
+  begin observables
+    Species freeL L()
+    Molecules boundL R(P~1) R(P~2) R(P~x)
+    Species freeR R(P~0,P~0)
+    Molecules Crosslink R(P~x)
+    Molecules pY R(Y~P!?)
+  end observables
+  begin reaction rules
+    R(P~0)+L()<->R(P~1) kp1,km1
+    R(P~0)+L()<->R(P~2) kp2,km2
+    %x:R(P~1)<->R(P~x) if(Crosslink(x)>0,0,lp2),lm2
+    %x:R(P~2)<->R(P~x) if(Crosslink(x)>0,0,lp1),lm1
+    R(P~x,Y~0)->R(P~x,Y~P) kp
+    R(Y~P)->R(Y~0) kdp
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_end=>12000,n_steps=>120})
+end actions

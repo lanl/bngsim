@@ -1,0 +1,551 @@
+#---
+# File:
+#  Filename: Rag_Ragulator_assembly_v2.bngl
+#  Created: 9 June 2016 (v2), from Rag_Ragulatory_assembly.bngl (created in Nov/Dec 2015)
+#  Completed: TBA
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+#  Comments:
+#   - This model describes Rag-Ragulator assembly.
+#---
+
+#---
+# Software:
+#  - BioNetGen version 2.2.6
+#  - NFsim version 1.11
+#  - RuleBender version 2.0.382r32Ne
+#---
+
+begin model
+
+############
+# metadata #
+############
+
+#---
+# References:
+#  - Bar-Peled L, ..., Sabatini DM (2012) Cell 150: 1196-1208. [PMID: 22980980]
+#  - Geiger T, ..., Mann M (2012) Mol Cell Proteomics 11: M111.014050 [PMID: 22278370]
+#  - Gong R, ..., Xu Y (2011) Genes Dev 25: 1668-1673. [PMID: 21816923]
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+#  - Kulak NA, ..., Mann M (2014) Nat Methods 11: 319-324. [PMID: 24487582]
+#  - Kurzbauer R, ..., Clausen T (2004) PNAS 101: 10984-10989. [PMID: 15263099]
+#  - Levine TP, ..., Barr FA (2013) Small GTPases 4: 62-69. [PMID: 23511850]
+#  - Lunin VV, ..., Sacher M (2004) J Biol Chem 279: 23422-23430. [PMID: 15016825]
+#  - Miertzschke M, ..., Wittinghofer A (2011). EMBO J 30: 4185-4197. [PMID: 21847100]
+#  - Powis K, ..., Ding j (2015) Cell Res 25: 1043-1059. [PMID: 26206314]
+#  - Sancak Y, ..., Sabatini DM (2010) Cell 141: 290-303. [PMID: 20381137]
+#  - Sekiguchi T, ..., Nishimoto T (2001) J Biol Chem 276: 7246-7257. [PMID: 11073942]
+#  - Tan CW, ..., Burgess AW (2012) PLoS ONE 7: e31882. [PMID: 22363759]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#  comments:
+#   - The scaling factor f should multiply volumes, copy numbers 
+#     and rate constants for zero-order processes (e.g., a synthesis reaction).
+#   - This parameter can be set to a value <1 to accelerate stochastic simulation.
+#   - The value of f has no effect on the speed of a deterministic (ODE-based) simulation.
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+#########################
+# sizes of compartments #
+#########################
+
+# volume of cytosol (Vcyt)
+#  comments:
+#   - We could consider 1.2 pL to be a typical volume for a non-dividing mammalian cell in culture 
+#     (Tan et al., 2012). [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL]
+#   - HeLa and U2OS cells were not evaluated in the study of Tan et al. (2012).
+#   - Hein et al. (2015) assumed a volume of 2 pL when estimating protein concentrations; see Table S3.
+Vcyt_HEK293     = 2e-12 # L per cell
+Vcyt_U2OS       = 2e-12 # L per cell
+Vcyt_HeLa_S3    = 2e-12 # L per cell
+Vcyt_HeLa_Kyoto = 2e-12 # L per cell
+
+# cell-line specific setting of cytosolic volume
+Vcyt=Vcyt_U2OS*f # L (dm^3) per cell
+
+#####################################
+# endogenous abundances of proteins #
+#####################################
+
+# protein abundances in HEK293 cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #1 (iBAQ1)
+
+LAMTOR1_iBAQ1_HEK293 6.729521 # dimensionless (C11orf59)
+LAMTOR2_iBAQ1_HEK293 6.858212 # dimensionless (MAPBPIP)
+LAMTOR3_iBAQ1_HEK293 6.358886 # dimensionless (MAPKSP1)
+#LAMTOR4_iBAQ1_HEK293 ? # dimensionless (C7orf59), no value reported by Geiger et al. (2012)
+LAMTOR5_iBAQ1_HEK293 6.896405 # dimensionless (HBXIP)
+
+RRAGA_iBAQ1_HEK293 5.621665 # dimensionless
+#RRAGB_iBAQ1_HEK293 ? # dimensionless, Geiger et al. (2012) did not detect RRAGB in Experiment #1.
+RRAGC_iBAQ1_HEK293 6.639716 # dimensionless
+#RRAGD_iBAQ1_HEK293 ? # dimensionless, Geiger et al. (2012) did not detect RRAGD in Experiment #1.
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_HEK293 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+LAMTOR1_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^LAMTOR1_iBAQ1_HEK293 # copies per cell
+LAMTOR2_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^LAMTOR2_iBAQ1_HEK293 # copies per cell
+LAMTOR3_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^LAMTOR3_iBAQ1_HEK293 # copies per cell
+#LAMTOR4_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^LAMTOR4_iBAQ1_HEK293 # copies per cell
+LAMTOR5_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^LAMTOR5_iBAQ1_HEK293 # copies per cell
+
+# We will set the abundance of LAMTOR4 to the average of the abundances of LAMTOR1,2,3,5.
+LAMTOR4_cpc_HEK293=(LAMTOR1_cpc_HEK293+LAMTOR2_cpc_HEK293+LAMTOR3_cpc_HEK293+LAMTOR5_cpc_HEK293)/4
+
+RRAGA_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^RRAGA_iBAQ1_HEK293 # copies per cell
+#RRAGB_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^RRAGB_iBAQ1_HEK293 # copies per cell
+RRAGB_cpc_HEK293 0 # copies per cell
+RRAGC_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^RRAGC_iBAQ1_HEK293 # copies per cell
+#RRAGD_cpc_HEK293 = iBAQ_to_cpc_HEK293*10^RRAGD_iBAQ1_HEK293 # copies per cell
+RRAGD_cpc_HEK293 0 # copies per cell
+
+# protein abundances in U2OS cells
+#  comments:
+#   - See Supplemental Table 3 (Geiger et al., 2012);
+#     in this table, abundance is reported as log10(iBAQ value).
+#   - We will use the iBAQ values from Experiment #3 (iBAQ3)
+
+LAMTOR1_iBAQ3_U2OS 7.453578 # dimensionless
+LAMTOR2_iBAQ3_U2OS 7.116209 # dimensionless
+LAMTOR3_iBAQ3_U2OS 7.275726 # dimensionless
+#LAMTOR4_iBAQ3_U2OS ? # dimensionless, no value reported by Geiger et al. (2012)
+LAMTOR5_iBAQ3_U2OS 7.081779 # dimensionless
+
+RRAGA_iBAQ3_U2OS 6.575373 # dimensionless
+#RRAGB_iBAQ3_U2OS ? # dimensionless, Geiger et al. (2012) did not detect RRAGB.
+RRAGC_iBAQ3_U2OS 6.816712 # dimensionless
+#RRAGD_iBAQ3_U2OS ? # dimensionless, Geiger et al. (2012) did not detect RRAGD.
+
+# factor that converts abundance as measured by iBAQ value to copies per cell
+#  comments:
+#   - The iBAQ value of a protein is proportional to its molar abundance in lysate.
+iBAQ_to_cpc_U2OS 0.02*f # converts iBAQ value to copies per cell
+
+# convert from log10(iBAQ) to copies per cell
+LAMTOR1_cpc_U2OS = iBAQ_to_cpc_U2OS*10^LAMTOR1_iBAQ3_U2OS # copies per cell
+LAMTOR2_cpc_U2OS = iBAQ_to_cpc_U2OS*10^LAMTOR2_iBAQ3_U2OS # copies per cell
+LAMTOR3_cpc_U2OS = iBAQ_to_cpc_U2OS*10^LAMTOR3_iBAQ3_U2OS # copies per cell
+#LAMTOR4_cpc_U2OS = iBAQ_to_cpc_U2OS*10^LAMTOR4_iBAQ3_U2OS # copies per cell
+LAMTOR5_cpc_U2OS = iBAQ_to_cpc_U2OS*10^LAMTOR5_iBAQ3_U2OS # copies per cell
+
+# We will set the abundance of LAMTOR4 to the average of the abundances of LAMTOR1,2,3,5.
+LAMTOR4_cpc_U2OS=(LAMTOR1_cpc_U2OS+LAMTOR2_cpc_U2OS+LAMTOR3_cpc_U2OS+LAMTOR5_cpc_U2OS)/4
+
+RRAGA_cpc_U2OS = iBAQ_to_cpc_U2OS*10^RRAGA_iBAQ3_U2OS # copies per cell
+#RRAGB_cpc_U2OS = iBAQ_to_cpc_U2OS*10^RRAGB_iBAQ3_U2OS # copies per cell
+RRAGB_cpc_U2OS 0 # copies per cell
+RRAGC_cpc_U2OS = iBAQ_to_cpc_U2OS*10^RRAGC_iBAQ3_U2OS # copies per cell
+#RRAGD_cpc_U2OS = iBAQ_to_cpc_U2OS*10^RRAGD_iBAQ3_U2OS # copies per cell
+RRAGD_cpc_U2OS 0 # copies per cell
+
+# protein abundances in HeLa S3 cells (ATCC CCL-2.2)
+#  comments:
+#   - See Supplementary Table 1 (Kulak et al. 2014).
+
+# Ragulator components
+LAMTOR1_cpc_HeLa_S3 466689.3*f # copies per cell
+LAMTOR2_cpc_HeLa_S3 240623.0*f # copies per cell 
+LAMTOR3_cpc_HeLa_S3 121519.8*f # copies per cell
+LAMTOR4_cpc_HeLa_S3 130582.9*f # copies per cell (C7orf59)
+LAMTOR5_cpc_HeLa_S3 536524.4*f # copies per cell (HBXIP)
+
+# RAG GTPases
+#   Kulak et al. (2014) report a copy number of 58,468 for RagA/RagB 
+#     Apparently, the two proteins are too similar to be differentiated.
+RRAGA_cpc_HeLa_S3 58467.8*f # copies per cell
+RRAGB_cpc_HeLa_S3 0 # Kulak et al. (2014) report a single value for RagA/B.
+RRAGC_cpc_HeLa_S3 74059.66*f # copies per cell
+RRAGD_cpc_HeLa_S3 0 # copies per cell, no value reported by Kulak et al. (2014)
+
+# protein abundances in HeLa Kyoto cells
+#  comments:
+#   - See Table S3 (Hein et al., 2015).
+
+LAMTOR1_cpc_HeLa_Kyoto 662783*f # copies per cell
+LAMTOR2_cpc_HeLa_Kyoto  64104*f # copies per cell
+LAMTOR3_cpc_HeLa_Kyoto  45618*f # copies per cell
+LAMTOR4_cpc_HeLa_Kyoto   5324*f # copies per cell
+LAMTOR5_cpc_HeLa_Kyoto 922421*f # copies per cell
+
+RRAGA_cpc_HeLa_Kyoto 95388*f # copies per cell
+RRAGB_cpc_HeLa_Kyoto 0*f # Hein et al. (2015) report a single value for RagA/B.
+RRAGC_cpc_HeLa_Kyoto 31053*f # copies per cell
+RRAGD_cpc_HeLa_Kyoto 0*f # copies per cell, no value reported by Hein et al. (2015)
+
+###########################
+# parameters of rate laws #
+###########################
+
+#---
+# Rate constants:
+#  One should specify a rate constant for a bimolecular association reaction under the 
+#  assumption that the reaction is of the form A+B->product(s) and that association is 
+#  mediated by one and only one binding site in A and by one and only one binding site 
+#  in B. BioNetGen automatically adds symmetry numbers and statistical factors as needed 
+#  to correct for indistinguishable reactants [in A+A->product(s) reactions] and reaction
+#  path degeneracy (viz., reactions involving a reactant with multiple copies of a binding site).
+#---
+
+# rate constants for reversible dimerization of Ragulator components LAMTOR2-5
+kf_LAMTOR23 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_LAMTOR23 0.005 # /s
+kf_LAMTOR45 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_LAMTOR45 0.005 # /s
+kf_LAMTOR55 5e5/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_LAMTOR55 0.01 # /s
+
+# rate constants for LAMTOR1 interactions with LAMTOR2/4
+kf_LAMTOR12 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_LAMTOR12 0.1 # /s
+kf_LAMTOR14 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_LAMTOR14 0.1 # /s
+
+# rate constants for reversible dimerization of RagA and RagC
+kf_RagAC 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_RagAC 0.005 # /s
+
+# rate constants for reversible Rag-Ragulator interaction
+kf_RagAC_Ragulator 1e6/(NA*Vcyt) # /M/s
+kr_RagAC_Ragulator 0.001 # /s
+
+end parameters
+
+begin molecule types
+
+LAMTOR1(Helix,Cloop)
+#---
+# LAMTOR1: Ragulator complex protein LAMTOR1 (aka lipid raft adaptor protein p18)
+#  UniProt entry: http://www.uniprot.org/uniprot/Q6IAA8
+#  comments:
+#   - 161 amino acids (Q6IAA8-1)
+#   - LAMTOR1 anchors the Ragulator complex to membranes 
+#     (Sancak et al., 2010; Bar-Peled et al., 2012).
+#   - similar to yeast (Sc) Ego1p (aka Meh1p)
+#   - N-myristoylation at G2
+#   - palmitoylation at C3 and C4
+#   - contains a late endosomes/lysosomes (LE/Lys) targeting motif: aa 21-23 (LLL)
+#   - contains a LAMTOR1-like domain (http://pfam.xfam.org/family/PF15454): aa 18-85
+#   - phosphorylation at Y40
+#  components:
+#   Helix: putative LAMTOR4/5 binding site (aa 126-144)
+#    comments:
+#     - LAMTOR4 and LAMTOR5 are structurally similar to yeast (Sc) Ego2p, which binds
+#       the most C-terminal alpha-helix in Ego1p (Powis et al., 2015). 
+#     - There are two candidates for a LAMTOR4/5 binding site in LAMTOR1.
+#        1) The sequence SSILAKTASNIIDVSAADS (aa 55-73) aligns with the part of Ego1p (aka Meh1p)
+#           in contact with Ego2p (Powis et al., 2015). See PDB entry 4XPM. A motif, LxKxxSNI, is
+#           conserved in these human and yeast sequences.
+#        2) Secondary structure prediction (Jpred 4) indicates that FSDLQQVSRIAAYAYSALS (aa 126-144)
+#           may fold into an alpha-helix. This sequence lies immediately upstream of the putative
+#           LAMTOR2/3 binding site in LAMTOR1 (see below), which is consistent with the 4XPM structure.
+#       The second candidate seems more likely because Ego1p (aka Meh1p) and LAMTOR1 both contain
+#       an N-terminal LAMTOR1-like domain (aa 18-85 in LAMTOR1). This domain in Ego1p does not overlap 
+#       with the C-terminal Ego2p-Ego3p binding region.
+#   Cloop: putative LAMTOR2/3 binding site (aa 143-158)
+#    comments:
+#     - LAMTOR2 and LAMTOR3 are structurally similar to yeast (Sc) Ego3p (aka Slm4p), which binds
+#       a (mostly) disordered region of Ego1p located at the C-terminus (Powis et al., 2015).
+#     - The sequence LSQIRVDAKEELVVQF (aa 143-158) aligns with the part of Ego1p (aka Meh1p)
+#       in contact with Ego3p (Powis et al., 2015). See PDB entry 4XPM.
+#     - Secondary structure prediction (Jpred 4) indicates that LVVQF (aa 154-158) may fold into 
+#       a beta-strand, which is consistent with the 4XPM structure.
+#     - The putative binding site is also consistent with the 4XPM structure in that it is located
+#       at the C-terminus and secondary structure prediction (Jpred 4) indicates that it may be mostly
+#       disordered.
+#---
+
+LAMTOR2(RB,Gdistal)
+#---
+# LAMTOR2: Ragulator complex protein LAMTOR2 (aka endosomal adaptor protein p14)
+#  UniProt entry: http://www.uniprot.org/uniprot/Q9Y2Q5
+#  comments:
+#   - 125 amino acids (Q9Y2Q5-1)
+#   - a component of the Ragulator complex (Sancak et al., 2010; Bar-Peled et al., 2012)
+#   - heterodimerizes with LAMTOR3 (aka MP1) (Kurzbauer et al., 2004; Lunin et al., 2004);
+#     see PDB entries 1VET and 1VEU.
+#   - similar to yeast (Sc) Ego3p (aka Slm4p)
+#   - consists mostly of a roadblock (RB) domain (http://pfam.xfam.org/family/PF03259)
+#   - A roadblock (RB) domain is found in LAMTOR2/3/4/5 and RRRAGA/B/C/D.
+#   - See annotation of LAMTOR1.
+#  components:
+#   RB: roadblock (RB) domain
+#    comments:
+#     - RB domains commonly dimerize and together form a platform that binds a G domain 
+#       (Levine et al., 2013). They are structurally similar to longin domains.
+#     - RB dimers (e.g., the LAMTOR2/3 heterodimer) can be viewed as having two faces:
+#        1) the face comprising the G domain platform that is typical of RB dimers, and
+#        2) the opposite face (Levine et al., 2013).
+#       We will refer to these faces, to which each member of an RB dimer contributes,
+#       as the "G-proximal" face and the "G-distal" face. Typically, two alpha-helices are 
+#       present on the G-proximal face (one from each RB domain), and four alpha-helices are 
+#       present on the G-distal face (a pair from each RB domain). See PDB entries 3T1R  and 
+#       3T1S and Miertzschke M et al. (2011). 
+#     - Representation of RB dimers is somewhat problematic because their binding sites,
+#       the G-proximal and G-distal faces, are discontinuous (i.e., composed of residues from 
+#       each member of the dimer). To cope with this difficulty, we will adopt the following 
+#       convention for LAMTOR2/3 and LAMTOR4/5 heterodimers. We will consider each RB domain-
+#       containing protein (LAMTOR2,3,4 and 5) to have two components:
+#        1) an RB component, which mediates RB domain dimerization, and
+#        2) either a Gproximal or Gdistal component, which represents one of the two binding
+#           sites of an RB dimer.
+#       Thus, for each pair of interacting RB domains, both will be endowed with an RB 
+#       component, one will be endowed with a Gproximal component, and the other will be endowed 
+#       with a complementary Gdistal component. It should be understood that the binding sites 
+#       represented by Gproximal and Gdistal components are not present in monomeric RB domain-
+#       containing dimers. Rather, these binding sites are features of RB dimers.
+#     - The roadblock domain in LAMTOR2 is evident from the LAMTOR2 sequence (Pfam), which is not 
+#       the case for LAMTOR3/4/5.
+#   Gdistal: G-distal face of the LAMTOR2-LAMTOR3 heterodimer
+#    comments:
+#     - cognate binding site for the putative LAMTOR2/3 binding site in LAMTOR1, a partially
+#       disordered region at the C terminus of LAMTOR1.
+#     - Arbitrarily, in accordance with the convention explained above, the Gdistal component 
+#       of the LAMTOR2-LAMTOR3 heterodimer is assigned to LAMTOR2. The Gproximal component is
+#       assigned to LAMTOR3.
+#     - It seems likely that the G-distal face of the LAMTOR2-LAMTOR3 heterodimer mediates
+#       interaction with LAMTOR1, because in the Ego1p-Ego2p-Ego3p crystal structure (Powis et al.,
+#       2015), the C-terminal end of Ego1p (corresponding to LAMTOR1) contacts G-distal elements of 
+#       Ego2p and Ego3p (corresponding to LAMTOR4/5 and LAMTOR2/3).
+#---
+
+LAMTOR3(RB,Gproximal)
+#---
+# LAMTOR3: component of the Ragulator complex [aka MEK-binding partner 1 (MP1)]
+#  description: heterodimerization partner of LAMTOR2
+#  UniProt entry: 
+#  comments:
+#   - See annotation of LAMTOR1.
+#   - The LAMTOR2/3 heterdimer presents a discontinuous binding site for Rag GTPases.
+#  components:
+#   RB: Roadblock/LC7 domain
+#    description: mediates RB-RB dimerization
+#    Pfam entry: http://pfam.xfam.org/family/PF03259
+#    comments:
+#     - See annotation of LAMTOR2.
+#     - Identification of the roadblock domain is by structural analysis.
+#   Gproximal: hypothetical component
+#    description: assumed binding site for Rag GTPases
+#    comments:
+#     - The "top" face of an isolated roadblock domain
+#     - This face exposes a single alpha-helix situated above a beta-sheet (Levine et al., 2013).
+#     - The two helices of the top faces of a dimerized roadblock domain together 
+#       form a binding site for a G domain.
+#     - The proximal site in LAMTOR3 is intended to represent the discontinuous binding site
+#       created when LAMTOR2 and LAMTOR3 dimerize.
+#   MAPKK1_Int: mitogen-activated protein kinase kinase 1 interacting domain
+#    description: mediates LAMTOR3 interaction with MEK
+#    Pfam entry: http://pfam.xfam.org/family/PF08923
+#---
+
+LAMTOR4(RB,Gdistal)
+#---
+# LAMTOR4: component of the Ragulator compplex (aka C7orf59)
+#  description: heterodimerization partner of LAMTOR5
+#  UniProt entry:
+#  comments:
+#   - See annotation of LAMTOR1.
+#   - The LAMTOR4/5 heterodimer presents a discontinuous binding site for Rag GTPases.
+#  components:
+#   RB: Roadblock/LC7 domain
+#    description: mediates RB-RB dimerization
+#    Pfam entry: http://pfam.xfam.org/family/PF03259
+#    comments:
+#     - See annotation of LAMTOR2.
+#     - Identification of the roadblock domain is by structural analysis.
+#   distal: hypothetical component
+#    description: assumed cognate binding site for LAMTOR1's "Helix" component
+#    comments:
+#     - It is assumed that this site lies on the face of the roadblock domain that is opposite the face that interacts with Rag GTPases.
+#   lamtor2: hypothetical component
+#    description: assumed (weak) binding site for LAMTOR2's lamtor4 component
+#    comments:
+#     - It is assumed that this binding site is involved in a LAMTOR2-LAMTOR4 interaction
+#       when LAMTOR2 and LAMTOR4 are both bound to LAMTOR1. 
+#     - The assumed LAMTOR2-LAMTOR4 interface is analogous to the Ego2-Ego3 interface (Powis et al., 2015).
+#     - LAMTOR2-LAMTOR4 affinity is assumed to be negligible except upon co-association with LAMTOR1.
+#---
+
+LAMTOR5(RB,Gproximal)
+#---
+# LAMTOR5: component of the Ragulator complex (aka HBXIP)
+#  description: heterodimerization partner of LAMTOR4; also capable of forming homodimers
+#  UniProt entry:
+#  comments:
+#   - See annotation of LAMTOR1.
+#   - The LAMTOR4/5 heterodimer presents a discontinuous binding site for Rag GTPases.
+#   - LAMTOR5 interacts with a Hepatitis B viral protein (HBx).
+#  components:
+#   RB: Roadblock/LC7 domain
+#    description: mediates RB-RB dimerization
+#    Pfam entry: http://pfam.xfam.org/family/PF03259
+#    comments:
+#     - See annotation of LAMTOR2.
+#     - Identification of the roadblock domain is by structural analysis.
+#   Gproximal: hypothetical component
+#    description: assumed binding site for Rag GTPases
+#    comments:
+#     - The "top" face of an isolated roadblock domain
+#     - This face exposes a single alpha-helix situated above a beta-sheet (Levine et al., 2013).
+#     - The two helices of the top faces of a dimerized roadblock domain together 
+#       form a binding site for a G domain.
+#     - The proximal site in LAMTOR5 is intended to represent the discontinuous binding site
+#       created when LAMTOR4 and LAMTOR5 dimerize.
+#   HBXIP: hepatitis B virus X-interacting protein domain
+#    description:
+#    Pfam entry: http://pfam.xfam.org/family/PF16672
+#---
+
+# RAG GTPases
+
+RRAGA(G~0~GDP~GTP,switch,RB,GdistalA)
+#---
+# RRAGA: RagA (homolog of yeast Gtr1)
+#  description: member of the Gtr1/RagA subfamily of the Ras family of G proteins
+#  UniProt entry: http://www.uniprot.org/uniprot/Q7L523
+#  comments:
+#   - RagA and RabB are similar.
+#   - RagA dimerizes with RagC.
+#  components:
+#   G: guanine nucleotide binding domain
+#    states:
+#     - 0: apo G domain
+#     - GDP: GDP-loaded G domain
+#     - GTP: GTP-loaded G domain
+#   RB: Roadblock/LC7 domain
+#    description: mediates RB-RB dimerization
+#    Pfam entry: http://pfam.xfam.org/family/PF03259
+#    comments:
+#     - The C-terminal region of RagA/B is responsible for interaction with RagC/D (Sekiguchi et al., 2001).
+#     - Identification of the roadblock domain is by structural analysis; sequence conservation is low.
+#     - Roadblock domains are structurally similar to longin domains.
+#     - RagA-D and LAMTOR2-5 each contain a roadblock domain.
+#   switch: switch I and II regions of the G domain and additional parts
+#    description: mediates interaction with RAPTOR (Gong et al., 2011)
+#   GdistalA: alpha-helices 2 and 3 of RB, which are distal from the G domain binding platform
+#---
+
+RRAGC(G~0~GDP~GTP,switch,RB,GdistalC)
+#---
+# RRAGC: RagC (homolog of yeast Gtr2)
+#  description: member of the Gtr1/RagA subfamily of the Ras family of G proteins
+#  UniProt entry: http://www.uniprot.org/uniprot/Q9HB90
+#  comments:
+#   - RagC and RagD are similar.
+#   - RagC dimerizes with RagA.
+#  components:
+#   G: guanine nucleotide binding domain
+#    states:
+#     - 0: apo G domain
+#     - GDP: GDP-loaded G domain
+#     - GTP: GTP-loaded G domain
+#   switch: switch I/II (putative effector binding site)
+#   RB: Roadblock/LC7 domain
+#    description: mediates RB-RB dimerization
+#    Pfam entry: http://pfam.xfam.org/family/PF03259
+#    comments:
+#     - See annotation for RagA (RRAGA).
+#   GdistalC: alpha-helices 2 and 3 of RB, which are distal from the G domain binding platform
+#---
+
+end molecule types
+
+begin seed species
+
+######################################################
+# amino acid (arginine) sensing machinery components #
+######################################################
+
+# Ragulator (LAMTOR1-5)
+LAMTOR1(Helix,Cloop) LAMTOR1_cpc_U2OS
+LAMTOR2(RB,Gdistal) LAMTOR2_cpc_U2OS
+LAMTOR3(RB,Gproximal) LAMTOR3_cpc_U2OS
+LAMTOR4(RB,Gdistal) LAMTOR4_cpc_U2OS
+LAMTOR5(RB,Gproximal) LAMTOR5_cpc_U2OS
+
+# Rag GTPases (RagA and RagC)
+RRAGA(G~GTP,switch,RB,GdistalA) RRAGA_cpc_U2OS
+RRAGC(G~GDP,switch,RB,GdistalC) RRAGC_cpc_U2OS
+
+end seed species
+
+begin observables
+
+Molecules LAMTOR1_total LAMTOR1()
+
+Molecules LAMTOR2_total LAMTOR2()
+Molecules LAMTOR3_total LAMTOR3()
+Molecules LAMTOR23_dimers LAMTOR2(RB!1).LAMTOR3(RB!1)
+
+Molecules LAMTOR4_total LAMTOR4()
+Molecules LAMTOR5_total LAMTOR5()
+Molecules LAMTOR45_dimers LAMTOR4(RB!1).LAMTOR5(RB!1)
+Species LAMTOR55_dimers LAMTOR5(RB!1).LAMTOR5(RB!1)
+
+Molecules RRAGA_total RRAGA()
+Molecules RRAGC_total RRAGC()
+Molecules RagAC_dimers RRAGA(RB!1).RRAGC(RB!1)
+
+# define observable to count Ragulator complexes LAMTOR1-5 together in a complex
+# define observable to count Rag-Ragulator complex RagA-B and LAMTOR1-5 together in a complex
+
+end observables
+
+begin reaction rules
+
+######################################
+# Ragulator assembly and disassembly #
+######################################
+
+# reversible LAMTOR2/3, LAMTOR4/5 and LAMTOR5/5 dimerization (in the cytosol)
+LAMTOR2(RB,Gdistal)+LAMTOR3(RB,Gproximal)<->LAMTOR2(RB!1,Gdistal).LAMTOR3(RB!1,Gproximal) kf_LAMTOR23,kr_LAMTOR23
+LAMTOR4(RB,Gdistal)+LAMTOR5(RB,Gproximal)<->LAMTOR4(RB!1,Gdistal).LAMTOR5(RB!1,Gproximal) kf_LAMTOR45,kr_LAMTOR45
+LAMTOR5(RB,Gproximal)+LAMTOR5(RB,Gproximal)<->LAMTOR5(RB!1,Gproximal).LAMTOR5(RB!1,Gproximal) kf_LAMTOR55,kr_LAMTOR55
+
+# reversible capture of cytosolic LAMTOR2/3 dimer and cytosolic LAMTOR4/5 dimer by lysosomal LAMTOR1
+LAMTOR1(Cloop)+LAMTOR2(RB!1,Gdistal).LAMTOR3(RB!1,Gproximal)<->\
+LAMTOR1(Cloop!2).LAMTOR2(RB!1,Gdistal!2).LAMTOR3(RB!1,Gproximal) kf_LAMTOR12,kr_LAMTOR12
+LAMTOR1(Helix)+LAMTOR4(RB!1,Gdistal).LAMTOR5(RB!1,Gproximal)<->\
+LAMTOR1(Helix!2).LAMTOR4(RB!1,Gdistal!2).LAMTOR5(RB!1,Gproximal) kf_LAMTOR14,kr_LAMTOR14
+
+#################################
+# Interactions of RagA and RagC #
+#################################
+
+# reversible dimerization of RagA and RagC (in the cytosol)
+RRAGA(RB,GdistalA)+RRAGC(RB,GdistalC)<->RRAGA(RB!1,GdistalA).RRAGC(RB!1,GdistalC) kf_RagAC,kr_RagAC
+
+# capture/release of RagA-RagC heterodimer by (fully assembled) Ragulator
+RRAGA(RB!7,GdistalA).RRAGC(RB!7,GdistalC)+LAMTOR1(Helix!1,Cloop!2).LAMTOR2(RB!3,Gdistal!2).LAMTOR3(RB!3,Gproximal).LAMTOR4(RB!4,Gdistal!1).LAMTOR5(RB!4,Gproximal)<->\
+RRAGA(RB!7,GdistalA!5).RRAGC(RB!7,GdistalC!6).LAMTOR1(Helix!1,Cloop!2).LAMTOR2(RB!3,Gdistal!2).LAMTOR3(RB!3,Gproximal!5).LAMTOR4(RB!4,Gdistal!1).LAMTOR5(RB!4,Gproximal!6) kf_RagAC_Ragulator,kr_RagAC_Ragulator
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",t_start=>0,t_end=>120,n_steps=>120,print_functions=>1})
+
+#simulate({method=>"nf",complex=>1,gml=>10000000,\
+#          t_start=>0,t_end=>200,n_steps=>200,\
+#          print_functions=>0})
+
+end actions

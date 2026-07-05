@@ -1,0 +1,50 @@
+From 7faf4f2c9fa893169f33f798c3e0d16eadfbbba4 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Fri, 15 May 2026 16:03:38 -0600
+Subject: [PATCH 03/14] bngsim: ignore comments in TFUN data files
+
+---
+ src/NFutil/conversion.cpp | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/src/NFutil/conversion.cpp b/src/NFutil/conversion.cpp
+index 09500e7..438e2b5 100644
+--- a/src/NFutil/conversion.cpp
++++ b/src/NFutil/conversion.cpp
+@@ -16,13 +16,31 @@ TimeSeries NFutil::loadTimeSeries(const std::string& filePath, const std::string
+ 	}
+ 
+ 	try {
+-		std::string a, b;
++		std::string line;
+ 		bool hasDirection = false;
+ 		bool isIncreasing = false;
+ 		double prevTime = 0.0;
+ 		bool first = true;
+ 
+-		while (file >> a >> b) {
++		while (std::getline(file, line)) {
++			size_t commentPos = line.find('#');
++			if (commentPos != std::string::npos) {
++				line.erase(commentPos);
++			}
++			NFutil::trim(line);
++			if (line.empty()) {
++				continue;
++			}
++
++			std::istringstream row(line);
++			std::string a, b, extra;
++			if (!(row >> a >> b)) {
++				throw std::runtime_error("Data file line must contain two numeric columns.");
++			}
++			if (row >> extra) {
++				throw std::runtime_error("Data file line must contain exactly two numeric columns.");
++			}
++
+ 			double t = NFutil::convertToDouble(a);
+ 			ts.time.push_back(t);
+ 
+-- 
+2.53.0
+

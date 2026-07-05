@@ -1,0 +1,560 @@
+# Filename: IGF1R_model_v[version_number].bngl
+#Compressed & fragmented model
+
+begin model
+# HeLa cell-specific model for IGF1R signaling (two equivalent versions)
+#   Version 1 is a natural (and naive) specification of the model.
+#   Version 2 is a compressed and fragmented specification of the model.
+
+# Refernences:
+# Farooq A, ..., Zhou MM (1999) J Biol Chem 274:6114-6121 [PMID:10037694]
+# Kiselyov VV, ..., De Meyts P (2009) Mol Syst Biol 5:243 [PMID:19225456]
+# Koytiger G, ..., MacBeath G (2013) Mol Cell Proteomics 12:1204-1213 [PMID:23358503]
+# Kulak NA, ..., Mann M (2014) Nat Methods 11:319-324 [PMID:24487582]
+# Tan CW, ..., Burgess AW (2012) PLOS ONE 7:e31882 [PMID:22363759]
+
+begin parameters
+
+# fraction of cell to be considered in a simulation
+#   The scaling factor f should multiply volumes, copy numbers, 
+#   and rate constants for zero-order processes.
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# volume of extracellular fluid per cell
+#   Assumptions:
+#    - 15 cm culture dishes (cells 95% confluent)
+#    - 1.2e5 cells per cm^2
+#    - growth surface area of 140 cm^2
+#    - 1.7e7 cells per dish
+#    - 0.25 mL of medium per square cm of growth surface
+#    - 35 mL of medium per dish
+Vecf 2.1e-9*f # [=] L per cell
+
+# cytoplasmic volume
+#   1.2 pL is a typical cytoplasmic volume 
+#   for a non-dividing mammalian cell in culture (Tan et al., 2012).
+#   [N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max 1.87 pL] 
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+IGF1_conc_nM  10.0 # [=] nM
+IGF1_conc=IGF1_conc_nM*1.0e-9 # [=] M
+
+# copies of IGF1 per cell
+IGF1_total=IGF1_conc*(NA*Vecf)
+
+# The following copy number settings are based 
+#   on the data of Kulak et al. (2014) for HeLa S3 cells (ATCC CCL-2.2).
+IGF1R_total   14810*f # [=] copies per cell (NB: two copies of IGF1R per dimer)
+IRS1_total     1329*f # [=] copies per cell
+SHC1_total   111966*f # [=] copies per cell
+PIK3R1_total    448*f # [=] copies per cell
+PIK3R2_total  16715*f # [=] copies per cell
+PIK3R3_total   2060*f # [=] copies per cell
+STAT1_total  201741*f # [=] copies per cell
+SRC_total      1220*f # [=] copies per cell
+CRKL_total   202806*f # [=] copies per cell
+VAV2_total   106531*f # [=] copies per cell
+YES1_total    63595*f # [=] copies per cell
+PLCG2_total    2923*f # [=] copies per cell
+RASA1_total   26455*f # [=] copies per cell
+ABL2_total    11988*f # [=] copies per cell
+SYK_total	325*f # [=] copies per cell
+BLK_total	242*f # [=] copies per cell
+NCK2_total	964*f # [=] copies per cell
+
+# There are p46, p52 and p66 isoforms of SHC1.
+#   p46/p52 and p66 are synthesized from different transcripts.
+#   p46, p52 and p66 differ in their N-terminal regions.
+#   p46 and p52 activate mitogenic signaling, whereas p66 inhibits mitogenic signaling.
+#   p46 and p66 phosphorylated at S36 localize to mitochondria;
+#     p52 and p66 not phosphorylated at S36 are cytoplasmic.  
+p52_fraction 1.0 # dimensionless, 0 <= p52_fraction <= 1
+p52SHC1_total=p52_fraction*SHC1_total # [=] copies per cell
+
+# rate constants for IGF1 interaction with dimeric IGF1R (5 independent parameters)
+#   The values specified below are those reported by Kiselyov et al. (2009).
+#     See Table 1 (Kiselyov et al., 2009).
+
+# rate constants for ligand capture/release reactions
+#   KD1=d1/a1=9.2 nM - 9.09 nM is the Site 1 KD reported in Table 1 (Kiselyov et al., 2009)
+#   KD2=d2/a2=483 nM -  490 nM is the Site 2 KD reported in Table 1 (Kiselyov et al., 2009)
+
+# forward and reverse rate constants for IGF1 (ds) interaction with IGF1R (S1)
+#   Free IGF1 binds Site 1 in IGFR1.
+a1 3.47e5/(NA*Vecf) # [=] /M/s converted to /(molecule/cell)/s
+d1 3.2e-3 # [=] /s
+# forward and reverse rate constants for IGF1 (hs) interaction with IGF1R (S2)
+#   Free IGF1 binds Site 2 in IGFR1.
+a2  171361.2182/(NA*Vecf) # [=] /M/s convereted to /(molecule/cell)/s
+d2 4.2e-3 # [=] /s
+
+# rate constants for ligand-mediated Site 1-Site 2 crosslinking/uncrosslinking reactions
+#   Kiselyov et al. (2009) assumed that the rate constant for crosslinking has the same value 
+#     as that determined for insulin-insulin receptor interaction. Furthermore, as a simplification,
+#     a single rate constant is used to characterize both of the two possible crosslinking reactions.
+#   Kiselyov et al. (2009) reported that setting d1prime=d1 and d2prime=d2 is a reasonable simplification.
+#     See discussion on pp. 8 and 9 (Kiselyov et al., 2009).
+
+# forward rate constant (crosslinking reactions)
+#   IGF1 tethered at Site 1 (Site 2) binds Site 2 (Site 1).
+kcr 0.33 # [=] /s
+a1prime         kcr                                          # [=] /s 
+a2prime        (a2/a1)*a1prime                  # [=] /s
+# reverse rate constants (uncrosslinking reactions)
+#   Release of ligand from Site 1
+d1prime=d1 # [=] /s - see p. 9 in Kiselyov et al. (2009)
+#   Release of ligand from Site 2
+d2prime=d2 # [=] /s - see p. 9 in Kiselyov et al. (2009)
+
+# rate constant for autophosphorylation
+kp 0.5 # [=] /s
+# rate constant for pseudo first-order dephosphorylation by phosphatases considered implicitly
+kdp 0.1 # [=] /s
+
+# KD measurements for phosphotyrosine-SH2/PTB domain interactions (Koytiger et al., 2013)
+KD_IGF1R_pY980_SHC1_PTB        0.9560e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1161_PIK3R3_SH2_NC  0.6255e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1161_STAT1_SH2      0.8656e-6*(NA*Vcyt) # [=] M converted to molecules per cell #[but KD=1386nM for Kaushansky et al., 2008]
+KD_IGF1R_pY1161_SRC_SH2        0.8938e-6*(NA*Vcyt) # [=] M converted to molecules per cell 
+KD_IGF1R_pY1161_VAV2_SH2       0.6282e-6*(NA*Vcyt) # [=] M converted to molecules per cell #[but KD=1144nM for Kaushansky et al., 2008]
+KD_IGF1R_pY1161_YES1_SH2       0.9673e-6*(NA*Vcyt) # [=] M converted to molecules per cell #[but KD=775nM for Kaushansky et al., 2008]
+KD_IGF1R_pY1165_SRC_SH2        0.8447e-6*(NA*Vcyt) # [=] M converted to molecules per cell 
+KD_IGF1R_pY1165_YES1_SH2       0.8668e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PLCG2_SH2_NC   0.6624e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_RASA1_SH2_NC   0.9110e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R1_SH2_NC  0.5632e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R2_SH2_NC  0.9415e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_PIK3R3_SH2_NC  0.5870e-6*(NA*Vcyt) # [=] M converted to molecules per cell
+
+# KD measurements for phosphotyrosine-SH2/PTB domain interactions (Kaushansky et al., 2008)
+
+KD_IGF1R_pY973_CRKL_SH2      1863e-9*(NA*Vcyt)     # [=] M converted to molecules per cell 
+KD_IGF1R_pY973_ABL2_SH2      48e-9*(NA*Vcyt)       # [=] M converted to molecules per cell 
+KD_IGF1R_pY973_NCK2_SH2      349e-9*(NA*Vcyt)      # [=] M converted to molecules per cell 
+KD_IGF1R_pY1161_RASA1_SH2_N 1225e-9*(NA*Vcyt)      # [=] M converted to molecules per cell 
+KD_IGF1R_pY1161_SYK_SH2_N   1174e-9*(NA*Vcyt)      # [=] M converted to molecules per cell 
+KD_IGF1R_pY1161_BLK_SH2     1795e-9*(NA*Vcyt)      # [=] M converted to molecules per cell 
+KD_IGF1R_pY1166_CRKL_SH2    1830e-9*(NA*Vcyt)      # [=] M converted to molecules per cell 
+KD_IGF1R_pY1166_PLCG2_SH2_N 1597e-9*(NA*Vcyt)      # [=] M converted to molecules per cell
+KD_IGF1R_pY1346_ABL2_SH2    1364e-9*(NA*Vcyt)      # [=] M converted to molecules per cell
+
+# Measured SHC1 (PTB):IRS1 (PTB) ratio of affinities for binding NPxpY motif in INSR (Farooq et al., 1999)
+#   SHC1's affinity for the NPxpY motif in INSR is ~20-fold greater than IRS1's affinity for this site.
+#   We will assume that this ratio is preserved for the NPxpY motif in IGF1R.
+#   Y999 in INSR corresponds to Y980 in IGF1R.
+#   KD_INSR_pY999_IRS1_PTB = 87.07 microM (Table II, Farooq et al., 1999)
+#   KD_INSR_pY999_SHC1_PTB = 4.22 microM (Table I, Farooq et al., 1999)
+#   ratio := KD_INSR_pY999_IRS1_PTB / KD_INSR_pY999_SHC1_PTB = 87.07/4.22 = 20.6
+ratio 0.01 # [=] dimensionless 
+
+KD_IGF1R_pY980_IRS1_PTB=ratio*KD_IGF1R_pY980_SHC1_PTB # [=] molecules per cell
+
+# A typical association rate constant for a protein-protein interaction is 1e6 /M/s.
+kon_universal 1.0e6/(NA*Vcyt) # [=] /M/s converted to /(molecule/cell)/s
+
+# Find dissociation rate constants consistent with measured KD values and assumed
+#   universal association rate constant.
+#   KD=koff/kon => koff_[ID]=kon_universal*KD_[ID]
+koff_IGF1R_pY973_CRKL_SH2=kon_universal*KD_IGF1R_pY973_CRKL_SH2             # [=] /s
+Koff_IGF1R_pY973_ABL2_SH2=kon_universal*KD_IGF1R_pY973_ABL2_SH2             # [=] /s
+Koff_IGF1R_pY973_NCK2_SH2=kon_universal*KD_IGF1R_pY973_NCK2_SH2             # [=] /s
+koff_IGF1R_pY980_IRS1_PTB=kon_universal*KD_IGF1R_pY980_IRS1_PTB             # [=] /s
+koff_IGF1R_pY980_SHC1_PTB=kon_universal*KD_IGF1R_pY980_SHC1_PTB             # [=] /s
+koff_IGF1R_pY1161_STAT1_SH2=kon_universal*KD_IGF1R_pY1161_STAT1_SH2         # [=] /s
+koff_IGF1R_pY1161_SRC_SH2=kon_universal*KD_IGF1R_pY1161_SRC_SH2             # [=] /s
+koff_IGF1R_pY1161_PIK3R3_SH2_NC=kon_universal*KD_IGF1R_pY1161_PIK3R3_SH2_NC # [=] /s
+koff_IGF1R_pY1161_VAV2_SH2=kon_universal*KD_IGF1R_pY1161_VAV2_SH2           # [=] /s  
+koff_IGF1R_pY1161_YES1_SH2=kon_universal*KD_IGF1R_pY1161_YES1_SH2           # [=] /s  
+koff_IGF1R_pY1161_RASA1_SH2_N=kon_universal*KD_IGF1R_pY1161_RASA1_SH2_N     # [=] /s  
+koff_IGF1R_pY1161_SYK_SH2_N=kon_universal*KD_IGF1R_pY1161_SYK_SH2_N         # [=] /s  
+koff_IGF1R_pY1161_BLK_SH2=kon_universal*KD_IGF1R_pY1161_BLK_SH2             # [=] /s 
+koff_IGF1R_pY1165_SRC_SH2=kon_universal*KD_IGF1R_pY1165_SRC_SH2             # [=] /s 
+koff_IGF1R_pY1165_YES1_SH2=kon_universal*KD_IGF1R_pY1165_YES1_SH2           # [=] /s 
+koff_IGF1R_pY1166_CRKL_SH2=kon_universal*KD_IGF1R_pY1166_CRKL_SH2           # [=] /s 
+koff_IGF1R_pY1166_PLCG2_SH2_N=kon_universal*KD_IGF1R_pY1166_PLCG2_SH2_N     # [=] /s 
+koff_IGF1R_pY1346_PLCG2_SH2_NC=kon_universal*KD_IGF1R_pY1346_PLCG2_SH2_NC   # [=] /s
+koff_IGF1R_pY1346_RASA1_SH2_NC=kon_universal*KD_IGF1R_pY1346_RASA1_SH2_NC   # [=] /s
+koff_IGF1R_pY1346_ABL2_SH2=kon_universal*KD_IGF1R_pY1346_ABL2_SH2           # [=] /s
+koff_IGF1R_pY1346_PIK3R1_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R1_SH2_NC # [=] /s
+koff_IGF1R_pY1346_PIK3R2_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R2_SH2_NC # [=] /s
+koff_IGF1R_pY1346_PIK3R3_SH2_NC=kon_universal*KD_IGF1R_pY1346_PIK3R3_SH2_NC # [=] /s
+
+end parameters
+
+
+begin molecule types
+# We will use a prefix (c) to refer to molecule types in the compressed & fragmented model.
+# We introduce uniquely named ligand and receptor molecule types for each Y site in IGF1R of interest.
+
+# ligand
+#   The component r represents either ds or hs depending on context.
+#     If ligand is bound to S1, then r represents ds.
+#     If ligand is bound to S2, then r represents hs.
+cL_Y980(r)
+cL_Y973(r)
+cL_Y1165(r)
+cL_Y1166(r)
+cL_Y1161(r)
+cL_Y1346(r)
+
+# receptor
+#   The receptor is taken to be dimeric.
+#   Only one of the two monomer chains in a receptor dimer are explicitly represented.
+#     The other monomer chain is implicit.
+#   The component S1 represents Site 1 in Binding Pocket 1.
+#     S1 is taken to have the following states:
+#       0: S2 in the adjacent receptor is free
+#       1: S2 is the adjacent receptor is occupied
+#       X: S1 is bound to S2 in the adjacent receptor
+#   The component S2 represents Site 2 in Binding Pocekt 2.
+#     S2 is taken to have the following states:
+#       0: S1 in the adjacent receptor is free
+#       1: S1 is the adjacent receptor is occupied
+#       X: S2 is bound to S1 in the adjacent receptor
+cR_Y973(S1~0~1~X,S2~0~1~X,Y973~0~P)
+cR_Y980(S1~0~1~X,S2~0~1~X,Y980~0~P)
+cR_Y1161(S1~0~1~X,S2~0~1~X,Y1161~0~P)
+cR_Y1165(S1~0~1~X,S2~0~1~X,Y1165~0~P)
+cR_Y1166(S1~0~1~X,S2~0~1~X,Y1166~0~P)
+cR_Y1346(S1~0~1~X,S2~0~1~X,Y1346~0~P)
+
+#Adapter proteins with SH2/PTB domain (Kaushansky et al., 2008,Koytiger et al., 2013)
+cIRS1(PTB)
+cp52SHC1(PTB)
+cPIK3R1(tSH2,PI3KCA) 
+cPIK3R2(tSH2,PI3KCB)
+cPIK3R3(tSH2,PI3KCG)
+cSTAT1(SH2)
+cSRC(SH2)
+cCRKL(SH2)
+cVAV2(SH2)
+cYES1(SH2)
+cPLCG2(SH2)
+cRASA1(SH2)
+cABL2(SH2)
+cSYK(SH2)
+cBLK(SH2)
+cNCK2(SH2)
+end molecule types
+
+begin seed species
+cL_Y973(r) IGF1_total
+cR_Y973(S1~0,S2~0,Y973~0) 0.5*IGF1R_total
+cL_Y980(r) IGF1_total
+cR_Y980(S1~0,S2~0,Y980~0) 0.5*IGF1R_total
+cL_Y1161(r) IGF1_total
+cR_Y1161(S1~0,S2~0,Y1161~0) 0.5*IGF1R_total
+cL_Y1165(r) IGF1_total
+cR_Y1165(S1~0,S2~0,Y1165~0) 0.5*IGF1R_total
+cL_Y1166(r) IGF1_total
+cR_Y1166(S1~0,S2~0,Y1166~0) 0.5*IGF1R_total
+cL_Y1346(r) IGF1_total
+cR_Y1346(S1~0,S2~0,Y1346~0) 0.5*IGF1R_total
+
+cIRS1(PTB)          IRS1_total
+cp52SHC1(PTB)       p52SHC1_total
+cPIK3R1(tSH2,PI3KCA) PIK3R1_total
+cPIK3R2(tSH2,PI3KCB) PIK3R2_total
+cPIK3R3(tSH2,PI3KCG) PIK3R3_total
+cSTAT1(SH2)	     STAT1_total
+cSRC(SH2)	     SRC_total
+cCRKL(SH2)	     CRKL_total
+cVAV2(SH2)	     VAV2_total
+cYES1(SH2)	     YES1_total
+cPLCG2(SH2)	     PLCG2_total
+cRASA1(SH2)	     RASA1_total
+cABL2(SH2)	     ABL2_total
+cSYK(SH2)	     SYK_total
+cBLK(SH2)	     BLK_total
+cNCK2(SH2)	     NCK2_total
+end  seed species
+
+begin observables
+#Species free_cLigand_Y980 cL_Y980(r)
+#Molecules bound_cLigand_Y980 cL_Y980(r!+)
+#Molecules total_cLigand_Y980 cL_Y980()
+#Molecules free_cReceptor_Y980 cR_Y980(S1~0,S2~0)
+#Molecules activated_cReceptor_Y980 cR_Y980(S1~X!?) cR_Y980(S2~X!?)
+#Molecules activated_cReceptor_Y1165 cR_Y1165(S1~X!?) cR_Y1165(S2~X!?)
+
+#Molecules total_cReceptor_Y980 cR_Y980()
+
+Molecules pY973_alt cR_Y973(Y973~P) cR_Y973(Y973~P)
+Molecules pY980_alt cR_Y980(Y980~P) cR_Y980(Y980~P)
+Molecules pY1161_alt cR_Y1161(Y1161~P) cR_Y1161(Y1161~P)
+Molecules pY1165_alt cR_Y1165(Y1165~P) cR_Y1165(Y1165~P)
+Molecules pY1166_alt cR_Y1166(Y1166~P) cR_Y1166(Y1166~P)
+Molecules pY1346_alt cR_Y1346(Y1346~P) cR_Y1346(Y1346~P)
+
+Molecules p52SHC1_recruit_alt  cp52SHC1(PTB!+) cp52SHC1(PTB!+) 
+Molecules pIRS1_recruit_alt    cIRS1(PTB!+)    cIRS1(PTB!+) 
+Molecules PI3KR1_recruited     cPIK3R1(tSH2!+) cPIK3R1(tSH2!+)
+Molecules PI3KR2_recruited     cPIK3R2(tSH2!+) cPIK3R2(tSH2!+)
+Molecules PI3KR3_recruited     cPIK3R3(tSH2!+) cPIK3R3(tSH2!+)
+Molecules cSTAT1_recruit_alt   cSTAT1(SH2!+)    cSTAT1(SH2!+)
+Molecules cSRC_recruit_alt      cSRC(SH2!+)    cSRC(SH2!+)
+Molecules cCRKL_recruit_alt    cCRKL(SH2!+)    cCRKL(SH2!+)
+Molecules cVAV2_recruit_alt    cVAV2(SH2!+)    cVAV2(SH2!+)
+Molecules cYES1_recruit_alt    cYES1(SH2!+)    cYES1(SH2!+)
+Molecules cPLCG2_recruit_alt   cPLCG2(SH2!+)    cPLCG2(SH2!+)
+Molecules cRASA1_recruit_alt   cRASA1(SH2!+)    cRASA1(SH2!+)
+Molecules cABL2_recruit_alt   cABL2(SH2!+)    cABL2(SH2!+)
+Molecules cSYK_recruit_alt    cSYK(SH2!+)    cSYK(SH2!+)
+Molecules cBLK_recruit_alt    cBLK(SH2!+)    cBLK(SH2!+)
+Molecules cNCK2_recruit_alt   cNCK2(SH2!+)    cNCK2(SH2!+)
+
+end observables
+
+begin reaction rules
+
+#########################################################
+# IGF1R receptor Activation#
+#########################################################
+
+########
+# Y980 #
+########
+
+# Binding pocket 1 encompassing site S1 in a receptor captures free ligand
+#   Capture may happen in two ways: ligand may bind either S1 or S2 in the binding pocket.
+#     Ligand binds S1 in Binding pocket 1
+cR_Y980(S1~0)+cL_Y980(r)<->cR_Y980(S1~0!1).cL_Y980(r!1) a1,d1 # <-- parameters for IGF1 (ds) binding Site 1
+#     Ligand binds S2 in Binding pocket 1 (S2 is represented implicitly)
+#       ! here does not mean that S1 is bound but rather that Binding pocket 1 is occupied.
+cR_Y980(S1~0)+cL_Y980(r)<->cR_Y980(S1~1!1).cL_Y980(r!1) a2,d2 # <-- parameters for IGF1 (hs) binding Site 2
+
+# Binding pocket 2 encompassing site S2 in a receptor captures free ligand
+#   Capture may happen in two ways: ligand may bind either S2 or S1 in the binding pocket.
+#     Ligand binds S2 in Binding pocket 2
+cR_Y980(S2~0)+cL_Y980(r)<->cR_Y980(S2~0!1).cL_Y980(r!1) a2,d2 # <-- parameters for IGF1 (hs) binding Site 2
+#     Ligand binds S1 in Binding pocket 2 (S1 is represented implicitly)
+#       ! here does not mean that S2 is bound but rather that Binding pocket 2 is occupied.
+cR_Y980(S2~0)+cL_Y980(r)<->cR_Y980(S2~1!1).cL_Y980(r!1) a1,d1 # <-- parameters for IGF1 (ds) binding Site 1
+
+# Sites S1 and S2 in Binding pocket 1 become crosslinked (in one of two ways)
+#   Ligand anchored at S1 binds S2 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S1~0!+,S2~0!?)->cR_Y980(S1~X!+,S2~0!?) a2prime
+cR_Y980(S1~0!+,S2~1!?)->cR_Y980(S1~X!+,S2~1!?) a2prime
+#   Ligand anchored at S2 binds S1 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S1~1!+,S2~0!?)->cR_Y980(S1~X!+,S2~0!?) a1prime
+cR_Y980(S1~1!+,S2~1!?)->cR_Y980(S1~X!+,S2~1!?) a1prime
+#   Reverse reactions
+cR_Y980(S1~X!+)->cR_Y980(S1~0!+) d2prime
+cR_Y980(S1~X!+)->cR_Y980(S1~1!+) d1prime
+
+# Sites S2 and S1 in Binding pocket 2 become crosslinked (in one of two ways)
+#   Ligand anchored at S2 binds S1 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S2~0!+,S1~0!?)->cR_Y980(S2~X!+,S1~0!?) a1prime
+cR_Y980(S2~0!+,S1~1!?)->cR_Y980(S2~X!+,S1~1!?) a1prime
+#   Ligand anchored at S1 binds S2 - only possible if other binding pocket is not crosslinked (in state X)
+cR_Y980(S2~1!+,S1~0!?)->cR_Y980(S2~X!+,S1~0!?) a2prime
+cR_Y980(S2~1!+,S1~1!?)->cR_Y980(S2~X!+,S1~1!?) a2prime
+cR_Y980(S2~X!+)->cR_Y980(S2~0!+) d1prime
+cR_Y980(S2~X!+)->cR_Y980(S2~1!+) d2prime
+
+#########
+# Y973 #
+#########
+
+cR_Y973(S1~0)+cL_Y973(r)<->cR_Y973(S1~0!1).cL_Y973(r!1)  a1,d1
+cR_Y973(S1~0)+cL_Y973(r)<->cR_Y973(S1~1!1).cL_Y973(r!1) a2,d2
+cR_Y973(S2~0)+cL_Y973(r)<->cR_Y973(S2~0!1).cL_Y973(r!1) a2,d2
+cR_Y973(S2~0)+cL_Y973(r)<->cR_Y973(S2~1!1).cL_Y973(r!1) a1,d1
+cR_Y973(S1~0!+,S2~0!?)->cR_Y973(S1~X!+,S2~0!?) a2prime
+cR_Y973(S1~0!+,S2~1!?)->cR_Y973(S1~X!+,S2~1!?) a2prime
+cR_Y973(S1~1!+,S2~0!?)->cR_Y973(S1~X!+,S2~0!?) a1prime
+cR_Y973(S1~1!+,S2~1!?)->cR_Y973(S1~X!+,S2~1!?) a1prime
+cR_Y973(S1~X!+)->cR_Y973(S1~0!+) d2prime
+cR_Y973(S1~X!+)->cR_Y973(S1~1!+) d1prime
+cR_Y973(S2~0!+,S1~0!?)->cR_Y973(S2~X!+,S1~0!?) a1prime
+cR_Y973(S2~0!+,S1~1!?)->cR_Y973(S2~X!+,S1~1!?) a1prime
+cR_Y973(S2~1!+,S1~0!?)->cR_Y973(S2~X!+,S1~0!?) a2prime
+cR_Y973(S2~1!+,S1~1!?)->cR_Y973(S2~X!+,S1~1!?) a2prime
+cR_Y973(S2~X!+)->cR_Y973(S2~0!+) d1prime
+cR_Y973(S2~X!+)->cR_Y973(S2~1!+) d2prime
+
+#########
+# Y1165 #
+#########
+
+cR_Y1165(S1~0)+cL_Y1165(r)<->cR_Y1165(S1~0!1).cL_Y1165(r!1)  a1,d1
+cR_Y1165(S1~0)+cL_Y1165(r)<->cR_Y1165(S1~1!1).cL_Y1165(r!1) a2,d2
+cR_Y1165(S2~0)+cL_Y1165(r)<->cR_Y1165(S2~0!1).cL_Y1165(r!1) a2,d2
+cR_Y1165(S2~0)+cL_Y1165(r)<->cR_Y1165(S2~1!1).cL_Y1165(r!1) a1,d1
+cR_Y1165(S1~0!+,S2~0!?)->cR_Y1165(S1~X!+,S2~0!?) a2prime
+cR_Y1165(S1~0!+,S2~1!?)->cR_Y1165(S1~X!+,S2~1!?) a2prime
+cR_Y1165(S1~1!+,S2~0!?)->cR_Y1165(S1~X!+,S2~0!?) a1prime
+cR_Y1165(S1~1!+,S2~1!?)->cR_Y1165(S1~X!+,S2~1!?) a1prime
+cR_Y1165(S1~X!+)->cR_Y1165(S1~0!+) d2prime
+cR_Y1165(S1~X!+)->cR_Y1165(S1~1!+) d1prime
+cR_Y1165(S2~0!+,S1~0!?)->cR_Y1165(S2~X!+,S1~0!?) a1prime
+cR_Y1165(S2~0!+,S1~1!?)->cR_Y1165(S2~X!+,S1~1!?) a1prime
+cR_Y1165(S2~1!+,S1~0!?)->cR_Y1165(S2~X!+,S1~0!?) a2prime
+cR_Y1165(S2~1!+,S1~1!?)->cR_Y1165(S2~X!+,S1~1!?) a2prime
+cR_Y1165(S2~X!+)->cR_Y1165(S2~0!+) d1prime
+cR_Y1165(S2~X!+)->cR_Y1165(S2~1!+) d2prime
+
+#########
+# Y1166 #
+#########
+
+cR_Y1166(S1~0)+cL_Y1166(r)<->cR_Y1166(S1~0!1).cL_Y1166(r!1)  a1,d1
+cR_Y1166(S1~0)+cL_Y1166(r)<->cR_Y1166(S1~1!1).cL_Y1166(r!1) a2,d2
+cR_Y1166(S2~0)+cL_Y1166(r)<->cR_Y1166(S2~0!1).cL_Y1166(r!1) a2,d2
+cR_Y1166(S2~0)+cL_Y1166(r)<->cR_Y1166(S2~1!1).cL_Y1166(r!1) a1,d1
+cR_Y1166(S1~0!+,S2~0!?)->cR_Y1166(S1~X!+,S2~0!?) a2prime
+cR_Y1166(S1~0!+,S2~1!?)->cR_Y1166(S1~X!+,S2~1!?) a2prime
+cR_Y1166(S1~1!+,S2~0!?)->cR_Y1166(S1~X!+,S2~0!?) a1prime
+cR_Y1166(S1~1!+,S2~1!?)->cR_Y1166(S1~X!+,S2~1!?) a1prime
+cR_Y1166(S1~X!+)->cR_Y1166(S1~0!+) d2prime
+cR_Y1166(S1~X!+)->cR_Y1166(S1~1!+) d1prime
+cR_Y1166(S2~0!+,S1~0!?)->cR_Y1166(S2~X!+,S1~0!?) a1prime
+cR_Y1166(S2~0!+,S1~1!?)->cR_Y1166(S2~X!+,S1~1!?) a1prime
+cR_Y1166(S2~1!+,S1~0!?)->cR_Y1166(S2~X!+,S1~0!?) a2prime
+cR_Y1166(S2~1!+,S1~1!?)->cR_Y1166(S2~X!+,S1~1!?) a2prime
+cR_Y1166(S2~X!+)->cR_Y1166(S2~0!+) d1prime
+cR_Y1166(S2~X!+)->cR_Y1166(S2~1!+) d2prime
+
+#########
+# Y1161 #
+#########
+
+cR_Y1161(S1~0)+cL_Y1161(r)<->cR_Y1161(S1~0!1).cL_Y1161(r!1) a1,d1
+cR_Y1161(S1~0)+cL_Y1161(r)<->cR_Y1161(S1~1!1).cL_Y1161(r!1) a2,d2
+cR_Y1161(S2~0)+cL_Y1161(r)<->cR_Y1161(S2~0!1).cL_Y1161(r!1) a2,d2
+cR_Y1161(S2~0)+cL_Y1161(r)<->cR_Y1161(S2~1!1).cL_Y1161(r!1) a1,d1
+cR_Y1161(S1~0!+,S2~0!?)->cR_Y1161(S1~X!+,S2~0!?) a2prime
+cR_Y1161(S1~0!+,S2~1!?)->cR_Y1161(S1~X!+,S2~1!?) a2prime
+cR_Y1161(S1~1!+,S2~0!?)->cR_Y1161(S1~X!+,S2~0!?) a1prime
+cR_Y1161(S1~1!+,S2~1!?)->cR_Y1161(S1~X!+,S2~1!?) a1prime
+cR_Y1161(S1~X!+)->cR_Y1161(S1~0!+) d2prime
+cR_Y1161(S1~X!+)->cR_Y1161(S1~1!+) d1prime
+cR_Y1161(S2~0!+,S1~0!?)->cR_Y1161(S2~X!+,S1~0!?) a1prime
+cR_Y1161(S2~0!+,S1~1!?)->cR_Y1161(S2~X!+,S1~1!?) a1prime
+cR_Y1161(S2~1!+,S1~0!?)->cR_Y1161(S2~X!+,S1~0!?) a2prime
+cR_Y1161(S2~1!+,S1~1!?)->cR_Y1161(S2~X!+,S1~1!?) a2prime
+cR_Y1161(S2~X!+)->cR_Y1161(S2~0!+) d1prime
+cR_Y1161(S2~X!+)->cR_Y1161(S2~1!+) d2prime
+
+#########
+# Y1346 #
+#########
+
+cR_Y1346(S1~0)+cL_Y1346(r)<->cR_Y1346(S1~0!1).cL_Y1346(r!1) a1,d1
+cR_Y1346(S1~0)+cL_Y1346(r)<->cR_Y1346(S1~1!1).cL_Y1346(r!1) a2,d2
+cR_Y1346(S2~0)+cL_Y1346(r)<->cR_Y1346(S2~0!1).cL_Y1346(r!1) a2,d2
+cR_Y1346(S2~0)+cL_Y1346(r)<->cR_Y1346(S2~1!1).cL_Y1346(r!1) a1,d1
+cR_Y1346(S1~0!+,S2~0!?)->cR_Y1346(S1~X!+,S2~0!?) a2prime
+cR_Y1346(S1~0!+,S2~1!?)->cR_Y1346(S1~X!+,S2~1!?) a2prime
+cR_Y1346(S1~1!+,S2~0!?)->cR_Y1346(S1~X!+,S2~0!?) a1prime
+cR_Y1346(S1~1!+,S2~1!?)->cR_Y1346(S1~X!+,S2~1!?) a1prime
+cR_Y1346(S1~X!+)->cR_Y1346(S1~0!+) d2prime
+cR_Y1346(S1~X!+)->cR_Y1346(S1~1!+) d1prime
+cR_Y1346(S2~0!+,S1~0!?)->cR_Y1346(S2~X!+,S1~0!?) a1prime
+cR_Y1346(S2~0!+,S1~1!?)->cR_Y1346(S2~X!+,S1~1!?) a1prime
+cR_Y1346(S2~1!+,S1~0!?)->cR_Y1346(S2~X!+,S1~0!?) a2prime
+cR_Y1346(S2~1!+,S1~1!?)->cR_Y1346(S2~X!+,S1~1!?) a2prime
+cR_Y1346(S2~X!+)->cR_Y1346(S2~0!+) d1prime
+cR_Y1346(S2~X!+)->cR_Y1346(S2~1!+) d2prime
+
+
+#############################################
+# autophosphorylation and dephosphorylation #
+#############################################
+
+cR_Y980(S1~X!?,Y980~0)->cR_Y980(S1~X!?,Y980~P) kp
+cR_Y980(S2~X!?,Y980~0)->cR_Y980(S2~X!?,Y980~P) kp
+cR_Y980(Y980~P)->cR_Y980(Y980~0) kdp
+
+cR_Y973(S1~X!?,Y973~0)->cR_Y973(S1~X!?,Y973~P) kp
+cR_Y973(S2~X!?,Y973~0)->cR_Y973(S2~X!?,Y973~P) kp
+cR_Y973(Y973~P)->cR_Y973(Y973~0) kdp
+
+cR_Y1165(S1~X!?,Y1165~0)->cR_Y1165(S1~X!?,Y1165~P) kp
+cR_Y1165(S2~X!?,Y1165~0)->cR_Y1165(S2~X!?,Y1165~P) kp
+cR_Y1165(Y1165~P)->cR_Y1165(Y1165~0) kdp
+
+cR_Y1166(S1~X!?,Y1166~0)->cR_Y1166(S1~X!?,Y1166~P) kp
+cR_Y1166(S2~X!?,Y1166~0)->cR_Y1166(S2~X!?,Y1166~P) kp
+cR_Y1166(Y1166~P)->cR_Y1166(Y1166~0) kdp
+
+cR_Y1161(S1~X!?,Y1161~0)->cR_Y1161(S1~X!?,Y1161~P) kp
+cR_Y1161(S2~X!?,Y1161~0)->cR_Y1161(S2~X!?,Y1161~P) kp
+cR_Y1161(Y1161~P)->cR_Y1161(Y1161~0) kdp
+
+cR_Y1346(S1~X!?,Y1346~0)->cR_Y1346(S1~X!?,Y1346~P) kp
+cR_Y1346(S2~X!?,Y1346~0)->cR_Y1346(S2~X!?,Y1346~P) kp
+cR_Y1346(Y1346~P)->cR_Y1346(Y1346~0) kdp
+
+
+#########################################################
+# Recruitment of adapter proteins #
+#########################################################
+cR_Y973(Y973~P)+cCRKL(SH2)<->cR_Y973(Y973~P!1).cCRKL(SH2!1)           kon_universal,koff_IGF1R_pY973_CRKL_SH2
+
+cR_Y973(Y973~P)+cABL2(SH2)<->cR_Y973(Y973~P!1).cABL2(SH2!1)           kon_universal,Koff_IGF1R_pY973_ABL2_SH2
+
+cR_Y973(Y973~P)+cNCK2(SH2)<->cR_Y973(Y973~P!1).cNCK2(SH2!1)           kon_universal,Koff_IGF1R_pY973_NCK2_SH2
+
+cR_Y980(Y980~P)+cIRS1(PTB)<->cR_Y980(Y980~P!1).cIRS1(PTB!1)           2*kon_universal,koff_IGF1R_pY980_IRS1_PTB
+
+cR_Y980(Y980~P)+cp52SHC1(PTB)<->cR_Y980(Y980~P!1).cp52SHC1(PTB!1)     2*kon_universal,koff_IGF1R_pY980_SHC1_PTB
+
+cR_Y1161(Y1161~P)+cPIK3R3(tSH2)<->cR_Y1161(Y1161~P!1).cPIK3R3(tSH2!1)  kon_universal,koff_IGF1R_pY1161_PIK3R3_SH2_NC
+
+cR_Y1161(Y1161~P)+cSTAT1(SH2)<->cR_Y1161(Y1161~P!1).cSTAT1(SH2!1)      kon_universal,koff_IGF1R_pY1161_STAT1_SH2
+
+cR_Y1161(Y1161~P)+cSRC(SH2)<->cR_Y1161(Y1161~P!1).cSRC(SH2!1)          kon_universal,koff_IGF1R_pY1161_SRC_SH2
+
+cR_Y1161(Y1161~P)+cVAV2(SH2)<->cR_Y1161(Y1161~P!1).cVAV2(SH2!1)        kon_universal,koff_IGF1R_pY1161_VAV2_SH2
+
+cR_Y1161(Y1161~P)+cYES1(SH2)<->cR_Y1161(Y1161~P!1).cYES1(SH2!1)        kon_universal,koff_IGF1R_pY1161_YES1_SH2
+
+cR_Y1161(Y1161~P)+cRASA1(SH2)<->cR_Y1161(Y1161~P!1).cRASA1(SH2!1)      kon_universal,koff_IGF1R_pY1161_RASA1_SH2_N
+
+cR_Y1161(Y1161~P)+cSYK(SH2)<->cR_Y1161(Y1161~P!1).cSYK(SH2!1)          kon_universal,koff_IGF1R_pY1161_SYK_SH2_N
+
+cR_Y1161(Y1161~P)+cBLK(SH2)<->cR_Y1161(Y1161~P!1).cBLK(SH2!1)          kon_universal,koff_IGF1R_pY1161_SYK_SH2_N
+
+cR_Y1165(Y1165~P)+cIRS1(PTB)<->cR_Y1165(Y1165~P!1).cIRS1(PTB!1)        2*kon_universal,koff_IGF1R_pY980_IRS1_PTB
+
+cR_Y1165(Y1165~P)+cp52SHC1(PTB)<->cR_Y1165(Y1165~P!1).cp52SHC1(PTB!1)   2*kon_universal,5*koff_IGF1R_pY980_SHC1_PTB
+
+cR_Y1165(Y1165~P)+cSRC(SH2)<->cR_Y1165(Y1165~P!1).cSRC(SH2!1)            kon_universal,koff_IGF1R_pY1165_SRC_SH2
+
+cR_Y1165(Y1165~P)+cYES1(SH2)<->cR_Y1165(Y1165~P!1).cYES1(SH2!1)	         kon_universal,koff_IGF1R_pY1165_YES1_SH2
+
+cR_Y1166(Y1166~P)+cCRKL(SH2)<->cR_Y1166(Y1166~P!1).cCRKL(SH2!1)          kon_universal,koff_IGF1R_pY1166_CRKL_SH2
+
+cR_Y1166(Y1166~P)+cPLCG2(SH2)<->cR_Y1166(Y1166~P!1).cPLCG2(SH2!1)        kon_universal,koff_IGF1R_pY1166_PLCG2_SH2_N
+
+cR_Y1346(Y1346~P)+cPIK3R1(tSH2)<->cR_Y1346(Y1346~P!1).cPIK3R1(tSH2!1)     kon_universal,koff_IGF1R_pY1346_PIK3R1_SH2_NC
+
+cR_Y1346(Y1346~P)+cPIK3R2(tSH2)<->cR_Y1346(Y1346~P!1).cPIK3R2(tSH2!1)     kon_universal,koff_IGF1R_pY1346_PIK3R2_SH2_NC
+
+cR_Y1346(Y1346~P)+cPIK3R3(tSH2)<->cR_Y1346(Y1346~P!1).cPIK3R3(tSH2!1)     kon_universal,koff_IGF1R_pY1346_PIK3R3_SH2_NC
+
+cR_Y1346(Y1346~P)+cPLCG2(SH2)<->cR_Y1346(Y1346~P!1).cPLCG2(SH2!1)         kon_universal,koff_IGF1R_pY1346_PLCG2_SH2_NC
+
+cR_Y1346(Y1346~P)+cRASA1(SH2)<->cR_Y1346(Y1346~P!1).cRASA1(SH2!1)         kon_universal,koff_IGF1R_pY1346_RASA1_SH2_NC
+
+cR_Y1346(Y1346~P)+cABL2(SH2)<->cR_Y1346(Y1346~P!1).cABL2(SH2!1)           kon_universal,koff_IGF1R_pY1346_ABL2_SH2
+
+end reaction rules
+
+end model
+
+# actions
+
+generate_network({overwrite=>1})
+
+simulate({method=>"ode",t_start=>0,t_end=>3000,n_steps=>20})
+
+#parameter_scan({parameter=>"IGF1_conc_nM",par_min=>0.001,par_max=>1000,n_scan_pts=>20,log_scale=>1,\
+                #method=>"ode",t_start=>0,t_end=>100000,n_steps=>100})
+
+

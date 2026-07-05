@@ -1,0 +1,50 @@
+// This model is essentially the same as MS2007_MM_to_GMA.
+//
+// Exact canonical S-system of:
+//   X1' = (Vmax1*cX0)/(Km1 + cX0) - (Vmax2*X1)/(Km2 + X1)
+// Ancillary: Y2 = Km2 + X1  (enforced by Y2' = X1')
+//
+//   species X1, Y2;
+//
+// Parameters (as in the original)
+//   Vmax1 = 1.0;
+//   Km1   = 1.0;
+//   Vmax2 = 0.8;
+//   Km2   = 1.0;
+//   cX0   = 1.0;
+//
+// S-system rate constants
+//   alpha0 = (Vmax1*cX0)/(Km1 + cX0);   // constant production monomial
+//   beta1  = Vmax2;                     // degradation coefficient
+//
+// Canonical S-system dynamics (two single monomials per ODE)
+//   X1' = alpha0 - beta1 * X1 * (Y2^(-1));
+//   Y2' = alpha0 - beta1 * X1 * (Y2^(-1));
+//
+// Consistent initial conditions
+//   X1 = 0.1;
+//   Y2 = Km2 + X1;   // ensures Y2(t) - X1(t) = Km2 for all t
+//
+model Michaelis_Menten_prod_deg()
+
+  // Michaelis–Menten production/degradation example
+  // Source: Marin-Sanguino et al. (2007), Optimization of biotechnological systems through GP.
+  // See derivation around Eqs. (14–16): dX1/dt = Vmax1 * X0/(Km1 + X0) - Vmax2 * X1/(Km2 + X1)
+  // X0 is treated as an independent (constant) input.
+
+  species X_1;
+
+  // Parameters (positive)
+  V_1 = 1.0;
+  K_1   = 1.0;
+  V_2 = 0.8;
+  K_2   = 1.0;
+  X_0   = 1.0;   // independent input (constant)
+
+  // Dynamics
+  X_1' = (V_1*X_0)/(K_1 + X_0) - (V_2*X_1)/(K_2 + X_1);
+
+  // Initial condition
+  X_1 = 0.1;
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

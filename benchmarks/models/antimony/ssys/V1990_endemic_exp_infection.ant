@@ -1,0 +1,46 @@
+// =============================================================================
+// Source: Voit (1990) "S-System Modelling of Endemic Infections"
+//         Comput. Math. Applic. 20(4-6):161-173
+// Example: Endemic infection with exponential influence (Equations 39-41)
+// =============================================================================
+// Time horizon: t ∈ [0, 100]
+//
+// Variant model with exponential infection term (Equation 39):
+//   dI/dt = α1 * I^g11 * exp(b*A) - γ1*I
+//   dA/dt = α2 * I^g21 * A^g22 - γ2*A
+//
+// This shows infection of symptomatic group enhanced exponentially
+// by the number of asymptomatic carriers.
+//
+// Exact S-system recasting (Equations 40-41):
+//   Define: Z = exp(b*A)
+//   dZ/dt = α2*b*I^g21*A^(g22)*Z - γ2*b*A*Z
+//
+// Steady state analysis (Equation 41):
+//   Is = (α1*γ1^(-1)*Zs)^(1/(1-g11))
+//   As = (α2*γ2^(-1))^(1/(1-g22)) * (α1*γ1^(-1)*Zs)^(g21/((1-g11)(1-g22)))
+//   Then solve Zs = exp(b*As) numerically (1D search)
+//
+// =============================================================================
+
+model V1990_endemic_exp_infection()
+    // Parameters
+    alpha1 = 0.5  // Infection rate coefficient
+    alpha2 = 0.3  // Asymptotic conversion rate
+    gamma1 = 0.2  // Recovery rate for symptomatics
+    gamma2 = 0.1  // Recovery rate for asymptomatics
+    g11 = 0.5     // I self-influence exponent
+    g21 = 0.3     // I influence on A
+    g22 = 0.7     // A self-influence exponent
+    b = 0.1       // Exponential coupling strength
+    
+    // Original equations with exponential term
+    I' = alpha1 * I^g11 * exp(b*A) - gamma1*I
+    A' = alpha2 * I^g21 * A^g22 - gamma2*A
+    
+    // Initial conditions
+    I = 0.1   // Infected with symptoms
+    A = 0.1   // Asymptomatic carriers
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

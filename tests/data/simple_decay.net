@@ -1,0 +1,18 @@
+# Simple first-order decay model for testing bngsim
+# A --k1--> B, k1 = 0.1
+# A(0) = 100, B(0) = 0
+# Analytical: A(t) = 100*exp(-0.1*t), B(t) = 100*(1-exp(-0.1*t))
+begin parameters
+    1 k1  0.1  # Constant
+end parameters
+begin species
+    1 A() 100
+    2 B() 0
+end species
+begin reactions
+    1 1 2 k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

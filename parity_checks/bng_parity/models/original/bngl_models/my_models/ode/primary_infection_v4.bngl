@@ -1,0 +1,167 @@
+begin model
+# Reference:
+#  - Hlavacek WS et al. (2000) PNAS 97: 10966-10971
+#  - Rane S, Hogan T, Lee E, Seddon B, Yates AJ (2022) eLife 11: e78168.
+#  - Sopper S, Nierwetberg D, Halbach A et al. (2003) Blood 101: 1213-1219.
+#  - Zhao J, Cao Y, Jusko WJ (2015) Pharm Res 32: 3269-3281.
+begin parameters
+#
+##### BEST-FIT PARAMETER VALUES #####
+tau__FREE 0.058 # dimensionless
+p__FREE 140 # /d
+c__FREE 3.4 # /d
+m1__FREE 0.0065 # dimensionless
+kf__FREE 1.3e-10 # /molecule/d
+RT__FREE 1.2e11 # 
+f__FREE 0.5
+#####################################
+#
+# body weight (average for the 7 control animals)
+BW 5.36 # kg
+# total volume of extracellular fluid (in L)
+#  See Table I in Zhao et al. (2015)
+nu = BW*(0.157+0.314+0.735)/3.5 # L (a body weight of 5.36 kg corresponds to 1.85 L of ECF)
+# total number of target cells in an uninfected monkey (Sopper et al. 2003)
+T0 3.5e9 # dimensionless
+# fraction 0<tau<1
+tau tau__FREE # R0 = 1/tau = T0/T1 [FREE]
+# total number of target cells in an asymptomatic SIV-infected monkey
+T1 = tau*T0 # 6.6e9 according to Sopper et al. (2003)
+# target cell lifetime, 22 d according to Table 2 in Rane et al. (2022) 
+lT 22 # d 
+# rate constant for target cell death
+mu = 1/lT # /d
+# rate of de novo target cell generation
+lmbda = mu*T0 # cells per day ("lmbda" because "lambda" is a reserved keyword in Python)
+# rate constant for death of productively infected cells
+delta 1.5 # /d
+# rate constant for viral clearance
+#  34 /d for Patient 20485 according to Table 2 in Hlavacek et al. (2000)
+c c__FREE # /d [FREE]
+# rate of virion production by productively infected cells 
+p p__FREE # virions per day per infected cell [FREE]
+# rate constant for infection of target cells
+beta = c*delta/(p*T1) # /virion/d
+# initial whole-body viral load
+#  15 copies per mL is the limit of detection 
+#V0 0 # dimensionless
+# initial number of infected cells
+#I0 1
+# total number of viral receptors on FDCs
+RT RT__FREE # dimensionless
+# initial number of virion-bound viral receptors on FDCs
+#B0 0
+# fraction of viral receptors on FDCS blocked by anti-CD21 therapeutic antibody
+f f__FREE # dimensionless
+# effective forward rate constant for virion-receptor binding
+kf kf__FREE # /d
+# effective reverse rate constant for virion-receptor binding
+kr 0.25 # /d
+# scaling factor (multiplier of predicted fraction of infected cells)
+m1 m1__FREE
+# indicator
+therapy 0
+end parameters
+begin molecule types
+T() # target cells
+I() # productively infected cells
+V() # virions
+R() # free viral receptors on FDCs
+B() # FDC-associated virions / bound viral receptors on FDCs
+counter()
+end molecule types
+begin seed species
+T() T0
+I() 1
+V() 0
+R() (1-f*therapy)*RT
+B() 0
+counter() 0
+end seed species
+begin observables
+Molecules T T()
+Molecules I I()
+Molecules V V()
+Molecules R R()
+Molecules B B()
+Molecules t counter()
+end observables
+begin functions
+total_R()=RT
+infection()=beta*V
+production()=p*I
+#V_initial()=V0
+V_final()= p*lmbda/(c*delta) - mu/beta 
+#I_initial()=I0
+I_final()=lmbda/delta-c*mu/(p*beta) # = (c/p)*V_final()
+T_initial()=lmbda/mu # = T0
+T_final()=(c*delta)/(p*beta)
+B_final()=(1-f*therapy)*RT*((kf/kr)*(p*lmbda/(c*delta)-mu/beta))/(1+(kf/kr)*(p*lmbda/(c*delta)-mu/beta))
+R_initial()=(1-f*therapy)*RT
+R_final()=(1-f*therapy)*RT-B_final()
+freq_infected_cells()=1e4*m1*I/(T+I) # number of infected cells per 10,000 cells
+steady_state_freq_inf_cells()=1e4*m1*(lmbda/delta - c*mu/(p*beta))/(lmbda/delta - c*mu/(p*beta) + c*delta/(p*beta)) # per 10,000 cells
+lnVconc()=if(V>0,ln(2*V/(nu*1000)),0) # vRNA copies per mL
+total_FDC_virions()=B*1e-9 # whole body number of FDC-associated virions scaled by 1e-9
+# data for control animals
+lnVconc_avg_measurementC()=if(t< 7, 2.708,\
+                           if(t<14,13.523,\
+                           if(t<21,16.744,\
+                           if(t<28,15.318,\
+                           if(t<35,15.054,\
+                           if(t<42,14.274,\
+                           if(t<49,13.540,\
+                           if(t<56,13.632,\
+                           if(t<60,14.008,0)))))))))
+freq_inf_cells_avg_measurementC()=if(t<14, 0,\
+                                  if(t<28,21.65,\
+                                  if(t<56,22.44,\
+                                  if(t<60,21.19,0))))
+total_FDC_virions_avg_measurementC()=if(t<56,0,\
+                                     if(t<60,82.1,0))        
+# data for treated animals                                                
+lnVconc_avg_measurementT()=if(t< 7, 2.708,\
+                           if(t<14,13.456,\
+                           if(t<21,17.382,\
+                           if(t<28,15.437,\
+                           if(t<35,14.871,\
+                           if(t<42,14.052,\
+                           if(t<49,12.394,\
+                           if(t<56,13.405,\
+                           if(t<60,13.311,0)))))))))
+freq_inf_cells_avg_measurementT()=if(t<14, 0,\
+                                  if(t<28,25.02,\
+                                  if(t<56, 8.75,\
+                                  if(t<60, 5.02,0))))
+total_FDC_virions_avg_measurementT()=if(t<56,0,\
+                                     if(t<60,5.70,0))    
+# basic reproduction number
+R0()=p*beta*lmbda/(c*delta*mu) # = T_initial()/T_final()
+end functions
+begin reaction rules
+0->counter() 1
+# generation of target cells
+0->T() lmbda
+# target cell death
+T()->0 mu
+# infection
+T()->I() infection()
+# productively infected cell death
+I()->0 delta
+# production of virions by infected cells
+0->V() production()
+# viral clearance
+V()->0 c
+# virion interaction with viral receptors on FDCs
+V()+R()<->B() kf,kr
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({suffix=>"avg_control_animals",method=>"ode",t_start=>0,t_end=>60,n_steps=>600,print_functions=>1})
+resetConcentrations()
+setParameter("therapy",1)
+#setConcentration("R()",(1-f)*RT)
+simulate({suffix=>"avg_treated_animals",method=>"ode",t_start=>0,t_end=>60,n_steps=>600,print_functions=>1})
+end actions

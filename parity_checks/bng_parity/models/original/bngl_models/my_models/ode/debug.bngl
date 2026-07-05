@@ -1,0 +1,73 @@
+begin model
+
+begin parameters
+
+f 0.1
+NA 6.02214e23 # molecules per mol
+Vcyt 2e-12*f # L/cell
+kf_RNC_TOS 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_RNC_TOS 0.1 # /s
+eps 1e-5*(NA*Vcyt) # M converted to molecule/cell
+KM_MTOR_sensitive 10 # dimensionless, >>1 for a rapamycin-sensitive substrate
+KM_MTOR_resistant 0.1 # dimensionless, <<1 for a rapamycin-resistant substrate
+phi 0.1 # dimensionless
+kcat_MTOR 1.9 # /s
+km1_MTOR_substrate 0.1 # /s
+kp1_MTOR_tetheredSub_s=(km1_MTOR_substrate+kcat_MTOR)/(eps*KM_MTOR_sensitive) # /(molecule/cell)/s
+kp1_MTOR_tetheredSub_r=(km1_MTOR_substrate+kcat_MTOR)/(eps*KM_MTOR_resistant) # /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+MTOR(HEAT_horn,HEAT_step,FAT,PIKK~0~ATP~AZD8055,FRB,LBE_FATC)
+RPTOR(RNC,RNC_ARM,ARM,S792~0~P,S855~0~P,S859~0~P~P,S863~0~P)
+RPS6KB1(TOS,T389~0~P)
+end molecule types
+
+begin seed species
+RPS6KB1(TOS!1,T389~0!3).\
+RPTOR(RNC!1,RNC_ARM!2,ARM,S792~0,S855~0,S859~0,S863~0).\
+MTOR(HEAT_horn!4,HEAT_step!2,FAT!5,PIKK~ATP!3,FRB,LBE_FATC).\
+MTOR(HEAT_horn!5,HEAT_step!6,FAT!4,PIKK~ATP,FRB,LBE_FATC).\
+RPTOR(RNC,RNC_ARM!6,ARM,S792~0,S855~0,S859~0,S863~0) 10000*f
+end seed species
+
+begin observables
+Molecules boundPIKK MTOR(PIKK!+)
+Molecules boundRNC RPTOR(RNC!+)
+end observables
+
+begin reaction rules
+
+RPTOR(RNC)+RPS6KB1(TOS)->RPTOR(RNC!1).RPS6KB1(TOS!1) kf_RNC_TOS
+RPTOR(RNC!1).RPS6KB1(TOS!1)->RPTOR(RNC)+RPS6KB1(TOS) kr_RNC_TOS
+
+RPS6KB1(TOS!1,T389~0).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,FAT!+,PIKK,FRB)->\
+RPS6KB1(TOS!1,T389~0!3).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,FAT!+,PIKK!3,FRB) \
+kp1_MTOR_tetheredSub_s*eps
+
+RPS6KB1(TOS!1,T389~0).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,FAT!+,PIKK,FRB!+)->\
+RPS6KB1(TOS!1,T389~0!3).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,FAT!+,PIKK!3,FRB!+) \
+phi*kp1_MTOR_tetheredSub_s*eps
+
+RPS6KB1(TOS!1,T389~0!3).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,PIKK!3)->\
+RPS6KB1(TOS!1,T389~0).RPTOR(RNC!1,RNC_ARM!2).MTOR(HEAT_step!2,PIKK) km1_MTOR_substrate
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# equilibrate to complete assembly (3 hrs)
+saveConcentrations()
+resetConcentrations()
+simulate({method=>"ode",suffix=>"A_ODE",t_start=>0,t_end=>10800,n_steps=>300,print_functions=>1})
+resetConcentrations()
+simulate({method=>"nf",suffix=>"B_NFsim",complex=>1,gml=>10000000,get_final_state=>0,\
+          t_start=>0,t_end=>10800,n_steps=>300,print_functions=>1})
+saveConcentrations()
+
+end actions

@@ -1,0 +1,118 @@
+begin model
+# References:
+# - Diamante LM, Lan T (2014) J Food Processing 2014: 234583.
+begin parameters
+NA 6.02214076e23 # number per mole (exact value)
+Temp 37+273.15 # K <-- physiological temperature (37 C)
+mu_H2O=2.414e-2*10^(247.8/(Temp-140)) # mPa s (0.69 mPa s)
+mu_lipid 34.1 # mPa s viscosity of olive oil @ 38 degrees C (Diamante and Lan, 2014)
+cellDensity 1e9 # cells per L
+pi=2*asin(1) # dimensionless ratio
+cellDiameter 2e-4 # dm (20 um) <-- typical diameter of a HeLa cell
+Area=pi*cellDiameter^2 # dm^2 per cell
+height 5e-8 # dm (5 nm)
+V_thinLayer=Area*height # L per cell
+# Reactants tethered to the plasma membrane diffuse more slowly than when they are free in the cytosol.
+V_thinLayer_effective=V_thinLayer*(mu_lipid/mu_H2O) # adjustment for different diffusivities
+V_cytosol 1e-12 # L per cell (1 pL) <-- typical cytoplasmic volume for a mammalian cell
+Ras_cpc 1e5 # copies per cell
+Raf_cpc 1e5 # copies per cell
+#  equilibrium parameter for Raf-Raf dimerization
+K1 1e6/NA # /M converted to /(molecule/L)
+# equilibrium association constant for Ras-Raf binding
+K2 1e6/NA # /M converted to /(molecule/L)
+# Raf-Raf interaction is promoted by Ras binding to the RBD in one copy of Raf, which relieves RBD-mediated autoinhibition.
+sigma1 10 # dimensionless 
+K3=sigma1*K1
+K4=(K2*K3)/K1
+# Raf-Raf interaction is promoted by Ras binding to the RBD's in both copies of Raf, which relieves RBD-mediated autoinhibition.
+sigma2 100 # dimensionless
+K5=sigma2*K1
+K6=(K2*K5)/K3
+# detailed balance constraints
+# K1*K4=K2*K3
+# K3*K6=K2*K5
+koff 0.1 # /s
+km1=koff
+km2=koff
+km3=koff
+km4=koff
+km5=koff
+km6=koff
+kp1=km1*K1 # /(molecule/L)/s
+kp2=km2*K2
+kp3=km3*K3
+kp4=km4*K4
+kp5=km5*K5
+kp6=km6*K6
+phi 1 # dimensionless, 0<=phi<=1
+# phi=1 => differences in K's manifest as differences in dissociation rate constants only
+# phi=0 => differences in K's manifest as differences in association rate constants only
+# 0<phi<1 => differences in K's manifest as differences in both association and dissociation rate constants
+# activation energy for Raf dimerization
+E0_RafRaf=-(1-phi)*ln(kp1)-phi*ln(km1)
+# activation energy for Ras-Raf association
+E0_RasRaf=-(1-phi)*ln(kp2)-phi*ln(km2)
+epsilon 1e-20
+end parameters
+begin molecule types
+Ras(G~GTP) # G = G domain
+Raf(RBD,TKL) # RBD = Ras-binding domain, TKL = tyrosine kinase-like protein kinase
+eRas(G~GTP)
+eRaf(RBD,TKL)
+end molecule types
+begin compartments
+ECF 3 1/cellDensity # volume of extracellular fluid surrounding a single cell (on average)
+PM 2 V_thinLayer_effective ECF # thin layer adjacent to the plasma membrane
+Cytosol 3 V_cytosol PM # cytosol
+end compartments
+begin seed species
+Ras(G~GTP)@PM Ras_cpc # <-- all Ras is in the PM compartment
+Raf(RBD,TKL)@Cytosol Raf_cpc # <-- all Raf is initially in the cytosol (Raf can be recruited to the PM via interaction with Ras.)
+eRas(G~GTP)@PM Ras_cpc
+eRaf(RBD,TKL)@Cytosol Raf_cpc
+end seed species
+begin observables
+# cBNGL model outputs
+Species cRas Ras(G~GTP)
+Species cRaf Raf(RBD,TKL)
+Species cRafRaf Raf(RBD,TKL!1).Raf(RBD,TKL!1)
+Species cRasRaf Ras(G~GTP!1).Raf(RBD!1,TKL)
+Species cRasRafRaf Ras(G~GTP!1).Raf(RBD!1,TKL!2).Raf(RBD,TKL!2)
+Species cRasRafRasRaf Ras(G~GTP!1).Raf(RBD!1,TKL!2).Ras(G~GTP!3).Raf(RBD!3,TKL!2)
+# eBNGL model outputs
+Species eRas eRas(G~GTP)
+Species eRaf eRaf(RBD,TKL)
+Species eRafRaf eRaf(RBD,TKL!1).eRaf(RBD,TKL!1)
+Species eRasRaf eRas(G~GTP!1).eRaf(RBD!1,TKL)
+Species eRasRafRaf eRas(G~GTP!1).eRaf(RBD!1,TKL!2).eRaf(RBD,TKL!2)
+Species eRasRafRasRaf eRas(G~GTP!1).eRaf(RBD!1,TKL!2).eRas(G~GTP!3).eRaf(RBD!3,TKL!2)
+end observables
+begin functions
+#ratio_lipid_div_H2O()=mu_lipid/mu_H2O
+#ratio_V_cytosol_div_V_thinLayer()=V_cytosol/V_thinLayer
+end functions
+begin energy patterns
+# patterns should be non-overlapping (?)
+eRaf(RBD,TKL!1).eRaf(RBD,TKL!1) -ln(kp1/km1) 
+eRas(G~GTP!1).eRaf(RBD!1,TKL) -ln(kp2/km2)
+eRas(G~GTP!1).eRaf(RBD!1,TKL!2).eRaf(RBD,TKL!2) -ln(kp1/km1)-ln(kp4/km4)
+eRas(G~GTP!1).eRaf(RBD!1,TKL!2).eRaf(RBD!3,TKL!2).eRas(G~GTP!3) -ln(kp1/km1)-ln(kp4/km4)-ln(kp6/km6)
+end energy patterns
+begin reaction rules
+# universal cBNGL rules
+Raf(RBD,TKL)+Raf(RBD,TKL)<->Raf(RBD,TKL!1).Raf(RBD,TKL!1) kp1,km1
+Raf(RBD,TKL)+Ras(G~GTP)<->Raf(RBD!1,TKL).Ras(G~GTP!1) kp2,km2
+Raf(RBD!1,TKL).Ras(G~GTP!1)+Raf(RBD,TKL)<->Raf(RBD!1,TKL!2).Ras(G~GTP!1).Raf(RBD,TKL!2) kp3,km3
+Raf(RBD,TKL!1).Raf(RBD,TKL!1)+Ras(G~GTP)<->Raf(RBD!2,TKL!1).Raf(RBD,TKL!1).Ras(G~GTP!2) kp4,km4
+Raf(RBD!1,TKL).Ras(G~GTP!1)+Raf(RBD!2,TKL).Ras(G~GTP!2)<->Raf(RBD!1,TKL!3).Ras(G~GTP!1).Raf(RBD!2,TKL!3).Ras(G~GTP!2) kp5,km5
+Raf(RBD!2,TKL!1).Raf(RBD,TKL!1).Ras(G~GTP!2)+Ras(G~GTP)<->Raf(RBD!2,TKL!1).Raf(RBD!3,TKL!1).Ras(G~GTP!2).Ras(G~GTP!3) kp6,km6
+# eBNGL rules
+eRaf(TKL)+eRaf(TKL)<->eRaf(TKL!1).eRaf(TKL!1) Arrhenius(phi,E0_RafRaf)
+eRas(G~GTP)+eRaf(RBD)<->eRas(G~GTP!1).eRaf(RBD!1) Arrhenius(phi,E0_RasRaf)
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>1,t_end=>100,n_steps=>100,print_functions=>1})
+end actions

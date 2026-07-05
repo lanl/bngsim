@@ -1,0 +1,81 @@
+begin model
+
+begin parameters
+
+f 1 # dimensionless
+
+NA 6.02214e23 # molecules per mol
+Vcyt 2e-12*f # L per cell
+
+kf 1e6/(NA*Vcyt) # /M/s
+kr 0.1 # /s
+
+Kr 1000
+
+Acpc 1e5 # copies per cell
+Bcpc 1e5 # copies per cell
+
+end parameters
+
+begin molecule types
+
+A1
+B1
+C1
+
+A2(x)
+B2(y)
+
+A3
+B3(y~0~A3)
+
+A4()
+B4()
+
+end molecule types
+
+begin seed species
+
+A1 Acpc
+B1 Bcpc
+C1 0
+
+A2(x) Acpc
+B2(y) Bcpc
+
+A3 Acpc
+B3(y~0) Bcpc
+
+end seed species
+
+begin observables
+
+Molecules C1tot C1
+Molecules C2tot A2(x!1).B2(y!1)
+Molecules C3tot B3(y~A3)
+
+end observables
+
+
+
+begin reaction rules
+
+# Model 1
+A1+B1<->C1 kf,kr
+
+# Model 2
+A2(x)+B2(y)<->A2(x!1).B2(y!1) kf,kr
+
+# Model 3
+A3+B3(y~0)<->B3(y~A3) kf,kr
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100})
+
+end actions

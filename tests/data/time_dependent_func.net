@@ -1,0 +1,19 @@
+# Regression test for Fix #1: time() in functional rate laws
+# Rate = time() + 1, so species B grows as integral of (t+1) = t^2/2 + t
+begin parameters
+    1 k1  1  # Constant
+end parameters
+begin functions
+    1 _rateLaw1() time()+1
+end functions
+begin species
+    1 A() 1
+    2 B() 0
+end species
+begin reactions
+    1 1 1,2 _rateLaw1 #Rule1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

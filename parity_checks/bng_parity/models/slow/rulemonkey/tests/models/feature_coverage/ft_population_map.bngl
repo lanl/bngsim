@@ -1,0 +1,47 @@
+# Feature: population-type species (lumped population observable with explicit pattern)
+# Tests: multiple seed species collapsing into a single molecule-count observable,
+#        exercising the ListOfSpecies with distinct initial complexes
+# Tier: base
+# Expected: initial distribution across three seed species equilibrates under binding
+# invariant: conserved M_total = 90
+
+begin model
+begin parameters
+    M_bare     30
+    M_primed   30
+    M_docked   30
+    kf         0.02
+    kr         0.15
+end parameters
+
+begin molecule types
+    M(s~a~b~c,x)
+    X(m)
+end molecule types
+
+begin seed species
+    M(s~a,x)   M_bare
+    M(s~b,x)   M_primed
+    M(s~c,x)   M_docked
+    X(m)       50
+end seed species
+
+begin observables
+    Molecules  M_total    M()
+    Molecules  M_a        M(s~a)
+    Molecules  M_b        M(s~b)
+    Molecules  M_c        M(s~c)
+    Molecules  M_bound    M(x!+)
+    Molecules  X_free     X(m)
+end observables
+
+begin reaction rules
+    M(x) + X(m) <-> M(x!1).X(m!1)  kf, kr
+    M(s~a) -> M(s~b)                0.1
+    M(s~b) -> M(s~c)                0.05
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>60,n_steps=>60})
+end actions

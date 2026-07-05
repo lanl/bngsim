@@ -1,0 +1,63 @@
+begin model
+begin parameters
+    # Kinetic Parameters
+    k_bind     0.015   # Ligand-Receptor Association
+    k_unbind   0.0015  # Dissociation
+    k_receptor 0.35    # Receptor activation
+    k_jak      0.4     # JAK2 activation
+    k_signal   0.3     # STAT5 phosphorylation
+    k_reset    0.09    # Deactivation/Reset
+end parameters
+
+begin molecule types
+    EPO(r)                        # Erythropoietin (Ligand)
+    EPOR(l,state~inactive~active) # EPO Receptor
+    JAK2(state~off~on)            # Janus Kinase 2
+    STAT5(loc~cyto~nuc,phos~U~P)  # Signal Transducer & Activator of Transcription 5
+end molecule types
+
+begin seed species
+    EPO(r) 0
+    EPOR(l,state~inactive) 40
+    JAK2(state~off) 30
+    STAT5(loc~cyto,phos~U) 120
+end seed species
+
+begin reaction rules
+    # 1. Ligand Binding
+    EPO(r) + EPOR(l,state~inactive) <-> EPO(r!1).EPOR(l!1,state~inactive) k_bind,k_unbind
+    
+    # 2. Receptor Activation
+    EPO(r!1).EPOR(l!1,state~inactive) -> EPO(r!1).EPOR(l!1,state~active) k_receptor
+    
+    # 3. JAK2 Recruitment and Activation
+    EPOR(l!+,state~active) + JAK2(state~off) -> EPOR(l!+,state~active) + JAK2(state~on) k_jak
+    
+    # 4. Downstream Signaling (STAT5)
+    # JAK2 phosphorylates STAT5
+    JAK2(state~on) + STAT5(loc~cyto,phos~U) -> JAK2(state~on) + STAT5(loc~cyto,phos~P) k_signal
+    
+    # 5. Nuclear Translocation
+    STAT5(loc~cyto,phos~P) -> STAT5(loc~nuc,phos~P) k_signal
+    
+    # 6. Reset / Negative Feedback Loop
+    STAT5(loc~nuc,phos~P) -> STAT5(loc~cyto,phos~U) k_reset
+    JAK2(state~on) -> JAK2(state~off) k_reset
+    EPOR(l,state~active) -> EPOR(l,state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_EPOR    EPOR(state~active)
+    Molecules Active_JAK2    JAK2(state~on)
+    Molecules Nuclear_STAT5  STAT5(loc~nuc,phos~P)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    
+    # Simple stimulatory simulation for parity
+    setConcentration("EPO(r)", 100)
+    simulate({method=>"ode",t_end=>100,n_steps=>200})
+end actions
+end model
+

@@ -1,0 +1,63 @@
+# NFsim simulation of the job market
+# From Kuhn and Hillmann 2016 Journal of Economic Interaction and Coordination
+
+begin parameters 
+    c_init 10
+    pJoJ 0.01 
+    pPlJ 0.04 
+    pJv 3.2 
+    p_init 1000 
+    thou 1000 
+    mu 1 
+    beta1 0.9 
+    pDelay 0.01
+end parameters
+
+begin molecule types 
+    Company(j1,j2,j3,j4) 
+    Job(l,r,e) 
+    Person(Emp) 
+    Dummy(j)
+end molecule types
+
+begin seed species
+    Company(j1!1,j2!2,j3!3,j4!4).Job(l!1,r,e).Job(l!2,r,e).Job(l!3,r,e).Job(l!4,r,e) c_init 
+    Person(Emp) p_init 
+end seed species
+
+begin observables 
+    Molecules Jobs_tot Job() 
+    Molecules Jobs_occ Job(e!1).Person(Emp!1) 
+    Molecules Person_uemp Person(Emp) 
+    Molecules Jobs_free Job(e)
+end observables
+
+begin functions
+    LMtight()=if(Person_uemp>0, Jobs_free/Person_uemp, 0) 
+    MatchP()=if(Person_uemp>0,\
+if(Jobs_free/Person_uemp<0.01,\
+mu*(Person_uemp)^(beta1-1)*(Jobs_free+1)^(-beta1),\
+mu*(Person_uemp)^(beta1-1)*(Jobs_free)^(-beta1)),0)
+    Vac_creating()=if(Jobs_free>0,\
+if(Person_uemp/Jobs_free>pJoJ,\
+pJoJ, Person_uemp/Jobs_free),\
+Person_uemp/(Jobs_free+1))
+end functions
+
+begin reaction rules 
+    #’Job offers job’: 
+    Job(l!+,r,e!+)-> Job(l!+,r!1,e!+).Job(l!1,r,e) Vac_creating() 
+    #’Person gets job’ 
+    Job(l!+,e) + Person(Emp)-> Job(l!+,e!1).Person(Emp!1) MatchP() 
+    #’Person lose job’ 
+    Job(e!1).Person(Emp!1)-> Job(e!1).Dummy(j!1) + Person(Emp) pPlJ 
+    Job(e!1).Dummy(j!1) -> Job(e) pDelay DeleteMolecules 
+    #’Job vanishes’
+    Job(r!1).Job(l!1,e,r)-> Job(r) pJv DeleteMolecules
+end reaction rules
+
+begin actions
+simulate_nf({t_end=>2000,suffix=>"nf",n_steps=>200, param=>"-ogf -gml 500000"});
+end actions
+
+

@@ -1,0 +1,60 @@
+// =============================================================================
+// Source: Voit (1990) "S-System Modelling of Endemic Infections"
+//         Comput. Math. Applic. 20(4-6):161-173
+// Example: Kemper's endemic infection model - exact recasting (Equation 9)
+//          Original: Kemper (1978)
+// =============================================================================
+// Time horizon: t ∈ [0, 100]
+//
+// Original Kemper model (Equation 7 with γ1 = γ2 = γ):
+//   dS/dt = γ*I + γ*A - S*[g(I) + h(A)]
+//   dI/dt = f*S*[g(I) + h(A)] - γ*I
+//   dA/dt = (1-f)*S*[g(I) + h(A)] - γ*A
+//
+// With mass action: g(I) = r1*I, h(A) = r2*A
+//
+// Variables:
+//   S = susceptibles (proportion)
+//   I = infectives with symptoms (proportion)
+//   A = asymptomatics (proportion)
+//   S + I + A = 1 (conservation)
+//
+// Exact S-system recasting (Equation 9):
+//   Define: X1=S, X2=I, X3=A
+//           X4 = r1*I + r2*A (infection potential)
+//           X5 = I + A (fraction infected)
+//
+//   dX1/dt = γ*X5 - X1*X4
+//   dX2/dt = f*X1*X4 - γ*X2
+//   dX3/dt = (1-f)*X1*X4 - γ*X3
+//   dX4/dt = [r1*f + r2*(1-f)]*X1*X4 - γ*X4
+//   dX5/dt = X1*X4 - γ*X5
+//
+// Steady state (Equation 13):
+//   S* = γ/p where p = r1*f + r2*(1-f)
+//   I* = f*(p-γ)/p
+//   A* = (1-f)*(p-γ)/p
+// =============================================================================
+
+model V1990_kemper_endemic()
+    // Parameters
+    f = 0.8       // Fraction developing symptoms
+    gamma_rate = 0.2   // Recovery rate (same for both)
+    r1 = 0.5      // Contact rate for symptomatics
+    r2 = 0.3      // Contact rate for asymptomatics
+    
+    // Derived parameter
+    p := r1*f + r2*(1-f)  // Infection coefficient
+    
+    // Original Kemper equations with mass action
+    S' = gamma_rate*I + gamma_rate*A - S*(r1*I + r2*A)
+    I' = f*S*(r1*I + r2*A) - gamma_rate*I
+    A' = (1-f)*S*(r1*I + r2*A) - gamma_rate*A
+    
+    // Initial conditions (away from steady state)
+    S = 0.9   // Susceptibles
+    I = 0.05  // Infected with symptoms
+    A = 0.05  // Asymptomatic carriers
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

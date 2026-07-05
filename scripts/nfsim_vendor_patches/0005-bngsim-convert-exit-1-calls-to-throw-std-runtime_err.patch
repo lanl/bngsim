@@ -1,0 +1,549 @@
+From 05b42d7dfc1faa5d24e60b302d535ef76956ee6b Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Sun, 22 Feb 2026 01:59:39 -0700
+Subject: [PATCH 05/14] bngsim: convert exit(1) calls to throw
+ std::runtime_error
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Originally landed as PyBNF-Private bngsim commit 9c77d2ec ("Session 29:
+NFsim tech debt elimination", Feb 22 2026), but that work was written
+directly into bngsim/third_party/nfsim/ instead of being staged here on
+bngsim/vendor. The May-15 PyBNF-Private refresh (008529a7) faithfully
+replayed the recorded 13-patch carry queue and silently reverted those
+58 conversions, breaking BNGL models with local-function rate laws
+(crash in CompositeFunction::evaluateOn). This carry restores the work
+on the proper branch so future vendor_nfsim.py refreshes preserve it.
+
+Files: moleculeType.cpp (10 conversions), system.cpp (14),
+compositeFunction.cpp (5), function.cpp (5), NFinput.cpp (11),
+reaction.cpp (7). Of Session 29's original 58 conversions, 52 apply
+directly; the other 6 sites in compositeFunction.cpp::loadParamFile,
+function.cpp::loadParamFile, and the related enableFileDependency
+catches were superseded by upstream NFsim refactoring (use of
+NFutil::loadTimeSeries and pre-existing throws by Achyudhan Kutuva
+in April 2026) — those code paths no longer have exit(1) callsites.
+
+Each conversion adds #include <stdexcept> if not already present and
+extracts the failure context from the adjacent cerr/cout messages so
+the thrown what() reports something diagnosable. Malformed XML and
+all six file-class error paths now propagate as std::runtime_error
+that can be caught and translated to RuntimeError by the bngsim host.
+---
+ src/NFcore/moleculeType.cpp            | 22 +++++++++++-----------
+ src/NFcore/system.cpp                  | 24 ++++++++++++------------
+ src/NFfunction/compositeFunction.cpp   | 12 ++++++------
+ src/NFfunction/function.cpp            | 10 +++++-----
+ src/NFinput/NFinput.cpp                | 23 ++++++++++++-----------
+ src/NFreactions/reactions/reaction.cpp | 16 ++++++++--------
+ 6 files changed, 54 insertions(+), 53 deletions(-)
+
+diff --git a/src/NFcore/moleculeType.cpp b/src/NFcore/moleculeType.cpp
+index 9c83766..213f1f7 100644
+--- a/src/NFcore/moleculeType.cpp
++++ b/src/NFcore/moleculeType.cpp
+@@ -1,4 +1,5 @@
+ #include <iostream>
++#include <stdexcept>
+ #include "NFcore.hh"
+ 
+ 
+@@ -97,7 +98,7 @@ const string& MoleculeType::getComponentName(int cIndex) const {
+ 		cerr<<"in MoleculeType:getComponentName, can't get that component!"<<endl;
+ 		cerr<<"looking for cIndex: "<<cIndex<<endl;
+ 		cerr<<"I only have: "<<numOfComponents<<" components."<<endl;
+-		exit(2);
++		throw std::runtime_error("I only have:");
+ 	}
+ 	return this->compName[cIndex];
+ }
+@@ -119,7 +120,7 @@ void MoleculeType::init(
+ 			(int)isIntegerComponent.size()!=numOfComponents) {
+ 		cout<<"Error creating MoleculeType: '"<<name<<"': The length of the input vectors\n";
+ 		cout<<"do not match, so I can't initialize this object.\n";
+-		cout<<"quitting now."<<endl; exit(1);
++		cout<<"quitting now."<<endl; throw std::runtime_error("do not match, so I can't initialize this object.\n");
+ 	}
+ 
+ 	//Now we can get on with initializing the MoleculeType information
+@@ -245,7 +246,7 @@ bool MoleculeType::isIntegerComponent(const string& cName) const {
+ 	cerr<<"!!! error !!! cannot find site name "<< cName << " in MoleculeType: "<<name;
+ 	cerr<<"in function isIntegerComponent(string cName).  "<<endl;
+ 	this->printDetails();
+-	exit(1);
++	throw std::runtime_error("in function isIntegerComponent(string cName)");
+ }
+ bool MoleculeType::isIntegerComponent(int cIndex) const {
+ 	if(cIndex>=0 && cIndex<numOfComponents) {
+@@ -254,7 +255,7 @@ bool MoleculeType::isIntegerComponent(int cIndex) const {
+ 		cerr<<"!!! error !!! "<< cIndex << " is not a valid component index in MoleculeType: "<<name;
+ 		cerr<<"in function isIntegerComponent(int cIndex).  "<<endl;
+ 		this->printDetails();
+-		exit(1);
++		throw std::runtime_error("in function isIntegerComponent(int cIndex)");
+ 	}
+ }
+ 
+@@ -289,7 +290,7 @@ string MoleculeType::getEquivalenceClassComponentNameFromComponentIndex(int cInd
+ 		}
+ 	}
+ 	cerr<<"Could not find equivalency class component string for component number: "<<cIndex<<"!!!"<<endl;
+-	exit(1);
++	throw std::runtime_error("Could not find equivalency class component string for component number:");
+ }
+ 
+ void MoleculeType::getEquivalencyClass(int *&components, int &n_components, const string& cName) const {
+@@ -308,7 +309,7 @@ int MoleculeType::getEquivalencyClassNumber(const string& cName) const {
+ 		}
+ 	}
+ 	cerr<<"Could not find equivalency class number for component named: "<<cName<<"!!!"<<endl;
+-	exit(1);
++	throw std::runtime_error("Could not find equivalency class number for component named:");
+ }
+ 
+ 
+@@ -318,11 +319,11 @@ string MoleculeType::getComponentStateName(int cIndex, int cValue) {
+ 	if(cValue==Molecule::NOSTATE) return "NO_STATE";
+ 	if( cIndex>=(int)possibleCompStates.size() || cIndex<0 ){
+ 		cerr<<"Component index out of range (moltype="<<getName()<<" cIndex="<<cIndex<<")!!!"<<endl;
+-		exit(1);
++		throw std::runtime_error("Component index out of range (moltype=");
+ 	}
+ 	if( cValue>=(int)possibleCompStates.at(cIndex).size() || cValue<0 ){
+ 		cerr<<"State index out of range (moltype="<<getName()<<" cIndex="<<cIndex<<" cValue="<<cValue<<")!!!"<<endl;
+-		exit(1);
++		throw std::runtime_error("State index out of range (moltype=");
+ 	}
+ 	return possibleCompStates.at(cIndex).at(cValue);
+ }
+@@ -474,7 +475,7 @@ int MoleculeType::getStateValueFromName(int cIndex, string stateName) const
+ 	cerr<<"Error!  '"<<stateName<<" is not a recognized possible state for '"<<compName[cIndex]<<"' in MoleculeType: '"<<name<<"'"<<endl;
+ 	cerr<<"For that, I'm quitting!";
+ 	printDetails();
+-	exit(1);
++	throw std::runtime_error("For that, I'm quitting!");
+ }
+ 
+ 
+@@ -624,7 +625,7 @@ int MoleculeType::getRxnIndex(ReactionClass * rxn, int rxnPosition)
+ 				return r;
+ 	}
+ 	cerr<<"Could not find this rxn: " << rxn->getName() << " in molecule Type: "<<name<<endl;
+-	exit(1);
++	throw std::runtime_error("Could not find this rxn:");
+ }
+ 
+ 
+@@ -832,4 +833,3 @@ void MoleculeType::printDetails() const
+ //     return nfstream;
+ // }
+ 
+-
+diff --git a/src/NFcore/system.cpp b/src/NFcore/system.cpp
+index a5e3b6a..36a2552 100644
+--- a/src/NFcore/system.cpp
++++ b/src/NFcore/system.cpp
+@@ -278,7 +278,7 @@ void System::setOutputToBinary()
+ 		cerr<<"This problem is caused when you call 'setOutputToBinary()' after you call\n";
+ 		cerr<<"registerOutputFileLocation().\n";
+ 		cerr<<"So I'm just going to stop now."<<endl;
+-		exit(1);
++		throw std::runtime_error("So I'm just going to stop now");
+ 	}
+ }
+ 
+@@ -306,7 +306,7 @@ void System::registerOutputFileLocation(string filename)
+ 		if(!outputFileStream.is_open()) {
+ 			cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 			cerr<<"quitting."<<endl;
+-			exit(1);
++			throw std::runtime_error("quitting");
+ 		}
+ 
+ 		//ios_base::out -- Set for output only
+@@ -341,7 +341,7 @@ void System::registerOutputFileLocation(string filename)
+ 		if(!outputFileStream.is_open()) {
+ 			cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 			cerr<<"quitting."<<endl;
+-			exit(1);
++			throw std::runtime_error("quitting");
+ 		}
+ 
+ 		outputFileStream.setf(ios::scientific);
+@@ -363,7 +363,7 @@ void System::registerReactionFileLocation(string filename)
+ 	if(!reactionOutputFileStream.is_open()) {
+ 		cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	reactionOutputFileStream.setf(ios::fixed);
+@@ -379,7 +379,7 @@ void System::registerMoleculeTypeFileLocation(string filename) {
+ 	if(!moleculeTypeFileStream.is_open()) {
+ 		cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	moleculeTypeFileStream.setf(ios::dec);
+@@ -395,7 +395,7 @@ void System::registerRxnListFileLocation(string filename) {
+ 	if(!rxnListFileStream.is_open()) {
+ 		cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	rxnListFileStream.setf(ios::dec);
+@@ -415,7 +415,7 @@ void System::registerConnectedRxnFileLocation(string filename)
+ 	if(!connectedRxnFileStream.is_open()) {
+ 		cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	connectedRxnFileStream.setf(ios::scientific);
+@@ -440,7 +440,7 @@ void System::registerListOfConnectedRxnFileLocation(string filename)
+ 	if(!connectedRxnListFileStream.is_open()) {
+ 		cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	connectedRxnListFileStream.setf(ios::scientific);
+@@ -461,7 +461,7 @@ void System::tagReaction(unsigned int rID) {
+ 		cerr<<"!!! Error when trying to tag reaction with reaction ID "<<rID<<endl;
+ 		cerr<<"!!! Reaction with that ID does not exist."<<endl;
+ 		cerr<<"!!! quitting now."<<endl;
+-		exit(1);
++		throw std::runtime_error("!!! quitting now");
+ 	}
+ 	allReactions.at(rID)->tag();
+ 
+@@ -914,7 +914,7 @@ double System::getNextRxn()
+ 	double x = selector->getNextReactionClass(nextReaction);
+ 	if((int)x==-1) {
+ 		this->printAllReactions();
+-		exit(1);
++		throw std::runtime_error("NFsim error in NFcore/system.cpp near line 844");
+ 	}
+ 	if (getNFsimV1143Compatibility()) {
+ 		// Upstream NFsim v1.14.3 consumes and discards the first selector draw
+@@ -1708,7 +1708,7 @@ bool System::saveSpecies(string filename)
+ 	if(!speciesFile.is_open()) {
+ 		cerr<<"Error in System when calling System::saveSpecies(string)!  Cannot open output stream to file "<<filename<<". "<<endl;
+ 		cerr<<"quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("quitting");
+ 	}
+ 
+ 	cout<<"\n\nsaving list of final molecular species..."<<endl;
+@@ -2187,7 +2187,7 @@ void System::outputAllPropensities(double time, int rxnFired)
+ 		if(!outputFileStream.is_open()) {
+ 				cerr<<"Error in System!  cannot open output stream to file "<<filename<<". "<<endl;
+ 				cerr<<"quitting."<<endl;
+-				exit(1);
++				throw std::runtime_error("quitting");
+ 		}
+ 
+ 		propensityDumpStream<<"time rxn";
+diff --git a/src/NFfunction/compositeFunction.cpp b/src/NFfunction/compositeFunction.cpp
+index 4420fa9..a5e5999 100644
+--- a/src/NFfunction/compositeFunction.cpp
++++ b/src/NFfunction/compositeFunction.cpp
+@@ -101,7 +101,7 @@ void CompositeFunction::setGlobalObservableDependency(ReactionClass *r, System *
+ 				cerr<<"When creating a FunctionalRxnClass of name: "+r->getName()+" you provided a function that\n";
+ 				cerr<<"depends on an observable type that I can't yet handle! (which is "+gf->getVarRefType(vr)+"\n";
+ 				cerr<<"try using type: 'MoleculeObservable' for now.\n";
+-				cerr<<"quiting..."<<endl; exit(1);
++				cerr<<"quiting..."<<endl; throw std::runtime_error("try using type: 'MoleculeObservable' for now.\n");
+ 			}
+ 		}
+ 	}
+@@ -268,7 +268,7 @@ void CompositeFunction::finalizeInitialization(System *s)
+ 		} catch (std::runtime_error e) {
+ 			cerr<<"When referencing a reactant, you must include the reactant number"<<endl;
+ 			cerr<<e.what()<<endl;
+-			exit(1);
++			throw std::runtime_error("When referencing a reactant, you must include the reactant number");
+ 		}
+ 
+ 		bool isTwoDigitNumber = true;
+@@ -285,7 +285,7 @@ void CompositeFunction::finalizeInitialization(System *s)
+ 
+ 		if(isTwoDigitNumber) {
+ 			cerr<<"When referencing a reactant, you can only reference reactant numbers up to 9."<<endl;
+-			exit(1);
++			throw std::runtime_error("When referencing a reactant, you can only reference reactant numbers up to 9");
+ 		}
+ 
+ 		if(iOneDigit>maxReactantIndex) maxReactantIndex = iOneDigit;
+@@ -356,7 +356,7 @@ void CompositeFunction::prepareForSimulation(System *s)
+ 		cout<<"Error preparing function "<<name<<" in class CompositeFunction!!  This is what happened:"<<endl;
+ 		cout<< "  "<<e.GetMsg() << endl;
+ 		cout<<"Quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("Quitting");
+ 	}
+ 
+ 
+@@ -490,7 +490,7 @@ double CompositeFunction::evaluateOn(Molecule **molList, int *scope, int *curRea
+ 			cout<<"Error evaluating composite function: "<<name<<endl;
+ 			cout<<"This function depends on local functions, but you gave no molecules"<<endl;
+ 			cout<<"or scope when calling this function.  Time to quit."<<endl;
+-			exit(1);
++			throw std::runtime_error("or scope when calling this function.  Time to quit");
+ 		}
+ 
+ 	}
+@@ -658,4 +658,4 @@ void CompositeFunction::fileUpdate() {
+ 	p->DefineConst(ctrName, y);
+ 	return;
+ }
+-// AS-2021
+\ No newline at end of file
++// AS-2021
+diff --git a/src/NFfunction/function.cpp b/src/NFfunction/function.cpp
+index dafc4fc..01b5ff5 100644
+--- a/src/NFfunction/function.cpp
++++ b/src/NFfunction/function.cpp
+@@ -64,7 +64,7 @@ GlobalFunction::GlobalFunction(const string& name,
+ 	if(varRefNames.size()!=varRefTypes.size()) {
+ 		cerr<<"Trying to create a global function, but your variable reference vectors don't match up in size!"<<endl;
+ 		cerr<<"Quitting!"<<endl;
+-		exit(1);
++		throw std::runtime_error("Quitting!");
+ 	}
+ 
+ 	this->name = name;
+@@ -123,7 +123,7 @@ void GlobalFunction::prepareForSimulation(System *s)
+ 					cout<<"When creating global function: "<<this->name<<endl<<" could not find the observable: ";
+ 					cout<<varRefNames[vr]<<" of type "<<varRefTypes[vr]<<endl;
+ 					cout<<"Quitting."<<endl;
+-					exit(1);
++					throw std::runtime_error("Quitting");
+ 				}
+ 				obs->addReferenceToMyself(p);
+ 			} else {
+@@ -131,7 +131,7 @@ void GlobalFunction::prepareForSimulation(System *s)
+ 				cout<<"Uh oh, an unrecognized argType ("<<varRefTypes[vr]<<") for a function! "<<varRefNames[vr]<<endl;
+ 				cout<<"Try using the type: \"MoleculeObservable\""<<endl;
+ 				cout<<"Quitting because this will give unpredicatable results, or just crash."<<endl;
+-				exit(1);
++				throw std::runtime_error("Quitting because this will give unpredicatable results, or just crash");
+ 			}
+ 		}
+ 
+@@ -150,7 +150,7 @@ void GlobalFunction::prepareForSimulation(System *s)
+ 		cout<<"Error preparing function "<<name<<" in class GlobalFunction!!  This is what happened:"<<endl;
+ 		cout<< "  "<<e.GetMsg() << endl;
+ 		cout<<"Quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("Quitting");
+ 	}
+ }
+ 
+@@ -390,7 +390,7 @@ StateCounter::StateCounter(string name, MoleculeType *mt, string stateName) {
+ 		cerr<<"Trying to create a stateCounter: '"<<name<<"' on the state: '"<<stateName<<"'\n";
+ 		cerr<<"of MoleculeType: '"<<mt->getName()<<"', but the state you have selected cannot\n";
+ 		cerr<<"have integer values, so summations on this state are undefined.  I am quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("have integer values, so summations on this state are undefined.  I am quitting");
+ 	}
+ }
+ StateCounter::~StateCounter() {
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index 97afbf2..1ea59dd 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -1,6 +1,7 @@
+ #include "NFinput.hh"
+ #include "NFinput_energy.hh"
+ #include "../NFcore/compartment.hh"
++#include <stdexcept>
+ 
+ 
+ #include <algorithm>
+@@ -1301,7 +1302,7 @@ bool NFinput::initReactionRulePermutation(
+ 						if (verbose) cout << "\t\t\tUsing symmetry factor = " << symmetryFactor << endl;
+ 					} catch (std::runtime_error &e1) {
+ 						cerr<<"Error!! Symmetry Factor for ReactionRule "<<rxnName<<" was not set properly.  quitting."<<endl;
+-						exit(1);
++						throw std::runtime_error("Error!! Symmetry Factor for ReactionRule");
+ 					}
+ 				}
+ 
+@@ -1861,7 +1862,7 @@ bool NFinput::initReactionRulePermutation(
+ 								//if(allowedStates.find(c->t->getMoleculeTypeName()+"_"+lookupname+"_"+finalState)==allowedStates.end()) {
+ 									cout<<"Error! in NFinput, when looking up state: "<<c->t->getMoleculeTypeName()+"_"+c->symPermutationName+"_"+finalState<<endl;
+ 									cout<<"Could not find this in the list of allowed states!  exiting!"<<endl;
+-									exit(1);
++									throw std::runtime_error("Could not find this in the list of allowed states!  exiting!");
+ 								//}
+ 							}
+ 							finalStateInt = allowedStates.find(c->t->getMoleculeTypeName()+"_"+lookupname+"_"+finalState)->second;
+@@ -2205,7 +2206,7 @@ bool NFinput::initReactionRulePermutation(
+ 								cerr<<"Error in adding an delete molecule operation in ReactionClass: '"+rxnName+"'."<<endl;
+ 
+ 								cerr<<"Invalid read!  Looking for "<<id<<" but could not find it!"<<endl;
+-								exit(1);
++								throw std::runtime_error("Invalid read!  Looking for");
+ 							}
+ 							//cout<<"Templates.size() "<<templates.size()<<endl;
+ 							//c.t->printDetails();
+@@ -2274,7 +2275,7 @@ bool NFinput::initReactionRulePermutation(
+ 					} catch (std::runtime_error &e1) {
+ 						//cerr<<e1.what()<<endl;
+ 						cerr<<"Error!! totalrate flag for ReactionRule "<<rxnName<<" was not set properly.  quitting."<<endl;
+-						exit(1);
++						throw std::runtime_error("Error!! totalrate flag for ReactionRule");
+ 					}
+ 				}
+ 
+@@ -2536,7 +2537,7 @@ bool NFinput::initReactionRulePermutation(
+ 							if(lf!=NULL) {
+ 								cout<<"Error!! call a local function through a composite function always!"<<endl;
+ 								cout<<"DOR rxn should never directly call a local function."<<endl;
+-								exit(1);
++								throw std::runtime_error("DOR rxn should never directly call a local function");
+ 							} else {
+ 
+ 								ts->finalize();
+@@ -2634,13 +2635,13 @@ bool NFinput::initReactionRulePermutation(
+ 						if ( funcArgs1.size() < 1 )
+ 						{
+ 							cout<<"Error!! FunctionProduct ratelaw is missing argument for function1."<<endl;
+-							exit(1);
++							throw std::runtime_error("Error!! FunctionProduct ratelaw is missing argument for function1");
+ 						}
+ 
+ 						if ( funcArgs2.size() < 1 )
+ 						{
+ 							cout<<"Error!! FunctionProduct ratelaw is missing argument for function2."<<endl;
+-							exit(1);
++							throw std::runtime_error("Error!! FunctionProduct ratelaw is missing argument for function2");
+ 						}
+ 
+ 						//cout << "n_funcArgs1: " << funcArgs1.size() << endl;
+@@ -2651,7 +2652,7 @@ bool NFinput::initReactionRulePermutation(
+ 						if(lf1 != NULL) {
+ 							cout<<"Error!! call a local function through a composite function always!"<<endl;
+ 							cout<<"DOR rxn should never directly call a local function."<<endl;
+-							exit(1);
++							throw std::runtime_error("DOR rxn should never directly call a local function");
+ 						}
+ 
+ 						string functionName2 = pRateLaw->Attribute("name2");
+@@ -2659,7 +2660,7 @@ bool NFinput::initReactionRulePermutation(
+ 						if(lf2 != NULL) {
+ 							cout<<"Error!! call a local function through a composite function always!"<<endl;
+ 							cout<<"DOR rxn should never directly call a local function."<<endl;
+-							exit(1);
++							throw std::runtime_error("DOR rxn should never directly call a local function");
+ 						}
+ 
+ 						ts->finalize();
+@@ -3203,13 +3204,13 @@ TemplateMolecule *NFinput::readPattern(
+ 				cerr<<"\n\nError!  You cannot include a 'null' molecule in any reactant or observable pattern!"<<endl;
+ 				cerr<<"Null is a keyword in NFsim used for degradation, so cannot be used.  Check your"<<endl;
+ 				cerr<<"rules and patterns and remove any usage of 'Null' or 'null' or 'NULL'."<<endl;
+-				exit(1);
++				throw std::runtime_error("rules and patterns and remove any usage of 'Null' or 'null' or 'NULL'");
+ 			}
+ 			if(molName=="Trash" || molName=="TRASH" || molName=="trash") {
+ 				cerr<<"\n\nError!  You cannot include a 'trash' molecule in any reactant or observable pattern!"<<endl;
+ 			    cerr<<"Trash is a keyword in NFsim used for degradation, so cannot be used.  Check your"<<endl;
+ 			    cerr<<"rules and patterns and remove any usage of 'Trash' or 'trash' or 'TRASH'."<<endl;
+-				exit(1);
++				throw std::runtime_error("rules and patterns and remove any usage of 'Trash' or 'trash' or 'TRASH'");
+ 			}
+ 
+ 
+diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
+index fc6bd35..9fa1ca9 100644
+--- a/src/NFreactions/reactions/reaction.cpp
++++ b/src/NFreactions/reactions/reaction.cpp
+@@ -3,6 +3,7 @@
+ 
+ 
+ #include "reaction.hh"
++#include <stdexcept>
+ 
+ 
+ using namespace std;
+@@ -25,7 +26,7 @@ FunctionalRxnClass::FunctionalRxnClass(string name, GlobalFunction *gf, Transfor
+ 			cerr<<"When creating a FunctionalRxnClass of name: "+name+" you provided a function that\n";
+ 			cerr<<"depends on an observable type that I can't yet handle! (which is "+gf->getVarRefType(vr)+"\n";
+ 			cerr<<"try using type: 'MoleculeObservable' for now.\n";
+-			cerr<<"quiting..."<<endl; exit(1);
++			cerr<<"quiting..."<<endl; throw std::runtime_error("try using type: 'MoleculeObservable' for now.\n");
+ 		}
+ 	}
+ }
+@@ -48,7 +49,7 @@ double FunctionalRxnClass::update_a() {
+ 		cerr<<"Warning!!  You have on the fly observables turned off, but you are using functional\n";
+ 		cerr<<"reactions which depend on observables.  Therefore, you cannot turn off onTheFlyObservables!\n";
+ 		cerr<<"exiting now."<<endl;
+-		exit(1);
++		throw std::runtime_error("exiting now");
+ 	}
+ 
+ 
+@@ -74,7 +75,7 @@ double FunctionalRxnClass::update_a() {
+ 	//	cout<<"and here"<<endl;
+ 	} else {
+ 		cout<<"Error!  Functional rxn is not properly initialized, but is being used!"<<endl;
+-		exit(1);
++		throw std::runtime_error("Error!  Functional rxn is not properly initialized, but is being used!");
+ 	}
+ 
+ 	a *= this->volumeConversionFactor;
+@@ -87,7 +88,7 @@ double FunctionalRxnClass::update_a() {
+ 		cout<<"\nhere is the offending reaction: \n";
+ 		this->printDetails();
+ 		cout<<"\n\nquitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("\n\nquitting");
+ 	}
+ 
+ 
+@@ -168,7 +169,7 @@ MMRxnClass::MMRxnClass(string name, double kcat, double Km, TransformationSet *t
+ 		cerr<<"but you don't have the correct number of reactants!  Michaelis-Menten reactions require\n";
+ 		cerr<<"exactly 2 reactants.  A substrate (always given first) and an enzyme (always given second)\n";
+ 		cerr<<"Read your tutorial next time... now I will quit."<<endl;
+-		exit(1);
++		throw std::runtime_error("Read your tutorial next time... now I will quit");
+ 	}
+ }
+ MMRxnClass::~MMRxnClass() {};
+@@ -400,7 +401,7 @@ void BasicRxnClass::remove(Molecule *m, unsigned int reactantPos)
+ 	if(reactantPos<0 || reactantPos>=n_reactants || m==NULL)
+ 	{
+ 		cout<<"Error removing molecule from a reaction!!  Invalid molecule or reactant position given.  Quitting."<<endl;
+-		exit(1);
++		throw std::runtime_error("NFsim error in NFreactions/reactions/reaction.cpp near line 438");
+ 	}
+ 
+ 
+@@ -426,7 +427,7 @@ void BasicRxnClass::notifyRateFactorChange(Molecule * m, int reactantIndex, int
+ {
+ 	cerr<<"You are trying to notify a Basic Reaction of a rate Factor Change!!! You should only use this"<<endl;
+ 	cerr<<"function for DORrxnClass rules!  For this offense, I must abort now."<<endl;
+-	exit(1);
++	throw std::runtime_error("function for DORrxnClass rules!  For this offense, I must abort now");
+ }
+ 
+ double BasicRxnClass::exactRuleMonkey_a()
+@@ -627,4 +628,3 @@ void BasicRxnClass::pickMappingSets(double random_A_number) const
+ }
+ 
+ 
+-
+-- 
+2.53.0
+

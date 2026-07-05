@@ -1,0 +1,124 @@
+begin model
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# cytoplasmic volume
+V 1.2e-12 # L per cell
+
+# RNA copy numbers
+
+miR367_copyNum 10000 # copies per cell
+MIR302367_copyNum 1000 # copies per cell
+RYR3_copyNum 1000 # copies per cell
+RAB23_copyNum 1000 # copies per cell
+otherTargets_copyNum 2e5 # copies per cell
+
+kp1 1e6/(NA*V) # /M/s converted to /(molecule/cell)/s
+km1 0.1 # /s
+kp2 1e6/(NA*V) # /M/s converted to /(molecule/cell)/s
+km2 0.1 # /s
+kp3 1e6/(NA*V) # /M/s converted to /(molecule/cell)/s
+km3 0.1 # /s
+kp4 1e6/(NA*V) # /M/s converted to /(molecule/cell)/s
+km4 0.1 # /s
+
+kp1prime 5e5/(NA*V) # /M/s converted to /(molecule/cell)/s
+km1prime 0.5 # /s
+kp2prime 5e5/(NA*V) # /M/s converted to /(molecule/cell)/s
+km2prime 0.5 # /s
+
+ksynth 1 # molecule per s
+kdeg_slow 0.001 # /s
+kdeg_fast 0.1 # /s
+k_nuclease 0.01 # /s
+
+end parameters
+
+begin molecule types
+miR367(y)
+MIR302367(x1)
+MIR302367_SNP(x1_SNP)
+RYR3(x2)
+RYR3_SNP(x2_SNP)
+RAB23(z)
+otherTargets(u)
+end molecule types
+
+begin seed species
+miR367(y) miR367_copyNum
+MIR302367(x1) 0.5*MIR302367_copyNum
+MIR302367_SNP(x1_SNP) 0.5*MIR302367_copyNum
+RYR3(x2) 0.5*RYR3_copyNum
+RYR3_SNP(x2_SNP) 0.5*RYR3_copyNum
+RAB23(z) RAB23_copyNum
+otherTargets(u) otherTargets_copyNum
+end seed species
+
+begin observables
+Molecules miR367_abundance miR367()
+Molecules MIR302367_WT_abundance MIR302367()
+Molecules MIR302367_SNP_abundance MIR302367_SNP()
+Molecules RYR3_WT_abundance RYR3()
+Molecules RYR3_SNP_abundance RYR3_SNP()
+Molecules RAB23_abundance RAB23()
+Molecules miR367_boundTo_MIR302367 miR367(y!1).MIR302367(x1!1)
+Molecules miR367_boundTo_MIR302367_SNP miR367(y!1).MIR302367_SNP(x1_SNP!1)
+Molecules miR367_boundTo_RYR3 miR367(y!1).RYR3(x2!1)
+Molecules miR367_boundTo_RYR3_SNP miR367(y!1).RYR3_SNP(x2_SNP!1)
+Molecules miR367_boundTo_RAB23 miR367(y!1).RAB23(z!1)
+Molecules miR367_boundTo_otherTargets miR367(y!1).otherTargets(u!1)
+end observables
+
+begin functions
+end functions
+
+begin reaction rules
+
+# interactions of miR367 with transcripts
+miR367(y)+MIR302367(x1)<->miR367(y!1).MIR302367(x1!1) kp1,km1
+miR367(y)+MIR302367_SNP(x1_SNP)<->miR367(y!1).MIR302367_SNP(x1_SNP!1) kp1prime,km1prime
+miR367(y)+RYR3(x2)<->miR367(y!1).RYR3(x2!1) kp2,km2
+miR367(y)+RYR3_SNP(x2_SNP)<->miR367(y!1).RYR3_SNP(x2_SNP!1) kp2prime,km2prime
+miR367(y)+RAB23(z)<->miR367(y!1).RAB23(z!1) kp3,km3
+miR367(y)+otherTargets(u)<->miR367(y!1).otherTargets(u!1) kp4,km4
+
+# synthesis of transcripts
+0->MIR302367(x1) 0.5*ksynth
+0->MIR302367_SNP(x1_SNP) 0.5*ksynth
+0->RYR3(x2) 0.5*ksynth
+0->RYR3_SNP(x2_SNP) 0.5*ksynth
+0->RAB23(z) ksynth
+
+# processing of MIR302367 (generation of miR367)
+MIR302367(x1)->miR367(y) k_nuclease
+MIR302367_SNP(x1_SNP)->miR367(y) k_nuclease
+
+# degradation
+#   slow
+MIR302367(x1)->0 kdeg_slow
+MIR302367_SNP(x1_SNP)->0 kdeg_slow
+RYR3(x2)->0 kdeg_slow
+RYR3_SNP(x2_SNP)->0 kdeg_slow
+RAB23(z)->0 kdeg_slow
+miR367(y)->0 kdeg_slow
+#   fast
+MIR302367(x1!1).miR367(y!1)->miR367(y) kdeg_fast
+MIR302367_SNP(x1_SNP!1).miR367(y!1)->miR367(y) kdeg_fast
+RYR3(x2!1).miR367(y!1)->miR367(y) kdeg_fast
+RYR3_SNP(x2_SNP!1).miR367(y!1)->miR367(y) kdeg_fast
+RAB23(z!1).miR367(y!1)->miR367(y) kdeg_fast
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+writeMfile()
+simulate({method=>"ssa",t_start=>1,t_end=>12000,n_steps=>600})
+
+end actions

@@ -1,0 +1,51 @@
+begin model
+begin parameters
+    k_release 0.05
+    k_bind 0.02
+    k_unbind 0.002
+    k_integrin 0.4
+    k_tx 0.3
+    k_reset 0.07
+end parameters
+
+begin molecule types
+    ADP(medium~low~high)
+    P2Y12(l,state~inactive~active)
+    Integrin(state~closed~open)
+    Thromboxane(level~basal~elevated)
+end molecule types
+
+begin seed species
+    ADP(medium~low) 80
+    P2Y12(l,state~inactive) 50
+    Integrin(state~closed) 60
+    Thromboxane(level~basal) 40
+end seed species
+
+begin reaction rules
+    ADP(medium~low) -> ADP(medium~high) k_release
+    ADP(medium~high) + P2Y12(l,state~inactive) <-> ADP(medium~high!1).P2Y12(l!1,state~inactive) k_bind,k_unbind
+    ADP(medium~high!1).P2Y12(l!1,state~inactive) -> ADP(medium~high!1).P2Y12(l!1,state~active) k_integrin
+    # Bound active P2Y12 dissociates and releases active P2Y12 which activates integrins
+    ADP(medium~high!1).P2Y12(l!1,state~active) -> ADP(medium~high) + P2Y12(l,state~active) k_unbind*10
+    P2Y12(l,state~active) + Integrin(state~closed) -> P2Y12(l,state~active) + Integrin(state~open) k_integrin
+    Integrin(state~open) + Thromboxane(level~basal) -> Integrin(state~open) + Thromboxane(level~elevated) k_tx
+    Integrin(state~open) -> Integrin(state~closed) k_reset
+    Thromboxane(level~elevated) -> Thromboxane(level~basal) k_reset
+    P2Y12(l,state~active) -> P2Y12(l,state~inactive) k_reset
+    ADP(medium~high) -> ADP(medium~low) k_reset
+end reaction rules
+
+begin observables
+    Molecules High_ADP ADP(medium~high)
+    Molecules Active_P2Y12 P2Y12(state~active)
+    Molecules Open_Integrin Integrin(state~open)
+    Molecules Elevated_Thromboxane Thromboxane(level~elevated)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>70,n_steps=>140})
+end actions
+end model
+

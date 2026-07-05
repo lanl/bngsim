@@ -1,0 +1,603 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 a        4.9e-6  # Constant
+    2 p2R1     10.5e-6  # Constant
+    3 p2R2     6.3e-6  # Constant
+    4 p3R1     16.2e-6  # Constant
+    5 p3R2     6.6e-6  # Constant
+    6 pscaff   97.7  # Constant
+    7 d1       0.1  # Constant
+    8 d2       100  # Constant
+    9 u        0.14  # Constant
+   10 u2R1     0.12  # Constant
+   11 u2R2     0.15  # Constant
+   12 u3R1     0.11  # Constant
+   13 u3R2     0.13  # Constant
+   14 Atot     10e5  # Constant
+   15 Btot     10e5  # Constant
+   16 Ctot     5*10e5  # Constant
+   17 Stot     10e5  # Constant
+   18 S        1e-3  # Constant
+end parameters
+begin species
+    1 MAP3K(S~I,s) Atot
+    2 MAP2K(R1~Y,R2~Y,s) Btot
+    3 MAPK(R1~Y,R2~Y,s) Ctot
+    4 Scaff(map2k,map3k,mapk) Stot
+    5 MAP3K(S~A,s) 0
+    6 MAP2K(R1~Y,R2~Y,s!1).Scaff(map2k!1,map3k,mapk) 0
+    7 MAPK(R1~Y,R2~Y,s!1).Scaff(map2k,map3k,mapk!1) 0
+    8 MAP3K(S~A,s!1).Scaff(map2k,map3k!1,mapk) 0
+    9 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   10 MAP3K(S~A,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   11 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   12 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   13 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   14 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   15 MAP3K(S~I,s!1).Scaff(map2k,map3k!1,mapk) 0
+   16 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   17 MAP3K(S~I,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   18 MAP2K(R1~Yp,R2~Y,s!1).Scaff(map2k!1,map3k,mapk) 0
+   19 MAP2K(R1~Y,R2~Yp,s!1).Scaff(map2k!1,map3k,mapk) 0
+   20 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   21 MAP2K(R1~Yp,R2~Y,s) 0
+   22 MAP2K(R1~Y,R2~Yp,s) 0
+   23 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   24 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   25 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   26 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   27 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   28 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   29 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   30 MAP2K(R1~Yp,R2~Yp,s!1).Scaff(map2k!1,map3k,mapk) 0
+   31 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   32 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   33 MAP2K(R1~Yp,R2~Yp,s) 0
+   34 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   35 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   36 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   37 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   38 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   39 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   40 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   41 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   42 MAP3K(S~A,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   43 MAP3K(S~A,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   44 MAPK(R1~Yp,R2~Y,s) 0
+   45 MAPK(R1~Y,R2~Yp,s) 0
+   46 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   47 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   48 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   49 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   50 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   51 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   52 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   53 MAPK(R1~Yp,R2~Y,s!1).Scaff(map2k,map3k,mapk!1) 0
+   54 MAPK(R1~Y,R2~Yp,s!1).Scaff(map2k,map3k,mapk!1) 0
+   55 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   56 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   57 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   58 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   59 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   60 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   61 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   62 MAP3K(S~I,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   63 MAP3K(S~A,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   64 MAP3K(S~I,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   65 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   66 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   67 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   68 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   69 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   70 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   71 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   72 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   73 MAPK(R1~Yp,R2~Yp,s) 0
+   74 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   75 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   76 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   77 MAPK(R1~Yp,R2~Yp,s!1).Scaff(map2k,map3k,mapk!1) 0
+   78 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   79 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   80 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   81 MAP3K(S~I,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   82 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   83 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   84 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   85 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+end species
+begin reactions
+    1 1 5 S #_R1
+    2 2,4 6 a #_R4
+    3 3,4 7 a #_R8
+    4 4,5 8 a #_R2
+    5 5,6 9 a #_R2
+    6 5,7 10 a #_R2
+    7 2,7 11 a #_R4
+    8 6 2,4 d1 #_reverse__R4
+    9 3,6 11 a #_R8
+   10 7 3,4 d1 #_reverse__R8
+   11 5 1 u #_R16
+   12 5,11 12 a #_R2
+   13 8 4,5 d1 #_reverse__R2
+   14 9 5,6 d1 #_reverse__R2
+   15 10 5,7 d1 #_reverse__R2
+   16 2,8 9 a #_R4
+   17 2,10 12 a #_R4
+   18 9 2,8 d1 #_reverse__R4
+   19 11 2,7 d1 #_reverse__R4
+   20 3,8 10 a #_R8
+   21 3,9 12 a #_R8
+   22 10 3,8 d1 #_reverse__R8
+   23 11 3,6 d1 #_reverse__R8
+   24 9 13 pscaff #_R12
+   25 9 14 pscaff #_R13
+   26 8 15 u #_R16
+   27 9 16 u #_R16
+   28 10 17 u #_R16
+   29 12 5,11 d1 #_reverse__R2
+   30 13 5,18 d1 #_reverse__R2
+   31 14 5,19 d1 #_reverse__R2
+   32 15 1,4 d2 #_R3
+   33 16 1,6 d2 #_R3
+   34 17 1,7 d2 #_R3
+   35 2,15 16 a #_R4
+   36 2,17 20 a #_R4
+   37 12 2,10 d1 #_reverse__R4
+   38 16 2,15 d1 #_reverse__R4
+   39 13 8,21 d1 #_reverse__R5
+   40 14 8,22 d1 #_reverse__R6
+   41 3,13 23 a #_R8
+   42 3,14 24 a #_R8
+   43 3,15 17 a #_R8
+   44 3,16 20 a #_R8
+   45 12 3,9 d1 #_reverse__R8
+   46 17 3,15 d1 #_reverse__R8
+   47 12 23 pscaff #_R12
+   48 14 25 pscaff #_R12
+   49 12 24 pscaff #_R13
+   50 13 25 pscaff #_R13
+   51 12 20 u #_R16
+   52 13 26 u #_R16
+   53 14 27 u #_R16
+   54 13 9 u #_R17
+   55 14 9 u #_R18
+   56 5,18 13 a #_R2
+   57 5,19 14 a #_R2
+   58 23 5,28 d1 #_reverse__R2
+   59 24 5,29 d1 #_reverse__R2
+   60 25 5,30 d1 #_reverse__R2
+   61 20 1,11 d2 #_R3
+   62 26 1,18 d2 #_R3
+   63 27 1,19 d2 #_R3
+   64 20 2,17 d1 #_reverse__R4
+   65 4,21 18 a #_R5
+   66 7,21 28 a #_R5
+   67 8,21 13 a #_R5
+   68 10,21 23 a #_R5
+   69 15,21 26 a #_R5
+   70 17,21 31 a #_R5
+   71 18 4,21 d1 #_reverse__R5
+   72 23 10,21 d1 #_reverse__R5
+   73 26 15,21 d1 #_reverse__R5
+   74 4,22 19 a #_R6
+   75 7,22 29 a #_R6
+   76 8,22 14 a #_R6
+   77 10,22 24 a #_R6
+   78 15,22 27 a #_R6
+   79 17,22 32 a #_R6
+   80 19 4,22 d1 #_reverse__R6
+   81 24 10,22 d1 #_reverse__R6
+   82 27 15,22 d1 #_reverse__R6
+   83 25 8,33 d1 #_reverse__R7
+   84 3,18 28 a #_R8
+   85 3,19 29 a #_R8
+   86 3,25 34 a #_R8
+   87 3,26 31 a #_R8
+   88 3,27 32 a #_R8
+   89 20 3,16 d1 #_reverse__R8
+   90 23 3,13 d1 #_reverse__R8
+   91 24 3,14 d1 #_reverse__R8
+   92 24 34 pscaff #_R12
+   93 23 34 pscaff #_R13
+   94 23 31 u #_R16
+   95 24 32 u #_R16
+   96 25 35 u #_R16
+   97 18 6 u #_R17
+   98 21 2 u #_R17
+   99 23 12 u #_R17
+  100 25 14 u #_R17
+  101 26 16 u #_R17
+  102 19 6 u #_R18
+  103 22 2 u #_R18
+  104 24 12 u #_R18
+  105 25 13 u #_R18
+  106 27 16 u #_R18
+  107 5,28 23 a #_R2
+  108 5,29 24 a #_R2
+  109 5,30 25 a #_R2
+  110 34 5,36 d1 #_reverse__R2
+  111 31 1,28 d2 #_R3
+  112 32 1,29 d2 #_R3
+  113 35 1,30 d2 #_R3
+  114 28 7,21 d1 #_reverse__R5
+  115 31 17,21 d1 #_reverse__R5
+  116 29 7,22 d1 #_reverse__R6
+  117 32 17,22 d1 #_reverse__R6
+  118 4,33 30 a #_R7
+  119 7,33 36 a #_R7
+  120 8,33 25 a #_R7
+  121 10,33 34 a #_R7
+  122 15,33 35 a #_R7
+  123 17,33 37 a #_R7
+  124 30 4,33 d1 #_reverse__R7
+  125 34 10,33 d1 #_reverse__R7
+  126 35 15,33 d1 #_reverse__R7
+  127 3,30 36 a #_R8
+  128 3,35 37 a #_R8
+  129 28 3,18 d1 #_reverse__R8
+  130 29 3,19 d1 #_reverse__R8
+  131 31 3,26 d1 #_reverse__R8
+  132 32 3,27 d1 #_reverse__R8
+  133 34 3,25 d1 #_reverse__R8
+  134 34 38 pscaff #_R14
+  135 34 39 pscaff #_R15
+  136 34 37 u #_R16
+  137 28 11 u #_R17
+  138 30 19 u #_R17
+  139 31 20 u #_R17
+  140 33 22 u #_R17
+  141 34 24 u #_R17
+  142 35 27 u #_R17
+  143 29 11 u #_R18
+  144 30 18 u #_R18
+  145 32 20 u #_R18
+  146 33 21 u #_R18
+  147 34 23 u #_R18
+  148 35 26 u #_R18
+  149 5,36 34 a #_R2
+  150 38 5,40 d1 #_reverse__R2
+  151 39 5,41 d1 #_reverse__R2
+  152 37 1,36 d2 #_R3
+  153 36 7,33 d1 #_reverse__R7
+  154 37 17,33 d1 #_reverse__R7
+  155 38 33,42 d1 #_reverse__R7
+  156 39 33,43 d1 #_reverse__R7
+  157 36 3,30 d1 #_reverse__R8
+  158 37 3,35 d1 #_reverse__R8
+  159 38 25,44 d1 #_reverse__R9
+  160 39 25,45 d1 #_reverse__R10
+  161 36 40 pscaff #_R14
+  162 37 46 pscaff #_R14
+  163 39 47 pscaff #_R14
+  164 36 41 pscaff #_R15
+  165 37 48 pscaff #_R15
+  166 38 47 pscaff #_R15
+  167 38 46 u #_R16
+  168 39 48 u #_R16
+  169 36 29 u #_R17
+  170 37 32 u #_R17
+  171 38 49 u #_R17
+  172 39 50 u #_R17
+  173 36 28 u #_R18
+  174 37 31 u #_R18
+  175 38 51 u #_R18
+  176 39 52 u #_R18
+  177 38 34 u #_R19
+  178 39 34 u #_R20
+  179 5,40 38 a #_R2
+  180 5,41 39 a #_R2
+  181 42 5,53 d1 #_reverse__R2
+  182 43 5,54 d1 #_reverse__R2
+  183 47 5,55 d1 #_reverse__R2
+  184 49 5,56 d1 #_reverse__R2
+  185 50 5,57 d1 #_reverse__R2
+  186 51 5,58 d1 #_reverse__R2
+  187 52 5,59 d1 #_reverse__R2
+  188 46 1,40 d2 #_R3
+  189 48 1,41 d2 #_R3
+  190 2,42 60 a #_R4
+  191 2,43 61 a #_R4
+  192 21,42 51 a #_R5
+  193 21,43 52 a #_R5
+  194 51 21,42 d1 #_reverse__R5
+  195 52 21,43 d1 #_reverse__R5
+  196 22,42 49 a #_R6
+  197 22,43 50 a #_R6
+  198 49 22,42 d1 #_reverse__R6
+  199 50 22,43 d1 #_reverse__R6
+  200 33,42 38 a #_R7
+  201 33,43 39 a #_R7
+  202 40 33,53 d1 #_reverse__R7
+  203 41 33,54 d1 #_reverse__R7
+  204 46 33,62 d1 #_reverse__R7
+  205 47 33,63 d1 #_reverse__R7
+  206 48 33,64 d1 #_reverse__R7
+  207 4,44 53 a #_R9
+  208 6,44 65 a #_R9
+  209 8,44 42 a #_R9
+  210 9,44 60 a #_R9
+  211 13,44 51 a #_R9
+  212 14,44 49 a #_R9
+  213 15,44 62 a #_R9
+  214 16,44 66 a #_R9
+  215 18,44 58 a #_R9
+  216 19,44 56 a #_R9
+  217 25,44 38 a #_R9
+  218 26,44 67 a #_R9
+  219 27,44 68 a #_R9
+  220 30,44 40 a #_R9
+  221 35,44 46 a #_R9
+  222 40 30,44 d1 #_reverse__R9
+  223 42 8,44 d1 #_reverse__R9
+  224 46 35,44 d1 #_reverse__R9
+  225 49 14,44 d1 #_reverse__R9
+  226 51 13,44 d1 #_reverse__R9
+  227 4,45 54 a #_R10
+  228 6,45 69 a #_R10
+  229 8,45 43 a #_R10
+  230 9,45 61 a #_R10
+  231 13,45 52 a #_R10
+  232 14,45 50 a #_R10
+  233 15,45 64 a #_R10
+  234 16,45 70 a #_R10
+  235 18,45 59 a #_R10
+  236 19,45 57 a #_R10
+  237 25,45 39 a #_R10
+  238 26,45 71 a #_R10
+  239 27,45 72 a #_R10
+  240 30,45 41 a #_R10
+  241 35,45 48 a #_R10
+  242 41 30,45 d1 #_reverse__R10
+  243 43 8,45 d1 #_reverse__R10
+  244 48 35,45 d1 #_reverse__R10
+  245 50 14,45 d1 #_reverse__R10
+  246 52 13,45 d1 #_reverse__R10
+  247 47 25,73 d2 #_R11
+  248 49 38 pscaff #_R12
+  249 50 39 pscaff #_R12
+  250 51 38 pscaff #_R13
+  251 52 39 pscaff #_R13
+  252 41 55 pscaff #_R14
+  253 48 74 pscaff #_R14
+  254 40 55 pscaff #_R15
+  255 46 74 pscaff #_R15
+  256 42 62 u #_R16
+  257 43 64 u #_R16
+  258 47 74 u #_R16
+  259 49 68 u #_R16
+  260 50 72 u #_R16
+  261 51 67 u #_R16
+  262 52 71 u #_R16
+  263 40 56 u #_R17
+  264 41 57 u #_R17
+  265 46 68 u #_R17
+  266 47 75 u #_R17
+  267 48 72 u #_R17
+  268 51 60 u #_R17
+  269 52 61 u #_R17
+  270 40 58 u #_R18
+  271 41 59 u #_R18
+  272 46 67 u #_R18
+  273 47 76 u #_R18
+  274 48 71 u #_R18
+  275 49 60 u #_R18
+  276 50 61 u #_R18
+  277 40 36 u #_R19
+  278 42 10 u #_R19
+  279 44 3 u #_R19
+  280 46 37 u #_R19
+  281 47 39 u #_R19
+  282 49 24 u #_R19
+  283 51 23 u #_R19
+  284 41 36 u #_R20
+  285 43 10 u #_R20
+  286 45 3 u #_R20
+  287 47 38 u #_R20
+  288 48 37 u #_R20
+  289 50 24 u #_R20
+  290 52 23 u #_R20
+  291 5,53 42 a #_R2
+  292 5,54 43 a #_R2
+  293 5,55 47 a #_R2
+  294 5,56 49 a #_R2
+  295 5,57 50 a #_R2
+  296 5,58 51 a #_R2
+  297 5,59 52 a #_R2
+  298 5,65 60 a #_R2
+  299 5,69 61 a #_R2
+  300 60 5,65 d1 #_reverse__R2
+  301 61 5,69 d1 #_reverse__R2
+  302 63 5,77 d1 #_reverse__R2
+  303 75 5,78 d1 #_reverse__R2
+  304 76 5,79 d1 #_reverse__R2
+  305 62 1,53 d2 #_R3
+  306 64 1,54 d2 #_R3
+  307 66 1,65 d2 #_R3
+  308 67 1,58 d2 #_R3
+  309 68 1,56 d2 #_R3
+  310 70 1,69 d2 #_R3
+  311 71 1,59 d2 #_R3
+  312 72 1,57 d2 #_R3
+  313 74 1,55 d2 #_R3
+  314 2,53 65 a #_R4
+  315 2,54 69 a #_R4
+  316 2,62 66 a #_R4
+  317 2,63 80 a #_R4
+  318 2,64 70 a #_R4
+  319 60 2,42 d1 #_reverse__R4
+  320 61 2,43 d1 #_reverse__R4
+  321 65 2,53 d1 #_reverse__R4
+  322 66 2,62 d1 #_reverse__R4
+  323 69 2,54 d1 #_reverse__R4
+  324 70 2,64 d1 #_reverse__R4
+  325 21,53 58 a #_R5
+  326 21,54 59 a #_R5
+  327 21,62 67 a #_R5
+  328 21,63 76 a #_R5
+  329 21,64 71 a #_R5
+  330 58 21,53 d1 #_reverse__R5
+  331 59 21,54 d1 #_reverse__R5
+  332 67 21,62 d1 #_reverse__R5
+  333 71 21,64 d1 #_reverse__R5
+  334 76 21,63 d1 #_reverse__R5
+  335 22,53 56 a #_R6
+  336 22,54 57 a #_R6
+  337 22,62 68 a #_R6
+  338 22,63 75 a #_R6
+  339 22,64 72 a #_R6
+  340 56 22,53 d1 #_reverse__R6
+  341 57 22,54 d1 #_reverse__R6
+  342 68 22,62 d1 #_reverse__R6
+  343 72 22,64 d1 #_reverse__R6
+  344 75 22,63 d1 #_reverse__R6
+  345 33,53 40 a #_R7
+  346 33,54 41 a #_R7
+  347 33,62 46 a #_R7
+  348 33,63 47 a #_R7
+  349 33,64 48 a #_R7
+  350 55 33,77 d1 #_reverse__R7
+  351 74 33,81 d1 #_reverse__R7
+  352 53 4,44 d1 #_reverse__R9
+  353 56 19,44 d1 #_reverse__R9
+  354 58 18,44 d1 #_reverse__R9
+  355 60 9,44 d1 #_reverse__R9
+  356 62 15,44 d1 #_reverse__R9
+  357 65 6,44 d1 #_reverse__R9
+  358 66 16,44 d1 #_reverse__R9
+  359 67 26,44 d1 #_reverse__R9
+  360 68 27,44 d1 #_reverse__R9
+  361 54 4,45 d1 #_reverse__R10
+  362 57 19,45 d1 #_reverse__R10
+  363 59 18,45 d1 #_reverse__R10
+  364 61 9,45 d1 #_reverse__R10
+  365 64 15,45 d1 #_reverse__R10
+  366 69 6,45 d1 #_reverse__R10
+  367 70 16,45 d1 #_reverse__R10
+  368 71 26,45 d1 #_reverse__R10
+  369 72 27,45 d1 #_reverse__R10
+  370 55 30,73 d2 #_R11
+  371 63 8,73 d2 #_R11
+  372 74 35,73 d2 #_R11
+  373 75 14,73 d2 #_R11
+  374 76 13,73 d2 #_R11
+  375 60 51 pscaff #_R12
+  376 61 52 pscaff #_R12
+  377 75 47 pscaff #_R12
+  378 60 49 pscaff #_R13
+  379 61 50 pscaff #_R13
+  380 76 47 pscaff #_R13
+  381 60 66 u #_R16
+  382 61 70 u #_R16
+  383 63 81 u #_R16
+  384 75 82 u #_R16
+  385 76 83 u #_R16
+  386 55 78 u #_R17
+  387 58 65 u #_R17
+  388 59 69 u #_R17
+  389 67 66 u #_R17
+  390 71 70 u #_R17
+  391 74 82 u #_R17
+  392 76 80 u #_R17
+  393 55 79 u #_R18
+  394 56 65 u #_R18
+  395 57 69 u #_R18
+  396 68 66 u #_R18
+  397 72 70 u #_R18
+  398 74 83 u #_R18
+  399 75 80 u #_R18
+  400 53 7 u #_R19
+  401 55 41 u #_R19
+  402 56 29 u #_R19
+  403 58 28 u #_R19
+  404 60 12 u #_R19
+  405 62 17 u #_R19
+  406 63 43 u #_R19
+  407 65 11 u #_R19
+  408 66 20 u #_R19
+  409 67 31 u #_R19
+  410 68 32 u #_R19
+  411 73 45 u #_R19
+  412 74 48 u #_R19
+  413 75 50 u #_R19
+  414 76 52 u #_R19
+  415 54 7 u #_R20
+  416 55 40 u #_R20
+  417 57 29 u #_R20
+  418 59 28 u #_R20
+  419 61 12 u #_R20
+  420 63 42 u #_R20
+  421 64 17 u #_R20
+  422 69 11 u #_R20
+  423 70 20 u #_R20
+  424 71 31 u #_R20
+  425 72 32 u #_R20
+  426 73 44 u #_R20
+  427 74 46 u #_R20
+  428 75 49 u #_R20
+  429 76 51 u #_R20
+  430 5,77 63 a #_R2
+  431 5,78 75 a #_R2
+  432 5,79 76 a #_R2
+  433 80 5,84 d1 #_reverse__R2
+  434 81 1,77 d2 #_R3
+  435 82 1,78 d2 #_R3
+  436 83 1,79 d2 #_R3
+  437 2,77 84 a #_R4
+  438 2,81 85 a #_R4
+  439 80 2,63 d1 #_reverse__R4
+  440 21,77 79 a #_R5
+  441 21,81 83 a #_R5
+  442 79 21,77 d1 #_reverse__R5
+  443 83 21,81 d1 #_reverse__R5
+  444 22,77 78 a #_R6
+  445 22,81 82 a #_R6
+  446 78 22,77 d1 #_reverse__R6
+  447 82 22,81 d1 #_reverse__R6
+  448 33,77 55 a #_R7
+  449 33,81 74 a #_R7
+  450 77 4,73 d2 #_R11
+  451 78 19,73 d2 #_R11
+  452 79 18,73 d2 #_R11
+  453 80 9,73 d2 #_R11
+  454 81 15,73 d2 #_R11
+  455 82 27,73 d2 #_R11
+  456 83 26,73 d2 #_R11
+  457 80 76 pscaff #_R12
+  458 80 75 pscaff #_R13
+  459 80 85 u #_R16
+  460 79 84 u #_R17
+  461 83 85 u #_R17
+  462 78 84 u #_R18
+  463 82 85 u #_R18
+  464 77 54 u #_R19
+  465 78 57 u #_R19
+  466 79 59 u #_R19
+  467 80 61 u #_R19
+  468 81 64 u #_R19
+  469 82 72 u #_R19
+  470 83 71 u #_R19
+  471 77 53 u #_R20
+  472 78 56 u #_R20
+  473 79 58 u #_R20
+  474 80 60 u #_R20
+  475 81 62 u #_R20
+  476 82 68 u #_R20
+  477 83 67 u #_R20
+  478 5,84 80 a #_R2
+  479 85 1,84 d2 #_R3
+  480 84 2,77 d1 #_reverse__R4
+  481 85 2,81 d1 #_reverse__R4
+  482 84 6,73 d2 #_R11
+  483 85 16,73 d2 #_R11
+  484 84 69 u #_R19
+  485 85 70 u #_R19
+  486 84 65 u #_R20
+  487 85 66 u #_R20
+end reactions
+begin groups
+    1 MAPKP                38,39,40,41,42,43,44,45,46,48,49,50,51,52,53,54,56,57,58,59,60,61,62,64,65,66,67,68,69,70,71,72
+    2 MAP2KP               13,14,18,19,21,22,23,24,26,27,28,29,31,32,49,50,51,52,56,57,58,59,67,68,71,72,75,76,78,79,82,83
+    3 MAPKPP               47,55,63,73,74,75,76,77,78,79,80,81,82,83,84,85
+    4 MAP2KPP              25,30,33,34,35,36,37,38,39,40,41,46,47,48,55,74
+end groups

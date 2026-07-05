@@ -1,0 +1,62 @@
+// Central Chi-Squared Distribution - Original Form
+// Source: Rust & Voit, "Statistical Densities, Cumulatives, Quantiles, and Power..."
+//         JASA 85(410):572-578 (1990)
+//         Equation (6)
+//
+// Both papers explicitly cite Savageau & Voit (1987) - see Savageau (1982).
+//
+// Original chi-squared density with v degrees of freedom:
+//   f_c(v; t) = (1/(2^(v/2) · Γ(v/2))) · t^((v/2)-1) · exp(-t/2)
+//
+// Differentiating:
+//   f'(t) = ((v/2) - 1)/t · f(t) - (1/2) · f(t)
+//         = ((v-2)/(2t) - 1/2) · f(t)
+//
+// Problem: When v < 2, the first term has a negative rate constant.
+// Paper's solution uses X₂ = t·f(t) to handle all v > 0 universally.
+//
+// ==============================================================================
+// EXACT RECASTING TO S-SYSTEM (Eq. 6):
+// ==============================================================================
+// Universal S-system representation valid for ALL v > 0:
+//   X₁ = t
+//   X₂ = t · f_c(v; t)
+//   X₃ = F_c(v; t)  (cumulative)
+//
+// ODEs:
+//   X₁' = 1
+//   X₂' = (v/2) · X₁⁻¹ · X₂ - (1/2) · X₂
+//   X₃' = X₁⁻¹ · X₂
+//
+// The pdf is: f_c(v; t) = X₁⁻¹ · X₂
+// ==============================================================================
+
+model RV1990_central_chisquared()
+  // ORIGINAL ODE - direct form
+  // This works for v >= 2, but has issue for v < 2
+  
+  compartment cell = 1;
+  species t in cell;
+  species f_var in cell;
+  species F in cell;
+
+  // Parameters
+  v = 6;
+  
+  // ORIGINAL ODEs
+  // f'(t) = ((v/2) - 1)/t · f - (1/2) · f
+  // Note: For v < 2, the coefficient (v/2 - 1) < 0 which violates S-system constraints
+  t' = 1;
+  f_var' = (v / 2 - 1) / t * f_var - 0.5 * f_var;
+  F' = f_var;
+  
+  // Initial conditions at t = v (the mode for v >= 2)
+  // At t = v = 6:
+  //   f_c(6; 6) ≈ 0.112063448
+  //   F_c(6; 6) ≈ 0.5768
+  t = 6.0;
+  f_var = 0.112063448113;
+  F = 0.576810023449;
+end
+
+// @SIM T_START=6 T_END=20 N_STEPS=400

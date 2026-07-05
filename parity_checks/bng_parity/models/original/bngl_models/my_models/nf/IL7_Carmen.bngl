@@ -1,0 +1,188 @@
+begin model
+
+#  The primary focus of this model is the version published in
+#   ``Interleukin-7 receptor signalling network: an integrated systems perspective'' 
+#   by Palmer and Lauffenburger (et al.) 2008
+# A number of simplifications have been made. 
+# A list of the most significant ones is below:
+#  i) the receptor ilr7 is assumed to be the following ternary complex: 
+#     IL-7Ralpha bound to gamma_c chain, with Jak1 bound to IL7-Ralpha and 
+#     Jak3 bound to the common gamma_c chain.
+#  ii) we ignore the fact that STAT3 (a transcription factor) may also bind to 
+#      the phosphorylated tyrosine residue on the IL-7Ralpha chain
+
+# Concentration units are in nanomolar; time units are in minutes
+
+# There is the issue of considering each of the intra-cellular volumes to compute 
+# the reactions that correspond to events that do not take place on the membrane, 
+# but in the intra-cellular space.
+
+begin parameters
+
+# scaling factor (fraction of a cell to consider in a stochastic simulation)
+f 1 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# cytoplasmic volume of a cell
+Vcyt f*1e-12 # L (1 pL)
+
+# cell density
+cellDensity 1e8 # cells per L (1e5 cells per mL)
+
+# volume of extracellular fluid surrounding a single cell
+Vecf=f/cellDensity
+
+# concentration of IL-7 at time t=0
+il7_0 1.0e-9*(NA*Vecf) # M converted to copies per cell (cpc)
+
+# number of receptors per cell
+il7r_0 f*1.0e3 # cpc
+
+# number of TFs per cell
+stat5_0 f*1.5e3 # cpc
+
+# I am not sure if this is also needed: the initial number of cells in 
+# the experiment is 10^5 cells per litre (this will be required to determine 
+# receptor numbers in the experiment, given a ligand concentration), and the 
+# volume of each cell is 10^{-12} litres per cell (is this cellular volume required 
+# when considering intra-cellular reactions, such as stat5 dimerisation or tetramerisation? 
+# it might also be required for the stat5 binding to the ligand/receptor 
+# bound and phosphorylated complex)
+
+kp1 1.0e9/(NA*Vecf) # in units of M^{-1} min^{-1} converted to /(molecules/cell)/s
+km1 0.1 # in units of  min^{-1}
+
+kp2 0.1 # in units of  min^{-1}
+km2 0.1 # in units of  min^{-1}
+
+kp3 1.0e9/(NA*Vcyt)  # in units of M^{-1} min^{-1} converted to /(molecules/cell)/s
+km3 0.1 # in units of  min^{-1}
+
+kp4 0.1 # in units of  min^{-1}
+
+kp5 0.1 # in units of  min^{-1}
+
+kp6 1.0e9/(NA*Vcyt)  # in units of M^{-1} min^{-1} converted to /(molecules/cell)/s
+km6 0.1 # in units of  min^{-1}
+
+kp7 1.0e9/(NA*Vcyt)  # in units of M^{-1} min^{-1} converted to /(molecules/cell)/s
+km7 0.1 # in units of  min^{-1}
+
+end parameters
+
+begin molecule types
+
+il7(r) # <-- consider changing name to IL7
+
+# The receptor is a heterodimer composed of IL7R (aka IL-7 receptor subunit alpha) 
+#  and IL2RG (aka the gammaC chain, or cytokine common subunit gamma)
+il7r(r,l,Y449~u~p,stat) # <-- consider changing name to IL7R_IL2RG
+# consider using ~0 to unmodified and ~P for phosphorylated when naming the internal states of Y449
+
+# does this molecule represent both STAT5A and STAT5B?
+stat5(r,Y699~u~p,SH2,nd) # <-- consider changing name to STAT5 
+
+end molecule types
+
+begin seed species
+
+# r is the binding site in the ligand (il7)  for the receptor  (il7r)
+il7(r) il7_0 
+
+# l is the binding site in the receptor (il7r) for the ligand (il7)
+il7r(r,l,Y449~u,stat) il7r_0 
+
+# r is the binding site in the TF stat5 for the receptor/ligand complex, 
+# SH2 is the domain that allows dimerisation of stat5 molecules and nd is 
+# the domain that allows tetramerisation of the stat5 dimers
+stat5(r,Y699~u,SH2,nd) stat5_0 
+
+end seed species
+
+# We may want to consider different observables, but some initial thoughts are below
+
+begin observables
+
+# is this the notation for the free monomeric and unphosphorylated form of stat5?
+Molecules STAT5_Y669_0 stat5(r,Y699~u,SH2,nd) 
+
+Molecules STAT5_Y669_P stat5(r,Y699~p,SH2,nd)
+
+# is this the notation for the dimeric and phosphorylated form of stat5 
+# so that no tetrameric form is being included?
+Molecules STAT5_dimers stat5(Y699~p,SH2!1,nd).stat5(Y699~p,SH2!1,nd)  
+
+# is the notation for the tetrameric and phosphorylated form of stat5?
+Molecules STAT5_tetramers stat5(Y699~p,SH2!1,nd!3).stat5(Y699~p,SH2!1).stat5(Y699~p,SH2!2,nd!3).stat5(Y699~p,SH2!2) 
+
+end observables
+
+begin functions
+
+# define functions here
+
+end functions
+
+begin reaction rules
+
+# Ligand-receptor binding (rule 1)   
+# we assume that ligand-receptor binding is independent of Y449 (u or p) and stat (free or bound)
+il7r(l) + il7(r)  <->  il7r(l!1).il7(r!1)   kp1, km1   
+
+# Ligand-receptor transphosphorylation  and dephosphorylation  by RTK (Jak1 or Jak3) (rule 2) 
+# does this rule assume that dephosphorylation only takes place when bound? yes
+il7r(l!1,Y449~u).il7(r!1) <->  il7r(l!1,Y449~p).il7(r!1) kp2, km2  
+# consider the following instead:
+# il7r(l!1,Y449~u).il7(r!1)->il7r(l!1,Y449~p).il7(r!1) kp2
+# il7r(Y449~p)->il7r(Y449~u) km2
+
+# Ligand-receptor binding to STAT5 (rule 3)      
+# does this rule assume binding can happen when stat5 is in dimeric form or any other configuration? yes, I think so
+# NB: dissociation of STAT5 from the IL-7 receptor is prohibited if the receptor is not bound to ligand
+# dissociation is also prohibited if Y449 is not phosphorylated
+il7r(l!1,Y449~p,stat).il7(r!1) + stat5(r) <->  il7r(l!1,Y449~p,stat!2).il7(r!1).stat5(r!2) kp3, km3 
+# consider the following instead:
+# il7r(l!1,Y449~p,stat).il7(r!1) + stat5(r)->il7r(l!1,Y449~p,stat!2).il7(r!1).stat5(r!2) kp3
+# il7r(stat!2).stat5(r!2)->il7r(stat)+stat5(r) km3
+
+#  STAT5 phosphorylation (rule 4)   
+# does this rule assume that unbinding can happen when stat is dimeric or any other configuration?
+# two things are happening in this rule, phosphorylation of Y699 and also dissociation
+# whether the STAT5 here is a monomer, part of a dimer, or part of a tetramer doesn't seem to matter
+il7r(l!1,Y449~p,stat!2).il7(r!1).stat5(r!2,Y699~u) ->  il7r(l!1,Y449~p,stat).il7(r!1) + stat5(r,Y699~p) kp4 
+
+# STAT5 dephosphorylation (rule 5)
+stat5(Y699~p) -> stat5(Y699~u) kp5
+
+#    STAT5 dimerisation (rule 6)   
+# dimerisation can only take place if stat5 is p
+# NB: dissociation of STAT5 dimers is prohibited if Y699 is not phosphorylated
+stat5(Y699~p,SH2) + stat5(Y699~p,SH2) <-> stat5(Y699~p,SH2!1).stat5(Y699~p,SH2!1)  kp6, km6 
+# consider the following instead:
+# stat5(Y699~p,SH2) + stat5(Y699~p,SH2)->stat5(Y699~p,SH2!1).stat5(Y699~p,SH2!1) kp6
+# stat5(SH2!1).stat5(SH2!1)->stat5(SH2)+stat5(SH2) km6
+   
+#    STAT5 tetramerisation (rule 7)   
+# NB: dissociation is prohibited if Y699 becomes dephosphorylated - if this is not the desired behavior,
+# then replace the rule with two separate rules for association and dissociation as in the example above
+stat5(Y699~p,SH2!1,nd).stat5(Y699~p,SH2!1)   + stat5(Y699~p,SH2!2,nd).stat5(Y699~p,SH2!2) <->  \
+stat5(Y699~p,SH2!1,nd!3).stat5(Y699~p,SH2!1).stat5(Y699~p,SH2!2,nd!3).stat5(Y699~p,SH2!2) kp7, km7
+
+end reaction rules
+
+end model
+
+begin actions
+
+# we would like to run for different IL-7 concentrations, and may be play around with numbers of receptors per cell, 
+# and numbers of stat5 monomers at the initial time.
+# consider using the parameter_scan command, which is useful for making dose-response curves.
+# See my Phys Biol paper from 2015 "Modeling for (physical) biologists: an introduction to the rule-based approach" for info
+# about actions - there's a table in the paper that summarizes the most useful commands
+
+simulate({method=>"nf",complex=>1,gml=>10e6,t_start=>0,t_end=>100,n_steps=>100,get_final_state=>0})
+
+end actions
+

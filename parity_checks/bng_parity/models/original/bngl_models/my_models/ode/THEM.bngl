@@ -1,0 +1,140 @@
+begin model
+
+# Transient hapten exposure model (THEM)
+
+# Reference:
+# 1. Xu K, Goldstein B, Holowka D, Baird B (1998) J Immmunol 160: 3225-3235.
+
+begin parameters
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cell density, 1e6 cells/mL (from Fig 1 in Ref 1)
+cellDensity 1e9 # [=] cells per L
+
+# volume of extracellular fluid surrounding a single cell (on average)
+Vex=1/cellDensity # [=] L per cell
+
+# DNP-BSA concentration (11 nM from Fig 1 in Ref 1)
+multiLT 11e-9*(NA*Vex) # [=] M converted to molecule/cell
+
+# DCT concentration
+#   5.6 nM (from inset of Fig 1 in Ref 1)
+#   77 uM (from Fig 1 in Ref 1)
+monoLT_1 5.6e-9*(NA*Vex) # [=] M converted to molecule/cell
+monoLT_2 77e-6*(NA*Vex) # [=] M converted to molecule/cell
+
+# number of cell-surface IgE per cell, 0.5 nM (from Fig 1 in Ref 1)
+RT 0.5e-9*(NA*Vex) # [=] M converted to molecule/cell
+
+# number of Fab arms (antigen-combining sites) per cell (two per sIgE molecule)
+FT=2*RT # [=] molecule/cell
+
+# forward rate constant for ligand-receptor binding (from Fig 3 in Ref 1)
+#   The ligand is DNP-BSA
+kp1_BSA 9.2e6/(NA*Vex) # [=] /M/s converted to /(molecule/cell)/s
+
+# forward rate constant for ligand-mediated receptor crosslinking (from Fig 3 in Ref 1)
+#   The ligand is DNP-BSA
+kp2FT_BSA 1.1e-1 # [=] /s
+kp2_BSA=kp2FT_BSA/FT # [=] /(molecule/cell)/s
+
+# reverse rate constant for ligand-receptor binding/receptor crosslinking (from Fig 3 in Ref 1)
+#   The ligand is DNP-BSA
+koff_BSA 1.2e-2 # [=] /s
+km1_BSA=koff_BSA # [=] /s
+km2_BSA=koff_BSA # [=] /s
+
+# rate constants for hapten exposure and hapten burying (from Fig 3 in Ref 1)
+lambda_plus 9.1e-5 # [=] /s
+lambda_minus 7.5e-4 # [=] /s
+
+# equilibrium constant for hapten exposure step
+lambda=lambda_plus/lambda_minus # [=] dimensionless
+
+# forward rate constant for ligand-receptor binding (from Fig 2 in Ref 1)
+#   The ligand is DCT
+kp1_DCT 2.0e7/(NA*Vex) # [=] /M/s converted to /(molecule/cell)/s
+
+# reverse rate constant for ligand-receptor binding (from Fig 2 in Ref 1)
+#   The lignd is DCT
+km1_DCT 1.1e-2 # [=] /s
+
+end parameters
+
+begin molecule types
+
+# monovalent DNP ligand
+DCT(DNP)
+
+# multivalent DNP ligand (DNP_{15}-BSA)
+#   n=2 (maximum number of DNP groups that can become exposed)
+BSA(DNP~hidden~exposed,DNP~hidden~exposed)
+
+# receptor (DNP-specific IgE Fab arm)
+Rec(Fab)
+
+end molecule types
+
+begin seed species
+
+DCT(DNP) 0
+
+BSA(DNP~hidden,DNP~hidden) multiLT/((1+lambda)*(1+lambda)) # from Eq 12a in Ref 1
+BSA(DNP~hidden,DNP~exposed) 2*lambda*multiLT/((1+lambda)*(1+lambda)) # from Eq 12b in Ref 1
+BSA(DNP~exposed,DNP~exposed) lambda*lambda*multiLT/((1+lambda)*(1+lambda)) # from Eq 12c in Ref 1
+
+Rec(Fab) FT
+
+end  seed species
+
+begin observables
+
+Molecules allFab Rec()
+Molecules freeFab Rec(Fab)
+Molecules boundFab Rec(Fab!+)
+Molecules allDCT DCT()
+Molecules freeDCT DCT(DNP)
+Molecules boundDCT DCT(DNP!+)
+Molecules allBSA BSA()
+Species freeBSA BSA(DNP,DNP)
+Species boundBSA BSA(DNP~exposed!+,DNP) BSA(DNP~exposed!+,DNP~exposed!+)
+Species C0 BSA(DNP~hidden!?,DNP~hidden!?)
+Species C1 BSA(DNP~hidden!?,DNP~exposed!?)
+Species C2 BSA(DNP~exposed!?,DNP~exposed!?)
+Species xlinks Rec(Fab!1).BSA(DNP~exposed!1,DNP~exposed!2).Rec(Fab!2)
+
+end observables
+
+begin reaction rules
+
+# monovalent ligand-monovalent receptor interaction
+DCT(DNP)+Rec(Fab)<->DCT(DNP!1).Rec(Fab!1) kp1_DCT,km1_DCT
+
+# multivalent ligand-monovalent receptor interaction
+#   hapten exposure/burying
+BSA(DNP~hidden)<->BSA(DNP~exposed) lambda_plus,lambda_minus
+#   capture of free DNP-BSA ligand
+BSA(DNP~exposed,DNP)+Rec(Fab)->BSA(DNP~exposed!1,DNP).Rec(Fab!1) kp1_BSA
+#   receptor crosslinking
+Rec(Fab!1).BSA(DNP~exposed!1,DNP~exposed)+Rec(Fab)->Rec(Fab!1).BSA(DNP~exposed!1,DNP~exposed!2).Rec(Fab!2) kp2_BSA
+#   dissociation of a ligand-receptor bond
+Rec(Fab!1).BSA(DNP~exposed!1)->Rec(Fab)+BSA(DNP~exposed) koff_BSA
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+
+# simulate addition of DNP-BSA at a concentration of 11 nM
+simulate({method=>"ode",t_start=>0,t_end=>1800,n_steps=>180})
+
+# simulate addition of DCT at a concentration of 77 uM
+setConcentration("DCT(DNP)",4.6370478e10)
+simulate({continue=>1,method=>"ode",t_start=>1800,t_end=>2700,n_steps=>90})
+
+end actions

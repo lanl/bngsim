@@ -1,0 +1,84 @@
+begin model
+#@model_id: m19_RM_predator_prey
+#@title: Rosenzweig-MacArthur predator-prey model
+#@description: Predator-prey dynamics with logistic prey growth and Holling type-II functional response. From Rosenzweig & MacArthur (1963) Am Nat 97:209-223.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  r        1.0            # 1/time  intrinsic prey growth rate
+  K_cap    10.0           # molecules  prey carrying capacity
+  a_att    0.5            # 1/time  attack rate
+  h        0.4            # time  handling time
+  e        0.6            # dimensionless  conversion efficiency
+  m        0.2            # 1/time  predator mortality rate
+end parameters
+
+begin molecule types
+  x()   # prey
+  y()   # predator
+end molecule types
+
+begin seed species
+  x()  2   # molecules
+  y()  1   # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_x  x()
+  Molecules  Obs_y  y()
+end observables
+
+begin functions
+  # Prey growth (logistic): r*x
+  growth_x()    = r * Obs_x
+
+  # Prey density-dependent mortality: (r/K)*x^2
+  density_x()   = (r / K_cap) * Obs_x * Obs_x
+
+  # Holling type-II predation: a*x*y / (1 + a*h*x)
+  predation()   = a_att * Obs_x * Obs_y / (1 + a_att * h * Obs_x)
+
+  # Predator growth from predation: e*a*x*y / (1 + a*h*x)
+  growth_y()    = e * a_att * Obs_x * Obs_y / (1 + a_att * h * Obs_x)
+end functions
+
+begin reaction rules
+  # Prey logistic growth: r*x
+  0 -> x()  growth_x()
+
+  # Prey density-dependent death: (r/K)*x^2
+  x() -> 0  density_x()
+
+  # Prey consumed by predator: a*x*y/(1+a*h*x)
+  x() -> 0  predation()
+
+  # Predator growth from prey consumption
+  0 -> y()  growth_y()
+
+  # Predator natural mortality (first-order)
+  y() -> 0  m
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

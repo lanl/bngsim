@@ -1,0 +1,58 @@
+[
+  {
+    "problem": "prob05_threestep",
+    "backend": "subprocess",
+    "wall_clock_s": 10.105057345004752,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob05_threestep",
+    "backend": "bngsim",
+    "wall_clock_s": 5.4581430710386485,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob07_egg",
+    "backend": "subprocess",
+    "wall_clock_s": 23.013399971998297,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob07_egg",
+    "backend": "bngsim",
+    "wall_clock_s": 8.708815716963727,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob24_jnk",
+    "backend": "subprocess",
+    "wall_clock_s": 114.22447168699,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob24_jnk",
+    "backend": "bngsim",
+    "wall_clock_s": 28.70257850899361,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob18_mapk",
+    "backend": "subprocess",
+    "wall_clock_s": 96.55903424398275,
+    "status": "ok",
+    "notes": ""
+  },
+  {
+    "problem": "prob18_mapk",
+    "backend": "bngsim",
+    "wall_clock_s": 20.272552165959496,
+    "status": "ok",
+    "notes": ""
+  }
+]

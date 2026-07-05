@@ -1,0 +1,175 @@
+# blbr_with_immmobilization.bngl
+
+# NB: NFsim does not check product molecularity constraints.
+
+begin model
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+f 0.1 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# cell density
+cellDensity 1.0e9 # [=] cells per L
+
+# volume of extracellular fluid surrounding a cell (on average)
+V=f/cellDensity # [=] L
+
+# receptor copy number
+RT f*3.0e5 # [=] molecules per cell
+
+# ligand concentration
+lConc 1.5e-9 # [=] M
+LT=lConc*(NA*V) # [=] molecules per cell
+
+K1 1.0e9 # [=] /M
+K2RT 100.0 # [=] dimensionless
+
+koff 0.7 # [=] /s
+
+km1=koff # [=] /s
+km2=koff # [=] /s
+
+kp1=K1*km1/(NA*V) # [=] /(molecule/cell)/s
+kp2=(K2RT/RT)*km2 # [=] /(molecule/cell)/s
+
+# threshold T
+#   Clusters containing more than T receptors are considered to have reduced mobility.
+#   T is the number of receptors in the largest mobile cluster.
+T 3 # [=] dimensionless, T must be an integer
+
+# probability p
+#   p = probability of accepting an association reaction that joins two large clusters
+#     = probability of accepting a dissociation reaction that generates two large clusters
+p 1.0e-4 # [=] dimensionless, p must be a probability (0<=p<=1)
+
+end parameters
+
+begin molecule types
+
+L(s,s)
+R(s,s)
+
+L0(s,s)
+R0(s,s)
+
+end molecule types
+
+begin seed species
+
+L(s,s!1).R(s!1,s) RT
+
+L0(s,s!1).R0(s!1,s) RT
+
+
+end  seed species
+
+begin observables
+
+Molecules Ltot L()
+Species Lfree L(s,s)
+Molecules Rtot R()
+Molecules Sfree R(s)
+
+Species R_1 R==1
+Species R_5 R==5
+Species R_10 R==10
+Species R_15 R==15
+Species R_20 R==20
+
+Species R0_1 R0==1
+Species R0_5 R0==5
+Species R0_10 R0==10
+Species R0_15 R0==15
+Species R0_20 R0==20
+
+Molecules L0tot L0()
+Species L0free L0(s,s)
+Molecules R0tot R0()
+Molecules S0free R0(s)
+
+
+
+end observables
+
+begin functions
+
+# We define a local function that returns a value of 0 or 1.
+#   If Rtot>threshold T for complex x, then mobility_factor(x)=0;
+#   otherwise, mobility_factor(x)=1.
+mobility_factor(x) if(Rtot(x)>T,0.0,1.0)
+
+# local functions
+#   If Rtot(x)>threshold T for complex x, then small(x)=0 and large(x)=1;
+#   otherwise, small(x)=1 and large(x)=0.
+small(x) if(Rtot(x)>T,0.0,1.0)
+large(x) if(Rtot(x)>T,1.0,0.0)
+
+# If 2*T<Rtot(x)-1, then some dissociation reactions (that do not release ligand) 
+#   will generate two break-up products
+#   that both contain more than T receptors. The probability of this happening turns out to be
+#   (Rtot(x)-1-2*T)/(Rtot(x)-1). The probability of it not happening is
+#   2*T/(Rtot(x)-1). In other words, the latter probability is the probability that at least one
+#   breakup product will contain T or fewer receptors.   
+
+GE2(x) if(Rtot(x)>1,1.0,0.0) # =1 if aggregate contains 2 or more receptors; otherwise =0
+GE4(x) if(Rtot(x)>3,1.0,0.0) # =1 if aggregate contains 4 or more receptors; otherwise =0
+GE6(x) if(Rtot(x)>5,1.0,0.0) # =1 if aggregate contains 6 or more receptors; otherwise =0
+
+lambda() (Ltot-Lfree)/(2.0*Rtot)
+sigma() 1.0-(Sfree/(2.0*Rtot))
+
+lambda0() (L0tot-L0free)/(2.0*R0tot)
+sigma0() 1.0-(S0free/(2.0*R0tot))
+
+end functions
+
+begin reaction rules
+
+################################################################
+# bivalent ligand-bivalent receptor: no immobilization effects #
+################################################################
+
+###L0(s,s)+R0(s)->L0(s!1,s).R0(s!1) kp1
+L0(s!+,s)+R0(s)->L0(s!+,s!1).R0(s!1) kp2
+###L0(s!1).R0(s!1)->L0(s)+R0(s) koff
+
+################################################
+# Same model with immobilization effects added #
+################################################
+
+# ligand capture (and release)
+###L(s,s)+R(s)->L(s!1,s).R(s!1) kp1
+###L(s,s)+R(s)<->L(s!1,s).R(s!1) kp1,koff
+###L(s!1,s).R(s!1)->L(s,s)+R(s) koff
+# ligand release
+###L(s!1,s).R(s!1)->L(s,s,)+R(s) (1.0-p)*koff
+
+# receptor crosslinking by tethered ligand with consideration of receptor cluster mobility
+#   reactant x is mobile or immobile; reactant y is mobile
+L(s!+,s)+%y:R(s)->L(s!+,s!1).R(s!1) kp2*mobility_factor(y)
+#   reactant x is mobile; reactant y is immobile
+%x:L(s!+,s)+%y:R(s)->L(s!+,s!1).R(s!1) \
+FunctionProduct("kp2*mobility_factor(x)","1.0-mobility_factor(y)")
+#   reactant x is immobible; reactant y is immobile
+%x:L(s!+,s)+%y:R(s)->L(s!+,s!1).R(s!1) \
+FunctionProduct("p*kp2*large(x)","large(y)")
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+###generate_network({overwrite=>1})
+###simulate({t_start=>0,t_end=>60,n_steps=>60,print_functions=>1,\
+###          method=>"ode"})
+
+simulate({t_start=>0,t_end=>0.1,n_steps=>200,print_functions=>1,\
+          method=>"nf",complex=>1,gml=>1000000,param=>"-utl 1000000",get_final_state=>0})
+
+end actions

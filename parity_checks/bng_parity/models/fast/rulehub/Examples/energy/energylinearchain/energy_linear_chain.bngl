@@ -1,0 +1,57 @@
+# Model: energy_linear_chain.bngl
+# Description: Demonstrates a 3-state linear reaction chain (A <-> B <-> C) governed by an energy landscape.
+#              The intermediate state B is energetically favorable but has barriers to enter/exit.
+#              Uses Arrhenius kinetics to derive rates from energy differences.
+
+begin model
+
+begin parameters
+    # --- Energy Parameters (arbitrary units, e.g. kcal/mol) ---
+    # Ground state energies for species
+    G_A 0       # Reference state
+    G_B -2.0    # Intermediate B is more stable than A
+    G_C -5.0    # Product C is most stable (thermodynamic sink)
+    
+    # Intrinsic activation barriers (added to Delta G)
+    Ea_AB 5.0   # Barrier for A <-> B
+    Ea_BC 4.0   # Barrier for B <-> C
+    
+    # --- System Parameters ---
+    RT 1.0      # Product of Gas Constant and Temperature
+    phi 0.5     # Distribution factor (0.5 splits energy diff between forward/reverse barrier)
+end parameters
+
+begin molecule types
+    M(state~A~B~C) # Molecule M can be in state A, B, or C
+end molecule types
+
+begin seed species
+    M(state~A) 100 # Start with all M in state A
+end seed species
+
+begin observables
+    Molecules A M(state~A)
+    Molecules B M(state~B)
+    Molecules C M(state~C)
+end observables
+
+begin energy patterns
+    # Map molecule states to their ground energies
+    M(state~A) G_A
+    M(state~B) G_B
+    M(state~C) G_C
+end energy patterns
+
+begin reaction rules
+    # Transitions governed by Arrhenius kinetics
+    # Rate = A * exp(-(Ea + phi*DeltaG)/RT) (Simplified view)
+    # BioNetGen calculates precise rates based on energy difference of products - reactants
+    M(state~A) <-> M(state~B) Arrhenius(phi, Ea_AB)
+    M(state~B) <-> M(state~C) Arrhenius(phi, Ea_BC)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

@@ -1,0 +1,98 @@
+begin model
+begin parameters
+    # Nitric Oxide (NO) / cGMP signaling pathway.
+    # Advanced features: MM kinetics,TotalRate,and Variadic aggregates.
+    
+    # Nitric Oxide Dynamics
+    k_no_synth 10.0    # Stimulated NO production (e.g. by eNOS)
+    k_no_deg 0.5       # Rapid NO decay
+    
+    # sGC Activation
+    k_sgc_act 1.2      # NO-mediated sGC activation
+    k_sgc_inact 0.3    # Deactivation
+    
+    # sGC Turnover
+    k_syn_sgc 20.0
+    k_deg_sgc 0.1
+    
+    # cGMP Metabolism
+    k_cgmp_synth 15.0  # Peak cGMP production by active sGC
+    Km_pde 400         # Half-saturation for PDE metabolism
+    v_pde_max 10.0     # PDE capacity
+    
+    # Downstream Activation
+    k_pkg_act 1.0      # cGMP-mediated PKG activation
+    
+    # Initials
+    sGC_tot 200
+    PKG_tot 300
+    NO_init 10
+    cGMP_init 5
+end parameters
+
+begin molecule types
+    NO()
+    sGC(s~inactive~active)
+    cGMP()
+    PKG(s~inactive~active)
+end molecule types
+
+begin seed species
+    NO() NO_init
+    sGC(s~inactive) 0
+    cGMP() cGMP_init
+    PKG(s~inactive) PKG_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Vasodilator_Sig cGMP()                    # Core signaling level
+    Molecules Active_sGC      sGC(s~active)              # Signaling platform status
+    Molecules cGMP_Pool       cGMP()                   # Signal relay status
+    Molecules Phospho_Drive   PKG(s~active)              # Downstream work
+    Molecules Radical_Load    NO()                       # Upstream driver
+    Molecules Total_Cyclase   sGC()                      # Mass balance
+end observables
+
+begin functions
+    # Michaelis-Menten rate for saturable cGMP degradation (PDE kinetics)
+    v_deg() = v_pde_max * cGMP_Pool / (Km_pde + cGMP_Pool)
+end functions
+
+begin reaction rules
+    ## UPSTREAM GATING
+    # eNOS stimulated NO production
+    0 -> NO() k_no_synth
+    
+    # NO induces active sGC (TotalRate: sets the rule rate explicitly)
+    NO() + sGC(s~inactive) -> NO() + sGC(s~active) k_no_synth TotalRate
+    
+    # Basal NO decay
+    NO() -> 0 k_no_deg
+    
+    ## CYCLASE ACTIVITY
+    # Active sGC produces cGMP
+    sGC(s~active) -> sGC(s~active) + cGMP() k_cgmp_synth
+    
+    ## METABOLISM & DRIVE
+    # PDE clears cGMP (Functional Rate Law)
+    cGMP() -> 0 v_deg()
+    
+    # cGMP activates PKG (Simplified: cGMP acts as catalyst for PKG activation)
+    PKG(s~inactive) -> PKG(s~active) k_pkg_act * (cGMP_Pool / (cGMP_Pool + 100))
+    
+    ## RESET
+    sGC(s~active) -> sGC(s~inactive) k_sgc_inact
+    PKG(s~active) -> PKG(s~inactive) 0.1
+
+    ## sGC TURNOVER
+    0 -> sGC(s~inactive) k_syn_sgc
+    sGC() -> 0 k_deg_sgc
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>20,n_steps=>240})
+end actions
+end model
+

@@ -1,0 +1,91 @@
+# Mutual Information
+
+begin model
+
+# References:
+# 1. Blinov ML et al. (2006) BioSystems 83: 136-151.
+
+begin parameters
+
+egf_tot 1.2e6 # [=] molecules/cell, from Ref 1
+egfr_tot 1.8e5 # [=] molecules/cell, from Ref 1
+
+kp1 1.667e-6 # [=] /(molecule/cell)/s, from Ref 1
+km1 0.06 # [=] /s, from Ref 1
+kp2 5.556e-6 # [=] /(molecule/cell)/s, from Ref 1
+km2 0.1 # [=] /s, from Ref 1
+
+N=egfr_tot
+
+end parameters
+
+begin molecule types
+
+egf(r)
+egfr(l,r)
+
+end molecule types
+
+begin seed species
+
+egf(r) egf_tot
+egfr(l,r) egfr_tot
+
+end  seed species
+
+begin observables
+
+Molecules X1 egfr(l!+)
+Molecules Y1 egfr(r!+)
+Molecules N11 egfr(l!+,r!+)
+
+Molecules X0obs egfr(l)
+Molecules Y0obs egfr(r)
+Molecules N00obs egfr(l,r)
+Molecules N01obs egfr(l,r!+)
+Molecules N10obs egfr(l!+,r)
+
+end observables
+
+begin functions
+
+N10()=X1-N11
+N01()=Y1-N11
+
+N00()=N-N01()-N10()-N11
+X0()=N00()+N01()
+Y0()=N00()+N10()
+
+# calculate pointwise mutation information
+PMI00() if(N00()>0.0,log2(N*N00()/(X0()*Y0())),0.0)
+PMI01() if(N01()>0.0,log2(N*N01()/(X0()*Y1)),0.0)
+PMI10() if(N10()>0.0,log2(N*N10()/(X1*Y0())),0.0)
+PMI11() if(N11>0.0,log2(N*N11/(X1*Y1)),0.0)
+
+# calculate mutual information
+MI()=(N00()*PMI00()+N01()*PMI01()+N10()*PMI10()+N11*PMI11())/N
+
+end functions
+
+begin reaction rules
+
+# Blinov's rules 
+egfr(l,r)+egf(r)<->egfr(l!1,r).egf(r!1) kp1,km1
+egfr(l!+,r)+egfr(l!+,r)<->egfr(l!+,r!2).egfr(l!+,r!2) kp2,km2
+
+# alt. rules (minimal constraints on applicability)
+#egfr(l)+egf(r)<->egfr(l!1).egf(r!1) kp1,km1
+#egfr(r)+egfr(r)<->egfr(r!1).egfr(r!1) kp2,km2
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>20,n_steps=>100,print_functions=>1})
+
+#parameter_scan({parameter=>"egf_tot",par_min=>1.2e3,par_max=>1.2e7,\
+#                n_scan_pts=>100,log_scale=>1,method=>"ode",t_start=>0,\
+#                t_end=>1000,n_steps=>10,print_functions=>1})

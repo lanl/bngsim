@@ -1,0 +1,125 @@
+begin model
+begin parameters
+# Avogadro constant
+#NA 6.02214076e23 # molecules per mole
+# body weight
+BW 7.7 # kg
+# blood plasma volume
+VP=0.037*BW # L
+# lymph volume
+VL=0.074*BW # L
+# interstitial fluid volume
+VI=0.22*BW # L
+# systemic lymph flow rate
+nu=4.92e-3*(BW^0.73) # L per hr
+# rate constant for antibody clearance (in blood)
+cP=1.04e-2/(BW^0.1) # /hr
+# molecular weight of antibody (IgG)
+mwt 1.5e5 # g/mol
+# extensive amount of mAb administered during an infusion
+dose=2e-2*BW/mwt # moles
+# antibody infusion rate
+I=dose/3 # moles per hour
+# fraction of interstitial fluid accessible to antibody
+Kp 0.8 # dimensionless
+# reflection coefficient of tight tissue
+sigma1 0.945 # dimensionless
+# reflection coefficient of leaky tissue
+sigma2 0.697 # dimensionless
+# reflection coefficient of lymph
+sigmaL 0.2 # dimensionless
+# tight tissue fraction of interstitial fluid volume
+fV 0.65 # dimensionless
+# tight tissue fraction of lymph flow
+fnu 0.33
+# volume of ISF in tight tissue
+V1=fV*Kp*VI# L
+# volume of ISF in leaky tissue
+V2=(1-fV)*Kp*VI # L
+# tight tissue lymph flow
+nu1=fnu*nu # L per hour
+# leaky tissue lymph flow
+nu2=(1-fnu)*nu # L per hour
+# indicator
+indicator 1 # 0 or 1
+end parameters
+begin molecule types
+NP()
+N1()
+N2()
+NL()
+end molecule types
+begin seed species
+NP() 0
+N1() 0
+N2() 0
+NL() 0
+end seed species
+begin observables
+Molecules NP NP()
+Molecules N1 N1()
+Molecules N2 N2()
+Molecules NL NL()
+end observables
+begin functions
+CP()=NP/VP # M
+C1()=N1/V1 # M
+C2()=N2/V2 # M
+CL()=NL/VL # M
+ratio_Clymph_vs_Cplasma()=if(NP>0,(NL/VL)/(NP/VP),0)
+end functions
+begin reaction rules
+# mAb infusion
+0->NP() indicator*I
+# transport from blood plasma to tissue compartment 1
+NP()->N1() (1-sigma1)*nu1/VP
+# transport from blood plasma to tissue compartment 2
+NP()->N2() (1-sigma2)*nu2/VP
+# transport from tissue compartment 1 to lymph
+N1()->NL() (1-sigmaL)*nu1/V1
+# transport from tissue compartment 2 to lymph
+N2()->NL() (1-sigmaL)*nu2/V2
+# clearance in blood
+NP()->0 cP
+# transport from lymph to blood plasma
+NL()->NP() nu/VL
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# no infusion initially
+setParameter("indicator",0)
+simulate({method=>"ode",t_start=>0,t_end=>3,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>3,t_end=>168,\
+n_steps=>165,print_functions=>1})
+# first infusion at 1 week
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>168,t_end=>171,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>171,t_end=>336,\
+n_steps=>165,print_functions=>1})
+# second infusion at 2 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>336,t_end=>339,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>339,t_end=>672,\
+n_steps=>333,print_functions=>1})
+# third infusion at 4 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>672,t_end=>675,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>675,t_end=>1008,\
+n_steps=>333,print_functions=>1})
+# fourth infusion at 6 weeks
+setParameter("indicator",1)
+simulate({continue=>1,method=>"ode",t_start=>1008,t_end=>1011,\
+n_steps=>3,print_functions=>1})
+setParameter("indicator",0)
+simulate({continue=>1,method=>"ode",t_start=>1011,t_end=>1344,\
+n_steps=>333,print_functions=>1})
+end actions

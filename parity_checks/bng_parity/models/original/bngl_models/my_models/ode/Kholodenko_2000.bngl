@@ -1,0 +1,106 @@
+# can find a lot of online resources
+begin model
+begin parameters
+V1 = 2.5 # /s
+n = 1
+KI = 9 # nM
+K1 = 10 # nM
+V2 = 0.25 # /s
+K2 = 8 # nM
+k3 = 0.025 # /s
+K3 = 15 # nM
+k4 = 0.025 # /s
+K4 = 15 # nM
+V5 = 0.75 # /s
+K5 = 15 # nM
+V6 = 0.75 # /s
+K6 = 15 # nM
+k7 = 0.025 # /s
+K7 = 15 # nM
+k8 = 0.025 # /s
+K8 = 15 # nM
+V9 = 0.5 # /s
+K9 = 15 # nM
+V10 = 0.5 # /s
+K10 = 15 # nM
+
+#Inital Conditions
+MKKK_ini = 90 #nM
+MKKK_P_ini = 10 #nM
+MKK_ini = 280 #nM
+MKK_P_ini = 10 #nM
+MKK_PP_ini = 10 #nM
+MAPK_ini = 280 #nM
+MAPK_P_ini = 10 #nM
+MAPK_PP_ini = 10 #nM
+end parameters
+
+begin molecule types
+MKKK()
+MKKK_P()
+MKK()
+MKK_P()
+MKK_PP()
+MAPK()
+MAPK_P()
+MAPK_PP()
+end molecule types
+
+begin seed species # inital conditions
+MKKK() MKKK_ini
+MKKK_P() MKKK_P_ini
+MKK() MKK_ini
+MKK_P() MKK_P_ini
+MKK_PP() MKK_PP_ini
+MAPK() MAPK_ini
+MAPK_P() MAPK_P_ini
+MAPK_PP() MAPK_PP_ini
+end seed species
+
+begin observables
+Molecules MKKK MKK()
+Molecules MKKK_P MKKK_P()
+Molecules MKK MKK()
+Molecules MKK_P MKK_P()
+Molecules MKK_PP MKK_PP()
+Molecules MAPK MAPK()
+Molecules MAPK_P MAPK_P()
+Molecules MAPK_PP MAPK_PP()
+
+#Conservation Laws
+Molecules MKKK_tot MKKK() MKKK_P()
+Molecules MKK_tot MKK() MKK_P() MKK_PP()
+Molecules MAPK_tot MAPK() MAPK_P() MAPK_PP()
+end observables
+
+begin functions
+v1() = V1/((1 + (MAPK_PP/KI)^n)*(K1 + MKKK))
+v2() = V2/(K2 + MKKK_P)
+v3() = (k3*MKKK_P)/(K3 + MKKK)
+v4() = (k4*MKKK_P)/(K4 + MKK_P)
+v5() = V5/(K5 + MKK_PP)
+v6() = V6/(K6 + MKK_P)
+v7() = (k7*MKK_PP)/(K7 + MAPK)
+v8() = (k8*MKK_PP)/(K8 + MAPK_P)
+v9() = V9/(K9 + MAPK_PP)
+v10() = V10/(K10+MAPK_P)
+end functions
+
+begin reaction rules
+MKKK()<->MKKK_P() v1(),v2()
+MKK()<->MKK_P() v3(),v6()
+MKK_P()<->MKK_PP() v4(),v5()
+MAPK()<->MAPK_P() v7(),v10()
+MAPK_P()<->MAPK_PP() v8(),v9()
+
+
+end reaction rules
+
+end model
+
+
+begin actions
+generate_network({overwrite=>1})
+#min number of argumants, 100 reports/output, print functions we define
+simulate({method=>"ode",t_start=>0,t_end=>8400,n_steps=>200,print_functions=>1})
+end actions 

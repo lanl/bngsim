@@ -1,0 +1,91 @@
+# testing the effective valence idea
+
+# We consider a ligand with 5 binding sites.
+# All free binding sites are available until the ligand is bound 3 times.
+# After a ligand is bound 3 times, the remaining 2 binding sites become unavailable.
+# The model is written two different ways.
+
+begin model
+
+begin parameters
+
+NA 6.02214e23 # [=] molecules per mol
+cellDen 1e9 # [=] cells per L
+Vex=1/cellDen # [=] L
+L_tot 1e-9*(NA*Vex) # [=] M converted to molecules per cell
+R_tot 3e5 # [=] molecules per cell
+kp1 1e6/(NA*Vex) # /M/s converted to /(molecule/cell)/s
+km1 0.1 # [=] /s
+K2RT 10 # [=] dimensionless
+km2 0.1 # [=] /s
+kp2=K2RT*km2/R_tot # [=] /(molecule/cell)/s
+n 5 # [=] dimensionless
+
+end parameters
+
+begin molecule types
+
+L(bnd~0~1~2~3) # internal states from 0 to n
+R()
+
+Lig(s,s,s)
+Rec(s)
+
+end molecule types
+
+begin seed species
+
+L(bnd~0) L_tot
+R() R_tot
+
+Lig(s,s,s) L_tot
+Rec(s) R_tot
+
+end  seed species
+
+begin observables
+
+Molecules freeR R()
+Molecules freeL L(bnd~0)
+Molecules B1 L(bnd~1)
+Molecules B2 L(bnd~2)
+Molecules B3 L(bnd~3)
+Molecules Ltot L(bnd~0) L(bnd~1) L(bnd~2) L(bnd~3)
+
+Molecules freeRec Rec(s)
+Species freeLig Lig(s,s,s)
+Species Bnd1 Lig(s!+,s,s)
+Species Bnd2 Lig(s!+,s!+,s)
+Species Bnd3 Lig(s!+,s!+,s!+)
+Molecules Ligtot Lig()
+
+end observables
+
+begin functions
+Rtot() freeR+B1+2*B2+3*B3
+end functions
+
+begin reaction rules
+
+L(bnd~0)+R()<->L(bnd~1) 5*kp1,1*km1
+
+# reversible receptor xlinking reactions
+L(bnd~1)+R()<->L(bnd~2) 4*kp2,2*km2
+L(bnd~2)+R()<->L(bnd~3) 3*kp2,3*km2
+
+######## alt formulation
+
+Lig(s,s,s)+Rec(s)<->Lig(s!1,s,s).Rec(s!1) (5/3)*kp1,km1
+Lig(s!+,s,s)+Rec(s)<->Lig(s!+,s!1,s).Rec(s!1) (4/2)*kp2,km2
+Lig(s!+,s!+,s)+Rec(s)<->Lig(s!+,s!+,s!1).Rec(s!1) (3/1)*kp2,km2
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate_ode({t_start=>0,t_end=>300,n_steps=>150,print_functions=>1})
+
+end actions

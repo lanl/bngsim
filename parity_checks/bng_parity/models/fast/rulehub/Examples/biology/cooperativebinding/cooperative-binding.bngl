@@ -1,0 +1,67 @@
+begin model
+begin parameters
+    # Cooperative binding: The binding of the first ligand molecule increases 
+    # the affinity for the second ligand molecule (Positive Cooperativity).
+    
+    # Reaction rates
+    k_on_1 1e-4        # Binding of 1st ligand
+    k_off_1 0.1        # Dissociation of 1st ligand
+    
+    k_coop 10.0        # Cooperativity factor (A_2nd = k_on_1 * k_coop)
+    k_off_2 0.01       # Dissociation of 2nd ligand (often slower in positive coop)
+    
+    # Competition extension
+    k_on_comp 5e-5     # Competitive (non-cooperative) ligand
+    
+    # Initials
+    Receptor_tot 500   # Bivalent receptor
+    Ligand_tot 1000
+    Competitor_tot 0
+end parameters
+
+begin molecule types
+    Receptor(l1,l2)
+    Ligand(b)
+    Competitor(b)
+end molecule types
+
+begin seed species
+    Receptor(l1,l2) Receptor_tot
+    Ligand(b) Ligand_tot
+    Competitor(b) Competitor_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Free_Rec       Receptor(l1,l2)          # Unbound state
+    Molecules Mono_Bound     Receptor(l1!+,l2),Receptor(l1,l2!+) # Single occupancy
+    Molecules Fully_Occupied Receptor(l1!+,l2!+)      # Dual occupancy (Signaling state)
+    Molecules Total_Bound    Ligand(b!+)               # Mass balance
+    Molecules Half_Life      Receptor(l1!1).Ligand(b!1)  # For monitoring stability
+end observables
+
+begin reaction rules
+    ## COOPERATIVE BINDING SCHEME (BIVALENT)
+    
+    # Binding to first site (l1)
+    Receptor(l1,l2) + Ligand(b) <-> Receptor(l1!1,l2).Ligand(b!1) k_on_1,k_off_1
+    
+    # Binding to first site (l2)
+    Receptor(l1,l2) + Ligand(b) <-> Receptor(l1,l2!1).Ligand(b!1) k_on_1,k_off_1
+    
+    # Cooperative binding to second site (if l1 is occupied,bind l2)
+    Receptor(l1!+,l2) + Ligand(b) <-> Receptor(l1!+,l2!1).Ligand(b!1) k_on_1*k_coop,k_off_2
+    
+    # Cooperative binding to second site (if l2 is occupied,bind l1)
+    Receptor(l1,l2!+) + Ligand(b) <-> Receptor(l1!1,l2!+).Ligand(b!1) k_on_1*k_coop,k_off_2
+    
+    ## COMPETITION (NON-COOPERATIVE)
+    Receptor(l1) + Competitor(b) <-> Receptor(l1!1).Competitor(b!1) k_on_comp,0.1
+    Receptor(l2) + Competitor(b) <-> Receptor(l2!1).Competitor(b!1) k_on_comp,0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>500,n_steps=>200})
+end actions
+end model

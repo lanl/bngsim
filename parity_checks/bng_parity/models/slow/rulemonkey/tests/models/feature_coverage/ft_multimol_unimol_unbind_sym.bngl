@@ -1,0 +1,55 @@
+# Feature: multi-mol unimolecular RULE rate where the seed molecule has
+#          symmetric components and only some are operated on.
+# Tests:   reacting_local dedup must be applied in count_multi_mol_fast for
+#          rule rates (not just for single-mol rates via count_embeddings_single).
+# Bug pattern: r02 / basicmodels v02. The dephos rule was correctly mult=2
+#          (StateChange targets the matched p), but the unbind rule was
+#          incorrectly mult=2 in RM (DeleteBond targets only y, leaving the
+#          two p~0 sym embeddings indistinguishable; NFsim/BNG treat them
+#          as one reaction). Without dedup the unbind rate was 2x too fast,
+#          shifting equilibrium of the catalytic cycle and over-producing
+#          doubly-phosphorylated X.
+# Tier: base
+# Expected: RM unbind rate = NFsim unbind rate; X.Y decays at koff per X.Y,
+#          not 2*koff.
+# invariant: conserved X_total = 200
+# invariant: conserved Y_total = 200
+
+begin model
+begin parameters
+    XY_init  200
+    koff     5
+    kon      0.0   # disabled — verify pure unbinding decay
+end parameters
+
+begin molecule types
+    X(y,p~0~1,p~0~1)
+    Y(x)
+end molecule types
+
+begin seed species
+    X(y!1,p~0,p~0).Y(x!1)  XY_init
+end seed species
+
+begin observables
+    Molecules  X_total          X()
+    Molecules  Y_total          Y()
+    Molecules  XY_uu            X(y!1,p~0,p~0).Y(x!1)
+    Molecules  X_y_bound        X(y!+)
+    Molecules  X_y_free         X(y)
+end observables
+
+begin reaction rules
+    # The bug-trigger: pattern p~0 names a sym component but the operation
+    # (DeleteBond on y) does NOT target the matched p. NFsim/BNG dedup the
+    # two sym embeddings to one reaction; RM previously counted both.
+    X(y!1,p~0).Y(x!1) -> X(y,p~0) + Y(x)  koff
+    # Re-binding kept off so we observe pure decay; if enabled it would
+    # also exercise the dedup on the bind side.
+    X(y,p~0) + Y(x) -> X(y!1,p~0).Y(x!1)  kon
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>2.0,n_steps=>40,param=>"-bscb"})
+end actions

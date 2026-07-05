@@ -1,0 +1,46 @@
+begin model
+begin parameters
+    k_gef 0.35
+    k_gap 0.3
+    k_effector 0.28
+    k_reset 0.09
+end parameters
+
+begin molecule types
+    RAB(nucleotide~GDP~GTP)
+    GEF(state~inactive~active)
+    GAP(state~inactive~active)
+    Effector(state~off~on)
+end molecule types
+
+begin seed species
+    RAB(nucleotide~GDP) 70
+    GEF(state~inactive) 30
+    GAP(state~inactive) 30
+    Effector(state~off) 60
+end seed species
+
+begin reaction rules
+    GEF(state~inactive) -> GEF(state~active) k_gef
+    GEF(state~active) + RAB(nucleotide~GDP) -> GEF(state~active) + RAB(nucleotide~GTP) k_gef
+    RAB(nucleotide~GTP) + Effector(state~off) -> RAB(nucleotide~GTP) + Effector(state~on) k_effector
+    GAP(state~inactive) -> GAP(state~active) k_gap
+    GAP(state~active) + RAB(nucleotide~GTP) -> GAP(state~active) + RAB(nucleotide~GDP) k_gap
+    Effector(state~on) -> Effector(state~off) k_reset
+    GEF(state~active) -> GEF(state~inactive) k_reset
+    GAP(state~active) -> GAP(state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules RAB_GTP RAB(nucleotide~GTP)
+    Molecules Active_GEF GEF(state~active)
+    Molecules Active_GAP GAP(state~active)
+    Molecules Effector_On Effector(state~on)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>30,n_steps=>160})
+end actions
+end model
+

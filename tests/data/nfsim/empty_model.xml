@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Created by BioNetGen 2.9.3  -->
+<sbml xmlns="http://www.sbml.org/sbml/level3" level="3" version="1">
+  <model id="BSA_v1">
+    <ListOfParameters>
+      <Parameter id="f" type="Constant" value="1" expr="1"/>
+      <Parameter id="NA" type="Constant" value="6.02214e+23" expr="6.02214e23"/>
+      <Parameter id="pi" type="Constant" value="3.1415927" expr="3.14159265359"/>
+      <Parameter id="Vecf" type="Constant" value="2e-9" expr="2e-9*f"/>
+      <Parameter id="Dcell" type="Constant" value="0.00015" expr="1.5e-4"/>
+      <Parameter id="Hepm" type="Constant" value="3e-7" expr="3e-7"/>
+      <Parameter id="Vepm" type="Constant" value="1.0624095e-14" expr="((pi/6)*(((Dcell+Hepm)^3)-(Dcell^3)))*f"/>
+      <Parameter id="eta_ecf" type="Constant" value="0.6913" expr="0.6913"/>
+      <Parameter id="eta_mem" type="Constant" value="34.1" expr="34.1"/>
+      <Parameter id="mwt_BSA" type="Constant" value="66463" expr="66463"/>
+      <Parameter id="mwt_DNP" type="Constant" value="184" expr="184"/>
+      <Parameter id="mwt_DCT" type="Constant" value="513" expr="513"/>
+      <Parameter id="n" type="Constant" value="24" expr="24"/>
+      <Parameter id="mwt_DNPnBSA" type="Constant" value="70879" expr="mwt_BSA+(n*mwt_DNP)"/>
+      <Parameter id="D_BSA" type="Constant" value="8e-9" expr="8e-9"/>
+      <Parameter id="Lconc_nM" type="Constant" value="1" expr="1"/>
+      <Parameter id="Lconc" type="Constant" value="1e-9" expr="1e-9*Lconc_nM"/>
+      <Parameter id="Lcpc" type="Constant" value="1204428" expr="Lconc*(NA*Vecf)"/>
+      <Parameter id="Rcpc" type="Constant" value="300000" expr="3e5*f"/>
+      <Parameter id="KA_DCT" type="Constant" value="1.1623775e-6" expr="1.4e9/(NA*Vecf)"/>
+      <Parameter id="kon_DCT" type="Constant" value="2.1587011e-8" expr="2.6e7/(NA*Vecf)"/>
+      <Parameter id="koff_DCT" type="Constant" value="0.018571429" expr="kon_DCT/KA_DCT"/>
+      <Parameter id="kon" type="Constant" value="4.1756661e-9" expr="kon_DCT*((mwt_DCT/mwt_DNPnBSA)^(1/3))"/>
+      <Parameter id="koff" type="Constant" value="0.018571429" expr="koff_DCT"/>
+    </ListOfParameters>
+    <ListOfMoleculeTypes>
+    </ListOfMoleculeTypes>
+    <ListOfCompartments>
+    </ListOfCompartments>
+    <ListOfSpecies>
+    </ListOfSpecies>
+    <ListOfReactionRules>
+    </ListOfReactionRules>
+    <ListOfObservables>
+    </ListOfObservables>
+    <ListOfFunctions>
+    </ListOfFunctions>
+  </model>
+</sbml>

@@ -1,0 +1,41 @@
+// =============================================================================
+// Source: Voit (1988) "S-Systems as a Canonical Nonlinear Form"
+//         Math. Comput. Modelling 11:140-145
+// Example: Sin/Exp system - detailed exact recasting (Equations 6-10)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+//
+// Original system (Equation 6):
+//   dY/dt = 2 - sin(Y) - Y,     Y(0) = Y0
+//   dZ/dt = exp(Y^2) + Y*Z - Z, Z(0) = Z0
+//
+// Exact S-system recasting (Equation 10):
+//   Define auxiliary variables:
+//     X1 = Y, X2 = sin(Y)+4, X3 = Z, X4 = exp(Y^2)
+//     X5 = cos(Y)+4, X6 = product decomposition
+//
+//   Recast S-system (renaming X3→X2,...,X7→X6):
+//     dX1/dt = X5*X6 - X2
+//     dX2/dt = X2 - 4
+//     dX3/dt = 2*X1*X3*X5*X6 - 2*X1*X2*X3
+//     dX4/dt = 4 - X2
+//     dX5/dt = X3*X6^(-1) - X1*X6^(-1)
+//     dX6/dt = X1*X6
+//
+//   Initial conditions:
+//     X(0) = (Y0, sin(Y0)+4, exp(Y0^2), cos(Y0)+4, Z0, 1)
+//
+// This is an EXACT recasting showing sin, exp, and polynomial nonlinearities.
+// =============================================================================
+
+model V1988a_sin_exp_system()
+    // Original system with sin and exp nonlinearities
+    Y' = 2 - sin(Y) - Y
+    Z' = exp(Y^2) + Y*Z - Z
+    
+    // Initial conditions
+    Y = 1.0
+    Z = 1.0
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

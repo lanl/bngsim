@@ -1,0 +1,67 @@
+// Ozbudak2004_LacOperon_Simplified.ant
+//
+// Source model:
+//   Ozbudak EM, Thattai M, Lim HN, Shraiman BI, van Oudenaarden A (2004)
+//   "Multistability in the lactose utilization network of Escherichia coli."
+//   Nature 427:737–740. doi:10.1038/nature02298
+//
+// This is the standard reduced ODE model of the lac bistable switch,
+// in the form summarized from their Supplementary Information:
+//
+//   dx/dt =  beta * y - x
+//   dy/dt =  alpha / ( 1 + (rho - 1)/(1 + x^2) ) - y
+//
+// where:
+//   x(t)  : intracellular TMG (dimensionless, scaled)
+//   y(t)  : LacY permease level (relative expression)
+//
+// Parameters alpha, rho, beta are functions of extracellular glucose (G)
+// and TMG (T). Here we fix them to a concrete set corresponding to
+// no glucose and intermediate TMG in the bistable region, using the
+// fitted forms reported for alpha(G), rho, and beta(T,G).
+
+model Ozbudak2004_LacOperon_Simplified
+
+  // Compartment (dimensionless)
+  compartment cell = 1;
+
+  // State variables
+  species x in cell;
+  species y in cell;
+
+  // Parameters (from fits to Ozbudak et al. SI, for G = 0, T ≈ 30 mM)
+  //
+  // alpha(G) = 84.4 / (1 + (G/8.1)^1.2) + 16.1
+  // rho      = 167.1
+  // beta(T,G) = beta_T(T) * beta_G(G),
+  //   beta_T(T) = 1.23e-3 * T^0.6, beta_G(G>10) ≈ 65
+  //
+  // For G = 0 mM and T = 30 mM, this gives approximately:
+  //   alpha ≈ 100.5
+  //   rho   = 167.1
+  //   beta  ≈ 0.62
+  //
+  const alpha = 100.5;
+  const rho   = 167.1;
+  const beta  = 0.62;
+
+  // Effective inhibition function from LacI, after eliminating R:
+  //   1 + R/R0 = 1 + (rho - 1)/(1 + x^2)
+  inhib := 1 + (rho - 1)/(1 + x^2);
+
+  // ODEs
+  // Intracellular TMG
+  x' = beta * y - x;
+
+  // LacY (permease) expression
+  y' = alpha / inhib - y;
+
+  // Initial conditions corresponding to an "uninduced" state:
+  //   x(0) = 0 (no internal TMG)
+  //   y(0) ≈ alpha/rho (basal expression)
+  x = 0;
+  y = alpha/rho;
+
+end
+// @SIM T_START=0 T_END=10 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

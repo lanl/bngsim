@@ -1,0 +1,105 @@
+{
+  "model": "MODEL9089538076",
+  "T": 100.0,
+  "N": 200,
+  "runs": {
+    "analytical/default": {
+      "wall": 0.025847035998594947,
+      "stats": {
+        "n_steps": 433,
+        "n_rhs_evals": 549,
+        "n_jac_evals": 56,
+        "n_err_test_fails": 10,
+        "n_nonlin_iters": 546,
+        "steady_state_reached": 0
+      }
+    },
+    "analytical/tight": {
+      "wall": 0.0471430390025489,
+      "stats": {
+        "n_steps": 1087,
+        "n_rhs_evals": 1169,
+        "n_jac_evals": 90,
+        "n_err_test_fails": 8,
+        "n_nonlin_iters": 1167,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/default": {
+      "wall": 0.03184445899387356,
+      "stats": {
+        "n_steps": 423,
+        "n_rhs_evals": 537,
+        "n_jac_evals": 54,
+        "n_err_test_fails": 12,
+        "n_nonlin_iters": 534,
+        "steady_state_reached": 0
+      }
+    },
+    "fd/tight": {
+      "wall": 0.061956352001288906,
+      "stats": {
+        "n_steps": 1087,
+        "n_rhs_evals": 1169,
+        "n_jac_evals": 90,
+        "n_err_test_fails": 8,
+        "n_nonlin_iters": 1167,
+        "steady_state_reached": 0
+      }
+    }
+  },
+  "comparisons": [
+    {
+      "label": "analytical_default vs fd_default (the speedup-mode pair)",
+      "max_abs": 0.04411752230953425,
+      "peak": 658699.4763785785,
+      "peak_rel": 6.697670772730099e-08,
+      "max_elt_rel": 1.9953732327467637,
+      "at": {
+        "t_idx": 83,
+        "species": "AC_slash_AMP",
+        "a": 430113.6837235922,
+        "b": 430113.6396060699
+      }
+    },
+    {
+      "label": "analytical_tight vs fd_tight (do they converge together?)",
+      "max_abs": 3.6427518352866173e-06,
+      "peak": 658699.5059656923,
+      "peak_rel": 5.530217955676357e-12,
+      "max_elt_rel": 0.0010242083848325857,
+      "at": {
+        "t_idx": 164,
+        "species": "AC_slash_AMP",
+        "a": 589479.9699832865,
+        "b": 589479.9699796437
+      }
+    },
+    {
+      "label": "analytical: default vs tight (is analytical converging?)",
+      "max_abs": 0.015511510020587593,
+      "peak": 658699.5059641489,
+      "peak_rel": 2.3548689319089667e-08,
+      "max_elt_rel": 1.9911252342280172,
+      "at": {
+        "t_idx": 106,
+        "species": "AC_slash_AMP",
+        "a": 474904.6306278393,
+        "b": 474904.6151163293
+      }
+    },
+    {
+      "label": "fd: default vs tight (is fd converging?)",
+      "max_abs": 0.03486614814028144,
+      "peak": 658699.5059656923,
+      "peak_rel": 5.293179640261853e-08,
+      "max_elt_rel": 1.9814111700067119,
+      "at": {
+        "t_idx": 81,
+        "species": "AC_slash_AMP",
+        "a": 426276.3011009863,
+        "b": 426276.33596713445
+      }
+    }
+  ]
+}

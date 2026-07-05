@@ -1,0 +1,109 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23
+V 1e-9
+
+kf 5e6/(NA*V)
+kr 0.005 
+
+kmod 1
+
+end parameters
+
+begin molecule types
+
+X(a,a)
+Y(b,c,d~0~1)
+
+X1(p,q)
+Y1(b,c,d~0~1)
+
+end molecule types
+
+begin seed species
+
+X(a,a) 1e5
+Y(b,c,d~0) 1e5
+
+X1(p,q) 1e5
+Y1(b,c,d~0) 1e5
+
+end seed species
+
+begin observables
+
+Molecules Xtot X()
+Molecules Ytot Y()
+Species Xfree X(a,a)
+Molecules Yfree Y(b,c)
+Molecules Yd0 Y(d~0)
+Molecules Yd1 Y(d~1)
+
+Molecules X1tot X1()
+Molecules Y1tot Y1()
+Species X1free X1(p,q)
+Molecules Y1free Y1(b,c)
+Molecules Y1d0 Y1(d~0)
+Molecules Y1d1 Y1(d~1)
+
+end observables
+
+begin functions
+
+factor(x) if(Ytot(x)>0,1,0)
+
+factor1(x) if(Y1tot(x)>0,1,0)
+
+end functions
+
+begin reaction rules
+
+###########
+# Model 1 # - broken (when lines Bug1 and Bug2 are used, but not when lines NoBug1 and NoBug2 are used)
+###########
+
+X(a,a)+Y(b)<->X(a!1,a).Y(b!1) kf,kr
+X(a,a)+Y(c)<->X(a,a!1).Y(c!1) kf,kr
+
+X(a,a!+)+Y(b)<->X(a!1,a!+).Y(b!1) 1000*kf,kr
+X(a!+,a)+Y(c)<->X(a!+,a!1).Y(c!1) 1000*kf,kr
+
+#####################
+# THE BUG IS HERE!! #
+#####################
+
+# EACH OF THE LINES BELOWS GENERATES THE FOLLOWING ERROR MESSAGE:
+#   Internal error in LocalFunction::evaluateOn()! trying to evaluate a function with unknown scope.
+Bug1: %z:X(a!1,a!+).Y(b!1,d~0)->X(a!1,a!+).Y(b!1,d~1) factor(z)*kmod # factor(z) should evaluate to 1
+Bug2: %z:X(a!+,a!1).Y(c!1,d~0)->X(a!+,a!1).Y(c!1,d~1) factor(z)*kmod # factor(z) should evaluate to 1
+
+# THESE LINES WORK:
+#NoBug1: X(a!1,a!+).Y(b!1,d~0)->X(a!1,a!+).Y(b!1,d~1) kmod 
+#NoBug2: X(a!+,a!1).Y(c!1,d~0)->X(a!+,a!1).Y(c!1,d~1) kmod 
+
+###########
+# Model 2 # - not broken
+###########
+
+X1(p,q)+Y1(b)<->X1(p!1,q).Y1(b!1) 2*kf,kr
+X1(p,q)+Y1(c)<->X1(p,q!1).Y1(c!1) 2*kf,kr
+
+X1(p,q!+)+Y1(b)<->X1(p!1,q!+).Y1(b!1) 1000*kf,kr
+X1(p!+,q)+Y1(c)<->X1(p!+,q!1).Y1(c!1) 1000*kf,kr
+
+# THESE LINES WORK:
+%z:X1(p!1,q!+).Y1(b!1,d~0)->X1(p!1,q!+).Y1(b!1,d~1) factor1(z)*kmod
+%z:X1(p!+,q!1).Y1(c!1,d~0)->X1(p!+,q!1).Y1(c!1,d~1) factor1(z)*kmod
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",gml=>2000000,complex=>1,get_final_state=>0,print_functions=>1,\
+          t_start=>0,t_end=>300,n_steps=>300})
+          
+end actions

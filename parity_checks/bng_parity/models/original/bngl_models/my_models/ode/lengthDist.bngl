@@ -1,0 +1,134 @@
+begin model
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+# reactor volume
+V 1e-12 # L per reactor
+# maximum rate constant for bond formation
+kmax 1e6/(NA*V) # /M/s converted to /(molecule/reactor)/s
+# fraction used to determine rate constant for AA bond formation
+fAA 0.1 # dimensionless
+# fraction used to determine rate constant for AB bond formation
+fAB 0.6 # dimensionless
+# fraction used to determine rate constant for BB bond formation
+fBB 0.2 # dimensionless
+# fraction used to determine rate constant for BA bond formation
+fBA=1-(fAA+fAB+fBB) # dimensionless
+# NB: fAA+fAB+fBB+fBA=1
+# initial number of monomer subunits of type A in reactor
+A0 10000 # molecules per reactor
+# initial number of monomer subunits of type B in reactor
+B0 10000 # molecules per reactor
+end parameters
+begin molecule types
+counter() # time
+poly() # number of polymer generation events
+antipoly() # number of polymer elimination events
+Monomer(id~A~B,state~0~poly,x,y)
+# id~A: type A monomer
+# id~B: type B monomer
+# state~0: isolated monomer
+# state~1: subunit of a polymer
+# x: x terminus
+# y: y terminus
+end molecule types
+begin seed species
+counter() 0
+poly() 0 
+antipoly() 0
+Monomer(id~A,state~0,x,y) A0
+Monomer(id~B,state~0,x,y) B0
+end seed species
+begin observables
+Molecules t counter()
+Species M1 Monomer==1 # count of all monomers
+Species M2 Monomer==2 # count of all dimers
+Species M3 Monomer==3 # count of all trimers
+Species M4 Monomer==4 # count of all tetramers
+Species M5 Monomer==5
+Species M6 Monomer==6
+Species M7 Monomer==7
+Species M8 Monomer==8
+Species M9 Monomer==9
+Species M10 Monomer==10
+Species M11 Monomer==11
+Species M12 Monomer==12
+Molecules poly_plus poly()
+Molecules poly_minus antipoly()
+Molecules nA_in_polymers Monomer(id~A,state~poly)
+Molecules nB_in_polymers Monomer(id~B,state~poly) 
+end observables
+begin functions
+Num_polymers()=poly_plus-poly_minus
+monomericA()=A0-nA_in_polymers
+monomericB()=B0-nB_in_polymers
+# NB: the average polymer length is greater or equal to 2.
+AvgPolyLen()=if(poly_plus>poly_minus,(nA_in_polymers+nB_in_polymers)/(poly_plus-poly_minus),2)
+end functions
+begin reaction rules
+0->counter() 1
+######################################
+# Monomer+Monomer->Polymer reactions #
+######################################
+# NB: each reaction generates 1 polymer.
+# A+A->AA
+Monomer(id~A,state~0,x,y)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~A,state~poly,x,y!1).Monomer(id~A,state~poly,x!1,y)+poly() fAA*kmax
+# A+B->AB
+Monomer(id~A,state~0,x,y)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~A,state~poly,x,y!1).Monomer(id~B,state~poly,x!1,y)+poly() fAB*kmax
+# B+B->BB
+Monomer(id~B,state~0,x,y)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~B,state~poly,x,y!1).Monomer(id~B,state~poly,x!1,y)+poly() fBB*kmax
+# B+A->BA
+Monomer(id~B,state~0,x,y)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~B,state~poly,x,y!1).Monomer(id~A,state~poly,x!1,y)+poly() fBA*kmax
+######################################
+# Polymer+Monomer->Polymer reactions #
+######################################
+# NB: there are two types of polymers with A ends.
+# A+A->AA
+Monomer(id~A,state~poly,y)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~A,state~poly,y!1).Monomer(id~A,state~poly,x!1,y) fAA*kmax
+Monomer(id~A,state~poly,x)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~A,state~poly,x!1).Monomer(id~A,state~poly,x,y!1) fAA*kmax
+# A+B->AB
+Monomer(id~A,state~poly,y)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~A,state~poly,y!1).Monomer(id~B,state~poly,x!1,y) fAB*kmax
+Monomer(id~A,state~poly,x)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~A,state~poly,x!1).Monomer(id~B,state~poly,x,y!1) fAB*kmax
+#NB: there are two types of polymers with B ends
+# B+B->BB
+Monomer(id~B,state~poly,y)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~B,state~poly,y!1).Monomer(id~B,state~poly,x!1,y) fBB*kmax
+Monomer(id~B,state~poly,x)+Monomer(id~B,state~0,x,y)->\
+Monomer(id~B,state~poly,x!1).Monomer(id~B,state~poly,x,y!1) fBB*kmax
+# B+A->BA
+Monomer(id~B,state~poly,y)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~B,state~poly,y!1).Monomer(id~A,state~poly,x!1,y) fBA*kmax
+Monomer(id~B,state~poly,x)+Monomer(id~A,state~0,x,y)->\
+Monomer(id~B,state~poly,x!1).Monomer(id~A,state~poly,x,y!1) fBA*kmax
+######################################
+# Polymer+Polymer->Polymer reactions #
+######################################
+# NB: each reaction eliminates 1 polymer.
+# A+A->AA
+Monomer(id~A,state~poly,y)+Monomer(id~A,state~poly,x)->\
+Monomer(id~A,state~poly,y!1).Monomer(id~A,state~poly,x!1)+antipoly() fAA*kmax
+# A+B->AB
+Monomer(id~A,state~poly,y)+Monomer(id~B,state~poly,x)->\
+Monomer(id~A,state~poly,y!1).Monomer(id~B,state~poly,x!1)+antipoly() fAB*kmax
+# B+B->BB
+Monomer(id~B,state~poly,y)+Monomer(id~B,state~poly,x)->\
+Monomer(id~B,state~poly,y!1).Monomer(id~B,state~poly,x!1)+antipoly() fBB*kmax
+# B+A->BA
+Monomer(id~B,state~poly,y)+Monomer(id~A,state~poly,x)->\
+Monomer(id~B,state~poly,y!1).Monomer(id~A,state~poly,x!1)+antipoly() fBA*kmax
+end reaction rules
+end model
+begin actions
+#generate_network({max_agg=>6,overwrite=>1}) # only needed if method=>"ode"; NB: max_agg=>6 truncates network generation
+#simulate({method=>"ode",t_end=>600,n_steps=>300,print_functions=>1})
+# use NFsim (network-free stochastic simulation)
+simulate({method=>"nf",t_end=>600,n_steps=>300,print_functions=>1,get_final_state=>0})
+end actions

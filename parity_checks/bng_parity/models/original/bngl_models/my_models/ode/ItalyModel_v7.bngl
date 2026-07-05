@@ -1,0 +1,315 @@
+begin model
+# References:
+# - Lauer SA et al. (2020) Ann Intern Med doi:10.7326/M20-0504
+begin parameters
+# In the BNGL file used for curve fitting, 
+# the lines below should be commented out.
+# These lines are used to assign values to 
+# the "__FREE" parameters.
+# The best-fit parameter values are found using PyBioNetFit.
+# https://github.com/lanl/PyBNF
+# https://pybnf.readthedocs.io/en/latest/
+######### BEST-FIT PARAMETER VALUES #########
+b__FREE 4.46023719276727e-08
+gI__FREE 0.03218903228790797
+kfSD__FREE 0.1994063728217462
+krSD__FREE 0.0011931612553152575
+mb__FREE 0.29914823375988614
+t0__FREE 20.037677448099345
+#############################################
+# total population
+# FYI: the average household size is 2.6.
+# Set S0 equal to the total population of $LOCATION=Italy.
+S0 60e6
+# initial number of infected individuals
+I0 1
+# start of the epidemic, t0>=0
+t0 t0__FREE # d
+# rate constant b (beta) for infection (community transmission)
+b b__FREE # /d
+# multiplier of b (beta) for infection of individuals within isolated households
+mb mb__FREE
+# The incubation period is characterized by the CDF of a log-normal distribution
+# (Lauer et al., 2020).
+# A log-normal distribution has two parameters: mu and sigma.
+# median incubation time 
+median 5.1 # d, from Figure 2 in Lauer et al. (2020)
+# mu parameter of the log-normal distribution
+# (expected value of the variable's natural logarithm)
+mu=ln(median)
+dispersion 1.52 # from Figure 2 in Lauer et al. (2020)
+# sigma parameter of the log-normal distribution
+# (standard deviation of the variable's natural logarithm)
+sigma=1/dispersion^2
+mean=exp(mu+sigma^2/2) # d
+# A log-normal distribution can be approximated by an Erlang distribution.
+# A series of first-order transitions produces an Erlang distribution of waiting times.
+# number of incubation steps
+# k:=N means that we have N "E" populations: E1, E2,..., EN.
+# With k=5, each incubation stage has a duration of ~1 d.
+k 5 
+# We set kL (lambda) to a value consistent with the settings for k and mean.
+kL=k/mean # d, the mean of an Erlang distribution is k/kL.
+# rate constant for "removal" of symptomatic infectious individuals
+# gI:=kH+kR
+gI gI__FREE # /d
+# number of known active cases required to trigger social distancing
+# This parameter is used to prevent the start of social distancing
+# before the start of the local epidemic.
+threshold 100
+# rate constant for M->P transition (social distancing)
+kfSD kfSD__FREE
+# rate constant for P->M transition (exposure, relaxation of social distancing)
+krSD krSD__FREE
+# period between reports of new cases 
+# delta_t:=1 => daily reporting
+delta_t 1 # d
+# fraction of post-incubation period infected individuals that are asymptomatic
+#   fA:=F/(1+F) => F-fold more asymptomatic individuals than symptomatic individuals
+fA 5/6 # dimensionless
+# fraction of symptomatic individuals that require hospitalization
+# (or equivalently, become severely ill).
+fH 0.1 # dimensionless 
+# case fatality rate for patients requiring hospitalization
+# (or equivalently, case fatality rate for severely ill individuals)
+CFR_H 7.2/100 # 7.2%
+# relative infectivity of EI:=E2+E3+...+EN vs. I populations
+#   relEI:=0.5 => virus-incubating pre-(a)symptomatic individuals are 50% less infectious than symptomatic individuals
+relEI 0.5
+# relative infectivity of A vs. I populations
+#   relA:=0.2 => post-incubation period asymptomatic individuals are 20% less infectious than symptomatic individuals
+relA 0.2
+# rate constant for quarantine of virus-positive individuals driven by testing
+kQ 0.01
+# rate constant for (self-)quarantine of symptomatic individuals driven by symptoms
+jQ 0.2
+# rate constant for hospitalization (or equivalently, progression to severe illness)
+kH=fH*gI
+# rate constant for recovery of symptomatic individuals not requiring hospitalization
+kR=(1-fH)*gI
+# rate constant for removal/recovery of asymptomatic infected individuals
+gA=kR # /d
+#  rate constant for "removal" after hospitaliztion
+gH=0.5*gI
+# rate constant for death after hospitalization
+kHD=CFR_H*gH
+# rate constant for recovery after hospitalization
+kHR=(1-CFR_H)*gH
+# fraction of active cases that are detected
+#   We expect fDI>fH (i.e., fraction of 
+#   detected cases is greater than fraction of
+#   cases leading to hospitalization).
+fDI 0.2 # dimensionless
+# fraction of deaths that are reported
+fDD 5/6
+end parameters
+begin molecule types
+# The S, E, A, I, and R populations have internal states.
+#   d: social-distancing state 
+#     - d~M: mixing within the community
+#     - d~P: isolated (protected at home)
+#     - d~Q: quarantined (because of a positive test result or symptom-driven self-quarantine)
+#     - d~H: hospitalized (or incapacitated)
+# susceptible population
+S(d~M~P) 
+# exposed population, divided into N=5 incubation stages
+# The duration of each stage is roughly 1 d (on average).
+#   E1: incubating virus w/o symptoms, not yet infectious
+E1(d~M~P) # exposed, stage 1
+#   E2--E5: incubating virus w/o symptoms
+#           partially infectious (relatively low infectivity)
+E2(d~M~P~Q) # exposed, stage 2
+E3(d~M~P~Q) # exposed, stage 3
+E4(d~M~P~Q) # exposed, stage 4
+E5(d~M~P~Q) # exposed, stage 5
+# fully infectious & symptomatic population 
+#   eligible for recovery/hospitalization
+I(d~M~P~Q~S~H) 
+# partially infectious & asymptomatic population eligible for recovery
+A(d~M~P~Q)  
+# recovered population
+#   r~0: unrecorded recovery
+#   r~1: recorded (known) recovery 
+R(d~M~P,r~0~1) 
+# deceased
+D() 
+counter()
+end molecule types
+begin seed species
+S(d~M) S0 # S0 is taken to be the total population
+E1(d~M) 0
+E2(d~M) 0
+E3(d~M) 0
+E4(d~M) 0
+E5(d~M) 0
+I(d~M) I0 # I0=1 at t=t0
+A(d~M) 0
+R(d~M,r~0) 0
+counter() 0
+end seed species
+begin observables
+Molecules nS S(d~M) S(d~P)
+Molecules nS_mix S(d~M)
+Molecules nS_iso S(d~P)
+Molecules nE E1(d~M) E2(d~M) E3(d~M) E4(d~M) E5(d~M) E1(d~P) E2(d~P) E3(d~P) E4(d~P) E5(d~P) E2(d~Q) E3(d~Q) E4(d~Q) E5(d~Q)
+Molecules nE_nonInfectous E1()
+Molecules nEI_mix E2(d~M) E3(d~M) E4(d~M) E5(d~M)
+Molecules nEI_iso E2(d~P) E3(d~P) E4(d~P) E5(d~P)
+Molecules nEI_quarantined E2(d~Q) E3(d~Q) E4(d~Q) E5(d~Q)
+Molecules nI I(d~M) I(d~P) I(d~Q) I(d~H)
+Molecules nI_mix I(d~M)
+Molecules nI_iso I(d~P)
+Molecules nI_quarantined I(d~Q)
+Molecules nI_hospitalized I(d~H)
+Molecules nA A(d~M) A(d~P) A(d~Q)
+Molecules nA_mix A(d~M)
+Molecules nA_iso A(d~P)
+Molecules nA_quarantined A(d~Q)
+Molecules nR R(d~M,r~0) R(d~M,r~1) R(d~P,r~0) R(d~P,r~1)
+Molecules nR_unrecorded R(d~M,r~0) R(d~P,r~0)
+Molecules nR_recorded R(d~M,r~1) R(d~P,r~1)
+Molecules nD D()
+Molecules nE4_MP E4(d~M) E4(d~P)
+Molecules nE5_MP E5(d~M) E5(d~P)
+Molecules t counter()
+end observables
+begin functions
+report_kL()=kL
+init_doubling_time()=(1/S0)*ln(2)/b
+# I(d~M) individuals spread disease at a relatively high rate to S(d~M) and S(d~P) individuals.
+# I(d~M) individuals preferentially spread disease to S(d~M) individuals.
+# I(d~P) individuals spread disease at a relatively low rate to S(d~M) and S(d~P) individuals.
+# I(d~P) individuals preferentially spread disease to S(d~M) individuals.
+# We assume that I(d~Q) and I(d~H) individuals do not spread disease.
+# Similarly, we assume that E(d~Q) and A(d~Q) individuals do not spread disease.
+# E2-E5(d~M)/E2-E5(d~P) & A(d~M)/A(d~P) individuals spread disease in a manner
+#   analogous to I(d~M)/I(d~P) individuals but at lower rates.
+kM()=if(t>=t0,b*(nI_mix+relEI*nEI_mix+relA*nA_mix+mb*(nI_iso+relEI*nEI_iso+relA*nA_iso)),0)
+kP()=if(t>=t0,mb*b*(nI_mix+relEI*nEI_mix+relA*nA_mix+mb*(nI_iso+relEI*nEI_iso+relA*nA_iso)),0)
+kR_stepFunc()=if(t>=t0,kR,0)
+kH_stepFunc()=if(t>=t0,kH,0)
+kQ_stepFunc()=if(t>=t0,kQ,0)
+jQ_stepFunc()=if(t>=t0,jQ,0)
+kfSD_stepFunc()=if(fDI*nI>=threshold,kfSD,0)
+# CDF_log_normal characterizes the waiting time between infection and symptoms/infectiousness.
+# The special function erf(x) is not available. 
+# erf(x) is approximated by tanh(sqrt(pi)*ln(2)*x)
+#CDF_log_normal()=(1/2)*(1+(tanh(sqrt(pi)*ln(2)*(ln(time())-mu)/(sigma*sqrt(2)))))
+# cumulative number of symptomatic cases
+nC_symp()=nI+(1-fA)*nR+nD # active cases + recovered (from symptomatic disease) + deceased
+nC_symp_Detected()=fDI*(nI+(1-fA)*nR+nD)
+# deaths reported
+deaths_reported()=fDD*nD
+# first-order Taylor series approximation of nC(t)-nC(t-delta_t)
+newCases()=delta_t*((1-fA)*kL*nE5_MP)
+newCasesDetected()=fDI*delta_t*((1-fA)*kL*nE5_MP) # delta_t*accumulation_rate
+# second-order Taylor series approximation of nC(t)-nC(t-delta_t)
+#newCases()=delta_t*((1-fA)*kL*nE5_MP)-0.5*(delta_t^2)*(((1-fA)*kL)^2*(nE4_MP-nE5_MP))
+# t=0 corresponds to the first date for which surveillance data is available
+# (not necessarily the start of the local epidemic). 
+# For $LOCATION=Italy, 
+# t=0 corresponds to January 29, 2020;
+# t=68 corresponds to April 6, 2020; and 
+# t=84 corresponds to April 22, 2020.
+# Daily number of *NEW* cases reported for $LOCATION=Italy
+Data_DailyCases()=if(t<=0,0,if(t<=1,0,if(t<=2,2,if(t<=3,0,if(t<=4,0,if(t<=5,0,if(t<=6,0,if(t<=7,0,if(t<=8,0,if(t<=9,1,if(t<=10,0,if(t<=11,0,if(t<=12,0,if(t<=13,0,if(t<=14,0,if(t<=15,0,if(t<=16,0,if(t<=17,0,if(t<=18,0,if(t<=19,0,if(t<=20,0,if(t<=21,0,if(t<=22,0,if(t<=23,17,if(t<=24,42,if(t<=25,93,if(t<=26,74,if(t<=27,93,if(t<=28,131,if(t<=29,202,if(t<=30,233,if(t<=31,240,if(t<=32,566,if(t<=33,342,if(t<=34,466,if(t<=35,587,if(t<=36,769,if(t<=37,778,if(t<=38,1247,if(t<=39,1492,if(t<=40,1797,if(t<=41,977,if(t<=42,2313,if(t<=43,0,if(t<=44,5198,if(t<=45,3497,if(t<=46,3590,if(t<=47,3233,if(t<=48,3526,if(t<=49,4207,if(t<=50,5322,if(t<=51,5986,if(t<=52,6557,if(t<=53,5560,if(t<=54,4789,if(t<=55,5249,if(t<=56,5210,if(t<=57,6203,if(t<=58,5909,if(t<=59,5974,if(t<=60,5217,if(t<=61,4050,if(t<=62,4053,if(t<=63,4782,if(t<=64,4668,if(t<=65,4585,if(t<=66,4805,if(t<=67,4316,if(t<=68,3599,if(t<=69,3039,if(t<=70,3836,if(t<=71,4204,if(t<=72,3951,if(t<=73,4694,if(t<=74,4092,if(t<=75,3153,if(t<=76,2972,if(t<=77,2667,if(t<=78,3786,if(t<=79,3493,if(t<=80,3491,if(t<=81,3047,if(t<=82,2256,if(t<=83,2729,if(t<=84,3370,0)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+end functions
+begin reaction rules
+0->counter() 1 # time
+# transmission
+#   community transmission
+S(d~M)->E1(d~M) kM() # rate=kM()*nS_mix, which is non-zero if t>=t0
+#   transmission to individuals within isolated households
+S(d~P)->E1(d~P) kP() # rate=kP()*nS_iso, which is non-zero if t>=t0
+# incubation
+#   stage 1 -> stage 2
+E1(d~M)->E2(d~M) kL # rate=lambda*nE1
+E1(d~P)->E2(d~P) kL # rate=lambda*nE1
+#   stage 2 -> stage 3
+E2(d~M)->E3(d~M) kL # rate=lambda*nE2
+E2(d~P)->E3(d~P) kL # rate=lambda*nE2
+E2(d~Q)->E3(d~Q) kL # rate=lambda*nE2
+#   stage 3 -> stage 4
+E3(d~M)->E4(d~M) kL # rate=lambda*nE3
+E3(d~P)->E4(d~P) kL # rate=lambda*nE3
+E3(d~Q)->E4(d~Q) kL # rate=lambda#nE3
+#   stage 4 -> stage 5
+E4(d~M)->E5(d~M) kL # rate=lambda*nE4
+E4(d~P)->E5(d~P) kL # rate=lambda*nE4
+E4(d~Q)->E5(d~Q) kL # rate=lambda*nE4
+# progression toward resolution
+#   without symptoms
+E5(d~M)->A(d~M) fA*kL # rate=fA*lambda*nE5
+E5(d~P)->A(d~P) fA*kL # rate=fA*lambda*nE5
+E5(d~Q)->A(d~Q) fA*kL # rate=fA*lambda*nE5
+#   with symptoms
+E5(d~M)->I(d~M) (1-fA)*kL # rate=(1-fA)*lambda*nE5
+E5(d~P)->I(d~P) (1-fA)*kL # rate=(1-fA)*lambda*nE5
+E5(d~Q)->I(d~Q) (1-fA)*kL # rate=(1-fA)*lambda*nE5
+# recovery of post-incubation period asymptomatic individuals
+A(d~M)->R(d~M,r~0) gA # rate=gA*nA_mix
+A(d~P)->R(d~P,r~0) gA # rate=gA*nA_iso
+A(d~Q)->R(d~P,r~1) gA # rate=gA*nA_quarantined
+# recovery of mildly ill symptomatic individuals
+I(d~M)->R(d~M,r~0) kR_stepFunc() # rate=kR*nI_mix
+# NB: we use kR_func() instead of kR so as not to remove the index case before t=t0.
+I(d~P)->R(d~P,r~0) kR # rate=kR*nI_iso
+I(d~Q)->R(d~P,r~1) kR # rate=kR*nI_quarantined
+# hospitalization of symptomatic individuals
+I(d~M)->I(d~H) kH_stepFunc()
+I(d~P)->I(d~H) kH
+I(d~Q)->I(d~H) kH
+# recovery of severely ill individuals 
+I(d~H)->R(d~M,r~1) kHR # rate=kHR*nI_hospitalized
+# death of severely ill individuals
+I(d~H)->D() kHD # rate=kHD*nI_hospitalized
+# quarantine driven by testing results & contact tracing
+E2(d~M)->E2(d~Q) kQ
+E2(d~P)->E2(d~Q) kQ
+E3(d~M)->E3(d~Q) kQ
+E3(d~P)->E3(d~Q) kQ
+E4(d~M)->E4(d~Q) kQ
+E4(d~P)->E4(d~Q) kQ
+E5(d~M)->E5(d~Q) kQ
+E5(d~P)->E5(d~Q) kQ
+A(d~M)->A(d~Q) kQ
+A(d~P)->A(d~Q) kQ
+I(d~M)->I(d~Q) kQ_stepFunc()
+I(d~P)->I(d~Q) kQ
+# (self-)quarantine driven by symptoms & testing
+I(d~M)->I(d~Q) jQ_stepFunc() # jQ>kQ
+I(d~P)->I(d~Q) jQ # jQ>kQ
+# social distancing
+#   rate=kfSD*[population(d~M)] if fDI*nI>=threshold
+#   rate_reverse=krSD*[population(d~P)]
+S(d~M)<->S(d~P) kfSD_stepFunc(),krSD 
+E1(d~M)<->E1(d~P) kfSD_stepFunc(),krSD
+E2(d~M)<->E2(d~P) kfSD_stepFunc(),krSD
+E3(d~M)<->E3(d~P) kfSD_stepFunc(),krSD
+E4(d~M)<->E4(d~P) kfSD_stepFunc(),krSD
+E5(d~M)<->E5(d~P) kfSD_stepFunc(),krSD
+I(d~M)<->I(d~P) kfSD_stepFunc(),krSD
+A(d~M)<->A(d~P) kfSD_stepFunc(),krSD
+R(d~M)<->R(d~P) kfSD_stepFunc(),krSD
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+# $LOCATION=Italy
+# $EXPFILENAME is the name of the EXP file with surveillance data
+# For $LOCATION=Italy, $EXPFILENAME=ItalyData 
+# $LASTDDAY is the last day for which surveillance data is available
+# For $LOCATION=Italy, $LASTDAY=68
+# Use "suffix=>$EXPFILENAME"
+# Use "t_end=>$LASTDAY"
+# Use "n_steps=>$LASTDAY" (assuming that delta_t=1, daily reporting)
+simulate({suffix=>"ItalyData",method=>"ode",t_start=>0,t_end=>68,n_steps=>68,\
+print_functions=>1})
+# forecast to April 22, 2020 (t=84 d)
+#resetConcentrations()
+#simulate({suffix=>"forecast_to84",method=>"ode",t_start=>0,t_end=>84,n_steps=>84,print_functions=>1})
+# long-term (1-year) forecast (t=365 d)
+#resetConcentrations()
+#simulate({suffix=>"forecast_to365",method=>"ode",t_start=>0,t_end=>365,n_steps=>365,print_functions=>1})
+end actions

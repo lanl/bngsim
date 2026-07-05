@@ -1,0 +1,59 @@
+# Model: synbio_band_pass_filter.bngl
+# Description: Implements a Band-Pass Filter.
+#              The output is High only for intermediate levels of Input.
+#              Mechanism: High-pass (Activation) + Low-pass (Repression at high input).
+
+begin model
+
+begin parameters
+    # Input Level (Sweep this parameter)
+    Input_Conc 1.0
+end parameters
+
+begin molecule types
+    I() # Input
+    A() # Activator
+    R() # Repressor
+    Out() # Output
+end molecule types
+
+begin seed species
+    I() Input_Conc
+    A() 0
+    R() 0
+    Out() 0
+end seed species
+
+begin observables
+    Molecules Input_Level I()
+    Molecules Output_Level Out()
+end observables
+
+begin reaction rules
+    # 1. Input produces A and R with different sensitivities
+    # A (High Affinity, saturates early): Input -> A
+    I() -> I() + A() 1.0
+    
+    # R (Low Affinity, activates late): Input -> R
+    # Rate ~ [I]^2 ?
+    # I + I -> I + I + R ?
+    
+    # Simple production for now, tuning K_d later
+    I() -> I() + R() 0.5
+    
+    # 2. Output Logic
+    # Out produced by A, degraded by R
+    A() -> A() + Out() 1.0
+    R() + Out() -> R() 10.0
+    
+    # 3. Degradation
+    A() -> 0 0.1
+    R() -> 0 0.1
+    Out() -> 0 0.1
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>100, n_steps=>200})

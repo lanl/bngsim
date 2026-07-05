@@ -1,0 +1,32 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA           6.02214076e23  # Constant
+    2 V            1e-15  # Constant
+    3 tau_mRNA     120  # Constant
+    4 tau_Protein  3600  # Constant
+    5 gamma        1/tau_mRNA  # ConstantExpression
+    6 gamma0       1/tau_Protein  # ConstantExpression
+    7 B            40  # Constant
+    8 gammaB       B*gamma  # ConstantExpression
+    9 r0           2/3600  # Constant
+   10 r1           10/3600  # Constant
+   11 n            4  # Constant
+   12 K            200  # Constant
+end parameters
+begin functions
+    1 H() r0+((r1*(NP^n))/((K^n)+(NP^n)))
+end functions
+begin species
+    1 mRNA() 0
+    2 Protein() 0
+end species
+begin reactions
+    1 0 1 H #_R1
+    2 1 1,2 gammaB #_R2
+    3 1 0 gamma #_R3
+    4 2 0 gamma0 #_R4
+end reactions
+begin groups
+    1 mRNA                 1
+    2 NP                   2
+end groups

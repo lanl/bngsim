@@ -1,0 +1,84 @@
+# Model: genetic_dna_replication_stochastic.bngl
+# Description: Models the template-directed polymerization of a DNA strand.
+#              Demonstrates linear polymer growth where a Polymerase adds nucleotides one by one.
+#              Uses simplified "Length" attribute to track size or explicit chain formation.
+#              Here we use explicit chain formation: N(p) + N(m) -> N(p!1).N(m!1)
+
+begin model
+
+begin parameters
+    # Rates
+    k_init  0.1   # Initiation
+    k_ext   1.0   # Extension
+    k_term  0.01  # Termination
+    
+    # Concentrations
+    Pol_tot 10
+    N_tot   1000
+end parameters
+
+begin molecule types
+    Pol(s)       # Polymerase with site 's'
+    N(p,m)       # Nucleotide with 'plus' and 'minus' ends (5' and 3')
+    # p binds to m of previous
+end molecule types
+
+begin seed species
+    Pol(s)  Pol_tot
+    N(p,m)  N_tot
+end seed species
+
+begin observables
+    Molecules Free_Nuc   N(p,m)
+    Molecules Growing_Chain Pol(s!1).N(p!1) # Count active chains
+    # To count length, we might need advanced observables or just track consumption of N
+    Molecules Incorporated_N N(p!+,m) # N bound at 5' end
+    Molecules Total_Incorporated N(p!+) 
+end observables
+
+begin reaction rules
+    # 1. Initiation
+    # Pol binds first Nucleotide
+    Pol(s) + N(p) -> Pol(s!1).N(p!1) k_init
+    
+    # 2. Elongation
+    # Pol(s!1)...N(m) + N(p) -> Pol(s!1)...N(m!2).N(p!2)
+    # We need to find the specific N at the 3' end bound to Pol
+    # Simplified: Pol is bound to the *growing end*. The chain grows away from Pol.
+    # Let's say Pol holds the 3' end (m) of the last added nucleotide.
+    # N(p,m)
+    # Pol(s!1).N(m!1, p) --(add N)--> Pol(s!1).N(m!1, p!2).N(m!2) ??
+    # Actually, standard is 5' to 3'. 
+    # Let's assume Pol holds the Template (ignored here) and the Primer 3' end.
+    # Let's model Pol holding the *newest* nucleotide's 3' end (m).
+    # New N binds to Pol and the previous N's 3' end? 
+    # Simpler: Pol holds the 'p' (5') end of the FIRST nucleotide.
+    # And chain grows at 'm' (3') end.
+    # We need a rule that matches the END of the chain.
+    # R: N(m) + N(p) -> N(m!1).N(p!1)  (This is uncatalyzed)
+    # Catalyzed:
+    # Pol(s!1).N(p!1)...N(m) + N(p) -> ...
+    # This requires finding the end of a connected component, which is hard in standard BNGL rules without explicit 'End' marker.
+    
+    # Alternative Strategy: Pol holds the *active site*.
+    # Pol(s!1).N(m!1) means N is the last added one.
+    # Extension:
+    # Pol(s!1).N(m!1) + N(p,m) -> Pol(s!2).N(m!2).N(p!2,m!1)
+    # Here, Pol releases the old N's m-site and grabs the new N's m-site, while linking old-N(m) to new-N(p).
+    # Use 'MoveConnected'? No, standard rules can do this bond exchange.
+    
+    # Pol(s!1).N(m!1) + N(p,m) -> Pol(s!2).N(m!2).N(p!2,m!1) k_ext
+    # Break s-m bond1, form s-m bond2, form m1-p2 bond.
+    Pol(s!1).N(m!1) + N(p,m) -> Pol(s!2).N(m!2,p!3).N(m!3) k_ext
+    
+    # 3. Termination
+    # Pol falls off
+    Pol(s!1).N(m!1) -> Pol(s) + N(m) k_term
+    
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1, max_iter=>10}) # Limit iter because chains grow infinitely
+simulate({method=>"ode", t_end=>400, n_steps=>200})

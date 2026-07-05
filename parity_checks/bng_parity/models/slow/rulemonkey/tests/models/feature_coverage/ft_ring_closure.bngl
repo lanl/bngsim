@@ -1,0 +1,46 @@
+# Feature: ring closure / intramolecular bond formation
+# Tests: competition between intermolecular chain growth and intramolecular cyclization
+# Covers: A_plus_B_rings, nfsim_ring_closure_polymer, blbr_rings_* from existing corpus
+# Tier: base
+# Expected: mixture of linear chains and cyclic dimers/trimers
+# invariant: conserved A_total = 60
+# invariant: conserved B_total = 60
+# invariant: balance A_bound_r = B_bound_l
+
+begin model
+begin parameters
+    A_tot  60
+    B_tot  60
+    kf     0.005   # /s, intermolecular binding rate
+    kr     0.1     # /s, unbinding rate
+end parameters
+
+begin molecule types
+    A(l,r)
+    B(l,r)
+end molecule types
+
+begin seed species
+    A(l,r)  A_tot
+    B(l,r)  B_tot
+end seed species
+
+begin observables
+    Molecules  A_total     A()
+    Molecules  B_total     B()
+    Molecules  A_free_r    A(r)
+    Molecules  B_free_l    B(l)
+    Molecules  A_bound_r   A(r!+)
+    Molecules  B_bound_l   B(l!+)
+    Species    AB_complex  A(r!+)
+end observables
+
+begin reaction rules
+    # A right binds B left (chain growth and ring closure)
+    A(r) + B(l) <-> A(r!1).B(l!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100,param=>"-bscb -utl 5"})
+end actions

@@ -1,0 +1,101 @@
+begin model
+begin parameters
+    # IRE1a/XBP1 ER Stress: Chaperone buffering and mRNA decay (RIDD).
+    # Advanced features: DeleteMolecules for repair and RIDD mRNA decay.
+    
+    # Stress Sensing
+    k_stress 5.0       # Unfolded protein load
+    k_bip_bind 10.0    # Chaperone buffering (Fast)
+    k_ire1_dimer 2.0   # Stress-induced coupling
+    
+    # Signaling Relay
+    k_xbp1_splice 1.5  # Splicing activity
+    k_ridd_max 2.0     # Active IRE1-driven mRNA decay
+    Km_ridd 300        # Threshold for RIDD
+    
+    # Adaptation (Feedback)
+    k_bip_synth_max 5.0
+    Km_xbp1 400        # TF threshold for chaperones
+    n_hill 3.0         # Nonlinear adaptation burst
+    
+    # Repair/Clearance
+    k_repair 0.5       # Folding restoration
+    k_reset 0.05
+    
+    # Initials
+    IRE1_tot 200
+    XBP1_mRNA 1000     # The splicing substrate
+    Target_mRNA 800    # RIDD substrate
+    BiP_tot 300
+end parameters
+
+begin molecule types
+    IRE1(b,s~U~P)
+    BiP(b)
+    Unfolded(b)
+    XBP1(s~u~s)        # u: unspliced,s: spliced
+    RIDD_Target()      # Vulnerable mRNA pool
+end molecule types
+
+begin seed species
+    IRE1(b,s~U) IRE1_tot
+    BiP(b) BiP_tot
+    Unfolded(b) 10
+    XBP1(s~u) XBP1_mRNA
+    RIDD_Target() Target_mRNA
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules ProSurvival_XBP1 XBP1(s~s)                # Adaptive output
+    Molecules RIDD_Drive       RIDD_Target()            # Destructive output (mRNA decay)
+    Molecules Active_IRE1      IRE1(s~P)                # Signaling sensor status
+    Molecules Stress_Burden    Unfolded()              # Unbuffered protein load
+    Molecules Chaperone_Bip   BiP()                    # ER capacity index
+    Molecules Spliced_XBP1    XBP1(s~s)                # TF driver status
+end observables
+
+begin functions
+    # RIDD-mediated mRNA decay (Functional Rate)
+    v_ridd() = k_ridd_max * (Active_IRE1 / (Km_ridd + Active_IRE1))
+    
+    # Hill-driven chaperone induction by spliced XBP1
+    v_bip_burst() = k_bip_synth_max * (Spliced_XBP1^n_hill) / (Km_xbp1^n_hill + Spliced_XBP1^n_hill)
+end functions
+
+begin reaction rules
+    ## SENSING Phase
+    # Stress production and buffering
+    0 -> Unfolded(b) k_stress
+    BiP(b) + Unfolded(b) <-> BiP(b!1).Unfolded(b!1) k_bip_bind,1.0
+    
+    # Unbuffered proteins drive IRE1 dimerization (Activation)
+    Unfolded(b) + IRE1(s~U) + IRE1(s~U) -> Unfolded(b) + IRE1(s~P,b!1).IRE1(s~P,b!1) k_ire1_dimer
+    
+    ## SIGNALING Stage
+    # Active IRE1 splices XBP1
+    IRE1(s~P) + XBP1(s~u) -> IRE1(s~P) + XBP1(s~s) k_xbp1_splice
+    
+    # RIDD: Active IRE1 degrades target mRNAs (Functional Rate)
+    RIDD_Target() -> 0 v_ridd()
+    
+    ## ADAPTATION Stage
+    # Spliced XBP1 induces BiP (Hill-driven burst)
+    0 -> BiP(b) v_bip_burst()
+    
+    # Repair: Chaperone-assisted folding
+    # DeleteMolecules: The unfolded factor is restored/removed
+    BiP(b!1).Unfolded(b!1) -> BiP(b) k_repair DeleteMolecules
+    
+    ## RESET Phase
+    IRE1(s~P) -> IRE1(s~U) k_reset
+    XBP1(s~s) -> 0 0.05
+    0 -> RIDD_Target() 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

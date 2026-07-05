@@ -1,0 +1,270 @@
+begin model
+# References:
+# - Fischmann TO et al. (2009) Biochemistry 48:2661-2674.
+# - Haling JR et al. (2014) Cancer Cell 26:402-413.
+# - Hein MY et al. (2015) Cell 163:712-723.
+# - Lee N, Lee JW, Kang GY, Park SH, Kim KP (2019) Proteomics 19:1900086.
+# - Piala AT, Humphreys JM, Goldsmith EJ (2014) Biophys J 107:2006-2015.
+# - Resing KA, ..., Ahn NG (1995) Biochemistry 34:2610-2620.
+# - Stagni C et al. (2018) Mol Cancer Ther 17:1332-1340.
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # number per mole
+# cytosolic volume
+Vcyt 1e-12 # L per cell
+# total protein abundances in HeLa Kyoto cells (Hein et al., 2015)
+ARAF_cpc  32680 # copies per cell
+BRAF_cpc  19164 # copies per cell
+CRAF_cpc   2067 # copies per cell
+KSR1_cpc   1692 # copies per cell
+KSR2_cpc      0 # copies per cell (not detected)
+MEK1_cpc 261981 # copies per cell
+MEK2_cpc 396724 # copies per cell
+ERK1_cpc  67298 # copies per cell
+ERK2_cpc 300375 # copies per cell
+#
+kf_typical 1e6 # /M/s
+#
+KD_BRAFV600E_BRAFV600E 10e-9 # M
+kf_BRAFV600E_BRAFV600E=kf_typical/(NA*Vcyt) # /(molecule/cell)/s
+kr_BRAFV600E_BRAFV600E=kf_typical*KD_BRAFV600E_BRAFV600E # /s
+KD_MEK1_BRAF 43e-9 # M (Haling et al., 2014)
+kf_MEK1_BRAF=kf_typical/(NA*Vcyt) # /(molecule/cell)/s
+kr_MEK1_BRAF=kf_typical*KD_MEK1_BRAF # /s
+kf_MEK2_BRAF=kf_MEK1_BRAF
+kr_MEK2_BRAF=kr_MEK1_BRAF
+#KD_MEK1_MEK1 > KD_MEK1_BRAF1 (Haling et al., 2014)
+KD_MEK1_MEK1 100e-9 # M
+kf_MEK1_MEK1=kf_typical/(NA*Vcyt)
+kr_MEK1_MEK1=kf_typical*KD_MEK1_MEK1
+kf_MEK1_MEK2=kf_MEK1_MEK1
+kr_MEK1_MEK2=kr_MEK1_MEK1
+kf_MEK2_MEK2=kf_MEK1_MEK1
+kr_MEK2_MEK2=kr_MEK1_MEK1
+#KD_MEK1_KSR1/2 > KD_MEK1_BRAF1 (Haling et al., 2014)
+# parameters for RAF-mediated phosphorylation of MEK
+Ceff_RAF_MEK 1e-5 # M
+KM_RAF_MEK 1e-6 # M
+kcat_RAF_MEK 1 # /s
+keff_BRAFV600E_MEK1_S218=Ceff_RAF_MEK*kcat_RAF_MEK/KM_RAF_MEK
+keff_BRAFV600E_MEK1_S222=Ceff_RAF_MEK*kcat_RAF_MEK/KM_RAF_MEK
+keff_BRAFV600E_MEK2_S222=Ceff_RAF_MEK*kcat_RAF_MEK/KM_RAF_MEK
+keff_BRAFV600E_MEK2_S226=Ceff_RAF_MEK*kcat_RAF_MEK/KM_RAF_MEK
+# parameters for MEK-mediated phosphorylation of ERK
+Ceff_MEK_ERK 1e-5 # M
+KM_MEK_ERK 1e-6 # M
+kcat_MEK_ERK 1 # /s
+keff_MEK1_ERK1_T202=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK1_ERK1_Y204=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK2_ERK1_T202=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK2_ERK1_Y204=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK1_ERK2_T185=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK1_ERK2_Y187=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK2_ERK2_T185=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+keff_MEK2_ERK2_Y187=Ceff_MEK_ERK*kcat_MEK_ERK/KM_MEK_ERK
+Ceff_ERK_MEK=Ceff_MEK_ERK
+KM_ERK_MEK 1e-6 # M
+kcat_ERK_MEK 1 # /s
+keff_ERK1_MEK1_T292=Ceff_ERK_MEK*kcat_ERK_MEK/KM_ERK_MEK
+keff_ERK2_MEK1_T292=Ceff_ERK_MEK*kcat_ERK_MEK/KM_ERK_MEK
+# parameters for reversible MEK-ERK association
+kf_MEK1_ERK1 1e6/(NA*Vcyt) # /(molecule/cell)/s
+kr_MEK1_ERK1 0.1 # /s
+kf_MEK1_ERK2 1e6/(NA*Vcyt) # /(molecule/cell)/s
+kr_MEK1_ERK2 0.1 # /s
+kf_MEK2_ERK1 1e6/(NA*Vcyt) # /(molecule/cell)/s
+kr_MEK2_ERK1 0.1 # /s
+kf_MEK2_ERK2 1e6/(NA*Vcyt) # /(molecule/cell)/s
+kr_MEK2_ERK2 0.1 # /s
+# steric factor
+phi 0.3 # dimensionless
+# rate constant for constitutive dephosphorylation of phosphosites
+kpase 2 # /s
+end parameters
+begin molecule types
+#YWHAE() # 14-3-3 epsilon
+#YWHAZ() # 14-3-3 zeta 
+#ARAF(RBD,CRD,S214~0~P)
+#BRAF(RBD,CRD,S365~0~P,S729~0~P)
+#CRAF(RBD,CRD,S259~0~P) 
+BRAFV600E(face,back) 
+# BRAF
+# - face: kinase surface responsible for interaction with MEK
+# - back: kinase surface responsible for interaction with RAF and KSR
+MEK1(D,face,S218~0~P,S222~0~P,T292~0~P) 
+# MAP2K1
+# - D: D motif
+# - face: kinase surface responsible for interaction with MEK, RAF, and KSR
+# - S218/S222: activation loop (aka T-loop)
+# - T292: negative feedback site phosphorylated by ERK (serves as phosphatase recruitment site)
+#         T292 is located within a proline-rich insert in the kinase domain sequence.
+MEK2(D,face,S222~0~P,S226~0~P) 
+# MAP2K2
+# - D: D motif
+# - face: kinase surface responsible for interaction with MEK, RAF, and KSR
+# - S222/S226: activation loop (aka (T-loop)
+# NB: the T292 site in MEK1 is missing in MEK2.
+ERK2(T185~0~P,Y187~0~P,DRS) 
+# MAPK1
+# - T185/Y187: TxY motif (TEY in ERK, TGY in p38, TPY in JNK)
+# - DRS: D recognition site (binds MEK and substrates with D motifs)
+# - FRS: F recognition site (binds substrates with F motifs)
+ERK1(T202~0~P,Y204~0~P,DRS)
+# MAPK3
+# - T202/Y204: TxY motif
+# - DRS: D recognition site (binds MEK and substrates with D motifs)
+# - FRS: F recognition site (only competent for binding to an F motif when the TxY motif is doubly phosphorylated)
+end molecule types
+begin seed species
+# For simplicity, we assume that the V600E mutation is homozygous.
+# BRAF copy number and mutant allele percentage are heterogeneous 
+# in tumors of patients with metastatic melanoma (Stagni et al., 2018).
+BRAFV600E(face,back) BRAF_cpc 
+MEK1(D,face,S218~0,S222~0,T292~0) MEK1_cpc
+MEK2(D,face,S222~0,S226~0) MEK2_cpc
+ERK2(T185~0,Y187~0,DRS) ERK2_cpc
+ERK1(T202~0,Y204~0,DRS) ERK1_cpc
+end seed species
+begin observables
+Molecules BRAF_monomers BRAFV600E(face,back)
+Species BRAF_dimers BRAFV600E(back!1).BRAFV600E(back!1)
+Molecules MEK1_BRAF_interfaces MEK1(face!1).BRAFV600E(face!1)
+Molecules MEK2_BRAF_interfaces MEK2(face!1).BRAFV600E(face!1)
+Species MEK1x2_BRAFx2_tetramers MEK1(face!1).BRAFV600E(face!1,back!2).BRAFV600E(back!2,face!3).MEK1(face!3)
+Species MEK1_MEK2_BRAFx2_tetramers MEK1(face!1).BRAFV600E(face!1,back!2).BRAFV600E(back!2,face!3).MEK2(face!3)
+Species MEK2x2_BRAFx2_tetramers MEK2(face!1).BRAFV600E(face!1,back!2).BRAFV600E(back!2,face!3).MEK2(face!3)
+Species MEK1_homodimers MEK1(face!1).MEK1(face!1)
+Molecules MEK1_MEK2_heterodimers MEK1(face!1).MEK2(face!1)
+Species MEK2_homodimers MEK2(face!1).MEK2(face!1)
+Molecules ppMEK1 MEK1(S218~P,S222~P)
+Molecules ppMEK2 MEK2(S222~P,S226~P)
+Molecules ppERK1 ERK1(T202~P,Y204~P)
+Molecules ppERK2 ERK2(T185~P,Y187~P)
+Molecules pT292_MEK1 MEK1(T292~P!?)
+end observables
+begin functions
+end functions
+begin reaction rules
+###############################
+# reversible RAF dimerization #
+###############################
+# reversible dimerization of mutant BRAF
+BRAFV600E(back)+BRAFV600E(back)<->BRAFV600E(back!1).BRAFV600E(back!1) kf_BRAFV600E_BRAFV600E,kr_BRAFV600E_BRAFV600E
+################################## 
+# reversible MEK-RAF association #
+##################################
+# Does binding depend on phosphorylation state of MEK? <<---- Q1
+# Can MEK bind RAF and ERK at the same time? <<---- Q2
+# reversible MEK1/2 binding to monomeric and dimeric forms of mutant BRAF
+# We assume that MEK activation-loop phosphorylation inhibits MEK-RAF binding.
+BRAFV600E(face)+MEK1(D,face,S218~0,S222~0)<->BRAFV600E(face!1).MEK1(D,face!1,S218~0,S222~0) kf_MEK1_BRAF,kr_MEK1_BRAF
+BRAFV600E(face)+MEK1(D,face,S218~P,S222~0)<->BRAFV600E(face!1).MEK1(D,face!1,S218~P,S222~0) phi*kf_MEK1_BRAF,(1/phi)*kr_MEK1_BRAF
+BRAFV600E(face)+MEK1(D,face,S218~0,S222~P)<->BRAFV600E(face!1).MEK1(D,face!1,S218~0,S222~P) phi*kf_MEK1_BRAF,(1/phi)*kr_MEK1_BRAF
+BRAFV600E(face)+MEK1(D,face,S218~P,S222~P)<->BRAFV600E(face!1).MEK1(D,face!1,S218~P,S222~P) phi^2*kf_MEK1_BRAF,(1/phi^2)*kr_MEK1_BRAF
+BRAFV600E(face)+MEK2(D,face,S222~0,S226~0)<->BRAFV600E(face!1).MEK2(D,face!1,S222~0,S226~0) kf_MEK2_BRAF,kr_MEK2_BRAF
+BRAFV600E(face)+MEK2(D,face,S222~P,S226~0)<->BRAFV600E(face!1).MEK2(D,face!1,S222~P,S226~0) phi*kf_MEK2_BRAF,(1/phi)*kr_MEK2_BRAF
+BRAFV600E(face)+MEK2(D,face,S222~0,S226~P)<->BRAFV600E(face!1).MEK2(D,face!1,S222~0,S226~P) phi*kf_MEK2_BRAF,(1/phi)*kr_MEK2_BRAF 
+BRAFV600E(face)+MEK2(D,face,S222~P,S226~P)<->BRAFV600E(face!1).MEK2(D,face!1,S222~P,S226~P) phi^2*kf_MEK2_BRAF,(1/phi^2)*kr_MEK2_BRAF 
+################################################## 
+# RAF-mediated activating phosphorylation of MEK #
+##################################################
+# We assume a non-processive mechanism.
+# We assume proximity-mediated catalysis.
+# We assume that phosphorylation is ordered. See Resing et al. (1995).
+# We assume that pS222 in MEK1 (pS226 in MEK2) is required for phosphorylation of S218 in MEK1 (S222 in MEK2).
+BRAFV600E(face!1).MEK1(face!1,S218~0,S222~P)->BRAFV600E(face!1).MEK1(face!1,S218~P,S222~P) keff_BRAFV600E_MEK1_S218
+BRAFV600E(face!1).MEK1(face!1,S222~0)->BRAFV600E(face!1).MEK1(face!1,S222~P) keff_BRAFV600E_MEK1_S222
+BRAFV600E(face!1).MEK2(face!1,S222~0,S226~P)->BRAFV600E(face!1).MEK2(face!1,S222~P,S226~P) keff_BRAFV600E_MEK2_S222
+BRAFV600E(face!1).MEK2(face!1,S226~0)->BRAFV600E(face!1).MEK2(face!1,S226~P) keff_BRAFV600E_MEK2_S226
+###############################
+# reversible MEK dimerization #
+###############################
+# Can MEK bind ERK and RAF at the same time? <<---- Q2
+# Inactive MEK does not dimerize (Fischmann et al., 2009). <<---- Is this correct?
+# We assume that only fully activated MEK is capable of dimerization.
+MEK1(D,face,S218~P,S222~P)+MEK1(D,face,S218~P,S222~P)<->MEK1(D,face!1,S218~P,S222~P).MEK1(D,face!1,S218~P,S222~P) kf_MEK1_MEK1,kr_MEK1_MEK1
+MEK1(D,face,S218~P,S222~P)+MEK2(D,face,S222~P,S226~P)<->MEK1(D,face!1,S218~P,S222~P).MEK2(D,face!1,S222~P,S226~P) kf_MEK1_MEK2,kr_MEK1_MEK2
+MEK2(D,face,S222~P,S226~P)+MEK2(D,face,S222~P,S226~P)<->MEK2(D,face!1,S222~P,S226~P).MEK2(D,face!1,S222~P,S226~P) kf_MEK2_MEK2,kr_MEK2_MEK2
+###########################
+# MEK autophosphorylation #
+###########################
+# Does MEK autophosphorylation happen? Is MEK a substrate of MEK? <<---- Q3
+################################## 
+# reversible MEK-ERK association #
+##################################
+# What about competition between MEK and cytosolic ERK substrates for ERK binding? <<---- Q4
+# MEK-ERK binding is independent of phosphorylation states of MEK and ERK?? <<---- Q5
+# Has the MEK-ERK interface been characterized? <<----Q6
+# Is there cooperativity in binding of MEK dimers to ERK dimers? <<---- Q7
+# There seems to be the possiblity of two-point attachment:
+# the two D motifs in a MEK dimer can simultaneously bind the two DRS motifs in an ERK dimer.
+MEK1(D,face)+ERK1(DRS)<->MEK1(D!1,face).ERK1(DRS!1) kf_MEK1_ERK1,kr_MEK1_ERK1
+MEK1(D,face)+ERK2(DRS)<->MEK1(D!1,face).ERK2(DRS!1) kf_MEK1_ERK2,kr_MEK1_ERK2
+MEK2(D,face)+ERK1(DRS)<->MEK2(D!1,face).ERK1(DRS!1) kf_MEK2_ERK1,kr_MEK2_ERK1
+MEK2(D,face)+ERK2(DRS)<->MEK2(D!1,face).ERK2(DRS!1) kf_MEK2_ERK2,kr_MEK2_ERK2
+###################################################################
+# MEK-mediated activating phosphorylation of the TxY motif in ERK #
+###################################################################
+# We assume an ordered mechanism of dual phosphorylation (Lee et al., 2019).
+# See also Piala et al. (2014) and references therein.
+# We assume that phosphorylation is non-processive, i.e., 
+# monophosphorylation TEpY is a possible outcome of MEK-ERK interaction.
+# The Y residue in the TxY motif must be phosphorylated before the T residue.
+# Activation of kinase activity requires phosphorylation of the T in the TxY motif, i.e.,
+# phosphorylation of the Y in the TxY motif is a prerequisite for T phosphorylation and does
+# significantly upregulate kinase activity.
+# We assume proximity-mediated catalysis.
+# The kinase activity of MEK1 depends on activating phosphorylation of S218 and S222.
+# The kinase activity of MEK2 depends on activating phosphorylation of S222 and S226.
+MEK1(D!1,S218~P,S222~P).ERK1(DRS!1,T202~0,Y204~P)->MEK1(D!1,S218~P,S222~P).ERK1(DRS!1,T202~P,Y204~P) keff_MEK1_ERK1_T202
+MEK1(D!1,S218~P,S222~P).ERK1(DRS!1,Y204~0)->MEK1(D!1,S218~P,S222~P).ERK1(DRS!1,Y204~P) keff_MEK1_ERK1_Y204
+MEK2(D!1,S222~P,S226~P).ERK1(DRS!1,T202~0,Y204~P)->MEK2(D!1,S222~P,S226~P).ERK1(DRS!1,T202~P,Y204~P) keff_MEK2_ERK1_T202
+MEK2(D!1,S222~P,S226~P).ERK1(DRS!1,Y204~0)->MEK2(D!1,S222~P,S226~P).ERK1(DRS!1,Y204~P) keff_MEK2_ERK1_Y204
+MEK1(D!1,S218~P,S222~P).ERK2(DRS!1,T185~0,Y187~P)->MEK1(D!1,S218~P,S222~P).ERK2(DRS!1,T185~P,Y187~P) keff_MEK1_ERK2_T185
+MEK1(D!1,S218~P,S222~P).ERK2(DRS!1,Y187~0)->MEK1(D!1,S218~P,S222~P).ERK2(DRS!1,Y187~P) keff_MEK1_ERK2_Y187
+MEK2(D!1,S222~P,S226~P).ERK2(DRS!1,T185~0,Y187~P)->MEK2(D!1,S222~P,S226~P).ERK2(DRS!1,T185~P,Y187~P) keff_MEK2_ERK2_T185
+MEK2(D!1,S222~P,S226~P).ERK2(DRS!1,Y187~0)->MEK2(D!1,S222~P,S226~P).ERK2(DRS!1,Y187~P) keff_MEK2_ERK2_Y187
+########################################################################### 
+# ERK-mediated phosphorylation of T292 in the proline-rich region of MEK1 #
+###########################################################################
+# We assume a distributive (vs. processive) mechanism.
+# We assume proximity-mediated catalysis.
+# The kinase activity of ERK1 depends on activating phosphorylation of T202 and Y204.
+# The kinase activity of ERK2 depends on activating phosphorylation of T185 and Y187.
+ERK1(DRS!1).MEK1(D!1,T292~0)->ERK1(DRS!1).MEK1(D!1,T292~P) keff_ERK1_MEK1_T292
+ERK2(DRS!1).MEK1(D!1,T292~0)->ERK2(DRS!1).MEK1(D!1,T292~P) keff_ERK2_MEK1_T292
+########################### 
+# ERK1/2 homodimerization #
+###########################
+# Has the ERK dimer been structurally characterized? <<---- Q8
+# No ERK1/ERK2 heterodimers? <<---- Q9
+##########################################################
+# reversible recruitment of phosphatase to pT292 in MEK1 #
+##########################################################
+# Which phosphatase mediates negative feedback dephosphorylation? <<---- Q10
+
+####################################################################################
+# ERK-regulated pT292-dependent negative feedback dephosphorylation of phospho-MEK #
+####################################################################################
+
+##################################################
+# constitutive dephosphorylation of phosphosites #
+##################################################
+# We assume that all phosphosites are dephosphorylated via an unregulated pseudo first-order process.
+MEK1(S218~P)->MEK1(S218~0) kpase
+MEK1(S222~P)->MEK1(S222~0) kpase
+MEK1(T292~P)->MEK1(T292~0) kpase
+MEK2(S222~P)->MEK2(S222~0) kpase
+MEK2(S226~P)->MEK2(S226~0) kpase
+ERK1(T202~P)->ERK1(T202~0) kpase
+ERK1(Y204~P)->ERK1(Y204~0) kpase
+ERK2(T185~P)->ERK2(T185~0) kpase
+ERK2(Y187~P)->ERK2(Y187~0) kpase
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration simulation
+simulate({suffix=>"equil",method=>"ode",t_end=>180,n_steps=>180,print_functions=>1})
+# production simulation
+end actions

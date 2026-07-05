@@ -1,0 +1,71 @@
+begin model
+# References:
+#  - Hein MY, ..., Mann M (2015) Cell 163: 712-723. [PMID: 26496610]
+begin parameters
+# Avogadro constant (NA)
+NA 6.02214076e23 # molecules per mole (exact value)
+# volume of the cytosol (V_cyt)
+#  comments:
+#   - Hein et al. (2015) assumed a cytoplasmic volume of 2 pL for HeLa Kyoto cells.  
+V_cyt 2e-12 # L  
+# ratio (circumference:diameter)
+pi=2*asin(1) # dimensionless
+# time at which oscillations begin
+t_delay 300 # s, set to 0 to start Ca2+ oscillations right away
+# period of calcium oscillations (<1 s to several minutes)
+period 300 # s
+# min and max free cytosolic Ca2+ concentrations 
+free_ion_conc_min 10 # nM
+free_ion_conc_max 100 # nM
+# equilibrium dissociation constant for CaM binding to Ca2+
+KD 1600 # nM
+# dissociation rate constant
+koff 6.41e-3 # /s
+# association rate constant
+kon=koff/KD # /nM/s
+# number of copies of calmodulin per cell
+#  comments:
+#   - Calmodulin abundance was measured by Hein et al. (2015) for HeLa Kyoto cells.  
+CaM_total 11354804 # copies per cell
+end parameters
+begin molecule types
+counter()
+CaM(EF~0~1)
+#---
+# CaM: calmodulin
+#  components:
+#   EF: Ca2+ binding domain
+#    comments: We only consider the EF hand with relatively low affinity for Ca2+.
+#    states:
+#     - 0: free
+#     - 1: bound to Ca2+
+#---
+end molecule types
+begin seed species
+counter() 0
+CaM(EF~0) CaM_total*KD/(free_ion_conc_min+KD) # equilibrium abundance
+CaM(EF~1) CaM_total*free_ion_conc_min/(free_ion_conc_min+KD) # equilibrium abundance
+end seed species
+begin observables
+Molecules t counter() # t is time 
+Molecules CaM_0 CaM(EF~0) # Ca2+ free CaM
+Molecules CaM_1 CaM(EF~1) # Ca2+ bound CaM
+end observables
+begin functions
+# We assume that free Ca2+ concentration is sinusoidal with specified period and amplitude
+#  for t>=t_delay. For t<t_delay, free Ca2+ concentration is steady and at its minimum.
+free_ion_conc()=if(t>=t_delay,free_ion_conc_min+((free_ion_conc_max-free_ion_conc_min)/2)*(1+sin(pi*(3/2+2*(t-t_delay)/period))),free_ion_conc_min)
+kon_eff()=kon*free_ion_conc()
+end functions
+begin reaction rules
+# The molecule counter() accumulates at a rate of 1 molecule per unit time.
+# The abundance of counter() [the number of counter() molecules] is equivalent to time. 
+# The time can also be fetched using the built-in function time().
+0->counter() 1 
+# Ca2+ binding to CaM
+CaM(EF~0)<->CaM(EF~1) kon_eff(),koff
+end reaction rules
+end model
+begin actions
+simulate({method=>"ode",t_end=>3000,n_steps=>300,print_functions=>1})
+end actions

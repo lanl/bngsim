@@ -1,0 +1,40 @@
+// =============================================================================
+// Source: Voit (1993) "S-System Modelling of Complex Systems with Chaotic Input"
+//         Environmetrics 4(2):153-186
+// Example: Forced oscillator - exact recasting (Appendix, Equations A1-A3)
+// =============================================================================
+// Time horizon: t ∈ [0, 200]
+//
+// Original forced oscillator (Equation A1):
+//   x'' + 0.25*x' - x + x^3 = A*sin(t)
+//
+// This is a Duffing-type forced oscillator with damping.
+// Parameter A controls the forcing amplitude and determines chaos vs. periodic.
+//
+// Recast as first-order S-system (Equation A3):
+//   Introduce: X1 = x + p, X2 = x' + q, X3 = A*sin(t) + r, X4 = A*cos(t) + r
+//   With constraints: r = p^3 - p + 0.25*q (e.g., p=q=2, r=6.5)
+//
+//   dX1/dt = X2 - q
+//   dX2/dt = X3 - r + p^3 - p + 0.25*q - X1^3 + 3*p*X1^2 - (3*p^2-1)*X1 - 0.25*X2
+//   dX3/dt = X4 - r
+//   dX4/dt = r - X3
+//
+// For A ≈ 0.265, the system exhibits chaotic transitions between upper/lower domains.
+// =============================================================================
+
+model V1993_forced_oscillator()
+    // Forcing amplitude (A ≈ 0.265 for chaos)
+    A = 0.265
+    
+    // Forced Duffing-type oscillator (second order)
+    // x'' + 0.25*x' - x + x^3 = A*sin(t)
+    x' = v
+    v' = x - x^3 - 0.25*v + A*sin(time)
+    
+    // Initial conditions
+    x = 0.0
+    v = 0.0
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

@@ -1,0 +1,76 @@
+# Created by BioNetGen 2.9.3
+setOption("NumberPerQuantityUnit","6.0221e+23")
+begin parameters
+    1 RT                   2.5774863  # Constant
+    2 NA                   6.0221418e23  # Constant
+    3 PI                   3.1415927  # Constant
+    4 rad                  1e-4  # Constant
+    5 frac                 0.70  # Constant
+    6 celldens             1e9  # Constant
+    7 vol_EC               1/celldens  # ConstantExpression
+    8 area_PM              (4*PI)*(rad^2)  # ConstantExpression
+    9 vol_CP               ((frac*(4/3))*PI)*(rad^3)  # ConstantExpression
+   10 width_PM             1e-7  # Constant
+   11 vol_PM               area_PM*width_PM  # ConstantExpression
+   12 logConcLig           -15  # Constant
+   13 conc_L_0             10^logConcLig  # ConstantExpression
+   14 count_R_0            300000  # Constant
+   15 K11                  4.6e9  # Constant
+   16 K21                  5.3e9  # Constant
+   17 L20                  5.3e11  # Constant
+   18 K_LR                 K11  # ConstantExpression
+   19 K_RR                 L20*width_PM  # ConstantExpression
+   20 alpha                10  # Constant
+   21 beta                 0.01  # Constant
+   22 Gf_LR                -ln(K_LR)  # ConstantExpression
+   23 Gf_RR                -ln(K_RR)  # ConstantExpression
+   24 Gf_LRR               -ln(alpha)  # ConstantExpression
+   25 Gf_LRRL              -ln(beta)  # ConstantExpression
+   26 phi                  0.5  # Constant
+   27 Eact0_LR             -17.8/RT  # ConstantExpression
+   28 Eact0_RR             -11.9/RT  # ConstantExpression
+   29 _InitialConc1        (conc_L_0*NA)*vol_EC  # ConstantExpression
+   30 _AEact0_1            Eact0_LR/RT  # ConstantExpression
+   31 _AEact0_2            Eact0_RR/RT  # ConstantExpression
+   32 _R0_local1           exp((-(_AEact0_1+(phi*Gf_LR))))  # ConstantExpression
+   33 _R1_local1           exp((-(_AEact0_2+(phi*Gf_RR))))  # ConstantExpression
+   34 _R0_local2           exp((-(_AEact0_1+(phi*(Gf_LR+Gf_LRR)))))  # ConstantExpression
+   35 __reverse_R0_local1  exp((-(_AEact0_1+((1-phi)*(-Gf_LR)))))  # ConstantExpression
+   36 _R1_local2           exp((-(_AEact0_2+(phi*(Gf_RR+Gf_LRR)))))  # ConstantExpression
+   37 _R1_local3           exp((-(_AEact0_2+(phi*(Gf_RR+(2*Gf_LRR)+Gf_LRRL)))))  # ConstantExpression
+   38 __reverse_R1_local1  exp((-(_AEact0_2+((1-phi)*(-Gf_RR)))))  # ConstantExpression
+   39 _R0_local3           exp((-(_AEact0_1+(phi*(Gf_LR+Gf_LRR+Gf_LRRL)))))  # ConstantExpression
+   40 __reverse_R0_local2  exp((-(_AEact0_1+((1-phi)*((-Gf_LR)+(-Gf_LRR))))))  # ConstantExpression
+   41 __reverse_R0_local3  exp((-(_AEact0_1+((1-phi)*((-Gf_LR)+(-Gf_LRR)+(-Gf_LRRL))))))  # ConstantExpression
+   42 __reverse_R1_local2  exp((-(_AEact0_2+((1-phi)*((-Gf_RR)+(-Gf_LRR))))))  # ConstantExpression
+   43 __reverse_R1_local3  exp((-(_AEact0_2+((1-phi)*((-Gf_RR)+(-2*Gf_LRR)+(-Gf_LRRL))))))  # ConstantExpression
+end parameters
+begin functions
+    1 dimfrac() RecDimer/(RecDimer+RecMonomer)
+end functions
+begin species
+    1 @EC::L(r) _InitialConc1
+    2 @PM::R(d,l) count_R_0
+    3 @PM::L(r!1)@EC.R(d,l!1) 0
+    4 @PM::R(d!1,l).R(d!1,l) 0
+    5 @PM::L(r!1)@EC.R(d!2,l!1).R(d!2,l) 0
+    6 @PM::L(r!1)@EC.L(r!2)@EC.R(d!3,l!1).R(d!3,l!2) 0
+end species
+begin reactions
+    1 1,2 3 1.6605503e-15*_R0_local1 #R0 unit_conversion=1/(6.0221e+23*vol_EC)
+    2 2,2 4 6.6071196e-11*_R1_local1 #R1 unit_conversion=1/(6.0221e+23*vol_PM)
+    3 1,4 5 3.3211006e-15*_R0_local2 #R0 unit_conversion=1/(6.0221e+23*vol_EC)
+    4 3 1,2 __reverse_R0_local1 #_reverse_R0
+    5 2,3 5 1.3214239e-10*_R1_local2 #R1 unit_conversion=1/(6.0221e+23*vol_PM)
+    6 3,3 6 6.6071196e-11*_R1_local3 #R1 unit_conversion=1/(6.0221e+23*vol_PM)
+    7 4 2,2 __reverse_R1_local1 #_reverse_R1
+    8 1,5 6 1.6605503e-15*_R0_local3 #R0 unit_conversion=1/(6.0221e+23*vol_EC)
+    9 5 1,4 __reverse_R0_local2 #_reverse_R0
+   10 6 1,5 2*__reverse_R0_local3 #_reverse_R0
+   11 5 2,3 __reverse_R1_local2 #_reverse_R1
+   12 6 3,3 __reverse_R1_local3 #_reverse_R1
+end reactions
+begin groups
+    1 RecDimer             2*4,2*5,2*6
+    2 RecMonomer           2,3
+end groups

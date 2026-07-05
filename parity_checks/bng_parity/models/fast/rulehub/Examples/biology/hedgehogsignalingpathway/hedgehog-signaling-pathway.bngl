@@ -1,0 +1,99 @@
+begin model
+begin parameters
+    # Hedgehog (Hh) Signaling: Ciliary translocation and Gli processing.
+    # Advanced features: MoveConnected for Gli-Sufu transport and Hill feedback.
+    
+    # Early Relay
+    k_hh_bind 1e-4
+    k_ptch_deg_max 2.0  # Hh-induced Ptch degradation
+    Km_ptch 300         # Threshold for Ptch clearance
+    n_hill 3.0          # Cooperativity of internalization
+    
+    # Smoothened Dynamics
+    k_smo_rel 1.5       # Release of Smo inhibition
+    k_cilia_on 2.0      # Transport into primary cilium
+    k_cilia_off 0.2     # Exit from cilium
+    
+    # GLI Processing (The Hub)
+    k_gli_act 2.5       # Active Smo promotes GLI_act
+    k_gli_rep 1.0       # Default GLI processing to repressor
+    
+    # Feedback
+    k_ptch_synth 0.1    # Hh-induced negative feedback
+    k_reset 0.05
+    
+    # Initials
+    Hh_tot 100
+    Ptch_tot 400
+    Smo_tot 300
+    Gli_tot 600
+    Sufu_tot 200        # GLI-sequestering partner
+end parameters
+
+begin molecule types
+    Hh(b)
+    Ptch(b,state~A~I)
+    Smo(b,s~U~A,loc~cyt~cilia)
+    Gli(b,s~rep~act,loc~cyt~nuc)
+    Sufu(b)
+end molecule types
+
+begin seed species
+    Hh(b) Hh_tot
+    Ptch(b,state~A) Ptch_tot
+    Smo(b,s~U,loc~cyt) Smo_tot
+    Gli(b,s~rep,loc~cyt) Gli_tot
+    Sufu(b) Sufu_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_Output   Gli(s~act,loc~nuc)       # Final effector factor
+    Molecules Repressor_Level Gli(s~rep)                # Basal inhibition pool
+    Molecules Ciliary_Smo     Smo(loc~cilia,s~A)       # Spatial signaling competence
+    Molecules Ptch_Density    Ptch(b,state~A)             # Feedback/Inhibitor status
+    Molecules Gli_Sufu_Comp   Gli(b!1).Sufu(b!1)        # Sequestration status
+    Molecules Hh_Signal       Hh(b!+)                   # Ligand occupancy
+end observables
+
+begin functions
+    # Hill-driven Ptch degradation by Hedgehog
+    v_ptch_sink() = k_ptch_deg_max * (Hh_Signal / (Km_ptch + Hh_Signal))^n_hill
+end functions
+
+begin reaction rules
+    ## RECEPTION Phase
+    # Hh binds and inactivates Ptch
+    Hh(b) + Ptch(b,state~A) <-> Hh(b!1).Ptch(b!1,state~I) k_hh_bind,0.1
+    
+    # Hh induces Ptch degradation (Functional Rate - Hill)
+    Ptch(state~I!+) -> 0 v_ptch_sink()
+    
+    ## RELAY Stage
+    # Depletion of Ptch allows Smo to enter cilia and activate
+    Smo(loc~cyt,s~U) <-> Smo(loc~cilia,s~A) k_cilia_on,k_cilia_off
+    
+    # Hh/Smo induces Gli activation
+    Smo(loc~cilia,s~A) + Gli(s~rep) -> Smo(loc~cilia,s~A) + Gli(s~act) k_gli_act
+    
+    ## TRANSPORT Phase
+    # Active Gli (sequestered by Sufu) moves to nucleus
+    # MoveConnected: Partner (Sufu) stays bound during transport
+    Gli(b,loc~cyt) <-> Gli(b,loc~nuc) 0.5,0.1 MoveConnected
+    Gli(b) + Sufu(b) <-> Gli(b!1).Sufu(b!1) 2.0,0.2
+    
+    ## FEEDBACK Controlling
+    # Nuclear GliAct induces Ptch synthesis (Self-limitation)
+    Gli(s~act,loc~nuc) -> Gli(s~act,loc~nuc) + Ptch(b,state~A) k_ptch_synth
+    
+    ## RESET Phase
+    Gli(s~act) -> Gli(s~rep) k_reset
+    Ptch(b,state~A) -> 0 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>100,n_steps=>400})
+end actions
+end model
+

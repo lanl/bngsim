@@ -1,0 +1,92 @@
+begin model
+begin parameters
+    # Caspase activation loop: The executioner feedback system.
+    # Advanced features: Hill kinetics for activation threshold and wildcards (!?).
+    
+    # Initiation
+    k_ligand 0.8       # Input drive
+    k_c8_act 1.2       # Initiator trigger
+    
+    # Thresholding (Switching behavior)
+    k_c3_max 5.0       # Max effector activation
+    Km_c8 200          # Threshold of C8 for C3
+    n_hill 3.0         # Cooperative response
+    
+    # Feedback
+    k_fb_loop 1.5      # C3 -> C8 amplification
+    
+    # Inhibition (Life signals)
+    k_iap_bind 5.0     # XIAP neutralization
+    k_flip_inh 2.0     # c-FLIP inhibits C8 (Competitive)
+    
+    # Reset
+    k_degrade 0.1      # Clearance
+    
+    # Initials
+    C8_tot 500
+    C3_tot 1000
+    IAP_tot 400
+    FLIP_tot 200
+end parameters
+
+begin molecule types
+    DeathLigand()
+    Caspase8(b,s~U~A)
+    Caspase3(b,s~U~A)
+    IAP(b)
+    FLIP(b)
+end molecule types
+
+begin seed species
+    DeathLigand() 10
+    Caspase8(b,s~U) C8_tot
+    Caspase3(b,s~U) C3_tot
+    IAP(b) IAP_tot
+    FLIP(b) FLIP_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    # Molecules Effector_Pore    Mitochondria(s~open)             # Commitment marker (Removed: Not in rules)
+    Molecules Active_Caspase8  Caspase8(s~A)           # Feedback driver status
+    Molecules XIAP_Brake       Caspase3(b!1).IAP(b!1)   # Inhibition status
+    Molecules Flip_Inhibited   Caspase8(b!1).FLIP(b!1)  # Competitive blockade
+    Molecules Total_Execution  Caspase3(s~A!?)          # Aggregated execution pool
+end observables
+
+begin functions
+    # Sharp switch for effector activation
+    v_trigger() = k_c3_max * (Active_Caspase8^n_hill) / (Km_c8^n_hill + Active_Caspase8^n_hill)
+end functions
+
+begin reaction rules
+    ## INITIATION
+    # Ligand triggers C8
+    DeathLigand() + Caspase8(s~U) -> DeathLigand() + Caspase8(s~A) k_ligand
+    
+    # c-FLIP competes for C8 activation (Inhibition)
+    FLIP(b) + Caspase8(b,s~U) <-> FLIP(b!1).Caspase8(b!1,s~U) k_flip_inh,0.5
+    
+    ## EFFECTOR PHASE
+    # C8 activates C3 (Functional Rate - Hill)
+    Caspase3(s~U) -> Caspase3(s~A) v_trigger()
+    
+    ## FEEDBACK LOOP
+    # C3 amplifies C8 activation
+    Caspase3(s~A) + Caspase8(s~U) -> Caspase3(s~A) + Caspase8(s~A) k_fb_loop
+    
+    ## REGULATION
+    # XIAP inhibits active C3 (Wildcard !? for any partner)
+    Caspase3(s~A,b) + IAP(b) <-> Caspase3(s~A,b!1).IAP(b!1) k_iap_bind,0.1
+    
+    ## RESET
+    Caspase3(s~A) -> Caspase3(s~U) k_degrade
+    Caspase8(s~A) -> Caspase8(s~U) k_degrade
+    DeathLigand() -> 0 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>80,n_steps=>200})
+end actions
+end model

@@ -1,0 +1,70 @@
+begin model
+  begin parameters
+    NA 6.02214076e23
+    V 1e-9
+    LT 1e-9*(NA*V)
+    RT 1e5
+    kp1 2.8e5/(NA*V)
+    km1 5e-2
+    kp2 1.5e4/(NA*V)
+    km2 1.9e-4
+    lp1 5.6e-3
+    lm1 1.9e-5
+    lp2 5.2e1
+    lm2 1.3e-2
+    kp 0.5
+    kdp 0.1
+  end parameters
+  begin molecule types
+    L()
+    R00()
+    R10()
+    R20()
+    R11()
+    R12()
+    R22()
+    Rx0()
+    Rx1()
+    Rx2()
+  end molecule types
+  begin seed species
+    L() LT
+    R00() RT
+  end seed species
+  begin observables
+    Species freeL L()
+    Species Crosslink Rx0() Rx1() Rx2()
+    Species freeR R00()
+    Species R10_ R10()
+    Species R20_ R20()
+    Species Rx0_ Rx0()
+    Species R11_ R11()
+    Species R12_ R12()
+    Species R22_ R22()
+    Species Rx1_ Rx1()
+    Species Rx2_ Rx2()
+  end observables
+  begin functions
+    boundL()=R10_+R20_+Rx0_+2*(R11_+R12_+R22_+Rx1_+Rx2_)
+  end functions
+  begin reaction rules
+    R00()+L()<->R10() 2*kp1,km1
+    R00()+L()<->R20() 2*kp2,km2
+    R10()+L()<->R12() kp2,km2
+    R10()+L()<->R11() kp1,2*km1
+    R10()<->Rx0() lp2,lm2    
+    R20()+L()<->R12() kp1,km1
+    R20()+L()<->R11() kp2,2*km2
+    R20()<->Rx0() lp1,lm1  
+    R11()<->Rx1() 2*lp2,lm2
+    R12()<->Rx1() lp1,lm1
+    R12()<->Rx2() lp2,lm2
+    R22()<->Rx2() 2*lp1,lm1
+    Rx1()<->Rx0()+L() km1,kp1
+    Rx2()<->Rx0()+L() km2,kp2
+  end reaction rules
+end model
+begin actions
+  generate_network({overwrite=>1})
+  simulate({method=>"ode",t_end=>12000,n_steps=>120,print_functions=>1})
+end actions

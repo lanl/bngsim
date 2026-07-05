@@ -1,0 +1,95 @@
+begin model
+begin parameters
+# parameter values are taken from Table 2
+V1 0.05*2.5 # nM/s
+n 1 # dimensionless
+KI 9 # nM
+KM1 10 # nM
+V2 0.25 # nM/s
+KM2 8 # nM
+k3 0.025 # /s
+KM3 15 # nM
+k4 0.025 # /s
+KM4 15 # nM
+V5 0.75 # nM/s
+KM5 15 # nM
+V6 0.75 # nM/s
+KM6 15 # nM
+k7 0.025 # /s
+KM7 15 # nM
+k8 0.025 # /s
+KM8 15 # nM
+V9 0.5 # nM/s
+KM9 15 # nM
+V10 0.5 # nM/s
+KM10 15 # nM
+RAF_total 100 # nM
+MEK_total 300 # nM
+ERK_total 300 # nM
+end parameters
+begin molecule types
+RAF(s~0~P) # RAF(s~0) [=] MKKK, RAF(s~P) [=] MKKK-P
+MEK(s~0~P~PP) # MEK(s~0) [=] MKK, MEK(s~P) [=] MKK-P, MEK(s~PP) [=] MKK-PP
+ERK(s~0~P~PP) # ERK(s~0) [=] MAPK, ERK(s~P) [=] MAPK-P, ERK(s~PP) [=] MAPK-PP
+end molecule types
+begin seed species
+RAF(s~0) RAF_total
+MEK(s~0) MEK_total
+ERK(s~0) ERK_total
+end seed species
+begin observables
+Molecules MKKK RAF(s~0)
+Molecules MKKK_P RAF(s~P)
+Molecules MKK MEK(s~0)
+Molecules MKK_P MEK(s~P)
+Molecules MKK_PP MEK(s~PP)
+Molecules MAPK ERK(s~0)
+Molecules MAPK_P ERK(s~P)
+Molecules MAPK_PP ERK(s~PP)
+end observables
+begin functions
+v1()=V1/(((1+MAPK_PP/KI)^n)*(KM1+MKKK)) # *MKKK
+v2()=V2/(KM2+MKKK_P) # *MKKK_P
+v3()=k3*MKKK_P/(KM3+MKK) # *MKK
+v4()=k4*MKKK_P/(KM4+MKK_P) # *MKK_P
+v5()=V5/(KM5+MKK_PP) # *MKK_PP
+v6()=V6/(KM6+MKK_P) # *MKK_P
+v7()=k7*MKK_PP/(KM7+MAPK) # *MAPK
+v8()=k8*MKK_PP/(KM8+MAPK_P) # *MAPK_P
+v9()=V9/(KM9+MAPK_PP) # *MAPK_PP
+v10()=V10/(KM10+MAPK_P) # *MAPK_P
+end functions
+begin reaction rules
+RAF(s~0)<->RAF(s~P) v1(),v2()
+MEK(s~0)<->MEK(s~P) v3(),v6()
+MEK(s~P)<->MEK(s~PP) v4(),v5()
+ERK(s~0)<->ERK(s~P) v7(),v10()
+ERK(s~P)<->ERK(s~PP) v8(),v9()
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+# equilibration
+simulate({suffix=>"equil",method=>"ode",t_end=>1000,n_steps=>100,print_functions=>1})
+saveConcentrations() # save basal steady-state concentrations (V1=0.05*2.5 nM/s)
+setParameter("V1",2.5) # V1 increases from 5% to 100%
+simulate({suffix=>"Fig2A",method=>"ode",t_end=>9000,n_steps=>1500})
+resetConcentrations()
+# adjust parameter values as specified in the caption of Figure 2
+setParameter("n",2)
+setParameter("KI",18)
+setParameter("KM1",50)
+setParameter("KM2",40)
+setParameter("KM3",100)
+setParameter("KM4",100)
+setParameter("KM5",100)
+setParameter("KM6",100)
+setParameter("KM7",100)
+setParameter("KM8",100)
+setParameter("KM9",100)
+setParameter("KM10",100)
+setParameter("V9",1.25)
+setParameter("V10",1.25)
+setParameter("V1",2.5) # V1 increases from 5% to 100%
+simulate({suffix=>"Fig2B",method=>"ode",t_end=>12000,n_steps=>2000})
+end actions

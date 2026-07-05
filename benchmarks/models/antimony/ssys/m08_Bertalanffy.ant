@@ -1,0 +1,30 @@
+// Model for Bertalanffy growth with linear loss
+// von Bertalanffy L (1938) A quantitative theory of organic growth
+//   (inquiries on growth laws. II) Human Biology 10: 181-213.
+// ODE (already in S-system form):
+//   x' = p*x^a - q*x
+// ICs: x(0)=10
+// Params: p=7, a=2/3, q=2
+// Note: mmax = (p/q)^(1/(1-a)) = (7/2)^(3) = 42.875 (not used directly)
+
+// Analytic solution (for reference only; not parsed):
+//   x(t) = mmax * ( 1 - (1 - (x(0)/mmax)^(1-a)) * exp(-q*(1-a)*t) )^(1/(1-a))
+
+model Bertalanffy()
+  // initial conditions
+  x = 10
+
+  // parameters
+  p = 7
+  a = 2/3  // 0 < a < 1
+  q = 2
+
+  // observable: carrying capacity / asymptote
+  // var mmax;
+  // mmax := (p/q)^(1/(1 - a));   // = 42.875 with settings above
+
+  // flows
+  G:  -> x; p*x^a      // growth
+  L:  x -> ; q*x       // linear loss
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400

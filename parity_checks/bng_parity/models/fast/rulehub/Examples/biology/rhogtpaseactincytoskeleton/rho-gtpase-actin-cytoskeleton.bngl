@@ -1,0 +1,92 @@
+begin model
+begin parameters
+    # RhoA-GTPase regulation of the actin cytoskeleton.
+    # Advanced features: TotalRate,translocation,and downstream kinase relay.
+    
+    # RhoA Cycle
+    k_gefs_act 0.8     # External drive (e.g. LPA)
+    k_rhoA_exch 2.0    # GDP/GTP exchange
+    k_rhoA_hydro 0.5   # GAP-mediated reset
+    
+    # Downstream Cascade (ROCK/LIMK)
+    k_rock_act 1.2     # ROCK activation by RhoA-GTP
+    k_limk_phos 1.0    # LIMK phosphorylation by ROCK
+    k_cof_inact 1.5    # Cofilin inactivation by LIMK (Protects F-actin)
+    
+    # Actin Dynamics
+    k_polym 5.0        # Basal polymerization
+    k_depolym 3.0      # Basal depolymerization
+    k_cof_depolym 10.0 # Accelerated depolymerization by active cofilin
+    
+    # Initials
+    RhoA_tot 500
+    ROCK_tot 200
+    LIMK_tot 200
+    Cofilin_tot 800
+    Actin_tot 2000     # Mostly G-actin monomer reservoir
+end parameters
+
+begin molecule types
+    RhoA(s~GDP~GTP,loc~cyt~mem)
+    ROCK(s~inactive~active)
+    LIMK(s~U~P)
+    Cofilin(s~active~inactive)
+    Actin(s~G~F)
+end molecule types
+
+begin seed species
+    RhoA(s~GDP,loc~cyt) RhoA_tot
+    ROCK(s~inactive) ROCK_tot
+    LIMK(s~U) LIMK_tot
+    Cofilin(s~active) Cofilin_tot
+    Actin(s~G) Actin_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules F_Actin_Mass     Actin(s~F)               # Cytoskeletal structure reading
+    Molecules Active_RhoA      RhoA(s~GTP)              # Driver intensity
+    Molecules Phospho_LIMK     LIMK(s~P)                # Middle-layer signal
+    Molecules Stabilized_Cof   Cofilin(s~inactive)      # Regulation status
+    Molecules Membrane_RhoA    RhoA(loc~mem)            # Spatial localization
+end observables
+
+begin reaction rules
+    ## UPSTREAM ACTIVATION
+    # External GEFs activate RhoA (TotalRate: drive-dependent)
+    RhoA(s~GDP,loc~cyt) -> RhoA(s~GTP,loc~mem) k_gefs_act TotalRate
+    
+    ## KINASE RELAY
+    # RhoA-GTP activates ROCK
+    RhoA(s~GTP,loc~mem) + ROCK(s~inactive) -> RhoA(s~GTP,loc~mem) + ROCK(s~active) k_rock_act
+    
+    # ROCK phosphorylates LIMK
+    ROCK(s~active) + LIMK(s~U) -> ROCK(s~active) + LIMK(s~P) k_limk_phos
+    
+    # LIMK phosphorylates/inactivates Cofilin
+    LIMK(s~P) + Cofilin(s~active) -> LIMK(s~P) + Cofilin(s~inactive) k_cof_inact
+    
+    ## CYTOSKELETAL DYNAMICS
+    # Polymerization (G-actin -> F-actin)
+    # Wildcard: Enabled if RhoA is active (!?)
+    Actin(s~G) -> Actin(s~F) k_polym
+    
+    # Depolymerization (Regulated by active cofilin)
+    Cofilin(s~active) + Actin(s~F) -> Cofilin(s~active) + Actin(s~G) k_cof_depolym
+    
+    # Basal depolymerization
+    Actin(s~F) -> Actin(s~G) k_depolym
+    
+    ## RESET
+    RhoA(s~GTP,loc~mem) -> RhoA(s~GDP,loc~cyt) k_rhoA_hydro
+    ROCK(s~active) -> ROCK(s~inactive) 0.1
+    LIMK(s~P) -> LIMK(s~U) 0.1
+    Cofilin(s~inactive) -> Cofilin(s~active) 0.2
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>8,n_steps=>300})
+end actions
+end model
+

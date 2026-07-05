@@ -1,0 +1,58 @@
+begin parameters
+oligo0	3    	# 0.005 nM (see below)
+PrPC0	600   	# 1 nM (corresponds to 1.e-12 L volume)
+lambda	2400  	# [=] /day rate of PrPC production
+d		4		# [=] /day rate of PrPC degradation
+a		0.0235   # [=] /day slow rate of PrPSc oligomer loss
+beta    0.00292 # [=] /day rate of PrPSc chain elongation
+b		0.0314  # [=] /day rate of PrPSc oligomer breakage
+rev     100     # [=] /day rate of monomeric PrPSc reversion to PrPC
+end parameters
+
+begin molecule types
+dum()
+PrP(a~C~Sc,x,y)
+end molecule types
+
+begin species
+dum() 1
+PrP(a~C,x,y) PrPC0
+PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y!2).PrP(a~Sc,x!2,y) oligo0
+end species
+
+begin reaction rules
+dum()->dum()+PrP(a~C,x,y) lambda
+PrP(a~C,x,y)+dum()->dum() d
+PrP(a~Sc,x!?)+dum()->dum() a
+PrP(a~C,x)+PrP(a~Sc,y)->PrP(a~Sc,x!1).PrP(a~Sc,y!1) beta
+PrP(a~Sc,x!?,y!1).PrP(a~Sc,x!1,y!?)->PrP(a~Sc,x!?,y)+PrP(a~Sc,x,y!?) b
+PrP(a~Sc,x,y)->PrP(a~C,x,y) rev
+# Shouldn't it be the following?
+#PrP(a~Sc,x,y!1).PrP(a~Sc,x!1,y)->PrP(a~C,x,y)+PrP(a~C,x,y) rev
+# Tested the above line, doesn't reproduce the result either.
+end reaction rules
+
+begin observables
+Molecules PrPC PrP(a~C)
+Molecules PrPSc PrP(a~Sc)
+Species Oligomers PrP(a~Sc)
+end observables
+
+resetConcentrations();
+setParameter("a",0.0235);
+generate_network({overwrite=>1,check_iso=>1,max_stoich=>{PrP=>40}});
+simulate_ssa({suffix=>"0.0235",t_start=>0,t_end=>300,n_steps=>120});
+#simulate({method=>"nf",suffix=>"0.0235",t_start=>0,t_end=>300,n_steps=>120,gml=>10000000});
+
+resetConcentrations();
+setParameter("a",0.047);
+generate_network({overwrite=>1,check_iso=>1,max_stoich=>{PrP=>40}});
+simulate_ssa({suffix=>"0.047",t_start=>0,t_end=>300,n_steps=>120});
+#simulate({method=>"nf",suffix=>"0.047",t_start=>0,t_end=>300,n_steps=>120,gml=>10000000});
+
+resetConcentrations();
+setParameter("a",0.094);
+generate_network({overwrite=>1,check_iso=>1,max_stoich=>{PrP=>40}});
+simulate_ssa({suffix=>"0.094",t_start=>0,t_end=>300,n_steps=>120});
+#simulate({method=>"nf",suffix=>"0.094",t_start=>0,t_end=>300,n_steps=>120,gml=>10000000});
+

@@ -1,0 +1,90 @@
+begin model
+#@model_id: krishna2006_nfkb_core
+#@title: Minimal NF-kB spiky oscillator (Krishna 2006)
+#@description: Three-variable core NF-kB feedback loop with nuclear NF-kB (Nn), IkB mRNA (Im), and cytoplasmic IkB (I). Rational and Hill-like feedback produces spiky oscillations. Species scaled x1000 for SSA.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1073/pnas.0604085103
+#@note: |
+#  All variables are dimensionless in the original (0..1 range for Nn).
+#  Scaled x1000 for integer molecule counts in SSA.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Scaling factor
+  scale    1000           # dimensionless
+
+  # Model parameters (dimensionless, time in minutes)
+  A_k      0.007          # dimensionless
+  B_k      954.5          # dimensionless
+  C_k      0.035          # dimensionless
+  delta_k  0.029          # dimensionless
+  eps_k    2e-5           # dimensionless
+end parameters
+
+begin molecule types
+  Nn()
+  Im()
+  Ik()
+end molecule types
+
+begin seed species
+  Nn()  1   # molecules (0 * 1000, use 1 for SSA)
+  Im()  1   # molecules (0 * 1000, use 1 for SSA)
+  Ik()  1   # molecules (0 * 1000, use 1 for SSA)
+end seed species
+
+begin observables
+  Molecules  Obs_Nn  Nn()
+  Molecules  Obs_Im  Im()
+  Molecules  Obs_Ik  Ik()
+end observables
+
+begin functions
+  # Rescaled concentrations
+  Nn_c() = Obs_Nn / scale
+  Im_c() = Obs_Im / scale
+  Ik_c() = Obs_Ik / scale
+
+  # dNn/dt = A*(1-Nn)/(eps+I) - B*I*Nn/(delta+Nn)
+  prod_Nn() = A_k * (1 - Nn_c()) / (eps_k + Ik_c()) * scale
+  cons_Nn() = B_k * Ik_c() * Nn_c() / (delta_k + Nn_c()) * scale
+
+  # dIm/dt = Nn^2 - Im
+  prod_Im() = (Nn_c())^2 * scale
+  cons_Im() = Im_c() * scale
+
+  # dI/dt = Im - C*(1-Nn)*I/(eps+I)
+  prod_Ik() = Im_c() * scale
+  cons_Ik() = C_k * (1 - Nn_c()) * Ik_c() / (eps_k + Ik_c()) * scale
+end functions
+
+begin reaction rules
+  # Nuclear NF-kB
+  0 -> Nn()  prod_Nn()
+  Nn() -> 0  cons_Nn()
+
+  # IkB mRNA
+  0 -> Im()  prod_Im()
+  Im() -> 0  cons_Im()
+
+  # Cytoplasmic IkB
+  0 -> Ik()  prod_Ik()
+  Ik() -> 0  cons_Ik()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>10,n_steps=>400,complex=>1})
+end actions

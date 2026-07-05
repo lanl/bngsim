@@ -1,0 +1,693 @@
+
+
+
+#include "NFcore.hh"
+#include <unordered_set>
+
+
+using namespace std;
+using namespace NFcore;
+
+
+
+ReactionClass::ReactionClass(string name, double baseRate, string baseRateParameterName, TransformationSet *transformationSet, System *s)
+{
+	this->system=s;
+	this->tagged = false;
+	this->useRuleMonkey = false;
+
+	totalRateFlag=false;
+	isDimerStyle=false;
+	//Setup the basic properties of this reactionClass
+	this->name = name;
+	this->baseRate = baseRate;
+	this->baseRateParameterName=baseRateParameterName;
+	this->fireCounter = 0;
+	this->a = 0;
+	this->volumeConversionFactor = 1.0;
+	this->traversalLimit = ReactionClass::NO_LIMIT;
+	this->transformationSet = transformationSet;
+
+
+	//Set up the template molecules from the transformationSet
+	this->n_reactants   = transformationSet->getNreactants();
+	this->n_mappingsets = transformationSet->getNmappingSets();
+    this->reactantTemplates = new TemplateMolecule *[n_reactants];
+	vector <TemplateMolecule*> tmList;
+	vector <int> hasMapGenerator;
+	for(unsigned int r=0; r<n_reactants; r++)
+	{
+		//The main reactant should be the one that is getting modified...
+		//In other words, we select the reactant that has at least one map generator, and
+		//to minimize mistakes, with the least sym sites...
+		TemplateMolecule *curTemplate = transformationSet->getTemplateMolecule(r);
+		TemplateMolecule::traverse(curTemplate,tmList,TemplateMolecule::FIND_ALL);
+
+		//First, single out all the templates that have at least one map generator
+		for(unsigned int i=0; i<tmList.size(); i++) {
+
+			if(tmList.at(i)->getN_mapGenerators()>0) {
+				hasMapGenerator.push_back(i);
+			}
+		}
+
+		//Find the one with the least sym comp bonds...
+		int minSymSites = 999999;
+		for(unsigned int k=0; k<hasMapGenerator.size(); k++) {
+			if(tmList.at(hasMapGenerator.at(k))->getN_symCompBonds()<minSymSites) {
+				curTemplate = tmList.at(hasMapGenerator.at(k));
+				minSymSites = curTemplate->getN_symCompBonds();
+			}
+		}
+
+		reactantTemplates[r] = curTemplate;
+		tmList.clear(); hasMapGenerator.clear();
+	}
+	mappingSet = new MappingSet *[n_mappingsets];
+
+
+
+	/* create blank mappingSets for the added molecules. These will be used
+	 * to hold mappings to added molecules, which is useful for rules that create
+	 *  molecules and then perform other transformations.  --Justin, 1Mar2011
+	 */
+	for ( unsigned int r = n_reactants; r < n_mappingsets; ++r )
+	{
+		mappingSet[r] = transformationSet->generateBlankMappingSet(r,0);
+	}
+
+
+
+	//Here, if we identify that there are disjoint sets in this pattern, from
+	//the connected-to syntax, then we have to flag the ones that we actually
+	//have to traverse down...
+	for(unsigned int r=0; r<n_reactants; r++)
+	{
+		tmList.clear();
+
+		// Get the connected set of molecules
+		TemplateMolecule *curTemplate = reactantTemplates[r];
+		TemplateMolecule::traverse(curTemplate,tmList,TemplateMolecule::FIND_ALL);
+
+		//Label the unique sets, and only continue if we have more than one set
+		vector <vector <TemplateMolecule *> > sets;
+		vector <int> uniqueSetId;
+		int setCount = TemplateMolecule::getNumDisjointSets(tmList,sets,uniqueSetId);
+		if(setCount<=1) continue;
+
+
+		//count the number of map generators (rxn centers) in each set
+		vector <int> numMapGenerators;
+		for(int s=0; s<setCount; s++) { numMapGenerators.push_back(0); }
+
+		int curTemplateSetId = -1;
+		for(unsigned int t=0;t<tmList.size();t++) {
+			if(tmList.at(t)==curTemplate) {
+				curTemplateSetId = uniqueSetId.at(t);
+			}
+			int n_maps = numMapGenerators.at(uniqueSetId.at(t));
+			numMapGenerators.at(uniqueSetId.at(t)) = n_maps+tmList.at(t)->getN_mapGenerators();
+		}
+
+
+
+		//Lets rearrange the connected-to elements so that the one head is listed as
+		//connected to all other molecules.  This will better suit our needs.
+
+		// first, clear out the old connections
+		for(unsigned int i=0; i<tmList.size(); i++) {
+			tmList.at(i)->clearConnectedTo();
+		}
+
+		// add back the connections, but always through the head template
+		int rxnCenterSets = 1;
+		int curSet=0;
+		for(unsigned int i=0; i<uniqueSetId.size(); i++) {
+			if(uniqueSetId.at(i)==curTemplateSetId) {
+				if(curSet==curTemplateSetId) curSet++;
+				continue;
+			}
+			if(uniqueSetId.at(i)==curSet) {
+				bool otherHasRxnCenter = false;
+				if(numMapGenerators.at(curSet)>0) {
+					otherHasRxnCenter=true;
+					rxnCenterSets++;
+				}
+				TemplateMolecule *otherTemplate = tmList.at(i);
+				int ctIndex1=curTemplate->getN_connectedTo();
+				int ctIndex2=otherTemplate->getN_connectedTo();
+				curTemplate->addConnectedTo(otherTemplate,ctIndex2,otherHasRxnCenter);
+				otherTemplate->addConnectedTo(curTemplate,ctIndex1);
+				curSet++;
+			}
+		}
+
+		if(rxnCenterSets>2) {
+			cout.flush();
+			cerr<<"\n\n   Error in Reaction Rule: "<<name<<endl;
+			cerr<<"   You created a reaction with a pattern that includes the connected-to\n";
+			cerr<<"   syntax (ie: A().B()).  You included 3 or more disjoint sets of molecules\n";
+			cerr<<"   where there are more than 2 sets with rxn centers.  This may work ok, \n";
+			cerr<<"   but you really shouldn't ever do something this crazy, so I'm just going\n";
+			cerr<<"   to stop you now.  Goodbye.\n"<<endl;
+			exit(1);
+		}
+
+
+
+
+		//Finally, clear out the data structures.
+		for(unsigned int i=0; i<sets.size(); i++) sets.at(i).clear();
+		sets.clear(); uniqueSetId.clear();
+		numMapGenerators.clear();
+	}
+
+
+	//Check here to see if we have molecule types that are the same across different reactants
+	//Because if so, we will give a warning
+	if(n_reactants>2) cerr<<"Warning!! You created a reaction ("<< name <<") that has more than 2 reactants.  This has not been extensively tested!"<<endl;
+
+	if(n_reactants==2)
+	{	//If the reactants are of the same type, then we have to make a few special considerations
+		if(reactantTemplates[0]->getMoleculeType()==reactantTemplates[1]->getMoleculeType())
+		{
+			cout<<endl;
+			cout<<"Warning! You have a binding rxn (" << name << ") that allows a moleculeType to bind another of the same type."<<endl;
+			cout<<"Make sure that is correct, because this can potentially make long polymers or large aggregates."<<endl;
+			cout<<endl;
+		}
+	}
+
+	if ( this->transformationSet->usingSymmetryFactor() )
+	{	// new general method for handling reaction center symmetry
+		baseRate *= this->transformationSet->getSymmetryFactor();
+	}
+	else
+	{	// old method for handling symmetric binding and unbinding
+		if(n_reactants==2)
+		{
+			//If the binding is symmetric
+			if(transformationSet->hasSymBindingTransform()) {
+				cout<<endl;
+				cout<<"Warning! You have an binding rxn (" << name << ") that is symmetric."<<endl;
+				cout<<"Make sure that is correct."<<endl;
+
+				cout<<endl;
+				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
+				isDimerStyle=true;
+			}
+		}
+		if(n_reactants==1)
+		{
+			if(transformationSet->hasSymUnbindingTransform())
+			{
+				cout<<endl;
+				cout<<"Warning! You have an unbinding rxn (" << name << ") that is symmetric."<<endl;
+				cout<<"Make sure that is correct."<<endl;
+				cout<<endl;
+				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
+				isDimerStyle=true;
+			}
+		}
+	}
+
+
+	onTheFlyObservables=true;
+
+
+	// check for population type reactants
+	isPopulationType = new bool[n_reactants];
+	matchOncePerReactant = new bool[n_reactants];
+	for( unsigned int i=0; i < n_reactants; ++i )
+	{
+		isPopulationType[i] = reactantTemplates[i]->getMoleculeType()->isPopulationType();
+		matchOncePerReactant[i] = false;
+	}
+
+
+	// calculate discrete count corrections for symmetric population reactants
+	//  e.g. number of reactant pairs = A*(A-1)/2.  Note that the factor of two
+	//  is part of the symmetry factor above.
+	identicalPopCountCorrection = new int[n_reactants];
+	for ( int i=0; i < (int)n_reactants; ++i )
+	{
+		identicalPopCountCorrection[i] = 0;
+		if ( isPopulationType[i] )
+		{
+			for ( int j=i-1; j >= 0; --j )
+			{
+				if ( reactantTemplates[i]->getMoleculeType() == reactantTemplates[j]->getMoleculeType() )
+				{
+					identicalPopCountCorrection[i] = identicalPopCountCorrection[j] + 1;
+					break;
+				}
+			}
+		}
+	}
+}
+
+
+void ReactionClass::appendConnectedRxn(ReactionClass * rxn) {
+	this->connectedReactions.push_back(rxn);
+}
+
+bool ReactionClass::isReactionConnected(ReactionClass * rxn) {
+	// First check if any of the operations share MoleculeType and components with
+	// one of the reactant templates of rxn.
+	if (this->transformationSet->checkConnection(rxn)) return true;
+
+	// Full membership refresh revisits every explicit reactant template in the
+	// fired rule, not only templates that carry direct transformations.
+	for (unsigned int i=0; i<allReactantTemplates.size(); i++) {
+		if (rxn->isTemplateCompatible(allReactantTemplates[i])) return true;
+	}
+
+	// Product templates can also create new compatible mappings, but avoid
+	// broadening pure-synthesis rules where this over-connects add-only paths.
+	if (n_reactants > 0) {
+		for (unsigned int i=0; i<allProductTemplates.size(); i++) {
+			if (rxn->isTemplateCompatible(allProductTemplates[i])) return true;
+		}
+	}
+	return false;
+}
+
+ReactionClass::~ReactionClass()
+{
+	delete [] reactantTemplates;
+	delete transformationSet;
+	for ( unsigned int r = n_reactants; r < n_mappingsets; ++r )
+	{
+		delete mappingSet[r];
+	}
+
+	delete [] mappingSet;
+	delete [] isPopulationType;
+	delete [] matchOncePerReactant;
+	delete [] identicalPopCountCorrection;
+	connectedReactions.clear();
+}
+
+/** Fill the reactant and product templates for inferring reaction connectivity matrix
+ * @author Arvind Rasi Subramaniam
+ */
+void ReactionClass::setAllReactantAndProductTemplates(map <string,TemplateMolecule *> reactants,
+					map <string,TemplateMolecule *> products) {
+	map <string, TemplateMolecule *>::iterator it;
+	// Fill the reactant template pattern
+	for (it = reactants.begin(); it != reactants.end(); ++it)
+		this->allReactantTemplates.push_back(it->second);
+	// Fill the product template pattern
+	for (it = products.begin(); it != products.end(); ++it)
+		this->allProductTemplates.push_back(it->second);
+}
+
+
+void ReactionClass::setBaseRate(double newBaseRate,string newBaseRateName) {
+	if ( this->transformationSet->usingSymmetryFactor() )
+	{	this->baseRate = this->transformationSet->getSymmetryFactor() * newBaseRate;   }
+	else if (isDimerStyle)
+	{	this->baseRate = 0.5 * newBaseRate;   }
+	else
+	{	this->baseRate = newBaseRate;   }
+
+	this->baseRateParameterName = newBaseRateName;
+	update_a();
+};
+
+
+void ReactionClass::resetBaseRateFromSystemParamter() {
+
+	if(!this->baseRateParameterName.empty()) {
+		if ( transformationSet->usingSymmetryFactor() ) {
+			this->baseRate = transformationSet->getSymmetryFactor() * system->getParameter(this->baseRateParameterName);
+		}
+		else if (isDimerStyle) {
+			this->baseRate = 0.5 * system->getParameter(this->baseRateParameterName);
+		}
+		else {
+			this->baseRate=system->getParameter(this->baseRateParameterName);
+		}
+		this->update_a();
+	}
+
+}
+
+
+/** For use in MoleculeTye::updateRxnMembership
+ * @author Arvind Rasi Subramaniam
+ */
+MoleculeType *ReactionClass::getMoleculeTypeOfReactantTemplate(int pos) const {
+	// return reactantTemplates.at(pos)->getMoleculeType();
+	return reactantTemplates[pos]->getMoleculeType();
+}
+
+
+void ReactionClass::printDetails() const {
+	cout<< name <<"  (id="<<this->rxnId<<", baseRate="<<baseRate<<",  a="<<a<<", fired="<<fireCounter<<" times )"<<endl;
+	// added by rasi to look at only nonzero mapping reactions
+	int n_mappings = 0;
+	for(unsigned int r=0; r<n_reactants; r++)
+	{
+		n_mappings += this->getReactantCount(r);
+	}
+//	if (n_mappings == 0) return;
+
+	cout << name << "  (id=" << this->rxnId << ", baseRate=" << baseRate
+			<< ",  a=" << a << ", fired=" << fireCounter << " times )" << endl;
+	for (unsigned int r = 0; r < n_reactants; r++) {
+		cout << "      -|" << this->getReactantCount(r) << " mappings|\t";
+		cout << this->reactantTemplates[r]->getPatternString() << "\n";
+	}
+	if (n_reactants == 0)
+		cout
+				<< "      >No Reactants: so this rule either creates new species or does nothing."
+				<< endl;
+	cout << "\n";
+}
+
+void ReactionClass::fire(double random_A_number) {
+	this->fire(random_A_number, false);
+}
+
+// AS2023 - Alternative call signature to tell fire call when we are tracking 
+// each firing for the rxnlog argument
+string ReactionClass::fire(double random_A_number, bool track) {
+	fireCounter++;
+
+
+	// First randomly pick the reactants to fire by selecting the MappingSets
+	this->pickMappingSets(random_A_number);
+
+	// Check reactants for correct molecularity:
+	if ( ! transformationSet->checkMolecularity(mappingSet) ) {
+		// wrong molecularity!  this is a NULL event
+		++(System::NULL_EVENT_COUNTER);
+		// AS2023 - we need to return a string now that this can return 
+		// an event log if track is true
+		return string("");
+	}
+
+	// Defensive check: a picked MappingSet can occasionally contain an unmapped entry
+	// (null molecule) in edge cases involving internal bond reconnection/symmetry.
+	// Treat this as a null event and skip firing to avoid dereferencing null mappings.
+	for (unsigned int k=0; k<n_reactants; k++) {
+		Mapping *picked = mappingSet[k]->get(0);
+		if (picked == 0 || picked->getMolecule() == 0) {
+			++(System::NULL_EVENT_COUNTER);
+			return string("");
+		}
+
+		Molecule *mol = picked->getMolecule();
+		if (!transformationSet->checkReactantFilters(k, mol)) {
+			++(System::NULL_EVENT_COUNTER);
+			return string("");
+		}
+	}
+
+
+	// Generate the set of possible products that we need to update
+	// (excluding new molecules, we'll get those later --Justin)
+	this->transformationSet->getListOfProducts(mappingSet,products,traversalLimit);
+
+	// Check product-side filters (include_products / exclude_products).
+	// If the resulting products don't pass the filter, treat this as a null event.
+	if (!transformationSet->checkProductFilters(products)) {
+		products.clear();
+		++(System::NULL_EVENT_COUNTER);
+		return string("");
+	}
+
+	// Loop through the products (excluding added molecules) and remove from observables
+	if (this->onTheFlyObservables) {
+		std::unordered_set<int> updatedComplexIds;
+
+		// molecule observables..
+		for ( molIter = products.begin(); molIter != products.end(); molIter++ )
+			(*molIter)->removeFromObservables();
+
+		// species observables..
+		if(system->getNumOfSpeciesObs()>0) {
+			// we can find reactant complexes by following mappingSets to target molecules
+			int matches = 0;
+			Complex * c;
+			for ( unsigned int k=0; k<transformationSet->getNreactants(); k++) {
+				// get complexID and check if we've already updated that complex
+				int complexId = mappingSet[k]->get(0)->getMolecule()->getComplexID();
+				if ( updatedComplexIds.insert(complexId).second ) {
+					// complex has not been updated, so do it now.
+					c = mappingSet[k]->get(0)->getMolecule()->getComplex();
+					for(int i=0; i<system->getNumOfSpeciesObs(); i++) {
+						matches = system->getSpeciesObs(i)->isObservable(c);
+						system->getSpeciesObs(i)->straightSubtract(matches);
+					}
+				}
+			}
+
+			// grab added molecules that are represented as populations and remove from observables
+			for ( int k=0; k<transformationSet->getNumOfAddMoleculeTransforms(); k++)
+			{
+				Molecule * addmol = transformationSet->getPopulationPointer((unsigned int)k);
+				if ( addmol == NULL ) continue;
+
+				// get complexID and check if we've already updated that complex
+				int complexId = addmol->getComplexID();
+				if ( updatedComplexIds.insert(complexId).second ) {
+					// complex has not been updated, so do it now.
+					c = addmol->getComplex();
+					for (int i=0; i < system->getNumOfSpeciesObs(); i++) {
+						matches = system->getSpeciesObs(i)->isObservable(c);
+						system->getSpeciesObs(i)->straightSubtract(matches);
+					}
+				}
+			}
+		}
+	}
+
+	// Through the MappingSet, transform all the molecules as neccessary
+	//  This will also create new molecules, as required.  As a side effect,
+	//  deleted molecules will be removed from observables.
+	// AS2023 - if tracking is turned on, transform needs a string to build up
+	string logstr;
+	if (this->system->getReactionTrackingStatus()) {
+		logstr = this->transformationSet->transform(this->mappingSet, true);
+		
+	} else {
+		logstr = this->transformationSet->transform(this->mappingSet);
+	}
+
+	// Add newly created molecules to the list of products
+	this->transformationSet->getListOfAddedMolecules(mappingSet,products,traversalLimit);
+
+	// Track molecules that were explicitly mapped by this firing. Products added
+	// through bonded-neighborhood traversal must use the full updater to preserve
+	// the same membership mutation order as the non-connectivity path.
+	std::unordered_set<Molecule*> directProductSet;
+	for (unsigned int msIndex=0; msIndex<n_mappingsets; msIndex++) {
+		MappingSet *ms = mappingSet[msIndex];
+		if (ms==0) continue;
+		for (unsigned int mapIndex=0; mapIndex<ms->getNumOfMappings(); mapIndex++) {
+			Mapping *mapping = ms->get(mapIndex);
+			if (mapping==0) continue;
+			Molecule *directMol = mapping->getMolecule();
+			if (directMol!=0) directProductSet.insert(directMol);
+		}
+	}
+	bool hasIndirectProducts = false;
+	for (molIter = products.begin(); molIter != products.end(); molIter++) {
+		Molecule *mol = *molIter;
+		if (!mol->isAlive()) continue;
+		if (directProductSet.find(mol)==directProductSet.end()) {
+			hasIndirectProducts = true;
+			break;
+		}
+	}
+
+	// if complex bookkeeping is on, find all product complexes
+	// (this is useful for updating Species Observables and TypeII functions, so keep the info handy).
+	// NOTE: this is a brute force approach: check complex of each molecule. there may be a more
+	//  elegant way to do this, but it's tricky to get it right.
+	if (system->isUsingComplex()) {
+		std::unordered_set<Complex*> productComplexSet;
+		Complex * complex;
+		for ( molIter = products.begin(); molIter != products.end(); molIter++ ) {
+			// skip dead molecules
+			if ( ! (*molIter)->isAlive() ) continue;
+			// get complexID and check if we've already updated that complex
+			complex = (*molIter)->getComplex();
+			if ( productComplexSet.insert(complex).second )
+				productComplexes.push_back(complex);
+		}
+	}
+
+
+	// If we're handling observables on the fly, tell each molecule to add itself to observables.
+	if (onTheFlyObservables) {
+
+		// molecule observables..
+		for ( molIter = products.begin(); molIter != products.end(); molIter++ ) {
+			// skip dead molecules
+			if ( ! (*molIter)->isAlive() ) continue;
+			(*molIter)->addToObservables();
+		}
+
+		// species observables..
+		if (system->getNumOfSpeciesObs()>0) {
+			Complex * c;
+			int matches;
+			// we can assume that complex bookkeeping is enabled..
+			for ( complexIter = productComplexes.begin(); complexIter != productComplexes.end(); ++complexIter ) {
+				// update all species observables for this complex
+				c = *complexIter;
+				matches = 0;
+				for ( int i=0; i < system->getNumOfSpeciesObs(); i++ ) {
+					matches = system->getSpeciesObs(i)->isObservable(c);
+					system->getSpeciesObs(i)->straightAdd(matches);
+				}
+			}
+
+			// NOTE: we don't need to handle added population types separately since they are
+			//  among the product molecules
+		}
+	}
+
+	// Now update reaction membership, functions, and update any DOR Groups
+	//  also, gather a list of typeII dependencies that will require updating
+	typeII_products.clear();
+	std::unordered_set<MoleculeType*> typeIIProductSet;
+	for ( molIter = products.begin(); molIter != products.end(); molIter++ ) {
+		Molecule * mol = *molIter;
+		MoleculeType * mt = mol->getMoleculeType();
+
+		// If this moleculeType has typeII dependencies, add it to the list
+		// (do this for alive and dead molecules, since molecule deletion may influence
+		//    the value of a local function)
+		if ( mt->getNumOfTypeIIFunctions() > 0 ) {
+			if ( typeIIProductSet.insert(mt).second )
+				typeII_products.push_back( mt );
+		}
+
+		//Update this molcule's reaction membership
+		//  NOTE: as a side-effect, DORreactions that depend on molecule-scoped local functions
+		//   (typeI relationship) will be updated as long as UTL is set appropriately.
+		if ( mol->isAlive() ) {
+			bool useConnectedUpdate =
+				useConnectivity &&
+				!hasIndirectProducts &&
+				directProductSet.find(mol)!=directProductSet.end();
+			mol->updateRxnMembership(this, useConnectedUpdate);
+		}
+	}
+
+	// update complex-scoped local functions for typeII dependencies
+	// NOTE: as a side-effect, dependent DOR reactions (via typeI molecule dependencies) will be updated
+	
+	// for each typeII product molecule, update all dependent local functions
+	if (system->isUsingComplex()) {
+		// this is the easy way: update all typeI molecules on each complex
+		for ( typeII_iter = typeII_products.begin(); typeII_iter != typeII_products.end(); ++typeII_iter ) {
+			MoleculeType * mt = *typeII_iter;
+			for (int i=0; i < mt->getNumOfTypeIIFunctions(); i++) {
+				for ( complexIter = productComplexes.begin(); complexIter != productComplexes.end(); ++complexIter )
+					mt->getTypeIILocalFunction(i)->evaluateOn( *complexIter );
+			}
+		}
+	}
+	else {
+		// this is the hard way: find a representative molecule from each connected set
+		//  and evaluate TypeII functions on that representative.
+		std::unordered_set<Molecule*> allMols;
+		Molecule * mol;
+		for ( molIter = products.begin(); molIter != products.end(); molIter++ ) {
+			mol = *molIter;
+			if ( allMols.insert(mol).second ) {
+				// remember everything connected to this molecule so we don't
+				// evaluate this connected set multiple times.
+				list<Molecule*> connectedMols;
+				mol->traverseBondedNeighborhood( connectedMols, ReactionClass::NO_LIMIT );
+				for ( list<Molecule*>::iterator cm = connectedMols.begin(); cm != connectedMols.end(); ++cm )
+					allMols.insert(*cm);
+
+				// evaluate typeII local functions on this connected set
+				for ( typeII_iter = typeII_products.begin(); typeII_iter != typeII_products.end(); ++typeII_iter ) {
+					MoleculeType * mt = *typeII_iter;
+					for (int i=0; i<mt->getNumOfTypeIIFunctions(); i++)
+						mt->getTypeIILocalFunction(i)->evaluateOn( mol, LocalFunction::SPECIES );
+				}
+			}
+		}
+	}
+
+	// update the last reaction firing time
+	// this is written to molecule_type_list.tsv at the end of the simulation
+	// @author: Arvind R. Subramaniam
+	// @date: 13 Nov 2019
+	this->system->setLastRxnTime(this->system->getCurrentTime());
+	// output to a JSON if the reaction was tagged
+	if (this->system->getReactionTrackingStatus()) {
+		if (tagged && track) {
+			string track_str = "";
+			int level = 6; // indentation level
+			this->system->current_cpu_time = ((double) (clock() - this->system->start) / (double) CLOCKS_PER_SEC);
+			// we need the correct number of commas
+			if (this->system->getGlobalEventCounter() != 1) {
+				track_str += ",\n";
+			} 
+			// open firing and write info
+			track_str += std::string(level,' ') + "{\n" +
+				std::string(level+2,' ') + "\"props\": [";
+			if (this->system->getRxnNumberTrack()) {
+				track_str += string("\"") + to_string(rxnId) + "\",";
+			} else {
+				track_str += string("\"") + name + "\",";
+			}
+			track_str += to_string(this->system->getGlobalEventCounter()) +
+					"," + to_string(this->system->getCurrentTime()) + "],\n";
+
+			// write transformation log
+			track_str += logstr;
+					
+			// close firing 
+			track_str += std::string(level,' ') + "}";
+			//Tidy up
+			products.clear();
+			productComplexes.clear();
+			return track_str;
+		}
+	}
+	//Tidy up
+	products.clear();
+	productComplexes.clear();
+	// AS2023 - returning empty, if we are here logging was off
+	return "";
+}
+
+void ReactionClass::identifyConnectedReactions() {
+	ReactionClass * rxn;
+	vector <ReactionClass *> allReactions;
+	allReactions = system->getAllReactions();
+	for (unsigned int r=0; r < allReactions.size(); r++) {
+		rxn = allReactions.at(r);
+		if (this->isReactionConnected(rxn)) this->appendConnectedRxn(rxn);
+	}
+}
+
+bool ReactionClass::areMoleculeTypeAndComponentPresent(MoleculeType * mt, int cIndex) {
+	TemplateMolecule * t2;
+	for (unsigned int i=0; i<allReactantTemplates.size(); i++) {
+		t2 = allReactantTemplates[i];
+		if (t2->isMoleculeTypeAndComponentPresent(mt, cIndex)) return true;
+	}
+
+	return false;
+}
+
+bool ReactionClass::isTemplateCompatible(TemplateMolecule * t) {
+	TemplateMolecule * t2;
+	for (unsigned int i=0; i<allReactantTemplates.size(); i++) {
+		t2 = allReactantTemplates[i];
+		if (t->isTemplateCompatible(t2)) return true;
+	}
+
+	return false;
+}

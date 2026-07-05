@@ -1,0 +1,42 @@
+begin model
+
+begin parameters
+
+koff_s 1e-4 # /s
+koff=koff_s*60*60 # /hr
+
+end parameters
+
+begin molecule types
+
+L(site)
+R(site)
+
+end molecule types
+
+begin seed species
+
+L(site!1).R(site!1) 100
+
+end seed species
+
+begin observables
+
+Molecules B L(site!1).R(site!1)
+
+end observables
+
+begin reaction rules
+
+L(site!1).R(site!1)->L(site)+R(site) koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>7,n_steps=>100})
+
+end actions

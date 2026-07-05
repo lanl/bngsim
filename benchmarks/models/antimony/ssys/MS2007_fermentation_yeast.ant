@@ -1,0 +1,78 @@
+// =============================================================================
+// Source: Marin-Sanguino et al. (2007) "Optimization of biotechnological
+//         systems through geometric programming"
+//         Theor. Biol. Med. Model. 4:38
+// Example: Anaerobic fermentation in S. cerevisiae (Equations 39-40)
+//          Based on Curto et al. (1995) Math. Biosci. 130:25-50
+// =============================================================================
+// Time horizon: t ∈ [0, 20] (added for simulation)
+//
+// GMA model for glycolytic pathway (already in GMA form):
+//   5 dependent variables: X1-X5 (metabolite pools)
+//   9 independent variables: X6-X14 (enzyme activities, etc.)
+//
+// Original ODEs (Equation 39):
+//   dX1/dt = v_in - v_HK
+//   dX2/dt = v_HK - v_PFK - v_POL
+//   dX3/dt = v_PFK - v_GAPD - v_GOL
+//   dX4/dt = 2*v_GAPD - v_PK
+//   dX5/dt = 2*v_PK - v_HK - v_PFK - v_POL - v_ATP
+//
+// Flux equations (Equation 40, all monomials/power-laws):
+//   v_in = 0.8122 * X2^(-0.2344) * X6
+//   v_HK = 2.8632 * X1^(0.7464) * X5^(0.0243) * X7
+//   v_PFK = 0.5232 * X2^(0.7318) * X5^(0.3941) * X8^(-0.0009) * X11^(2.8632)
+//   v_GAPD = 0.011 * X2^(0.7318) * X5^(0.3941) * X8^(0.6159) * X5^(0.1308) * X9 * X14^(0.6088)
+//   v_PK = 3.005 * X4^(0.533) * X5^(0.0822) * X10
+//   v_POL = 0.0945 * X2^(8.6107) * X11^(-0.0009)
+//   v_GOL = 0.0945 * X3^(0.05) * X4^(0.533) * X5^(0.0822) * X12
+//   v_ATP = 5 * X13
+//
+// Note: This is already in GMA form - no recasting needed.
+// =============================================================================
+
+model MS2007_fermentation_yeast()
+    // Metabolite pools (dependent variables)
+    // X1: Glucose
+    // X2: G6P/F6P pool
+    // X3: FBP/DHAP/GAP pool  
+    // X4: 3PG/2PG/PEP pool
+    // X5: ATP
+    
+    // Flux definitions (power-law/monomial form)
+    v_in := 0.8122 * X2^(-0.2344) * X6
+    v_HK := 2.8632 * X1^(0.7464) * X5^(0.0243) * X7
+    v_PFK := 0.5232 * X2^(0.7318) * X5^(0.3941) * X8^(-0.0009) * X11^(2.8632)
+    v_GAPD := 0.011 * X2^(0.7318) * X5^(0.3941) * X8^(0.6159) * X9 * X14^(0.6088)
+    v_PK := 3.005 * X4^(0.533) * X5^(0.0822) * X10
+    v_POL := 0.0945 * X2^(8.6107) * X11^(-0.0009)
+    v_GOL := 0.0945 * X3^(0.05) * X4^(0.533) * X5^(0.0822) * X12
+    v_ATP := 5 * X13
+    
+    // ODEs
+    X1' = v_in - v_HK
+    X2' = v_HK - v_PFK - v_POL
+    X3' = v_PFK - v_GAPD - v_GOL
+    X4' = 2*v_GAPD - v_PK
+    X5' = 2*v_PK - v_HK - v_PFK - v_POL - v_ATP
+    
+    // Initial conditions (basal state from paper)
+    X1 = 0.03456
+    X2 = 1.0110
+    X3 = 9.1876
+    X4 = 0.009532
+    X5 = 1.1278
+    
+    // Independent variables (enzyme activities, etc.)
+    X6 = 19.7     // v_in enzyme
+    X7 = 68.5     // Hexokinase
+    X8 = 31.7     // Phosphofructokinase
+    X9 = 49.9     // GAPDH
+    X10 = 3440    // Pyruvate kinase
+    X11 = 14.3    // ATPase (glycogen/trehalose)
+    X12 = 203     // G3P dehydrogenase (glycerol)
+    X13 = 25.1    // Other ATP consumption
+    X14 = 0.042   // NAD+/NADH ratio
+end
+// @SIM T_START=0 T_END=0.002 N_STEPS=200 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

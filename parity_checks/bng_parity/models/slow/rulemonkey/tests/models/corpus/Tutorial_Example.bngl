@@ -1,0 +1,50 @@
+# Example file for BNG2 tutorial.
+# All text following the occurence off '#' character in a line is ignored.
+#   Written by James R. Faeder
+#	       Theoretical Biology and Biophysics Group
+#	       Los Alamos National Laboratory
+#	       faeder@lanl.gov
+#   10/28/2005
+
+begin parameters
+  L0   200	# Number of ligand molecules
+  R0   200	# Number of receptor molecules
+  A0   50	# Number of adaptor molecules
+  kp1  0.01	# Ligand-receptor association
+  km1  1		# Ligand-receptor dissociation
+  kp2  1		# Dimer formation
+  km2  1		# Dimer dissociation
+  p1  10		# Receptor transphosphorylation
+  d1   5		# Receptor dephosphorylation
+  kpA  0.1	# Adaptor-receptor association
+  kmA  0.1	# Adaptor-receptor dissociation
+  p2   10	# Adaptor transphosphorylation
+  d2    5	# Adaptor dephosphorylation
+end parameters
+
+begin species
+L(r)       L0
+R(l,d,Y~U) R0
+A(SH2,Y~U)     A0
+end species
+
+begin observables
+Molecules R_dim_1   R(d!+)
+Molecules R_phos_1   R(Y~P!?)
+Molecules A_R_1   A(SH2!1).R(Y~P!1)
+Molecules A_phos_1   A(Y~P!?)
+end observables
+
+begin reaction rules
+L(r) + R(l,d) <-> L(r!1).R(l!1,d) kp1, km1
+R(l!+,d) + R(l!+,d) <-> R(l!+,d!2).R(l!+,d!2) kp2, km2
+R(d!+,Y~U) -> R(d!+,Y~P) p1
+R(Y~P) -> R(Y~U) d1
+R(Y~P) + A(SH2) <-> R(Y~P!1).A(SH2!1) kpA, kmA
+A(Y~U).A() -> A(Y~P).A() p2
+A(Y~P) -> A(Y~U) d2
+end reaction rules
+
+begin actions
+simulate({method=>"nf",t_end=>5,n_steps=>50})
+end actions

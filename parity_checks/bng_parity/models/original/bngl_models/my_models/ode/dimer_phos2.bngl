@@ -1,0 +1,130 @@
+# basal phos/dephos of EGFR, constitutive dimerization, no ligand
+
+begin model
+begin parameters
+
+# Avogardro constant
+NA  6.02214129e23 # [=] molecules per mol
+
+# Volume
+V  1.0e-12 # [=] L, 1 pL
+
+RT  1.1e4 # number per cell
+
+kf  1.0e5 # [=] /M/s
+
+kp1  kf/(NA*V) # [=] /M/s, converted
+kp2  (kf/5.0)/(NA*V) # [=] /M/s, converted
+kp3  (kf/25.0)/(NA*V) # [=] /M/s, converted
+
+km1  0.1 # [=] /sec
+km2  0.1 # [=] /sec
+km3  0.1 # [=] /sec
+
+kph  0.5 # /sec
+kpb  0.01 # /sec
+kdp  0.09 # /sec
+
+ksynth 10. # molecules per sec
+kdeg  0.01 # /sec
+
+end parameters
+
+begin molecule types
+R1(d,Y~O~P) # WT
+R2(d,Y~O~P) # del7
+R3(d,Y~O~P) # L858R
+null()
+end molecule types
+
+begin seed species
+R1(d,Y~O)  RT
+R2(d,Y~O)  RT
+R3(d,Y~O)  RT
+R1(d,Y~P)  0.0
+R2(d,Y~P)  0.0
+R3(d,Y~P)  0.0
+null()  1.0
+end  seed species
+
+begin observables
+Molecules Dim1 R1(d!1).R1(d!1)
+Molecules Dim2 R2(d!1).R2(d!1)
+Molecules Dim3 R3(d!1).R3(d!1)
+Molecules pR1 R1(Y~P)
+Molecules pR2 R2(Y~P)
+Molecules pR3 R3(Y~P)
+Molecules uR1 R1(Y~O)
+Molecules uR2 R2(Y~O)
+Molecules uR3 R3(Y~O)
+Molecules R1tot R1()
+Molecules R2tot R2()
+Molecules R3tot R3()
+end observables
+
+begin functions
+
+# if pR1<200,000 then deg_f1=0.0; otherwise, deg_f1=1.0
+deg_f1  if(pR1<2.0e5,0.0,1.0)
+deg_f2  if(pR2<2.0e5,0.0,1.0)
+deg_f3  if(pR3<2.0e5,0.0,1.0)
+
+end functions
+
+begin reaction rules
+
+# dimerization reactions
+
+R1(d)+R1(d)<->R1(d!1).R1(d!1) kp1,km1
+R2(d)+R2(d)<->R2(d!1).R2(d!1) kp2,km2
+R3(d)+R3(d)<->R3(d!1).R3(d!1) kp3,km3
+
+# basal phosphorylation reactions
+
+R1(Y~O)->R1(Y~P) kpb
+R2(Y~O)->R2(Y~P) kpb
+R3(Y~O)->R3(Y~P) kpb
+
+# dimer-dependent phosphorylation reactions
+
+R1(d!+,Y~O)->R1(d!+,Y~P) kph
+R2(d!+,Y~O)->R2(d!+,Y~P) kph
+R3(d!+,Y~O)->R3(d!+,Y~P) kph
+
+# dephosphorylation reactions
+
+R1(Y~P)->R1(Y~O) kdp
+R2(Y~P)->R2(Y~O) kdp
+R3(Y~P)->R3(Y~O) kdp
+
+# conditional receptor degradation
+R1(Y~P)+null()->null() kdeg
+R2(Y~P)+null()->null() kdeg
+R3(Y~P)+null()->null() kdeg
+
+# receptor synthesis
+#null()->null()+R1(d,Y~O) ksynth
+#null()->null()+R2(d,Y~O) ksynth
+#null()->null()+R3(d,Y~O) ksynth
+
+# dimer internalization
+#R1(Y~P)+null()->null() kdeg
+#R2(Y~P)+null()->null() kdeg
+#R3(Y~P)+null()->null() kdeg
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1});
+
+# equilibrate
+
+parameter_scan({parameter=>"RT",par_min=>1.0e3,par_max=>1.0e6,\
+n_scan_pts=>101,\
+log_scale=>1,method=>"ode",\
+t_start=>0,t_end=>300,n_steps=>31})
+
+

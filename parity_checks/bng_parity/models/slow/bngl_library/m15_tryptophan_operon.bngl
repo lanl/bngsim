@@ -1,0 +1,116 @@
+begin model
+#@model_id: m15_tryptophan_operon
+#@title: Tryptophan operon model
+#@description: Three-variable tryptophan operon model with rational rate laws for mRNA, enzyme, and tryptophan. From Marin-Sanguino et al. (2007) Fig. 4, Eqs. (41-42).
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  X_4      0.05           # dimensionless  regulator
+  X_5      0.5            # dimensionless  auxiliary factor
+  X_6      50.0           # dimensionless  saturation scale
+  X_7      150.0          # dimensionless  growth/excretion factor
+  tau      0.1            # 1/time  time-scale factor
+
+  # Derived constants
+  d_v2     0.95           # 1/time  = 0.9 + X_4
+  d_v4     0.07           # 1/time  = 0.02 + X_4
+  coeff_v5 2500.0         # dimensionless  = X_6^2
+  coeff_v7 0.0011         # 1/time  = 0.0022 * X_5
+  coeff_v8 93.75          # molecules/time  = (1 - 7.5*X_4) * X_7
+end parameters
+
+begin molecule types
+  X1()   # mRNA
+  X2()   # enzyme
+  X3()   # tryptophan
+end molecule types
+
+begin seed species
+  X1()  2    # molecules
+  X2()  12   # molecules
+  X3()  25   # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+end observables
+
+begin functions
+  # v1: (X3 + 1) / (1 + (1 + X_5)*X3) -- production of mRNA
+  v1() = tau * (Obs_X3 + 1) / (1 + (1 + X_5) * Obs_X3)
+
+  # v2: (0.9 + X_4) * X1 -- degradation of mRNA; also production of enzyme
+  v2() = tau * d_v2 * Obs_X1
+
+  # v3: X1 -- consumed from enzyme dynamics (degradation term for X2, production-independent)
+  v3() = tau * Obs_X1
+
+  # v4: (0.02 + X_4) * X2 -- enzyme degradation
+  v4() = tau * d_v4 * Obs_X2
+
+  # v5: X3^2 * X6^2 / (X6^2 + X3^2) -- tryptophan consumption (saturation)
+  v5() = tau * coeff_v5 * Obs_X3 * Obs_X3 / (coeff_v5 + Obs_X3 * Obs_X3)
+
+  # v6: X4 * X3 -- tryptophan degradation (regulator-dependent)
+  v6() = tau * X_4 * Obs_X3
+
+  # v7: 0.0022 * X5 * X3 / (1 + X3) -- tryptophan production (feedback)
+  v7() = tau * coeff_v7 * Obs_X3 / (1 + Obs_X3)
+
+  # v8: (1 - 7.5*X4) * X7 * X3 / (X3 + 0.005) -- tryptophan production (growth)
+  v8() = tau * coeff_v8 * Obs_X3 / (Obs_X3 + 0.005)
+end functions
+
+begin reaction rules
+  # X1' = tau * (v1 - v2)
+  # mRNA production (repressed by tryptophan)
+  0 -> X1()  v1()
+
+  # mRNA degradation
+  X1() -> 0  v2()
+
+  # X2' = tau * (v2 - v3)  note: v2 term produces X2, v3 = tau*X1 degrades X2
+  # Enzyme production (from mRNA, rate = v2)
+  0 -> X2()  v2()
+
+  # Enzyme removal (rate = tau*X1)
+  X2() -> 0  v3()
+
+  # X3' = tau * (-v3 - v4 - v5 - v6 + v7 + v8)
+  #   note: original equation: -X1 -d_v4*X2 -v5 -v6 +v7 +v8
+  # Tryptophan production: v7 + v8
+  0 -> X3()  v7()
+  0 -> X3()  v8()
+
+  # Tryptophan consumption: v3 (= tau*X1), v4, v5, v6
+  X3() -> 0  v3()
+  X3() -> 0  v4()
+  X3() -> 0  v5()
+  X3() -> 0  v6()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

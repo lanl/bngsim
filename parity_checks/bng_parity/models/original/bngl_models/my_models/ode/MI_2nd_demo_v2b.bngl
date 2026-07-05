@@ -1,0 +1,189 @@
+# MI - 2nd demo
+
+begin model
+
+begin parameters
+
+# fraction of a cell to consider in a simulation
+f 1.0 # [=] dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # [=] molecules per mol
+
+# ligand concentration
+Lconc_nM 1.0 # [=] nM
+Lconc=Lconc_nM*1.0e-9 # [=] M
+
+# medium volume per cell
+Vex_nL 2.0 # [=] nL per cell (~2 nL per cell for 15 cm cell culture dishes)
+Vex=f*Vex_nL*1.0e-9 # [=] L per cell (scaled by f)
+
+# cytoplasmic volume of a cell
+Vcyto_pL 1.5 # [=] pL
+Vcyto=f*Vcyto_pL*1.0e-12 # [=] L (scaled by f)
+
+# number of ligand molecules per cell
+NL=Lconc*(NA*Vex) # [=] copies per cell
+
+# number of receptor molecules per cell
+R_copyNum 1.8e5 # [=] copies per cell
+NR=f*R_copyNum # [=] copier per cell (scaled by f)
+
+# The parameter values below are from Blinov et al. (2006).
+kp1 1.667e-6 # [=] /(molecule/cell)/s
+km1 0.06 # [=] /s
+kp2 5.556e-6 # [=] /(molecule/cell)/s
+km2 0.1 # [=] /s
+kp3 0.5 # [=] /s
+#km3 4.505 # [=] /s
+
+km3 0.01
+
+#NG 1.0e5 # [=] copies per cell
+#NS 2.7e5 # [=] copies per cell
+
+NG 2.7e5
+NS 2.7e5
+
+kp9 8.333e-7 # [=] /(molecule/cell)/s
+km9 0.05 # [=] /s
+#kp13 2.5e-5 # [=] /(molecule/cell)/s
+#km13 0.6 # [=] /s
+
+kp13 8.333e-7
+km13 0.05
+
+end parameters
+
+begin molecule types
+L(r)
+R(l,r,x~0~1,y~0~1)
+G(a)
+S(b)
+end molecule types
+
+begin seed species
+L(r) NL
+R(l,r,x~0,y~0) NR
+G(a) NG
+S(b) NS
+end  seed species
+
+begin observables
+
+# I(l;r)
+Molecules l0 R(l)
+Molecules l1 R(l!+)
+Molecules r0 R(r)
+Molecules r1 R(r!+)
+Molecules l0r0 R(l,r)
+Molecules l0r1 R(l,r!+)
+Molecules l1r0 R(l!+,r)
+Molecules l1r1 R(l!+,r!+)
+
+# I(x;y)
+Molecules x0 R(x~0)
+Molecules x1 R(x~1!?)
+Molecules y0 R(y~0)
+Molecules y1 R(y~1!?)
+Molecules x0y0 R(x~0,y~0)
+Molecules x0y1 R(x~0,y~1!?)
+Molecules x1y0 R(x~1!?,y~0)
+Molecules x1y1 R(x~1!?,y~1!?)
+
+# I(l;x)
+Molecules l0x0 R(l,x~0)
+Molecules l0x1 R(l,x~1!?)
+Molecules l1x0 R(l!+,x~0)
+Molecules l1x1 R(l!+,x~1!?)
+
+# I(l;y)
+Molecules l0y0 R(l,y~0)
+Molecules l0y1 R(l,y~1!?)
+Molecules l1y0 R(l!+,y~0)
+Molecules l1y1 R(l!+,y~1!?)
+
+# I(r;x)
+Molecules r0x0 R(r,x~0)
+Molecules r0x1 R(r,x~1!?)
+Molecules r1x0 R(r!+,x~0)
+Molecules r1x1 R(r!+,x~1!?)
+
+# I(r;y)
+Molecules r0y0 R(r,y~0)
+Molecules r0y1 R(r,y~1!?)
+Molecules r1y0 R(r!+,y~0)
+Molecules r1y1 R(r!+,y~1!?)
+
+end observables
+
+begin functions
+
+# I(l;r)
+pmi_l0r0() if(l0r0>0.0,log2(NR*l0r0/(l0*r0)),0.0)
+pmi_l0r1() if(l0r1>0.0,log2(NR*l0r1/(l0*r1)),0.0)
+pmi_l1r0() if(l1r0>0.0,log2(NR*l1r0/(l1*r0)),0.0)
+pmi_l1r1() if(l1r1>0.0,log2(NR*l1r1/(l1*r1)),0.0)
+MI_lr=(l0r0*pmi_l0r0+l0r1*pmi_l0r1+l1r0*pmi_l1r0+l1r1*pmi_l1r1)/NR
+
+# I(x;y)
+pmi_x0y0() if(x0y0>0.0,log2(NR*x0y0/(x0*y0)),0.0)
+pmi_x0y1() if(x0y1>0.0,log2(NR*x0y1/(x0*y1)),0.0)
+pmi_x1y0() if(x1y0>0.0,log2(NR*x1y0/(x1*y0)),0.0)
+pmi_x1y1() if(x1y1>0.0,log2(NR*x1y1/(x1*y1)),0.0)
+MI_xy=(x0y0*pmi_x0y0+x0y1*pmi_x0y1+x1y0*pmi_x1y0+x1y1*pmi_x1y1)/NR
+
+# I(l;x)
+pmi_l0x0() if(l0x0>0.0,log2(NR*l0x0/(l0*x0)),0.0)
+pmi_l0x1() if(l0x1>0.0,log2(NR*l0x1/(l0*x1)),0.0)
+pmi_l1x0() if(l1x0>0.0,log2(NR*l1x0/(l1*x0)),0.0)
+pmi_l1x1() if(l1x1>0.0,log2(NR*l1x1/(l1*x1)),0.0)
+MI_lx=(l0x0*pmi_l0x0+l0x1*pmi_l0x1+l1x0*pmi_l1x0+l1x1*pmi_l1x1)/NR
+
+# I(l;y)
+pmi_l0y0() if(l0y0>0.0,log2(NR*l0y0/(l0*y0)),0.0)
+pmi_l0y1() if(l0y1>0.0,log2(NR*l0y1/(l0*y1)),0.0)
+pmi_l1y0() if(l1y0>0.0,log2(NR*l1y0/(l1*y0)),0.0)
+pmi_l1y1() if(l1y1>0.0,log2(NR*l1y1/(l1*y1)),0.0)
+MI_ly=(l0y0*pmi_l0y0+l0y1*pmi_l0y1+l1y0*pmi_l1y0+l1y1*pmi_l1y1)/NR
+
+# I(r;x)
+pmi_r0x0() if(r0x0>0.0,log2(NR*r0x0/(r0*x0)),0.0)
+pmi_r0x1() if(r0x1>0.0,log2(NR*r0x1/(r0*x1)),0.0)
+pmi_r1x0() if(r1x0>0.0,log2(NR*r1x0/(r1*x0)),0.0)
+pmi_r1x1() if(r1x1>0.0,log2(NR*r1x1/(r1*x1)),0.0)
+MI_rx=(r0x0*pmi_r0x0+r0x1*pmi_r0x1+r1x0*pmi_r1x0+r1x1*pmi_r1x1)/NR
+
+# I(r;y)
+pmi_r0y0() if(r0y0>0.0,log2(NR*r0y0/(r0*y0)),0.0)
+pmi_r0y1() if(r0y1>0.0,log2(NR*r0y1/(r0*y1)),0.0)
+pmi_r1y0() if(r1y0>0.0,log2(NR*r1y0/(r1*y0)),0.0)
+pmi_r1y1() if(r1y1>0.0,log2(NR*r1y1/(r1*y1)),0.0)
+MI_ry=(r0y0*pmi_r0y0+r0y1*pmi_r0y1+r1y0*pmi_r1y0+r1y1*pmi_r1y1)/NR
+
+end functions
+
+begin reaction rules
+
+# Blinov's rules
+R(l,r)+L(r)<->R(l!1,r).L(r!1) kp1,km1
+R(l!+,r)+R(l!+,r)<->R(l!+,r!2).R(l!+,r!2) kp2,km2
+R(r!+,x~0)->R(r!+,x~1) kp3
+R(r!+,y~0)->R(r!+,y~1) kp3
+R(x~1)->R(x~0) km3
+R(y~1)->R(y~0) km3
+#R(x~1)+G(a)<->R(x~1!1).G(a!1) kp9,km9
+#R(y~1)+S(b)<->R(y~1!1).S(b!1) kp13,km13
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1})
+#simulate({method=>"ode",t_start=>0,t_end=>20,n_steps=>100,print_functions=>1})
+
+parameter_scan({parameter=>"Lconc_nM",par_min=>0.001,par_max=>10,\
+                n_scan_pts=>50,log_scale=>1,method=>"ode",t_start=>0,\
+                t_end=>1000,n_steps=>10,print_functions=>1})

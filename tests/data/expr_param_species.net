@@ -1,0 +1,17 @@
+# Regression test for Fix #5: species init from expression-valued parameter
+# p = 2+3 = 5, species A starts at p. A(0) should be 5, not 2.
+begin parameters
+    1 p   2+3  # ConstantExpression
+    2 k1  0.1  # Constant
+end parameters
+begin species
+    1 A() p
+    2 B() 0
+end species
+begin reactions
+    1 1 2 k1 #_R1
+end reactions
+begin groups
+    1 A_tot  1
+    2 B_tot  2
+end groups

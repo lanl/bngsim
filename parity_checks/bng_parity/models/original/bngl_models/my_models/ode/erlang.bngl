@@ -1,0 +1,39 @@
+begin model
+begin parameters
+kL_5 8.927295697220e-01
+kL_6 1/0.87
+end parameters
+begin molecule types
+E_5(stage~1~2~3~4~5)
+E_6(stage~1~2~3~4~5~6)
+I_5()
+I_6()
+end molecule types
+begin seed species
+E_5(stage~1) 1
+E_6(stage~1) 1
+end seed species
+begin observables
+Molecules I5 I_5()
+Molecules I6 I_6()
+end observables
+begin functions
+end functions
+begin reaction rules
+E_5(stage~1)->E_5(stage~2) kL_5
+E_5(stage~2)->E_5(stage~3) kL_5
+E_5(stage~3)->E_5(stage~4) kL_5
+E_5(stage~4)->E_5(stage~5) kL_5
+E_5(stage~5)->I_5() kL_5
+E_6(stage~1)->E_6(stage~2) kL_6
+E_6(stage~2)->E_6(stage~3) kL_6
+E_6(stage~3)->E_6(stage~4) kL_6
+E_6(stage~4)->E_6(stage~5) kL_6
+E_6(stage~5)->E_6(stage~6) kL_6
+E_6(stage~6)->I_6() kL_6
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>100})
+end actions

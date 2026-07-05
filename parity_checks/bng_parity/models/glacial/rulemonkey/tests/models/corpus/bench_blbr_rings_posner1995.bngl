@@ -1,0 +1,165 @@
+begin model
+
+#@title: |
+#  Bivalent ligand-bivalent receptor aggregation with cyclic
+#  dimers (Posner, Wofsy, and Goldstein, 1995)
+
+#@description: |
+#  Network-free (NFsim) kinetic model of symmetric bivalent ligand
+#  binding to bivalent cell-surface receptors, forming chains and
+#  cyclic dimers. Four processes: (1) ligand capture from solution,
+#  (2) receptor cross-linking by tethered ligand (inter-complex
+#  only via "+" operator), (3) ligand-receptor bond dissociation,
+#  and (4) reversible ring closure of C_1(2) chains into cyclic
+#  dimers. No larger ring species are permitted.
+#
+#  Component states (u=unbound, c=chain-bound, g=ring-bound)
+#  distinguish chain bonds from ring bonds, enabling correct
+#  ring opening via an explicit reverse ring rule.
+#
+#  NFsim requires the -bscb flag for correct reactant-side
+#  molecularity enforcement in this model.
+#
+#  With default parameterization (KxRT = 5, J2 = 100), cyclic
+#  dimers dominate the aggregate population at all ligand doses.
+#  The bell-shaped dependence of receptor cross-linking on ligand
+#  concentration (prozone effect) is demonstrated by running time
+#  courses at three ligand doses.
+
+#@keyword: |
+#  bivalent ligand, bivalent receptor, cross-linking, aggregation,
+#  cyclic dimer, ring closure, prozone effect, bell-shaped dose
+#  response, mass action, network-free, NFsim, IgE, basophil,
+#  histamine release
+
+#@reference: |
+#  Posner RG, Wofsy C, Goldstein B (1995). The kinetics of bivalent
+#  ligand-bivalent receptor aggregation: ring formation and the
+#  breakdown of the equivalent site approximation. Math Biosci
+#  126:171-190. doi:10.1016/0025-5564(94)00045-2
+#
+#  Dembo M, Goldstein B (1978). Theory of equilibrium binding of
+#  symmetric bivalent haptens to cell surface antibody: application
+#  to histamine release from basophils. J Immunol 121:345-353.
+#  doi:10.4049/jimmunol.121.1.345
+
+#@note: |
+#  Network generation is not feasible because bivalent-bivalent
+#  cross-linking produces an unbounded set of chain species.
+#  NFsim is used with -bscb (block same-complex binding, which
+#  implies complex bookkeeping) and -utl 5 (traversal limit
+#  override; the auto value of 4 is too shallow for this model).
+#
+#  This model constrains j-2 = koff (ring opening uses the same
+#  rate constant as chain dissociation). The _bidirectional_ring
+#  variant has an independent jm parameter for ring opening.
+#
+#  Mapping to Posner et al. (1995) notation:
+#    k+1 = kf, k-1 = koff, k+2 = kxf, k-2 = koff
+#    j+2 = jp, j-2 = koff (explicit reverse ring rule)
+#    J2 = jp/koff (Posner per-bond convention)
+#    R2/C1(2) = J2/4 = 25 at equilibrium
+#  Mapping to Dembo and Goldstein (1978):
+#    H = 2*Ka, k = KxRT, J2_Dembo = J2/4 = 25
+
+begin parameters
+
+  # Physical constants
+  NA  6.02214076e23  # /mol
+
+  # Experimental conditions
+  V_cell  1e-9  # L/cell
+  R_per_cell  3e5  # molecules/cell
+
+  # SSA/NFsim scaling
+  f  0.01  # dimensionless
+  V_sim  V_cell*f  # L
+
+  # Scaled molecule counts
+  RT  R_per_cell*f  # molecules (= 3000)
+
+  # Total ligand
+  LT_per_cell  3e6  # molecules/cell
+  LT  LT_per_cell*f  # molecules
+
+  # Single-site kinetic rate constants
+  kon  1e6  # /M/s
+  koff  0.01  # /s
+
+  # Dimensionless control parameters
+  KxRT  5  # dimensionless
+  J2  100  # dimensionless (Posner: jp/koff)
+
+  # Stochastic rate constants (single-site, per molecule pair)
+  kf  kon/(NA*V_sim)  # /(molecule*s)
+  kxf  KxRT/RT*koff  # /(molecule*s)
+  # Ring closure rate
+  jp  J2*koff  # /s
+
+end parameters
+
+begin molecule types
+  # Bivalent ligand: two identical receptor-binding sites
+  # States: u=unbound, c=chain-bound, g=ring-bound (gated)
+  L(r~u~c~g,r~u~c~g)
+  # Bivalent receptor: two identical ligand-binding sites
+  R(l~u~c~g,l~u~c~g)
+end molecule types
+
+begin seed species
+  L(r~u,r~u)  LT  # molecules
+  R(l~u,l~u)  RT  # molecules
+end seed species
+
+begin observables
+  # Free ligand (both sites unbound)
+  Species    Obs_Free_L        L(r~u,r~u)
+  # Free receptor (both sites unbound)
+  Species    Obs_Free_R        R(l~u,l~u)
+  # Total ligand-receptor bonds (chain + ring)
+  Molecules  Obs_Bonds         L(r!1).R(l!1)
+  # Free ligand sites (on any ligand)
+  Molecules  Obs_Free_L_sites  L(r~u)
+  # Free receptor sites (on any receptor)
+  Molecules  Obs_Free_R_sites  R(l~u)
+  # Cyclic dimers (2R + 2L in ring, all g-state bonds)
+  Species    Obs_Cyclic_Dimer  L(r~g!1,r~g!2).R(l~g!1,l~g!3).L(r~g!3,r~g!4).R(l~g!4,l~g!2)
+end observables
+
+begin reaction rules
+
+  # ================================================================
+  # Ligand capture: free ligand binds receptor site
+  # ================================================================
+  R_capture:  L(r~u,r~u) + R(l~u) -> L(r~u,r~c!1).R(l~c!1)  kf
+
+  # ================================================================
+  # Cross-linking: tethered ligand arm binds DIFFERENT complex
+  # ================================================================
+  R_crosslink:  L(r~c!+,r~u) + R(l~u) -> L(r~c!+,r~c!1).R(l~c!1)  kxf
+
+  # ================================================================
+  # Bond dissociation: any chain bond breaks
+  # ================================================================
+  R_dissoc:  L(r~c!1).R(l~c!1) -> L(r~u) + R(l~u)  koff
+
+  # ================================================================
+  # Ring closure: C_1(2) chain -> cyclic dimer
+  # ================================================================
+  R_ring_close:  L(r~u,r~c!1).R(l~c!1,l~c!2).L(r~c!2,r~c!3).R(l~c!3,l~u) -> \
+    L(r~g!4,r~g!1).R(l~g!1,l~g!2).L(r~g!2,r~g!3).R(l~g!3,l~g!4)  jp
+
+  # ================================================================
+  # Ring opening: cyclic dimer -> C_1(2) chain
+  # ================================================================
+  R_ring_open:  L(r~g!4,r~g!1).R(l~g!1,l~g!2).L(r~g!2,r~g!3).R(l~g!3,l~g!4) -> \
+    L(r~u,r~c!1).R(l~c!1,l~c!2).L(r~c!2,r~c!3).R(l~c!3,l~u)  koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+simulate({method=>"nf",t_end=>3000,n_steps=>300})
+end actions

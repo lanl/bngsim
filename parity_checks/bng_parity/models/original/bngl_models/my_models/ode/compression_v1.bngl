@@ -1,0 +1,76 @@
+# test of compression
+
+begin model
+
+begin parameters
+
+L1_total 1.2e6 
+R1_total 1.8e5
+L2_total 1.2e6
+R2_total 1.8e5
+
+kp1 1.667e-6
+km1 0.06
+
+kp2 5.556e-6
+km2 0.1
+
+end parameters
+
+begin molecule types
+
+L1(r)
+R1(l,r)
+L2(r)
+R2(l,r~0~1)
+
+end molecule types
+
+begin seed species
+
+L1(r) L1_total
+R1(l,r) R1_total
+L2(r) L2_total
+R2(l,r~0) R2_total
+
+end  seed species
+
+begin observables
+
+Molecules Num_R1_in_dimers R1(r!1).R1(r!1)
+Molecules Num_R2_in_dimers R2(r~1)
+
+Molecules freeL1 L1(r)
+Molecules freeL2 L2(r)
+
+Molecules freeR1 R1(l,r)
+Molecules freeR2 R2(l,r~0)
+
+Molecules bound_R1_monomers R1(l!+,r)
+Molecules bound_R2_monomers R2(l!+,r~0)
+
+end observables
+
+begin functions
+
+# none
+
+end functions
+
+begin reaction rules
+
+L1(r)+R1(l,r)<->L1(r!1).R1(l!1,r) kp1,km1
+R1(l!+,r)+R1(l!+,r)<->R1(l!+,r!1).R1(l!+,r!1) kp2,km2
+
+L2(r)+R2(l,r~0)<->L2(r!1).R2(l!1,r~0) kp1,km1
+R2(l!+,r~0)+R2(l!+,r~0)->R2(l!+,r~1)+R2(l!+,r~1) kp2
+R2(r~1)->R2(r~0) km2
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100})

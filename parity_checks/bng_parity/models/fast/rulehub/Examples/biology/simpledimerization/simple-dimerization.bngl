@@ -1,0 +1,32 @@
+begin model
+begin parameters
+    p1 0.1
+    p2 0.2
+end parameters
+
+begin molecule types
+    A(b)
+    B(a)
+end molecule types
+
+begin seed species
+    A(b) 100
+    B(a) 100
+end seed species
+
+begin observables
+    Molecules A_free A(b)
+    Molecules B_free B(a)
+    Molecules AB A(b!1).B(a!1)
+end observables
+
+begin reaction rules
+    A(b) + B(a) -> A(b!1).B(a!1) p1
+    A(b!1).B(a!1) -> A(b) + B(a) p2
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>50,n_steps=>200})
+end actions
+end model

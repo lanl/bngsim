@@ -1,0 +1,37 @@
+# Products-side fixture for internal#60 (item 2).
+#
+# include_products(1, ...) is NOT yet enforced in the vendored NFsim. The
+# contract (decided in #60) is to KEEP the load-time warning rather than
+# hard-abort or implement enforcement, pending upstream RuleWorld/nfsim#63.
+#
+# The companion test loads this model and asserts NFsim emits its
+# "not yet enforced in NFsim" warning, pinning that contract so a silent
+# behavior change (warning dropped, or escalated to abort) fails loudly.
+#
+# XML is regenerated with: BNG2.pl include_products_warn.bngl
+begin model
+begin parameters
+    N       100
+    kf      0.01
+end parameters
+
+begin molecule types
+    A(s,p~U~P)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s,p~U)  N
+    B(s)      N
+end seed species
+
+begin observables
+    Molecules  AB_total  A(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    A(s,p~U) + B(s) -> A(s!1,p~P).B(s!1)  kf  include_products(1,A(p~P))
+end reaction rules
+end model
+
+writeXML()

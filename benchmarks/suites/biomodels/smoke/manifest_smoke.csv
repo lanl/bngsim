@@ -1,0 +1,8 @@
+# stage-1 biomodels SMOKE subset (6 models) | pinned to biomodels_provenance.json | derived from manifest.csv
+model_id,verdict,reason,n_species,n_reactions,n_rate_rules,n_events,tags,sha256
+BIOMD0000000001,keep,,12,17,0,1,events,407fccc883f80e6d120e34d8b0810a206a5cc6535a26d4574611504e683beb08
+BIOMD0000000003,keep,,3,7,0,0,,a633872e4c602922e85ac487ef52ac8bd8ead762ec7c0f86f9e93032a84c90f5
+BIOMD0000000004,keep,,5,7,0,0,,504dc54b5697b4183bd0046fb11f0991702961e3dee0baf15ac1ecaad5009eb6
+BIOMD0000000005,keep,,9,9,0,0,,5a4f44b5a0bc8f32d3206f460f748236539de593be0fb016da2ed7cddd098e36
+BIOMD0000000006,keep,,4,3,2,0,,c3cd0b2dfc738565fe72be3208eec28023e623297e198015df1df77a7e430820
+BIOMD0000000010,keep,,8,10,0,0,,906964e07ffd570ad94a03c1222e230b54b913cd536b008392bfb6155930a966

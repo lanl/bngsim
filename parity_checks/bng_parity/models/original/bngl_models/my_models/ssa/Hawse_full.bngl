@@ -1,0 +1,331 @@
+# Translation of Boolean model in Full Boolean T-Cell Model.txt to BNGL format within the GSP (Gillespie) update mode.
+begin model
+begin parameters
+	x	1
+end parameters
+begin molecule types
+   tcr(state~0~1)
+   tcr_low(state~0~1)
+   tcr_high(state~0~1)
+   cd28(state~0~1)
+   tgfbeta(state~0~1)
+   il2(state~0~1)
+   il2r(state~0~1)
+   ap1(state~0~1)
+   fos(state~0~1)
+   fos_d(state~0~1)
+   fos_dd(state~0~1)
+   fos_ddd(state~0~1)
+   jun(state~0~1)
+   erk(state~0~1)
+   mek2(state~0~1)
+   tak1(state~0~1)
+   mkk7(state~0~1)
+   jnk(state~0~1)
+   raf(state~0~1)
+   ras(state~0~1)
+   ca(state~0~1)
+   nfat(state~0~1)
+   pkctheta(state~0~1)
+   nfkappab(state~0~1)
+   akt(state~0~1)
+   mtorc1(state~0~1)
+   mtorc2(state~0~1)
+   mtor(state~0~1)
+   mtorc1_d(state~0~1)
+   mtorc2_d(state~0~1)
+   mtorc2_dd(state~0~1)
+   mtor_d(state~0~1)
+   mtor_dd(state~0~1)
+   mtor_ddd(state~0~1)
+   mtor_dddd(state~0~1)
+   rheb(state~0~1)
+   tsc(state~0~1)
+   smad3(state~0~1)
+   jak3(state~0~1)
+   stat5(state~0~1)
+   stat5_d(state~0~1)
+   stat5_dd(state~0~1)
+   stat5_ddd(state~0~1)
+   foxp3(state~0~1)
+   cd25(state~0~1)
+   cd122(state~0~1)
+   cd132(state~0~1)
+   il2_ex(state~0~1)
+   akt_off(state~0~1)
+   mtorc1_off(state~0~1)
+   nfat_off(state~0~1)
+   nedd4(state~0~1)
+   pten_total(state~0~1)
+   pten_active(state~0~1)
+   foxo1(state~0~1)
+   mek1(state~0~1)
+   ck2(state~0~1)
+   pip3(state~0~1)
+   foxp3_promoter(state~0~1)
+end molecule types
+begin seed species
+   tcr(state~0) 1
+   tcr_low(state~0) 1
+   tcr_high(state~1) 1
+   cd28(state~1) 1
+   tgfbeta(state~0) 1
+   il2(state~0) 1
+   il2r(state~0) 1
+   ap1(state~0) 1
+   fos(state~0) 1
+   fos_d(state~0) 1
+   fos_dd(state~0) 1
+   fos_ddd(state~0) 1
+   jun(state~0) 1
+   erk(state~0) 1
+   mek2(state~0) 1
+   tak1(state~0) 1
+   mkk7(state~0) 1
+   jnk(state~0) 1
+   raf(state~0) 1
+   ras(state~0) 1
+   ca(state~0) 1
+   nfat(state~0) 1
+   pkctheta(state~0) 1
+   nfkappab(state~0) 1
+   akt(state~0) 1
+   mtorc1(state~0) 1
+   mtorc2(state~0) 1
+   mtor(state~0) 1
+   mtorc1_d(state~0) 1
+   mtorc2_d(state~0) 1
+   mtorc2_dd(state~0) 1
+   mtor_d(state~0) 1
+   mtor_dd(state~0) 1
+   mtor_ddd(state~0) 1
+   mtor_dddd(state~0) 1
+   rheb(state~0) 1
+   tsc(state~1) 1
+   smad3(state~0) 1
+   jak3(state~0) 1
+   stat5(state~0) 1
+   stat5_d(state~0) 1
+   stat5_dd(state~0) 1
+   stat5_ddd(state~0) 1
+   foxp3(state~0) 1
+   cd25(state~0) 1
+   cd122(state~1) 1
+   cd132(state~1) 1
+   il2_ex(state~0) 1
+   akt_off(state~0) 1
+   mtorc1_off(state~0) 1
+   nfat_off(state~0) 1
+   nedd4(state~0) 1
+   pten_total(state~1) 1
+   pten_active(state~0) 1
+   foxo1(state~1) 1
+   mek1(state~0) 1
+   ck2(state~0) 1
+   pip3(state~0) 1
+   foxp3_promoter(state~1) 1
+end seed species
+begin observables
+   Molecules TCR tcr(state~1)
+   Molecules TCR_LOW tcr_low(state~1)
+   Molecules TCR_HIGH tcr_high(state~1)
+   Molecules CD28 cd28(state~1)
+   Molecules TGFBETA tgfbeta(state~1)
+   Molecules IL2 il2(state~1)
+   Molecules IL2R il2r(state~1)
+   Molecules AP1 ap1(state~1)
+   Molecules FOS fos(state~1)
+   Molecules FOS_D fos_d(state~1)
+   Molecules FOS_DD fos_dd(state~1)
+   Molecules FOS_DDD fos_ddd(state~1)
+   Molecules JUN jun(state~1)
+   Molecules ERK erk(state~1)
+   Molecules MEK2 mek2(state~1)
+   Molecules TAK1 tak1(state~1)
+   Molecules MKK7 mkk7(state~1)
+   Molecules JNK jnk(state~1)
+   Molecules RAF raf(state~1)
+   Molecules RAS ras(state~1)
+   Molecules CA ca(state~1)
+   Molecules NFAT nfat(state~1)
+   Molecules PKCTHETA pkctheta(state~1)
+   Molecules NFKAPPAB nfkappab(state~1)
+   Molecules AKT akt(state~1)
+   Molecules MTORC1 mtorc1(state~1)
+   Molecules MTORC2 mtorc2(state~1)
+   Molecules MTOR mtor(state~1)
+   Molecules MTORC1_D mtorc1_d(state~1)
+   Molecules MTORC2_D mtorc2_d(state~1)
+   Molecules MTORC2_DD mtorc2_dd(state~1)
+   Molecules MTOR_D mtor_d(state~1)
+   Molecules MTOR_DD mtor_dd(state~1)
+   Molecules MTOR_DDD mtor_ddd(state~1)
+   Molecules MTOR_DDDD mtor_dddd(state~1)
+   Molecules RHEB rheb(state~1)
+   Molecules TSC tsc(state~1)
+   Molecules SMAD3 smad3(state~1)
+   Molecules JAK3 jak3(state~1)
+   Molecules STAT5 stat5(state~1)
+   Molecules STAT5_D stat5_d(state~1)
+   Molecules STAT5_DD stat5_dd(state~1)
+   Molecules STAT5_DDD stat5_ddd(state~1)
+   Molecules FOXP3 foxp3(state~1)
+   Molecules CD25 cd25(state~1)
+   Molecules CD122 cd122(state~1)
+   Molecules CD132 cd132(state~1)
+   Molecules IL2_EX il2_ex(state~1)
+   Molecules AKT_OFF akt_off(state~1)
+   Molecules MTORC1_OFF mtorc1_off(state~1)
+   Molecules NFAT_OFF nfat_off(state~1)
+   Molecules NEDD4 nedd4(state~1)
+   Molecules PTEN_TOTAL pten_total(state~1)
+   Molecules PTEN_ACTIVE pten_active(state~1)
+   Molecules FOXO1 foxo1(state~1)
+   Molecules MEK1 mek1(state~1)
+   Molecules CK2 ck2(state~1)
+   Molecules PIP3 pip3(state~1)
+   Molecules FOXP3_PROMOTER foxp3_promoter(state~1)
+end observables
+begin functions
+   tcr_func() if(TCR_LOW>0.5 || TCR_HIGH>0.5, 1, 0)
+   ras_func() if((TCR>0.5 && CD28>0.5) || (RAS>0.5 && IL2_EX>0.5 && IL2R>0.5), 1, 0)
+   raf_func() if(RAS>0.5, 1, 0)
+   mek2_func() if(RAF>0.5, 1, 0)
+   erk_func() if(MEK2>0.5, 1, 0)
+   fos_func() if(ERK>0.5, 1, 0)
+   pkctheta_func() if(TCR_HIGH>0.5 || (TCR_LOW>0.5 && CD28>0.5 && MTORC2>0.5), 1, 0)
+   tak1_func() if(PKCTHETA>0.5, 1, 0)
+   mkk7_func() if(TAK1>0.5, 1, 0)
+   jnk_func() if(MKK7>0.5, 1, 0)
+   jun_func() if(JNK>0.5, 1, 0)
+   fos_d_func() if(FOS>0.5, 1, 0)
+   fos_dd_func() if(FOS_D>0.5, 1, 0)
+   ap1_func() if(FOS>0.5 && JUN>0.5, 1, 0)
+   ca_func() if(TCR>0.5, 1, 0)
+   nfkappab_func() if(PKCTHETA>0.5 || AKT>0.5, 1, 0)
+   nfat_func() if(CA>0.5 && NFAT_OFF<0.5, 1, 0)
+   il2_func() if(((AP1>0.5 && NFAT>0.5 && NFKAPPAB>0.5) || IL2>0.5) && FOXP3<0.5, 1, 0)
+   il2r_func() if(CD25>0.5 && CD122>0.5 && CD132>0.5, 1, 0)
+   tsc_func() if(AKT<0.5, 1, 0)
+   rheb_func() if(TSC<0.5, 1, 0)
+   mtorc1_func() if(RHEB>0.5 && MTORC1_OFF<0.5, 1, 0)
+   mtorc1_d_func() if(MTORC1>0.5 , 1, 0)
+   mtorc2_d_func() if(MTORC2>0.5, 1, 0)
+   mtor_func() if(MTORC1_D>0.5 && MTORC2_D>0.5, 1, 0)
+   mtor_d_func() if(MTOR>0.5, 1, 0)
+   mtor_dd_func() if(MTOR_D>0.5, 1, 0)
+   smad3_func() if(TGFBETA>0.5, 1, 0)
+   jak3_func() if(IL2R>0.5 && IL2_EX>0.5, 1, 0)
+   stat5_func() if(JAK3>0.5, 1, 0)
+   stat5_d_func() if(STAT5>0.5, 1, 0)
+   foxp3_func() if((FOXO1>0.5 && STAT5_D>0.5 && FOXP3_PROMOTER>0.5) || (NFAT>0.5 && SMAD3>0.5), 1, 0)
+   cd25_func() if(FOXP3>0.5 || (AP1>0.5 && NFAT>0.5 && NFKAPPAB>0.5) || STAT5>0.5, 1, 0)
+   il2_ex_func() if(IL2>0.5 || IL2_EX>0.5, 1, 0)
+   ck2_func() if(TCR_HIGH>0.5, 1, 0)
+   mek1_func() if(TCR>0.5, 1, 0)
+   pip3_func() if(((TCR>0.5 && CD28>0.5) || (PIP3>0.5 && IL2_EX>0.5 && IL2R>0.5)) && PTEN_ACTIVE<0.5, 1, 0)
+   akt_func() if(PIP3>0.5 && MTORC2>0.5, 1, 0)
+   mtorc2_func() if((TCR>0.5 && CD28>0.5) || (MTORC2>0.5 && IL2_EX>0.5 && IL2R>0.5) && AKT<0.5, 1, 0)
+   pten_total_func() if(FOXO1>0.5 && NEDD4<0.5, 1, 0)
+   pten_active_func() if(PTEN_TOTAL>0.5 && MEK1>0.5 && CK2<0.5, 1, 0)
+   foxo1_func() if(AKT<0.5, 1, 0)
+   nedd4_func() if(TCR_HIGH>0.5, 1, 0)
+   foxp3_promoter_func() if(FOXP3_PROMOTER>0.5 && (MTORC1<0.5 || MTORC1_D<0.5), 1, 0)
+end functions
+begin reaction rules
+   R1: tcr(state) -> tcr(state~1) if(tcr_func()>0.5,1,0)
+   R2: tcr(state) -> tcr(state~0) if(tcr_func()<0.5,1,0)
+   R3: ras(state) -> ras(state~1) if(ras_func()>0.5,1,0)
+   R4: ras(state) -> ras(state~0) if(ras_func()<0.5,1,0)
+   R5: raf(state) -> raf(state~1) if(raf_func()>0.5,1,0)
+   R6: raf(state) -> raf(state~0) if(raf_func()<0.5,1,0)
+   R7: mek2(state) -> mek2(state~1) if(mek2_func()>0.5,1,0)
+   R8: mek2(state) -> mek2(state~0) if(mek2_func()<0.5,1,0)
+   R9: erk(state) -> erk(state~1) if(erk_func()>0.5,1,0)
+   R10: erk(state) -> erk(state~0) if(erk_func()<0.5,1,0)
+   R11: fos(state) -> fos(state~1) if(fos_func()>0.5,1,0)
+   R12: fos(state) -> fos(state~0) if(fos_func()<0.5,1,0)
+   R13: pkctheta(state) -> pkctheta(state~1) if(pkctheta_func()>0.5,1,0)
+   R14: pkctheta(state) -> pkctheta(state~0) if(pkctheta_func()<0.5,1,0)
+   R15: tak1(state) -> tak1(state~1) if(tak1_func()>0.5,1,0)
+   R16: tak1(state) -> tak1(state~0) if(tak1_func()<0.5,1,0)
+   R17: mkk7(state) -> mkk7(state~1) if(mkk7_func()>0.5,1,0)
+   R18: mkk7(state) -> mkk7(state~0) if(mkk7_func()<0.5,1,0)
+   R19: jnk(state) -> jnk(state~1) if(jnk_func()>0.5,1,0)
+   R20: jnk(state) -> jnk(state~0) if(jnk_func()<0.5,1,0)
+   R21: jun(state) -> jun(state~1) if(jun_func()>0.5,1,0)
+   R22: jun(state) -> jun(state~0) if(jun_func()<0.5,1,0)
+   R23: fos_d(state) -> fos_d(state~1) if(fos_d_func()>0.5,1,0)
+   R24: fos_d(state) -> fos_d(state~0) if(fos_d_func()<0.5,1,0)
+   R25: fos_dd(state) -> fos_dd(state~1) if(fos_dd_func()>0.5,1,0)
+   R26: fos_dd(state) -> fos_dd(state~0) if(fos_dd_func()<0.5,1,0)
+   R27: ap1(state) -> ap1(state~1) if(ap1_func()>0.5,1,0)
+   R28: ap1(state) -> ap1(state~0) if(ap1_func()<0.5,1,0)
+   R29: ca(state) -> ca(state~1) if(ca_func()>0.5,1,0)
+   R30: ca(state) -> ca(state~0) if(ca_func()<0.5,1,0)
+   R31: nfkappab(state) -> nfkappab(state~1) if(nfkappab_func()>0.5,1,0)
+   R32: nfkappab(state) -> nfkappab(state~0) if(nfkappab_func()<0.5,1,0)
+   R33: nfat(state) -> nfat(state~1) if(nfat_func()>0.5,1,0)
+   R34: nfat(state) -> nfat(state~0) if(nfat_func()<0.5,1,0)
+   R35: il2(state) -> il2(state~1) if(il2_func()>0.5,1,0)
+   R36: il2(state) -> il2(state~0) if(il2_func()<0.5,1,0)
+   R37: il2r(state) -> il2r(state~1) if(il2r_func()>0.5,1,0)
+   R38: il2r(state) -> il2r(state~0) if(il2r_func()<0.5,1,0)
+   R39: tsc(state) -> tsc(state~1) if(tsc_func()>0.5,1,0)
+   R40: tsc(state) -> tsc(state~0) if(tsc_func()<0.5,1,0)
+   R41: rheb(state) -> rheb(state~1) if(rheb_func()>0.5,1,0)
+   R42: rheb(state) -> rheb(state~0) if(rheb_func()<0.5,1,0)
+   R43: mtorc1(state) -> mtorc1(state~1) if(mtorc1_func()>0.5,1,0)
+   R44: mtorc1(state) -> mtorc1(state~0) if(mtorc1_func()<0.5,1,0)
+   R45: mtorc1_d(state) -> mtorc1_d(state~1) if(mtorc1_d_func()>0.5,1,0)
+   R46: mtorc1_d(state) -> mtorc1_d(state~0) if(mtorc1_d_func()<0.5,1,0)
+   R47: mtorc2_d(state) -> mtorc2_d(state~1) if(mtorc2_d_func()>0.5,1,0)
+   R48: mtorc2_d(state) -> mtorc2_d(state~0) if(mtorc2_d_func()<0.5,1,0)
+   R49: mtor(state) -> mtor(state~1) if(mtor_func()>0.5,1,0)
+   R50: mtor(state) -> mtor(state~0) if(mtor_func()<0.5,1,0)
+   R51: mtor_d(state) -> mtor_d(state~1) if(mtor_d_func()>0.5,1,0)
+   R52: mtor_d(state) -> mtor_d(state~0) if(mtor_d_func()<0.5,1,0)
+   R53: mtor_dd(state) -> mtor_dd(state~1) if(mtor_dd_func()>0.5,1,0)
+   R54: mtor_dd(state) -> mtor_dd(state~0) if(mtor_dd_func()<0.5,1,0)
+   R55: smad3(state) -> smad3(state~1) if(smad3_func()>0.5,1,0)
+   R56: smad3(state) -> smad3(state~0) if(smad3_func()<0.5,1,0)
+   R57: jak3(state) -> jak3(state~1) if(jak3_func()>0.5,1,0)
+   R58: jak3(state) -> jak3(state~0) if(jak3_func()<0.5,1,0)
+   R59: stat5(state) -> stat5(state~1) if(stat5_func()>0.5,1,0)
+   R60: stat5(state) -> stat5(state~0) if(stat5_func()<0.5,1,0)
+   R61: stat5_d(state) -> stat5_d(state~1) if(stat5_d_func()>0.5,1,0)
+   R62: stat5_d(state) -> stat5_d(state~0) if(stat5_d_func()<0.5,1,0)
+   R63: foxp3(state) -> foxp3(state~1) if(foxp3_func()>0.5,1,0)
+   R64: foxp3(state) -> foxp3(state~0) if(foxp3_func()<0.5,1,0)
+   R65: cd25(state) -> cd25(state~1) if(cd25_func()>0.5,1,0)
+   R66: cd25(state) -> cd25(state~0) if(cd25_func()<0.5,1,0)
+   R67: il2_ex(state) -> il2_ex(state~1) if(il2_ex_func()>0.5,1,0)
+   R68: il2_ex(state) -> il2_ex(state~0) if(il2_ex_func()<0.5,1,0)
+   R69: ck2(state) -> ck2(state~1) if(ck2_func()>0.5,1,0)
+   R70: ck2(state) -> ck2(state~0) if(ck2_func()<0.5,1,0)
+   R71: mek1(state) -> mek1(state~1) if(mek1_func()>0.5,1,0)
+   R72: mek1(state) -> mek1(state~0) if(mek1_func()<0.5,1,0)
+   R73: pip3(state) -> pip3(state~1) if(pip3_func()>0.5,1,0)
+   R74: pip3(state) -> pip3(state~0) if(pip3_func()<0.5,1,0)
+   R75: akt(state) -> akt(state~1) if(akt_func()>0.5,1,0)
+   R76: akt(state) -> akt(state~0) if(akt_func()<0.5,1,0)
+   R77: mtorc2(state) -> mtorc2(state~1) if(mtorc2_func()>0.5,1,0)
+   R78: mtorc2(state) -> mtorc2(state~0) if(mtorc2_func()<0.5,1,0)
+   R79: pten_total(state) -> pten_total(state~1) if(pten_total_func()>0.5,1,0)
+   R80: pten_total(state) -> pten_total(state~0) if(pten_total_func()<0.5,1,0)
+   R81: pten_active(state) -> pten_active(state~1) if(pten_active_func()>0.5,1,0)
+   R82: pten_active(state) -> pten_active(state~0) if(pten_active_func()<0.5,1,0)
+   R83: foxo1(state) -> foxo1(state~1) if(foxo1_func()>0.5,1,0)
+   R84: foxo1(state) -> foxo1(state~0) if(foxo1_func()<0.5,1,0)
+   R85: nedd4(state) -> nedd4(state~1) if(nedd4_func()>0.5,1,0)
+   R86: nedd4(state) -> nedd4(state~0) if(nedd4_func()<0.5,1,0)
+   R87: foxp3_promoter(state) -> foxp3_promoter(state~1) if(foxp3_promoter_func()>0.5,1,0)
+   R88: foxp3_promoter(state) -> foxp3_promoter(state~0) if(foxp3_promoter_func()<0.5,1,0)
+end reaction rules
+end model
+
+generate_network({overwrite=>1})
+
+# Simulate for 30 time units, outputting every time unit.
+ simulate({method=>"ssa",t_end=>30,n_steps=>30,print_CDAT=>0,verbose=>1})
+#parameter_scan({parameter=>"x",par_min=>1,par_max=>1000,n_scan_pts=>100,method=>"ssa",t_end=>30,n_steps=>300,log_scale=>0})

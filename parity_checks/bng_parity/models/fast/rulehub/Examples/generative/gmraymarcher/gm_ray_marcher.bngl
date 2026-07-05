@@ -1,0 +1,136 @@
+# Ray Marching Renderer in BNGL
+# ===============================
+# A 1D ray marcher where a "Ray" molecule advances through space.
+# The ray's position is its concentration.
+# A signed distance function (SDF) defines the scene geometry.
+# When SDF < threshold,the ray "hits" and stops (via rate clamping).
+# Color/intensity is computed from hit position and surface normal.
+#
+# Scene: A sphere at position 50 with radius 15.
+# Ray starts at 0 and marches forward.
+# Multiple rays at different "angles" (different initial velocities).
+
+begin model
+
+begin parameters
+    # Scene
+    sphere_center   50.0
+    sphere_radius   15.0
+    
+    # Ray marching
+    march_speed     10.0    # Base marching speed
+    hit_threshold   0.5     # Distance to count as "hit"
+    
+    # Light source
+    light_pos       20.0    # Light source position
+end parameters
+
+begin molecule types
+    # Rays at different vertical positions (simulating scan lines)
+    Ray0
+    Ray1
+    Ray2
+    Ray3
+    
+    # Hit detection (accumulates when ray reaches surface)
+    Hit0
+    Hit1
+    Hit2
+    Hit3
+    
+    # Brightness (computed from hit geometry)
+    Bright0
+    Bright1
+    Bright2
+    Bright3
+end molecule types
+
+begin seed species
+    Ray0() 0    Ray1() 0    Ray2() 0    Ray3() 0
+    Hit0() 0    Hit1() 0    Hit2() 0    Hit3() 0
+    Bright0() 0 Bright1() 0 Bright2() 0 Bright3() 0
+end seed species
+
+begin observables
+    Molecules R0 Ray0()
+    Molecules R1 Ray1()
+    Molecules R2 Ray2()
+    Molecules R3 Ray3()
+    Molecules H0 Hit0()
+    Molecules H1 Hit1()
+    Molecules H2 Hit2()
+    Molecules H3 Hit3()
+    Molecules B0 Bright0()
+    Molecules B1 Bright1()
+    Molecules B2 Bright2()
+    Molecules B3 Bright3()
+end observables
+
+begin functions
+    # Signed Distance Functions for each ray
+    # Each ray has a different "y-offset" simulating different scan lines
+    # SDF of sphere: |pos - center| - radius
+    # For ray with vertical offset dy:
+    # distance = sqrt((ray_x - center)^2 + dy^2) - radius
+    
+    # Center ray (dy = 0): hits sphere center
+    sdf0() = abs(R0 - sphere_center) - sphere_radius
+    
+    # Offset rays (dy = 5,10,18)
+    sdf1() = sqrt((R1 - sphere_center)^2 + 25) - sphere_radius    # dy=5
+    sdf2() = sqrt((R2 - sphere_center)^2 + 100) - sphere_radius   # dy=10
+    sdf3() = sqrt((R3 - sphere_center)^2 + 324) - sphere_radius   # dy=18 (miss!)
+    
+    # March speed: proportional to SDF (sphere tracing!)
+    # Stop when hit (SDF < threshold)
+    speed0() = if(sdf0() > hit_threshold,march_speed * max(sdf0(),1),0)
+    speed1() = if(sdf1() > hit_threshold,march_speed * max(sdf1(),1),0)
+    speed2() = if(sdf2() > hit_threshold,march_speed * max(sdf2(),1),0)
+    speed3() = if(sdf3() > hit_threshold,march_speed * max(sdf3(),1),0)
+    
+    # Hit detection: accumulate when SDF < threshold
+    hit_rate0() = if(sdf0() < hit_threshold,100,0)
+    hit_rate1() = if(sdf1() < hit_threshold,100,0)
+    hit_rate2() = if(sdf2() < hit_threshold,100,0)
+    hit_rate3() = if(sdf3() < hit_threshold,100,0)
+    
+    # Brightness: based on surface normal dot light direction
+    # Normal at hit point ≈ (hit_pos - center) / radius (for sphere)
+    # Light direction ≈ (light_pos - hit_pos) 
+    # Simplified: brighter when hit is closer to light
+    bright_rate0() = if(H0 > 50,100 * exp(-(R0 - light_pos)^2 / 1000),0)
+    bright_rate1() = if(H1 > 50,80 * exp(-(R1 - light_pos)^2 / 1000),0)
+    bright_rate2() = if(H2 > 50,50 * exp(-(R2 - light_pos)^2 / 1000),0)
+    bright_rate3() = if(H3 > 50,10 * exp(-(R3 - light_pos)^2 / 1000),0)
+end functions
+
+begin reaction rules
+    # === RAY MARCHING ===
+    # Each ray advances at speed proportional to SDF (sphere tracing)
+    0 -> Ray0()     speed0()
+    0 -> Ray1()     speed1()
+    0 -> Ray2()     speed2()
+    0 -> Ray3()     speed3()
+    
+    # === HIT DETECTION ===
+    0 -> Hit0()     hit_rate0()
+    0 -> Hit1()     hit_rate1()
+    0 -> Hit2()     hit_rate2()
+    0 -> Hit3()     hit_rate3()
+    
+    # === SHADING ===
+    0 -> Bright0()  bright_rate0()
+    0 -> Bright1()  bright_rate1()
+    0 -> Bright2()  bright_rate2()
+    0 -> Bright3()  bright_rate3()
+    Bright0() -> 0  1.0
+    Bright1() -> 0  1.0
+    Bright2() -> 0  1.0
+    Bright3() -> 0  1.0
+end reaction rules
+
+end model
+
+# Watch rays march forward,stop at sphere surface
+# Final Brightness values = rendered pixel intensities
+simulate({method=>"ode",t_end=>10,n_steps=>500})

@@ -1,0 +1,2616 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level2" xmlns:celldesigner="http://www.sbml.org/2001/ns/celldesigner" metaid="_829767" level="2" version="1">
+  <model metaid="_406668" id="Radulescu2008_NFkB_hierarchy_M_14_25_33" name="Radulescu2008_NFkB_hierarchy_M_14_25_33">
+    <notes>
+      <body xmlns="http://www.w3.org/1999/xhtml">
+        <body>
+          <h1>NFkB model M(14,25,33)</h1>
+          <p>This is a model of NFkB pathway functioning 
+from hierarchy of models of decreasing complexity,
+created to demonstrate application of model reduction methods</p>
+          <p>Radulescu O, Gorban A., Zinovyev A., Lilienbaum. A. 
+Robust simplifications of multiscale models in</p>
+          <p>The models are provided in CellDesigner v3.5
+format. The name of the model M(x,y,z) should be</p>
+          <p>x - number of species
+y - number of reactions</p>
+          <p>Simulation protocol:
+The model can be simulated in CellDesigner
+directly, or in any simulator supporting
+events. The simulation period should be
+set up in 40 hours (t=144000 sec).
+The &apos;signal&apos; event applies signal to the</p>
+          <p>For additional information please contact</p>
+          <p>This model originates from BioModels Database: A Database of Annotated Published Models. It is copyright (c) 2005-2011 The BioModels.net Team.        <br/>
+            To the extent possible under law, all copyright and related or neighbouring rights to this encoded model have been dedicated to the public domain worldwide. Please refer to        <a href="http://creativecommons.org/publicdomain/zero/1.0/" title="Creative Commons CC0">CC0 Public Domain Dedication</a>
+            for more information.        </p>
+        <p>In summary, you are entitled to use this encoded model in absolutely any manner you deem suitable, verbatim, or with modification, alone or embedded it in a larger context, redistribute it, commercially or not, in a restricted way or not..        <br/>
+        <br/>
+            To cite BioModels Database, please use:        <a href="http://www.ncbi.nlm.nih.gov/pubmed/20587024" target="_blank">Li C, Donizelli M, Rodriguez N, Dharuri H, Endler L, Chelliah V, Li L, He E, Henry A, Stefan MI, Snoep JL, Hucka M, Le Novère N, Laibe C (2010) BioModels Database: An enhanced, curated and annotated resource for published quantitative kinetic models. BMC Syst Biol., 4:92.</a>
+    </p>
+  </body>
+</body>
+</notes><annotation>
+  <celldesigner:modelVersion>2.5</celldesigner:modelVersion>
+  <celldesigner:modelDisplay sizeX="1400" sizeY="1400"/>
+  <celldesigner:listOfIncludedSpecies>
+    <celldesigner:species id="s46" name="p50">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s192</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr24</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s47" name="p65">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s192</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr7</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s48" name="IkB_alpha">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s192</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s91" name="p50">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s195</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr24</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s92" name="p65">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s195</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr7</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s136" name="p65">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s188</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr7</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s137" name="p50">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s188</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr24</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s138" name="IkB_alpha">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s188</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s140" name="IkB_alpha">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s191</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s141" name="IKKa">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s191</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr16</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s143" name="IkB_alpha">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s189</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s144" name="p50">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s189</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr24</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s145" name="p65">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s189</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr7</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s146" name="IKKa">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s189</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr16</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s148" name="p50">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s190</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr24</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+    <celldesigner:species id="s149" name="p65">
+      <celldesigner:annotation>
+        <celldesigner:complexSpecies>s190</celldesigner:complexSpecies>
+        <celldesigner:speciesIdentity>
+          <celldesigner:class>PROTEIN</celldesigner:class>
+          <celldesigner:proteinReference>pr7</celldesigner:proteinReference>
+        </celldesigner:speciesIdentity>
+      </celldesigner:annotation>
+    </celldesigner:species>
+  </celldesigner:listOfIncludedSpecies>
+  <celldesigner:listOfCompartmentAliases>
+    <celldesigner:compartmentAlias compartment="c1" id="ca1">
+      <celldesigner:class>SQUARE_CLOSEUP_SOUTH</celldesigner:class>
+      <celldesigner:point x="582.0" y="947.0"/>
+      <celldesigner:doubleLine innerWidth="1.0" outerWidth="2.0" thickness="12.0"/>
+      <celldesigner:paint color="ffcccc00" scheme="Color"/>
+    </celldesigner:compartmentAlias>
+  </celldesigner:listOfCompartmentAliases>
+  <celldesigner:listOfComplexSpeciesAliases>
+    <celldesigner:complexSpeciesAlias compartmentAlias="ca1" id="csa9" species="s192">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="71.0" w="107.0" x="660.1666666666666" y="764.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="78.16666666666663" y="-183.0"/>
+        <celldesigner:boxSize height="71.0" width="107.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+    <celldesigner:complexSpeciesAlias compartmentAlias="ca1" id="csa17" species="s195">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="65.0" w="79.0" x="679.8036175710594" y="45.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="97.80361757105936" y="-902.0"/>
+        <celldesigner:boxSize height="65.0" width="79.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+    <celldesigner:complexSpeciesAlias id="csa18" species="s188">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="68.0" w="110.0" x="741.5" y="1166.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="68.0" width="110.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+    <celldesigner:complexSpeciesAlias id="csa19" species="s191">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="81.0" w="74.0" x="1017.5" y="1151.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="81.0" width="74.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+    <celldesigner:complexSpeciesAlias id="csa20" species="s189">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="94.0" w="114.0" x="824.0" y="1272.5759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="94.0" width="114.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+    <celldesigner:complexSpeciesAlias id="csa21" species="s190">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="69.0" w="62.0" x="585.5" y="1164.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="69.0" width="62.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="2.0"/>
+        <celldesigner:paint color="fff7f7f7" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:complexSpeciesAlias>
+  </celldesigner:listOfComplexSpeciesAliases>
+  <celldesigner:listOfSpeciesAliases>
+    <celldesigner:speciesAlias compartmentAlias="ca1" id="sa13" species="s93">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="26.0" w="54.0" x="687.4932170542637" y="185.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="105.49321705426371" y="-762.0"/>
+        <celldesigner:boxSize height="26.0" width="54.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa9" id="sa44" species="s46">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="19.0" w="49.0" x="666.1666666666666" y="776.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="6.0" y="12.5"/>
+        <celldesigner:boxSize height="19.0" width="49.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa9" id="sa45" species="s47">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="20.0" w="50.0" x="666.1666666666666" y="794.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="6.0" y="30.0"/>
+        <celldesigner:boxSize height="20.0" width="50.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa9" id="sa46" species="s48">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="24.0" w="44.0" x="715.6666666666666" y="784.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="55.5" y="20.5"/>
+        <celldesigner:boxSize height="24.0" width="44.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa17" id="sa75" species="s91">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="19.0" w="49.0" x="694.3036175710594" y="50.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="14.5" y="5.5"/>
+        <celldesigner:boxSize height="19.0" width="49.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa17" id="sa76" species="s92">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="20.0" w="50.0" x="694.3036175710594" y="68.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="14.5" y="23.0"/>
+        <celldesigner:boxSize height="20.0" width="50.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias compartmentAlias="ca1" id="sa90" species="s177">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="21.0" w="57.0" x="1083.5" y="837.25"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="501.5" y="-109.75"/>
+        <celldesigner:boxSize height="21.0" width="57.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffff66" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa91" species="s122">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="932.5" y="1048.75"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa92" species="s123">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="26.0" w="54.0" x="985.5" y="1050.75"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="26.0" width="54.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa93" species="s124">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="850.5" y="974.75"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa94" species="s178">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="23.0" w="100.0" x="901.5" y="976.25"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="23.0" width="100.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ff66ff66" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias compartmentAlias="ca1" id="sa95" species="s126">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="23.0" w="58.0" x="1282.0" y="854.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="700.0" y="-92.5"/>
+        <celldesigner:boxSize height="23.0" width="58.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffff66" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa96" species="s127">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="25.0" w="90.0" x="1270.0" y="977.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="25.0" width="90.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ff66ff66" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa97" species="s128">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="24.0" w="57.0" x="1273.0" y="1130.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="24.0" width="57.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa98" species="s129">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="1218.5" y="1026.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa99" species="s130">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="25.0" w="54.0" x="1203.5" y="1078.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="25.0" width="54.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa100" species="s131">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="1239.5" y="984.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa101" species="s132">
+      <celldesigner:activity>active</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="55.0" x="1101.5" y="1078.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="55.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa102" species="s133">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="27.0" w="49.0" x="1167.5" y="984.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="27.0" width="49.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa103" species="s134">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="1101.5" y="1025.5759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa18" id="sa104" species="s136">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="20.0" w="50.0" x="743.5" y="1193.8259937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="2.0" y="27.75"/>
+        <celldesigner:boxSize height="20.0" width="50.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa18" id="sa105" species="s137">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="19.0" w="49.0" x="743.5" y="1173.3259937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="2.0" y="7.25"/>
+        <celldesigner:boxSize height="19.0" width="49.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa18" id="sa106" species="s138">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="25.0" w="53.0" x="793.5810055865923" y="1183.71007196473"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="52.081005586592255" y="17.63407821229066"/>
+        <celldesigner:boxSize height="25.0" width="53.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa19" id="sa107" species="s140">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="24.0" w="50.0" x="1028.5" y="1186.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="11.0" y="35.0"/>
+        <celldesigner:boxSize height="24.0" width="50.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa19" id="sa108" species="s141">
+      <celldesigner:activity>active</celldesigner:activity>
+      <celldesigner:bounds h="18.0" w="51.0" x="1027.5" y="1163.5759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="10.0" y="12.5"/>
+        <celldesigner:boxSize height="18.0" width="51.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa20" id="sa109" species="s143">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="23.0" w="42.0" x="879.0810055865923" y="1308.21007196473"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="55.081005586592255" y="35.63407821229066"/>
+        <celldesigner:boxSize height="23.0" width="42.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa20" id="sa110" species="s144">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="19.0" w="49.0" x="829.0" y="1308.8259937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="5.0" y="36.25"/>
+        <celldesigner:boxSize height="19.0" width="49.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa20" id="sa111" species="s145">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="20.0" w="50.0" x="829.0" y="1328.3259937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="5.0" y="55.75"/>
+        <celldesigner:boxSize height="20.0" width="50.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa20" id="sa112" species="s146">
+      <celldesigner:activity>active</celldesigner:activity>
+      <celldesigner:bounds h="21.0" w="52.0" x="854.5" y="1281.5759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="30.5" y="9.0"/>
+        <celldesigner:boxSize height="21.0" width="52.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa21" id="sa113" species="s148">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="23.0" w="41.0" x="597.0" y="1172.5759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="11.5" y="8.5"/>
+        <celldesigner:boxSize height="23.0" width="41.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias complexSpeciesAlias="csa21" id="sa114" species="s149">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="20.0" w="45.0" x="593.0" y="1196.0759937524394"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="7.5" y="32.0"/>
+        <celldesigner:boxSize height="20.0" width="45.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffccffcc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias compartmentAlias="ca1" id="sa115" species="s150">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="23.0" w="56.0" x="1171.0" y="872.5"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="589.0" y="-74.5"/>
+        <celldesigner:boxSize height="23.0" width="56.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffff66" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="60.0" width="80.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa116" species="s153">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="1310.0" y="1029.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+    <celldesigner:speciesAlias id="sa117" species="s154">
+      <celldesigner:activity>inactive</celldesigner:activity>
+      <celldesigner:bounds h="30.0" w="30.0" x="1285.0" y="1176.0"/>
+      <celldesigner:view state="usual"/>
+      <celldesigner:usualView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="30.0" width="30.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="ffffcccc" scheme="Color"/>
+      </celldesigner:usualView>
+      <celldesigner:briefView>
+        <celldesigner:innerPosition x="0.0" y="0.0"/>
+        <celldesigner:boxSize height="0.0" width="0.0"/>
+        <celldesigner:singleLine width="1.0"/>
+        <celldesigner:paint color="3fff0000" scheme="Color"/>
+      </celldesigner:briefView>
+    </celldesigner:speciesAlias>
+  </celldesigner:listOfSpeciesAliases>
+  <celldesigner:listOfGroups/>
+  <celldesigner:listOfProteins>
+    <celldesigner:protein id="pr10" name="IkB_alpha" type="GENERIC"/>
+    <celldesigner:protein id="pr24" name="p50" type="GENERIC"/>
+    <celldesigner:protein id="pr7" name="p65" type="GENERIC"/>
+    <celldesigner:protein id="pr25" name="A20" type="GENERIC"/>
+    <celldesigner:protein id="pr26" name="IKKi" type="GENERIC"/>
+    <celldesigner:protein id="pr16" name="IKKa" type="GENERIC"/>
+    <celldesigner:protein id="pr15" name="IKKn" type="GENERIC"/>
+  </celldesigner:listOfProteins>
+  <celldesigner:listOfGenes>
+    <celldesigner:gene id="gn12" name="A20" type="GENE"/>
+    <celldesigner:gene id="gn13" name="IKK" type="GENE"/>
+    <celldesigner:gene id="gn9" name="IKB_alpha" type="GENE"/>
+  </celldesigner:listOfGenes>
+  <celldesigner:listOfRNAs>
+    <celldesigner:RNA id="rn6" name="mRNAA20" type="RNA"/>
+    <celldesigner:RNA id="rn3" name="mRNAIKB_alpha" type="RNA"/>
+  </celldesigner:listOfRNAs>
+  <celldesigner:listOfAntisenseRNAs/>
+  <celldesigner:listOfBlockDiagrams/>
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:vCard="http://www.w3.org/2001/vcard-rdf/3.0#" xmlns:bqbiol="http://biomodels.net/biology-qualifiers/" xmlns:bqmodel="http://biomodels.net/model-qualifiers/">
+    <rdf:Description rdf:about="#_406668">
+      <bqmodel:is>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/biomodels.db/MODEL7743444866"/>
+        </rdf:Bag>
+      </bqmodel:is>
+      <bqmodel:isDescribedBy>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/pubmed/18854041"/>
+        </rdf:Bag>
+      </bqmodel:isDescribedBy>
+      <bqbiol:hasTaxon>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/taxonomy/40674"/>
+        </rdf:Bag>
+      </bqbiol:hasTaxon>
+      <bqbiol:isVersionOf>
+        <rdf:Bag>
+          <rdf:li rdf:resource="http://identifiers.org/go/GO:0038061"/>
+        </rdf:Bag>
+      </bqbiol:isVersionOf>
+    </rdf:Description>
+  </rdf:RDF>
+</annotation><listOfCompartments>
+  <compartment metaid="_406893" id="default"/>
+  <compartment metaid="_406894" id="c1" name="nucleus" outside="default">
+    <annotation>
+      <celldesigner:name>nucleus</celldesigner:name>
+    </annotation>
+  </compartment>
+</listOfCompartments><listOfSpecies>
+  <species metaid="_406904" id="s93" name="IkB_alpha" compartment="c1" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+      <celldesigner:listOfCatalyzedReactions>
+        <celldesigner:catalyzed reaction="re44"/>
+      </celldesigner:listOfCatalyzedReactions>
+    </annotation>
+  </species>
+  <species metaid="_406915" id="s122" name="sa13_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa13_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406925" id="s123" name="IkB_alpha" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr10</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406936" id="s124" name="sa12_degraded" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa12_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406946" id="s126" name="A20" compartment="c1" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>GENE</celldesigner:class>
+        <celldesigner:geneReference>gn12</celldesigner:geneReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406956" id="s127" name="mRNAA20" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>RNA</celldesigner:class>
+        <celldesigner:rnaReference>rn6</celldesigner:rnaReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406967" id="s128" name="A20" compartment="default" initialAmount="0" charge="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr25</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+      <celldesigner:listOfCatalyzedReactions>
+        <celldesigner:catalyzed reaction="re63"/>
+      </celldesigner:listOfCatalyzedReactions>
+    </annotation>
+  </species>
+  <species metaid="_406978" id="s129" name="sa444_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa444_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_406988" id="s130" name="IKKi" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr26</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407063" id="s131" name="sa19_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa19_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407073" id="s132" name="IKKa" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr16</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407083" id="s133" name="IKKn" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>PROTEIN</celldesigner:class>
+        <celldesigner:proteinReference>pr15</celldesigner:proteinReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407092" id="s134" name="sa20_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa20_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407102" id="s150" name="IKK" compartment="c1" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>GENE</celldesigner:class>
+        <celldesigner:geneReference>gn13</celldesigner:geneReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407111" id="s153" name="sa96_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa96_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407121" id="s154" name="sa97_degraded" compartment="default" initialAmount="0" boundaryCondition="true" charge="0" constant="true">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>DEGRADED</celldesigner:class>
+        <celldesigner:name>sa97_degraded</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407130" id="s178" name="mRNAIKB_alpha" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>RNA</celldesigner:class>
+        <celldesigner:rnaReference>rn3</celldesigner:rnaReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407140" id="s188" name="NFkB:IkB_alpha" compartment="default" initialAmount="0.166" charge="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>NFkB:IkB_alpha</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407149" id="s189" name="NFkB:IKKa:Ikb_alpha" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>NFkB:IKKa:Ikb_alpha</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407159" id="s190" name="NFkB" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>NFkB</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407168" id="s191" name="IKKa:IKB_alpha" compartment="default" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>IKKa:IKB_alpha</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407178" id="s192" name="NFkB:IkB_alpha" compartment="c1" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>NFkB:IkB_alpha</celldesigner:name>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+  <species metaid="_407187" id="s195" name="NFkB" compartment="c1" initialAmount="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>COMPLEX</celldesigner:class>
+        <celldesigner:name>NFkB</celldesigner:name>
+      </celldesigner:speciesIdentity>
+      <celldesigner:listOfCatalyzedReactions>
+        <celldesigner:catalyzed reaction="re44"/>
+        <celldesigner:catalyzed reaction="re48"/>
+      </celldesigner:listOfCatalyzedReactions>
+    </annotation>
+  </species>
+  <species metaid="_407198" id="s177" name="IKB_alpha" compartment="c1" initialAmount="0" charge="0">
+    <annotation>
+      <celldesigner:positionToCompartment>inside</celldesigner:positionToCompartment>
+      <celldesigner:speciesIdentity>
+        <celldesigner:class>GENE</celldesigner:class>
+        <celldesigner:geneReference>gn9</celldesigner:geneReference>
+      </celldesigner:speciesIdentity>
+    </annotation>
+  </species>
+</listOfSpecies><listOfParameters>
+  <parameter metaid="_407516" id="k1" value="0" constant="false"/>
+  <parameter metaid="_407518" id="k2" value="0.000125"/>
+  <parameter metaid="_407520" id="k3" value="1e-05"/>
+  <parameter metaid="_407522" id="k4" value="0.1"/>
+  <parameter metaid="_407524" id="k5" value="0.0015"/>
+  <parameter metaid="_407526" id="k6" value="0.000125"/>
+  <parameter metaid="_407528" id="k7" value="0.24"/>
+  <parameter metaid="_407530" id="k8" value="0.1"/>
+  <parameter metaid="_407532" id="k9" value="1.2"/>
+  <parameter metaid="_407534" id="k10" value="0.1"/>
+  <parameter metaid="_407536" id="k11" value="0.000125"/>
+  <parameter metaid="_407538" id="k12" value="2e-05"/>
+  <parameter metaid="_407540" id="kf13" value="0.5"/>
+  <parameter metaid="_407542" id="kr13" value="0"/>
+  <parameter metaid="_407544" id="kf14" value="0.5"/>
+  <parameter metaid="_407546" id="kr14" value="0"/>
+  <parameter metaid="_407548" id="kf15" value="0.0025"/>
+  <parameter metaid="_407550" id="kr15" value="8e-05"/>
+  <parameter metaid="_407552" id="k16" value="0.5"/>
+  <parameter metaid="_407554" id="k17" value="0.0004"/>
+  <parameter metaid="_407556" id="k18" value="0.0003"/>
+  <parameter metaid="_407558" id="k20" value="5e-07"/>
+  <parameter metaid="_407560" id="k19" value="0"/>
+  <parameter metaid="_407562" id="k21" value="0.0001"/>
+  <parameter metaid="_407564" id="k22" value="0.5"/>
+  <parameter metaid="_407566" id="kf23" value="0.001"/>
+  <parameter metaid="_407568" id="kr23" value="0.0005"/>
+  <parameter metaid="_407570" id="k25" value="0"/>
+  <parameter metaid="_407572" id="k27" value="0.0004"/>
+  <parameter metaid="_407574" id="kf28" value="0.01"/>
+  <parameter metaid="_407576" id="kr28" value="0"/>
+  <parameter metaid="_407578" id="kf32" value="10"/>
+  <parameter metaid="_407580" id="kr32" value="0.0001"/>
+  <parameter metaid="_407582" id="k42" value="0.0005"/>
+  <parameter metaid="_407584" id="k43" value="0.1"/>
+  <parameter metaid="_407586" id="k33" value="0.0005"/>
+  <parameter metaid="_407588" id="k34" value="0.1"/>
+  <parameter metaid="_407590" id="k69" value="0.006"/>
+  <parameter metaid="_407592" id="k70" value="0.06"/>
+  <parameter metaid="_407594" id="k49" value="0.0005"/>
+  <parameter metaid="_407596" id="k50" value="0.02"/>
+  <parameter metaid="_407598" id="k61" value="0.06"/>
+  <parameter metaid="_407600" id="k62" value="0.6"/>
+  <parameter metaid="_407602" id="k35" value="0.01"/>
+  <parameter metaid="_407604" id="k36" value="0.0041"/>
+  <parameter metaid="_407606" id="k37" value="5e-05"/>
+  <parameter metaid="_407608" id="k38" value="6e-05"/>
+  <parameter metaid="_407610" id="k39" value="0.00013"/>
+  <parameter metaid="_407612" id="k40" value="6.4e-05"/>
+  <parameter metaid="_407614" id="kf41" value="10"/>
+  <parameter metaid="_407616" id="kr41" value="0.0001"/>
+  <parameter metaid="_407618" id="k44" value="0.016"/>
+  <parameter metaid="_407620" id="k45" value="0.0053"/>
+  <parameter metaid="_407622" id="k46" value="5e-05"/>
+  <parameter metaid="_407624" id="k47" value="6.4e-05"/>
+  <parameter metaid="_407626" id="kf48" value="10"/>
+  <parameter metaid="_407628" id="kr48" value="0.0001"/>
+  <parameter metaid="_407630" id="k51" value="0.025"/>
+  <parameter metaid="_407632" id="kf52" value="0.003"/>
+  <parameter metaid="_407634" id="kr52" value="0.001"/>
+  <parameter metaid="_407636" id="k53" value="0.0002"/>
+  <parameter metaid="_407638" id="k54" value="0.0002"/>
+  <parameter metaid="_407640" id="kf55" value="0.62"/>
+  <parameter metaid="_407642" id="kr55" value="0.00048"/>
+  <parameter metaid="_407644" id="kf56" value="0.62"/>
+  <parameter metaid="_407646" id="kr56" value="0.00048"/>
+  <parameter metaid="_407648" id="kf57" value="18.4"/>
+  <parameter metaid="_407650" id="kr57" value="0.055"/>
+  <parameter metaid="_407652" id="kf58" value="18.4"/>
+  <parameter metaid="_407654" id="kr58" value="0.055"/>
+  <parameter metaid="_407656" id="kf59" value="0.0038"/>
+  <parameter metaid="_407658" id="kr59" value="8e-13"/>
+  <parameter metaid="_407660" id="kf60" value="0.0038"/>
+  <parameter metaid="_407662" id="kr60" value="8e-13"/>
+  <parameter metaid="_407664" id="kf63" value="0.62"/>
+  <parameter metaid="_407666" id="kr63" value="0.00048"/>
+  <parameter metaid="_407668" id="kf64" value="0.62"/>
+  <parameter metaid="_407670" id="kr64" value="0.00048"/>
+  <parameter metaid="_407672" id="kf65" value="18.4"/>
+  <parameter metaid="_407674" id="kr65" value="0.055"/>
+  <parameter metaid="_407676" id="kf66" value="18.4"/>
+  <parameter metaid="_407678" id="kr66" value="0.055"/>
+  <parameter metaid="_407680" id="kf67" value="0.0038"/>
+  <parameter metaid="_407682" id="kr67" value="8e-13"/>
+  <parameter metaid="_407684" id="kf68" value="0.0038"/>
+  <parameter metaid="_407686" id="kr68" value="8e-13"/>
+  <parameter metaid="_407688" id="k71" value="0.0002"/>
+  <parameter metaid="_407690" id="k72" value="0.0002"/>
+  <parameter metaid="_407692" id="P0" name="concentration of promoters" value="6.66e-06"/>
+  <parameter metaid="_407694" id="k45p" name="=k43*k45*P0 / k46" value="7.07e-05"/>
+  <parameter metaid="_407696" id="k39p1" name="=k36*k39*P0*k34*kf68/(k37*kf64*(k38+k39))" value="2.2925e-07"/>
+  <parameter metaid="_407698" id="k39p2" name="=k39*k36*kr66*k70*P0/(k37*kf66*(k38+k39))" value="6.7e-08"/>
+  <parameter metaid="_407700" id="k39p3" name="=kf68/kf64" value="0.0061"/>
+  <parameter metaid="_407702" id="k39p4" name="=kr66/kf66" value="0.003"/>
+  <parameter metaid="_407704" id="k39p5" name="dummy" value="1e-10"/>
+  <parameter metaid="_407706" id="k26p1" name="=P0*k50*k60/k56" value="8.172e-10"/>
+  <parameter metaid="_407708" id="k26p2" name="=P0*kr58*k62/kf58" value="1.1957e-08"/>
+  <parameter metaid="_407710" id="k26p3" name="=kf60/kf56" value="0.0061"/>
+  <parameter metaid="_407712" id="k26p4" name="=kr58/kf58" value="0.003"/>
+  <parameter metaid="_407714" id="k26p5" name="dummy" value="1e-10"/>
+</listOfParameters><listOfReactions>
+  <reaction metaid="_407207" id="re44" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSCRIPTIONAL_ACTIVATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa90" species="s177">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa94" species="s178">
+          <celldesigner:linkAnchor position="NNW"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="horizontal"/>
+          <celldesigner:lineDirection index="1" value="unknown"/>
+          <celldesigner:lineDirection index="2" value="unknown"/>
+          <celldesigner:lineDirection index="3" value="vertical"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.15338213154752678,0.14025852670923555 0.3669521881326898,0.33555520946893047 0.5446036442921667,0.49800654103722053</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+      <celldesigner:listOfModification>
+        <celldesigner:modification aliases="sa13" editPoints="0.10676207061836152,-0.3088105096910424" modifiers="s93" targetLineIndex="-1,2" type="CATALYSIS">
+          <celldesigner:connectScheme connectPolicy="square">
+            <celldesigner:listOfLineDirection>
+              <celldesigner:lineDirection index="0" value="horizontal"/>
+              <celldesigner:lineDirection index="1" value="vertical"/>
+            </celldesigner:listOfLineDirection>
+          </celldesigner:connectScheme>
+          <celldesigner:linkTarget alias="sa13" species="s93">
+            <celldesigner:linkAnchor position="E"/>
+          </celldesigner:linkTarget>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:modification>
+        <celldesigner:modification aliases="csa17" editPoints="0.10066421358924932,-0.300883581625364" modifiers="s195" targetLineIndex="-1,1" type="CATALYSIS">
+          <celldesigner:connectScheme connectPolicy="square">
+            <celldesigner:listOfLineDirection>
+              <celldesigner:lineDirection index="0" value="horizontal"/>
+              <celldesigner:lineDirection index="1" value="vertical"/>
+            </celldesigner:listOfLineDirection>
+          </celldesigner:connectScheme>
+          <celldesigner:linkTarget alias="csa17" species="s195">
+            <celldesigner:linkAnchor position="E"/>
+          </celldesigner:linkTarget>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:modification>
+      </celldesigner:listOfModification>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_829781" species="s177">
+        <annotation>
+          <celldesigner:alias>sa90</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_829793" species="s178">
+        <annotation>
+          <celldesigner:alias>sa94</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_829805" species="s93">
+        <annotation>
+          <celldesigner:alias>sa13</celldesigner:alias>
+        </annotation>
+      </modifierSpeciesReference>
+      <modifierSpeciesReference metaid="_829817" species="s195">
+        <annotation>
+          <celldesigner:alias>csa17</celldesigner:alias>
+        </annotation>
+      </modifierSpeciesReference>
+    </listOfModifiers>
+    <kineticLaw metaid="_829829">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <divide/>
+          <apply>
+            <plus/>
+            <apply>
+              <times/>
+              <ci> k26p1 </ci>
+              <apply>
+                <plus/>
+                <ci> s93 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k26p2 </ci>
+              <apply>
+                <plus/>
+                <ci> s195 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+            </apply>
+          </apply>
+          <apply>
+            <plus/>
+            <apply>
+              <times/>
+              <apply>
+                <plus/>
+                <ci> s93 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+              <apply>
+                <plus/>
+                <ci> s195 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k26p3 </ci>
+              <apply>
+                <plus/>
+                <ci> s93 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+            </apply>
+            <apply>
+              <times/>
+              <ci> k26p4 </ci>
+              <apply>
+                <plus/>
+                <ci> s195 </ci>
+                <ci> k26p5 </ci>
+              </apply>
+            </apply>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407225" id="re45" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa94" species="s178">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa93" species="s124">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_829841" species="s178">
+        <annotation>
+          <celldesigner:alias>sa94</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_829853" species="s124">
+        <annotation>
+          <celldesigner:alias>sa93</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_829865">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k27 </ci>
+          <ci> s178 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407236" id="re46" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa92" species="s123">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa91" species="s122">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_829877" species="s123">
+        <annotation>
+          <celldesigner:alias>sa92</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_829889" species="s122">
+        <annotation>
+          <celldesigner:alias>sa91</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_829901">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k21 </ci>
+          <ci> s123 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407248" id="re47" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSLATIONAL_ACTIVATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa94" species="s178">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa92" species="s123">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:listOfProductLinks>
+        <celldesigner:productLink alias="sa94" product="s178" targetLineIndex="-1,0">
+          <celldesigner:linkAnchor position="SSE"/>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:productLink>
+      </celldesigner:listOfProductLinks>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+          <celldesigner:lineDirection index="1" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.5551661423899272,0.016266889386721495</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_829913" species="s178">
+        <annotation>
+          <celldesigner:alias>sa94</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_829925" species="s123">
+        <annotation>
+          <celldesigner:alias>sa92</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_829937" species="s178">
+        <annotation>
+          <celldesigner:alias>sa94</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_829949">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k22 </ci>
+          <ci> s178 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407261" id="re48" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSCRIPTIONAL_ACTIVATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa95" species="s126">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa96" species="s127">
+          <celldesigner:linkAnchor position="NNW"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+      <celldesigner:listOfModification>
+        <celldesigner:modification aliases="csa17" editPoints="0.25711299121386133,-0.403177468042185 0.9679835773828381,0.050204776295488696" modifiers="s195" targetLineIndex="-1,0" type="CATALYSIS">
+          <celldesigner:connectScheme connectPolicy="square">
+            <celldesigner:listOfLineDirection>
+              <celldesigner:lineDirection index="0" value="horizontal"/>
+              <celldesigner:lineDirection index="1" value="vertical"/>
+              <celldesigner:lineDirection index="2" value="horizontal"/>
+            </celldesigner:listOfLineDirection>
+          </celldesigner:connectScheme>
+          <celldesigner:linkTarget alias="csa17" species="s195">
+            <celldesigner:linkAnchor position="ENE"/>
+          </celldesigner:linkTarget>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:modification>
+      </celldesigner:listOfModification>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_829961" species="s126">
+        <annotation>
+          <celldesigner:alias>sa95</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_829973" species="s127">
+        <annotation>
+          <celldesigner:alias>sa96</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_829985" species="s195">
+        <annotation>
+          <celldesigner:alias>csa17</celldesigner:alias>
+        </annotation>
+      </modifierSpeciesReference>
+    </listOfModifiers>
+    <kineticLaw metaid="_829997">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <plus/>
+          <ci> k19 </ci>
+          <apply>
+            <times/>
+            <ci> k20 </ci>
+            <ci> s195 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407276" id="re49" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa102" species="s133">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="NNE"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830009" species="s133">
+        <annotation>
+          <celldesigner:alias>sa102</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830021" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830033">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k1 </ci>
+          <ci> s133 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407287" id="re52" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa18" species="s188">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa21" species="s190">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830045" species="s188">
+        <annotation>
+          <celldesigner:alias>csa18</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830057" species="s190">
+        <annotation>
+          <celldesigner:alias>csa21</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830069">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k12 </ci>
+          <ci> s188 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407299" id="re53" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa102" species="s133">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa100" species="s131">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830081" species="s133">
+        <annotation>
+          <celldesigner:alias>sa102</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830093" species="s131">
+        <annotation>
+          <celldesigner:alias>sa100</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830105">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k2 </ci>
+          <ci> s133 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407311" id="re56" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="NNW"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa103" species="s134">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830117" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830129" species="s134">
+        <annotation>
+          <celldesigner:alias>sa103</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830141">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k6 </ci>
+          <ci> s132 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407322" id="re57" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa19" species="s191">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="square">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="horizontal"/>
+          <celldesigner:lineDirection index="1" value="vertical"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.16784030554395102,0.37372441367786635</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830153" species="s191">
+        <annotation>
+          <celldesigner:alias>csa19</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830165" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830177">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k8 </ci>
+          <ci> s191 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407334" id="re58" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>HETERODIMER_ASSOCIATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+        <celldesigner:baseReactant alias="csa18" species="s188">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa20" species="s189">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection arm="0" index="0" value="horizontal"/>
+          <celldesigner:lineDirection arm="0" index="1" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="0" value="vertical"/>
+          <celldesigner:lineDirection arm="2" index="0" value="horizontal"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints num0="1" num1="0" num2="0">0.5184945776047645,-0.26085197539350524 0.4455974085217367,0.2624550873649998</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830189" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830201" species="s188">
+        <annotation>
+          <celldesigner:alias>csa18</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830213" species="s189">
+        <annotation>
+          <celldesigner:alias>csa20</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830225">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k9 </ci>
+          <ci> s132 </ci>
+          <ci> s188 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407348" id="re59" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>DISSOCIATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa20" species="s189">
+          <celldesigner:linkAnchor position="NNE"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa21" species="s190">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseProduct>
+        <celldesigner:baseProduct alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="SW"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection arm="0" index="0" value="horizontal"/>
+          <celldesigner:lineDirection arm="1" index="0" value="vertical"/>
+          <celldesigner:lineDirection arm="1" index="1" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="2" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="3" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="0" value="vertical"/>
+          <celldesigner:lineDirection arm="2" index="1" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints num0="0" num1="3" num2="1">0.4273394943135247,-0.14882602369769904 0.5948995370293575,-0.15360686499912246 1.0122115640049674,-0.10531521622007434 0.4886967896025871,-0.2665084314830759 0.18742023916434025,0.4277123115281092</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830237" species="s189">
+        <annotation>
+          <celldesigner:alias>csa20</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830249" species="s190">
+        <annotation>
+          <celldesigner:alias>csa21</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830261" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830273">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k10 </ci>
+          <ci> s189 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407362" id="re60" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa99" species="s130"/>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa98" species="s129"/>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830285" species="s130">
+        <annotation>
+          <celldesigner:alias>sa99</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830297" species="s129">
+        <annotation>
+          <celldesigner:alias>sa98</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830309">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k11 </ci>
+          <ci> s130 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407373" id="re61" reversible="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSLATIONAL_ACTIVATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa96" species="s127">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa97" species="s128">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:listOfProductLinks>
+        <celldesigner:productLink alias="sa96" product="s127" targetLineIndex="-1,0">
+          <celldesigner:linkAnchor position="SSW"/>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:productLink>
+      </celldesigner:listOfProductLinks>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+          <celldesigner:lineDirection index="1" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.22657918828196522,-5.492828806836769E-4</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830321" species="s127">
+        <annotation>
+          <celldesigner:alias>sa96</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830333" species="s128">
+        <annotation>
+          <celldesigner:alias>sa97</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830345" species="s127">
+        <annotation>
+          <celldesigner:alias>sa96</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830357">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k16 </ci>
+          <ci> s127 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407386" id="re63" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa99" species="s130">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+      <celldesigner:listOfModification>
+        <celldesigner:modification aliases="sa97" editPoints="0.7736631150599855,-0.4184596748262188" modifiers="s128" targetLineIndex="-1,0" type="CATALYSIS">
+          <celldesigner:connectScheme connectPolicy="square">
+            <celldesigner:listOfLineDirection>
+              <celldesigner:lineDirection index="0" value="horizontal"/>
+              <celldesigner:lineDirection index="1" value="vertical"/>
+            </celldesigner:listOfLineDirection>
+          </celldesigner:connectScheme>
+          <celldesigner:linkTarget alias="sa97" species="s128">
+            <celldesigner:linkAnchor position="W"/>
+          </celldesigner:linkTarget>
+          <celldesigner:line color="ff000000" width="1.0"/>
+        </celldesigner:modification>
+      </celldesigner:listOfModification>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830369" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830381" species="s130">
+        <annotation>
+          <celldesigner:alias>sa99</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <listOfModifiers>
+      <modifierSpeciesReference metaid="_830393" species="s128">
+        <annotation>
+          <celldesigner:alias>sa97</celldesigner:alias>
+        </annotation>
+      </modifierSpeciesReference>
+    </listOfModifiers>
+    <kineticLaw metaid="_830405">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <plus/>
+          <apply>
+            <times/>
+            <ci> k5 </ci>
+            <ci> s132 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> k4 </ci>
+            <ci> s132 </ci>
+            <ci> s128 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407401" id="re64" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSCRIPTIONAL_ACTIVATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa115" species="s150">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa102" species="s133">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830417" species="s150">
+        <annotation>
+          <celldesigner:alias>sa115</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830429" species="s133">
+        <annotation>
+          <celldesigner:alias>sa102</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830441">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <ci> k3 </ci>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407412" id="re65" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>HETERODIMER_ASSOCIATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa92" species="s123">
+          <celldesigner:linkAnchor position="S"/>
+        </celldesigner:baseReactant>
+        <celldesigner:baseReactant alias="csa21" species="s190">
+          <celldesigner:linkAnchor position="NNE"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa18" species="s188">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection arm="0" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="1" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints num0="0" num1="1" num2="0">0.9719654785471139,0.14304937695414743 0.556120764651924,-0.010295475935947707</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830453" species="s123">
+        <annotation>
+          <celldesigner:alias>sa92</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830465" species="s190">
+        <annotation>
+          <celldesigner:alias>csa21</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830477" species="s188">
+        <annotation>
+          <celldesigner:alias>csa18</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830489">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> kf13 </ci>
+            <ci> s190 </ci>
+            <ci> s123 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> kr13 </ci>
+            <ci> s188 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407426" id="re66" reversible="false">
+    <annotation>
+      <celldesigner:reactionType>HETERODIMER_ASSOCIATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa92" species="s123">
+          <celldesigner:linkAnchor position="E"/>
+        </celldesigner:baseReactant>
+        <celldesigner:baseReactant alias="sa101" species="s132">
+          <celldesigner:linkAnchor position="WNW"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa19" species="s191">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection arm="0" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints num0="0" num1="0" num2="0">0.44087978304718956,-0.008630826785645418</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830501" species="s123">
+        <annotation>
+          <celldesigner:alias>sa92</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830513" species="s132">
+        <annotation>
+          <celldesigner:alias>sa101</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830525" species="s191">
+        <annotation>
+          <celldesigner:alias>csa19</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830537">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k7 </ci>
+          <ci> s132 </ci>
+          <ci> s123 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407439" id="re67" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSPORT</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa21" species="s190">
+          <celldesigner:linkAnchor position="W"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa17" species="s195">
+          <celldesigner:linkAnchor position="WNW"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="square">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="horizontal"/>
+          <celldesigner:lineDirection index="1" value="vertical"/>
+          <celldesigner:lineDirection index="2" value="horizontal"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>-0.020252079248310073,-0.24424530839743885 0.9729196438899514,-0.32659609161677255</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830549" species="s190">
+        <annotation>
+          <celldesigner:alias>csa21</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830561" species="s195" stoichiometry="5">
+        <annotation>
+          <celldesigner:alias>csa17</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830573">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> kf15 </ci>
+            <ci> s190 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> kr15 </ci>
+            <ci> s195 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407452" id="re68" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSPORT</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa9" species="s192">
+          <celldesigner:linkAnchor position="ESE"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa18" species="s188">
+          <celldesigner:linkAnchor position="NNW"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="horizontal"/>
+          <celldesigner:lineDirection index="1" value="vertical"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.08901522289521235,-0.02772195573501124</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830585" species="s192" stoichiometry="5">
+        <annotation>
+          <celldesigner:alias>csa9</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830597" species="s188">
+        <annotation>
+          <celldesigner:alias>csa18</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830609">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> kf28 </ci>
+            <ci> s192 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> kr28 </ci>
+            <ci> s188 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407464" id="re69" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>HETERODIMER_ASSOCIATION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="csa17" species="s195">
+          <celldesigner:linkAnchor position="SSW"/>
+        </celldesigner:baseReactant>
+        <celldesigner:baseReactant alias="sa13" species="s93">
+          <celldesigner:linkAnchor position="NW"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="csa9" species="s192">
+          <celldesigner:linkAnchor position="N"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection arm="0" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="1" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="0" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="1" value="unknown"/>
+          <celldesigner:lineDirection arm="2" index="2" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints num0="0" num1="0" num2="2">0.2829752297698199,0.015437379398172357 0.39423053857033785,-0.04250146770458363 11.658945082996837,-1.8225801696691484</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830621" species="s195">
+        <annotation>
+          <celldesigner:alias>csa17</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+      <speciesReference metaid="_830633" species="s93">
+        <annotation>
+          <celldesigner:alias>sa13</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830645" species="s192">
+        <annotation>
+          <celldesigner:alias>csa9</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830657">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> kf14 </ci>
+            <ci> s195 </ci>
+            <ci> s93 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> kr14 </ci>
+            <ci> s192 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407478" id="re70" reversible="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa96" species="s127"/>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa116" species="s153"/>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830669" species="s127">
+        <annotation>
+          <celldesigner:alias>sa96</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830681" species="s153">
+        <annotation>
+          <celldesigner:alias>sa116</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830693">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k17 </ci>
+          <ci> s127 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407489" id="re71" reversible="false">
+    <annotation>
+      <celldesigner:reactionType>STATE_TRANSITION</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa97" species="s128"/>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa117" species="s154"/>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830705" species="s128">
+        <annotation>
+          <celldesigner:alias>sa97</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830717" species="s154">
+        <annotation>
+          <celldesigner:alias>sa117</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830729">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <times/>
+          <ci> k18 </ci>
+          <ci> s128 </ci>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+  <reaction metaid="_407500" id="re72" reversible="false" fast="false">
+    <annotation>
+      <celldesigner:reactionType>TRANSPORT</celldesigner:reactionType>
+      <celldesigner:baseReactants>
+        <celldesigner:baseReactant alias="sa92" species="s123">
+          <celldesigner:linkAnchor position="NNE"/>
+        </celldesigner:baseReactant>
+      </celldesigner:baseReactants>
+      <celldesigner:baseProducts>
+        <celldesigner:baseProduct alias="sa13" species="s93">
+          <celldesigner:linkAnchor position="NE"/>
+        </celldesigner:baseProduct>
+      </celldesigner:baseProducts>
+      <celldesigner:connectScheme connectPolicy="direct">
+        <celldesigner:listOfLineDirection>
+          <celldesigner:lineDirection index="0" value="unknown"/>
+          <celldesigner:lineDirection index="1" value="unknown"/>
+          <celldesigner:lineDirection index="2" value="unknown"/>
+          <celldesigner:lineDirection index="3" value="unknown"/>
+        </celldesigner:listOfLineDirection>
+      </celldesigner:connectScheme>
+      <celldesigner:editPoints>0.09437307093514868,0.18949988897901648 0.965852586075397,0.48193216720566323 1.032996802265275,0.15555904208327875</celldesigner:editPoints>
+      <celldesigner:line color="ff000000" width="1.0"/>
+    </annotation>
+    <listOfReactants>
+      <speciesReference metaid="_830741" species="s123">
+        <annotation>
+          <celldesigner:alias>sa92</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfReactants>
+    <listOfProducts>
+      <speciesReference metaid="_830753" species="s93" stoichiometry="5">
+        <annotation>
+          <celldesigner:alias>sa13</celldesigner:alias>
+        </annotation>
+      </speciesReference>
+    </listOfProducts>
+    <kineticLaw metaid="_830765">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <minus/>
+          <apply>
+            <times/>
+            <ci> kf23 </ci>
+            <ci> s123 </ci>
+          </apply>
+          <apply>
+            <times/>
+            <ci> kr23 </ci>
+            <ci> s93 </ci>
+          </apply>
+        </apply>
+      </math>
+    </kineticLaw>
+  </reaction>
+</listOfReactions><listOfEvents>
+  <event metaid="_407513" id="signal" name="signal">
+    <trigger metaid="_830777">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply>
+          <gt/>
+          <csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+          <cn type="integer"> 72000 </cn>
+        </apply>
+      </math>
+    </trigger>
+    <delay metaid="_830789">
+      <math xmlns="http://www.w3.org/1998/Math/MathML">
+        <cn type="integer"> 0 </cn>
+      </math>
+    </delay>
+    <listOfEventAssignments>
+      <eventAssignment metaid="_830801" variable="k1">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <cn> 0.0025 </cn>
+        </math>
+      </eventAssignment>
+    </listOfEventAssignments>
+  </event>
+</listOfEvents>
+</model>
+</sbml>

@@ -1,0 +1,59 @@
+begin model
+begin parameters
+    # Kinetic Parameters
+    k_activate 0.25  # PI3K activation
+    k_convert  0.45  # PIP2 -> PIP3 conversion
+    k_pdk1     0.35  # PDK1 recruitment
+    k_pten     0.15  # PIP3 dephosphorylation
+    k_reset    0.05  # Deactivation
+end parameters
+
+begin molecule types
+    PI3K(state~inactive~active)
+    PIP2(state~present~consumed)
+    PIP3(state~low~high)
+    PTEN(state~off~on)
+    PDK1(state~inactive~active)
+end molecule types
+
+begin seed species
+    PI3K(state~inactive) 30
+    PIP2(state~present) 80
+    PIP3(state~low) 20
+    PTEN(state~on) 20
+    PDK1(state~inactive) 40
+end seed species
+
+begin reaction rules
+    # 1. PI3K Activation
+    PI3K(state~inactive) -> PI3K(state~active) k_activate
+    
+    # 2. Phosphoinositide Conversion
+    # Active PI3K phosphorylates PIP2 to PIP3
+    PI3K(state~active) + PIP2(state~present) -> PI3K(state~active) + PIP2(state~consumed) + PIP3(state~high) k_convert
+    
+    # 3. Downstream Signaling (PDK1)
+    # PIP3 recruits and activates PDK1
+    PIP3(state~high) + PDK1(state~inactive) -> PIP3(state~high) + PDK1(state~active) k_pdk1
+    
+    # 4. Negative Regulation (PTEN)
+    # PTEN dephosphorylates PIP3 back to basal levels
+    PTEN(state~on) + PIP3(state~high) -> PTEN(state~on) + PIP3(state~low) k_pten
+    
+    # 5. Reset Mechanisms
+    PDK1(state~active) -> PDK1(state~inactive) k_reset
+    PI3K(state~active) -> PI3K(state~inactive) k_reset
+end reaction rules
+
+begin observables
+    Molecules Active_PI3K PI3K(state~active)
+    Molecules PIP3_High   PIP3(state~high)
+    Molecules Active_PDK1 PDK1(state~active)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>70,n_steps=>140})
+end actions
+end model
+

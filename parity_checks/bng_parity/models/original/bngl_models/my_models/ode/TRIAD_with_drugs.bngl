@@ -1,0 +1,101 @@
+begin model
+
+begin parameters
+
+NA 6.02214076e23 # molecules per mole
+
+Vecf 2e-9 # L per cell
+Vcyt 2e-12 # L per cell
+
+AMPK_cpc 1e4 # copies per cell
+mTORC1_cpc 1e4 # copies per cell
+ULK1_cpc 1e4 # copies per cell
+Ragulator_cpc 1e4 # copies per cell
+VPS34_cpc 1e4 # copies per cell
+S6K1_cpc 1e4 # copies per cell
+ACC_cpc 1e4 # copies per cell
+FKBP12_cpc 1e4 # copies per cell
+
+# rate constant for clearance of autophagic vesicles
+c 1 # /s
+Pmin 1 # vesicles per cell per s
+Pmax 10 # vesicles per cell per s
+nH 2 # dimensionless
+KH 1e2 # copies per cell
+
+k_nutrient_stress 1 # /s
+k_nutrient_supply 1 # /s
+
+kf_mTORC1_RagCGDP 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+kr_mTORC1_RagCGDP 0.01 # /s
+kpx_mTORC1_RagCGDP 100*0.01/1e4 # /(molecule/cell)/s
+kmx_mTORC1_RagCGDP 0.01 # /s
+
+end parameters
+
+begin molecule types
+AMPK() # AMP-activated protein kinase
+mTORC1(Raptor_ARM,Raptor_ARM) # MTOR complex 1
+ULK1() # ULK1 complex; ATG1 = ULK1
+Ragulator(RagC~GDP~GTP) # Rag-Ragulator complex
+VPS34(BECN1_S15~0~P) # VPS34 complex; VPS34 = PIK3C3
+S6K1(TOS,T412~0~P) # S6K1 = RPS6KB1 (isoform alpha I); T412 is T389 in other isoforms 
+ACC(S80~0~P) # ACC = ACACA; S80 corresponds to S79 in the rat protein 
+FKBP12(FKBP~0~rapamycin) # FKBP12 = FKBP1A
+AV() # autophagic vesicle
+end molecule types
+
+begin seed species
+
+AMPK() AMPK_cpc
+mTORC1(Raptor_ARM,Raptor_ARM) mTORC1_cpc
+ULK1() ULK1_cpc
+Ragulator(RagC~GTP) Ragulator_cpc
+VPS34(BECN1_S15~0) VPS34_cpc
+S6K1(TOS,T412~0) S6K1_cpc
+ACC(S80~0) ACC_cpc
+FKBP12(FKBP~0) FKBP12_cpc
+
+end seed species
+
+begin observables
+Species AVcount AV()
+Molecules actVPS34 VPS34(BECN1_S15~P)
+Species lysosomal_mTORC1 mTORC1(Raptor_ARM!+)
+end observables
+
+begin functions
+P()=Pmin+(Pmax-Pmin)*((actVPS34/KH)^nH/(1+(actVPS34/KH)^nH))
+end functions
+
+begin reaction rules
+
+# simple model for regulation of GTP-loading of Rag proteins by nutrients (amino acids)
+Ragulator(RagC~GDP)->Ragulator(RagC~GTP) k_nutrient_stress
+Ragulator(RagC~GTP)->Ragulator(RagC~GDP) k_nutrient_supply
+
+# recruitment of mTORC1 to Rag-Ragulator complex on lysosomes
+mTORC1(Raptor_ARM,Raptor_ARM)+Ragulator(RagC~GDP)<->\
+mTORC1(Raptor_ARM!1,Raptor_ARM).Ragulator(RagC~GDP!1) kf_mTORC1_RagCGDP,kr_mTORC1_RagCGDP
+ 
+# mTORC1-mediated crosslinking of Rag-Ragulator complexes on lysosomes
+mTORC1(Raptor_ARM!+,Raptor_ARM)+Ragulator(RagC~GDP)<->\
+mTORC1(Raptor_ARM!+,Raptor_ARM!1).Ragulator(RagC~GDP!1) kpx_mTORC1_RagCGDP,kmx_mTORC1_RagCGDP
+
+# VPS34-dependent synthesis of autophagosomes
+0->AV() P()
+
+# clearance of autophagosomes
+AV()->0 c
+
+end reaction rules
+
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>100,print_functions=>1})
+
+end actions

@@ -1,0 +1,57 @@
+begin model
+begin parameters
+    # Rate Constants
+    k_drop      0.01   # O2 drop rate (Hypoxia onset)
+    k_restore   0.02   # Reoxygenation
+    k_hif_synth 0.5    # Basal HIF1 synthesis
+    k_hif_deg   0.3    # HIF1 degradation (O2-dependent)
+    k_stabilize 0.4    # HIF1 stabilization by sensor
+    k_relax     0.05   # Destabilization
+    k_vegf      0.6    # VEGF transcription
+    k_vegf_deg  0.1    # VEGF turnover
+end parameters
+
+begin molecule types
+    OxygenSensor(state~norm~hyp)  # PHD/VHL pathway proxy
+    HIF1(state~unstable~stable)   # Hypoxia Inducible Factor 1
+    VEGF()                        # Vascular Endothelial Growth Factor
+end molecule types
+
+begin seed species
+    OxygenSensor(state~norm) 1
+    HIF1(state~unstable) 20
+end seed species
+
+begin observables
+    Molecules Hypoxic_sensor OxygenSensor(state~hyp)
+    Molecules Stable_HIF1    HIF1(state~stable)
+    Molecules VEGF_pool      VEGF()
+end observables
+
+begin reaction rules
+    # 1. Oxygen Sensing
+    OxygenSensor(state~norm) -> OxygenSensor(state~hyp) k_drop
+    OxygenSensor(state~hyp) -> OxygenSensor(state~norm) k_restore
+    
+    # 2. HIF1 Turnover
+    0 -> HIF1(state~unstable) k_hif_synth
+    HIF1(state~unstable) -> 0 k_hif_deg
+    
+    # 3. Stabilization (Hypoxia blocks degradation)
+    OxygenSensor(state~hyp) + HIF1(state~unstable) -> OxygenSensor(state~hyp) + HIF1(state~stable) k_stabilize
+    
+    # 4. Destabilization / Re-equilibration
+    HIF1(state~stable) -> HIF1(state~unstable) k_relax
+    
+    # 5. Target Gene Induction (Angiogenesis)
+    HIF1(state~stable) -> HIF1(state~stable) + VEGF() k_vegf
+    
+    # 6. Clearance
+    VEGF() -> 0 k_vegf_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>500,n_steps=>200})
+end actions
+end model

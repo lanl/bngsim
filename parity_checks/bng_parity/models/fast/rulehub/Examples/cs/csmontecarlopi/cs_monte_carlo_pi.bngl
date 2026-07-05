@@ -1,0 +1,51 @@
+# Model: cs_monte_carlo_pi.bngl
+# Description: Estimates the value of Pi using a Monte Carlo method.
+#              Molecule concentrations represent successful 'hits' inside a circle.
+#              Total species concentration represents total random trials.
+
+begin model
+
+begin parameters
+    # Iteration rate
+    k_trial 10.0
+    
+    # Pre-calculated "random" outcomes (Hit or Miss based on r < 1)
+    # We use a static sample of 5 points to determine the rate.
+    # Hits: (0.5,0.5), (0.1,0.1), (0.2,0.8) -> 3 hits
+    # Misses: (0.9,0.9), (0.8,0.8) -> 2 misses
+    # Hit Ratio = 3/5 = 0.6
+    p_hit 0.6
+end parameters
+
+begin molecule types
+    Trial(state~Total~Hit)
+end molecule types
+
+begin seed species
+    # Initialize with very small values to avoid division by zero in some solvers
+    Trial(state~Total) 1e-10
+    Trial(state~Hit)   1e-10
+end seed species
+
+begin observables
+    Molecules Total Trial(state~Total)
+    Molecules Hits  Trial(state~Hit)
+end observables
+
+begin functions
+    # Expected Pi = 4 * Hits / Total
+    Pi_Estimate() = 4 * Hits / (Total + 1e-12)
+end functions
+
+begin reaction rules
+    # Total trials increment
+    R_Total: 0 -> Trial(state~Total) k_trial
+    
+    # Successes increment
+    R_Hit:   0 -> Trial(state~Hit) k_trial * p_hit
+end reaction rules
+
+end model
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>10,n_steps=>200})

@@ -1,0 +1,55 @@
+# Model: nfsim_ring_closure_polymer.bngl
+# Description: Models the formation of linear polymers and their cyclization (ring closure).
+#              Monomers A(x,y) bind linearly x-y.
+#              If the two ends of a chain (x and y) react, a ring is formed.
+#              Demonstrates competition between elongation (intermolecular) and cyclization (intramolecular).
+
+begin model
+
+begin parameters
+    k_elong 1.0 # Bimolecular
+    k_cyc   0.5 # Unimolecular (End-to-End)
+
+    A_tot 100
+end parameters
+
+begin molecule types
+    A(x,y)
+end molecule types
+
+begin seed species
+    A(x,y) A_tot
+end seed species
+
+begin observables
+    Molecules Monomers A(x,y)
+    Molecules Linear_Dimers A(x!1,y).A(x,y!1)
+    Molecules Cyclic_Dimers A(x!1,y!2).A(x!2,y!1)
+end observables
+
+begin reaction rules
+    # Elongation (Linear growth)
+    # Free x binds Free y
+    A(x) + A(y) <-> A(x!1).A(y!1) k_elong, 0.01
+
+    # Cyclization (Ring Closure)
+    # Monomer cyclization (A-loop).
+    A(x,y) -> A(x!1,y!1) k_cyc
+
+    # Dimer Cyclization:
+    # A(x,y!1).A(x!1,y) -> A(x!2,y!1).A(x!1,y!2)
+    A(x,y!1).A(x!1,y) -> A(x!2,y!1).A(x!1,y!2) k_cyc
+
+end reaction rules
+
+end model
+
+## Actions ##
+#generate_network({overwrite=>1, max_iter=>5})
+#simulate({method=>"nf",get_final_state=>0, t_end=>50, n_steps=>200, get_final_state=>0})
+
+
+begin actions
+simulate({method=>"nf",get_final_state=>0,t_end=>50,n_steps=>200})
+
+end actions

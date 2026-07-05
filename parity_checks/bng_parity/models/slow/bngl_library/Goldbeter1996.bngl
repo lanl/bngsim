@@ -1,0 +1,105 @@
+begin model
+#@model_id: goldbeter1991_mitotic_oscillator
+#@title: Minimal mitotic oscillator (Goldbeter 1991)
+#@description: Three-variable minimal model for mitotic oscillations involving cyclin (C), active cdc2 kinase (M), and active cyclin protease (X). Michaelis-Menten enzymatic activation/inactivation cycles produce sustained oscillations. Species scaled x1000 for SSA.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: Goldbeter A (1991) PNAS 88:9107-9111
+#@note: |
+#  M and X are fractions (0..1) in the original; scaled x1000 for molecule counts.
+#  C is in uM in the original; also scaled x1000.
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Scaling factor
+  scale    1000           # dimensionless
+
+  # Cyclin synthesis and degradation
+  v_i      0.025          # uM/min
+  V_d      0.25           # uM/min
+  K_d      0.02           # uM
+  k_d      0.01           # 1/min
+
+  # cdc2 activation-inactivation cycle
+  V_M1     3.0            # 1/min
+  K_c      0.5            # uM
+  K_1      0.005          # dimensionless
+  V_2      1.5            # 1/min
+  K_2      0.005          # dimensionless
+
+  # Protease activation-inactivation cycle
+  V_M3     1.0            # 1/min
+  K_3      0.005          # dimensionless
+  V_4      0.5            # 1/min
+  K_4      0.005          # dimensionless
+end parameters
+
+begin molecule types
+  C()
+  M()
+  X()
+end molecule types
+
+begin seed species
+  C()  10   # molecules (0.01 * 1000)
+  M()  10   # molecules (0.01 * 1000)
+  X()  10   # molecules (0.01 * 1000)
+end seed species
+
+begin observables
+  Molecules  Obs_C  C()
+  Molecules  Obs_M  M()
+  Molecules  Obs_X  X()
+end observables
+
+begin functions
+  # Rescaled concentrations
+  C_conc()  = Obs_C / scale
+  M_conc()  = Obs_M / scale
+  X_conc()  = Obs_X / scale
+
+  # Helper rates
+  V1_rate() = V_M1 * C_conc() / (K_c + C_conc())
+  V3_rate() = V_M3 * M_conc()
+
+  # Cyclin: dC/dt = v_i - V_d*X*C/(K_d+C) - k_d*C
+  prod_C()  = v_i * scale
+  cons_C()  = (V_d * X_conc() * C_conc() / (K_d + C_conc()) + k_d * C_conc()) * scale
+
+  # Active cdc2: dM/dt = V1*(1-M)/(K_1+1-M) - V_2*M/(K_2+M)
+  prod_M()  = V1_rate() * (1 - M_conc()) / (K_1 + 1 - M_conc()) * scale
+  cons_M()  = V_2 * M_conc() / (K_2 + M_conc()) * scale
+
+  # Active protease: dX/dt = V3*(1-X)/(K_3+1-X) - V_4*X/(K_4+X)
+  prod_X()  = V3_rate() * (1 - X_conc()) / (K_3 + 1 - X_conc()) * scale
+  cons_X()  = V_4 * X_conc() / (K_4 + X_conc()) * scale
+end functions
+
+begin reaction rules
+  # Cyclin
+  0 -> C()  prod_C()
+  C() -> 0  cons_C()
+
+  # Active cdc2 kinase
+  0 -> M()  prod_M()
+  M() -> 0  cons_M()
+
+  # Active cyclin protease
+  0 -> X()  prod_X()
+  X() -> 0  cons_X()
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>80,n_steps=>800})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>80,n_steps=>800})
+end actions

@@ -1,0 +1,50 @@
+# Model: wacky_traffic_jam_asep.bngl
+# Description: Models traffic flow as a 1D Asymmetric Simple Exclusion Process (ASEP).
+#              Cars move forward only if the next site is empty.
+#              High density leads to "Traffic Jams" (slowmovement).
+
+begin model
+
+begin parameters
+    k_move 1.0  # Speed limit
+    k_in   0.8  # Inflow rate
+    k_out  0.5  # Outflow rate (bottleneck)
+end parameters
+
+begin molecule types
+    Site(next,prev,state~Empty~Occ) # Road site
+    Car()
+end molecule types
+
+begin seed species
+    # 5-Site Road
+    # Site1 -> Site2 -> Site3 -> Site4 -> Site5
+    # Linked via next/prev components
+    Site(next!1,prev,state~Empty).Site(next!2,prev!1,state~Empty).Site(next!3,prev!2,state~Empty).Site(next!4,prev!3,state~Empty).Site(next,prev!4,state~Empty) 1
+end seed species
+
+begin observables
+    Molecules Cars Site(state~Occ)
+    Molecules Jam  Site(state~Occ,next!1).Site(prev!1,state~Occ) # Two cars back-to-back
+end observables
+
+begin reaction rules
+    # 1. Inflow (EnterSite1)
+    # Matches 'prev' being unbound (Startofroad)
+    # Only if Empty
+    Site(prev,state~Empty) -> Site(prev,state~Occ) k_in
+    
+    # 2. Movement (HopForward)
+    # Site(Occ).Site(Empty) -> Site(Empty).Site(Occ)
+    Site(state~Occ,next!1).Site(prev!1,state~Empty) -> Site(state~Empty,next!1).Site(prev!1,state~Occ) k_move
+    
+    # 3. Outflow (ExitSite5)
+    # Matches 'next' being unbound (Endofroad)
+    Site(next,state~Occ) -> Site(next,state~Empty) k_out
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>50,n_steps=>200})

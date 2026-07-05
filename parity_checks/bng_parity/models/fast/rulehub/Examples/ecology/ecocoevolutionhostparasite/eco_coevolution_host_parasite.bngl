@@ -1,0 +1,73 @@
+# Model: eco_coevolution_host_parasite.bngl
+# Description: Models the "Red Queen" arms race between a Host and a Parasite.
+#              Hosts evolve Resistance (Res). Parasites evolve Virulence (Vir).
+#              Interaction leads to coupled oscillations or escalation.
+
+begin model
+
+begin parameters
+    # Host
+    h_birth 1.0
+    h_death 0.1
+    cost_res 0.2
+    
+    # Parasite
+    p_birth 0.0
+    p_trans 0.5 # Transmission
+    cost_vir 0.2
+    
+    # Interaction
+    # Infection prob depends on |Res - Vir| mismatch?
+    # Or matching alleles.
+    # Let's use simple levels: Low/High
+end parameters
+
+begin molecule types
+    Host(res~Lo~Hi,state~S~I)
+    Parasite(vir~Lo~Hi) # Free parasite? Or just property of infection
+end molecule types
+
+begin seed species
+    Host(res~Lo,state~S) 90
+    Host(res~Hi,state~S) 10
+    Parasite(vir~Lo) 10
+    Parasite(vir~Hi) 10
+end seed species
+
+begin observables
+    Molecules H_Lo Host(res~Lo)
+    Molecules H_Hi Host(res~Hi)
+    Molecules P_Lo Parasite(vir~Lo)
+    Molecules P_Hi Parasite(vir~Hi)
+end observables
+
+begin reaction rules
+    # Host Reproduction
+    # Lo Res is cheaper (fastergrowth)
+    Host(res~Lo,state~S) -> Host(res~Lo,state~S) + Host(res~Lo,state~S) h_birth
+    Host(res~Hi,state~S) -> Host(res~Hi,state~S) + Host(res~Hi,state~S) h_birth * (1-cost_res)
+    
+    # Infection
+    # P(Lo) can infect H(Lo) easily, H(Hi) hard
+    # P(Hi) can infect H(Hi) easily, but P(Hi) has cost (lowertransmission/survival)
+    
+    # P_Lo infects H_Lo
+    Parasite(vir~Lo) + Host(res~Lo,state~S) -> Parasite(vir~Lo) + Host(res~Lo,state~I) p_trans
+    
+    # P_Hi infects H_Hi
+    Parasite(vir~Hi) + Host(res~Hi,state~S) -> Parasite(vir~Hi) + Host(res~Hi,state~I) p_trans * (1-cost_vir)
+    
+    # Parasite Reproduction (fromInfectedHost)
+    Host(res~Lo,state~I) -> Host(res~Lo,state~I) + Parasite(vir~Lo) 1.0
+    Host(res~Hi,state~I) -> Host(res~Hi,state~I) + Parasite(vir~Hi) 1.0
+    
+    # Death
+    Host() -> 0 h_death
+    Parasite() -> 0 0.5 # Free parasite decay
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_end=>100,n_steps=>200})

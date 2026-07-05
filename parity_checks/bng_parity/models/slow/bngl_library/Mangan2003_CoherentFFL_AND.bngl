@@ -1,0 +1,86 @@
+begin model
+#@model_id: Mangan2003_CoherentFFL_AND
+#@title: Coherent feed-forward loop with AND gate (Mangan & Alon 2003)
+#@description: Type-1 coherent FFL: X activates Y; X and Y jointly activate Z via AND logic with Hill activation. Converted from Antimony to BNGL with population variables.
+#@organism: other
+#@created: 2026-03-08
+#@bng_version: >=2.9.3
+#@house_style_version: 0.1
+#@source: from_antimony
+#@reference: doi:10.1016/j.jmb.2003.09.049
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Input transcription factor (constant stimulus)
+  X        1.0            # molecules (dimensionless)
+
+  # Basal and maximal production rates
+  B_y      0.0            # molecules/s (basal Y production)
+  b_1      1.0            # molecules/s (max Y production)
+  b_2      1.0            # molecules/s (max Z production)
+
+  # Degradation rates
+  a_1      1.0            # 1/s
+  a_2      1.0            # 1/s
+
+  # Hill coefficient and thresholds
+  H        2              # dimensionless
+  K_xy     0.5            # molecules (dimensionless)
+  K_xz     0.5            # molecules (dimensionless)
+  K_yz     0.5            # molecules (dimensionless)
+end parameters
+
+begin molecule types
+  # Intermediate gene product Y
+  Y()
+  # Output gene product Z
+  Z()
+end molecule types
+
+begin seed species
+  Y()  1  # molecules (scaled from 0.01)
+  Z()  1  # molecules (scaled from 0.01)
+end seed species
+
+begin observables
+  Molecules  Obs_Y  Y()
+  Molecules  Obs_Z  Z()
+end observables
+
+begin functions
+  # Hill activation: f(u, K) = u^H / (K^H + u^H)
+  hill_X_xy() = X^H / (K_xy^H + X^H)
+  hill_X_xz() = X^H / (K_xz^H + X^H)
+  hill_Y_yz() = Obs_Y^H / (K_yz^H + Obs_Y^H)
+
+  # Production propensities
+  syn_Y() = B_y + b_1 * hill_X_xy()
+  syn_Z() = b_2 * hill_X_xz() * hill_Y_yz()
+end functions
+
+begin reaction rules
+  # Y production: basal + Hill-activated by X
+  0 -> Y()  syn_Y()
+
+  # Y degradation
+  Y() -> 0  a_1
+
+  # Z production: AND gate (product of Hill activations by X and Y)
+  0 -> Z()  syn_Z()
+
+  # Z degradation
+  Z() -> 0  a_2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>10,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>10,n_steps=>400,complex=>1})
+end actions

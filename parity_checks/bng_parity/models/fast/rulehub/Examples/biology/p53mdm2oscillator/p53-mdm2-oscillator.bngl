@@ -1,0 +1,37 @@
+begin model
+begin parameters
+    k_stress 0.4
+    k_mdmsynth 0.3
+    k_degrade 0.2
+    k_mdmdown 0.1
+    k_p53deg 0.05
+end parameters
+
+begin molecule types
+    p53()
+    MDM2()
+end molecule types
+
+begin seed species
+    p53() 20
+end seed species
+
+begin observables
+    Molecules p53_total p53()
+    Molecules MDM2_total MDM2()
+end observables
+
+begin reaction rules
+    0 -> p53() k_stress
+    p53() -> 0 k_p53deg
+    p53() -> p53() + MDM2() k_mdmsynth
+    MDM2() + p53() -> MDM2() k_degrade
+    MDM2() -> 0 k_mdmdown
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>50,n_steps=>320})
+end actions
+end model
+

@@ -1,0 +1,48 @@
+# Feature combination: synthesis + degradation + binding equilibrium
+# Tests: birth-death process coupled with reversible binding
+# Tier: combinations
+# Expected: steady state where synthesis, degradation, and binding all balance
+
+begin model
+begin parameters
+    k_birth  0.3    # /s, A production rate
+    k_death  0.01   # /s, A degradation rate
+    B_tot    30
+    kf       0.02   # /s, A-B binding
+    kr       0.1    # /s, A-B unbinding
+end parameters
+
+begin molecule types
+    Src()
+    A(s)
+    B(s)
+    Trash()
+end molecule types
+
+begin seed species
+    Src()    1
+    A(s)     0
+    B(s)     B_tot
+    $Trash() 0
+end seed species
+
+begin observables
+    Molecules  A_total  A()
+    Molecules  A_free   A(s)
+    Molecules  B_free   B(s)
+    Molecules  AB       A(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    # A synthesis
+    Src() -> Src() + A(s)   k_birth
+    # A degradation (removes A from complex, frees B)
+    A() -> Trash()   k_death  DeleteMolecules
+    # A-B binding
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>500,n_steps=>100})
+end actions

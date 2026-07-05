@@ -1,0 +1,110 @@
+begin model
+begin parameters
+    # Genetic Toggle Switch: Mutual repression circuit.
+    # Advanced features: if function for switching and exclusion logic.
+    
+    # Production
+    k_synth_low 0.2    # Basal leakiness
+    k_synth_high 8.0   # Full expression
+    
+    # Repression (Hill-like explicitly)
+    k_bind_dna 1.0     # TF binding to promoter
+    k_unbind_dna 0.1
+    
+    # Stability
+    k_deg 0.08         # Protein turnover
+    
+    # Switching (Inducers)
+    k_ind_bind 2.0     # Inducer sequesters TF
+    k_ind_off 0.2
+    
+    # Thresholds
+    Ind_switch 200     # Pulse level
+    k_ind_L_synth 0.1 # Current Ind_L synthesis rate
+    k_ind_R_synth 0.1 # Current Ind_R synthesis rate
+end parameters
+
+begin molecule types
+    PromL(s~on~off)
+    PromR(s~on~off)
+    TF_L(b,i)         # Left TF (Represses Right)
+    TF_R(b,i)         # Right TF (Represses Left)
+    Ind_L(b)            # Turns ON Right side by removing L
+    Ind_R(b)            # Turns ON Left side by removing R
+end molecule types
+
+begin seed species
+    PromL(s~on) 1
+    PromR(s~on) 1
+    TF_L(b,i) 0
+    TF_R(b,i) 50       # Start biased to "R high"
+    Ind_L(b) 0
+    Ind_R(b) 0
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules State_L_Level    TF_L()                   # System state A
+    Molecules State_R_Level    TF_R()                   # System state B
+    Molecules Active_Prom_L   PromL(s~on)              # Promoter status A
+    Molecules Active_Prom_R   PromR(s~on)              # Promoter status B
+    Molecules Locked_TF_L     TF_L(i!+)                # Neutralized factor
+end observables
+
+begin functions
+    v_ind_L() = k_ind_L_synth
+    v_ind_R() = k_ind_R_synth
+end functions
+
+begin reaction rules
+    ## PRODUCTION
+    # Mutual exclusion: Left produces TF_L (which will inhibit Right)
+    PromL(s~on) -> PromL(s~on) + TF_L(b,i) k_synth_high
+    PromL(s~off) -> PromL(s~off) + TF_L(b,i) k_synth_low
+    
+    # Right produces TF_R (which will inhibit Left)
+    PromR(s~on) -> PromR(s~on) + TF_R(b,i) k_synth_high
+    PromR(s~off) -> PromR(s~off) + TF_R(b,i) k_synth_low
+    
+    ## REPRESSION LOGIC (The Mutual Inhibition)
+    # TF_L represses PromR
+    # exclude_reactants: Only free TF_L (not inducer-bound) can repress
+    TF_L(b,i) + PromR(s~on) <-> TF_L(b!1,i).PromR(s~off!1) k_bind_dna,k_unbind_dna
+    
+    # TF_R represses PromL
+    TF_R(b,i) + PromL(s~on) <-> TF_R(b!1,i).PromL(s~off!1) k_bind_dna,k_unbind_dna
+    
+    ## INDUCTION (External Control)
+    # Pulses of inducer sequester local TFs
+    0 -> Ind_L(b) v_ind_L()
+    Ind_L(b) + TF_L(i) <-> Ind_L(b!1).TF_L(i!1) k_ind_bind,k_ind_off
+    
+    0 -> Ind_R(b) v_ind_R()
+    Ind_R(b) + TF_R(i) <-> Ind_R(b!1).TF_R(i!1) k_ind_bind,k_ind_off
+    
+    ## RESET
+    TF_L() -> 0 k_deg
+    TF_R() -> 0 k_deg
+    Ind_L(b) -> 0 0.5
+    Ind_R(b) -> 0 0.5
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-100)
+    simulate({method=>"ode",t_end=>100,n_steps=>100})
+    # Phase 2: Pulse L begins (100-120)
+    setParameter("k_ind_L_synth",200)
+    simulate({continue=>1,method=>"ode",t_end=>120,n_steps=>20,continue=>1})
+    # Phase 3: Intermediate (120-160) - Truncated at Steady State
+    setParameter("k_ind_L_synth",0.1)
+    simulate({continue=>1,method=>"ode",t_end=>160,n_steps=>40,continue=>1})
+    # Phase 4: Pulse R begins (160-180)
+    setParameter("k_ind_R_synth",200)
+    simulate({continue=>1,method=>"ode",t_end=>180,n_steps=>20,continue=>1})
+    # Phase 5: Final Recovery (180-260) - Truncated at Steady State
+    setParameter("k_ind_R_synth",0.1)
+    simulate({continue=>1,method=>"ode",t_end=>260,n_steps=>80,continue=>1})
+end actions
+end model
+

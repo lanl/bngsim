@@ -1,0 +1,69 @@
+# Model: genetic_goodwin_oscillator.bngl
+# Description: Implements the classic Goodwin Oscillator, a negative feedback loop with delay.
+#              Gene -> mRNA -> Protein -> Repressor -> Gene
+
+begin model
+
+begin parameters
+    # Production
+    k_rn 1.0
+    k_p  1.0
+    
+    # Degradation
+    d_m  0.1
+    d_p  0.1
+    d_r  0.1
+    
+    # Repression
+    k_on  10.0
+    k_off 0.1 # High affinity
+    
+    n_hill 4 # Cooperativity (approximated by multimer binding)
+end parameters
+
+begin molecule types
+    Gene(p)
+    mRNA()
+    Protein()
+    Repressor(b) # Binding site
+end molecule types
+
+begin seed species
+    Gene(p) 1
+end seed species
+
+begin observables
+    Molecules RNA mRNA()
+    Molecules Prot Protein()
+    Molecules Rep Repressor(b)
+end observables
+
+begin reaction rules
+    # 1. Transcription (Inhibited by Repressor binding)
+    # Free gene transcribes
+    Gene(p) -> Gene(p) + mRNA() k_rn
+    
+    # 2. Translation
+    mRNA() -> mRNA() + Protein() k_p
+    
+    # 3. Modification / Transport / Delay Step
+    Protein() -> Repressor(b) 0.5
+    
+    # 4. Repression (Simplified via Binding)
+    # We need high non-linearity for oscillation (Hill coeff > 8 for some, >3 typically)
+    # Explicit binding: R + G <-> G:R
+    Gene(p) + Repressor(b) <-> Gene(p!1).Repressor(b!1) k_on, k_off
+    # This is n=1. For n>1, need multimers or multiple binding sites.
+    # Let's add multiple consecutive binding sites for non-linearity
+    
+    # 5. Degradation
+    mRNA() -> 0 d_m
+    Protein() -> 0 d_p
+    Repressor(b) -> 0 d_r
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>200, n_steps=>400})

@@ -1,0 +1,12 @@
+
+# BNG2.pl simulation output
+*.cdat
+*.gdat
+*.info
+*.out
+
+# macOS
+.DS_Store
+
+# run_all orchestrator output (per-run logs + summary)
+results/run_all_*/

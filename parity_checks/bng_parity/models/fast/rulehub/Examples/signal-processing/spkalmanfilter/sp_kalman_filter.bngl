@@ -1,0 +1,126 @@
+# Kalman Filter in BNGL
+# ======================
+# A 1D Kalman filter for tracking position from noisy measurements.
+# 
+# State: position (X) and velocity (V)
+# Measurement: noisy position readings (Obs)
+# Estimate: filtered position (Est) and uncertainty (Var)
+#
+# The molecules ARE the Kalman state variables.
+# Functions encode the predict/update equations.
+# No chemistry whatsoever — pure state estimation algorithm.
+
+begin model
+
+begin parameters
+    # True system dynamics
+    true_vel    5.0     # True constant velocity
+    
+    # Noise parameters  
+    Q           1.0     # Process noise variance
+    R           25.0    # Measurement noise variance
+    
+    # Kalman update rate
+    dt          0.1     # Time step (continuous approximation)
+    
+    # Observation generation
+    obs_noise_amp 5.0   # Amplitude of observation noise
+    obs_freq      3.0   # Frequency of noise oscillation (fake noise via sin)
+    t 0                 # Time variable for functions
+end parameters
+
+begin molecule types
+    TrueX()         # True position (hidden)
+    Obs()           # Noisy observation
+    EstX()          # Kalman estimate of position
+    EstV()          # Kalman estimate of velocity
+    Variance()      # Estimation uncertainty (P matrix diagonal)
+    Innovation()    # Obs - predicted (for diagnostics)
+end molecule types
+
+begin seed species
+    TrueX()     0       # Start at origin
+    Obs()       0
+    EstX()      0       # Initial estimate: at origin
+    EstV()      3.0     # Initial velocity guess (wrong on purpose)
+    Variance()  100.0   # High initial uncertainty
+    Innovation() 0
+end seed species
+
+begin observables
+    Molecules True_Pos      TrueX()
+    Molecules Observation   Obs()
+    Molecules Estimate      EstX()
+    Molecules Est_Velocity  EstV()
+    Molecules Uncertainty   Variance()
+    Molecules Innov         Innovation()
+end observables
+
+begin functions
+    # True dynamics: x = true_vel * t (constant velocity)
+    true_dx() = true_vel
+    
+    # Fake noisy observation: true position + sinusoidal "noise"
+    # (We can't do real random noise in ODE mode,so we fake it)
+    obs_target() = True_Pos + obs_noise_amp * sin(obs_freq * t) \
+                   + obs_noise_amp * 0.5 * sin(7.1 * t)
+    
+    # === KALMAN PREDICT STEP ===
+    # Predicted state: x_pred = x_est + v_est * dt
+    predicted_x() = Estimate + Est_Velocity * dt
+    
+    # Predicted variance: P_pred = P + Q
+    predicted_P() = Uncertainty + Q * dt
+    
+    # === KALMAN UPDATE STEP ===
+    # Innovation: y = observation - predicted
+    innov() = Observation - predicted_x()
+    
+    # Kalman gain: K = P_pred / (P_pred + R)
+    K_gain() = predicted_P() / (predicted_P() + R)
+    
+    # Updated estimate: x_est = x_pred + K * innovation
+    update_x() = K_gain() * innov()
+    
+    # Updated variance: P = (1 - K) * P_pred
+    # Rate to drive Variance toward target
+    target_var() = (1 - K_gain()) * predicted_P()
+    var_correction() = (target_var() - Uncertainty) 
+end functions
+
+begin reaction rules
+    # === TRUE SYSTEM (hidden from filter) ===
+    0 -> TrueX()            true_dx()
+    
+    # === OBSERVATION (noisy measurement) ===
+    # Drive Obs toward noisy target
+    0 -> Obs()              if(obs_target() - Observation > 0,\
+                               10*(obs_target() - Observation),0)
+    Obs() -> 0              if(obs_target() - Observation < 0,\
+                               10*(Observation - obs_target()) / max(Observation,0.01),0)
+    
+    # === KALMAN ESTIMATE UPDATE ===
+    # Estimate tracks predicted + correction
+    0 -> EstX()             if(Est_Velocity + update_x()/dt > 0,\
+                               Est_Velocity + update_x()/dt,0)
+    EstX() -> 0             if(Est_Velocity + update_x()/dt < 0,\
+                               -(Est_Velocity + update_x()/dt)/max(Estimate,0.01),0)
+    
+    # Velocity estimate correction (slow adaptation)
+    0 -> EstV()             if(innov() > 0,0.1 * K_gain() * innov(),0)
+    EstV() -> 0             if(innov() < 0,-0.1 * K_gain() * innov() / max(Est_Velocity,0.01),0)
+    
+    # === VARIANCE UPDATE ===
+    0 -> Variance()         if(var_correction() > 0,var_correction(),0)
+    Variance() -> 0         if(var_correction() < 0,\
+                               -var_correction() / max(Uncertainty,0.01),0)
+    
+    # === INNOVATION TRACKING ===
+    0 -> Innovation()       if(innov() > 0,innov(),0)
+    Innovation() -> 0       1.0
+end reaction rules
+
+end model
+
+# Watch estimate converge to true position despite noisy observations
+simulate({method=>"ode",t_end=>20,n_steps=>1000})

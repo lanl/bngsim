@@ -1,0 +1,395 @@
+#################
+# file metadata #
+#################
+
+#---
+# Filename: BSA_v[version_number].bngl
+# Versions:
+#  - Version 1 (v1) was created on 02-Aug-2016 (at work).
+#  - Version 2 (v2) was created on 02-Aug-2016 (at home). 
+#    With completion of v2 (completed on 03-Aug-2016), 
+#    a first-pass attempt to account for steric effects is done.
+#  - Version 3 (v3) was created on 03-Aug-2016. The goal now is 
+#    to add diffusional slowing of ligand capture and release using the
+#    Berg-Purcell theory.
+#  - Version 4 (v4) was created on 03-Aug-2016 (at home). 
+#    Implementation of diffusion-control of ligand capture/release was completed on 05-Aug-2016.
+#  - Version 5 (v5) was created on 05-Aug-2016 (at work). The goal now is
+#    to add fast and slow mobility classes of receptor-containing chemical species.
+# Completed: TBA
+# [PII REMOVED]
+# Copyright: (c) 2026 Bill Hlavacek. Licensed under CC BY 4.0.
+# Software: 
+#  - RuleBender 2.0.r382r3-osx64
+#  - BioNetGen 2.2.6
+#  - NFsim 1.11
+#  - Software is available online (http://bionetgen.org/index.php/Download).
+#---
+
+begin model
+
+##################
+# model metadata #
+##################
+
+#---
+# Title: A rule-based model for multivalent ligand-receptor interactions
+# Contributors:
+#  - William S. Hlavacek
+# Acknowledgments:
+#  - Thanks to David A. Holowka for providing the molecular weight of DCT.
+# Description: 
+#  - The ligand is bovine serum albumin (BSA)
+#    conjugated to n dinitrophenyl (DNP) groups (on average).
+#  - The receptor is DNP-specific monoclonal cell-surface IgE on RBL-2H3 cells.
+#  - IgE is tethered to the cell surface through interaction with 
+#    the alpha subunit of the multimeric high-affinity IgE receptor 
+#    (Fcer1a, http://www.uniprot.org/uniprot/P12371).
+#  - The model is formulated for a single RBL-2H3 cell.
+#  - The model incorporates steric effects.
+#  - The model incorporates diffusion control of ligand capture and release.
+#  - The model will eventually incorporate slow and fast receptor aggregate mobility classes.
+# Inputs:
+#  - ligand dose
+# Outputs:
+#  - amount of bound ligand
+#  - number of free receptor sites
+#  - average ligand-induced receptor aggregate size
+#  - average receptor mobility
+# Cell lines:
+#  - rat basophilic leukemia (RBL) cells, clone 2H3 (RBL-2H3)
+# Compartments:
+#  - extracellular fluid (ecf)
+#  - extracellular face of the plasma membrane (epm)
+# References:
+#  - Bujacz A (2012) Acta Crystallogr D Biol Crystallogr 68: 1278-1289. [PMID: 22993082]
+#  - Drinkwater N, ..., Sutton BJ (2014) Nat Struct Mol Biol 21: 397-404. [PMID: 24632569]
+#  - Erickson J, ..., Baird B (1986) Mol Immunol 72: 769-781. [PMID: 2948110]
+#  - Erickson J, ..., Baird B (1987) Biophys J 52: 657-662. [PMID: 2960385]
+#  - Goldstein B, Levine H, Torney D (2007) SIAM J Appl Math 67: 1147-1165.
+#  - Hlavacek WS, Posner RG, Perelson AS (1999) Biophys J 76: 3031-3043. [PMID: 10354429]
+#  - Mahajan A, ..., Wilson BS (2014) ACS Chem Biol 9: 1508-1519. [PMID: 24784318]
+#  - Majorek KA, ..., Minor W (2012) Mol Immunol 52: 174-182. [PMID: 22677715]
+#  - Medda L, Monduzzi M, Salis A (2015) Chem Commun 51: 6663-6666. [PMID: 25782536]
+#  - Padlan EA (1994) Mol Immunol 31: 169-217. [PMID: 8114766]
+#  - Poljak RJ, ..., Saul F (1973) Proc Natl Acad Sci USA 70: 3305-3310. [PMID: 4519624]
+#  - Swift DG, Posner RG, Hammer DA (1998) Biophys J 75: 2597-2611. [PMID: 9788956]
+#---
+
+begin parameters
+
+# fraction of a cell to consider in a (stochastic) simulation
+#  comments:
+#   - The scaling factor f should multiply compartment volumes, 
+#     copy numbers, and rate constants of zero-order processes.
+#   - This parameter can be set to a value <1 to accelerate stochastic
+#     simulation.
+#   - The value of f has no effect on the efficiency of a deterministic
+#     (ODE-based) simulation.
+#  usage examples: 
+#   - Volume_cytosol 1e-12*f # L per cell
+#   - Protein_copyNumber 100*f # copies per cell
+#   - k_synthesis 10*f # copies produced per cell per s [0->Protein() k_synthesis]
+f 0.001 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# ratio of a circle's circumference to its diameter
+pi 3.14159265359 # dimensionless
+
+# a small number (used to avoid divide-by-zero error)
+epsilon 1e-10 # dimensionless
+
+##############################
+# properties of compartments #
+##############################
+
+# volume of extracellular fluid (ecf) surrounding a single RBL-2H3 cell
+#  If cells are in suspension, we assume the following:
+#   - cell density of 5e5 cells per mL
+#  If cells are adherent to a surface, we assume the following:
+#   - 15 cm culture dishes (cells 95% confluent)
+#   - 1.2e5 cells per cm^2
+#   - growth surface area of 140 cm^2
+#   - 1.7e7 cells per dish
+#   - 0.25 mL of medium per square cm of growth surface
+#   - 35 mL of medium per dish
+
+# cell density when cells are in suspension
+cellDensity 5e8 # cells per L
+
+# number of cells per culture dish
+Ncells 1.7e7 # cells per dish
+
+# area of culture dish covered by adherent cells
+Adish 1.4 # dm^2 per dish
+
+# confluency of cells (fraction of surface covered by cells)
+confluency 0.95 # dimensionless
+
+# area covered per cell
+Acell=confluency*Adish/Ncells # dm^2 per cell
+
+# volume of medium in culture dish
+Vmedium 3.5e-2 # L (dm^3) per dish
+
+# height of medium in culture dish
+Hmedium=Vmedium/Adish # dm (0.25 mm)
+
+# set extracellular fluid volume per cell
+#  in suspension
+#Vecf=f/cellDensity # L per cell (2 nL per cell)
+#  adherent to a surface
+Vecf=f*Vmedium/Ncells # L per cell (2 nL per cell)
+
+# average diameter of an RBL-2H3 cell (Swift et al., 1998)
+Dcell 1.5e-4 # dm (15 microns)
+
+# height of a thin layer adjacent to the extracellular face of the plasma membrane
+#  in which cell-surface ligand-receptor interactions occur
+#  comments:
+#   - This height is estimated as the largest dimension of a
+#     complex of Fcer1a, IgE, and BSA.
+#   - Models of the IgE-FceRIalpha complex are available.
+#     See Drinkwater et al. (2014) and Mahajan et al. (2014).
+#   - The structure of BSA is known (Bujacz, 2012; Majorek et al., 2012).
+Hepm 3e-7 # dm (30 nm)
+
+# volume of the thin layer adjacent to the extracellular face of the plasma membrane
+Vepm=(pi/6)*((Dcell+Hepm)^3-Dcell^3)*f # L (dm^3) per cell (~1e-14 L per cell)
+
+# Vecf/Vepm = ~2e5
+
+# viscosity of extracellular fluid (water) at 37 C
+eta_ecf 0.6913 # mPa s
+
+# viscosity of plasma membrane (olive oil) at 37 C
+eta_mem 34.1 # mPa s
+
+# eta_ecf/eta_mem = ~2e-2
+
+# (Vecf/Vepm)*(eta_ecf/eta_mem) = ~4000
+
+#######################################
+# properties of ligands and receptors #
+#######################################
+
+# molecular weight of BSA
+mwt_BSA 66463 # g per mol
+
+# molecular weight of 2,4-dinitrophenol
+mwt_DNP 184 # g per mol
+
+# molecular weight of DNP-L-tyrosine (DCT) in solution (vs. in salt, where m.wt. = 642)
+mwt_DCT 446 # g per mol (+/-2 depending on whether the carboxyl group and secondary amine are protonated)
+
+# average number of DNP groups per BSA
+n 24 # dimensionless
+
+# maximum number of ligand binding sites 
+#  that can be occupied by receptors on the same ligand
+m 5 # dimensionless, f<=n
+
+# area covered by a Fab arm (Poljak et al., 1973; Padlan, 1994)
+Area_Fab 30 # nm^2 (crude estimate)
+
+# total surface area of BSA (Bujacz, 2012; Majorek et al., 2012)
+Area_BSA 300 # nm^2 (crude estimate)
+
+# fraction of ligand surface area covered by a bound Fab arm
+a=Area_Fab/Area_BSA # dimensionless (0.1)
+
+# steric hindrance factors for i=1,..,m-1
+#  formula: H(i)=(1-i*a)*(1-3*a/(1-i*a))^i (Hlavacek et al., 1999)
+H1=(1-1*a)*(1-3*a/(1-1*a))^1 # 0.60
+H2=(1-2*a)*(1-3*a/(1-2*a))^2 # 0.31
+H3=(1-3*a)*(1-3*a/(1-3*a))^3 # 0.13
+H4=(1-4*a)*(1-3*a/(1-4*a))^4 # 0.04
+
+# expected number of available ligand binding sites
+#  for different ligand binding site occupancy levels, 1 to m-1
+#  formula: nu(i)=(n-i)*H(i) (Hlavacek et al., 1999)
+#nu0=n
+nu1=(n-1)*H1 # ~14
+nu2=(n-2)*H2 #  ~7
+nu3=(n-3)*H3 #  ~3
+nu4=(n-4)*H4 #  ~1
+#num=0
+
+# molecular weight of BSA conjugated to n DNP groups
+mwt_DNPnBSA=mwt_BSA+n*mwt_DNP # g per mol (~71 kDa for DNP_{24}-BSA)
+
+# diffusion coefficient of BSA in water (Medda et al., 2015)
+#  comments:
+#   - T = 37 C
+#   - pH = 7, 
+#   - [NaCl] = 0.1 M 
+D_BSA 8e-9 # dm^2/s
+
+# diffusion coefficient of DCT (estimate of Erickson et al., 1987)
+D_DCT 1e-7 # dm^2/s
+
+# ligand dose
+Lconc_nM 0.1 # nM
+Lconc=1e-9*Lconc_nM # M
+Lcpc=Lconc*(NA*Vecf) # copies per cell
+
+# average number of receptors per cell (Erickson et al., 1987)
+Rcpc 3e5*f # copies per cell
+
+###################################################
+# rate constants for ligand-receptor interactions #
+###################################################
+
+# equilibrium association constant for DCT binding to a Fab arm in surface IgE (Erickson et al., 1986)
+KA_DCT 1.4e9/(NA*Vecf) # /M (KD = ~0.7 nM)
+
+# association rate constant for DCT binding to a Fab arm in surface IgE (Erickson et al., 1987)
+kon_DCT 2.6e7/(NA*Vecf) # /M/s
+
+# dissociation rate constant
+koff_DCT=kon_DCT/KA_DCT # /s (~0.02 per s)
+
+# rate constants for DNP_n-BSA
+#  comments:
+#   - BSA is significantly larger than DCT.
+#   - We correct for the size difference using the Stokes-Einstein relation
+#     and an assumption that molecular weight is proportional to molecular volume.
+kon=kon_DCT*(mwt_DCT/mwt_DNPnBSA)^(1/3) # kon = ~5e6 /M/s
+koff=koff_DCT
+
+# rate constants for ligand-receptor surface interactions
+#  comments:
+#   - The diffusion limit is reached when kpx*Rcpc = ~50 /s (Goldstein et al., 2007).
+kpx=kon*(Vecf/Vepm)*(eta_ecf/eta_mem) # kpx*Rcpc = ~25 /s
+kmx=koff
+
+end parameters
+
+begin molecule types
+
+# DNP-L-tyrosine (monovalent ligand)
+DCT(DNP)
+
+# bovine serum albumin conjugated to n DNP groups (multivalent ligand)
+BSA(DNP,DNP,DNP,DNP,DNP)
+
+# monoclonal DNP-specific IgE bound to Fcer1a on RBL-2H3 cells (bivalent receptor)
+IgE(Fab,Fab)
+
+# debug
+#BSA0(DNP,DNP,DNP,DNP,DNP)
+#IgE0(Fab,Fab)
+# debug
+
+end molecule types
+
+begin seed species
+
+DCT(DNP) 0 # n*Lcpc
+
+BSA(DNP,DNP,DNP,DNP,DNP) Lcpc
+
+IgE(Fab,Fab) Rcpc
+
+# debug
+#BSA0(DNP,DNP,DNP,DNP,DNP) Lcpc
+#IgE0(Fab,Fab) Rcpc
+# debug
+
+end seed species
+
+begin observables
+
+Molecules DCTtot DCT()
+Molecules BSAtot BSA()
+Molecules IgEtot IgE()
+
+Species monIgE IgE==1
+Species naggs IgE>1
+Molecules freeFab IgE(Fab)
+
+Molecules freeDCT DCT(DNP)
+
+Species freeBSA BSA(DNP,DNP,DNP,DNP,DNP)
+
+# debug
+#Molecules BSA0tot BSA0()
+#Species freeBSA0 BSA0(DNP,DNP,DNP,DNP,DNP)
+# debug
+
+end observables
+
+begin functions
+
+boundDCT()=DCTtot-freeDCT
+boundBSA()=BSAtot-freeBSA
+
+# debug
+#boundBSA0()=BSA0tot-freeBSA0
+# debug
+
+avg_agg_size()=(IgEtot-monIgE)/(naggs+epsilon)
+
+# effective forward and reverse rate constants for diffusion-controlled DCT capture/release
+#  cells are in suspension
+kf_DCT()=kon_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(4*pi*D_DCT*(Dcell/2)))
+kr_DCT()=koff_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(4*pi*D_DCT*(Dcell/2)))
+#  cells are adherent to a surface
+#kf_DCT()=kon_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(3*D_DCT*Acell/Hmedium))
+#kr_DCT()=koff_DCT/(1+kon_DCT*(freeFab/f)*Vecf/(3*D_DCT*Acell/Hmedium))
+
+# effective forward and reverse rate constants for diffusion-controlled DNP_n-BSA capture/release
+#  cells are in suspension
+kf_BSA()=kon/(1+n*kon*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+kr_BSA()=koff/(1+n*kon*(freeFab/f)*Vecf/(4*pi*D_BSA*(Dcell/2)))
+#  cells are adherent to a surface
+#kf_BSA()=kon/(1+n*kon*(freeFab/f)*Vecf/(3*D_BSA*Acell/Hmedium))
+#kr_BSA()=koff/(1+n*kon*(freeFab/f)*Vecf/(3*D_BSA*Acell/Hmedium))
+
+end functions
+
+begin reaction rules
+
+# monovalent ligand capture/release
+DCT(DNP)+IgE(Fab)<->DCT(DNP!1).IgE(Fab!1) kf_DCT(),kr_DCT()
+
+# multivalent ligand capture/release
+BSA(DNP,DNP,DNP,DNP,DNP)+IgE(Fab)<->BSA(DNP!1,DNP,DNP,DNP,DNP).IgE(Fab!1) (n/m)*kf_BSA(),kr_BSA()
+
+# debug
+#BSA0(DNP,DNP,DNP,DNP,DNP)+IgE0(Fab)<->BSA0(DNP!1,DNP,DNP,DNP,DNP).IgE0(Fab!1) (n/m)*kon,koff
+# debug
+
+# multivalent ligand-mediated receptor crosslinking
+BSA(DNP!+,DNP,DNP,DNP,DNP)+IgE(Fab)->BSA(DNP!+,DNP!1,DNP,DNP,DNP).IgE(Fab!1) (nu1/(m-1))*kpx
+BSA(DNP!+,DNP!+,DNP,DNP,DNP)+IgE(Fab)->BSA(DNP!+,DNP!+,DNP!1,DNP,DNP).IgE(Fab!1) (nu2/(m-2))*kpx
+BSA(DNP!+,DNP!+,DNP!+,DNP,DNP)+IgE(Fab)->BSA(DNP!+,DNP!+,DNP!+,DNP!1,DNP).IgE(Fab!1) (nu3/(m-3))*kpx
+BSA(DNP!+,DNP!+,DNP!+,DNP!+,DNP)+IgE(Fab)->BSA(DNP!+,DNP!+,DNP!+,DNP!+,DNP!1).IgE(Fab!1) (nu4/(m-4))*kpx
+
+# break crosslinks
+BSA(DNP!+,DNP!1).IgE(Fab!1)->BSA(DNP!+,DNP)+IgE(Fab) kmx
+
+end reaction rules
+
+end model
+
+begin actions
+
+#generate_network({overwrite=>1})
+#saveConcentrations()
+#setParameter("D_BSA",16e-9)
+#resetConcentrations()
+#simulate({suffix=>"A_fast",method=>"ode",t_start=>0,t_end=>1800,n_steps=>600,print_functions=>1})
+#setParameter("D_BSA",8e-9)
+#resetConcentrations()
+#simulate({suffix=>"B_medium",method=>"ode",t_start=>0,t_end=>1800,n_steps=>600,print_functions=>1})
+#setParameter("D_BSA",4e-9)
+#resetConcentrations()
+#simulate({suffix=>"C_slow",method=>"ode",t_start=>0,t_end=>1800,n_steps=>600,print_functions=>1})
+
+simulate({method=>"nf",complex=>1,gml=>10000000,get_final_state=>0,print_functions=>1,\
+	t_start=>0,t_end=>600,n_steps=>120})
+
+end actions

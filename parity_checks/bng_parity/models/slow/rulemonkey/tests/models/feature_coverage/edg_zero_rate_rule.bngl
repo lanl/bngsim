@@ -1,0 +1,52 @@
+# Edge case: a reversible rule with ONE direction at rate=0
+# Tests:  the unbinding direction is parameter-bound to 0.  RM's
+#         priority-queue (Fenwick tree, FENWICK_THRESHOLD path) must
+#         skip zero-propensity rules cleanly without flagging them as
+#         "live" candidates for sampling.  A bug in the rule-picker
+#         could either (a) divide-by-zero when normalising, (b) hang
+#         on an empty event queue when only zero-rate rules remain,
+#         or (c) sample the zero-rate rule and produce a wasted null
+#         event that doesn't fire.  None of these have explicit
+#         coverage today.
+# Edge:   forward rate is high so the system rapidly shifts to the
+#         bound state; with kr=0 it stays there permanently.  The
+#         observable A_bound should monotonically rise to its limit
+#         (min(A_tot,B_tot)).  Any reverse-direction firing — or
+#         worse, a hang — is an obvious bug.
+# Tier:   base
+# invariant: conserved A_total = 30
+# invariant: conserved B_total = 30
+
+begin model
+begin parameters
+    A_tot   30
+    B_tot   30
+    kf      0.20
+    kr      0.0      # zero-rate reverse direction
+end parameters
+
+begin molecule types
+    A(s)
+    B(s)
+end molecule types
+
+begin seed species
+    A(s)  A_tot
+    B(s)  B_tot
+end seed species
+
+begin observables
+    Molecules  A_total   A()
+    Molecules  B_total   B()
+    Molecules  A_bound   A(s!+)
+    Molecules  AB        A(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    A(s) + B(s) <-> A(s!1).B(s!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>40,n_steps=>80})
+end actions

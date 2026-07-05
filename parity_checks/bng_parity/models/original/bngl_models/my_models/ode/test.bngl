@@ -1,0 +1,88 @@
+begin model
+begin parameters
+NA 6.02214076e23 # molec/mol
+cellDensity 1e9 # cells/L
+Vecf=1/cellDensity # L/cell
+koff 0.01 # /s
+kf 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr=koff # /s
+LT 1e-9*(NA*Vecf) # M converted to molec/cell
+RT 3e5 # copies per cell
+VT 1000 # copies per cell
+KxRT 100 # dimensionless crosslinking constant
+kmx=koff # /s
+kpx=kmx*KxRT/RT # /(molecule/cell)/s
+kfast 1000 # /s 
+kf_drug = 1e6/(NA*Vecf) # /M/s converted to /(molecule/cell)/s
+kr_drug = 0.001 # /s
+kmx_drug=koff #/s
+kpx_drug=kmx_drug*KxRT/RT # /(molecule/cell)/s
+end parameters
+begin molecule types
+L(s)
+R(s)
+V(s1,s2,s3,s4,s5,loc~ECF~PM)
+L0(s)
+R0(s)
+#monoD(s)
+biD(s,s)
+end molecule types
+begin seed species
+L(s) LT
+R(s) RT
+V(s1,s2,s3,s4,s5,loc~ECF) VT
+L0(s) LT # 1 nM
+R0(s) RT # 300,000 copies per cell @ a cell density of 1e6 cells per mL (0.5 nM)
+#monoD(s) 10*LT # 10 nM
+biD(s,s) 10*LT 
+end seed species
+begin observables
+Molecules Lfree L(s)
+Molecules Rfree R(s)
+Molecules LR L(s!1).R(s!1)
+Molecules R0free R0(s)
+Molecules L0R0 L0(s!1).R0(s!1)
+Molecules Vfree V(s1,s2,s3,s4,s5)
+Molecules Vbound V(loc~PM)
+Molecules Rbound R(s!+)
+#Molecules monoDfree D(s)
+Species biDfree biD(s,s)
+#Molecules monoDR monoD(s!1).R(s!1)
+Species biDLL biD(s!1,s!2).L(s!1).L(s!2)
+end observables
+begin functions
+end functions
+begin reaction rules
+# monovalent ligand-monovalent receptor binding
+L(s)+R(s)<->L(s!1).R(s!1) kf,kr
+L0(s)+R0(s)<->L0(s!1).R0(s!1) kf,kr
+# virus capture by host receptor
+V(s1,loc~ECF)+R(s)->V(s1!1,loc~PM).R(s!1) kf
+V(s2,loc~ECF)+R(s)->V(s2!1,loc~PM).R(s!1) kf
+V(s3,loc~ECF)+R(s)->V(s3!1,loc~PM).R(s!1) kf
+V(s4,loc~ECF)+R(s)->V(s4!1,loc~PM).R(s!1) kf
+V(s5,loc~ECF)+R(s)->V(s5!1,loc~PM).R(s!1) kf
+# virus-mediated receptor crosslinking
+V(s1,loc~PM)+R(s)->V(s1!1,loc~PM).R(s!1) kpx
+V(s2,loc~PM)+R(s)->V(s2!1,loc~PM).R(s!1) kpx
+V(s3,loc~PM)+R(s)->V(s3!1,loc~PM).R(s!1) kpx
+V(s4,loc~PM)+R(s)->V(s4!1,loc~PM).R(s!1) kpx
+V(s5,loc~PM)+R(s)->V(s5!1,loc~PM).R(s!1) kpx
+# virus-receptor dissociation
+V(s1!1).R(s!1)->V(s1)+R(s) koff
+V(s2!1).R(s!1)->V(s2)+R(s) koff
+V(s3!1).R(s!1)->V(s3)+R(s) koff
+V(s4!1).R(s!1)->V(s4)+R(s) koff
+V(s5!1).R(s!1)->V(s5)+R(s) koff
+# fix location
+V(s1,s2,s3,s4,s5,loc~PM)->V(s1,s2,s3,s4,s5,loc~ECF) kfast
+# drug binding to receptor
+#monoD(s)+R(s)<->monoD(s!1).R(s!1) kf_drug,kr_drug
+biD(s,s)+R(s)<->biD(s,s!1).R(s!1) kf_drug,kr_drug
+biD(s!+,s)+R(s)<->biD(s!+,s!1).R(s!1) kpx_drug,kmx_drug
+end reaction rules
+end model
+begin actions
+generate_network({})
+simulate({method=>"ode",t_end=>10000,n_steps=>250,print_functions=>1})
+end actions

@@ -1,0 +1,723 @@
+# bngsim/harness/jobs.yaml — Benchmark Job Manifest
+#
+# Single source of truth for all benchmark jobs.
+# Consumed by: run_jobs.py (execution), validate_jobs.py (sync checking),
+# bngsim/dev/benchmarks/benchmarking_playbook.md (documentation pointer).
+#
+# Phase-6 reconciliation (2026-05-19): 16 jobs whose work is now done by a
+# `bngsim/benchmarks/suites/<name>/` runner have been marked
+# `enabled: false` with a one-line pointer to the canonical suite path.
+# The orchestrator entry point is `bngsim/benchmarks/run_all.py`.
+#
+# Still live (`enabled: true`):
+#   - run_dsmts             : DSMTS stochastic corpus (separate from suites/)
+#   - run_ssa_roundtrip     : KS gate over suites/sbml_roundtrip/ outputs
+#   - validate_sbml         : legacy SBML loader validation (no suites/ equiv)
+#   - calibrate_horizons    : calibration utility used to seed t_end fields
+#   - bench_amortization    : Fig 3 amortization analysis (no suites/ equiv)
+#   - bench_biomodels_warmup: Fig 4 warmup analysis (no suites/ equiv)
+#   - bench_sbml_events     : 214-SBML events corpus (alt Fig S2 source;
+#                             benchmarks/sbml_events/ stayed in place per
+#                             the Phase-3 "loose ends" decision)
+#
+# ── Editing guide ────────────────────────────────────────────────
+# - Set enabled: false to skip a job without deleting it
+# - Edit `description` to fine-tune what a job should do (narrative prompt)
+# - Edit `protocol` to change warmup/runs/timing parameters
+# - After editing, run: python validate_jobs.py (checks sync)
+# - Then run: python run_jobs.py [--job <id>] [--phase validation|comparison|tables]
+# ─────────────────────────────────────────────────────────────────
+
+defaults:
+  protocol:
+    warmup: 2
+    runs: 5
+    timing: median
+
+# ════════════════════════════════════════════════════════════════
+# Phase 1: VALIDATION (correctness — run these first)
+# ════════════════════════════════════════════════════════════════
+
+jobs:
+
+  # ── V1: ODE correctness ──────────────────────────────────────
+  - id: validate_ode
+    phase: validation
+    enabled: false  # superseded by suites/ode/ (correctness gate is part of run.py --mode both)
+    script: validation/validate_ode.py
+    description: >
+      Validate BNGsim ODE integration against BioNetGen's run_network
+      on all 27 Pool C models (2–3,744 species). For each model, both
+      engines integrate the same .net file with identical CVODE settings
+      (BDF, rtol=1e-8, atol=1e-12). Trajectories are compared element-wise;
+      pass criterion is max relative error < 1e-5 at all time points.
+      This is the primary regression gate — if any model fails, ODE
+      benchmark numbers cannot be trusted.
+    suite: benchmarks/suite_ode.json
+    engines: [bngsim, run_network]
+    prerequisites:
+      packages: [bngsim]
+      external: [run_network]
+    paper_artifacts: []  # validation only, no paper output
+    estimated_time: "2 min"
+    output: results/validate_ode.json
+
+  # ── V2: SSA determinism ──────────────────────────────────────
+  - id: validate_ssa
+    phase: validation
+    enabled: false  # superseded by suites/ssa/ (correctness gate is part of run.py --mode both)
+    script: validation/validate_ssa.py
+    description: >
+      Validate BNGsim SSA for deterministic seeding and statistical
+      correctness on 10 stochastic models. Tests: (1) same seed produces
+      identical trajectories across runs, (2) moment estimates from 100
+      replicate runs are within expected statistical bounds. This ensures
+      the Fenwick tree + dependency graph implementation is correct.
+    suite: benchmarks/suite_ssa.json
+    engines: [bngsim]
+    prerequisites:
+      packages: [bngsim]
+      external: []
+    paper_artifacts: []
+    estimated_time: "3 min"
+    output: results/validate_ssa.json
+
+  # ── V2a: DSMTS sweep (SBML SSA Phase 1) ─────────────────────
+  - id: run_dsmts
+    phase: validation
+    enabled: true
+    script: run_dsmts.py
+    description: >
+      Run BNGsim SSA on the 39 is_dsmts_proper cases from the SBML Test
+      Suite stochastic corpus and apply the DSMTS Z/Y tolerance from
+      stochastic/README.md. Loads each SBML at its highest available
+      level (preferring l3v2), runs N=1000 replicates per case (the
+      README floor; bump to 10000 for the published baseline), and
+      compares the per-time-point sample mean and variance against the
+      DSMTS-shipped expected values: Z = sqrt(N)*(X_obs-mu)/sigma must
+      lie in mean_range, Y = sqrt(N/2)*(S^2/sigma^2-1) must lie in
+      sd_range. A case passes when ≤1 Z exceedance and ≤1 Y exceedance
+      per variable (README's tolerant rule); strict_pass requires zero
+      exceedances. The summary aggregates pass/fail counts by test_tag /
+      component_tag (HasOnlySubstanceUnits, NonUnityCompartment,
+      AssignmentRule, EventNoDelay, CSymbolTime, ...) so failures point
+      directly at SBML SSA Plan Phases 2/3/5.
+    suite: harness/sbml_test_suite/dsmts/dsmts_index.json
+    engines: [bngsim]
+    prerequisites:
+      packages: [bngsim]
+      external: []
+    paper_artifacts: []
+    estimated_time: "2 min @ N=1000"
+    output: results/dsmts.json
+
+  # ── V2b: SSA roundtrip (SBML SSA Phase 1) ───────────────────
+  - id: run_ssa_roundtrip
+    phase: validation
+    enabled: true
+    script: run_ssa_roundtrip.py
+    description: >
+      For each model in benchmarks/ssa/<name>.net paired with
+      benchmarks/suites/sbml_roundtrip/<name>.xml, run N=200 SSA replicates on both
+      Model.from_net and Model.from_sbml using the same seed schedule
+      and apply scipy.stats.ks_2samp per (species column, time point).
+      Pass: min(p) > 0.01. Tracked corpus is 8 models (4 large models
+      are .gitignored — pass --include-large after running
+      benchmarks/suites/sbml_roundtrip/run.py to enable them). Today the loader
+      is structurally isomorphic, so matched-seed trajectories are
+      typically byte-identical and KS reports min_p=1; the harness
+      generalizes to mismatched-seed comparisons should the SSA paths
+      diverge in the future.
+    suite: benchmarks/suite_ssa.json
+    engines: [bngsim]
+    prerequisites:
+      packages: [bngsim, scipy]
+      external: []
+    paper_artifacts: []
+    estimated_time: "5 min @ N=200, tracked corpus only"
+    output: results/ssa_roundtrip.json
+
+  # ── V3: NFsim correctness ───────────────────────────────────
+  - id: validate_nf
+    phase: validation
+    enabled: false  # superseded by suites/nf/ (correctness is the only mode the runner has)
+    script: validation/validate_nf.py
+    description: >
+      Validate BNGsim's embedded NFsim against standalone BNG2.pl NFsim
+      on 5 network-free models. Both engines read the same XML, use the
+      same seed, and should produce identical observable trajectories.
+      Tests the vendored NFsim static library (ExprTk replacement,
+      per-system RNG, exit→exception conversion).
+    suite: benchmarks/nf/
+    engines: [bngsim, bng2pl_nfsim]
+    prerequisites:
+      packages: [bngsim]
+      external: [BNG2.pl, NFsim]
+    paper_artifacts: []
+    estimated_time: "30 sec"
+    output: results/validate_nf.json
+
+  # ── V4: SBML cross-validation ───────────────────────────────
+  - id: validate_sbml
+    phase: validation
+    enabled: true
+    script: validation/validate_sbml.py
+    description: >
+      Cross-validate BNGsim's Antimony/SBML loader against libRoadRunner
+      on Pool A (117 ssys Antimony models). Both engines load the same
+      .ant file, integrate to model-specific t_end, and trajectories are
+      compared by species name with max_rel_err < 1e-3. This validates
+      the unified ModelBuilder path for non-BNG model formats.
+    suite: benchmarks/models/antimony/ssys/
+    engines: [bngsim, roadrunner]
+    cli_flags: "--pool a --quick 10"
+    prerequisites:
+      packages: [bngsim, roadrunner]
+      external: []
+    paper_artifacts: []
+    estimated_time: "1 min (quick 10), 5 min (full)"
+    output: results/validate_sbml.json
+
+  # ════════════════════════════════════════════════════════════════
+  # Phase 2: COMPARISON (performance — generates paper data)
+  # ════════════════════════════════════════════════════════════════
+
+  # ── C1: ODE 4-engine (Table 1 / Table S1) ───────────────────
+  - id: bench_ode_4engine
+    phase: comparison
+    enabled: false  # superseded by suites/ode/ (timing gate is part of run.py --mode both)
+    script: comparison/bench_ode_4engine.py
+    description: >
+      Four-engine ODE performance comparison on 27 BNG models (Pool C).
+      Engines: BNGsim (ExprTk bytecode), run_network (subprocess CVODE),
+      libRoadRunner (LLVM JIT CVODE), AMICI (CasADi codegen CVODES).
+      BNGsim and run_network load .net files; RR and AMICI load SBML
+      converted via BNG2.pl writeSBML(). Reports median wall time per
+      model, geometric mean speedup for each engine pair. AMICI and RR
+      entries are "---" when SBML conversion fails or load exceeds 2 min.
+      This is the primary ODE benchmark table for the paper.
+    suite: benchmarks/suite_ode.json
+    engines: [bngsim, run_network, roadrunner, amici]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, amici]
+      external: [run_network, BNG2.pl]
+    paper_artifacts:
+      - type: table
+        id: "Table 1"
+        location: "bngsim/dev/paper/bngsim_application_note.md"
+        latex: "bngsim/dev/paper/latex/supplementary.tex § Table S1"
+    estimated_time: "15 min"
+    output: results/bench_ode_4engine.json
+
+  # ── C2: SSA timing (Table 2 / Table S2) ─────────────────────
+  - id: bench_ssa
+    phase: comparison
+    enabled: false  # superseded by suites/ssa/ (timing gate is part of run.py --mode both)
+    script: comparison/bench_ssa_vs_runnetwork.py
+    description: >
+      SSA performance comparison: BNGsim (Fenwick tree + dependency graph,
+      O(log N) selection) vs run_network (linear scan + bubble sort).
+      10 models from 2 to 3,744 species. Fixed seed sequence for
+      reproducibility. Speedup ranges from 1.3× (small fast models where
+      both engines are efficient) to 132× (tiny models dominated by
+      subprocess overhead) to 29.7× (large models where algorithmic
+      advantage dominates).
+    suite: benchmarks/suite_ssa.json
+    engines: [bngsim, run_network]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim]
+      external: [run_network]
+    paper_artifacts:
+      - type: table
+        id: "Table 2"
+        location: "bngsim/dev/paper/bngsim_application_note.md"
+        latex: "bngsim/dev/paper/latex/supplementary.tex § Table S2"
+    estimated_time: "10 min"
+    output: results/bench_ssa_vs_runnetwork.json
+
+  # ── C3: PSA timing (Table 3 / Table S3) ─────────────────────
+  - id: bench_psa
+    phase: comparison
+    enabled: false  # superseded by suites/psa/ (timing gate is part of run.py --mode both)
+    script: comparison/bench_psa_vs_runnetwork.py
+    description: >
+      PSA (partial-scaling approximation) performance comparison:
+      BNGsim vs run_network on 3 models × 4 Nc values (10, 30, 100, 300).
+      The erk_activation model achieves the largest speedup (42× at
+      Nc=10) because its populations reach 3×10⁶. For smaller models,
+      speedup is 2.5–5.1× primarily from subprocess overhead elimination.
+      The additional Nc values (30, 300) show how speedup varies with
+      the continuous/discrete threshold, providing finer resolution on
+      the accuracy-performance tradeoff.
+    suite: benchmarks/suite_psa.json
+    engines: [bngsim, run_network]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim]
+      external: [run_network]
+    paper_artifacts:
+      - type: table
+        id: "Table 3"
+        location: "bngsim/dev/paper/bngsim_application_note.md"
+        latex: "bngsim/dev/paper/latex/supplementary.tex § Table S3"
+    estimated_time: "5 min"
+    output: results/bench_psa_vs_runnetwork.json
+
+  # ── C4: NFsim 2-engine (Table 4 / Table S4) ─────────────────
+  - id: bench_nf_vs_nfsim
+    phase: comparison
+    enabled: false  # superseded by suites/nf/ (single-mode runner covers correctness + timing)
+    script: comparison/bench_nf_vs_nfsim.py
+    description: >
+      Network-free simulation benchmark: BNGsim (embedded NFsim) vs
+      standalone BNG2.pl NFsim on 5 models. Focus on the two NFsim
+      implementations only.
+      Two performance regimes: small fast models (basicTLBR, receptor_nf)
+      show 100× BNGsim speedup from subprocess elimination; large models
+      (egfr_nf, tcr) show 1.5–1.9× from reduced overhead.
+    suite: benchmarks/nf/
+    engines: [bngsim, bng2pl_nfsim]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim]
+      external: [BNG2.pl, NFsim]
+    paper_artifacts:
+      - type: table
+        id: "Table 4"
+        location: "bngsim/dev/paper/bngsim_application_note.md"
+        latex: "bngsim/dev/paper/latex/supplementary.tex § Table S4"
+    estimated_time: "5 min"
+    output: results/bench_nf_vs_nfsim.json
+
+  # ── C5: Pure Python comparison (Table 6) ────────────────────
+  - id: bench_pure_python
+    phase: comparison
+    enabled: false  # superseded by suites/python_ode/ + suites/python_ssa/ (joint S6)
+    script: comparison/bench_pure_python.py
+    description: >
+      BNGsim vs pure-Python alternatives (scipy LSODA, diffrax Kvaerno5,
+      gillespy2). Part A: model defined in Python (simple_system, 4 sp).
+      Part B: model loaded from .net via universal parser, dispatched to
+      BNGsim CVODE or scipy LSODA or diffrax. Demonstrates speedup
+      increases with model size (6× at 4 sp, 18× at 356 sp) because
+      Python-interpreted RHS evaluation becomes the bottleneck.
+    suite: benchmarks/suite_ode.json
+    engines: [bngsim, scipy, diffrax, gillespy2]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, scipy, diffrax, gillespy2]
+      external: []
+    paper_artifacts:
+      - type: table
+        id: "Table 6"
+        location: "bngsim/dev/paper/bngsim_application_note.md"
+    estimated_time: "5 min"
+    output: results/bench_pure_python.json
+
+  # ── C6: Antimony 4-comparison (Table S5) ────────────────────
+  - id: bench_ant_4comparison
+    phase: comparison
+    enabled: false  # superseded by suites/showcase/run_ant_exprtk_3engine.py + suites/antimony/emit.py
+    script: comparison/bench_ant_3engine.py
+    description: >
+      Four-comparison ODE benchmark on 117 hand-crafted Antimony models
+      from the ssys test suite (Pool A). All 117 models should be tested
+      in each comparison if possible. The four comparisons are:
+        1. BNGsim ExprTk vs libRoadRunner
+        2. BNGsim codegen vs libRoadRunner
+        3. BNGsim ExprTk vs AMICI
+        4. BNGsim codegen vs AMICI
+      Reports geometric mean speedup for each of the 4 comparisons.
+      Requires calibrate_horizons.py to have run first to set
+      model-dependent t_end values.
+    suite: benchmarks/models/antimony/ssys/
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner, amici]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, amici]
+      external: []
+    depends_on: [calibrate_horizons]
+    paper_artifacts:
+      - type: table
+        id: "Table S5"
+        location: "bngsim/dev/paper/latex/supplementary.tex"
+        note: "4 comparisons: ExprTk vs RR, codegen vs RR, ExprTk vs AMICI, codegen vs AMICI"
+    estimated_time: "20 min"
+    output: results/bench_ant_4comparison.json
+
+  # ── C7: BioModels scatter (Figure 2 / Figure S1) ───────────
+  - id: bench_biomodels_sbml
+    phase: comparison
+    enabled: false  # superseded by suites/biomodels/ (3-engine coverage + accuracy → Fig S1)
+    script: comparison/bench_biomodels_sbml.py
+    description: >
+      Large-scale BioModels benchmark: BNGsim vs libRoadRunner on the
+      full Pool B manifest union (~1013 IDs by default). 3-phase
+      pipeline with checkpointing: load → cross-validate → time.
+      Uses manifest-driven Antimony discovery under
+      bngsim/benchmarks/biomodels_ant/ (top-level + review_extra/).
+      --quick and optional pool materialization are both subset-bounded.
+    suite: Pool B (BioModels Antimony, manifest-driven full union ~1013)
+    engines: [bngsim, roadrunner]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner]
+      external: []
+    paper_artifacts:
+      - type: figure
+        id: "Figure 2"
+        file: "bngsim/dev/paper/fig_biomodels_scatter.png"
+        latex: "bngsim/dev/paper/latex/main.tex line 163"
+    estimated_time: "1–2 hours"
+    output: results/bench_biomodels_sbml.json
+
+  # ── C8: Amortization (Figure 3) ─────────────────────────────
+  - id: bench_amortization
+    phase: comparison
+    enabled: true
+    script: comparison/bench_amortization.py
+    description: >
+      Codegen amortization study: measure per-evaluation wall time vs
+      number of repeated evaluations N (1 to 1000) for 5 BioModels
+      spanning 5–99 species. Three engines: BNGsim ExprTk, BNGsim
+      codegen, libRoadRunner. Shows that all in-process engines converge
+      to flat per-eval cost after N=1, confirming overhead amortizes.
+      Dashed line shows run_network's ~20ms subprocess cost that never
+      amortizes. Produces Figure 3 for the paper.
+    suite: "5 selected BioModels (hardcoded in script)"
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner]
+    prerequisites:
+      packages: [bngsim, roadrunner, matplotlib]
+      external: []
+    paper_artifacts:
+      - type: figure
+        id: "Figure 3"
+        file: "bngsim/dev/paper/fig_amortization.png"
+    estimated_time: "10 min"
+    output: results/bench_amortization.json
+
+  # ── C9: 3-engine warmup (Figure 4) ──────────────────────────
+  - id: bench_biomodels_warmup
+    phase: comparison
+    enabled: true
+    script: comparison/bench_biomodels_warmup.py
+    description: >
+      Three-engine warmup benchmark on 472 BioModels: fitting-loop
+      protocol (load once, warmup once, 5× reset+run, median) for
+      BNGsim ExprTk, BNGsim codegen, and libRoadRunner. Produces a
+      2-panel scatter plot. Left: ExprTk vs RR (ExprTk wins 85%).
+      Right: Codegen vs RR (codegen loses on small models due to
+      dlopen dispatch overhead). Validates the auto-codegen threshold
+      of 256 species.
+    suite: Pool B (BioModels Antimony)
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner]
+    protocol:
+      warmup: 1
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, matplotlib]
+      external: []
+    paper_artifacts:
+      - type: figure
+        id: "Figure 4"
+        file: "bngsim/dev/paper/fig_biomodels_scatter_warmup.png"
+    estimated_time: "1–2 hours"
+    output: results/bench_biomodels_warmup.json
+
+  # ── C10: KINSOL steady-state dose-response (new Table) ──────
+  - id: bench_kinsol_dose_response
+    phase: comparison
+    enabled: false  # superseded by suites/steady_state/ (Table S7)
+    script: comparison/bench_kinsol_dose_response.py
+    description: >
+      Demonstrate KINSOL steady-state solver advantage for dose-response
+      curves. Uses RAFi_ground model (6 species, 12 reactions) which has
+      a parameter_scan action with steady_state=>1 (scanning Ifree from
+      1e-4 to 1e2, log scale). Compares:
+        1. BNG2.pl/run_network: parameter_scan via subprocess (long-time
+           ODE integration to t=100000 per point)
+        2. BNGsim CVODE: time-course to t=100000 per point (same as run_network)
+        3. BNGsim KINSOL: direct Newton solve per point (milliseconds)
+      KINSOL uses automatic conservation law detection + reduced-space
+      Newton. Expected 100-1000× speedup vs long-time integration.
+      Additional models with parameter_scan: Scaff_22_ground, mwc,
+      wofsy_goldstein.
+    suite: "4 models hardcoded in script: RAFi_ground, Scaff_22, mwc, wofsy_goldstein"
+    engines: [bngsim_kinsol, bngsim_cvode, run_network]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim]
+      external: [run_network, BNG2.pl]
+    paper_artifacts:
+      - type: table
+        id: "Table S7 (KINSOL dose-response)"
+        location: "bngsim/dev/paper/latex/supplementary.tex"
+        note: "NEW — KINSOL vs CVODE vs run_network for steady-state parameter scans"
+    estimated_time: "5 min"
+    output: results/bench_kinsol_dose_response.json
+
+  # ── C11: SBML events 3-engine validation + timing (Figure S2) ──
+  - id: bench_sbml_events
+    phase: comparison
+    enabled: true
+    script: comparison/bench_sbml_events.py
+    description: >
+      Three-engine comparison on 214 SBML models with discrete events
+      from BioModels (curated subset from ~/Code/ssys/biomodels_batch/).
+      Models are in benchmarks/sbml_events/*.xml. Pipeline:
+        1. Load each model in BNGsim, libRoadRunner, and AMICI
+        2. Cross-validate: only models that pass between pairs are timed
+        3. Time head-to-head comparisons
+      Produces a 2×2 scatter plot (Figure S2):
+        Top-left:     BNGsim ExprTk vs libRoadRunner
+        Top-right:    BNGsim ExprTk vs AMICI
+        Bottom-left:  BNGsim codegen vs libRoadRunner
+        Bottom-right: BNGsim codegen vs AMICI
+      This demonstrates BNGsim's SBML event support on real-world models.
+    suite: benchmarks/sbml_events/
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner, amici]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, amici, matplotlib]
+      external: []
+    paper_artifacts:
+      - type: figure
+        id: "Figure S2"
+        file: "bngsim/dev/paper/fig_sbml_events_4panel.png"
+        note: "NEW — 4-panel scatter plot for SBML event models"
+    estimated_time: "1–2 hours"
+    output: results/bench_sbml_events.json
+
+  # ── C12: Pythonic workflows (new Table) ──────────────────────
+  - id: bench_pythonic_workflows
+    phase: comparison
+    enabled: false  # superseded by suites/python_ode/ + suites/python_ssa/ (joint S6 table)
+    script: comparison/bench_pythonic_workflows.py
+    description: >
+      Comprehensive comparison of Pythonic simulation workflows. Eight
+      configurations, each tested on simple_system (4 sp) and larger
+      models from suite_ode.json:
+        1. BNGsim + pure Python ModelBuilder API
+        2. BNGsim + universal .net reader module
+        3. scipy/LSODA + pure Python model formulation
+        4. scipy/LSODA + universal .net reader module
+        5. Diffrax + pure Python model formulation
+        6. Diffrax + universal .net reader module
+        7. gillespy2 + pure Python model formulation (SSA only)
+        8. gillespy2 + universal .net reader module (SSA only)
+      Reports median wall time per configuration per model. Demonstrates
+      BNGsim speedup increases with model size due to C++ RHS evaluation.
+    suite: benchmarks/suite_ode.json
+    engines: [bngsim, scipy, diffrax, gillespy2]
+    protocol:
+      warmup: 2
+      runs: 5
+    prerequisites:
+      packages: [bngsim, scipy, diffrax, gillespy2]
+      external: []
+    paper_artifacts:
+      - type: table
+        id: "Table S8 (Pythonic workflows)"
+        location: "bngsim/dev/paper/latex/supplementary.tex"
+        note: "NEW — 8 configurations × multiple models"
+    estimated_time: "10 min"
+    output: results/bench_pythonic_workflows.json
+
+  # ── C13: SBML Test Suite 3-engine validation (new Table) ─────
+  - id: bench_sbml_test_suite
+    phase: validation
+    enabled: false  # superseded by suites/sbml_test_suite/ (Table S8)
+    script: sbml_test_suite/run_sbml_test_suite.py
+    description: >
+      Run the official SBML Test Suite (1,824 semantic test cases, pinned to
+      commit 473e119d / 3.4.0-36-g473e119dd; see sbml_test_suite/SUITE_PIN.json)
+      against BNGsim, libRoadRunner, and AMICI. Reports pass/fail/skip
+      counts per engine, broken down by SBML feature (events, algebraic
+      rules, function definitions, piecewise, etc.). This is a validation-
+      only table — no timing. Demonstrates BNGsim's SBML coverage relative
+      to established engines. BNGsim passes 604/1789 non-skipped cases
+      (34%); the majority of failures are intentionally unsupported features.
+    suite: "SBML Test Suite @473e119d (3.4.0-36-g473e119dd, 1824 semantic cases, external download)"
+    engines: [bngsim, roadrunner, amici]
+    prerequisites:
+      packages: [bngsim, roadrunner, amici]
+      external: []
+    paper_artifacts:
+      - type: table
+        id: "Table S10 (SBML Test Suite)"
+        location: "bngsim/dev/paper/latex/supplementary.tex"
+        note: "NEW — 3-engine SBML Test Suite pass rates"
+    estimated_time: "30 min"
+    output: results/bench_sbml_test_suite.json
+
+  # ── C14: Forward sensitivity benchmark (new Table) ──────────
+  - id: bench_forward_sensitivity
+    phase: comparison
+    enabled: false  # superseded by suites/forward_sens/ (Table S9)
+    script: comparison/bench_forward_sensitivity.py
+    description: >
+      Forward sensitivity analysis benchmark. For each target model
+      and each CVODES corrector method ('simultaneous' = AMICI's
+      compiled-in default; 'staggered' = CVODES'/BNGsim's default),
+      both engines are pinned to the same internal corrector and
+      compared apples-to-apples. Compares:
+        1. BNGsim serial: CVODES with all params at once
+        2. BNGsim sharded: parallel chunked (chunk_size=2) with
+           n_workers in S9_WORKER_COUNTS (default 2,3,4,5,6).
+        3. AMICI forward sensitivity: AMICI's native CVODES wrapper
+      BNGsim's .net is the cross-engine source of truth: ICs and
+      parameter values are pushed defensively into AMICI before
+      timed runs, and a per-model alignment check records any
+      residual divergence. Models: subset of suite ODE models that
+      AMICI can load (up to ~149 species).
+    suite: benchmarks/suite_ode.json
+    engines: [bngsim, amici]
+    protocol:
+      warmup: 1
+      runs: 3
+    prerequisites:
+      packages: [bngsim, amici]
+      external: []
+    paper_artifacts:
+      - type: table
+        id: "Tables S12–S13 (Forward sensitivity)"
+        location: "bngsim/dev/paper/latex/supplementary.tex"
+        note: "Staggered + simultaneous; BNGsim vs AMICI forward sensitivity"
+    estimated_time: "30 min"
+    output: results/bench_forward_sensitivity.json
+
+  # ── C15: BioModels 4-panel (Figure S1) ──────────────────────
+  - id: bench_biomodels_4panel
+    phase: comparison
+    enabled: false  # superseded by suites/biomodels/ (Figs S1/S2 via emit.py)
+    script: comparison/bench_1013_4engine.py
+    description: >
+      Four-panel supplementary figure showing the same 4 comparisons
+      as Table S5 but on the full Pool B manifest union (~1013 IDs by
+      default). The 2×2 scatter plot panels are:
+        Top-left:     BNGsim ExprTk vs libRoadRunner
+        Top-right:    BNGsim ExprTk vs AMICI
+        Bottom-left:  BNGsim codegen vs libRoadRunner
+        Bottom-right: BNGsim codegen vs AMICI
+      Points above the diagonal indicate BNGsim is faster. Colored
+      by species count (blue: 1–10, orange: 11–50, red: >50).
+      3-phase pipeline with checkpointing (load → xval → timing).
+      Figure asset is produced by bngsim/harness/comparison/plot_1013_4panel.py
+      (reads results/bench_1013_4engine.json by default).
+      This replaces the old single-panel Figure S1 (BNGsim vs RR only).
+    suite: Pool B (BioModels Antimony, manifest-driven full union ~1013)
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner, amici]
+    protocol:
+      warmup: 1
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, amici, matplotlib]
+      external: []
+    paper_artifacts:
+      - type: figure
+        id: "Figure S1"
+        file: "bngsim/dev/paper/fig_1013_4panel.png"
+        latex: "bngsim/dev/paper/latex/supplementary.tex"
+        note: >
+          Written by bngsim/harness/comparison/plot_1013_4panel.py (default
+          output bngsim/dev/paper/fig_1013_4panel.png). 4-panel: ExprTk vs RR,
+          ExprTk vs AMICI, codegen vs RR, codegen vs AMICI
+    estimated_time: "4–8 hours"
+    output: results/bench_1013_4engine.json
+
+  # ── C11: legacy job id (disabled; superseded by bench_biomodels_4panel) ──
+  - id: bench_1013_4engine_legacy
+    phase: comparison
+    enabled: false  # superseded by bench_biomodels_4panel
+    script: comparison/bench_1013_4engine.py
+    description: >
+      Legacy alias for the Pool B 4-engine benchmark definition.
+      Superseded by bench_biomodels_4panel (same script/output).
+      Keep disabled unless specifically needed for compatibility workflows.
+    suite: "Pool B (BioModels Antimony, manifest-driven full union ~1013)"
+    engines: [bngsim_exprTk, bngsim_codegen, roadrunner, amici]
+    protocol:
+      warmup: 1
+      runs: 5
+    prerequisites:
+      packages: [bngsim, roadrunner, amici, matplotlib]
+      external: []
+    paper_artifacts: []
+    estimated_time: "4–8 hours"
+    output: results/bench_1013_4engine.json
+
+  # ════════════════════════════════════════════════════════════════
+  # Phase 3: CALIBRATION (prerequisites for some comparison jobs)
+  # ════════════════════════════════════════════════════════════════
+
+  - id: calibrate_horizons
+    phase: calibration
+    enabled: true
+    script: calibrate_horizons.py
+    description: >
+      Calibrate time horizons for Antimony model pools. The default
+      t=1.0 cross-validation horizon is too short for meaningful timing.
+      This script finds model-dependent t_end where simulation takes
+      real work. Must run before bench_ant_3engine and
+      bench_ode_vs_roadrunner.
+    suite: "Pools A+B"
+    engines: [bngsim]
+    cli_flags: "--pool ab"
+    prerequisites:
+      packages: [bngsim]
+      external: []
+    paper_artifacts: []
+    estimated_time: "5 min"
+    output: results/calibrated_horizons.json
+
+  # ════════════════════════════════════════════════════════════════
+  # Phase 4: TABLE/FIGURE GENERATION (post-processing)
+  # ════════════════════════════════════════════════════════════════
+
+  - id: generate_paper_tables
+    phase: tables
+    enabled: false  # superseded by Phase-5 per-suite emit.py → generated/<name>.tex + Phase-6 run_all.py
+    script: comparison/generate_paper_tables.py
+    description: >
+      Read all benchmark JSON results from results/ and generate
+      publication-ready tables in Markdown and LaTeX format. Currently
+      produces a single paper_tables.tex that covers ODE and SSA tables.
+      NOTE: The generated .tex is NOT yet \input{}'d by supplementary.tex
+      — numbers must be manually transcribed. This is a known gap; see
+      bngsim/dev/benchmarks/benchmarking_playbook.md § "Editing tables and figures".
+    suite: null
+    engines: []
+    prerequisites:
+      packages: [numpy]
+      external: []
+    depends_on: [bench_ode_4engine, bench_ssa, bench_psa, bench_nf_vs_nfsim]
+    paper_artifacts:
+      - type: generated_tables
+        files:
+          - "results/paper_tables.md"
+          - "results/paper_tables.tex"
+        note: "Must be manually synced to bngsim/dev/paper/latex/supplementary.tex"
+    estimated_time: "5 sec"
+    output:
+      - results/paper_tables.md
+      - results/paper_tables.tex

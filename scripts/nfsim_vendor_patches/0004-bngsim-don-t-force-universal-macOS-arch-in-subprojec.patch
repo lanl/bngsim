@@ -1,0 +1,29 @@
+From 3359f1db4d07ad55ac69c978667711ff48051b06 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Mon, 18 May 2026 10:38:04 -0600
+Subject: [PATCH 04/14] bngsim: don't force universal macOS arch in subprojects
+
+---
+ CMakeLists.txt | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 96fb4e9..2bb40a4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,6 +1,11 @@
+ cmake_minimum_required(VERSION 3.5...3.27)
+ 
+-set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build universal binary" FORCE)
++# Preserve the historical standalone macOS universal default without
++# overriding the architecture chosen by a parent project that vendors NFsim.
++if(APPLE AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND
++   NOT DEFINED CMAKE_OSX_ARCHITECTURES)
++    set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build universal binary")
++endif()
+ 
+ project(NFsim)
+ 
+-- 
+2.53.0
+

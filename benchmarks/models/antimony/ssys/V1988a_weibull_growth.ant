@@ -1,0 +1,40 @@
+// =============================================================================
+// Source: Voit (1988) "S-Systems as a Canonical Nonlinear Form"
+//         Math. Comput. Modelling 11:140-145
+// Example: Weibull growth law - exact recasting (Equations 2-4)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+//
+// Original Weibull growth law (Equation 2):
+//   W(t) = Wf * exp[-b*(t+a)^(-C)]
+//
+// Differentiate to get ODE and recast as S-system (Equations 4):
+//   dW/dt = b*C * W * Z^(-1)
+//   dZ/dt = -Z
+//   where Z = (t+a)^(C+1)
+//
+// This is an EXACT recasting of the Weibull growth law.
+//
+// NOTE: Parameter values added for simulation.
+// =============================================================================
+
+model V1988a_weibull_growth()
+    // Parameters
+    Wf = 100.0    // Final/asymptotic weight
+    b = 1.0       // Rate parameter
+    C = 2.0       // Shape parameter
+    a = 1.0       // Time shift
+    
+    // Differentiating Weibull to get ODE form:
+    // W(t) = Wf * exp[-b*(t+a)^(-C)]
+    // dW/dt = Wf * exp[-b*(t+a)^(-C)] * b*C*(t+a)^(-C-1)
+    //       = W * b*C*(t+a)^(-C-1)
+    
+    // Original ODE form
+    W' = W * b*C*(time+a)^(-C-1)
+    
+    // Initial condition: W(0) = Wf * exp[-b*a^(-C)]
+    W = Wf * exp(-b*a^(-C))
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

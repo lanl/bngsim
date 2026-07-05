@@ -1,0 +1,246 @@
+BNGsim — THIRD-PARTY NOTICES
+============================
+
+BNGsim itself is licensed under the MIT License; see the LICENSE file in this
+directory for the full text and the U.S. Government / Triad National Security
+copyright notice (Los Alamos National Laboratory release O5098).
+
+This NOTICE lists third-party software and data that BNGsim redistributes —
+either vendored into the source tree or, in the case of SUNDIALS, fetched at
+build time and statically linked into the binary (wheel) distributions. Each
+component is redistributed under its own license, reproduced or referenced
+below; where BNGsim has modified a component, that is stated.
+
+Per-file provenance for the vendored model and test-data corpora — the exact
+upstream path, pinned commit, and SHA-256 of each individual file — is
+documented in benchmarks/models/README.md, benchmarks/models/sbml/README.md,
+and the corpus manifests under parity_checks/ and harness/.
+
+
+================================================================================
+1. Vendored source code (third_party/)
+================================================================================
+
+--------------------------------------------------------------------------------
+NFsim — network-free stochastic simulator
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/RuleWorld/nfsim
+Version:       branch `bngsim/vendor` at 8478a3c8 (based on origin/master 4c3da839)
+License:       MIT — Copyright (c) 2016 Michael W. Sneddon, James R. Faeder,
+               Thierry Emonet
+In repository: third_party/nfsim/
+License text:  third_party/nfsim/LICENSE.txt
+Modified:      YES. BNGsim carries local patches to the vendored NFsim (raising
+               exceptions instead of exit()/terminate, BNG-compatibility fixes,
+               and library-only build trims). Every change is recorded in
+               third_party/nfsim/VENDOR.json ("carry_queue").
+
+--------------------------------------------------------------------------------
+RuleMonkey — canonical rule/species graph library
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/richardposner/RuleMonkey
+Version:       fbdde54f
+License:       MIT — Copyright (c) 2026 Bill Hlavacek
+In repository: third_party/rulemonkey/
+License text:  third_party/rulemonkey/LICENSE
+Modified:      No source changes. The CLI, tests, and examples are pruned and one
+               include path is normalized at build-configuration time
+               (third_party/rulemonkey/VENDOR.json).
+
+--------------------------------------------------------------------------------
+MIR — lightweight JIT compiler (optional micro-JIT backend, default OFF)
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/vnmakarov/mir
+Version:       99c65079
+License:       MIT — Copyright (c) 2018-2024 Vladimir Makarov
+In repository: third_party/mir/
+License text:  third_party/mir/LICENSE
+Modified:      No. The upstream tree is pruned to the translation units BNGsim
+               builds (third_party/mir/VENDOR.json). The MIR backend is gated
+               behind the BNGSIM_ENABLE_MIR CMake option and is OFF by default.
+
+--------------------------------------------------------------------------------
+ExprTk — C++ Mathematical Expression Toolkit Library
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/ArashPartow/exprtk
+Version:       66883f0d
+License:       MIT — Copyright (c) 1999-2025 Arash Partow
+In repository: third_party/exprtk/exprtk.hpp
+License text:  third_party/exprtk/LICENSE (also stated in the exprtk.hpp header)
+Modified:      No.
+
+
+================================================================================
+2. Build-time dependency bundled in binary (wheel) distributions
+================================================================================
+
+--------------------------------------------------------------------------------
+SUNDIALS — SUite of Nonlinear and DIfferential/ALgebraic equation Solvers
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/LLNL/sundials
+Version:       v7.2.1
+License:       BSD-3-Clause — Copyright (c) 2002-2024, Lawrence Livermore National
+               Security and Southern Methodist University
+In repository: Not committed to source. Fetched at build time from the pinned
+               official release archive (third_party/sundials/VENDOR.json, via
+               CMake FetchContent) and statically linked into the compiled
+               extension, so it is present in BNGsim's binary wheel distributions.
+License text:  https://github.com/LLNL/sundials/blob/v7.2.1/LICENSE
+               (BSD-3-Clause text reproduced in Section 5 below)
+Modified:      No.
+
+
+================================================================================
+3. Vendored model and test-data corpora
+================================================================================
+
+These are redistributed data files (BNGL / SBML models and stochastic test
+cases). Per-file provenance — upstream path, pinned commit, and SHA-256 — is in
+benchmarks/models/README.md and the corpus manifests under parity_checks/ and
+harness/.
+
+--------------------------------------------------------------------------------
+RuleHub — curated rule-based model repository
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/RuleWorld/RuleHub
+Version:       479d6d62
+License:       MIT — Copyright (c) 2018 RuleWorld (no individual holder is named
+               in the upstream LICENSE)
+In repository: benchmarks/models/ (bngl/rulehub/ and curated role buckets),
+               parity_checks/bng_parity/ (vendored per manifest.json)
+License text:  MIT — reproduced in Section 5 below.
+Modified:      Some vendored copies were comment-scrubbed (comments/formatting
+               only; the reaction network is unchanged).
+
+--------------------------------------------------------------------------------
+BNGL-Models — BNGL model collection
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/wshlavacek/BNGL-Models
+Version:       81c90d8f
+License:       CC-BY-4.0 — Copyright (c) 2026 Bill Hlavacek
+               (https://creativecommons.org/licenses/by/4.0/)
+In repository: benchmarks/models/ (curated role buckets),
+               parity_checks/bng_parity/ (vendored per manifest.json)
+Attribution (required by CC-BY-4.0):
+                 Title:   BNGL-Models
+                 Author:  Bill Hlavacek
+                 Source:  https://github.com/wshlavacek/BNGL-Models
+                 License: CC-BY-4.0
+Modified:      YES — some vendored copies were comment-scrubbed (comments/
+               formatting only; reaction networks unchanged). CC-BY-4.0 requires
+               this indication that changes were made.
+
+--------------------------------------------------------------------------------
+BioNetGen model distribution (Models2)
+--------------------------------------------------------------------------------
+Upstream:      BioNetGen 2.9.3 distribution — https://github.com/RuleWorld/bionetgen
+Version:       2.9.3
+License:       MIT — Copyright (c) 2024 James R. Faeder
+In repository: benchmarks/models/ (bngl/models2/ and some curated role buckets)
+License text:  MIT — reproduced in Section 5 below.
+Modified:      No.
+
+--------------------------------------------------------------------------------
+DSMTS — Discrete Stochastic Models Test Suite
+--------------------------------------------------------------------------------
+Upstream:      https://github.com/sbmlteam/sbml-test-suite
+               (commit 473e119d, "3.4.0-36-g473e119dd")
+Original
+authors:       Thomas W. Evans, Colin S. Gillespie, Darren J. Wilkinson
+License:       GNU LGPL-2.1-or-later — Copyright (C) 2004-2017 jointly by the
+               California Institute of Technology, EMBL-EBI, University of
+               Heidelberg, University of Tübingen, The Babraham Institute, and
+               the University of Hertfordshire (see the vendored LICENSE.txt)
+In repository: harness/sbml_test_suite/dsmts/cases/ (the 39 DSMTS-proper
+               stochastic cases, 156 files; hashed in dsmts_manifest.json)
+License text:  harness/sbml_test_suite/dsmts/LICENSE.txt (upstream terms and the
+               DSMTS attribution) and harness/sbml_test_suite/dsmts/COPYING.txt
+               (the full GNU LGPL v2.1)
+Modified:      No — vendored byte-identical to upstream at the pinned commit.
+
+
+================================================================================
+4. Development and validation tools (NOT redistributed)
+================================================================================
+
+BNGsim was developed and validated against several external tools that are NOT
+redistributed with it — RoadRunner, AMICI, COPASI, BioNetGen's BNG2.pl /
+run_network, and the SBML semantic test suite. Using them as reference oracles
+imposes no redistribution obligation, but they are gratefully acknowledged, with
+citations, in ACKNOWLEDGMENTS.md.
+
+
+================================================================================
+5. Full license texts
+================================================================================
+
+--------------------------------------------------------------------------------
+MIT License
+--------------------------------------------------------------------------------
+Applies to NFsim, RuleMonkey, MIR, ExprTk, RuleHub, and the BioNetGen Models2
+distribution, each under its own copyright as listed in Sections 1 and 3.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+BSD 3-Clause License
+--------------------------------------------------------------------------------
+Applies to SUNDIALS — Copyright (c) 2002-2024, Lawrence Livermore National
+Security and Southern Methodist University. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+Creative Commons Attribution 4.0 International (CC-BY-4.0)
+--------------------------------------------------------------------------------
+Applies to BNGL-Models. Full legal code:
+https://creativecommons.org/licenses/by/4.0/legalcode
+Human-readable summary: https://creativecommons.org/licenses/by/4.0/
+Attribution is provided in Section 3 above; changes made by BNGsim are noted.
+
+--------------------------------------------------------------------------------
+GNU Lesser General Public License, version 2.1
+--------------------------------------------------------------------------------
+Applies to the DSMTS test cases. The full text is vendored at
+harness/sbml_test_suite/dsmts/COPYING.txt, and the SBML Test Suite's own
+licensing terms (including the DSMTS attribution) at
+harness/sbml_test_suite/dsmts/LICENSE.txt.

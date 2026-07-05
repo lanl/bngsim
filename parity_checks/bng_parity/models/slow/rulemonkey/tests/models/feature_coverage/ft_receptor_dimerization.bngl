@@ -1,0 +1,51 @@
+# Feature: receptor dimerization + adaptor recruitment
+# Tests: ligand-induced receptor dimerization followed by adaptor binding
+# Covers: Tutorial_Example, egfr_net, simple_nfsim from existing corpus
+# Tier: base
+# Expected: ligand crosslinks two receptors; dimer recruits adaptor
+
+begin model
+begin parameters
+    L_tot    200
+    R_tot    400
+    A_tot    300
+    kfLR     0.001   # /s, ligand binds receptor (scaled for larger pop)
+    krLR     0.1     # /s, ligand unbinds receptor
+    kfRA     0.002   # /s, adaptor recruitment to ligand-bound receptor
+    krRA     0.2     # /s, adaptor release
+end parameters
+
+begin molecule types
+    L(r1,r2)
+    R(l,a)
+    A(r)
+end molecule types
+
+begin seed species
+    L(r1,r2)   L_tot
+    R(l,a)     R_tot
+    A(r)       A_tot
+end seed species
+
+begin observables
+    Molecules  L_free      L(r1,r2)
+    Molecules  R_free      R(l,a)
+    Molecules  LR          L(r1!+)
+    Molecules  R_dimer     L(r1!+,r2!+)
+    Molecules  A_free      A(r)
+    Molecules  A_recruited A(r!+)
+end observables
+
+begin reaction rules
+    # Ligand binds first receptor
+    L(r1) + R(l) <-> L(r1!1).R(l!1)  kfLR, krLR
+    # Ligand crosslinks second receptor (dimerization)
+    L(r2) + R(l) <-> L(r2!1).R(l!1)  kfLR, krLR
+    # Adaptor binds to ligand-bound receptor
+    R(l!+,a) + A(r) <-> R(l!+,a!1).A(r!1)  kfRA, krRA
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

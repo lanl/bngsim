@@ -1,0 +1,102 @@
+begin model
+
+# NB: this model does not consider steric effects.
+
+begin parameters
+
+f 0.001
+
+NA 6.02214e23 # molecules per mol
+V f*1e-9 # L per cell
+
+koff 1.2e-2 # /s 
+
+# Change KD from 1.2e-2/9.2e6 = 1.3 nM to 13 nM by multiplying kp1 by 0.1.
+kp1 0.1*9.2e6/(NA*V) # /M/s converted to /cpc/s
+km1=koff
+
+jp2=100 # /s
+jm2=koff
+
+Ltot 1.5e-9*(NA*V) # M converted to cpc
+Rtot 5.5e-9*(NA*V) # M converted to cpc
+
+# parameters of the measurement model
+
+Fmax 96.6 # a.u. (from y-value in Figure 6 at time t = 0)
+Fmin 69 # a.u. (from dashed line in Figure 6, corresonding to Fab saturation)
+
+end parameters
+
+begin molecule types
+
+BSA(DNP,DNP,DNP,DNP)
+IgE(Fab,Fab)
+
+L0(s,s,s,s)
+R0(s,s)
+
+end molecule types
+
+begin seed species
+
+BSA(DNP,DNP,DNP,DNP) Ltot
+IgE(Fab,Fab) Rtot
+
+L0(s,s,s,s) Ltot
+R0(s,s) Rtot
+
+end seed species
+
+begin observables
+
+Molecules boundFab IgE(Fab!+)
+Molecules boundR0s R0(s!+)
+
+end observables
+
+begin functions
+
+#####################
+# measurement model #
+#####################
+
+relFL()=Fmax*(2*Rtot-boundFab)/(2*Rtot)+Fmin*boundFab/(2*Rtot)
+
+relFL0()=Fmax*(2*Rtot-boundR0s)/(2*Rtot)+Fmin*boundR0s/(2*Rtot)
+
+end functions
+
+begin reaction rules
+
+###########################################
+# model with cyclic receptor dimer (ring) #
+###########################################
+
+# bimolecular association reaction
+BSA(DNP)+IgE(Fab)->BSA(DNP!1).IgE(Fab!1) kp1
+
+# unimolecular isomerization reaction 
+#  (formation of a 4-member cyclic structure with 2:2 stoichiometry)
+BSA(DNP,DNP!1).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab)->\
+BSA(DNP!4,DNP!1).IgE(Fab!1,Fab!2).BSA(DNP!2,DNP!3).IgE(Fab!3,Fab!4) jp2
+
+# NB: NFsim does not enforce product molecularity constraints.
+BSA(DNP!1).IgE(Fab!1)->BSA(DNP)+IgE(Fab) koff
+
+###########################################################################
+# model with only tree-like ligand-induced receptor aggregates (no rings) #
+###########################################################################
+
+L0(s)+R0(s)<->L0(s!1).R0(s!1) kp1,koff
+
+end reaction rules
+
+end model
+
+begin actions
+
+# NB: the "utl" argument needs to be set to a higher-than-default value for this problem.
+simulate({method=>"nf",complex=>1,utl=>100,gml=>20000000,get_final_state=>0,t_start=>0,t_end=>2400,n_steps=>600,print_functions=>1})
+
+end actions

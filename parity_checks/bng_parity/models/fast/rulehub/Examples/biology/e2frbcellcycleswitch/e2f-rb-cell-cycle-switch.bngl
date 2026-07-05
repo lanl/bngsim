@@ -1,0 +1,100 @@
+begin model
+begin parameters
+    # E2F/Rb Switch: The G1/S transition gate.
+    # Advanced features: Hill kinetics for the E2F loop and exclusion logic.
+    
+    # Growth Trigger (Mitogen/CycD)
+    k_synth_mit 0.5    # Drive from outside
+    k_phos_cycd 1.0    # Rb phosphorylation by CycD-CDK
+    
+    # E2F Amplification (Self-locking)
+    k_cyce_synth_max 5.0
+    Km_e2f 150         # Threshold for CycE induction
+    n_hill 3.0         # Nonlinearity of the switch
+    
+    # Rb Control
+    k_rb_bind 5.0      # Rb sequesters E2F
+    k_phos_cyce 2.0    # Rb phosphorylation by CycE-CDK (Feedback)
+    
+    # Arrest / Stability
+    k_p27_inh 2.5      # CKI inhibition of CDK
+    k_deg_cyce 0.2     # Proteolytic clearance
+    k_reset 0.05
+    
+    # Initials
+    Rb_tot 500
+    E2F_tot 200
+    p27_tot 100
+    Mitogens 0         # Input drive
+    k_cycd_synth 0.05  # Current CycD production rate
+end parameters
+
+begin molecule types
+    Mitogen()
+    Rb(b,s~U~P)       # U: Binds E2F,P: Released
+    E2F(b)
+    CycD()
+    CycE(b)
+    p27(b)
+end molecule types
+
+begin seed species
+    Mitogen() 0
+    Rb(b,s~U) Rb_tot
+    E2F(b) E2F_tot
+    CycD() 0
+    CycE(b) 10
+    p27(b) p27_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules S_Phase_Drive  E2F(b)                   # Free activators
+    Molecules CycE_Level     CycE()                  # Positive feedback marker
+    Molecules Rb_Sequest     Rb(b!1).E2F(b!1)         # The cell cycle brake
+    Molecules CKI_Inhibition CycE(b!1).p27(b!1)       # Arrest status
+    Molecules CyclinE_Count CycE()                   # Phase driver status
+    Molecules E2F_Active    E2F(b)                   # Freedom status
+    Molecules HyperPhos_Rb   Rb(s~P)                  # Inactive brake
+end observables
+
+begin functions
+    # Sharp switch for E2F-mediated Cyclin E induction
+    v_switch() = k_cyce_synth_max * (E2F_Active^n_hill) / (Km_e2f^n_hill + E2F_Active^n_hill)
+end functions
+
+begin reaction rules
+    ## REPRESSION Stage
+    # Rb sequesters E2F
+    Rb(b,s~U) + E2F(b) <-> Rb(b!1,s~U).E2F(b!1) k_rb_bind,0.1
+    
+    ## ACTIVATION (Mitogen)
+    # Mitogen produces CycD,which phosphorylates Rb
+    0 -> CycD() k_cycd_synth
+    CycD() + Rb(b!1,s~U).E2F(b!1) -> CycD() + Rb(b,s~P) + E2F(b) k_phos_cycd
+    
+    ## AMPLIFICATION (Feedback)
+    # Free E2F induces CycE (Functional Rate - Hill)
+    0 -> CycE(b) v_switch()
+    
+    # CycE-CDK also phosphorylates Rb (Positive Feedback)
+    CycE(b) + Rb(b!1,s~U).E2F(b!1) -> CycE(b) + Rb(b,s~P) + E2F(b) k_phos_cyce
+    
+    ## ARREST Phase
+    p27(b) + CycE(b) <-> p27(b!1).CycE(b!1) k_p27_inh,0.1
+    
+    ## RESET
+    Rb(s~P) -> Rb(s~U) k_reset
+    CycD() -> 0 k_deg_cyce
+    CycE() -> 0 k_deg_cyce
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    # Phase 1: Basal (0-20)
+    simulate({method=>"ode",t_end=>20,n_steps=>40})
+    # Phase 2: Mitogen Stimulation (20-150)
+    setParameter("k_cycd_synth",0.5)
+    simulate({method=>"ode",t_end=>150,n_steps=>260,continue=>1})
+end actions
+end model

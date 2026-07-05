@@ -1,0 +1,54 @@
+begin model
+begin parameters
+    # Kinetic Parameters
+    k_bind   0.1   # TCR-pMHC interaction
+    k_unbind 0.0012  # Dissociation
+    k_lck    0.45    # Lck kinase activation
+    k_zap    0.35    # ZAP70 phosphorylation
+    k_reset  0.08    # Deactivation/Phosphatase
+end parameters
+
+begin molecule types
+    TCR(p,state~inactive~active)  # T Cell Receptor
+    pMHC(r)                       # Peptide-MHC Complex
+    Lck(state~off~on)             # Src Family Kinase
+    ZAP70(phos~U~P)               # Zeta-chain-associated protein kinase 70
+end molecule types
+
+begin seed species
+    TCR(p,state~inactive) 80
+    pMHC(r) 60
+    Lck(state~off) 40
+    ZAP70(phos~U) 70
+end seed species
+
+begin reaction rules
+    # 1. Immune Recognition (Synapse Nucleation)
+    TCR(p,state~inactive) + pMHC(r) <-> TCR(p!1,state~inactive).pMHC(r!1) k_bind,k_unbind
+    
+    # 2. Kinase Recruitment / Activation
+    # Lck is recruited to the bound TCR complex
+    Lck(state~off) + TCR(p!1,state~inactive).pMHC(r!1) -> Lck(state~on) + TCR(p!1,state~active).pMHC(r!1) k_lck
+    
+    # 3. Downstream Signaling
+    # Active TCR recruits/activates ZAP70
+    TCR(p!+,state~active) + ZAP70(phos~U) -> TCR(p!+,state~active) + ZAP70(phos~P) k_zap
+    
+    # 4. Reset Mechanisms (Phosphatases/Disassembly)
+    ZAP70(phos~P) -> ZAP70(phos~U) k_reset
+    TCR(p,state~active) -> TCR(p,state~inactive) k_reset
+    Lck(state~on) -> Lck(state~off) k_reset
+end reaction rules
+
+begin observables
+    Molecules Bound_TCR     TCR(p!+,state~inactive)
+    Molecules Active_TCR    TCR(state~active)
+    Molecules Phospho_ZAP70 ZAP70(phos~P)
+end observables
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_start=>0,t_end=>40,n_steps=>150})
+end actions
+end model
+

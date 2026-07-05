@@ -1,0 +1,31 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NaV       6.022e23*1e-15  # Constant
+    2 Lig_tot   6.0e3  # Constant
+    3 Rec_tot   4.0e2  # Constant
+    4 kp1       1e5/NaV  # ConstantExpression
+    5 km1       0.01  # Constant
+    6 kp2       1e3/NaV  # ConstantExpression
+    7 km2       0.01  # Constant
+    8 vol_wall  0.88  # Constant
+    9 vol_EC    39  # Constant
+   10 vol_PM    0.01  # Constant
+   11 vol_CP    1  # Constant
+end parameters
+begin species
+    1 @EC::Lig(l,l) Lig_tot
+    2 @PM::Rec(a) Rec_tot
+    3 @PM::Lig(l!1,l)@EC.Rec(a!1) 0
+    4 @PM::Lig(l!1,l!2)@EC.Rec(a!2).Rec(a!1) 0
+end species
+begin reactions
+    1 1,2 3 0.051282051*kp1 #R1 unit_conversion=1/vol_EC
+    2 3 1,2 km1 #_reverse_R1
+    3 2,3 4 100*kp2 #R2 unit_conversion=1/vol_PM
+    4 4 2,3 2*km2 #_reverse_R2
+end reactions
+begin groups
+    1 RecFree              2
+    2 RecBound             3,2*4
+    3 Dimers               4
+end groups

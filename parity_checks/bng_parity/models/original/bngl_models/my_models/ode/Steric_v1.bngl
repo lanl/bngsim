@@ -1,0 +1,162 @@
+# A model for ligand-receptor binding with steric effects
+#   The ligand is multivalent; the receptor is monovalent
+# Parameter values are consistent with those of Ref 1.
+# We assume conservation of ligand and receptor.
+
+# List of References
+# 1. Hlavacek WS, et al. (1999)
+#    Quantifying aggregation of IgE-Fc(epsilon)RI by multivalent antigen
+#    Biophys J 76: 2421-2431.
+# 2. Hlavacek WS, Posner RG, Perelson AS (1999)
+#    Steric effects on multivalent ligand-receptor binding:
+#    exclusion of ligand sites by bound cell surface receptors.
+#    Biophys J 76: 3031-3043. 
+
+begin model
+
+begin parameters
+
+# Avogadro constant
+NA  6.02214e23 # [=] molecules per mol
+
+# cell density
+rho  1.0e6 # [=] number of cells per mL
+
+# volume of fluid surrounding a single cell (on average)
+# the factor of 1.0e-3 (below) arises from 1 L per 1000 mL
+V=1.0e-3/rho # [=] L
+
+# ligand valence
+n  5 # 25 for the ligand considered in Ref 1
+# because of BioNetGen limitations, considering a large valence is trouble
+
+# nu(i) = (n - i)*H(i), Eq 1 in Ref 2
+#   n is the total number of ligand sites (ligand valence)
+#   i is the number of ligand sites bound
+#   H(i) is a function that corrects for steric effects
+#     H(i) = 1 in the absence of steric effects
+#   nu(i) is the number of available ligand sites
+# We will assume H(i) = exp(-a*i), empirically determined (Ref 1)
+#   This expression approximates that of Eq 10 in Ref 2
+# h = exp(-a), where a = 0.43 (from Ref 1)
+# Thus, nu(i) = (n - i)*h**i
+h  0.65 # [=] dimensionless 
+
+# number of receptors per cell
+RT  9.6e5 # Ref 1 (a receptor is a Fab arm of cell-surface IgE)
+
+# ligand concentration
+LTconc  0.4e-9 # [=] M (corresponds to 0.1 ug/ml for DNP-PE ligand of Ref 1)
+
+# number of ligands per cell
+LT=LTconc*NA*V
+
+# single-site equilibrium association constant
+#   for capture of free ligand by a receptor
+K0eq  4.4e8/(NA*V) # [=] /M (Ref 1), converted to /(molecule/cell)
+
+# single-site equilibrium receptor crosslinking constant
+K1eq  13.0/(h*RT) # [=] /(molecule/cell) (Ref 1)
+
+# dissociation rate constant
+koff  0.1 # /s (arbitrary)
+
+# single-site association rate constant for ligand capture
+kp0=K0eq*koff # [=] /(molecule/cell)/s
+
+# single-site forward rate constant for receptor crosslinking
+kp1=K1eq*koff # [=] /(molecule/cell)/s
+
+end parameters
+
+begin molecule types
+
+# I want ligand sites to be explicitly defined as equivalent, as follows:
+#L(r,r,r,r,r)
+# BUT this causes problems, so...
+
+# multivalent ligand
+L(r1,r2,r3,r4,r5)
+# monovalent receptor
+R(l)
+
+end molecule types
+
+begin seed species
+
+L(r1,r2,r3,r4,r5)  LT # all ligand is initially free
+R(l)  RT # all receptor is initially free
+
+end  seed species
+
+begin observables
+
+Species freeR R(l)
+Molecules Rtot R()
+Molecules R1 R(l!1).L(r1!1,r2,r3,r4,r5) # number of uncrosslinked bound receptors
+Species R2 R==2 # number of receptor dimers
+Species R3 R==3 # number of receptor trimers
+Species R4 R==4 # number of receptor tetramers
+Species R5 R==5 # number of receptor pentamers
+
+# I want number of ligand-receptor bonds (k)
+# BUT... the stupid observable below gives n choose k
+# Molecules Nbonds L(r!+)
+# It would be nice to have a new observable type that returns number of bonds, k,
+# not the number of possible ways of having k bonds
+
+#Molecules N1bonds L(r1!+)
+#Molecules N2bonds L(r2!+)
+#Molecules N3bonds L(r3!+)
+#Molecules N4bonds L(r4!+)
+#Molecules N5bonds L(r5!+)
+
+# number of bonds
+Molecules i L(r1!+) L(r2!+) L(r3!+) L(r4!+) L(r5!+)
+# Does i = 0 if there are no matches?
+# I don't want i reported in the gdat file; I just want to use i in a function
+# Can I override the default behavior of including i in the gdat file?
+
+end observables
+
+begin functions
+
+kp1nu(x)  kp1*(n-i(x))*(h^i(x))
+# Could we allow ** in addition to ^ for "raise to the power of"?
+# Can I write kp2*nu(x) for the rate of a rule instead of kp1nu(x)?
+# nu() would be (n-i)*(h**i)
+
+stat(x)  i(x)+1
+
+end functions
+
+begin reaction rules
+
+# capture/release of free ligand
+L(r1,r2,r3,r4,r5)+R(l)<->L(r1!1,r2,r3,r4,r5).R(l!1) n*kp0,koff
+
+# I would like to write one rule for ligand-mediated receptor crosslinking
+# %x:L(r!+,r)+R(l)<->L(r!+,r!1).R(l!1) kp2*nu(x),koff*stat(x)
+# BUT... this is not possible unless ligand sites are defined as being identical, so...
+# reversible formation of receptor dimer
+%x:L(r1!+,r2,r3,r4,r5)+R(l)<->L(r1!+,r2!1,r3,r4,r5).R(l!1) kp1nu(x),2*koff
+# there seems to be a problem with using x twice, so I can't seem to have kp1nu(x) and stat(x)
+#   for the rate laws
+
+# reversible foramtion of receptor trimer
+%x:L(r1!+,r2!+,r3,r4,r5)+R(l)<->L(r1!+,r2!+,r3!1,r4,r5).R(l!1) kp1nu(x),3*koff
+
+# reversible foramtion of receptor tetramer
+%x:L(r1!+,r2!+,r3!+,r4,r5)+R(l)<->L(r1!+,r2!+,r3!+,r4!1,r5).R(l!1) kp1nu(x),4*koff
+
+# reversible foramtion of receptor pentamer
+%x:L(r1!+,r2!+,r3!+,r4!+,r5)+R(l)<->L(r1!+,r2!+,r3!+,r4!+,r5!1).R(l!1) kp1nu(x),5*koff
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1});
+simulate_ode({t_start=>0,t_end=>2,n_steps=>100});

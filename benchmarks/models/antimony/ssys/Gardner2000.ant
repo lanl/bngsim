@@ -1,0 +1,57 @@
+// Gardner2000_ToggleSwitch.ant
+//
+// Source:
+//   Gardner TS, Cantor CR, Collins JJ (2000)
+//   "Construction of a genetic toggle switch in Escherichia coli."
+//   Nature 403:339–342. doi:10.1038/35002131
+//
+// Implementation based on the curated BioModels entry BIOMD0000000507
+// (JSim model "Gardner2000 - genetic toggle switch in E.coli").
+//
+// State variables:
+//   R1 : concentration of repressor 1 (e.g. LacI)
+//   R2 : concentration of repressor 2 (e.g. TetR)
+//
+// Dimensionless ODEs:
+//   dR1/dt = alpha_1 / (1 + R2^{n_2}) - k_deg1 * R1
+//   dR2/dt = alpha_2 / (1 + R1^{n_1}) - k_deg2 * R2
+//
+// Parameters from BIOMD0000000507:
+//   alpha_1 = 156.25   (effective synthesis rate of repressor 1)
+//   alpha_2 = 15.6     (effective synthesis rate of repressor 2)
+//   n_2     = 2.5      (cooperativity of repression of promoter 2)
+//   n_1     = 1.0      (cooperativity of repression of promoter 1)
+//   k_deg1 = k_deg2 = 1  (degradation/dilution rates; set as time scale)
+//
+// Initial conditions (BioModels/JSim):
+//   R1(0) = 0
+//   R2(0) = 0
+
+model Gardner2000_ToggleSwitch
+
+  // Compartment
+  compartment cell = 1;
+
+  // Species (repressor concentrations)
+  species R1 in cell;
+  species R2 in cell;
+
+  // Parameters
+  const alpha_1 = 156.25;
+  const alpha_2 = 15.6;
+  const n_2     = 2.5;
+  const n_1     = 1.0;
+  const k_deg1  = 1.0;
+  const k_deg2  = 1.0;
+
+  // ODEs: mutually repressive toggle
+  R1' = alpha_1 / (1 + R2^n_2) - k_deg1 * R1;
+  R2' = alpha_2 / (1 + R1^n_1) - k_deg2 * R2;
+
+  // Initial conditions (uninduced, both low)
+  R1 = 0;
+  R2 = 0;
+
+end
+// @SIM T_START=0 T_END=8 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

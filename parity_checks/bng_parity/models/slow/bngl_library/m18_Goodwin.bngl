@@ -1,0 +1,89 @@
+begin model
+#@model_id: m18_Goodwin
+#@title: Goodwin oscillator
+#@description: Three-variable Goodwin oscillatory feedback model with Hill-type end-product repression and first-order degradation. From Goodwin (1965) Advances in Enzyme Regulation 3:425-428.
+#@organism: other
+#@authors: unknown
+#@created: 2026-03-08
+#@modified: 2026-03-08
+#@bng_version: >=2.9.3
+#@units_convention: population-based; molecule counts
+#@runtime_expectation: ~<1 min typical runs
+#@license: CC-BY-4.0
+#@house_style_version: 0.1
+#@source: from_antimony
+
+begin parameters
+  NA       6.02214076e23  # 1/mol
+  V_ref    1.0            # L
+  f        1.0            # dimensionless
+
+  # Model parameters
+  k1       5.0            # molecules/time  max transcription rate
+  K        2.0            # molecules  Hill repression threshold
+  n        3              # dimensionless  Hill coefficient
+  d1       1.0            # 1/time  mRNA degradation rate
+  k2       1.5            # 1/time  translation rate
+  d2       1.0            # 1/time  enzyme degradation rate
+  k3       1.2            # 1/time  product synthesis rate
+  d3       1.0            # 1/time  product degradation rate
+end parameters
+
+begin molecule types
+  X1()   # mRNA
+  X2()   # enzyme
+  X3()   # product (repressor)
+end molecule types
+
+begin seed species
+  X1()  1   # molecules
+  X2()  1   # molecules
+  X3()  1   # molecules
+end seed species
+
+begin observables
+  Molecules  Obs_X1  X1()
+  Molecules  Obs_X2  X2()
+  Molecules  Obs_X3  X3()
+end observables
+
+begin functions
+  # Hill-repressed transcription: k1 / (1 + (X3/K)^n)
+  syn_X1() = k1 / (1 + (Obs_X3 / K)^n)
+
+  # Translation: k2 * X1
+  syn_X2() = k2 * Obs_X1
+
+  # Product synthesis: k3 * X2
+  syn_X3() = k3 * Obs_X2
+end functions
+
+begin reaction rules
+  # mRNA synthesis (Hill-repressed by product X3)
+  0 -> X1()  syn_X1()
+
+  # mRNA degradation (first-order)
+  X1() -> 0  d1
+
+  # Enzyme synthesis (proportional to mRNA)
+  0 -> X2()  syn_X2()
+
+  # Enzyme degradation (first-order)
+  X2() -> 0  d2
+
+  # Product synthesis (proportional to enzyme)
+  0 -> X3()  syn_X3()
+
+  # Product degradation (first-order)
+  X3() -> 0  d3
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})
+
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>20,n_steps=>400})
+  simulate({method=>"nf",suffix=>"nfr",t_start=>0,t_end=>20,n_steps=>400,complex=>1})
+end actions

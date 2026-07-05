@@ -1,0 +1,81 @@
+begin model
+# Model 3
+# Reference:
+# - Kholodenko BN (2015) Cell Rep 12:1939-1949.
+begin parameters
+varyI1 0 # Boolean indicator
+varyI2 0 # Boolean indicator
+I1init 0 
+I2init 0
+fa 0.01 # from caption of Figure 3
+fb 0.005 # from caption of Figure 3
+g1a 2 # from caption of Figure 3
+g1b 5 # from caption of Figure 3
+g2a 10 # from caption of Figure 3
+g2b 20 # from caption of Figure 3
+g3a 0.01 # from caption of Figure 3
+g3b 10 # from caption of Figure 3
+alpha 0.1 # value reported in caption of Figure 1; calculations of Figure 2 are reported to use the same value
+lambda 10 # value reported in Supplemental Experimental Procedures, Section 1 (see Eq. (S1.10))
+rho 0.5 # value reported in Supplemental Experimental Procedures, Seciton 1 (see Eq. (S1.10))
+kappa 1 # monomer activity is normalized
+end parameters
+begin molecule types
+I1() # h1
+I2() # h2
+end molecule types
+begin seed species
+I1() I1init 
+I2() I2init
+end seed species
+begin observables
+Molecules I1 I1()
+Molecules I2 I2()
+end observables
+begin functions
+h1()=I1
+h2()=I2
+# Eq. (S2.13)
+A()=2*alpha*(1+h1()/fa+h2()/fb+h1()/(fa*g1a)+h2()/(fb*g1b)+h1()^2/(fa*g1a*g2a)+h2()^2/(fb*g1b*g2b)+h1()*h2()/(fa*g1a*g3b)+h1()*h2()/(fb*g1b*g3a))
+B()=1+h1()+h2()
+r0()=(sqrt(1+8*alpha)-1)/(4*alpha) # from special case of Eq. (S2.13) where h1=h2=0 and quadratic formula
+r1r20()=alpha*r0()^2 # from line 1 in Eq. (S2.10)
+Activity0()=lambda*r1r20()+kappa*r0() # special case of Eq. (S2.14) where h1=h2=0
+r()=(-B()+sqrt(B()^2+4*A()))/(2*A()) # from Eq. (S2.13) and quadratic formula
+r1r2()=alpha*r()^2 # from line 1 in Eq. (S2.10)
+r1i1r2()=h1()*(alpha*r()^2)/(fa) # from line 3 in Eq. (S2.10), left
+r1i2r2()=h2()*(alpha*r()^2)/(fb) # from line 3 in Eq. (S2.10), right
+r1r2i1()=h1()*(alpha*r()^2)/(fa*g1a) # from line 4 in Eq. (S2.10), left
+r1r2i2()=h2()*(alpha*r()^2)/(fb*g1b) # from line 4 in Eq. (S2.10), right
+Act_uninhibitedMonomers()=kappa*(r())
+Act_partiallyInhibitedDimers()=rho*lambda*(r1i1r2()+r1i2r2()+r1r2i1()+r1r2i2())
+Act_uninhibitedDimers()=lambda*(r1r2())
+Normalized_Kinase_Activity()=(Act_uninhibitedMonomers()+Act_partiallyInhibitedDimers()+Act_uninhibitedDimers())/Activity0()
+end functions
+begin reaction rules
+0->I1() 1*varyI1 # increment I1 (from 0 to 5 - see actions block); time corresponds to h1
+0->I2() 1*varyI2 # increment I2 (from 0 to 5 - see actions block); time corresponds to h2
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+resetConcentrations()
+setParameter("varyI1",1)
+setParameter("I1init",0)
+setParameter("varyI2",0)
+setParameter("I2init",1)  
+simulate({suffix=>"red",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h1)
+resetConcentrations()
+setParameter("varyI1",0)
+setParameter("I1init",0)
+setParameter("varyI2",1)
+setParameter("I2init",0) 
+simulate({suffix=>"blue",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h)
+resetConcentrations()
+setParameter("varyI1",1)
+setParameter("I1init",0)
+setParameter("varyI2",0)
+setParameter("I2init",0) 
+simulate({suffix=>"black",method=>"ode",t_start=>0,t_end=>5,n_steps=>1000,print_functions=>1}) # inspect plot of Normalized_Kinase_Activity vs. time (=h)
+end actions

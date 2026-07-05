@@ -1,0 +1,103 @@
+begin model
+
+begin parameters
+
+NA 6.02214e23 # molecules per mol
+
+Vcyt 1e-12 # L per cell
+
+Etot 1e5 # cpc
+Stot 1e3 # cpc
+
+kp1 (6.02214)*1e5/(NA*Vcyt) # /M/s converted to /cpc/s
+km1  0.01 # /s
+kcat 10 # /s
+
+kpase 0.5 # /s
+
+#KM=(kcat+km1)/kp1 # cpc
+#VM=kcat*Etot # cpc/s
+
+end parameters
+
+begin molecule types
+
+A1(Y~0~P)
+B1(PTK)
+
+#A2(Y~0~P)
+#B2(PTK)
+
+#A3(Y~0~P)
+
+#A4(Y~0~P)
+
+end molecule types
+
+begin seed species
+
+A1(Y~0) Stot
+B1(PTK) Etot
+
+#A2(Y~0) Stot
+#B2(PTK) Etot
+
+#A3(Y~0) Stot
+
+#A4(Y~0) Stot
+
+end seed species
+
+begin observables
+
+Molecules Prod1 A1(Y~P!?)
+#Molecules Prod2 A2(Y~P!?)
+#Molecules Prod3 A3(Y~P!?)
+#Molecules Prod4 A4(Y~P!?)
+
+#Molecules freeA4 A4(Y~0)
+
+end observables
+
+begin functions
+
+#MM_rate_law()=kcat*Etot/(KM+freeA4)
+
+#VM_div_KM()=VM/KM
+#kcat_div_KM()=kcat/KM
+
+end functions
+
+begin reaction rules
+
+# phosphorylation
+
+# elementary steps, Michaelis-Menten mechanism
+A1(Y~0)+B1(PTK)<->A1(Y~0!1).B1(PTK!1) kp1,km1
+A1(Y~0!1).B1(PTK!1)->A1(Y~P)+B1(PTK) kcat
+
+#A2(Y~0)+B2(PTK)->A2(Y~P)+B2(PTK) kcat/KM # kcat/KM = 1e-6 /cpc/s
+
+#A3(Y~0)->A3(Y~P) VM/KM # VM/KM = 0.1 /s
+
+# quasi steady-state assumption, Michaelis-Menten rate law
+#A4(Y~0)->A4(Y~P) MM_rate_law()
+
+# dephosphorylation
+
+A1(Y~P)->A1(Y~0) kpase
+#A2(Y~P)->A2(Y~0) kpase
+#A3(Y~P)->A3(Y~0) kpase
+#A4(Y~P)->A4(Y~0) kpase
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+writeLatex()
+simulate({method=>"ode",t_start=>0,t_end=>100,n_steps=>100,print_functions=>1})
+
+end actions

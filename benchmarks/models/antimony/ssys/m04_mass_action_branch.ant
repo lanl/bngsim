@@ -1,0 +1,42 @@
+// Model for a branched biochemical pathway
+//
+// Original model:
+//   A' = -k_1*A
+//   B' =  k_1*A - (k_2 + k_3)*B + k_4*D
+//   C' =  k_2*B
+//   D' =  k_3*B - k_4*D
+//
+// Change of variables:
+//   A = X1
+//   B = X2*X3
+//   C = X5
+//   D = X4
+//
+// S-system (with ε-splitting):
+//   X1' =  epsA*X1                - (epsA + k1)*X1
+//   X2' =  (eps2 + k1)*X1*X3^(-1) - eps2*X1*X3^(-1)
+//   X3' =  k4*X4*X2^(-1)          - (k2 + k3)*X3
+//   X4' =  k3*X2*X3               - k4*X4
+//   X5' =  (epsC + k2)*X2*X3      - epsC*X2*X3
+//
+// Initial conditions
+// S-systems require strictly positive states when negative exponents
+// are present. Since X2 and X3 appear with exponent −1, we cannot set
+// X2(0)=0 or X3(0)=0. We approximate B(0) by taking X2(0)=δ (small positive), 
+// and X3(0)=1, so that B(0)=δ ≈ 0. The value of δ can be set as small as possible.
+//   X1 = 5;        // A(0) = 5
+//   X2 = 1e-9;     // small positive
+//   X3 = 1;        // B(0) = X2(0)*X3(0) ≈ 0
+//   X4 = 0;        // D(0) = 0
+//   X5 = 0;        // C(0) = 0
+
+model mass_action_branch()
+A = 5; B = 0; C = 0; D = 0
+k_1 = 0.1; k_2 = 0.2; k_3 = 0.15; k_4 = 0.3
+A -> B; k_1*A
+B -> C; k_2*B
+B -> D; k_3*B
+D -> B; k_4*D
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-3
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

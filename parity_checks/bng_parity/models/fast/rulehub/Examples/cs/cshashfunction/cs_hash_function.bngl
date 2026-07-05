@@ -1,0 +1,138 @@
+# Cryptographic Hash Function in BNGL
+# =====================================
+# Input: 4-bit message encoded as initial concentrations of Bit molecules.
+# Hash: Nonlinear mixing of bits via chaotic-like functions to produce
+#       a 4-bit "digest" that is sensitive to input changes (avalanche).
+#
+# Uses the "concentration as value" trick:
+# - High concentration (~100) = bit is 1
+# - Low concentration (~0) = bit is 0
+# - Mixing rounds use XOR-like operations via functions
+#
+# XOR(a,b) â‰ˆ a + b - 2*a*b/100 (normalized so 100=1,0=0)
+# AND(a,b) â‰ˆ a*b/100
+# NOT(a) â‰ˆ 100 - a
+
+begin model
+
+begin parameters
+    # Bit scaling (100 = logical 1)
+    ONE     100.0
+    
+    # Mixing constants (like hash round constants)
+    K1      37.0
+    K2      71.0
+    K3      13.0
+    K4      89.0
+    
+    # Mixing dynamics
+    mix_rate    5.0     # How fast mixing converges
+    n_eff       100.0   # Normalization constant
+end parameters
+
+begin molecule types
+    # Input message bits
+    B0()
+    B1()
+    B2()
+    B3()
+    # Hash state (internal,gets mixed)
+    H0()
+    H1()
+    H2()
+    H3()
+    # Round counter (drives sequential mixing)
+    RoundCnt()
+end molecule types
+
+begin seed species
+    # Input message: 1011 = (100,0,100,100)
+    B0() 100    # bit 0 = 1
+    B1() 0      # bit 1 = 0
+    B2() 100    # bit 2 = 1
+    B3() 100    # bit 3 = 1
+    
+    # Hash state initialized to round constants
+    H0() 37
+    H1() 71
+    H2() 13
+    H3() 89
+    
+    # Round counter
+    RoundCnt() 0
+end seed species
+
+begin observables
+    Molecules Input0    B0()
+    Molecules Input1    B1()
+    Molecules Input2    B2()
+    Molecules Input3    B3()
+    Molecules Hash0     H0()
+    Molecules Hash1     H1()
+    Molecules Hash2     H2()
+    Molecules Hash3     H3()
+    Molecules RoundNum  RoundCnt()
+end observables
+
+begin functions
+    # Normalized operations (where 100 = logical 1)
+    # XOR(a,b) = a + b - 2*a*b/100
+    XOR_01() = Input0 + Input1 - 2*Input0*Input1/n_eff
+    XOR_23() = Input2 + Input3 - 2*Input2*Input3/n_eff
+    
+    # Nonlinear mixing function (pseudo-chaotic)
+    # Target hash values after mixing
+    # Each hash bit gets mixed with rotated input and constants
+    T0() = Hash0 + XOR_01() - 2*Hash0*XOR_01()/n_eff    # H0 XOR (B0 XOR B1)
+    T1() = Hash1 + XOR_23() - 2*Hash1*XOR_23()/n_eff    # H1 XOR (B2 XOR B3)
+    
+    # Cross-mixing (avalanche): each output depends on ALL inputs
+    T2() = T0() + Hash2 - 2*T0()*Hash2/n_eff             # Cascade
+    T3() = T1() + Hash3 - 2*T1()*Hash3/n_eff
+    
+    # Additional nonlinearity: modular-arithmetic-like wrapping
+    # Clamp to [0,100] range
+    Target0() = if(T0() > 0,if(T0() < n_eff,T0(),n_eff),0)
+    Target1() = if(T1() > 0,if(T1() < n_eff,T1(),n_eff),0)
+    Target2() = if(T2() > 0,if(T2() < n_eff,T2(),n_eff),0)
+    Target3() = if(T3() > 0,if(T3() < n_eff,T3(),n_eff),0)
+    
+    # Correction rates to drive hash toward targets
+    corr0() = mix_rate * (Target0() - Hash0)
+    corr1() = mix_rate * (Target1() - Hash1)
+    corr2() = mix_rate * (Target2() - Hash2)
+    corr3() = mix_rate * (Target3() - Hash3)
+
+    rate0U() = if(corr0() > 0,corr0(),0)
+    rate0D() = if(corr0() < 0,-corr0()/max(Hash0,0.01),0)
+    rate1U() = if(corr1() > 0,corr1(),0)
+    rate1D() = if(corr1() < 0,-corr1()/max(Hash1,0.01),0)
+    rate2U() = if(corr2() > 0,corr2(),0)
+    rate2D() = if(corr2() < 0,-corr2()/max(Hash2,0.01),0)
+    rate3U() = if(corr3() > 0,corr3(),0)
+    rate3D() = if(corr3() < 0,-corr3()/max(Hash3,0.01),0)
+end functions
+
+begin reaction rules
+    # === HASH MIXING ===
+    # Drive each hash state toward its mixed target
+    0 -> H0()  rate0U()
+    H0() -> 0  rate0D()
+    
+    0 -> H1()  rate1U()
+    H1() -> 0  rate1D()
+    
+    0 -> H2()  rate2U()
+    H2() -> 0  rate2D()
+    
+    0 -> H3()  rate3U()
+    H3() -> 0  rate3D()
+    
+    # Round counter
+    0 -> RoundCnt()  1.0
+end reaction rules
+
+end model
+
+# Run hash computation
+simulate({method=>"ode",t_end=>5,n_steps=>200})

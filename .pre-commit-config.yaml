@@ -1,0 +1,128 @@
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+fail_fast: false
+
+# Standalone bngsim/ config. In the upstream development monorepo the active
+# config lives at that repo's root (with every path bngsim/-prefixed); this file
+# is the de-prefixed sibling that travels with `git subtree split -P bngsim` so
+# the extracted repo lints/tests itself with no path fixups.
+
+# Globally excluded paths (apply to every hook below):
+#   - third_party/  vendored NFsim/SUNDIALS/exprtk/mir/rulemonkey source;
+#                   upstream-byte-faithful, do not reformat / EOL-fix
+#   - dev/          scratch notes, plans, ADRs — informal markdown
+exclude: ^(third_party|dev)/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Hygiene hooks are scoped to *source* file types only.
+      # Test data (.bngl, .net, .ant, .xml, .gdat, .cdat, .csv, .json,
+      # …) must NOT be touched: many are byte-mirrored from upstream
+      # sources (BioModels SBML, BNG2.pl-generated .net) and are
+      # consumed by parsers that may be sensitive to whitespace/EOL.
+      - id: check-yaml
+        files: \.(yaml|yml)$
+      - id: end-of-file-fixer
+        files: ^.*\.(py|cpp|hpp|cc|cxx|hh|hxx|c|h|md|toml|cfg|ini|yaml|yml)$
+      - id: trailing-whitespace
+        files: ^.*\.(py|cpp|hpp|cc|cxx|hh|hxx|c|h|md|toml|cfg|ini|yaml|yml)$
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Committed spec manifests (parity_checks/*/ *_jobs.json) run ~0.6 MB;
+        # the multi-MB SBML/SED-ML corpora are gitignored, so 1 MB still
+        # catches accidental binary commits.
+        args: ['--maxkb=1024']
+        # bng_parity golden.json is committed reference data (per-job seed=1
+        # checksums + fingerprints over the full 895-job corpus, ~1.7 MB at full
+        # coverage) — the same category as jobs.json above, just denser. The
+        # fingerprints are not thinnable without weakening the consumer check,
+        # so this one file is exempted from the 1 MB cap.
+        exclude: ^parity_checks/bng_parity/golden/golden\.json$
+      - id: mixed-line-ending
+        files: ^.*\.(py|cpp|hpp|cc|cxx|hh|hxx|c|h|md|toml|cfg|ini|yaml|yml)$
+      - id: debug-statements
+        files: ^.*\.py$
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      # Lint + format gate the entire tree. Per-file ignores for E501
+      # (long lines) in benchmarks/harness/scripts live in
+      # pyproject.toml [tool.ruff.lint.per-file-ignores]; the dev/ tree
+      # (scratch notes) is gitignored.
+      - id: ruff
+        args: [--fix]
+        files: ^.*\.py$
+      - id: ruff-format
+        files: ^.*\.py$
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v17.0.6
+    hooks:
+      - id: clang-format
+        files: ^(src|include)/.*\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^python/bngsim/.*\.py$
+        args: [--ignore-missing-imports, --follow-imports=silent]
+        additional_dependencies: [numpy]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (bngsim)
+        entry: bash -c '.venv/bin/pytest -q python/tests'
+        language: system
+        pass_filenames: false
+        files: ^.
+        stages: [pre-push]
+
+      # ─── Manual-stage local-CI hooks ─────────────────────────────────
+      # The wheel matrix is validated locally on each target platform.
+      # See scripts/LOCAL_CI.md. These hooks do NOT run on commit or
+      # push — invoke explicitly:
+      #
+      #   pre-commit run --hook-stage manual local-ci-wheel   --all-files
+      #   pre-commit run --hook-stage manual local-ci-matrix  --all-files
+      #   pre-commit run --hook-stage manual local-ci-linux   --all-files
+      - id: local-ci-wheel
+        name: local CI — wheel build + smoke (uv, current Python)
+        entry: uv run python scripts/local_ci.py wheel
+        language: system
+        pass_filenames: false
+        stages: [manual]
+      - id: local-ci-matrix
+        name: local CI — wheel matrix cp310-cp313 (uv, native arch)
+        entry: uv run python scripts/local_ci.py matrix
+        language: system
+        pass_filenames: false
+        stages: [manual]
+      - id: local-ci-linux
+        name: local CI — manylinux2014 wheel + smoke (Docker)
+        entry: bash scripts/local_ci_linux_docker.sh
+        language: system
+        pass_filenames: false
+        stages: [manual]
+      # Tripwire: verifies that third_party/nfsim/ matches what
+      # vendor + the patch series under scripts/nfsim_vendor_patches/
+      # would produce. Catches the silent-direct-edit class of regression.
+      # Requires /tmp/nfsim-vendor-candidate to exist at the vendor tip;
+      # build it via the recipe in scripts/NFSIM_VENDORING.md.
+      - id: local-ci-vendor-verify
+        name: local CI — verify vendored NFsim matches carry queue
+        entry: python3 scripts/vendor_nfsim.py --verify-clean
+        language: system
+        pass_filenames: false
+        stages: [manual]
+      - id: local-ci-vendor-verify-strict
+        name: local CI — vendor verify + patch-series reproducibility
+        entry: python3 scripts/vendor_nfsim.py --verify-clean --strict
+        language: system
+        pass_filenames: false
+        stages: [manual]

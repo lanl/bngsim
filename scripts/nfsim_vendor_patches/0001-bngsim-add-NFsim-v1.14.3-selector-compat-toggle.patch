@@ -1,0 +1,51 @@
+From 39d86d09d047071877bd55c75be7f8560779e4df Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Fri, 15 May 2026 15:01:46 -0600
+Subject: [PATCH 01/14] bngsim: add NFsim v1.14.3 selector compat toggle
+
+---
+ src/NFcore/NFcore.hh  | 3 +++
+ src/NFcore/system.cpp | 6 ++++++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
+index 7aad629..594b9b4 100644
+--- a/src/NFcore/NFcore.hh
++++ b/src/NFcore/NFcore.hh
+@@ -516,6 +516,8 @@ namespace NFcore
+ 			 */
+ 			void useConnectivityFlag(bool connectivityFlag) {this->connectivityFlag = connectivityFlag;};
+ 			bool getConnectivityFlag() {return connectivityFlag;};
++			void setNFsimV1143Compatibility(bool value) { this->nfsimV1143Compatibility = value; }
++			bool getNFsimV1143Compatibility() const { return nfsimV1143Compatibility; }
+ 
+ 			void setMaxCpuTime(double time) { max_cpu_time = time; };
+ 
+@@ -568,6 +570,7 @@ namespace NFcore
+ 			bool hasTimeDependentFunctions;
+ 		    bool anyRxnTagged; /*< sets whether any reaction is tagged for output when it fires */
+ 		    bool connectivityFlag; /* Whether to infer and use reaction connectivity  for updating molecule rxn membership*/
++		    bool nfsimV1143Compatibility = false; /* Preserve NFsim v1.14.3 selector double-draw behavior */
+ 		    bool trackConnected; /* Whether to track connected reactions after each reaction firing. Useful for debugging */
+ 		    bool printConnected; /* Whether to print connected reactions at the beginning of the simulation. Useful for debugging */
+ 			bool outputMoleculeTypesFile; /* Output molecule types (default: false) */
+diff --git a/src/NFcore/system.cpp b/src/NFcore/system.cpp
+index ad9e86e..a5e3b6a 100644
+--- a/src/NFcore/system.cpp
++++ b/src/NFcore/system.cpp
+@@ -916,6 +916,12 @@ double System::getNextRxn()
+ 		this->printAllReactions();
+ 		exit(1);
+ 	}
++	if (getNFsimV1143Compatibility()) {
++		// Upstream NFsim v1.14.3 consumes and discards the first selector draw
++		// here, then uses the second draw/residual. Keep this only as an
++		// explicit compatibility mode for same-seed parity with that CLI.
++		return selector->getNextReactionClass(nextReaction);
++	}
+ 	return x;
+ 
+ 
+-- 
+2.53.0
+

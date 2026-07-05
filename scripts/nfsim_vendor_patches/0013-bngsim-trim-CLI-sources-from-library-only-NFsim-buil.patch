@@ -1,0 +1,33 @@
+From 95b0a26a14927eddac03aa7e9129c5f3ea38d1f0 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Tue, 9 Jun 2026 12:33:55 -0600
+Subject: [PATCH 13/14] bngsim: trim CLI sources from library-only NFsim build
+
+---
+ CMakeLists.txt | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2bb40a4..3f0279a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -82,6 +82,16 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR} include ${SUB_DIRS})
+ file(GLOB_RECURSE src_files  "${CMAKE_CURRENT_SOURCE_DIR}/src/*cpp")
+ file(GLOB_RECURSE c_src_files  "${CMAKE_CURRENT_SOURCE_DIR}/src/*c")
+ 
++# BNGsim links NFsim in-process as a library and prunes src/NFtest from the
++# vendored export, so a library-only build must not compile the standalone CLI
++# or the upstream test harness sources that depend on those headers.
++if(NFSIM_BUILD_LIBRARY AND NOT NFSIM_BUILD_EXECUTABLE)
++    list(FILTER src_files EXCLUDE REGEX "[/\\\\]src[/\\\\]NFsim\\.cpp$")
++    list(FILTER src_files EXCLUDE REGEX "[/\\\\]src[/\\\\]NFtest[/\\\\].*")
++    list(FILTER src_files EXCLUDE REGEX "[/\\\\]src[/\\\\]NFscheduler[/\\\\]Scheduler\\.cpp$")
++    list(FILTER src_files EXCLUDE REGEX "[/\\\\]src[/\\\\]NFutil[/\\\\]MTrand[/\\\\]mttest\\.cpp$")
++endif()
++
+ # Exclude muParser sources when using ExprTk
+ if(NFSIM_USE_EXPRTK)
+     list(FILTER src_files EXCLUDE REGEX ".*/muParser/.*")
+-- 
+2.53.0
+

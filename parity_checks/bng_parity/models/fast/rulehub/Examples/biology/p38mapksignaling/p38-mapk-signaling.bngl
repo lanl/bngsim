@@ -1,0 +1,78 @@
+begin model
+begin parameters
+    # p38 MAPK stress signaling cascade.
+    # Advanced features: Arrhenius-like temperature dependence and wildcards.
+    
+    # Upstream drive (Stress-activated MKK3/6)
+    k_stress 1.0       # Stress intensity (e.g. UV,Osmotic)
+    
+    # Temperature dependence (Arrhenius demo)
+    # k = A * exp(-Ea / (R*T))
+    A_mkk 100.0
+    Ea_mkk 40.0
+    R_gas 8.314e-3
+    Temp_K 310         # 37 Celsius
+    
+    # Signaling Dynamics
+    k_p38_phos 2.0     # Phosphorylation of p38 by MKK3
+    k_mapkap_act 1.5   # Activation of MAPKAPK2 by p-p38
+    k_dephos 0.2       # Nuclear phosphatase activity
+    
+    # Initials
+    p38_tot 1000
+    MKK3_tot 100
+    MAPKAP2_tot 400
+end parameters
+
+begin molecule types
+    p38(b,s~U~P)
+    MKK3(b,s~inactive~active)
+    MAPKAP2(b,s~U~P)
+end molecule types
+
+begin seed species
+    p38(b,s~U) p38_tot
+    MKK3(b,s~inactive) MKK3_tot
+    MAPKAP2(b,s~U) MAPKAP2_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Active_p38      p38(s~P)                  # Stress signaling status
+    Molecules Transducer_Work MAPKAP2(s~P)              # Final downstream effector
+    Molecules Upstream_Drive  MKK3(s~active)            # Driver intensity
+    Molecules Complex_States  p38(b!+)                  # Wildcard: p38 bound to any partner
+    Molecules Total_Workload  p38(s~P),MAPKAP2(s~P)    # Aggregate stress signal
+end observables
+
+begin functions
+    # Arrhenius rate for thermal stress activation
+    v_thermal() = A_mkk * exp(-Ea_mkk / (R_gas * Temp_K))
+end functions
+
+begin reaction rules
+    ## ACTIVATION
+    # Stress activates MKK3 (Combining environmental drive with thermal sensitivity)
+    MKK3(s~inactive) -> MKK3(s~active) k_stress * v_thermal()
+    
+    # MKK3 recruits and phosphorylates p38
+    # MKK3 recruits and phosphorylates p38
+    MKK3(s~active,b) + p38(s~U,b) <-> MKK3(s~active,b!1).p38(s~U,b!1) 1.0,0.5
+    MKK3(s~active,b!1).p38(s~U,b!1) -> MKK3(s~active,b) + p38(s~P,b) k_p38_phos
+    
+    ## EFFECTOR RELAY
+    # p-p38 activates MAPKAPK2 (Wildcard: any p-p38 can activate)
+    p38(s~P) + MAPKAP2(s~U) -> p38(s~P) + MAPKAP2(s~P) k_mapkap_act
+    
+    ## RECOVERY
+    p38(s~P) -> p38(s~U) k_dephos
+    MAPKAP2(s~P) -> MAPKAP2(s~U) 0.1
+    MKK3(s~active) -> MKK3(s~inactive) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>150,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,88 @@
+begin model
+begin parameters
+    # Endosomal Sorting: Rab GTPase conversion and effector recruitment.
+    # Advanced features: TotalRate for conversion drive and saturable kinetics.
+    
+    # GTPase Cycle
+    k_gef_max 2.0      # Peak GEF drive
+    Km_gef 100         # Saturation of GEF activity
+    k_gap_max 1.5      # Peak GAP drive
+    Km_gap 150         # Saturation of GAP activity
+    
+    # Conversion (Rab5 -> Rab7 proxy)
+    k_convert 0.5      # Positive feedback on conversion
+    
+    # Effector Recruitment
+    k_eff_bind 10.0    # Fast effector docking
+    k_mem_on 1.5       # GDI-mediated delivery
+    k_mem_off 0.2      # GDI-mediated extraction
+    
+    # Initials
+    Rab5_tot 500
+    Rab7_tot 500
+    GEF5_tot 20
+    Eff_tot 200
+end parameters
+
+begin molecule types
+    Rab5(s~GDP~GTP,b,loc~cyt~mem)
+    Rab7(s~GDP~GTP,b,loc~cyt~mem)
+    Effector(b)
+end molecule types
+
+begin seed species
+    Rab5(s~GDP,b,loc~mem) Rab5_tot
+    Rab7(s~GDP,b,loc~mem) Rab7_tot
+    Effector(b) Eff_tot
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Early_Endosome  Rab5(s~GTP,loc~mem)      # Early marker
+    Molecules Late_Endosome   Rab7(s~GTP,loc~mem)      # Late marker
+    Molecules Conversion_Node Rab5(b!1).Effector(b!1)   # Active signaling node
+    Molecules Mem_Total       Rab5(loc~mem),Rab7(loc~mem) # Membrane density
+    Molecules Cyto_Pool       Rab5(loc~cyt),Rab7(loc~cyt) # Recycling pool
+    Molecules Rab5_GDP_Mem    Rab5(s~GDP,loc~mem)      # Substrate for GEF
+    Molecules Total_Rab5_GTP  Rab5(s~GTP)               # Global driver
+end observables
+
+begin functions
+    # Saturable GEF kinetics (Functional Rate)
+    v_gef() = k_gef_max * (Rab5_GDP_Mem / (Km_gef + Rab5_GDP_Mem))
+    
+    # Conversion drive (TotalRate)
+    # Active Rab5 promotes its own inactivation and Rab7 recruitment
+    v_gap_drive() = k_gap_max * (Total_Rab5_GTP / 100)
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # GEF activates Rab5 (Functional Rate)
+    Rab5(s~GDP,loc~mem) -> Rab5(s~GTP,loc~mem) v_gef()
+    
+    # Rab5 recruitment of effector
+    Rab5(s~GTP,loc~mem,b) + Effector(b) <-> Rab5(s~GTP,loc~mem,b!1).Effector(b!1) k_eff_bind,0.5
+    
+    ## CONVERSION (The Handover)
+    # GAP inactivates Rab5 (Driven by Rab5 density - TotalRate)
+    Rab5(s~GTP) -> Rab5(s~GDP) v_gap_drive() TotalRate
+    
+    # Active Rab5 recruits Rab7 GEF (Simplified as direct Rab7 activation)
+    Rab5(s~GTP,loc~mem) + Rab7(s~GDP,loc~mem) -> Rab5(s~GTP,loc~mem) + Rab7(s~GTP,loc~mem) k_convert
+    
+    ## RECYCLING
+    # GDI extracts GDP-bound Rabs
+    Rab5(s~GDP,loc~mem) <-> Rab5(s~GDP,loc~cyt) k_mem_off,k_mem_on
+    Rab7(s~GDP,loc~mem) <-> Rab7(s~GDP,loc~cyt) k_mem_off,k_mem_on
+    
+    ## RESET
+    Rab7(s~GTP) -> Rab7(s~GDP) 0.05
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>20,n_steps=>300})
+end actions
+end model
+

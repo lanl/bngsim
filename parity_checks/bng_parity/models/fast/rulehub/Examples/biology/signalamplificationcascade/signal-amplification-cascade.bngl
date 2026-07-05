@@ -1,0 +1,43 @@
+begin model
+begin parameters
+    k_bind 0.01
+    k_unbind 0.002
+    k_act 0.5
+    k_deact 0.1
+    k_prod 5.0
+    k_deg 0.5
+end parameters
+
+begin molecule types
+    Ligand()
+    Receptor(state~inactive~active)
+    Effector(state~inactive~active)
+    Messenger()
+end molecule types
+
+begin seed species
+    Ligand() 100
+    Receptor(state~inactive) 50
+    Effector(state~inactive) 30
+end seed species
+
+begin observables
+    Molecules Active_receptor Receptor(state~active)
+    Molecules Active_effector Effector(state~active)
+    Molecules Messenger Messenger()
+end observables
+
+begin reaction rules
+    Ligand() + Receptor(state~inactive) <-> Ligand() + Receptor(state~active) k_bind,k_unbind
+    Receptor(state~active) + Effector(state~inactive) -> Receptor(state~active) + Effector(state~active) k_act
+    Effector(state~active) -> Effector(state~inactive) k_deact
+    Effector(state~active) -> Effector(state~active) + Messenger() k_prod
+    Messenger() -> 0 k_deg
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>20,n_steps=>240})
+end actions
+end model
+

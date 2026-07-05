@@ -1,0 +1,76 @@
+# Model: energy_catalysis_mm.bngl
+# Description: Implements Michaelis-Menten enzyme kinetics (E + S <-> ES -> E + P) using an explicit energy landscape.
+#              Defines energies for S, E, ES complex, and P.
+
+begin model
+
+begin parameters
+    # --- Thermodynamic Landscape ---
+    # Substrate S is higher energy than Product P
+    G_S 0
+    G_P -10.0   # Reaction S -> P is exergonic
+    G_E 0       # Enzyme reference energy
+    
+    # Intermediate ES Complex Energy
+    # Typically lower than E+S to favor binding
+    G_ES -5.0
+    
+    # --- Kinetic Barriers ---
+    Ea_bind 2.0  # Barrier for E+S <-> ES
+    Ea_cat 3.0   # Barrier for ES <-> E+P (catalytic step)
+    
+    RT 1.0
+    phi 0.5
+    
+    # --- Concentrations ---
+    Stot 200
+    Etot 20
+end parameters
+
+begin molecule types
+    E(s)  # Enzyme with substrate binding site
+    S(e)  # Substrate with enzyme binding site
+    P(e)  # Product with enzyme binding site (for reversibility)
+end molecule types
+
+begin seed species
+    E(s) Etot
+    S(e) Stot
+    P(e) 0
+end seed species
+
+begin observables
+    Molecules Product P()
+    Molecules Substrate S()
+    Molecules Enzyme_Free E(s)
+    Molecules Enzyme_Substrate E(s!1).S(e!1)
+end observables
+
+begin energy patterns
+    # Single molecule energies
+    E(s) G_E
+    S(e) G_S
+    P(e) G_P
+    
+    # Complex Energy
+    # This overrides the sum of individual energies for the complex
+    # Binding Energy = G_ES - (G_E + G_S) = -5 - 0 = -5
+    E(s!1).S(e!1) G_ES
+end energy patterns
+
+begin reaction rules
+    # 1. Substrate Binding: E + S <-> ES
+    # Rate determined by barrier Ea_bind relative to (G_E + G_S) vs G_ES
+    E(s) + S(e) <-> E(s!1).S(e!1) Arrhenius(phi, Ea_bind)
+    
+    # 2. Catalysis: ES <-> E + P
+    # Rate determined by barrier Ea_cat relative to G_ES vs (G_E + G_P)
+    # This also naturally handles the reverse validation (Product Inhibition)
+    E(s!1).S(e!1) <-> E(s) + P(e) Arrhenius(phi, Ea_cat)
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

@@ -1,0 +1,230 @@
+# Filename: RAF_v[version_number].bngl
+# [PII REMOVED]
+# [PII REMOVED]
+# [PII REMOVED]
+
+begin model
+
+# References:
+#   Filchtinski D et al. (2010) J Mol Biol 399: 422-435.
+#   Kulak NA et al. (2014) Nat Methods 11: 319-324.
+#   Stites EC et al. (2007) Science 318: 463-467.
+#   Tan CW et al. (2012) PLoS ONE 7: e31882.
+#   Wohlgemuth S et al. (2005) J Mol Biol 348: 741-758.
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+f 1.0 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# cytoplasmic volume
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell 
+#   in culture (Tan et al., 2012):
+#     N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+# protein copy numbers in HeLa S3 cells (ATCC CCL-2.2)
+#   See Supplementary Table S2 in Kulak et al. (2014).
+EGFR_total    92674*f # [=] molecules per cell (Kulak et al., 2014)
+SHC1_total   111966*f # [=] molecules per cell (Kulak et al., 2014)
+GRB2_total   628016*f # [=] molecules per cell (Kulak et al., 2014)
+RASA1_total   26455*f # [=] molecules per cell (Kulak et al., 2014)
+PTPN11_total 299893*f # [=] molecules per cell (Kulak et al., 2014)
+SOS1_total     7565*f # [=] molecules per cell (Kulak et al., 2014)
+GAB1_total     1531*f # [=] molecules per cell (Kulak et al., 2014)
+ARAF_total    50606*f # [=] molecules per cell (Kulak et al., 2014)
+BRAF_total     4993*f # [=] molecules per cell (Kulak et al., 2014)
+RAF1_total    35757*f # [=] molecules per cell (Kulak et al., 2014) RAF1 is also known as CRAF
+RAF_total     91356*f # [=] molecules per cell [RAF]=[ARAF]+[BRAF]+[RAF1]
+MAP2K1_total 170516*f # [=] molecules per cell (Kulak et al., 2014) MAP2K1 is also known as MEK1
+MAP2K2_total 325020*f # [=] molecules per cell (Kulak et al., 2014) MAP2K2 is also known as MEK2
+MEK_total    495536*f # [=] molecules per cell [MEK]=[MAP2K1]+[MAP2K2]
+MAPK1_total  544669*f # [=] molecules per cell (Kulak et al., 2014) MAPK1 is also known as ERK2
+MAPK3_total   58855*f # [=] molecules per cell (Kulak et al., 2014) MAPK3 is also known as ERK1
+ERK_total    603524*f # [=] molecules per cell [ERK]=[MAPK1]+[MAPK3]
+HRAS_total   131924*f # [=] molecules per cell (Kulak et al., 2014)
+NRAS_total    32806*f # [=] molecules per cell (Kulak et al., 2014) 
+
+RAS_conc 0.4e-6 # M (Stites et al., 2007)
+RAS_total=RAS_conc*(NA*Vcyt) # 289063 molecules per cell for a cytoplasmic volume of 1.2 pL
+KRAS_total=RAS_total-(HRAS_total+NRAS_total) # 124333 copies per cell, from [RAS]=[HRAS]+[KRAS]+[NRAS]
+
+
+# rate constants
+#   NB: BioNetGen automatically adds symmetry numbers and statistical factors.
+#   One should specify a rate constant for a bimolecular association reaction under the assumption
+#   that the reaction is of the form A+B->product(s) and that association is mediated 
+#   by one and only one binding site in A and by one and only one binding site in B. 
+
+# KD, on and off rate constants, and modifying factors for RasGTP interaction with the RBD in CRAF
+KD1 0.13e-6*(NA*Vcyt) # M converted to molecules per cell, from Table 2 (Filchtinski et al., 2010)
+#KD1_RBDinRaf1_RasGDP 46e-6*(NA*Vcyt) # M converted to molecules per cell, from Table 2 (Filchtinski et al., 2010)
+km1 4.34 # /s, from Table 2 (Wohlgemuth et al., 2005)
+kp1=km1/KD1 # /(molecule/cell)/s [=33.4 /uM/s]
+ERK_effect_on_kp1 0.2 # dimensionless, captures the effect of ERK-mediated phosphorylation of S642 in CRAF
+ERK_effect_on_km1 10 # dimensionless, captures the effect of ERK-mediated phosphorylation of S642 in CRAF
+
+end parameters
+
+begin molecule types
+
+# RAS: HRAS, KRAS and NRAS
+#   switch: switch I/II region(s), interaction with effectors and regulators
+#   G: G motifs (G1 through G5), guanine nucleotide binding
+#     GDP: GDP loaded
+#     GTP: GTP loaded
+RAS(switch,G~GDP~GTP)
+
+# CRAF: RAF1
+#   RBD: Ras binding domain
+#   S259: substrate of PKA, PKB (AKT1) and PKC
+#     0: unphosphorylated
+#     P: phosphorylated
+#   S338: substrate of PAK1
+#     0: unphosphorylated
+#     P: phosphorylated
+#   Dm: ?
+#   S642: representative substrate of ERK (ERK2) involved in negative feedback regulation of RAF
+#     0: unphosphorylated
+#     P: phosphorylated
+#   MEKB: ?
+#   I1: ?
+CRAF(RBD,S259~0~P,S338~0~P,Dm,S642~0~P,MEKB,I1)
+
+# BRAF
+#   RBD: Ras binding domain
+#   S365: substrate fof SGK1, corresponds to S259 in CRAF
+#     0: unphosphorylated
+#     P: phosphorylated
+#   Dm: ?
+#   T753: representative substrate of ERK (ERK2) involved in negative feedback regulation of RAF
+#     0: unphosphorylated
+#     P: phosphorylated
+#   MEKB: ?
+#   I2: ?
+BRAF(RBD,S365~0~P,Dm,T753~0~P,MEKB,I2)
+
+# MEK: MEK1 (MAP2K1) and MEK2 (MAP2K2)
+#   Y:
+#     0: unphosphorylated
+#     P: phosphorylated
+#   T:
+#     0: unphosphorylated
+#     P: phosphorylated
+MEK(Y~U~P,T~U~P,RAFMB,MERKB,I3)
+
+# ERK: ERK1 (MAPK3) and ERK2 (MAPK1)
+#   T: T185 in ERK2, T202 in ERK1
+#     0: unphosphorylated
+#     P: phosphorylated
+#   Y: Y187 in ERK2, Y204 in ERK1
+#     0: unphosphorylated
+#     P: phosphorylated
+#   MEK1B: ?
+#   RAFDm: ? 
+ERK(T~0~P,Y~0~P,MEK1B,RAFDm)
+
+end molecule types
+
+begin seed species
+
+RAS(switch,G~GTP) RAS_total
+
+# monomeric CRAF with S642~0
+CRAF(RBD,S259~0,S338~0,Dm,S642~0,MEKB,I1) RAF1_total/4
+# monomeric CRAF with S642~P
+CRAF(RBD,S259~0,S338~0,Dm,S642~P,MEKB,I1) RAF1_total/4
+# homodimeric CRAF with S642~0 S642~0
+CRAF(RBD,S259~0,S338~0,Dm!1,S642~0,MEKB,I1).CRAF(RBD,S259~0,S338~0,Dm!1,S642~0,MEKB,I1) RAF1_total/16
+# homodimeric CRAF with S642~0 S642~P
+CRAF(RBD,S259~0,S338~0,Dm!1,S642~0,MEKB,I1).CRAF(RBD,S259~0,S338~0,Dm!1,S642~P,MEKB,I1) RAF1_total/8
+# homodimeric CRAF with S642~P S642~P
+CRAF(RBD,S259~0,S338~0,Dm!1,S642~P,MEKB,I1).CRAF(RBD,S259~0,S338~0,Dm!1,S642~P,MEKB,I1) RAF1_total/16
+# heterodimeric CRAF with S642~0
+CRAF(RBD,S259~0,S338~0,Dm!1,S642~0,MEKB,I1).BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,I2) RAF1_total/8
+# heterodimeric CRAF with S642~P
+CRAF(RBD,S259~0,S338~0,Dm!1,S642~P,MEKB,I1).BRAF(RBD,S365~0,Dm!1,T753~0,MEKB,I2) RAF1_total/8
+
+end seed species
+
+begin observables
+
+Molecules Ras_CRAF RAS(switch!1).CRAF(RBD!1)
+Molecules Ras_CRAF_S642_0 RAS(switch!1).CRAF(RBD!1,S642~0)
+Molecules Ras_CRAF_S642_P RAS(switch!1).CRAF(RBD!1,S642~P)
+Molecules Ras_CRAF_DmCRAF RAS(switch!1).CRAF(RBD!1,Dm!2).CRAF(Dm!2)
+Molecules Ras_CRAF_DmBRAF RAS(switch!1).CRAF(RBD!1,Dm!2).BRAF(Dm!2)
+
+end observables
+
+begin reaction rules
+
+# '\' indicates line continuation
+
+# I. RAS(switch)+CRAF(RBD)<->RAS(switch!1).CRAF(RBD) kp1,km1
+#   A. Cytosolic CRAF associates with plasma membrane-associated GTP-loaded RAS
+#     Cytosolic CRAF can associate with GTP-loaded RAS as a 1) monomer, 2) homodimer, or 3) heterodimer.
+#     Association requires that S259 in monomeric CRAF be unmodified.
+#     Association requires that both copies of S259 in homodimeric CRAF be unmodified.
+#     Association requires that S259 in CRAF and S365 in BRAF both be unmodified if CRAF is in a CRAF-BRAF heterodimer.
+#     The rate of association depends on whether CRAF is phosphorylated by ERK (at S642).
+#       Association is a) fast if CRAF is NOT phosphorylated by ERK (at S642).
+#       Association is b) slow if CRAF is phosphorylated by ERK (at S642).
+#     1. monomeric CRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA1a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm,S642~0)->\
+RAS(switch!1,G~GTP).CRAF(RBD!1,S259~0,Dm,S642~0) kp1
+#       b. slow
+RuleIA1b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm,S642~P)->\
+RAS(switch!1,G~GTP).CRAF(RBD!1,S259~0,Dm,S642~P) kp1*ERK_effect_on_kp1
+#     2. homodimeric CRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA2a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~0).CRAF(RBD,S259~0,Dm!1) kp1
+#       b. slow
+RuleIA2b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~P).CRAF(RBD,S259~0,Dm!1) kp1*ERK_effect_on_kp1
+#     3. CRAF is in a heterodimer with BRAF
+#       a. fast (no retardation as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIA3a: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~0).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~0).BRAF(RBD,S365~0,Dm!1) kp1
+#       b. slow
+RuleIA3b: RAS(switch,G~GTP)+CRAF(RBD,S259~0,Dm!1,S642~P).BRAF(RBD,S365~0,Dm!1)->\
+RAS(switch!2,G~GTP).CRAF(RBD!2,S259~0,Dm!1,S642~P).BRAF(RBD,S365~0,Dm!1) kp1*ERK_effect_on_kp1
+#   B. CRAF dissociates from RAS
+#     RAS can be either 1) GTP- or 2) GDP-loaded
+#     The rate of dissociation depends on whether CRAF is phosphorylated by ERK (at S642).
+#       Dissociation is a) slow if CRAF is NOT phosphorylated by ERK (at S642).
+#       Dissociation is b) fast if CRAF is phosphorylated by ERK (at S642).
+#     1. GTP-loaded RAS
+#       a. slow (no acceleration as a result of ERK-mediated phosphorylation of S642 in CRAF)
+RuleIB1a: RAS(switch!1,G~GTP).CRAF(RBD!1,S642~0)->RAS(switch,G~GTP)+CRAF(RBD,S642~0) km1
+#       b. fast
+RuleIB1b: RAS(switch!1,G~GTP).CRAF(RBD!1,S642~P)->RAS(switch,G~GTP)+CRAF(RBD,S642~P) km1*ERK_effect_on_km1
+
+# NB: there is no rule for dissociation of CRAF from GDP-loaded RAS.
+# If GTP is hydrolyzed to GDP while CRAF is bound to RAS, it is likely that CRAF will be almost immediately released.
+# Thus, for simplicity, CRAF release should be included in the rule for hydrolysis of GTP on CRAF-bound RAS.
+
+# NB: there is no rule that permits a RAF homo- or heterdimer to crosslink two copies of RAS.
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate-first approach or indirect (deterministic) simulation
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>1,n_steps=>100})
+
+# network-free approach or direct (stochastic) simulation
+#simulate({method=>"nf",complex=>1,gml=>1000000,t_start=>0,t_end=>1,n_steps=>100})
+
+end actions

@@ -1,0 +1,26 @@
+# Michaelis-Menten tQSSA test
+# E + S -> E + P with MM(kcat, Km)
+# Tests tQSSA formula: sFree = 0.5*((S-Km-E) + sqrt((S-Km-E)^2 + 4*Km*S))
+#                      rate  = kcat * sFree * E / (Km + sFree)
+#
+# Parameters chosen so E is comparable to S (tQSSA differs from sQSSA).
+# E=10, S=100, kcat=1, Km=50
+begin parameters
+    1 kcat   1.0
+    2 Km     50.0
+    3 E_0    10.0
+    4 S_0    100.0
+end parameters
+begin species
+    1 E()  E_0
+    2 S()  S_0
+    3 P()  0
+end species
+begin reactions
+    1 1,2 1,3 MM kcat Km #Rule1
+end reactions
+begin groups
+    1 Etot  1
+    2 Stot  2
+    3 Ptot  3
+end groups

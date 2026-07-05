@@ -1,0 +1,49 @@
+# Edge case: single rule with TWO simultaneous StateChange operations
+# on different components of the same molecule
+# Tests:  ListOfOperations with two StateChange entries that both
+#         resolve to flat indices on the same reactant molecule.
+#         RM applies operations in order in fire_rule; if the second
+#         StateChange uses a flat index that points into the BEFORE-
+#         state pattern (rather than the canonical type-comp index),
+#         a rule that simultaneously activates AND opens up a
+#         reaction-competent site would mis-apply one of the changes.
+# Edge:   neither component participates in any bond; the rule is
+#         purely state-transition.  Most coverage models change ONE
+#         state per rule (push-pull, multistate); this model changes
+#         TWO at once, with a reverse rule that sets BOTH back.
+# Tier:   base
+# invariant: conserved A_total = 50
+
+begin model
+begin parameters
+    A_tot   50
+    k_act   0.10
+    k_dea   0.05
+end parameters
+
+begin molecule types
+    A(p~U~P,q~U~P)
+end molecule types
+
+begin seed species
+    A(p~U,q~U)  A_tot
+end seed species
+
+begin observables
+    Molecules  A_total   A()
+    Molecules  A_pp_uu   A(p~U,q~U)
+    Molecules  A_pp_pu   A(p~P,q~U)
+    Molecules  A_pp_up   A(p~U,q~P)
+    Molecules  A_pp_pp   A(p~P,q~P)
+end observables
+
+begin reaction rules
+    # Two StateChange ops in a single rule.  RM must apply both.
+    A(p~U,q~U) -> A(p~P,q~P)  k_act
+    A(p~P,q~P) -> A(p~U,q~U)  k_dea
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>30,n_steps=>60})
+end actions

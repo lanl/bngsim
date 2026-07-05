@@ -1,0 +1,293 @@
+begin model
+begin parameters
+########## BEST-FIT PARAMETER VALUES ##########
+APinit100__FREE 34.43644265588848
+PGinit100__FREE 3.9358031417141284
+a0_0__FREE 0.31335998375851054
+a1_0__FREE 0.0002053009137838902
+delta__FREE 0.009636818790573824
+k0AA__FREE 0.19300487665682425
+k1AA__FREE 0.15371702432287238
+k__FREE 788.1083423755588
+r__FREE 2.498629238603567
+# 
+# APinit100__FREE 15
+#PGinit100__FREE 2
+#a0_0__FREE 0.9
+#a1_0__FREE 0.001
+#k0AA__FREE 0.08
+#k1AA__FREE 0.18
+#k__FREE 440
+#r__FREE 8.2
+#delta__FREE 0.04
+###############################################
+gamma 1
+#gamma gamma__FREE
+h 0.5
+#h h__FREE
+k k__FREE
+r r__FREE
+PG0init0 9 # AA-starved level at t=0 in restimulation expt
+PGinit100 PGinit100__FREE # AA-replete steady-state level
+APinit100 APinit100__FREE # AA-replete steady-state level
+AA 100 # A:=0 => AA-starved condition; A:=100 => AA-replete condition
+k0AA k0AA__FREE
+k1AA k1AA__FREE
+a0_0 a0_0__FREE
+a0_100=r*PGinit100^h/(PGinit100^h+k^h)
+a0_1=a0_100+(a0_0-a0_100)*exp(-k0AA*1)
+a0_5=a0_100+(a0_0-a0_100)*exp(-k0AA*5)
+a0_7=a0_100+(a0_0-a0_100)*exp(-k0AA*7)
+a0_10=a0_100+(a0_0-a0_100)*exp(-k0AA*10)
+a1_0 a1_0__FREE # AA=0%
+a1_1 a1_0*exp(-k1AA*1) # AA=1%
+a1_5 a1_0*exp(-k1AA*5) # AA=5%
+a1_7 a1_0*exp(-k1AA*7) # AA=7%
+a1_10 a1_0*exp(-k1AA*10) # AA=10%
+a1_100 0 # AA=100%
+delta delta__FREE
+#  presence/absence of BafA1
+# =0: absent
+# =1: added at t=0
+# =2: added at t=120 min
+# =3: added at t=240 min
+plusBafA1 0
+end parameters
+begin molecule types
+PG0()
+PG()
+AP()
+counter()
+end molecule types
+begin seed species
+PG0() PG0init0 # starved condition
+PG() PGinit100 # nutrient replete condition
+AP() APinit100 # nutrient replete condition
+counter() 0
+end seed species
+begin observables
+Molecules PG0 PG0() # phagophore count (per cell) in AA restimulation expt
+Molecules PG PG() # phagophore count (per cell) in starvation expts
+Molecules AP AP() # autophagosome count (per cell) in starvation expts
+Molecules t counter() # time
+end observables
+begin functions
+# rate law for PG synthesis
+alpha()=if(AA==0,a0_0+a1_0*t,\
+if(AA==1,a0_1+a1_1*t,\
+if(AA==5,a0_5+a1_5*t,\
+if(AA==7,a0_7+a1_7*t,\
+if(AA==10,a0_10+a1_10*t,\
+if(AA==100,a0_100+a1_100*t,\
+0))))))
+H_div_PG()=r*PG^(h-1)/(PG^h+k^h) # rate law for PG maturation
+H_div_PG0()=r*PG0^(h-1)/(PG0^h+k^h) # rate law for PG0 maturation
+toggle()=if(plusBafA1==1 && t>=0,0,\
+if(plusBafA1==2 && t>=120,0,\
+if(plusBafA1==3 && t>=240,0,1)))
+PG0dat_restim()=if(t<=0,9.12662900842906,\
+if(t<=10,2.69869424954653,\
+if(t<=20,1.18022440702163,\
+if(t<=30,1.07777805818219,\
+if(t<=40,1.15965840401418,\
+if(t<=50,1.07502139163734,\
+if(t<=60,1.08838119674061,\
+if(t<=70,1.02069525455913,\
+if(t<=80,0.965470989790535,\
+if(t<=90,1.06701422826169,\
+if(t<=100,0.967187522325015,\
+if(t<=110,1.07637294301608,\
+if(t<=120,1.00322847720174,\
+0)))))))))))))
+PGdat_noBafA1_0()=if(t<=0,1.94119194273087,\
+if(t<=20,2.29594971342552,\
+if(t<=40,2.742888702021800,\
+if(t<=60,3.481782607347850,\
+if(t<=80,4.074248225765400,\
+if(t<=100,4.38369446592924,\
+if(t<=120,4.72315977533249,\
+if(t<=140,4.97746896356101,\
+if(t<=160,5.43954796266927,\
+if(t<=180,5.10221902432344,\
+if(t<=200,5.52977684919313,\
+if(t<=220,6.27271413374968,\
+if(t<=240,7.73118945219746,\
+if(t<=260,10.0492880191056,\
+if(t<=280,12.3322748366837,\
+if(t<=300,12.8599921369108,\
+if(t<=320,13.8580077307452,\
+if(t<=340,15.1236932441783,\
+if(t<=360,18.1410835362421,\
+0)))))))))))))))))))
+PGdat_noBafA1_5()=if(t<=0,2.70296254774907,\
+if(t<=20,2.5048937684652,\
+if(t<=40,4.0669633822448,\
+if(t<=60,5.20564157606516,\
+if(t<=80,2.95786149478486,\
+if(t<=100,3.34100124449899,\
+if(t<=120,3.12076918489786,\
+if(t<=140,3.82191612953333,\
+if(t<=160,4.65234685474442,\
+if(t<=180,3.83035293136135,\
+if(t<=200,3.95958719069959,\
+if(t<=220,5.32119281432656,\
+if(t<=240,5.39569397871992,\
+if(t<=260,5.4813970491341,\
+if(t<=280,7.66167564132779,\
+if(t<=300,7.18873569678516,\
+if(t<=320,7.2530031458802,\
+if(t<=340,7.1267078203843,\
+if(t<=360,7.67599637466547,\
+0)))))))))))))))))))
+APdat_plusBafA1_0()=if(t<=0,18.4242439768935,\
+if(t<=10,22.0974185353256,\
+if(t<=20,23.0491382552644,\
+if(t<=30,38.9635207057518,\
+if(t<=40,49.5174015385396,\
+if(t<=50,59.695639639663,\
+if(t<=60,73.4614791786535,\
+if(t<=70,77.3527601190994,\
+if(t<=80,98.5675425788728,\
+if(t<=90,93.6468808111942,\
+if(t<=100,112.959986180212,\
+if(t<=110,98.9555985452051,\
+if(t<=120,135.103721164182,\
+0)))))))))))))
+APdat_plusBafA1_5()=if(t<=0,26.7078717548763,\
+if(t<=10,27.9781386476913,\
+if(t<=20,28.4536103537178,\
+if(t<=30,37.7192990071228,\
+if(t<=40,39.9124766398924,\
+if(t<=50,53.6653019132201,\
+if(t<=60,64.9720107602937,\
+if(t<=70,76.3016812031494,\
+if(t<=80,90.5625137783192,\
+if(t<=90,101.50250927342,\
+if(t<=100,115.278921453337,\
+if(t<=110,125.974668489073,\
+if(t<=120,141.99630428069,\
+0)))))))))))))
+end functions
+begin reaction rules
+0->counter() 1 # t
+#########################################
+# model for AA restimulation experiment #
+#########################################
+# -BafA1
+0->PG0() a0_100 # rate = a0 (a1=0)
+PG0()->0 gamma*H_div_PG0() # rate = gamma*H = gamma*r*PG0^h/(PG0^h+k^h)
+#################################################
+# model for AA starvation experiments +/- BafA1 #
+#################################################
+# PG synthesis
+0->PG() alpha() # rate = a0+a1*t
+# PG maturation
+#   NB: gamma PG's are converted to 1 AP.
+PG()->0 (gamma-1)*H_div_PG() # rate = (gamma-1)*H = (gamma-1)*r*PG^h/(PG^h+k^h)
+PG()->AP() H_div_PG() # rate = H = r*PG^h/(PG^h+k^h)
+# AP clearance
+AP()->0 delta
+end reaction rules
+end model
+begin actions
+
+generate_network({overwrite=>1})
+
+saveParameters()
+saveConcentrations()
+#############################################
+# simulation of AA restimulation experiment #
+#############################################
+# counter=0 (t=0)
+# PG0(t=0)=PGinit0 (AA-starved steady-state PG count)
+resetConcentrations()
+simulate({suffix=>"supplementAA_100",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+#####################################################
+# simulations of AA starvation experiments (-BafA1) #
+#####################################################
+# counter=0 (t=0)
+# PG(t=0)=PGinit100 (AA-replete steady-state PG count)
+# AP(t=0)=APinit100 (AA-replete steady-state AP count)
+setParameter("plusBafA1",0) # -BafA1
+resetConcentrations()
+setParameter("AA",0) # AA=0% => a1()=a1_0
+simulate({suffix=>"starveAA_0_noBafA1",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+resetConcentrations()
+setParameter("AA",1) # AA=1% => a1()=a1_1
+simulate({suffix=>"starveAA_1_noBafA1",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+resetConcentrations()
+setParameter("AA",5) # AA=5% => a1()=a1_5
+simulate({suffix=>"starveAA_5_noBafA1",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+resetConcentrations()
+setParameter("AA",7) # AA=7% => a1()=a1_7
+simulate({suffix=>"starveAA_7_noBafA1",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+resetConcentrations()
+setParameter("AA",10) # AA=10% => a1()=a1_10
+simulate({suffix=>"starveAA_10_noBafA1",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+resetConcentrations()
+setParameter("AA",100) # AA=100% => a1()=a1_100
+simulate({suffix=>"starveAA_100_noBafA1",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#####################################################
+# simulations of AA starvation experiments (+BafA1) #
+#####################################################
+# t=0 to 120 min
+setParameter("plusBafA1",1)
+resetConcentrations()
+setParameter("AA",0) # AA=0% => a1()=a1_0
+simulate({suffix=>"starveAA_0_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+resetConcentrations()
+setParameter("AA",1) # AA=1% => a1()=a1_1
+simulate({suffix=>"starveAA_1_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+resetConcentrations()
+setParameter("AA",5) # AA=5% => a1()=a1_5
+simulate({suffix=>"starveAA_5_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+resetConcentrations()
+setParameter("AA",7) # AA=7% => a1()=a1_7
+simulate({suffix=>"starveAA_7_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+resetConcentrations()
+setParameter("AA",10) # AA=10% => a1()=a1_10
+simulate({suffix=>"starveAA_10_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+resetConcentrations()
+setParameter("AA",100) # AA=100% => a1()=a1_100
+simulate({suffix=>"starveAA_100_plusBafA1_0to120",method=>"ode",t_start=>0,t_end=>120,n_steps=>12,print_functions=>1})
+# t=120 to 240 min
+#setParameter("plusBafA1",2)
+#resetConcentrations()
+#setParameter("AA",0) # AA=0% => a1()=a1_0
+#simulate({suffix=>"starveAA_0_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",1) # AA=1% => a1()=a1_1
+#simulate({suffix=>"starveAA_1_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",5) # AA=5% => a1()=a1_5
+#simulate({suffix=>"starveAA_5_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",7) # AA=7% => a1()=a1_7
+#simulate({suffix=>"starveAA_7_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",10) # AA=10% => a1()=a1_10
+#simulate({suffix=>"starveAA_10_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",100) # AA=100% => a1()=a1_100
+#simulate({suffix=>"starveAA_100_plusBafA1_120to240",method=>"ode",t_start=>0,t_end=>240,n_steps=>24,print_functions=>1})
+# t=240 to 360 min
+#setParameter("plusBafA1",3)
+#resetConcentrations()
+#setParameter("AA",0) # AA=0% => a1()=a1_0
+#simulate({suffix=>"starveAA_0_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",1) # AA=1% => a1()=a1_1
+#simulate({suffix=>"starveAA_1_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",5) # AA=5% => a1()=a1_5
+#simulate({suffix=>"starveAA_5_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",7) # AA=7% => a1()=a1_7
+#simulate({suffix=>"starveAA_7_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",10) # AA=10% => a1()=a1_10
+#simulate({suffix=>"starveAA_10_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+#resetConcentrations()
+#setParameter("AA",100) # AA=100% => a1()=a1_100
+#simulate({suffix=>"starveAA_100_plusBafA1_240to360",method=>"ode",t_start=>0,t_end=>360,n_steps=>36,print_functions=>1})
+end actions

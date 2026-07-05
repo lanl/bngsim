@@ -1,0 +1,61 @@
+begin model
+begin parameters
+    k_transcribe 1.0
+    k_translate 5.0
+    k_repress 0.003
+    k_release 0.001
+    k_deg_m 0.2
+    k_deg_p 0.1
+end parameters
+
+begin molecule types
+    GeneA(state~free~bound)
+    GeneB(state~free~bound)
+    GeneC(state~free~bound)
+    mRNA_A()
+    mRNA_B()
+    mRNA_C()
+    ProteinA()
+    ProteinB()
+    ProteinC()
+end molecule types
+
+begin seed species
+    GeneA(state~free) 1
+    GeneB(state~free) 1
+    GeneC(state~free) 1
+end seed species
+
+begin observables
+    Molecules Protein_A ProteinA()
+    Molecules Protein_B ProteinB()
+    Molecules Protein_C ProteinC()
+    Molecules GeneA_bound GeneA(state~bound)
+end observables
+
+begin reaction rules
+    GeneA(state~free) -> GeneA(state~free) + mRNA_A() k_transcribe
+    GeneB(state~free) -> GeneB(state~free) + mRNA_B() k_transcribe
+    GeneC(state~free) -> GeneC(state~free) + mRNA_C() k_transcribe
+    mRNA_A() -> mRNA_A() + ProteinA() k_translate
+    mRNA_B() -> mRNA_B() + ProteinB() k_translate
+    mRNA_C() -> mRNA_C() + ProteinC() k_translate
+    ProteinC() + GeneA(state~free) -> ProteinC() + GeneA(state~bound) k_repress
+    GeneA(state~bound) -> GeneA(state~free) k_release
+    ProteinA() + GeneB(state~free) -> ProteinA() + GeneB(state~bound) k_repress
+    GeneB(state~bound) -> GeneB(state~free) k_release
+    ProteinB() + GeneC(state~free) -> ProteinB() + GeneC(state~bound) k_repress
+    GeneC(state~bound) -> GeneC(state~free) k_release
+    mRNA_A() -> 0 k_deg_m
+    mRNA_B() -> 0 k_deg_m
+    mRNA_C() -> 0 k_deg_m
+    ProteinA() -> 0 k_deg_p
+    ProteinB() -> 0 k_deg_p
+    ProteinC() -> 0 k_deg_p
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>1000,n_steps=>400})
+end actions
+end model

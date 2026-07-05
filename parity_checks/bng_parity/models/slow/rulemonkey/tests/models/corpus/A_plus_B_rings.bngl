@@ -1,0 +1,38 @@
+# Simple loop closure reaction
+
+begin parameters
+t_end		10
+n_steps     10000
+kp1		0.1
+km1		0.5
+kp2		0.3
+km2		0.2
+A_tot		1000
+B_tot		2000
+end parameters
+
+begin molecule types
+A(b,b)
+B(a,a)
+end molecule types
+
+begin species
+A(b,b)		A_tot
+B(a,a)		B_tot
+end species
+
+begin reaction rules
+A(b,b) + B(a,a) <-> A(b!1,b).B(a!1,a) kp1,km1
+A(b!1,b).B(a!1,a) <-> A(b!1,b!2).B(a!1,a!2) kp2,km2
+end reaction rules
+
+begin observables
+Species A_1   A(b,b)
+Species B_1   B(a,a)
+Species AB1_1   A(b!1,b).B(a!1,a)
+Species AB2_1   A(b!1,b!2).B(a!1,a!2)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>10000})
+end actions

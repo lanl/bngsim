@@ -1,0 +1,31 @@
+# Simple state change reaction
+
+begin parameters
+t_end		10
+n_steps         100
+kp	0.3
+kd	0.1
+R_0	1000
+end parameters
+
+begin molecule types
+R(Y~U~P)
+end molecule types
+
+begin species
+R(Y~U)	R_0
+end species
+
+begin reaction rules
+R(Y~U) -> R(Y~P)  kp
+R(Y~P) -> R(Y~U)  kd
+end reaction rules
+
+begin observables
+Species uY_1   R(Y~U)
+Species pY_1   R(Y~P)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>100})
+end actions

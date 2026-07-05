@@ -1,0 +1,32 @@
+# Simple A+A reaction
+
+begin parameters
+t_end		10
+n_steps         100
+
+A_tot		1000
+
+kp		0.001
+km		0.5
+end parameters
+
+begin molecule types
+A(a)
+end molecule types
+
+begin species
+A(a)		A_tot
+end species
+
+begin reaction rules
+A(a) + A(a) <-> A(a!1).A(a!1) kp,km
+end reaction rules
+
+begin observables
+Species A_1   A(a)
+Species AA_1   A(a!1).A(a!1)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>100})
+end actions

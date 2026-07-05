@@ -1,0 +1,276 @@
+# test of compression
+
+begin model
+
+# References:
+#  Schlee S, Carmillo P, Whitty A (2006) Nat Chem Biol 2: 636-644.
+
+begin parameters
+
+L1_total 1.2e6 
+R1_total 1.8e5
+L2_total 1.2e6
+R2_total 1.8e5
+
+kp1 1.667e-6
+km1 0.06
+
+kp2 5.556e-6
+km2 0.1
+
+# ARTN-GFRA3-RET parameters from Schlee et al. (2006)
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# circumference:diameter
+pi 3.14159265359 # dimensionless ratio
+
+# diameter of murine neuroblast 
+D 25e-5 # dm (25 microns)
+
+# surface area of NB41A3-mGFRalpha3 cells
+A=pi*D^2 # dm^2 per cell
+
+# cell density
+cellDensity 5e5 # cells per well
+
+# volume of growth medium
+Vmedium 40e-6 # L per well
+
+# volume of extracellur fluid surrouding a cell
+Vecf=Vmedium/cellDensity # L per cell
+
+GFRA3_SurfaceDensity 33e10 # copies per dm^2
+RET_SurfaceDensity 3e10 # copies per dm^2
+ARTN_Concentration 10e-9 # M
+
+GFRA3_cpc=GFRA3_SurfaceDensity*A # cpc
+RET_cpc=RET_SurfaceDensity*A # cpc
+ARTN_cpc=ARTN_Concentration*(NA*Vecf) # cpc
+
+Kd1 420e-9*(NA*Vecf) # M converted to cpc
+Kd2 2.5e10*A # cpc
+Kd3 17e10*A # cpc
+Kd4 0.03e10*A # cpc
+
+koff_universal 0.5 # /s
+kr1=koff_universal # /s
+kr2=koff_universal # /s
+kr3=koff_universal # /s
+kr4=koff_universal # /s
+
+kf1=kr1/Kd1 # /cpc/s
+kf2=kr2/Kd2 # /cpc/s
+kf3=kr3/Kd3 # /cpc/s
+kf4=kr4/Kd4 # /cpc/s
+
+# parameters for EGF-EGFR interaction
+
+Vex 1e-9 # L per cell
+
+EGF_cpc 0.001e-9*(NA*Vex) # M converted to cpc
+EGFR_cpc 5e4 # cpc
+
+kET_0 10 # /s
+kTE 1 # /s
+KeqTE_0=kTE/kET_0 # dimensionless
+
+kfT 5e6*(NA*Vex) # /M/s converted to /cpc/s
+krT 50 # /s
+KeqT=kfT/krT # /cpc
+
+kfE 5e6*(NA*Vex) # /M/s converted to /cpc/s
+krE 0.5 # /s
+KeqE=kfE/krE # /cpc
+
+# detailed balance
+kET_1=kET_0*(KeqT/KeqE) # /s
+
+kfdim 1e-3 # /cpc/s
+krdim 0.5 # /s
+
+end parameters
+
+begin molecule types
+
+ARTN(g~0~1,r,S) # ligand
+GFRA3(a,r) # cell-surface cofactor
+RET(a,g) # receptor tyrosine kinase
+
+Ln(s,s)
+Rn(s)
+Lo()
+Ro(s~0~1~2)
+
+L1(r)
+R1(l,r)
+L2(r)
+R2(l,r~0~1)
+
+EGF(EGFL)
+EGFR(ECD~T~E,I_III,II)
+
+end molecule types
+
+begin seed species
+
+ARTN(g~1,r,S!0).ARTN(g~0,r,S!0) ARTN_cpc # homodimeric ligand
+GFRA3(a,r) GFRA3_cpc
+RET(a,g) RET_cpc
+
+Ln(s,s) L1_total
+Rn(s) R1_total
+Lo() L1_total
+Ro(s~0) R1_total
+
+L1(r) L1_total
+R1(l,r) R1_total
+L2(r) L2_total
+R2(l,r~0) R2_total
+
+EGF(EGFL) EGF_cpc
+EGFR(ECD~T,I_III,II) EGFR_cpc*1/(1+KeqTE_0)
+EGFR(ECD~E,I_III,II) EGFR_cpc*KeqTE_0/(1+KeqTE_0)
+
+end  seed species
+
+begin observables
+
+# ARTN-GFRA3-RET model
+Species RET_dimers ARTN(g~1!1,r!2,S!0).ARTN(g~1!4,r!5,S!0).GFRA3(a!1,r!3).RET(a!2,g!3).GFRA3(a!4,r!6).RET(a!5,g!6)
+Species soluble_homodimeric_ARTN ARTN(g~1,r,S!0).ARTN(g~0,r,S!0)
+Molecules freeRET RET(a,g)
+Species bound_monomeric_RET ARTN(g~1!1,r!2,S!0).ARTN(g~1!4,r,S!0).GFRA3(a!1,r!3).RET(a!2,g!3).GFRA3(a!4,r)
+
+# ligand-mediated receptor crosslinking
+
+Molecules Num_Rn_in_dimers Rn(s!1).Ln(s!1,s!+)
+Molecules Num_Ro_in_dimers Ro(s~2)
+
+Species freeLn Ln(s,s)
+Species freeLo Lo()
+
+Molecules freeRn Rn(s)
+Molecules freeRo Ro(s~0)
+
+Molecules bound_Rn_monomers Rn(s!1).Ln(s!1,s)
+Molecules bound_Ro_monomers Ro(s~1)
+
+# ligand-dependent receptor-receptor interaction
+
+Molecules Num_R1_in_dimers R1(r!1).R1(r!1)
+Molecules Num_R2_in_dimers R2(r~1)
+
+Molecules freeL1 L1(r)
+Molecules freeL2 L2(r)
+
+Molecules freeR1 R1(l,r)
+Molecules freeR2 R2(l,r~0)
+
+Molecules bound_R1_monomers R1(l!+,r)
+Molecules bound_R2_monomers R2(l!+,r~0)
+
+# EGF-EGFR model
+Species EGFR_dimers EGFR(II!1).EGFR(II!1)
+Species freeEGF EGF(EGFL)
+Molecules ligand_free_EGFR_monomers EGFR(I_III,II)
+Molecules ligand_free_EGFR_in_dimers EGFR(I_III,II!+)
+Molecules bound_EGFR_monomers EGFR(I_III!+,II)
+Molecules tethered_EGFR EGFR(ECD~T)
+Molecules extended_EGFR EGFR(ECD~E)
+
+end observables
+
+begin functions
+
+# none
+
+end functions
+
+begin reaction rules
+
+# receptor dimerization mechanisms
+
+#########################################
+# ligand-mediated receptor crosslinking #
+#########################################
+
+# without a cofactor
+# Examples: KIT-SCF, VEGFR2-VEGFA, NTRK1-NGF
+
+# natural formulation
+Ln(s,s)+Rn(s)<->Ln(s,s!1).Rn(s!1) kp1,km1
+Ln(s,s!1).Rn(s!1)+Rn(s)<->Ln(s!2,s!1).Rn(s!1).Rn(s!2) kp2,km2
+
+# optimized to minimize rule-derived network size
+Lo()+Ro(s~0)->Ro(s~1) 2*kp1
+Ro(s~1)->Ro(s~0)+Lo() km1
+Ro(s~0)+Ro(s~1)->Ro(s~2)+Ro(s~2) kp2
+Ro(s~2)->Ro(s~1) 0.5*(2*km2)
+Ro(s~2)->Ro(s~0) 0.5*(2*km2)
+
+# with a cofactor
+# Examples: RET-ARTN-GFRA3
+
+# natural formulation - based on model of Schlee et al. (2006)
+ARTN(g~1,r,S!0).ARTN(g~0,r,S!0)+GFRA3(a,r)<->\
+ARTN(g~1!1,r,S!0).ARTN(g~0,r,S!0).GFRA3(a!1,r) kf1,kr1
+ARTN(g~1!1,r,S!0).ARTN(g~0,r,S!0).GFRA3(a!1,r)+RET(a,g)<->\
+ARTN(g~1!1,r!2,S!0).ARTN(g~1,r,S!0).GFRA3(a!1,r!3).RET(a!2,g!3) kf2,kr2
+ARTN(g~1!1,r!2,S!0).ARTN(g~1,r,S!0).GFRA3(a!1,r!3).RET(a!2,g!3)+GFRA3(a,r)<->\
+ARTN(g~1!1,r!2,S!0).ARTN(g~1!4,r,S!0).GFRA3(a!1,r!3).RET(a!2,g!3).GFRA3(a!4,r) kf3,kr3
+ARTN(g~1!1,r!2,S!0).ARTN(g~1!4,r,S!0).GFRA3(a!1,r!3).RET(a!2,g!3).GFRA3(a!4,r)+RET(a,g)<->\
+ARTN(g~1!1,r!2,S!0).ARTN(g~1!4,r!5,S!0).GFRA3(a!1,r!3).RET(a!2,g!3).GFRA3(a!4,r!6).RET(a!5,g!6) kf4,kr4
+
+##################################################
+# ligand-dependent receptor-receptor interaction #
+##################################################
+
+# without a cofactor
+# Examples: EGF-EGFR, NRG1-ERBB4
+
+# natural formulation - simplest scheme
+L1(r)+R1(l,r)<->L1(r!1).R1(l!1,r) kp1,km1
+R1(l!+,r)+R1(l!+,r)<->R1(l!+,r!1).R1(l!+,r!1) kp2,km2
+
+# optimized to minimize rule-derived network size
+L2(r)+R2(l,r~0)<->L2(r!1).R2(l!1,r~0) kp1,km1
+R2(l!+,r~0)+R2(l!+,r~0)->R2(l!+,r~1)+R2(l!+,r~1) kp2
+R2(r~1)->R2(r~0) km2
+
+# natural formulation - more realistic scheme for EGF-EGFR (no cooperativity, no oligomers larger than dimers)
+EGFR(ECD~T,I_III,II)<->EGFR(ECD~E,I_III,II) kTE,kET_0
+EGF(EGFL)+EGFR(ECD~T,I_III)<->EGF(EGFL!1).EGFR(ECD~T,I_III!1) kfT,krT
+EGF(EGFL)+EGFR(ECD~E,I_III)<->EGF(EGFL!1).EGFR(ECD~E,I_III!1) kfE,krE
+EGFR(ECD~T,I_III!+,II)<->EGFR(ECD~E,I_III!+,II) kTE,kET_1
+EGFR(ECD~E,II)+EGFR(ECD~E,II)<->EGFR(ECD~E,II!1).EGFR(ECD~E,II!1) kfdim,krdim
+
+# with a cofactor
+# Examples: FGFR1-FGF2-HSPG
+
+# 1) Cell-surface HSPG captures soluble FGF.
+# 2) The HSPG-FGF complex binds FGFR, forming a ternary complex.
+# 3) The ternary complex dimerizes, with FGFR-FGFR contacts contributing most prominently to the dimerization interface.
+
+#######################################################################################
+# ligand-mediated stabilization of active conformation of constitutive receptor dimer #
+#######################################################################################
+
+# Examples: IGF1-IGF1R, INS-INSR
+
+# idealized case
+# monovalent ligand L(s)
+# dimeric receptor R(s,Y1~0~P,Y2~0~P,S!0).R(s,Y1~0~P,Y2~0~P,S!0)
+# simplify to L(s) + D(s,Y1~0~P,Y2~0~P)
+
+# harmonic oscillator model for IGF1 interaction with IGF1R (more realistic scheme)
+
+end reaction rules
+
+end model
+
+#ACTIONS
+
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>30,n_steps=>300})

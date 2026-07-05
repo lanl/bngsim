@@ -1,0 +1,99 @@
+begin model
+begin parameters
+    # BMAL1-CLOCK: The master activator of the circadian circuit.
+    # Advanced features: MoveConnected for nuclear export and saturable turnover.
+    
+    # Assembly
+    k_bind_act 2.5     # CLOCK:BMAL1 heterodimerization
+    k_transcribe 2.0   # Functional driver
+    k_bind_dna 1.0     # DNA binding
+    k_unbind_dna 0.1
+    
+    # Negative Loops (Secondary rev-erba/ror)
+    k_ror_synth 0.5    # BMAL1-mediated ROR production
+    k_rev_synth 0.8    # BMAL1-mediated REV-ERB production
+    k_bmal_rep 5.0     # REV-ERB represses BMAL1 transcription
+    
+    # Spatial Transport
+    k_export 1.0       # Nuclear exclusion rate
+    k_import 1.5       # Nuclear import (Active)
+    
+    # Stability
+    k_deg_basal 0.1
+    Km_clearance 200   # Saturation threshold for UPS
+    
+    # Initials
+    Clock_tot 100
+    Bmal1_tot 400
+    ROR_tot 20
+    Rev_tot 10
+end parameters
+
+begin molecule types
+    Clock(b)
+    Bmal1(b1,b2,loc~cyt~nuc)
+    ROR(b)
+    RevErb(b)
+    DNA(p)
+end molecule types
+
+begin seed species
+    Clock(b) Clock_tot
+    Bmal1(b1,b2,loc~cyt) Bmal1_tot
+    ROR(b) ROR_tot
+    RevErb(b) Rev_tot
+    DNA(p) 10
+end seed species
+
+begin observables
+    # KEY BIOLOGICAL OUTPUTS
+    Molecules Activator_Comp  Clock(b!1).Bmal1(b1!1)   # Active TF heteromer
+    Molecules Nuclear_Bmal1   Bmal1(loc~nuc)           # Spatial driver status
+    Molecules RevErb_Brake    RevErb()                 # Negative inhibitor levels
+    Molecules ROR_Accelerator ROR()                   # Positive activator levels
+    Molecules Transcription_ON Bmal1(b2!+)             # Engagement with DNA
+    Molecules Bmal1_Total_Obs Bmal1()                  # Substrate status
+end observables
+
+begin functions
+    # Saturable degradation (Clearance bottleneck)
+    v_clear() = k_deg_basal * (Bmal1_Total_Obs / (Km_clearance + Bmal1_Total_Obs))
+end functions
+
+begin reaction rules
+    ## ACTIVATION 
+    # Bmal1 moves to nucleus
+    Bmal1(b1,b2,loc~cyt) <-> Bmal1(b1,b2,loc~nuc) k_import,k_export
+    
+    # Heterodimerization (The Engine)
+    Clock(b) + Bmal1(b1,loc~nuc) <-> Clock(b!1).Bmal1(b1!1,loc~nuc) k_bind_act,0.2
+
+    # DNA Binding (Transcription ON)
+    Clock(b!1).Bmal1(b1!1,b2,loc~nuc) + DNA(p) <-> Clock(b!1).Bmal1(b1!1,b2!2,loc~nuc).DNA(p!2) k_bind_dna,k_unbind_dna
+    
+    ## SECONDARY LOOP (The Tuning)
+    # Active complex induces RevErb and ROR
+    Clock(b!1).Bmal1(b1!1) -> Clock(b!1).Bmal1(b1!1) + RevErb(b) k_rev_synth
+    Clock(b!1).Bmal1(b1!1) -> Clock(b!1).Bmal1(b1!1) + ROR(b) k_ror_synth
+    
+    # RevErb represses Bmal1 production (Negative)
+    # (Modeled as active degradation of Bmal1 mRNA proxy or turnover)
+    RevErb(b) + Bmal1() -> RevErb(b) + 0 k_bmal_rep
+    
+    # ROR promotes Bmal1 production (Positive)
+    ROR(b) -> ROR(b) + Bmal1(b1,b2,loc~cyt) 2.0
+    
+    ## RESET Phase
+    # Functional Rate for saturable clearance
+    Bmal1() -> 0 v_clear()
+    
+    RevErb() -> 0 0.1
+    ROR() -> 0 0.1
+end reaction rules
+
+begin actions
+    generate_network({overwrite=>1})
+    simulate({method=>"ode",t_end=>120,n_steps=>300})
+end actions
+end model
+

@@ -1,0 +1,120 @@
+# Model: genetic_turing_pattern_1d.bngl
+# Description: Models a 4-compartment 1D reaction-diffusion system (Activator-Inhibitor).
+#              Demonstrates how diffusion between adjacent compartments can lead to spatial patterns.
+# Model: Gierer-Meinhardt type kinetics.
+
+begin model
+
+begin parameters
+    # Kinetics
+    # Activator A: autocatalytic, activates Inhibitor B
+    # Inhibitor B: inhibits Activator A
+    ka 0.1   # Basal production of A
+    kb 0.05  # Basal production of B
+    k_aut 1.0 # Autocatalysis of A
+    k_inh 1.0 # Inhibition by B
+    k_degA 0.5
+    k_degB 0.2
+    
+    # Diffusion Rates
+    D_A 0.01 # Slow diffusion of Activator
+    D_B 1.0  # Fast diffusion of Inhibitor (Key for Turing instability)
+    
+    Initial_A 1.0
+end parameters
+
+begin molecule types
+    A()
+    B()
+end molecule types
+
+begin compartments
+    # 1D Chain: Cell1 <-> Cell2 <-> Cell3 <-> Cell4
+    Cell1 3 1.0
+    Cell2 3 1.0
+    Cell3 3 1.0
+    Cell4 3 1.0
+end compartments
+
+begin seed species
+    # Random initial perturbation
+    A()@Cell1 1.1
+    A()@Cell2 0.9
+    A()@Cell3 1.0
+    A()@Cell4 1.2
+    B()@Cell1 0.5
+    B()@Cell2 0.5
+    B()@Cell3 0.5
+    B()@Cell4 0.5
+end seed species
+
+begin observables
+    Molecules A1 A()@Cell1
+    Molecules A2 A()@Cell2
+    Molecules A3 A()@Cell3
+    Molecules A4 A()@Cell4
+    Molecules B1 B()@Cell1
+end observables
+
+begin reaction rules
+    # --- Reaction System (Same in all cells) ---
+    # Simplification: Use mass action or hill functions if allowed. 
+    # Here we use approximate mass action for demonstrative structure.
+    # A' = ka + k_aut * A^2 / B - k_degA * A
+    # B' = kb + k_aut * A^2 - k_degB * B
+    # Note: Division by B is hard in elementary rules.
+    # We will use "Activator-Depleted Substrate" or similar scheme for pure elementary rules.
+    # Or simplified:
+    # A + A -> A + A + A (Autocatalysis)
+    # A + B -> B (Inhibition/Degradation of A by B)
+    # A -> A + B (A activates B)
+    
+    # Rule 1: Autocatalytic growth with saturation (per compartment)
+    A()@Cell1 + A()@Cell1 -> A()@Cell1 + A()@Cell1 + A()@Cell1 k_aut * (1 - A1/100)
+    A()@Cell2 + A()@Cell2 -> A()@Cell2 + A()@Cell2 + A()@Cell2 k_aut * (1 - A2/100)
+    A()@Cell3 + A()@Cell3 -> A()@Cell3 + A()@Cell3 + A()@Cell3 k_aut * (1 - A3/100)
+    A()@Cell4 + A()@Cell4 -> A()@Cell4 + A()@Cell4 + A()@Cell4 k_aut * (1 - A4/100)
+    
+    # Rule 2: Inhibition (B degrades A)
+    A() + B() -> B() 0.1 # k_inh
+    
+    # Rule 3: A produces B
+    A() -> A() + B() 0.1
+    
+    # Rule 4: Basal Production/Degradation (Per Cell)
+    # Applying to each compartment separately
+    0 -> A()@Cell1 ka
+    0 -> A()@Cell2 ka
+    0 -> A()@Cell3 ka
+    0 -> A()@Cell4 ka
+    
+    0 -> B()@Cell1 kb
+    0 -> B()@Cell2 kb
+    0 -> B()@Cell3 kb
+    0 -> B()@Cell4 kb
+    
+    A()@Cell1 -> 0 k_degA
+    A()@Cell2 -> 0 k_degA
+    A()@Cell3 -> 0 k_degA
+    A()@Cell4 -> 0 k_degA
+    
+    B()@Cell1 -> 0 k_degB
+    B()@Cell2 -> 0 k_degB
+    B()@Cell3 -> 0 k_degB
+    B()@Cell4 -> 0 k_degB
+    
+    # --- Diffusion (Between Neighbors) ---
+    A()@Cell1 <-> A()@Cell2 D_A, D_A
+    A()@Cell2 <-> A()@Cell3 D_A, D_A
+    A()@Cell3 <-> A()@Cell4 D_A, D_A
+    
+    B()@Cell1 <-> B()@Cell2 D_B, D_B
+    B()@Cell2 <-> B()@Cell3 D_B, D_B
+    B()@Cell3 <-> B()@Cell4 D_B, D_B
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ode", t_end=>50, n_steps=>200})

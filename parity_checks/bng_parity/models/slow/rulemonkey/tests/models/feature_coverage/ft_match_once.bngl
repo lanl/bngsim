@@ -1,0 +1,54 @@
+# Feature: MatchOnce attribute on observables (Species-type, multi-embedding)
+# Tests: when a species matches the observable pattern in multiple ways
+#   (pattern has degeneracy across homotypic sites), a Species-type
+#   observable with matchOnce="1" counts the species ONCE regardless of
+#   embedding multiplicity.  Silent-ignore of matchOnce would collapse
+#   the Species count to the Molecules (embedding) count.
+# Tier: base
+#
+# BNG2 2.9.3 NOTE: BNG2 auto-sets matchOnce="1" on every Species-type
+# observable pattern and does NOT propagate user-written `{MatchOnce}`
+# on Molecules-type observables to XML (RuleWorld/bionetgen#312).  The
+# Species-type multi-embedding case is therefore the only testable
+# form of MatchOnce through our toolchain; this model covers it.
+#
+# Expected at saturation:
+#   - A has two homotypic b-sites; at equilibrium all 50 A's have both
+#     bonds (kf*B_tot >> kr).
+#   - Molecules  A(b!+): 2 embeddings × 50 mols = 100
+#   - Species    A(b!+): 1 match per species × 50 population = 50
+# Verdict relies on RM-vs-NFsim z-score: if RM silently ignored
+# matchOnce="1", A_species_any would track A_mol_embeds (→100) and
+# NFsim would disagree.
+
+begin model
+begin parameters
+    A_tot  50
+    B_tot  200
+    kf     10.0   # fast binding — drives A to doubly-bound state
+    kr     0.01   # slow unbinding
+end parameters
+
+begin molecule types
+    A(b,b)
+    B(a)
+end molecule types
+
+begin seed species
+    A(b,b)  A_tot
+    B(a)    B_tot
+end seed species
+
+begin observables
+    Molecules  A_mol_embeds   A(b!+)    # counts bound-site embeddings
+    Species    A_species_any  A(b!+)    # auto-matchOnce="1" in XML
+end observables
+
+begin reaction rules
+    A(b) + B(a) <-> A(b!1).B(a!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>50})
+end actions

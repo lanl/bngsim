@@ -1,0 +1,122 @@
+begin model
+
+begin parameters
+
+f 1 # dimensionless, 0<f<=1
+
+NA 6.02214e23 # molecules per mol
+
+pi 3.14159265359
+
+Vecf 2e-9*f # L per cell
+
+# average diameter of an RBL-2H3 cell (Swift et al., 1998)
+Dcell 1.5e-4 # dm (15 microns)
+
+Lconc_nM 0.1 # nM
+Lconc=1e-9*Lconc_nM # M
+Lcpc=Lconc*(NA*Vecf) # copies per cell
+
+Rcpc 3e5*f # copies per cell
+
+D_DCT 1e-7 # dm^2/s 
+
+# equilibrium association constant for DCT binding to a Fab arm in surface IgE (Erickson et al., 1986)
+KA_DCT 1.4e9/(NA*Vecf) # /M (KD = ~0.7 nM)
+
+# association rate constant for DCT binding to a Fab arm in surface IgE (Erickson et al., 1987)
+kon_DCT 2.6e7/(NA*Vecf) # /M/s
+
+# dissociation rate constant
+koff_DCT=kon_DCT/KA_DCT # /s (~0.02 per s)
+
+end parameters
+
+begin molecule types
+
+DCT_1(DNP)
+IgE_1(Fab,Fab)
+
+DCT_2(DNP)
+IgE_2(Fab,Fab)
+
+DCT_3(DNP)
+IgE_3(Fab,Fab)
+
+end molecule types
+
+begin seed species
+
+DCT_1(DNP) 24*Lcpc
+IgE_1(Fab,Fab) Rcpc
+
+DCT_2(DNP) 24*Lcpc
+IgE_2(Fab,Fab) Rcpc
+
+DCT_3(DNP) 24*Lcpc
+IgE_3(Fab,Fab) Rcpc
+
+end seed species
+
+begin observables
+
+Molecules freeDCT_1 DCT_1(DNP)
+Molecules boundDCT_1 DCT_1(DNP!+)
+Molecules freeFab_1 IgE_1(Fab)
+
+Molecules freeDCT_2 DCT_2(DNP)
+Molecules boundDCT_2 DCT_2(DNP!+)
+Molecules freeFab_2 IgE_2(Fab)
+
+#Molecules freeDCT_3 DCT_3(DNP)
+#Molecules boundDCT_3 DCT_3(DNP!+)
+#Molecules freeFab_3 IgE_3(Fab)
+
+end observables
+
+begin functions
+
+kf_DCT_s()=kon_DCT/(1+kon_DCT*(freeFab_2/f)*Vecf/(4*pi*D_DCT*Dcell/2))
+kr_DCT_s()=koff_DCT/(1+kon_DCT*(freeFab_2/f)*Vecf/(4*pi*D_DCT*Dcell/2))
+
+end functions
+
+begin reaction rules
+
+# Model 1 - no diffusion effects
+DCT_1(DNP)+IgE_1(Fab)<->DCT_1(DNP!1).IgE_1(Fab!1) kon_DCT,koff_DCT
+
+# Model 2 - diffusion-controlled ligand capture and release, cells in suspension
+DCT_2(DNP)+IgE_2(Fab)<->DCT_2(DNP!1).IgE_2(Fab!1) kf_DCT_s(),kr_DCT_s()
+
+# Model 3 - diffusion-controlled ligand capture and release, cells adherent to a surface
+
+
+end reaction rules
+
+end model
+
+begin actions
+
+generate_network({overwrite=>1})
+saveConcentrations()
+
+setParameter("f",1)
+resetConcentrations()
+simulate({suffix=>"ode_f1",method=>"ode",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"ssa_f1",method=>"ssa",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"xnf_f1",method=>"nf",complex=>1,get_final_state=>0,gml=>10000000,\
+#	t_start=>0,t_end=>300,n_steps=>300})
+
+#setParameter("f",0.01)
+#resetConcentrations()
+#simulate({suffix=>"ode_f01",method=>"ode",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"ssa_f01",method=>"ssa",t_start=>0,t_end=>300,n_steps=>300})
+#resetConcentrations()
+#simulate({suffix=>"xnf_f01",method=>"nf",complex=>1,get_final_state=>0,gml=>10000000,\
+#	t_start=>0,t_end=>300,n_steps=>300})
+
+end actions

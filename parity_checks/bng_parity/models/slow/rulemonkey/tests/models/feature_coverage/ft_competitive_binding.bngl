@@ -1,0 +1,45 @@
+# Feature: competitive binding — two species competing for the same site
+# Tests: correct site occupancy competition, displacement dynamics
+# Tier: base
+# Expected: A and B compete for R's single site; higher-affinity species dominates
+
+begin model
+begin parameters
+    R_tot   30
+    A_tot   40
+    B_tot   40
+    kfA     0.02   # /s, A binding rate
+    krA     0.05   # /s, A unbinding rate (Kd_A = 2.5)
+    kfB     0.02   # /s, B binding rate
+    krB     0.2    # /s, B unbinding rate (Kd_B = 10, weaker)
+end parameters
+
+begin molecule types
+    R(s)
+    A(s)
+    B(s)
+end molecule types
+
+begin seed species
+    R(s)  R_tot
+    A(s)  A_tot
+    B(s)  B_tot
+end seed species
+
+begin observables
+    Molecules  R_free    R(s)
+    Molecules  A_free    A(s)
+    Molecules  B_free    B(s)
+    Molecules  RA        R(s!1).A(s!1)
+    Molecules  RB        R(s!1).B(s!1)
+end observables
+
+begin reaction rules
+    R(s) + A(s) <-> R(s!1).A(s!1)  kfA, krA
+    R(s) + B(s) <-> R(s!1).B(s!1)  kfB, krB
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

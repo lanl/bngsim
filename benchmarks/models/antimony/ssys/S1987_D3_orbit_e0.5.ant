@@ -1,0 +1,39 @@
+// =============================================================================
+// Source: Savageau & Voit (1987) "Recasting Nonlinear Differential Equations
+//         as S-Systems: A Canonical Nonlinear Form"
+//         Math. Biosci. 87:83-115
+// Example: Problem D3 - Orbit equation, eccentricity e=0.5 (Appendix A)
+// =============================================================================
+// Time horizon: t ∈ [0, 20]
+// Eccentricity: e = 0.5
+// Initial conditions: Z1(0) = 1-e = 0.5
+//                     Z2(0) = 0
+//                     Z3(0) = 0
+//                     Z4(0) = sqrt((1+e)/(1-e)) = sqrt(1.5/0.5) = sqrt(3) ≈ 1.7321
+//
+// Original ODEs (2-body orbit problem):
+//   dZ1/dt = Z3
+//   dZ2/dt = Z4
+//   dZ3/dt = -Z1*(Z1^2 + Z2^2)^(-3/2)
+//   dZ4/dt = -Z2*(Z1^2 + Z2^2)^(-3/2)
+//
+// Recast S-system: Same structure as D1, see paper for details.
+// =============================================================================
+
+model S1987_D3_orbit_e0p5()
+    // Orbital mechanics with eccentricity e = 0.5
+    e = 0.5
+    
+    Z1' = Z3
+    Z2' = Z4
+    Z3' = -Z1*(Z1^2 + Z2^2)^(-3/2)
+    Z4' = -Z2*(Z1^2 + Z2^2)^(-3/2)
+    
+    // Initial conditions
+    Z1 = 1 - e           // = 0.5
+    Z2 = 0
+    Z3 = 0
+    Z4 = ((1+e)/(1-e))^(1/2)  // = sqrt(3) ≈ 1.7321
+end
+// @SIM T_START=0 T_END=20 N_STEPS=400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

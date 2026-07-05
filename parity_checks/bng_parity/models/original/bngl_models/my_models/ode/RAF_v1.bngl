@@ -1,0 +1,124 @@
+# Filename: RAF_v[version_number].bngl
+# [PII REMOVED]
+
+begin model
+
+# References:
+#   Kulak NA et al. (2014) Nat Methods 11: 319-324.
+#   Stites EC et al. (2007) Science 318: 463-467.
+#   Tan CW et al. (2012) PLoS ONE 7: e31882.
+
+begin parameters
+
+# fraction of a cell to consider in a stochastic simulation
+#   The scaling factor f should multiply volumes, copy numbers 
+#   and rate constants for zero-order processes (e.g., a synthesis reaction).
+f 1.0 # dimensionless, 0<f<=1
+
+# Avogadro constant
+NA 6.02214e23 # molecules per mol
+
+# cytoplasmic volume
+#   A typical volume is 1.2 pL for a non-dividing mammalian cell 
+#   in culture (Tan et al., 2012):
+#     N=5, median=1.16 pL, avg=1.36 pL, min=1.15 pL, max=1.87 pL
+#   NB: HeLa cells were not evaluated in the study of Tan et al. (2012).
+Vcyt 1.2e-12*f # [=] L per cell
+
+# protein copy numbers in HeLa S3 cells (ATCC CCL-2.2)
+#   See Supplementary Table S2 in Kulak et al. (2014).
+EGFR_total    92674*f # [=] molecules per cell (Kulak et al., 2014)
+SHC1_total   111966*f # [=] molecules per cell (Kulak et al., 2014)
+GRB2_total   628016*f # [=] molecules per cell (Kulak et al., 2014)
+RASA1_total   26455*f # [=] molecules per cell (Kulak et al., 2014)
+PTPN11_total 299893*f # [=] molecules per cell (Kulak et al., 2014)
+SOS1_total     7565*f # [=] molecules per cell (Kulak et al., 2014)
+GAB1_total     1531*f # [=] molecules per cell (Kulak et al., 2014)
+ARAF_total    50606*f # [=] molecules per cell (Kulak et al., 2014)
+BRAF_total     4993*f # [=] molecules per cell (Kulak et al., 2014)
+RAF1_total    35757*f # [=] molecules per cell (Kulak et al., 2014) RAF1 is also known as CRAF
+RAF_total     91356*f # [=] molecules per cell [RAF]=[ARAF]+[BRAF]+[RAF1]
+MAP2K1_total 170516*f # [=] molecules per cell (Kulak et al., 2014) MAP2K1 is also known as MEK1
+MAP2K2_total 325020*f # [=] molecules per cell (Kulak et al., 2014) MAP2K2 is also known as MEK2
+MEK_total    495536*f # [=] molecules per cell [MEK]=[MAP2K1]+[MAP2K2]
+MAPK1_total  544669*f # [=] molecules per cell (Kulak et al., 2014) MAPK1 is also known as ERK2
+MAPK3_total   58855*f # [=] molecules per cell (Kulak et al., 2014) MAPK3 is also known as ERK1
+ERK_total    603524*f # [=] molecules per cell [ERK]=[MAPK1]+[MAPK3]
+HRAS_total   131924*f # [=] molecules per cell (Kulak et al., 2014)
+NRAS_total    32806*f # [=] molecules per cell (Kulak et al., 2014) 
+
+RAS_conc 0.4e-6 # M (Stites et al., 2007)
+RAS_total=RAS_conc*(NA*Vcyt) # 289063 molecules per cell for a cytoplasmic volume of 1.2 pL
+KRAS_total=RAS_total-(HRAS_total+NRAS_total) # 124333 copies per cell, from [RAS]=[HRAS]+[KRAS]+[NRAS]
+
+
+# rate constants
+#   NB: BioNetGen automatically adds symmetry numbers and statistical factors.
+#   One should specify a rate constant for a bimolecular association reaction under the assumption
+#   that the reaction is of the form A+B->product(s) and that association is mediated 
+#   by one and only one binding site in A and by one and only one binding site in B. 
+
+k1 1e6/(NA*Vcyt) # /M/s converted to /(molecule/cell)/s
+k_1 0.1 # /s
+p1 5 # dimensionless
+
+end parameters
+
+begin molecule types
+
+Ras(RBD,G~D~T)
+CRAF(Ras,S259~U~P,S338~U~P,Dm,ERKS642~U~P,MEKB,I1)
+BRAF(Ras,S365~U~P,Dm,ERKT753~U~P,MEKB,I2)
+MEK(Y~U~P,T~U~P,RAFMB,MERKB,I3)
+ERK(Y~U~P,T~U~P,MEK1B,RAFDm)
+
+end molecule types
+
+begin seed species
+
+Ras(RBD,G~T) RAS_total
+CRAF(Ras,S259~U,S338~U,Dm,ERKS642~U,MEKB,I1) RAF1_total/4
+CRAF(Ras,S259~U,S338~U,Dm,ERKS642~P,MEKB,I1) RAF1_total/4
+CRAF(Ras,S259~U,S338~U,Dm!1,ERKS642~U,MEKB,I1).CRAF(Ras,S259~U,S338~U,Dm!1,ERKS642~U,MEKB,I1) RAF1_total/4
+
+end seed species
+
+begin observables
+
+Molecules Ras_CRAF_bonds Ras(RBD!1).CRAF(Ras!1)
+Molecules Ras_CRAF_ERK642_U Ras(RBD!1).CRAF(Ras!1,ERKS642~U)
+Molecules Ras_CRAF_ERK642_P Ras(RBD!1).CRAF(Ras!1,ERKS642~P)
+Molecules Ras_assoc_CRAF_dim Ras(RBD!1).CRAF(Ras!1,Dm!2).CRAF(Dm!2)
+
+end observables
+
+begin reaction rules
+
+# Rules 1 and 2: reversible binding of monomeric CRAF to GTP-loaded RAS
+#   CRAF is not allowed to be phosphorylated at S259.
+#   Rule 1: CRAF is NOT phosphorylated at S642 (a substrate of ERK)
+Ras(RBD,G~T)+CRAF(Ras,S259~U,Dm,ERKS642~U)<->Ras(RBD!1,G~T).CRAF(Ras!1,S259~U,Dm,ERKS642~U) k1,k_1
+#   Rule 2: CRAF is phosphorylated at S642 (a substrate of ERK)
+Ras(RBD,G~T)+CRAF(Ras,S259~U,Dm,ERKS642~P)<->Ras(RBD!1,G~T).CRAF(Ras!1,S259~U,Dm,ERKS642~P) k1/p1,p1*k_1
+
+# Rules 3-7 (old 11, 4, old 13, old 10, old 12): reversible binding of dimeric CRAF to GTP-loaded RAS
+#   Rule 3: S259 and S642 are NOT phosphorylated in each protomer
+Ras(RBD,G~T)+CRAF(Ras,S259~U,Dm!1,ERKS642~U).CRAF(Ras,S259~U,Dm!1,ERKS642~U)<->\ 
+Ras(RBD!2,G~T).CRAF(Ras!2,S259~U,Dm!1,ERKS642~U).CRAF(Ras,S259~U,Dm!1,ERKS642~U) k1,k_1
+
+# '\' indicates line continuation
+
+end reaction rules
+
+end model
+
+begin actions
+
+# generate-first approach or indirect (deterministic) simulation
+generate_network({overwrite=>1})
+simulate({method=>"ode",t_start=>0,t_end=>10,n_steps=>100})
+
+# network-free approach or direct (stochastic) simulation
+#simulate({method=>"nf",complex=>1,gml=>1000000,t_start=>0,t_end=>10,n_steps=>100})
+
+end actions

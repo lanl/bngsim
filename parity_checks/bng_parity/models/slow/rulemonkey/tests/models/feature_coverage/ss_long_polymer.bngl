@@ -1,0 +1,41 @@
+# Stress: long linear polymer at scale
+# Tests: incremental bookkeeping across many bond ops per complex over long sim time
+# Bug pattern: affected_mols expansion during bond add/remove (project_incremental_drift_bug)
+# Tier: stress (network-free; NFsim reference only)
+# Target: ~20-40s RM, exercises complex-expansion traversal many times per event
+# invariant: conserved M_total = 300
+# invariant: balance M_bound_l = M_bound_r
+
+begin model
+begin parameters
+    M_tot  300
+    kf     0.01   # /s, polymerization
+    kr     0.2    # /s, depolymerization — high ratio to disfavor ring formation
+end parameters
+
+begin molecule types
+    M(l,r)
+end molecule types
+
+begin seed species
+    M(l,r)  M_tot
+end seed species
+
+begin observables
+    Molecules  M_total       M()
+    Molecules  M_free        M(l,r)
+    Molecules  M_left_free   M(l)
+    Molecules  M_right_free  M(r)
+    Molecules  M_bound_l     M(l!+)
+    Molecules  M_bound_r     M(r!+)
+    Species    Chains        M(l!+)
+end observables
+
+begin reaction rules
+    M(r) + M(l) <-> M(r!1).M(l!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>500,n_steps=>100,param=>"-bscb -utl 5"})
+end actions

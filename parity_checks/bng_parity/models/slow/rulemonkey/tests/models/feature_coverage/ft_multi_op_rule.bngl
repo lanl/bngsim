@@ -1,0 +1,52 @@
+# Feature: single rule with multiple operations in one firing
+# Tests: ListOfOperations combining DeleteBond + AddBond + StateChange
+# Tier: base
+# Expected: A swaps binding partner from B to C and changes state simultaneously
+# invariant: conserved A_total = 60
+# invariant: conserved B_total = 60
+# invariant: conserved C_total = 60
+
+begin model
+begin parameters
+    A_tot 60
+    B_tot 60
+    C_tot 60
+    kseed 0.01
+    kswap 0.02
+    kun   0.1
+end parameters
+
+begin molecule types
+    A(b,s~U~P)
+    B(a)
+    C(a)
+end molecule types
+
+begin seed species
+    A(b,s~U)  A_tot
+    B(a)      B_tot
+    C(a)      C_tot
+end seed species
+
+begin observables
+    Molecules  A_total   A()
+    Molecules  B_total   B()
+    Molecules  C_total   C()
+    Molecules  A_U       A(s~U)
+    Molecules  A_P       A(s~P)
+    Molecules  AB        A(b!1).B(a!1)
+    Molecules  AC        A(b!1).C(a!1)
+    Molecules  A_free_b  A(b)
+end observables
+
+begin reaction rules
+    # Initial binding of A-B
+    A(b) + B(a) <-> A(b!1).B(a!1)  kseed, kun
+    # Multi-op swap: break A-B (bond 1), form A-C (bond 2), flip state U->P
+    A(b!1,s~U).B(a!1) + C(a) -> A(b!2,s~P).C(a!2) + B(a)  kswap
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

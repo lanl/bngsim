@@ -1,0 +1,45 @@
+# Feature: simulation continuation (save/restore state)
+# Tests: two-phase simulation with state save/load at midpoint
+# Covers: --save-state, --load-state, --t-start flags
+# Tier: base
+# Expected: Phase 1 equilibrates binding; Phase 2 continues from saved state.
+#           Observable values at the join point must match exactly.
+#           Trajectories are statistically equivalent to a single-phase run.
+# Note: NFsim does NOT support continue=>1; this is RM-only functionality.
+#
+# Validation: run Phase 1 (0-50), save state, load state, run Phase 2 (50-100).
+# Compare Phase 2 start values against Phase 1 end values (must be identical).
+# Compare overall trajectory statistics against ODE or single-phase RM.
+
+begin model
+begin parameters
+    A_tot   100
+    B_tot   100
+    kf      0.01    # /s, binding rate
+    kr      0.5     # /s, unbinding rate
+end parameters
+
+begin molecule types
+    A(b)
+    B(a)
+end molecule types
+
+begin seed species
+    A(b)  A_tot
+    B(a)  B_tot
+end seed species
+
+begin observables
+    Molecules  Afree   A(b)
+    Molecules  Bfree   B(a)
+    Molecules  AB      A(b!1).B(a!1)
+end observables
+
+begin reaction rules
+    A(b) + B(a) <-> A(b!1).B(a!1)  kf, kr
+end reaction rules
+end model
+
+begin actions
+simulate({method=>"nf",t_end=>100,n_steps=>100})
+end actions

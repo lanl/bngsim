@@ -1,0 +1,54 @@
+# Model: eco_mutualism_obligate.bngl
+# Description: Models two species (A and B) that essentially require each other to survive.
+#              Growth of A depends on B, and vice versa.
+#              Shows Allee effect (collapse below critical density) or stable coexistence.
+
+begin model
+
+begin parameters
+    d_A 0.1 # Death rates
+    d_B 0.1
+    
+    # Mutualistic growth
+    # A + B -> A + A + B (B acts as catalyst for A's growth)
+    k_grow 0.05
+    
+    # Carrying capacity self-limitation
+    k_lim 0.1
+end parameters
+
+begin molecule types
+    A()
+    B()
+end molecule types
+
+begin seed species
+    A() 20
+    B() 20
+end seed species
+
+begin observables
+    Molecules Pop_A A()
+    Molecules Pop_B B()
+end observables
+
+begin reaction rules
+    # Growth (Obligate)
+    # A cannot grow without B
+    A() + B() -> A() + A() + B() k_grow
+    B() + A() -> B() + B() + A() k_grow
+    
+    # Death
+    A() -> 0 d_A
+    B() -> 0 d_B
+    
+    # Competition/Crowding (stabilizes explosion)
+    A() + A() -> A() k_lim
+    B() + B() -> B() k_lim
+end reaction rules
+
+end model
+
+## Actions ##
+generate_network({overwrite=>1})
+simulate({method=>"ssa", t_end=>100, n_steps=>200})

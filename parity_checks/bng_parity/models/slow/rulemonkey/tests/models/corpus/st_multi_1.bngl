@@ -1,0 +1,30 @@
+# State change reaction: multiple events at the same reaction step
+
+begin parameters
+t_end		10
+n_steps         100
+kf		0.1
+kb		0.5
+A_tot		10000
+end parameters
+
+begin molecule types
+A(a~U~P,b~U~P,c~U~P)
+end molecule types
+
+begin species
+A(a~U,b~U,c~U)		A_tot
+end species
+
+begin reaction rules
+A(a~U,b~U,c~U) <-> A(a~P,b~P,c~P) kf,kb
+end reaction rules
+
+begin observables
+Species AU_1   A(a~U,b~U,c~U)
+Species AP_1   A(a~P,b~P,c~P)
+end observables
+
+begin actions
+simulate({method=>"nf",t_end=>10,n_steps=>100})
+end actions

@@ -1,0 +1,45 @@
+// Michaelis-Menten Kinetics Recasting
+// Source: Daniels & Nemenman, PLOS ONE 10(3):e0119821 (2015)
+// Equation 6
+//
+// This paper explicitly cites Savageau & Voit (1987) as reference [17].
+//
+// Original Michaelis-Menten kinetics (1D):
+//   dx₁/dt = -A·x₁ / (B + x₁)
+//
+// ==============================================================================
+// RECASTING TO S-SYSTEM FORM (Eq. 6):
+// ==============================================================================
+// "The classic Michaelis-Menten enzymatic kinetics can be recast by introducing
+//  one hidden variable x₂" (p. 4)
+//
+// Let x₂ = B + x₁ (auxiliary variable)
+//
+// Then:
+//   dx₁/dt = -A·x₁·x₂⁻¹           (power-law form)
+//   x₂ = B + x₁                   (algebraic constraint)
+//
+// To get dynamics for x₂:
+//   dx₂/dt = dx₁/dt = -A·x₁·x₂⁻¹
+//
+// This is now in S-system form: products of powers.
+//
+// Note: In the paper's notation, they write x₂⁻¹ but we need the constraint
+// x₂ = B + x₁ as an initial condition (algebraic DAE).
+// ==============================================================================
+
+model DN2015b_michaelis_menten()
+  // Variables
+  compartment cell = 1;var species x1 in cell
+
+  // Michaelis-Menten parameters
+  A := 1.0; B := 0.5
+  
+  // Original Michaelis-Menten kinetics
+  // dx₁/dt = -A·x₁ / (B + x₁)
+  x1' = -A * x1 / (B + x1)
+  
+  // Initial condition
+  x1 = 1.0; end
+// @SIM T_START=0; T_END=20; N_STEPS =400 EPS_INIT=1e-6
+// Note: Zero-valued initial conditions are replaced with EPS_INIT during recasting.

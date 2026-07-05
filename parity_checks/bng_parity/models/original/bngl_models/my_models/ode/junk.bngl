@@ -1,0 +1,576 @@
+# A model for in vitro interactions of Ras, SOScat, and GDP
+#   This model assumes a single well-mixed reaction compartment. 
+#   This model corresponds to the conditions considered in Fig. 6
+#     of Margarit et al. (2003).
+
+# REFERENCES
+#
+# Freedman TS et al. (2006) PNAS 103:16692-16697.
+# Lenzen C et al. (1998) Biochemistry 37:7420-7430.
+# Margarit SM et al. (2003) Cell 112:685-695.
+# Smith MJ, Neel BG, Ikura M (2013) PNAS 110:4574-4579.
+# Sondermann H et al. (2004) Cell 119:393-405.
+# Stites EC et al. (2007) Science 318:463-467.
+
+
+begin model
+
+
+begin parameters
+
+# simulation parameters
+
+# scaling factor
+f  1.0 # [=] dimensionless (0<f<=1)
+
+# physical constants
+
+# Avogadro constant
+NA  6.02214e23 # [=] # of molecules per mol
+
+# (scaled) compartment volumes
+
+V3D  f*1.0e-12 # [=] L (1 pL)
+
+# concentrations
+#   given in M and then
+#   converted to number of molecules per (scaled) compartment volume
+
+# NB: see seed species block and actions.
+
+concRasGDP  0.0
+concRasGTP  0.0
+
+# RasWT loaded with mantGDP (the N-methylanthranyl derivative of GDP)
+concRasmantGDP  1.0e-6*(NA*V3D) # [=] M (1 uM)
+
+concRasmantGTP  0.0
+
+# SOScat is a fragment of SOS1 encompassing the REM and RasGEF domains
+concSOScat  1.0e-6*(NA*V3D) # [=] M (1 uM)
+
+# free (unlabeled) GDP
+concGDP  200.0e-6*(NA*V3D) # [=] M (200 uM)
+
+# free (unlabeled) GTP
+concGTP=10.0*concGDP # [=] M
+#   In a cell, free GTP is ~10x more abundant than free GDP.
+
+# RasY64A does NOT bind the RasGEF domain in SOS1
+# RasY64A loaded with either GDP or GTP
+# The stoichiometric ratio RasY64AGxP:SOScat is 1:1 in experiments
+concRasY64AGDP=concSOScat # [=] M 
+concRasY64AGTP=concSOScat # [=] M 
+
+# rate constant for intrinsic GTPase activity (hydrolysis of GTP)
+khyd  1.5e-4 # [=] /s 
+#   Smith et al. (2013) reported 8.8e-3 /min (Table S1; Fig. 1).
+#   Estimate is based on monitoring GTPase activity by NMR.
+
+# equilibrium and rate constants for reversible binding interactions
+
+# Reaction 1: Ras+GDP=RasGDP
+KD1  9.0e-12*(NA*V3D) # [=] M 
+#   Lenzen et al. (1998) reported 9 pM (Table 3).
+km1  6.3e-5 # [=] /s 
+#   Smith et al. (2013) reported 3.8e-3 /min (Table S1; Fig. 1).
+#   Estimate is based on monitoring exchange reactions by NMR.
+kp1=km1/KD1 # [=] /M/s (derived from definition of KD) (~7.0e6 /M/s)
+
+# Reaction 3: RasGDP+GEF=RasGDP:GEF (three cases)
+# Case 1: REM domain is free
+KD3_1  14.5e-6*(NA*V3D) # [=] M 
+#   Sondermann et al. (2004) reported 14.5 uM (Fig. 3)
+#   Estimate based on characterization of SOScatW729E binding to
+#     labeled RasC118S/A122C:GDP via fluorescence anisotropy.
+#     SOScatW729E is defective for Ras binding at the REM domain.
+#     RasC118S/A122C is reported to behave similarly to wild-type Ras. 
+# Case 3: REM domain is bound to RasGTP
+KD3_3  1.9e-6*(NA*V3D) # [=] M 
+#   Sondermann et al. (2004) reported 1.9 uM (Fig. 3)
+#   Estimated based on characterization SOScat:RasY64A:GppNp binding to
+#     labeled RasC118S/A122C:GDP via fluorescence anisotropy.
+#     GppNp is a non-hydrolyzable analog of GTP.
+#     RasY64A is defective for SOScat binding at the RasGEF domain.
+# Case 2: REM domain is bound to RasGDP
+KD3_2=KD3_3 # [=] M (assumption)
+#   Lenzen et al. (1998) reported that RasmantGDP and RasmantGTP bind the
+#     the RasGEF domain of Rasgrf1 with comparable affinities (Table 3).
+
+# To find rate constants for Reaction 3, we will assume that the
+# kcat and Km measured by Lenzen et al. (1998) apply for SOScat bound 
+# at the REM domain by RasGTP, with the exception that the kcat is greater 
+# than that for Rasgrf1 by a factor of 380/50 (Freedman et al., 2006; Fig. 2).
+rel_cat_eff  7.6 # [=] dimensionless, relative catalytic efficiency (380/50)
+
+# kcat and Km determined by Lenzen et al. (1998) (Fig. 2)
+#   These values are based on murine Hras and the RasGEF domain from Rasgrf1
+kcat  3.9 # [=] /s
+##Km  386.0e-6*(NA*V3D) # [=] M (from Lenzen et al.)
+Km  6.05e-5*(NA*V3D) # [=] M (from fitting to data in Fig. 6A)
+
+kp3_3=rel_cat_eff*kcat/(Km-KD3_3) # [=] /M/s (~7.7e4 /M/s)
+#   derived from the definition of Km := (kr+kcat)/kf
+km3_3=kp3_3*KD3_3 # [=] /s (~0.15 /s)
+
+km3_1=km3_3 # [=] /s (simplifying assumption)
+kp3_1=km3_1/KD3_1 # [=] /M/s (~1.0e4 /M/s) (derived from definition of KD)
+
+km3_2=km3_3 # [=] /s (simplifying assumption)
+kp3_2=km3_2/KD3_2 # [=] /M/s (~7.7e4 /M/s) (derived from definition of KD)
+
+km3=km3_3
+
+# Reaction 4: Ras:GEF+GDP=RasGDP:GEF
+#   For simplicity, we will assume that GDP binding to apo Ras 
+#   in complex with SOScat (via interaction of Ras with the RasGEF domain) 
+#   is unaffected by the bound state of the REM domain in SOScat.
+KD4  1.6e-6*(NA*V3D) # [=] M
+#   Lenzen et al. (1998) reported 1.6 uM (Table 3)
+#   We identify km4 with rel_cat_eff*kcat
+km4=rel_cat_eff*kcat # [=] /s (~30 /s)
+kp4=km4/KD4 # [=] /M/s (derived from definition of KD) (~1.9e7 /M/s)
+
+# Reaction 2: Ras+GEF=Ras:GEF (three cases)
+# Case 1: REM domain is free
+KD2_1=KD1*KD3_1/KD4 # [=] M (derived from detailed balance constraint)
+#   (~8.2e-11 M)
+# Case 2: REM domain is bound to RasGDP
+KD2_2=KD1*KD3_2/KD4 # [=] M (derived from detailed balance constraint)
+#   (~1.1e-11 M)
+# Case 3: REM domain is bound to RasGTP
+KD2_3=KD1*KD3_3/KD4 # [=] M (derived from detailed balance constraint)
+#   (~1.1e-11 M)
+
+# Lenzen et al. (1998) measured a long-lived interaction between apo Ras
+#   and the RasGEF domain of Rasgrf1. 
+# For lack of a better approach, we will assume that the dissociation rate
+#   constant determinted by Lenzen et al. (1998) applies.
+km2  1.0e-3 # [=] /s
+
+km2_1=km2 # [=] /s (simplifying assumption)
+km2_2=km2 # [=] /s (simplifying assumption)
+km2_3=km2 # [=] /s (simplifying assumption)
+
+kp2_1=km2_1/KD2_1 # [=] /M/s (derived from defn of KD) (~ 1.2e7 /M/s)
+kp2_2=km2_2/KD2_2 # [=] /M/s (derived from defn of KD) (~ 9.1e7 /M/s)
+kp2_3=km2_3/KD2_3 # [=] /M/s (derived from defn of KD) (~ 9.1e7 /M/s)
+
+# Reaction 5: Ras+GTP=RasGTP
+KD5  5.0e-12*(NA*V3D) # [=] M
+#   Lenzen et al. (1998) reported 5 pM (Table 3)
+# We will assume that a difference between km5 and km1 is responsible
+#   for the difference between KD5 and KD1. In other words, we assume
+#   that kp1=kp5.
+km5=km1/(KD1/KD5) # [=] /s (~3.5e-5 /s)
+kp5=km5/KD5 # [=] /M/s (derived from definition of KD) (~7.0e6 /M/s)
+
+# Reaction 7: RasGTP+GEF=RasGTP:GEF (three cases)
+# Case 1: REM domain is free
+## KD7_1=??
+KD7_1=KD3_1 # [=] M (assumption, OK??)
+# Case 3: REM domain is bound to RasGTP
+## KD7_3=??
+KD7_3=KD3_3 # [=] M (assumption, OK??)
+# Case 2: REM domain is bound to RasGDP
+KD7_2=KD7_3 # [=] M (assumption)
+#   Lenzen et al. (1998) reported that RasmantGDP and RasmantGTP bind the
+#     the RasGEF domain of Rasgrf1 with comparable affinities (Table 3).
+
+km7_1=km3_1 # [=] /s (assumption, OK??)
+km7_2=km3_2 # [=] /s (assumption, OK??)
+km7_3=km3_3 # [=] /s (assumption, OK??)
+
+kp7_1=km7_1/KD7_1 # [=] /M/s (derived from definition of KD)
+kp7_2=km7_2/KD7_2 # [=] /M/s (derived from definition of KD)
+kp7_3=km7_3/KD7_3 # [=] /M/s (dervied from definition of KD)
+
+# Reaction 6: Ras:GEF+GTP=RasGTP:GEF
+#   For simplicity, we will assume that GTP binding to apo Ras
+#   in complex with SOScat (via interaction of Ras with the RasGEF domain)
+#   is unaffected by the bound state of the REM domain in SOScat.
+KD6  3.0e-7*(NA*V3D) # [=] M
+#   Lenzen et al. (1998) reported 0.3 uM (Table 3)
+km6_Lenzen  1.1 # [=] /s
+#   Lenzen et al. (1998) reported 1.1 /s (Table 3)
+# We will assume that that same factor multiplying kcat (=km4_Lenzen) also
+#   multiplies km6_Lenzen.
+km6=rel_cat_eff*km6_Lenzen # [=] /s (~8.4 /s)
+kp6=km6/KD6 # [=] /M/s (derived from definition of KD) (~2.8e7 /M/s)
+
+# Reaction 8: RasGDP+REM=RasGDP:REM (four cases)
+# Case 1: RasGEF domain is free
+KD8_1  24.5e-6*(NA*V3D) # [=] M
+#   Sondermann et al. (2004) reported 24.5 uM (Fig. 5).
+#   Estimate is based on characterization of SOScat binding to 
+#     labeled RasY64A/C118S/A122C:GDP via fluorescence anisotropy.
+#     RasY64A/C118S/A22C is reported to behave similarly to RasY64A.
+# Case 2: RasGEF domain is bound to RasGDP
+KD8_2=KD8_1*KD3_2/KD3_1 # [=] M (derived from detailed balance constraint)
+#  (~3.2e-6 M)
+# Case 3: RasGEF domain is bound to apo Ras
+KD8_3=KD8_1*KD2_2/KD2_1 # [=] M (derived from detailed balance constraint)
+#  (~3.2e-6 M)
+# Case 4: RasGEF domain is bound to RasGTP
+## KD8_4=??
+KD8_4=KD8_2 # [=] M (assumption, OK??)
+
+# We assume that relase of REM domain binding to RasGxP is similar to 
+#   effector (RBD) binding to RasGTP.
+# We will use the dissociation rate constant from the study of 
+#   Stites et al. (2007). See Ref (S42) in the supplemental material.
+km89  3.6 # [=] /s
+
+km8_1=km89 # [=] /s (simplifying assumption)
+km8_2=km89 # [=] /s (simplifying assumption)
+km8_3=km89 # [=] /s (simplifying assumption)
+km8_4=km89 # [=] /s (simplifying assumption)
+
+kp8_1=km8_1/KD8_1 # [=] /M/s (~1.5e5 /M/s)
+kp8_2=km8_2/KD8_2 # [=] /M/s (~1.1e6 /M/s)
+kp8_3=km8_3/KD8_3 # [=] /M/s (~1.1e6 /M/s)
+kp8_4=km8_4/KD8_4 # [=] /M/s
+
+# Reaction 9: RasGTP+REM=RasGTP:REM (four cases)
+# Case 1: RasGEF domain is free
+KD9_1  3.6e-6*(NA*V3D) # [=] M 
+#   Sondermann et al. (2004) reported 3.6 uM (Fig. 5).
+#   Estimates is based on characterization of SOScat binding to
+#     labeled RasY64A/C118S/A122C:GppNp via fluorescence anisotropy.
+#     GppNp is a non-hydrolyzable analog of GTP.
+#     RasY64A/C118S/A122C is reported to behave similarly to RasY64A.
+# Case 2: RasGEF domain is bound to RasGDP
+KD9_2=KD9_1*KD3_3/KD3_1 # [=] M (derived from detailed balance constraint)
+#  (~4.7e-7 M)
+# Case 3: RasGEF domain is bound to apo Ras
+KD9_3=KD9_1*KD2_3/KD2_1 # [=] M (derived from detailed balance constraint)
+#  (~4.7e-7 M)
+# Case 4: RasGEF domain is bound to RasGTP
+## KD9_4=??
+KD9_4=KD9_2 # [=] M (assumption, OK??)
+
+km9_1=km89 # [=] /s (simplifying assumption)
+km9_2=km89 # [=] /s (simplifying assumption)
+km9_3=km89 # [=] /s (simplifying assumption)
+km9_4=km89 # [=] /s (simplifying assumption)
+
+kp9_1=km9_1/KD9_1 # [=] /M/s (~1.0e6 /M/s)
+kp9_2=km9_2/KD9_2 # [=] /M/s (~7.6e6 /M/s)
+kp9_3=km9_3/KD9_3 # [=] /M/s (~7.6e6 /M/s)
+kp9_4=km9_4/KD9_4 # [=] /M/s
+
+end parameters
+
+
+begin molecule types
+
+# guanosine diphosphate (GDP)
+#   GDP(ribose~0) is the unlabeled form
+#   GDP(ribose~mant) is the N-methylanthranyl derivate (labeled form)
+GDP(ribose~0~mant)
+
+# guanosine-5'-triphosphate (GTP) or GppNp (non-hydrolyzable analog)
+#   GTP(ribose~0) is the unlabeled form
+#   GTP(ribose~mant) is the N-methylanthranyl derivative (labeled form)
+GTP(ribose~0~mant)
+
+# fragment of SOS, guanine nucleotide exchange factor
+#   REM is the REM domain
+#   GEF is the RasGEF domain
+SOScat(REM,GEF)
+
+# wild-type Ras, small Ras-family GTPase
+#   The G domain can be 
+#     free (G~apo),
+#     bound to unlabeled GDP (G~GDP)
+#     bound to labeled GDP (G~mantGDP)
+#     bound to unlabeled GTP (G~GTP)
+#     bound to labeled GTP (G~mantGTP)
+Ras(G~apo~GDP~mantGDP~GTP~mantGTP)
+
+# mutant Ras (RasY64A), deficient for binding to the RasGEF domain in SOS
+#   The G domain can be
+#     bound to GDP
+#     bound to guanosine-5'-triphosphate (GTP), or equivalently, the
+#     non-hydrolyzable analog GppNp (G~GTP)
+RasY64A(G~GDP~GTP)
+
+end molecule types
+
+
+begin seed species
+
+# There are several initial conditions of interest (Margarit et al., 2003).
+#   See Fig. 6.
+#   See actions block, at bottom of this file.
+
+GDP(ribose~0)  concGDP
+GTP(ribose~0)  concGTP
+SOScat(REM,GEF)  concSOScat
+Ras(G~GDP)  concRasGDP
+Ras(G~GTP)  concRasGTP
+Ras(G~mantGDP)  concRasmantGDP
+Ras(G~mantGTP)  concRasmantGTP
+RasY64A(G~GDP)  concRasY64AGDP
+RasY64A(G~GTP)  concRasY64AGTP
+
+end seed species
+
+
+begin observables
+
+Molecules Ras_bound_mantGDP Ras(G~mantGDP!?)
+Molecules free_mantGDP GDP(ribose~mant)
+
+Molecules Ras_bound_mantGTP Ras(G~mantGTP!?)
+Molecules free_mantGTP GTP(ribose~mant)
+
+# sanity checks
+Molecules total_GDP GDP(ribose~0) Ras(G~GDP!?) 
+Molecules total_GTP GTP(ribose~0) Ras(G~GTP!?)
+Molecules total_mantGDP GDP(ribose~mant) Ras(G~mantGDP!?)
+Molecules total_mantGTP GTP(ribose~mant) Ras(G~mantGTP!?)
+Molecules total_SOScat SOScat()
+Molecules total_Ras Ras()
+Molecules total_RasY64A RasY64A()
+
+end observables
+
+
+begin reaction rules
+
+# We assume that GxP does not dissociate significantly from RasY64A*GxP
+#   over the time scale of interest.
+
+# Reaction 1: apo Ras reversibly binds GDP
+#   Case 1a: GDP is unlabeled
+#   forward direction: free, unlabeled GDP binds the apo form of Ras
+Ras(G~apo)+GDP(ribose~0)->Ras(G~GDP) kp1
+#   reverse direction: unlabeled GDP spontaneously dissociates from Ras
+Ras(G~GDP)->Ras(G~apo)+GDP(ribose~0) km1
+#   Case 1b: GDP is labeled
+#   forward direction: free, labeled GDP binds the apo form of Ras
+Ras(G~apo)+GDP(ribose~mant)->Ras(G~mantGDP) kp1
+#   reverse direction: labeled GDP spontaneously dissociates from Ras
+Ras(G~mantGDP)->Ras(G~apo)+GDP(ribose~mant) km1
+
+# Reaction 2: apo Ras reversibly binds GEF
+#   forward direction 
+#   Case 1: REM is free
+Ras(G~apo)+SOScat(REM,GEF)->Ras(G~apo!1).SOScat(REM,GEF!1) kp2_1
+#   Case 2: REM is bound to RasY64A*GDP 
+Ras(G~apo)+SOScat(REM!1,GEF).RasY64A(G~GDP!1)->\
+Ras(G~apo!2).SOScat(REM!1,GEF!2).RasY64A(G~GDP!1) kp2_2
+#   Case 3: REM is bound to RasY64A*GTP
+Ras(G~apo)+SOScat(REM!1,GEF).RasY64A(G~GTP!1)->\
+Ras(G~apo!2).SOScat(REM!1,GEF!2).RasY64A(G~GTP!1) kp2_3
+#   reverse direction
+Ras(G~apo!1).SOScat(GEF!1)->Ras(G~apo)+SOScat(GEF) km2
+
+# Reaction 3: RasGDP reversibly binds GEF
+#   forward direction
+#   Case 1a: REM is free, GDP is unlabeled
+Ras(G~GDP)+SOScat(REM,GEF)->Ras(G~GDP!1).SOScat(REM,GEF!1) kp3_1
+#   Case 1b: REM is free, GDP is labeled
+Ras(G~mantGDP)+SOScat(REM,GEF)->Ras(G~mantGDP!1).SOScat(REM,GEF!1) kp3_1
+#   Case 2a: REM is bound to RasY64A*GDP, GDP is unlabeled
+Ras(G~GDP)+SOScat(REM!1,GEF).RasY64A(G~GDP!1)->\
+Ras(G~GDP!2).SOScat(REM!1,GEF!2).RasY64A(G~GDP!1) kp3_2
+#   Case 2b: REM is bound to RasY64A*GDP, GDP is labeled
+Ras(G~mantGDP)+SOScat(REM!1,GEF).RasY64A(G~GDP!1)->\
+Ras(G~mantGDP!2).SOScat(REM!1,GEF!2).RasY64A(G~GDP!1) kp3_2
+#   Case 3a: REM is bound to RasY64A*GTP, GDP is unlabeled
+Ras(G~GDP)+SOScat(REM!1,GEF).RasY64A(G~GTP!1)->\
+Ras(G~GDP!2).SOScat(REM!1,GEF!2).RasY64A(G~GTP!1) kp3_3
+#   Case 3b: REM is bound to RasY64A*GTP, GDP is labeled
+Ras(G~mantGDP)+SOScat(REM!1,GEF).RasY64A(G~GTP!1)->\
+Ras(G~mantGDP!2).SOScat(REM!1,GEF!2).RasY64A(G~GTP!1) kp3_3
+#   reverse direction (two cases)
+Ras(G~GDP!1).SOScat(GEF!1)->Ras(G~GDP)+SOScat(GEF) km3
+Ras(G~mantGDP!1).SOScat(GEF!1)->Ras(G~mantGDP)+SOScat(GEF) km3
+
+# Reaction 4: GDP reversibly binds Ras in Ras:GEF complex
+#   forward direction (two cases)
+Ras(G~apo!1).SOScat(GEF!1)+GDP(ribose~0)->Ras(G~GDP!1).SOScat(GEF!1) kp4
+Ras(G~apo!1).SOScat(GEF!1)+GDP(ribose~mant)->Ras(G~mantGDP!1).SOScat(GEF!1) kp4
+#   reverse direction (two cases)
+Ras(G~GDP!1).SOScat(GEF!1)->Ras(G~apo!1).SOScat(GEF!1)+GDP(ribose~0) km4
+Ras(G~mantGDP!1).SOScat(GEF!1)->Ras(G~apo!1).SOScat(GEF!1)+GDP(ribose~mant) km4
+
+# Reaction 8: RasGDP reversibly binds REM
+#   forward direction
+#   Case 1: GEF is free (three cases)
+RasY64A(G~GDP)+SOScat(REM,GEF)->RasY64A(G~GDP!1).SOScat(REM!1,GEF) kp8_1
+Ras(G~GDP)+SOScat(REM,GEF)->Ras(G~GDP!1).SOScat(REM!1,GEF) kp8_1
+Ras(G~mantGDP)+SOScat(REM,GEF)->Ras(G~mantGDP!1).SOScat(REM!1,GEF) kp8_1
+#   Case 2: GEF is bound to RasGDP (six cases)
+RasY64A(G~GDP)+SOScat(REM,GEF!1).Ras(G~GDP!1)->\
+RasY64A(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~GDP!1) kp8_2
+RasY64A(G~GDP)+SOScat(REM,GEF!1).Ras(G~mantGDP!1)->\
+RasY64A(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~mantGDP!1) kp8_2
+Ras(G~GDP)+SOScat(REM,GEF!1).Ras(G~GDP!1)->\
+Ras(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~GDP!1) kp8_2
+Ras(G~GDP)+SOScat(REM,GEF!1).Ras(G~mantGDP!1)->\
+Ras(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~mantGDP!1) kp8_2
+Ras(G~mantGDP)+SOScat(REM,GEF!1).Ras(G~GDP!1)->\
+Ras(G~mantGDP!2).SOScat(REM!2,GEF!1).Ras(G~GDP!1) kp8_2
+Ras(G~mantGDP)+SOScat(REM,GEF!1).Ras(G~mantGDP!1)->\
+Ras(G~mantGDP!2).SOScat(REM!2,GEF!1).Ras(G~mantGDP!1) kp8_2
+#   Case 3: GEF is bound to apo Ras (three cases)
+RasY64A(G~GDP)+SOScat(REM,GEF!1).Ras(G~apo!1)->\
+RasY64A(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~apo!1) kp8_3
+Ras(G~GDP)+SOScat(REM,GEF!1).Ras(G~apo!1)->\
+Ras(G~GDP!2).SOScat(REM!2,GEF!1).Ras(G~apo!1) kp8_3
+Ras(G~mantGDP)+SOScat(REM,GEF!1).Ras(G~apo!1)->\
+Ras(G~mantGDP!2).SOScat(REM!2,GEF!1).Ras(G~apo!1) kp8_3
+#   reverse direction (three cases)
+RasY64A(G~GDP!1).SOScat(REM!1)->RasY64A(G~GDP)+SOScat(REM) km89
+Ras(G~GDP!1).SOScat(REM!1)->Ras(G~GDP)+SOScat(REM) km89
+Ras(G~mantGDP!1).SOScat(REM!1)->Ras(G~mantGDP)+SOScat(REM) km89
+
+# Reaction 9: RasGTP reversibly binds REM
+#   forward direction
+#   Case 1: GEF is free
+RasY64A(G~GTP)+SOScat(REM,GEF)->RasY64A(G~GTP!1).SOScat(REM!1,GEF) kp9_1
+#   Case 2: GEF is bound to RasGDP (two cases)
+RasY64A(G~GTP)+SOScat(REM,GEF!1).Ras(G~GDP!1)->\
+RasY64A(G~GTP!2).SOScat(REM!2,GEF!1).Ras(G~GDP!1) kp9_2
+RasY64A(G~GTP)+SOScat(REM,GEF!1).Ras(G~mantGDP!1)->\
+RasY64A(G~GTP!2).SOScat(REM!2,GEF!1).Ras(G~mantGDP!1) kp9_2
+#   Case 3: GEF is bound to apo Ras (one case)
+RasY64A(G~GTP)+SOScat(REM,GEF!1).Ras(G~apo!1)->\
+RasY64A(G~GTP!2).SOScat(REM!2,GEF!1).Ras(G~apo!1) kp9_3
+#   reverse direction
+RasY64A(G~GTP!1).SOScat(REM!1)->RasY64A(G~GTP)+SOScat(REM) km89
+
+end reaction rules
+
+
+end model
+
+
+# actions
+
+generate_network({overwrite=>1});
+
+# initialize
+saveConcentrations();
+
+# Initial condition 1
+##############
+## Ras*mGDP ##
+##############
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","0.0");
+setConcentration("Ras(G~GDP)","0.0");
+setConcentration("Ras(G~GTP)","0.0");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","0.0");
+setConcentration("RasY64A(G~GTP)","0.0");
+simulate_ode({suffix=>"case1",t_start=>0,t_end=>360,n_steps=>180});
+
+# Initial condition 2
+####################
+## Ras*mGDP + CAT ##
+####################
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","concSOScat");
+setConcentration("Ras(G~GDP)","0.0");
+setConcentration("Ras(G~GTP)","0.0");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","0.0");
+setConcentration("RasY64A(G~GTP)","0.0");
+simulate_ode({suffix=>"case2",t_start=>0,t_end=>360,n_steps=>180});
+
+# Initial condition 3
+##################################
+## Ras*mGDP + CAT + RasY64A*GDP ##
+##################################
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","concSOScat");
+setConcentration("Ras(G~GDP)","0.0");
+setConcentration("Ras(G~GTP)","0.0");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","concRasY64AGDP");
+setConcentration("RasY64A(G~GTP)","0.0");
+simulate_ode({suffix=>"case3",t_start=>0,t_end=>360,n_steps=>180});
+
+# Initial condition 4
+##################################
+## Ras*mGDP + CAT + RasY64A*GTP ##
+##################################
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","concSOScat");
+setConcentration("Ras(G~GDP)","0.0");
+setConcentration("Ras(G~GTP)","0.0");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","0.0");
+setConcentration("RasY64A(G~GTP)","concRasY64AGTP");
+simulate_ode({suffix=>"case4",t_start=>0,t_end=>360,n_steps=>180});
+
+# Initial condition 5
+##############################
+## Ras*mGDP + CAT + Ras*GDP ##
+##############################
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","concSOScat");
+setConcentration("Ras(G~GDP)","concRasGDP");
+setConcentration("Ras(G~GTP)","0.0");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","0.0");
+setConcentration("RasY64A(G~GTP)","0.0");
+##simulate_ode({suffix=>"case5",t_start=>0,t_end=>360,n_steps=>180});
+
+# Initial condition 6
+##############################
+## Ras*mGDP + CAT + Ras*GTP ##
+##############################
+resetConcentrations();
+setConcentration("GDP(ribose~0)","concGDP");
+setConcentration("GTP(ribose~0)","0.0");
+setConcentration("SOScat(REM,GEF)","concSOScat");
+setConcentration("Ras(G~GDP)","0.0");
+setConcentration("Ras(G~GTP)","concRasGTP");
+setConcentration("Ras(G~mantGDP)","concRasmantGDP");
+setConcentration("Ras(G~mantGTP)","0.0");
+setConcentration("RasY64A(G~GDP)","0.0");
+setConcentration("RasY64A(G~GTP)","0.0");
+##simulate_ode({suffix=>"case6",t_start=>0,t_end=>360,n_steps=>180});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
