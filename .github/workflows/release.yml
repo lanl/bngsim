@@ -6,8 +6,9 @@ name: release
 #   - Manual run (workflow_dispatch): choose `testpypi` (rehearsal) or `pypi`.
 #   - Tag push (v*): publishes to PyPI.
 #
-# Scope: Linux (manylinux x86_64) + macOS arm64 + sdist. Intel-macOS / Windows
-# wheels can be added later; platforms without a wheel fall back to the sdist.
+# Scope: all platforms — Linux (manylinux x86_64), macOS arm64, macOS x86_64
+# (Intel, via macos-15-intel), Windows x86_64, + sdist. SuiteSparse/KLU is built
+# from source per job; any platform without a wheel still falls back to the sdist.
 #
 # The publish job runs in the `pypi` / `testpypi` GitHub Environment so it matches
 # the trusted-publisher configuration on (Test)PyPI.

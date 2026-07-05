@@ -7,10 +7,12 @@ copyright notice (Los Alamos National Laboratory release O5098).
 
 This NOTICE lists third-party software and data that BNGsim redistributes —
 either vendored into the source tree or, in the case of SUNDIALS and
-SuiteSparse, built at wheel-build time and linked into the binary (wheel)
-distributions (SUNDIALS statically; SuiteSparse/KLU as bundled shared libraries). Each
-component is redistributed under its own license, reproduced or referenced
-below; where BNGsim has modified a component, that is stated.
+SuiteSparse, built from source and linked into the installed package (SUNDIALS
+statically; SuiteSparse/KLU as bundled shared libraries). SuiteSparse/KLU is
+bundled both into the binary wheels and, when a source (sdist) install finds no
+system SuiteSparse, into that build's package directory. Each component is
+redistributed under its own license, reproduced or referenced below; where
+BNGsim has modified a component, that is stated.
 
 Per-file provenance for the vendored model and test-data corpora — the exact
 upstream path, pinned commit, and SHA-256 of each individual file — is
