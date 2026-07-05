@@ -31,7 +31,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest          # manylinux x86_64
-          - os: macos-13               # macOS x86_64 (Intel)
+          - os: macos-15-intel         # macOS x86_64 (Intel); macos-13 retired 2025-12-04
             macos_target: "10.15"      # from-source SuiteSparse -> broad target
           - os: macos-14               # macOS arm64 (Apple Silicon)
             macos_target: "11.0"       # arm64 floor; from-source SuiteSparse

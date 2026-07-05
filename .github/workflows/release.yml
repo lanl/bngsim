@@ -38,6 +38,8 @@ jobs:
           - os: ubuntu-latest        # manylinux x86_64
           - os: macos-14             # macOS arm64 (Apple Silicon)
             macos_target: "11.0"
+          - os: macos-15-intel       # macOS x86_64 (Intel); macos-13 retired 2025-12-04
+            macos_target: "10.15"    # from-source SuiteSparse -> broad target
           - os: windows-latest       # Windows x86_64 (KLU via from-source SuiteSparse)
     steps:
       - uses: actions/checkout@v4
