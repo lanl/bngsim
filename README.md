@@ -5,7 +5,7 @@
 **Embeddable simulation engine for BioNetGen reaction networks.**
 
 `bngsim` is a high-performance C++ simulation kernel with Python bindings that replaces
-BioNetGen's subprocess-based `run_network` driver. It loads BioNetGen `.net` and `.xml` files, runs deterministic
+BioNetGen's subprocess-based `run_network` driver. The library also includes two network-free simulators. It loads BioNetGen `.net` and `.xml` files, runs deterministic
 and stochastic simulations in-process, and returns results as NumPy arrays —
 no file I/O, no subprocess spawning, no Perl dependency.
 
