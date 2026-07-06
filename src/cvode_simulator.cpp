@@ -2675,7 +2675,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // the run's SunContextGuard goes out of scope.
             SUNLogger logger = nullptr;
             if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
-                SUNLogger_SetWarningFilename(logger, "/dev/null");
+                SUNLogger_SetWarningFilename(logger, bngsim::null_device);
             }
         }
 

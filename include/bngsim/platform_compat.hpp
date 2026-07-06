@@ -41,3 +41,19 @@ inline int unsetenv(const char *name) { return _putenv_s(name, ""); }
 #include <unistd.h> // ::getpid, ssize_t
 
 #endif // _WIN32
+
+// ── Null device path (both platforms, GH #1) ─────────────────────────────────
+// The OS "bit bucket". NFsim's System::registerOutputFileLocation() and
+// SUNDIALS' SUNLogger_SetWarningFilename() open this path to discard output, and
+// NFsim treats a failed open as a hard error (throws "quitting"). The POSIX
+// spelling "/dev/null" does not exist on Windows — it resolves to <drive>:\dev\
+// null, whose parent directory is absent, so the std::ofstream open fails and
+// every NFsim initialize()/simulate() aborts. "NUL" is the Windows null device
+// and is openable by std::ofstream / fopen.
+namespace bngsim {
+#ifdef _WIN32
+inline constexpr const char *null_device = "NUL";
+#else
+inline constexpr const char *null_device = "/dev/null";
+#endif
+} // namespace bngsim

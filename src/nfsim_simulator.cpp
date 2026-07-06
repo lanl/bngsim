@@ -1135,7 +1135,7 @@ struct NfsimSimulator::Impl {
             // Temporary parity bridge while vendored runtime still has global
             // NFutil RNG callsites (e.g., ReactantList::pickRandom).
             NFutil::SEED_RANDOM(static_cast<unsigned long>(seed));
-            system->registerOutputFileLocation("/dev/null");
+            system->registerOutputFileLocation(bngsim::null_device);
             system->outputAllObservableNames();
             system->prepareForSimulation();
 
