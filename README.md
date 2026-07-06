@@ -2,7 +2,7 @@
 
 # bngsim
 
-**Embeddable simulation engine for BioNetGen reaction networks.**
+**Embeddable simulation engine for biochemical reaction networks.**
 
 `bngsim` is a high-performance C++ simulation kernel with Python bindings that replaces
 BioNetGen's subprocess-based `run_network` driver. The library also includes two network-free simulators. It loads BioNetGen `.net` and `.xml` files, runs deterministic
@@ -17,7 +17,7 @@ no file I/O, no subprocess spawning, no Perl dependency.
 - **Multi-format** — loads BioNetGen `.net` and `.xml`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72)
 - **Rich results** — NumPy arrays, named observable access, pandas/xarray, HDF5 save/load
 - **Standards interchange** — `.net`/cBNGL ⇄ SBML and SED-ML + OMEX packaging, every conversion *verified faithful*
-- **Gradient-ready** — CVODES forward sensitivities, Fisher information, JAX-differentiable RHS
+- **Gradient-ready** — CVODES forward sensitivities, Fisher information
 - **Validated** — matches `run_network` to ~10⁻¹² (ODE) and cross-checked against RoadRunner and the SBML semantic test suite
 
 ## Installation
@@ -26,7 +26,7 @@ no file I/O, no subprocess spawning, no Perl dependency.
 pip install bngsim
 ```
 
-Prebuilt wheels ship for common platforms; large / genome-scale models benefit from the
+Prebuilt wheels ship for common platforms; large models may benefit from the
 optional sparse (KLU) solver. See the [installation guide](docs/installation.md) for
 source builds, the KLU dependency, and optional extras.
 
@@ -35,7 +35,7 @@ source builds, the KLU dependency, and optional extras.
 ```python
 import bngsim
 
-# Load a model (.net, Antimony, or SBML) and run an ODE simulation
+# Load a model (BioNetGen .net/.xml, Antimony, or SBML) and run an ODE simulation
 model = bngsim.Model.from_net_file("model.net")
 sim = bngsim.Simulator(model, method="ode")
 result = sim.run(t_end=100.0, n_steps=1000)
