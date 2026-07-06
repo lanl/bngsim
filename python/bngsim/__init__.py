@@ -97,6 +97,16 @@ try:
 except (ImportError, AttributeError):
     HAS_KLU = False
 
+# True when the vendored MIR micro-JIT codegen backend is compiled in
+# (BNGSIM_ENABLE_MIR=ON, GH #78). Gate the compiler-free JIT path
+# (BNGSIM_CODEGEN_JIT=mir) on this; default wheels ship it OFF.
+try:
+    from bngsim._bngsim_core import HAS_MIR as _HAS_MIR
+
+    HAS_MIR: bool = _HAS_MIR
+except (ImportError, AttributeError):
+    HAS_MIR = False
+
 # Stale-binary guard (issue #125). In an editable/source checkout the compiled
 # _bngsim_core is built separately and does NOT auto-rebuild on import (#23), so
 # it can silently lag the live C++ and drive false correctness verdicts. Warn —
@@ -171,6 +181,7 @@ __all__ = [
     "HAS_NFSIM",
     "HAS_RULEMONKEY",
     "HAS_KLU",
+    "HAS_MIR",
     "HAS_LIBSBML",
     "HAS_ANTIMONY",
     "HAS_VIVARIUM",
@@ -310,6 +321,7 @@ def capabilities() -> dict[str, Any]:
         "nfsim": HAS_NFSIM,
         "rulemonkey": HAS_RULEMONKEY,
         "klu": HAS_KLU,
+        "mir": HAS_MIR,
         "libsbml": HAS_LIBSBML,
         "antimony": HAS_ANTIMONY,
         "vivarium": HAS_VIVARIUM,

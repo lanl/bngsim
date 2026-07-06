@@ -1553,6 +1553,18 @@ PYBIND11_MODULE(_bngsim_core, m) {
     m.attr("HAS_KLU") = false;
 #endif
 
+    // True when this extension embeds the vendored MIR micro-JIT codegen backend
+    // (BNGSIM_ENABLE_MIR=ON, GH #78). When true, setting BNGSIM_CODEGEN_JIT=mir
+    // routes the code-generated ODE RHS through an in-process c2mir + MIR_gen JIT
+    // instead of shelling out to `cc` + dlopen — a compiler-free codegen path.
+    // Surfaced so tests and downstream tools can gate the JIT path (and its
+    // cc-equivalence check) on whether the backend was actually compiled in.
+#ifdef BNGSIM_HAS_MIR
+    m.attr("HAS_MIR") = true;
+#else
+    m.attr("HAS_MIR") = false;
+#endif
+
     // ─── ModelBuilder (programmatic model construction) ──────────────────────
     py::class_<bngsim::ModelBuilder>(m, "ModelBuilder")
         .def(py::init<>())

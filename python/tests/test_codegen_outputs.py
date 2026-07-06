@@ -415,9 +415,16 @@ def test_net_codegen_true_outputs_match_interpreted(tmp_path, monkeypatch, jacob
     sim_cg, m_cg, r_cg = _run_net(net, codegen=True, jacobian=jacobian, monkeypatch=monkeypatch)
     _, _, r_et = _run_net(net, codegen=False, jacobian=jacobian, monkeypatch=monkeypatch)
 
-    # The compiled .so actually carries the symbol the warm recording loop calls.
-    assert sim_cg.codegen_backend == "cc"
-    assert _so_has_symbol(sim_cg._codegen_so_path, "bngsim_codegen_outputs")
+    # The compiled artifact actually carries the symbol the warm recording loop
+    # calls. The default cc backend emits a .so (inspect its symbol table); the
+    # MIR backend (BNGSIM_CODEGEN_JIT=mir) JITs the same C source in-process, so
+    # there is no .so — assert the source it JITs defines the output function.
+    backend = sim_cg.codegen_backend
+    assert backend in ("cc", "mir")
+    if backend == "cc":
+        assert _so_has_symbol(sim_cg._codegen_so_path, "bngsim_codegen_outputs")
+    else:
+        assert "bngsim_codegen_outputs" in sim_cg._codegen_c_source
 
     o_cg, o_et = np.asarray(r_cg.observables), np.asarray(r_et.observables)
     e_cg, e_et = np.asarray(r_cg.expressions), np.asarray(r_et.expressions)

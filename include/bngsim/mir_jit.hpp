@@ -21,10 +21,13 @@
 
 #if defined(BNGSIM_HAS_MIR)
 #include <cstddef>
-#include <cstdio>  // open_memstream, FILE, fflush, fclose, stderr
+#include <cstdio>  // open_memstream/tmpfile, FILE, fflush, fclose, stderr
 #include <cstdlib> // free
-#include <cstring> // std::memset
-#include <dlfcn.h>
+#include <cstring> // std::memset, std::memcpy, std::strcmp
+#include <cmath>   // libm addresses for the Windows import table (GH #3)
+#ifndef _WIN32
+#include <dlfcn.h> // dlsym(RTLD_DEFAULT) — POSIX import resolver
+#endif
 extern "C" {
 #include "c2mir.h"
 #include "mir-gen.h"
@@ -39,9 +42,117 @@ namespace detail {
 
 // Import resolver for MIR_link: maps an external symbol name (libc/libm
 // functions the generated RHS calls — pow, exp, sqrt, memset, ...) to its
-// runtime address. RTLD_DEFAULT searches every globally-loaded symbol, which
-// includes libSystem/libm in this process. Must have C linkage / no captures.
+// runtime address. Must have C linkage / no captures.
+//
+// POSIX: RTLD_DEFAULT searches every globally-loaded symbol, which includes
+// libSystem/libm already resident in this process, so dlsym resolves the whole
+// libm/libc surface the codegen can emit.
+//
+// Windows/MSVC (GH #3): there is no dlsym/RTLD_DEFAULT. We resolve against a
+// static table of exactly the libm/libc functions the codegen can emit — which
+// is complete by construction: the JIT source can only *call* functions that
+// jit_prelude() forward-declares, so the set of MIR import symbols is a subset
+// of the prelude set. Taking &std::pow (etc.) yields a valid out-of-line
+// address on every ABI, so the table needs no OS symbol lookup at all. Keep it
+// in step with jit_prelude() below.
+#ifdef _WIN32
+inline void *mir_import_resolver(const char *name) {
+    struct Entry {
+        const char *name;
+        void *addr;
+    };
+    // Cast through the exact C signature to pick the right <cmath> overload.
+#define BNGSIM_MIR_D1(fn)                                                                          \
+    {#fn, reinterpret_cast<void *>(static_cast<double (*)(double)>(&std::fn))}
+#define BNGSIM_MIR_D2(fn)                                                                          \
+    {#fn, reinterpret_cast<void *>(static_cast<double (*)(double, double)>(&std::fn))}
+    static const Entry table[] = {
+        BNGSIM_MIR_D2(pow),      BNGSIM_MIR_D1(exp),      BNGSIM_MIR_D1(exp2),
+        BNGSIM_MIR_D1(expm1),    BNGSIM_MIR_D1(log),      BNGSIM_MIR_D1(log2),
+        BNGSIM_MIR_D1(log10),    BNGSIM_MIR_D1(log1p),    BNGSIM_MIR_D1(logb),
+        BNGSIM_MIR_D1(sqrt),     BNGSIM_MIR_D1(cbrt),     BNGSIM_MIR_D2(hypot),
+        BNGSIM_MIR_D1(fabs),     BNGSIM_MIR_D2(fmax),     BNGSIM_MIR_D2(fmin),
+        BNGSIM_MIR_D2(fmod),     BNGSIM_MIR_D2(copysign), BNGSIM_MIR_D1(floor),
+        BNGSIM_MIR_D1(ceil),     BNGSIM_MIR_D1(round),    BNGSIM_MIR_D1(trunc),
+        BNGSIM_MIR_D1(rint),     BNGSIM_MIR_D1(nearbyint), BNGSIM_MIR_D1(sin),
+        BNGSIM_MIR_D1(cos),      BNGSIM_MIR_D1(tan),      BNGSIM_MIR_D1(asin),
+        BNGSIM_MIR_D1(acos),     BNGSIM_MIR_D1(atan),     BNGSIM_MIR_D2(atan2),
+        BNGSIM_MIR_D1(sinh),     BNGSIM_MIR_D1(cosh),     BNGSIM_MIR_D1(tanh),
+        BNGSIM_MIR_D1(asinh),    BNGSIM_MIR_D1(acosh),    BNGSIM_MIR_D1(atanh),
+        BNGSIM_MIR_D1(erf),      BNGSIM_MIR_D1(erfc),     BNGSIM_MIR_D1(tgamma),
+        BNGSIM_MIR_D1(lgamma),
+        {"memset",
+         reinterpret_cast<void *>(static_cast<void *(*)(void *, int, std::size_t)>(&std::memset))},
+        {"memcpy", reinterpret_cast<void *>(
+                       static_cast<void *(*)(void *, const void *, std::size_t)>(&std::memcpy))},
+    };
+#undef BNGSIM_MIR_D1
+#undef BNGSIM_MIR_D2
+    for (const auto &e : table) {
+        if (std::strcmp(e.name, name) == 0)
+            return e.addr;
+    }
+    return nullptr;
+}
+#else
 inline void *mir_import_resolver(const char *name) { return dlsym(RTLD_DEFAULT, name); }
+#endif
+
+// Portable capture of c2mir's diagnostic stream into a std::string. POSIX has
+// open_memstream (a growable in-memory FILE*); MSVC's CRT does not, so on
+// Windows we fall back to a tmpfile() read back after compilation. Diagnostics
+// only matter on a compile *failure* (which valid generated source never hits),
+// so a null stream degrades gracefully to stderr rather than aborting.
+class DiagStream {
+  public:
+    DiagStream() {
+#ifdef _WIN32
+        file_ = std::tmpfile();
+#else
+        file_ = open_memstream(&buf_, &len_);
+#endif
+    }
+    ~DiagStream() {
+        if (file_ != nullptr)
+            std::fclose(file_);
+#ifndef _WIN32
+        if (buf_ != nullptr)
+            std::free(buf_);
+#endif
+    }
+    DiagStream(const DiagStream &) = delete;
+    DiagStream &operator=(const DiagStream &) = delete;
+
+    // Stream handed to c2mir as message_file; falls back to stderr if the
+    // in-memory/temp stream could not be created.
+    FILE *file() const { return file_ != nullptr ? file_ : stderr; }
+
+    // Finalize and return whatever c2mir wrote. Call after c2mir_compile.
+    std::string str() {
+        if (file_ == nullptr)
+            return {};
+        std::fflush(file_);
+#ifdef _WIN32
+        long end = std::ftell(file_);
+        if (end <= 0)
+            return {};
+        std::rewind(file_);
+        std::string out(static_cast<size_t>(end), '\0');
+        size_t n = std::fread(&out[0], 1, out.size(), file_);
+        out.resize(n);
+        return out;
+#else
+        return buf_ != nullptr ? std::string(buf_, len_) : std::string();
+#endif
+    }
+
+  private:
+    FILE *file_ = nullptr;
+#ifndef _WIN32
+    char *buf_ = nullptr;
+    size_t len_ = 0;
+#endif
+};
 
 // getc callback for c2mir_compile: streams a NUL-terminated C source string.
 struct MirSourceReader {
@@ -173,9 +284,10 @@ class MirJit {
     // compiler detected"). Since bngsim *generates* the C it JITs, the JIT path
     // strips the system #includes and prepends extern declarations for the
     // libc/libm symbols the RHS can call; MIR resolves them at link time via the
-    // import resolver (dlsym). The RHS *body* — everything that affects numerics
-    // — is byte-identical to what the cc-subprocess backend compiles. Only the
-    // header preamble differs.
+    // import resolver (dlsym on POSIX; a static libm/libc table on Windows — see
+    // detail::mir_import_resolver). The RHS *body* — everything that affects
+    // numerics — is byte-identical to what the cc-subprocess backend compiles.
+    // Only the header preamble differs.
     static std::string make_jit_source(const std::string &src) {
         std::string out;
         out.reserve(src.size() + 2048);
@@ -220,10 +332,15 @@ class MirJit {
     // Forward declarations for every libc/libm function the codegen can emit
     // (see _BUILTIN_IDENT_MAP, the ^→pow lowering, the MM sqrt, and ExprTk
     // builtins that pass through to <math.h>). M_PI/M_E are still provided by
-    // the generated source's own #ifndef/#define blocks. size_t is unsigned
-    // long on every LP64 target bngsim ships (macOS/Linux x86-64 + aarch64).
+    // the generated source's own #ifndef/#define blocks. The memset/memcpy size
+    // argument must match c2mir's built-in size_t width (what sizeof yields in
+    // the generated call): unsigned long on the LP64 targets (macOS/Linux
+    // x86-64 + aarch64) and unsigned long long on Windows (LLP64) — mirroring
+    // c2mir/x86_64/mirc_x86_64_stddef.h. Getting this wrong on Windows would
+    // narrow the byte count passed to memset (GH #3).
     static const char *jit_prelude() {
-        return "/* bngsim MIR-JIT prelude (forward-declare libc/libm; resolved via dlsym) */\n"
+        return "/* bngsim MIR-JIT prelude (forward-declare libc/libm; resolved via the "
+               "import resolver) */\n"
                "extern double pow(double, double);\n"
                "extern double exp(double); extern double exp2(double); extern double "
                "expm1(double);\n"
@@ -249,8 +366,15 @@ class MirJit {
                "atanh(double);\n"
                "extern double erf(double); extern double erfc(double);\n"
                "extern double tgamma(double); extern double lgamma(double);\n"
+#ifdef _WIN32
+               // Windows is LLP64 — c2mir's size_t is unsigned long long (64-bit).
+               "extern void *memset(void *, int, unsigned long long);\n"
+               "extern void *memcpy(void *, const void *, unsigned long long);\n";
+#else
+               // LP64 — c2mir's size_t is unsigned long (64-bit).
                "extern void *memset(void *, int, unsigned long);\n"
                "extern void *memcpy(void *, const void *, unsigned long);\n";
+#endif
     }
 
     // Auto opt-level by JIT source size. MIR -O2's optimizer is superlinear on
@@ -277,26 +401,18 @@ class MirJit {
             throw std::runtime_error("MirJit: MIR_init failed");
         c2mir_init(ctx_);
 
-        // Capture c2mir diagnostics into an in-memory buffer for error reporting.
-        char *msg_buf = nullptr;
-        size_t msg_len = 0;
-        FILE *msg_file = open_memstream(&msg_buf, &msg_len);
+        // Capture c2mir diagnostics for error reporting (portable in-memory
+        // stream on POSIX, tmpfile on Windows — see detail::DiagStream).
+        detail::DiagStream diag;
 
         struct c2mir_options opts;
         std::memset(&opts, 0, sizeof(opts));
-        opts.message_file = msg_file != nullptr ? msg_file : stderr;
+        opts.message_file = diag.file();
 
         detail::MirSourceReader reader{jit_source.c_str()};
         int ok = c2mir_compile(ctx_, &opts, detail::mir_source_getc, &reader, "bngsim_rhs_module",
                                nullptr);
-        if (msg_file != nullptr)
-            fflush(msg_file);
-        std::string diagnostics =
-            msg_buf != nullptr ? std::string(msg_buf, msg_len) : std::string();
-        if (msg_file != nullptr)
-            fclose(msg_file);
-        if (msg_buf != nullptr)
-            free(msg_buf);
+        std::string diagnostics = diag.str();
 
         if (!ok) {
             close();

@@ -608,11 +608,14 @@ if(BNGSIM_ENABLE_MIR)
         # part of libSystem (always linked), so an explicit -lm is redundant —
         # and because libm also arrives transitively (SUNDIALS), the redundant
         # entry trips a benign `ld: warning: ignoring duplicate libraries: -lm`.
-        # Skip the explicit libm on Apple; keep it elsewhere so bngsim_mir is
-        # self-contained. C2MIR_PARALLEL is intentionally left undefined →
-        # single-threaded gen, no pthread dependency.
+        # On Windows (MSVC, GH #3) there is no separate libm — the math runtime
+        # lives in the C runtime — and CMAKE_DL_LIBS is empty (no libdl; the MIR
+        # import table is a static libm/libc table, not dlsym). So link libm only
+        # on the Unix-y platforms where it is a real, separate archive.
+        # C2MIR_PARALLEL is intentionally left undefined → single-threaded gen,
+        # no pthread dependency.
         target_link_libraries(bngsim_mir PUBLIC ${CMAKE_DL_LIBS})
-        if(NOT APPLE)
+        if(NOT APPLE AND NOT WIN32)
             target_link_libraries(bngsim_mir PUBLIC m)
         endif()
         target_compile_options(bngsim_mir PRIVATE

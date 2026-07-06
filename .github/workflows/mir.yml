@@ -1,0 +1,129 @@
+name: mir-jit
+
+# MIR micro-JIT codegen backend CI (issues #2 and #3).
+#
+# bngsim has a second codegen backend: an in-process micro-JIT built on the
+# vendored MIR compiler (third_party/mir, include/bngsim/mir_jit.hpp), enabled
+# with -DBNGSIM_ENABLE_MIR=ON and selected at runtime via BNGSIM_CODEGEN_JIT=mir.
+# It exists so the codegen path works on machines with no C compiler: the default
+# backend generates C and shells out to `cc` + dlopen, and MIR JIT-compiles the
+# *same* generated source in-process instead.
+#
+# The shipped wheels build with MIR OFF, so nothing else in CI exercises the JIT
+# path. This job builds -DBNGSIM_ENABLE_MIR=ON and runs the codegen suite under
+# BNGSIM_CODEGEN_JIT=mir on Linux, macOS x86_64, macOS arm64 (#2) and Windows
+# (#3, the Windows import-resolver work). test_mir_equivalence.py asserts the JIT
+# path is bit-identical to the cc backend (both compile the same C source) and
+# matches the compiler-free ExprTk baseline — the equivalence the issues ask CI
+# to guard.
+#
+# KLU is intentionally OFF here: the MIR backend JITs the ODE RHS and is
+# orthogonal to the SuiteSparse/KLU direct solver, so we skip the slow
+# from-source SuiteSparse build. The KLU-gated codegen tests (sparse Jacobian)
+# skip cleanly on a KLU-off core.
+#
+# On Windows the default cc+dlopen codegen path is not the story — a bare
+# Windows box is the case with no C compiler, which is exactly why MIR exists
+# (#3) — so the cc-baseline tests (marked needs_cc: cc/clang/gcc) skip there and
+# test_mir_equivalence's compiler-free MIR-vs-ExprTk check is the end-to-end
+# Windows verification. On Linux/macOS cc is present, so cc-vs-MIR bit-identity
+# is asserted too.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, -k some_pattern)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths: &mir_paths
+      - "include/bngsim/mir_jit.hpp"
+      - "src/cvode_simulator.cpp"
+      - "src/_bngsim_core.cpp"
+      - "third_party/mir/**"
+      - "python/bngsim/_codegen.py"
+      - "python/bngsim/_simulator.py"
+      - "python/bngsim/__init__.py"
+      - "python/tests/test_mir_equivalence.py"
+      - "python/tests/test_codegen*.py"
+      - "python/tests/test_mir_vendoring.py"
+      - "CMakeLists.txt"
+      - ".github/workflows/mir.yml"
+  pull_request:
+    paths: *mir_paths
+
+concurrency:
+  group: mir-jit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mir-tests:
+    name: MIR codegen · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest    # manylinux-class x86_64
+          - os: macos-15-intel   # macOS x86_64 (Intel)
+          - os: macos-14         # macOS arm64 (Apple Silicon)
+          - os: windows-latest   # Windows x86_64 (issue #3)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build & install bngsim (MIR on, KLU off)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          # BNGSIM_ENABLE_MIR=ON builds the vendored MIR backend; KLU off (and
+          # REQUIRE_KLU off, overriding the pyproject default) skips SuiteSparse.
+          python -m pip install -v \
+            --config-settings=cmake.define.BNGSIM_ENABLE_MIR=ON \
+            --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
+            ".[test]"
+
+      - name: Show build / capability info
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_MIR', bngsim.HAS_MIR)"
+          # Fail loudly if the MIR backend did not actually compile in — otherwise
+          # every MIR test would skip and the job would be a false green.
+          python -c "import bngsim, sys; sys.exit(0 if bngsim.HAS_MIR else 'HAS_MIR is False — MIR backend was not built')"
+
+      - name: Run codegen suite under the MIR backend
+        shell: bash
+        env:
+          BNGSIM_CODEGEN_JIT: mir
+          BNGSIM_TEST_DATA: ${{ github.workspace }}/tests/data
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider \
+            python/tests/test_mir_equivalence.py \
+            python/tests/test_mir_vendoring.py \
+            python/tests/test_codegen.py \
+            python/tests/test_codegen_outputs.py \
+            python/tests/test_codegen_jacobian.py \
+            python/tests/test_codegen_sensitivity.py \
+            python/tests/test_model_codegen_sensitivity.py \
+            python/tests/test_codegen_determinism.py \
+            -rA --tb=short ${{ github.event.inputs.pytest_args }} \
+            2>&1 | tee mir-${{ matrix.os }}.log
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mir-log-${{ matrix.os }}
+          path: mir-${{ matrix.os }}.log
+          if-no-files-found: error
