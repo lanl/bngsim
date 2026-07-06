@@ -1,0 +1,78 @@
+name: windows-nfsim-repro
+
+# Reproduce the Windows-only NFsim test failures (issue #1) on a GitHub-hosted
+# windows-latest runner. DIAGNOSTIC ONLY — manual trigger, not part of the
+# release/wheel pipeline.
+#
+# Builds bngsim from source with KLU disabled (NFsim does not use SuiteSparse/KLU,
+# so we skip the slow from-source SuiteSparse step) and runs the NFsim test
+# cluster with full tracebacks. The pytest log is always uploaded as an artifact,
+# so the concrete first-failure output is available even when the job goes red.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, -k some_pattern, or a single file path)"
+        required: false
+        default: ""
+      python_version:
+        description: "Python version to build/test against"
+        required: false
+        default: "3.12"
+
+jobs:
+  nfsim-tests:
+    name: NFsim tests · windows-latest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Build & install bngsim (NFsim on, KLU off)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          # Override the pyproject BNGSIM_REQUIRE_KLU=ON define so the build does
+          # not need SuiteSparse; ENABLE_KLU=OFF avoids the KLU autobuild too.
+          # The NFsim test cluster + conftest only need pytest (numpy is a base
+          # bngsim dep); skip the [test] extra (antimony/scipy) to stay lean.
+          python -m pip install -v \
+            --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
+            .
+          python -m pip install "pytest>=8.0"
+
+      - name: Show build / capability info
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_KLU', bngsim.HAS_KLU)"
+
+      - name: Run NFsim test cluster
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider \
+            python/tests/test_nfsim_session.py \
+            python/tests/test_nfsim.py \
+            python/tests/test_nfsim_tech_debt.py \
+            python/tests/test_nfsim_tstart.py \
+            python/tests/test_nfsim_molecularity.py \
+            python/tests/test_nfsim_selectors.py \
+            -rA --tb=long ${{ inputs.pytest_args }} \
+            2>&1 | tee nfsim-windows.log
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfsim-windows-log-py${{ inputs.python_version }}
+          path: nfsim-windows.log
+          if-no-files-found: error
