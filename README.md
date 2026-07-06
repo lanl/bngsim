@@ -14,7 +14,7 @@ no file I/O, no subprocess spawning, no Perl dependency.
 - **Fast** — in-process execution with the GIL released during simulation; thread-parallel batch sweeps
 - **No toolchain at runtime** — `import bngsim`; no compilers, no `BNGPATH`, no Perl
 - **Modern SUNDIALS** — v7.x CVODE/CVODES with re-entrant `SUNContext`
-- **Multi-format** — loads `.net`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72)
+- **Multi-format** — loads BioNetGen `.net` and `.xml`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72)
 - **Rich results** — NumPy arrays, named observable access, pandas/xarray, HDF5 save/load
 - **Standards interchange** — `.net`/cBNGL ⇄ SBML and SED-ML + OMEX packaging, every conversion *verified faithful*
 - **Gradient-ready** — CVODES forward sensitivities, Fisher information, JAX-differentiable RHS
