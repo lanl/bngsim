@@ -1,13 +1,16 @@
-name: windows-nfsim-repro
+name: windows-nfsim
 
-# Reproduce the Windows-only NFsim test failures (issue #1) on a GitHub-hosted
-# windows-latest runner. DIAGNOSTIC ONLY — manual trigger, not part of the
-# release/wheel pipeline.
+# Windows NFsim regression guard (issue #1). NFsim runs in-process as vendored
+# C++; it was fully broken on Windows (every initialize()/simulate() aborted
+# because System::registerOutputFileLocation("/dev/null") cannot open that path
+# on Windows) and nothing caught it — the wheel's smoke test only checks import +
+# HAS_KLU. This job builds bngsim on windows-latest (KLU off; NFsim does not use
+# SuiteSparse, so we skip the slow from-source SuiteSparse step) and runs the
+# NFsim test cluster, so a Windows-only NFsim regression fails CI instead of
+# shipping silently. The pytest log is always uploaded as an artifact.
 #
-# Builds bngsim from source with KLU disabled (NFsim does not use SuiteSparse/KLU,
-# so we skip the slow from-source SuiteSparse step) and runs the NFsim test
-# cluster with full tracebacks. The pytest log is always uploaded as an artifact,
-# so the concrete first-failure output is available even when the job goes red.
+# Scoped to paths that can affect NFsim-on-Windows so it does not rebuild on
+# every push. Also runnable manually (workflow_dispatch) for ad-hoc repros.
 
 on:
   workflow_dispatch:
@@ -20,6 +23,22 @@ on:
         description: "Python version to build/test against"
         required: false
         default: "3.12"
+  push:
+    branches: [main]
+    paths: &nfsim_paths
+      - "src/nfsim_simulator.cpp"
+      - "src/cvode_simulator.cpp"
+      - "include/bngsim/platform_compat.hpp"
+      - "third_party/nfsim/**"
+      - "python/bngsim/_nfsim_session.py"
+      - "python/tests/test_nfsim*.py"
+      - ".github/workflows/windows-nfsim.yml"
+  pull_request:
+    paths: *nfsim_paths
+
+concurrency:
+  group: windows-nfsim-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   nfsim-tests:
@@ -30,7 +49,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python_version }}
+          python-version: ${{ inputs.python_version || '3.12' }}
 
       - name: Build & install bngsim (NFsim on, KLU off)
         shell: bash
@@ -73,6 +92,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nfsim-windows-log-py${{ inputs.python_version }}
+          name: nfsim-windows-log-py${{ inputs.python_version || '3.12' }}
           path: nfsim-windows.log
           if-no-files-found: error
