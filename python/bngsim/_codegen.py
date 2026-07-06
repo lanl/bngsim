@@ -2598,10 +2598,13 @@ def _compile_sharded(
     work = Path(tempfile.mkdtemp(prefix="bngsim_shard_", dir=CACHE_DIR))
     try:
         names: list[tuple[str, str]] = []  # (c_name, o_name), link order
-        (work / "driver.c").write_text(driver_src)
+        # Always UTF-8: the generated source carries non-ASCII comment glyphs
+        # (→, −, ·). Path.write_text defaults to the locale encoding, which is
+        # cp1252 on Windows and raises UnicodeEncodeError on those bytes.
+        (work / "driver.c").write_text(driver_src, encoding="utf-8")
         names.append(("driver.c", "driver.o"))
         for i, unit_src in enumerate(units):
-            (work / f"unit_{i:04d}.c").write_text(unit_src)
+            (work / f"unit_{i:04d}.c").write_text(unit_src, encoding="utf-8")
             names.append((f"unit_{i:04d}.c", f"unit_{i:04d}.o"))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
@@ -2698,7 +2701,9 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             os.replace(tmp_so_path, so_path)
         else:
             c_path = CACHE_DIR / f"rhs_{model_hash}.{token}.c"
-            c_path.write_text(c_source)
+            # UTF-8: generated source has non-ASCII comment glyphs; the locale
+            # default (cp1252 on Windows) would raise UnicodeEncodeError.
+            c_path.write_text(c_source, encoding="utf-8")
             try:
                 cmd = _build_compile_cmd(c_path, tmp_so_path, opt_flag)
                 logger.info("Compiling codegen RHS (%s): %s", opt_flag, " ".join(cmd))

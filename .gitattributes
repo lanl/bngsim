@@ -1,0 +1,5 @@
+# Vendored third-party sources are checked out byte-for-byte on every platform
+# (no CRLF conversion), so each vendor's anchored checksums (VENDOR.json,
+# verified by the vendoring tests) match on Windows too. Without this a Windows
+# checkout with core.autocrlf=true rewrites LF->CRLF and every checksum drifts.
+third_party/** -text
