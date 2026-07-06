@@ -5,8 +5,8 @@
 **Embeddable simulation engine for BioNetGen reaction networks.**
 
 `bngsim` is a high-performance C++ simulation kernel with Python bindings that replaces
-BioNetGen's subprocess-based `run_network` driver. It loads `.net` files, runs ODE
-(CVODE) and SSA (Gillespie) simulations in-process, and returns results as NumPy arrays —
+BioNetGen's subprocess-based `run_network` driver. It loads BioNetGen `.net` and `.xml` files, runs deterministic
+and stochastic simulations in-process, and returns results as NumPy arrays —
 no file I/O, no subprocess spawning, no Perl dependency.
 
 ## Highlights
@@ -14,7 +14,7 @@ no file I/O, no subprocess spawning, no Perl dependency.
 - **Fast** — in-process execution with the GIL released during simulation; thread-parallel batch sweeps
 - **No toolchain at runtime** — `import bngsim`; no compilers, no `BNGPATH`, no Perl
 - **Modern SUNDIALS** — v7.x CVODE/CVODES with re-entrant `SUNContext`
-- **Multi-format** — loads `.net`, Antimony (`.ant`), and SBML (`.xml`) models
+- **Multi-format** — loads `.net`, Antimony (`.ant`), and SBML (`.xml`) models [SBML Test Suite results](https://sbml.bioquant.uni-heidelberg.de/Submission/Details/72)
 - **Rich results** — NumPy arrays, named observable access, pandas/xarray, HDF5 save/load
 - **Standards interchange** — `.net`/cBNGL ⇄ SBML and SED-ML + OMEX packaging, every conversion *verified faithful*
 - **Gradient-ready** — CVODES forward sensitivities, Fisher information, JAX-differentiable RHS
