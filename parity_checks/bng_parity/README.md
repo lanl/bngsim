@@ -7,9 +7,9 @@ on the BNGL corpus the PyBioNetGen parity effort assembled: ODE, SSA, and NF.
 
 ```
 bng_parity/
-  models/<tier>/<source>/<relpath>.bngl   896 vendored models (+11 companions)
+  models/<tier>/<source>/<relpath>.bngl   895 vendored models (+11 companions)
   manifest.json / manifest.csv            vendor_corpus.py output (provenance + sha256)
-  jobs.json                               _core manifest (896 jobs) — the SPEC
+  jobs.json                               _core manifest (895 jobs) — the SPEC
   vendor_corpus.py                        fetches the corpus from pinned GitHub commits
   overrides.py                            per-model fixtures lifted from parity_sweep
   build_jobs.py                           manifest.json + overrides.py -> jobs.json
@@ -19,7 +19,7 @@ bng_parity/
   parity_diff.py                          .gdat/.cdat I/O helpers (load_normalized)
 ```
 
-## Corpus (896 models, fetched from pinned GitHub commits)
+## Corpus (895 models, fetched from pinned GitHub commits)
 
 `vendor_corpus.py` materializes the corpus from three **public** repos, each
 pinned to a commit — no local-checkout, and no PyBioNetGen, dependency. It
@@ -29,11 +29,11 @@ shallow-fetches each pin (`git fetch --depth 1 origin <sha>`) into a gitignored
 
 | `source` | n | repo | pin |
 |---|---|---|---|
-| `bngl_models` (tier `original`) | 377 | `wshlavacek/BNGL-Models` | `0df6cbd` |
+| `bngl_models` (tier `original`) | 376 | `wshlavacek/BNGL-Models` | `81c90d8` |
 | rulehub (fast/slow/glacial) | 339 | `RuleWorld/RuleHub` | `479d6d6` |
 | rulemonkey | 130 | `richardposner/RuleMonkey` | `0f70112` |
-| bngl_library | 49 | `wshlavacek/BNGL-Models` (`bngl_models/`) | `0df6cbd` |
-| curated (Creamer) | 1 | `wshlavacek/BNGL-Models` (`creamer/`) | `0df6cbd` |
+| bngl_library | 49 | `wshlavacek/BNGL-Models` (`bngl_models/`) | `81c90d8` |
+| curated (Creamer) | 1 | `wshlavacek/BNGL-Models` (`creamer/`) | `81c90d8` |
 
 Bump a pin in `vendor_corpus.py`'s `PINS` (a deliberate, reviewed change) to
 move the corpus to newer upstream. A developer who already has a checkout *at
@@ -56,8 +56,8 @@ origin + transform:
   Kept under `source=rulehub` (`bench_rulehub/` relpath) in membership but
   resolved from BNGL-Models — see `resolve()` in `vendor_corpus.py`.
 
-**Membership.** Which 896 models is read from the committed `manifest.json`'s
-`(tier, source, relpath)` triples (the frozen result of PyBioNetGen's
+**Membership.** The 895-model membership is read from the committed
+`manifest.json`'s `(tier, source, relpath)` triples (the frozen result of PyBioNetGen's
 `dev/parity_report_FINAL_0.9.7.json` per_model keys + the Lin2019
 `ERK_model`/`prion_model`). The report itself is no longer consulted.
 
@@ -70,7 +70,7 @@ dependencies: fitting parity is PyBNF's). Each model carries only its own bare
 (regenerated each run). Output names run through `windows_safe()`. Re-vendor:
 `python vendor_corpus.py`.
 
-568 deterministic, 328 stochastic. 104 carry `__FREE` — these are *filled*
+569 deterministic, 326 stochastic. 104 carry `__FREE` — these are *filled*
 best-fit models (real parameter values), not the unfilled PyBNF fitting
 templates (which were excluded upstream and are PyBNF's parity, not ours).
 
@@ -215,7 +215,7 @@ engines directly** instead of through the heavyweight `bionetgen.run()` subtree:
 
 ```
 export BNGPATH=/path/to/BioNetGen-2.9.3      # BNG2.pl + bin/run_network
-python bng_ode_run.py --workers 4            # all 591 ODE jobs -> runs/report_ode.json
+python bng_ode_run.py --workers 4            # all 592 ODE jobs -> runs/report_ode.json
 python generate_bng_matrix.py                # -> runs/bng_matrix_ode.html
 open runs/bng_matrix_ode.html
 # subset / debug: --limit N · --include fast/ · --models <id,id> · --out report.json
@@ -265,8 +265,8 @@ has no species, so observables-by-name is the uniform axis for both).
 
 ```
 export BNGPATH=/path/to/BioNetGen-2.9.3      # BNG2.pl + bin/run_network + bin/NFsim
-python bng_stoch_run.py --track ssa --workers 4   # ~107 SSA jobs -> runs/report_ssa.json
-python bng_stoch_run.py --track nf  --workers 4   # ~227 NF jobs  -> runs/report_nf.json
+python bng_stoch_run.py --track ssa --workers 4   # ~110 SSA jobs -> runs/report_ssa.json
+python bng_stoch_run.py --track nf  --workers 4   # ~235 NF jobs  -> runs/report_nf.json
 python generate_bng_matrix.py runs/report_ssa.json   # -> runs/bng_matrix_ssa.html
 python generate_bng_matrix.py runs/report_nf.json    # -> runs/bng_matrix_nf.html
 # subset / debug: --limit N · --tier slow · --models <id,id> · --n-rep 10 · --out report.json
