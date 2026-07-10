@@ -57,10 +57,13 @@ import numpy as np
 # rather than emit a misattributed DIFF.
 RHS_FAITHFUL_TOL = 1e-6
 
-# Pure-Python conversion + RoadRunner JIT + n_rep replicates can be costly for a large
-# network; past this wall the oracle bails (returns None) so a slow model stays an
-# honest REFERENCE_FAILED instead of dominating the run. Mirrors net_gillespie.
-DEFAULT_WALL_BUDGET_SEC = 90.0
+# Conversion + RoadRunner JIT + n_rep replicates can be costly for a large network;
+# past this wall the oracle bails (returns None) so a slow model stays an honest
+# REFERENCE_FAILED instead of dominating the run. The bng_parity caller caps the RR
+# comparison horizon (RR_ORACLE_MAX_POINTS) to keep a large net like prion's 2809-rxn
+# network tractable (~90s for a 10-rep t≤10 ensemble); this wall gives that capped run
+# headroom (JIT + slower machines) while still bounding a runaway.
+DEFAULT_WALL_BUDGET_SEC = 180.0
 
 
 def roadrunner_available() -> bool:

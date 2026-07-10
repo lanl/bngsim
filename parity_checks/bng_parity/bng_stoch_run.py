@@ -96,6 +96,18 @@ DEFAULT_N_REP = 10  # manifest base ensemble; DIFFs can escalate to 30/100 below
 # threshold. Keep the default aligned with build_jobs.py/jobs.json.
 DEFAULT_SEED_BASE = 1
 
+# RoadRunner second-engine oracle: horizon cap for its comparison grid. RR's exact
+# Gillespie cost scales with the simulated time (event count), so on a large network
+# at a long horizon it is impractical — prion's 2809-reaction net at t=300 is ~40 min
+# for a 20-rep RR ensemble and blows net_roadrunner's wall budget → the model stayed
+# unscored. SSA is causal, so bngsim's leading grid slice IS a shorter-horizon
+# ensemble: when a model's grid exceeds this many points, the RR means-check runs over
+# the first RR_ORACLE_MAX_POINTS samples (the tractable early horizon) and bngsim's
+# ensemble is truncated to match. For prion (step 0.01) 1001 points → t≤10, matching
+# the psa benchmark's prion horizon; RR completes in ~90s. Means-gated only — the
+# second-moment residual over this window is tracked in lanl/bngsim#9.
+RR_ORACLE_MAX_POINTS = 1001
+
 # Seed-escalation oracle (GH #69, direction-of-change discriminator GH #185). A
 # DIFF at the base replicate count can be finite-N sampling noise: at N=10 the
 # per-cell std estimate that sets the K-sigma bar is itself unreliable, so a
@@ -862,6 +874,11 @@ def _worker(spec: dict, q) -> None:
                 #      solver and reaches functional/concentration nets net_gillespie
                 #      refuses; skips cleanly when libroadrunner is absent. SECOND engine.
                 ng_oracle = rr_oracle = None
+                # bn_rr is the bngsim ensemble the RR oracle is scored against — the
+                # SAME as bn unless the horizon is capped (below), where it is bn's
+                # leading slice so the two ensembles share a grid.
+                bn_rr = bn
+                rr_capped_tend = None
                 if track == "ssa" and bn is not None:
                     try:
                         ng_oracle = ng.net_gillespie_ensemble(
@@ -872,10 +889,19 @@ def _worker(spec: dict, q) -> None:
                         )
                     except Exception:
                         ng_oracle = None
+                    # RoadRunner's Gillespie cost grows with the horizon; cap it to the
+                    # first RR_ORACLE_MAX_POINTS samples so a long/expensive net (prion)
+                    # is still means-validated over its tractable early horizon rather
+                    # than left unscored. SSA is causal → bn's leading slice is exactly
+                    # that shorter-horizon ensemble.
+                    k = min(len(bn[0]), RR_ORACLE_MAX_POINTS)
+                    if k < len(bn[0]):
+                        bn_rr = (bn[0][:k], bn[1][:, :k, :], bn[2])
+                        rr_capped_tend = float(bn[0][k - 1])
                     try:
                         rr_oracle = nrr.net_roadrunner_ensemble(
                             artifact,
-                            bn[0],
+                            bn_rr[0],
                             n_rep=int(spec["n_rep"]),
                             seed_base=int(spec["seed_base"]),
                             obs_names=list(bn[2]),
@@ -895,14 +921,17 @@ def _worker(spec: dict, q) -> None:
                     res["exception"] = leg_exc  # keep legacy failure as detail
                     corrob = ""
                     if rr_oracle is not None:
-                        # Second-engine cross-check. JobResult carries no structured
-                        # corroboration field, so the verdict rides in the (persisted)
-                        # comment rather than a dead dict key.
+                        # Second-engine cross-check (scored against bn_rr, the horizon-
+                        # matched slice). JobResult carries no structured corroboration
+                        # field, so the verdict rides in the (persisted) comment.
                         try:
-                            c_status, c_value, *_ = _compare_stoch(bn, rr_oracle)
+                            c_status, c_value, *_ = _compare_stoch(bn_rr, rr_oracle)
+                            horizon = (
+                                f" over t≤{rr_capped_tend:g}" if rr_capped_tend is not None else ""
+                            )
                             corrob = (
                                 f" Corroborated by a SECOND engine (RoadRunner on bngsim's "
-                                f".net→SBML): {c_status.upper()} at {c_value * 100:.1f}%."
+                                f".net→SBML){horizon}: {c_status.upper()} at {c_value * 100:.1f}%."
                             )
                         except Exception:
                             pass
@@ -916,17 +945,27 @@ def _worker(spec: dict, q) -> None:
                     # net_gillespie refused this .net (functional/time-dependent/
                     # concentration net beyond its gate) but RoadRunner scored it — the
                     # second engine EXTENDS coverage past what the primary oracle reaches.
-                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(bn, rr_oracle)
+                    # Scored against bn_rr (the horizon-matched slice; == bn unless capped).
+                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(
+                        bn_rr, rr_oracle
+                    )
                     res["status"], res["value"] = o_status, o_value
                     res["metric"], res["tol"] = o_metric, o_tol
                     res["subclass"] = "oracle_roadrunner"
                     res["exception"] = leg_exc  # keep legacy failure as detail
+                    horizon = (
+                        f" The full horizon is too costly for RoadRunner's Gillespie on this "
+                        f"network, so the means were validated over the early t≤{rr_capped_tend:g} "
+                        f"window (means-gated; second-moment fidelity tracked separately)."
+                        if rr_capped_tend is not None
+                        else ""
+                    )
                     res["comment"] = (
                         f"Legacy reference ({spec['legacy_label']}) failed here and the .net "
                         f"Gillespie oracle did not apply, so bngsim's SSA was scored against an "
                         f"INDEPENDENT engine — libRoadRunner's Gillespie on bngsim's faithful "
                         f".net→SBML export (assignment-rule observables sidestep the run_network "
-                        f"crash). {o_comment}"
+                        f"crash). {o_comment}{horizon}"
                     )
                 else:
                     res["status"], res["exception"] = "reference_failed", leg_exc
