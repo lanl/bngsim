@@ -21,7 +21,7 @@ def _read_pyproject_version() -> str:
         return "0.0.0+unknown"
     match = re.search(
         r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+(?:[-+.][a-zA-Z0-9.+-]+)?)"\s*$',
-        pyproject.read_text(),
+        pyproject.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
     return match.group(1) if match else "0.0.0+unknown"

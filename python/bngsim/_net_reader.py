@@ -77,7 +77,7 @@ def parse_net_file(path: str | Path) -> dict[str, Any]:
                            rate_law (parameter or function name), stat_factor
     """
     path = Path(path)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
 
     # Parse each block
     parameters = _parse_parameters(text)

@@ -42,7 +42,7 @@ def _bngsim_source_root() -> Path | None:
     candidates.extend(Path(__file__).resolve().parents)
     for candidate in candidates:
         py = candidate / "pyproject.toml"
-        if py.is_file() and 'name = "bngsim"' in py.read_text():
+        if py.is_file() and 'name = "bngsim"' in py.read_text(encoding="utf-8"):
             return candidate
     return None
 
@@ -59,7 +59,7 @@ def src_root() -> Path:
 def pyproject_version(src_root: Path) -> str:
     match = re.search(
         r'^version\s*=\s*"([^"]+)"',
-        (src_root / "pyproject.toml").read_text(),
+        (src_root / "pyproject.toml").read_text(encoding="utf-8"),
         re.MULTILINE,
     )
     assert match is not None, f"No version line in {src_root / 'pyproject.toml'}"
@@ -79,7 +79,7 @@ def test_c_extension_version_matches_pyproject(pyproject_version: str) -> None:
 def test_init_py_has_no_version_literal(src_root: Path) -> None:
     """``__init__.py`` must not contain a hardcoded ``__version__ = "X.Y.Z"``."""
     init_py = src_root / "python" / "bngsim" / "__init__.py"
-    assert not re.search(r'__version__\s*=\s*"', init_py.read_text()), (
+    assert not re.search(r'__version__\s*=\s*"', init_py.read_text(encoding="utf-8")), (
         f"{init_py} contains a literal __version__ assignment; "
         "it should import from bngsim._version instead (issue #31)."
     )
@@ -88,7 +88,10 @@ def test_init_py_has_no_version_literal(src_root: Path) -> None:
 def test_result_py_has_no_version_literal(src_root: Path) -> None:
     """``_result.py`` must not write a hardcoded version string to HDF5."""
     result_py = src_root / "python" / "bngsim" / "_result.py"
-    bad = re.search(r'attrs\[\s*"bngsim_version"\s*\]\s*=\s*"', result_py.read_text())
+    bad = re.search(
+        r'attrs\[\s*"bngsim_version"\s*\]\s*=\s*"',
+        result_py.read_text(encoding="utf-8"),
+    )
     assert not bad, (
         f"{result_py} writes a literal version string to HDF5; "
         "it should use bngsim._version.__version__ (issue #31)."
@@ -98,7 +101,7 @@ def test_result_py_has_no_version_literal(src_root: Path) -> None:
 def test_core_cpp_has_no_version_literal(src_root: Path) -> None:
     """``_bngsim_core.cpp`` must source ``__version__`` from the CMake compile define."""
     core_cpp = src_root / "src" / "_bngsim_core.cpp"
-    bad = re.search(r'attr\(\s*"__version__"\s*\)\s*=\s*"\d', core_cpp.read_text())
+    bad = re.search(r'attr\(\s*"__version__"\s*\)\s*=\s*"\d', core_cpp.read_text(encoding="utf-8"))
     assert not bad, (
         f"{core_cpp} contains a literal __version__ string; "
         "it should use BNGSIM_VERSION_STR from CMake (issue #31)."
@@ -108,7 +111,10 @@ def test_core_cpp_has_no_version_literal(src_root: Path) -> None:
 def test_cmakelists_has_no_version_literal(src_root: Path) -> None:
     """``CMakeLists.txt`` must not embed an ``X.Y.Z`` literal in ``project(VERSION ...)``."""
     cmakelists = src_root / "CMakeLists.txt"
-    bad = re.search(r"project\([^)]*VERSION\s+\d+\.\d+\.\d+", cmakelists.read_text())
+    bad = re.search(
+        r"project\([^)]*VERSION\s+\d+\.\d+\.\d+",
+        cmakelists.read_text(encoding="utf-8"),
+    )
     assert not bad, (
         f"{cmakelists} contains a literal version in project(VERSION ...); "
         "it should use ${BNGSIM_VERSION} parsed from pyproject.toml (issue #31)."
@@ -129,7 +135,9 @@ def test_pyproject_is_the_only_anchor(src_root: Path, pyproject_version: str) ->
         src_root / "CMakeLists.txt",
     )
     offenders = [
-        str(path.relative_to(src_root)) for path in derived_anchors if quoted in path.read_text()
+        str(path.relative_to(src_root))
+        for path in derived_anchors
+        if quoted in path.read_text(encoding="utf-8")
     ]
     assert not offenders, (
         f"Version literal {quoted} found in non-pyproject anchors: {offenders}. "
@@ -147,7 +155,9 @@ def test_cmake_project_version_picks_up_pyproject(src_root: Path, pyproject_vers
         pytest.skip("No CMakeCache.txt under build/; skipping.")
     # Multiple wheel-tag build dirs may coexist; any one matching is enough.
     expected = f"CMAKE_PROJECT_VERSION:STATIC={pyproject_version}"
-    matched = any(expected in cache.read_text(errors="replace") for cache in caches)
+    matched = any(
+        expected in cache.read_text(encoding="utf-8", errors="replace") for cache in caches
+    )
     assert matched, (
         f"No CMakeCache.txt under build/ has {expected}. "
         "Reconfigure CMake after bumping pyproject.toml."

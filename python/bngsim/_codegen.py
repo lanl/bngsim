@@ -419,7 +419,7 @@ def _parse_net_file(net_path: str) -> dict:
     Returns dict with keys: parameters, species, reactions, observables,
     functions, fixed_species.
     """
-    with open(net_path) as f:
+    with open(net_path, encoding="utf-8") as f:
         content = f.read()
 
     result: dict[str, list] = {
