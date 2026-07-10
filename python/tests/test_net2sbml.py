@@ -25,7 +25,9 @@ from bngsim.convert import (
     write_sbml,
 )
 from bngsim.convert._sbml_writer import (
+    _MATHML_RESERVED_SIDS,
     _exprtk_to_ast,
+    _sanitize_sid,
     sbml_capability_report,
 )
 
@@ -214,6 +216,116 @@ def test_translator_zero_arg_observable_call() -> None:
 
     ast = _exprtk_to_ast("k1*Atot()", where="t", scalar_names=frozenset({"k1", "Atot"}))
     assert libsbml.formulaToL3String(ast) == "k1 * Atot"
+
+
+# ─── Reserved MathML-constant SIds (GH #8) ──────────────────────────────────
+
+
+def test_sanitize_sid_avoids_mathml_constant_names() -> None:
+    """A sanitized ``SId`` must never equal a MathML reserved constant bareword
+    (``pi``, ``time``, ``avogadro``, …) — ``parseL3Formula`` reads those
+    case-insensitively as ``<pi/>`` / the time csymbol / etc., silently
+    mis-lowering any symbol referenced by that ``SId``. ``_sanitize_sid`` bumps
+    them (``pi`` → ``pi_2``) so no emitted formula token can collapse (GH #8)."""
+    import libsbml
+
+    for word in _MATHML_RESERVED_SIDS:
+        for cand in (word, word.upper(), word.capitalize()):
+            sid = _sanitize_sid(cand, set(), fallback="s")
+            assert sid.lower() not in _MATHML_RESERVED_SIDS, (cand, sid)
+            # the invariant that matters: the SId parses as a plain name reference
+            node = libsbml.parseL3Formula(sid)
+            assert node is not None and node.getType() == libsbml.AST_NAME, (cand, sid)
+
+    # Ordinary names (even ones that merely contain a reserved word) are untouched.
+    for ok in ("k1", "Atot", "rho", "piston", "time_course", "runtime"):
+        assert _sanitize_sid(ok, set(), fallback="s") == ok
+
+    # Reserved + collision compose: two ``pi``-sanitizing symbols stay distinct
+    # and neither collapses.
+    used: set[str] = set()
+    a = _sanitize_sid("pi()", used, fallback="s")
+    b = _sanitize_sid("pi[]", used, fallback="s")
+    assert a != b and a.lower() != "pi" and b.lower() != "pi"
+
+
+# A minimal model reproducing the issue: a population species literally named
+# ``pi()`` (``A`` decays into it, so it grows) and a Species-observable ``Ptot``
+# over it. Before the fix the species took ``SId`` ``pi`` and ``Ptot``'s
+# assignment rule serialized to the π *constant* ``<pi/>`` (≡ 3.14159), not a
+# reference to the growing population.
+_PI_SPECIES_NET = """\
+begin parameters
+    1 k1  0.5
+end parameters
+begin species
+    1 A() 100
+    2 pi() 0
+end species
+begin reactions
+    1 1 2 k1 #_R1
+end reactions
+begin groups
+    1 Atot  1
+    2 Ptot  2
+end groups
+"""
+
+
+def test_pi_named_species_observable_not_constant(tmp_path: Path) -> None:
+    """A species/observable named ``pi`` round-trips to the population count, not
+    the π constant, with no stray ``<pi/>`` in the emitted SBML (GH #8)."""
+    import libsbml
+
+    src = tmp_path / "pi_species.net"
+    src.write_text(_PI_SPECIES_NET)
+    out = tmp_path / "pi_species.xml"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        net_to_sbml(src, out, validate=None, strict=True)
+    text = out.read_text()
+
+    # No MathML π constant anywhere — the whole point of the bug.
+    assert "<pi/>" not in text
+
+    # The species named ``pi()`` got a non-``pi`` SId, and ``Ptot``'s assignment
+    # rule is a plain <ci> reference to it — not the AST_CONSTANT_PI node.
+    doc = libsbml.readSBMLFromString(text)
+    m = doc.getModel()
+    pi_sp = next(
+        m.getSpecies(i) for i in range(m.getNumSpecies()) if m.getSpecies(i).getName() == "pi()"
+    )
+    assert pi_sp.getId().lower() != "pi"
+    # observable parameter keeps its natural SId ``Ptot``; its rule is a <ci> ref
+    assert m.getParameter("Ptot") is not None
+    rule = m.getRuleByVariable("Ptot")
+    assert rule is not None
+    math = rule.getMath()
+    assert math.getType() == libsbml.AST_NAME
+    assert math.getName() == pi_sp.getId()
+
+
+def test_pi_named_species_numeric_roundtrip(tmp_path: Path) -> None:
+    """The reloaded model evaluates ``Ptot`` as the growing population, matching
+    the source ``.net`` exactly — never pinned to π ≈ 3.14159 (GH #8)."""
+    src = tmp_path / "pi_species.net"
+    src.write_text(_PI_SPECIES_NET)
+    out = tmp_path / "pi_species.xml"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        net_to_sbml(src, out, validate=None, strict=True)
+        net_model = bngsim.Model.from_net(src)
+        sbml_model = bngsim.Model.from_sbml(out)
+
+    rn = bngsim.Simulator(net_model, method="ode").run(t_span=(0, 5), n_points=6)
+    rs = bngsim.Simulator(sbml_model, method="ode").run(t_span=(0, 5), n_points=6)
+    # The .net carries ``Ptot`` as an observable; the SBML round-trip re-expresses
+    # it as an assignment-rule parameter (reloaded as an expression).
+    ptot_net = np.asarray(rn.observables["Ptot"])
+    ptot_sbml = np.asarray(rs.expressions["Ptot"])
+    assert ptot_sbml[-1] > 1.0  # grew — not frozen at the π constant
+    assert not np.allclose(ptot_sbml, np.pi, atol=1e-3)
+    np.testing.assert_allclose(ptot_net, ptot_sbml, rtol=1e-9, atol=1e-9)
 
 
 def test_translator_refuses_tfun() -> None:

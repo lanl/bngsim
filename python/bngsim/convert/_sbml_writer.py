@@ -124,6 +124,33 @@ _EXPRTK_SUPPORTED_CALLS = frozenset(
 _SID_OK = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SID_BAD = re.compile(r"[^A-Za-z0-9_]")
 
+# Barewords that ``libsbml.parseL3Formula`` reads as a MathML constant / csymbol
+# rather than a symbol reference — *case-insensitively* (``pi``/``PI``/``Pi`` all
+# collapse to ``<pi/>``, ``time`` to the time csymbol, ``avogadro`` to the
+# Avogadro csymbol, ``nan``/``inf``/``true``/``false``/``exponentiale`` to their
+# literals). A model symbol whose sanitized ``SId`` equals one of these would be
+# silently mis-lowered wherever it is referenced by that ``SId`` in an
+# assignment-rule sum or kinetic-law formula (GH #8: a species ``pi()`` →
+# observable ``Ptot`` ≡ 3.14159 instead of the population count). We bump such an
+# ``SId`` (``pi`` → ``pi_2``) at allocation so no emitted formula token can ever
+# resolve to a constant, fixing every downstream reference at once. Compared
+# lowercased. (``_walk_fix_pi`` still handles genuine π from the ExprTk ``_pi``
+# sentinel; this is the complementary guard for the SId-reference paths.)
+_MATHML_RESERVED_SIDS = frozenset(
+    {
+        "pi",
+        "exponentiale",
+        "avogadro",
+        "time",
+        "nan",
+        "notanumber",
+        "inf",
+        "infinity",
+        "true",
+        "false",
+    }
+)
+
 
 def _dedup_functions(functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse functions that repeat the same name *and* expression to one.
@@ -177,7 +204,9 @@ def _sanitize_sid(name: str, used: set[str], *, fallback: str) -> str:
     Valid ``SId`` is ``[A-Za-z_][A-Za-z0-9_]*``. Pattern characters
     (``() ~ , . !`` …) are replaced with ``_``; a name that starts with a digit
     (or empties out) is prefixed with ``fallback``. Uniqueness is enforced by
-    appending ``_2``, ``_3``, … on collision.
+    appending ``_2``, ``_3``, … on collision, and the same bump avoids the MathML
+    reserved constant barewords (:data:`_MATHML_RESERVED_SIDS`) case-insensitively
+    so no ``SId`` can be mis-read as ``<pi/>`` / the time csymbol / etc. (GH #8).
     """
     base = _SID_BAD.sub("_", name).strip("_")
     if not base or not base[0].isalpha() and base[0] != "_":
@@ -186,7 +215,7 @@ def _sanitize_sid(name: str, used: set[str], *, fallback: str) -> str:
         base = fallback
     sid = base
     n = 2
-    while sid in used:
+    while sid in used or sid.lower() in _MATHML_RESERVED_SIDS:
         sid = f"{base}_{n}"
         n += 1
     used.add(sid)
