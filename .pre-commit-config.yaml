@@ -71,7 +71,14 @@ repos:
       - id: mypy
         files: ^python/bngsim/.*\.py$
         args: [--ignore-missing-imports, --follow-imports=silent]
-        additional_dependencies: [numpy]
+        # Pin numpy (not floating) so the fresh-env CI gate is reproducible. 2.1.3 is
+        # the last numpy whose stubs are fully clean under the pinned mypy v1.13.0 at
+        # python_version 3.10 (pyproject [tool.mypy]): numpy >= 2.3 ships PEP 695 `type`
+        # statements mypy 1.13.0 rejects ("only supported in Python 3.12 and greater"),
+        # and 2.2's stricter shape-typed ndarray stubs flag our code. A local cache with
+        # an older numpy hid this until CI installed numpy fresh. Bump this in lockstep
+        # with the mypy rev above.
+        additional_dependencies: [numpy==2.1.3]
 
   - repo: local
     hooks:
