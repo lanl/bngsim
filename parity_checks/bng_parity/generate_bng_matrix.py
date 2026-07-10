@@ -22,6 +22,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
+# Mirror of ``bng_stoch_run.DEFAULT_N_REP`` — the base stochastic ensemble size a
+# default run uses. Kept as a local constant (not imported) so this renderer stays
+# lightweight and stack-free; a stochastic row is only "non-default" when its n_rep
+# differs from this. Keep in sync with bng_stoch_run.py.
+_DEFAULT_N_REP = 10
+
 
 # --------------------------------------------------------------------------- #
 # Taxonomy (identical to the SBML matrices)
@@ -150,7 +156,7 @@ def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
             settings.get("timeout_source") == "job_override"
             or settings.get("tol_source") == "job_override"
             or settings.get("rep_timeout_source") == "cli"
-            or (settings.get("n_rep") is not None and settings.get("n_rep") != 100)
+            or (settings.get("n_rep") is not None and settings.get("n_rep") != _DEFAULT_N_REP)
             or (settings.get("seed_base") is not None and settings.get("seed_base") != 1)
             or settings.get("nf_block_same_complex_binding") is False
         )
@@ -170,7 +176,7 @@ def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
                 f"rtol={settings.get('rtol'):g}, atol={settings.get('atol'):g} "
                 f"({_esc(settings.get('tol_source'))})"
             )
-        if settings.get("n_rep") is not None and settings.get("n_rep") != 100:
+        if settings.get("n_rep") is not None and settings.get("n_rep") != _DEFAULT_N_REP:
             bits.append(f"n_rep={settings.get('n_rep')}")
         if settings.get("seed_base") is not None and settings.get("seed_base") != 1:
             bits.append(f"seed_base={settings.get('seed_base')}")
