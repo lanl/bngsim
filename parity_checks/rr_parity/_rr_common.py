@@ -26,6 +26,7 @@ overrun. One bad model never takes down the screen.
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
 import queue as _queue
 import time
@@ -919,10 +920,8 @@ def schedule(
         for r in running:
             proc, spec, q = r["proc"], r["spec"], r["q"]
             if "res" not in r:
-                try:
+                with contextlib.suppress(_queue.Empty):
                     r["res"] = q.get_nowait()  # drain FIRST so the child can flush/exit
-                except _queue.Empty:
-                    pass
             if "res" in r:
                 # Keep the process handle live until the child really exits. Dropping
                 # it after a bounded join can leave a spawned child orphaned after a
