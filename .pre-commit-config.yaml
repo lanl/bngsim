@@ -77,7 +77,11 @@ repos:
     hooks:
       - id: pytest
         name: pytest (bngsim)
-        entry: bash -c '.venv/bin/pytest -q python/tests'
+        # Use the active interpreter, not a hardcoded .venv/bin/pytest: a fresh
+        # `lanl/bngsim` clone has no .venv, so `pre-commit install` there would emit a
+        # pre-push hook that errors on a missing path. `python -m pytest` runs in
+        # whatever env the developer has active (their venv, after `pip install -e .`).
+        entry: python -m pytest -q python/tests
         language: system
         pass_filenames: false
         files: ^.

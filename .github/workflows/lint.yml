@@ -1,37 +1,32 @@
 name: lint
 
-# CI gate for the C/C++ formatting hook that runs locally via pre-commit but was
-# previously ungated in CI. Nothing enforced clang-format on push/PR, so src/*.cpp
-# and include/*.hpp silently drifted out of the pinned v17.0.6 format (surfaced
-# while fixing the SSA-JIT propensity export, lanl/bngsim #6). This job replays
-# the SAME pinned hook from .pre-commit-config.yaml, so CI and a developer's
-# `pre-commit run` can never disagree on the clang-format version — a mismatch is
-# how the drift went unnoticed in the first place (a newer local clang-format
-# reformats differently than the pinned one).
+# CI gate that replays the project's pre-commit hooks at their PINNED versions, so
+# CI and a developer's local `pre-commit run` can never disagree — a version mismatch
+# is exactly how drift went unnoticed (a newer local tool formats differently than the
+# pinned one). It exists because "nothing in CI runs the hooks" let src/*.cpp and
+# include/*.hpp silently drift out of the pinned clang-format (lanl/bngsim #6). #7
+# closes the SAME gap for the rest of the config — ruff, ruff-format, mypy, and the
+# hygiene hooks — by running the whole suite here instead of only clang-format.
 #
-# Scoped to the C/C++ tree + the format config. The other pre-commit hooks
-# (ruff, mypy, hygiene) are intentionally not gated here yet; add them once the
-# tree is clean under each.
+# `pre-commit run --all-files` runs every commit-stage hook (clang-format, ruff,
+# ruff-format, mypy, and the pre-commit-hooks hygiene set). It does NOT run the local
+# pre-push pytest hook (stages: [pre-push]) or the manual local-CI hooks
+# (stages: [manual]), so this stays a fast lint gate. --all-files scans the whole tree,
+# not just the push diff, so a merge that reintroduces drift is caught even in a file
+# it did not touch — hence no `paths:` filter.
 
 on:
   push:
     branches: [main]
-    paths: &lint_paths
-      - "src/**"
-      - "include/**"
-      - ".clang-format"
-      - ".pre-commit-config.yaml"
-      - ".github/workflows/lint.yml"
   pull_request:
-    paths: *lint_paths
 
 concurrency:
   group: lint-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  clang-format:
-    name: clang-format (C/C++)
+  pre-commit:
+    name: pre-commit (pinned hooks)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,10 +40,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "pre-commit>=3.5"
 
-      # Runs the clang-format hook at the version pinned in
-      # .pre-commit-config.yaml (mirrors-clang-format rev). --all-files checks the
-      # whole tree, not just the push diff, so a merge that reintroduces drift is
-      # caught even if it did not touch a C/C++ file directly.
-      # --show-diff-on-failure prints exactly what to reformat.
-      - name: clang-format (pinned via pre-commit)
-        run: pre-commit run clang-format --all-files --show-diff-on-failure
+      # Cache the installed hook environments (clang-format binary, ruff, mypy+numpy,
+      # pre-commit-hooks). Keyed on the config so a pinned-version bump busts the cache.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # Replays every commit-stage hook at the version pinned in
+      # .pre-commit-config.yaml. --show-diff-on-failure prints exactly what to reformat.
+      - name: pre-commit run --all-files
+        run: pre-commit run --all-files --show-diff-on-failure
