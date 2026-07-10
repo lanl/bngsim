@@ -7,6 +7,12 @@ name: windows-tail
 # with the same fast recipe as windows-nfsim.yml (KLU off, from source) and runs
 # the tail files with full tracebacks; the pytest log is always uploaded.
 #
+# It also guards the SSA-JIT propensity export (issue #6): the cc-compiled
+# value-specialized propensity library (GH #190) is resolved by name from the
+# built DLL, so it needs the same __declspec(dllexport) tag #5 added for the
+# Python-side codegen entry points — test_ssa_propensity_export.py fails here if
+# the emit drops it.
+#
 # An MSVC developer environment is set up first so the runtime codegen path
 # (bngsim compiles the generated C RHS with cl.exe + LoadLibrary at simulate
 # time) has a C compiler on PATH — otherwise every codegen test would fail with
@@ -33,9 +39,12 @@ on:
       - "python/bngsim/_version.py"
       - "python/bngsim/_net_reader.py"
       - "src/cvode_simulator.cpp"
+      - "src/model.cpp"
+      - "src/ssa_simulator.cpp"
       - "include/bngsim/platform_compat.hpp"
       - "python/tests/test_codegen*.py"
       - "python/tests/test_model_codegen_sensitivity.py"
+      - "python/tests/test_ssa_propensity_export.py"
       - "python/tests/test_timeout.py"
       - "python/tests/test_seed_semantics.py"
       - "python/tests/test_seed_count_rounding.py"
@@ -110,6 +119,7 @@ jobs:
             python/tests/test_codegen_chunking.py \
             python/tests/test_codegen_jacobian.py \
             python/tests/test_model_codegen_sensitivity.py \
+            python/tests/test_ssa_propensity_export.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee tail-windows.log
 

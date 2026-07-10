@@ -1843,13 +1843,30 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
     }
 
     std::string src;
-    src.reserve(body.size() + 128);
+    src.reserve(body.size() + 256);
+    // Portable export decoration so the cc-compiled propensity library exports
+    // bngsim_ssa_propensities on Windows. An MSVC/MinGW DLL exports nothing
+    // unless the symbol is tagged __declspec(dllexport), so the by-name lookup in
+    // ssa_simulator.cpp / _bngsim_core.cpp (DynamicLibrary::symbol ->
+    // GetProcAddress) would fail to resolve it and the run would silently fall
+    // back to the interpreted propensity path — the same class of bug the Python
+    // codegen prelude's BNGSIM_EXPORT fixed for the RHS/Jacobian entry points
+    // (lanl/bngsim #5, this is #6). Unix ELF/Mach-O export global symbols by
+    // default, so the macro expands to nothing there and the source stays
+    // functionally identical; it is likewise a no-op on the in-process MIR/cc
+    // JIT paths, which resolve the symbol from the JIT rather than from a DLL.
+    src += "#if defined(_WIN32)\n";
+    src += "#define BNGSIM_EXPORT __declspec(dllexport)\n";
+    src += "#else\n";
+    src += "#define BNGSIM_EXPORT\n";
+    src += "#endif\n";
     // sqrt declaration only when an MM reaction needs it, so pure mass-action
     // sources stay byte-identical (cc accepts the extern; MIR strips #include but
     // keeps this decl and resolves sqrt via its libm import resolver).
     if (needs_sqrt)
         src += "extern double sqrt(double);\n";
-    src += "void bngsim_ssa_propensities(const double* x, const double* p, double* a) {\n";
+    src += "BNGSIM_EXPORT void bngsim_ssa_propensities(const double* x, const double* p, double* "
+           "a) {\n";
     src += body;
     src += "}\n";
     return {src, n_unsupported};
