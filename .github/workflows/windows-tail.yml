@@ -1,0 +1,121 @@
+name: windows-tail
+
+# Windows non-NFsim test tail (issue #5). Issue #1 fixed and guarded the NFsim
+# cluster on Windows; this job captures the remaining, non-NFsim Windows-only
+# failures (codegen / timeout / seed / version / method) so they get concrete
+# tracebacks instead of being triaged blind. It builds bngsim on windows-latest
+# with the same fast recipe as windows-nfsim.yml (KLU off, from source) and runs
+# the tail files with full tracebacks; the pytest log is always uploaded.
+#
+# An MSVC developer environment is set up first so the runtime codegen path
+# (bngsim compiles the generated C RHS with cl.exe + LoadLibrary at simulate
+# time) has a C compiler on PATH — otherwise every codegen test would fail with
+# "No C compiler found" and mask the real per-group failures. The wheel build
+# itself uses MSVC, so a compiler-present run is the faithful reproduction of the
+# test suite in a build-capable Windows environment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, -k some_pattern, or a single file path)"
+        required: false
+        default: ""
+      python_version:
+        description: "Python version to build/test against"
+        required: false
+        default: "3.12"
+  push:
+    branches: [main]
+    paths: &tail_paths
+      - "python/bngsim/_codegen.py"
+      - "python/bngsim/_simulator.py"
+      - "python/bngsim/_version.py"
+      - "python/bngsim/_net_reader.py"
+      - "src/cvode_simulator.cpp"
+      - "include/bngsim/platform_compat.hpp"
+      - "python/tests/test_codegen*.py"
+      - "python/tests/test_model_codegen_sensitivity.py"
+      - "python/tests/test_timeout.py"
+      - "python/tests/test_seed_semantics.py"
+      - "python/tests/test_seed_count_rounding.py"
+      - "python/tests/test_version_consistency.py"
+      - "python/tests/test_method_normalization.py"
+      - "python/tests/test_lazy_jacobian.py"
+      - "python/tests/test_exprtk_vendoring.py"
+      - ".github/workflows/windows-tail.yml"
+  pull_request:
+    paths: *tail_paths
+
+concurrency:
+  group: windows-tail-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tail-tests:
+    name: non-NFsim tail · windows-latest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.12' }}
+
+      # Put cl.exe on PATH for the runtime codegen compile (see header note).
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build & install bngsim (NFsim on, KLU off)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          # Override the pyproject BNGSIM_REQUIRE_KLU=ON define so the build does
+          # not need SuiteSparse; ENABLE_KLU=OFF avoids the KLU autobuild too.
+          # The tail files + conftest only need pytest (numpy is a base bngsim
+          # dep); skip the [test] extra (antimony/scipy) to stay lean.
+          python -m pip install -v \
+            --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
+            --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
+            .
+          python -m pip install "pytest>=8.0"
+
+      - name: Show build / capability / compiler info
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_KLU', bngsim.HAS_KLU)"
+          # Confirm the runtime codegen compiler is discoverable.
+          python -c "from bngsim import _codegen; print('C compiler:', _codegen._find_c_compiler())"
+          command -v cl || echo "cl.exe not on PATH"
+
+      - name: Run non-NFsim tail
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider \
+            python/tests/test_version_consistency.py \
+            python/tests/test_method_normalization.py \
+            python/tests/test_seed_semantics.py \
+            python/tests/test_seed_count_rounding.py \
+            python/tests/test_lazy_jacobian.py \
+            python/tests/test_exprtk_vendoring.py \
+            python/tests/test_timeout.py \
+            python/tests/test_codegen.py \
+            python/tests/test_codegen_outputs.py \
+            python/tests/test_codegen_chunking.py \
+            python/tests/test_codegen_jacobian.py \
+            python/tests/test_model_codegen_sensitivity.py \
+            -rA --tb=long ${{ inputs.pytest_args }} \
+            2>&1 | tee tail-windows.log
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tail-windows-log-py${{ inputs.python_version || '3.12' }}
+          path: tail-windows.log
+          if-no-files-found: error
