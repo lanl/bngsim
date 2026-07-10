@@ -1696,6 +1696,15 @@ def classify_row_stoch(outcome: str, subclass: str | None = None) -> tuple[str, 
         return "status-triaged", "KNOWN REF"
     if outcome == "DIFF" and subclass == "known_artifact":
         return "status-triaged", "KNOWN ARTIFACT"
+    # Scored against the INDEPENDENT .net Gillespie SECOND oracle (the legacy reference
+    # crashed — e.g. edgepop). Distinct badge so it is not blended with a run_network
+    # verdict, but it still counts (PASS = bngsim confirmed by an independent engine;
+    # DIFF = bngsim genuinely disagrees with the .net oracle, actionable).
+    if subclass == "oracle_net_gillespie":
+        if outcome == "PASS":
+            return "status-passed", "PASS (net oracle)"
+        if outcome in ("DIFF", "TIMEOUT"):
+            return "status-failed", "DIFF (net oracle)"
     if outcome == "PASS":
         return "status-passed", "PASSED"
     if outcome == "DIFF":

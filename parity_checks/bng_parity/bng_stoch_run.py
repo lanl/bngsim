@@ -69,6 +69,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # so `from _core import ...` resolves
 
 import _bng_common as bc  # noqa: E402
+import net_gillespie as ng  # noqa: E402
 from _core import (  # noqa: E402
     JobResult,
     Outcome,
@@ -846,8 +847,40 @@ def _worker(spec: dict, q) -> None:
                     "Neither engine could run this model — a model/setup problem, not bngsim."
                 )
             elif leg_exc:
-                res["status"], res["exception"] = "reference_failed", leg_exc
-                res["comment"] = reference_failure_comment(track, spec["legacy_label"], leg_exc)
+                # SECOND ORACLE: the legacy reference (run_network) failed — most often
+                # the 'edgepop' molecule/edge-population crash — so there is no primary
+                # oracle. bngsim ran, so try to SCORE it against an INDEPENDENT .net
+                # Gillespie (net_gillespie): it reads the .net's pre-resolved groups block
+                # for observables (no pattern matching → no edgepop), so it computes exactly
+                # the observables that crash run_network. Supported only for elementary
+                # constant-rate mass-action, count-based nets (else the oracle returns None
+                # and we keep the honest REFERENCE_FAILED).
+                oracle = None
+                if track == "ssa" and bn is not None:
+                    try:
+                        oracle = ng.net_gillespie_ensemble(
+                            artifact, bn[0], n_rep=int(spec["n_rep"]),
+                            seed_base=int(spec["seed_base"]),
+                        )
+                    except Exception:
+                        oracle = None
+                if oracle is not None:
+                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(bn, oracle)
+                    res["status"], res["value"] = o_status, o_value
+                    res["metric"], res["tol"] = o_metric, o_tol
+                    res["subclass"] = "oracle_net_gillespie"
+                    res["exception"] = leg_exc                # keep legacy failure as detail
+                    res["comment"] = (
+                        f"Legacy reference ({spec['legacy_label']}) failed here, so bngsim was "
+                        f"scored against an INDEPENDENT .net Gillespie oracle instead (reads the "
+                        f".net groups block, so it sidesteps the run_network observable crash). "
+                        f"{o_comment}"
+                    )
+                else:
+                    res["status"], res["exception"] = "reference_failed", leg_exc
+                    res["comment"] = reference_failure_comment(
+                        track, spec["legacy_label"], leg_exc
+                    )
             else:
                 res["status"], res["exception"] = "exception", bn_exc
                 res["comment"] = (
