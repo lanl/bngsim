@@ -70,6 +70,7 @@ sys.path.insert(0, str(HERE.parent))  # so `from _core import ...` resolves
 
 import _bng_common as bc  # noqa: E402
 import net_gillespie as ng  # noqa: E402
+import net_roadrunner as nrr  # noqa: E402
 from _core import (  # noqa: E402
     JobResult,
     Outcome,
@@ -847,36 +848,85 @@ def _worker(spec: dict, q) -> None:
                     "Neither engine could run this model — a model/setup problem, not bngsim."
                 )
             elif leg_exc:
-                # SECOND ORACLE: the legacy reference (run_network) failed — most often
-                # the 'edgepop' molecule/edge-population crash — so there is no primary
-                # oracle. bngsim ran, so try to SCORE it against an INDEPENDENT .net
-                # Gillespie (net_gillespie): it reads the .net's pre-resolved groups block
-                # for observables (no pattern matching → no edgepop), so it computes exactly
-                # the observables that crash run_network. Supported only for elementary
-                # constant-rate mass-action, count-based nets (else the oracle returns None
-                # and we keep the honest REFERENCE_FAILED).
-                oracle = None
+                # SECOND-ORACLE ladder: the legacy reference (run_network) failed — most
+                # often the 'edgepop' molecule/edge-population crash — so there is no
+                # primary oracle. bngsim ran, so try to SCORE it against an INDEPENDENT
+                # engine on the SAME .net. Two engines, both sidestepping edgepop:
+                #   1. net_gillespie — a from-scratch .net Gillespie (own parser/RNG,
+                #      shares NO bngsim code) reading the .net's pre-resolved groups block.
+                #      FULLY independent, but supports only elementary constant-rate
+                #      mass-action count-based nets. This is the PRIMARY oracle.
+                #   2. net_roadrunner — libRoadRunner's Gillespie on bngsim's faithful
+                #      .net→SBML export (observables become assignment-rule params → no
+                #      pattern matching). Validates bngsim's SSA ENGINE against a second
+                #      solver and reaches functional/concentration nets net_gillespie
+                #      refuses; skips cleanly when libroadrunner is absent. SECOND engine.
+                ng_oracle = rr_oracle = None
                 if track == "ssa" and bn is not None:
                     try:
-                        oracle = ng.net_gillespie_ensemble(
+                        ng_oracle = ng.net_gillespie_ensemble(
                             artifact,
                             bn[0],
                             n_rep=int(spec["n_rep"]),
                             seed_base=int(spec["seed_base"]),
                         )
                     except Exception:
-                        oracle = None
-                if oracle is not None:
-                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(bn, oracle)
+                        ng_oracle = None
+                    try:
+                        rr_oracle = nrr.net_roadrunner_ensemble(
+                            artifact,
+                            bn[0],
+                            n_rep=int(spec["n_rep"]),
+                            seed_base=int(spec["seed_base"]),
+                            obs_names=list(bn[2]),
+                        )
+                    except Exception:
+                        rr_oracle = None
+
+                if ng_oracle is not None:
+                    # Primary verdict from the fully-independent .net Gillespie. When
+                    # RoadRunner also ran, fold its agreement in as corroboration (a
+                    # second engine confirming the same .net), without changing the
+                    # scored verdict.
+                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(bn, ng_oracle)
                     res["status"], res["value"] = o_status, o_value
                     res["metric"], res["tol"] = o_metric, o_tol
                     res["subclass"] = "oracle_net_gillespie"
                     res["exception"] = leg_exc  # keep legacy failure as detail
+                    corrob = ""
+                    if rr_oracle is not None:
+                        # Second-engine cross-check. JobResult carries no structured
+                        # corroboration field, so the verdict rides in the (persisted)
+                        # comment rather than a dead dict key.
+                        try:
+                            c_status, c_value, *_ = _compare_stoch(bn, rr_oracle)
+                            corrob = (
+                                f" Corroborated by a SECOND engine (RoadRunner on bngsim's "
+                                f".net→SBML): {c_status.upper()} at {c_value * 100:.1f}%."
+                            )
+                        except Exception:
+                            pass
                     res["comment"] = (
                         f"Legacy reference ({spec['legacy_label']}) failed here, so bngsim was "
                         f"scored against an INDEPENDENT .net Gillespie oracle instead (reads the "
                         f".net groups block, so it sidesteps the run_network observable crash). "
-                        f"{o_comment}"
+                        f"{o_comment}{corrob}"
+                    )
+                elif rr_oracle is not None:
+                    # net_gillespie refused this .net (functional/time-dependent/
+                    # concentration net beyond its gate) but RoadRunner scored it — the
+                    # second engine EXTENDS coverage past what the primary oracle reaches.
+                    o_status, o_value, o_comment, o_metric, o_tol = _compare_stoch(bn, rr_oracle)
+                    res["status"], res["value"] = o_status, o_value
+                    res["metric"], res["tol"] = o_metric, o_tol
+                    res["subclass"] = "oracle_roadrunner"
+                    res["exception"] = leg_exc  # keep legacy failure as detail
+                    res["comment"] = (
+                        f"Legacy reference ({spec['legacy_label']}) failed here and the .net "
+                        f"Gillespie oracle did not apply, so bngsim's SSA was scored against an "
+                        f"INDEPENDENT engine — libRoadRunner's Gillespie on bngsim's faithful "
+                        f".net→SBML export (assignment-rule observables sidestep the run_network "
+                        f"crash). {o_comment}"
                     )
                 else:
                     res["status"], res["exception"] = "reference_failed", leg_exc

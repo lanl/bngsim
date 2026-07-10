@@ -1705,6 +1705,14 @@ def classify_row_stoch(outcome: str, subclass: str | None = None) -> tuple[str, 
             return "status-passed", "PASS (net oracle)"
         if outcome in ("DIFF", "TIMEOUT"):
             return "status-failed", "DIFF (net oracle)"
+    # Scored against the SECOND engine — libRoadRunner's Gillespie on bngsim's faithful
+    # .net→SBML export — when the .net Gillespie oracle did not apply (functional /
+    # concentration nets it refuses). Same counting semantics, distinct badge.
+    if subclass == "oracle_roadrunner":
+        if outcome == "PASS":
+            return "status-passed", "PASS (RR oracle)"
+        if outcome in ("DIFF", "TIMEOUT"):
+            return "status-failed", "DIFF (RR oracle)"
     if outcome == "PASS":
         return "status-passed", "PASSED"
     if outcome == "DIFF":
