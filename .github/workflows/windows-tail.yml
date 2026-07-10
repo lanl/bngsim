@@ -73,14 +73,15 @@ jobs:
           python -m pip install --upgrade pip
           # Override the pyproject BNGSIM_REQUIRE_KLU=ON define so the build does
           # not need SuiteSparse; ENABLE_KLU=OFF avoids the KLU autobuild too.
-          # The tail files + conftest only need pytest (numpy is a base bngsim
-          # dep); skip the [test] extra (antimony/scipy) to stay lean.
           python -m pip install -v \
             --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF \
             --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
             --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
             .
-          python -m pip install "pytest>=8.0"
+          # pytest to run; scipy + antimony are import-time deps of a handful of
+          # codegen tests (models built from antimony/SBML), so install them too
+          # or those tests error out on collection instead of exercising codegen.
+          python -m pip install "pytest>=8.0" "scipy>=1.15" "antimony>=3.1.1"
 
       - name: Show build / capability / compiler info
         shell: bash
