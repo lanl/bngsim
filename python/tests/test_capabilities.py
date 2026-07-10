@@ -20,6 +20,7 @@ EXPECTED_FEATURE_KEYS = frozenset(
         "nfsim",
         "rulemonkey",
         "klu",
+        "mir",
         "libsbml",
         "antimony",
         "vivarium",
