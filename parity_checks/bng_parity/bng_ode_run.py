@@ -155,6 +155,50 @@ KNOWN_DETERMINISTIC_ARTIFACTS = {
 }
 
 
+# Chaotic / sensitive-dependence systems, keyed by BNGL stem. Unlike the bounded
+# artifacts above, these are NOT gated on a small ``max_abs``: for a chaotic IVP
+# large pointwise divergence between two correct integrators is mathematically
+# inevitable (positive Lyapunov exponent → exponential decorrelation), so magnitude
+# is not a valid discriminator. The disposition is a deliberate, per-model catalogue
+# decision — pointwise trajectory parity is simply the wrong test for these systems.
+KNOWN_CHAOTIC_SYSTEMS = {
+    "ph_lorenz_attractor": {
+        "issue": "deterministic chaos — pointwise trajectory parity ill-posed",
+        "reason": "The Lorenz attractor is the canonical chaotic system (largest Lyapunov "
+        "exponent ~0.9): two correct integrators taking different internal step sequences "
+        "decorrelate exponentially. Over t_end=50 (~45 Lyapunov times) full pointwise "
+        "divergence is inevitable and says nothing about integrator correctness — both stacks "
+        "integrate the identical .net at 1e-8 tol. max_rel_err is not a valid discriminator "
+        "here; the correct test is a statistical/invariant one (bounded attractor extent, "
+        "matching moments).",
+    },
+}
+
+
+def annotate_chaotic_artifact(res: dict, status: str, stem: str) -> dict:
+    """Tag a known chaotic-system DIFF in place; return ``res``.
+
+    A DIFF on a catalogued chaotic model (``KNOWN_CHAOTIC_SYSTEMS``) is a comparison
+    artifact, not a bngsim defect: sensitive dependence guarantees two correct integrators
+    diverge pointwise. We keep the honest ``status="diff"`` but set
+    ``res["subclass"]="known_artifact"`` and rewrite the comment so the matrix renders it
+    KNOWN ARTIFACT (non-scoring). Deliberately NOT gated on a magnitude bound (see
+    ``KNOWN_CHAOTIC_SYSTEMS``). A no-op for any non-DIFF status or uncatalogued model.
+    """
+    if status != "diff":
+        return res
+    art = KNOWN_CHAOTIC_SYSTEMS.get(stem)
+    if art is None:
+        return res
+    res["subclass"] = "known_artifact"
+    res["comment"] = (
+        f"Known comparison artifact, not a bngsim error: {art['reason']} Pointwise "
+        f"trajectory parity is ill-posed for a chaotic system → non-scoring. "
+        f"(Raw: {res.get('comment', '')})"
+    )
+    return res
+
+
 def annotate_known_artifact(res: dict, status: str, stem: str, max_abs: float) -> dict:
     """Tag a known deterministic comparison artifact in place; return ``res``.
 
@@ -543,6 +587,9 @@ def _worker(spec: dict, q) -> None:
             # within its recorded magnitude bound is tagged so the matrix renders it
             # KNOWN ARTIFACT (non-scoring); the honest verdict is unchanged.
             annotate_known_artifact(res, status, bngl_path.stem, max_abs)
+            # Chaotic systems: pointwise divergence is expected (not magnitude-bounded),
+            # so a separate identity-keyed disposition renders them KNOWN ARTIFACT.
+            annotate_chaotic_artifact(res, status, bngl_path.stem)
         except Exception as exc:
             res["status"] = "exception"
             res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
