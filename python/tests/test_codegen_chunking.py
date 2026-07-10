@@ -226,7 +226,10 @@ class TestChunkGatingStructure:
         src = cg.generate_rhs_c(os.path.join(DATA, "two_species_reversible.net"))
         assert cg._CHUNK_MARKER not in src
         assert "rxn_blk_" not in src
-        assert "BNGSIM_NOINLINE" not in src
+        # The NOINLINE macro is *defined* in every source now (it shares the
+        # prelude with BNGSIM_EXPORT, which every entry point needs on Windows),
+        # but below the gate it must go unused — no NOINLINE-decorated block.
+        assert "BNGSIM_NOINLINE void" not in src
 
     def test_chunked_above_gate(self, monkeypatch):
         monkeypatch.setenv("BNGSIM_CODEGEN_CHUNK", "on")
