@@ -6,3 +6,6 @@ docs/_build/
 
 # Python bytecode caches
 __pycache__/
+
+# macOS
+.DS_Store
