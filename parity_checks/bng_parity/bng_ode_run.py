@@ -729,9 +729,7 @@ def main() -> int:
     default_cap = args.timeout if args.timeout is not None else DEFAULT_ODE_TIMEOUT
     default_timeout_source = "cli" if args.timeout is not None else "default"
     global_tol_source = (
-        "cli"
-        if (args.rtol != bc.DEFAULT_RTOL or args.atol != bc.DEFAULT_ATOL)
-        else "default"
+        "cli" if (args.rtol != bc.DEFAULT_RTOL or args.atol != bc.DEFAULT_ATOL) else "default"
     )
     specs = []
     for j in jobs:

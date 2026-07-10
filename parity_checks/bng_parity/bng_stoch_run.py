@@ -859,7 +859,9 @@ def _worker(spec: dict, q) -> None:
                 if track == "ssa" and bn is not None:
                     try:
                         oracle = ng.net_gillespie_ensemble(
-                            artifact, bn[0], n_rep=int(spec["n_rep"]),
+                            artifact,
+                            bn[0],
+                            n_rep=int(spec["n_rep"]),
                             seed_base=int(spec["seed_base"]),
                         )
                     except Exception:
@@ -869,7 +871,7 @@ def _worker(spec: dict, q) -> None:
                     res["status"], res["value"] = o_status, o_value
                     res["metric"], res["tol"] = o_metric, o_tol
                     res["subclass"] = "oracle_net_gillespie"
-                    res["exception"] = leg_exc                # keep legacy failure as detail
+                    res["exception"] = leg_exc  # keep legacy failure as detail
                     res["comment"] = (
                         f"Legacy reference ({spec['legacy_label']}) failed here, so bngsim was "
                         f"scored against an INDEPENDENT .net Gillespie oracle instead (reads the "

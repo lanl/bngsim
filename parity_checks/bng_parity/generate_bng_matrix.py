@@ -151,7 +151,7 @@ def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
 
     row_items = []
     for r in results:
-        settings = ((r.get("timing") or {}).get("settings") or {})
+        settings = (r.get("timing") or {}).get("settings") or {}
         row_specific = (
             settings.get("timeout_source") == "job_override"
             or settings.get("tol_source") == "job_override"
@@ -186,7 +186,9 @@ def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
         if reason:
             bits.append(f"reason: {_esc(reason)}")
         if bits:
-            row_items.append(f"<li><code>{_esc(r.get('model_id', ''))}</code>: {'; '.join(bits)}</li>")
+            row_items.append(
+                f"<li><code>{_esc(r.get('model_id', ''))}</code>: {'; '.join(bits)}</li>"
+            )
 
     override_items = []
     for ov in overrides.get("jobs") or []:
@@ -205,9 +207,7 @@ def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
         else "<p>No row used non-default resolved runtime settings.</p>"
     )
     override_html = (
-        "<h4>Manifest overrides selected for this run</h4><ul>"
-        + "".join(override_items)
-        + "</ul>"
+        "<h4>Manifest overrides selected for this run</h4><ul>" + "".join(override_items) + "</ul>"
         if override_items
         else "<p>No manifest overrides selected for this run.</p>"
     )

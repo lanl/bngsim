@@ -42,22 +42,51 @@ from __future__ import annotations
 
 import ast
 import math
+import operator
 import re
 from collections import Counter
-from time import perf_counter as _now
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter as _now
 
 import numpy as np
 
 # ── Safe constant-expression evaluator (BNG ExprTk subset) ──────────────────
 _FUNCS = {
     "if": lambda c, a, b: a if c else b,
-    "exp": math.exp, "ln": math.log, "log": math.log, "log10": math.log10,
-    "sqrt": math.sqrt, "abs": abs, "min": min, "max": max,
-    "floor": math.floor, "ceil": math.ceil, "pow": pow,
-    "sin": math.sin, "cos": math.cos, "tan": math.tan,
-    "rint": round, "and": lambda a, b: a and b, "or": lambda a, b: a or b,
+    "exp": math.exp,
+    "ln": math.log,
+    "log": math.log,
+    "log10": math.log10,
+    "sqrt": math.sqrt,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "pow": pow,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "rint": round,
+    "and": lambda a, b: a and b,
+    "or": lambda a, b: a or b,
+}
+_BINOPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+}
+_CMPOPS = {
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
 }
 
 
@@ -89,34 +118,30 @@ def _eval_expr(expr: str, env: dict[str, float]) -> float:
                 return float(env[n.id])
             raise _UnsupportedExpr(f"non-constant symbol {n.id!r}")
         if isinstance(n, ast.BinOp):
-            l, r = ev(n.left), ev(n.right)
-            if isinstance(n.op, ast.Add): return l + r
-            if isinstance(n.op, ast.Sub): return l - r
-            if isinstance(n.op, ast.Mult): return l * r
-            if isinstance(n.op, ast.Div): return l / r
-            if isinstance(n.op, ast.Pow): return l ** r
-            if isinstance(n.op, ast.Mod): return l % r
-            raise _UnsupportedExpr(f"op {type(n.op).__name__}")
+            op = _BINOPS.get(type(n.op))
+            if op is None:
+                raise _UnsupportedExpr(f"op {type(n.op).__name__}")
+            return float(op(ev(n.left), ev(n.right)))
         if isinstance(n, ast.UnaryOp):
             v = ev(n.operand)
-            if isinstance(n.op, ast.UAdd): return +v
-            if isinstance(n.op, ast.USub): return -v
-            if isinstance(n.op, ast.Not): return float(not v)
+            if isinstance(n.op, ast.UAdd):
+                return +v
+            if isinstance(n.op, ast.USub):
+                return -v
+            if isinstance(n.op, ast.Not):
+                return float(not v)
             raise _UnsupportedExpr("unary")
         if isinstance(n, ast.Compare) and len(n.ops) == 1:
-            l, r = ev(n.left), ev(n.comparators[0])
-            op = n.ops[0]
-            if isinstance(op, ast.Lt): return float(l < r)
-            if isinstance(op, ast.LtE): return float(l <= r)
-            if isinstance(op, ast.Gt): return float(l > r)
-            if isinstance(op, ast.GtE): return float(l >= r)
-            if isinstance(op, ast.Eq): return float(l == r)
-            if isinstance(op, ast.NotEq): return float(l != r)
-            raise _UnsupportedExpr("compare")
+            op = _CMPOPS.get(type(n.ops[0]))
+            if op is None:
+                raise _UnsupportedExpr("compare")
+            return float(op(ev(n.left), ev(n.comparators[0])))
         if isinstance(n, ast.BoolOp) and len(n.values) == 2:
-            l, r = ev(n.values[0]), ev(n.values[1])
-            if isinstance(n.op, ast.And): return float(bool(l) and bool(r))
-            if isinstance(n.op, ast.Or): return float(bool(l) or bool(r))
+            lhs, rhs = ev(n.values[0]), ev(n.values[1])
+            if isinstance(n.op, ast.And):
+                return float(bool(lhs) and bool(rhs))
+            if isinstance(n.op, ast.Or):
+                return float(bool(lhs) or bool(rhs))
             raise _UnsupportedExpr("boolop")
         if isinstance(n, ast.IfExp):
             return ev(n.body) if ev(n.test) else ev(n.orelse)
@@ -130,12 +155,12 @@ def _eval_expr(expr: str, env: dict[str, float]) -> float:
 # ── .net model ──────────────────────────────────────────────────────────────
 @dataclass
 class NetModel:
-    x0: np.ndarray                       # initial counts, species order (0-based)
-    reactions: list                      # (reactants:list[int0], products:list[int0], k:float)
-    obs_names: list                      # group names, in file order
-    obs_terms: list                      # per-obs list of (weight:float, species_idx0)
-    mults: list = None                   # per-rxn tuple of (species_idx0, multiplicity)
-    dep_rxns: list = None                # per-species list of rxn indices it is a reactant of
+    x0: np.ndarray  # initial counts, species order (0-based)
+    reactions: list  # (reactants:list[int0], products:list[int0], k:float)
+    obs_names: list  # group names, in file order
+    obs_terms: list  # per-obs list of (weight:float, species_idx0)
+    mults: list = None  # per-rxn tuple of (species_idx0, multiplicity)
+    dep_rxns: list = None  # per-species list of rxn indices it is a reactant of
 
     def precompute(self):
         ns = len(self.x0)
@@ -186,11 +211,11 @@ def parse_net(path: str | Path) -> NetModel | None:
         if not body:
             continue
         if section == "parameters":
-            parts = body.split(None, 2)          # idx name value
+            parts = body.split(None, 2)  # idx name value
             if len(parts) >= 3:
                 raw_params.append((parts[1], parts[2].strip()))
         elif section == "species":
-            parts = body.split()                 # idx pattern... amount  (amount is last)
+            parts = body.split()  # idx pattern... amount  (amount is last)
             species_amt.append(parts[-1])
         elif section == "reactions":
             rxn_lines.append(body)
@@ -220,12 +245,12 @@ def parse_net(path: str | Path) -> NetModel | None:
         except _UnsupportedExpr:
             return None
         if not float(v).is_integer() or v < 0:
-            return None                          # concentration units / non-count → refuse
+            return None  # concentration units / non-count → refuse
         x0.append(int(round(v)))
 
     # Reactions:  idx  reactant_idxs  product_idxs  rate_expr
     if len(rxn_lines) > MAX_REACTIONS:
-        return None                              # network too large for a pure-Python SSA
+        return None  # network too large for a pure-Python SSA
     reactions = []
     for rl in rxn_lines:
         parts = rl.split()
@@ -235,9 +260,9 @@ def parse_net(path: str | Path) -> NetModel | None:
         prod = [] if parts[2] == "0" else [int(i) - 1 for i in parts[2].split(",")]
         rate_expr = parts[3]
         try:
-            k = _eval_expr(rate_expr, params)    # folds in the statistical factor
+            k = _eval_expr(rate_expr, params)  # folds in the statistical factor
         except _UnsupportedExpr:
-            return None                          # functional / time-dependent rate → refuse
+            return None  # functional / time-dependent rate → refuse
         if not math.isfinite(k) or k < 0:
             return None
         reactions.append((reac, prod, k))
@@ -245,7 +270,7 @@ def parse_net(path: str | Path) -> NetModel | None:
     # Groups (observables): name  [w*]idx,[w*]idx,...
     obs_names, obs_terms = [], []
     for gl in grp_lines:
-        parts = gl.split(None, 2)                # idx name terms
+        parts = gl.split(None, 2)  # idx name terms
         if len(parts) < 2:
             return None
         name = parts[1]
@@ -273,14 +298,15 @@ def _prop(k, mult, x):
     for si, c in mult:
         xi = x[si]
         for m in range(c):
-            ar *= (xi - m)
+            ar *= xi - m
         if ar <= 0.0:
             return 0.0
     return ar
 
 
-def _simulate_one(net: NetModel, t_grid: np.ndarray, rng: np.random.Generator,
-                  deadline: float | None = None) -> np.ndarray:
+def _simulate_one(
+    net: NetModel, t_grid: np.ndarray, rng: np.random.Generator, deadline: float | None = None
+) -> np.ndarray:
     """One exact SSA trajectory; returns observables sampled at ``t_grid`` — shape
     (n_time, n_obs). Uses a species→reaction dependency graph so only the propensities
     touched by the fired reaction are recomputed (O(degree) per step, not O(nr))."""
@@ -304,13 +330,13 @@ def _simulate_one(net: NetModel, t_grid: np.ndarray, rng: np.random.Generator,
     events = 0
     while k_out < nt:
         if a0 <= 0.0:
-            while k_out < nt:                    # no reaction can fire → hold state
+            while k_out < nt:  # no reaction can fire → hold state
                 record(k_out)
                 k_out += 1
             break
         tau = rng.exponential(1.0 / a0)
         t_next = t + tau
-        while k_out < nt and t_grid[k_out] <= t_next:   # emit outputs crossed by this step
+        while k_out < nt and t_grid[k_out] <= t_next:  # emit outputs crossed by this step
             record(k_out)
             k_out += 1
         t = t_next
@@ -336,7 +362,7 @@ def _simulate_one(net: NetModel, t_grid: np.ndarray, rng: np.random.Generator,
             touched.update(dep[si])
         for r in touched:
             a[r] = _prop(rxns[r][2], mults[r], x)
-        a0 = math.fsum(a)                        # re-sum (kept exact; nr small)
+        a0 = math.fsum(a)  # re-sum (kept exact; nr small)
         events += 1
         if events > MAX_EVENTS:
             raise _TooCostly(f"{events} events > MAX_EVENTS")
@@ -345,8 +371,9 @@ def _simulate_one(net: NetModel, t_grid: np.ndarray, rng: np.random.Generator,
     return out
 
 
-def net_gillespie_ensemble(net_path, t_grid, n_rep: int, seed_base: int,
-                           wall_budget_sec: float = DEFAULT_WALL_BUDGET_SEC):
+def net_gillespie_ensemble(
+    net_path, t_grid, n_rep: int, seed_base: int, wall_budget_sec: float = DEFAULT_WALL_BUDGET_SEC
+):
     """Independent SSA ensemble on ``net_path`` sampled at ``t_grid``.
 
     Returns ``(t_grid, values, obs_names)`` with ``values`` shape
@@ -364,21 +391,26 @@ def net_gillespie_ensemble(net_path, t_grid, n_rep: int, seed_base: int,
     deadline = _now() + wall_budget_sec
     try:
         for rep in range(n_rep):
-            rng = np.random.default_rng(seed_base + rep)     # independent PCG64 stream
+            rng = np.random.default_rng(seed_base + rep)  # independent PCG64 stream
             vals[rep] = _simulate_one(net, t_grid, rng, deadline=deadline)
     except _TooCostly:
-        return None                                          # too costly → stay unscored
+        return None  # too costly → stay unscored
     return t_grid, vals, net.obs_names
 
 
 if __name__ == "__main__":
     import sys
+
     net = parse_net(sys.argv[1])
     if net is None:
         print("UNSUPPORTED (.net has functional/time-dependent rates or non-count seeds)")
         sys.exit(2)
-    print(f"supported: {len(net.reactions)} reactions, {len(net.x0)} species, "
-          f"obs={net.obs_names}")
+    print(f"supported: {len(net.reactions)} reactions, {len(net.x0)} species, obs={net.obs_names}")
     tg = np.linspace(0.0, float(sys.argv[2]) if len(sys.argv) > 2 else 10.0, 51)
-    _, v, names = net_gillespie_ensemble(sys.argv[1], tg, n_rep=int(sys.argv[3]) if len(sys.argv) > 3 else 20, seed_base=1)
-    print("final-time ensemble mean:", dict(zip(names, v[:, -1, :].mean(axis=0).round(3))))
+    _, v, names = net_gillespie_ensemble(
+        sys.argv[1], tg, n_rep=int(sys.argv[3]) if len(sys.argv) > 3 else 20, seed_base=1
+    )
+    print(
+        "final-time ensemble mean:",
+        dict(zip(names, v[:, -1, :].mean(axis=0).round(3), strict=False)),
+    )
