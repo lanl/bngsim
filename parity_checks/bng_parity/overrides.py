@@ -85,6 +85,11 @@ TOL = {
         {"atol": "1e-12", "rtol": "1e-12"},
         "ill-conditioned IVP; both engines diverge at 1e-8, agree to ~9 sig figs at 1e-12",
     ),
+    "ml_q_learning.bngl": (
+        {"atol": "1e-10", "rtol": "1e-10"},
+        "piecewise/discontinuous Q-learning IVP; both engines still diverge at 1e-8 "
+        "but agree at the shared 1e-10 CVODE tolerance",
+    ),
 }
 
 # SYMBOL_RENAME (retired) — the old sweep-time whole-word rename for two classes of

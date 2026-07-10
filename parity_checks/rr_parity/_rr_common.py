@@ -896,6 +896,7 @@ def schedule(
     done: dict[str, dict] = {}
     total = len(specs)
     finished = 0
+    post_result_join_grace = 30.0
 
     def _finish(spec, res):
         nonlocal finished
@@ -917,13 +918,29 @@ def schedule(
         still = []
         for r in running:
             proc, spec, q = r["proc"], r["spec"], r["q"]
-            try:
-                res = q.get_nowait()  # drain FIRST so a large payload can flush
-            except _queue.Empty:
-                res = None
-            if res is not None:
-                proc.join(timeout=5.0)  # queue drained -> the child can now exit
-                _finish(spec, res)
+            if "res" not in r:
+                try:
+                    r["res"] = q.get_nowait()  # drain FIRST so the child can flush/exit
+                except _queue.Empty:
+                    pass
+            if "res" in r:
+                # Keep the process handle live until the child really exits. Dropping
+                # it after a bounded join can leave a spawned child orphaned after a
+                # successful q.put(), which wedged long stochastic sweeps at shutdown.
+                r.setdefault("result_time", time.time())
+                proc.join(timeout=0.05)
+                if proc.is_alive():
+                    if time.time() - r["result_time"] > post_result_join_grace:
+                        proc.terminate()
+                        proc.join(timeout=5.0)
+                        if proc.is_alive():
+                            proc.kill()
+                            proc.join()
+                        _finish(spec, r["res"])
+                    else:
+                        still.append(r)
+                else:
+                    _finish(spec, r["res"])
             elif time.time() - r["start"] > r["cap"]:
                 proc.terminate()
                 proc.join()

@@ -2152,9 +2152,10 @@ def _model_body_only(text: str) -> str:
     return body.rstrip()
 
 
-# Strip a ``suffix=>"x"`` arg AND its trailing comma (so a leading suffix doesn't leave
-# ``{,``); the dangling-comma cleanups below handle a trailing/last-position suffix.
-_SUFFIX_ARG_RE = re.compile(r"suffix\s*=>\s*['\"][^'\"]*['\"]\s*,?")
+# Strip a ``prefix=>"x"`` / ``suffix=>"x"`` arg AND its trailing comma (so a leading
+# output-prefix arg doesn't leave ``{,``); the dangling-comma cleanups below handle a
+# trailing/last-position output-prefix arg.
+_OUTPUT_PREFIX_ARG_RE = re.compile(r"(?:prefix|suffix)\s*=>\s*['\"][^'\"]*['\"]\s*,?")
 _DANGLING_OPEN_COMMA_RE = re.compile(r"\{\s*,")
 _DANGLING_CLOSE_COMMA_RE = re.compile(r",\s*\}")
 _SIM_BLOB_CLOSE_RE = re.compile(r"\}\s*\)\s*;?\s*$")
@@ -2175,7 +2176,7 @@ def native_protocol_oracle(
     Runs the model's OWN protocol natively through BNG2.pl (which carries concentrations
     across ``continue`` / honors ``save``/``resetConcentrations``/``setParameter``),
     truncated AFTER the representative simulate (statement ``rep_stmt_idx``) with that
-    simulate's ``suffix`` stripped so its output lands on the default ``m`` prefix. The
+    simulate's ``prefix``/``suffix`` stripped so its output lands on the default ``m`` prefix. The
     representative therefore inherits the prior segments' carry-over exactly as BNG2.pl
     runs the full model. Returns ``(time, values, names)``: the ``.cdat`` SPECIES for the
     deterministic (ode) track, the ``.gdat`` OBSERVABLES for the stochastic (ssa/psa/nf)
@@ -2193,7 +2194,7 @@ def native_protocol_oracle(
         if not _SIM_BLOCK_RE.match(stmt):
             return stmt
         if is_rep:
-            stmt = _SUFFIX_ARG_RE.sub("", stmt)  # default prefix -> m.cdat / m.gdat
+            stmt = _OUTPUT_PREFIX_ARG_RE.sub("", stmt)  # default prefix -> m.cdat / m.gdat
             stmt = _DANGLING_OPEN_COMMA_RE.sub("{", stmt)  # suffix was first arg -> "{,"
             stmt = _DANGLING_CLOSE_COMMA_RE.sub("}", stmt)  # suffix was last arg -> ",}"
             if track == "ode" and "print_CDAT" not in stmt:
@@ -2221,7 +2222,7 @@ def native_protocol_oracle(
     ext = ".cdat" if track == "ode" else ".gdat"
     out = workdir / f"m{ext}"
     if not out.exists():
-        # The representative simulate's suffix was stripped above so it writes the
+        # The representative simulate's prefix/suffix was stripped above so it writes the
         # default ``m`` prefix. If that file is absent the representative did not
         # actually run — fail loud (the caller records REFERENCE_FAILED) rather than
         # silently substituting some other segment's output (e.g. an earlier

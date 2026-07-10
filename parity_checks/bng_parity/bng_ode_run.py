@@ -8,8 +8,9 @@ rather than a Python library, so each job runs through a three-step pipeline in
 its own spawned worker:
 
   1. **Network generation (BNG2.pl)** — the shared per-model build *prefix*. The
-     BNGL model (actions stripped, a bare ``generate_network`` appended) is run
-     through BNG2.pl once to produce the reaction-network ``.net``. The same
+     BNGL model (simulation actions stripped, model-authored ``generate_network``
+     caps preserved when present) is run through BNG2.pl once to produce the
+     reaction-network ``.net``. The same
      ``.net`` feeds BOTH integrators, so this cost is attributed to neither.
   2. **BNGsim** integrates the ``.net`` in-process (``Model.from_net`` →
      ``Simulator(method="ode").run``) with per-phase build timing + a cold→warm
@@ -294,6 +295,12 @@ def _worker(spec: dict, q) -> None:
         }
     )
 
+    def _with_settings(timing: dict) -> dict:
+        settings = spec.get("settings")
+        if settings:
+            timing["settings"] = settings
+        return timing
+
     bngl_path = Path(spec["bngl"])
     try:
         bngl_text = bngl_path.read_text(errors="replace")
@@ -306,11 +313,14 @@ def _worker(spec: dict, q) -> None:
 
     # An injected-action fixture (rehab/action_inject) REPLACES a dud model's
     # actions, so it — not the raw BNGL — is the source of both the netgen caps and
-    # the simulate horizon. Non-injected jobs keep the bare netgen + raw-BNGL horizon
-    # (so their .net and result are unchanged).
+    # the simulate horizon. Non-injected jobs preserve the model's own
+    # generate_network(...) call when it carries caps such as max_stoich/max_agg; dropping
+    # those caps turns deliberately bounded networks into unbounded expansions.
     inject = spec.get("inject")
     horizon_text = inject or bngl_text
-    gen_network = bc.injected_gen_network(inject)
+    gen_network = bc.injected_gen_network(inject) or (
+        None if inject is not None else bc._model_gen_network(bngl_text)
+    )
     # GH #177/#179: the pre-representative setParameter/setConcentration state. A
     # dirty_carryover model (representative inherits a prior simulate's end state) is
     # driven through the FULL protocol on BOTH engines below; a single-phase model bakes
@@ -339,7 +349,9 @@ def _worker(spec: dict, q) -> None:
                 "model problem, not bngsim."
             )
             res["exception"] = netgen_err
-            res["timing"] = {"netgen": {"netgen_sec": round(netgen_sec, 6)}, "warmup": warmup}
+            res["timing"] = _with_settings(
+                {"netgen": {"netgen_sec": round(netgen_sec, 6)}, "warmup": warmup}
+            )
             q.put(res)
             return
 
@@ -358,7 +370,9 @@ def _worker(spec: dict, q) -> None:
                 res["comment"] = (
                     "No runnable time-course (no simulate with a numeric t_end) — nothing to compare."
                 )
-                res["timing"] = {"netgen": {"netgen_sec": round(netgen_sec, 6)}, "warmup": warmup}
+                res["timing"] = _with_settings(
+                    {"netgen": {"netgen_sec": round(netgen_sec, 6)}, "warmup": warmup}
+                )
                 q.put(res)
                 return
             ode = {**o, "dirty_carryover": False, "steps": None, "rep_index": None}
@@ -394,6 +408,21 @@ def _worker(spec: dict, q) -> None:
                     np.asarray(result.species),
                     list(result.species_names),
                 )
+                bn_timing = {
+                    "load_sec": None,
+                    "jac_derive_sec": None,
+                    "codegen_sec": None,
+                    "integrate_sec": round(bn_wall, 6),
+                    "integrate_cold_sec": round(bn_wall, 6),
+                    "integrate_n_warm": 0,
+                    "multi_segment": True,
+                    "config": {
+                        "codegen": "full-protocol replay",
+                        "jacobian": "per segment",
+                        "linear_solver": "CVODE via bngsim protocol replay",
+                        "cached": None,
+                    },
+                }
             except Exception as exc:
                 bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
             # 3b. legacy: run the model's OWN protocol natively (BNG2.pl carries state across
@@ -409,6 +438,23 @@ def _worker(spec: dict, q) -> None:
                     timeout=spec["sub_timeout"],
                 )
                 rn_wall = time.perf_counter() - t0
+                rn_timing = {
+                    "integrate_sec": round(rn_wall, 6),
+                    "integrate_cold_sec": round(rn_wall, 6),
+                    "integrate_n_warm": 0,
+                    "init_cpu_sec": None,
+                    "propagation_cpu_sec": None,
+                    "total_cpu_sec": None,
+                    "total_clock_sec": round(rn_wall, 6),
+                    "n_calls": 1,
+                    "multi_segment": True,
+                    "config": {
+                        "codegen": "native BNG2.pl protocol",
+                        "jacobian": "CVODE default",
+                        "linear_solver": "run_network / BNG2.pl default",
+                        "cached": None,
+                    },
+                }
             except Exception as exc:
                 rn_exc = f"native BNG2.pl protocol: {type(exc).__name__}: {exc}"[:400]
         else:
@@ -463,7 +509,7 @@ def _worker(spec: dict, q) -> None:
         if rn_timing:
             timing["run_network"] = rn_timing
         timing["warmup"] = warmup
-        res["timing"] = timing
+        res["timing"] = _with_settings(timing)
 
         # 4. Classify from per-engine status. The plain-English ``comment`` is the
         #    headline a reader sees; the raw engine error stays in ``exception`` as a
@@ -527,6 +573,34 @@ def _job_tol_override(job) -> dict | None:
             except (KeyError, ValueError, TypeError):
                 return None
     return None
+
+
+def _job_timeout_override(job) -> dict | None:
+    """The per-job wall-clock cap override, when no global ``--timeout`` is forced."""
+    for ov in job.overrides:
+        if ov.field == "timeout":
+            try:
+                return {"timeout": float(ov.value), "reason": ov.reason}
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def _override_summary(jobs) -> tuple[list[dict], dict[str, int]]:
+    records: list[dict] = []
+    counts: dict[str, int] = {}
+    for j in jobs:
+        for ov in j.overrides:
+            counts[ov.field] = counts.get(ov.field, 0) + 1
+            records.append(
+                {
+                    "model_id": j.model_id,
+                    "field": ov.field,
+                    "value": ov.value,
+                    "reason": ov.reason,
+                }
+            )
+    return records, counts
 
 
 def _filter_jobs(jobs, args):
@@ -602,21 +676,50 @@ def main() -> int:
             "Run `python vendor_corpus.py` to materialize the model tree."
         )
 
-    # Per-job wall cap; the inner BNG2.pl/run_network subprocesses get a slightly
-    # smaller cap so they self-terminate before the scheduler kills the worker
-    # (avoids orphaned grandchildren).
-    cap = args.timeout if args.timeout is not None else DEFAULT_ODE_TIMEOUT
-    sub_timeout = max(10.0, cap - 20.0)
-
     n_tol_ov = 0
+    n_timeout_ov = 0
+    override_records, override_counts = _override_summary(jobs)
+    default_cap = args.timeout if args.timeout is not None else DEFAULT_ODE_TIMEOUT
+    default_timeout_source = "cli" if args.timeout is not None else "default"
+    global_tol_source = (
+        "cli"
+        if (args.rtol != bc.DEFAULT_RTOL or args.atol != bc.DEFAULT_ATOL)
+        else "default"
+    )
     specs = []
     for j in jobs:
         tol_ov = _job_tol_override(j)
         if tol_ov:
             rtol, atol = tol_ov["rtol"], tol_ov["atol"]
+            tol_source = "job_override"
             n_tol_ov += 1
         else:
             rtol, atol = args.rtol, args.atol
+            tol_source = global_tol_source
+        timeout_ov = None if args.timeout is not None else _job_timeout_override(j)
+        if timeout_ov:
+            cap = timeout_ov["timeout"]
+            timeout_source = "job_override"
+            timeout_reason = timeout_ov["reason"]
+            n_timeout_ov += 1
+        else:
+            cap = default_cap
+            timeout_source = default_timeout_source
+            timeout_reason = None
+        # Per-job wall cap; the inner BNG2.pl/run_network subprocesses get a slightly
+        # smaller cap so they self-terminate before the scheduler kills the worker
+        # (avoids orphaned grandchildren).
+        sub_timeout = max(10.0, cap - 20.0)
+        settings = {
+            "timeout_sec": float(cap),
+            "subprocess_timeout_sec": float(sub_timeout),
+            "timeout_source": timeout_source,
+            "timeout_reason": timeout_reason,
+            "rtol": float(rtol),
+            "atol": float(atol),
+            "tol_source": tol_source,
+            "non_default": timeout_source != "default" or tol_source != "default",
+        }
         specs.append(
             {
                 "key": f"{j.model_id}:{j.method}",
@@ -629,6 +732,7 @@ def main() -> int:
                 "atol": atol,
                 "cap": float(cap),
                 "sub_timeout": float(sub_timeout),
+                "settings": settings,
                 "bng2_pl": bng2_pl,
                 "run_network_bin": run_network_bin,
                 "inject": bc.injected_action_block(j.overrides),
@@ -667,6 +771,9 @@ def main() -> int:
         elif r.get("status") == "dead":
             comment = "Worker process crashed before completion."
         wall = r.get("wall_sec") or 0.0
+        timing = r.get("timing")
+        if not timing and r.get("settings"):
+            timing = {"settings": r.get("settings")}
         results.append(
             JobResult(
                 model_id=r["model_id"],
@@ -682,7 +789,7 @@ def main() -> int:
                 versions=ver,
                 comment=comment,
                 subclass=r.get("subclass"),
-                timing=r.get("timing"),
+                timing=timing,
             )
         )
 
@@ -709,6 +816,27 @@ def main() -> int:
             "rtol": args.rtol,
             "atol": args.atol,
             "tol_overridden_jobs": n_tol_ov,
+            "timeout_overridden_jobs": n_timeout_ov,
+        },
+        "runtime": {
+            "default_timeout_sec": DEFAULT_ODE_TIMEOUT,
+            "global_timeout_sec": default_cap,
+            "global_timeout_source": default_timeout_source,
+            "subprocess_timeout_rule": "max(10, timeout_sec - 20)",
+            "tol_source": global_tol_source,
+            "tol_overridden_jobs": n_tol_ov,
+            "timeout_overridden_jobs": n_timeout_ov,
+        },
+        "overrides": {
+            "counts_by_field": override_counts,
+            "jobs": override_records,
+            "note": (
+                "Overrides are read from Job.overrides, baked by build_jobs.py from "
+                "overrides.py. A timeout override only applies when no global --timeout "
+                "is supplied; a tol override applies per-model rtol/atol to both engines. "
+                "All non-default runtime settings are echoed in timing.settings and in "
+                "this summary so regenerated matrices retain the provenance."
+            ),
         },
         "integration_tol": {"rtol": args.rtol, "atol": args.atol, "applied_to": "both engines"},
         "oracle_basis": (
@@ -744,6 +872,8 @@ def main() -> int:
     )
     if n_tol_ov:
         print(f"  overrides: {n_tol_ov} tol-overridden")
+    if n_timeout_ov:
+        print(f"  overrides: {n_timeout_ov} timeout-overridden")
     print(f"  report: {out_path}")
     print("=" * 72)
     from _core.taxonomy import FAILING

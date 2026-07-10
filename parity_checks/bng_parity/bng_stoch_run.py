@@ -88,10 +88,10 @@ JOBS = HERE / "jobs.json"
 DEFAULT_STOCH_TIMEOUT = 1800.0  # raised for 100-rep ensembles: the BNG2.pl reference
 # (one run_network subprocess per seed) is the bottleneck on heavy rule-networks
 # (~5s/rep => ~500s for 100 reps), so the per-job wall must clear that (GH #190).
-DEFAULT_N_REP = 100  # 100-replicate ensembles for tight ensemble-runtime stats, aligned
-# with the rr_parity SSA screen (GH #190). The agreement gate auto-scales by sqrt(N/10)
-# (differ.ensemble_k_for) so the larger N sharpens precision without tightening the
-# meaningful-difference threshold. Overridable via --n-rep.
+DEFAULT_N_REP = 10  # manifest base ensemble; DIFFs can escalate to 30/100 below.
+# The agreement gate auto-scales by sqrt(N/10) (differ.ensemble_k_for), so an explicit
+# larger --n-rep sharpens precision without tightening the meaningful-difference
+# threshold. Keep the default aligned with build_jobs.py/jobs.json.
 DEFAULT_SEED_BASE = 1
 
 # Seed-escalation oracle (GH #69, direction-of-change discriminator GH #185). A
@@ -317,6 +317,26 @@ def annotate_ssa_known(res: dict, status: str, track: str, stem: str) -> dict:
     return res
 
 
+def reference_failure_comment(track: str, legacy_label: str, leg_exc: str) -> str:
+    """Human attribution for known legacy-reference failure modes."""
+    if track == "ssa" and "edgepop:" in leg_exc:
+        return (
+            "The reference engine failed while evaluating a molecule/edge-population "
+            "observable (run_network 'edgepop' error) — no reference ensemble to compare. "
+            "bngsim ran fine; unscored."
+        )
+    if track == "nf" and "NO_STATE" in leg_exc:
+        return (
+            "The reference NFsim engine failed while evaluating a ring/bond observable "
+            "(NO_STATE in the legacy output) — no reference ensemble to compare. "
+            "bngsim ran fine; unscored."
+        )
+    return (
+        f"The reference engine ({legacy_label}) failed here — no reference ensemble to "
+        "compare against. bngsim ran fine; unscored."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Comparison (shared _core ensemble oracle over the observables, by name)
 # --------------------------------------------------------------------------- #
@@ -526,6 +546,12 @@ def _worker(spec: dict, q) -> None:
         }
     )
 
+    def _with_settings(timing: dict) -> dict:
+        settings = spec.get("settings")
+        if settings:
+            timing["settings"] = settings
+        return timing
+
     bngl_path = Path(spec["bngl"])
     try:
         bngl_text = bngl_path.read_text(errors="replace")
@@ -538,12 +564,14 @@ def _worker(spec: dict, q) -> None:
 
     # An injected-action fixture (rehab/action_inject) REPLACES a dud model's
     # actions, so it — not the raw BNGL — is the source of both the SSA netgen caps
-    # and the simulate horizon. Non-injected jobs keep the bare netgen + raw-BNGL
-    # horizon (so their .net/.xml and result are unchanged). NF builds XML directly
-    # (network-free), so its fixture carries no generate_network.
+    # and the simulate horizon. Non-injected SSA jobs preserve the model's own
+    # generate_network(...) call when it carries caps such as max_stoich/max_agg; NF
+    # builds XML directly (network-free), so its fixture carries no generate_network.
     inject = spec.get("inject")
     horizon_text = inject or bngl_text
-    gen_network = bc.injected_gen_network(inject)
+    gen_network = bc.injected_gen_network(inject) or (
+        None if inject is not None else bc._model_gen_network(bngl_text)
+    )
     # GH #177/#179: pre-representative state. A dirty_carryover model is driven through
     # the FULL protocol (multi_segment) on BOTH engines; a single-phase model bakes the
     # prefix into the shared artifact (option-1). multiseg is gated on the protocol being
@@ -591,7 +619,9 @@ def _worker(spec: dict, q) -> None:
                 "problem, not bngsim."
             )
             res["exception"] = build_err
-            res["timing"] = {"build": {build_key: round(build_sec, 6)}, "warmup": warmup}
+            res["timing"] = _with_settings(
+                {"build": {build_key: round(build_sec, 6)}, "warmup": warmup}
+            )
             q.put(res)
             return
 
@@ -609,7 +639,9 @@ def _worker(spec: dict, q) -> None:
                     f"No runnable {track.upper()} time-course (no simulate with a numeric t_end) "
                     "— nothing to compare."
                 )
-                res["timing"] = {"build": {build_key: round(build_sec, 6)}, "warmup": warmup}
+                res["timing"] = _with_settings(
+                    {"build": {build_key: round(build_sec, 6)}, "warmup": warmup}
+                )
                 q.put(res)
                 return
             sspec = {
@@ -782,7 +814,7 @@ def _worker(spec: dict, q) -> None:
         if leg_timing:
             timing["legacy"] = leg_timing
         timing["warmup"] = warmup
-        res["timing"] = timing
+        res["timing"] = _with_settings(timing)
 
         # 4. Classify from per-engine status. The plain-English ``comment`` is the
         #    headline; the raw engine error stays in ``exception`` as a muted detail.
@@ -815,9 +847,7 @@ def _worker(spec: dict, q) -> None:
                 )
             elif leg_exc:
                 res["status"], res["exception"] = "reference_failed", leg_exc
-                res["comment"] = (
-                    "The reference engine failed here — no reference to compare against. bngsim ran fine; unscored."
-                )
+                res["comment"] = reference_failure_comment(track, spec["legacy_label"], leg_exc)
             else:
                 res["status"], res["exception"] = "exception", bn_exc
                 res["comment"] = (
@@ -945,6 +975,34 @@ def _filter_jobs(jobs, args, track):
     return out
 
 
+def _job_timeout_override(job) -> dict | None:
+    """The per-job wall-clock cap override, when no global ``--timeout`` is forced."""
+    for ov in job.overrides:
+        if ov.field == "timeout":
+            try:
+                return {"timeout": float(ov.value), "reason": ov.reason}
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
+def _override_summary(jobs) -> tuple[list[dict], dict[str, int]]:
+    records: list[dict] = []
+    counts: dict[str, int] = {}
+    for j in jobs:
+        for ov in j.overrides:
+            counts[ov.field] = counts.get(ov.field, 0) + 1
+            records.append(
+                {
+                    "model_id": j.model_id,
+                    "field": ov.field,
+                    "value": ov.value,
+                    "reason": ov.reason,
+                }
+            )
+    return records, counts
+
+
 def _make_progress():
     def _cb(done: int, total: int, res: dict) -> None:
         if done % 10 == 0 or done == total:
@@ -1021,17 +1079,48 @@ def main() -> int:
             "Run `python vendor_corpus.py` to materialize the model tree."
         )
 
-    cap = args.timeout if args.timeout is not None else DEFAULT_STOCH_TIMEOUT
-    sub_timeout = max(15.0, cap - 30.0)
-    rep_timeout = (
-        args.rep_timeout
-        if args.rep_timeout is not None
-        else sub_timeout / (2 * max(args.n_rep, 1))
-    )
+    default_cap = args.timeout if args.timeout is not None else DEFAULT_STOCH_TIMEOUT
+    default_timeout_source = "cli" if args.timeout is not None else "default"
     nf_bscb = args.nf_bscb == "on"
 
+    n_timeout_ov = 0
+    override_records, override_counts = _override_summary(jobs)
     specs = []
     for j in jobs:
+        timeout_ov = None if args.timeout is not None else _job_timeout_override(j)
+        if timeout_ov:
+            cap = timeout_ov["timeout"]
+            timeout_source = "job_override"
+            timeout_reason = timeout_ov["reason"]
+            n_timeout_ov += 1
+        else:
+            cap = default_cap
+            timeout_source = default_timeout_source
+            timeout_reason = None
+        sub_timeout = max(15.0, cap - 30.0)
+        rep_timeout = (
+            args.rep_timeout
+            if args.rep_timeout is not None
+            else sub_timeout / (2 * max(args.n_rep, 1))
+        )
+        settings = {
+            "timeout_sec": float(cap),
+            "subprocess_timeout_sec": float(sub_timeout),
+            "rep_timeout_sec": float(rep_timeout),
+            "timeout_source": timeout_source,
+            "timeout_reason": timeout_reason,
+            "rep_timeout_source": "cli" if args.rep_timeout is not None else "derived",
+            "n_rep": int(args.n_rep),
+            "seed_base": int(args.seed_base),
+            "nf_block_same_complex_binding": nf_bscb if track == "nf" else None,
+            "non_default": (
+                timeout_source != "default"
+                or args.rep_timeout is not None
+                or args.n_rep != DEFAULT_N_REP
+                or args.seed_base != DEFAULT_SEED_BASE
+                or (track == "nf" and args.nf_bscb != "on")
+            ),
+        }
         specs.append(
             {
                 "key": f"{j.model_id}:{track}",
@@ -1047,6 +1136,7 @@ def main() -> int:
                 "nf_bscb": nf_bscb,
                 "cap": float(cap),
                 "sub_timeout": float(sub_timeout),
+                "settings": settings,
                 "bng2_pl": bng2_pl,
                 "legacy_bin": legacy_bin,
                 "legacy_label": legacy_label,
@@ -1089,6 +1179,9 @@ def main() -> int:
         elif r.get("status") == "dead":
             comment = "Worker process crashed before completion."
         wall = r.get("wall_sec") or 0.0
+        timing = r.get("timing")
+        if not timing and r.get("settings"):
+            timing = {"settings": r.get("settings")}
         results.append(
             JobResult(
                 model_id=r["model_id"],
@@ -1104,7 +1197,7 @@ def main() -> int:
                 versions=ver,
                 comment=comment,
                 subclass=r.get("subclass"),
-                timing=r.get("timing"),
+                timing=timing,
             )
         )
 
@@ -1132,8 +1225,29 @@ def main() -> int:
             "bngsim_method": "ssa" if track == "ssa" else "nf",
             "n_rep": args.n_rep,
             "seed_base": args.seed_base,
-            "rep_timeout_sec": round(rep_timeout, 3),
+            "rep_timeout_sec": None if args.rep_timeout is None else round(args.rep_timeout, 3),
+            "rep_timeout_source": "derived per job" if args.rep_timeout is None else "cli",
             "nf_block_same_complex_binding": nf_bscb if track == "nf" else None,
+            "timeout_overridden_jobs": n_timeout_ov,
+        },
+        "runtime": {
+            "default_timeout_sec": DEFAULT_STOCH_TIMEOUT,
+            "global_timeout_sec": default_cap,
+            "global_timeout_source": default_timeout_source,
+            "subprocess_timeout_rule": "max(15, timeout_sec - 30)",
+            "rep_timeout_rule": "cli --rep-timeout, else subprocess_timeout_sec / (2 * n_rep)",
+            "timeout_overridden_jobs": n_timeout_ov,
+        },
+        "overrides": {
+            "counts_by_field": override_counts,
+            "jobs": override_records,
+            "note": (
+                "Overrides are read from Job.overrides, baked by build_jobs.py from "
+                "overrides.py. A timeout override only applies when no global --timeout "
+                "is supplied. t_end_cap/n_scan_pts/action_inject overrides are applied "
+                "while building the shared artifact/protocol. Resolved settings are echoed "
+                "in timing.settings so regenerated matrices retain provenance."
+            ),
         },
         "ensemble": {
             "k_sigma": round(differ.ensemble_k_for(args.n_rep), 4),
@@ -1186,6 +1300,8 @@ def main() -> int:
         + "  ".join(f"{k}: {v}" for k, v in counts.items() if v)
         + f"   elapsed {elapsed:.1f}s"
     )
+    if n_timeout_ov:
+        print(f"  overrides: {n_timeout_ov} timeout-overridden")
     print(f"  report: {out_path}")
     print("=" * 72)
     from _core.taxonomy import FAILING

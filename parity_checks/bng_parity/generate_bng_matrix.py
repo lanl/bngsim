@@ -98,6 +98,127 @@ def _tcell(label: str, value: str) -> str:
     return f'<div class="tcell"><div class="tk">{label}</div><div class="tv">{value}</div></div>'
 
 
+def _fmt_sec(sec) -> str:
+    if sec is None:
+        return "—"
+    try:
+        return f"{float(sec):g}s"
+    except (TypeError, ValueError):
+        return str(sec)
+
+
+def _runtime_settings_html(meta: dict, results: list[dict]) -> str:
+    """Visible provenance for non-default runtime settings and per-model overrides."""
+    runtime = meta.get("runtime") or {}
+    overrides = meta.get("overrides") or {}
+    counts = overrides.get("counts_by_field") or {}
+
+    global_timeout = runtime.get("global_timeout_sec")
+    timeout_source = runtime.get("global_timeout_source")
+    default_timeout = runtime.get("default_timeout_sec")
+    top_bits = []
+    if global_timeout is not None:
+        top_bits.append(
+            f"global timeout={_fmt_sec(global_timeout)}"
+            + (f" ({_esc(timeout_source)})" if timeout_source else "")
+        )
+    if default_timeout is not None:
+        top_bits.append(f"default timeout={_fmt_sec(default_timeout)}")
+    if runtime.get("subprocess_timeout_rule"):
+        top_bits.append(f"subprocess cap: {_esc(runtime.get('subprocess_timeout_rule'))}")
+    if runtime.get("rep_timeout_rule"):
+        top_bits.append(f"replicate cap: {_esc(runtime.get('rep_timeout_rule'))}")
+    itol = meta.get("integration_tol") or {}
+    if itol.get("rtol") is not None and itol.get("atol") is not None:
+        top_bits.append(f"tol=rtol={itol.get('rtol'):g}, atol={itol.get('atol'):g}")
+
+    count_bits = []
+    for field in sorted(counts):
+        count_bits.append(f"{_esc(field)}={counts[field]}")
+    for key, label in (
+        ("tol_overridden_jobs", "tol-overridden jobs"),
+        ("timeout_overridden_jobs", "timeout-overridden jobs"),
+    ):
+        val = runtime.get(key)
+        if val:
+            count_bits.append(f"{label}={val}")
+
+    row_items = []
+    for r in results:
+        settings = ((r.get("timing") or {}).get("settings") or {})
+        row_specific = (
+            settings.get("timeout_source") == "job_override"
+            or settings.get("tol_source") == "job_override"
+            or settings.get("rep_timeout_source") == "cli"
+            or (settings.get("n_rep") is not None and settings.get("n_rep") != 100)
+            or (settings.get("seed_base") is not None and settings.get("seed_base") != 1)
+            or settings.get("nf_block_same_complex_binding") is False
+        )
+        if not row_specific:
+            continue
+        bits = []
+        if settings.get("timeout_source") != "default":
+            bits.append(
+                f"timeout={_fmt_sec(settings.get('timeout_sec'))} "
+                f"({_esc(settings.get('timeout_source'))})"
+            )
+        if settings.get("rep_timeout_source") == "cli":
+            bits.append(f"rep timeout={_fmt_sec(settings.get('rep_timeout_sec'))} (cli)")
+        if settings.get("tol_source") and settings.get("tol_source") != "default":
+            bits.append(
+                "tol="
+                f"rtol={settings.get('rtol'):g}, atol={settings.get('atol'):g} "
+                f"({_esc(settings.get('tol_source'))})"
+            )
+        if settings.get("n_rep") is not None and settings.get("n_rep") != 100:
+            bits.append(f"n_rep={settings.get('n_rep')}")
+        if settings.get("seed_base") is not None and settings.get("seed_base") != 1:
+            bits.append(f"seed_base={settings.get('seed_base')}")
+        if settings.get("nf_block_same_complex_binding") is False:
+            bits.append("NF block_same_complex_binding=off")
+        reason = settings.get("timeout_reason")
+        if reason:
+            bits.append(f"reason: {_esc(reason)}")
+        if bits:
+            row_items.append(f"<li><code>{_esc(r.get('model_id', ''))}</code>: {'; '.join(bits)}</li>")
+
+    override_items = []
+    for ov in overrides.get("jobs") or []:
+        val = ov.get("value")
+        if isinstance(val, (dict, list)):
+            val = json.dumps(val, sort_keys=True)
+        override_items.append(
+            f"<li><code>{_esc(ov.get('model_id', ''))}</code>: "
+            f"{_esc(ov.get('field', ''))}={_esc(val)} — {_esc(ov.get('reason', ''))}</li>"
+        )
+
+    summary = " · ".join(top_bits + count_bits) or "default runtime settings"
+    row_html = (
+        "<h4>Rows using non-default resolved settings</h4><ul>" + "".join(row_items) + "</ul>"
+        if row_items
+        else "<p>No row used non-default resolved runtime settings.</p>"
+    )
+    override_html = (
+        "<h4>Manifest overrides selected for this run</h4><ul>"
+        + "".join(override_items)
+        + "</ul>"
+        if override_items
+        else "<p>No manifest overrides selected for this run.</p>"
+    )
+    note = overrides.get("note") or ""
+    note_html = f"<p>{_esc(note)}</p>" if note else ""
+    return f"""
+        <details class="catdefs" open style="margin:6px 0 2px 0;">
+            <summary style="cursor:pointer;font-weight:600;color:#495057;font-size:0.9em;">Runtime settings &amp; overrides — {summary}</summary>
+            <div style="font-size:0.85em;color:#495057;line-height:1.65;margin:6px 0;">
+                {note_html}
+                {row_html}
+                {override_html}
+            </div>
+        </details>
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Engine-cell timing tiers
 # --------------------------------------------------------------------------- #
@@ -115,6 +236,7 @@ def render_bngsim_cell(outcome: str, timing: dict) -> str:
     cfg = bn.get("config", {})
     badge_text, badge_css = verdict_badge(outcome, "bngsim")
     has = bool(bn)
+    mode = (timing.get("spec") or {}).get("mode")
 
     parts = [
         '<div class="engine-cell">',
@@ -129,7 +251,27 @@ def render_bngsim_cell(outcome: str, timing: dict) -> str:
         f'<div class="verdict {badge_css}">{badge_text}</div>',
     ]
     if not has:
-        parts.append('<div class="error-msg">bngsim did not produce a trajectory</div>')
+        _msg = {
+            "BAD_TEST": "the model failed before bngsim could run",
+            "SKIP": "no runnable ODE horizon was resolved",
+            "TIMEOUT": "the job exceeded the wall clock before timing was recorded",
+            "REFERENCE_FAILED": "bngsim ran, but this older report did not record detailed bngsim timing",
+        }.get(outcome, "bngsim timing was not recorded in this report")
+        if mode == "multi_segment":
+            _msg = "full-protocol trajectory was compared; detailed bngsim timing is unavailable in this older report"
+        parts.append(f'<div class="error-msg">{_esc(_msg)}</div>')
+        parts.append("</div>")
+        return "".join(parts)
+
+    if bn.get("multi_segment"):
+        parts.append(
+            '<div class="ttier"><div class="ttier-head">② FULL PROTOCOL '
+            "<span>multi-phase replay; coarse wall timing, not a warm single-segment solve</span></div>"
+            '<div class="ttier-grid two">'
+            + _tcell("Replay wall", fmt_t(bn.get("integrate_sec")))
+            + _tcell("Segments", "protocol")
+            + "</div></div>"
+        )
         parts.append("</div>")
         return "".join(parts)
 
@@ -179,6 +321,7 @@ def render_run_network_cell(outcome: str, timing: dict) -> str:
     cfg = rn.get("config", {})
     badge_text, badge_css = verdict_badge(outcome, "run_network")
     has = bool(rn)
+    mode = (timing.get("spec") or {}).get("mode")
 
     parts = [
         '<div class="engine-cell">',
@@ -193,7 +336,28 @@ def render_run_network_cell(outcome: str, timing: dict) -> str:
         f'<div class="verdict {badge_css}">{badge_text}</div>',
     ]
     if not has:
-        parts.append('<div class="error-msg">run_network did not produce a trajectory</div>')
+        _msg = {
+            "BAD_TEST": "the model failed before run_network could run",
+            "SKIP": "no runnable ODE horizon was resolved",
+            "TIMEOUT": "the job exceeded the wall clock before timing was recorded",
+            "REFERENCE_FAILED": "run_network/reference did not produce a trajectory",
+            "EXCEPTION": "run_network ran; bngsim failed before comparison",
+        }.get(outcome, "run_network timing was not recorded in this report")
+        if mode == "multi_segment" and outcome != "REFERENCE_FAILED":
+            _msg = "full native protocol was compared; detailed run_network timing is unavailable in this older report"
+        parts.append(f'<div class="error-msg">{_esc(_msg)}</div>')
+        parts.append("</div>")
+        return "".join(parts)
+
+    if rn.get("multi_segment"):
+        parts.append(
+            '<div class="ttier"><div class="ttier-head">② FULL PROTOCOL '
+            "<span>native BNG2.pl protocol; coarse wall timing, no inner CPU split</span></div>"
+            '<div class="ttier-grid two">'
+            + _tcell("Protocol wall", fmt_t(rn.get("integrate_sec")))
+            + _tcell("Calls", str(rn.get("n_calls") or 1))
+            + "</div></div>"
+        )
         parts.append("</div>")
         return "".join(parts)
 
@@ -638,6 +802,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     )
 
     coststats, wins = _wins_table(results)
+    runtime_html = _runtime_settings_html(meta, results)
 
     # Plot data: per-integration warm (bngsim) and per-call (run_network), in the
     # sorted (species-count) order so the scatter reads left→right by complexity.
@@ -748,6 +913,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             <div class="summary-item summary-triaged">⚑ TRIAGED: {triaged_n}</div>
             <div class="summary-item summary-refused">— REFUSED/SKIP: {refused_n}</div>
         </div>
+        {runtime_html}
         {coststats}
         <div class="plots">
             <div class="plotctl">
@@ -1284,6 +1450,7 @@ def generate_stoch_html(report_path: Path, output_path: Path) -> None:
     )
 
     coststats, wins = _stoch_wins_table(results, regime, legacy_label)
+    runtime_html = _runtime_settings_html(meta, results)
 
     # The scatter plots the WORKFLOW view (the N-rep ensemble wall, what you pay) —
     # the ENGINE story lives in the per-row badges + the wins table's ENGINE column.
@@ -1446,6 +1613,7 @@ def generate_stoch_html(report_path: Path, output_path: Path) -> None:
             <div class="summary-item summary-triaged">⚠ {triaged_n} TRIAGED ({_pct(triaged_n):.1f}%)</div>
             <div class="summary-item summary-refused">⊘ {refused_n} REFUSED ({_pct(refused_n):.1f}%)</div>
         </div>
+        {runtime_html}
         <details class="catdefs" open style="margin:6px 0 2px 0;">
             <summary style="cursor:pointer;font-weight:600;color:#495057;font-size:0.9em;">How is each of the four categories assigned?</summary>
             <div style="font-size:0.85em;color:#495057;line-height:1.65;margin:6px 0;">
