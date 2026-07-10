@@ -191,8 +191,7 @@ def _trigger_fire_time(
     rising_right = (libsbml.AST_RELATIONAL_LEQ, libsbml.AST_RELATIONAL_LT)
     if t not in rising_left + rising_right or trigger_ast.getNumChildren() != 2:
         return None, (
-            "is not a simple rising time threshold (time >= T) — its trigger has "
-            "no actions form"
+            "is not a simple rising time threshold (time >= T) — its trigger has no actions form"
         )
     left, right = trigger_ast.getChild(0), trigger_ast.getChild(1)
     if t in rising_left and _is_time(left):
@@ -267,9 +266,7 @@ def sbml_events_to_protocol(
         return None, []
 
     env = _const_env(sbml_model)
-    species_ids = {
-        sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())
-    }
+    species_ids = {sbml_model.getSpecies(i).getId() for i in range(sbml_model.getNumSpecies())}
     name_to_idx = _codegen_species_names(model)
 
     lossy: list[str] = []
@@ -374,9 +371,7 @@ def _build_protocol(
     return ProtocolSpec(steps=tuple(steps), source=None)
 
 
-def _phase(
-    a: float, b: float, total: float, base_steps: int, first: bool
-) -> Experiment:
+def _phase(a: float, b: float, total: float, base_steps: int, first: bool) -> Experiment:
     n_steps = max(1, round(base_steps * (b - a) / total))
     extra: dict[str, Any] = {} if first else {"continue": 1}
     return Experiment(

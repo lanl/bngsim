@@ -31,7 +31,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BNGSIM_ROOT = REPO_ROOT / "bngsim"
 VENDOR_DIR = BNGSIM_ROOT / "third_party" / "mir"
@@ -110,9 +109,7 @@ def is_vendored_path(rel: str) -> bool:
     if suffix in EXCLUDED_SUFFIXES:
         return False
     # Drop docs except README.md (LICENSE has no extension and is kept above).
-    if base.endswith(".md") and base != "README.md":
-        return False
-    return True
+    return not (base.endswith(".md") and base != "README.md")
 
 
 # ── Git helpers (mirrors vendor_exprtk.py conventions) ────────────────────────
@@ -121,8 +118,7 @@ def run(cmd: list[str], cwd: Path | None = None, text: bool = True) -> subproces
         cmd,
         cwd=str(cwd) if cwd else None,
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=text,
     )
 
@@ -317,12 +313,18 @@ def do_summary(repo: Path, resolved_ref: str, commit: str, checkout_info: dict[s
         if p.is_file() and str(p.relative_to(VENDOR_DIR)) not in BNGSIM_FILES
     ]
 
-    candidate_anchors = {rel: sha256_hex(file_bytes_from_commit(repo, commit, rel)) for rel in ANCHORED_FILES}
-    recorded = {rel: metadata.get("files", {}).get(rel, {}).get("sha256") for rel in ANCHORED_FILES}
+    candidate_anchors = {
+        rel: sha256_hex(file_bytes_from_commit(repo, commit, rel)) for rel in ANCHORED_FILES
+    }
+    recorded = {
+        rel: metadata.get("files", {}).get(rel, {}).get("sha256") for rel in ANCHORED_FILES
+    }
     changed = [rel for rel in ANCHORED_FILES if candidate_anchors[rel] != recorded[rel]]
 
     print(f"MIR candidate: {repo}")
-    print(f"Canonical remote: {checkout_info['canonical_remote']} -> {checkout_info['canonical_remote_url']}")
+    print(
+        f"Canonical remote: {checkout_info['canonical_remote']} -> {checkout_info['canonical_remote_url']}"
+    )
     print(f"Candidate HEAD: {checkout_info['head_commit']}")
     print(f"Resolved source ref: {resolved_ref}")
     print(f"Resolved source commit: {commit}")
@@ -384,7 +386,9 @@ def do_write(repo: Path, resolved_ref: str, commit: str) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument(
         "--mir-repo",
         type=Path,

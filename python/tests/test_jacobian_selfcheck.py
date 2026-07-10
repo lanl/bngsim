@@ -27,10 +27,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bngsim
 import numpy as np
 import pytest
-
-import bngsim
 from bngsim import _jacobian as J
 
 FIXTURE = "jac_selfcheck_amount_scaled.net"

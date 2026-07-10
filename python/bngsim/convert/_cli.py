@@ -43,7 +43,8 @@ def _add_gate_args(
         default=default,
         help=(
             "validation gate before accepting the conversion: none (skip), "
-            f"L1 (fast structural round-trip), {'L2 (structural + ODE-RHS identity), ' if 'L2' in choices else ''}"
+            "L1 (fast structural round-trip), "
+            f"{'L2 (structural + ODE-RHS identity), ' if 'L2' in choices else ''}"
             "or full (the L0–L4 ladder gating on L0–L3 — proves the conversion "
             f"faithful; exits non-zero if a hard gate fails). Default: {default}"
         ),
@@ -262,16 +263,15 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
                     # The real .bngl protocol (every simulate/scan).
                     from bngsim.convert import write_sedml_protocol
 
-                    write_sedml_protocol(
-                        report.protocol, sidecar_path, model_source=str(out)
-                    )
+                    write_sedml_protocol(report.protocol, sidecar_path, model_source=str(out))
                 else:
                     # No real protocol — fabricate a default, but warn + mark it.
                     from bngsim._exceptions import ConversionWarning
                     from bngsim.convert import default_protocol, write_sedml
 
                     why = (
-                        "the .bngl carried no simulate action" if bngl is not None
+                        "the .bngl carried no simulate action"
+                        if bngl is not None
                         else "no .bngl protocol source was supplied"
                     )
                     warnings.warn(
@@ -281,9 +281,7 @@ def net2sbml_main(argv: list[str] | None = None) -> int:
                         ConversionWarning,
                         stacklevel=2,
                     )
-                    proto = default_protocol(
-                        args.net, model_source=str(out), model_format="sbml"
-                    )
+                    proto = default_protocol(args.net, model_source=str(out), model_format="sbml")
                     write_sedml(proto, sidecar_path, synthesized_default=True)
     except ConversionError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -408,9 +406,7 @@ def _build_validate_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--levels",
         default="all",
-        help=(
-            "comma-separated subset of L0,L1,L2,L3,L4 to run (default: all)"
-        ),
+        help=("comma-separated subset of L0,L1,L2,L3,L4 to run (default: all)"),
     )
     p.add_argument(
         "--allow-lossy",
@@ -452,8 +448,10 @@ def validate_main(argv: list[str] | None = None) -> int:
         print(f"error: no such file: {args.source}", file=sys.stderr)
         return 2
 
-    levels = "all" if args.levels == "all" else tuple(
-        s.strip() for s in args.levels.split(",") if s.strip()
+    levels = (
+        "all"
+        if args.levels == "all"
+        else tuple(s.strip() for s in args.levels.split(",") if s.strip())
     )
 
     with warnings.catch_warnings(record=True) as caught:
@@ -614,7 +612,10 @@ def _build_omex_parser() -> argparse.ArgumentParser:
         ),
     )
     tonet.add_argument(
-        "--t-end", type=float, default=100.0, help="L3-fallback end time when the archive carries no horizon (default: 100)"
+        "--t-end",
+        type=float,
+        default=100.0,
+        help="L3-fallback end time when the archive carries no horizon (default: 100)",
     )
     tonet.add_argument(
         "--n-points", type=int, default=101, help="L3-fallback time points (default: 101)"
@@ -746,7 +747,8 @@ def omex_main(argv: list[str] | None = None) -> int:
                 f" (+ {len(sed_entries) - 1} more SED-ML file"
                 f"{'' if len(sed_entries) == 2 else 's'}; "
                 "omex to-net composes every experiment)"
-                if len(sed_entries) > 1 else ""
+                if len(sed_entries) > 1
+                else ""
             )
             print(f"  protocol: {sed_entry.location} (SED-ML){extra}")
         else:

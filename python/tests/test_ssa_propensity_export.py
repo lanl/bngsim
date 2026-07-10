@@ -50,12 +50,7 @@ DATA = os.environ.get("BNGSIM_TEST_DATA") or os.path.join(
 # engages. No MM branch, so the source has no sqrt extern either.
 _MASS_ACTION_NET = os.path.join(DATA, "simple_decay.net")
 
-_CC = (
-    shutil.which("cc")
-    or shutil.which("clang")
-    or shutil.which("gcc")
-    or shutil.which("cl")
-)
+_CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc") or shutil.which("cl")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
 
 

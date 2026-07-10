@@ -375,11 +375,7 @@ def _remove_removable_power_denominators(expr):
         while changed:
             changed = False
             for denom_i, factor in enumerate(factors):
-                if not (
-                    isinstance(factor, sp.Pow)
-                    and factor.exp == -1
-                    and factor.base.is_Symbol
-                ):
+                if not (isinstance(factor, sp.Pow) and factor.exp == -1 and factor.base.is_Symbol):
                     continue
 
                 sym = factor.base

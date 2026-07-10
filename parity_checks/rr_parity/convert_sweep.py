@@ -57,10 +57,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
-    from bngsim.convert import sbml_to_net, sbml_to_bngl
+    from bngsim.convert import sbml_to_bngl, sbml_to_net
 
-    report = json.load(open(args.report))["results"]
-    jobs = {j["model_id"]: j for j in json.load(open(args.jobs))["jobs"]}
+    with open(args.report) as f:
+        report = json.load(f)["results"]
+    with open(args.jobs) as f:
+        jobs = {j["model_id"]: j for j in json.load(f)["jobs"]}
 
     # The ODE-verified subset = models bngsim and RoadRunner agree on.
     passed = [r["model_id"] for r in report if r["outcome"] == "PASS"]
@@ -109,11 +111,7 @@ def main() -> int:
     n = len(rows)
     net_faithful = [r for r in rows if r.get("net") == "faithful"]
     bngl_ok = [r for r in rows if r.get("bngl") == "accepted"]
-    combined = [
-        r
-        for r in rows
-        if r.get("net") == "faithful" or r.get("bngl") == "accepted"
-    ]
+    combined = [r for r in rows if r.get("net") == "faithful" or r.get("bngl") == "accepted"]
     refused_both = [
         r
         for r in rows
@@ -131,11 +129,7 @@ def main() -> int:
         "combined_faithful_pct": round(100 * len(combined) / n, 1) if n else 0,
         "refused_both": len(refused_both),
         "recovered_by_cbngl_only": len(
-            [
-                r
-                for r in rows
-                if r.get("bngl") == "accepted" and r.get("net") != "faithful"
-            ]
+            [r for r in rows if r.get("bngl") == "accepted" and r.get("net") != "faithful"]
         ),
     }
 

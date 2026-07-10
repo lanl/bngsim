@@ -275,7 +275,7 @@ _BARE_GEN_MODEL = (
     "end model\n"
     # A bare generate_network() (no overwrite=>1), like LV.bngl/birth-death.bngl —
     # _model_gen_network preserves this exact call, so the netgen-only copy injects it.
-    "begin actions\ngenerate_network()\nsimulate({method=>\"ode\",t_end=>1,n_steps=>10})\nend actions\n"
+    'begin actions\ngenerate_network()\nsimulate({method=>"ode",t_end=>1,n_steps=>10})\nend actions\n'
 )
 
 

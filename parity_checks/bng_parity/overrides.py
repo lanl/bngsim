@@ -244,10 +244,4 @@ REHAB = {
 # All basenames any override touches — build_jobs.py uses this to detect a
 # basename that matches no vendored model (a stale override) and the inverse.
 # (REHAB is keyed by model_id, not basename, so it is checked separately.)
-ALL_KEYS = (
-    set(TEND_CAP)
-    | set(NSCANPTS)
-    | set(ACTION_INJECT)
-    | set(TOL)
-    | set(TIMEOUT)
-)
+ALL_KEYS = set(TEND_CAP) | set(NSCANPTS) | set(ACTION_INJECT) | set(TOL) | set(TIMEOUT)

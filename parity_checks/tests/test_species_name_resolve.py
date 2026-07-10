@@ -36,8 +36,7 @@ def test_compartment_syntax_resolves():
     # Lang_2024: @cell:TP53(DBD,Ser15~p) -> canonical @cell::TP53(DBD,Ser15~p)
     canonical = ["@cell::TP53(DBD,Ser15~p)", "@cell::CDKN1A_promoter(TP53)"]
     assert (
-        bc.resolve_species_name("@cell:TP53(DBD,Ser15~p)", canonical)
-        == "@cell::TP53(DBD,Ser15~p)"
+        bc.resolve_species_name("@cell:TP53(DBD,Ser15~p)", canonical) == "@cell::TP53(DBD,Ser15~p)"
     )
 
 
@@ -68,7 +67,9 @@ def test_ambiguous_match_falls_back_never_guesses():
     # .net never lists two identical canonical species, but the resolver must be defensive.)
     canonical = ["A(p,q)", "A(q,p)"]
     assert bc.resolve_species_name("A(p,q)", canonical) == "A(p,q)"  # exact wins first
-    assert bc.resolve_species_name("A(q , p)", canonical) == "A(q , p)"  # 2 key-matches -> fallback
+    assert (
+        bc.resolve_species_name("A(q , p)", canonical) == "A(q , p)"
+    )  # 2 key-matches -> fallback
 
 
 def test_bonded_complex_pattern_is_not_guessed():

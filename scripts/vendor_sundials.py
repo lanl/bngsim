@@ -19,7 +19,6 @@ import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BNGSIM_ROOT = REPO_ROOT / "bngsim"
 VENDOR_DIR = BNGSIM_ROOT / "third_party" / "sundials"
@@ -167,7 +166,9 @@ def candidate_archive_path(args: argparse.Namespace, current_metadata: dict | No
 
 def release_asset_name(archive_path: Path) -> str:
     if not archive_path.name.endswith(".tar.gz"):
-        raise RuntimeError(f"Expected a .tar.gz SUNDIALS release archive, got: {archive_path.name}")
+        raise RuntimeError(
+            f"Expected a .tar.gz SUNDIALS release archive, got: {archive_path.name}"
+        )
     return archive_path.name
 
 
@@ -195,14 +196,12 @@ def normalize_archive_name(name: str) -> str:
 
 
 def archive_root_dir(member_names: set[str]) -> str:
-    roots = {
-        name.split("/", 1)[0]
-        for name in member_names
-        if name
-    }
+    roots = {name.split("/", 1)[0] for name in member_names if name}
     if len(roots) != 1:
         roots_text = ", ".join(sorted(roots))
-        raise RuntimeError(f"Expected a single top-level directory in the archive, found: {roots_text}")
+        raise RuntimeError(
+            f"Expected a single top-level directory in the archive, found: {roots_text}"
+        )
     return next(iter(roots))
 
 
@@ -219,7 +218,9 @@ def parse_cmake_version(cmake_text: str) -> str:
     patch = re.search(r'set\(PACKAGE_VERSION_PATCH "([^"]+)"\)', cmake_text)
     label = re.search(r'set\(PACKAGE_VERSION_LABEL "([^"]*)"\)', cmake_text)
     if not major or not minor or not patch or not label:
-        raise RuntimeError("Could not parse PACKAGE_VERSION_* fields from the SUNDIALS CMakeLists.txt")
+        raise RuntimeError(
+            "Could not parse PACKAGE_VERSION_* fields from the SUNDIALS CMakeLists.txt"
+        )
     version = f"{major.group(1)}.{minor.group(1)}.{patch.group(1)}"
     if label.group(1):
         version = f"{version}-{label.group(1)}"
@@ -251,7 +252,9 @@ def inspect_archive(archive_path: Path) -> dict:
         root_dir = archive_root_dir(member_names)
 
         missing_paths = [
-            relpath for relpath in REQUIRED_COMPONENT_PATHS if f"{root_dir}/{relpath}" not in member_names
+            relpath
+            for relpath in REQUIRED_COMPONENT_PATHS
+            if f"{root_dir}/{relpath}" not in member_names
         ]
         if missing_paths:
             raise RuntimeError(
@@ -306,7 +309,9 @@ def inspect_archive(archive_path: Path) -> dict:
     }
 
 
-def metadata_defaults(args: argparse.Namespace, current_metadata: dict | None, archive_info: dict) -> dict[str, str]:
+def metadata_defaults(
+    args: argparse.Namespace, current_metadata: dict | None, archive_info: dict
+) -> dict[str, str]:
     current_source = current_metadata["source"] if current_metadata else {}
     repo_url = args.repo_url or current_source.get("authoritative_repo", DEFAULT_REPO_URL)
     tag = args.tag or current_source.get("authoritative_release_tag", DEFAULT_RELEASE_TAG)
@@ -443,7 +448,9 @@ def print_summary(
 def write_metadata(metadata: dict, current_metadata: dict | None) -> bool:
     VENDOR_DIR.mkdir(parents=True, exist_ok=True)
     metadata_path = VENDOR_DIR / METADATA_NAME
-    if current_metadata is not None and stable_metadata_view(current_metadata) == stable_metadata_view(metadata):
+    if current_metadata is not None and stable_metadata_view(
+        current_metadata
+    ) == stable_metadata_view(metadata):
         return False
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     return True
@@ -477,7 +484,9 @@ def main() -> int:
     if args.check:
         if mismatches:
             if not args.summary:
-                print_summary(archive_path, archive_info, source_info, current_metadata, mismatches)
+                print_summary(
+                    archive_path, archive_info, source_info, current_metadata, mismatches
+                )
             return 1
         return 0
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 BNGSIM_ROOT = Path(__file__).resolve().parents[2]
 SUNDIALS_DIR = BNGSIM_ROOT / "third_party" / "sundials"
 SUNDIALS_VENDOR_METADATA = SUNDIALS_DIR / "VENDOR.json"

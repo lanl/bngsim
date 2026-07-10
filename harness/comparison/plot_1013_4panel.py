@@ -179,10 +179,7 @@ def main():
     else:
         # Default matches paper layout: bngsim/dev/paper/ (see harness jobs.yaml).
         out_png = (
-            Path(__file__).resolve().parent.parent.parent
-            / "dev"
-            / "paper"
-            / "fig_1013_4panel.png"
+            Path(__file__).resolve().parent.parent.parent / "dev" / "paper" / "fig_1013_4panel.png"
         )
     out_png.parent.mkdir(parents=True, exist_ok=True)
 

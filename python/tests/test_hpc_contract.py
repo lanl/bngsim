@@ -24,7 +24,6 @@ import bngsim
 import numpy as np
 import pytest
 from bngsim import _codegen
-from bngsim._exceptions import SimulationError
 
 # Honor BNGSIM_TEST_DATA so this module works under run_tests.sh (which copies
 # tests to a temp dir, breaking __file__-relative resolution).
@@ -75,7 +74,9 @@ class TestCacheDirControl:
         """A codegen build writes its .so into the redirected cache, not ~/.cache."""
         cache = tmp_path / "cache"
         monkeypatch.setattr(_codegen, "CACHE_DIR", cache)
-        sim = bngsim.Simulator(bngsim.Model.from_net(_expr_chain_net()), method="ode", codegen=True)
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(_expr_chain_net()), method="ode", codegen=True
+        )
         # Construction compiled the .so into the redirected dir.
         assert sim._codegen_so_path
         so = Path(sim._codegen_so_path)
@@ -101,7 +102,9 @@ class TestBatchArtifactReuseStateless:
         so_before = sim._codegen_so_path
 
         theta = [{"k1": 0.05 + 0.01 * i} for i in range(12)]
-        rows = sim.run_batch(t_span=(0, 10), n_points=11, params=theta, num_processors=4, **_EXPR_RUN)
+        rows = sim.run_batch(
+            t_span=(0, 10), n_points=11, params=theta, num_processors=4, **_EXPR_RUN
+        )
 
         # The artifact is unchanged (shared, not re-created per row).
         assert sim._codegen_so_path == so_before
@@ -228,17 +231,13 @@ class TestEventBatchSensitivity:
         b.add_event("evt", trigger, [(s, assign)])
         m = bngsim.Model(b.build())
         assert m._core.n_events == 1
-        return bngsim.Simulator(
-            m, method="ode", sensitivity_params=["k_prod", "k_deg"]
-        )
+        return bngsim.Simulator(m, method="ode", sensitivity_params=["k_prod", "k_deg"])
 
     def test_sensitivity_batch_fixed_time_event_runs(self):
         # Fixed-time event (never fires in window) is Phase-1-safe: the batch
         # runs instead of raising, and propagates sensitivities through it.
         sim = self._event_sim()
-        rows = sim.run_batch(
-            t_span=(0, 5), n_points=6, params=[{"k_prod": 5.0}, {"k_prod": 6.0}]
-        )
+        rows = sim.run_batch(t_span=(0, 5), n_points=6, params=[{"k_prod": 5.0}, {"k_prod": 6.0}])
         assert len(rows) == 2
 
     def test_sensitivity_batch_state_dependent_event_raises(self):
@@ -384,9 +383,7 @@ class TestEvaluationSpecSerialization:
         digest = good.compute_source_sha256()
         ok = bngsim.EvaluationSpec(model_source=net, model_format="net", model_sha256=digest)
         ok.build_model()  # no raise
-        bad = bngsim.EvaluationSpec(
-            model_source=net, model_format="net", model_sha256="0" * 64
-        )
+        bad = bngsim.EvaluationSpec(model_source=net, model_format="net", model_sha256="0" * 64)
         with pytest.raises(ValueError, match="SHA-256 mismatch"):
             bad.build_model()
 

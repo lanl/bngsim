@@ -139,7 +139,8 @@ def manifest_text() -> str:
         joined = ", ".join(c.suite_tags)
         lines.append(f"#   {joined}: {c.reason}")
     lines.append(
-        "#   " + ", ".join(NON_TIMECOURSE_TAGS)
+        "#   "
+        + ", ".join(NON_TIMECOURSE_TAGS)
         + ": flux-balance (FluxBalanceSteadyState) cases are not TimeCourse; "
         "bngsim is a time-course ODE engine"
     )

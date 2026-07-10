@@ -45,7 +45,7 @@ def _params_from_initial_assignments(assignments):
         for pid, mathml in assignments
     )
     sbml = (
-        f"{_HDR}\n<model id=\"m\">"
+        f'{_HDR}\n<model id="m">'
         f"<listOfParameters>{params}</listOfParameters>"
         f"<listOfInitialAssignments>{ias}</listOfInitialAssignments>"
         f"</model></sbml>"
@@ -105,8 +105,8 @@ def test_factorial_runtime_expression_compiles_and_runs():
     # An assignmentRule factorial reaches the ExprTk emitter (tgamma), which used
     # to load-fail on the undefined ``lgamma``.
     sbml = (
-        f"{_HDR}\n<model id=\"m\">"
-        '<listOfParameters>'
+        f'{_HDR}\n<model id="m">'
+        "<listOfParameters>"
         '<parameter id="n" value="4" constant="true"/>'
         '<parameter id="f" constant="false"/>'
         "</listOfParameters>"
@@ -125,7 +125,7 @@ def test_empty_nary_operators_compile_in_kinetic_law():
     # (ExprTk previously emitted "()" ⇒ load failure).
     for op, kind in (("plus", "additive"), ("times", "multiplicative")):
         sbml = (
-            f"{_HDR}\n<model id=\"m_{op}\">"
+            f'{_HDR}\n<model id="m_{op}">'
             '<listOfCompartments><compartment id="C" size="1" constant="true"/>'
             "</listOfCompartments>"
             '<listOfSpecies><species id="S" compartment="C" initialAmount="1"'
@@ -134,7 +134,7 @@ def test_empty_nary_operators_compile_in_kinetic_law():
             '<listOfReactions><reaction id="J" reversible="false">'
             '<listOfProducts><speciesReference species="S" stoichiometry="1"'
             ' constant="true"/></listOfProducts>'
-            "<kineticLaw><math xmlns=\"http://www.w3.org/1998/Math/MathML\">"
+            '<kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">'
             f"<apply><{op}/></apply></math></kineticLaw></reaction></listOfReactions>"
             "</model></sbml>"
         )
@@ -151,7 +151,7 @@ def test_avogadro_in_event_priority_orders_correctly():
     # priority must not disturb this ordering (it is kept on the dynamic path
     # via avogadro_value=None), so p must still be 3, never 5.
     sbml = (
-        f"{_HDR}\n<model id=\"m_pri\">"
+        f'{_HDR}\n<model id="m_pri">'
         '<listOfParameters><parameter id="p" value="0" constant="false"/>'
         "</listOfParameters>"
         "<listOfEvents>"

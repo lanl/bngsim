@@ -261,9 +261,7 @@ class TestEventSensitivity:
         b.add_event("evt", trigger, [(s, assign)])
         m = bngsim.Model(b.build())
         assert m._core.n_events == 1
-        return bngsim.Simulator(
-            m, method="ode", sensitivity_params=["k_prod", "k_deg"]
-        )
+        return bngsim.Simulator(m, method="ode", sensitivity_params=["k_prod", "k_deg"])
 
     def test_single_phase_fixed_time_runs(self):
         sim = self._event_sim()

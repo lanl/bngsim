@@ -48,6 +48,18 @@ def _load_bng_common():
     return _bng_common
 
 
+def _bridge():
+    """Import the PyBioNetGen bngsim bridge module (source of the version floor).
+
+    ``MINIMUM_BNGSIM_VERSION`` / ``BNGSIM_UNAVAILABLE_REASON`` live on
+    ``bionetgen.core.tools.bngsim_bridge`` — only ``BNGSIM_AVAILABLE`` /
+    ``BNGSIM_VERSION`` are re-exported at the ``bionetgen`` top level.
+    """
+    from bionetgen.core.tools import bngsim_bridge
+
+    return bngsim_bridge
+
+
 def backend_status() -> dict:
     """Whether bngsim is wired into the active PyBioNetGen, plus provenance.
 

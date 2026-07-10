@@ -130,8 +130,9 @@ def test_read_biomodels_style_archive(data_dir: Path, tmp_path: Path) -> None:
         warnings.simplefilter("ignore", bngsim.ConversionWarning)
         model = bngsim.Model.from_net(src)
         sbml_text = write_sbml(model, None, strict=False)
-        proto = default_protocol(model, model_source="model.xml", model_format="sbml",
-                                 t_span=(0, 40), n_points=21)
+        proto = default_protocol(
+            model, model_source="model.xml", model_format="sbml", t_span=(0, 40), n_points=21
+        )
         sedml_text = write_sedml(proto, model_source="model.xml")
 
     omex = tmp_path / "biomodels.omex"
@@ -247,7 +248,7 @@ def test_net_to_omex_embeds_source(data_dir: Path, tmp_path: Path) -> None:
     pytest.importorskip("libsbml")
     src = _require("two_species_reversible.net", data_dir)
     bngl = tmp_path / "model.bngl"
-    bngl.write_text("begin model\nend model\nsimulate({method=>\"ode\",t_end=>30,n_steps=>15})\n")
+    bngl.write_text('begin model\nend model\nsimulate({method=>"ode",t_end=>30,n_steps=>15})\n')
     out = tmp_path / "m.omex"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", bngsim.ConversionWarning)
@@ -256,7 +257,7 @@ def test_net_to_omex_embeds_source(data_dir: Path, tmp_path: Path) -> None:
     with zipfile.ZipFile(out) as zf:
         names = set(zf.namelist())
     assert "two_species_reversible.net" in names  # original .net, by its real name
-    assert "model.bngl" in names                  # rule-based source, by its real name
+    assert "model.bngl" in names  # rule-based source, by its real name
     with read_omex(out) as arch:
         assert {e.kind for e in arch.entries} == {"sbml", "sedml", "net", "source"}
         assert arch.master_model_entry().kind == "sbml"  # SBML still curated master
@@ -283,8 +284,9 @@ def test_net_to_omex_provenance(data_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "m.omex"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", bngsim.ConversionWarning)
-        net_to_omex(src, out, gate="full", created="2026-06-28T00:00:00+00:00",
-                    t_span=(0, 30), n_points=16)
+        net_to_omex(
+            src, out, gate="full", created="2026-06-28T00:00:00+00:00", t_span=(0, 30), n_points=16
+        )
 
     with zipfile.ZipFile(out) as zf:
         names = set(zf.namelist())
@@ -302,8 +304,14 @@ def test_net_to_omex_provenance(data_dir: Path, tmp_path: Path) -> None:
     out2 = tmp_path / "m2.omex"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", bngsim.ConversionWarning)
-        net_to_omex(src, out2, gate="full", created="2026-06-28T00:00:00+00:00",
-                    t_span=(0, 30), n_points=16)
+        net_to_omex(
+            src,
+            out2,
+            gate="full",
+            created="2026-06-28T00:00:00+00:00",
+            t_span=(0, 30),
+            n_points=16,
+        )
     assert out.read_bytes() == out2.read_bytes()
 
     # provenance=False omits both files.
@@ -695,8 +703,17 @@ def test_cli_omex_to_net_actions(data_dir: Path, tmp_path: Path) -> None:
     out3 = tmp_path / "decay_out3.net"
     redirect = tmp_path / "custom_actions.bngl"
     rc = omex_main(
-        ["to-net", str(omex), "-o", str(out3), "--gate", "none",
-         "--actions-out", str(redirect), "--quiet"]
+        [
+            "to-net",
+            str(omex),
+            "-o",
+            str(out3),
+            "--gate",
+            "none",
+            "--actions-out",
+            str(redirect),
+            "--quiet",
+        ]
     )
     assert rc == 0
     assert redirect.is_file() and not out3.with_suffix(".bngl").exists()

@@ -72,14 +72,21 @@ def _chunked_combined(net_path, monkeypatch, block_size="4") -> tuple[str, int, 
 
 def _call_rhs(so_path, n_sp, n_par, y, p, t=0.41):
     class UD(ctypes.Structure):
-        _fields_ = [("param_values", ctypes.POINTER(ctypes.c_double)),
-                    ("tfun_ctx", ctypes.c_void_p), ("tfun_eval", ctypes.c_void_p)]
+        _fields_ = [
+            ("param_values", ctypes.POINTER(ctypes.c_double)),
+            ("tfun_ctx", ctypes.c_void_p),
+            ("tfun_eval", ctypes.c_void_p),
+        ]
 
     lib = ctypes.CDLL(str(so_path))
     fn = lib.bngsim_codegen_rhs
     fn.restype = ctypes.c_int
-    fn.argtypes = [ctypes.c_double, ctypes.POINTER(ctypes.c_double),
-                   ctypes.POINTER(ctypes.c_double), ctypes.c_void_p]
+    fn.argtypes = [
+        ctypes.c_double,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_void_p,
+    ]
     pa = (ctypes.c_double * n_par)(*p)
     ud = UD(param_values=pa, tfun_ctx=None, tfun_eval=None)
     ya, yd = (ctypes.c_double * n_sp)(*y), (ctypes.c_double * n_sp)()
@@ -89,17 +96,27 @@ def _call_rhs(so_path, n_sp, n_par, y, p, t=0.41):
 
 def _call_sens(so_path, n_sp, n_par, y, yS, p, iS, t=0.41):
     class SUD(ctypes.Structure):
-        _fields_ = [("param_values", ctypes.POINTER(ctypes.c_double)),
-                    ("plist", ctypes.POINTER(ctypes.c_int)), ("n_sens", ctypes.c_int)]
+        _fields_ = [
+            ("param_values", ctypes.POINTER(ctypes.c_double)),
+            ("plist", ctypes.POINTER(ctypes.c_int)),
+            ("n_sens", ctypes.c_int),
+        ]
 
     lib = ctypes.CDLL(str(so_path))
     fn = lib.bngsim_codegen_sens_rhs
     fn.restype = ctypes.c_int
-    fn.argtypes = [ctypes.c_int, ctypes.c_double, ctypes.POINTER(ctypes.c_double),
-                   ctypes.POINTER(ctypes.c_double), ctypes.c_int,
-                   ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
-                   ctypes.c_void_p, ctypes.POINTER(ctypes.c_double),
-                   ctypes.POINTER(ctypes.c_double)]
+    fn.argtypes = [
+        ctypes.c_int,
+        ctypes.c_double,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+    ]
     pa = (ctypes.c_double * n_par)(*p)
     plist = (ctypes.c_int * n_par)(*range(n_par))
     sud = SUD(param_values=pa, plist=plist, n_sens=n_par)
@@ -229,7 +246,8 @@ class TestShardJobs:
         import types
 
         monkeypatch.setattr(
-            cg.subprocess, "run",
+            cg.subprocess,
+            "run",
             lambda *a, **k: types.SimpleNamespace(stdout=self._VM_STAT),
         )
         # free + inactive + speculative + purgeable = 152000 pages × 16384 B.
@@ -309,12 +327,14 @@ class TestShardCompile:
         for _ in range(6):
             y = [abs(rng.gauss(1.0, 0.6)) + 0.05 for _ in range(n_sp)]
             p = [abs(rng.gauss(1.0, 0.6)) + 0.05 for _ in range(n_par)]
-            assert _call_rhs(so_serial, n_sp, n_par, y, p) == \
-                   _call_rhs(so_shard, n_sp, n_par, y, p)
+            assert _call_rhs(so_serial, n_sp, n_par, y, p) == _call_rhs(
+                so_shard, n_sp, n_par, y, p
+            )
             yS = [rng.gauss(0.0, 1.0) for _ in range(n_sp)]
             iS = rng.randrange(n_par)
-            assert _call_sens(so_serial, n_sp, n_par, y, yS, p, iS) == \
-                   _call_sens(so_shard, n_sp, n_par, y, yS, p, iS)
+            assert _call_sens(so_serial, n_sp, n_par, y, yS, p, iS) == _call_sens(
+                so_shard, n_sp, n_par, y, yS, p, iS
+            )
 
     def test_so_byte_identical_across_job_counts(self, monkeypatch, tmp_path):
         net = tmp_path / "m.net"
@@ -349,8 +369,9 @@ class TestShardCompile:
         for _ in range(4):
             y = [abs(rng.gauss(1.0, 0.5)) + 0.1 for _ in range(n_sp)]
             p = [abs(rng.gauss(1.0, 0.5)) + 0.1 for _ in range(n_par)]
-            assert _call_rhs(so_serial, n_sp, n_par, y, p) == \
-                   _call_rhs(so_shard, n_sp, n_par, y, p)
+            assert _call_rhs(so_serial, n_sp, n_par, y, p) == _call_rhs(
+                so_shard, n_sp, n_par, y, p
+            )
 
         # Second call hits the cache and returns the same path (no recompile).
         assert cg.compile_rhs(src, "shardhash") == so_shard

@@ -2659,7 +2659,9 @@ def generate_ssa_html(report_path: Path, output_path: Path) -> None:
     # hit the wall and ran a sub-window, the model was vacuous, or RoadRunner refused
     # it), so it would bias the cost plots; exclude it.
     fig_results = [
-        r for r in results_sorted if _ssa_row_class(r["outcome"], r.get("subclass"))[0] == "status-passed"
+        r
+        for r in results_sorted
+        if _ssa_row_class(r["outcome"], r.get("subclass"))[0] == "status-passed"
     ]
     fig_n = len(fig_results)
 
@@ -3068,9 +3070,7 @@ def generate_ssa_html(report_path: Path, output_path: Path) -> None:
                 if heavy
                 else ""
             )
-            med_ctx = (
-                f"; per-rep median {fmt_ms(bm)} vs {fmt_ms(rm)}" if bm and rm else ""
-            )
+            med_ctx = f"; per-rep median {fmt_ms(bm)} vs {fmt_ms(rm)}" if bm and rm else ""
             ratio_html = (
                 '<div class="metric">Ensemble cost: BNGsim is '
                 f'<strong style="color:{color}">{phrase}</strong> RoadRunner '
@@ -3235,8 +3235,8 @@ def generate_ssa_html(report_path: Path, output_path: Path) -> None:
         '                <div style="margin-bottom:5px;"><span style="color:#dc3545;font-weight:700;">FAILED</span> — the only states that point at BNGsim: its SSA mean strays from its OWN ODE (a real divergence), the two engines&rsquo; ODEs themselves disagree (loader / ODE-level), or BNGsim raised an exception.</div>\n'
         '                <div style="margin-bottom:5px;"><span style="color:#b8860b;font-weight:700;">TRIAGED</span> — both engines ran, but the difference is explained AWAY from BNGsim: pinned on the RoadRunner gillespie (it leaves its own ODE while BNGsim tracks its), RoadRunner cannot fire time-triggered events (RR LIMIT), a filed RoadRunner issue, RoadRunner refused to load the model (REF-FAIL), or a provisional sub- / extended-horizon verdict (PARTIAL / EXTENDED). None reflect on BNGsim.</div>\n'
         '                <div><span style="color:#6c757d;font-weight:700;">REFUSED</span> — no valid comparison could be made, and NOT because of a BNGsim fault: exact SSA too slow to finish within the per-model wall budget (TOO SLOW), too quiet for any cell to clear the low-count floor (NO SIGNAL), the model is not SSA-compatible (UNSUPPORTED), both engines rejected the SBML (BAD_TEST), or the file was missing (SKIP). It is <em>not</em> &ldquo;both engines failed to load&rdquo; — that single case is BAD_TEST.</div>\n'
-        '            </div>\n'
-        '        </details>\n'
+        "            </div>\n"
+        "        </details>\n"
         f"        {plots_html}\n"
         "    </div>\n"
         '    <div class="sortbar">\n'

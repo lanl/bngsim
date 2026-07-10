@@ -65,13 +65,26 @@ def _drive(base_fp, trajectory, escalate=_escalate_ok):
     base_status = "pass" if base_fp >= PASS_FRAC else "diff"
     cmp = _ScriptedCompare(trajectory)
     out = bsr._run_escalation(
-        bn, leg, base_status, base_fp, "base comment", "ensemble_frac_pass", PASS_FRAC,
-        n_rep_base=10, seed_base=1, compare=cmp, escalate=escalate,
+        bn,
+        leg,
+        base_status,
+        base_fp,
+        "base comment",
+        "ensemble_frac_pass",
+        PASS_FRAC,
+        n_rep_base=10,
+        seed_base=1,
+        compare=cmp,
+        escalate=escalate,
     )
     status, value, comment, metric, m_tol, prog, stalled = out
     return {
-        "status": status, "value": value, "comment": comment, "prog": prog,
-        "stalled": stalled, "compare_calls": cmp.calls,
+        "status": status,
+        "value": value,
+        "comment": comment,
+        "prog": prog,
+        "stalled": stalled,
+        "compare_calls": cmp.calls,
     }
 
 

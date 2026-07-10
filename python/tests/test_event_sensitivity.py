@@ -249,18 +249,14 @@ class TestStillUnsupported:
     def test_trigger_time_parameter_raises(self):
         # time() >= t_dose with t_dose requested as a sensitivity parameter:
         # the crossing time moves with the parameter (∂t*/∂p ≠ 0) — Phase 2.
-        m, _ = _decay_with_event(
-            "2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)]
-        )
+        m, _ = _decay_with_event("2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)])
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k", "t_dose"])
         with pytest.raises(ValueError, match="t_dose"):
             sim.run(t_span=(0, 10), n_points=11)
 
     def test_trigger_time_parameter_ok_when_not_sensitized(self):
         # Same trigger but t_dose NOT among the requested params ⇒ ∂t*/∂p = 0.
-        m, _ = _decay_with_event(
-            "2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)]
-        )
+        m, _ = _decay_with_event("2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)])
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
         r = sim.run(t_span=(0, 10), n_points=11)
         assert np.all(np.isfinite(r.sensitivities))
@@ -268,9 +264,7 @@ class TestStillUnsupported:
     def test_compute_all_sensitivities_with_trigger_time_param_raises(self):
         # compute_all_sensitivities defaults to ALL params, which includes the
         # trigger-time parameter t_dose, so it must refuse.
-        m, _ = _decay_with_event(
-            "2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)]
-        )
+        m, _ = _decay_with_event("2.0", trigger="time() >= t_dose", extra_params=[("t_dose", 5.0)])
         sim = bngsim.Simulator(m, method="ode")
         with pytest.raises(ValueError, match="t_dose"):
             sim.compute_all_sensitivities(t_span=(0, 10), n_points=11)

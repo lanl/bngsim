@@ -16,9 +16,8 @@ duplicates. A reactant listed ``+1`` and ``-1`` (net 0) was emitted as a net
 derives the multisets from the aggregated ``net`` dict.
 """
 
-import numpy as np
-
 import bngsim
+import numpy as np
 
 _HDR = '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
 

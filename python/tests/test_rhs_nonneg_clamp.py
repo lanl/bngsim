@@ -44,10 +44,9 @@ RHS (and Jacobian) finite and the solve runs to completion.
 
 from __future__ import annotations
 
+import bngsim
 import numpy as np
 import pytest
-
-import bngsim
 
 # X decays slowly (a finite, well-behaved mass-action law); Y is produced at rate
 # Vmax * X^3.98 — NaN for X < 0. An event at t=0.5 forces X = -1e-3, so the very
@@ -113,9 +112,7 @@ def test_negative_state_in_fractional_power_jacobian_recovers(
 
 
 @pytest.mark.parametrize("analytical", ["1", "0"], ids=["analytical_jac", "fd_jac"])
-def test_clamp_is_noop_on_a_valid_trajectory(
-    monkeypatch: pytest.MonkeyPatch, analytical: str
-):
+def test_clamp_is_noop_on_a_valid_trajectory(monkeypatch: pytest.MonkeyPatch, analytical: str):
     """The conditional clamp must not perturb a physical (nonnegative) solve: with
     the event removed, X decays cleanly and never goes negative, so the unclamped
     RHS is always finite and the clamp never engages. The analytical-Jacobian and

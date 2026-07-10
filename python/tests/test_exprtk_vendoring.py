@@ -12,7 +12,6 @@ import json
 import re
 from pathlib import Path
 
-
 BNGSIM_ROOT = Path(__file__).resolve().parents[2]
 EXPRTK_DIR = BNGSIM_ROOT / "third_party" / "exprtk"
 EXPRTK_HEADER = EXPRTK_DIR / "exprtk.hpp"
@@ -46,12 +45,17 @@ def test_exprtk_vendor_metadata_matches_header():
     header_bytes = EXPRTK_HEADER.read_bytes()
     header_text = header_bytes.decode("utf-8")
 
-    assert metadata["source"]["authoritative_remote"] == "https://github.com/ArashPartow/exprtk.git"
+    assert (
+        metadata["source"]["authoritative_remote"] == "https://github.com/ArashPartow/exprtk.git"
+    )
     assert metadata["source"]["authoritative_branch"] == "master"
     assert metadata["source"]["official_project_homepage"] == (
         "https://www.partow.net/programming/exprtk/index.html"
     )
-    assert metadata["source"]["official_project_download"] == "https://www.partow.net/downloads/exprtk.zip"
+    assert (
+        metadata["source"]["official_project_download"]
+        == "https://www.partow.net/downloads/exprtk.zip"
+    )
 
     assert metadata["files"]["header"]["path"] == "bngsim/third_party/exprtk/exprtk.hpp"
     assert metadata["files"]["header"]["sha256"] == hashlib.sha256(header_bytes).hexdigest()

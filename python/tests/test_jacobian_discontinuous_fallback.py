@@ -20,10 +20,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import bngsim
 import numpy as np
 import pytest
-
-import bngsim
 from bngsim import SimulationError
 
 FIXTURE = "ltype_calcium_discontinuous_jacobian.net"

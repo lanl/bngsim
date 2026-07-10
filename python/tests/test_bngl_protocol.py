@@ -120,7 +120,7 @@ def test_arithmetic_and_string_args() -> None:
 
 def test_setconcentration_numeric_and_expr() -> None:
     p = parse_bngl_protocol(
-        'begin model\nend model\n'
+        "begin model\nend model\n"
         'setConcentration("A(b)",100)\n'
         'setConcentration("B",A0*2)\n'
         'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
@@ -166,7 +166,7 @@ def test_build_directives_dropped() -> None:
     text = (
         "begin model\nend model\n"
         "generate_network({overwrite=>1})\n"
-        'writeSBML({})\n'
+        "writeSBML({})\n"
         "saveConcentrations()\n"
         'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
     )
@@ -335,9 +335,7 @@ def test_combine_protocols_concatenates_with_reset_boundary() -> None:
     p2 = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 50.0), 51),), source="b")
     merged = combine_protocols([p1, p2])
     assert len(merged.experiments) == 2
-    assert [type(s).__name__ for s in merged.steps] == [
-        "Experiment", "StateChange", "Experiment"
-    ]
+    assert [type(s).__name__ for s in merged.steps] == ["Experiment", "StateChange", "Experiment"]
     assert merged.steps[1].kind == "reset_concentrations"
     assert merged.source == "a + b"
 
@@ -376,11 +374,13 @@ def test_combine_protocols_concatenates_dropped_and_lossy() -> None:
     channels survive the merge so the combined deliverable reports every loss."""
     p1 = ProtocolSpec(
         steps=(Experiment("simulate", "ode", (0.0, 10.0), 11),),
-        dropped=("writeBNGL",), lossy=("setVolume",),
+        dropped=("writeBNGL",),
+        lossy=("setVolume",),
     )
     p2 = ProtocolSpec(
         steps=(Experiment("simulate", "ode", (0.0, 50.0), 51),),
-        dropped=("writeNET",), lossy=("substanceUnits",),
+        dropped=("writeNET",),
+        lossy=("substanceUnits",),
     )
     merged = combine_protocols([p1, p2])
     assert merged.dropped == ("writeBNGL", "writeNET")
@@ -389,12 +389,15 @@ def test_combine_protocols_concatenates_dropped_and_lossy() -> None:
 
 def test_combine_protocols_no_double_reset() -> None:
     """A spec already ending in resetConcentrations is not given a second one."""
-    p1 = ProtocolSpec(steps=(
-        Experiment("simulate", "ode", (0.0, 10.0), 11),
-        StateChange(kind="reset_concentrations"),
-    ))
+    p1 = ProtocolSpec(
+        steps=(
+            Experiment("simulate", "ode", (0.0, 10.0), 11),
+            StateChange(kind="reset_concentrations"),
+        )
+    )
     p2 = ProtocolSpec(steps=(Experiment("simulate", "ode", (0.0, 5.0), 6),))
     merged = combine_protocols([p1, p2])
-    resets = [s for s in merged.steps if isinstance(s, StateChange)
-              and s.kind == "reset_concentrations"]
+    resets = [
+        s for s in merged.steps if isinstance(s, StateChange) and s.kind == "reset_concentrations"
+    ]
     assert len(resets) == 1

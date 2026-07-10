@@ -31,9 +31,8 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
-
 import bngsim
+import numpy as np
 
 _SUITE_DIR = Path(__file__).resolve().parent
 _BENCH_ROOT = _SUITE_DIR.parents[1]  # bngsim/benchmarks

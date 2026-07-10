@@ -220,7 +220,14 @@ def _compare_ode(bn, rn) -> tuple[str, float, str, str, float, float]:
     metric, tol = "max_rel_err", differ.REL_TOL
     aligned = bc.align_net_species(bn_v, rn_v, bn_t, rn_t)
     if aligned is None:
-        return "diff", float("inf"), "Disjoint species/time-points — nothing to compare.", metric, tol, float("inf")
+        return (
+            "diff",
+            float("inf"),
+            "Disjoint species/time-points — nothing to compare.",
+            metric,
+            tol,
+            float("inf"),
+        )
     bn_a, rn_a, n_sp = aligned
     v = differ.deterministic_verdict(bn_a, rn_a)
     status = "pass" if v["passed"] else "diff"
@@ -244,7 +251,14 @@ def _compare_ode_multiseg(bn, rn) -> tuple[str, float, str, str, float, float]:
     rn_t, rn_v, _rn_n = rn
     metric, tol = "max_rel_err", differ.REL_TOL
     if bn_v.size == 0 or rn_v.size == 0:
-        return "diff", float("inf"), "Disjoint species/time-points — nothing to compare.", metric, tol, float("inf")
+        return (
+            "diff",
+            float("inf"),
+            "Disjoint species/time-points — nothing to compare.",
+            metric,
+            tol,
+            float("inf"),
+        )
     idx = [int(np.argmin(np.abs(rn_t - t))) for t in bn_t]
     rn_on_grid = rn_v[idx]
     n_sp = min(bn_v.shape[1], rn_on_grid.shape[1])
@@ -341,7 +355,9 @@ def _worker(spec: dict, q) -> None:
             o = bc.parse_ode_spec(horizon_text, net_params, atol=spec["atol"], rtol=spec["rtol"])
             if o is None:
                 res["status"] = "skip"
-                res["comment"] = "No runnable time-course (no simulate with a numeric t_end) — nothing to compare."
+                res["comment"] = (
+                    "No runnable time-course (no simulate with a numeric t_end) — nothing to compare."
+                )
                 res["timing"] = {"netgen": {"netgen_sec": round(netgen_sec, 6)}, "warmup": warmup}
                 q.put(res)
                 return
@@ -363,11 +379,21 @@ def _worker(spec: dict, q) -> None:
             try:
                 t0 = time.perf_counter()
                 result, _info = bc.multi_segment_replay(
-                    net_path, ode["steps"], ode["rep_index"],
-                    track="ode", atol=ode["atol"], rtol=ode["rtol"], seed=None, poplevel=0.0,
+                    net_path,
+                    ode["steps"],
+                    ode["rep_index"],
+                    track="ode",
+                    atol=ode["atol"],
+                    rtol=ode["rtol"],
+                    seed=None,
+                    poplevel=0.0,
                 )
                 bn_wall = time.perf_counter() - t0
-                bn = (np.asarray(result.time), np.asarray(result.species), list(result.species_names))
+                bn = (
+                    np.asarray(result.time),
+                    np.asarray(result.species),
+                    list(result.species_names),
+                )
             except Exception as exc:
                 bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
             # 3b. legacy: run the model's OWN protocol natively (BNG2.pl carries state across
@@ -375,8 +401,12 @@ def _worker(spec: dict, q) -> None:
             try:
                 t0 = time.perf_counter()
                 rn = bc.native_protocol_oracle(
-                    horizon_text, spec["bng2_pl"], workdir / "native",
-                    track="ode", rep_stmt_idx=ode["rep_stmt_idx"], timeout=spec["sub_timeout"],
+                    horizon_text,
+                    spec["bng2_pl"],
+                    workdir / "native",
+                    track="ode",
+                    rep_stmt_idx=ode["rep_stmt_idx"],
+                    timeout=spec["sub_timeout"],
                 )
                 rn_wall = time.perf_counter() - t0
             except Exception as exc:
@@ -441,13 +471,19 @@ def _worker(spec: dict, q) -> None:
         if bn_exc or rn_exc:
             if bn_exc and rn_exc:
                 res["status"], res["exception"] = "bad_test", f"{rn_exc} || {bn_exc}"
-                res["comment"] = "Neither engine could run this model — a model/setup problem, not bngsim."
+                res["comment"] = (
+                    "Neither engine could run this model — a model/setup problem, not bngsim."
+                )
             elif rn_exc:
                 res["status"], res["exception"] = "reference_failed", rn_exc
-                res["comment"] = "run_network failed here — no reference to compare against. bngsim ran fine; unscored."
+                res["comment"] = (
+                    "run_network failed here — no reference to compare against. bngsim ran fine; unscored."
+                )
             else:
                 res["status"], res["exception"] = "exception", bn_exc
-                res["comment"] = "bngsim errored while run_network succeeded — an actionable bngsim issue."
+                res["comment"] = (
+                    "bngsim errored while run_network succeeded — an actionable bngsim issue."
+                )
             q.put(res)
             return
 

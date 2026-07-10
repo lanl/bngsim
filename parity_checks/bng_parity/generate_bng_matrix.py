@@ -674,9 +674,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         comment_html = ""
         if comment or exc:
             comment_html = (
-                (f'<div class="row-comment">{_esc(comment)}</div>' if comment else "")
-                + (f'<div class="row-detail">{_esc(exc)}</div>' if exc else "")
-            )
+                f'<div class="row-comment">{_esc(comment)}</div>' if comment else ""
+            ) + (f'<div class="row-detail">{_esc(exc)}</div>' if exc else "")
 
         # feature/horizon tags
         feats = []
@@ -745,7 +744,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         <div class="summary">
             <div class="summary-item summary-passed">✓ PASSED: {pass_n}</div>
             <div class="summary-item summary-failed">✗ FAILED: {fail_n}</div>
-            {f'<div class="summary-item summary-known">◇ KNOWN ARTIFACT: {known_n}</div>' if known_n else ''}
+            {f'<div class="summary-item summary-known">◇ KNOWN ARTIFACT: {known_n}</div>' if known_n else ""}
             <div class="summary-item summary-triaged">⚑ TRIAGED: {triaged_n}</div>
             <div class="summary-item summary-refused">— REFUSED/SKIP: {refused_n}</div>
         </div>
@@ -926,7 +925,9 @@ def _stoch_workflow_badge(t: dict, legacy_label: str) -> str:
     )
 
 
-def render_bngsim_stoch_cell(outcome: str, timing: dict, regime: str, subclass: str | None = None) -> str:
+def render_bngsim_stoch_cell(
+    outcome: str, timing: dict, regime: str, subclass: str | None = None
+) -> str:
     """Config + verdict + BNGsim stochastic timing tiers (load · ensemble)."""
     rg = _REGIME[regime]
     bn = timing.get("bngsim") or {}
@@ -1003,7 +1004,9 @@ def render_bngsim_stoch_cell(outcome: str, timing: dict, regime: str, subclass: 
     return "".join(parts)
 
 
-def render_legacy_stoch_cell(outcome: str, timing: dict, regime: str, legacy_label: str, subclass: str | None = None) -> str:
+def render_legacy_stoch_cell(
+    outcome: str, timing: dict, regime: str, legacy_label: str, subclass: str | None = None
+) -> str:
     """Config + verdict + the legacy timing tiers (per-call only — a fresh process
     each replicate, no warm reuse) for run_network (SSA) / NFsim (NF)."""
     leg = timing.get("legacy") or {}
@@ -1070,9 +1073,7 @@ def render_legacy_stoch_cell(outcome: str, timing: dict, regime: str, legacy_lab
         init_cpu = leg.get("init_cpu_sec")
         prop_cpu = leg.get("propagation_cpu_sec")
         if all(isinstance(x, (int, float)) for x in (rep_med, init_cpu, prop_cpu)):
-            wf_cells += _tcell(
-                "Spawn+I/O / call", fmt_t(max(0.0, rep_med - init_cpu - prop_cpu))
-            )
+            wf_cells += _tcell("Spawn+I/O / call", fmt_t(max(0.0, rep_med - init_cpu - prop_cpu)))
     wf_cells += _tcell("First call", fmt_t(leg.get("rep_cold_sec")))
     parts.append(
         '<div class="ttier"><div class="ttier-head">④ WORKFLOW · N-rep ensemble '
@@ -1344,9 +1345,8 @@ def generate_stoch_html(report_path: Path, output_path: Path) -> None:
         comment_html = ""
         if comment or exc:
             comment_html = (
-                (f'<div class="row-comment">{_esc(comment)}</div>' if comment else "")
-                + (f'<div class="row-detail">{_esc(exc)}</div>' if exc else "")
-            )
+                f'<div class="row-comment">{_esc(comment)}</div>' if comment else ""
+            ) + (f'<div class="row-detail">{_esc(exc)}</div>' if exc else "")
 
         feats = []
         if spec:
@@ -1399,7 +1399,9 @@ def generate_stoch_html(report_path: Path, output_path: Path) -> None:
         )
 
         bn_cell = render_bngsim_stoch_cell(outcome, timing, regime, r.get("subclass"))
-        leg_cell = render_legacy_stoch_cell(outcome, timing, regime, legacy_label, r.get("subclass"))
+        leg_cell = render_legacy_stoch_cell(
+            outcome, timing, regime, legacy_label, r.get("subclass")
+        )
         bn_wf = _bn_workflow(timing) or 0
         leg_wf = _leg_workflow(timing) or 0
         wf_spd = (leg_wf / bn_wf) if (bn_wf and leg_wf) else 0

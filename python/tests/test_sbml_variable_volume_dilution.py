@@ -501,13 +501,17 @@ AR_EVENT_RXN = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def _explicit_species_resize_sbml(species_first=True):
-    assignments = """
+    assignments = (
+        """
     <eventAssignment variable="S1"><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.2</cn></math></eventAssignment>
     <eventAssignment variable="C1"><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.2</cn></math></eventAssignment>
-""" if species_first else """
+"""
+        if species_first
+        else """
     <eventAssignment variable="C1"><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.2</cn></math></eventAssignment>
     <eventAssignment variable="S1"><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.2</cn></math></eventAssignment>
 """
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
  <model id="explicit_resize">
@@ -598,8 +602,10 @@ def test_ar_static_compartment_emits_no_dilution():
     sbml = AR_PURE.replace(
         '<rateRule variable="p2"><math xmlns="http://www.w3.org/1998/Math/MathML"><ci>r</ci></math></rateRule>',
         "",
-    ).replace('value="0.1" constant="true"/>\n   <parameter id="p2" value="1.5" constant="false"/>',
-              'value="0.1" constant="true"/>\n   <parameter id="p2" value="1.5" constant="true"/>')
+    ).replace(
+        'value="0.1" constant="true"/>\n   <parameter id="p2" value="1.5" constant="false"/>',
+        'value="0.1" constant="true"/>\n   <parameter id="p2" value="1.5" constant="true"/>',
+    )
     model, res = _run(sbml, t_end=10.0, n=11)
     assert model._varvol_ar_amount_map == {}
     S = _conc(res, "S")

@@ -145,8 +145,16 @@ def main() -> int:
         sys.exit(f"ABORT: pin file missing: {REQ_PYBIONETGEN}")
     print(f"installing pinned PyBioNetGen ({REQ_PYBIONETGEN.name}) ...")
     _run(
-        [uv, "pip", "install", "--python", python_exe, "--no-build-isolation",
-         "-r", str(REQ_PYBIONETGEN)]
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            python_exe,
+            "--no-build-isolation",
+            "-r",
+            str(REQ_PYBIONETGEN),
+        ]
     )
     # bngsim from this repo's wheel.
     wheel = _resolve_bngsim_wheel(args)

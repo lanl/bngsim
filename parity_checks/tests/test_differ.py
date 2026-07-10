@@ -284,7 +284,9 @@ def test_ensemble_k_for_scales_with_sqrt_n():
     """Effect-size-preserving gate (GH #190): K = ENSEMBLE_K·sqrt(N/base), unchanged
     at the calibration N, 2× at 4× the replicates, sqrt(10)× at 10×."""
     assert differ.ensemble_k_for(differ.ENSEMBLE_K_BASE_N) == pytest.approx(differ.ENSEMBLE_K)
-    assert differ.ensemble_k_for(4 * differ.ENSEMBLE_K_BASE_N) == pytest.approx(2.0 * differ.ENSEMBLE_K)
+    assert differ.ensemble_k_for(4 * differ.ENSEMBLE_K_BASE_N) == pytest.approx(
+        2.0 * differ.ENSEMBLE_K
+    )
     assert differ.ensemble_k_for(100) == pytest.approx(
         differ.ENSEMBLE_K * (100 / differ.ENSEMBLE_K_BASE_N) ** 0.5
     )

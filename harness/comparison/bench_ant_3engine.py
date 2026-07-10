@@ -176,7 +176,10 @@ def main():
 
         # BNGsim
         bt = timed(
-            lambda ant_path=ant_path, t_end=t_end, n_steps=n_steps, timeout=args.bngsim_timeout: run_bngsim(
+            lambda ant_path=ant_path,
+            t_end=t_end,
+            n_steps=n_steps,
+            timeout=args.bngsim_timeout: run_bngsim(
                 ant_path, t_end, n_steps, bngsim_timeout=timeout
             )
         )

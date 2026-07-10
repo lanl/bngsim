@@ -121,9 +121,7 @@ class TestTypedSelectors:
         (meta,) = func_composition_result.resolve_outputs("  observable : A_tot ")
         assert meta["selector"] == "observable:A_tot"
 
-    def test_single_string_equivalent_to_one_element_list(
-        self, func_composition_result: Result
-    ):
+    def test_single_string_equivalent_to_one_element_list(self, func_composition_result: Result):
         as_str = func_composition_result.resolve_outputs("observable:A_tot")
         as_list = func_composition_result.resolve_outputs(["observable:A_tot"])
         assert as_str == as_list
@@ -155,9 +153,7 @@ class TestFunctionCallNormalization:
         (meta,) = func_composition_result.resolve_outputs("function:fRate_cond()")
         assert meta["selector"] == "expression:fRate_cond"
 
-    def test_expression_with_and_without_parens_agree(
-        self, func_composition_result: Result
-    ):
+    def test_expression_with_and_without_parens_agree(self, func_composition_result: Result):
         bare = func_composition_result.resolve_outputs("expression:fRate0")
         paren = func_composition_result.resolve_outputs("expression:fRate0()")
         assert bare == paren
@@ -194,9 +190,7 @@ class TestBareNames:
         (meta,) = func_composition_result.resolve_outputs("fRate0()")
         assert meta["selector"] == "expression:fRate0"
 
-    def test_bare_function_with_and_without_parens_agree(
-        self, func_composition_result: Result
-    ):
+    def test_bare_function_with_and_without_parens_agree(self, func_composition_result: Result):
         assert func_composition_result.resolve_outputs(
             "fRate_cond"
         ) == func_composition_result.resolve_outputs("fRate_cond()")
@@ -321,9 +315,7 @@ class TestOutputsAccessor:
     """``Result.outputs`` stacks the named columns into one array."""
 
     def test_shape_and_order(self, func_composition_result: Result):
-        vals = func_composition_result.outputs(
-            ["observable:A_tot", "expression:fRate0"]
-        )
+        vals = func_composition_result.outputs(["observable:A_tot", "expression:fRate0"])
         assert vals.shape == (func_composition_result.n_times, 2)
 
     def test_values_match_named_accessors(self, func_composition_result: Result):
@@ -336,9 +328,7 @@ class TestOutputsAccessor:
     def test_single_string_argument(self, func_composition_result: Result):
         vals = func_composition_result.outputs("observable:A_tot")
         assert vals.shape == (func_composition_result.n_times, 1)
-        np.testing.assert_array_equal(
-            vals[:, 0], func_composition_result.observables["A_tot"]
-        )
+        np.testing.assert_array_equal(vals[:, 0], func_composition_result.observables["A_tot"])
 
     def test_empty_selector_list(self, func_composition_result: Result):
         vals = func_composition_result.outputs([])

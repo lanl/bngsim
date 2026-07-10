@@ -200,6 +200,18 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "scripts/**" = ["E501"]
 "parity_checks/**" = ["E501"]
 
+# These test modules embed long single-line SBML/MathML reference documents
+# (one <sbml>/<species>/<reaction> chunk per line). XML inter-element and
+# inter-attribute whitespace is insignificant, so the data is deliberately kept
+# unwrapped for readability — reflowing it to 99 cols would only obscure the
+# fixture. E501 stays enforced on the test *code*; only these fixture-dominated
+# modules are exempt.
+"python/tests/test_jacobian_selfcheck.py" = ["E501"]
+"python/tests/test_rhs_nonneg_clamp.py" = ["E501"]
+"python/tests/test_sbml_no_species_time.py" = ["E501"]
+"python/tests/test_sbml_suite_grading.py" = ["E501"]
+"python/tests/test_sbml_variable_volume_dilution.py" = ["E501"]
+
 # ── cibuildwheel: binary wheels for Linux / macOS / Windows (GH #140) ─────────
 # Wheels bundle SuiteSparse/KLU: BNGSIM_REQUIRE_KLU=ON makes a build that cannot
 # find KLU fail loudly instead of silently shipping the dense-only fallback, and

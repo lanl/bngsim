@@ -446,7 +446,7 @@ def test_rateof_recorded_value_exact_at_t0():
 def test_rateof_of_local_parameter_is_zero():
     # The kinetic law rateOf(k) reads the kinetic-law-local k (constant) ⇒ 0, so
     # S never changes. (Previously load-failed on an unbound rate_of__k.)
-    body = """
+    body = f"""
       <model id="m">
         <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
         <listOfSpecies>
@@ -458,12 +458,12 @@ def test_rateof_of_local_parameter_is_zero():
             <listOfProducts><speciesReference species="S" stoichiometry="1" constant="true"/>
             </listOfProducts>
             <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
-              <apply>%s<ci>k</ci></apply></math>
+              <apply>{_RATEOF_CSYMBOL}<ci>k</ci></apply></math>
               <listOfLocalParameters><localParameter id="k" value="3"/></listOfLocalParameters>
             </kineticLaw>
           </reaction>
         </listOfReactions>
-      </model>""" % _RATEOF_CSYMBOL
+      </model>"""
     res = _run(bngsim.Model.from_sbml_string(_sbml(body)), t_end=5.0, n_points=6)
     S = _read_value(res, "S")
     np.testing.assert_allclose(S, 4.0, rtol=0, atol=1e-9)
@@ -608,7 +608,7 @@ def test_rateof_hosu_variable_volume_amount_rate_value():
     The reported amount-rate is the constant 0.4 for all t — NOT 0.4/V(0) = 0.8
     (unscaled) nor a drifting chain-rule value. Pins the ×volume_factor recovery on
     the variable-volume path."""
-    body = """
+    body = f"""
   <model id="varvol_rateof">
     <listOfCompartments>
       <compartment id="C" spatialDimensions="3" size="0.5" constant="false"/>
@@ -624,9 +624,9 @@ def test_rateof_hosu_variable_volume_amount_rate_value():
       <rateRule variable="C"><math xmlns="http://www.w3.org/1998/Math/MathML">
         <cn>0.2</cn></math></rateRule>
       <assignmentRule variable="x"><math xmlns="http://www.w3.org/1998/Math/MathML">
-        <apply>{csym}<ci>S</ci></apply></math></assignmentRule>
+        <apply>{_RATEOF_CSYMBOL}<ci>S</ci></apply></math></assignmentRule>
     </listOfRules>
-  </model>""".format(csym=_RATEOF_CSYMBOL)
+  </model>"""
     model = bngsim.Model.from_sbml_string(_sbml(body))
     res = _run(model, t_end=1.0, n_points=11)
     x = _read_value(res, "x")
@@ -645,7 +645,7 @@ def test_rateof_hosu_variable_volume_amount_rate_value():
 
 def test_rateof_in_initial_assignment_rate_rule():
     """01250: ``p2 = rateOf(p1)`` where p1 has rate rule 1 ⇒ p2 folds to 1."""
-    body = """
+    body = f"""
   <model id="m">
     <listOfParameters>
       <parameter id="p1" value="2" constant="false"/>
@@ -653,13 +653,13 @@ def test_rateof_in_initial_assignment_rate_rule():
     </listOfParameters>
     <listOfInitialAssignments>
       <initialAssignment symbol="p2"><math xmlns="http://www.w3.org/1998/Math/MathML">
-        <apply>{csym}<ci>p1</ci></apply></math></initialAssignment>
+        <apply>{_RATEOF_CSYMBOL}<ci>p1</ci></apply></math></initialAssignment>
     </listOfInitialAssignments>
     <listOfRules>
       <rateRule variable="p1"><math xmlns="http://www.w3.org/1998/Math/MathML">
         <cn>1</cn></math></rateRule>
     </listOfRules>
-  </model>""".format(csym=_RATEOF_CSYMBOL)
+  </model>"""
     model = bngsim.Model.from_sbml_string(_sbml(body))
     assert model.get_param("p2") == pytest.approx(1.0)
 
@@ -670,7 +670,7 @@ def test_rateof_in_initial_assignment_reaction_species():
 
     def _model(as_product: bool) -> str:
         ref = "listOfProducts" if as_product else "listOfReactants"
-        return """
+        return f"""
   <model id="m">
     <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
     <listOfSpecies>
@@ -680,7 +680,7 @@ def test_rateof_in_initial_assignment_reaction_species():
     <listOfParameters><parameter id="p2" constant="false"/></listOfParameters>
     <listOfInitialAssignments>
       <initialAssignment symbol="p2"><math xmlns="http://www.w3.org/1998/Math/MathML">
-        <apply>{csym}<ci>S</ci></apply></math></initialAssignment>
+        <apply>{_RATEOF_CSYMBOL}<ci>S</ci></apply></math></initialAssignment>
     </listOfInitialAssignments>
     <listOfReactions>
       <reaction id="J0" reversible="false">
@@ -688,7 +688,7 @@ def test_rateof_in_initial_assignment_reaction_species():
         <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>1</cn></math></kineticLaw>
       </reaction>
     </listOfReactions>
-  </model>""".format(csym=_RATEOF_CSYMBOL, ref=ref)
+  </model>"""
 
     prod = bngsim.Model.from_sbml_string(_sbml(_model(True)))
     reac = bngsim.Model.from_sbml_string(_sbml(_model(False)))
@@ -709,7 +709,7 @@ def test_rateof_event_trigger_fires_robustly_across_atol():
     ``p2 := 5``. rateOf(p1) = 0.01*p1 crosses at p1 = 1.05 ⇒ t = ln(1.05)/0.01. The
     fire is deterministic across solver tolerances — before the confirmation refresh
     it was seen only at some atols."""
-    body = """
+    body = f"""
   <model id="m">
     <listOfParameters>
       <parameter id="p1" value="1" constant="false"/>
@@ -723,7 +723,7 @@ def test_rateof_event_trigger_fires_robustly_across_atol():
       <event id="ev" useValuesFromTriggerTime="false">
         <trigger initialValue="false" persistent="true">
           <math xmlns="http://www.w3.org/1998/Math/MathML">
-            <apply><gt/><apply>{csym}<ci>p1</ci></apply><cn>0.0105</cn></apply>
+            <apply><gt/><apply>{_RATEOF_CSYMBOL}<ci>p1</ci></apply><cn>0.0105</cn></apply>
           </math>
         </trigger>
         <listOfEventAssignments>
@@ -732,7 +732,7 @@ def test_rateof_event_trigger_fires_robustly_across_atol():
         </listOfEventAssignments>
       </event>
     </listOfEvents>
-  </model>""".format(csym=_RATEOF_CSYMBOL)
+  </model>"""
     t_cross = math.log(1.05) / 0.01
     for atol in (1e-8, 1e-10, 1e-12, 1e-14):
         model = bngsim.Model.from_sbml_string(_sbml(body))

@@ -308,13 +308,19 @@ def effort_tier(case_id: str) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Authoritative-equivalent SBML Test Suite score for bngsim")
+    ap = argparse.ArgumentParser(
+        description="Authoritative-equivalent SBML Test Suite score for bngsim"
+    )
     ap.add_argument("--suite-dir", type=Path, default=DEFAULT_SUITE_DIR)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--case", type=str, default="", help="Score a single case (e.g. 00001)")
     ap.add_argument("--quick", type=int, default=0, help="First N cases after filters")
-    ap.add_argument("--reconcile", type=Path, default=None, help="Fair-harness results JSON to diff against")
-    ap.add_argument("--json", type=Path, default=Path(__file__).resolve().parent / "score_results.json")
+    ap.add_argument(
+        "--reconcile", type=Path, default=None, help="Fair-harness results JSON to diff against"
+    )
+    ap.add_argument(
+        "--json", type=Path, default=Path(__file__).resolve().parent / "score_results.json"
+    )
     add_effort_arg(ap)
     args = ap.parse_args()
 
@@ -361,11 +367,15 @@ def main() -> int:
     for label in (MATCH, NOMATCH, CANNOTSOLVE, UNSUPPORTED, ERROR, UNAVAILABLE, SKIPPED):
         print(f"  {label:12s} {counts.get(label, 0)}")
     if attempted:
-        print(f"\n  Correct among attempted (Match/(Match+NoMatch+Error)): "
-              f"{counts[MATCH]}/{attempted} = {100 * counts[MATCH] / attempted:.1f}%")
+        print(
+            f"\n  Correct among attempted (Match/(Match+NoMatch+Error)): "
+            f"{counts[MATCH]}/{attempted} = {100 * counts[MATCH] / attempted:.1f}%"
+        )
     if timecourse:
-        print(f"  In-scope TimeCourse Match: {tc_match}/{len(timecourse)} "
-              f"= {100 * tc_match / len(timecourse):.1f}%")
+        print(
+            f"  In-scope TimeCourse Match: {tc_match}/{len(timecourse)} "
+            f"= {100 * tc_match / len(timecourse):.1f}%"
+        )
 
     # Error cases are the ones to look at first: bngsim failed to produce a
     # correct result AND had no unsupported-tag excuse.
@@ -399,13 +409,19 @@ def main() -> int:
             print(f"\n{'=' * 64}")
             print(f"Reconciliation vs fair harness ({args.reconcile.name})")
             print(f"{'=' * 64}")
-            print(f"  compared: {rec['compared']}  agree: {rec['agree']}  disagree: {rec['disagree']}")
+            print(
+                f"  compared: {rec['compared']}  agree: {rec['agree']}  disagree: {rec['disagree']}"
+            )
             if rec["only_score_pass"]:
-                print(f"  Match here but fail in fair harness ({len(rec['only_score_pass'])}): "
-                      f"{', '.join(rec['only_score_pass'][:20])}")
+                print(
+                    f"  Match here but fail in fair harness ({len(rec['only_score_pass'])}): "
+                    f"{', '.join(rec['only_score_pass'][:20])}"
+                )
             if rec["only_fair_pass"]:
-                print(f"  Pass in fair harness but not Match here ({len(rec['only_fair_pass'])}): "
-                      f"{', '.join(rec['only_fair_pass'][:20])}")
+                print(
+                    f"  Pass in fair harness but not Match here ({len(rec['only_fair_pass'])}): "
+                    f"{', '.join(rec['only_fair_pass'][:20])}"
+                )
 
     args.json.write_text(json.dumps(payload, indent=2, default=str))
     print(f"\nResults: {args.json}")

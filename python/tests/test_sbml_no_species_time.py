@@ -18,7 +18,9 @@ import numpy as np
 import pytest
 
 _HDR = '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
-_TIME = '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+_TIME = (
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+)
 
 
 def _model(body: str) -> str:

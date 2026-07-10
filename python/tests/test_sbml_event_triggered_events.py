@@ -21,7 +21,6 @@ deterministic engine does not implement. This test only exercises delayed chains
 
 import bngsim
 import numpy as np
-import pytest
 
 # 01759: P1=0.5. E0(P1>1, delay 2 → P1=3), E1(P1>1, delay 1 → P1=0),
 # E2(time>0.65, no delay → P1=2). E2 lifts P1 above 1, arming E0/E1; thereafter

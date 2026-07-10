@@ -184,9 +184,7 @@ class TestSampleTimesNetworkFree:
         sample = [0, 1.3, 2.7, 4.1, 6.6, 9.0]
         r1 = self._sim(simple_decay_net, nfsim_xml, method).run(sample_times=sample, seed=11)
         r2 = self._sim(simple_decay_net, nfsim_xml, method).run(sample_times=sample, seed=11)
-        np.testing.assert_array_equal(
-            np.asarray(r1.observables), np.asarray(r2.observables)
-        )
+        np.testing.assert_array_equal(np.asarray(r1.observables), np.asarray(r2.observables))
 
     def test_single_segment_matches_uniform(self, simple_decay_net, nfsim_xml, method):
         """sample_times=[t_start, t_end] reproduces the n_points=2 uniform run.
@@ -199,9 +197,7 @@ class TestSampleTimesNetworkFree:
         r_uniform = self._sim(simple_decay_net, nfsim_xml, method).run(
             t_span=(0, 10), n_points=2, seed=5
         )
-        r_sample = self._sim(simple_decay_net, nfsim_xml, method).run(
-            sample_times=[0, 10], seed=5
-        )
+        r_sample = self._sim(simple_decay_net, nfsim_xml, method).run(sample_times=[0, 10], seed=5)
         np.testing.assert_array_equal(
             np.asarray(r_sample.observables), np.asarray(r_uniform.observables)
         )

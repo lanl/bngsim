@@ -7,7 +7,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from _sbml_features import extract_sbml_features
+# Sibling module, importable only after the sys.path insert above.
+from _sbml_features import extract_sbml_features  # noqa: E402
 
 # Test on BIOMD0000000012 if it exists
 test_model = HERE / "models" / "BIOMD0000000012" / "BIOMD0000000012_url.xml"

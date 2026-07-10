@@ -43,9 +43,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
-
 import bngsim
+import numpy as np
 
 _SUITE_DIR = Path(__file__).resolve().parent
 _BENCH_ROOT = _SUITE_DIR.parents[1]  # bngsim/benchmarks
@@ -220,7 +219,9 @@ def _xval_block(bng_tensor, ref_tensor, *, label):
     return stats
 
 
-def _validate_kind(r, bng_params, net_path, sbml, build_dir, kind, out_names, t_end, n_points, do_fd):
+def _validate_kind(
+    r, bng_params, net_path, sbml, build_dir, kind, out_names, t_end, n_points, do_fd
+):
     """Cross-validate one output kind (``observable`` or ``expression``).
 
     Builds an AMICI model with ``out_names`` registered as observables,
@@ -272,7 +273,7 @@ def validate_model(cfg, suite_by_name, *, do_fd=True):
 
     sm = suite_by_name.get(name, {})
     t_end = float(sm.get("t_end", 100))
-    n_points = int((sm.get("n_steps") or sm.get("n_points") or 200)) + 1
+    n_points = int(sm.get("n_steps") or sm.get("n_points") or 200) + 1
 
     m = bngsim.Model.from_net(str(net_path))
     obs_names = list(m.observable_names)
@@ -305,8 +306,16 @@ def validate_model(cfg, suite_by_name, *, do_fd=True):
         skip_reasons = []
         for kind, out_names in kinds:
             res = _validate_kind(
-                r, bng_params, net_path, sbml, Path(tmp) / f"build_{kind}",
-                kind, out_names, t_end, n_points, do_fd,
+                r,
+                bng_params,
+                net_path,
+                sbml,
+                Path(tmp) / f"build_{kind}",
+                kind,
+                out_names,
+                t_end,
+                n_points,
+                do_fd,
             )
             if res is None:
                 skip_reasons.append(f"{kind}: no alignable outputs/params")

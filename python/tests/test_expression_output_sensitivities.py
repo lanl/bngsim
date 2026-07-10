@@ -20,7 +20,6 @@ from pathlib import Path
 import bngsim
 import numpy as np
 import pytest
-
 from bngsim._jacobian import differentiate_expression_output_partials
 
 _env = os.environ.get("BNGSIM_TEST_DATA")
@@ -191,7 +190,10 @@ class TestDerivedParameter:
         kb = r.sensitivity_params.index("kbase")
         analytic = r.sensitivities_expressions[:, di, kb]
         h = 0.30 * 1e-6
-        fd = (np.asarray(run(0.30 + h).expressions["dfn"]) - np.asarray(run(0.30 - h).expressions["dfn"])) / (2 * h)
+        fd = (
+            np.asarray(run(0.30 + h).expressions["dfn"])
+            - np.asarray(run(0.30 - h).expressions["dfn"])
+        ) / (2 * h)
         _assert_fd_close(analytic, fd, float(np.max(np.abs(r.expressions["dfn"]))))
 
 
@@ -227,7 +229,11 @@ class TestSelectorAPI:
     def test_function_call_convention(self):
         # A trailing () is the .gdat header convention; resolve it to the column.
         r = _run_chain()
-        assert r.output_sensitivities("expression:ratio()").shape == (N_POINTS, 1, len(CHAIN_PARAMS))
+        assert r.output_sensitivities("expression:ratio()").shape == (
+            N_POINTS,
+            1,
+            len(CHAIN_PARAMS),
+        )
 
     def test_ic_axis_selector(self):
         r = _run_chain(params=("k1",), ic=["A()", "B()", "C()"])

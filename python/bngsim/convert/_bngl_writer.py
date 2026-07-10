@@ -137,10 +137,7 @@ def _molecule_names(
     """
     used: set[str] = {p["name"] for p in params if p["name"] not in shadow}
     used |= {f["name"] for f in functions}
-    mol_names = [
-        _sanitize(s["name"], used, fallback=f"S{i + 1}")
-        for i, s in enumerate(species)
-    ]
+    mol_names = [_sanitize(s["name"], used, fallback=f"S{i + 1}") for i, s in enumerate(species)]
     return used, mol_names
 
 
@@ -334,7 +331,8 @@ def bngl_capability_report(
     # has no `inf` literal and reads the token as an undefined parameter, aborting at
     # network generation. The .net/ExprTk channel carries them, so cBNGL-only.
     nonfinite = sorted(
-        p["name"] for p in data["parameters"]
+        p["name"]
+        for p in data["parameters"]
         if not p.get("expression") and not math.isfinite(float(p["value"]))
     )
     if nonfinite:
@@ -428,9 +426,7 @@ def _bng_stat_factor(reactants: list[int], products: list[int]) -> int:
     return out
 
 
-def _reaction_volume(
-    rxn: dict[str, Any], species: list[dict[str, Any]]
-) -> float:
+def _reaction_volume(rxn: dict[str, Any], species: list[dict[str, Any]]) -> float:
     """The volume BNG uses for a reaction's ``unit_conversion`` (its compartment).
 
     For ``n ≥ 1`` reactants (all in one compartment — cross-compartment is refused
@@ -543,9 +539,7 @@ def write_bngl(
     def _comp_for(vol: float) -> str:
         key = float(vol)
         if key not in vol_to_comp:
-            cid = _sanitize(
-                f"comp{len(vol_to_comp) + 1}", used_ids, fallback="comp"
-            )
+            cid = _sanitize(f"comp{len(vol_to_comp) + 1}", used_ids, fallback="comp")
             vol_to_comp[key] = cid
             comp_lines.append(f"    {cid} 3 {_fmt(key)}")
         return vol_to_comp[key]
@@ -672,9 +666,7 @@ def write_bngl(
     # ── actions (SBML events → BNGL protocol, #224 phase 2) ────────────────
     if protocol is not None and not protocol.is_empty:
         lines.append("")
-        lines.append(
-            _actions_block(protocol, mol_names, species_comp, species)
-        )
+        lines.append(_actions_block(protocol, mol_names, species_comp, species))
 
     text = "\n".join(lines) + "\n"
     if out_path is not None:
@@ -727,9 +719,7 @@ def _actions_block(
     )
 
 
-def _pattern_side(
-    indices: list[int], mol_names: list[str], species_comp: list[str]
-) -> str:
+def _pattern_side(indices: list[int], mol_names: list[str], species_comp: list[str]) -> str:
     """Render one side of a reaction rule as compartment-qualified ground patterns.
 
     An empty side (synthesis / degradation) is BNG's ``0``. Repeated indices

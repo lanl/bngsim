@@ -32,12 +32,7 @@ def _spawn_grandchild_script(tmp_path, pidfile, sleep_s: float = 300.0):
     """A 'driver' that launches a long-lived grandchild (records its PID) and
     then blocks — mirroring ``cc`` waiting on its ``clang -cc1`` backend."""
     script = tmp_path / "fake_cc.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        f"sleep {sleep_s} &\n"
-        f'echo $! > "{pidfile}"\n'
-        "wait\n"
-    )
+    script.write_text(f'#!/bin/sh\nsleep {sleep_s} &\necho $! > "{pidfile}"\nwait\n')
     script.chmod(0o755)
     return ["/bin/sh", str(script)]
 
@@ -120,9 +115,11 @@ def test_run_compile_abort_reaps_grandchild(tmp_path):
 
     import unittest.mock as mock
 
-    with mock.patch.object(subprocess.Popen, "communicate", fake_communicate):
-        with pytest.raises(KeyboardInterrupt):
-            cg._run_compile(cmd, timeout=30.0)
+    with (
+        mock.patch.object(subprocess.Popen, "communicate", fake_communicate),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        cg._run_compile(cmd, timeout=30.0)
 
     grandchild = _read_pid(pidfile)
     assert _wait_dead(grandchild), (
@@ -145,8 +142,6 @@ def test_run_compile_success_returns_completed_process(tmp_path):
 def test_run_compile_failure_surfaces_returncode_and_stderr(tmp_path):
     """A non-zero exit is returned (not raised) with stderr captured, matching
     how the callers test ``result.returncode`` / ``result.stderr``."""
-    result = cg._run_compile(
-        ["/bin/sh", "-c", "printf boom >&2; exit 3"], timeout=10.0
-    )
+    result = cg._run_compile(["/bin/sh", "-c", "printf boom >&2; exit 3"], timeout=10.0)
     assert result.returncode == 3
     assert "boom" in result.stderr

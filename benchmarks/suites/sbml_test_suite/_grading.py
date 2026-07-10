@@ -336,8 +336,12 @@ def _flux_eval(mini, resolve_sym, n, times):
             return np.abs(a[0])
         if op in ("lt", "leq", "gt", "geq", "eq", "neq"):
             cmp = {
-                "lt": np.less, "leq": np.less_equal, "gt": np.greater,
-                "geq": np.greater_equal, "eq": np.equal, "neq": np.not_equal,
+                "lt": np.less,
+                "leq": np.less_equal,
+                "gt": np.greater,
+                "geq": np.greater_equal,
+                "eq": np.equal,
+                "neq": np.not_equal,
             }[op]
             return cmp(a[0], a[1]).astype(float)
         if op == "piecewise":  # value0, cond0, value1, cond1, ..., [default]

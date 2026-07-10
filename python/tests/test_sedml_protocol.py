@@ -120,9 +120,7 @@ def test_best_effort_recovers_sequential_horizons() -> None:
 
 
 def test_nf_method_preserved_in_annotation() -> None:
-    p = parse_bngl_protocol(
-        'begin model\nend model\nsimulate_nf({t_end=>10,n_steps=>10})\n'
-    )
+    p = parse_bngl_protocol("begin model\nend model\nsimulate_nf({t_end=>10,n_steps=>10})\n")
     xml = write_sedml_protocol(p)
     assert read_sedml_protocol(xml).experiments[0].method == "nf"  # exact via annotation
 

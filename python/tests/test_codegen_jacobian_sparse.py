@@ -471,7 +471,8 @@ def test_net_codegen_fd_jacobian_appends_nothing(tmp_path):
     # jacobian="fd" must not append the analytical Jacobian to the .net .so (the
     # solver uses colored FD; the analytical terms are never derived). Confirms the
     # Simulator gate passes model=None for non-analytical strategies.
-    m = _prepared_sparse_model(tmp_path, 70)
+    # Writes sparse_chain_70.net into tmp_path; the model object itself is unused here.
+    _prepared_sparse_model(tmp_path, 70)
     net = str(tmp_path / "sparse_chain_70.net")
     # Mirror the Simulator gate: fd → no model passed.
     so = prepare_codegen(net, None)

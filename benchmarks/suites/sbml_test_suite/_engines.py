@@ -490,7 +490,11 @@ def _copasi_core(case_id, sbml_path, settings, exp_data, ent) -> dict:
             if not task.initialize(COPASI.CCopasiTask.OUTPUT_UI):
                 return {"status": "sim_fail", "error": "COPASI task init failed", "max_err": 0.0}
             if not task.process(True):
-                return {"status": "sim_fail", "error": "COPASI task process failed", "max_err": 0.0}
+                return {
+                    "status": "sim_fail",
+                    "error": "COPASI task process failed",
+                    "max_err": 0.0,
+                }
         except Exception as e:
             return {"status": "sim_fail", "error": str(e)[:200], "max_err": 0.0}
 

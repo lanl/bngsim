@@ -19,7 +19,6 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BNGSIM_ROOT = REPO_ROOT / "bngsim"
 VENDOR_DIR = BNGSIM_ROOT / "third_party" / "exprtk"
@@ -49,8 +48,7 @@ def run(cmd: list[str], cwd: Path | None = None, text: bool = True) -> subproces
         cmd,
         cwd=str(cwd) if cwd else None,
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=text,
     )
 
@@ -87,7 +85,9 @@ def remote_url(exprtk_repo: Path, remote: str) -> str | None:
 def canonical_remote_info(exprtk_repo: Path) -> tuple[str | None, str | None]:
     remotes = git_lines(exprtk_repo, ["remote"])
     canonical = [
-        remote for remote in remotes if is_canonical_upstream_remote(remote_url(exprtk_repo, remote))
+        remote
+        for remote in remotes
+        if is_canonical_upstream_remote(remote_url(exprtk_repo, remote))
     ]
     ordered: list[str] = []
     for preferred in ("origin", "upstream"):
@@ -192,7 +192,9 @@ def verify_source_checkout(exprtk_repo: Path) -> dict[str, str]:
 
     canonical_ref = f"{canonical_remote}/{DEFAULT_VENDOR_REF}"
     try:
-        canonical_commit = git(exprtk_repo, ["rev-parse", "--verify", f"{canonical_ref}^{{commit}}"])
+        canonical_commit = git(
+            exprtk_repo, ["rev-parse", "--verify", f"{canonical_ref}^{{commit}}"]
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"ExprTk checkout is missing {canonical_ref}. Fetch/prune the canonical remote first."
@@ -215,7 +217,9 @@ def read_vendor_metadata() -> dict | None:
 
 
 def header_bytes_from_commit(exprtk_repo: Path, commit: str) -> bytes:
-    return run(["git", "-C", str(exprtk_repo), "show", f"{commit}:{HEADER_NAME}"], text=False).stdout
+    return run(
+        ["git", "-C", str(exprtk_repo), "show", f"{commit}:{HEADER_NAME}"], text=False
+    ).stdout
 
 
 def sha256_hex(data: bytes) -> str:
@@ -346,10 +350,22 @@ def metadata_drift(
     guardrails = vendor_metadata.get("guardrails", {})
 
     expectations = [
-        ("source.authoritative_remote", source.get("authoritative_remote"), DEFAULT_UPSTREAM_REMOTE),
+        (
+            "source.authoritative_remote",
+            source.get("authoritative_remote"),
+            DEFAULT_UPSTREAM_REMOTE,
+        ),
         ("source.authoritative_branch", source.get("authoritative_branch"), DEFAULT_VENDOR_REF),
-        ("source.official_project_homepage", source.get("official_project_homepage"), OFFICIAL_PROJECT_HOMEPAGE),
-        ("source.official_project_download", source.get("official_project_download"), OFFICIAL_PROJECT_DOWNLOAD),
+        (
+            "source.official_project_homepage",
+            source.get("official_project_homepage"),
+            OFFICIAL_PROJECT_HOMEPAGE,
+        ),
+        (
+            "source.official_project_download",
+            source.get("official_project_download"),
+            OFFICIAL_PROJECT_DOWNLOAD,
+        ),
         ("source.upstream_remote", source.get("upstream_remote"), DEFAULT_UPSTREAM_REMOTE),
         ("source.commit", source.get("commit"), commit),
         ("files.header.path", header.get("path"), "bngsim/third_party/exprtk/exprtk.hpp"),
@@ -400,7 +416,9 @@ def print_summary(
     vendor_metadata: dict | None,
 ) -> None:
     vendored_header = VENDOR_DIR / HEADER_NAME
-    current_header_sha = sha256_hex(vendored_header.read_bytes()) if vendored_header.exists() else "missing"
+    current_header_sha = (
+        sha256_hex(vendored_header.read_bytes()) if vendored_header.exists() else "missing"
+    )
     current_commit = None
     if vendor_metadata:
         current_commit = vendor_metadata.get("source", {}).get("commit")
@@ -418,7 +436,9 @@ def print_summary(
     print(f"Current vendored commit: {current_commit or 'missing'}")
     print(f"Current vendored sha256: {current_header_sha}")
     print(f"Candidate sha256: {header_metadata['sha256']}")
-    print(f"Header diff: {header_diff_summary(vendored_header, header_bytes_from_commit(exprtk_repo, commit))}")
+    print(
+        f"Header diff: {header_diff_summary(vendored_header, header_bytes_from_commit(exprtk_repo, commit))}"
+    )
     print(
         "Upstream reserved identifiers: "
         f"{len(header_metadata['reserved_words'])} reserved_words, "
@@ -462,7 +482,9 @@ def main() -> int:
     vendor_metadata = read_vendor_metadata()
 
     if args.summary:
-        print_summary(exprtk_repo, checkout_info, resolved_ref, commit, header_metadata, vendor_metadata)
+        print_summary(
+            exprtk_repo, checkout_info, resolved_ref, commit, header_metadata, vendor_metadata
+        )
         return 0
 
     if args.check:
@@ -491,7 +513,9 @@ def main() -> int:
         )
         return 0
 
-    metadata = build_vendor_metadata(exprtk_repo, checkout_info, resolved_ref, commit, header_metadata)
+    metadata = build_vendor_metadata(
+        exprtk_repo, checkout_info, resolved_ref, commit, header_metadata
+    )
     write_refresh(exprtk_repo, header_bytes, metadata)
     print(
         "vendor_exprtk: refreshed bngsim/third_party/exprtk/exprtk.hpp and VENDOR.json "

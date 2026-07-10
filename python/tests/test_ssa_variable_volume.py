@@ -377,7 +377,8 @@ def test_tier1_synthesis_matches_extrande():
     for i in range(1, len(t)):
         z = abs(pb[i] - mean_cf[i]) / (se[i] + 1e-12)
         assert z < 5.0, (
-            f"synth Tier1 closed-form t={t[i]:.1f}: bng={pb[i]:.2f} exact={mean_cf[i]:.2f} z={z:.2f}"
+            f"synth Tier1 closed-form t={t[i]:.1f}: "
+            f"bng={pb[i]:.2f} exact={mean_cf[i]:.2f} z={z:.2f}"
         )
 
     # Independent stochastic oracle (Extrande) with a step-V(t) propensity.
@@ -394,9 +395,7 @@ def test_tier1_synthesis_matches_extrande():
     se2 = np.sqrt(nP.var(0, ddof=1) / reps + oref[:, :, 0].var(0, ddof=1) / reps)
     for i in range(1, len(t)):
         z = abs(pb[i] - pe[i]) / (se2[i] + 1e-12)
-        assert z < 5.0, (
-            f"synth Tier1 t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
-        )
+        assert z < 5.0, f"synth Tier1 t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
 _T2_SYNTH = """
@@ -429,7 +428,8 @@ def test_tier2_synthesis_matches_extrande():
     for i in range(1, len(t)):
         z = abs(pb[i] - mean_cf[i]) / (se[i] + 1e-12)
         assert z < 5.0, (
-            f"synth Tier2 closed-form t={t[i]:.1f}: bng={pb[i]:.2f} exact={mean_cf[i]:.2f} z={z:.2f}"
+            f"synth Tier2 closed-form t={t[i]:.1f}: "
+            f"bng={pb[i]:.2f} exact={mean_cf[i]:.2f} z={z:.2f}"
         )
 
     ref = ext.RefModel(
@@ -444,9 +444,7 @@ def test_tier2_synthesis_matches_extrande():
     se2 = np.sqrt(nP.var(0, ddof=1) / reps + oref[:, :, 0].var(0, ddof=1) / reps)
     for i in range(1, len(t)):
         z = abs(pb[i] - pe[i]) / (se2[i] + 1e-12)
-        assert z < 5.0, (
-            f"synth Tier2 t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
-        )
+        assert z < 5.0, f"synth Tier2 t={t[i]:.1f}: bng={pb[i]:.2f} ext={pe[i]:.2f} z={z:.2f}"
 
 
 # A *bare* zeroth-order law ``k`` (no compartment factor, p=0) in a varvol
@@ -519,7 +517,9 @@ def test_case1_hosu_decay_rate_rule_matches_oracle():
     ref = ext.RefModel(
         species=["H"],
         x0={"H": H0},
-        reactions=[ext.ReactionSpec(stoich={"H": -1}, propensity=lambda s: k * s["cell"] * s["H"])],
+        reactions=[
+            ext.ReactionSpec(stoich={"H": -1}, propensity=lambda s: k * s["cell"] * s["H"])
+        ],
         cont={"cell": lambda s: g},
         c0={"cell": V0},
     )
@@ -1014,7 +1014,6 @@ def test_c4_cross_compartment_ode_matches_semantics():
         rho = k * (A / Vc) * (B / Vd)
         return np.array([-rho, -rho, rho, g])
 
-    ref = {0.0: np.array([A, B, P, Vc])}
     dt = 1e-3
     state = np.array([A, B, P, Vc])
     tt = 0.0
@@ -1254,8 +1253,7 @@ def test_c4_c5_analytical_jacobian_matches_finite_difference(name):
         # relative error (an analytically-exact 0 vs FD noise ~1e-8 is a match).
         bad = (abs_err > 1e-6) & (abs_err / denom > 1e-4)
         assert not bad.any(), (
-            f"{name}: analytical≠FD at {np.argwhere(bad).tolist()} "
-            f"an={an[bad]} fd={fd[bad]}"
+            f"{name}: analytical≠FD at {np.argwhere(bad).tolist()} an={an[bad]} fd={fd[bad]}"
         )
 
 

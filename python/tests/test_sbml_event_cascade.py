@@ -229,9 +229,7 @@ def test_same_seed_is_reproducible():
     reproducibility contract for equal-priority event models."""
     _, r1 = _run(_COMPETE, t_end=20, n_points=201, seed=12345)
     _, r2 = _run(_COMPETE, t_end=20, n_points=201, seed=12345)
-    np.testing.assert_array_equal(
-        np.asarray(r1.observables["Q"]), np.asarray(r2.observables["Q"])
-    )
+    np.testing.assert_array_equal(np.asarray(r1.observables["Q"]), np.asarray(r2.observables["Q"]))
 
 
 def test_different_seeds_change_the_realization():
@@ -249,9 +247,7 @@ def test_default_seed_is_reproducible_across_runs():
     no-arg runs are identical (not drawn fresh from entropy like SSA)."""
     _, r1 = _run(_COMPETE, t_end=20, n_points=201)
     _, r2 = _run(_COMPETE, t_end=20, n_points=201)
-    np.testing.assert_array_equal(
-        np.asarray(r1.observables["Q"]), np.asarray(r2.observables["Q"])
-    )
+    np.testing.assert_array_equal(np.asarray(r1.observables["Q"]), np.asarray(r2.observables["Q"]))
 
 
 # Two events with DISTINCT priorities assigning the same variable: the RNG must
@@ -346,14 +342,14 @@ _DELAYED_COMPETE = _COMPETE_SBML.replace(
     "{qinc}",
     _compete_event("Qinc", "Q").replace(
         "<listOfEventAssignments>",
-        "<delay><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><cn>0.25</cn></math></delay>"
+        '<delay><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.25</cn></math></delay>'
         "<listOfEventAssignments>",
     ),
 ).replace(
     "{rinc}",
     _compete_event("Rinc", "R").replace(
         "<listOfEventAssignments>",
-        "<delay><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><cn>0.25</cn></math></delay>"
+        '<delay><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>0.25</cn></math></delay>'
         "<listOfEventAssignments>",
     ),
 )

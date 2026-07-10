@@ -90,7 +90,7 @@ def test_budget_is_monotonic_in_species():
     """More species never buys *less* derivation time."""
     samples = [0, 500, 4000, 8000, 15000, _FD_NONVIABLE_SPECIES - 1]
     budgets = [_derivation_budget_s(n_species=n) for n in samples]
-    assert all(a <= b for a, b in zip(budgets, budgets[1:]))
+    assert all(a <= b for a, b in zip(budgets, budgets[1:], strict=False))
 
 
 def test_scaled_budget_covers_gs_sparced_derivation():

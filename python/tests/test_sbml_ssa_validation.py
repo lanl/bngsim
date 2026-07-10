@@ -243,9 +243,7 @@ def test_compartment_rate_rule_simulator_constructs():
     model = bngsim.Model.from_sbml_string(COMPARTMENT_RATE_RULE_SBML)
     sim = bngsim.Simulator(model, method="ssa")  # no SsaValidationError
     reps, k, A0 = 1200, 0.01, 100
-    res = sim.run_batch(
-        t_span=(0.0, 50.0), n_points=11, params=[{} for _ in range(reps)], seed=4
-    )
+    res = sim.run_batch(t_span=(0.0, 50.0), n_points=11, params=[{} for _ in range(reps)], seed=4)
     names = list(res[0].species_names)
     nA = np.stack([np.asarray(r.species) for r in res], axis=0)[:, :, names.index("A")]
     assert np.allclose(nA, np.round(nA))  # integer counts (V_static = 1)

@@ -22,9 +22,7 @@ from bngsim.convert import (
 )
 from bngsim.convert._net_writer import _rateof_refs, capability_report
 
-pytestmark = pytest.mark.skipif(
-    not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml"
-)
+pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
 _BNGSIM = Path(__file__).resolve().parents[2]
 _EVENTS = _BNGSIM / "benchmarks" / "sbml_events"

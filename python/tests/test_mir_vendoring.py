@@ -13,7 +13,6 @@ import hashlib
 import json
 from pathlib import Path
 
-
 BNGSIM_ROOT = Path(__file__).resolve().parents[2]
 MIR_DIR = BNGSIM_ROOT / "third_party" / "mir"
 MIR_VENDOR_METADATA = MIR_DIR / "VENDOR.json"

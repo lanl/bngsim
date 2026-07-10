@@ -29,9 +29,7 @@ from bngsim.convert._sbml_writer import (
     sbml_capability_report,
 )
 
-pytestmark = pytest.mark.skipif(
-    not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml"
-)
+pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
 _BNGSIM = Path(__file__).resolve().parents[2]
 _DATA = _BNGSIM / "tests" / "data"
@@ -151,9 +149,7 @@ def test_translator_infix_and_or() -> None:
     untouched."""
     import libsbml
 
-    ast = _exprtk_to_ast(
-        "if((time()>=50) and (time()<=100), 1, 0)", where="t"
-    )
+    ast = _exprtk_to_ast("if((time()>=50) and (time()<=100), 1, 0)", where="t")
     assert libsbml.formulaToL3String(ast) == "piecewise(1, (time >= 50) && (time <= 100), 0)"
 
     ast = _exprtk_to_ast("if((a<=1) or (b>=2), 1, 0)", where="t")
@@ -216,9 +212,7 @@ def test_translator_zero_arg_observable_call() -> None:
     """An observable referenced as ``Atot()`` collapses to the bareword."""
     import libsbml
 
-    ast = _exprtk_to_ast(
-        "k1*Atot()", where="t", scalar_names=frozenset({"k1", "Atot"})
-    )
+    ast = _exprtk_to_ast("k1*Atot()", where="t", scalar_names=frozenset({"k1", "Atot"}))
     assert libsbml.formulaToL3String(ast) == "k1 * Atot"
 
 
@@ -291,9 +285,9 @@ def test_nonunit_volume_roundtrips_faithfully(name: str, tmp_path: Path) -> None
         vols = {float(s.get("volume_factor", 1.0)) for s in data["species"]}
         assert vols != {1.0}, f"{name} has only unit volume; not a useful case"
         rep = sbml_capability_report(model)
-        assert not any(
-            "volume" in note or "mis-scale" in note for note in rep["lossy"]
-        ), rep["lossy"]
+        assert not any("volume" in note or "mis-scale" in note for note in rep["lossy"]), rep[
+            "lossy"
+        ]
         write_sbml(model, tmp_path / "rt.xml", strict=True)  # must not raise
         back = bngsim.Model.from_sbml(tmp_path / "rt.xml")
     assert _rhs_max_delta(model, back) <= 1e-9
@@ -672,8 +666,15 @@ def test_cli_sbml2net_gate_full_lossy_exits_nonzero(tmp_path: Path) -> None:
     from bngsim.convert._cli import main as sbml2net_main
 
     rc = sbml2net_main(
-        [str(_SMITH), "-o", str(tmp_path / "smith.net"), "--gate", "full",
-         "--allow-lossy", "--quiet"]
+        [
+            str(_SMITH),
+            "-o",
+            str(tmp_path / "smith.net"),
+            "--gate",
+            "full",
+            "--allow-lossy",
+            "--quiet",
+        ]
     )
     assert rc == 1
 

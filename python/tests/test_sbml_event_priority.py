@@ -72,9 +72,7 @@ def test_fractional_priority_not_truncated_to_tie():
     Under the old int-truncation both priorities became 2 → a tie → declaration
     order → Ea first, Eb last → w=20 (wrong). The fix keeps them distinct doubles.
     """
-    sbml = _sbml(
-        _event("Ea", "<cn>2.2</cn>", 10) + _event("Eb", "<cn>2.8</cn>", 20)
-    )
+    sbml = _sbml(_event("Ea", "<cn>2.2</cn>", 10) + _event("Eb", "<cn>2.8</cn>", 20))
     assert _final_w(sbml) == pytest.approx(10.0)
 
 
@@ -86,7 +84,6 @@ def test_fractional_vs_integer_priority_orders_correctly():
     Ehi last → w=10 (wrong). The fix orders Ehi(2.5) > Elo(2) correctly.
     """
     sbml = _sbml(
-        _event("Elo", "<cn type=\"integer\">2</cn>", 20)
-        + _event("Ehi", "<cn>2.5</cn>", 10)
+        _event("Elo", '<cn type="integer">2</cn>', 20) + _event("Ehi", "<cn>2.5</cn>", 10)
     )
     assert _final_w(sbml) == pytest.approx(20.0)

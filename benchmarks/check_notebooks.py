@@ -8,7 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-
 NOTEBOOK_ROOTS = (Path(__file__).resolve().parent / "suites" / "showcase",)
 LOCAL_PATH_RE = re.compile(r"/Users/|/home/|~/|[A-Z]:\\\\")
 

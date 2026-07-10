@@ -185,7 +185,12 @@ class TestSsaMatrix:
             "NO SIGNAL",
             "verdict-refused",
         )
-        assert gm._ssa_verdict_badges("PASS", None) == ("PASS", "verdict-pass", "PASS", "verdict-pass")
+        assert gm._ssa_verdict_badges("PASS", None) == (
+            "PASS",
+            "verdict-pass",
+            "PASS",
+            "verdict-pass",
+        )
         assert gm._ssa_row_class("DIFF", "bngsim_suspect")[0] == "status-failed"
         assert gm._ssa_row_class("DIFF", "ode_level")[0] == "status-failed"
         assert gm._ssa_row_class("DIFF", "rr_known")[0] == "status-triaged"

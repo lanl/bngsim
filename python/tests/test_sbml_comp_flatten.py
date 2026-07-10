@@ -14,12 +14,10 @@ the scoped-rename and id-disambiguation behaviour is exactly what flattening
 buys, and is checked against closed-form trajectories.
 """
 
-import numpy as np
-
 import bngsim
-from bngsim._sbml_loader import _doc_uses_comp
-
 import libsbml
+import numpy as np
+from bngsim._sbml_loader import _doc_uses_comp
 
 
 def _modeldef(defid: str, k: float) -> str:

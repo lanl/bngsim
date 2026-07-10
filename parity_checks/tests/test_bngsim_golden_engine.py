@@ -51,12 +51,12 @@ MODELS = _BNG_PARITY / "models"
 # --------------------------------------------------------------------------- #
 # Unit: the track classifier (no engine needed — pure text -> engine decision).
 # --------------------------------------------------------------------------- #
-_ODE_BNGL = "simulate({method=>\"ode\",t_end=>10,n_steps=>10})"
-_SSA_BNGL = "simulate({method=>\"ssa\",t_end=>10,n_steps=>10,seed=>1})"
-_NF_BNGL = "simulate({method=>\"nf\",t_end=>10,n_steps=>10,seed=>1})"
-_RM_BNGL = "simulate({method=>\"rm\",t_end=>10,n_steps=>10,seed=>1})"
-_PSA_BNGL = "simulate({method=>\"ssa\",poplevel=>100,t_end=>10,n_steps=>10,seed=>1})"
-_PLA_BNGL = "simulate({method=>\"pla\",t_end=>10,n_steps=>10})"
+_ODE_BNGL = 'simulate({method=>"ode",t_end=>10,n_steps=>10})'
+_SSA_BNGL = 'simulate({method=>"ssa",t_end=>10,n_steps=>10,seed=>1})'
+_NF_BNGL = 'simulate({method=>"nf",t_end=>10,n_steps=>10,seed=>1})'
+_RM_BNGL = 'simulate({method=>"rm",t_end=>10,n_steps=>10,seed=>1})'
+_PSA_BNGL = 'simulate({method=>"ssa",poplevel=>100,t_end=>10,n_steps=>10,seed=>1})'
+_PLA_BNGL = 'simulate({method=>"pla",t_end=>10,n_steps=>10})'
 
 
 @pytest.mark.parametrize(
@@ -180,5 +180,7 @@ def test_legacy_bngl_route_is_bng2pl_not_bngsim(run_network_moved_aside):
 
     model = MODELS / "fast/rulehub/Examples/biology/aktsignaling/akt-signaling.bngl"
     out = tempfile.mkdtemp(prefix="bridge_bngl_route_")
-    with pytest.raises(Exception):
+    # Broad on purpose: the point is that the route CRASHES with run_network gone;
+    # the exact error (missing-binary / subprocess / bionetgen) is not what we pin.
+    with pytest.raises(Exception):  # noqa: B017
         bionetgen.run(str(model), out=out, simulator="bngsim")
