@@ -1,2 +1,8 @@
 # Sphinx build output
 docs/_build/
+
+# scikit-build-core build tree (build-dir = "build/{wheel_tag}")
+/build/
+
+# Python bytecode caches
+__pycache__/
