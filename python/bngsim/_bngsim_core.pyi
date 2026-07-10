@@ -6,7 +6,7 @@ import collections.abc
 import numpy
 import numpy.typing
 import typing
-__all__: list[str] = ['CvodeSimulator', 'HAS_KLU', 'HAS_LAPACK_DENSE', 'HAS_NFSIM', 'HAS_RULEMONKEY', 'ModelBuilder', 'NetworkModel', 'NfsimSimulator', 'ResultCore', 'RuleMonkeySimulator', 'SolverOptions', 'SolverStats', 'SsaDiagnostics', 'SsaSimulator', 'SteadyStateOptions', 'SteadyStateResultCore', 'TimeSpec', 'bench_ssa_propensity_jit', 'emit_ssa_propensity_source_structure', 'find_steady_state', 'reserved_names']
+__all__: list[str] = ['CvodeSimulator', 'HAS_KLU', 'HAS_LAPACK_DENSE', 'HAS_MIR', 'HAS_NFSIM', 'HAS_RULEMONKEY', 'ModelBuilder', 'NetworkModel', 'NfsimSimulator', 'ResultCore', 'RuleMonkeySimulator', 'SolverOptions', 'SolverStats', 'SsaDiagnostics', 'SsaSimulator', 'SteadyStateOptions', 'SteadyStateResultCore', 'TimeSpec', 'bench_ssa_propensity_jit', 'emit_ssa_propensity_source_structure', 'find_steady_state', 'reserved_names']
 class CvodeSimulator:
     def __init__(self, model: NetworkModel) -> None:
         """
@@ -887,6 +887,7 @@ def reserved_names() -> dict:
     """
 HAS_KLU: bool = True
 HAS_LAPACK_DENSE: bool = True
+HAS_MIR: bool = True
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
 __build_commit__: str = '9b0f2804b36f+dirty'

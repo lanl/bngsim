@@ -4410,8 +4410,8 @@ def generate_jacobian_from_model(model) -> str | None:
             fixed_set = sorted(int(r) for r in plan["fixed_rows"])
             fixed_arr = np.array(fixed_set, dtype=row_indices.dtype)
             fixed_csc = np.nonzero(np.isin(row_indices, fixed_arr))[0]
-            for csc in fixed_csc.tolist():
-                _emit(f"    jac_data[{int(csc)}] = 0.0;")
+            for fixed_i in fixed_csc:
+                _emit(f"    jac_data[{int(fixed_i)}] = 0.0;")
         else:
             for row in plan["fixed_rows"]:
                 _emit(
