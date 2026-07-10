@@ -1243,10 +1243,13 @@ def generate_rhs_c(net_path: str) -> str:
     # ── Tier-1 chunking: NOINLINE reaction blocks at file scope ───────────
     # Prototypes precede the definitions so the driver TU can call the blocks
     # after compile_rhs lifts their bodies into separate units (GH #160).
+    # BNGSIM_EXPORT (below) tags the entry points so they are visible from the
+    # built library on Windows and must be defined for every model, chunked or
+    # not; BNGSIM_NOINLINE is used only by the chunked blocks (lanl/bngsim #5).
+    for ln in _CODEGEN_PRELUDE_LINES:
+        _emit(ln)
+    _emit("")
     if chunk:
-        for ln in _CODEGEN_PRELUDE_LINES:
-            _emit(ln)
-        _emit("")
         for ln in (
             *rxn_block_protos,
             "",
@@ -1659,12 +1662,12 @@ def _emit_sens_rhs_body(
     _emit(f"#define N_SPECIES {n_sp}")
     _emit(f"#define N_PARAMS  {n_params}")
     _emit("")
-    if chunk:
-        # Guarded — the combined .so concatenates this after the (already chunked)
-        # RHS source, which defines the same macro.
-        for ln in _CODEGEN_PRELUDE_LINES:
-            _emit(ln)
-        _emit("")
+    # Emit unconditionally so BNGSIM_EXPORT is defined even when this sensitivity
+    # source compiles without a chunked RHS ahead of it (lanl/bngsim #5). The
+    # #ifndef guards no-op it when the combined .so already defined the macros.
+    for ln in _CODEGEN_PRELUDE_LINES:
+        _emit(ln)
+    _emit("")
 
     # ── df/dp function: computes partial derivatives w.r.t. one parameter ──
     _emit("/* Compute df/dp_{iP} - partial derivative of RHS w.r.t. parameter iP.")
@@ -3518,10 +3521,12 @@ def generate_rhs_from_model(model) -> str:
     # blocks read inv_vf at file scope (vs. the local static in the flat path),
     # so hoist its table here when needed — it lands in the source prefix the
     # shard splitter prepends to every unit, so each unit still sees it.
+    # Emit the prelude unconditionally so BNGSIM_EXPORT is defined for every
+    # model (lanl/bngsim #5); BNGSIM_NOINLINE stays used only by chunked blocks.
+    for ln in _CODEGEN_PRELUDE_LINES:
+        _emit(ln)
+    _emit("")
     if chunk:
-        for ln in _CODEGEN_PRELUDE_LINES:
-            _emit(ln)
-        _emit("")
         if needs_inv_vf:
             _emit("/* 1/volume_factor per species (cross-compartment unified emission) */")
             _emit(f"static const double inv_vf[N_SPECIES] = {{ {', '.join(inv_vf_terms)} }};")
