@@ -12,8 +12,8 @@
 #include <pybind11/stl.h>
 
 #include <bngsim/bngsim.hpp>
-#include <bngsim/function_columns.hpp>
 #include <bngsim/cc_jit.hpp>
+#include <bngsim/function_columns.hpp>
 #include <bngsim/mir_jit.hpp>
 #include <bngsim/steady_state.hpp>
 #include <bngsim/wallclock.hpp>
@@ -521,22 +521,24 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // IC sensitivity data
         .def_property_readonly("n_sens_ic_species", &bngsim::Result::n_sens_ic_species)
         .def_property_readonly("sens_ic_species_names", &bngsim::Result::sens_ic_species_names)
-        .def_property_readonly("sensitivity_ic_data", [](const bngsim::Result &r) {
-            int nt = r.n_times();
-            int ns = r.n_species();
-            int nic = r.n_sens_ic_species();
-            if (nic == 0 || r.sensitivity_ic_data().empty()) {
-                return py::array_t<double>({0, 0, 0});
-            }
-            auto *vec = new std::vector<double>(r.sensitivity_ic_data());
-            auto capsule =
-                py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
-            return py::array_t<double>({nt, ns, nic},
-                                       {static_cast<py::ssize_t>(ns * nic * sizeof(double)),
-                                        static_cast<py::ssize_t>(nic * sizeof(double)),
-                                        static_cast<py::ssize_t>(sizeof(double))},
-                                       vec->data(), capsule);
-        })
+        .def_property_readonly(
+            "sensitivity_ic_data",
+            [](const bngsim::Result &r) {
+                int nt = r.n_times();
+                int ns = r.n_species();
+                int nic = r.n_sens_ic_species();
+                if (nic == 0 || r.sensitivity_ic_data().empty()) {
+                    return py::array_t<double>({0, 0, 0});
+                }
+                auto *vec = new std::vector<double>(r.sensitivity_ic_data());
+                auto capsule =
+                    py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
+                return py::array_t<double>({nt, ns, nic},
+                                           {static_cast<py::ssize_t>(ns * nic * sizeof(double)),
+                                            static_cast<py::ssize_t>(nic * sizeof(double)),
+                                            static_cast<py::ssize_t>(sizeof(double))},
+                                           vec->data(), capsule);
+            })
         // GH #196 — observable/expression output sensitivities (storage only).
         // Shape (n_times, n_rows, depth), or empty (0,0,0) when not computed.
         // The parameter blocks share the species parameter axis (n_sens_params);
@@ -751,8 +753,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) {
                 const auto &seed = self.pending_sens_seed();
-                const auto np = static_cast<py::ssize_t>(
-                    self.pending_sens_seed_param_names().size());
+                const auto np =
+                    static_cast<py::ssize_t>(self.pending_sens_seed_param_names().size());
                 const auto ns = static_cast<py::ssize_t>(self.n_species());
                 if (seed.empty() || np == 0) {
                     return py::array_t<double>(std::vector<py::ssize_t>{0, 0});
@@ -1892,7 +1894,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 cc_compile_ms = chr::duration<double, std::milli>(k1 - k0).count();
                 return cc->symbol<PropFn>("bngsim_ssa_propensities");
             });
-            (void) sink;
+            (void)sink;
 
             py::dict out;
             out["n_species"] = ns;

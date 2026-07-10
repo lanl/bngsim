@@ -20,11 +20,11 @@
 #include <string>
 
 #if defined(BNGSIM_HAS_MIR)
+#include <cmath> // libm addresses for the Windows import table (GH #3)
 #include <cstddef>
 #include <cstdio>  // open_memstream/tmpfile, FILE, fflush, fclose, stderr
 #include <cstdlib> // free
 #include <cstring> // std::memset, std::memcpy, std::strcmp
-#include <cmath>   // libm addresses for the Windows import table (GH #3)
 #ifndef _WIN32
 #include <dlfcn.h> // dlsym(RTLD_DEFAULT) — POSIX import resolver
 #endif
@@ -63,23 +63,49 @@ inline void *mir_import_resolver(const char *name) {
     };
     // Cast through the exact C signature to pick the right <cmath> overload.
 #define BNGSIM_MIR_D1(fn)                                                                          \
-    {#fn, reinterpret_cast<void *>(static_cast<double (*)(double)>(&std::fn))}
+    { #fn, reinterpret_cast<void *>(static_cast<double (*)(double)>(&std::fn)) }
 #define BNGSIM_MIR_D2(fn)                                                                          \
-    {#fn, reinterpret_cast<void *>(static_cast<double (*)(double, double)>(&std::fn))}
+    { #fn, reinterpret_cast<void *>(static_cast<double (*)(double, double)>(&std::fn)) }
     static const Entry table[] = {
-        BNGSIM_MIR_D2(pow),      BNGSIM_MIR_D1(exp),      BNGSIM_MIR_D1(exp2),
-        BNGSIM_MIR_D1(expm1),    BNGSIM_MIR_D1(log),      BNGSIM_MIR_D1(log2),
-        BNGSIM_MIR_D1(log10),    BNGSIM_MIR_D1(log1p),    BNGSIM_MIR_D1(logb),
-        BNGSIM_MIR_D1(sqrt),     BNGSIM_MIR_D1(cbrt),     BNGSIM_MIR_D2(hypot),
-        BNGSIM_MIR_D1(fabs),     BNGSIM_MIR_D2(fmax),     BNGSIM_MIR_D2(fmin),
-        BNGSIM_MIR_D2(fmod),     BNGSIM_MIR_D2(copysign), BNGSIM_MIR_D1(floor),
-        BNGSIM_MIR_D1(ceil),     BNGSIM_MIR_D1(round),    BNGSIM_MIR_D1(trunc),
-        BNGSIM_MIR_D1(rint),     BNGSIM_MIR_D1(nearbyint), BNGSIM_MIR_D1(sin),
-        BNGSIM_MIR_D1(cos),      BNGSIM_MIR_D1(tan),      BNGSIM_MIR_D1(asin),
-        BNGSIM_MIR_D1(acos),     BNGSIM_MIR_D1(atan),     BNGSIM_MIR_D2(atan2),
-        BNGSIM_MIR_D1(sinh),     BNGSIM_MIR_D1(cosh),     BNGSIM_MIR_D1(tanh),
-        BNGSIM_MIR_D1(asinh),    BNGSIM_MIR_D1(acosh),    BNGSIM_MIR_D1(atanh),
-        BNGSIM_MIR_D1(erf),      BNGSIM_MIR_D1(erfc),     BNGSIM_MIR_D1(tgamma),
+        BNGSIM_MIR_D2(pow),
+        BNGSIM_MIR_D1(exp),
+        BNGSIM_MIR_D1(exp2),
+        BNGSIM_MIR_D1(expm1),
+        BNGSIM_MIR_D1(log),
+        BNGSIM_MIR_D1(log2),
+        BNGSIM_MIR_D1(log10),
+        BNGSIM_MIR_D1(log1p),
+        BNGSIM_MIR_D1(logb),
+        BNGSIM_MIR_D1(sqrt),
+        BNGSIM_MIR_D1(cbrt),
+        BNGSIM_MIR_D2(hypot),
+        BNGSIM_MIR_D1(fabs),
+        BNGSIM_MIR_D2(fmax),
+        BNGSIM_MIR_D2(fmin),
+        BNGSIM_MIR_D2(fmod),
+        BNGSIM_MIR_D2(copysign),
+        BNGSIM_MIR_D1(floor),
+        BNGSIM_MIR_D1(ceil),
+        BNGSIM_MIR_D1(round),
+        BNGSIM_MIR_D1(trunc),
+        BNGSIM_MIR_D1(rint),
+        BNGSIM_MIR_D1(nearbyint),
+        BNGSIM_MIR_D1(sin),
+        BNGSIM_MIR_D1(cos),
+        BNGSIM_MIR_D1(tan),
+        BNGSIM_MIR_D1(asin),
+        BNGSIM_MIR_D1(acos),
+        BNGSIM_MIR_D1(atan),
+        BNGSIM_MIR_D2(atan2),
+        BNGSIM_MIR_D1(sinh),
+        BNGSIM_MIR_D1(cosh),
+        BNGSIM_MIR_D1(tanh),
+        BNGSIM_MIR_D1(asinh),
+        BNGSIM_MIR_D1(acosh),
+        BNGSIM_MIR_D1(atanh),
+        BNGSIM_MIR_D1(erf),
+        BNGSIM_MIR_D1(erfc),
+        BNGSIM_MIR_D1(tgamma),
         BNGSIM_MIR_D1(lgamma),
         {"memset",
          reinterpret_cast<void *>(static_cast<void *(*)(void *, int, std::size_t)>(&std::memset))},

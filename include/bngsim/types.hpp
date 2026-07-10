@@ -241,9 +241,9 @@ struct Reaction {
     // path ignores this. Applied AFTER the scalar correction; a reaction uses one
     // mechanism or the other, never both.
     struct LiveVolumeTerm {
-        int live_idx0;    // promoted compartment species index (stored value = V_live)
-        double v_static;  // V_c at load time (the propensity-correction numerator)
-        double exp;       // m_c: hOSU=false reactant law-factor count in compartment c
+        int live_idx0;   // promoted compartment species index (stored value = V_live)
+        double v_static; // V_c at load time (the propensity-correction numerator)
+        double exp;      // m_c: hOSU=false reactant law-factor count in compartment c
     };
     std::vector<LiveVolumeTerm> ssa_live_volume_terms;
 

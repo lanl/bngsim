@@ -295,8 +295,7 @@ class NetworkModel {
     // (which advances state without tracking dx/dθ, invalidating the seed).
     const std::vector<double> &pending_sens_seed() const;
     const std::vector<std::string> &pending_sens_seed_param_names() const;
-    void set_pending_sens_seed(std::vector<double> seed,
-                               std::vector<std::string> param_names);
+    void set_pending_sens_seed(std::vector<double> seed, std::vector<std::string> param_names);
     void clear_pending_sens_seed();
 
     // ─── Table functions ────────────────────────────────────────────────────

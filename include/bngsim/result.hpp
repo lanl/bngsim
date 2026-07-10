@@ -248,10 +248,10 @@ class Result {
     // GH #196 — observable/expression output sensitivities (storage only; empty
     // until a later stage populates them). Parameter axis = sens_param_names_;
     // IC axis = sens_ic_species_names_. Row counts recovered from buffer size.
-    std::vector<double> observable_sensitivities_;     // [time][observable][param]
-    std::vector<double> expression_sensitivities_;     // [time][expression][param]
-    std::vector<double> observable_sensitivities_ic_;  // [time][observable][ic_species]
-    std::vector<double> expression_sensitivities_ic_;  // [time][expression][ic_species]
+    std::vector<double> observable_sensitivities_;    // [time][observable][param]
+    std::vector<double> expression_sensitivities_;    // [time][expression][param]
+    std::vector<double> observable_sensitivities_ic_; // [time][observable][ic_species]
+    std::vector<double> expression_sensitivities_ic_; // [time][expression][ic_species]
 
     std::vector<std::string> species_names_;
     std::vector<std::string> observable_names_;

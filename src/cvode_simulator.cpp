@@ -335,8 +335,8 @@ static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) 
         // e.g. -k·conc self-corrects back toward 0 — is byte-identical and keeps
         // that restoring behavior; clamping unconditionally would freeze such a
         // species at a small negative value and make the solve chatter.
-        data->model->compute_derivs(static_cast<double>(t),
-                                    clamp_state_nonneg(data, y_ptr), ydot_ptr);
+        data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y_ptr),
+                                    ydot_ptr);
         if (rhs_has_nonfinite(data, ydot_ptr))
             return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
     }
@@ -996,8 +996,8 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
             // Prefer the compiled CSC Jacobian (GH #162) when codegen resolved it;
             // it mirrors fill_sparse_analytical_jacobian without the per-step
             // ExprTk eval. Falls back to the interpreted sparse callback otherwise.
-            jac_fn = user_data.codegen_jac_sparse_fn ? cvode_codegen_sparse_jac
-                                                     : cvode_analytical_jac;
+            jac_fn =
+                user_data.codegen_jac_sparse_fn ? cvode_codegen_sparse_jac : cvode_analytical_jac;
             if (std::getenv("BNGSIM_JAC_DEBUG"))
                 std::fprintf(stderr, "[jac] sparse Jacobian: %s\n",
                              user_data.codegen_jac_sparse_fn
@@ -1438,9 +1438,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         // fresh at each output grid point already yields the correct piecewise
         // value (exactly what RoadRunner reports).
         if (model.n_events() > 0) {
-            throw std::runtime_error(
-                "Cannot simulate: model has no species but defines events "
-                "(no integrator state to anchor the trigger crossing).");
+            throw std::runtime_error("Cannot simulate: model has no species but defines events "
+                                     "(no integrator state to anchor the trigger crossing).");
         }
         const int n_func = model.n_functions();
         std::vector<double> t_out = times.output_times();
@@ -2072,25 +2071,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // all of its species-sensitivity columns. The codegen fills func_sens_buf in
     // [col][func] order; the parameter columns [0, n_sens_p) record into the
     // parameter block and the IC columns [n_sens_p, n_sens) into the IC block.
-    auto record_expression_output_sensitivities =
-        [&](int time_index, double t_row, const double *const *sens_ptrs) {
-            if (!compute_expr_sens) {
-                return;
-            }
-            std::fill(func_sens_buf.begin(), func_sens_buf.end(), 0.0);
-            user_data.codegen_output_sens_fn(
-                t_row, y_data, user_data.codegen_so_data.param_values, sens_ptrs,
-                sens_plist.data(), n_sens, /*obs_sens_out=*/nullptr, func_sens_buf.data(),
-                &user_data.codegen_so_data);
-            if (compute_expr_sens_p) {
-                result.record_expression_sensitivities(time_index, func_sens_ptrs.data(), n_func,
-                                                       n_sens_p);
-            }
-            if (compute_expr_sens_ic) {
-                result.record_expression_sensitivities_ic(
-                    time_index, func_sens_ptrs.data() + n_sens_p, n_func, n_sens_ic);
-            }
-        };
+    auto record_expression_output_sensitivities = [&](int time_index, double t_row,
+                                                      const double *const *sens_ptrs) {
+        if (!compute_expr_sens) {
+            return;
+        }
+        std::fill(func_sens_buf.begin(), func_sens_buf.end(), 0.0);
+        user_data.codegen_output_sens_fn(
+            t_row, y_data, user_data.codegen_so_data.param_values, sens_ptrs, sens_plist.data(),
+            n_sens, /*obs_sens_out=*/nullptr, func_sens_buf.data(), &user_data.codegen_so_data);
+        if (compute_expr_sens_p) {
+            result.record_expression_sensitivities(time_index, func_sens_ptrs.data(), n_func,
+                                                   n_sens_p);
+        }
+        if (compute_expr_sens_ic) {
+            result.record_expression_sensitivities_ic(time_index, func_sens_ptrs.data() + n_sens_p,
+                                                      n_func, n_sens_ic);
+        }
+    };
 
     // ─── Event rootfinding setup ─────────────────────────────────────────────
     // Register root functions for event trigger edge detection.
@@ -2485,8 +2483,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
         int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
         if (gf != CV_SUCCESS) {
-            throw std::runtime_error(
-                "CVodeGetSens for event sensitivity capture failed: " + std::to_string(gf));
+            throw std::runtime_error("CVodeGetSens for event sensitivity capture failed: " +
+                                     std::to_string(gf));
         }
         s_minus.resize(static_cast<size_t>(n_sens));
         for (int c = 0; c < n_sens; ++c) {
@@ -2602,8 +2600,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         int rf = CVodeSensReInit(cvode_mem, sens_method, yS_guard.arr);
         if (rf != CV_SUCCESS) {
-            throw std::runtime_error(
-                "CVodeSensReInit after event sensitivity jump failed: " + std::to_string(rf));
+            throw std::runtime_error("CVodeSensReInit after event sensitivity jump failed: " +
+                                     std::to_string(rf));
         }
     };
 
@@ -3100,8 +3098,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         // stale trigger-time amount, corrupting it by V_old/V_new
                         // at the wrong volume. Evaluating the rescale fresh here
                         // reproduces the (correct) UVFTT=false apply path exactly.
-                        const bool ode_only = a < ev_pe.assignment_ode_only.size() &&
-                                              ev_pe.assignment_ode_only[a];
+                        const bool ode_only =
+                            a < ev_pe.assignment_ode_only.size() && ev_pe.assignment_ode_only[a];
                         double nv = (use_frozen && !ode_only)
                                         ? pe.frozen_values[a]
                                         : eval_ref.evaluate(assigns[a].second);
@@ -3226,7 +3224,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 record_observable_output_sensitivities(i, sens_ptrs.data());
                 record_expression_output_sensitivities(i, static_cast<double>(t_ret),
-                                                        sens_ptrs.data());
+                                                       sens_ptrs.data());
             }
         }
 

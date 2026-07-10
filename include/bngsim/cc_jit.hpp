@@ -64,11 +64,11 @@ class CcJit {
         struct stat st;
         if (stat(so.c_str(), &st) != 0) {
             const std::string dir = so.substr(0, so.find_last_of('/'));
-            (void) std::system(("mkdir -p '" + dir + "'").c_str());
+            (void)std::system(("mkdir -p '" + dir + "'").c_str());
             // Process-unique temps so concurrent ensembles don't collide; the
             // finished .so is renamed into place atomically.
-            const std::string stem = so.substr(0, so.size() - 3) + "." +
-                                     std::to_string(static_cast<long>(getpid()));
+            const std::string stem =
+                so.substr(0, so.size() - 3) + "." + std::to_string(static_cast<long>(getpid()));
             const std::string cpath = stem + ".c";
             const std::string sotmp = stem + ".so.tmp";
             {

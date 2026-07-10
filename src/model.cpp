@@ -13,14 +13,14 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
-#include <sstream>
-#include <utility>
 #include <cstdlib>
 #include <cstring>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace bngsim {
 
@@ -1159,8 +1159,7 @@ void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, 
         if (!impl_->functional_jac.volume_terms.empty()) {
             evaluate_functions(t);
             for (const auto &vt : impl_->functional_jac.volume_terms) {
-                if (vt.func_param_idx0 < 0 ||
-                    vt.func_param_idx0 >= static_cast<int>(params.size()))
+                if (vt.func_param_idx0 < 0 || vt.func_param_idx0 >= static_cast<int>(params.size()))
                     continue;
                 double func = params[vt.func_param_idx0].value;
                 if (func == 0.0)
@@ -1263,8 +1262,7 @@ void NetworkModel::fill_sparse_analytical_jacobian(double t, const double *conc,
         if (!impl_->functional_jac.volume_terms.empty()) {
             evaluate_functions(t);
             for (const auto &vt : impl_->functional_jac.volume_terms) {
-                if (vt.func_param_idx0 < 0 ||
-                    vt.func_param_idx0 >= static_cast<int>(params.size()))
+                if (vt.func_param_idx0 < 0 || vt.func_param_idx0 >= static_cast<int>(params.size()))
                     continue;
                 double func = params[vt.func_param_idx0].value;
                 if (func == 0.0)
@@ -1787,17 +1785,17 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
         if (elem_ok) {
             // Runtime rate constant × baked structural factor (omitted when 1.0).
             const double C = rxn.stat_factor * rxn.ssa_volume_factor;
-            body += "  a[" + std::to_string(r) + "] = p[" + std::to_string(rxn.rate_param_idx0) +
-                    "]";
+            body +=
+                "  a[" + std::to_string(r) + "] = p[" + std::to_string(rxn.rate_param_idx0) + "]";
             if (C != 1.0)
                 body += " * " + lit(C);
             for (const auto &mult : rxn.reactant_multiplicities) {
                 const int si = mult.first;
                 const int count = mult.second;
                 const double vf = species[si].amount_valued ? species[si].volume_factor : 1.0;
-                const std::string n =
-                    vf != 1.0 ? ("(" + lit(vf) + " * x[" + std::to_string(si) + "])")
-                              : ("x[" + std::to_string(si) + "]");
+                const std::string n = vf != 1.0
+                                          ? ("(" + lit(vf) + " * x[" + std::to_string(si) + "])")
+                                          : ("x[" + std::to_string(si) + "]");
                 for (int m = 0; m < count; ++m) {
                     if (m == 0) {
                         body += " * " + n;

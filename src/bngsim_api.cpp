@@ -187,9 +187,9 @@ const char *bng_last_error(void) { return last_error.c_str(); }
 
 static const char *reserved_constants_[] = {"_pi", "_e", "_kB", "_NA", "_R", "_h", "_F", nullptr};
 static const char *reserved_functions_[] = {
-    "time", "t",     "sin",   "cos",   "tan",  "asin",  "acos",   "atan", "sinh",  "cosh",
-    "tanh", "asinh", "acosh", "atanh", "exp",  "log",   "ln",     "log2", "log10", "sqrt",
-    "abs",  "floor", "ceil",  "round", "rint", "trunc", "min",    "max",  "clamp", "avg",
+    "time", "t",     "sin",   "cos",   "tan",  "asin",  "acos",   "atan",   "sinh",  "cosh",
+    "tanh", "asinh", "acosh", "atanh", "exp",  "log",   "ln",     "log2",   "log10", "sqrt",
+    "abs",  "floor", "ceil",  "round", "rint", "trunc", "min",    "max",    "clamp", "avg",
     "sum",  "erf",   "erfc",  "sign",  "sgn",  "if",    "mratio", "tgamma", nullptr};
 
 const char **bng_reserved_constants(int *count) {

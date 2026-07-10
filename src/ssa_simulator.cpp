@@ -672,8 +672,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             sel_set(r, 0.0);
             return;
         }
-        double signed_prop =
-            prop_jit_active ? a_jit[r] : model.compute_propensity(r, conc.data());
+        double signed_prop = prop_jit_active ? a_jit[r] : model.compute_propensity(r, conc.data());
         int dir = (signed_prop < 0.0) ? -1 : 1;
         double prop = (dir < 0) ? -signed_prop : signed_prop; // |signed_prop|
         rxn_dir[r] = dir;
@@ -1016,8 +1015,8 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // DEFAULT (no in-process override): use the Python-provided cc .so when
         // the model is eligible and within the size gate. No MIR, reached by
         // production builds. BNGSIM_SSA_NO_CODEGEN opts out → interpreted path.
-        const bool use_default = !want_inprocess && !codegen_disabled &&
-                                 recompute_eligible && size_ok;
+        const bool use_default =
+            !want_inprocess && !codegen_disabled && recompute_eligible && size_ok;
 
         using PropFn = void (*)(const double *, const double *, double *);
         try {

@@ -884,10 +884,10 @@ std::unique_ptr<ExprTkEvaluator> ExprTkEvaluator::clone_empty() const {
 ReservedNames reserved_names() {
     ReservedNames names;
     names.constants = {"_pi", "_e", "_kB", "_NA", "_R", "_h", "_F"};
-    names.functions = {"time",  "sin",   "cos",   "tan",   "asin",  "acos", "atan",  "sinh",
-                       "cosh",  "tanh",  "asinh", "acosh", "atanh", "exp",  "log",   "ln",
-                       "log2",  "log10", "sqrt",  "abs",   "floor", "ceil", "round", "rint",
-                       "trunc", "min",   "max",   "clamp", "avg",   "sum",  "erf",   "erfc",
+    names.functions = {"time",  "sin",   "cos",   "tan",    "asin",  "acos", "atan",  "sinh",
+                       "cosh",  "tanh",  "asinh", "acosh",  "atanh", "exp",  "log",   "ln",
+                       "log2",  "log10", "sqrt",  "abs",    "floor", "ceil", "round", "rint",
+                       "trunc", "min",   "max",   "clamp",  "avg",   "sum",  "erf",   "erfc",
                        "sign",  "sgn",   "if",    "mratio", "tgamma"};
     return names;
 }
