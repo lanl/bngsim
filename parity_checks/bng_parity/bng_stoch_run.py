@@ -104,8 +104,15 @@ DEFAULT_SEED_BASE = 1
 # ensemble: when a model's grid exceeds this many points, the RR means-check runs over
 # the first RR_ORACLE_MAX_POINTS samples (the tractable early horizon) and bngsim's
 # ensemble is truncated to match. For prion (step 0.01) 1001 points → t≤10, matching
-# the psa benchmark's prion horizon; RR completes in ~90s. Means-gated only — the
-# second-moment residual over this window is tracked in lanl/bngsim#9.
+# the psa benchmark's prion horizon; RR completes in ~90s. Means-gated only — but the
+# second-moment residual once seen over this window (lanl/bngsim#9) was resolved as
+# finite-N estimator scatter on heavy-tailed polymer counts, NOT a translation defect:
+# net_to_sbml preserves propensity, stoichiometry AND event granularity (e.g. prion's
+# {MatchOnce} whole-chain deletion and its symmetric 2k→k+k fragmentation), so both
+# engines run the identical CTMC. At N=400 the per-observable variance ratios collapse
+# into the equal-variance F-CI and sit within bngsim's own split-half scatter. #9 also
+# hardened net_roadrunner against the ONE construct whose SBML is ODE-faithful yet not
+# propensity-faithful — homo-oligomerization (repeated reactant); prion has none.
 RR_ORACLE_MAX_POINTS = 1001
 
 # Seed-escalation oracle (GH #69, direction-of-change discriminator GH #185). A
