@@ -30,6 +30,16 @@ Independence — what this validates and what it does NOT
     ``net_gillespie.py`` — its own ``.net`` parser, sharing no bngsim code — remains
     the FULLY independent primary oracle; treat RoadRunner as the second engine.
 
+    One class of ``.net`` is deterministically faithful yet stochastically UNfaithful,
+    so the RHS gate alone is not enough: a homo-oligomerization (repeated reactant, e.g.
+    ``2A -> C``). Its exact-SSA propensity is the falling factorial ``k*A*(A-1)`` (what
+    bngsim and ``net_gillespie`` compute), but SBML mass-action carries the ODE rate law
+    ``k*A*A`` — the correct RHS, a different function of the count — which RoadRunner's
+    Gillespie takes literally as the propensity (firing even at ``A == 1``). The two
+    laws cannot be reconciled in one SBML kinetic law, so this oracle screens such nets
+    out (:func:`_has_repeated_reactant`) and stays unscored rather than emit a DIFF that
+    would be wrongly charged to bngsim's (correct) SSA. GH #9.
+
 Why it sidesteps ``edgepop``
     ``net_to_sbml`` lowers each ``.net`` observable — the network generator's
     pre-resolved ``groups`` block — to an SBML ``<parameter>`` + ``<assignmentRule>``
@@ -75,14 +85,51 @@ def roadrunner_available() -> bool:
     return True
 
 
+def _has_repeated_reactant(sbml_text: str) -> bool:
+    """True iff some reaction consumes one species with total reactant multiplicity ≥2
+    (a homo-oligomerization such as ``2A -> C``) — the one construct whose SBML is
+    ODE-faithful yet NOT stochastically faithful under RoadRunner's Gillespie (GH #9).
+
+    bngsim's SSA (``NetworkModel::compute_propensity``) and the ``net_gillespie``
+    oracle both use the exact falling-factorial propensity ``k·A·(A-1)`` for such a
+    reaction, but ``net_to_sbml`` emits the *deterministic* mass-action kinetic law
+    ``k·A·A`` — the correct ODE RHS, yet a different function of the integer count.
+    RoadRunner's ``gillespie`` integrator evaluates that law literally as the
+    propensity, so it fires ``2A -> C`` even at ``A == 1`` (propensity ``0.5·k`` instead
+    of ``0``), inflating BOTH the mean and the variance. The two SBML kinetic laws
+    cannot be reconciled — ``A·(A-1) ≠ A·A`` as functions — so no converter change fixes
+    this for a stochastic engine; the RHS-faithfulness gate is blind to it (``A·A`` IS
+    the right RHS). We therefore screen for it structurally and refuse, keeping an
+    honest REFERENCE_FAILED rather than emitting a DIFF that would be misattributed to
+    bngsim's (correct) SSA.
+    """
+    import libsbml
+
+    doc = libsbml.readSBMLFromString(sbml_text)
+    model = doc.getModel()
+    if model is None:
+        return False
+    for i in range(model.getNumReactions()):
+        r = model.getReaction(i)
+        tally: dict[str, float] = {}
+        for j in range(r.getNumReactants()):
+            sr = r.getReactant(j)
+            tally[sr.getSpecies()] = tally.get(sr.getSpecies(), 0.0) + sr.getStoichiometry()
+        if any(v >= 1.5 for v in tally.values()):
+            return True
+    return False
+
+
 def _faithful_sbml_text(net_path: str | Path) -> str | None:
     """``.net`` → SBML text via bngsim's converter, gated for faithfulness.
 
     Returns the SBML string, or ``None`` when the model is not faithfully
-    representable as SBML: ``net_to_sbml`` raised under ``strict`` (a construct SBML
-    cannot carry), or the round-trip ODE-RHS delta exceeds :data:`RHS_FAITHFUL_TOL`
-    (the emitted SBML is not the model bngsim simulated). ``None`` → the caller keeps
-    REFERENCE_FAILED.
+    representable as SBML for a stochastic engine: ``net_to_sbml`` raised under
+    ``strict`` (a construct SBML cannot carry); the round-trip ODE-RHS delta exceeds
+    :data:`RHS_FAITHFUL_TOL` (the emitted SBML is not the model bngsim simulated); or a
+    reaction is a homo-oligomerization (repeated reactant) whose SBML mass-action law is
+    ODE-faithful but not propensity-faithful under RoadRunner's Gillespie
+    (:func:`_has_repeated_reactant`, GH #9). ``None`` → the caller keeps REFERENCE_FAILED.
     """
     try:
         from bngsim.convert import net_to_sbml
@@ -92,6 +139,8 @@ def _faithful_sbml_text(net_path: str | Path) -> str | None:
         return None
     delta = report.max_rhs_delta
     if delta is None or not np.isfinite(delta) or delta > RHS_FAITHFUL_TOL:
+        return None
+    if _has_repeated_reactant(report.output_text):
         return None
     return report.output_text
 
