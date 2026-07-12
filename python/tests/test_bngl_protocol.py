@@ -176,6 +176,42 @@ def test_build_directives_dropped() -> None:
     assert any(isinstance(s, StateChange) and s.kind == "save_concentrations" for s in p.steps)
 
 
+def test_named_save_reset_labels_round_trip() -> None:
+    """BNG saveConcentrations("name") / resetConcentrations("name") preserve
+    the label through parse → write → parse (issue #11)."""
+    from bngsim.convert._protocol import write_bngl_protocol
+
+    text = (
+        "begin actions\n"
+        "saveConcentrations()\n"
+        'saveConcentrations("start_competition")\n'
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+        'resetConcentrations("start_competition")\n'
+        "resetConcentrations()\n"
+        "end actions\n"
+    )
+    p = parse_bngl_protocol(text)
+    labels = [(s.kind, s.label) for s in p.steps if isinstance(s, StateChange)]
+    assert labels == [
+        ("save_concentrations", None),
+        ("save_concentrations", "start_competition"),
+        ("reset_concentrations", "start_competition"),
+        ("reset_concentrations", None),
+    ]
+
+    out = write_bngl_protocol(p)
+    assert 'saveConcentrations("start_competition")' in out
+    assert 'resetConcentrations("start_competition")' in out
+    assert "saveConcentrations()" in out
+    assert "resetConcentrations()" in out
+
+    # Re-parse recovers identical labels; JSON round-trip carries the label too.
+    p2 = parse_bngl_protocol(out)
+    assert [(s.kind, s.label) for s in p2.steps if isinstance(s, StateChange)] == labels
+    round = [StateChange.from_dict(s.to_dict()) for s in p.steps if isinstance(s, StateChange)]
+    assert any(s.label == "start_competition" for s in round)
+
+
 def test_unknown_action_strict_raises_lossy_warns() -> None:
     text = (
         "begin model\nend model\nfrobnicate({x=>1})\n"

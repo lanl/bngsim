@@ -162,6 +162,10 @@ class StateChange:
     target: str | None = None  # parameter/species name (None for reset/save)
     value: float | None = None  # numeric value, when the action carries one
     value_expr: str | None = None  # raw string value when it is not a plain number
+    # BNG named saved-state label (issue #11): the positional argument of
+    # saveConcentrations("name") / resetConcentrations("name"). None for the
+    # default (unlabeled) slot. Only meaningful for the reset/save kinds.
+    label: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +174,7 @@ class StateChange:
             "target": self.target,
             "value": self.value,
             "value_expr": self.value_expr,
+            "label": self.label,
         }
 
     @classmethod
@@ -179,6 +184,7 @@ class StateChange:
             target=d.get("target"),
             value=d.get("value"),
             value_expr=d.get("value_expr"),
+            label=d.get("label"),
         )
 
 
@@ -569,8 +575,12 @@ def _experiment_action(e: Experiment) -> str:
 def _state_change_action(s: StateChange) -> str:
     """Serialize a :class:`StateChange` to its BNG ``set*`` call."""
     if s.kind == "reset_concentrations":
+        if s.label is not None:
+            return f'resetConcentrations("{s.label}")'
         return "resetConcentrations()"
     if s.kind == "save_concentrations":
+        if s.label is not None:
+            return f'saveConcentrations("{s.label}")'
         return "saveConcentrations()"
     verb = "setParameter" if s.kind == "set_parameter" else "setConcentration"
     val = (
@@ -679,7 +689,12 @@ def _build_experiment(verb: str, argstr: str) -> Experiment:
 
 def _build_state_change(kind: str, argstr: str) -> StateChange:
     if kind in ("reset_concentrations", "save_concentrations"):
-        return StateChange(kind=kind)
+        # BNG saveConcentrations("name") / resetConcentrations("name") carry an
+        # optional positional label naming the saved state (issue #11). Preserve
+        # it so a multi-state protocol round-trips; the unlabeled form → None.
+        pos = _parse_positional(argstr)
+        label = str(pos[0]) if pos else None
+        return StateChange(kind=kind, label=label)
     pos = _parse_positional(argstr)
     if not pos:
         raise ConversionError(f'{kind}: expected ("name", value), got {argstr!r}')

@@ -1487,6 +1487,26 @@ class Simulator:
             "or use the low-level session APIs on NfsimSimulator directly."
         )
 
+    def _recreate_interactive_sim(self) -> None:
+        """Rebuild the C++ backend simulator from the (possibly mutated) model.
+
+        The persistent CvodeSimulator / SsaSimulator is constructed once from
+        ``model._core``; after a parameter change some backend state must be
+        rebuilt to pick it up (the SSA value-specialized propensity library
+        bakes rate-constant values; the ODE path also drops any cached
+        integrator workspace). ``intervene``, ``restore``, and the scan
+        primitives all re-derive the backend through this single helper so the
+        recreation rule lives in one place.
+        """
+        if self._method == "ode":
+            from bngsim._bngsim_core import CvodeSimulator
+
+            self._sim = CvodeSimulator(self._model._core)
+        elif self._method in ("ssa", "psa"):
+            from bngsim._bngsim_core import SsaSimulator
+
+            self._sim = SsaSimulator(self._model._core)
+
     # ─── Run ────────────────────────────────────────────────────────
 
     def _resolve_max_step(self, max_step: float | None) -> float | None:
@@ -2230,6 +2250,292 @@ class Simulator:
         if squeeze:
             return self._stamp(Result.squeeze(results))
         return results
+
+    # ─── Parameter scan / bifurcation (issue #11) ──────────────────
+
+    @staticmethod
+    def _resolve_scan_values(
+        par_scan_vals: Sequence[float] | None,
+        par_min: float | None,
+        par_max: float | None,
+        n_scan_pts: int | None,
+        log_scale: bool,
+    ) -> list[float]:
+        """Resolve the ordered list of scanned parameter values.
+
+        Accepts either an explicit ``par_scan_vals`` list or the BNG
+        ``par_min`` / ``par_max`` / ``n_scan_pts`` (+ ``log_scale``) triple.
+        ``n_scan_pts`` is the number of points, inclusive of both endpoints
+        (``np.linspace`` / ``np.geomspace`` convention).
+        """
+        if par_scan_vals is not None:
+            vals = [float(v) for v in par_scan_vals]
+            if not vals:
+                raise ValueError("par_scan_vals must be a non-empty sequence")
+            return vals
+        if par_min is None or par_max is None or n_scan_pts is None:
+            raise ValueError(
+                "Provide either par_scan_vals, or all of par_min, par_max, and n_scan_pts."
+            )
+        n = int(n_scan_pts)
+        if n < 1:
+            raise ValueError(f"n_scan_pts must be >= 1, got {n}")
+        if n == 1:
+            return [float(par_min)]
+        if log_scale:
+            if par_min <= 0.0 or par_max <= 0.0:
+                raise ValueError(
+                    "log_scale=True requires positive par_min and par_max "
+                    f"(got par_min={par_min}, par_max={par_max})."
+                )
+            return [float(v) for v in np.geomspace(par_min, par_max, n)]
+        return [float(v) for v in np.linspace(par_min, par_max, n)]
+
+    def parameter_scan(
+        self,
+        parameter: str,
+        par_scan_vals: Sequence[float] | None = None,
+        *,
+        par_min: float | None = None,
+        par_max: float | None = None,
+        n_scan_pts: int | None = None,
+        log_scale: bool = False,
+        t_span: tuple[float, float] = (0.0, 100.0),
+        n_points: int = 101,
+        reset_conc: bool = True,
+        reset_to: str | None = None,
+        on_point: Callable[[Model, float], None] | None = None,
+        seed: int | None = None,
+        rtol: float | None = None,
+        atol: float | None = None,
+        max_steps: int | None = None,
+        max_step: float | None = None,
+        timeout: float | None = None,
+        steady_state: bool = False,
+        steady_state_tol: float | None = None,
+        squeeze: bool = False,
+    ) -> list[Result] | Result:
+        """Sweep one parameter, running a simulation per value (BNG ``parameter_scan``).
+
+        This is the native scan primitive whose ``reset_conc`` semantics match
+        BNG2.pl (issue #11). Unlike a hand-rolled loop that re-derives every
+        point's species from the ``.net`` seed initializers, each point here
+        resets to the state **at scan invocation** (or to a named snapshot) —
+        so a pre-equilibrate → intervene → scan protocol carries its
+        post-intervention state into the sweep faithfully, instead of discarding
+        it.
+
+        For each scanned value the model is: reset to the snapshot (when
+        ``reset_conc``), assigned the scanned ``parameter``, passed through the
+        optional ``on_point`` hook (for coupled ``setConcentration`` overrides
+        that track the scanned parameter), then integrated over ``t_span``.
+
+        Supported on the stateful model-backed backends (ODE / SSA / PSA) only;
+        the XML network-free backends have no in-process scan path.
+
+        Parameters
+        ----------
+        parameter : str
+            Name of the parameter to scan. Must exist in the model.
+        par_scan_vals : sequence of float, optional
+            Explicit values to scan. Mutually exclusive with the
+            ``par_min`` / ``par_max`` / ``n_scan_pts`` triple.
+        par_min, par_max : float, optional
+            Endpoints of a generated scan range (inclusive).
+        n_scan_pts : int, optional
+            Number of points in the generated range (>= 1).
+        log_scale : bool
+            When generating a range, space points geometrically (requires
+            positive endpoints) rather than linearly. Default ``False``.
+        t_span : tuple[float, float]
+            ``(t_start, t_end)`` for each per-point simulation.
+        n_points : int
+            Output time points per simulation (including ``t_start``).
+        reset_conc : bool
+            BNG ``reset_conc``. When ``True`` (default), every point resets to
+            the snapshot before applying the scanned parameter — points are
+            independent. When ``False``, points are *not* reset between values;
+            each continues from the previous point's end-state (a continuation
+            scan — see :meth:`bifurcate`).
+        reset_to : str, optional
+            Name of a saved concentration snapshot
+            (``Model.save_concentrations(label=...)``) to reset each point to.
+            When ``None`` (default), the reset target is the model's live state
+            captured at the moment this method is called. Only consulted when
+            ``reset_conc=True``.
+        on_point : callable, optional
+            ``on_point(model, value)`` invoked after the reset + scanned-parameter
+            assignment and before integration, for each point. Use it to apply
+            coupled ``setConcentration`` overrides whose value tracks the scanned
+            parameter (e.g. a ligand species whose count is
+            ``value * NA * Vecf``) — the model-specific bookkeeping the primitive
+            cannot infer on its own.
+        seed : int, optional
+            Base seed for stochastic methods; point *i* uses ``seed_base + i``
+            (drawn fresh from entropy when ``None``). Ignored for ODE.
+        rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
+            Per-simulation solver options, forwarded to :meth:`run`.
+        squeeze : bool
+            When ``True``, stack the per-point results into a single
+            :class:`Result` with 3-D arrays (like :meth:`run_batch`); otherwise
+            return a list of per-point results.
+
+        Returns
+        -------
+        list[Result] or Result
+            One :class:`Result` per scanned value (in order), each carrying
+            ``custom_attrs["scan_parameter"]`` and ``custom_attrs["scan_value"]``.
+            A squeezed :class:`Result` when ``squeeze=True``.
+
+        Notes
+        -----
+        The persistent model + backend simulator are left as they were before
+        the call: the scanned parameter and the reset-target concentrations are
+        restored afterward, so a :class:`Simulator` can be scanned repeatedly
+        (and the returned trajectories, not the live model, are the product).
+        """
+        self._require_interactive_backend_support()
+        if steady_state and self._method != "ode":
+            raise ValueError(
+                "steady_state=True is only supported for method='ode' "
+                f"(got method='{self._method}')."
+            )
+        # A scan resets each point to a snapshot (or carries the prior point's
+        # state), so the per-point IC is not the model's seed. CVODES forward
+        # sensitivities would be mis-seeded across that boundary (∂y(0)/∂θ ≠ 0),
+        # so refuse rather than return silently-wrong derivatives — use run_batch
+        # for a seed-reset sensitivity scan (it clones + resets each point).
+        if self._sensitivity_params or self._sensitivity_ic:
+            raise ValueError(
+                "parameter_scan / bifurcate do not support output sensitivities: "
+                "each point resets to a snapshot rather than the seed initial "
+                "conditions, so the forward-sensitivity seed would be wrong across "
+                "that boundary. Build a Simulator without sensitivity_params for "
+                "the scan, or use run_batch (which resets each point to the seed) "
+                "for a sensitivity parameter sweep."
+            )
+
+        values = self._resolve_scan_values(par_scan_vals, par_min, par_max, n_scan_pts, log_scale)
+
+        # Validate the parameter and capture its pre-scan value so the model can
+        # be left pristine (get_param raises a clean ParameterError if unknown).
+        original_value = self._model.get_param(parameter)
+
+        # Determine — and validate — the per-point reset target up front.
+        use_named = reset_to is not None
+        if use_named and not self._model.has_saved_concentrations(reset_to):
+            known = ", ".join(self._model.saved_concentration_labels) or "(none)"
+            raise ValueError(
+                f"reset_to={reset_to!r}: no saved concentration state by that "
+                f"name. Saved states: {known}. Call save_concentrations({reset_to!r}) "
+                "before the scan."
+            )
+        # Snapshot the live state at invocation as the reset target (and as the
+        # post-scan restore point). Captured even for reset_conc=False so the
+        # model can be rewound afterward.
+        invocation_state = self._model.get_state()
+
+        def _reset_point() -> None:
+            if use_named:
+                self._model.restore_concentrations(reset_to)
+            else:
+                self._model.set_state(invocation_state)
+
+        base_seed = _resolve_seed(seed) if self._method != "ode" else 0
+
+        results: list[Result] = []
+        try:
+            for i, value in enumerate(values):
+                if reset_conc:
+                    _reset_point()
+                self._model.set_param(parameter, float(value))
+                if on_point is not None:
+                    on_point(self._model, float(value))
+                # Rebuild the backend so the scanned parameter (and any on_point
+                # rate-constant change) is picked up; run() then seeds from the
+                # model's current live concentrations.
+                self._recreate_interactive_sim()
+                point_seed = None if self._method == "ode" else base_seed + i
+                result = self.run(
+                    t_span=t_span,
+                    n_points=n_points,
+                    seed=point_seed,
+                    rtol=rtol,
+                    atol=atol,
+                    max_steps=max_steps,
+                    max_step=max_step,
+                    timeout=timeout,
+                    steady_state=steady_state,
+                    steady_state_tol=steady_state_tol,
+                )
+                result.custom_attrs["scan_parameter"] = parameter
+                result.custom_attrs["scan_value"] = float(value)
+                results.append(result)
+        finally:
+            # Leave the persistent model + simulator as we found them.
+            self._model.set_param(parameter, original_value)
+            self._model.set_state(invocation_state)
+            self._recreate_interactive_sim()
+
+        if squeeze:
+            return self._stamp(Result.squeeze(results))
+        return results
+
+    def bifurcate(
+        self,
+        parameter: str,
+        par_scan_vals: Sequence[float] | None = None,
+        *,
+        par_min: float | None = None,
+        par_max: float | None = None,
+        n_scan_pts: int | None = None,
+        log_scale: bool = False,
+        t_span: tuple[float, float] = (0.0, 100.0),
+        n_points: int = 101,
+        seed: int | None = None,
+        rtol: float | None = None,
+        atol: float | None = None,
+        max_steps: int | None = None,
+        max_step: float | None = None,
+        timeout: float | None = None,
+        steady_state: bool = False,
+        steady_state_tol: float | None = None,
+        squeeze: bool = False,
+    ) -> list[Result] | Result:
+        """Continuation scan of one parameter (BNG ``bifurcate``, ``reset_conc=0``).
+
+        A :meth:`parameter_scan` sibling that does **not** reset concentrations
+        between points: each point continues from the previous point's
+        end-state, so the sweep traces a branch of steady states as the
+        parameter is stepped. Sweep ``par_scan_vals`` up then down (two calls)
+        to expose hysteresis. The first point starts from the model's live state
+        at invocation.
+
+        Accepts the same arguments as :meth:`parameter_scan` except
+        ``reset_conc`` (pinned to ``False``), ``reset_to``, and ``on_point``
+        (which pertain to the per-point reset that continuation omits). See
+        :meth:`parameter_scan` for the shared parameters.
+        """
+        return self.parameter_scan(
+            parameter,
+            par_scan_vals,
+            par_min=par_min,
+            par_max=par_max,
+            n_scan_pts=n_scan_pts,
+            log_scale=log_scale,
+            t_span=t_span,
+            n_points=n_points,
+            reset_conc=False,
+            seed=seed,
+            rtol=rtol,
+            atol=atol,
+            max_steps=max_steps,
+            max_step=max_step,
+            timeout=timeout,
+            steady_state=steady_state,
+            steady_state_tol=steady_state_tol,
+            squeeze=squeeze,
+        )
 
     def _run_single_batch(
         self,
@@ -3173,14 +3479,35 @@ class Simulator:
         self._model.set_params(params)
 
         # Recreate the C++ simulator to pick up parameter changes
-        if self._method == "ode":
-            from bngsim._bngsim_core import CvodeSimulator
+        self._recreate_interactive_sim()
 
-            self._sim = CvodeSimulator(self._model._core)
-        elif self._method in ("ssa", "psa"):
-            from bngsim._bngsim_core import SsaSimulator
+    def save_concentrations(self, label: str | None = None) -> None:
+        """Snapshot the model's current concentrations (BNG ``saveConcentrations``).
 
-            self._sim = SsaSimulator(self._model._core)
+        Thin delegator to :meth:`Model.save_concentrations` on the underlying
+        model. With no ``label`` this overwrites the default slot (a later
+        :meth:`Model.reset` returns here); with a ``label`` it stores a named
+        snapshot that :meth:`parameter_scan` can reset each point to via
+        ``reset_to=label``. Use it to capture a post-intervention state between
+        ``run_until`` phases and a following scan (issue #11).
+        """
+        self._require_interactive_backend_support()
+        self._model.save_concentrations(label)
+
+    def restore_concentrations(self, label: str | None = None) -> None:
+        """Restore the model's concentrations from a snapshot (BNG ``resetConcentrations``).
+
+        Thin delegator to :meth:`Model.restore_concentrations`. With no ``label``
+        this restores the default slot (identical to :meth:`Model.reset`); with a
+        ``label`` it restores that named snapshot. The backend simulator is
+        rebuilt so a subsequent :meth:`run` / :meth:`run_until` seeds from the
+        restored state.
+        """
+        self._require_interactive_backend_support()
+        self._model.restore_concentrations(label)
+        # Species state changed wholesale; rebuild the backend so it seeds from
+        # the restored concentrations on the next run.
+        self._recreate_interactive_sim()
 
     def snapshot(self) -> dict:
         """Capture the current simulation state.
@@ -3255,14 +3582,7 @@ class Simulator:
                 self._model.set_concentration(name, value)
 
         # Recreate simulator with restored state
-        if self._method == "ode":
-            from bngsim._bngsim_core import CvodeSimulator
-
-            self._sim = CvodeSimulator(self._model._core)
-        elif self._method in ("ssa", "psa"):
-            from bngsim._bngsim_core import SsaSimulator
-
-            self._sim = SsaSimulator(self._model._core)
+        self._recreate_interactive_sim()
 
         logger.info(
             "Restored to t=%.6g",

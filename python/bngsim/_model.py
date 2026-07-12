@@ -68,6 +68,7 @@ class Model:
         "_varvol_event_resize_map",
         "_periodic_disc_max_step",
         "_want_output_sens",
+        "_named_conc_states",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -176,6 +177,16 @@ class Model:
         # byte-identical to before. Simulator.run applies it unless the caller
         # passes an explicit ``max_step``. See _sbml_loader.py.
         self._periodic_disc_max_step: float | None = None
+        # Issue #11: named saved concentration states. Maps a user label to a
+        # snapshot of the full live species-concentration vector (a copy of
+        # get_state(), ordered like species_names). This is the multi-slot
+        # analog of BNG2.pl's saveConcentrations("name") / resetConcentrations(
+        # "name"): a block can save two distinct states and restore either one.
+        # The *default* (unlabeled) slot is deliberately NOT stored here — it
+        # continues to route through the C++ initial_conc mechanism (save_
+        # concentrations()/reset()) so today's single-slot behavior is preserved
+        # byte-for-byte. Carried through clone().
+        self._named_conc_states: dict[str, np.ndarray] = {}
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -478,6 +489,10 @@ class Model:
         m._varvol_ar_amount_map = dict(self._varvol_ar_amount_map)
         m._varvol_event_resize_map = dict(self._varvol_event_resize_map)
         m._periodic_disc_max_step = self._periodic_disc_max_step
+        # Issue #11: carry named concentration snapshots to the clone, each a
+        # fresh copy so the clone's restore can never alias the parent's stored
+        # vector. (The default slot lives in the C++ core, deep-copied above.)
+        m._named_conc_states = {k: v.copy() for k, v in self._named_conc_states.items()}
         return m
 
     # ─── SSA validation ───────────────────────────────────────────────────
@@ -588,18 +603,102 @@ class Model:
         """Reset all species to their initial concentrations.
 
         Parameter values are **not** reset — only species concentrations.
+
+        Equivalent to :meth:`restore_concentrations` with no label: it returns
+        to the seed initial conditions, or — after an unlabeled
+        :meth:`save_concentrations` — to that saved snapshot. Named snapshots
+        (``save_concentrations(label=...)``) are unaffected.
         """
         self._core.reset()
 
-    def save_concentrations(self) -> None:
-        """Snapshot current species concentrations as the new initial state.
+    def save_concentrations(self, label: str | None = None) -> None:
+        """Snapshot the current species concentrations for later restore.
 
-        Subsequent :meth:`reset` calls will restore to this snapshot rather
-        than the original initial conditions from the ``.net`` file.
+        Implements BNG ``saveConcentrations()`` / ``saveConcentrations("name")``.
 
-        Implements BNG ``saveConcentrations()`` action.
+        Parameters
+        ----------
+        label : str, optional
+            Name for the snapshot. When omitted (or ``None``), this preserves
+            the historical single-slot behavior: the current concentrations
+            become the new baseline initial state, so a subsequent :meth:`reset`
+            (or :meth:`restore_concentrations` with no label) returns here rather
+            than to the original ``.net`` seed. When a ``label`` is given, the
+            snapshot is stored under that name in a separate multi-slot store and
+            does **not** disturb the default slot; restore it later with
+            ``restore_concentrations(label)``. Multiple named states coexist, so
+            a multi-phase protocol (e.g. ``saveConcentrations("t=0")`` …
+            ``saveConcentrations("start_competition")``) round-trips faithfully.
+
+        Notes
+        -----
+        A named snapshot captures only the species concentrations (the bulk
+        state vector, ordered like :attr:`species_names`); parameters and the
+        current time are not part of it, matching BNG ``resetConcentrations``.
         """
-        self._core.save_concentrations()
+        if label is None:
+            self._core.save_concentrations()
+            return
+        # A named snapshot is a copy of the live state vector; storing get_state()
+        # (which already returns a fresh array) is safe, but copy defensively so a
+        # later set_state alias can never mutate a stored snapshot.
+        self._named_conc_states[str(label)] = np.array(self._core.get_state(), dtype=np.float64)
+
+    def restore_concentrations(self, label: str | None = None) -> None:
+        """Restore species concentrations from a saved snapshot.
+
+        Implements BNG ``resetConcentrations()`` / ``resetConcentrations("name")``.
+
+        Parameters
+        ----------
+        label : str, optional
+            Name of the snapshot to restore. When omitted (or ``None``), restores
+            the default slot — identical to :meth:`reset` (the seed initial
+            conditions, or the last unlabeled :meth:`save_concentrations`). When a
+            ``label`` is given, restores the named snapshot saved by
+            ``save_concentrations(label)``.
+
+        Raises
+        ------
+        ModelError
+            If ``label`` is given but no snapshot was saved under that name.
+        """
+        if label is None:
+            self._core.reset()
+            return
+        key = str(label)
+        snapshot = self._named_conc_states.get(key)
+        if snapshot is None:
+            known = ", ".join(sorted(self._named_conc_states)) or "(none)"
+            raise ModelError(
+                f"No saved concentration state named {key!r}. "
+                f"Saved states: {known}. Call save_concentrations({key!r}) first."
+            )
+        self._core.set_state(snapshot)
+
+    def has_saved_concentrations(self, label: str | None = None) -> bool:
+        """Whether a named concentration snapshot is available to restore.
+
+        Parameters
+        ----------
+        label : str, optional
+            When given, reports whether a snapshot saved under that exact name
+            exists. When omitted (or ``None``), reports whether *any* named
+            snapshot exists. The default (unlabeled) slot is always restorable
+            via :meth:`reset` and is not reflected here.
+        """
+        if label is None:
+            return bool(self._named_conc_states)
+        return str(label) in self._named_conc_states
+
+    @property
+    def saved_concentration_labels(self) -> list[str]:
+        """Sorted names of the currently saved named concentration snapshots.
+
+        Does not include the default (unlabeled) slot, which is restored via
+        :meth:`reset` / :meth:`restore_concentrations` with no label.
+        """
+        return sorted(self._named_conc_states)
 
     def set_concentration(self, name: str, value: float) -> None:
         """Set a single species concentration by name.

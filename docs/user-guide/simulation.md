@@ -23,6 +23,44 @@ batch = sim.run_batch(
 print(batch.species.shape)  # (100, 101, n_species)
 ```
 
+`run_batch` clones the model and resets every point to the `.net` seed initial
+conditions — correct for a dose–response from a fresh start.
+
+## Parameter scans that carry a pre-equilibrated state
+
+A `run_batch` re-syncs each point to the seed, which is wrong for a multi-phase
+protocol: pre-equilibrate, intervene (wash / bolus), then scan from the
+*post-intervention* state. `parameter_scan` matches BNG2.pl's `reset_conc`
+semantics — each point resets to the state **at scan invocation** (or to a named
+snapshot), not the seed:
+
+```python
+# Phase 1 — pre-incubate off the seed, then snapshot the post-wash state.
+sim.run_until(t=7200)                    # load receptors
+sim.model.set_concentration("L(r,label~hot)", 0.0)   # wash out free hot ligand
+sim.save_concentrations("start_competition")
+
+# Phase 2 — dose-response that resets each point to the saved snapshot.
+results = sim.parameter_scan(
+    "cold_conc",
+    par_scan_vals=[2.3e-10, 6.6e-9, 3.9e-8, 4.9e-7],
+    t_span=(0, 1200), n_points=13,
+    reset_conc=True,                     # BNG reset_conc=>1
+    reset_to="start_competition",        # reset each point to the snapshot
+    # Apply a coupled setConcentration that tracks the scanned value:
+    on_point=lambda model, v: model.set_concentration(
+        "L(r,label~cold)", v * NA * Vecf
+    ),
+)
+# Each Result carries custom_attrs["scan_value"]; the bound-hot readout starts
+# near the pre-wash amount and falls as cold competes it off.
+
+# bifurcate() is the continuation sibling (reset_conc=>0): each point continues
+# from the previous point's end-state — sweep up then down to trace hysteresis.
+branch = sim.bifurcate("stimulus", par_min=0, par_max=10, n_scan_pts=50,
+                       t_span=(0, 500), n_points=2)
+```
+
 ## Interactive simulation
 
 ```python
@@ -55,6 +93,13 @@ print(model.get_concentration("A(b)"))
 
 # Reset restores to save_concentrations() snapshot
 model.reset()
+
+# Named states coexist — save two, restore either (BNG saveConcentrations("name"))
+model.save_concentrations("t=0")
+# ... advance / intervene ...
+model.save_concentrations("start_competition")
+model.restore_concentrations("t=0")            # back to the first named state
+model.restore_concentrations("start_competition")
 ```
 
 ## Stop conditions

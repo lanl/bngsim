@@ -797,3 +797,65 @@ class TestNfsimSessionSaveRestore:
             assert nf.has_saved_concentrations() is False
             with pytest.raises(bngsim.SimulationError):
                 nf.restore_concentrations()
+
+
+class TestNfsimSessionNamedSaveRestore:
+    """Labeled save/restore, mirroring Model.save_concentrations(label=...)
+    over the NFsim backend's single in-session snapshot slot (issue #11)."""
+
+    def _obs(self, nf) -> dict[str, float]:
+        return dict(zip(nf.get_observable_names(), nf.get_observable_values(), strict=False))
+
+    def test_labeled_save_and_restore_roundtrip(self, nfsim_xml):
+        with bngsim.NfsimSession(str(nfsim_xml)) as nf:
+            nf.initialize(seed=42)
+            nf.simulate(0, 2, n_points=2)
+            saved = self._obs(nf)
+            nf.save_concentrations("start_competition")
+            assert nf.has_saved_concentrations("start_competition") is True
+            assert nf.has_saved_concentrations("other") is False
+            assert nf.has_saved_concentrations() is True  # any snapshot held
+
+            nf.simulate(2, 8, n_points=2)
+            nf.restore_concentrations("start_competition")
+            assert self._obs(nf) == saved
+
+    def test_restore_wrong_label_raises(self, nfsim_xml):
+        """Single-slot backend: a name that isn't the held snapshot fails loudly
+        rather than restoring the wrong state."""
+        with bngsim.NfsimSession(str(nfsim_xml)) as nf:
+            nf.initialize(seed=42)
+            nf.simulate(0, 1, n_points=2)
+            nf.save_concentrations("phase_a")
+            with pytest.raises(bngsim.SimulationError, match="phase_b"):
+                nf.restore_concentrations("phase_b")
+            # The correct label — and the unlabeled restore — still work.
+            nf.restore_concentrations("phase_a")
+            nf.restore_concentrations()
+
+    def test_unlabeled_restore_ignores_label(self, nfsim_xml):
+        """restore_concentrations() with no label restores whatever is held,
+        even a labeled snapshot."""
+        with bngsim.NfsimSession(str(nfsim_xml)) as nf:
+            nf.initialize(seed=42)
+            nf.simulate(0, 2, n_points=2)
+            saved = self._obs(nf)
+            nf.save_concentrations("labeled")
+            nf.simulate(2, 6, n_points=2)
+            nf.restore_concentrations()  # no label
+            assert self._obs(nf) == saved
+
+    def test_later_save_rebases_label(self, nfsim_xml):
+        """Each save overwrites the single slot; the held label updates too."""
+        with bngsim.NfsimSession(str(nfsim_xml)) as nf:
+            nf.initialize(seed=42)
+            nf.simulate(0, 1, n_points=2)
+            nf.save_concentrations("first")
+            nf.simulate(1, 5, n_points=2)
+            second = self._obs(nf)
+            nf.save_concentrations("second")  # overwrite
+            assert nf.has_saved_concentrations("first") is False
+            assert nf.has_saved_concentrations("second") is True
+            nf.simulate(5, 9, n_points=2)
+            nf.restore_concentrations("second")
+            assert self._obs(nf) == second

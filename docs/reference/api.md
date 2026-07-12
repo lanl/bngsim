@@ -19,9 +19,12 @@ Methods:
 - **`set_param(name, value)`** — Set a parameter value
 - **`get_param(name)`** — Get a parameter value
 - **`set_params(dict)`** — Set multiple parameters (atomic)
-- **`reset()`** — Reset species to initial concentrations
+- **`reset()`** — Reset species to initial concentrations (= `restore_concentrations()` with no label)
 - **`clone()`** — Deep copy for parallel workers
-- **`save_concentrations()`** — Snapshot current state as new initial conditions
+- **`save_concentrations(label=None)`** — Snapshot current concentrations. No label rebases the default slot (`reset()` returns here); a `label` stores a named snapshot (BNG `saveConcentrations("name")`), and multiple named states coexist.
+- **`restore_concentrations(label=None)`** — Restore a snapshot; no label restores the default slot, a `label` restores that named state (BNG `resetConcentrations("name")`)
+- **`has_saved_concentrations(label=None)`** — Whether a named snapshot (or, with no label, any) exists
+- `saved_concentration_labels` — Sorted names of saved named snapshots
 - **`set_concentration(name, value)`** — Set a single species concentration
 - **`get_concentration(name)`** — Get a single species concentration
 - **`add_table_function(name, *, file, times, values, index)`** — Add a piecewise-linear table function
@@ -48,7 +51,9 @@ Constructor:
 
 Simulation:
 - **`run(t_span, n_points, *, seed, rtol, atol, max_steps, timeout, steady_state, steady_state_tol)`** → `Result`
-- **`run_batch(t_span, n_points, *, params, seed, num_processors, squeeze, timeout, steady_state, steady_state_tol)`** → `list[Result]` or `Result`
+- **`run_batch(t_span, n_points, *, params, seed, num_processors, squeeze, timeout, steady_state, steady_state_tol)`** → `list[Result]` or `Result` — clones + resets each point to the `.net` seed
+- **`parameter_scan(parameter, par_scan_vals=None, *, par_min, par_max, n_scan_pts, log_scale, t_span, n_points, reset_conc=True, reset_to=None, on_point=None, seed, squeeze, …)`** → `list[Result]` or `Result` — BNG `parameter_scan`. With `reset_conc=True`, each point resets to the state *at scan invocation* (or to the named snapshot `reset_to`), not the seed — so a pre-equilibrate → intervene → scan protocol carries its post-intervention state. `on_point(model, value)` applies coupled `setConcentration` overrides that track the scanned value.
+- **`bifurcate(parameter, par_scan_vals=None, *, …)`** → `list[Result]` or `Result` — continuation scan (`reset_conc=0`): each point continues from the previous point's end-state
 - **`compute_all_sensitivities(t_span, n_points, *, params, chunk_size, n_workers, rtol, atol, max_steps)`** → `Result` with full sensitivity tensor
 
 `timeout` is a wall-clock budget in seconds (or `None` to disable, the default).
@@ -64,6 +69,7 @@ time may overshoot the budget by one such interval.
 Interactive:
 - **`run_until(t, *, n_points, seed)`** → `Result`
 - **`intervene(params)`** — Change parameters mid-simulation
+- **`save_concentrations(label=None)`** / **`restore_concentrations(label=None)`** — Snapshot / restore the model's concentrations by name (delegates to `Model`); pair with `parameter_scan(reset_to=label)` for a preincubate → save → scan protocol
 - **`snapshot()`** → `dict` — Save state
 - **`restore(snapshot)`** — Restore state
 
@@ -117,6 +123,18 @@ Species count mutation currently supports exact, unbound, single-molecule BNGL
 patterns such as `"X(p~0,y)"`, `"L(r)"`, and `"TNF()"`. Patterns must list every
 component and specify every stateful component state. Multi-molecule complex
 patterns fail with a clear `SimulationError`.
+
+Saved states (in-process):
+- **`save_concentrations(label=None)`** — Snapshot the live molecular state
+  (counts, component states, bonds). An optional `label` names it (BNG
+  `saveConcentrations("name")`).
+- **`restore_concentrations(label=None)`** — Rewind to the snapshot; a `label`
+  must match the currently-held one.
+- **`has_saved_concentrations(label=None)`** — Whether a (named) snapshot is held.
+
+  The NFsim backend keeps a **single** in-session snapshot, so each save
+  overwrites the previous one; the label lets a mismatched restore fail loudly.
+  The network-based `Model` supports true multi-slot named states.
 
 ## `bngsim.RuleMonkeySession`
 
