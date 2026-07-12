@@ -319,9 +319,9 @@ class NfsimSimulator:
         """
         Get current count for an exact single-molecule BNGL species pattern
         """
-    def has_saved_concentrations(self) -> bool:
+    def has_saved_concentrations(self, label: str = '') -> bool:
         """
-        Whether a save_concentrations() snapshot is available to restore
+        Whether a save_concentrations() snapshot is available to restore under 'label'
         """
     def has_session(self) -> bool:
         """
@@ -335,21 +335,25 @@ class NfsimSimulator:
         """
         Remove count exact single-molecule BNGL species instances
         """
-    def restore_concentrations(self) -> None:
+    def restore_concentrations(self, label: str = '') -> None:
         """
-        Restore the molecular state captured by the most recent save_concentrations() (BNG resetConcentrations()). Raises if none saved.
+        Restore the molecular state captured by save_concentrations() into slot 'label' (BNG resetConcentrations()). Raises if none saved under 'label'.
         """
     def run(self, times: TimeSpec, seed: typing.SupportsInt | typing.SupportsIndex = 42, timeout_seconds: typing.SupportsFloat | typing.SupportsIndex = 0.0) -> ResultCore:
         """
         Run NFsim simulation with deterministic seed (releases GIL). timeout_seconds > 0 enables a wall-clock budget checked between output points; on overrun, raises bngsim.SimulationTimeout.
         """
-    def save_concentrations(self) -> None:
+    def save_concentrations(self, label: str = '') -> None:
         """
-        Snapshot the live System's molecular state for later in-process restore (BNG saveConcentrations()).
+        Snapshot the live System's molecular state into the named slot 'label' for later in-process restore (BNG saveConcentrations()). Each label owns its own snapshot; '' is the default/unlabeled slot.
         """
     def save_species(self, path: str) -> None:
         """
         Write the live System's molecular species to a BNG-format .species file
+        """
+    def saved_concentration_labels(self) -> list[str]:
+        """
+        Sorted names of currently-held save_concentrations() slots ('' = default)
         """
     def set_block_same_complex_binding(self, enabled: bool) -> None:
         """
@@ -885,10 +889,10 @@ def reserved_names() -> dict:
     """
     Return dict of reserved constant and function names
     """
-HAS_KLU: bool = True
+HAS_KLU: bool = False
 HAS_LAPACK_DENSE: bool = True
 HAS_MIR: bool = True
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
-__build_commit__: str = '9b0f2804b36f+dirty'
-__version__: str = '0.11.30'
+__build_commit__: str = '3547007854b2+dirty'
+__version__: str = '0.11.33'

@@ -14,6 +14,7 @@
 
 // NFsim headers (from vendored libnfsim)
 #include "NFcore/NFcore.hh"
+#include "NFcore/systemSnapshot.hh"
 #include "NFfunction/NFfunction.hh"
 #include "NFinput/NFinput.hh"
 #include "NFutil/NFutil.hh"
@@ -1016,10 +1017,13 @@ struct NfsimSimulator::Impl {
     std::vector<std::string> session_fn_names;
     std::vector<NfsimOutputFunction> session_fn_funcs;
     double session_logical_time = 0.0;
-    // True once save_concentrations() has captured a snapshot on the current
-    // session_system. Reset whenever the session System is (re)created or
-    // destroyed, since the snapshot lives inside that System.
-    bool session_has_snapshot = false;
+    // Named concentration snapshots, keyed by label ("" = default/unlabeled
+    // slot). Each label owns its own SystemSnapshot, so multiple named states
+    // coexist — true multi-slot parity with the network-based Model (issue #11).
+    // This bypasses NFcore::System's single internal savedSnapshot. Cleared
+    // whenever the session System is (re)created or destroyed, since the
+    // captured molecules belong to that System.
+    std::unordered_map<std::string, std::unique_ptr<::NFcore::SystemSnapshot>> session_snapshots;
 
     Impl(const std::string &path) : xml_path(path) {}
 
@@ -1397,7 +1401,7 @@ void NfsimSimulator::initialize(uint64_t seed) {
     impl_->cache_obs_names(impl_->session_system);
     impl_->cache_function_set(impl_->session_system);
     impl_->session_logical_time = 0.0;
-    impl_->session_has_snapshot = false;
+    impl_->session_snapshots.clear();
 }
 
 void NfsimSimulator::step_to(double time) {
@@ -1644,7 +1648,7 @@ void NfsimSimulator::destroy_session() {
     impl_->session_logical_time = 0.0;
     impl_->session_n_obs = 0;
     impl_->session_obs_names.clear();
-    impl_->session_has_snapshot = false;
+    impl_->session_snapshots.clear();
 }
 
 void NfsimSimulator::save_species(const std::string &path) {
@@ -1656,26 +1660,45 @@ void NfsimSimulator::save_species(const std::string &path) {
     impl_->session_system->saveSpecies(path);
 }
 
-void NfsimSimulator::save_concentrations() {
+void NfsimSimulator::save_concentrations(const std::string &label) {
     impl_->require_session();
     StreamSuppressor suppress;
-    impl_->session_system->saveConcentrations();
-    impl_->session_has_snapshot = true;
+    // Capture directly into our own per-label SystemSnapshot rather than
+    // NFcore::System's single internal savedSnapshot, so distinct labels don't
+    // clobber one another. Saving to an existing label replaces just that slot.
+    auto snapshot = std::make_unique<::NFcore::SystemSnapshot>();
+    snapshot->capture(impl_->session_system);
+    impl_->session_snapshots[label] = std::move(snapshot);
 }
 
-void NfsimSimulator::restore_concentrations() {
+void NfsimSimulator::restore_concentrations(const std::string &label) {
     impl_->require_session();
-    if (!impl_->session_has_snapshot) {
-        throw std::runtime_error("NfsimSimulator: no saved concentrations to restore. "
-                                 "Call save_concentrations() first.");
+    auto it = impl_->session_snapshots.find(label);
+    if (it == impl_->session_snapshots.end()) {
+        throw std::runtime_error("NfsimSimulator: no saved concentrations to restore under label '" +
+                                 label + "'. Call save_concentrations() first.");
     }
     StreamSuppressor suppress;
-    impl_->session_system->resetConcentrations();
-    // Reaction propensities and the live agent population changed wholesale;
-    // drop NFsim's stepTo cache so the next simulate()/step_to() re-samples.
+    // Reaction propensities and the live agent population change wholesale;
+    // drop NFsim's stepTo cache before the restore so the next
+    // simulate()/step_to() re-samples (NFcore::System::resetConcentrations does
+    // this too; SystemSnapshot::restore() alone does not).
     impl_->session_system->invalidateStepToCache();
+    it->second->restore(impl_->session_system);
 }
 
-bool NfsimSimulator::has_saved_concentrations() const { return impl_->session_has_snapshot; }
+bool NfsimSimulator::has_saved_concentrations(const std::string &label) const {
+    return impl_->session_snapshots.find(label) != impl_->session_snapshots.end();
+}
+
+std::vector<std::string> NfsimSimulator::saved_concentration_labels() const {
+    std::vector<std::string> labels;
+    labels.reserve(impl_->session_snapshots.size());
+    for (const auto &kv : impl_->session_snapshots) {
+        labels.push_back(kv.first);
+    }
+    std::sort(labels.begin(), labels.end());
+    return labels;
+}
 
 } // namespace bngsim

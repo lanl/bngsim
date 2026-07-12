@@ -1407,13 +1407,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def("save_species", &bngsim::NfsimSimulator::save_species, py::arg("path"),
              "Write the live System's molecular species to a BNG-format .species file")
         .def("save_concentrations", &bngsim::NfsimSimulator::save_concentrations,
-             "Snapshot the live System's molecular state for later in-process restore "
-             "(BNG saveConcentrations()).")
+             py::arg("label") = "",
+             "Snapshot the live System's molecular state into the named slot 'label' "
+             "for later in-process restore (BNG saveConcentrations()). Each label owns "
+             "its own snapshot; '' is the default/unlabeled slot.")
         .def("restore_concentrations", &bngsim::NfsimSimulator::restore_concentrations,
-             "Restore the molecular state captured by the most recent "
-             "save_concentrations() (BNG resetConcentrations()). Raises if none saved.")
+             py::arg("label") = "",
+             "Restore the molecular state captured by save_concentrations() into slot "
+             "'label' (BNG resetConcentrations()). Raises if none saved under 'label'.")
         .def("has_saved_concentrations", &bngsim::NfsimSimulator::has_saved_concentrations,
-             "Whether a save_concentrations() snapshot is available to restore")
+             py::arg("label") = "",
+             "Whether a save_concentrations() snapshot is available to restore under 'label'")
+        .def("saved_concentration_labels", &bngsim::NfsimSimulator::saved_concentration_labels,
+             "Sorted names of currently-held save_concentrations() slots ('' = default)")
         .def("destroy_session", &bngsim::NfsimSimulator::destroy_session,
              "Destroy the current session, freeing the NFsim System");
 

@@ -103,7 +103,6 @@ class NfsimSession:
         "_initialized",
         "_destroyed",
         "_seed",
-        "_saved_conc_label",
     )
 
     def __init__(
@@ -147,12 +146,6 @@ class NfsimSession:
             self._core.set_traversal_limit(int(traversal_limit))
 
         self._seed: int | None = None
-        # Issue #11: label of the currently-held in-session concentration
-        # snapshot, or None for the default (unlabeled) slot. Sentinel value
-        # ``False`` means "nothing saved yet" (distinct from a saved unlabeled
-        # slot, whose label is None). The NFsim backend holds a single snapshot,
-        # so this tracks which named state it currently represents.
-        self._saved_conc_label: str | None | bool = False
 
         logger.debug("NfsimSession created: %s", self._xml_path)
 
@@ -297,10 +290,6 @@ class NfsimSession:
             raise SimulationError(f"NFsim initialization failed: {e}") from e
         self._initialized = True
         self._seed = used_seed
-        # A fresh session System drops any prior in-memory snapshot (the C++
-        # session_has_snapshot resets on (re)create); mirror that here so a
-        # stale label can't be reported after a re-initialize (issue #11).
-        self._saved_conc_label = False
         logger.info("NfsimSession initialized (seed=%d)", used_seed)
 
     def destroy(self) -> None:
@@ -678,17 +667,15 @@ class NfsimSession:
             Name for the snapshot, so a multi-phase protocol can refer to it by
             name in :meth:`restore_concentrations` (BNG
             ``saveConcentrations("name")``). Mirrors
-            :meth:`bngsim.Model.save_concentrations`.
+            :meth:`bngsim.Model.save_concentrations`. When omitted (or ``None``),
+            the snapshot goes to the default (unlabeled) slot.
 
-            .. note::
-               The NFsim backend holds a **single** in-session snapshot slot, so
-               each ``save_concentrations`` (labeled or not) overwrites the
-               previous one. The label is remembered so a later
-               ``restore_concentrations(label)`` with a *different* name fails
-               loudly rather than restoring the wrong state. Holding several
-               distinct named NFsim states at once is a tracked follow-up
-               (issue #11); the network-based :class:`bngsim.Model` already
-               supports true multi-slot named states today.
+            Each distinct ``label`` owns its own snapshot, so multiple named
+            NFsim states coexist and round-trip faithfully (issue #11): a later
+            ``save_concentrations("other")`` does **not** disturb a snapshot
+            saved under a different name, and ``restore_concentrations(label)``
+            rewinds to exactly the state saved under that name. Saving to the
+            same ``label`` again overwrites just that slot.
 
         Raises
         ------
@@ -696,11 +683,11 @@ class NfsimSession:
             If the session is not initialized.
         """
         self._require_initialized()
+        key = "" if label is None else str(label)
         try:
-            self._core.save_concentrations()
+            self._core.save_concentrations(key)
         except RuntimeError as e:
             raise SimulationError(f"NFsim save_concentrations failed: {e}") from e
-        self._saved_conc_label = label
 
     def restore_concentrations(self, label: str | None = None) -> None:
         """Restore the molecular state captured by :meth:`save_concentrations`.
@@ -714,37 +701,29 @@ class NfsimSession:
         ----------
         label : str, optional
             Name of the snapshot to restore. When omitted (or ``None``), restores
-            the single held snapshot regardless of the name it was saved under.
-            When given, the name must match the label of the currently-held
-            snapshot (see the single-slot note on :meth:`save_concentrations`).
+            the default (unlabeled) slot saved by ``save_concentrations()`` with
+            no label. When given, restores the state saved under that exact name
+            by ``save_concentrations(label)``; named and default slots are
+            independent (issue #11).
 
         Raises
         ------
         SimulationError
-            If the session is not initialized, no snapshot has been saved, or a
-            ``label`` is given that does not match the currently-held snapshot.
+            If the session is not initialized, or no snapshot has been saved
+            under the requested ``label`` (or the default slot when ``label`` is
+            omitted).
         """
         self._require_initialized()
-        if not self._core.has_saved_concentrations():
+        key = "" if label is None else str(label)
+        if not self._core.has_saved_concentrations(key):
+            known = ", ".join(repr(x) for x in self._core.saved_concentration_labels()) or "(none)"
+            target = "the default (unlabeled) slot" if key == "" else f"a slot named {key!r}"
             raise SimulationError(
-                "No saved concentrations to restore. "
-                "Call save_concentrations() before restore_concentrations()."
-            )
-        if label is not None and self._saved_conc_label != label:
-            held = (
-                "an unlabeled snapshot"
-                if self._saved_conc_label is None
-                else f"the snapshot named {self._saved_conc_label!r}"
-            )
-            raise SimulationError(
-                f"Cannot restore NFsim concentration state {label!r}: the session "
-                f"currently holds {held}. The NFsim backend keeps a single "
-                "in-session snapshot, so only the most recently saved state is "
-                "restorable by name (issue #11 tracks true multi-slot named "
-                "NFsim states)."
+                f"No saved NFsim concentrations to restore for {target}. "
+                f"Saved slots: {known}. Call save_concentrations({label!r}) first."
             )
         try:
-            self._core.restore_concentrations()
+            self._core.restore_concentrations(key)
         except RuntimeError as e:
             raise SimulationError(f"NFsim restore_concentrations failed: {e}") from e
 
@@ -754,18 +733,31 @@ class NfsimSession:
         Parameters
         ----------
         label : str, optional
-            When given, reports whether the currently-held snapshot was saved
-            under that exact name. When omitted, reports whether *any* snapshot
-            is held (labeled or not).
+            When given, reports whether a snapshot saved under that exact name
+            exists. When omitted, reports whether *any* snapshot is held
+            (a named slot or the default/unlabeled one).
         """
         self._require_alive()
         if not self._initialized:
             return False
-        if not self._core.has_saved_concentrations():
-            return False
         if label is None:
-            return True
-        return self._saved_conc_label == label
+            return bool(self._core.saved_concentration_labels())
+        return self._core.has_saved_concentrations(str(label))
+
+    @property
+    def saved_concentration_labels(self) -> list[str]:
+        """Sorted names of the currently saved named concentration snapshots.
+
+        Does not include the default (unlabeled) slot, which is saved by
+        ``save_concentrations()`` with no label and restored via
+        ``restore_concentrations()`` with no label. Mirrors
+        :attr:`bngsim.Model.saved_concentration_labels`. Empty before
+        ``initialize()``.
+        """
+        self._require_alive()
+        if not self._initialized:
+            return []
+        return [lbl for lbl in self._core.saved_concentration_labels() if lbl != ""]
 
     # ── Properties ───────────────────────────────────────────────
 

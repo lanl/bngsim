@@ -170,18 +170,27 @@ class NfsimSimulator {
     double get_parameter(const std::string &name) const;
 
     /// Snapshot the live System's full molecular state (counts, component
-    /// states, and bonds) for later in-process restore. Mirrors the BNG
-    /// ``saveConcentrations()`` action. Overwrites any previous snapshot.
-    /// The session is otherwise unchanged.
-    void save_concentrations();
+    /// states, and bonds) into the named slot ``label`` for later in-process
+    /// restore. Mirrors the BNG ``saveConcentrations()`` /
+    /// ``saveConcentrations("name")`` action. Each distinct label owns its own
+    /// snapshot, so multiple named states coexist; saving to the same label
+    /// again overwrites just that slot. The empty label ``""`` is the default
+    /// (unlabeled) slot. The session is otherwise unchanged.
+    void save_concentrations(const std::string &label = "");
 
-    /// Restore the molecular state captured by the most recent
-    /// save_concentrations() call. Mirrors the BNG ``resetConcentrations()``
-    /// action. Throws std::runtime_error if no snapshot has been saved.
-    void restore_concentrations();
+    /// Restore the molecular state captured by save_concentrations() into the
+    /// named slot ``label`` (``""`` = default/unlabeled). Mirrors the BNG
+    /// ``resetConcentrations()`` / ``resetConcentrations("name")`` action.
+    /// Throws std::runtime_error if no snapshot has been saved under ``label``.
+    void restore_concentrations(const std::string &label = "");
 
-    /// Whether a save_concentrations() snapshot is available to restore.
-    bool has_saved_concentrations() const;
+    /// Whether a save_concentrations() snapshot is available to restore under
+    /// the named slot ``label`` (``""`` = default/unlabeled).
+    bool has_saved_concentrations(const std::string &label = "") const;
+
+    /// Names of every currently-held save_concentrations() slot, including the
+    /// default/unlabeled slot as ``""`` when present. Sorted ascending.
+    std::vector<std::string> saved_concentration_labels() const;
 
     /// Whether a session is currently active.
     bool has_session() const;
