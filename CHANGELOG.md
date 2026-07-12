@@ -12,6 +12,42 @@ string; every other anchor (Python `__version__`, the C extension
 `__version__`, the `Result` HDF5 attr, and `project(... VERSION ...)`
 in `CMakeLists.txt`) is derived from it.
 
+## [0.11.34] - 2026-07-12
+
+### Added
+- **True multi-slot named saved-concentration states for the NFsim backend
+  (issue #11).** `NfsimSession.save_concentrations(label=...)` /
+  `restore_concentrations(label=...)` now hold each named state in its own
+  in-session snapshot, so multiple named NFsim states coexist and round-trip
+  faithfully — a later `save_concentrations("other")` no longer clobbers an
+  earlier one, matching the network-based `Model`. Adds the
+  `NfsimSession.saved_concentration_labels` property. This replaces the previous
+  single-slot-with-label shim, which held only one snapshot and raised when a
+  differently-named state was requested. Named and default (unlabeled) slots are
+  independent; unlabeled `restore_concentrations()` still rewinds the default
+  slot and requires a prior unlabeled `save_concentrations()` (NFsim has no
+  seed-reset). Implemented in C++ via a per-label `NFcore::SystemSnapshot` map
+  (no vendored-NFsim changes).
+
+## [0.11.33] - 2026-07-05
+
+### Changed
+- **Self-sufficient sdist install:** builds and bundles SuiteSparse/KLU from
+  source when no system SuiteSparse is present (GH #209), so `pip install` from
+  an sdist always gets the sparse solver instead of failing or degrading to
+  dense. Intel-mac wheels build in CI again (retired `macos-13` →
+  `macos-15-intel`) and publish via Trusted Publishing. No library API changes
+  since 0.11.32.
+
+## [0.11.32] - 2026-07-05
+
+### Added
+- **PyPI Trusted-Publishing release workflow** (`.github/workflows/release.yml`):
+  builds Linux (manylinux x86_64), macOS (arm64 + Intel), and Windows wheels via
+  cibuildwheel plus an sdist, and publishes via PyPI Trusted Publishing (OIDC, no
+  tokens). `workflow_dispatch` targets TestPyPI (rehearsal) or PyPI; a `v*` tag
+  publishes to PyPI. No library API changes since 0.11.31.
+
 ## [0.11.31] - 2026-07-04
 
 First public release of bngsim, as a Los Alamos National Laboratory open-source
