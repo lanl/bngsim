@@ -1675,8 +1675,9 @@ void NfsimSimulator::restore_concentrations(const std::string &label) {
     impl_->require_session();
     auto it = impl_->session_snapshots.find(label);
     if (it == impl_->session_snapshots.end()) {
-        throw std::runtime_error("NfsimSimulator: no saved concentrations to restore under label '" +
-                                 label + "'. Call save_concentrations() first.");
+        throw std::runtime_error(
+            "NfsimSimulator: no saved concentrations to restore under label '" + label +
+            "'. Call save_concentrations() first.");
     }
     StreamSuppressor suppress;
     // Reaction propensities and the live agent population change wholesale;
