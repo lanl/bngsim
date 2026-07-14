@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.11.35] - 2026-07-14
+
 ### Added
 - **Steady-state forward sensitivities at the observable / expression level
   (issue #12).** `Simulator.steady_state(sensitivity_params=[...])` now returns a
