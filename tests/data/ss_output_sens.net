@@ -1,0 +1,41 @@
+# ss_output_sens.net — GH #12 steady-state output-sensitivity fixture.
+#
+# Closed linear interconversion A <-> B <-> C (total conserved by the ICs),
+# reaching a finite, non-trivial, stable steady state:
+#   B* = (k1/k2)·A*,  C* = (k3/k4)·B*,  A*+B*+C* = 30
+#   ⇒ A* = 30/9 = 10/3,  B* = 20/3,  C* = 20   (for the rates below)
+# Exercises the conservation-law (reduced-space) sensitivity path.
+#
+# Observables use non-trivial group factors; functions reference BOTH observables
+# and parameters so the expression output sensitivity exercises the state-chain
+# term AND the explicit ∂func/∂p term. Parameters `amp` and `Km` appear ONLY in
+# functions (not the reaction network), so d(species)/d(amp) == 0 while
+# d(satA)/d(amp) != 0 — isolating the explicit-parameter contribution.
+begin parameters
+    1 k1  2.0   # A -> B
+    2 k2  1.0   # B -> A
+    3 k3  1.5   # B -> C
+    4 k4  0.5   # C -> B
+    5 Km  4.0   # function-only parameter
+    6 amp 3.0   # function-only parameter
+end parameters
+begin species
+    1 A() 30.0
+    2 B() 0.0
+    3 C() 0.0
+end species
+begin reactions
+    1 1 2 k1  #_A_to_B
+    2 2 1 k2  #_B_to_A
+    3 2 3 k3  #_B_to_C
+    4 3 2 k4  #_C_to_B
+end reactions
+begin groups
+    1 A_tot  1
+    2 BC2    2,2*3
+    3 Total  1,2,3
+end groups
+begin functions
+    1 satA()  amp*A_tot/(Km+A_tot)
+    2 lin()   k1*A_tot+k3*BC2
+end functions

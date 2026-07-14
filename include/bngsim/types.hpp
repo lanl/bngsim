@@ -702,6 +702,27 @@ struct SteadyStateResult {
     std::vector<double> sensitivity; // empty if no sensitivity requested
     std::vector<std::string> sens_param_names;
     int n_sens_params = 0;
+
+    // ─── Observable / function output sensitivities at steady state (GH #12) ───
+    // The chain-rule projection of the species dY_ss/dp above onto the model's
+    // observables and global functions, so a gradient consumer can read
+    // d(observable)/dp and d(function)/dp directly instead of re-deriving the
+    // output Jacobian:
+    //   d(obs_j)/dp  = Σ_i (∂obs_j/∂x_i)·dY_ss_i/dp                (exact; linear groups)
+    //   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p  (finite differences)
+    // The function total derivative carries BOTH the state-chain term and the
+    // function's explicit parameter dependence (e.g. `k3/(K4+G)` w.r.t. k3),
+    // matching the CVODES codegen output-sensitivity chain rule. IC-axis output
+    // sensitivities are structurally zero at a stable steady state (∂x*/∂x(0)=0)
+    // and are not stored. Both blocks are row-major (n_rows × n_sens_params) and
+    // empty unless sensitivity was requested AND the solve converged; the
+    // function block has one row per RAW function (declaration order, including
+    // the auto-generated _rateLawN intermediates), which the pybind layer
+    // filters to the user-facing set that Result.expression_names exposes.
+    std::vector<std::string> observable_names;  // n_observables
+    std::vector<std::string> function_names;    // n_functions (raw, incl _rateLawN)
+    std::vector<double> observable_sensitivity; // (n_observables × n_sens_params)
+    std::vector<double> function_sensitivity;   // (n_functions × n_sens_params)
 };
 
 // ─── Solver options ──────────────────────────────────────────────────────────

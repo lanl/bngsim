@@ -23,7 +23,7 @@ import logging
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -41,7 +41,7 @@ from bngsim._exceptions import (
     StopConditionMet,
 )
 from bngsim._model import Model
-from bngsim._result import Result
+from bngsim._result import Result, _as_selector_list, _resolve_output_selector
 from bngsim._seed import _DEFAULT_EVENT_SEED, _resolve_seed
 from bngsim._ssa_validation import validate_for_ssa
 
@@ -3891,6 +3891,18 @@ class _CallableStopCondition(_StopCondition):
         return None
 
 
+def _ss_output_sens_block(core: Any, attr: str) -> np.ndarray:
+    """Read a 2-D steady-state output-sensitivity block off a C++ core (GH #12).
+
+    The pybind accessors return a ``(n_rows, n_params)`` array — empty ``(0, 0)``
+    when the block was never populated (no sensitivity run). A ``hasattr`` guard
+    tolerates an older core built before the block existed.
+    """
+    if hasattr(core, attr):
+        return np.asarray(getattr(core, attr), dtype=np.float64)
+    return np.empty((0, 0))
+
+
 class SteadyStateResult:
     """Result of a steady-state computation.
 
@@ -3911,7 +3923,19 @@ class SteadyStateResult:
     n_rhs_evals : int
         Number of RHS evaluations.
     sensitivity : ndarray or None
-        ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``.
+        Species ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``. ``None``
+        if no sensitivity was requested.
+
+    Notes
+    -----
+    When ``sensitivity_params`` is passed to :meth:`Simulator.steady_state`, the
+    result also carries the **observable-** and **expression-level** steady-state
+    forward sensitivities (GH #12): read them by name with
+    :meth:`output_sensitivities`, mirroring :meth:`bngsim.Result.output_sensitivities`
+    on a CVODE run. These are the chain-rule projection of the species
+    ``dY_ss/dp`` onto the model's observables and global functions, so a gradient
+    consumer gets ``∂(observable)/∂θ`` directly without re-deriving the output
+    Jacobian.
 
     Examples
     --------
@@ -3922,6 +3946,9 @@ class SteadyStateResult:
     50.0
     >>> ss.concentrations
     array([50., 25., ...])
+    >>> ss = sim.steady_state(sensitivity_params=["k_deg"])
+    >>> ss.output_sensitivities(["observable:Stot"])  # (n_sel, n_params)
+    array([[-1.25]])
     """
 
     __slots__ = (
@@ -3935,6 +3962,10 @@ class SteadyStateResult:
         "n_rhs_evals",
         "_sensitivity",
         "_sens_param_names",
+        "_observable_names",
+        "_expression_names",
+        "_observable_sensitivity",
+        "_expression_sensitivity",
     )
 
     def __init__(self, core) -> None:
@@ -3956,6 +3987,17 @@ class SteadyStateResult:
         else:
             self._sensitivity = None
             self._sens_param_names = []
+
+        # GH #12 — observable/expression output sensitivities d(output)/dp at the
+        # steady state, populated on a sensitivity run (empty otherwise). The
+        # names + blocks parallel Result's: observable_names/expression_names
+        # label the rows, and expression_names is already filtered of the
+        # auto-generated _rateLawN functions by the pybind layer. Guarded with
+        # getattr for forward/backward compatibility with an older core.
+        self._observable_names = list(getattr(core, "observable_names", []))
+        self._expression_names = list(getattr(core, "expression_names", []))
+        self._observable_sensitivity = _ss_output_sens_block(core, "observable_sensitivity_data")
+        self._expression_sensitivity = _ss_output_sens_block(core, "expression_sensitivity_data")
 
     @property
     def concentrations(self):
@@ -3979,6 +4021,156 @@ class SteadyStateResult:
     def sensitivity_params(self) -> list[str]:
         """Parameter names for sensitivity."""
         return self._sens_param_names
+
+    # ─── Observable / expression output sensitivities (GH #12) ──────────
+
+    @property
+    def observable_names(self) -> list[str]:
+        """Observable names labelling the observable output-sensitivity rows.
+
+        Populated on a sensitivity run (``sensitivity_params=[...]``); empty
+        otherwise. Provided for parity with :attr:`bngsim.Result.observable_names`.
+        """
+        return self._observable_names
+
+    @property
+    def expression_names(self) -> list[str]:
+        """Expression (global-function) names for the expression rows.
+
+        Bare, user-facing names (the auto-generated ``_rateLawN`` intermediates
+        are filtered out, matching :attr:`bngsim.Result.expression_names`).
+        Populated on a sensitivity run; empty otherwise.
+        """
+        return self._expression_names
+
+    @property
+    def sensitivities_observables(self) -> np.ndarray:
+        """Observable steady-state sensitivities ``d(observable)/dp``.
+
+        Shape ``(n_observables, n_params)`` on a sensitivity run, aligned with
+        :attr:`observable_names` (rows) and :attr:`sensitivity_params` (columns);
+        empty ``(0, 0)`` otherwise. This is the exact linear projection of the
+        species :attr:`sensitivity` through each observable's group factors.
+        """
+        return self._observable_sensitivity
+
+    @property
+    def sensitivities_expressions(self) -> np.ndarray:
+        """Expression (global-function) steady-state sensitivities ``d(func)/dp``.
+
+        Shape ``(n_expressions, n_params)`` on a sensitivity run, aligned with
+        :attr:`expression_names` (rows) and :attr:`sensitivity_params` (columns);
+        empty ``(0, 0)`` otherwise. Carries the function's full total derivative
+        — the state-chain term ``(∂func/∂x)·dY_ss/dp`` plus the function's
+        explicit parameter dependence ``∂func/∂p``.
+        """
+        return self._expression_sensitivity
+
+    def resolve_outputs(self, selectors: str | Iterable[str]) -> list[dict[str, Any]]:
+        """Resolve typed output selectors to structured metadata.
+
+        Same selector grammar as :meth:`bngsim.Result.resolve_outputs`
+        (``species:``/``observable:``/``expression:`` with ``state:``/``function:``
+        aliases, ``()`` handling, and bare-name uniqueness). Observable and
+        expression names resolve only on a sensitivity run.
+        """
+        return [self._resolve_one_output(sel) for sel in _as_selector_list(selectors)]
+
+    def output_sensitivities(
+        self,
+        selectors: str | Iterable[str],
+        *,
+        axis: str = "parameter",
+    ) -> np.ndarray:
+        """Return steady-state ``d(named output)/dp`` for each selector, stacked.
+
+        The steady-state analogue of :meth:`bngsim.Result.output_sensitivities`:
+        resolves each selector and stacks the matching steady-state sensitivity
+        row, so a gradient consumer reads ``∂(observable)/∂θ`` /
+        ``∂(expression)/∂θ`` directly instead of re-deriving the output Jacobian.
+
+        ``species:`` selectors read the species ``dY_ss/dp`` rows;
+        ``observable:`` selectors the exact linear group projection;
+        ``expression:`` selectors the finite-difference total derivative of the
+        global function (state chain + explicit parameter dependence).
+
+        Parameters
+        ----------
+        selectors : str or iterable of str
+            Selectors accepted by :meth:`resolve_outputs`.
+        axis : {"parameter"}, optional
+            Only ``"parameter"`` (the default) is meaningful here. A stable
+            steady state is independent of its initial conditions
+            (``∂x*/∂x(0) = 0``), so the ``"ic"`` axis is structurally zero and is
+            not computed; requesting it raises :class:`ValueError`.
+
+        Returns
+        -------
+        ndarray
+            Shape ``(n_selectors, n_params)``, one row per selector in input
+            order (no time axis — a steady state is a single point). An empty
+            selector list yields a ``(0, n_params)`` array.
+
+        Raises
+        ------
+        ValueError
+            If ``axis`` is not ``"parameter"``; if no parameter sensitivities
+            were computed (run with ``sensitivity_params=[...]``); or if a
+            selector names a kind whose sensitivities are unavailable.
+        TypeError
+            Propagated from :meth:`resolve_outputs`.
+
+        Examples
+        --------
+        >>> ss = sim.steady_state(sensitivity_params=["k_deg"])
+        >>> ss.output_sensitivities(["observable:Stot", "expression:foo"]).shape
+        (2, 1)
+        """
+        if axis == "ic":
+            raise ValueError(
+                "output_sensitivities: the 'ic' (initial-condition) axis is not "
+                "available on a steady-state result. A stable steady state forgets "
+                "its initial conditions (∂x*/∂x(0) = 0), so IC-axis output "
+                "sensitivities are structurally zero and are not computed."
+            )
+        if axis != "parameter":
+            raise ValueError(f"output_sensitivities: axis must be 'parameter', got {axis!r}.")
+        if self._sensitivity is None:
+            raise ValueError(
+                "output_sensitivities: no steady-state sensitivities were computed for "
+                "this result. Enable them via sim.steady_state(sensitivity_params=[...])."
+            )
+        n_params = self._sensitivity.shape[1]
+        meta = self.resolve_outputs(selectors)
+        if not meta:
+            return np.empty((0, n_params), dtype=np.float64)
+        rows = [self._output_sensitivity_row(m) for m in meta]
+        return np.stack(rows, axis=0)
+
+    def _resolve_one_output(self, selector: str) -> dict[str, Any]:
+        """Resolve one selector to its metadata dict via the shared resolver."""
+        return _resolve_output_selector(
+            selector,
+            self._species_names,
+            self._observable_names,
+            self._expression_names,
+        )
+
+    def _output_sensitivity_row(self, meta: dict[str, Any]) -> np.ndarray:
+        """``(n_params,)`` steady-state sensitivity row for one resolved output."""
+        kind = meta["kind"]
+        if kind == "species":
+            # self._sensitivity is not None here (checked by output_sensitivities).
+            return self._sensitivity[meta["index"], :]  # type: ignore[index]
+        block = (
+            self._observable_sensitivity if kind == "observable" else self._expression_sensitivity
+        )
+        if block.size == 0:
+            raise ValueError(
+                f"output_sensitivities: no {kind} sensitivities are available for "
+                f"selector {meta['selector']!r} on this steady-state result."
+            )
+        return block[meta["index"], :]
 
     def __getitem__(self, key: str) -> float:
         """Get steady-state concentration by species name."""

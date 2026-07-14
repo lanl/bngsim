@@ -120,6 +120,49 @@ static py::array_t<double> sens_block_to_ndarray_3d_rows(const std::vector<doubl
         vec->data(), capsule);
 }
 
+// ─── Helper: a (n_rows × depth) row-major matrix as a 2-D NumPy array ─────────
+// GH #12. Empty/unpopulated buffers yield an empty (0, 0) array, matching the
+// steady-state ``sensitivity_data`` accessor.
+static py::array_t<double> matrix_to_ndarray_2d(const std::vector<double> &data, int depth) {
+    if (data.empty() || depth == 0) {
+        return py::array_t<double>(py::array::ShapeContainer{0, 0});
+    }
+    const int n_rows = static_cast<int>(data.size() / static_cast<size_t>(depth));
+    auto *vec = new std::vector<double>(data);
+    auto capsule = py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
+    return py::array_t<double>(
+        {n_rows, depth},
+        {static_cast<py::ssize_t>(static_cast<size_t>(depth) * sizeof(double)),
+         static_cast<py::ssize_t>(sizeof(double))},
+        vec->data(), capsule);
+}
+
+// Like matrix_to_ndarray_2d but keeps only the rows in ``keep`` (drops the
+// auto-generated _rateLawN function rows so the block aligns with the filtered
+// ``expression_names`` a selector indexes into — the 2-D analogue of
+// sens_block_to_ndarray_3d_rows for the steady-state output-sensitivity blocks).
+static py::array_t<double> matrix_to_ndarray_2d_rows(const std::vector<double> &data, int depth,
+                                                     const std::vector<size_t> &keep) {
+    if (data.empty() || depth == 0 || keep.empty()) {
+        return py::array_t<double>(py::array::ShapeContainer{0, 0});
+    }
+    const int n_rows = static_cast<int>(keep.size());
+    auto *vec = new std::vector<double>();
+    vec->reserve(static_cast<size_t>(n_rows) * depth);
+    for (size_t r : keep) {
+        const size_t rbase = r * static_cast<size_t>(depth);
+        for (int d = 0; d < depth; ++d) {
+            vec->push_back(data[rbase + static_cast<size_t>(d)]);
+        }
+    }
+    auto capsule = py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
+    return py::array_t<double>(
+        {n_rows, depth},
+        {static_cast<py::ssize_t>(static_cast<size_t>(depth) * sizeof(double)),
+         static_cast<py::ssize_t>(sizeof(double))},
+        vec->data(), capsule);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Module definition
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1756,20 +1799,54 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("n_rhs_evals", &bngsim::SteadyStateResult::n_rhs_evals)
         .def_readonly("n_sens_params", &bngsim::SteadyStateResult::n_sens_params)
         .def_readonly("sens_param_names", &bngsim::SteadyStateResult::sens_param_names)
-        .def_property_readonly("sensitivity_data", [](const bngsim::SteadyStateResult &r) {
-            int ns = static_cast<int>(r.concentrations.size());
-            int np = r.n_sens_params;
-            if (np == 0 || r.sensitivity.empty()) {
-                return py::array_t<double>(py::array::ShapeContainer{0, 0});
-            }
-            auto *vec = new std::vector<double>(r.sensitivity);
-            auto capsule =
-                py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
-            return py::array_t<double>({ns, np},
-                                       {static_cast<py::ssize_t>(np * sizeof(double)),
-                                        static_cast<py::ssize_t>(sizeof(double))},
-                                       vec->data(), capsule);
-        });
+        .def_property_readonly(
+            "sensitivity_data",
+            [](const bngsim::SteadyStateResult &r) {
+                int ns = static_cast<int>(r.concentrations.size());
+                int np = r.n_sens_params;
+                if (np == 0 || r.sensitivity.empty()) {
+                    return py::array_t<double>(py::array::ShapeContainer{0, 0});
+                }
+                auto *vec = new std::vector<double>(r.sensitivity);
+                auto capsule =
+                    py::capsule(vec, [](void *p) { delete static_cast<std::vector<double> *>(p); });
+                return py::array_t<double>({ns, np},
+                                           {static_cast<py::ssize_t>(np * sizeof(double)),
+                                            static_cast<py::ssize_t>(sizeof(double))},
+                                           vec->data(), capsule);
+            })
+        // GH #12 — observable/expression output sensitivities at steady state.
+        // Observable names + block are exposed as-is; the function block is
+        // recorded per RAW function, so ``expression_*`` filter the auto-
+        // generated _rateLawN rows (mirroring Result.expression_names /
+        // .expression_sensitivity_data), and ``raw_expression_*`` keep them.
+        .def_readonly("observable_names", &bngsim::SteadyStateResult::observable_names)
+        .def_property_readonly("observable_sensitivity_data",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   return matrix_to_ndarray_2d(r.observable_sensitivity,
+                                                               r.n_sens_params);
+                               })
+        .def_property_readonly("expression_names",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   const auto keep = user_function_indices(r.function_names);
+                                   std::vector<std::string> filtered;
+                                   filtered.reserve(keep.size());
+                                   for (size_t i : keep) {
+                                       filtered.push_back(r.function_names[i]);
+                                   }
+                                   return filtered;
+                               })
+        .def_property_readonly("expression_sensitivity_data",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   return matrix_to_ndarray_2d_rows(
+                                       r.function_sensitivity, r.n_sens_params,
+                                       user_function_indices(r.function_names));
+                               })
+        .def_readonly("raw_expression_names", &bngsim::SteadyStateResult::function_names)
+        .def_property_readonly(
+            "raw_expression_sensitivity_data", [](const bngsim::SteadyStateResult &r) {
+                return matrix_to_ndarray_2d(r.function_sensitivity, r.n_sens_params);
+            });
 
     // --- find_steady_state ---
     m.def(

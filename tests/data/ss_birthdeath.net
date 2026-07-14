@@ -1,0 +1,26 @@
+# ss_birthdeath.net — GH #12 open-system steady-state output-sensitivity fixture.
+#
+# Birth-death: dS/dt = k_prod - k_deg·S  ⇒  S* = k_prod/k_deg = 2.5.
+# No conservation law, so the steady-state solver takes the FULL-space
+# sensitivity path (complementing the reduced-space path in ss_output_sens.net):
+#   dS*/dk_prod = 1/k_deg,   dS*/dk_deg = -k_prod/k_deg².
+# Observable Stot = S; function sq() = scale·Stot references the observable and
+# the function-only parameter `scale` (explicit ∂sq/∂scale = Stot).
+begin parameters
+    1 k_prod 5.0
+    2 k_deg  2.0
+    3 scale  3.0
+end parameters
+begin species
+    1 S() 0.0
+end species
+begin reactions
+    1 0 1 k_prod   #_source
+    2 1 0 k_deg    #_sink
+end reactions
+begin groups
+    1 Stot 1
+end groups
+begin functions
+    1 sq() scale*Stot
+end functions

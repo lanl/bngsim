@@ -736,68 +736,17 @@ class Result:
         return np.stack(cols, axis=-2)
 
     def _resolve_one_output(self, selector: str) -> dict[str, Any]:
-        """Resolve a single selector string to its metadata dict."""
-        if not isinstance(selector, str):
-            raise TypeError(
-                f"Output selector must be a string, got {type(selector).__name__}: {selector!r}."
-            )
-        sel = selector.strip()
-        if not sel:
-            raise ValueError("Empty output selector.")
+        """Resolve a single selector string to its metadata dict.
 
-        if ":" in sel:
-            prefix, name = sel.split(":", 1)
-            prefix = prefix.strip().lower()
-            name = name.strip()
-            if prefix not in _SELECTOR_PREFIX_ALIASES:
-                valid = ", ".join(f"{p}:" for p in _SELECTOR_KINDS)
-                raise ValueError(
-                    f"Unknown selector kind {prefix + ':'!r} in {selector!r}. "
-                    f"Valid prefixes: {valid} "
-                    f"(aliases: state:→species:, function:→expression:)."
-                )
-            kind = _SELECTOR_PREFIX_ALIASES[prefix]
-            # `()` is the function-call header convention; strip it only for
-            # expressions. Species names legitimately carry "()" (e.g. "A()"),
-            # so stripping there would break resolution.
-            if kind == "expression" and name.endswith("()"):
-                name = name[:-2].strip()
-            names = self._names_for_kind(kind)
-            if name in names:
-                return _output_meta(kind, name, names.index(name))
-            raise ValueError(
-                f"Unresolved selector {selector!r}: no {kind} named {name!r}. "
-                f"Available {kind} names: {names}"
-            )
-
-        # Bare name: resolve only if unique across all kinds.
-        matches = [
-            (kind, self._names_for_kind(kind).index(sel))
-            for kind in _SELECTOR_KINDS
-            if sel in self._names_for_kind(kind)
-        ]
-        if len(matches) == 1:
-            kind, idx = matches[0]
-            return _output_meta(kind, sel, idx)
-        if len(matches) > 1:
-            typed = ", ".join(f"{kind}:{sel}" for kind, _ in matches)
-            raise ValueError(
-                f"Ambiguous output selector {sel!r}: matches {typed}. "
-                f"Use a typed selector to disambiguate."
-            )
-        # No verbatim match. A bare "foo()" is the function-call convention:
-        # retry the stripped name against expressions.
-        if sel.endswith("()"):
-            base = sel[:-2].strip()
-            expr_names = self._expression_names
-            if base in expr_names:
-                return _output_meta("expression", base, expr_names.index(base))
-        raise ValueError(
-            f"Unresolved output selector {selector!r}: not found among "
-            f"species, observables, or expressions.\n"
-            f"  species:     {self._species_names}\n"
-            f"  observables: {self._observable_names}\n"
-            f"  expressions: {self._expression_names}"
+        Delegates to the shared :func:`_resolve_output_selector` so a
+        :class:`Result` and a :class:`~bngsim._simulator.SteadyStateResult`
+        accept selectors by identical rules (GH #12).
+        """
+        return _resolve_output_selector(
+            selector,
+            self._species_names,
+            self._observable_names,
+            self._expression_names,
         )
 
     def _names_for_kind(self, kind: str) -> list[str]:
@@ -2811,6 +2760,90 @@ def _output_meta(kind: str, name: str, index: int) -> dict[str, Any]:
         "index": index,
         "column_label": name,
     }
+
+
+def _resolve_output_selector(
+    selector: str,
+    species_names: list[str],
+    observable_names: list[str],
+    expression_names: list[str],
+) -> dict[str, Any]:
+    """Resolve one output selector against the given name lists (GH #195/#12).
+
+    The single source of truth for output-selector semantics — typed prefixes
+    and their aliases, the ``()`` function-call convention, and bare-name
+    uniqueness — shared by :meth:`Result._resolve_one_output` and
+    :meth:`~bngsim._simulator.SteadyStateResult._resolve_one_output` so both
+    containers accept identical selectors. Returns the metadata dict from
+    :func:`_output_meta`; see :meth:`Result.resolve_outputs` for the accepted
+    forms and raised errors.
+    """
+    names_by_kind = {
+        "species": species_names,
+        "observable": observable_names,
+        "expression": expression_names,
+    }
+    if not isinstance(selector, str):
+        raise TypeError(
+            f"Output selector must be a string, got {type(selector).__name__}: {selector!r}."
+        )
+    sel = selector.strip()
+    if not sel:
+        raise ValueError("Empty output selector.")
+
+    if ":" in sel:
+        prefix, name = sel.split(":", 1)
+        prefix = prefix.strip().lower()
+        name = name.strip()
+        if prefix not in _SELECTOR_PREFIX_ALIASES:
+            valid = ", ".join(f"{p}:" for p in _SELECTOR_KINDS)
+            raise ValueError(
+                f"Unknown selector kind {prefix + ':'!r} in {selector!r}. "
+                f"Valid prefixes: {valid} "
+                f"(aliases: state:→species:, function:→expression:)."
+            )
+        kind = _SELECTOR_PREFIX_ALIASES[prefix]
+        # `()` is the function-call header convention; strip it only for
+        # expressions. Species names legitimately carry "()" (e.g. "A()"),
+        # so stripping there would break resolution.
+        if kind == "expression" and name.endswith("()"):
+            name = name[:-2].strip()
+        names = names_by_kind[kind]
+        if name in names:
+            return _output_meta(kind, name, names.index(name))
+        raise ValueError(
+            f"Unresolved selector {selector!r}: no {kind} named {name!r}. "
+            f"Available {kind} names: {names}"
+        )
+
+    # Bare name: resolve only if unique across all kinds.
+    matches = [
+        (kind, names_by_kind[kind].index(sel))
+        for kind in _SELECTOR_KINDS
+        if sel in names_by_kind[kind]
+    ]
+    if len(matches) == 1:
+        kind, idx = matches[0]
+        return _output_meta(kind, sel, idx)
+    if len(matches) > 1:
+        typed = ", ".join(f"{kind}:{sel}" for kind, _ in matches)
+        raise ValueError(
+            f"Ambiguous output selector {sel!r}: matches {typed}. "
+            f"Use a typed selector to disambiguate."
+        )
+    # No verbatim match. A bare "foo()" is the function-call convention:
+    # retry the stripped name against expressions.
+    if sel.endswith("()"):
+        base = sel[:-2].strip()
+        if base in expression_names:
+            return _output_meta("expression", base, expression_names.index(base))
+    raise ValueError(
+        f"Unresolved output selector {selector!r}: not found among "
+        f"species, observables, or expressions.\n"
+        f"  species:     {species_names}\n"
+        f"  observables: {observable_names}\n"
+        f"  expressions: {expression_names}"
+    )
 
 
 def _identifiability_from_fim(

@@ -12,6 +12,25 @@ string; every other anchor (Python `__version__`, the C extension
 `__version__`, the `Result` HDF5 attr, and `project(... VERSION ...)`
 in `CMakeLists.txt`) is derived from it.
 
+## [Unreleased]
+
+### Added
+- **Steady-state forward sensitivities at the observable / expression level
+  (issue #12).** `Simulator.steady_state(sensitivity_params=[...])` now returns a
+  `SteadyStateResult` that also exposes `output_sensitivities(selectors,
+  axis="parameter")`, plus `observable_names`, `expression_names`,
+  `sensitivities_observables`, and `sensitivities_expressions` — mirroring
+  `Result.output_sensitivities` on a CVODE run. These project the exact species
+  `dY_ss/dp` onto the model's observables (exact linear group map) and global
+  functions (finite-difference total derivative: state chain **plus** the
+  function's explicit `∂func/∂p`), so a gradient consumer reads
+  `∂(observable)/∂θ` / `∂(expression)/∂θ` directly instead of re-deriving the
+  output Jacobian. Validated against the CVODES forward-sensitivity `run()` at
+  steady state. The `ic` axis is structurally zero for a stable steady state
+  (`∂x*/∂x(0) = 0`) and raises a directed error. Unblocks a scored, gradient-
+  differentiable KINSOL steady-state dose-response scan in PyBNF
+  (lanl/PyBNF#478).
+
 ## [0.11.34] - 2026-07-12
 
 ### Added

@@ -629,6 +629,133 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &resul
 }
 
 // ---------------------------------------------------------------------------
+// Steady-state OUTPUT sensitivities (GH #12)
+// ---------------------------------------------------------------------------
+//
+// Project the species sensitivity dY_ss/dp (from compute_ss_sensitivity) onto
+// the model's observables and global functions, so a gradient consumer can read
+// d(observable)/dp and d(function)/dp directly instead of re-deriving the output
+// Jacobian:
+//
+//   d(obs_j)/dp  = Σ_i (∂obs_j/∂x_i)·dY_ss_i/dp                (exact; linear groups)
+//   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p  (finite differences)
+//
+// Observables are Σ factor·x, so ∂obs/∂x is exactly the group factor and the
+// observable projection is exact. The function projection reuses the same
+// finite-difference primitive as compute_ss_sensitivity: the state-chain Jacobian
+// ∂func/∂x from per-species perturbations, plus the function's explicit parameter
+// dependence ∂func/∂p (e.g. `k3/(K4+G)` w.r.t. k3) from per-parameter
+// perturbations at the fixed steady state. BOTH terms are needed for the total
+// derivative and match the CVODES codegen output-sensitivity chain rule.
+//
+// Precondition: result.sensitivity is populated and the model species are set to
+// the steady state. The model is left evaluated at the steady state with the
+// original parameter values on return.
+static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateResult &result,
+                                          const std::vector<std::string> &param_names) {
+    const int ns = model.n_species();
+    const int np = static_cast<int>(param_names.size());
+    const int n_obs = model.n_observables();
+    const int n_func = model.n_functions();
+    if (np == 0 || result.sensitivity.empty()) {
+        return;
+    }
+
+    result.observable_names = model.observable_names();
+    result.function_names = model.function_names();
+
+    const double *y_ss = result.concentrations.data();
+
+    // ── Observables: exact linear projection through the group factors ────────
+    // obs_j = Σ_{(i,f) ∈ group_j} f·x_i  ⇒  d(obs_j)/dp = Σ f·dY_ss_i/dp.
+    if (n_obs > 0) {
+        result.observable_sensitivity.assign(static_cast<size_t>(n_obs) * np, 0.0);
+        const auto &observables = model.observables();
+        for (int j = 0; j < n_obs; ++j) {
+            double *out = result.observable_sensitivity.data() + static_cast<size_t>(j) * np;
+            for (const auto &entry : observables[j].entries) {
+                const int i = entry.species_index - 1; // group entries are 1-based
+                if (i < 0 || i >= ns) {
+                    continue;
+                }
+                const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
+                for (int p = 0; p < np; ++p) {
+                    out[p] += entry.factor * dxi[p];
+                }
+            }
+        }
+    }
+
+    // ── Functions: finite-difference total derivative ─────────────────────────
+    if (n_func > 0) {
+        result.function_sensitivity.assign(static_cast<size_t>(n_func) * np, 0.0);
+        const double eps = 1.4901161193847656e-8; // sqrt(machine eps)
+
+        // Base function values at the steady state with the original parameters.
+        // function_value_cache() returns a reference reused by every subsequent
+        // evaluate_functions() call, so snapshot it into f0.
+        model.update_observables(y_ss);
+        model.evaluate_functions(0.0);
+        const std::vector<double> f0(model.function_value_cache());
+        std::vector<double> f1;
+        std::vector<double> y_pert(ns);
+
+        // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one species,
+        // re-evaluate observables + functions), folded into
+        // Σ_i (∂func_m/∂x_i)·dY_ss_i/dp as each species column is produced.
+        for (int i = 0; i < ns; ++i) {
+            std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
+            const double h = eps * std::max(std::abs(y_ss[i]), 1.0);
+            y_pert[i] += h;
+            model.update_observables(y_pert.data());
+            model.evaluate_functions(0.0);
+            f1 = model.function_value_cache();
+            const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
+            for (int m = 0; m < n_func; ++m) {
+                const double dfm_dxi = (f1[m] - f0[m]) / h;
+                double *out = result.function_sensitivity.data() + static_cast<size_t>(m) * np;
+                for (int p = 0; p < np; ++p) {
+                    out[p] += dfm_dxi * dxi[p];
+                }
+            }
+        }
+
+        // Explicit-parameter term: ∂func_m/∂p at the fixed steady state (perturb
+        // one parameter, keep the state fixed). Observables are functions of
+        // species only, so update_observables(y_ss) restores the same totals; the
+        // function evaluator picks up the live parameter value.
+        const auto &params = model.parameters();
+        for (int p = 0; p < np; ++p) {
+            // param_names[p] was validated to exist by compute_ss_sensitivity.
+            int pi = -1;
+            for (size_t k = 0; k < params.size(); ++k) {
+                if (params[k].name == param_names[p]) {
+                    pi = static_cast<int>(k);
+                    break;
+                }
+            }
+            if (pi < 0) {
+                continue;
+            }
+            const double pval = params[pi].value;
+            const double h = eps * std::max(std::abs(pval), 1.0);
+            const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+            model.update_observables(y_ss);
+            model.evaluate_functions(0.0);
+            f1 = model.function_value_cache();
+            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+            for (int m = 0; m < n_func; ++m) {
+                result.function_sensitivity[static_cast<size_t>(m) * np + p] += (f1[m] - f0[m]) / h;
+            }
+        }
+
+        // Leave the model evaluated at the steady state with original parameters.
+        model.update_observables(y_ss);
+        model.evaluate_functions(0.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -683,6 +810,9 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             species[i].concentration = result.concentrations[i];
         }
         compute_ss_sensitivity(model, result, opts.sensitivity_params);
+        // GH #12 — project dY_ss/dp onto observables/functions for direct
+        // d(output)/dp access (mirrors Result.output_sensitivities).
+        compute_ss_output_sensitivity(model, result, opts.sensitivity_params);
     }
 
     return result;

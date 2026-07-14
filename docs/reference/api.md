@@ -196,6 +196,26 @@ Methods:
 - **`Result.load(path)`** — Load from HDF5 (class method)
 - **`Result.squeeze(results)`** — Stack list into 3D batch result
 
+## `bngsim.SteadyStateResult`
+
+Returned by `Simulator.steady_state()`.
+
+Properties:
+- **`concentrations`** — `ndarray (n_species,)` species values at steady state
+- **`species_names`** — `list[str]`
+- **`residual`**, **`method_used`**, **`converged`**, **`n_steps`**, **`n_rhs_evals`** — solve diagnostics
+- **`sensitivity`** — `ndarray (n_species, n_params)` species `dY_ss/dp` (or `None` if no `sensitivity_params`)
+- **`sensitivity_params`** — `list[str]`
+- **`observable_names`**, **`expression_names`** — `list[str]` labelling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
+- **`sensitivities_observables`** — `ndarray (n_observables, n_params)` exact `d(observable)/dp`
+- **`sensitivities_expressions`** — `ndarray (n_expressions, n_params)` `d(function)/dp` total derivative (state chain + explicit `∂func/∂p`)
+
+Methods:
+- **`resolve_outputs(selectors)`** → `list[dict]` — same selector grammar as `Result.resolve_outputs`
+- **`output_sensitivities(selectors, *, axis="parameter")`** → `ndarray (n_selectors, n_params)` — steady-state `∂(named output)/∂p` for `species:`/`observable:`/`expression:` selectors, mirroring `Result.output_sensitivities` (no time axis). `axis="ic"` raises: a stable steady state is independent of its initial conditions (`∂x*/∂x(0) = 0`)
+- **`__getitem__(name)`** → `float` — steady-state concentration by species name
+- **`to_dict()`** → `dict[str, float]`
+
 ## Exceptions
 
 All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):

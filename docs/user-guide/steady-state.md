@@ -142,6 +142,35 @@ BNGsim automatically builds a reduced Jacobian on the independent species
 subspace, solves the non-singular reduced system, and reconstructs the
 dependent species sensitivities from the conservation constraints.
 
+#### Observable / expression output sensitivities
+
+`ss.sensitivity` is species-level. To read `∂(observable)/∂θ` or
+`∂(expression)/∂θ` directly — without re-deriving the output Jacobian yourself —
+use `output_sensitivities`, exactly as on a CVODE
+[`Result`](sensitivities.md):
+
+```python
+ss = sim.steady_state(sensitivity_params=["kf", "kr", "kcat"])
+
+# (n_selectors, n_params), one row per selector — no time axis at steady state.
+grad = ss.output_sensitivities(["observable:P_tot", "expression:activity"])
+
+ss.observable_names            # rows of ss.sensitivities_observables
+ss.expression_names            # rows of ss.sensitivities_expressions
+ss.sensitivities_observables   # (n_observables, n_params) bulk array
+```
+
+BNGsim projects `dY_ss/dp` internally: observables use the exact linear group
+map, and global functions use the full total derivative — the state-chain term
+`(∂func/∂x)·dY_ss/dp` **plus** the function's explicit parameter dependence
+`∂func/∂p` (e.g. a rate-law function `k3/(K4+G)` differentiated w.r.t. `k3`) —
+matching the CVODES codegen chain rule. A downstream gradient consumer can reuse
+its existing CVODE `output_sensitivities` code path unchanged.
+
+A stable steady state forgets its initial conditions (`∂x*/∂x(0) = 0`), so the
+initial-condition axis is structurally zero and is not computed;
+`output_sensitivities(..., axis="ic")` raises rather than return zeros.
+
 ### Pre-equilibration / carry-over output sensitivities (`carry_sensitivities=True`)
 
 A **pre-equilibration** protocol equilibrates the system to steady state under

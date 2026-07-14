@@ -823,6 +823,12 @@ class SteadyStateResultCore:
     def converged(self) -> bool:
         ...
     @property
+    def expression_names(self) -> list[str]:
+        ...
+    @property
+    def expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
+        ...
+    @property
     def method_used(self) -> str:
         ...
     @property
@@ -833,6 +839,18 @@ class SteadyStateResultCore:
         ...
     @property
     def n_steps(self) -> int:
+        ...
+    @property
+    def observable_names(self) -> list[str]:
+        ...
+    @property
+    def observable_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
+        ...
+    @property
+    def raw_expression_names(self) -> list[str]:
+        ...
+    @property
+    def raw_expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property
     def residual(self) -> float:
@@ -889,10 +907,10 @@ def reserved_names() -> dict:
     """
     Return dict of reserved constant and function names
     """
-HAS_KLU: bool = False
+HAS_KLU: bool = True
 HAS_LAPACK_DENSE: bool = True
 HAS_MIR: bool = True
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
-__build_commit__: str = '3547007854b2+dirty'
-__version__: str = '0.11.33'
+__build_commit__: str = '6c7e10b16106+dirty'
+__version__: str = '0.11.34'
