@@ -219,6 +219,12 @@ class TestCapabilitiesMissingExplanations:
         monkeypatch.setattr(bngsim, "HAS_LIBSBML", True)
         monkeypatch.setattr(bngsim, "HAS_ANTIMONY", True)
         monkeypatch.setattr(bngsim, "HAS_VIVARIUM", True)
+        # HAS_MIR is a COMPILED flag (the MIR micro-JIT is an OFF-by-default
+        # prototype absent from shipped wheels — GH #78), so it reflects the local
+        # build. This is a build-independent LOGIC test of capabilities() — "if
+        # every optional feature were present, nothing is missing" — so pin it too;
+        # otherwise the test spuriously fails on any default (non-MIR) build.
+        monkeypatch.setattr(bngsim, "HAS_MIR", True)
         caps = bngsim.capabilities()
         assert caps["missing"] == {}
         assert all(caps["features"].values())

@@ -84,11 +84,15 @@ repos:
     hooks:
       - id: pytest
         name: pytest (bngsim)
-        # Use the active interpreter, not a hardcoded .venv/bin/pytest: a fresh
-        # `lanl/bngsim` clone has no .venv, so `pre-commit install` there would emit a
-        # pre-push hook that errors on a missing path. `python -m pytest` runs in
-        # whatever env the developer has active (their venv, after `pip install -e .`).
-        entry: python -m pytest -q python/tests
+        # Run in the uv project venv (.venv) WITHOUT requiring the developer to
+        # activate it — `uv run` resolves the interpreter itself, so a plain
+        # `git push` shell (no `source .venv/bin/activate`) no longer dies with
+        # "python: command not found". `--no-sync` uses the env as provisioned
+        # (`uv sync --extra dev` / `--extra test`) rather than mutating it on every
+        # push, so a dev who also installed roadrunner/jax keeps them. This matches
+        # the `uv run` pattern the local-ci-* hooks below already use. A fresh clone
+        # that hasn't run `uv sync` yet gets a clear uv error, not a cryptic one.
+        entry: uv run --no-sync python -m pytest -q python/tests
         language: system
         pass_filenames: false
         files: ^.

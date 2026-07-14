@@ -28,6 +28,14 @@ _PYBNF_ROOT = Path(__file__).resolve().parents[3]  # up to the dev tree that car
 if str(_PYBNF_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYBNF_ROOT))
 
+# PyBNF is a DEV-ONLY external checkout, not a bngsim dependency — it is not on
+# PYTHONPATH in a normal install/CI env. Skip the whole module (rather than error
+# at collection) when it is unimportable, mirroring the roadrunner guard above.
+pytest.importorskip(
+    "pybnf",
+    reason="PyBNF dev checkout not importable; method=>protocol is a dev-only integration test",
+)
+
 from pybnf.bngsim_model import (  # noqa: E402  (after sys.path insert above)
     BngsimModel,
     _normalize_action_method,
