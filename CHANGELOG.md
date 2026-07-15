@@ -28,6 +28,13 @@ in `CMakeLists.txt`) is derived from it.
   `stiffness_ratio_median` (sustained). The old 3-point sampling under-resolved
   the peak for large networks — e.g. the `N=1281` `fceri_fyn` peak rose from
   `1.4e7` to `1.0e8` under dense resampling.
+- **SBML BioModels counterpart** of the characterization harness
+  (`parity_checks/rr_parity/jacobian_characterization_sbml.py`): applies the same
+  density and stiffness metrics and regime classification to the `rr_parity`
+  SBML corpus, loading each model via `Model.from_sbml` (no network-generation
+  step) and reusing the `bng_parity` metric helpers — including the dense
+  trajectory time sampling above — so both corpora are characterized by identical
+  code.
 
 ## [0.11.35] - 2026-07-14
 
