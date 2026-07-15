@@ -34,7 +34,8 @@ in `CMakeLists.txt`) is derived from it.
   SBML corpus, loading each model via `Model.from_sbml` (no network-generation
   step) and reusing the `bng_parity` metric helpers — including the dense
   trajectory time sampling above — so both corpora are characterized by identical
-  code.
+  code and report the same `stiffness_ratio_max` / `stiffness_ratio_median`
+  fields.
 
 ## [0.11.35] - 2026-07-14
 

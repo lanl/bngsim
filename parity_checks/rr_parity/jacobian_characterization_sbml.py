@@ -115,6 +115,8 @@ def characterize_sbml(model_id: str, sbml_rel: str, horizon: dict) -> dict:
         row["density"] = row["nnz"] / (n * n)
         finite = [p["ratio"] for p in per_time if np.isfinite(p["ratio"])]
         row["stiffness_ratio_max"] = float(max(finite)) if finite else float("inf")
+        # median over finite per-time ratios = the "sustained" stiffness (vs the peak).
+        row["stiffness_ratio_median"] = float(np.median(finite)) if finite else float("inf")
         row["n_time_points"] = len(idxs)
         row["oscillatory"] = bool(any_osc)
         row["per_time"] = per_time
@@ -149,7 +151,8 @@ def main() -> int:
         extra = ""
         if r.get("N") is not None:
             extra = (f"N={r['N']} dens={r.get('density', float('nan')):.3f} "
-                     f"stiff={r.get('stiffness_ratio_max', float('nan')):.3g} "
+                     f"stiff[max/med]={r.get('stiffness_ratio_max', float('nan')):.3g}/"
+                     f"{r.get('stiffness_ratio_median', float('nan')):.3g} "
                      f"{'OSC ' if r.get('oscillatory') else ''}")
         print(f"[{k:4d}/{len(jobs)}] {str(r.get('status')):16s} {extra}{j['model_id']}",
               flush=True)
