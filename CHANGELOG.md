@@ -14,6 +14,21 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **ODE Jacobian characterization harness**
+  (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each
+  ODE model in the `bng_parity` corpus by structural Jacobian density
+  (`nnz/N^2`) and stiffness ratio — `max|Re lambda| / min_{!=0}|Re lambda|` on the
+  conservation-reduced Jacobian, computed from BNGsim's own native analytical
+  Jacobian (no autodiff) — and, in `--analyze` mode, partitions the corpus into
+  sparse-stiff / dense-stiff / non-stiff regimes. For models with `N > 300` the
+  stiffness ratio is sampled at up to `DENSE_TIME_SAMPLES` log-spaced trajectory
+  points (default 64; `--dense-time-samples` to override) rather than the former
+  3, and each result now reports both `stiffness_ratio_max` (trajectory peak) and
+  `stiffness_ratio_median` (sustained). The old 3-point sampling under-resolved
+  the peak for large networks — e.g. the `N=1281` `fceri_fyn` peak rose from
+  `1.4e7` to `1.0e8` under dense resampling.
+
 ## [0.11.35] - 2026-07-14
 
 ### Added
