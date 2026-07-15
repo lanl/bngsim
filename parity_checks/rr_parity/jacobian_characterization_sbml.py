@@ -15,6 +15,7 @@ Environment: the bngsim editable checkout venv, e.g.
 Reads ``ode_jobs.json`` + the vendored ``models/<id>/*.xml`` read-only; the only write
 is the output report JSON (default ``runs/jacobian_characterization_sbml.json``).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,7 @@ if str(BNG_PARITY) not in sys.path:
 import jacobian_characterization as jc  # noqa: E402  (shared metric helpers)
 
 INTEGRATION_TIMEOUT = 7.0  # wall-clock cap per model's ODE solve (bounds stiff BioModels;
-                           # BNGsim may retry once with an FD Jacobian, so worst case ~2x)
+# BNGsim may retry once with an FD Jacobian, so worst case ~2x)
 
 
 def load_ode_jobs() -> list[dict]:
@@ -56,7 +57,8 @@ def characterize_sbml(model_id: str, sbml_rel: str, horizon: dict) -> dict:
             return {**row, "status": "no_species", "N": 0}
         m.prepare_analytical_jacobian()
         row["analytical_jacobian_complete"] = bool(
-            getattr(core, "analytical_jacobian_complete", False))
+            getattr(core, "analytical_jacobian_complete", False)
+        )
         row["jacobian_method"] = "native_analytical"
         row["N"] = n
         row["n_reactions"] = int(jc._prop(m, "n_reactions"))
@@ -76,12 +78,20 @@ def characterize_sbml(model_id: str, sbml_rel: str, horizon: dict) -> dict:
         row["density"] = row["nnz"] / (n * n)
 
         if n > jc.EIG_MAX_N:
-            return {**row, "status": "ok_density_only",
-                    "detail": f"N={n} > EIG_MAX_N; stiffness skipped"}
+            return {
+                **row,
+                "status": "ok_density_only",
+                "detail": f"N={n} > EIG_MAX_N; stiffness skipped",
+            }
     except Exception as exc:
         import traceback
-        return {**row, "status": "error", "detail": f"{type(exc).__name__}: {exc}",
-                "trace": traceback.format_exc()[-1200:]}
+
+        return {
+            **row,
+            "status": "error",
+            "detail": f"{type(exc).__name__}: {exc}",
+            "trace": traceback.format_exc()[-1200:],
+        }
 
     # Trajectory + stiffness in a SEPARATE try, with a wall-clock integration cap:
     # a pathologically stiff BioModel that CVODE cannot integrate must neither stall
@@ -96,7 +106,8 @@ def characterize_sbml(model_id: str, sbml_rel: str, horizon: dict) -> dict:
         if horizon.get("atol"):
             run_kw["atol"] = horizon["atol"]
         res = Simulator(m, method="ode").run(
-            t_span=(float(t_start), float(t_end)), n_points=int(n_pts), **run_kw)
+            t_span=(float(t_start), float(t_end)), n_points=int(n_pts), **run_kw
+        )
         X = np.asarray(res.species, float)
         T = np.asarray(res.time, float)
 
@@ -129,9 +140,12 @@ def characterize_sbml(model_id: str, sbml_rel: str, horizon: dict) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", type=Path, default=HERE / "runs" / "jacobian_characterization_sbml.json")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--out", type=Path, default=HERE / "runs" / "jacobian_characterization_sbml.json"
+    )
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--model", type=str, default=None)
     args = ap.parse_args()
@@ -150,25 +164,33 @@ def main() -> int:
         rows.append(r)
         extra = ""
         if r.get("N") is not None:
-            extra = (f"N={r['N']} dens={r.get('density', float('nan')):.3f} "
-                     f"stiff[max/med]={r.get('stiffness_ratio_max', float('nan')):.3g}/"
-                     f"{r.get('stiffness_ratio_median', float('nan')):.3g} "
-                     f"{'OSC ' if r.get('oscillatory') else ''}")
-        print(f"[{k:4d}/{len(jobs)}] {str(r.get('status')):16s} {extra}{j['model_id']}",
-              flush=True)
+            extra = (
+                f"N={r['N']} dens={r.get('density', float('nan')):.3f} "
+                f"stiff[max/med]={r.get('stiffness_ratio_max', float('nan')):.3g}/"
+                f"{r.get('stiffness_ratio_median', float('nan')):.3g} "
+                f"{'OSC ' if r.get('oscillatory') else ''}"
+            )
+        print(
+            f"[{k:4d}/{len(jobs)}] {str(r.get('status')):16s} {extra}{j['model_id']}", flush=True
+        )
 
     out = {
-        "_meta": {"generator": "jacobian_characterization_sbml.py",
-                  "bngsim_version": __import__("bngsim").__version__,
-                  "n_models": len(rows),
-                  "elapsed_sec": round(time.perf_counter() - t0, 2)},
+        "_meta": {
+            "generator": "jacobian_characterization_sbml.py",
+            "bngsim_version": __import__("bngsim").__version__,
+            "n_models": len(rows),
+            "elapsed_sec": round(time.perf_counter() - t0, 2),
+        },
         "results": rows,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=1))
     ok = sum(1 for r in rows if str(r.get("status")).startswith("ok"))
-    print(f"[jac-sbml] wrote {args.out} ({ok}/{len(rows)} characterized, "
-          f"{out['_meta']['elapsed_sec']}s)", flush=True)
+    print(
+        f"[jac-sbml] wrote {args.out} ({ok}/{len(rows)} characterized, "
+        f"{out['_meta']['elapsed_sec']}s)",
+        flush=True,
+    )
     return 0
 
 
