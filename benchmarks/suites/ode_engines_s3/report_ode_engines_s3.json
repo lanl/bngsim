@@ -1,0 +1,1106 @@
+{
+ "_meta": {
+  "suite": "ode_engines_s3",
+  "description": "Cross-engine ODE timing on the six representative published BNGL models (Table S1). Cold = one-time build + first solve; warm = median of subsequent solves. SBML engines consume bngsim net_to_omex SBML+SED-ML.",
+  "engines": [
+   "run_network",
+   "bngsim",
+   "roadrunner",
+   "amici_klu",
+   "amici_dense",
+   "copasi"
+  ],
+  "metric": {
+   "cold": "build_sec + integrate_cold_sec (= cold_total_sec)",
+   "warm": "integrate_warm_median_sec (= warm_sec)",
+   "warm_reps": {
+    "max": 5,
+    "budget_sec": 3.0
+   }
+  },
+  "rtol": 1e-08,
+  "atol": 1e-08,
+  "default_horizon": {
+   "t_end": 100.0,
+   "n_steps": 100
+  },
+  "omex_gate": "full",
+  "versions": {
+   "bngsim": "0.11.30",
+   "roadrunner": "2.9.2",
+   "amici": "1.0.1",
+   "libsbml": "5.21.0",
+   "copasi": "4.46.300 (Source)",
+   "sundials": "7.2.1"
+  },
+  "hardware": {
+   "cpu": "Apple M4 Max",
+   "physical_cores": 16,
+   "logical_cores": 16,
+   "platform": "macOS-26.5.1-arm64-arm-64bit"
+  },
+  "n_results": 6
+ },
+ "results": [
+  {
+   "model_id": "fast/rulehub/Published/Lang2024/Lang_2024.bngl",
+   "label": "Lang_2024",
+   "row": 1,
+   "n_species": 64,
+   "n_reactions": 282,
+   "horizon": {
+    "t_start": 150000.0,
+    "t_end": 280000.0,
+    "n_steps": 1000,
+    "n_points": 1001,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "model"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/fast__rulehub__Published__Lang2024__Lang_2024.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/fast__rulehub__Published__Lang2024__Lang_2024.bngl.omex",
+    "export_sec": 0.2477,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.0,
+      "propagation_cpu_sec": 0.06,
+      "total_cpu_sec": 0.06
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.294775,
+     "integrate_warm_min_sec": 0.079867,
+     "integrate_warm_median_sec": 0.079993,
+     "integrate_warm_max_sec": 0.084789,
+     "n_warm": 5,
+     "cold_total_sec": 0.294775,
+     "warm_sec": 0.079993,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 6
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 0.004391,
+     "build_breakdown": {
+      "load_sec": 0.004391,
+      "jac_derive_sec": 2.6e-05,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.010374,
+     "integrate_warm_min_sec": 0.00988,
+     "integrate_warm_median_sec": 0.010179,
+     "integrate_warm_max_sec": 0.01046,
+     "n_warm": 5,
+     "cold_total_sec": 0.014765,
+     "warm_sec": 0.010179,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "Dense",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 0.475138,
+     "build_breakdown": {
+      "read_sec": 2.8e-05,
+      "parse_sec": 0.011652,
+      "interpret_sec": 0.003392,
+      "codegen_sec": 0.440257,
+      "jit_sec": 0.431049,
+      "parse_interpret_codegen_sec": 0.475138,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.011539,
+     "integrate_warm_min_sec": 0.010991,
+     "integrate_warm_median_sec": 0.011222,
+     "integrate_warm_max_sec": 0.011368,
+     "n_warm": 5,
+     "cold_total_sec": 0.486677,
+     "warm_sec": 0.011222,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 11.269552,
+     "build_breakdown": {
+      "parse_sec": 0.024421,
+      "interpret_sec": 0.08214,
+      "jac_derive_sec": 0.420735,
+      "codegen_sec": 0.337265,
+      "compile_sec": 10.4,
+      "load_sec": 0.004991
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.091184,
+     "integrate_warm_min_sec": 0.060616,
+     "integrate_warm_median_sec": 0.061322,
+     "integrate_warm_max_sec": 0.066666,
+     "n_warm": 5,
+     "cold_total_sec": 11.360736,
+     "warm_sec": 0.061322,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "KLU",
+      "cached": false
+     },
+     "integrate_cpu_ms": 19.288,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "amici_dense": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 11.269552,
+     "build_breakdown": {
+      "parse_sec": 0.024421,
+      "interpret_sec": 0.08214,
+      "jac_derive_sec": 0.420735,
+      "codegen_sec": 0.337265,
+      "compile_sec": 10.4,
+      "load_sec": 0.004991
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.0723,
+     "integrate_warm_min_sec": 0.072211,
+     "integrate_warm_median_sec": 0.072769,
+     "integrate_warm_max_sec": 0.073143,
+     "n_warm": 5,
+     "cold_total_sec": 11.341852,
+     "warm_sec": 0.072769,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "dense",
+      "cached": false
+     },
+     "integrate_cpu_ms": 23.807,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 64,
+     "build_sec": 0.084586,
+     "build_breakdown": {
+      "import_config_sec": 0.084586
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.275533,
+     "integrate_warm_min_sec": 0.270375,
+     "integrate_warm_median_sec": 0.271222,
+     "integrate_warm_max_sec": 0.272351,
+     "n_warm": 5,
+     "cold_total_sec": 0.360119,
+     "warm_sec": 0.271222,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  },
+  {
+   "model_id": "slow/rulehub/Published/Kocieniewski2012/Kocieniewski_2012.bngl",
+   "label": "Kocieniewski_2012",
+   "row": 2,
+   "n_species": 85,
+   "n_reactions": 487,
+   "horizon": {
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_steps": 100,
+    "n_points": 101,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "default"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/slow__rulehub__Published__Kocieniewski2012__Kocieniewski_2012.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/slow__rulehub__Published__Kocieniewski2012__Kocieniewski_2012.bngl.omex",
+    "export_sec": 0.3394,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.0,
+      "propagation_cpu_sec": 0.02,
+      "total_cpu_sec": 0.02
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.035736,
+     "integrate_warm_min_sec": 0.034435,
+     "integrate_warm_median_sec": 0.034854,
+     "integrate_warm_max_sec": 0.03588,
+     "n_warm": 5,
+     "cold_total_sec": 0.035736,
+     "warm_sec": 0.034854,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 6
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 0.004244,
+     "build_breakdown": {
+      "load_sec": 0.004244,
+      "jac_derive_sec": 1.8e-05,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.003243,
+     "integrate_warm_min_sec": 0.003071,
+     "integrate_warm_median_sec": 0.003118,
+     "integrate_warm_max_sec": 0.00322,
+     "n_warm": 5,
+     "cold_total_sec": 0.007487,
+     "warm_sec": 0.003118,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "Dense",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 0.634832,
+     "build_breakdown": {
+      "read_sec": 5.1e-05,
+      "parse_sec": 0.014438,
+      "interpret_sec": 0.000923,
+      "codegen_sec": 0.581832,
+      "jit_sec": 0.574682,
+      "parse_interpret_codegen_sec": 0.634832,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.002695,
+     "integrate_warm_min_sec": 0.002574,
+     "integrate_warm_median_sec": 0.002664,
+     "integrate_warm_max_sec": 0.002802,
+     "n_warm": 5,
+     "cold_total_sec": 0.637527,
+     "warm_sec": 0.002664,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 11.386895,
+     "build_breakdown": {
+      "parse_sec": 0.029822,
+      "interpret_sec": 0.104815,
+      "jac_derive_sec": 0.931944,
+      "codegen_sec": 0.668056,
+      "compile_sec": 9.65,
+      "load_sec": 0.002258
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.010993,
+     "integrate_warm_min_sec": 0.006523,
+     "integrate_warm_median_sec": 0.007321,
+     "integrate_warm_max_sec": 0.008823,
+     "n_warm": 5,
+     "cold_total_sec": 11.397888,
+     "warm_sec": 0.007321,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "KLU",
+      "cached": false
+     },
+     "integrate_cpu_ms": 9.438,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "amici_dense": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 11.386895,
+     "build_breakdown": {
+      "parse_sec": 0.029822,
+      "interpret_sec": 0.104815,
+      "jac_derive_sec": 0.931944,
+      "codegen_sec": 0.668056,
+      "compile_sec": 9.65,
+      "load_sec": 0.002258
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.008369,
+     "integrate_warm_min_sec": 0.007536,
+     "integrate_warm_median_sec": 0.007696,
+     "integrate_warm_max_sec": 0.008074,
+     "n_warm": 5,
+     "cold_total_sec": 11.395264,
+     "warm_sec": 0.007696,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "dense",
+      "cached": false
+     },
+     "integrate_cpu_ms": 7.671,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 85,
+     "build_sec": 0.124793,
+     "build_breakdown": {
+      "import_config_sec": 0.124793
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.094758,
+     "integrate_warm_min_sec": 0.090875,
+     "integrate_warm_median_sec": 0.092011,
+     "integrate_warm_max_sec": 0.093419,
+     "n_warm": 5,
+     "cold_total_sec": 0.219551,
+     "warm_sec": 0.092011,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  },
+  {
+   "model_id": "slow/rulehub/Published/Barua2007/Barua_2007.bngl",
+   "label": "Barua_2007",
+   "row": 3,
+   "n_species": 149,
+   "n_reactions": 1032,
+   "horizon": {
+    "t_start": 0.0,
+    "t_end": 1000.0,
+    "n_steps": 100,
+    "n_points": 101,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "model"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/slow__rulehub__Published__Barua2007__Barua_2007.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/slow__rulehub__Published__Barua2007__Barua_2007.bngl.omex",
+    "export_sec": 1.1005,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.0,
+      "propagation_cpu_sec": 0.05,
+      "total_cpu_sec": 0.05
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.082437,
+     "integrate_warm_min_sec": 0.067348,
+     "integrate_warm_median_sec": 0.067843,
+     "integrate_warm_max_sec": 0.06832,
+     "n_warm": 5,
+     "cold_total_sec": 0.082437,
+     "warm_sec": 0.067843,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 6
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 0.005504,
+     "build_breakdown": {
+      "load_sec": 0.005504,
+      "jac_derive_sec": 3.9e-05,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.004886,
+     "integrate_warm_min_sec": 0.004249,
+     "integrate_warm_median_sec": 0.004291,
+     "integrate_warm_max_sec": 0.004318,
+     "n_warm": 5,
+     "cold_total_sec": 0.01039,
+     "warm_sec": 0.004291,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "KLU",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 2.037473,
+     "build_breakdown": {
+      "read_sec": 9.8e-05,
+      "parse_sec": 0.031613,
+      "interpret_sec": 0.001967,
+      "codegen_sec": 1.862192,
+      "jit_sec": 1.845512,
+      "parse_interpret_codegen_sec": 2.037473,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.010017,
+     "integrate_warm_min_sec": 0.009721,
+     "integrate_warm_median_sec": 0.009757,
+     "integrate_warm_max_sec": 0.009806,
+     "n_warm": 5,
+     "cold_total_sec": 2.04749,
+     "warm_sec": 0.009757,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 17.125294,
+     "build_breakdown": {
+      "parse_sec": 0.140141,
+      "interpret_sec": 0.224159,
+      "jac_derive_sec": 4.224682,
+      "codegen_sec": 2.535318,
+      "compile_sec": 10.0,
+      "load_sec": 0.000994
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.007208,
+     "integrate_warm_min_sec": 0.005234,
+     "integrate_warm_median_sec": 0.005341,
+     "integrate_warm_max_sec": 0.005599,
+     "n_warm": 5,
+     "cold_total_sec": 17.132502,
+     "warm_sec": 0.005341,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "KLU",
+      "cached": false
+     },
+     "integrate_cpu_ms": 3.663,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "amici_dense": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 17.125294,
+     "build_breakdown": {
+      "parse_sec": 0.140141,
+      "interpret_sec": 0.224159,
+      "jac_derive_sec": 4.224682,
+      "codegen_sec": 2.535318,
+      "compile_sec": 10.0,
+      "load_sec": 0.000994
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.012742,
+     "integrate_warm_min_sec": 0.012757,
+     "integrate_warm_median_sec": 0.012878,
+     "integrate_warm_max_sec": 0.012999,
+     "n_warm": 5,
+     "cold_total_sec": 17.138036,
+     "warm_sec": 0.012878,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "dense",
+      "cached": false
+     },
+     "integrate_cpu_ms": 10.98,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 149,
+     "build_sec": 0.325784,
+     "build_breakdown": {
+      "import_config_sec": 0.325784
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.180812,
+     "integrate_warm_min_sec": 0.180708,
+     "integrate_warm_median_sec": 0.182005,
+     "integrate_warm_max_sec": 0.182484,
+     "n_warm": 5,
+     "cold_total_sec": 0.506596,
+     "warm_sec": 0.182005,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  },
+  {
+   "model_id": "slow/rulehub/Published/Blinov2006/Blinov_2006.bngl",
+   "label": "Blinov_2006",
+   "row": 4,
+   "n_species": 356,
+   "n_reactions": 3749,
+   "horizon": {
+    "t_start": 0.0,
+    "t_end": 100000.0,
+    "n_steps": 10,
+    "n_points": 11,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "model"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/slow__rulehub__Published__Blinov2006__Blinov_2006.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/slow__rulehub__Published__Blinov2006__Blinov_2006.bngl.omex",
+    "export_sec": 11.1824,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.01,
+      "propagation_cpu_sec": 0.27,
+      "total_cpu_sec": 0.28
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.298237,
+     "integrate_warm_min_sec": 0.290442,
+     "integrate_warm_median_sec": 0.294431,
+     "integrate_warm_max_sec": 0.301832,
+     "n_warm": 5,
+     "cold_total_sec": 0.298237,
+     "warm_sec": 0.294431,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 6
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 0.012564,
+     "build_breakdown": {
+      "load_sec": 0.012564,
+      "jac_derive_sec": 0.000491,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.053125,
+     "integrate_warm_min_sec": 0.052719,
+     "integrate_warm_median_sec": 0.05282,
+     "integrate_warm_max_sec": 0.053131,
+     "n_warm": 5,
+     "cold_total_sec": 0.065689,
+     "warm_sec": 0.05282,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "KLU",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 22.761034,
+     "build_breakdown": {
+      "read_sec": 0.000253,
+      "parse_sec": 0.131106,
+      "interpret_sec": 0.009949,
+      "codegen_sec": 20.353416,
+      "jit_sec": 20.26843,
+      "parse_interpret_codegen_sec": 22.761034,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.035493,
+     "integrate_warm_min_sec": 0.035175,
+     "integrate_warm_median_sec": 0.035409,
+     "integrate_warm_max_sec": 0.035774,
+     "n_warm": 5,
+     "cold_total_sec": 22.796527,
+     "warm_sec": 0.035409,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 105.268607,
+     "build_breakdown": {
+      "parse_sec": 4.290136,
+      "interpret_sec": 1.577028,
+      "jac_derive_sec": 50.548599,
+      "codegen_sec": 31.951401,
+      "compile_sec": 16.9,
+      "load_sec": 0.001443
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.031956,
+     "integrate_warm_min_sec": 0.029283,
+     "integrate_warm_median_sec": 0.029386,
+     "integrate_warm_max_sec": 0.029601,
+     "n_warm": 5,
+     "cold_total_sec": 105.300563,
+     "warm_sec": 0.029386,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "KLU",
+      "cached": false
+     },
+     "integrate_cpu_ms": 30.307,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "amici_dense": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 105.268607,
+     "build_breakdown": {
+      "parse_sec": 4.290136,
+      "interpret_sec": 1.577028,
+      "jac_derive_sec": 50.548599,
+      "codegen_sec": 31.951401,
+      "compile_sec": 16.9,
+      "load_sec": 0.001443
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.046685,
+     "integrate_warm_min_sec": 0.046533,
+     "integrate_warm_median_sec": 0.051318,
+     "integrate_warm_max_sec": 0.052634,
+     "n_warm": 5,
+     "cold_total_sec": 105.315292,
+     "warm_sec": 0.051318,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "dense",
+      "cached": false
+     },
+     "integrate_cpu_ms": 45.629,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 356,
+     "build_sec": 3.797566,
+     "build_breakdown": {
+      "import_config_sec": 3.797566
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.204232,
+     "integrate_warm_min_sec": 0.204061,
+     "integrate_warm_median_sec": 0.205779,
+     "integrate_warm_max_sec": 0.206352,
+     "n_warm": 5,
+     "cold_total_sec": 4.001798,
+     "warm_sec": 0.205779,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  },
+  {
+   "model_id": "slow/rulehub/Published/Barua2013/Barua_2013__PATCHED.bngl",
+   "label": "Barua_2013",
+   "row": 5,
+   "n_species": 410,
+   "n_reactions": 2737,
+   "horizon": {
+    "t_start": 0.0,
+    "t_end": 250000.0,
+    "n_steps": 2500,
+    "n_points": 2501,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "model"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/slow__rulehub__Published__Barua2013__Barua_2013__PATCHED.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/slow__rulehub__Published__Barua2013__Barua_2013__PATCHED.bngl.omex",
+    "export_sec": 4.6239,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.01,
+      "propagation_cpu_sec": 1.77,
+      "total_cpu_sec": 1.78
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 1.807176,
+     "integrate_warm_min_sec": 1.812367,
+     "integrate_warm_median_sec": 1.812367,
+     "integrate_warm_max_sec": 1.812367,
+     "n_warm": 1,
+     "cold_total_sec": 1.807176,
+     "warm_sec": 1.812367,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 2
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 0.010887,
+     "build_breakdown": {
+      "load_sec": 0.010887,
+      "jac_derive_sec": 0.000296,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 0.229342,
+     "integrate_warm_min_sec": 0.227071,
+     "integrate_warm_median_sec": 0.228392,
+     "integrate_warm_max_sec": 0.228599,
+     "n_warm": 5,
+     "cold_total_sec": 0.240229,
+     "warm_sec": 0.228392,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "KLU",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 12.200271,
+     "build_breakdown": {
+      "read_sec": 0.000129,
+      "parse_sec": 0.086033,
+      "interpret_sec": 0.00638,
+      "codegen_sec": 11.044522,
+      "jit_sec": 10.990379,
+      "parse_interpret_codegen_sec": 12.200271,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.28821,
+     "integrate_warm_min_sec": 0.286615,
+     "integrate_warm_median_sec": 0.287895,
+     "integrate_warm_max_sec": 0.288293,
+     "n_warm": 5,
+     "cold_total_sec": 12.488481,
+     "warm_sec": 0.287895,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 57.440869,
+     "build_breakdown": {
+      "parse_sec": 0.680084,
+      "interpret_sec": 0.857374,
+      "jac_derive_sec": 24.175357,
+      "codegen_sec": 17.824643,
+      "compile_sec": 13.9,
+      "load_sec": 0.003411
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 0.335501,
+     "integrate_warm_min_sec": 0.289138,
+     "integrate_warm_median_sec": 0.293073,
+     "integrate_warm_max_sec": 0.311329,
+     "n_warm": 5,
+     "cold_total_sec": 57.77637,
+     "warm_sec": 0.293073,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "KLU",
+      "cached": false
+     },
+     "integrate_cpu_ms": 229.854,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "amici_dense": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 57.440869,
+     "build_breakdown": {
+      "parse_sec": 0.680084,
+      "interpret_sec": 0.857374,
+      "jac_derive_sec": 24.175357,
+      "codegen_sec": 17.824643,
+      "compile_sec": 13.9,
+      "load_sec": 0.003411
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 21.067678,
+     "integrate_warm_min_sec": null,
+     "integrate_warm_median_sec": null,
+     "integrate_warm_max_sec": null,
+     "n_warm": 0,
+     "cold_total_sec": 78.508547,
+     "warm_sec": null,
+     "config": {
+      "codegen": "C++ (compiled)",
+      "jacobian": "analytical (symbolic)",
+      "linear_solver": "dense",
+      "cached": false
+     },
+     "integrate_cpu_ms": 20979.244,
+     "_note": "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense (paid once); build_sec repeats it in both rows."
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 410,
+     "build_sec": 1.567615,
+     "build_breakdown": {
+      "import_config_sec": 1.567615
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 6.582499,
+     "integrate_warm_min_sec": null,
+     "integrate_warm_median_sec": null,
+     "integrate_warm_max_sec": null,
+     "n_warm": 0,
+     "cold_total_sec": 8.150114,
+     "warm_sec": null,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  },
+  {
+   "model_id": "slow/rulehub/Published/fcerifyn/fceri_fyn.bngl",
+   "label": "fceri_fyn",
+   "row": 6,
+   "n_species": 1281,
+   "n_reactions": 15256,
+   "horizon": {
+    "t_start": 0.0,
+    "t_end": 100.0,
+    "n_steps": 100,
+    "n_points": 101,
+    "rtol": 1e-08,
+    "atol": 1e-08,
+    "rn_timeout": 1200.0,
+    "horizon_source": "default"
+   },
+   "omex": {
+    "status": "ok",
+    "sbml_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/sbml/slow__rulehub__Published__fcerifyn__fceri_fyn.bngl.xml",
+    "omex_path": "/Users/wish/Code/bngsim/benchmarks/suites/ode_engines_s3/omex/slow__rulehub__Published__fcerifyn__fceri_fyn.bngl.omex",
+    "export_sec": 57.0577,
+    "cached": false,
+    "gate_ok": true
+   },
+   "engines": {
+    "run_network": {
+     "status": "ok",
+     "n_species": 1281,
+     "build_sec": 0.0,
+     "build_breakdown": {
+      "init_cpu_sec": 0.05,
+      "propagation_cpu_sec": 17.7,
+      "total_cpu_sec": 17.77
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 17.805025,
+     "integrate_warm_min_sec": null,
+     "integrate_warm_median_sec": null,
+     "integrate_warm_max_sec": null,
+     "n_warm": 0,
+     "cold_total_sec": 17.805025,
+     "warm_sec": null,
+     "config": {
+      "codegen": "C (compiled run_network binary)",
+      "jacobian": "FD (CVODE difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": null
+     },
+     "n_calls": 1
+    },
+    "bngsim": {
+     "status": "ok",
+     "n_species": 1281,
+     "build_sec": 0.038157,
+     "build_breakdown": {
+      "load_sec": 0.038157,
+      "jac_derive_sec": 0.000403,
+      "codegen_sec": 0.0
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 2.19673,
+     "integrate_warm_min_sec": 2.200545,
+     "integrate_warm_median_sec": 2.200545,
+     "integrate_warm_max_sec": 2.200545,
+     "n_warm": 1,
+     "cold_total_sec": 2.234887,
+     "warm_sec": 2.200545,
+     "config": {
+      "codegen": "exprtk",
+      "jacobian": "analytical",
+      "linear_solver": "KLU",
+      "cached": null
+     }
+    },
+    "roadrunner": {
+     "status": "ok",
+     "n_species": 1281,
+     "build_sec": 441.789736,
+     "build_breakdown": {
+      "read_sec": 0.000689,
+      "parse_sec": 0.481087,
+      "interpret_sec": 0.048615,
+      "codegen_sec": 405.620633,
+      "jit_sec": 405.279781,
+      "parse_interpret_codegen_sec": 441.789736,
+      "model_cache_hit": 0.0
+     },
+     "build_cached": false,
+     "integrate_cold_sec": 2.959108,
+     "integrate_warm_min_sec": 2.972499,
+     "integrate_warm_median_sec": 2.972499,
+     "integrate_warm_max_sec": 2.972499,
+     "n_warm": 1,
+     "cold_total_sec": 444.748844,
+     "warm_sec": 2.972499,
+     "config": {
+      "codegen": "LLVM JIT",
+      "jacobian": "FD (difference-quotient)",
+      "linear_solver": "Dense (built-in LU)",
+      "cached": false
+     }
+    },
+    "amici_klu": {
+     "status": "timeout",
+     "error": "engine exceeded wall timeout of 600s"
+    },
+    "amici_dense": {
+     "status": "timeout",
+     "error": "engine exceeded wall timeout of 1200s"
+    },
+    "copasi": {
+     "status": "ok",
+     "n_species": 1281,
+     "build_sec": 33.723044,
+     "build_breakdown": {
+      "import_config_sec": 33.723044
+     },
+     "build_cached": null,
+     "integrate_cold_sec": 41.064249,
+     "integrate_warm_min_sec": null,
+     "integrate_warm_median_sec": null,
+     "integrate_warm_max_sec": null,
+     "n_warm": 0,
+     "cold_total_sec": 74.787293,
+     "warm_sec": null,
+     "config": {
+      "codegen": "interpreted (COPASI)",
+      "jacobian": "internal",
+      "linear_solver": "COPASI deterministic (LSODA)",
+      "cached": null
+     }
+    }
+   },
+   "_complete": true
+  }
+ ]
+}

@@ -1,0 +1,5 @@
+omex/
+sbml/
+__pycache__/
+*.log
+*.json.tmp
