@@ -1,0 +1,28 @@
+# reactions_text_block.net — issue #13 regression fixture.
+#
+# BNG2.pl emits a `begin reactions_text ... end reactions_text` block for some
+# models (when the corresponding print option is set). The block is purely
+# informational: it restates the numeric `reactions` block in human-readable
+# pattern form. bngsim's .net loader used to match "begin reactions" as a
+# substring of "begin reactions_text" and feed the pattern lines to the numeric
+# reaction parser, where std::stoi("A(b)") threw "stoi: no conversion".
+#
+# This fixture is the minimal reproduction: a first-order decay A -> B with a
+# reactions_text block appended. It must load and integrate to A(t) = A0*exp(-k1*t).
+begin parameters
+   1 k1 1.0
+end parameters
+begin species
+   1 A() 100
+   2 B() 0
+end species
+begin reactions
+   1 1 2 k1
+end reactions
+begin reactions_text
+   1 A(b) -> B(a) k1
+end reactions_text
+begin groups
+   1 GA 1
+   2 GB 2
+end groups

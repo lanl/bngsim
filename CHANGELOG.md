@@ -37,6 +37,22 @@ in `CMakeLists.txt`) is derived from it.
   code and report the same `stiffness_ratio_max` / `stiffness_ratio_median`
   fields.
 
+### Fixed
+- **`Model.from_net` no longer fails with `stoi: no conversion` on a `.net`
+  containing a `reactions_text` block (issue #13).** BNG2.pl emits an optional
+  `begin reactions_text ... end reactions_text` block (when the corresponding
+  print option is set) that restates the numeric `reactions` block in
+  human-readable pattern form (`1 A(b) -> B(a) k1`). The loader's block dispatch
+  matched `"begin reactions"` as a *substring* of `"begin reactions_text"`, so
+  those pattern lines were fed to the numeric reaction parser, where
+  `std::stoi("A(b)")` threw. The loader now recognizes and skips the
+  `reactions_text` block (checked before `begin reactions`, since that string is
+  a prefix substring), as it already does for other optional blocks — the
+  numeric `reactions` block remains authoritative and the network is unchanged.
+  Two parity-corpus models that previously loaded only after the block was
+  stripped by hand (`ComplexDegradation` N=6, `BaruaBCR_2012` N=1122) now load
+  directly.
+
 ## [0.11.35] - 2026-07-14
 
 ### Added

@@ -849,6 +849,15 @@ NetworkModel NetFileLoader::load(const std::string &path) {
             parsed_species = parse_species(file, param_name_to_idx, parsed_params);
         } else if (trimmed.find("begin functions") != std::string::npos) {
             parsed_functions = parse_functions(file);
+        } else if (trimmed.find("begin reactions_text") != std::string::npos) {
+            // Informational block emitted by BNG2.pl (restates the numeric
+            // `reactions` block in human-readable pattern form, e.g.
+            // "1 A(b) -> B(a) k1"). The numeric `reactions` block is
+            // authoritative, so skip this one — otherwise its pattern lines
+            // reach parse_reactions and std::stoi throws (issue #13). Must be
+            // checked before "begin reactions" because that string is a
+            // substring of "begin reactions_text".
+            skip_block(file, "end reactions_text");
         } else if (trimmed.find("begin reactions") != std::string::npos) {
             parsed_reactions = parse_reactions(file);
         } else if (trimmed.find("begin groups") != std::string::npos) {

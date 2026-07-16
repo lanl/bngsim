@@ -100,6 +100,12 @@ def t_as_observable_net(data_dir: Path) -> Path:
 
 
 @pytest.fixture
+def reactions_text_block_net(data_dir: Path) -> Path:
+    """Path to reactions_text_block.net (issue #13 regression)."""
+    return data_dir / "reactions_text_block.net"
+
+
+@pytest.fixture
 def obs_zero_arg_call_net(data_dir: Path) -> Path:
     """Path to obs_zero_arg_call.net (issue #28 regression)."""
     return data_dir / "obs_zero_arg_call.net"
