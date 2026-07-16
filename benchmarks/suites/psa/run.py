@@ -18,11 +18,19 @@ Two gates per ``(model, Nc)`` (machinery in ``benchmarks/_netbench.py``):
 2. **timing** -- a warmup + timed-run wall-clock comparison, reported only
    for a ``(model, Nc)`` that passed correctness.
 
+Plus an anchor-free **diagnostics** pass (GH #15, on by default): one BNGsim
+PSA run per ``(model, Nc)`` whose ``psa_diagnostics`` are digested into the
+report -- the measured event-rate speedup ``ŝ``, which channels scaled and how
+hard (``m̄``), the peak-population activation signal, and the top variance-
+inflation channels by ``q̄``. It needs no ``run_network`` and no exact-SSA
+anchor, so it reports even where neither gate can (exact SSA infeasible).
+
 Usage::
 
-    python run.py                       # both gates, all models x Nc
-    python run.py --mode correctness     # correctness gate only
-    python run.py --mode timing          # timing gate only
+    python run.py                       # both gates + diagnostics, all models x Nc
+    python run.py --mode correctness     # correctness gate only (+ diagnostics)
+    python run.py --mode timing          # timing gate only (+ diagnostics)
+    python run.py --no-diagnostics       # skip the diagnostics pass
     python run.py --effort low           # cheap subset (cumulative tiers)
     python run.py --replicates 40        # larger correctness ensemble
 """
@@ -80,6 +88,79 @@ MODELS = [
         "notes": "Nucleated polymerization; 2809 reactions make SSA slow",
     },
 ]
+
+# Fixed seed + top-K channels for the anchor-free PSA diagnostics pass (GH #15).
+DIAG_SEED = 20260716
+DIAG_TOP_K = 3
+
+
+# ---------------------------------------------------------------------------
+# PSA scaling diagnostics (GH #15) -- anchor-free
+# ---------------------------------------------------------------------------
+#
+# These models are the reason PSA exists: exact SSA is infeasible, so there is
+# no per-Nc ground truth and the correctness gate can only check cross-engine
+# *consistency*, not accuracy. The per-run partial-scaling diagnostics are the
+# one signal computable from the scaled run *alone* (no anchor): the measured
+# event-rate speedup s-hat, which channels actually scaled and how hard (m-bar),
+# and the propensity-weighted excess q-bar attributing variance inflation to
+# individual reactions. This pass runs one BNGsim PSA simulation per (model, Nc)
+# and digests result.psa_diagnostics into a compact, JSON-serializable row.
+
+
+def collect_diagnostics(net_path, t_end, n_steps, poplevel, seed):
+    """Run one BNGsim PSA simulation and digest its ``psa_diagnostics`` (GH #15).
+
+    Anchor-free -- needs no ``run_network``, so it reports even where the gates
+    cannot (exact SSA infeasible). Returns a compact dict of scalars plus the
+    top ``DIAG_TOP_K`` variance-inflation channels; ``error`` is a string on
+    failure, ``None`` on success. The full per-reaction arrays are intentionally
+    NOT stored -- prion has 2809 reactions -- only the digest goes into the JSON.
+    """
+    import time
+
+    import bngsim
+    import numpy as np
+
+    try:
+        model = bngsim.Model.from_net(str(net_path))
+        m = model.clone()
+        m.reset()
+        sim = bngsim.Simulator(m, method="psa", poplevel=poplevel)
+        t0 = time.perf_counter()
+        r = sim.run(t_span=(0, t_end), n_points=n_steps + 1, seed=seed)
+        wall = time.perf_counter() - t0
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{e}"[:200]}
+
+    p = r.psa_diagnostics
+    mbar = np.asarray(p["mbar"], dtype=float)
+    qexc = np.asarray(p["qexc"], dtype=float)
+    ridx = p["reaction_index"]
+    scaled_mask = mbar > 1.0 + 1e-9
+    # Channels carrying the most propensity-weighted excess q-bar (the reactions
+    # responsible for the variance inflation), largest first.
+    order = np.argsort(qexc)[::-1] if qexc.size else []
+    top = [
+        {"reaction_index": int(ridx[i]), "qexc": float(qexc[i]), "mbar": float(mbar[i])}
+        for i in order[:DIAG_TOP_K]
+        if qexc[i] > 0.0
+    ]
+    return {
+        "error": None,
+        "active": bool(p["active"]),
+        "speedup": float(p["speedup"]),
+        "scaled_event_integral": float(p["scaled_event_integral"]),
+        "exact_event_integral": float(p["exact_event_integral"]),
+        "n_reactions": int(mbar.size),
+        "n_scaled": int(scaled_mask.sum()),
+        "max_mbar": float(mbar.max()) if mbar.size else 1.0,
+        "peak_population": float(p["peak_population"]),
+        "activation_crossed": bool(p["activation_crossed"]),
+        "sim_time": float(p["time"]),
+        "wall_time": float(wall),
+        "top_channels": top,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +236,75 @@ def generate_markdown(payload, outpath):
     geo = nb.geometric_mean(speedups)
     if geo:
         lines.append(f"**Geometric-mean speedup (correctness-passing jobs): {geo:.1f}×**\n")
+
+    _append_diagnostics_section(lines, payload)
     outpath.write_text("\n".join(lines))
+
+
+def _append_diagnostics_section(lines, payload):
+    """Append the anchor-free PSA scaling-diagnostics section (GH #15)."""
+    diag_rows = [
+        r
+        for r in payload["results"]
+        if r.get("diagnostics")
+        and not r["diagnostics"].get("error")
+        and r["diagnostics"].get("active")
+    ]
+    if not diag_rows:
+        return
+
+    lines.append("## PSA scaling diagnostics (BNGsim, anchor-free)\n")
+    lines.append(
+        "Per-run partial-scaling statistics measured from the scaled run **alone** "
+        "-- no exact-SSA anchor, which these models cannot provide. `ŝ` is a per-path "
+        "*event-rate* ratio (would-be-exact events ÷ scaled events), an **upper bound** "
+        "on wall-clock speedup (per-event overhead erodes it); `m̄` is the dwell-time-"
+        "averaged leap multiplier and a channel counts as *scaled* when `m̄_r > 1`; "
+        "*activated* means the peak population crossed the `2·Nc` threshold below which "
+        "no channel can scale. See GH #15.\n"
+    )
+    lines.append(
+        "| Model | Nc | ŝ (event-rate) | scaled events | would-be exact | scaled rxns | "
+        "max m̄ | peak pop | activated |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for r in payload["results"]:
+        d = r.get("diagnostics")
+        if not d:
+            continue
+        if d.get("error"):
+            lines.append(
+                f"| {r['name']} | {r['poplevel']} | *(error: {d['error'][:40]})* | — | — | — | — | — | — |"
+            )
+            continue
+        if not d.get("active"):
+            continue
+        lines.append(
+            f"| {r['name']} | {r['poplevel']} | {d['speedup']:.1f}× | "
+            f"{d['scaled_event_integral']:,.0f} | {d['exact_event_integral']:,.0f} | "
+            f"{d['n_scaled']}/{d['n_reactions']} | {d['max_mbar']:,.0f} | "
+            f"{d['peak_population']:,.0f} | {'yes' if d['activation_crossed'] else 'no'} |"
+        )
+    lines.append("")
+    lines.append(
+        "**Top variance-inflation channels** — the reactions with the largest "
+        "propensity-weighted excess `q̄_r = (1/T)∫(m_r−1)·a_r dt`, the correct "
+        "statistic for attributing inflation to a channel:\n"
+    )
+    any_top = False
+    for r in payload["results"]:
+        d = r.get("diagnostics")
+        if not d or d.get("error") or not d.get("top_channels"):
+            continue
+        any_top = True
+        chans = ", ".join(
+            f"R{c['reaction_index']} (q̄={c['qexc']:.2g}, m̄={c['mbar']:.0f})"
+            for c in d["top_channels"]
+        )
+        lines.append(f"- **{r['name']}** @ Nc={r['poplevel']}: {chans}")
+    if not any_top:
+        lines.append("- *(no channel scaled at any tested Nc)*")
+    lines.append("")
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +330,13 @@ def main():
         "--warmup", type=int, default=nb.DEFAULT_WARMUP, help="Timing warmup runs."
     )
     parser.add_argument("--runs", type=int, default=nb.DEFAULT_RUNS, help="Timing timed runs.")
+    parser.add_argument(
+        "--diagnostics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Collect anchor-free PSA scaling diagnostics (ŝ, m̄, q̄, activation) per "
+        "(model, Nc). Needs no run_network. (default: on)",
+    )
     add_effort_arg(parser)
     args = parser.parse_args()
 
@@ -260,6 +416,18 @@ def main():
             elif args.mode == "both" and not correctness_ok:
                 print("  timing: skipped (correctness gate did not pass)")
 
+            if args.diagnostics:
+                d = collect_diagnostics(net_path, cfg["t_end"], cfg["n_steps"], nc, DIAG_SEED)
+                row["diagnostics"] = d
+                if d.get("error"):
+                    print(f"  diagnostics: ERROR {d['error'][:80]}")
+                else:
+                    print(
+                        f"  diagnostics: ŝ={d['speedup']:.1f}× (event-rate) | "
+                        f"scaled {d['n_scaled']}/{d['n_reactions']} rxns | "
+                        f"max m̄={d['max_mbar']:,.0f} | activated={d['activation_crossed']}"
+                    )
+
             results.append(row)
 
     # Summary
@@ -270,6 +438,20 @@ def main():
     n_fail = sum(1 for r in results if r.get("correctness") and not r["correctness"].get("passed"))
     n_skip = sum(1 for r in results if r["status"] == "skip")
     print(f"  jobs: {len(results)}  correctness PASS: {n_pass}  FAIL: {n_fail}  SKIP: {n_skip}")
+    if args.diagnostics:
+        shats = [
+            r["diagnostics"]["speedup"]
+            for r in results
+            if r.get("diagnostics")
+            and not r["diagnostics"].get("error")
+            and r["diagnostics"].get("active")
+        ]
+        if shats:
+            geo_shat = nb.geometric_mean(shats)
+            print(
+                f"  PSA diagnostics: {len(shats)} jobs measured; "
+                f"geometric-mean ŝ (event-rate) {geo_shat:.1f}×"
+            )
 
     payload = {
         "machine_info": nb.machine_info(),
@@ -277,6 +459,7 @@ def main():
         "replicates": args.replicates,
         "warmup": args.warmup,
         "runs": args.runs,
+        "diagnostics": args.diagnostics,
         "results": results,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
