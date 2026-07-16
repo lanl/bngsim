@@ -74,6 +74,43 @@ struct SsaDiagnostics {
     // (per-reaction compute_propensity + Fenwick — native arithmetic for
     // mass-action, ExprTk for Functional rate laws). Default "interpreted".
     std::string propensity_backend = "interpreted";
+
+    // ─── GH #15 — PSA partial-scaling diagnostics ──────────────────────────────
+    // Populated only when the run used partial scaling (poplevel > 1); left at the
+    // defaults (false / 0 / empty) under exact SSA and every non-SSA backend.
+    // Semantics follow docs/notes.tex (Lin–Feng–Hlavacek adaptive scaling): for
+    // reaction r, the integer leap multiplier is m_r(N) = max(1, floor(N'_min /
+    // N_c)) where N'_min is the smallest population participating in r, a_r is its
+    // unscaled propensity, and T is the simulated horizon. These are a cheap audit
+    // layer for a PSA run — measured accept/reject signals, not a certification of
+    // accuracy.
+    bool psa_active = false;
+
+    // Per-reaction, time-integrated over the run. The integral form is stored (not
+    // just the average) because the affine covariance source of notes.tex is
+    // Σ_r q̄_r ξ_r ξ_rᵀ with the dwell-time average q̄_r = (1/T)∫(m_r−1)a_r dt,
+    // while a transient correction wants the time-resolved integral — keeping ∫
+    // and T (below) lets a downstream consumer form either. q̄_r (not m̄_r alone)
+    // is the correct statistic for attributing variance inflation to a reaction:
+    // E[m·a] ≠ E[m]·a(E[N]). Vectors are indexed in parallel with
+    // psa_reaction_index (the 1-based Reaction::index).
+    std::vector<int> psa_reaction_index;   // 1-based reaction index per entry
+    std::vector<double> psa_mbar_integral; // ∫ m_r dt        (÷ psa_time ⇒ m̄_r)
+    std::vector<double> psa_qexc_integral; // ∫ (m_r−1)·a_r dt (÷ psa_time ⇒ q̄_r)
+
+    double psa_time = 0.0;                  // T = ∫ dt (simulated horizon)
+    double psa_exact_event_integral = 0.0;  // ∫ Σ_r a_r dt      (would-be exact rate)
+    double psa_scaled_event_integral = 0.0; // ∫ Σ_r a_r/m_r dt  (actual scaled rate)
+    // The measured per-path speedup ŝ = exact/scaled is formed in the Python layer.
+
+    // Activation signal (notes.tex finite-time coupling theorem): a channel can
+    // only scale once a participating population reaches 2·N_c, since
+    // floor(N/N_c) ≥ 2 requires N ≥ 2·N_c. If the peak never crossed it, no
+    // channel ever scaled and the run was pathwise identical to exact SSA.
+    // psa_peak_population is the running max over the populations (in counts)
+    // participating in scaling-eligible reactions.
+    double psa_peak_population = 0.0;
+    bool psa_activation_crossed = false; // psa_peak_population >= 2·poplevel
 };
 
 class Result {

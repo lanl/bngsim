@@ -67,6 +67,7 @@ from bngsim.coupling import (
     set_compartment_volume,
 )
 from bngsim.kernel import ReactionKernel
+from bngsim.psa import psa_cost_decision
 
 # NFsim availability flag — True when the C++ extension was built with
 # -DBNGSIM_BUILD_NFSIM=ON.  Consumers should use this instead of
@@ -177,6 +178,8 @@ __all__ = [
     "reserved_names",
     "configure_logging",
     "normalize_method",
+    # PSA diagnostics (GH #15)
+    "psa_cost_decision",
     # Feature flags
     "HAS_NFSIM",
     "HAS_RULEMONKEY",

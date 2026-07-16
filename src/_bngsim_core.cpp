@@ -238,13 +238,26 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_reverse_fires", &bngsim::SsaDiagnostics::n_reverse_fires)
         .def_readwrite("first_reverse_reaction", &bngsim::SsaDiagnostics::first_reverse_reaction)
         .def_readwrite("propensity_backend", &bngsim::SsaDiagnostics::propensity_backend)
+        // GH #15 — PSA partial-scaling diagnostics.
+        .def_readwrite("psa_active", &bngsim::SsaDiagnostics::psa_active)
+        .def_readwrite("psa_reaction_index", &bngsim::SsaDiagnostics::psa_reaction_index)
+        .def_readwrite("psa_mbar_integral", &bngsim::SsaDiagnostics::psa_mbar_integral)
+        .def_readwrite("psa_qexc_integral", &bngsim::SsaDiagnostics::psa_qexc_integral)
+        .def_readwrite("psa_time", &bngsim::SsaDiagnostics::psa_time)
+        .def_readwrite("psa_exact_event_integral",
+                       &bngsim::SsaDiagnostics::psa_exact_event_integral)
+        .def_readwrite("psa_scaled_event_integral",
+                       &bngsim::SsaDiagnostics::psa_scaled_event_integral)
+        .def_readwrite("psa_peak_population", &bngsim::SsaDiagnostics::psa_peak_population)
+        .def_readwrite("psa_activation_crossed", &bngsim::SsaDiagnostics::psa_activation_crossed)
         .def("__repr__",
              [](const bngsim::SsaDiagnostics &d) {
                  std::ostringstream os;
                  os << "SsaDiagnostics(n_negative_crossings=" << d.n_negative_crossings
                     << ", first_negative_species='" << d.first_negative_species
                     << "', n_reverse_fires=" << d.n_reverse_fires << ", first_reverse_reaction='"
-                    << d.first_reverse_reaction << "')";
+                    << d.first_reverse_reaction
+                    << "', psa_active=" << (d.psa_active ? "True" : "False") << ")";
                  return os.str();
              })
         .def("to_dict", [](const bngsim::SsaDiagnostics &d) {
@@ -254,6 +267,15 @@ PYBIND11_MODULE(_bngsim_core, m) {
             out["n_reverse_fires"] = d.n_reverse_fires;
             out["first_reverse_reaction"] = d.first_reverse_reaction;
             out["propensity_backend"] = d.propensity_backend;
+            out["psa_active"] = d.psa_active;
+            out["psa_reaction_index"] = d.psa_reaction_index;
+            out["psa_mbar_integral"] = d.psa_mbar_integral;
+            out["psa_qexc_integral"] = d.psa_qexc_integral;
+            out["psa_time"] = d.psa_time;
+            out["psa_exact_event_integral"] = d.psa_exact_event_integral;
+            out["psa_scaled_event_integral"] = d.psa_scaled_event_integral;
+            out["psa_peak_population"] = d.psa_peak_population;
+            out["psa_activation_crossed"] = d.psa_activation_crossed;
             return out;
         });
 

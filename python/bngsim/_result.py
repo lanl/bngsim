@@ -28,6 +28,70 @@ if TYPE_CHECKING:
 logger = logging.getLogger("bngsim")
 
 
+def _empty_psa_diagnostics() -> dict[str, Any]:
+    """PSA diagnostics dict for a non-PSA (or non-SSA) run: inactive, all empty."""
+    return {
+        "active": False,
+        "reaction_index": [],
+        "time": 0.0,
+        "mbar": [],
+        "qexc": [],
+        "mbar_integral": [],
+        "qexc_integral": [],
+        "exact_event_integral": 0.0,
+        "scaled_event_integral": 0.0,
+        "speedup": float("nan"),
+        "peak_population": 0.0,
+        "activation_crossed": False,
+    }
+
+
+def _psa_diagnostics_from_core(ssa_diag: Any) -> dict[str, Any]:
+    """Build the PSA diagnostics dict from the C++ SsaDiagnostics struct (GH #15).
+
+    Returns the empty/inactive dict when the run did not use partial scaling, so
+    every non-PSA backend reports a stable, zero-valued shape.
+    """
+    if not getattr(ssa_diag, "psa_active", False):
+        return _empty_psa_diagnostics()
+
+    t = float(ssa_diag.psa_time)
+    mbar_int = [float(x) for x in ssa_diag.psa_mbar_integral]
+    qexc_int = [float(x) for x in ssa_diag.psa_qexc_integral]
+    # Dwell-time averages m̄_r = (1/T)∫m_r dt and q̄_r = (1/T)∫(m_r−1)a_r dt. The
+    # raw integrals are kept alongside so a covariance correction can form either
+    # the stationary source (÷T) or a transient one.
+    if t > 0.0:
+        mbar = [v / t for v in mbar_int]
+        qexc = [v / t for v in qexc_int]
+    else:
+        mbar = [1.0 for _ in mbar_int]
+        qexc = [0.0 for _ in qexc_int]
+
+    exact = float(ssa_diag.psa_exact_event_integral)
+    scaled = float(ssa_diag.psa_scaled_event_integral)
+    # ŝ = ∫Σa_r dt / ∫Σ(a_r/m_r) dt — a per-path event-rate ratio (would-be exact
+    # events ÷ actual scaled events), computable from the scaled run alone. This
+    # is NOT a wall-clock speedup: it ignores per-event overhead and the variance
+    # of any excess correction (see docs/notes.tex §sampling-cost).
+    speedup = exact / scaled if scaled > 0.0 else float("nan")
+
+    return {
+        "active": True,
+        "reaction_index": [int(i) for i in ssa_diag.psa_reaction_index],
+        "time": t,
+        "mbar": mbar,
+        "qexc": qexc,
+        "mbar_integral": mbar_int,
+        "qexc_integral": qexc_int,
+        "exact_event_integral": exact,
+        "scaled_event_integral": scaled,
+        "speedup": speedup,
+        "peak_population": float(ssa_diag.psa_peak_population),
+        "activation_crossed": bool(ssa_diag.psa_activation_crossed),
+    }
+
+
 @dataclass(frozen=True)
 class IdentifiabilityReport:
     r"""Model-identifiability readout of a Fisher Information Matrix (GH #202).
@@ -150,6 +214,7 @@ class Result:
         "_sensitivity_ic_species",
         "_solver_stats",
         "_ssa_diagnostics",
+        "_psa_diagnostics",
         "_species_volume_factors",
         "_varvol_live_vol",
         "_varvol_conc_factor",
@@ -285,6 +350,8 @@ class Result:
                 # (compiled recompute-all) or "interpreted".
                 "propensity_backend": getattr(ssa_diag, "propensity_backend", "interpreted"),
             }
+            # GH #15 — PSA partial-scaling diagnostics (inactive dict on non-PSA).
+            self._psa_diagnostics: dict[str, Any] = _psa_diagnostics_from_core(ssa_diag)
         else:
             # Construct from raw arrays (load / batch)
             self._time = _time if _time is not None else np.empty(0)
@@ -322,6 +389,7 @@ class Result:
                 "first_reverse_reaction": "",
                 "propensity_backend": "interpreted",
             }
+            self._psa_diagnostics = _empty_psa_diagnostics()
 
         # GH #198 — {function_name: unsupported_reason_or_None} for expression
         # output sensitivities, set by the Simulator after a sensitivity run from
@@ -1560,6 +1628,56 @@ class Result:
         All zero/empty on every non-SSA backend.
         """
         return self._ssa_diagnostics
+
+    @property
+    def psa_diagnostics(self) -> dict[str, Any]:
+        r"""PSA partial-scaling diagnostics dict (GH #15).
+
+        A cheap audit layer for a partial-scaling run: per-reaction, time-
+        integrated scaling statistics plus a measured event-rate speedup. These
+        are *measured accept/reject signals* for a fixed PSA run, not a
+        certification of accuracy. Inactive (``active=False``, all zero/empty) on
+        exact SSA and every non-SSA backend.
+
+        For reaction ``r``, the integer leap multiplier is
+        ``m_r(N) = max(1, floor(N'_min / N_c))`` (``N'_min`` = smallest
+        participating population, ``N_c`` = ``poplevel``), ``a_r`` its unscaled
+        propensity, and ``T`` the simulated horizon.
+
+        Keys:
+
+        - ``active`` (bool): whether this run used partial scaling.
+        - ``reaction_index`` (list[int]): 1-based reaction indices, parallel to
+          every per-reaction list below (matches ``.net`` reaction numbering).
+        - ``time`` (float): ``T``, the simulated horizon (integral denominator).
+        - ``mbar`` (list[float]): dwell-time-averaged multiplier
+          ``m̄_r = (1/T)∫ m_r dt``. A non-scaling reaction reports ``1.0``.
+        - ``qexc`` (list[float]): propensity-weighted excess
+          ``q̄_r = (1/T)∫ (m_r−1)·a_r dt`` — the correct per-reaction statistic
+          for attributing variance inflation (``E[m·a] ≠ E[m]·a(E[N])``), and the
+          source term for an affine/monomolecular covariance correction.
+        - ``mbar_integral`` / ``qexc_integral`` (list[float]): the raw
+          ``∫ m_r dt`` and ``∫ (m_r−1)·a_r dt`` (divide by ``time`` for the
+          averages; kept so a transient correction can use the un-normalized
+          integral).
+        - ``exact_event_integral`` (float): ``∫ Σ_r a_r dt`` (would-be exact
+          event count).
+        - ``scaled_event_integral`` (float): ``∫ Σ_r a_r/m_r dt`` (actual scaled
+          event count).
+        - ``speedup`` (float): measured per-path event-rate ratio
+          ``ŝ = exact/scaled ≥ 1``, computable from the scaled run alone. It is
+          **not** a wall-clock speedup and ignores correction-estimator variance.
+        - ``peak_population`` (float): running max over the populations (counts)
+          participating in scaling-eligible reactions.
+        - ``activation_crossed`` (bool): whether ``peak_population ≥ 2·poplevel``.
+          Scaling can only engage past ``2·poplevel``; if this is ``False`` no
+          channel ever scaled and the run was pathwise identical to exact SSA.
+
+        To turn ``speedup`` into a cost/precision go/no-go, pair it with the
+        observable's variance-inflation ratio ``ρ`` (from a calibration/anchor
+        run) via :func:`bngsim.psa_cost_decision`.
+        """
+        return self._psa_diagnostics
 
     # ─── pandas DataFrame (optional dependency) ─────────────────────
 

@@ -734,6 +734,8 @@ class SsaDiagnostics:
     first_negative_species: str
     first_reverse_reaction: str
     propensity_backend: str
+    psa_activation_crossed: bool
+    psa_active: bool
     def __init__(self) -> None:
         ...
     def __repr__(self) -> str:
@@ -751,6 +753,48 @@ class SsaDiagnostics:
         ...
     @n_reverse_fires.setter
     def n_reverse_fires(self, arg0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def psa_exact_event_integral(self) -> float:
+        ...
+    @psa_exact_event_integral.setter
+    def psa_exact_event_integral(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def psa_mbar_integral(self) -> list[float]:
+        ...
+    @psa_mbar_integral.setter
+    def psa_mbar_integral(self, arg0: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        ...
+    @property
+    def psa_peak_population(self) -> float:
+        ...
+    @psa_peak_population.setter
+    def psa_peak_population(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def psa_qexc_integral(self) -> list[float]:
+        ...
+    @psa_qexc_integral.setter
+    def psa_qexc_integral(self, arg0: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        ...
+    @property
+    def psa_reaction_index(self) -> list[int]:
+        ...
+    @psa_reaction_index.setter
+    def psa_reaction_index(self, arg0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
+        ...
+    @property
+    def psa_scaled_event_integral(self) -> float:
+        ...
+    @psa_scaled_event_integral.setter
+    def psa_scaled_event_integral(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def psa_time(self) -> float:
+        ...
+    @psa_time.setter
+    def psa_time(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
 class SsaSimulator:
     def __init__(self, model: NetworkModel) -> None:
@@ -909,8 +953,8 @@ def reserved_names() -> dict:
     """
 HAS_KLU: bool = True
 HAS_LAPACK_DENSE: bool = True
-HAS_MIR: bool = True
+HAS_MIR: bool = False
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
-__build_commit__: str = '6c7e10b16106+dirty'
-__version__: str = '0.11.34'
+__build_commit__: str = '771a40931f4d+dirty'
+__version__: str = '0.11.35'

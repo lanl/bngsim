@@ -505,6 +505,38 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
     std::vector<double> propensities(nr, 0.0);    // unscaled propensities (magnitudes)
     std::vector<double> scaling_factors(nr, 1.0); // λ_r per reaction (PSA)
 
+    // GH #15 — PSA partial-scaling diagnostics (accumulators; only used when
+    // use_psa). The (m_r, a_r) pair in force for each reaction is banked lazily:
+    // whenever set_propensity recomputes reaction r it first flushes the previous
+    // pair over [psa_last_t[r], psa_now] into the dwell integrals, then records
+    // the new pair. A closing sweep after the loop flushes the tail. This is
+    // O(affected) per step — exactly the reactions the dep-graph already
+    // recomputes — plus one O(nr) sweep at the end. psa_now mirrors the current
+    // simulated time; it is updated whenever `t` advances so every set_propensity
+    // call flushes against the correct clock.
+    const std::size_t psa_n = use_psa ? static_cast<std::size_t>(nr) : 0;
+    std::vector<double> psa_m_at(psa_n, 1.0);             // m_r currently in force
+    std::vector<double> psa_a_at(psa_n, 0.0);             // unscaled a_r in force
+    std::vector<double> psa_last_t(psa_n, times.t_start); // last flush time per rxn
+    std::vector<double> psa_mbar_int(psa_n, 0.0);         // ∫ m_r dt
+    std::vector<double> psa_qexc_int(psa_n, 0.0);         // ∫ (m_r−1)·a_r dt
+    double psa_exact_int = 0.0;                           // ∫ Σ_r a_r dt
+    double psa_scaled_int = 0.0;                          // ∫ Σ_r a_r/m_r dt
+    double psa_peak_pop = 0.0;                            // running max participating count
+    double psa_now = times.t_start;                       // mirror of current sim time
+    auto psa_flush = [&](int r) {
+        const double dt = psa_now - psa_last_t[r];
+        if (dt > 0.0) {
+            const double m = psa_m_at[r];
+            const double a = psa_a_at[r];
+            psa_mbar_int[r] += m * dt;
+            psa_qexc_int[r] += (m - 1.0) * a * dt;
+            psa_exact_int += a * dt;
+            psa_scaled_int += (a / m) * dt; // m >= 1 by construction
+        }
+        psa_last_t[r] = psa_now;
+    };
+
     // GH #110 — sign-split firing direction per reaction. +1 forward (rate >= 0,
     // reactants → products), -1 reverse (rate < 0, products → reactants). The
     // Fenwick tree and propensities[] hold |rate| for selection; rxn_dir[r]
@@ -722,8 +754,11 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             auto fold_min = [&](const std::vector<int> &idx) {
                 for (int ci : idx) {
                     int si = ci - 1;
-                    if (si >= 0 && si < ns)
-                        n_min = std::min(n_min, conc[si] * species_list[si].volume_factor);
+                    if (si >= 0 && si < ns) {
+                        const double count = conc[si] * species_list[si].volume_factor;
+                        n_min = std::min(n_min, count);
+                        psa_peak_pop = std::max(psa_peak_pop, count); // GH #15
+                    }
                 }
             };
             fold_min(rxn.reactant_indices);
@@ -736,9 +771,19 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             double inv_lambda = std::max(1.0, floor_ratio);
             scaling_factors[r] = 1.0 / inv_lambda;
             effective_prop = scaling_factors[r] * prop;
+            // GH #15 — bank the (m_r, a_r) that was in force over its dwell, then
+            // record the pair now taking effect. inv_lambda is exactly m_r.
+            psa_flush(r);
+            psa_m_at[r] = inv_lambda;
+            psa_a_at[r] = prop;
         } else if (use_psa) {
             scaling_factors[r] = 1.0;
             effective_prop = 0.0;
+            // GH #15 — reaction inactive (prop == 0): close its dwell, record the
+            // idle pair (m=1, a=0) so the integrals see no contribution.
+            psa_flush(r);
+            psa_m_at[r] = 1.0;
+            psa_a_at[r] = 0.0;
         }
         sel_set(r, effective_prop);
     };
@@ -1413,6 +1458,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                     // before firing so the event sees their integrated values.
                     integrate_rr(t_event_idle - t);
                     t = t_event_idle;
+                    psa_now = t; // GH #15 — keep the PSA dwell clock on t
                     sync_state(t);
                     firing_scratch.clear();
                     std::vector<int> &firing = firing_scratch;
@@ -1463,6 +1509,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
                 // continuous targets move.
                 integrate_rr(t_next - t);
                 t = t_next;
+                psa_now = t; // GH #15 — keep the PSA dwell clock on t
                 model.set_current_time(t);
                 continue;
             }
@@ -1541,6 +1588,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // the event's assignment RHS sees their values at the event time.
             integrate_rr(t_event - t);
             t = t_event;
+            psa_now = t; // GH #15 — keep the PSA dwell clock on t
             sync_state(t);
             // Confirm rising-edge status under the post-sync state and apply
             // the firing batch.
@@ -1571,6 +1619,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             // GH #81: Euler-advance the rate-rule targets across the full cap.
             integrate_rr(t_proposed - t);
             t = t_proposed;
+            psa_now = t; // GH #15 — keep the PSA dwell clock on t
             model.set_current_time(t);
             continue;
         }
@@ -1641,6 +1690,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         // interval (t, t_proposed] alongside the discrete fire just applied.
         integrate_rr(t_proposed - t);
         t = t_proposed;
+        psa_now = t; // GH #15 — keep the PSA dwell clock on t
         model.set_current_time(t);
         ++total_steps;
 
@@ -1729,6 +1779,31 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
             diag.first_reverse_reaction = "R" + std::to_string(rrx.index) + " (" +
                                           join(rrx.reactant_indices) + " -> " +
                                           join(rrx.product_indices) + ")";
+        }
+    }
+
+    // GH #15 — PSA partial-scaling diagnostics. Close every reaction's dwell over
+    // the final [psa_last_t[r], t] tail, then publish the run integrals. Left
+    // untouched (defaults) on exact SSA so non-PSA results are unchanged.
+    if (use_psa) {
+        psa_now = t;
+        for (int r = 0; r < nr; ++r)
+            psa_flush(r);
+
+        auto &diag = result.ssa_diagnostics();
+        diag.psa_active = true;
+        diag.psa_time = t - times.t_start;
+        diag.psa_exact_event_integral = psa_exact_int;
+        diag.psa_scaled_event_integral = psa_scaled_int;
+        diag.psa_peak_population = psa_peak_pop;
+        diag.psa_activation_crossed = (psa_peak_pop >= 2.0 * poplevel);
+        diag.psa_reaction_index.resize(nr);
+        diag.psa_mbar_integral.resize(nr);
+        diag.psa_qexc_integral.resize(nr);
+        for (int r = 0; r < nr; ++r) {
+            diag.psa_reaction_index[r] = reactions[r].index;
+            diag.psa_mbar_integral[r] = psa_mbar_int[r];
+            diag.psa_qexc_integral[r] = psa_qexc_int[r];
         }
     }
 
