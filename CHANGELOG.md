@@ -38,6 +38,26 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **PSA now scales zeroth-order synthesis reactions and bounds every reaction's
+  leap by its products as well as its reactants (issue #14).** The partial-scaling
+  leap factor `iScaling = max(1, ⌊N_min/N_c⌋)` previously took `N_min` over
+  *reactant* species only. Synthesis reactions (`∅ → A`) have no reactants, so
+  `N_min` defaulted to 0 and they were never scaled — the source channel dominated
+  the step budget in source-driven models even when the product was abundant.
+  Separately, a reaction with a large reactant but a small product was
+  over-scaled: the leap was bounded by the (large) reactant and dumped a coarse
+  jump into a currently-small product. `N_min` is now the minimum population over
+  the **union of reactants and products**, matching BioNetGen `run_network`'s
+  default heterogeneous adaptive scaling (`rxn_rate_scaled`, `pScaleChecker=true`):
+  reactants bound depletion, products bound overshoot of a small produced species.
+  For synthesis the product population governs — the reaction is scaled once the
+  product is large and runs as exact SSA while it is small. This intentionally
+  departs from `run_network`, which scales synthesis by a flat `N_c` regardless of
+  the product. The SSA dependency graph gained a PSA-only product-population
+  dependency so a reaction is re-evaluated when a product it makes changes its leap
+  factor; the exact-SSA path is unchanged. The scaling of nonlinear rate laws
+  (MichaelisMenten / Sat / Hill) still differs from `run_network` and is tracked
+  separately in issue #16.
 - **`Model.from_net` no longer fails with `stoi: no conversion` on a `.net`
   containing a `reactions_text` block (issue #13).** BNG2.pl emits an optional
   `begin reactions_text ... end reactions_text` block (when the corresponding

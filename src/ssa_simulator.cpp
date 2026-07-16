@@ -121,6 +121,11 @@ class FenwickTree {
 // For Functional rate laws: propensity depends on reactant species PLUS
 //   all species that contribute to any observable (since function values
 //   can depend on any observable via ExprTk expressions).
+// Under PSA (psa_product_deps): every reaction ALSO depends on its product
+//   species, because the leap factor iScaling is the min population over
+//   reactants ∪ products (GH #14) — a change to a product can change the
+//   reaction's scaled propensity. Exact SSA does not add this (products do
+//   not enter the raw rate), keeping its recompute set minimal.
 //
 // When a reaction fires, it changes certain species (reactants consumed,
 // products produced). We look up all reactions that depend on any changed
@@ -146,8 +151,10 @@ struct DependencyGraph {
     // has_functional_rates: true if any reaction uses Functional rate laws
     bool has_functional_rates = false;
 
-    // Build dependency graph from model
-    void build(const NetworkModel &model) {
+    // Build dependency graph from model. psa_product_deps: also register each
+    // reaction's dependency on its product species (needed only under PSA, where
+    // iScaling is bounded by the min population over reactants ∪ products).
+    void build(const NetworkModel &model, bool psa_product_deps) {
         const int ns = model.n_species();
         const int nr = model.n_reactions();
         const auto &reactions = model.reactions();
@@ -192,6 +199,19 @@ struct DependencyGraph {
                 for (int s = 0; s < ns; ++s) {
                     if (is_observable_species[s]) {
                         deps.insert(s);
+                    }
+                }
+            }
+
+            // GH #14 — under PSA the scaled propensity's leap factor (iScaling) is
+            // bounded by the min population over reactants ∪ products, so a change
+            // to any product population can change this reaction's effective
+            // propensity. Register that dependency (PSA only).
+            if (psa_product_deps) {
+                for (int pi : rxn.product_indices) {
+                    int si = pi - 1;
+                    if (si >= 0 && si < ns) {
+                        deps.insert(si);
                     }
                 }
             }
@@ -272,6 +292,7 @@ struct SsaSimulator::Impl {
     bool dep_graph_built = false;
     int dep_graph_ns = -1; // topology fingerprint guarding stale reuse
     int dep_graph_nr = -1;
+    bool dep_graph_psa = false; // GH #14 — PSA adds product-population deps
 
     // GH #190 — path to the cc-compiled value-specialized propensity-vector .so
     // (symbol bngsim_ssa_propensities), produced by the Python codegen layer
@@ -288,14 +309,16 @@ struct SsaSimulator::Impl {
     // Build the dependency graph if not already cached for the current topology.
     // The (ns, nr) fingerprint defends against a model whose structure changed
     // under the simulator (unusual — topology is normally fixed once loaded).
-    DependencyGraph &dependency_graph() {
+    DependencyGraph &dependency_graph(bool use_psa) {
         const int ns = model.n_species();
         const int nr = model.n_reactions();
-        if (!dep_graph_built || dep_graph_ns != ns || dep_graph_nr != nr) {
-            dep_graph.build(model);
+        if (!dep_graph_built || dep_graph_ns != ns || dep_graph_nr != nr ||
+            dep_graph_psa != use_psa) {
+            dep_graph.build(model, use_psa);
             dep_graph_built = true;
             dep_graph_ns = ns;
             dep_graph_nr = nr;
+            dep_graph_psa = use_psa;
         }
         return dep_graph;
     }
@@ -343,7 +366,10 @@ Result SsaSimulator::run_psa(const TimeSpec &times, uint64_t seed, double poplev
 //
 // PSA Algorithm 1 from Lin, Feng, Hlavacek (2019):
 //   For each reaction r:
-//     N_min^r = min population among REACTANT species only (Eq. 14)
+//     N_min^r = min population over reactants ∪ products (Eq. 14 + run_network's
+//               default product-scale check; GH #14). Reactants bound depletion,
+//               products bound overshoot of a small produced species. Synthesis
+//               (∅ → A) has no reactants, so A alone bounds it.
 //     λ_r = 1 / max(1, ⌊N_min^r / N_c⌋)
 //     scaled_rate_r = λ_r * propensity_r
 //   When reaction r fires:
@@ -501,7 +527,7 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
 
     // ─── Build (or reuse) dependency graph ───────────────────────────────────
     // Cached on the Impl across run() calls — topology-only, seed-independent.
-    DependencyGraph &dep_graph = impl_->dependency_graph();
+    DependencyGraph &dep_graph = impl_->dependency_graph(use_psa);
 
     // ─── Build Fenwick tree ──────────────────────────────────────────────────
     // Stores effective propensities: unscaled for SSA, scaled for PSA.
@@ -681,14 +707,29 @@ Result SsaSimulator::run_internal(const TimeSpec &times, uint64_t seed, double p
         double effective_prop = prop;
         if (use_psa && prop > 0.0) {
             const auto &rxn = reactions[r];
-            const auto &consumed = (dir > 0) ? rxn.reactant_indices : rxn.product_indices;
+            // GH #14 — PSA leap factor (iScaling = 1/λ_r) is governed by the
+            // smallest population among ALL species the reaction changes: its
+            // reactants (a leap cannot consume more than are present) AND its
+            // products (a leap must not overshoot a currently-small produced
+            // species). This is the union min over reactants ∪ products, matching
+            // run_network's default heterogeneous adaptive scaling (rxn_rate_scaled
+            // with pScaleChecker=true, Network3/network.cpp). A synthesis reaction
+            // (∅ → A) has no reactants, so its bound comes from the product A: it
+            // scales once A is large and runs as exact SSA while A is small —
+            // unlike run_network, which scales synthesis by a fixed N_c regardless
+            // of A. Direction is irrelevant here since both sides are inspected.
             double n_min = std::numeric_limits<double>::max();
-            for (int ci : consumed) {
-                int si = ci - 1;
-                if (si >= 0 && si < ns) {
-                    n_min = std::min(n_min, conc[si] * species_list[si].volume_factor);
+            auto fold_min = [&](const std::vector<int> &idx) {
+                for (int ci : idx) {
+                    int si = ci - 1;
+                    if (si >= 0 && si < ns)
+                        n_min = std::min(n_min, conc[si] * species_list[si].volume_factor);
                 }
-            }
+            };
+            fold_min(rxn.reactant_indices);
+            fold_min(rxn.product_indices);
+            // Only a null reaction (no reactants and no products) leaves the
+            // sentinel; it changes nothing, so leave it unscaled.
             if (n_min == std::numeric_limits<double>::max())
                 n_min = 0.0;
             double floor_ratio = std::floor(n_min / poplevel);
