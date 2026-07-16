@@ -46,6 +46,7 @@ timeout, so a crash or hang on the giant (fceri_fyn) is contained, not fatal.
     export BNGPATH=~/Simulations/BioNetGen-2.9.3
     ~/Code/PyBNF-Private/bngsim/.venv/bin/python run_s3_timing.py --fresh-amici
 """
+
 from __future__ import annotations
 
 import argparse
@@ -185,9 +186,14 @@ def eng_run_network(net_path, hz, rn_bin):
     work = Path(tempfile.mkdtemp(prefix="s3rn_"))
     try:
         t, v, names, tm = bc.run_network_ode(
-            net_path, rn_bin,
-            t_start=hz["t_start"], t_end=hz["t_end"], n_steps=hz["n_steps"],
-            rtol=hz["rtol"], atol=hz["atol"], out_prefix=str(work / "rn"),
+            net_path,
+            rn_bin,
+            t_start=hz["t_start"],
+            t_end=hz["t_end"],
+            n_steps=hz["n_steps"],
+            rtol=hz["rtol"],
+            atol=hz["atol"],
+            out_prefix=str(work / "rn"),
             timeout=hz["rn_timeout"],
         )
     finally:
@@ -198,8 +204,7 @@ def eng_run_network(net_path, hz, rn_bin):
     # No persistent build: each call is a fresh process, so the read+CVODE-setup
     # cost lands inside integrate_cold_sec (first call) and every warm call.
     bd = {k: tm.get(k) for k in ("init_cpu_sec", "propagation_cpu_sec", "total_cpu_sec")}
-    return _norm(0.0, bd, None, tm, tm.get("config", {}), n,
-                 extra={"n_calls": tm.get("n_calls")})
+    return _norm(0.0, bd, None, tm, tm.get("config", {}), n, extra={"n_calls": tm.get("n_calls")})
 
 
 def eng_roadrunner(sbml_path, hz):
@@ -211,9 +216,18 @@ def eng_roadrunner(sbml_path, hz):
     n = int(v.shape[1])
     # RoadRunner(sbml) construction = libSBML parse + LLVM JIT (the one-time build).
     build = float(tm.get("parse_interpret_codegen_sec") or 0.0)
-    bd = {k: tm.get(k) for k in
-          ("read_sec", "parse_sec", "interpret_sec", "codegen_sec", "jit_sec",
-           "parse_interpret_codegen_sec", "model_cache_hit")}
+    bd = {
+        k: tm.get(k)
+        for k in (
+            "read_sec",
+            "parse_sec",
+            "interpret_sec",
+            "codegen_sec",
+            "jit_sec",
+            "parse_interpret_codegen_sec",
+            "model_cache_hit",
+        )
+    }
     cfg = tm.get("config", {})
     return _norm(build, bd, cfg.get("cached"), tm, cfg, n)
 
@@ -222,9 +236,9 @@ def eng_amici(sbml_path, hz, fresh):
     """Time BOTH AMICI linear-solver variants off a SINGLE compile. Returns a dict
     with keys ``amici_klu`` and ``amici_dense`` (plus ``_note``). The C++ compile is
     the shared one-time build recorded in both rows' ``build_sec`` (paid once)."""
+    import _amici_common as amc
     import amici  # noqa: F401
     import amici.sim.sundials as ss
-    import _amici_common as amc
 
     sbml_str = Path(sbml_path).read_text()
     if fresh:
@@ -232,15 +246,27 @@ def eng_amici(sbml_path, hz, fresh):
         shutil.rmtree(amc.AMICI_CACHE / f"amici_{key}", ignore_errors=True)
 
     model, bt, cached = amc._build_model(sbml_str)
-    build = (bt["parse_sec"] + bt["interpret_sec"] + bt["jac_derive_sec"]
-             + bt["codegen_sec"] + bt["compile_sec"] + bt["load_sec"])
+    build = (
+        bt["parse_sec"]
+        + bt["interpret_sec"]
+        + bt["jac_derive_sec"]
+        + bt["codegen_sec"]
+        + bt["compile_sec"]
+        + bt["load_sec"]
+    )
     ts = np.linspace(hz["t_start"], hz["t_end"], hz["n_points"])
     sens_none = getattr(ss, "SensitivityOrder_none", 0)
 
-    out = {"_note": ("AMICI codegen+compile is one-time and shared by amici_klu and "
-                     "amici_dense (paid once); build_sec repeats it in both rows.")}
-    for eng, enumval in (("amici_klu", ss.LinearSolver_KLU),
-                         ("amici_dense", ss.LinearSolver_dense)):
+    out = {
+        "_note": (
+            "AMICI codegen+compile is one-time and shared by amici_klu and "
+            "amici_dense (paid once); build_sec repeats it in both rows."
+        )
+    }
+    for eng, enumval in (
+        ("amici_klu", ss.LinearSolver_KLU),
+        ("amici_dense", ss.LinearSolver_dense),
+    ):
         try:
             solver = model.create_solver()
             solver.set_relative_tolerance(hz["rtol"])
@@ -253,8 +279,11 @@ def eng_amici(sbml_path, hz, fresh):
             rd = model.simulate(solver=solver)
             cold = time.perf_counter() - t1
             if int(rd.status) != 0:
-                out[eng] = {**_err(f"AMICI status {rd.status} (cold)", "error"),
-                            "build_sec": round(build, 6), "build_breakdown": bt}
+                out[eng] = {
+                    **_err(f"AMICI status {rd.status} (cold)", "error"),
+                    "build_sec": round(build, 6),
+                    "build_breakdown": bt,
+                }
                 continue
             warm = []
             for _ in range(rc._warm_rep_count(cold)):
@@ -272,13 +301,27 @@ def eng_amici(sbml_path, hz, fresh):
             except Exception:
                 ls = str(solver.get_linear_solver())
             n = int(np.asarray(rd.x).shape[1])
-            cfg = {"codegen": "C++ (compiled)", "jacobian": "analytical (symbolic)",
-                   "linear_solver": ls, "cached": cached}
-            out[eng] = _norm(build, bt, cached, integ, cfg, n,
-                             extra={"integrate_cpu_ms": round(float(rd.cpu_time), 4)})
+            cfg = {
+                "codegen": "C++ (compiled)",
+                "jacobian": "analytical (symbolic)",
+                "linear_solver": ls,
+                "cached": cached,
+            }
+            out[eng] = _norm(
+                build,
+                bt,
+                cached,
+                integ,
+                cfg,
+                n,
+                extra={"integrate_cpu_ms": round(float(rd.cpu_time), 4)},
+            )
         except Exception as e:  # noqa: BLE001
-            out[eng] = {**_err(f"{type(e).__name__}: {e}"),
-                        "build_sec": round(build, 6), "build_breakdown": bt}
+            out[eng] = {
+                **_err(f"{type(e).__name__}: {e}"),
+                "build_sec": round(build, 6),
+                "build_breakdown": bt,
+            }
     return out
 
 
@@ -327,8 +370,12 @@ def eng_copasi(sbml_path, hz):
             except Exception:
                 break
         integ = rc._integrate_stats(cold, warm)
-        cfg = {"codegen": "interpreted (COPASI)", "jacobian": "internal",
-               "linear_solver": "COPASI deterministic (LSODA)", "cached": None}
+        cfg = {
+            "codegen": "interpreted (COPASI)",
+            "jacobian": "internal",
+            "linear_solver": "COPASI deterministic (LSODA)",
+            "cached": None,
+        }
         return _norm(build, {"import_config_sec": round(build, 6)}, None, integ, cfg, n)
     finally:
         with contextlib.suppress(Exception):
@@ -411,8 +458,13 @@ def ensure_sbml(net_path, bngl_path, san, gate, hz):
     omex_path = OMEX_DIR / f"{san}.omex"
     sbml_out = SBML_DIR / f"{san}.xml"
     if sbml_out.exists() and omex_path.exists():
-        return {"status": "ok", "sbml_path": str(sbml_out), "omex_path": str(omex_path),
-                "export_sec": None, "cached": True}
+        return {
+            "status": "ok",
+            "sbml_path": str(sbml_out),
+            "omex_path": str(omex_path),
+            "export_sec": None,
+            "cached": True,
+        }
     t0 = time.perf_counter()
     rep = net_to_omex(str(net_path), str(omex_path), bngl=str(bngl_path), gate=gate)
     export_sec = time.perf_counter() - t0
@@ -421,8 +473,14 @@ def ensure_sbml(net_path, bngl_path, san, gate, hz):
     master = arch.master_model_entry()
     src = arch.path_of(master)
     shutil.copyfile(src, sbml_out)
-    return {"status": "ok", "sbml_path": str(sbml_out), "omex_path": str(omex_path),
-            "export_sec": round(export_sec, 4), "cached": False, "gate_ok": bool(rep.ok)}
+    return {
+        "status": "ok",
+        "sbml_path": str(sbml_out),
+        "omex_path": str(omex_path),
+        "export_sec": round(export_sec, 4),
+        "cached": False,
+        "gate_ok": bool(rep.ok),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +488,9 @@ def resolve_run_network() -> str:
     if os.environ.get("RUN_NETWORK"):
         p = Path(os.environ["RUN_NETWORK"])
     else:
-        root = Path(os.environ.get("BNGPATH", str(Path.home() / "Simulations" / "BioNetGen-2.9.3")))
+        root = Path(
+            os.environ.get("BNGPATH", str(Path.home() / "Simulations" / "BioNetGen-2.9.3"))
+        )
         root = root.parent if root.name == "BNG2.pl" else root
         p = root / "bin" / "run_network"
     if not p.exists():
@@ -448,6 +508,7 @@ def _versions() -> dict:
             v[mod] = f"unavailable ({type(e).__name__})"
     try:
         import COPASI
+
         v["copasi"] = COPASI.CVersion.VERSION.getVersion() if hasattr(COPASI, "CVersion") else "?"
     except Exception as e:  # noqa: BLE001
         v["copasi"] = f"unavailable ({type(e).__name__})"
@@ -462,15 +523,20 @@ def resolve_models(args):
     rel = {j.model_id: j.model for j in alljobs}
     picked = []
     for spec in MODELS:
-        mid = next((m for m in nets
-                    if spec["key"] in m and nets[m].get("status") == "ok"), None)
+        mid = next((m for m in nets if spec["key"] in m and nets[m].get("status") == "ok"), None)
         if mid is None:
             print(f"  WARN: no cached net for {spec['label']} ({spec['key']}) — skipped")
             continue
-        picked.append({**spec, "model_id": mid, "net_file": nets[mid]["net_file"],
-                       "n_species": nets[mid].get("n_species"),
-                       "n_reactions": nets[mid].get("n_reactions"),
-                       "model_rel": rel.get(mid, mid)})
+        picked.append(
+            {
+                **spec,
+                "model_id": mid,
+                "net_file": nets[mid]["net_file"],
+                "n_species": nets[mid].get("n_species"),
+                "n_reactions": nets[mid].get("n_reactions"),
+                "model_rel": rel.get(mid, mid),
+            }
+        )
     if args.models:
         subs = [s.strip() for s in args.models.split(",") if s.strip()]
         picked = [p for p in picked if any(s in p["model_id"] or s in p["label"] for s in subs)]
@@ -492,35 +558,69 @@ def horizon_for(spec, args):
         net_params = bc.read_net_parameters(net_path)
         ode = bc.parse_ode_spec(bngl_text, net_params, atol=args.atol, rtol=args.rtol)
         if ode is None:
-            t_start, t_end, n_steps, source = 0.0, args.default_tend, args.default_nsteps, "default"
+            t_start, t_end, n_steps, source = (
+                0.0,
+                args.default_tend,
+                args.default_nsteps,
+                "default",
+            )
         else:
             t_start, t_end, n_steps, source = (
-                float(ode["t_start"]), float(ode["t_end"]), int(ode["n_steps"]), "model")
+                float(ode["t_start"]),
+                float(ode["t_end"]),
+                int(ode["n_steps"]),
+                "model",
+            )
     return {
-        "t_start": t_start, "t_end": t_end, "n_steps": n_steps, "n_points": n_steps + 1,
-        "rtol": args.rtol, "atol": args.atol, "rn_timeout": args.timeout,
+        "t_start": t_start,
+        "t_end": t_end,
+        "n_steps": n_steps,
+        "n_points": n_steps + 1,
+        "rtol": args.rtol,
+        "atol": args.atol,
+        "rn_timeout": args.timeout,
         "horizon_source": source,
     }
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--models", default="", help="Comma-separated model_id/label substring filter.")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--models", default="", help="Comma-separated model_id/label substring filter."
+    )
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--redo", action="store_true", help="Re-time models already present in the report.")
-    ap.add_argument("--fresh-amici", action="store_true",
-                    help="Clear each model's AMICI compile cache first so build_sec is a true cold compile.")
-    ap.add_argument("--omex-gate", default="full", choices=["full", "L1", "none"],
-                    help="net->SBML validation gate for the OMEX export (default full).")
+    ap.add_argument(
+        "--redo", action="store_true", help="Re-time models already present in the report."
+    )
+    ap.add_argument(
+        "--fresh-amici",
+        action="store_true",
+        help="Clear each model's AMICI compile cache first so build_sec is a true cold compile.",
+    )
+    ap.add_argument(
+        "--omex-gate",
+        default="full",
+        choices=["full", "L1", "none"],
+        help="net->SBML validation gate for the OMEX export (default full).",
+    )
     ap.add_argument("--rtol", type=float, default=bc.DEFAULT_RTOL)
     ap.add_argument("--atol", type=float, default=bc.DEFAULT_ATOL)
     ap.add_argument("--default-tend", type=float, default=DEFAULT_TEND)
     ap.add_argument("--default-nsteps", type=int, default=DEFAULT_NSTEPS)
-    ap.add_argument("--timeout", type=float, default=1200.0,
-                    help="Per-engine wall timeout (s); also the run_network subprocess timeout.")
+    ap.add_argument(
+        "--timeout",
+        type=float,
+        default=1200.0,
+        help="Per-engine wall timeout (s); also the run_network subprocess timeout.",
+    )
     ap.add_argument("--omex-timeout", type=float, default=1200.0)
-    ap.add_argument("--engines", default=",".join(ENGINE_ORDER),
-                    help="Comma-separated subset of engines to run.")
+    ap.add_argument(
+        "--engines",
+        default=",".join(ENGINE_ORDER),
+        help="Comma-separated subset of engines to run.",
+    )
     args = ap.parse_args()
 
     rn_bin = resolve_run_network()
@@ -537,8 +637,10 @@ def main() -> int:
     print("=" * 74)
     print(f"  models: {len(models)}   engines: {want_engines}")
     print(f"  run_network: {rn_bin}")
-    print(f"  fresh-amici: {args.fresh_amici}   omex-gate: {args.omex_gate}   "
-          f"tol: {args.rtol:g}/{args.atol:g}   timeout: {args.timeout:g}s")
+    print(
+        f"  fresh-amici: {args.fresh_amici}   omex-gate: {args.omex_gate}   "
+        f"tol: {args.rtol:g}/{args.atol:g}   timeout: {args.timeout:g}s"
+    )
     print(f"  bngsim: {_versions().get('bngsim')}")
     print()
 
@@ -552,18 +654,25 @@ def main() -> int:
         net_path = NETS_DIR / spec["net_file"]
         bngl_path = MODELS_ROOT / spec["model_rel"]
         hz = horizon_for(spec, args)
-        print(f"  #{spec['row']} {spec['label']:20} N={spec['n_species']:>5} "
-              f"rxn={spec['n_reactions']:>6}  horizon t_end={hz['t_end']:g} "
-              f"n_steps={hz['n_steps']} ({hz['horizon_source']})")
+        print(
+            f"  #{spec['row']} {spec['label']:20} N={spec['n_species']:>5} "
+            f"rxn={spec['n_reactions']:>6}  horizon t_end={hz['t_end']:g} "
+            f"n_steps={hz['n_steps']} ({hz['horizon_source']})"
+        )
 
         # OMEX export (SBML + SED-ML) — needed by the SBML engines. Fork-isolated.
-        need_sbml = any(e in want_engines for e in ("roadrunner", "amici_klu", "amici_dense", "copasi"))
+        need_sbml = any(
+            e in want_engines for e in ("roadrunner", "amici_klu", "amici_dense", "copasi")
+        )
         sbml_path = None
         omex_info = None
         if need_sbml:
             omex_info = run_in_child(
-                lambda: ensure_sbml(net_path, bngl_path, san, args.omex_gate, hz),
-                args.omex_timeout)
+                lambda net_path=net_path, bngl_path=bngl_path, san=san, hz=hz: ensure_sbml(
+                    net_path, bngl_path, san, args.omex_gate, hz
+                ),
+                args.omex_timeout,
+            )
             if omex_info.get("status") == "ok":
                 sbml_path = omex_info["sbml_path"]
                 tag = "cached" if omex_info.get("cached") else f"{omex_info.get('export_sec')}s"
@@ -574,27 +683,51 @@ def main() -> int:
         engines: dict[str, dict] = {}
         for eng in want_engines:
             if eng == "run_network":
-                res = run_in_child(lambda: eng_run_network(net_path, hz, rn_bin), args.timeout)
+                res = run_in_child(
+                    lambda net_path=net_path, hz=hz: eng_run_network(net_path, hz, rn_bin),
+                    args.timeout,
+                )
             elif eng == "bngsim":
-                res = run_in_child(lambda: eng_bngsim(net_path, hz), args.timeout)
+                res = run_in_child(
+                    lambda net_path=net_path, hz=hz: eng_bngsim(net_path, hz), args.timeout
+                )
             elif eng in ("roadrunner", "amici_klu", "amici_dense", "copasi"):
                 if sbml_path is None:
-                    res = _err(f"no SBML (omex export failed): {(omex_info or {}).get('error')}", "skipped")
+                    res = _err(
+                        f"no SBML (omex export failed): {(omex_info or {}).get('error')}",
+                        "skipped",
+                    )
                 elif eng == "roadrunner":
-                    res = run_in_child(lambda: eng_roadrunner(sbml_path, hz), args.timeout)
+                    res = run_in_child(
+                        lambda sbml_path=sbml_path, hz=hz: eng_roadrunner(sbml_path, hz),
+                        args.timeout,
+                    )
                 elif eng == "copasi":
-                    res = run_in_child(lambda: eng_copasi(sbml_path, hz), args.timeout)
+                    res = run_in_child(
+                        lambda sbml_path=sbml_path, hz=hz: eng_copasi(sbml_path, hz), args.timeout
+                    )
                 else:  # amici_klu / amici_dense — computed together, once
                     if "amici_klu" in engines or "amici_dense" in engines:
                         res = engines.get(eng)  # already produced below
                     else:
                         amici_out = run_in_child(
-                            lambda: eng_amici(sbml_path, hz, args.fresh_amici), args.timeout)
+                            lambda sbml_path=sbml_path, hz=hz: eng_amici(
+                                sbml_path, hz, args.fresh_amici
+                            ),
+                            args.timeout,
+                        )
                         note = amici_out.get("_note") if isinstance(amici_out, dict) else None
                         for k in ("amici_klu", "amici_dense"):
                             sub = amici_out.get(k) if isinstance(amici_out, dict) else None
-                            engines[k] = sub if sub is not None else dict(
-                                amici_out if isinstance(amici_out, dict) else _err("amici child failed"))
+                            engines[k] = (
+                                sub
+                                if sub is not None
+                                else dict(
+                                    amici_out
+                                    if isinstance(amici_out, dict)
+                                    else _err("amici child failed")
+                                )
+                            )
                             if note and isinstance(engines[k], dict):
                                 engines[k].setdefault("_note", note)
                         res = engines.get(eng)
@@ -605,9 +738,14 @@ def main() -> int:
             _print_engine(eng, engines.get(eng))
 
         results[mid] = {
-            "model_id": mid, "label": spec["label"], "row": spec["row"],
-            "n_species": spec["n_species"], "n_reactions": spec["n_reactions"],
-            "horizon": hz, "omex": omex_info, "engines": engines,
+            "model_id": mid,
+            "label": spec["label"],
+            "row": spec["row"],
+            "n_species": spec["n_species"],
+            "n_reactions": spec["n_reactions"],
+            "horizon": hz,
+            "omex": omex_info,
+            "engines": engines,
             "_complete": all(e in engines for e in want_engines),
         }
         _write(results, args, want_engines)
@@ -620,7 +758,7 @@ def main() -> int:
 def _fmt(x, ms=False):
     if not isinstance(x, (int, float)):
         return "   --   "
-    return f"{x*1000:8.2f}ms" if ms else f"{x:8.3f}s"
+    return f"{x * 1000:8.2f}ms" if ms else f"{x:8.3f}s"
 
 
 def _print_engine(eng, r):
@@ -631,9 +769,11 @@ def _print_engine(eng, r):
         print(f"       {eng:14} {r.get('status').upper()}: {(r.get('error') or '')[:60]}")
         return
     ls = (r.get("config") or {}).get("linear_solver", "")
-    print(f"       {eng:14} cold={_fmt(r.get('cold_total_sec'))} "
-          f"(build={_fmt(r.get('build_sec'))}+first={_fmt(r.get('integrate_cold_sec'))}) "
-          f"warm={_fmt(r.get('warm_sec'), ms=True)}  {ls}")
+    print(
+        f"       {eng:14} cold={_fmt(r.get('cold_total_sec'))} "
+        f"(build={_fmt(r.get('build_sec'))}+first={_fmt(r.get('integrate_cold_sec'))}) "
+        f"warm={_fmt(r.get('warm_sec'), ms=True)}  {ls}"
+    )
 
 
 def _write(results, args, want_engines):
@@ -641,15 +781,20 @@ def _write(results, args, want_engines):
     doc = {
         "_meta": {
             "suite": "ode_engines_s3",
-            "description": ("Cross-engine ODE timing on the six representative published "
-                            "BNGL models (Table S1). Cold = one-time build + first solve; "
-                            "warm = median of subsequent solves. SBML engines consume "
-                            "bngsim net_to_omex SBML+SED-ML."),
+            "description": (
+                "Cross-engine ODE timing on the six representative published "
+                "BNGL models (Table S1). Cold = one-time build + first solve; "
+                "warm = median of subsequent solves. SBML engines consume "
+                "bngsim net_to_omex SBML+SED-ML."
+            ),
             "engines": want_engines,
-            "metric": {"cold": "build_sec + integrate_cold_sec (= cold_total_sec)",
-                       "warm": "integrate_warm_median_sec (= warm_sec)",
-                       "warm_reps": {"max": rc.WARM_REPS, "budget_sec": rc.WARM_BUDGET_SEC}},
-            "rtol": args.rtol, "atol": args.atol,
+            "metric": {
+                "cold": "build_sec + integrate_cold_sec (= cold_total_sec)",
+                "warm": "integrate_warm_median_sec (= warm_sec)",
+                "warm_reps": {"max": rc.WARM_REPS, "budget_sec": rc.WARM_BUDGET_SEC},
+            },
+            "rtol": args.rtol,
+            "atol": args.atol,
             "default_horizon": {"t_end": args.default_tend, "n_steps": args.default_nsteps},
             "omex_gate": args.omex_gate,
             "versions": _versions(),

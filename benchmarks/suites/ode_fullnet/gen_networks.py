@@ -41,6 +41,7 @@ with a longer ``--timeout`` for the slow-netgen tail.
     ~/Code/bngsim/.venv/bin/python gen_networks.py --timeout 180 --workers 6
     ~/Code/bngsim/.venv/bin/python gen_networks.py --only-failed --timeout 2400 --workers 2
 """
+
 from __future__ import annotations
 
 import argparse
@@ -79,7 +80,9 @@ def resolve_bng2pl() -> str:
     if os.environ.get("BNG2_PL"):
         p = Path(os.environ["BNG2_PL"])
     else:
-        root = Path(os.environ.get("BNGPATH", str(Path.home() / "Simulations" / "BioNetGen-2.9.3")))
+        root = Path(
+            os.environ.get("BNGPATH", str(Path.home() / "Simulations" / "BioNetGen-2.9.3"))
+        )
         p = root if root.name == "BNG2.pl" else root / "BNG2.pl"
     if not p.exists():
         sys.exit(f"ABORT: BNG2.pl not found at {p} (set BNGPATH to the BioNetGen-2.9.3 root)")
@@ -155,8 +158,12 @@ def gen_one(job, bng2_pl: str, timeout: float) -> dict:
         # names). BNG2.pl only emits it for a couple of models. Removing it lets
         # bngsim load them (verified byte-for-byte equivalent network otherwise).
         text = net_path.read_text()
-        text = re.sub(r"begin reactions_text.*?end reactions_text\n?", "", text,
-                      flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(
+            r"begin reactions_text.*?end reactions_text\n?",
+            "",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         dest.write_text(text)
         row.update({"status": "ok", "net_file": dest.name, "n_species": nsp, "n_reactions": nrxn})
         return row
@@ -181,10 +188,14 @@ def save_manifest(man: dict) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--timeout", type=float, default=180.0, help="Per-model netgen timeout (s).")
     ap.add_argument("--workers", type=int, default=6, help="Concurrent netgen subprocesses.")
-    ap.add_argument("--only-failed", action="store_true", help="Reprocess models not currently 'ok'.")
+    ap.add_argument(
+        "--only-failed", action="store_true", help="Reprocess models not currently 'ok'."
+    )
     ap.add_argument("--models", default="", help="Comma-separated model_id substring filter.")
     ap.add_argument("--limit", type=int, default=0, help="Max models after filtering (0=all).")
     args = ap.parse_args()
@@ -200,7 +211,9 @@ def main() -> int:
     todo = []
     for j in jobs:
         cur = man.get(j.model_id)
-        cached_ok = cur and cur.get("status") == "ok" and (NETS / (cur.get("net_file") or "")).exists()
+        cached_ok = (
+            cur and cur.get("status") == "ok" and (NETS / (cur.get("net_file") or "")).exists()
+        )
         if args.only_failed:
             if cached_ok:
                 continue
@@ -213,8 +226,10 @@ def main() -> int:
     print("=" * 72)
     print("  Phase 1 — full-network generation + .net cache (ode_fullnet)")
     print("=" * 72)
-    print(f"  corpus ODE jobs: {len(jobs)}   to process: {len(todo)}   "
-          f"already ok: {sum(1 for j in jobs if (man.get(j.model_id) or {}).get('status') == 'ok')}")
+    print(
+        f"  corpus ODE jobs: {len(jobs)}   to process: {len(todo)}   "
+        f"already ok: {sum(1 for j in jobs if (man.get(j.model_id) or {}).get('status') == 'ok')}"
+    )
     print(f"  timeout: {args.timeout}s   workers: {args.workers}   BNG2.pl: {bng2_pl}")
     print(f"  cache: {NETS}")
     print()
@@ -239,12 +254,15 @@ def main() -> int:
                 if st == "ok"
                 else (row.get("detail") or "")[:70]
             )
-            print(f"  [{done}/{len(todo)}] {tag:15} {row['netgen_sec'] if 'netgen_sec' in row else '?':>7}s "
-                  f"{row['model_id'].split('/')[-1]:45} {extra}")
+            print(
+                f"  [{done}/{len(todo)}] {tag:15} {row.get('netgen_sec', '?'):>7}s "
+                f"{row['model_id'].split('/')[-1]:45} {extra}"
+            )
 
     dt = time.perf_counter() - t0
     # Summary over the WHOLE corpus (not just this pass).
     from collections import Counter
+
     tally = Counter((man.get(j.model_id) or {}).get("status", "missing") for j in jobs)
     print()
     print(f"  processed {done} in {dt:.0f}s. corpus status: {dict(tally)}")

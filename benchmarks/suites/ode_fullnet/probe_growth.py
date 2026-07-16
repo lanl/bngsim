@@ -10,6 +10,7 @@ plateaus has a finite full network that merely needs more time. This turns the
     export BNGPATH=~/Simulations/BioNetGen-2.9.3
     ~/Code/bngsim/.venv/bin/python probe_growth.py --iters 1,2,3,4,5,6 --timeout 120
 """
+
 from __future__ import annotations
 
 import argparse
@@ -56,10 +57,14 @@ def resolve_bng2pl() -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--iters", default="1,2,3,4,5,6")
     ap.add_argument("--timeout", type=float, default=120.0)
-    ap.add_argument("--models", default="", help="Override the default model list (comma-separated).")
+    ap.add_argument(
+        "--models", default="", help="Override the default model list (comma-separated)."
+    )
     args = ap.parse_args()
 
     bng2 = resolve_bng2pl()
@@ -73,7 +78,10 @@ def main() -> int:
             wd = Path(tempfile.mkdtemp(prefix="probe_"))
             try:
                 net, sec, err = bc.generate_network(
-                    bngl_text, bng2, wd, timeout=args.timeout,
+                    bngl_text,
+                    bng2,
+                    wd,
+                    timeout=args.timeout,
                     gen_network=f"generate_network({{overwrite=>1,max_iter=>{k}}})",
                 )
                 if net is None:
@@ -83,6 +91,7 @@ def main() -> int:
                 print(f"  max_iter={k:2}: N={nsp:6}  rxn={nrxn:7}  ({sec:.1f}s)")
             finally:
                 import shutil
+
                 shutil.rmtree(wd, ignore_errors=True)
     return 0
 

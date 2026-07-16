@@ -12,6 +12,7 @@ dense times out.
     ~/Code/PyBNF-Private/bngsim/.venv/bin/python patch_amici_split.py \
         --models fcerifyn --dense-timeout 1800
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-
 import run_s3_timing as H  # the harness module (same dir); reuses run_in_child, paths
 
 
@@ -30,13 +30,20 @@ def _amici_one(sbml_path, hz, linear_solver):
     normalized dict the harness produces."""
     import amici  # noqa: F401
     import amici.sim.sundials as ss
+
     sys.path.insert(0, str(H.AMICI_PARITY))
     import _amici_common as amc
 
     sbml_str = Path(sbml_path).read_text()
     model, bt, cached = amc._build_model(sbml_str)  # cache hit -> load only
-    build = (bt["parse_sec"] + bt["interpret_sec"] + bt["jac_derive_sec"]
-             + bt["codegen_sec"] + bt["compile_sec"] + bt["load_sec"])
+    build = (
+        bt["parse_sec"]
+        + bt["interpret_sec"]
+        + bt["jac_derive_sec"]
+        + bt["codegen_sec"]
+        + bt["compile_sec"]
+        + bt["load_sec"]
+    )
     enumval = ss.LinearSolver_KLU if linear_solver == "KLU" else ss.LinearSolver_dense
     solver = model.create_solver()
     solver.set_relative_tolerance(hz["rtol"])
@@ -49,8 +56,11 @@ def _amici_one(sbml_path, hz, linear_solver):
     rd = model.simulate(solver=solver)
     cold = time.perf_counter() - t1
     if int(rd.status) != 0:
-        return {**H._err(f"AMICI status {rd.status} (cold)"),
-                "build_sec": round(build, 6), "build_breakdown": bt}
+        return {
+            **H._err(f"AMICI status {rd.status} (cold)"),
+            "build_sec": round(build, 6),
+            "build_breakdown": bt,
+        }
     warm = []
     for _ in range(H.rc._warm_rep_count(cold)):
         try:
@@ -66,12 +76,25 @@ def _amici_one(sbml_path, hz, linear_solver):
         ls = ss.LinearSolver(solver.get_linear_solver()).name
     except Exception:
         ls = str(solver.get_linear_solver())
-    cfg = {"codegen": "C++ (compiled)", "jacobian": "analytical (symbolic)",
-           "linear_solver": ls, "cached": cached}
-    note = ("AMICI codegen+compile is one-time and shared by amici_klu and amici_dense "
-            "(paid once); build_sec repeats it in both rows.")
-    d = H._norm(build, bt, cached, integ, cfg, int(np.asarray(rd.x).shape[1]),
-                extra={"integrate_cpu_ms": round(float(rd.cpu_time), 4), "_note": note})
+    cfg = {
+        "codegen": "C++ (compiled)",
+        "jacobian": "analytical (symbolic)",
+        "linear_solver": ls,
+        "cached": cached,
+    }
+    note = (
+        "AMICI codegen+compile is one-time and shared by amici_klu and amici_dense "
+        "(paid once); build_sec repeats it in both rows."
+    )
+    d = H._norm(
+        build,
+        bt,
+        cached,
+        integ,
+        cfg,
+        int(np.asarray(rd.x).shape[1]),
+        extra={"integrate_cpu_ms": round(float(rd.cpu_time), 4), "_note": note},
+    )
     return d
 
 
@@ -98,7 +121,9 @@ def main() -> int:
         tmp.replace(H.OUT)
 
     doc = json.loads(H.OUT.read_text())
-    targets = [r for r in doc["results"] if any(s in r["model_id"] or s in r["label"] for s in subs)]
+    targets = [
+        r for r in doc["results"] if any(s in r["model_id"] or s in r["label"] for s in subs)
+    ]
     if not targets:
         print("  no matching models.")
         return 0
@@ -110,13 +135,22 @@ def main() -> int:
             continue
         hz = r["horizon"]
         if not args.skip_klu:
-            print(f"  {r['label']} N={r['n_species']}: KLU child (timeout {args.klu_timeout:g}s) ...", flush=True)
-            klu = H.run_in_child(lambda: _amici_one(sbml_path, hz, "KLU"), args.klu_timeout)
+            print(
+                f"  {r['label']} N={r['n_species']}: KLU child (timeout {args.klu_timeout:g}s) ...",
+                flush=True,
+            )
+            klu = H.run_in_child(
+                lambda sbml_path=sbml_path, hz=hz: _amici_one(sbml_path, hz, "KLU"),
+                args.klu_timeout,
+            )
             H._print_engine("amici_klu", klu)
             _save("amici_klu", klu)  # persist KLU immediately
         if not args.skip_dense:
             print(f"  {r['label']}: dense child (timeout {args.dense_timeout:g}s) ...", flush=True)
-            dense = H.run_in_child(lambda: _amici_one(sbml_path, hz, "dense"), args.dense_timeout)
+            dense = H.run_in_child(
+                lambda sbml_path=sbml_path, hz=hz: _amici_one(sbml_path, hz, "dense"),
+                args.dense_timeout,
+            )
             H._print_engine("amici_dense", dense)
             _save("amici_dense", dense)
     print(f"  patched: {H.OUT}")

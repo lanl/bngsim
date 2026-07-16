@@ -13,6 +13,7 @@ The 7 genuinely network-free-by-design models stay excluded (no finite ODE netwo
     export BNGPATH=~/Simulations/BioNetGen-2.9.3
     ~/Code/bngsim/.venv/bin/python recover_s4_points.py
 """
+
 from __future__ import annotations
 
 import json
@@ -36,8 +37,9 @@ def _gen_strip(*a, **k):
     net, sec, err = _orig_gen(*a, **k)
     if net is not None:
         t = Path(net).read_text()
-        t2 = re.sub(r"begin reactions_text.*?end reactions_text\n?", "", t,
-                    flags=re.DOTALL | re.IGNORECASE)
+        t2 = re.sub(
+            r"begin reactions_text.*?end reactions_text\n?", "", t, flags=re.DOTALL | re.IGNORECASE
+        )
         if t2 != t:
             Path(net).write_text(t2)
     return net, sec, err
@@ -67,8 +69,10 @@ def main() -> int:
     for mid in TARGETS:
         print(f"characterizing {mid.split('/')[-1]} ...", flush=True)
         row = jc.characterize_model(mid, horizons.get(mid, {}), bng2_pl)
-        print(f"   status={row.get('status')} N={row.get('N')} density={row.get('density')}",
-              flush=True)
+        print(
+            f"   status={row.get('status')} N={row.get('N')} density={row.get('density')}",
+            flush=True,
+        )
         new_rows[mid] = row
 
     doc = json.loads(RAW.read_text())
