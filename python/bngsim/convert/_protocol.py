@@ -263,12 +263,25 @@ class ProtocolSpec:
     execute (``setVolume``, ``substanceUnits``, a result-changing ``setOption``,
     ``readModel``/…), so a consumer can tell a clean drop from a fidelity risk
     (GH #226).
+
+    ``network_gen`` keeps the source model's ``generate_network(...)`` call
+    **verbatim** (the last one, if several) when the ``.bngl`` carried one. That
+    directive is still *dropped* from ``steps`` (it is a build directive, not a
+    simulation action), but its text is retained here because it may carry a
+    **finiteness cap** — ``max_stoich`` / ``max_agg`` / ``max_iter`` — without
+    which a rule-based network generates unbounded. A materializer (e.g.
+    :func:`~bngsim.convert._bngl_writer.write_bngl`) that re-emits an actions block
+    honors this instead of prepending a bare ``generate_network({overwrite=>1})``,
+    so a model that is finite only under its cap stays finite (lanl/PyBNF #485).
+    ``None`` when the source had no ``generate_network`` (e.g. a protocol composed
+    from SBML/SED-ML events), in which case the bare default is used.
     """
 
     steps: tuple[object, ...] = ()  # tuple[Experiment | StateChange, ...]
     source: str | None = None
     dropped: tuple[str, ...] = ()
     lossy: tuple[str, ...] = ()
+    network_gen: str | None = None
 
     @property
     def experiments(self) -> list[Experiment]:
@@ -312,6 +325,7 @@ class ProtocolSpec:
             "source": self.source,
             "dropped": list(self.dropped),
             "lossy": list(self.lossy),
+            "network_gen": self.network_gen,
             "steps": out,
         }
 
@@ -328,6 +342,7 @@ class ProtocolSpec:
             source=d.get("source"),
             dropped=tuple(d.get("dropped", [])),
             lossy=tuple(d.get("lossy", [])),
+            network_gen=d.get("network_gen"),
         )
 
     def to_json(self, *, indent: int | None = None) -> str:
@@ -385,6 +400,7 @@ def combine_protocols(
     sources: list[str] = []
     dropped: list[str] = []
     lossy: list[str] = []
+    network_gen: str | None = None
     for spec in non_empty:
         if (
             reset_between
@@ -399,12 +415,17 @@ def combine_protocols(
             sources.append(spec.source)
         dropped.extend(spec.dropped)
         lossy.extend(spec.lossy)
+        # Carry a cap through the merge: the first contributing spec that names a
+        # generate_network wins (independent SED-ML files rarely carry one at all).
+        if network_gen is None and spec.network_gen is not None:
+            network_gen = spec.network_gen
 
     return ProtocolSpec(
         steps=tuple(steps),
         source=" + ".join(sources) if sources else None,
         dropped=tuple(dropped),
         lossy=tuple(lossy),
+        network_gen=network_gen,
     )
 
 
@@ -445,6 +466,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
     steps: list[object] = []
     dropped: list[str] = []
     lossy: list[str] = []
+    network_gen: str | None = None
     for verb, argstr in _iter_action_calls(text):
         low = verb.lower()
         if low == "quit":
@@ -468,6 +490,13 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
             _flag_lossy(verb, _LOSSY_VERBS[low], strict=strict, lossy=lossy)
         elif low in _BUILD_VERBS:
             dropped.append(verb)
+            if low == "generate_network":
+                # Drop it from the replayable steps (it is a build directive, not a
+                # simulation action) but keep the call verbatim: it may carry a finiteness
+                # cap (max_stoich / max_agg / max_iter) a re-emitted actions block must honor
+                # rather than override with a bare default (lanl/PyBNF #485). Last one wins,
+                # mirroring BNG2.pl (a later generate_network supersedes an earlier one).
+                network_gen = f"{verb}({argstr})"
         else:
             msg = (
                 f"unrecognized BNGL action {verb!r}: the protocol channel carries "
@@ -484,6 +513,7 @@ def parse_bngl_protocol(source: str | Path, *, strict: bool = True) -> ProtocolS
         source=src_label,
         dropped=tuple(dropped),
         lossy=tuple(lossy),
+        network_gen=network_gen,
     )
 
 
