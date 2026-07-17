@@ -1,171 +1,359 @@
 begin model
+
+#@title: Combinatorial EGFR signaling (Blinov et al., 2006)
+
+#@description: |
+#  Rule-based network model of early events in epidermal growth factor
+#  receptor (EGFR) signaling leading to recruitment of the guanine
+#  nucleotide exchange factor Sos to the plasma membrane. EGF binds
+#  monomeric EGFR, ligated receptors dimerize, and the receptor kinase
+#  transphosphorylates two docking tyrosines that are treated
+#  independently: Y1068 (Grb2 docking) and Y1148 (Shc docking; lumps
+#  Y1148/Y1173). Grb2 binds pY1068 directly and pY1148 indirectly via
+#  Shc; Grb2 constitutively carries Sos through its SH3 domains. The
+#  five proteins (EGF, EGFR, Grb2, Shc, Sos) and their site-specific,
+#  non-competitive interactions generate a network of 356 molecular
+#  species connected by 3749 unidirectional reactions from only 37
+#  parameters.
+#
+#  Dynamics: EGF addition to the resting state drives a fast transient
+#  of receptor phosphorylation and direct Grb2-EGFR association (peaking
+#  near t=9 s) that relaxes to a lower steady state as phosphorylated
+#  Shc accumulates in its cytosolic form. Total phosphorylated Shc and
+#  Shc-Grb2 rise monotonically to plateaus; receptor phosphotyrosines
+#  and membrane Sos peak sharply then decline. The network model
+#  reproduces the aggregate predictions of the 18-species Kholodenko
+#  pathway-like model (the _pathway variant) for the quantities in
+#  Fig. 2 while additionally resolving individual phosphoforms.
+#
+#  Population interpretation: molecule counts correspond to a reference
+#  volume V_ref such that 1 nM maps to 1800 molecules ([EGFR]=100 nM =
+#  1.8e5 molecules); divide any observable by 1800 to obtain nM. The
+#  copy numbers are large (up to 1.2e6 EGF), so ODE integration is the
+#  intended protocol; stochastic simulation is impractical here.
+
+#@keyword: |
+#  signal transduction, receptor tyrosine kinase, EGFR, EGF, Grb2, Shc,
+#  Sos, combinatorial complexity, rule-based model, automatic network
+#  generation, adapter protein, mass action, negative feedback, transient
+#  response, Homo sapiens
+
+#@reference: |
+#  Blinov ML, Faeder JR, Goldstein B, Hlavacek WS (2006). A network model
+#  of early events in epidermal growth factor receptor signaling that
+#  accounts for combinatorial complexity. BioSystems 83:136-151.
+#  doi:10.1016/j.biosystems.2005.06.014
+#  Source BNGL: BioNetGen 2.9.3 Models2/egfr_net.bngl (km21 corrected;
+#  see note below). Parameter estimates from Kholodenko et al. (1999),
+#  Journal of Biological Chemistry 274:30169-30181.
+
+#@note: |
+#  Rate constants follow Table 1 of Blinov et al. (2006). Bimolecular
+#  constants are given here in molecule-count units (paper value in
+#  nM^-1 s^-1 divided by 1800 molecules/nM); unimolecular constants are
+#  unchanged (s^-1). Cytosolic-protein-to-EGFR association constants
+#  carry the Table 1 footnote-a factor of 0.5, accounting for one
+#  docking site per receptor in the network model versus one per dimer
+#  in the pathway-like model.
+#
+#  Correction relative to the distributed BioNetGen Models2/egfr_net.bngl:
+#  km21 is set to 0.1 s^-1 (Table 1, k_-21 = 0.1), not the 0.01 s^-1 in
+#  the distributed file. The value 0.1 is required for thermodynamic
+#  consistency of detailed-balance loops loop2 and loop4 (both equal 1
+#  only with km21 = 0.1) and reproduces the Fig. 2 steady states more
+#  closely (panels A, C, E). Loops loop3 and loop5 remain ~1.5 with
+#  either value; that residual is a property of the published Kholodenko
+#  parameter fit, not a transcription error.
+
 begin parameters
-    egf_tot       1.2e6    # molecule counts
-    egfr_tot      1.8e5   
-    Grb2_tot      1.0e5   
-    Shc_tot       2.7e5 
-    Sos_tot       1.3e4 
-    Grb2_Sos_tot  4.9e4  
+  # Avogadro constant; included for population-conversion readiness.
+  NA  6.02214076e23  # /mol
 
-    kp1      1.667e-06 # ligand-monomer binding (scaled), units: /molecule/s
-    km1           0.06 # ligand-monomer dissociation, units: /s
+  # Reference volume per cell chosen so that 1 nM = 1800 molecules
+  # ([EGFR]=100 nM=1.8e5, [Shc]=150 nM=2.7e5). V_ref = 1800/(NA*1e-9 M).
+  V_ref  2.989e-12  # L/cell
 
-    kp2      5.556e-06 # aggregation of bound monomers (scaled)
-    km2            0.1 # dissociation of bound monomers
+  # Total protein abundances (molecule counts). Paper nM values in
+  # comments; Grb2 and Sos totals are partitioned between free protein
+  # and the pre-formed cytosolic Grb2-Sos pool.
+  egf_tot       1.2e6  # molecules
+  egfr_tot      1.8e5  # molecules
+  Grb2_tot      1.0e5  # molecules
+  Shc_tot       2.7e5  # molecules
+  Sos_tot       1.3e4  # molecules
+  Grb2_Sos_tot  4.9e4  # molecules
 
-    kp3            0.5 # dimer transphosphorylation   
-    km3          4.505 # dimer dephosphorylation        
+  # Step 1 - EGF binding to monomeric EGFR (k1=0.003 nM^-1 s^-1).
+  kp1  1.667e-06  # /(molecule*s)
+  km1  0.06       # /s
 
-    kp14             3 # Shc transphosphorylation  
-    km14          0.03 # Shc dephosphorylation      
+  # Step 2 - dimerization of ligated receptors (k2=0.01 nM^-1 s^-1).
+  kp2  5.556e-06  # /(molecule*s)
+  km2  0.1        # /s
 
-    km16         0.005 # Shc cytosolic dephosphorylation     
+  # Steps 3-4 - receptor tyrosine transphosphorylation (k3=0.5) and
+  # dephosphorylation (k-3=4.505); k-3 replaces the Michaelis-Menten
+  # phosphatase rate law of Kholodenko et al. (1999).
+  kp3  0.5    # /s
+  km3  4.505  # /s
 
-    kp9      8.333e-07 # binding of Grb2 to receptor (scaled)
-    km9           0.05 # dissociation of Grb2 from receptor
+  # Step 14 - transphosphorylation of receptor-bound Shc (k14=3) and
+  # membrane Shc dephosphorylation (k-14=0.03).
+  kp14  3     # /s
+  km14  0.03  # /s
 
-    kp10     5.556e-06 # binding of Sos to receptor (scaled)
-    km10          0.06 # dissociation of Sos from receptor
+  # Step 16 - cytosolic phospho-Shc dephosphorylation (k-16=0.005).
+  km16  0.005  # /s
 
-    kp11      1.25e-06 # binding of Grb2-Sos to receptor (scaled)
-    km11          0.03 # diss. of Grb2-Sos from receptor
+  # Step 9 - Grb2 binding to pY1068 (k9=0.0015, footnote-a scaled).
+  kp9  8.333e-07  # /(molecule*s)
+  km9  0.05       # /s
 
-    kp13       2.5e-05 # binding of Shc to receptor (scaled)
-    km13           0.6 # diss. of Shc from receptor
+  # Step 10 - Sos binding to pY1068-Grb2 (k10=0.01).
+  kp10  5.556e-06  # /(molecule*s)
+  km10  0.06       # /s
 
-    kp15       2.5e-07 # binding of ShcP to receptor (scaled)
-    km15           0.3 # diss. of ShcP from receptor
+  # Step 11 - Grb2-Sos binding to pY1068 (k11=0.00225, footnote-a scaled).
+  kp11  1.25e-06  # /(molecule*s)
+  km11  0.03      # /s
 
-    kp17     1.667e-06 # binding of Grb2 to RP-ShcP (scaled)
-    km17           0.1 # diss. of Grb2 from RP-ShcP  
+  # Step 13 - Shc binding to pY1148 (k13=0.045, footnote-a scaled).
+  kp13  2.5e-05  # /(molecule*s)
+  km13  0.6      # /s
 
-    kp18       2.5e-07 # binding of ShcP-Grb2 to receptor (scaled)
-    km18           0.3 # diss. of ShcP-Grb2 from receptor
+  # Step 15 - phospho-Shc binding to pY1148 (k15=0.00045, footnote-a).
+  kp15  2.5e-07  # /(molecule*s)
+  km15  0.3      # /s
 
-    kp19     5.556e-06 # binding of Sos to RP-ShcP-Grb2 (scaled)
-    km19        0.0214 # diss. of Sos from RP-ShcP-Grb2 
+  # Step 17 - Grb2 binding to pY1148-ShcP (k17=0.003).
+  kp17  1.667e-06  # /(molecule*s)
+  km17  0.1        # /s
 
-    kp20     6.667e-08 # binding of ShcP-Grb2-Sos to receptor (scaled)
-    km20          0.12 # diss. of ShcP-Grb2-Sos from receptor
+  # Step 18 - ShcP-Grb2 binding to pY1148 (k18=0.00045, footnote-a).
+  kp18  2.5e-07  # /(molecule*s)
+  km18  0.3      # /s
 
-    kp24         5e-06 # binding of Grb2-Sos to RP-ShcP (scaled)
-    km24        0.0429 # diss. of Grb2-Sos from RP-ShcP
+  # Step 19 - Sos binding to pY1148-ShcP-Grb2 (k19=0.01).
+  kp19  5.556e-06  # /(molecule*s)
+  km19  0.0214     # /s
 
-    kp21     1.667e-06 # binding of ShcP to Grb2 in cytosol (scaled)
-    km21          0.01 # diss. of Grb2 and SchP in cytosol
+  # Step 20 - ShcP-Grb2-Sos binding to pY1148 (k20=0.00012, footnote-a).
+  kp20  6.667e-08  # /(molecule*s)
+  km20  0.12       # /s
 
-    kp23     1.167e-05 # binding of ShcP to Grb2-Sos in cytosol (scaled)
-    km23           0.1 # diss. of Grb2-Sos and SchP in cytosol
+  # Step 24 - Grb2-Sos binding to pY1148-ShcP (k24=0.009).
+  kp24  5e-06   # /(molecule*s)
+  km24  0.0429  # /s
 
-    kp12     5.556e-08 # binding of Grb2 to Sos in cytosol (scaled)
-    km12        0.0015 # diss. of Grb2 and Sos in cytosol
+  # Step 21 - cytosolic Grb2 binding to phospho-Shc (k21=0.003).
+  # km21 = 0.1 per Table 1 (k-21); see header note on the correction.
+  kp21  1.667e-06  # /(molecule*s)
+  km21  0.1        # /s
 
-    kp22     1.667e-05 # binding of ShcP-Grb2 to Sos in cytosol (scaled)
-    km22         0.064 # diss. of ShcP-Grb2 and Sos in cytosol
+  # Step 23 - cytosolic Grb2-Sos binding to phospho-Shc (k23=0.021).
+  kp23  1.167e-05  # /(molecule*s)
+  km23  0.1        # /s
 
-    # check detailed balanced
-    loop1 = (kp9/km9)*(kp10/km10)/((kp11/km11)*(kp12/km12))
-    loop2 = (kp15/km15)*(kp17/km17)/((kp21/km21)*(kp18/km18))
-    loop3 = (kp18/km18)*(kp19/km19)/((kp22/km22)*(kp20/km20))
-    loop4 = (kp12/km12)*(kp23/km23)/((kp22/km22)*(kp21/km21))
-    loop5 = (kp15/km15)*(kp24/km24)/((kp20/km20)*(kp23/km23))
+  # Step 12 - cytosolic Grb2-Sos association (k12=0.0001).
+  kp12  5.556e-08  # /(molecule*s)
+  km12  0.0015     # /s
+
+  # Step 22 - cytosolic Sos binding to phospho-Shc-Grb2 (k22=0.03).
+  kp22  1.667e-05  # /(molecule*s)
+  km22  0.064      # /s
+
+  # Detailed-balance loop products (should equal 1 for a thermodynamically
+  # consistent cycle). loop1, loop2, loop4 equal 1 with the parameters
+  # above; loop3 and loop5 equal ~1.5, a property of the published fit.
+  loop1  (kp9/km9)*(kp10/km10)/((kp11/km11)*(kp12/km12))    # dimensionless
+  loop2  (kp15/km15)*(kp17/km17)/((kp21/km21)*(kp18/km18))  # dimensionless
+  loop3  (kp18/km18)*(kp19/km19)/((kp22/km22)*(kp20/km20))  # dimensionless
+  loop4  (kp12/km12)*(kp23/km23)/((kp22/km22)*(kp21/km21))  # dimensionless
+  loop5  (kp15/km15)*(kp24/km24)/((kp20/km20)*(kp23/km23))  # dimensionless
 end parameters
 
 begin molecule types
-    egf(r)
-    egfr(l,r,Y1068~Y~pY,Y1148~Y~pY)
-    Shc(PTB,Y317~Y~pY)
-    Grb2(SH2,SH3)
-    Sos(dom)
+  # EGF ligand with a single EGFR-binding site.
+  EGF(r)
+  # EGF receptor: l=ligand site, r=dimerization interface, Y1068=Grb2
+  # docking tyrosine, Y1148=Shc docking tyrosine (lumps Y1148/Y1173).
+  EGFR(l,r,Y1068~Y~pY,Y1148~Y~pY)
+  # Shc adapter: PTB=receptor-binding domain (lumps SH2 and PTB),
+  # Y317=Grb2 docking tyrosine.
+  SHC1(PTB,Y317~Y~pY)
+  # Grb2 adapter: SH2=phosphotyrosine-binding domain, SH3=Sos-binding.
+  GRB2(SH2,SH3)
+  # Sos guanine nucleotide exchange factor: dom=Grb2-binding domain.
+  SOS1(dom)
 end molecule types
 
 begin seed species
-    egf(r)                        egf_tot
-    Grb2(SH2,SH3)                 Grb2_tot
-    Shc(PTB,Y317~Y)               Shc_tot
-    Sos(dom)                      Sos_tot
-    egfr(l,r,Y1068~Y,Y1148~Y)     egfr_tot
-    Grb2(SH2,SH3!1).Sos(dom!1)    Grb2_Sos_tot
+  # Resting state: free EGF and receptors, free Grb2 and Sos, and the
+  # pre-formed cytosolic Grb2-Sos pool at its equilibrium level. Shc is
+  # unphosphorylated. This state is already at cytosolic equilibrium, so
+  # no separate pre-equilibration is required.
+  EGF(r)                      egf_tot       # molecules
+  GRB2(SH2,SH3)               Grb2_tot      # molecules
+  SHC1(PTB,Y317~Y)            Shc_tot       # molecules
+  SOS1(dom)                   Sos_tot       # molecules
+  EGFR(l,r,Y1068~Y,Y1148~Y)   egfr_tot      # molecules
+  GRB2(SH2,SH3!1).SOS1(dom!1)   Grb2_Sos_tot  # molecules
 end seed species
 
+begin observables
+  # Fig. 2A - Grb2 co-precipitating with EGFR: all Grb2 associated with a
+  # receptor, either bound directly at pY1068 or indirectly via Shc.
+  Molecules  Obs_Grb2_EGFR   EGFR(Y1068~pY!1).GRB2(SH2!1), \
+    EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY!2).GRB2(SH2!2)
+
+  # Fig. 2C - Grb2 co-precipitating with Shc: all phospho-Shc-Grb2
+  # complexes, membrane-bound or cytosolic.
+  Molecules  Obs_ShcP_Grb2   SHC1(Y317~pY!1).GRB2(SH2!1)
+
+  # Fig. 2D - total phosphorylated Shc.
+  Molecules  Obs_ShcP_total   SHC1(Y317~pY!?)
+
+  # Fig. 2E - total receptor phosphotyrosines (pY1068 plus pY1148).
+  Molecules  Obs_Rec_pTyr   EGFR(Y1068~pY!?), EGFR(Y1148~pY!?)
+
+  # Membrane-recruited Sos (the signaling output): Sos held on a receptor
+  # via direct Grb2 (pY1068) or via the Shc-Grb2 route (pY1148).
+  Molecules  Obs_Sos_membrane   EGFR(Y1068~pY!1).GRB2(SH2!1,SH3!2).SOS1(dom!2), \
+    SHC1(PTB!+,Y317~pY!2).GRB2(SH2!2,SH3!3).SOS1(dom!3)
+
+  # Receptors residing in ligand-induced dimers.
+  Molecules  Obs_Rec_dimer   EGFR(r!1).EGFR(r!1)
+
+  # Conservation checks for the five conserved protein pools.
+  Molecules  Obs_Tot_EGFR   EGFR()
+  Molecules  Obs_Tot_Grb2   GRB2()
+  Molecules  Obs_Tot_Shc    SHC1()
+  Molecules  Obs_Tot_Sos    SOS1()
+end observables
+
 begin reaction rules
-    # Ligand-receptor binding      
-    egfr(l,r)   + egf(r) <-> egfr(l!1,r).egf(r!1)  kp1, km1   #ligand-monomer
+  # Step 1 - EGF binding to a monomeric receptor.
+  R1_bind_egf: EGFR(l,r) + EGF(r) <-> EGFR(l!1,r).EGF(r!1)  kp1, km1
 
-    # Note changed multiplicity
-    # Receptor-aggregation 
-    egfr(l!+,r) + egfr(l!+,r) <-> egfr(l!+,r!3).egfr(l!+,r!3)  kp2,km2
+  # Step 2 - aggregation of two ligated receptors into a dimer.
+  R2_dimerize: \
+    EGFR(l!+,r) + EGFR(l!+,r) <-> EGFR(l!+,r!1).EGFR(l!+,r!1)  kp2, km2
 
-    # Transphosphorylation of egfr by RTK
-    egfr(r!+,Y1068~Y) -> egfr(r!+,Y1068~pY)  kp3
-    egfr(r!+,Y1148~Y) -> egfr(r!+,Y1148~pY)  kp3
+  # Step 3 - transphosphorylation of the two docking tyrosines in a dimer.
+  R3_phos_Y1068: EGFR(r!+,Y1068~Y) -> EGFR(r!+,Y1068~pY)  kp3
+  R3_phos_Y1148: EGFR(r!+,Y1148~Y) -> EGFR(r!+,Y1148~pY)  kp3
 
-    #Dephosphorylayion
-    egfr(Y1068~pY) -> egfr(Y1068~Y)  km3
-    egfr(Y1148~pY) -> egfr(Y1148~Y)  km3
+  # Step 4 - dephosphorylation of receptor tyrosines (implicit phosphatase).
+  R4_dephos_Y1068: EGFR(Y1068~pY) -> EGFR(Y1068~Y)  km3
+  R4_dephos_Y1148: EGFR(Y1148~pY) -> EGFR(Y1148~Y)  km3
 
-    # Shc transphosph
-    egfr(r!+,Y1148~pY!1).Shc(PTB!1,Y317~Y) ->  egfr(r!+,Y1148~pY!1).Shc(PTB!1,Y317~pY)  kp14
-    Shc(PTB!+,Y317~pY)  ->  Shc(PTB!+,Y317~Y)  km14
+  # Step 14 - EGFR phosphorylates receptor-bound Shc at Y317.
+  R14_phos_Shc: \
+    EGFR(r!+,Y1148~pY!1).SHC1(PTB!1,Y317~Y) -> \
+    EGFR(r!+,Y1148~pY!1).SHC1(PTB!1,Y317~pY)  kp14
 
-    # Y1068 activity
-    egfr(Y1068~pY) + Grb2(SH2,SH3)   <-> egfr(Y1068~pY!1).Grb2(SH2!1,SH3)    kp9,km9
-    egfr(Y1068~pY) + Grb2(SH2,SH3!+) <-> egfr(Y1068~pY!1).Grb2(SH2!1,SH3!+)  kp11,km11
-    egfr(Y1068~pY!1).Grb2(SH2!1,SH3) + Sos(dom) <-> egfr(Y1068~pY!1).Grb2(SH2!1,SH3!2).Sos(dom!2)  kp10,km10
+  # Step 14 (reverse) - dephosphorylation of membrane-associated Shc.
+  R14_dephos_Shc_mem: SHC1(PTB!+,Y317~pY) -> SHC1(PTB!+,Y317~Y)  km14
 
-    # Y1148 activity
-    egfr(Y1148~pY) + Shc(PTB,Y317~Y)    <-> egfr(Y1148~pY!1).Shc(PTB!1,Y317~Y)   kp13,km13
-    egfr(Y1148~pY) + Shc(PTB,Y317~pY)   <-> egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY)  kp15,km15
-    egfr(Y1148~pY) + Shc(PTB,Y317~pY!1).Grb2(SH2!1,SH3)   <-> \
-          egfr(Y1148~pY!2).Shc(PTB!2,Y317~pY!1).Grb2(SH2!1,SH3)  kp18,km18
-    egfr(Y1148~pY) + Shc(PTB,Y317~pY!1).Grb2(SH2!1,SH3!3).Sos(dom!3)   <-> \
-          egfr(Y1148~pY!2).Shc(PTB!2,Y317~pY!1).Grb2(SH2!1,SH3!3).Sos(dom!3)  kp20,km20
+  # Step 9 - Grb2 binds pY1068.
+  R9_bind_Grb2_Y1068: \
+    EGFR(Y1068~pY) + GRB2(SH2,SH3) <-> EGFR(Y1068~pY!1).GRB2(SH2!1,SH3)  kp9, km9
 
-    egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY) + Grb2(SH2,SH3)   <-> \
-          egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY!2).Grb2(SH2!2,SH3)  kp17,km17
+  # Step 11 - a Grb2-Sos complex binds pY1068 through Grb2.
+  R11_bind_Grb2Sos_Y1068: \
+    EGFR(Y1068~pY) + GRB2(SH2,SH3!+) <-> EGFR(Y1068~pY!1).GRB2(SH2!1,SH3!+)  kp11, km11
 
-    egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY) + Grb2(SH2,SH3!3).Sos(dom!3)   <-> \
-          egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY!2).Grb2(SH2!2,SH3!3).Sos(dom!3)  kp24,km24
+  # Step 10 - Sos binds a receptor-bound Grb2 at pY1068.
+  R10_bind_Sos_Y1068: \
+    EGFR(Y1068~pY!1).GRB2(SH2!1,SH3) + SOS1(dom) <-> \
+    EGFR(Y1068~pY!1).GRB2(SH2!1,SH3!2).SOS1(dom!2)  kp10, km10
 
-    Shc(PTB!+,Y317~pY!2).Grb2(SH2!2,SH3) + Sos(dom)   <-> \
-          Shc(PTB!+,Y317~pY!2).Grb2(SH2!2,SH3!3).Sos(dom!3)  kp19,km19
+  # Step 13 - unphosphorylated Shc binds pY1148.
+  R13_bind_Shc_Y1148: \
+    EGFR(Y1148~pY) + SHC1(PTB,Y317~Y) <-> EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~Y)  kp13, km13
 
-    # Cytosolic 
-    Shc(PTB,Y317~pY) + Grb2(SH2,SH3)   <-> Shc(PTB,Y317~pY!1).Grb2(SH2!1,SH3)    kp21,km21
-    Shc(PTB,Y317~pY) + Grb2(SH2,SH3!+) <-> Shc(PTB,Y317~pY!1).Grb2(SH2!1,SH3!+)  kp23,km23
-    Shc(PTB,Y317~pY) -> Shc(PTB,Y317~Y)  km16
-    Grb2(SH2,SH3) + Sos(dom) <-> Grb2(SH2,SH3!1).Sos(dom!1)  kp12,km12
-    Shc(PTB,Y317~pY!2).Grb2(SH2!2,SH3) + Sos(dom)   <-> \
-    Shc(PTB,Y317~pY!2).Grb2(SH2!2,SH3!3).Sos(dom!3)  kp22,km22
+  # Step 15 - phosphorylated Shc binds pY1148.
+  R15_bind_ShcP_Y1148: \
+    EGFR(Y1148~pY) + SHC1(PTB,Y317~pY) <-> EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY)  kp15, km15
+
+  # Step 18 - a cytosolic ShcP-Grb2 complex binds pY1148 through Shc.
+  R18_bind_ShcPGrb2_Y1148: \
+    EGFR(Y1148~pY) + SHC1(PTB,Y317~pY!1).GRB2(SH2!1,SH3) <-> \
+    EGFR(Y1148~pY!2).SHC1(PTB!2,Y317~pY!1).GRB2(SH2!1,SH3)  kp18, km18
+
+  # Step 20 - a cytosolic ShcP-Grb2-Sos complex binds pY1148 through Shc.
+  R20_bind_ShcPGrb2Sos_Y1148: \
+    EGFR(Y1148~pY) + SHC1(PTB,Y317~pY!1).GRB2(SH2!1,SH3!3).SOS1(dom!3) <-> \
+    EGFR(Y1148~pY!2).SHC1(PTB!2,Y317~pY!1).GRB2(SH2!1,SH3!3).SOS1(dom!3)  kp20, km20
+
+  # Step 17 - Grb2 binds phospho-Y317 of a receptor-associated Shc.
+  R17_bind_Grb2_Shc: \
+    EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY) + GRB2(SH2,SH3) <-> \
+    EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY!2).GRB2(SH2!2,SH3)  kp17, km17
+
+  # Step 24 - a Grb2-Sos complex binds phospho-Y317 of receptor-bound Shc.
+  R24_bind_Grb2Sos_Shc: \
+    EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY) + GRB2(SH2,SH3!3).SOS1(dom!3) <-> \
+    EGFR(Y1148~pY!1).SHC1(PTB!1,Y317~pY!2).GRB2(SH2!2,SH3!3).SOS1(dom!3)  kp24, km24
+
+  # Step 19 - Sos binds Grb2 that is held on a receptor-associated Shc.
+  R19_bind_Sos_ShcGrb2: \
+    SHC1(PTB!+,Y317~pY!2).GRB2(SH2!2,SH3) + SOS1(dom) <-> \
+    SHC1(PTB!+,Y317~pY!2).GRB2(SH2!2,SH3!3).SOS1(dom!3)  kp19, km19
+
+  # Step 21 - cytosolic Grb2 binds phospho-Shc.
+  R21_bind_Grb2_ShcP_cyt: \
+    SHC1(PTB,Y317~pY) + GRB2(SH2,SH3) <-> SHC1(PTB,Y317~pY!1).GRB2(SH2!1,SH3)  kp21, km21
+
+  # Step 23 - a cytosolic Grb2-Sos complex binds phospho-Shc.
+  R23_bind_Grb2Sos_ShcP_cyt: \
+    SHC1(PTB,Y317~pY) + GRB2(SH2,SH3!+) <-> SHC1(PTB,Y317~pY!1).GRB2(SH2!1,SH3!+)  kp23, km23
+
+  # Step 16 - cytosolic phospho-Shc dephosphorylation.
+  R16_dephos_ShcP_cyt: SHC1(PTB,Y317~pY) -> SHC1(PTB,Y317~Y)  km16
+
+  # Step 12 - cytosolic Grb2-Sos association.
+  R12_bind_Grb2_Sos_cyt: \
+    GRB2(SH2,SH3) + SOS1(dom) <-> GRB2(SH2,SH3!1).SOS1(dom!1)  kp12, km12
+
+  # Step 22 - cytosolic Sos binds a phospho-Shc-Grb2 complex.
+  R22_bind_Sos_ShcPGrb2_cyt: \
+    SHC1(PTB,Y317~pY!2).GRB2(SH2!2,SH3) + SOS1(dom) <-> \
+    SHC1(PTB,Y317~pY!2).GRB2(SH2!2,SH3!3).SOS1(dom!3)  kp22, km22
 end reaction rules
 
-begin observables
-    Molecules    Dimers       egfr.egfr
-    Molecules    Sos_act      Shc(PTB!+,Y317~pY!2).Grb2(SH2!2,SH3!3).Sos(dom!3), egfr(Y1068~pY!1).Grb2(SH2!1,SH3!2).Sos(dom!2)
-    Molecules    RP           egfr(Y1068~pY!?), egfr(Y1148~pY!?)
-    Molecules    Shc_Grb      Shc(Y317~pY!1).Grb2(SH2!1)
-    Molecules    Shc_Grb_Sos  Shc(Y317~pY!1).Grb2(SH2!1,SH3!2).Sos(dom!2)
-    Molecules    R_Grb2       egfr(Y1068~pY!1).Grb2(SH2!1)
-    Molecules    R_Shc        egfr(Y1148~pY!1).Shc(PTB!1,Y317~Y)
-    Molecules    R_ShcP       egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY!?)
-    Molecules    ShcP         Shc(Y317~pY!?)
-    Molecules    R_G_S        egfr(Y1068~pY!1).Grb2(SH2!1,SH3!2).Sos(dom!2)
-    # Strong differences are seen for R_G_S in comparison with path model
-    Molecules    R_S_G_S      egfr(Y1148~pY!1).Shc(PTB!1,Y317~pY!2).Grb2(SH2!2,SH3!3).Sos(dom!3)
-
-    Molecules    Efgr_total   egfr
-    Molecules    Shc_total    Shc
-    Molecules    Sos_total    Sos
-    Molecules    Grb2_total   Grb2
-end observables
 end model
 
-## actions ##
-generate_network({overwrite=>1})
-# Equilibration
-setConcentration("egf(r)",0)
-simulate_ode({t_end=>100000,n_steps=>10,sparse=>1,steady_state=>1})
-# Kinetics
-setConcentration("egf(r)","egf_tot")
-writeSBML({})
-simulate_ode({t_end=>120,n_steps=>120,atol=>1e-8,rtol=>1e-8,sparse=>1})
+begin actions
+  generate_network({overwrite=>1})  # 356 species, 3749 reactions
+
+  #@note: |
+  #  ODE is the intended protocol. Copy numbers are large (up to 1.2e6
+  #  EGF molecules across 3749 reactions), so generate-first SSA and
+  #  network-free NFsim are impractical (far exceeding the ~1 min
+  #  runtime target); a commented SSA stub is provided for reference.
+
+  saveConcentrations()
+
+  # EGF response time course
+
+  #@protocol: |
+  #  Integrate the EGF-stimulated response from the resting seed state
+  #  for 120 s. The observables reproduce Fig. 2 of Blinov et al. (2006)
+  #  (solid, network-model curves): Obs_Grb2_EGFR (A), Obs_ShcP_Grb2 (C),
+  #  Obs_ShcP_total (D), and Obs_Rec_pTyr (E). Divide any observable by
+  #  1800 to convert molecules to nM for direct comparison with the
+  #  figure axes. Expected: Grb2-EGFR peaks near 18 nM at ~9 s then
+  #  relaxes toward ~4 nM; ShcP-Grb2 and total ShcP rise to ~64 and
+  #  ~148 nM; receptor phosphotyrosines peak near 55 nM at ~9 s and
+  #  relax toward ~21 nM.
+
+  #@figure: Fig. 2 (panels A, C, D, E) in Blinov et al. (2006)
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_end=>120,n_steps=>600,\
+    atol=>1e-10,rtol=>1e-10,sparse=>1})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",suffix=>"ssa",t_end=>120,n_steps=>600})
+end actions

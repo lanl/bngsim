@@ -84,6 +84,17 @@ PINS = {
         "https://github.com/wshlavacek/BNGL-Models.git",
         "81c90d8f58354a925651859c94142149afefc4b1",
     ),
+    # A SECOND pin of BNGL-Models, at a newer commit, used ONLY to re-source the six
+    # house-curated "representative published" models (paper Table S3 / KLU-scaling set)
+    # from their corrected, bug-fixed bodies — see CURATED_SIX / resolve(). Kept separate
+    # from the `bngl_models` pin so re-sourcing the six does NOT drag the other ~430
+    # bngl_models/bngl_library/curated models to a newer upstream (zero collateral): those
+    # stay at 81c90d8, these six at dfeb88d.
+    "bngl_curated": Pin(
+        "wshlavacek/BNGL-Models",
+        "https://github.com/wshlavacek/BNGL-Models.git",
+        "14ed1b0fafb358a65d327c8da98f1d9743998142",
+    ),
 }
 
 # SPDX license per source repo (keyed by the resolved pin repo key, so the four
@@ -96,6 +107,7 @@ REPO_LICENSE = {
     "rulehub": {"spdx": "MIT", "notice": None},
     "rulemonkey": {"spdx": "MIT", "notice": None},
     "bngl_models": {"spdx": "CC-BY-4.0", "notice": None},
+    "bngl_curated": {"spdx": "CC-BY-4.0", "notice": None},  # same repo as bngl_models
 }
 
 # manifest `source` -> (pin repo key, path prefix within that repo). Several
@@ -111,8 +123,53 @@ SOURCE_TO_REPO = {
 }
 
 
+# The six house-curated "representative published" models behind the paper's Supplementary
+# Table S3 (cross-engine ODE timing) and the KLU-scaling figure. Their corrected, bug-fixed
+# bodies (km21 typo, fyn transphosphorylation fix, added ODE horizons, the Lang v3.2.0 fused
+# model, ...) live in wshlavacek/BNGL-Models, NOT upstream in RuleHub as-run — so they are
+# RE-SOURCED from BNGL-Models (the `bngl_curated` pin) while keeping their rulehub membership
+# IDs stable, exactly like the bench_rulehub fixtures below. Keyed by the membership
+# ``(source, relpath)``; ``src`` is the path within the BNGL-Models checkout and ``out``
+# (optional) pins the vendored relpath so a pre-existing corpus ID stays byte-stable
+# (Barua_2013 keeps its historical ``__PATCHED`` name). Provenance (origin.repo/commit/path
+# = BNGL-Models @ dfeb88d / models/…) is recorded per-record; ``test_curated_resource``
+# checks these keys stay live.
+CURATED_SIX: dict[tuple[str, str], dict] = {
+    ("rulehub", "Published/Lang2024/Lang_2024.bngl"): {
+        "src": "models/cell_cycle_oscillator_lang2024/cell_cycle_oscillator_lang2024_fused.bngl",
+        "reason": "Lang 2024 v3.2.0 full fused RPE-1 cell-cycle model with an in-file ODE horizon",
+    },
+    ("rulehub", "Published/Kocieniewski2012/Kocieniewski_2012.bngl"): {
+        "src": "models/scaffolded_mapk_cascade_kocieniewski2012/scaffolded_mapk_cascade_kocieniewski2012.bngl",
+        "reason": "scaffolded MAPK cascade; adds the ODE simulate horizon it lacked upstream",
+    },
+    ("rulehub", "Published/Barua2007/Barua_2007.bngl"): {
+        "src": "models/shp2_regulation_and_function_barua2007/shp2_regulation_and_function_barua2007.bngl",
+        "reason": "SHP2 regulation; house-curated body + parameter_scan",
+    },
+    ("rulehub", "Published/Blinov2006/Blinov_2006.bngl"): {
+        "src": "models/combinatorial_egfr_signaling_blinov2006/combinatorial_egfr_signaling_blinov2006.bngl",
+        "reason": "combinatorial EGFR; km21 typo corrected 0.01 -> 0.1 /s (Table 1 k-21)",
+    },
+    ("rulehub", "Published/Barua2013/Barua_2013.bngl"): {
+        "src": "models/beta_catenin_destruction_complex_barua2013/beta_catenin_destruction_complex_barua2013.bngl",
+        "out": "Published/Barua2013/Barua_2013__PATCHED.bngl",  # keep the historical corpus ID
+        "reason": "beta-catenin destruction complex; corrected body (already carries atol, "
+        "superseding the former atoll->atol import repair)",
+    },
+    ("rulehub", "Published/fcerifyn/fceri_fyn.bngl"): {
+        "src": "models/early_fceri_signaling_faeder2003/early_fceri_signaling_faeder2003_fyn.bngl",
+        "reason": "early FceRI + Fyn; SH2-bound Lyn transphosphorylation bug fixed + ODE horizon added",
+    },
+}
+
+
 def resolve(source: str, relpath: str) -> tuple[str, str]:
     """Return (pin repo key, path within that repo) for a membership entry.
+
+    The six CURATED_SIX models are house-curated, bug-fixed re-sources of RuleHub
+    ``Published/`` models: they keep their rulehub membership IDs but resolve their
+    (corrected) bytes from BNGL-Models at the ``bngl_curated`` pin.
 
     The four ``rulehub``-sourced ``bench_rulehub/`` models are runtime-tuned
     derived fixtures (equilibration/ligand-add t_end shortened so the NFsim
@@ -120,6 +177,9 @@ def resolve(source: str, relpath: str) -> tuple[str, str]:
     hosted in BNGL-Models/bench_rulehub/ with provenance headers. Resolve those
     relpaths there, at the same path, rather than against RuleHub.
     """
+    cur = CURATED_SIX.get((source, relpath))
+    if cur is not None:
+        return "bngl_curated", cur["src"]
     if source == "rulehub" and relpath.startswith("bench_rulehub/"):
         return "bngl_models", relpath
     repo_key, prefix = SOURCE_TO_REPO[source]
@@ -131,6 +191,11 @@ ENV_OVERRIDE = {
     "rulehub": "RULEHUB_DIR",
     "rulemonkey": "RULEMONKEY_DIR",
     "bngl_models": "BNGL_MODELS_DIR",
+    # Separate from BNGL_MODELS_DIR because the two BNGL-Models pins are at DIFFERENT
+    # commits: a single local checkout can only be at one, so testing the curated six
+    # against a local checkout uses its own var (point it at a checkout @ the bngl_curated
+    # pin; a wrong-commit checkout surfaces as sha256 drift for the six in the summary).
+    "bngl_curated": "BNGL_CURATED_DIR",
 }
 
 DET_METHODS = {"ode", "cvode"}
@@ -214,11 +279,10 @@ CORPUS_REPAIRS: dict[tuple[str, str], dict] = {
         "reason": "`atoll=>` is a typo for `atol=>` (BNG2.pl ignores it -> default tol)",
         "edits": [("atoll=>", "atol=>", 1)],
     },
-    ("rulehub", "Published/Barua2013/Barua_2013.bngl"): {
-        "issue": "internal#173",
-        "reason": "`atoll=>` is a typo for `atol=>` (BNG2.pl ignores it -> default tol)",
-        "edits": [("atoll=>", "atol=>", 1)],
-    },
+    # NB: Barua2013 formerly had an `atoll=>atol` repair here; it is now RE-SOURCED from the
+    # house-curated BNGL-Models body (which already uses `atol`) via CURATED_SIX, so the
+    # import repair is retired. Its vendored ID keeps the historical `__PATCHED` name via
+    # CURATED_SIX[...]["out"].
     ("rulehub", "Examples/physics/phwaveequation/ph_wave_equation.bngl"): {
         "issue": "internal#173",
         "reason": "non-standard tolerance arg names `abstol`/`reltol` (BNG2.pl ignores "
@@ -402,6 +466,12 @@ def main() -> int:
             # Mirrors the existing __FREE sentinel convention.
             p = Path(rel_in)
             rel_in = str(p.with_name(p.stem + "__PATCHED" + p.suffix))
+        # Curated re-source (CURATED_SIX): a house-curated body may pin a specific vendored
+        # relpath so a pre-existing corpus ID stays byte-stable (Barua_2013 keeps the
+        # historical __PATCHED name it earned from the now-retired atoll->atol import repair).
+        curated = CURATED_SIX.get((source, relpath))
+        if curated is not None and curated.get("out"):
+            rel_in = windows_safe(curated["out"])
         rel_out = Path(tier) / source / rel_in
         dest = args.dest / rel_out
         # Defense in depth: a model that vendors still malformed (no repair covered it)
@@ -472,6 +542,13 @@ def main() -> int:
             # ``sha256`` is the upstream hash; the on-disk file is repaired. Record what
             # was changed so the divergence is explicit and auditable.
             entry["repairs"] = [repair]
+        # Curated re-source provenance: the membership ID is rulehub, but the bytes come
+        # (verbatim) from the house-curated body in BNGL-Models @ the bngl_curated pin. The
+        # ``origin`` above already points there; this flag makes the six greppable/auditable
+        # (and here sha256 IS the on-disk hash — the file is used verbatim, not repaired).
+        entry["curated"] = curated is not None
+        if curated is not None:
+            entry["curated_source"] = {"repo": PINS[repo_key].slug, "reason": curated["reason"]}
         manifest.append(entry)
 
     if not args.dry_run:

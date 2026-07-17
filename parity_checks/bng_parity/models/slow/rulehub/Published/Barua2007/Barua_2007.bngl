@@ -1,155 +1,327 @@
-# Base model of Shp2 regulation from Barua, Faeder, and Haugh (2006).
-# Copyright 2006, North Carolina State University and Los Alamos National
-# Laboratory
+begin model
 
-# Concentration units are in micromolar; time units are in seconds.
+#@title: Shp2 regulation and function (Barua et al., 2007)
 
-version("2.0.34");
+#@description: |
+#  Structure-based, rule-based kinetic model of the SH2 domain-containing
+#  protein tyrosine phosphatase Shp2 (PTPN11) acting on a dimerized receptor
+#  tyrosine kinase. Shp2 is represented as three receptor-binding modules on
+#  one molecule: the N-terminal SH2 domain (NSH2), the C-terminal SH2 domain
+#  (CSH2), and the catalytic PTP domain. Autoinhibition is modeled as a
+#  reversible intramolecular NSH2-PTP association: in the "closed"
+#  conformation neither NSH2 nor PTP can engage receptor sites, and only the
+#  "open" conformation (favored by receptor engagement of NSH2) is catalytic
+#  and receptor-competent. The receptor is introduced as a preformed dimer
+#  whose two protomers each bear two phosphotyrosines: Y1, the PTP substrate
+#  site, and Y2, an SH2 docking site that is always phosphorylated.
+#
+#  Dynamics are mass-action. An intrinsic kinase rephosphorylates receptor Y1
+#  (unimolecular); Shp2 dephosphorylates Y1 through an explicit
+#  enzyme-substrate complex and catalytic step. Cytosolic Shp2 is recruited to
+#  the complex by any one of its open domains (bimolecular binding, restricted
+#  to free Shp2 via exclude_reactants); once tethered, its remaining free
+#  domains can bind other phosphotyrosines within the same complex through 16
+#  unimolecular "ring-closure" rules whose forward rate constants are the
+#  bimolecular constants multiplied by concentration-valued conversion factors
+#  chi_r (Table 2), giving Shp2 its high binding avidity. Chains of more than
+#  one dimer are neglected. Rule expansion yields a 149-species, 1032-reaction
+#  mass-action network integrated as ODEs.
+#
+#  The readout is the steady-state fraction of receptor Y1 phosphorylated
+#  (pYR/Rtot). Sweeping receptor abundance (Rtot), Shp2 abundance (S_tot), and
+#  SH2 affinity (koff) traces how multivalent avidity and serial engagement
+#  set dephosphorylation: at high avidity (low koff) with Shp2 in excess,
+#  binding is near-stoichiometric and pYR/Rtot falls to a floor phi ~ 0.11;
+#  when receptors outnumber Shp2 a faster koff can raise dephosphorylation via
+#  serial engagement (one Shp2 turning over many dimers).
+
+#@keyword: |
+#  signaling, Shp2, PTPN11, SH2 domain, protein tyrosine phosphatase,
+#  receptor tyrosine kinase, dephosphorylation, autoinhibition, multivalency,
+#  avidity, serial engagement, intracomplex binding, induced proximity,
+#  rule-based model, mass action, monostable, Homo sapiens
+
+#@reference: |
+#  Barua D, Faeder JR, Haugh JM (2007). Structure-based kinetic models of
+#  modular signaling protein function: focus on Shp2. Biophys J 92(7):2290-2300.
+#  doi:10.1529/biophysj.106.093484
 
 begin parameters
+  # Avogadro constant; included for population-conversion readiness.
+  NA  6.02214076e23  # /mol
 
-kdim            1000
+  #@note: |
+  #  The model is concentration-based: amounts and rate constants are in
+  #  micromolar and seconds, exactly as in Barua et al. (2007) (Tables 1-2).
+  #  Populations for SSA/NFsim would follow n = C[uM] * 1e-6 * NA * V_ref;
+  #  with V_ref = 1 pL this gives 1 uM = 6.022e5 molecules, i.e. 0.05 uM ~
+  #  3e4 molecules/pL, matching the cytosolic-volume basis stated in the
+  #  paper. ODE is the native protocol here, so V_ref is provided only for
+  #  conversion readiness.
 
-kopen           10
-kclose          500
+  # Reference cytosolic volume per cell; sets the uM <-> molecule mapping.
+  V_ref  1e-12  # L/cell
 
-kon_CSH2        1       
-koff_CSH2       1        
+  # Shp2 conformational equilibrium (autoinhibition): closed <-> open. The
+  # closed form is strongly favored (kclose >> kopen); see Table 1.
+  kopen   10   # /s
+  kclose  500  # /s
 
-kon_NSH2        1       
-koff_NSH2       1
+  # SH2 domain-receptor (Y2) binding. koff is the single-site dissociation
+  # rate constant, assumed equal for the C-SH2 and N-SH2 domains and swept
+  # over 0.1-10 /s in the paper (single-site KD = koff/kon = 0.1-10 uM). The
+  # base case here is koff = 1 /s (KD = 1 uM).
+  kon_CSH2   1     # /uM/s
+  kon_NSH2   1     # /uM/s
+  koff       1     # /s
+  koff_CSH2  koff  # /s
+  koff_NSH2  koff  # /s
 
-kkin_Y1         0.1
+  # PTP domain-receptor (Y1 substrate) binding and catalysis; see Table 1.
+  kon_PTP   1   # /uM/s
+  koff_PTP  10  # /s
+  kcat_PTP  1   # /s
 
-kon_PTP         1        
-koff_PTP        10       
-kcat_PTP        1        
+  # Intrinsic receptor Y1 (re)phosphorylation by the receptor kinase.
+  kkin_Y1  0.1  # /s
 
-chi_r1          1000
-chi_r2          100
-chi_r3          1000
-chi_r4          1000
-chi_r5          100
-chi_r6          100
-chi_r7          100
-chi_r8          1000  # Equals chi_r1*chi_r6/chi_r2
-chi_r9          100   # Equals chi_r1*chi_r7/chi_r3
-chi_r10         100   # Equals chi_r1*chi_r6/chi_r4
-chi_r11         1000  # Equals chi_r1*chi_r7/chi_r5
+  # Intracomplex (ring-closure) conversion factors chi_r; see Table 2 in
+  # Barua et al. (2007). Each multiplies a bimolecular kon (/uM/s) to give a
+  # unimolecular tethered-binding rate (/s), so chi_r has units of uM. Values
+  # chi_r8..chi_r11 are fixed by microscopic reversibility (noted per line).
+  chi_r1   1000  # uM
+  chi_r2   100   # uM
+  chi_r3   1000  # uM
+  chi_r4   1000  # uM
+  chi_r5   100   # uM
+  chi_r6   100   # uM
+  chi_r7   100   # uM
+  # chi_r8 = chi_r1*chi_r6/chi_r2
+  chi_r8   1000  # uM
+  # chi_r9 = chi_r1*chi_r7/chi_r3
+  chi_r9   100   # uM
+  # chi_r10 = chi_r1*chi_r6/chi_r4
+  chi_r10  100   # uM
+  # chi_r11 = chi_r1*chi_r7/chi_r5
+  chi_r11  1000  # uM
 
-R_dim		0.025 # R_tot= 2*R_dim
-S_tot		0.05
+  # Total activated receptor (monomer basis) and the derived dimer amount;
+  # receptors are introduced only as preformed dimers, so R_dim = Rtot/2.
+  # Rtot is swept over 0.05-0.5 uM in the paper.
+  Rtot   0.05      # uM
+  R_dim  Rtot/2    # uM
+
+  # Total Shp2; assigned 0.05, 0.10, or 0.20 uM in the paper (0.10 here).
+  S_tot  0.10  # uM
 end parameters
 
 begin molecule types
-R(DD,Y1~U~P,Y2~P)
-S(NSH2~C~O,CSH2,PTP~C~O)
+  # Dimerized receptor. DD is the (permanent) dimerization bond; Y1 is the
+  # Shp2 PTP substrate site (unphosphorylated/phosphorylated); Y2 is the SH2
+  # docking site, always phosphorylated.
+  R(DD,Y1~U~P,Y2~P)
+  # Shp2 (PTPN11). NSH2/PTP carry the shared conformational state (~C closed,
+  # ~O open); CSH2 has no conformational coupling. A domain must be open (and
+  # free) to engage a receptor site.
+  Shp2(NSH2~C~O,CSH2,PTP~C~O)
 end molecule types
 
-begin species
-S(NSH2~C,CSH2,PTP~C)				S_tot
-# Pre-dimerized receptors
-R(DD!1,Y1~U,Y2~P).R(DD!1,Y1~U,Y2~P)             R_dim
-end species
-
-begin reaction rules
-# Intra-complex phosphorylation 
-R(DD!+,Y1~U) -> R(DD!+,Y1~P)  kkin_Y1
-
-# Equilibrium between the closed form and open form of S
-S(NSH2~C,PTP~C) <-> S(NSH2~O,PTP~O)  kopen,kclose
-
-# Binding of S(CSH2) from cytosol
-R(Y2~P) + S(CSH2) <-> R(Y2~P!1).S(CSH2!1)  kon_CSH2,koff_CSH2 \
-exclude_reactants(2,R)
-
-# Binding of S(NSH2~O) from cytosol
-R(Y2~P) + S(NSH2~O) <-> R(Y2~P!1).S(NSH2~O!1)  kon_NSH2,koff_NSH2 \
-exclude_reactants(2,R)
-
-# Binding of S(PTP~O) from cytosol
-R(Y1~P) + S(PTP~O) <-> R(Y1~P!1).S(PTP~O!1)  kon_PTP,koff_PTP \
-exclude_reactants(2,R)
-
-# Dephosphorylation of R(Y1~P)
-R(Y1~P!1).S(PTP~O!1) -> R(Y1~U) + S(PTP~O)  kcat_PTP
-R(Y1~P!1).S(PTP~O!1) -> R(Y1~U).S(PTP~O)  kcat_PTP
-
-# 1 Intra-complex binding: CSH2 bound, association of NSH2 (open) with other receptor
-R(Y2~P).S(NSH2~O,CSH2!+,PTP~O) <-> \
-R(Y2~P!1).S(NSH2~O!1,CSH2!+,PTP~O)  chi_r1*kon_NSH2,koff_NSH2
-
-# 2 Intra-complex binding: CSH2 bound, association of PTP (open) with same receptor
-R(Y1~P,Y2~P!1).S(NSH2~O,CSH2!1,PTP~O) <-> \
-R(Y1~P!2,Y2~P!1).S(NSH2~O,CSH2!1,PTP~O!2)  chi_r2*kon_PTP,koff_PTP
-
-# 3 Intra-complex binding: CSH2 bound, association of PTP (open) with other receptor
-R(Y1~P).R(Y2~P!1).S(NSH2~O,CSH2!1,PTP~O) <-> \
-R(Y1~P!2).R(Y2~P!1).S(NSH2~O,CSH2!1,PTP~O!2)  chi_r3*kon_PTP,koff_PTP
-
-# 4 Intra-complex binding: NSH2 bound, association of CSH2 with other receptor
-R(Y2~P).S(NSH2~O!+,CSH2,PTP~O) <-> \
-R(Y2~P!1).S(NSH2~O!+,CSH2!1,PTP~O)  chi_r1*kon_CSH2,koff_CSH2
-
-# 5 Intra-complex binding: NSH2 bound, association of PTP with other receptor
-R(Y1~P).R(Y2~P!1).S(NSH2~O!1,CSH2,PTP~O) <-> \
-R(Y1~P!2).R(Y2~P!1).S(NSH2~O!1,CSH2,PTP~O!2)  chi_r4*kon_PTP,koff_PTP
-
-# 6 Intracomplex binding: NSH2 bound, association of PTP with same receptor
-R(Y1~P,Y2~P!1).S(NSH2~O!1,CSH2,PTP~O) <-> \
-R(Y1~P!2,Y2~P!1).S(NSH2~O!1,CSH2,PTP~O!2)  chi_r5*kon_PTP,koff_PTP
-
-# 7 Intra-complex binding: PTP bound, association of CSH2 with same receptor
-R(Y1~P!1,Y2~P).S(NSH2~O,CSH2,PTP~O!1) <-> \
-R(Y1~P!1,Y2~P!2).S(NSH2~O,CSH2!2,PTP~O!1)  chi_r2*kon_CSH2,koff_CSH2
-
-# 8 Intra-complex binding: PTP bound, association of CSH2 with other receptor
-R(Y1~P!1).R(Y2~P).S(NSH2~O,CSH2,PTP~O!1) <-> \
-R(Y1~P!1).R(Y2~P!2).S(NSH2~O,CSH2!2,PTP~O!1)  chi_r3*kon_CSH2,koff_CSH2
-
-# 9 Intra-complex binding: PTP bound, association of NSH2 with other receptor
-R(Y1~P!1).R(Y2~P).S(NSH2~O,CSH2,PTP~O!1) <-> \
-R(Y1~P!1).R(Y2~P!2).S(NSH2~O!2,CSH2,PTP~O!1)  chi_r4*kon_NSH2,koff_NSH2
-
-# 10 Intra-complex binding: PTP bound, association of NSH2 with same receptor
-R(Y1~P!1,Y2~P).S(NSH2~O,CSH2,PTP~O!1) <-> \
-R(Y1~P!1,Y2~P!2).S(NSH2~O!2,CSH2,PTP~O!1)  chi_r5*kon_NSH2,koff_NSH2
-
-# 11 Intra-complex binding: CSH2 & NSH2 bound, assoc. of PTP with same receptor as CSH2
-R(Y1~P,Y2~P!1).R(Y2~P!2).S(NSH2~O!2,CSH2!1,PTP~O) <-> \
-R(Y1~P!3,Y2~P!1).R(Y2~P!2).S(NSH2~O!2,CSH2!1,PTP~O!3) \
-chi_r6*kon_PTP,koff_PTP
-
-# 12 Intra-complex binding: CSH2 & NSH2 bound, assoc. of PTP with same receptor as NSH2
-R(Y1~P,Y2~P!1).R(Y2~P!2).S(NSH2~O!1,CSH2!2,PTP~O) <-> \
-R(Y1~P!3,Y2~P!1).R(Y2~P!2).S(NSH2~O!1,CSH2!2,PTP~O!3) \
-chi_r7*kon_PTP,koff_PTP
-
-# 13 Intra-complex binding: CSH2 & PTP bound to the same receptor, assoc. of NSH2
-R(Y1~P!1,Y2~P!2).R(Y2~P).S(NSH2~O,CSH2!2,PTP~O!1) <-> \
-R(Y1~P!1,Y2~P!2).R(Y2~P!3).S(NSH2~O!3,CSH2!2,PTP~O!1) \
-chi_r8*kon_NSH2,koff_NSH2
-
-# 14 Intra-complex binding: CSH2 & PTP bound to different receptors, assoc. of NSH2
-R(Y2~P!1).R(Y1~P!2,Y2~P).S(NSH2~O,CSH2!1,PTP~O!2) <-> \
-R(Y2~P!1).R(Y1~P!2,Y2~P!3).S(NSH2~O!3,CSH2!1,PTP~O!2) \
-chi_r9*kon_NSH2,koff_NSH2
-
-# 15 Intra-complex binding: PTP & NSH2 bound to different receptors, assoc. of CSH2
-R(Y2~P!1).R(Y1~P!2,Y2~P).S(NSH2~O!1,CSH2,PTP~O!2) <-> \
-R(Y2~P!1).R(Y1~P!2,Y2~P!3).S(NSH2~O!1,CSH2!3,PTP~O!2) \
-chi_r10*kon_CSH2,koff_CSH2
-
-# 16 Intra-complex binding: PTP & NSH2 bound to same receptor, assoc. of CSH2 
-R(Y1~P!1,Y2~P!2).R(Y2~P).S(NSH2~O!2,CSH2,PTP~O!1) <-> \
-R(Y1~P!1,Y2~P!2).R(Y2~P!3).S(NSH2~O!2,CSH2!3,PTP~O!1) \
-chi_r11*kon_CSH2,koff_CSH2
-
-end reaction rules
+begin seed species
+  # Autoinhibited (closed) cytosolic Shp2.
+  Shp2(NSH2~C,CSH2,PTP~C)                          S_tot  # uM
+  # Preformed receptor dimer, both Y1 unphosphorylated, both Y2 phosphorylated.
+  R(DD!1,Y1~U,Y2~P).R(DD!1,Y1~U,Y2~P)              R_dim  # uM
+end seed species
 
 begin observables
-Molecules  pYR      R(Y1~P!?)
+  # Primary readout: phosphorylated receptor substrate sites (pYR). Divide by
+  # Rtot = 2*R_dim for the phosphorylated fraction pYR/Rtot.
+  Molecules  Obs_pYR      R(Y1~P!?)
+  # Free (Shp2-unbound) dimers, both protomers' Y1 and Y2 unoccupied. The
+  # bound-dimer fraction is bD = 1 - Obs_D_free/R_dim (denominator = total
+  # dimers = R_dim).
+  Species    Obs_D_free   R(DD!1,Y1,Y2).R(DD!1,Y1,Y2)
+  # Free cytosolic Shp2 (no domain receptor-bound); S_tot - Obs_Shp2_free is
+  # the receptor-recruited pool.
+  Species    Obs_Shp2_free  Shp2(NSH2,CSH2,PTP)
 end observables
 
-generate_network({overwrite=>1});
-simulate_ode({t_end=>1000,n_steps=>100,steady_state=>1,atol=>1e-10,rtol=>1e-8,sparse=>0});
+begin reaction rules
+  # --- Recruitment of Shp2 from the cytosol (Fig. 1 a) ---
+
+  # Intramolecular autoinhibition equilibrium: NSH2 and PTP switch together
+  # between the closed and open conformations.
+  R_conf_openclose: \
+    Shp2(NSH2~C,PTP~C) <-> Shp2(NSH2~O,PTP~O)  kopen, kclose
+
+  # Cytosolic C-SH2 binds a receptor Y2 (conformation-independent). Restricted
+  # to free Shp2 via exclude_reactants so tethered Shp2 uses the ring-closure
+  # rules below.
+  R_bind_CSH2_cyto: \
+    R(Y2~P) + Shp2(CSH2) <-> R(Y2~P!1).Shp2(CSH2!1)  kon_CSH2, koff_CSH2 \
+    exclude_reactants(2,R)
+
+  # Cytosolic open N-SH2 binds a receptor Y2.
+  R_bind_NSH2_cyto: \
+    R(Y2~P) + Shp2(NSH2~O) <-> R(Y2~P!1).Shp2(NSH2~O!1)  kon_NSH2, koff_NSH2 \
+    exclude_reactants(2,R)
+
+  # Cytosolic open PTP binds a phosphorylated receptor Y1 (substrate capture).
+  R_bind_PTP_cyto: \
+    R(Y1~P) + Shp2(PTP~O) <-> R(Y1~P!1).Shp2(PTP~O!1)  kon_PTP, koff_PTP \
+    exclude_reactants(2,R)
+
+  # --- Receptor Y1 phosphorylation and Shp2-mediated dephosphorylation (Fig. 1 b) ---
+
+  # Intrinsic receptor kinase rephosphorylates Y1 (requires an intact dimer).
+  R_kin_Y1: \
+    R(DD!+,Y1~U) -> R(DD!+,Y1~P)  kkin_Y1
+
+  # Catalytic dephosphorylation of Y1 by the bound PTP, releasing product. Two
+  # forms cover whether breaking the PTP-Y1 bond disconnects Shp2 from the
+  # complex (+) or leaves it tethered by another domain (.).
+  R_cat_dephos_release: \
+    R(Y1~P!1).Shp2(PTP~O!1) -> R(Y1~U) + Shp2(PTP~O)  kcat_PTP
+  R_cat_dephos_tethered: \
+    R(Y1~P!1).Shp2(PTP~O!1) -> R(Y1~U).Shp2(PTP~O)  kcat_PTP
+
+  # --- Intracomplex (ring-closure) binding of a second/third Shp2 domain ---
+  #@note: |
+  #  The 16 rules below (numbered as in Barua et al. (2007), Table 2 and Fig.
+  #  S1) enumerate every way a tethered Shp2 engages an additional receptor
+  #  phosphotyrosine within the same complex. Each is unimolecular; the
+  #  forward rate is a bimolecular kon scaled by the appropriate chi_r factor.
+  #  "same/other receptor" refers to which protomer of the dimer is engaged.
+
+  # 1: C-SH2 bound; open N-SH2 binds the other receptor's Y2.
+  R_intra01_CSH2_NSH2_other: \
+    R(Y2~P).Shp2(NSH2~O,CSH2!+,PTP~O) <-> \
+    R(Y2~P!1).Shp2(NSH2~O!1,CSH2!+,PTP~O)  chi_r1*kon_NSH2, koff_NSH2
+
+  # 2: C-SH2 bound; open PTP binds the same receptor's Y1.
+  R_intra02_CSH2_PTP_same: \
+    R(Y1~P,Y2~P!1).Shp2(NSH2~O,CSH2!1,PTP~O) <-> \
+    R(Y1~P!2,Y2~P!1).Shp2(NSH2~O,CSH2!1,PTP~O!2)  chi_r2*kon_PTP, koff_PTP
+
+  # 3: C-SH2 bound; open PTP binds the other receptor's Y1.
+  R_intra03_CSH2_PTP_other: \
+    R(Y1~P).R(Y2~P!1).Shp2(NSH2~O,CSH2!1,PTP~O) <-> \
+    R(Y1~P!2).R(Y2~P!1).Shp2(NSH2~O,CSH2!1,PTP~O!2)  chi_r3*kon_PTP, koff_PTP
+
+  # 4: N-SH2 bound; C-SH2 binds the other receptor's Y2.
+  R_intra04_NSH2_CSH2_other: \
+    R(Y2~P).Shp2(NSH2~O!+,CSH2,PTP~O) <-> \
+    R(Y2~P!1).Shp2(NSH2~O!+,CSH2!1,PTP~O)  chi_r1*kon_CSH2, koff_CSH2
+
+  # 5: N-SH2 bound; open PTP binds the other receptor's Y1.
+  R_intra05_NSH2_PTP_other: \
+    R(Y1~P).R(Y2~P!1).Shp2(NSH2~O!1,CSH2,PTP~O) <-> \
+    R(Y1~P!2).R(Y2~P!1).Shp2(NSH2~O!1,CSH2,PTP~O!2)  chi_r4*kon_PTP, koff_PTP
+
+  # 6: N-SH2 bound; open PTP binds the same receptor's Y1.
+  R_intra06_NSH2_PTP_same: \
+    R(Y1~P,Y2~P!1).Shp2(NSH2~O!1,CSH2,PTP~O) <-> \
+    R(Y1~P!2,Y2~P!1).Shp2(NSH2~O!1,CSH2,PTP~O!2)  chi_r5*kon_PTP, koff_PTP
+
+  # 7: PTP bound; C-SH2 binds the same receptor's Y2.
+  R_intra07_PTP_CSH2_same: \
+    R(Y1~P!1,Y2~P).Shp2(NSH2~O,CSH2,PTP~O!1) <-> \
+    R(Y1~P!1,Y2~P!2).Shp2(NSH2~O,CSH2!2,PTP~O!1)  chi_r2*kon_CSH2, koff_CSH2
+
+  # 8: PTP bound; C-SH2 binds the other receptor's Y2.
+  R_intra08_PTP_CSH2_other: \
+    R(Y1~P!1).R(Y2~P).Shp2(NSH2~O,CSH2,PTP~O!1) <-> \
+    R(Y1~P!1).R(Y2~P!2).Shp2(NSH2~O,CSH2!2,PTP~O!1)  chi_r3*kon_CSH2, koff_CSH2
+
+  # 9: PTP bound; open N-SH2 binds the other receptor's Y2.
+  R_intra09_PTP_NSH2_other: \
+    R(Y1~P!1).R(Y2~P).Shp2(NSH2~O,CSH2,PTP~O!1) <-> \
+    R(Y1~P!1).R(Y2~P!2).Shp2(NSH2~O!2,CSH2,PTP~O!1)  chi_r4*kon_NSH2, koff_NSH2
+
+  # 10: PTP bound; open N-SH2 binds the same receptor's Y2.
+  R_intra10_PTP_NSH2_same: \
+    R(Y1~P!1,Y2~P).Shp2(NSH2~O,CSH2,PTP~O!1) <-> \
+    R(Y1~P!1,Y2~P!2).Shp2(NSH2~O!2,CSH2,PTP~O!1)  chi_r5*kon_NSH2, koff_NSH2
+
+  # 11: C-SH2 and N-SH2 bound; PTP binds the same receptor as C-SH2.
+  R_intra11_CSH2NSH2_PTP_csh2: \
+    R(Y1~P,Y2~P!1).R(Y2~P!2).Shp2(NSH2~O!2,CSH2!1,PTP~O) <-> \
+    R(Y1~P!3,Y2~P!1).R(Y2~P!2).Shp2(NSH2~O!2,CSH2!1,PTP~O!3) \
+    chi_r6*kon_PTP, koff_PTP
+
+  # 12: C-SH2 and N-SH2 bound; PTP binds the same receptor as N-SH2.
+  R_intra12_CSH2NSH2_PTP_nsh2: \
+    R(Y1~P,Y2~P!1).R(Y2~P!2).Shp2(NSH2~O!1,CSH2!2,PTP~O) <-> \
+    R(Y1~P!3,Y2~P!1).R(Y2~P!2).Shp2(NSH2~O!1,CSH2!2,PTP~O!3) \
+    chi_r7*kon_PTP, koff_PTP
+
+  # 13: C-SH2 and PTP bound to the same receptor; N-SH2 binds the other.
+  R_intra13_CSH2PTP_same_NSH2: \
+    R(Y1~P!1,Y2~P!2).R(Y2~P).Shp2(NSH2~O,CSH2!2,PTP~O!1) <-> \
+    R(Y1~P!1,Y2~P!2).R(Y2~P!3).Shp2(NSH2~O!3,CSH2!2,PTP~O!1) \
+    chi_r8*kon_NSH2, koff_NSH2
+
+  # 14: C-SH2 and PTP bound to different receptors; N-SH2 binds the free Y2.
+  R_intra14_CSH2PTP_diff_NSH2: \
+    R(Y2~P!1).R(Y1~P!2,Y2~P).Shp2(NSH2~O,CSH2!1,PTP~O!2) <-> \
+    R(Y2~P!1).R(Y1~P!2,Y2~P!3).Shp2(NSH2~O!3,CSH2!1,PTP~O!2) \
+    chi_r9*kon_NSH2, koff_NSH2
+
+  # 15: PTP and N-SH2 bound to different receptors; C-SH2 binds the free Y2.
+  R_intra15_PTPNSH2_diff_CSH2: \
+    R(Y2~P!1).R(Y1~P!2,Y2~P).Shp2(NSH2~O!1,CSH2,PTP~O!2) <-> \
+    R(Y2~P!1).R(Y1~P!2,Y2~P!3).Shp2(NSH2~O!1,CSH2!3,PTP~O!2) \
+    chi_r10*kon_CSH2, koff_CSH2
+
+  # 16: PTP and N-SH2 bound to the same receptor; C-SH2 binds the other.
+  R_intra16_PTPNSH2_same_CSH2: \
+    R(Y1~P!1,Y2~P!2).R(Y2~P).Shp2(NSH2~O!2,CSH2,PTP~O!1) <-> \
+    R(Y1~P!1,Y2~P!2).R(Y2~P!3).Shp2(NSH2~O!2,CSH2!3,PTP~O!1) \
+    chi_r11*kon_CSH2, koff_CSH2
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1})  # 149 species, 1032 reactions
+
+  #@note: |
+  #  The model is concentration-based (uM), so ODE integration to steady
+  #  state is the native and only feasible protocol, matching Barua et al.
+  #  (2007) (equations deemed at steady state by t = 1e3 s). SSA/PSA/NFsim
+  #  are omitted: they require integer molecule counts, which would need the
+  #  uM -> population conversion via NA*V_ref described in the parameters note.
+
+  saveConcentrations()
+
+  # Relaxation to steady state at the base parameterization.
+
+  #@protocol: |
+  #  Integrate from the seed state to steady state at the base case
+  #  (Rtot = 0.05 uM, S_tot = 0.10 uM, koff = 1 /s). pYR/Rtot = Obs_pYR/Rtot
+  #  relaxes to its steady value; Obs_D_free and Obs_Shp2_free report the
+  #  bound-dimer and recruited-Shp2 pools used to place this condition on the
+  #  bD axis of Fig. 3.
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>1000,n_steps=>200,\
+    atol=>1e-8,rtol=>1e-8,sparse=>1})
+
+  # Dose response in receptor abundance (one Fig. 3 marker series).
+
+  #@protocol: |
+  #  Scan total receptor Rtot from 0.05 to 0.5 uM at S_tot = 0.10 uM and
+  #  koff = 1 /s, integrating each point to steady state. This is the
+  #  koff = 1 /s, S_tot = 0.10 uM series of Fig. 3 (equivalently a koff-slice
+  #  ridge of the Fig. 2 b surface): as Rtot rises, the bound-dimer fraction
+  #  bD = 1 - Obs_D_free/R_dim falls and pYR/Rtot = Obs_pYR/Rtot rises. The
+  #  companion notebook verify_barua2007.ipynb sweeps the full
+  #  S_tot x koff x Rtot grid and compares against the digitized Fig. 3.
+
+  #@figure: Fig. 3 in Barua et al. (2007)
+
+  resetConcentrations()
+  parameter_scan({method=>"ode",parameter=>"Rtot",par_min=>0.05,par_max=>0.5,\
+    n_scan_pts=>10,t_start=>0,t_end=>1000,n_steps=>10,steady_state=>1,\
+    atol=>1e-8,rtol=>1e-8,sparse=>1,suffix=>"scan"})
+end actions

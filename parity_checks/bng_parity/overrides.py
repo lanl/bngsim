@@ -229,12 +229,17 @@ REHAB = {
     "slow/rulehub/Published/Chattaraj2021/Chattaraj_2021.bngl": _ODE1,
     "slow/rulehub/Published/ChylekFceRI2014/ChylekFceRI_2014.bngl": _ODE,
     "slow/rulehub/Published/ChylekTCR2014/ChylekTCR_2014.bngl": _ODE,
-    "slow/rulehub/Published/Kocieniewski2012/Kocieniewski_2012.bngl": _ODE,
+    # Kocieniewski_2012 and fcerifyn/fceri_fyn were rehab'd because their upstream RuleHub
+    # bodies shipped without a runnable protocol. They are now RE-SOURCED from the
+    # house-curated BNGL-Models bodies (vendor_corpus.CURATED_SIX), which carry their own
+    # ODE horizon (t_end 500 / 600), so the rehab fixture is retired — the sim spec reads the
+    # model's own simulate. (Both consequently classify det/ODE from their own actions.)
     "slow/rulehub/Published/Massole2023/Massole_2023.bngl": _ODE,
     "slow/rulehub/Published/Mukhopadhyay2013/Mukhopadhyay_2013.bngl": _ODE,
     "slow/rulehub/Published/PyBioNetGen/tests/SimpleGenOnly/Simple_GenOnly.bngl": _ODE,
     "slow/rulehub/Published/Zhang2021/Zhang_2021.bngl": _ODE,
-    "slow/rulehub/Published/fcerifyn/fceri_fyn.bngl": _ODE,
+    # fcerifyn/fceri_fyn: rehab retired — re-sourced from BNGL-Models with its own ODE horizon
+    # (see the note by Kocieniewski_2012 above and vendor_corpus.CURATED_SIX).
     "slow/rulehub/Tutorials/NativeTutorials/Chyleklibrary/Chylek_library.bngl": _ODE,
     "slow/rulehub/Tutorials/NativeTutorials/ComplexDegradation/ComplexDegradation.bngl": _ODE,
     "slow/rulehub/Tutorials/NativeTutorials/Suderman2013/Suderman_2013.bngl": _ODE,

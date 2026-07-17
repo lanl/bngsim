@@ -1,60 +1,232 @@
 begin model
 
+#@title: Scaffolded MAPK cascade (Kocieniewski et al., 2012)
+
+#@description: |
+#  Rule-based model of a three-tier MAPK cascade (MAP3K -> MAP2K -> MAPK)
+#  assembled on a tripartite scaffold, corresponding to the "Scaff-22"
+#  model of Kocieniewski et al. (2012). A signal S activates MAP3K
+#  (first-order, e.g. RAF activation). Active MAP3K, unphosphorylated
+#  MAP2K, and unphosphorylated MAPK bind non-cooperatively to three
+#  dedicated sites on the scaffold. Activation of MAP2K and MAPK requires
+#  DOUBLE phosphorylation (residues R1 and R2), and phosphorylation occurs
+#  EXCLUSIVELY on the scaffold: scaffold-bound MAP3K phosphorylates
+#  scaffold-bound MAP2K, and scaffold-bound MAP2K phosphorylates
+#  scaffold-bound MAPK, each residue in random order at rate pscaff.
+#  Following the KSR/ERK system, inactive MAP3K cannot bind and dissociates
+#  quickly if inactivated while bound (rate d2), and doubly phosphorylated
+#  (active) MAPK dissociates almost immediately (rate d2). Dephosphorylation
+#  and MAP3K inactivation are first-order (rate u) and act on bound or free
+#  kinases alike.
+#
+#  The mechanism is mass-action; rule expansion yields 85 species and (in
+#  BioNetGen 2.9.3) 487 unidirectional reactions, integrated as ODEs. The
+#  system has a unique, stable steady state. The response R -- the level of
+#  active, unbound MAPK (Obs_R) -- is a biphasic ("prozone") function of the
+#  scaffold amount Stot: it rises, peaks near Stot ~ 1.8e5 molecules at
+#  S = 1 /s (R ~ 4.6e4), then falls at high scaffold as cascade components
+#  are titrated onto separate scaffolds (high-dose inhibition). See the
+#  mono-phosphorylation counterpart in
+#  scaffolded_mapk_cascade_kocieniewski2012_scaff11.bngl (the "Scaff-11"
+#  model), whose response peaks ~2-fold higher (Fig. 2).
+
+#@keyword: |
+#  cell signaling, MAPK cascade, MAP3K, MAP2K, MAPK, ERK, scaffold protein,
+#  KSR, double phosphorylation, dual phosphorylation, prozone effect,
+#  high-dose inhibition, biphasic response, signal amplification,
+#  rule-based model, mass action, monostable, mammalian
+
+#@reference: |
+#  Kocieniewski P, Faeder JR, Lipniacki T (2012). The interplay of double
+#  phosphorylation and scaffolding in MAPK pathways. J Theor Biol
+#  295:116-124. doi:10.1016/j.jtbi.2011.11.014
+
 begin parameters
-# Molecule Numbers
-Atot 1e5
-Btot 1e5
-Ctot 5e5
-Stot 1e5
-# Rates
-a 1e-6
-d1 0.1
-d2 100
-pscaff 100
-u 0.1
-S 1
-end parameters 
 
-begin molecule types 
-MAP3K(s,S~I~A)
-MAP2K(s,R1~Y~Yp,R2~Y~Yp)
-MAPK(s,R1~Y~Yp,R2~Y~Yp)
-Scaff(map3k,map2k,mapk)
-end molecule types 
+  # Avogadro constant and reference volume, for optional conversion of
+  # molecule counts to concentrations. The paper uses a mammalian-cell
+  # volume of 2000 um^3; 1e6 molecules ~ 0.8 uM. The model is defined and
+  # simulated natively in molecule counts, so these are not used in any rule.
+  NA 6.02214076e23  # molecules/mol
+  V_ref 2e-12       # L/cell
 
-begin seed species 
-MAP3K(s,S~I) Atot
-MAP2K(s,R1~Y,R2~Y) Btot
-MAPK(s,R1~Y,R2~Y) Ctot
-Scaff(map3k,map2k,mapk) Stot
-end seed species 
+  # Total molecule numbers per cell (Table 1 in Kocieniewski et al. (2012))
+  Atot 1e5   # molecules
+  Btot 1e5   # molecules
+  Ctot 5e5   # molecules
+  Stot 1e5   # molecules
+
+  # Signal: first-order activation rate of MAP3K
+  S 1        # /s
+
+  # Scaffold association (bimolecular) and dissociation (first-order).
+  # a: binding of MAP2K, unphosphorylated MAPK, and active MAP3K to scaffold.
+  # d1: dissociation of those bound kinases.
+  # d2: fast dissociation of inactivated MAP3K and of active (Yp,Yp) MAPK.
+  a 1e-6     # /molecule/s
+  d1 0.1     # /s
+  d2 100     # /s
+
+  # On-scaffold phosphorylation (first-order transfer within a bound trimer)
+  pscaff 100 # /s
+
+  # First-order dephosphorylation of MAP2K/MAPK residues and inactivation of
+  # MAP3K. Table 1 lists these separately (u, u2R1, u2R2, u3R1, u3R2); all
+  # equal 0.1 /s in the default set, so a single parameter u is used here.
+  u 0.1      # /s
+
+end parameters
+
+begin molecule types
+
+  # MAP3K (e.g. RAF): inactive (I) or active (A); s binds the scaffold
+  MAP3K(s,S~I~A)
+  # MAP2K (e.g. MEK): two phospho-residues R1,R2 (Y unphos / Yp phos)
+  MAP2K(s,R1~Y~Yp,R2~Y~Yp)
+  # MAPK (e.g. ERK): two phospho-residues R1,R2 (Y unphos / Yp phos)
+  MAPK(s,R1~Y~Yp,R2~Y~Yp)
+  # Tripartite scaffold (e.g. KSR): one site per cascade tier
+  Scaff(map3k,map2k,mapk)
+
+end molecule types
+
+begin seed species
+
+  MAP3K(s,S~I) Atot                # molecules
+  MAP2K(s,R1~Y,R2~Y) Btot          # molecules
+  MAPK(s,R1~Y,R2~Y) Ctot           # molecules
+  Scaff(map3k,map2k,mapk) Stot     # molecules
+
+end seed species
 
 begin observables
-Molecules MAPKchainone MAPK(s!1,R1~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp)
-Molecules MAPKchaintwo MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp)
+
+  # Response R: active (doubly phosphorylated), unbound MAPK
+  Molecules Obs_R MAPK(s,R1~Yp,R2~Yp)
+
+  # Total active kinase at each tier (bound or free)
+  Molecules Obs_MAPK_pp MAPK(R1~Yp,R2~Yp)
+  Molecules Obs_MAP2K_pp MAP2K(R1~Yp,R2~Yp)
+  Molecules Obs_MAP3K_A MAP3K(S~A)
+
+  # Conservation checks (must stay at Atot, Btot, Ctot, Stot)
+  Molecules Obs_MAP3K_tot MAP3K()
+  Molecules Obs_MAP2K_tot MAP2K()
+  Molecules Obs_MAPK_tot MAPK()
+  Molecules Obs_Scaff_tot Scaff()
+
 end observables
 
-begin reaction rules 
-MAP3K(s,S~I) -> MAP3K(s,S~A)  S
-MAP3K(s,S~A) + Scaff(map3k) <-> MAP3K(s!1,S~A).Scaff(map3k!1)  a, d1
-MAP3K(s!1,S~I).Scaff(map3k!1) -> MAP3K(s,S~I) + Scaff(map3k)  d2
-MAP2K(s,R1~Y,R2~Y) + Scaff(map2k) <-> MAP2K(s!1,R1~Y,R2~Y).Scaff(map2k!1)  a, d1
-MAP2K(s,R1~Yp,R2~Y) + Scaff(map2k) <-> MAP2K(s!1,R1~Yp,R2~Y).Scaff(map2k!1) a, d1
-MAP2K(s,R1~Y,R2~Yp) + Scaff(map2k) <-> MAP2K(s!1,R1~Y,R2~Yp).Scaff(map2k!1) a, d1
-MAP2K(s,R1~Yp,R2~Yp) + Scaff(map2k) <-> MAP2K(s!1,R1~Yp,R2~Yp).Scaff(map2k!1) a, d1
-MAPK(s,R1~Y,R2~Y) + Scaff(mapk) <-> MAPK(s!1,R1~Y,R2~Y).Scaff(mapk!1)  a, d1
-MAPK(s,R1~Yp,R2~Y) + Scaff(mapk) <-> MAPK(s!1,R1~Yp,R2~Y).Scaff(mapk!1)  a, d1
-MAPK(s,R1~Y,R2~Yp) + Scaff(mapk) <-> MAPK(s!1,R1~Y,R2~Yp).Scaff(mapk!1)  a, d1
-MAPK(s!1,R1~Yp,R2~Yp).Scaff(mapk!1) -> MAPK(s,R1~Yp,R2~Yp) + Scaff(mapk)  d2
-MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Y) -> MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Yp) pscaff
-MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Y) -> MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Yp) pscaff
-MAPK(s!1,R1~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> MAPK(s!1,R1~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
-MAPK(s!1,R2~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> MAPK(s!1,R2~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
-MAP3K(S~A) -> MAP3K(S~I)  u
-MAP2K(R1~Yp) -> MAP2K(R1~Y)  u
-MAP2K(R2~Yp) -> MAP2K(R2~Y)  u
-MAPK(R1~Yp) -> MAPK(R1~Y)  u
-MAPK(R2~Yp) -> MAPK(R2~Y)  u
+begin reaction rules
+
+  # Signal-driven activation of MAP3K
+  R_activate_MAP3K: MAP3K(s,S~I) -> MAP3K(s,S~A) S
+
+  # Scaffold binding of active MAP3K; fast release if inactivated while bound
+  R_bind_MAP3K: MAP3K(s,S~A) + Scaff(map3k) <-> \
+    MAP3K(s!1,S~A).Scaff(map3k!1) a, d1
+  R_release_MAP3K_I: MAP3K(s!1,S~I).Scaff(map3k!1) -> \
+    MAP3K(s,S~I) + Scaff(map3k) d2
+
+  # Scaffold binding of MAP2K in each of its four phospho-states
+  R_bind_MAP2K_YY: MAP2K(s,R1~Y,R2~Y) + Scaff(map2k) <-> \
+    MAP2K(s!1,R1~Y,R2~Y).Scaff(map2k!1) a, d1
+  R_bind_MAP2K_pY: MAP2K(s,R1~Yp,R2~Y) + Scaff(map2k) <-> \
+    MAP2K(s!1,R1~Yp,R2~Y).Scaff(map2k!1) a, d1
+  R_bind_MAP2K_Yp: MAP2K(s,R1~Y,R2~Yp) + Scaff(map2k) <-> \
+    MAP2K(s!1,R1~Y,R2~Yp).Scaff(map2k!1) a, d1
+  R_bind_MAP2K_pp: MAP2K(s,R1~Yp,R2~Yp) + Scaff(map2k) <-> \
+    MAP2K(s!1,R1~Yp,R2~Yp).Scaff(map2k!1) a, d1
+
+  # Scaffold binding of MAPK when not doubly phosphorylated; active MAPK
+  # (Yp,Yp) dissociates almost immediately (rate d2)
+  R_bind_MAPK_YY: MAPK(s,R1~Y,R2~Y) + Scaff(mapk) <-> \
+    MAPK(s!1,R1~Y,R2~Y).Scaff(mapk!1) a, d1
+  R_bind_MAPK_pY: MAPK(s,R1~Yp,R2~Y) + Scaff(mapk) <-> \
+    MAPK(s!1,R1~Yp,R2~Y).Scaff(mapk!1) a, d1
+  R_bind_MAPK_Yp: MAPK(s,R1~Y,R2~Yp) + Scaff(mapk) <-> \
+    MAPK(s!1,R1~Y,R2~Yp).Scaff(mapk!1) a, d1
+  R_release_MAPK_pp: MAPK(s!1,R1~Yp,R2~Yp).Scaff(mapk!1) -> \
+    MAPK(s,R1~Yp,R2~Yp) + Scaff(mapk) d2
+
+  # On-scaffold phosphorylation of MAP2K by scaffold-bound active MAP3K
+  R_phos_MAP2K_R1: MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Y) -> \
+    MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R1~Yp) pscaff
+  R_phos_MAP2K_R2: MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Y) -> \
+    MAP3K(s!1,S~A).Scaff(map3k!1,map2k!2).MAP2K(s!2,R2~Yp) pscaff
+
+  # On-scaffold phosphorylation of MAPK by scaffold-bound doubly-phos MAP2K
+  R_phos_MAPK_R1: \
+    MAPK(s!1,R1~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> \
+    MAPK(s!1,R1~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
+  R_phos_MAPK_R2: \
+    MAPK(s!1,R2~Y).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) -> \
+    MAPK(s!1,R2~Yp).Scaff(mapk!1,map2k!2).MAP2K(s!2,R1~Yp,R2~Yp) pscaff
+
+  # First-order inactivation of MAP3K and dephosphorylation of MAP2K/MAPK
+  # (act on bound or free kinases)
+  R_inactivate_MAP3K: MAP3K(S~A) -> MAP3K(S~I) u
+  R_dephos_MAP2K_R1: MAP2K(R1~Yp) -> MAP2K(R1~Y) u
+  R_dephos_MAP2K_R2: MAP2K(R2~Yp) -> MAP2K(R2~Y) u
+  R_dephos_MAPK_R1: MAPK(R1~Yp) -> MAPK(R1~Y) u
+  R_dephos_MAPK_R2: MAPK(R2~Yp) -> MAPK(R2~Y) u
+
 end reaction rules
 
 end model
+
+begin actions
+
+  generate_network({overwrite=>1})  # 85 species, 487 reactions
+
+  #@note: |
+  #  The published Scaff-22 model was simulated by generating the reaction
+  #  network and integrating the mass-action ODEs (BioNetGen); ODE is the
+  #  preferred protocol here. Kocieniewski et al. (2012) report 85 species
+  #  and 527 reactions; BioNetGen 2.9.3 generates the same 85 species but
+  #  487 unidirectional reactions. The species set is identical and mass is
+  #  conserved (verify_kocieniewski2012.ipynb), so the reaction-count
+  #  difference reflects reaction-deduplication/counting changes across
+  #  BioNetGen versions and does not affect the dynamics. SSA and PSA are
+  #  feasible (reaching steady state in well under a minute) and are left
+  #  commented as benchmark stubs. NFsim (nfr) is omitted: it aborts for
+  #  this model under the bundled backend (species-file read error).
+
+  saveConcentrations()
+
+  # Relaxation to the unique stable steady state at the default Stot = 1e5.
+
+  #@protocol: |
+  #  Integrate from the seed state (all kinases inactive/unphosphorylated) to
+  #  steady state. At S = 1 /s and Stot = 1e5 the response settles to
+  #  Obs_R ~ 3.99e4 active unbound MAPK; active MAP3K settles to
+  #  S*Atot/(S+u) = 9.09e4 (an exact analytic check).
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>500,\
+    n_steps=>500,atol=>1e-6,rtol=>1e-8})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>500,n_steps=>500})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",poplevel=>100,suffix=>"psa",t_start=>0,\
+#    t_end=>500,n_steps=>500})
+
+  # Scaffold prozone scan: steady-state response vs scaffold amount.
+
+  #@protocol: |
+  #  Scan the total scaffold amount Stot over 1e1..1e6 molecules (log
+  #  spacing) at S = 1 /s, integrating each point to steady state. The
+  #  response Obs_R is biphasic: it rises, peaks near Stot ~ 1.8e5 (Obs_R
+  #  ~ 4.6e4), then falls at high scaffold (high-dose inhibition). Plot
+  #  Obs_R vs Stot to reproduce the Scaff-22 curve.
+
+  #@figure: Fig. 2 (Scaff-22 curve) in Kocieniewski et al. (2012)
+
+  resetConcentrations()
+  parameter_scan({method=>"ode",parameter=>"Stot",par_min=>1e1,\
+    par_max=>1e6,n_scan_pts=>61,log_scale=>1,t_start=>0,t_end=>2000,\
+    n_steps=>1,atol=>1e-6,rtol=>1e-8,suffix=>"scan"})
+
+end actions

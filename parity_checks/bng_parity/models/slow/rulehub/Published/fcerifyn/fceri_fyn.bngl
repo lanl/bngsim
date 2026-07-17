@@ -1,125 +1,311 @@
 begin model
-begin parameters
-    Lig_tot  6.0e3
-    Rec_tot  4.0e2
-    Lyn_tot  2.8e1
-    Fyn_tot  4.0e2
-    Syk_tot  4.0e2
 
-     kp1  1.32845238e-7
-     km1  0
-     kp2  2.5e-1
-     km2  0
-     kpL  5e-2
-     kmL  20
-    kpLs  5e-2 
-    kmLs  0.12
-     kpF  5e-2
-     kmF  20
-     kpS  6e-2
-     kmS  0.13
-    kpSs  6e-2
-    kmSs  0.13
-     pLb  30
-    pLbs  100
-     pLg    1
-    pLgs    3
-     pLS   30
-    pLSs  100
-     pSS  100
-    pSSs  200 
-     pLF   30
-    pLFs  100
-      dm   20
-      dc   20
+#@title: Early FceRI signaling with Fyn (Faeder et al., 2003)
+
+#@description: |
+#  Extension of the Faeder et al. (2003) early FceRI signaling model that
+#  adds the Src-family kinase Fyn and activation-loop transphosphorylation
+#  of the receptor-associated Src kinases (Lyn and Fyn). Relative to the
+#  primary early_fceri_signaling_faeder2003 model: Fyn competes with
+#  SH2-mediated Lyn for phosphorylated receptor beta ITAMs, and
+#  aggregate-bound Lyn transphosphorylates the activation loops of
+#  neighboring Lyn and Fyn molecules. Receptor ITAM phosphorylation, Syk
+#  recruitment, and Syk activation-loop transphosphorylation are unchanged
+#  from the primary model.
+#
+#  This Fyn extension is NOT part of the published paper. Faeder et al.
+#  (2003) state that in their model only Lyn phosphorylates receptor ITAMs
+#  and leave a Fyn-containing model to future work. The rule set is adapted
+#  from the fceri_fyn.bngl demonstration model distributed with BioNetGen.
+#  Scaled molecule counts and deterministic ODE simulation match the
+#  primary model; the active protocol runs a 600 s time course.
+#
+#  Deviation from the distributed BioNetGen fceri_fyn.bngl: the rule
+#  "transphosphorylation of Fyn by SH2-bound Lyn" is corrected here. In the
+#  distributed file that rule binds Lyn's unique (U) domain to a
+#  phosphorylated beta ITAM, Lyn(U!1,SH2).Rec(b~pY!1) -- an unreachable
+#  configuration (U binds only unphosphorylated beta, and a U-bound beta is
+#  never phosphorylated), so it generates zero reactions and Fyn is
+#  phosphorylated only by constitutively bound Lyn. This model uses
+#  Lyn(U,SH2!1).Rec(b~pY!1), matching every other SH2-bound-Lyn rule, so
+#  Fyn is also phosphorylated by SH2-recruited Lyn. The correction adds 72
+#  reactions (15256 -> 15328); the species count is unchanged at 1281.
+
+#@keyword: |
+#  immunoreceptor signaling, FceRI, mast cell signaling, RBL-2H3,
+#  IgE receptor, Lyn, Fyn, Syk, Src-family kinase, activation loop,
+#  ITAM phosphorylation, receptor aggregation, kinase competition,
+#  mass action, rule-based model, deterministic ODE
+
+#@reference: |
+#  Faeder JR, Hlavacek WS, Reischl I, Blinov ML, Metzger H, Redondo A,
+#  Wofsy C, Goldstein B (2003). Investigation of early events in
+#  Fc epsilon RI-mediated signaling using a detailed mathematical model.
+#  Journal of Immunology 170:3769-3781. The Fyn extension follows the
+#  fceri_fyn.bngl demonstration model distributed with BioNetGen and is
+#  beyond the scope of the paper.
+
+begin parameters
+  # Avogadro constant; included for unit-conversion readiness.
+  NA  6.02214076e23  # /mol
+
+  # Extracellular reference volume per cell at 1e6 cells/ml.
+  V_ref  1e-9  # L/cell
+
+  # Effective membrane-adjacent layer thickness for surface processes.
+  h_mem  1e-7  # m
+
+  # Source BNGL scaled initial populations.
+  Lig_tot  6.0e3  # molecules
+  Rec_tot  4.0e2  # molecules
+  Lyn_tot  2.8e1  # molecules
+  Fyn_tot  4.0e2  # molecules
+  Syk_tot  4.0e2  # molecules
+
+  # Ligand-receptor binding and receptor aggregation rates.
+  kp1  1.32845238e-7  # /(molecule*s)
+  km1  0              # /s
+  kp2  2.5e-1         # /(molecule*s)
+  km2  0              # /s
+
+  # Constitutive Lyn binding to unphosphorylated receptor beta.
+  kpL  5e-2  # /(molecule*s)
+  kmL  20    # /s
+
+  # Lyn SH2 binding to phosphorylated receptor beta.
+  kpLs  5e-2  # /(molecule*s)
+  kmLs  0.12  # /s
+
+  # Fyn SH2 binding to phosphorylated receptor beta (competes with Lyn SH2).
+  kpF  5e-2  # /(molecule*s)
+  kmF  20    # /s
+
+  # Syk tandem-SH2 binding to phosphorylated receptor gamma.
+  kpS  6e-2  # /(molecule*s)
+  kmS  0.13  # /s
+
+  # Syk binding rates after Syk phosphorylation; same values as basal Syk.
+  kpSs  6e-2  # /(molecule*s)
+  kmSs  0.13  # /s
+
+  # Transphosphorylation by constitutively associated Lyn
+  # (pLb beta ITAM; pLg gamma ITAM; pLS Syk linker and Src activation loop).
+  pLb  30  # /s
+  pLg  1   # /s
+  pLS  30  # /s
+
+  # Transphosphorylation by SH2-bound Lyn
+  # (pLbs beta ITAM; pLgs gamma ITAM; pLSs Syk linker and Src activation loop).
+  pLbs  100  # /s
+  pLgs  3    # /s
+  pLSs  100  # /s
+
+  # Fyn activation-loop transphosphorylation by aggregate-associated Lyn
+  # (pLF constitutive Lyn; pLFs SH2-bound Lyn).
+  pLF   30   # /s
+  pLFs  100  # /s
+
+  # Syk-mediated Syk activation-loop transphosphorylation.
+  pSS   100  # /s
+  pSSs  200  # /s
+
+  # Intrinsic membrane and cytosolic dephosphorylation rates.
+  dm  20  # /s
+  dc  20  # /s
 end parameters
 
+begin molecule types
+  # Bivalent IgE-dimer ligand with two equivalent receptor-binding sites.
+  Lig(l,l)
+  # Membrane-associated Lyn kinase with unique-domain (U) and SH2 binding
+  # sites, plus a transphosphorylatable activation-loop tyrosine (a).
+  Lyn(U,SH2,a~Y~pY)
+  # Fyn kinase with SH2 binding site, transphosphorylatable activation-loop
+  # tyrosine (a), and a C-terminal tail tyrosine (t). No rule in this
+  # network modifies t; it is retained from the source model as a scaffold.
+  Fyn(SH2,a~Y~pY,t~Y)
+  # Syk kinase with tandem SH2, linker, and activation-loop phosphorylation sites.
+  Syk(tSH2,l~Y~pY,a~Y~pY)
+  # FceRI with ligand-binding alpha and ITAM-containing beta and gamma subunits.
+  Rec(a,b~Y~pY,g~Y~pY)
+end molecule types
+
 begin seed species
-    Lig(l,l)           Lig_tot
-    Lyn(U,SH2,a~Y)     Lyn_tot
-    Fyn(SH2,a~Y,t~Y)   Fyn_tot
-    Syk(tSH2,l~Y,a~Y)  Syk_tot
-    Rec(a,b~Y,g~Y)     Rec_tot
+  Lig(l,l)             Lig_tot  # molecules
+  Lyn(U,SH2,a~Y)       Lyn_tot  # molecules
+  Fyn(SH2,a~Y,t~Y)     Fyn_tot  # molecules
+  Syk(tSH2,l~Y,a~Y)    Syk_tot  # molecules
+  Rec(a,b~Y,g~Y)       Rec_tot  # molecules
 end seed species
 
+begin observables
+  # Free Lyn not bound to a receptor.
+  Molecules  Obs_Free_Lyn        Lyn(U,SH2)
+  # Free Fyn not bound to a receptor.
+  Molecules  Obs_Free_Fyn        Fyn(SH2)
+  # Receptors not in dimers: free receptors plus singly ligated receptors.
+  Molecules  Obs_Rec_Monomer     Rec(a), Rec(a!1).Lig(l!1,l)
+  # Receptor molecules in ligand-crosslinked dimers.
+  Molecules  Obs_Rec_Dimer       Rec.Rec
+
+  # Receptors with phosphorylated beta ITAMs.
+  Molecules  Obs_Rec_BetaP       Rec(b~pY!?)
+  # Receptors with phosphorylated gamma ITAMs, unbound or Syk-bound.
+  Molecules  Obs_Rec_GammaP      Rec(g~pY), Rec(g~pY!+)
+  # Receptors with Syk bound to phosphorylated gamma.
+  Molecules  Obs_Rec_Syk         Rec(g~pY!1).Syk(tSH2!1)
+  # Receptors with gamma-bound Syk phosphorylated on the activation loop.
+  Molecules  Obs_Rec_Syk_AloopP  Rec(g~pY!1).Syk(tSH2!1,a~pY)
+
+  # Fyn recruited to phosphorylated receptor beta.
+  Molecules  Obs_Rec_Fyn         Rec(b~pY!1).Fyn(SH2!1)
+  # Lyn molecules phosphorylated on the activation loop.
+  Molecules  Obs_Lyn_AloopP      Lyn(a~pY)
+  # Fyn molecules phosphorylated on the activation loop.
+  Molecules  Obs_Fyn_AloopP      Fyn(a~pY)
+
+  # Conservation checks for the four protein species.
+  Molecules  Obs_Tot_Syk         Syk
+  Molecules  Obs_Tot_Lyn         Lyn
+  Molecules  Obs_Tot_Fyn         Fyn
+  Molecules  Obs_Tot_Rec         Rec
+end observables
+
 begin reaction rules
-    # Ligand-receptor binding      
-    Rec(a) + Lig(l,l) <-> Rec(a!1).Lig(l!1,l)  kp1, km1
+  # Ligand-receptor binding.
+  R1_bind_ligand: Rec(a) + Lig(l,l) <-> Rec(a!1).Lig(l!1,l)  kp1, km1
 
-    # Receptor-aggregation
-    Rec(a) + Lig(l,l!+) <-> Rec(a!2).Lig(l!2,l!+)  kp2,km2
+  # Receptor aggregation through the second site on a singly-bound ligand.
+  R2_crosslink_receptor: \
+    Rec(a) + Lig(l,l!+) <-> Rec(a!2).Lig(l!2,l!+)  kp2, km2
 
-    # Constitutive Lyn-receptor binding
+  # Constitutive Lyn-receptor binding through Lyn unique domain.
+  R3_bind_lyn_constitutive: \
     Rec(b~Y) + Lyn(U,SH2) <-> Rec(b~Y!1).Lyn(U!1,SH2)  kpL, kmL
 
-    # Transphosphorylation of beta by constitutive Lyn
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~Y) -> Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY) pLb
+  # Transphosphorylation of receptor beta by constitutively associated Lyn.
+  R4_phosphorylate_beta_constitutive_lyn: \
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~Y) -> \
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY)  pLb
 
-    # Transphosphorylation of gamma by constitutive Lyn
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~Y) -> Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY) pLg
+  # Transphosphorylation of receptor gamma by constitutively associated Lyn.
+  R5_phosphorylate_gamma_constitutive_lyn: \
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~Y) -> \
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY)  pLg
 
-    # Lyn-receptor binding through SH2 domain
-    Rec(b~pY) + Lyn(U,SH2) <-> Rec(b~pY!1).Lyn(U,SH2!1) kpLs, kmLs
+  # Lyn SH2 binding to phosphorylated receptor beta.
+  R6_bind_lyn_sh2: \
+    Rec(b~pY) + Lyn(U,SH2) <-> Rec(b~pY!1).Lyn(U,SH2!1)  kpLs, kmLs
 
-    # Fyn-receptor binding through SH2 domain
-    Rec(b~pY) + Fyn(SH2) <-> Rec(b~pY!1).Fyn(SH2!1) kpF, kmF
+  # Fyn SH2 binding to phosphorylated receptor beta (competes with Lyn SH2).
+  R7_bind_fyn_sh2: \
+    Rec(b~pY) + Fyn(SH2) <-> Rec(b~pY!1).Fyn(SH2!1)  kpF, kmF
 
-    # Transphosphorylation of beta by SH2-bound Lyn
-    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~Y) -> Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY) pLbs
+  # Transphosphorylation of receptor beta by SH2-bound Lyn.
+  R8_phosphorylate_beta_sh2_lyn: \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~Y) -> \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY)  pLbs
 
-    # Transphosphorylation of gamma by SH2-bound Lyn
-    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~Y) -> Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY) pLgs
+  # Transphosphorylation of receptor gamma by SH2-bound Lyn.
+  R9_phosphorylate_gamma_sh2_lyn: \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~Y) -> \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY)  pLgs
 
-    # Syk-receptor binding through tSH2 domain
-    Rec(g~pY) + Syk(tSH2) <-> Rec(g~pY!1).Syk(tSH2!1) kpS, kmS
+  # Syk tandem-SH2 binding to phosphorylated receptor gamma.
+  R10_bind_syk: \
+    Rec(g~pY) + Syk(tSH2) <-> Rec(g~pY!1).Syk(tSH2!1)  kpS, kmS
 
-    # Transphosphorylation of Lyn by constitutive Lyn
+  # Transphosphorylation of Lyn activation loop by constitutively associated Lyn.
+  R11_phosphorylate_lyn_aloop_constitutive_lyn: \
     Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~Y) -> \
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~pY) pLS
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~pY)  pLS
 
-    # Transphosphorylation of Lyn by SH2-bound Lyn
+  # Transphosphorylation of Lyn activation loop by SH2-bound Lyn.
+  R12_phosphorylate_lyn_aloop_sh2_lyn: \
     Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~Y) -> \
-    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~pY) pLSs
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Lyn(SH2!4,a~pY)  pLSs
 
-    # Transphosphorylation of Fyn by constitutive Lyn
+  # Transphosphorylation of Fyn activation loop by constitutively associated Lyn.
+  R13_phosphorylate_fyn_aloop_constitutive_lyn: \
     Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~Y) -> \
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~pY) pLF
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~pY)  pLF
 
-    # Transphosphorylation of Fyn by SH2-bound Lyn
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~Y) -> \
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~pY) pLFs
+  # Transphosphorylation of Fyn activation loop by SH2-bound Lyn.
+  # (Corrected from the distributed model: SH2-bound Lyn is Lyn(U,SH2!3) on
+  # b~pY!3, not Lyn(U!3,SH2); see the header #@description.)
+  R14_phosphorylate_fyn_aloop_sh2_lyn: \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~Y) -> \
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,b~pY!4).Fyn(SH2!4,a~pY)  pLFs
 
-    # Transphosphorylation of Syk by constitutive Lyn
+  # Transphosphorylation of Syk linker sites by constitutively associated Lyn.
+  R15_phosphorylate_syk_linker_constitutive_lyn: \
     Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~Y) -> \
-    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY) pLS
+    Lig(l!1,l!2).Lyn(U!3,SH2).Rec(a!2,b~Y!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY)  pLS
 
-    # Transphosphorylation of Syk by SH2-bound Lyn
+  # Transphosphorylation of Syk linker sites by SH2-bound Lyn.
+  R16_phosphorylate_syk_linker_sh2_lyn: \
     Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~Y) -> \
-    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY) pLSs
+    Lig(l!1,l!2).Lyn(U,SH2!3).Rec(a!2,b~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,l~pY)  pLSs
 
-    # Transphosphorylation of Syk by Syk not phosphorylated on aloop
+  # Syk activation-loop transphosphorylation by unactivated Syk.
+  R17_phosphorylate_syk_activation_loop_basal_syk: \
     Lig(l!1,l!2).Syk(tSH2!3,a~Y).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~Y) -> \
-    Lig(l!1,l!2).Syk(tSH2!3,a~Y).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY) pSS
+    Lig(l!1,l!2).Syk(tSH2!3,a~Y).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY)  pSS
 
-    # Transphosphorylation of Syk by Syk phosphorylated on aloop
+  # Syk activation-loop transphosphorylation by activation-loop phosphorylated Syk.
+  R18_phosphorylate_syk_activation_loop_active_syk: \
     Lig(l!1,l!2).Syk(tSH2!3,a~pY).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~Y) -> \
-    Lig(l!1,l!2).Syk(tSH2!3,a~pY).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY) pSSs
+    Lig(l!1,l!2).Syk(tSH2!3,a~pY).Rec(a!2,g~pY!3).Rec(a!1,g~pY!4).Syk(tSH2!4,a~pY)  pSSs
 
-    # Dephosphorylation of Rec beta
-    Rec(b~pY)-> Rec(b~Y) dm
+  # Dephosphorylation of receptor beta and gamma ITAMs.
+  R19_dephosphorylate_beta: Rec(b~pY) -> Rec(b~Y)  dm
+  R20_dephosphorylate_gamma: Rec(g~pY) -> Rec(g~Y)  dm
 
-    # Dephosphorylation of Rec gamma
-    Rec(g~pY)-> Rec(g~Y) dm
+  # Dephosphorylation of membrane-bound Syk.
+  R21_dephosphorylate_membrane_syk_linker: Syk(tSH2!+,l~pY) -> Syk(tSH2!+,l~Y)  dm
+  R22_dephosphorylate_membrane_syk_activation_loop: \
+    Syk(tSH2!+,a~pY) -> Syk(tSH2!+,a~Y)  dm
 
-    # Dephosphorylation of Syk at membrane
-    Syk(tSH2!+,l~pY)-> Syk(tSH2!+,l~Y) dm
-    Syk(tSH2!+,a~pY)-> Syk(tSH2!+,a~Y) dm
-
-    # Dephosphorylation of Syk in cytosol
-    Syk(tSH2,l~pY)-> Syk(tSH2,l~Y) dc
-    Syk(tSH2,a~pY)-> Syk(tSH2,a~Y) dc
+  # Dephosphorylation of cytosolic Syk.
+  R23_dephosphorylate_cytosolic_syk_linker: Syk(tSH2,l~pY) -> Syk(tSH2,l~Y)  dc
+  R24_dephosphorylate_cytosolic_syk_activation_loop: \
+    Syk(tSH2,a~pY) -> Syk(tSH2,a~Y)  dc
 end reaction rules
+
 end model
 
-## actions ##
-generate_network({overwrite=>1,max_iter=>100})
+begin actions
+  generate_network({overwrite=>1,max_iter=>100})  # 1281 species, 15328 reactions
+
+  #@note: |
+  #  The source BNGL used ODE-oriented parameterization with scaled
+  #  molecule counts. ODE is the preferred protocol here, matching the
+  #  primary early_fceri_signaling_faeder2003 model. Lyn and Fyn
+  #  activation-loop phosphorylation is irreversible in this network (no
+  #  phosphatase acts on the Src activation loops), so Obs_Lyn_AloopP and
+  #  Obs_Fyn_AloopP rise monotonically toward saturation. The SSA stub is
+  #  a discrete-population alternative; it is left commented and should be
+  #  validated separately before use.
+
+  saveConcentrations()
+
+  # Early signaling time course with Fyn.
+
+  #@protocol: |
+  #  Simulate receptor aggregation and downstream signaling for 600 s from
+  #  the scaled source initial condition. Alongside the primary-model
+  #  observables (receptor dimers, beta and gamma ITAM phosphorylation, Lyn
+  #  redistribution, Syk recruitment and activation), this variant tracks
+  #  Fyn recruitment to phosphorylated beta (Obs_Rec_Fyn) and Src-kinase
+  #  activation-loop phosphorylation (Obs_Lyn_AloopP, Obs_Fyn_AloopP).
+  #  There is no source-paper figure for the Fyn extension; verification is
+  #  at the model-specification level (see verify_faeder2003.ipynb).
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>600,\
+    n_steps=>10,atol=>1e-8,rtol=>1e-8})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>600,\
+#    n_steps=>10})
+end actions

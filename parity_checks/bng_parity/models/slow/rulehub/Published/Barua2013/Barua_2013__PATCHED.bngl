@@ -1,130 +1,325 @@
+begin model
+
+#@title: Beta-catenin destruction complex (Barua and Hlavacek, 2013)
+
+#@description: |
+#  Site-specific rule-based model of the beta-catenin destruction complex,
+#  the multiprotein assembly that targets beta-catenin (CTNNB1) for
+#  phosphorylation-dependent degradation in the Wnt pathway. Five proteins
+#  are represented explicitly with functional-site resolution: APC, Axin,
+#  beta-catenin, GSK-3beta, and CK1alpha; CK1epsilon and phosphatases are
+#  represented implicitly. beta-catenin ARM repeats 5-9 bind the APC 15-aa
+#  repeats (Arrow 1); ARM repeats 3-4 bind either a phosphorylated APC 20-aa
+#  repeat (Arrow 2) or Axin (Arrow 3), and these two are mutually exclusive;
+#  APC SAMP repeats bind Axin (Arrow 4); GSK-3beta and CK1alpha bind Axin
+#  (Arrows 5-6). Axin-recruited CK1alpha then GSK-3beta processively
+#  phosphorylate beta-catenin S45 and S33/S37 (Arrows 7-8), and Axin-bound
+#  GSK-3beta (with implicit CK1epsilon) phosphorylates the APC 20-aa repeat
+#  (Arrows 9-10). Phosphorylation of S33/S37 switches beta-catenin from slow
+#  to fast first-order degradation.
+#
+#  This is the base model of Barua and Hlavacek (2013): a normal cell with
+#  full-length APC, whose operative high-affinity beta-catenin site is the
+#  phosphorylated third 20-aa repeat (KD2 = 1.5 nM). Because APC, Axin, and
+#  beta-catenin can each bind the other two, a closed/cyclic ternary complex
+#  can form; intracomplex (tethered) binding is represented by separate rules
+#  whose forward rate constant is enhanced by a local-concentration factor
+#  chi. Rule expansion yields a 409-species mass-action network integrated as
+#  ODEs (410 in the paper, which includes an inert placeholder; see the note in
+#  the molecule types block). From the seed state the model relaxes to a nominal
+#  steady-state
+#  beta-catenin level of about 35 nM. Raising full-length APC does not lower
+#  beta-catenin; instead it has a concentration-dependent positive effect
+#  (Fig. 5A), a signature of APC competing with Axin for beta-catenin.
+
+#@keyword: |
+#  Wnt signaling, beta-catenin, destruction complex, APC, Axin, GSK-3beta,
+#  CK1alpha, colorectal cancer, tumor suppressor, phosphorylation,
+#  processive phosphorylation, competitive binding, cyclic complex,
+#  scaffold, rule-based model, mass action, monostable, Homo sapiens
+
+#@reference: |
+#  Barua D, Hlavacek WS (2013). Modeling the effect of APC truncation on
+#  destruction complex function in colorectal cancer cells. PLoS Comput Biol
+#  9(9):e1003217. doi:10.1371/journal.pcbi.1003217
+
 begin parameters
-BCATtot   11000 
-APCtot    31540
-AXINtot   3154  
-GSKtot    31540
-CK1atot   31540
+  # Avogadro constant; included for population-conversion readiness.
+  NA  6.02214076e23  # /mol
 
-kf1_bap   3.17e-6
-kr1_bap   0.273  
-kf2_bap   3.17e-6
-kr2_bap   0.0015   # This default value applies to full-length APC; for APC1338, which lacks the 3rd 20-aa repeat, kr2_bap = 0.085 (Table 1).  
+  #@note: |
+  #  The model is population-based (molecule counts per cell). Copy numbers
+  #  and rate constants follow Table 1 of Barua and Hlavacek (2013), which
+  #  uses 1 nM = 315.4 molecules/cell (e.g., AXINtot = 3154 molecules = 10
+  #  nM). That conversion corresponds to V_ref below (~5.24e-13 L/cell); the
+  #  paper's text cites a cytoplasmic volume of ~1e-12 L, but its tabulated
+  #  copy numbers are self-consistent with the smaller volume used here.
 
-kf_ba     3.17e-6
-kr_ba     0.227  
+  # Reference cytoplasmic volume per cell; 1 nM <-> NA*V_ref*1e-9 = 315.4
+  # molecules, matching the copy numbers in Table 1 of Barua et al. (2013).
+  V_ref  5.24e-13  # L/cell
 
-kf_apa    3.17e-6  # This default value applies to full-length APC; for APC1338, which lacks the SAMP repeats, kf_apa = 0 (Table 1).    
-kr_apa    0.1
+  # Total protein copy numbers per cell; see Table 1 in Barua et al. (2013).
+  # BCATtot is the seed value; the steady-state level (~11000) is set by
+  # synthesis and degradation and is close to this initial value.
+  BCATtot  11000   # molecules
+  APCtot   31540   # molecules
+  AXINtot  3154    # molecules
+  GSKtot   31540   # molecules
+  CK1atot  31540   # molecules
 
-kf_ga     3.17e-6
-kr_ga     0.065     
-   
-kf_ca     3.17e-6
-kr_ca     0.1 
+  # Single-site rate constants for reversible protein-protein binding.
+  # Each forward constant kf = 1e-3 /nM/s = 3.17e-6 /molecule/s (Table 1);
+  # each reverse constant kr = KD * kf, with the KD noted above it.
 
-kpb       0.05  
-kmpb      0.0012 
+  # Arrow 1: beta-catenin ARM 5-9 <-> APC 15-aa repeats; KD1 = 273 nM.
+  kf1_bap  3.17e-6  # /(molecule*s)
+  kr1_bap  0.273    # /s
 
-kp        0.05
-kmp       0.05 
+  # Arrow 2: beta-catenin ARM 3-4 <-> phosphorylated APC 20-aa repeat.
+  # KD2 = 1.5 nM for the third 20-aa repeat of full-length APC.
+  kf2_bap  3.17e-6  # /(molecule*s)
+  kr2_bap  0.0015   # /s
 
-kdb1      0.0000428  
-kdb2      0.00428     
-ksb       4.0 
-chi       3154000
+  # Arrow 3: beta-catenin ARM 3-4 <-> Axin; KD = 227 nM.
+  kf_ba  3.17e-6  # /(molecule*s)
+  kr_ba  0.227    # /s
+
+  # Arrow 4: APC SAMP repeats <-> Axin RGS domain; KD = 100 nM (assumed).
+  kf_apa  3.17e-6  # /(molecule*s)
+  kr_apa  0.1      # /s
+
+  # Arrow 5: GSK-3beta <-> Axin GID domain; KD = 65 nM.
+  kf_ga  3.17e-6  # /(molecule*s)
+  kr_ga  0.065    # /s
+
+  # Arrow 6: CK1alpha <-> Axin; KD = 100 nM (assumed).
+  kf_ca  3.17e-6  # /(molecule*s)
+  kr_ca  0.1      # /s
+
+  # beta-catenin phosphorylation (S45 and S33/S37) and dephosphorylation.
+  kpb   0.05    # /s
+  kmpb  0.0012  # /s
+
+  # APC 20-aa repeat phosphorylation and dephosphorylation.
+  kp   0.05  # /s
+  kmp  0.05  # /s
+
+  # beta-catenin degradation: slow when S33/S37 unphosphorylated, fast when
+  # phosphorylated; and zeroth-order-like synthesis via source species I.
+  kdb1  0.0000428  # /s
+  kdb2  0.00428    # /s
+  ksb   4.0        # molecules/s
+
+  # Intracomplex enhancement factor for tethered (co-confined) binding; the
+  # local-concentration factor x = 1e4 nM of Barua et al. (2013), expressed
+  # in molecules (1e4 nM * 315.4 molecules/nM). Multiplies kf in each
+  # intracomplex rule to give a first-order (/s) ring-closing rate constant.
+  chi  3154000  # molecules
 end parameters
 
-
 begin molecule types
-AXIN(rgs,gid,b,e)
-GSK3b(a)
-APC(a15,a20~U~P,s)
-bCat(s33s37~U~P,s45~U~P,ARM34,ARM59,ss~l~d)
-CK1a(e)
-dead
-I
+  # Axin scaffold: rgs binds APC SAMP repeats, gid binds GSK-3beta,
+  # b binds beta-catenin ARM 3-4, e binds CK1alpha.
+  AXIN(rgs,gid,b,e)
+  # GSK-3beta kinase; a binds the Axin GID domain.
+  GSK3b(a)
+  # Full-length APC: a15 = 15-aa repeats, a20 = operative (third) 20-aa
+  # repeat with unphosphorylated/phosphorylated states, s = SAMP repeats.
+  APC(a15,a20~U~P,s)
+  # beta-catenin: s33s37 and s45 are phosphosites; ARM34 binds APC-p20a or
+  # Axin, ARM59 binds APC 15-aa; ss tracks live (l) vs degraded (d) copies.
+  bCat(s33s37~U~P,s45~U~P,ARM34,ARM59,ss~l~d)
+  # CK1alpha kinase; e binds Axin.
+  CK1a(e)
+  # Dummy source species held at one copy to drive constant-rate synthesis.
+  I()
+
+  #@note: |
+  #  The source BNGL of Barua and Hlavacek (2013) also declares an inert
+  #  placeholder molecule (dead) that participates in no rule and stays at
+  #  zero copies. It is omitted here as an unused entity; its removal drops
+  #  the generated network from the 410 species reported in the paper to 409
+  #  and leaves every reaction and trajectory unchanged.
 end molecule types
 
-
-begin species
-bCat(s33s37~U,s45~U,,ARM34,ARM59,ss~l)  BCATtot
-APC(a15,a20~U,s)  APCtot
-AXIN(rgs,gid,b,e)  AXINtot
-GSK3b(a) GSKtot
-CK1a(e)   CK1atot
-I    1
-dead 0
-end species 
-
-begin reaction rules
-
-# Binding of beta-catenin ARM repeats 5-9 to APC 15-aa repeats (Arrow 1) 
-bCat(ARM59,ss~l) + APC(a15) <-> bCat(ARM59!1,ss~l).APC(a15!1) kf1_bap, kr1_bap
-bCat(ARM59,ARM34!1,ss~l).AXIN(b!1,rgs!2).APC(a15,s!2) <-> bCat(ARM59!3,ARM34!1,ss~l).AXIN(b!1,rgs!2).APC(a15!3,s!2) chi*kf1_bap, kr1_bap
-bCat(ARM59,ARM34!1).APC(a15,a20~P!1) <-> bCat(ARM59!2,ARM34!1).APC(a15!2,a20~P!1)  chi*kf1_bap, kr1_bap 
-
-# Binding of beta-catenin ARM repeats 3-4 to phosphorylated APC 20-aa repeats (Arrow 2) 
-bCat(ARM34,ss~l) + APC(a20~P) <-> bCat(ARM34!1,ss~l).APC(a20~P!1) kf2_bap, kr2_bap
-bCat(ARM59!1,ARM34).APC(a15!1,a20~P) <-> bCat(ARM59!1,ARM34!2).APC(a15!1,a20~P!2)  chi*kf2_bap, kr2_bap
-
-# Binding of beta-Catenin ARM repeats 3 and 4 with Axin (Arrow 3)
-bCat(ARM34,ss~l) + AXIN(b) <-> bCat(ARM34!1,ss~l).AXIN(b!1) kf_ba, kr_ba
-bCat(ARM59!1,ARM34,ss~l).AXIN(b,rgs!2).APC(a15!1,s!2) <->  bCat(ARM59!1,ARM34!3,ss~l).AXIN(b!3,rgs!2).APC(a15!1,s!2)  chi*kf_ba, kr_ba  
-
-# Binding of APC SAMP repeats to Axin RGS domain (Arrow 4)
-APC(a20~U,s) + AXIN(rgs) <-> APC(a20~U,s!1).AXIN(rgs!1) kf_apa, kr_apa
-APC(a20~P,s) + AXIN(rgs) <-> APC(a20~P,s!1).AXIN(rgs!1) kf_apa, kr_apa
-APC(a20~P!+,s) + AXIN(rgs) <-> APC(a20~P!+,s!1).AXIN(rgs!1) kf_apa, kr_apa
-APC(a15!1,a20~U,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> APC(a15!1,a20~U,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2) chi*kf_apa, kr_apa
-APC(a15!1,a20~P,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> APC(a15!1,a20~P,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2) chi*kf_apa, kr_apa
-APC(a15!1,a20~P!+,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> APC(a15!1,a20~P!+,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2) chi*kf_apa, kr_apa
-
-# Binding of GSK-3beta to AXIN GID domain (Arrow 5)
-GSK3b(a) + AXIN(gid) <-> GSK3b(a!1).AXIN(gid!1)  kf_ga, kr_ga
-
-# Binding of CK1alpha to Axin (Arrow 6)
-AXIN(e) + CK1a(e) <-> AXIN(e!1).CK1a(e!1)   kf_ca, kr_ca
-
-# Phosphorylation of S45 of beta-catenin by CK1alpha (Arrow 7)
-bCat(s45~U,ss~l).CK1a -> bCat(s45~P,ss~l).CK1a  kpb
-
-# Phosphorylation of S33/S37 of beta-catenin by GSK-3beta (Arrow 8)
-bCat(s33s37~U,s45~P,ss~l).GSK3b -> bCat(s33s37~P,s45~P,ss~l).GSK3b  kpb
-
-# Phosphorylation of APC 20-aa repeat by CK1epsilon (implicit) and GSK-3beta (Arrows 9 and 10)
-APC(a20~U).GSK3b -> APC(a20~P).GSK3b  kp
-
-# Dephsophorylation of beta-catenin 
-bCat(s45~P,ss~l) -> bCat(s45~U,ss~l) kmpb
-bCat(s33s37~P,ss~l) -> bCat(s33s37~U,ss~l) kmpb
-
-# Dephoshporylation of APC 
-APC(a20~P).AXIN -> APC(a20~U).AXIN  kmp  
-
-# b-catenin synthesis 
-I -> I + bCat(s33s37~U,s45~U,ARM59,ARM34,ss~l) ksb
-
-# Degradation of beta-catenin not phosphorylated at S33/S37 
-bCat(s33s37~U,ss~l) -> bCat(s33s37~U,ss~d) kdb1
-
-# Degradation of beta-catenin phosphorylated at S33/S37
-bCat(s33s37~P,ss~l) -> bCat(s33s37~P,ss~d)  kdb2
-
-# (Assumed) rapid dissociation of beta-catenin associated proteins upon degradation of beta-catenin 
-bCat(ARM59!1,ss~d).APC(a15!1) -> bCat(ARM59,ss~d) + APC(a15) 1000
-bCat(ARM59!1,ss~d).APC(a15!1) -> bCat(ARM59,ss~d).APC(a15) 1000
-bCat(ARM34!1,ss~d).APC(a20~P!1) -> bCat(ARM34,ss~d) + APC(a20~P) 1000
-bCat(ARM34!1,ss~d).AXIN(b!1) -> bCat(ARM34,ss~d) + AXIN(b) 1000 
-bCat(ARM34!1,ss~d).AXIN(b!1) -> bCat(ARM34,ss~d).AXIN(b) 1000 
-end reaction rules
+begin seed species
+  bCat(s33s37~U,s45~U,ARM34,ARM59,ss~l)  BCATtot  # molecules
+  APC(a15,a20~U,s)                       APCtot   # molecules
+  AXIN(rgs,gid,b,e)                      AXINtot  # molecules
+  GSK3b(a)                               GSKtot   # molecules
+  CK1a(e)                                CK1atot  # molecules
+  I()                                    1        # molecules
+end seed species
 
 begin observables
-Molecules bcat_tot         bCat(ss~l)
-Molecules bCat_pS45        bCat(s45~P,ss~l)
-Molecules bCat_pS33S37     bCat(s33s37~P,ss~l)
-Molecules APC_p20a         APC(a20~P!?)
-Species   BCat_Axin        bCat(ARM34!1,ss~l).AXIN(b!1)
-end observables 
+  # Total intact (undegraded) beta-catenin; the primary readout.
+  Molecules  Obs_Tot_bCat       bCat(ss~l)
+  # beta-catenin phosphorylated at S45 (CK1alpha site).
+  Molecules  Obs_bCat_pS45      bCat(s45~P,ss~l)
+  # beta-catenin phosphorylated at S33/S37 (GSK-3beta site; degradation tag).
+  Molecules  Obs_bCat_pS33S37   bCat(s33s37~P,ss~l)
+  # APC molecules with a phosphorylated 20-aa repeat (bound or unbound).
+  Molecules  Obs_APC_p20aP      APC(a20~P!?)
+  # beta-catenin directly bound to Axin via ARM 3-4.
+  Species    Obs_bCat_Axin      bCat(ARM34!1,ss~l).AXIN(b!1)
+end observables
 
-generate_network({overwrite=>1,max_stoich=>{APC=>1,AXIN=>1,bCat=>1}});
-simulate_ode({t_end=>250000, n_steps=>2500,atol=>1e-08,rtol=>1e-08,sparse=>1});
+begin reaction rules
+  # Arrow 1: beta-catenin ARM 5-9 bind APC 15-aa repeats. Intermolecular
+  # binding, plus two intracomplex (chi-enhanced) ring-closing variants.
+  R1_bind_bCat15_free: \
+    bCat(ARM59,ss~l) + APC(a15) <-> bCat(ARM59!1,ss~l).APC(a15!1)  kf1_bap, kr1_bap
+  R1_bind_bCat15_via_axin: \
+    bCat(ARM59,ARM34!1,ss~l).AXIN(b!1,rgs!2).APC(a15,s!2) <-> \
+    bCat(ARM59!3,ARM34!1,ss~l).AXIN(b!1,rgs!2).APC(a15!3,s!2)  chi*kf1_bap, kr1_bap
+  R1_bind_bCat15_via_a20: \
+    bCat(ARM59,ARM34!1).APC(a15,a20~P!1) <-> \
+    bCat(ARM59!2,ARM34!1).APC(a15!2,a20~P!1)  chi*kf1_bap, kr1_bap
+
+  # Arrow 2: beta-catenin ARM 3-4 bind a phosphorylated APC 20-aa repeat.
+  # Intermolecular binding, plus an intracomplex variant via the 15-aa link.
+  R2_bind_bCat20_free: \
+    bCat(ARM34,ss~l) + APC(a20~P) <-> bCat(ARM34!1,ss~l).APC(a20~P!1)  kf2_bap, kr2_bap
+  R2_bind_bCat20_via_a15: \
+    bCat(ARM59!1,ARM34).APC(a15!1,a20~P) <-> \
+    bCat(ARM59!1,ARM34!2).APC(a15!1,a20~P!2)  chi*kf2_bap, kr2_bap
+
+  # Arrow 3: beta-catenin ARM 3-4 bind Axin. Intermolecular binding, plus an
+  # intracomplex variant that closes the APC-Axin-beta-catenin ring.
+  R3_bind_bCatAxin_free: \
+    bCat(ARM34,ss~l) + AXIN(b) <-> bCat(ARM34!1,ss~l).AXIN(b!1)  kf_ba, kr_ba
+  R3_bind_bCatAxin_ring: \
+    bCat(ARM59!1,ARM34,ss~l).AXIN(b,rgs!2).APC(a15!1,s!2) <-> \
+    bCat(ARM59!1,ARM34!3,ss~l).AXIN(b!3,rgs!2).APC(a15!1,s!2)  chi*kf_ba, kr_ba
+
+  # Arrow 4: APC SAMP repeats bind the Axin RGS domain, independent of the
+  # APC 20-aa phosphorylation state. Intermolecular binding for each state,
+  # plus intracomplex variants that close the ring via bound beta-catenin.
+  R4_bind_APCAxin_u_free: \
+    APC(a20~U,s) + AXIN(rgs) <-> APC(a20~U,s!1).AXIN(rgs!1)  kf_apa, kr_apa
+  R4_bind_APCAxin_p_free: \
+    APC(a20~P,s) + AXIN(rgs) <-> APC(a20~P,s!1).AXIN(rgs!1)  kf_apa, kr_apa
+  R4_bind_APCAxin_pbound_free: \
+    APC(a20~P!+,s) + AXIN(rgs) <-> APC(a20~P!+,s!1).AXIN(rgs!1)  kf_apa, kr_apa
+  R4_bind_APCAxin_u_ring: \
+    APC(a15!1,a20~U,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> \
+    APC(a15!1,a20~U,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2)  chi*kf_apa, kr_apa
+  R4_bind_APCAxin_p_ring: \
+    APC(a15!1,a20~P,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> \
+    APC(a15!1,a20~P,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2)  chi*kf_apa, kr_apa
+  R4_bind_APCAxin_pbound_ring: \
+    APC(a15!1,a20~P!+,s).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs,b!2) <-> \
+    APC(a15!1,a20~P!+,s!3).bCat(ARM59!1,ARM34!2,ss~l).AXIN(rgs!3,b!2)  chi*kf_apa, kr_apa
+
+  # Arrow 5: GSK-3beta binds the Axin GID domain.
+  R5_bind_GSK3b_Axin: \
+    GSK3b(a) + AXIN(gid) <-> GSK3b(a!1).AXIN(gid!1)  kf_ga, kr_ga
+
+  # Arrow 6: CK1alpha binds Axin.
+  R6_bind_CK1a_Axin: \
+    AXIN(e) + CK1a(e) <-> AXIN(e!1).CK1a(e!1)  kf_ca, kr_ca
+
+  # Arrow 7: Axin-recruited CK1alpha phosphorylates beta-catenin S45.
+  R7_phos_bCat_S45: \
+    bCat(s45~U,ss~l).CK1a -> bCat(s45~P,ss~l).CK1a  kpb
+
+  # Arrow 8: Axin-recruited GSK-3beta phosphorylates beta-catenin S33/S37
+  # (requires prior S45 phosphorylation; processive).
+  R8_phos_bCat_S33S37: \
+    bCat(s33s37~U,s45~P,ss~l).GSK3b -> bCat(s33s37~P,s45~P,ss~l).GSK3b  kpb
+
+  # Arrows 9-10: Axin-recruited GSK-3beta (with implicit CK1epsilon)
+  # phosphorylates the APC 20-aa repeat.
+  R9_phos_APC_a20: \
+    APC(a20~U).GSK3b -> APC(a20~P).GSK3b  kp
+
+  # Dephosphorylation of beta-catenin S45 and S33/S37 (implicit phosphatase).
+  R10_dephos_bCat_S45: bCat(s45~P,ss~l) -> bCat(s45~U,ss~l)  kmpb
+  R11_dephos_bCat_S33S37: bCat(s33s37~P,ss~l) -> bCat(s33s37~U,ss~l)  kmpb
+
+  # Dephosphorylation of the APC 20-aa repeat, allowed only while APC is
+  # bound to Axin (which recruits PP2A).
+  R12_dephos_APC_a20: APC(a20~P).AXIN -> APC(a20~U).AXIN  kmp
+
+  # Constant-rate synthesis of new unmodified beta-catenin from source I.
+  R13_synth_bCat: \
+    I -> I + bCat(s33s37~U,s45~U,ARM59,ARM34,ss~l)  ksb
+
+  # Slow degradation of beta-catenin not phosphorylated at S33/S37, marked by
+  # the ss~l -> ss~d state change (regardless of bound state).
+  R14_degrade_bCat_slow: bCat(s33s37~U,ss~l) -> bCat(s33s37~U,ss~d)  kdb1
+
+  # Fast degradation of beta-catenin phosphorylated at S33/S37.
+  R15_degrade_bCat_fast: bCat(s33s37~P,ss~l) -> bCat(s33s37~P,ss~d)  kdb2
+
+  # Ancillary rules: a degraded (ss~d) beta-catenin rapidly releases any
+  # bound APC and Axin partners, so degradation removes only beta-catenin.
+  R16_release_APC15_diss: \
+    bCat(ARM59!1,ss~d).APC(a15!1) -> bCat(ARM59,ss~d) + APC(a15)  1000
+  R17_release_APC15_intra: \
+    bCat(ARM59!1,ss~d).APC(a15!1) -> bCat(ARM59,ss~d).APC(a15)  1000
+  R18_release_APC20_diss: \
+    bCat(ARM34!1,ss~d).APC(a20~P!1) -> bCat(ARM34,ss~d) + APC(a20~P)  1000
+  R19_release_Axin_diss: \
+    bCat(ARM34!1,ss~d).AXIN(b!1) -> bCat(ARM34,ss~d) + AXIN(b)  1000
+  R20_release_Axin_intra: \
+    bCat(ARM34!1,ss~d).AXIN(b!1) -> bCat(ARM34,ss~d).AXIN(b)  1000
+end reaction rules
+
+end model
+
+begin actions
+  generate_network({overwrite=>1,\
+    max_stoich=>{APC=>1,AXIN=>1,bCat=>1}})  # 409 species, 2737 reactions
+
+  #@note: |
+  #  The published model was simulated by generating the reaction network and
+  #  integrating the mass-action ODEs (BioNetGen CVODE); ODE is the preferred
+  #  protocol here. The network is bounded by max_stoich so that no more than
+  #  one copy each of APC, Axin, and beta-catenin appears per complex (the
+  #  1:1:1 ternary complex of Barua and Hlavacek, 2013). SSA is feasible but
+  #  slow to steady state and is left commented as a benchmark stub; PSA and
+  #  NFsim are omitted (the model has a constant-rate source and cyclic
+  #  intracomplex patterns). The parameter_scan below expands the rules only
+  #  once and then integrates one ODE per APCtot value (a fresh per-point
+  #  .net carries the updated initial APC count), so the full protocol still
+  #  takes a few minutes; the companion notebook verify_barua2013.ipynb
+  #  performs the fine-grained comparison against the digitized Fig. 5A curve.
+
+  saveConcentrations()
+
+  # Relaxation to the nominal steady state.
+
+  #@protocol: |
+  #  Integrate from the seed state to steady state (~2.5e5 s). Reproduces the
+  #  nominal normal-cell beta-catenin level of about 35 nM (~11000 molecules;
+  #  Table 1 of Barua et al. (2013)) with the operative high-affinity site
+  #  being the phosphorylated third 20-aa repeat of full-length APC.
+
+  resetConcentrations()
+  simulate({method=>"ode",suffix=>"ode",t_start=>0,t_end=>250000,\
+    n_steps=>1000,atol=>1e-8,rtol=>1e-8,sparse=>1})
+
+  # Concentration-dependent effect of full-length APC on beta-catenin.
+
+  #@protocol: |
+  #  Scan total full-length APC (APCtot) from ~1.01x to ~101x the endogenous
+  #  100 nM (i.e., relative transfected APC from 1e-2 to 1e2), integrating
+  #  each point to steady state. Increasing APC raises steady-state
+  #  beta-catenin ~7.6-fold rather than lowering it, because full-length APC
+  #  competes with Axin for beta-catenin. Divide each steady-state
+  #  Obs_Tot_bCat by its value at the smallest APCtot to reproduce the
+  #  relative beta-catenin level.
+
+  #@figure: Fig. 5A in Barua and Hlavacek (2013)
+
+  resetConcentrations()
+  parameter_scan({method=>"ode",parameter=>"APCtot",par_min=>31855,\
+    par_max=>3185540,n_scan_pts=>11,log_scale=>1,t_start=>0,\
+    t_end=>250000,n_steps=>10,atol=>1e-6,rtol=>1e-8,sparse=>1,suffix=>"scan"})
+
+#  resetConcentrations()
+#  simulate({method=>"ssa",suffix=>"ssa",t_start=>0,t_end=>250000,\
+#    n_steps=>500})
+end actions
