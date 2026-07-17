@@ -99,24 +99,34 @@ MODELS = [
     {"label": "Barua_2007", "key": "/Barua2007/", "row": 3},
     {"label": "Blinov_2006", "key": "/Blinov2006/", "row": 4},
     {"label": "Barua_2013", "key": "/Barua2013/", "row": 5},
-    {"label": "fceri_fyn", "key": "/fcerifyn/", "row": 6},
+    {
+        "label": "Faeder_2003",
+        "key": "/fcerifyn/",
+        "row": 6,
+    },  # early FceRI+Fyn (Faeder et al. 2003)
 ]
 
 # --------------------------------------------------------------------------- #
 # AUTHOR HORIZON OVERRIDES.
-# Kocieniewski_2012 and fceri_fyn ship NO runnable ODE `simulate` action in their
-# RuleHub BNGL (verified against .sources_cache 2026-07-15: neither the parity
-# model nor the original source carries one), so both currently fall back to the
-# DEFAULT horizon below (flagged horizon_source="default" in the report). Bill is
-# supplying the author-specified time horizons from the publications; drop them in
-# here (keyed by the MODELS `key` fragment) and re-run:
-#     --redo --models Kocieniewski2012,fcerifyn
-# Values are (t_end, n_steps) with t_start=0; add t_start via a 3-tuple/dict if a
-# model needs it.
+# The six are now re-sourced from the house-curated BNGL-Models bodies, which carry
+# their own author ODE `simulate` action (Kocieniewski_2012 and fceri_fyn no longer
+# fall back to the DEFAULT horizon — they gained real horizons). horizon_for() reads
+# the model's LARGEST-SPAN action, which for the three scan-carrying models takes the
+# supplementary `parameter_scan` t_end/n_steps over the paper's representative single
+# run. We pin those three to their primary `simulate` (the representative published
+# protocol) so the S3 timing is the author's headline run, not the scan:
+#   * Kocieniewski_2012 — steady-state relaxation to t_end=500 (the scan runs each
+#     prozone point to a conservative t_end=2000; the single-trajectory timing wants 500).
+#   * Barua_2007 / Barua_2013 — same t_end as their scan, but the scan carries a coarse
+#     n_steps; pin the simulate's n_steps so n_points matches the published run.
+# Lang_2024, Blinov_2006, fceri_fyn need no override (their only ODE action is the
+# representative simulate). Keyed by the MODELS `key` fragment; (t_end, n_steps) with
+# t_start=0. Re-run after edits: --redo --models Kocieniewski2012,Barua2007,Barua2013
 # --------------------------------------------------------------------------- #
 HORIZON_OVERRIDES: dict[str, dict] = {
-    # "/Kocieniewski2012/": {"t_end": ____, "n_steps": ____},   # TODO: from Kocieniewski et al. 2012
-    # "/fcerifyn/":        {"t_end": ____, "n_steps": ____},   # TODO: from the BNG FcERI/Fyn example
+    "/Kocieniewski2012/": {"t_end": 500.0, "n_steps": 500},
+    "/Barua2007/": {"t_end": 1000.0, "n_steps": 200},
+    "/Barua2013/": {"t_end": 250000.0, "n_steps": 1000},
 }
 
 DEFAULT_TEND = 100.0

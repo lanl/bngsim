@@ -36,7 +36,7 @@ begin parameters
    34 kp24          5e-04  # Constant
    35 km24          0.0429  # Constant
    36 kp21          1.667e-04  # Constant
-   37 km21          0.01  # Constant
+   37 km21          0.1  # Constant
    38 kp23          1.167e-03  # Constant
    39 km23          0.1  # Constant
    40 kp12          5.556e-06  # Constant

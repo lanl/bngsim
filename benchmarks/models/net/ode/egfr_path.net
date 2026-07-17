@@ -36,7 +36,7 @@ begin parameters
    34 kp24          5e-06  # Constant
    35 km24          0.0429  # Constant
    36 kp21          1.667e-06  # Constant
-   37 km21          0.01  # Constant
+   37 km21          0.1  # Constant
    38 kp23          1.167e-05  # Constant
    39 km23          0.1  # Constant
    40 kp12          5.556e-08  # Constant
@@ -50,24 +50,24 @@ begin parameters
    48 loop5         ((kp15/km15)*(kp24/km24))/((kp20/km20)*(kp23/km23))  # ConstantExpression
 end parameters
 begin species
-    1 EGF() EGF_tot
-    2 Grb2() 1.001633417249e+05
-    3 Grb2_Sos() 4.883665827505e+04
-    4 Shc() 2.700000000000e+05
-    5 ShcP() -9.410199457854e-22
-    6 ShcP_Grb2() -2.564716665777e-21
-    7 ShcP_Grb2_Sos() -6.720483262892e-21
-    8 Sos() 1.316334172495e+04
-    9 R() 1.800000000000e+05
-   10 RA() 0.000000000000e+00
-   11 R2() 0.000000000000e+00
-   12 RP() 0.000000000000e+00
-   13 R_Sh() 0.000000000000e+00
-   14 R_ShP() 0.000000000000e+00
-   15 R_Sh_G() 0.000000000000e+00
-   16 R_Sh_G_S() 0.000000000000e+00
-   17 R_G() 0.000000000000e+00
-   18 R_G_S() 0.000000000000e+00
+    1 EGF() 0
+    2 Grb2() Grb2_tot
+    3 Grb2_Sos() Grb2_SOS_tot
+    4 Shc() Shc_tot
+    5 ShcP() 0
+    6 ShcP_Grb2() 0
+    7 ShcP_Grb2_Sos() 0
+    8 Sos() SOS_tot
+    9 R() Rec_tot
+   10 RA() 0
+   11 R2() 0
+   12 RP() 0
+   13 R_Sh() 0
+   14 R_ShP() 0
+   15 R_Sh_G() 0
+   16 R_Sh_G_S() 0
+   17 R_G() 0
+   18 R_G_S() 0
 end species
 begin reactions
     1 1,9 10 kp1 #_R1

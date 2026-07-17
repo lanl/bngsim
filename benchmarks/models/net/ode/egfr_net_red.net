@@ -36,7 +36,7 @@ begin parameters
    34 kp24          5e-06  # Constant
    35 km24          0.0429  # Constant
    36 kp21          1.667e-06  # Constant
-   37 km21          0.01  # Constant
+   37 km21          0.1  # Constant
    38 kp23          1.167e-05  # Constant
    39 km23          0.1  # Constant
    40 kp12          5.556e-08  # Constant
@@ -56,45 +56,45 @@ begin functions
 end functions
 begin species
     1 egf(r) egf_tot
-    2 egfr_1(l,r) 1.800000000000e+05
-    3 egfr_2(Y1068~Y,l,r) 1.800000000000e+05
-    4 egfr_3(Y1148~Y,l,r) 1.800000000000e+05
-    5 Grb2(SH2,SH3) 8.999982000865e+04
-    6 Shc(PTB,Y317~Y) 2.700000000000e+05
-    7 Sos(dom) 2.999820008653e+03
-    8 egf(r!1).egfr_1(l!1,r) 0.000000000000e+00
-    9 egf(r!1).egfr_2(Y1068~Y,l!1,r) 0.000000000000e+00
-   10 egf(r!1).egfr_3(Y1148~Y,l!1,r) 0.000000000000e+00
-   11 Grb2(SH2,SH3!1).Sos(dom!1) 1.000017999135e+04
-   12 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_2(Y1068~Y,l!1,r!3) 0.000000000000e+00
-   13 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_3(Y1148~Y,l!1,r!3) 0.000000000000e+00
-   14 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_2(Y1068~pY,l!1,r!3) 0.000000000000e+00
-   15 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_3(Y1148~pY,l!1,r!3) 0.000000000000e+00
-   16 egf(r!1).egfr_2(Y1068~pY,l!1,r) 0.000000000000e+00
-   17 egf(r!1).egfr_3(Y1148~pY,l!1,r) 0.000000000000e+00
-   18 Grb2(SH2!1,SH3).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_2(Y1068~pY!1,l!2,r!4) 0.000000000000e+00
-   19 Grb2(SH2!1,SH3!2).Sos(dom!2).egf(r!3).egf(r!4).egfr_1(l!4,r!5).egfr_2(Y1068~pY!1,l!3,r!5) 0.000000000000e+00
-   20 Shc(PTB!1,Y317~Y).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_3(Y1148~pY!1,l!2,r!4) 0.000000000000e+00
-   21 egfr_2(Y1068~pY,l,r) 0.000000000000e+00
-   22 egfr_3(Y1148~pY,l,r) 0.000000000000e+00
-   23 Grb2(SH2!1,SH3).egf(r!2).egfr_2(Y1068~pY!1,l!2,r) 0.000000000000e+00
-   24 Grb2(SH2!1,SH3!2).Sos(dom!2).egf(r!3).egfr_2(Y1068~pY!1,l!3,r) 0.000000000000e+00
-   25 Shc(PTB!1,Y317~Y).egf(r!2).egfr_3(Y1148~pY!1,l!2,r) 0.000000000000e+00
-   26 Shc(PTB!1,Y317~pY).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_3(Y1148~pY!1,l!2,r!4) 0.000000000000e+00
-   27 Grb2(SH2!1,SH3).egfr_2(Y1068~pY!1,l,r) 0.000000000000e+00
-   28 Grb2(SH2!1,SH3!2).Sos(dom!2).egfr_2(Y1068~pY!1,l,r) 0.000000000000e+00
-   29 Shc(PTB!1,Y317~Y).egfr_3(Y1148~pY!1,l,r) 0.000000000000e+00
-   30 Shc(PTB!1,Y317~pY).egf(r!2).egfr_3(Y1148~pY!1,l!2,r) 0.000000000000e+00
-   31 Shc(PTB,Y317~pY) 0.000000000000e+00
-   32 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egf(r!3).egf(r!4).egfr_1(l!4,r!5).egfr_3(Y1148~pY!2,l!3,r!5) 0.000000000000e+00
-   33 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egf(r!4).egf(r!5).egfr_1(l!5,r!6).egfr_3(Y1148~pY!3,l!4,r!6) 0.000000000000e+00
-   34 Shc(PTB!1,Y317~pY).egfr_3(Y1148~pY!1,l,r) 0.000000000000e+00
-   35 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egf(r!3).egfr_3(Y1148~pY!2,l!3,r) 0.000000000000e+00
-   36 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egf(r!4).egfr_3(Y1148~pY!3,l!4,r) 0.000000000000e+00
-   37 Grb2(SH2!1,SH3).Shc(PTB,Y317~pY!1) 0.000000000000e+00
-   38 Grb2(SH2!1,SH3!2).Shc(PTB,Y317~pY!1).Sos(dom!2) 0.000000000000e+00
-   39 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egfr_3(Y1148~pY!2,l,r) 0.000000000000e+00
-   40 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egfr_3(Y1148~pY!3,l,r) 0.000000000000e+00
+    2 egfr_1(l,r) egfr_tot
+    3 egfr_2(Y1068~Y,l,r) egfr_tot
+    4 egfr_3(Y1148~Y,l,r) egfr_tot
+    5 Grb2(SH2,SH3) Grb2_tot
+    6 Shc(PTB,Y317~Y) Shc_tot
+    7 Sos(dom) Sos_tot
+    8 egf(r!1).egfr_1(l!1,r) 0
+    9 egf(r!1).egfr_2(Y1068~Y,l!1,r) 0
+   10 egf(r!1).egfr_3(Y1148~Y,l!1,r) 0
+   11 Grb2(SH2,SH3!1).Sos(dom!1) 0
+   12 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_2(Y1068~Y,l!1,r!3) 0
+   13 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_3(Y1148~Y,l!1,r!3) 0
+   14 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_2(Y1068~pY,l!1,r!3) 0
+   15 egf(r!1).egf(r!2).egfr_1(l!2,r!3).egfr_3(Y1148~pY,l!1,r!3) 0
+   16 egf(r!1).egfr_2(Y1068~pY,l!1,r) 0
+   17 egf(r!1).egfr_3(Y1148~pY,l!1,r) 0
+   18 Grb2(SH2!1,SH3).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_2(Y1068~pY!1,l!2,r!4) 0
+   19 Grb2(SH2!1,SH3!2).Sos(dom!2).egf(r!3).egf(r!4).egfr_1(l!4,r!5).egfr_2(Y1068~pY!1,l!3,r!5) 0
+   20 Shc(PTB!1,Y317~Y).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_3(Y1148~pY!1,l!2,r!4) 0
+   21 egfr_2(Y1068~pY,l,r) 0
+   22 egfr_3(Y1148~pY,l,r) 0
+   23 Grb2(SH2!1,SH3).egf(r!2).egfr_2(Y1068~pY!1,l!2,r) 0
+   24 Grb2(SH2!1,SH3!2).Sos(dom!2).egf(r!3).egfr_2(Y1068~pY!1,l!3,r) 0
+   25 Shc(PTB!1,Y317~Y).egf(r!2).egfr_3(Y1148~pY!1,l!2,r) 0
+   26 Shc(PTB!1,Y317~pY).egf(r!2).egf(r!3).egfr_1(l!3,r!4).egfr_3(Y1148~pY!1,l!2,r!4) 0
+   27 Grb2(SH2!1,SH3).egfr_2(Y1068~pY!1,l,r) 0
+   28 Grb2(SH2!1,SH3!2).Sos(dom!2).egfr_2(Y1068~pY!1,l,r) 0
+   29 Shc(PTB!1,Y317~Y).egfr_3(Y1148~pY!1,l,r) 0
+   30 Shc(PTB!1,Y317~pY).egf(r!2).egfr_3(Y1148~pY!1,l!2,r) 0
+   31 Shc(PTB,Y317~pY) 0
+   32 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egf(r!3).egf(r!4).egfr_1(l!4,r!5).egfr_3(Y1148~pY!2,l!3,r!5) 0
+   33 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egf(r!4).egf(r!5).egfr_1(l!5,r!6).egfr_3(Y1148~pY!3,l!4,r!6) 0
+   34 Shc(PTB!1,Y317~pY).egfr_3(Y1148~pY!1,l,r) 0
+   35 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egf(r!3).egfr_3(Y1148~pY!2,l!3,r) 0
+   36 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egf(r!4).egfr_3(Y1148~pY!3,l!4,r) 0
+   37 Grb2(SH2!1,SH3).Shc(PTB,Y317~pY!1) 0
+   38 Grb2(SH2!1,SH3!2).Shc(PTB,Y317~pY!1).Sos(dom!2) 0
+   39 Grb2(SH2!1,SH3).Shc(PTB!2,Y317~pY!1).egfr_3(Y1148~pY!2,l,r) 0
+   40 Grb2(SH2!1,SH3!2).Shc(PTB!3,Y317~pY!1).Sos(dom!2).egfr_3(Y1148~pY!3,l,r) 0
 end species
 begin reactions
     1 1,2 8 kp1 #_R1
