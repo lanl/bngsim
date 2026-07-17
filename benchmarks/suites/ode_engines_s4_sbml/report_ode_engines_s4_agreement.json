@@ -1,0 +1,150 @@
+{
+ "_meta": {
+  "suite": "ode_engines_s4_sbml",
+  "description": "Cross-engine trajectory agreement for the Table S4 models: bngsim from_sbml (reference) vs RoadRunner and COPASI, final state, order-independent (sorted species multiset). A model whose completing engines disagree would be timing different computations; all six agree to solver tolerance.",
+  "reference": "bngsim Model.from_sbml",
+  "cross_checks": [
+   "libRoadRunner",
+   "COPASI"
+  ],
+  "metric": "sorted final-state species multiset, max relative error",
+  "disagree_tol": 0.05,
+  "versions": {
+   "bngsim": "0.11.30",
+   "roadrunner": "2.9.2",
+   "copasi": "4.46.300 (Source)"
+  },
+  "hardware": {
+   "cpu": "Apple M4 Max",
+   "physical_cores": 16,
+   "logical_cores": 16,
+   "platform": "macOS-26.5.1-arm64-arm-64bit"
+  }
+ },
+ "results": [
+  {
+   "model_id": "BIOMD0000000834",
+   "label": "Verma2016",
+   "row": 1,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 400.0,
+    "t_end": 700.0,
+    "n_points": 44,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "n_species": 75,
+   "disagree_tol": 0.05,
+   "bngsim_vs_roadrunner_sorted_mre": 1.4943988061459726e-05,
+   "bngsim_vs_roadrunner_name_mre": 1.4943988061459726e-05,
+   "n_common_species": 75,
+   "bngsim_vs_copasi_sorted_mre": 3.569822424300115e-05,
+   "agree": true,
+   "worst_mre": 3.569822424300115e-05
+  },
+  {
+   "model_id": "BIOMD0000000468",
+   "label": "Koo2013",
+   "row": 2,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 0.0,
+    "t_end": 12000.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "n_species": 79,
+   "disagree_tol": 0.05,
+   "bngsim_vs_roadrunner_sorted_mre": 0.01085130676302375,
+   "bngsim_vs_roadrunner_name_mre": 0.01085130676302375,
+   "n_common_species": 79,
+   "bngsim_vs_copasi_sorted_mre": 0.009636492345910618,
+   "agree": true,
+   "worst_mre": 0.01085130676302375
+  },
+  {
+   "model_id": "BIOMD0000000559",
+   "label": "Ouzounoglou2014",
+   "row": 3,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 0.0,
+    "t_end": 600000.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "n_species": 90,
+   "disagree_tol": 0.05,
+   "bngsim_vs_roadrunner_sorted_mre": 9.432525509296562e-07,
+   "bngsim_vs_roadrunner_name_mre": 9.432525509296562e-07,
+   "n_common_species": 90,
+   "bngsim_vs_copasi_sorted_mre": 5.9717025547319174e-06,
+   "agree": true,
+   "worst_mre": 5.9717025547319174e-06
+  },
+  {
+   "model_id": "BIOMD0000000667",
+   "label": "Hornberg2005",
+   "row": 4,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 0.0,
+    "t_end": 6000.0,
+    "n_points": 101,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "n_species": 103,
+   "disagree_tol": 0.05,
+   "bngsim_vs_roadrunner_sorted_mre": 3.9843588203223626e-06,
+   "bngsim_vs_roadrunner_name_mre": 3.9843588203223626e-06,
+   "n_common_species": 103,
+   "bngsim_vs_copasi_sorted_mre": 4.426326264290013e-06,
+   "agree": true,
+   "worst_mre": 4.426326264290013e-06
+  },
+  {
+   "model_id": "BIOMD0000000474",
+   "label": "Smith2013",
+   "row": 5,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 0.0,
+    "t_end": 2805.0,
+    "n_points": 1001,
+    "rtol": 1e-06,
+    "atol": 1e-09
+   },
+   "n_species": 133,
+   "disagree_tol": 0.05,
+   "roadrunner_error": "RuntimeError: CVODE Error: CV_CONV_FAILURE: Convergence test failures occurred too many times (= MXNCF = 10) during one internal timestep or occurred with |h| = hmin.; In virtual double rr::CVODEIntegrator::integrate(double, double)",
+   "bngsim_vs_copasi_sorted_mre": 0.00026579369559815726,
+   "agree": true,
+   "worst_mre": 0.00026579369559815726
+  },
+  {
+   "model_id": "BIOMD0000001065",
+   "label": "vonDassow2000",
+   "row": 6,
+   "horizon": {
+    "t_start": 0.0,
+    "output_start": 0.0,
+    "t_end": 1100.0,
+    "n_points": 221,
+    "rtol": 1e-08,
+    "atol": 1e-09
+   },
+   "n_species": 148,
+   "disagree_tol": 0.05,
+   "bngsim_vs_roadrunner_sorted_mre": 3.9141529912277516e-09,
+   "bngsim_vs_roadrunner_name_mre": 3.9141529912277516e-09,
+   "n_common_species": 140,
+   "bngsim_vs_copasi_sorted_mre": 3.916785035190915e-09,
+   "agree": true,
+   "worst_mre": 3.916785035190915e-09
+  }
+ ]
+}
