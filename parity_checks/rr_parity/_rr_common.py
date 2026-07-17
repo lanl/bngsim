@@ -326,10 +326,17 @@ def bn_ode(
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
     """One deterministic bngsim run. Returns (time, values[n_time,n_sp], names, timing).
 
-    ``t_span=(t_start, t_end)`` integrates from the model's initial time and
-    samples ``n_points`` uniformly over ``[t_start, t_end]`` — the same
-    ``outputStartTime`` semantics RoadRunner's ``simulate`` uses, so the two
-    grids match for t_start>0 too (verified on BIOMD0000000042, t_start=120).
+    ``t_span=(t_start, t_end)`` integrates from ``t_start`` (the model's initial
+    state applied there) and samples ``n_points`` uniformly over ``[t_start,
+    t_end]`` — matching ``rr.simulate(t_start, t_end, n_points)``, which likewise
+    begins integration at ``t_start`` (it does NOT pre-integrate ``[0, t_start]``),
+    so the two grids and trajectories match for ``t_start>0`` too.
+
+    Callers pass the SED-ML ``initialTime`` as ``t_start`` so pre-``outputStartTime``
+    dynamics/events fire (GH #19); the ``outputStartTime`` grid was the old,
+    event-dropping behavior (BIOMD834/Verma2016's ``H:=1.8 @ t>=200`` event with
+    window ``[400,700]`` never fired). For the common ``initialTime == outputStartTime``
+    model this is unchanged.
 
     The timing dict carries a fine per-phase breakdown {"io_sec", "parse_sec",
     "interpret_sec", "jac_derive_sec", "codegen_sec", "integrate_sec",

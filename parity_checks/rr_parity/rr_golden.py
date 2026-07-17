@@ -74,7 +74,7 @@ TRAJECTORY_ALLOWLIST: dict[str, str] = {
     "BIOMD0000000001:ode": "Edelstein ACh receptor — the canonical first BioModel; small smoke trajectory",
     "BIOMD0000000010:ode": "Kholodenko MAPK ultrasensitivity cascade — classic stiff multi-scale ODE",
     "BIOMD0000000012:ode": "Elowitz–Leibler repressilator — limit-cycle oscillator, sharp periodic features",
-    "BIOMD0000000042:ode": "outputStartTime=120 job — exercises the non-zero output-start time grid",
+    "BIOMD0000000042:ode": "outputStartTime=120 > initialTime=0 — exercises integration from initial_time (GH #19)",
     # --- stochastic (ssa, seed=1) ------------------------------------------
     "BIOMD0000000010:ssa": "MAPK cascade under SSA at seed=1 — discrete-event trajectory",
     "BIOMD0000000012:ssa": "repressilator under SSA at seed=1 — stochastic oscillation",
@@ -98,8 +98,17 @@ def _golden_worker(spec: dict, q) -> None:
     try:
         t0 = time.perf_counter()
         if method == "ode":
+            # Integrate from the SED-ML initialTime (GH #19), matching rr_run: the
+            # golden must be the trajectory the parity check validates. initial_time
+            # == t_start except for outputStartTime > initialTime models; .get keeps
+            # pre-field job files integrating from t_start.
             t, values, names = rc.bn_ode(
-                xml, p["t_start"], p["t_end"], p["n_points"], p["rtol"], p["atol"]
+                xml,
+                p.get("initial_time", p["t_start"]),
+                p["t_end"],
+                p["n_points"],
+                p["rtol"],
+                p["atol"],
             )
         else:
             t, reps, names = rc.bn_ssa(

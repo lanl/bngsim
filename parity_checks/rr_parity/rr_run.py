@@ -320,6 +320,13 @@ def _worker(spec: dict, q) -> None:
         {"metric": spec["metric"], "tol": tol, "value": None, "comment": "", "exception": ""}
     )
 
+    # Integrate from the SED-ML initialTime, NOT outputStartTime (GH #19): both
+    # engines start at t_int so any pre-outputStartTime dynamics/events fire, then
+    # sample n_points over [t_int, t_end]. initial_time == t_start for all but the
+    # handful of models with outputStartTime > initialTime; .get keeps job files
+    # predating the field (e.g. the smoke subset) integrating from t_start as before.
+    t_int = p.get("initial_time", p["t_start"])
+
     # --- bngsim side (record status; do NOT short-circuit on a generic raise) ---
     bn = None
     bn_exc = ""
@@ -329,7 +336,7 @@ def _worker(spec: dict, q) -> None:
         t0 = time.perf_counter()
         bn = rc.bn_ode(
             xml,
-            p["t_start"],
+            t_int,
             p["t_end"],
             p["n_points"],
             p["rtol"],
@@ -351,7 +358,7 @@ def _worker(spec: dict, q) -> None:
     rr_wall = 0.0
     try:
         t0 = time.perf_counter()
-        rr = rc.rr_ode(xml, p["t_start"], p["t_end"], p["n_points"], p["rtol"], p["atol"])
+        rr = rc.rr_ode(xml, t_int, p["t_end"], p["n_points"], p["rtol"], p["atol"])
         rr_wall = time.perf_counter() - t0
         # rr_ode now returns (time, species, names, timing)
         if len(rr) == 4:
