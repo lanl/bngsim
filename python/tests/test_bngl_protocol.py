@@ -176,6 +176,94 @@ def test_build_directives_dropped() -> None:
     assert any(isinstance(s, StateChange) and s.kind == "save_concentrations" for s in p.steps)
 
 
+# ─── generate_network finiteness cap capture (lanl/PyBNF #485) ───────────────
+
+
+def test_generate_network_cap_captured_verbatim() -> None:
+    """A generate_network carrying a finiteness cap (max_stoich / max_agg / max_iter) is
+    still dropped from the replayable steps, but its call is retained verbatim in
+    ``network_gen`` so a re-emitted actions block can honor the cap rather than
+    network-generate unbounded (lanl/PyBNF #485)."""
+    text = (
+        "begin model\nend model\n"
+        "generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    p = parse_bngl_protocol(text)
+    assert p.network_gen == "generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})"
+    # provenance unchanged: generate_network is still a dropped build directive
+    assert p.dropped == ("generate_network",)
+    assert len(p.experiments) == 1  # the cap is not a simulation step
+
+
+def test_no_generate_network_leaves_network_gen_none() -> None:
+    # A protocol with no generate_network (e.g. one composed from SBML/SED-ML) records None,
+    # so the materializer falls back to the bare default.
+    p = parse_bngl_protocol(
+        'begin model\nend model\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    assert p.network_gen is None
+
+
+def test_last_generate_network_wins() -> None:
+    # BNG2.pl lets a later generate_network supersede an earlier one; the captured cap
+    # mirrors that (the max_agg cap here, not the earlier bare call).
+    text = (
+        "begin model\nend model\n"
+        "generate_network({overwrite=>1})\n"
+        "generate_network({overwrite=>1,max_agg=>5})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    p = parse_bngl_protocol(text)
+    assert p.network_gen == "generate_network({overwrite=>1,max_agg=>5})"
+
+
+def test_network_gen_survives_json_round_trip() -> None:
+    p = parse_bngl_protocol(
+        "begin model\nend model\n"
+        "generate_network({overwrite=>1,max_iter=>3})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    again = ProtocolSpec.from_json(p.to_json())
+    assert again.network_gen == p.network_gen == "generate_network({overwrite=>1,max_iter=>3})"
+    assert again.to_dict() == p.to_dict()
+
+
+def test_actions_block_honors_captured_cap() -> None:
+    """The SBML→BNGL materializer emits the source model's own capped generate_network
+    verbatim instead of the bare ``generate_network({overwrite=>1})`` default (#485)."""
+    from bngsim.convert._bngl_writer import _actions_block
+
+    p = parse_bngl_protocol(
+        "begin model\nend model\n"
+        "generate_network({overwrite=>1,max_stoich=>{EGF=>4,EGFR=>4}})\n"
+        'simulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    block = _actions_block(p, mol_names=[], species_comp=[], species=[])
+    assert "max_stoich=>{EGF=>4,EGFR=>4}" in block  # the cap survives materialization
+    assert block.count("generate_network") == 1  # not duplicated with the default
+    assert "simulate" in block
+
+    # With no captured directive the bare default is used, exactly as before.
+    p_none = parse_bngl_protocol(
+        'begin model\nend model\nsimulate({method=>"ode",t_end=>1,n_steps=>1})\n'
+    )
+    block_none = _actions_block(p_none, mol_names=[], species_comp=[], species=[])
+    assert "generate_network({overwrite=>1})" in block_none and "max_stoich" not in block_none
+
+
+def test_generate_network_line_ensures_overwrite() -> None:
+    # A captured cap that omits overwrite gets overwrite=>1 injected (the network is rebuilt
+    # into a fresh path each run) while the cap options are preserved.
+    from bngsim.convert._bngl_writer import _generate_network_line
+
+    assert _generate_network_line(None) == "generate_network({overwrite=>1})"
+    line = _generate_network_line("generate_network({max_stoich=>{A=>3}})")
+    assert "overwrite=>1" in line and "max_stoich=>{A=>3}" in line
+    # A bare hashless call falls back to the safe default rather than risk a no-overwrite re-run.
+    assert _generate_network_line("generate_network()") == "generate_network({overwrite=>1})"
+
+
 def test_named_save_reset_labels_round_trip() -> None:
     """BNG saveConcentrations("name") / resetConcentrations("name") preserve
     the label through parse → write → parse (issue #11)."""

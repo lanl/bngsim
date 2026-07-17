@@ -708,15 +708,44 @@ def _actions_block(
         source=protocol.source,
         dropped=protocol.dropped,
         lossy=protocol.lossy,
+        network_gen=protocol.network_gen,
     )
     block = write_bngl_protocol(translated)
     # Materialize the network before simulating (generate_network is a build
-    # directive parse_bngl_protocol drops, so the serializer never emits it).
+    # directive parse_bngl_protocol drops, so the serializer never emits it). Honor the
+    # source model's own generate_network verbatim when it carried one -- it may hold a
+    # finiteness cap (max_stoich / max_agg / max_iter) that keeps a rule-based network
+    # finite (lanl/PyBNF #485) -- else prepend the bare default. overwrite=>1 is ensured
+    # either way, since the network is (re)built into a fresh path each run.
     return block.replace(
         "begin actions\n",
-        "begin actions\n\ngenerate_network({overwrite=>1})\n",
+        f"begin actions\n\n{_generate_network_line(protocol.network_gen)}\n",
         1,
     )
+
+
+def _generate_network_line(network_gen: str | None) -> str:
+    """The ``generate_network`` action to materialize the network before simulating.
+
+    ``network_gen`` is the source model's own call, captured verbatim by
+    :func:`~bngsim.convert._protocol.parse_bngl_protocol` (carrying any ``max_stoich`` /
+    ``max_agg`` / ``max_iter`` cap), or ``None`` when the protocol came from SBML/SED-ML.
+    The default is the bare ``generate_network({overwrite=>1})``; a captured call is
+    honored as-is, with ``overwrite=>1`` ensured because the network is rebuilt into a
+    fresh path each run. A call that is not the ``({...})`` hash form (bare/positional)
+    falls back to the safe default rather than risk a no-overwrite re-run.
+    """
+    default = "generate_network({overwrite=>1})"
+    if not network_gen:
+        return default
+    if re.search(r"\boverwrite\s*=>", network_gen, re.IGNORECASE):
+        return network_gen
+    m = re.match(r"(?is)(generate_network\s*\(\s*\{)(.*?)(\}\s*\)\s*)\Z", network_gen)
+    if not m:
+        return default
+    inner = m.group(2).strip()
+    sep = "," if inner else ""
+    return f"{m.group(1)}overwrite=>1{sep}{inner}{m.group(3)}".rstrip()
 
 
 def _pattern_side(indices: list[int], mol_names: list[str], species_comp: list[str]) -> str:
