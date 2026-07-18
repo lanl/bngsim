@@ -234,20 +234,12 @@ KNOWN_ARTIFACT: dict[str, dict] = {
     # integrator step below the periodic floor()/modulo dose window, so bngsim is
     # tol-stable at the segmented oracle (953.07). The residual RR-only step-over
     # at the sweep tol is a TOL_OVERRIDES entry (both engines agree at 1e-11/1e-16).
-    "BIOMD0000000002:ssa": {
-        "issue": None,
-        "reason": (
-            "Sub-particle degenerate SSA model (bngsim correct). Edelstein "
-            "nicotinic-AChR in a V=1e-16 compartment: every species' initial "
-            "amount (conc x V) is ~1e-22..1e-21, i.e. far below one molecule. "
-            "Exact SSA floors all <1-molecule populations to 0, so bngsim's "
-            "ensemble is all-zero; RoadRunner gillespie keeps the fractional "
-            "concentration (B~1e-6, L~1e-5), which is non-physical for a "
-            "discrete-event method. Verified 2026-05-28 (bngsim all-zero, RR "
-            "fractional on B/L). Matches the SBML_VS_ROADRUNNER 'sub-particle, "
-            "bngsim->0' class; corpus-quality (degenerate model), not a bug."
-        ),
-    },
+    #
+    # NOTE: the BIOMD0000000002:ssa KNOWN_ARTIFACT entry (sub-particle degenerate
+    # Edelstein AChR, bngsim->0 vs RR fractional) was removed in #23: the model is
+    # no longer in the SSA-admitted set (ssa_candidates.json), so it builds no SSA
+    # job and the override keyed nothing (stale_keys flagged it). Its exclusion
+    # rationale now lives in the validation pipeline; see git history for the text.
 }
 
 # --------------------------------------------------------------------------- #
