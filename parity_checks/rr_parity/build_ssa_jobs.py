@@ -76,6 +76,12 @@ def main() -> int:
     tier_counts = {"figure_sedml": 0, "template_sedml": 0, "invented": 0}
     effort_counts = {"low": 0, "medium": 0, "high": 0}
     no_ode_sister = []
+    # GH #21 detection pass (mirrors build_ode_jobs.py's GH #19 block): SSA jobs
+    # whose inherited horizon has outputStartTime (t_start) > initialTime. The old
+    # flattening integrated the SSA golden from outputStartTime, dropping pre-window
+    # dynamics/events; rr_golden now integrates from initial_time. Recorded in _meta
+    # so the affected models are auditable from the committed spec.
+    output_start_offset = []
 
     for m in candidates:
         mid = m["name"]
@@ -83,16 +89,25 @@ def main() -> int:
         ode = ode_by_model.get(mid)
         if ode:
             p = ode.params
+            # initial_time = SED-ML initialTime = integration start; inherited from
+            # the ODE sister alongside the window (GH #21, mirrors GH #19). .get
+            # keeps ODE job files predating the field integrating from t_start.
+            initial_time = p.get("initial_time", p["t_start"])
             t_start, t_end, n_points = p["t_start"], p["t_end"], p["n_points"]
             horizon_source = p["horizon_source"]
             sbml_origin, sedml = p["sbml_origin"], p["sedml"]
             model = ode.model
         else:
             no_ode_sister.append(mid)
-            t_start, t_end, n_points = 0.0, FALLBACK_T_END, FALLBACK_N_POINTS
+            initial_time, t_start, t_end, n_points = 0.0, 0.0, FALLBACK_T_END, FALLBACK_N_POINTS
             horizon_source = "invented"
             sbml_origin, sedml = "biomodels_dir", None
             model = f"models/{mid}/{mid}.xml"
+
+        if abs(t_start - initial_time) > 1e-12:
+            output_start_offset.append(
+                {"model_id": mid, "initial_time": initial_time, "output_start": t_start}
+            )
 
         tier_counts[horizon_source] += 1
         effort_counts[effort] = effort_counts.get(effort, 0) + 1
@@ -108,6 +123,11 @@ def main() -> int:
                     "sbml_origin": sbml_origin,
                     "sedml": sedml,
                     "horizon_source": horizon_source,
+                    # initial_time = integration start (SED-ML initialTime),
+                    # inherited from the ODE sister; the SSA golden integrates
+                    # [initial_time, t_end]. t_start = outputStartTime = plotted/
+                    # compared window start (>= initial_time). See GH #21 / #19.
+                    "initial_time": initial_time,
                     "t_start": t_start,
                     "t_end": t_end,
                     "n_points": n_points,
@@ -135,11 +155,26 @@ def main() -> int:
             "wall_cap_by_tier": WALL_CAP_BY_TIER,
         },
         "no_ode_sister": no_ode_sister,
+        # GH #21: SSA jobs whose inherited SED-ML outputStartTime (t_start) >
+        # initialTime (initial_time). The SSA golden integrates [initial_time,
+        # t_end] so pre-window dynamics/events fire; these are the jobs where that
+        # matters. Mirrors ode_jobs.json's _meta.output_start_offset (GH #19).
+        "output_start_offset": {
+            "count": len(output_start_offset),
+            "note": (
+                "SED-ML outputStartTime > initialTime; the SSA golden integrates "
+                "from initial_time, not t_start (GH #21, counterpart of #19)."
+            ),
+            "models": output_start_offset,
+        },
         "notes": (
             "Horizons inherited from ode_jobs.json (SSA is a subset of ODE). The inherited t_end is "
             "the intended window but may be a population bomb under SSA; the runner caps wall time per "
             "effort tier and may prune (too_slow) or call for an edited (scaled-IC) variant. SSA-only "
-            "settings (seed/n_rep/tolerance) are authored here -- SED-ML does not carry them."
+            "settings (seed/n_rep/tolerance) are authored here -- SED-ML does not carry them. "
+            "params.initial_time = integration start (SED-ML initialTime, inherited from the ODE "
+            "sister); params.t_start = outputStartTime = plotted/compared window start; the SSA "
+            "golden integrates [initial_time, t_end] (GH #21)."
         ),
     }
     stale = ov.stale_keys({j.model_id for j in jobs}, "ssa")
@@ -151,6 +186,12 @@ def main() -> int:
         f"wrote {args.out} : {len(jobs)} jobs  tiers={tier_counts} effort={effort_counts}  overrides={n_ov}"
         + (f"  no_ode_sister={len(no_ode_sister)}" if no_ode_sister else "")
     )
+    if output_start_offset:
+        ids = ", ".join(o["model_id"] for o in output_start_offset)
+        print(
+            f"GH #21: {len(output_start_offset)} SSA job(s) have outputStartTime > initialTime "
+            f"(golden integrates from initial_time): {ids}"
+        )
     return 0
 
 
