@@ -34,10 +34,12 @@ from rr_run import _job_overrides
 # overrides_for
 # --------------------------------------------------------------------------- #
 def test_seeded_known_artifact_round_trips():
-    """The committed BIOMD2 SSA sub-particle entry must surface as a
-    known_artifact record carrying its reason (this is the entry the runner
-    reclassifies DIFF→PASS)."""
-    recs = ov.overrides_for("BIOMD0000000002", "ssa")
+    """A committed KNOWN_ARTIFACT key must surface as a known_artifact record
+    carrying its reason (the entry the runner reclassifies DIFF→PASS). Keyed off
+    a live dict entry so it survives churn like the #23 BIOMD2-ssa retirement."""
+    key = next(iter(ov.KNOWN_ARTIFACT))
+    model_id, method = key.rsplit(":", 1)
+    recs = ov.overrides_for(model_id, method)
     arts = [r for r in recs if r["field"] == "known_artifact"]
     assert len(arts) == 1
     assert arts[0]["reason"]  # non-empty rationale
@@ -46,8 +48,12 @@ def test_seeded_known_artifact_round_trips():
 
 def test_unknown_key_has_no_overrides():
     assert ov.overrides_for("BIOMD9999999999", "ode") == []
-    # The seeded artifact is ssa-scoped; the model's ode job must be clean.
-    assert ov.overrides_for("BIOMD0000000002", "ode") == []
+    # Overrides are regime-scoped: a seeded KNOWN_ARTIFACT entry must not leak
+    # onto the same model's other-regime job.
+    key = next(iter(ov.KNOWN_ARTIFACT))
+    model_id, method = key.rsplit(":", 1)
+    other = "ssa" if method == "ode" else "ode"
+    assert ov.overrides_for(model_id, other) == []
 
 
 def test_seeded_invalid_reference_round_trips():
@@ -64,14 +70,17 @@ def test_seeded_invalid_reference_round_trips():
 def test_tol_override_emitted_first_and_for_both_engines(monkeypatch):
     """A TOL_OVERRIDES entry yields a tol record with rtol/atol; if a key also
     has a known_artifact, the tol record precedes it (apply-before-run, then
-    reclassify-after-run). Injected so the test does not depend on whether a
-    real tol case has been triaged yet."""
+    reclassify-after-run). Injected onto a live known_artifact key so the test
+    does not depend on whether a real tol+artifact co-occurrence has been triaged
+    yet."""
+    key = next(iter(ov.KNOWN_ARTIFACT))  # a key that already carries a known_artifact
+    model_id, method = key.rsplit(":", 1)
     monkeypatch.setitem(
         ov.TOL_OVERRIDES,
-        "BIOMD0000000002:ssa",
+        key,
         {"rtol": 1e-12, "atol": 1e-12, "reason": "test: ill-conditioned"},
     )
-    recs = ov.overrides_for("BIOMD0000000002", "ssa")
+    recs = ov.overrides_for(model_id, method)
     fields = [r["field"] for r in recs]
     assert fields == ["tol", "known_artifact"]  # tol first
     tol = recs[0]
@@ -83,18 +92,23 @@ def test_tol_override_emitted_first_and_for_both_engines(monkeypatch):
 # stale_keys
 # --------------------------------------------------------------------------- #
 def test_stale_keys_flags_unmatched_and_stays_silent_when_matched():
-    """The seeded BIOMD2 ssa key is stale iff its model is not in the built set."""
-    # BIOMD2 present in the ssa build set → not stale.
-    assert ov.stale_keys({"BIOMD0000000002", "X"}, "ssa") == []
-    # BIOMD2 absent → flagged.
-    assert ov.stale_keys({"X", "Y"}, "ssa") == ["BIOMD0000000002:ssa"]
-    # Wrong regime: the ssa key never counts as an ode stale key (robust to the
-    # ode override keys that now exist — those are flagged, the ssa key is not).
-    assert "BIOMD0000000002:ssa" not in ov.stale_keys({"X"}, "ode")
-    # An ode override whose model IS in the built set is not stale; absent → flagged.
+    """An authored key is stale iff its model is absent from the built set for
+    that regime; a key never counts against the other regime. (The BIOMD2 ssa
+    entry that used to seed this test was retired in #23, leaving only :ode
+    override keys.)"""
+    ode_keys = sorted(k for k in ov.ALL_KEYS if k.endswith(":ode"))
+    assert ode_keys, "expected at least one :ode override key"
+    example = ode_keys[0]
+    model_id = example.rsplit(":", 1)[0]
+    # model present in the built set → not stale
+    assert example not in ov.stale_keys({model_id}, "ode")
+    # model absent → flagged
+    assert example in ov.stale_keys({"X", "Y"}, "ode")
+    # wrong regime: an ode key never counts as an ssa stale key
+    assert example not in ov.stale_keys({"X"}, "ssa")
+    # every ode override model matched → silent
     ode_models = {k.rsplit(":", 1)[0] for k in ov.ALL_KEYS if k.endswith(":ode")}
     assert ov.stale_keys(ode_models, "ode") == []
-    assert "BIOMD0000000375:ode" in ov.stale_keys({"X"}, "ode")
 
 
 # --------------------------------------------------------------------------- #
