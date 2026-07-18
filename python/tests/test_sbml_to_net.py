@@ -105,7 +105,12 @@ def test_output_loads_via_from_net(src: str, data_dir: Path, tmp_path: Path) -> 
         net_model = bngsim.Model.from_net(out)
 
     assert net_model.n_species == src_model.n_species
-    assert net_model.n_reactions == src_model.n_reactions
+    # The writer re-encodes functional laws as per-species signed flux, so the raw
+    # reaction count may grow; the source topology is recovered by folding those
+    # fragments back (the L1 structural check gates on the folded count).
+    from bngsim.convert._validate import _effective_n_reactions
+
+    assert _effective_n_reactions(net_model) == _effective_n_reactions(src_model)
     assert net_model.n_observables == src_model.n_observables
 
 
@@ -182,12 +187,13 @@ def test_lossy_model_allow_lossy(tmp_path: Path) -> None:
 def test_flux_expansion_fixes_reactant_independent_law(tmp_path: Path) -> None:
     """A functional reaction whose propensity is reactant-*independent* (here a
     constant influx onto an initially-empty species) round-trips RHS-faithfully:
-    the writer emits it as a per-species signed flux instead of the reactant-
-    guarded form that wrongly zeroed it. Before this fix BIOMD0000000060 diverged
-    by ~1.0 and was a silent .net loss.
+    the writer emits every ``asf=False`` functional law as per-species signed flux
+    instead of the reactant-division-guarded form that wrongly zeroed it. Before
+    this fix BIOMD0000000060 diverged by ~1.0 and was a silent .net loss.
 
-    The fix changes only the broken reaction's topology — the ``.net`` gains a
-    zero-reactant ``0 -> species`` flux reaction — so its reaction count rises."""
+    The re-encoding grows the raw reaction count (each law becomes one zero-reactant
+    ``0 -> species`` flux per affected species); the source topology is recovered by
+    folding those fragments back, so the L1 structural check still passes."""
     sbml = _corpus_xml("BIOMD0000000060")
     out = tmp_path / "m.net"
     report = sbml_to_net(sbml, out)  # default L2 + strict: must NOT raise now
@@ -196,6 +202,78 @@ def test_flux_expansion_fixes_reactant_independent_law(tmp_path: Path) -> None:
     # the broken reaction became a per-species signed flux (zero-reactant synthesis)
     net_model = bngsim.Model.from_net(out)
     assert net_model.n_reactions > report.n_reactions  # at least one reaction split
+
+
+def test_flux_guard_zero_crossing_reactant_roundtrips_faithfully(tmp_path: Path) -> None:
+    """GH #18: a functional reaction whose reactant *crosses zero mid-trajectory*
+    (a rate-driven pseudo-species going negative) round-trips faithfully.
+
+    Koo2013 (BIOMD0000000468) has reactant-independent laws (e.g. ``s63 -> s64`` at a
+    rate independent of ``s63``) whose reactant starts positive but is driven below
+    zero. The old reactant-division guard ``if(r>1e-300, P/r, 0)`` silently zeroed
+    the flux once the reactant reached zero — the initial-state probe could not see
+    the later crossing, so ``sbml_to_net`` falsely reported ``rhs_faithful=True``
+    while the ``.net`` integrated to a ~100%-wrong trajectory. Emitting every
+    functional law as a signed flux removes the guard entirely, so the conversion is
+    now faithful under *integration*, not just at the two RHS probe points."""
+    import numpy as np
+
+    sbml = _corpus_xml("BIOMD0000000468")
+    out = tmp_path / "koo.net"
+    report = sbml_to_net(sbml, out)  # default L2 + strict: must NOT raise now
+    assert report.ok and report.rhs_faithful is True
+
+    # Prove faithfulness under integration (the pointwise probe cannot see the
+    # mid-trajectory zero-crossing that used to be lost). The divergence appears
+    # within ~0.5% of the model's horizon, so a short window is decisive.
+    src = bngsim.Model.from_sbml(sbml)
+    net = bngsim.Model.from_net(out)
+    ts, npts = (0.0, 1000.0), 201
+    a = np.asarray(bngsim.Simulator(src, method="ode").run(t_span=ts, n_points=npts).species)
+    b = np.asarray(bngsim.Simulator(net, method="ode").run(t_span=ts, n_points=npts).species)
+    scale = max(float(np.abs(a).max()), 1.0)
+    assert np.max(np.abs(a[-1] - b[-1])) <= 1e-4 * scale, (
+        f"from_net diverged from from_sbml: {np.max(np.abs(a[-1] - b[-1])) / scale:.2e}"
+    )
+
+
+def test_ar_report_frozen_species_refused(tmp_path: Path) -> None:
+    """GH #18: a model with a *varying* AssignmentRule-target species is refused.
+
+    vonDassow2000 (BIOMD0000001065) emits 12 AssignmentRule-target ``_T`` totals as
+    ``fixed`` species; their live rule value is a Simulator report transform the flat
+    ``.net`` cannot carry, so the reloaded network reports them frozen at their
+    initial value. The ODE-RHS probe is blind (a fixed species has ``dy/dt = 0`` in
+    both models, giving ``max_rhs_delta ≈ 0``); the assignment-rule report probe
+    catches the varying rule and refuses under strict."""
+    sbml = _corpus_xml("BIOMD0000001065")
+    with pytest.raises(bngsim.ConversionError) as exc:
+        sbml_to_net(sbml, tmp_path / "vd.net")  # default L2 + strict
+    msg = str(exc.value)
+    assert "assignment-rule" in msg and "frozen" in msg
+    assert "strict=False" in msg or "--allow-lossy" in msg
+
+    # strict=False emits a best-effort network and records the loss, not raises.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = sbml_to_net(sbml, tmp_path / "vd.net", strict=False)
+    assert report.rhs_faithful is False and report.ok is False
+    # the RHS probe is blind; the AR-report probe is what fires
+    assert report.max_rhs_delta is not None and report.max_rhs_delta <= 1e-6
+    assert report.max_ar_report_delta is not None and report.max_ar_report_delta > 1e-6
+    assert any(issubclass(w.category, bngsim.ConversionWarning) for w in caught)
+
+
+def test_ar_report_constant_rule_passes(tmp_path: Path) -> None:
+    """A *constant* AssignmentRule target must NOT be refused (no false positive).
+
+    BIOMD0000000264 assigns a constant input species by rule; freezing it in the
+    ``.net`` reports the same value the source reports, so the conversion is
+    faithful and the assignment-rule report probe stays ≈ 0."""
+    sbml = _corpus_xml("BIOMD0000000264")
+    report = sbml_to_net(sbml, tmp_path / "m.net")  # default L2 + strict: must NOT raise
+    assert report.ok and report.rhs_faithful is True
+    assert report.max_ar_report_delta is not None and report.max_ar_report_delta <= 1e-6
 
 
 def test_rateof_refs_detects_undefined_csymbol() -> None:

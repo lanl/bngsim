@@ -30,11 +30,14 @@ Both conversion directions are gated: pass an ``.xml``/``.sbml`` source to grade
 
 from __future__ import annotations
 
+import re
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from bngsim.convert._net_writer import FLUX_HELPER_PREFIX, SYNTHETIC_PREFIX
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,11 +53,72 @@ if TYPE_CHECKING:
 # cycle: __init__ imports them from this module.
 
 
-def _stoich_signatures(model: Model) -> Counter:
-    """Multiset of per-reaction (sorted reactant idxs, sorted product idxs)."""
-    data = model._core.codegen_data()
-    sigs: Counter = Counter()
+_FLUX_FRAGMENT_RE = re.compile(rf"^{re.escape(FLUX_HELPER_PREFIX)}(\d+)_\d+$")
+
+
+def _net_stoich_sig(net: dict[int, int]) -> dict[str, list[int]]:
+    """(reactants, products) multiset from a per-species net-stoichiometry map,
+    dropping catalysts (net 0)."""
+    reactants: list[int] = []
+    products: list[int] = []
+    for sp, s in net.items():
+        if s < 0:
+            reactants.extend([sp] * -s)
+        elif s > 0:
+            products.extend([sp] * s)
+    return {"reactants": reactants, "products": products}
+
+
+def _folded_reactions(data: dict[str, Any]) -> list[dict[str, list[int]]]:
+    """Per-reaction **net** stoichiometry, with signed-flux fragments folded back.
+
+    The ``.net`` writer re-encodes an ``asf=False`` functional reaction as one
+    zero-reactant ``0 -> Molᵢ`` fragment per *net-affected* species, rate function
+    ``__flux{n}_{k}() = sᵢ * (P)`` (see ``_net_writer._expand_functional_reactions``).
+    That re-encoding is RHS-identical but (a) changes the reaction count/topology and
+    (b) drops catalysts — a species appearing on both sides nets to zero and gets no
+    fragment. So a structural comparison must reconstruct source reaction *n* from
+    its fragments (negative factor ⇒ reactant, positive ⇒ product) **and** reduce
+    every reaction to its net stoichiometry, so an explicit catalyst ``A -> A + B``
+    and its folded flux form ``-> B`` compare equal. Applied symmetrically to source
+    and ``.net``; a model with no fragments is reduced to net stoichiometry only.
+    """
+    funcs = {f["name"]: f.get("expression", "") for f in data.get("functions", [])}
+    out: list[dict[str, list[int]]] = []
+    groups: dict[str, dict[int, int]] = {}
     for r in data["reactions"]:
+        m = _FLUX_FRAGMENT_RE.match(str(r.get("function_name", "")))
+        factor = None
+        if m and len(r["products"]) == 1 and not r["reactants"]:
+            try:
+                factor = int(round(float(funcs[r["function_name"]].split("*", 1)[0].strip())))
+            except (KeyError, ValueError, IndexError):
+                factor = None
+        if m is not None and factor is not None:
+            # fragment: species = the sole product; accumulate into its source group
+            grp = groups.setdefault(m.group(1), {})
+            sp = int(r["products"][0])
+            grp[sp] = grp.get(sp, 0) + factor
+        else:
+            net: dict[int, int] = {}
+            for i in r["reactants"]:
+                net[i] = net.get(i, 0) - 1
+            for i in r["products"]:
+                net[i] = net.get(i, 0) + 1
+            out.append(_net_stoich_sig(net))
+    for net in groups.values():
+        out.append(_net_stoich_sig(net))
+    return out
+
+
+def _stoich_signatures(model: Model) -> Counter:
+    """Multiset of per-reaction (sorted reactant idxs, sorted product idxs).
+
+    Signed-flux fragments are folded back to their source reaction first, so the
+    signature reflects the source topology rather than the ``.net`` re-encoding.
+    """
+    sigs: Counter = Counter()
+    for r in _folded_reactions(model._core.codegen_data()):
         sigs[(tuple(sorted(r["reactants"])), tuple(sorted(r["products"])))] += 1
     return sigs
 
@@ -62,15 +126,21 @@ def _stoich_signatures(model: Model) -> Counter:
 def _dynamic_stoich_signatures(model: Model) -> Counter:
     """Per-reaction (sorted reactant idxs, sorted product idxs) over *non-fixed*
     species — the topology that must be invariant across loaders even when a
-    constant boundary species is folded into the rate law."""
+    constant boundary species is folded into the rate law. Signed-flux fragments
+    are folded back to their source reaction first (see :func:`_folded_reactions`)."""
     data = model._core.codegen_data()
     fixed = {i for i, s in enumerate(data["species"]) if s.get("fixed", False)}
     sigs: Counter = Counter()
-    for r in data["reactions"]:
+    for r in _folded_reactions(data):
         rr = tuple(sorted(i for i in r["reactants"] if i not in fixed))
         pp = tuple(sorted(i for i in r["products"] if i not in fixed))
         sigs[(rr, pp)] += 1
     return sigs
+
+
+def _effective_n_reactions(model: Model) -> int:
+    """Reaction count with signed-flux fragments folded back to their source."""
+    return len(_folded_reactions(model._core.codegen_data()))
 
 
 def _max_rhs_delta(a_model: Model, b_model: Model) -> float:
@@ -92,6 +162,65 @@ def _max_rhs_delta(a_model: Model, b_model: Model) -> float:
             return float("inf")
         scale = max(float(np.abs(a).max(initial=0.0)), 1.0)
         worst = max(worst, float(np.max(np.abs(a - b)) / scale))
+    return worst
+
+
+def _ar_report_delta(model: Model) -> float:
+    """How much an AssignmentRule-target species' *reported* value varies with state.
+
+    An AR-target species is emitted ``fixed`` (its ODE derivative is zeroed) and
+    ``Simulator.run`` overwrites its reported column with the rule's live value —
+    a report-time transform (``_apply_ar_report_map``) that the plain ``.net``
+    cannot carry, so a round-tripped network reports these species *frozen at their
+    initial value*. That loss is invisible to :func:`_max_rhs_delta` (the frozen
+    species has ``dy/dt = 0`` in both models). It is a faithfulness loss **iff the
+    rule's value actually varies**: a constant rule (``EGF := 30``) freezes to the
+    same value the source reports, so it round-trips faithfully.
+
+    We measure that variation directly on the source model, at the same two states
+    :func:`_max_rhs_delta` probes: the shared initial state and a nonlinear
+    perturbation. The rule's live value is its bare-name observable (linear-on-
+    species rules) or expression/function (everything else). Returns the largest
+    scale-relative change of any AR-target's live value between the two states —
+    ``0.0`` when the model has no AR-target species or all their rules are
+    constant, ``inf`` when a rule cannot be evaluated (conservatively unfaithful).
+    """
+    import numpy as np
+
+    amap = getattr(model, "_ar_report_map", None)
+    if not amap:
+        return 0.0
+    core = model._core
+    data = core.codegen_data()
+    obs_entries = {o["name"]: o["entries"] for o in data["observables"]}
+    y0 = np.asarray(model.get_state(), dtype=np.float64)
+    states = [(0.0, y0), (1.0, y0 * 1.37 + 0.05)]
+    fn_by_state: list[dict | None] = []
+    for _t, y in states:
+        try:
+            fn_by_state.append(core._eval_functions(_t, y.tolist()))
+        except Exception:  # noqa: BLE001 — out-of-domain probe leaves this state undecided
+            fn_by_state.append(None)
+
+    def _live_value(kind: str, src: str, y: np.ndarray, fns: dict | None) -> float | None:
+        if kind == "observable" and src in obs_entries:
+            return float(sum(float(f) * float(y[int(i)]) for i, f in obs_entries[src]))
+        if kind == "expression" and fns is not None and src in fns:
+            try:
+                return float(fns[src])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    worst = 0.0
+    for entry in amap.values():
+        kind, src = entry[0], entry[1]
+        v0 = _live_value(kind, src, states[0][1], fn_by_state[0])
+        v1 = _live_value(kind, src, states[1][1], fn_by_state[1])
+        if v0 is None or v1 is None:
+            return float("inf")  # can't prove constant → treat as unfaithful
+        scale = max(abs(v0), 1.0)
+        worst = max(worst, abs(v1 - v0) / scale)
     return worst
 
 
@@ -746,14 +875,16 @@ def _check_l0_net(target_model: Model | None, load_error: str | None) -> LevelRe
 
 
 def _structural_metrics(src: Model, dst: Model) -> dict:
-    from bngsim.convert._net_writer import SYNTHETIC_PREFIX
-
     def _real_params(m: Model) -> int:
-        return sum(1 for n in m.param_names if not n.startswith(SYNTHETIC_PREFIX))
+        return sum(
+            1 for n in m.param_names if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX))
+        )
 
     return {
         "n_species": (src.n_species, dst.n_species),
-        "n_reactions": (src.n_reactions, dst.n_reactions),
+        # Fold signed-flux fragments back to their source reaction so the count
+        # reflects the original topology, not the RHS-identical re-encoding.
+        "n_reactions": (_effective_n_reactions(src), _effective_n_reactions(dst)),
         "n_parameters": (_real_params(src), _real_params(dst)),
         "n_observables": (src.n_observables, dst.n_observables),
     }
@@ -816,15 +947,17 @@ def _check_l2(source_model: Model, back_model: Model, *, rhs_tol: float) -> Leve
     mismatches: list[str] = []
     if metrics["n_species"][0] != metrics["n_species"][1]:
         mismatches.append("species count {} != {}".format(*metrics["n_species"]))
-    if metrics["n_reactions"][0] != metrics["n_reactions"][1]:
-        mismatches.append("reactions count {} != {}".format(*metrics["n_reactions"]))
 
-    sig_a = _dynamic_stoich_signatures(source_model)
-    sig_b = _dynamic_stoich_signatures(back_model)
-    if sig_a != sig_b:
-        mismatches.append("reaction topology changed across the round-trip")
-
+    # The ODE RHS is the substantive identity gate. Reaction topology is *not*
+    # hard-gated here: when the forward conversion re-encoded a functional law as
+    # per-species signed flux, that re-encoding does not survive a second hop
+    # (X→Y→X) in a form the fold-back can recognize — a ``C→0`` degradation comes
+    # back as a ``0→C`` reaction carrying a negative-signed rate — so the stoich
+    # signature legitimately differs while the dynamics are identical. A topology
+    # change with a *matching* RHS is a benign re-encoding (recorded, not failed);
+    # a real corruption shows up as an RHS divergence.
     delta = None
+    topo_reencoded = False
     if not mismatches:
         delta = _max_rhs_delta(source_model, back_model)
         metrics["max_rhs_delta"] = delta
@@ -832,18 +965,26 @@ def _check_l2(source_model: Model, back_model: Model, *, rhs_tol: float) -> Leve
             mismatches.append(
                 f"ODE RHS differs (max scale-relative |Δ| = {delta:.2e} > {rhs_tol:.0e})"
             )
+        else:
+            topo_reencoded = _dynamic_stoich_signatures(source_model) != (
+                _dynamic_stoich_signatures(back_model)
+            )
 
     if mismatches:
         return LevelResult(
             "L2", "round-trip identity", True, "fail", "; ".join(mismatches), metrics
         )
+    note = (
+        " (reactions re-encoded as per-species signed flux; RHS-identical)"
+        if topo_reencoded
+        else ""
+    )
     return LevelResult(
         "L2",
         "round-trip identity",
         True,
         "pass",
-        f"X→Y→X reproduces the source network and ODE RHS "
-        f"(max scale-relative |Δ dy/dt| = {delta:.2e})",
+        f"X→Y→X reproduces the source ODE RHS (max scale-relative |Δ dy/dt| = {delta:.2e}){note}",
         metrics,
     )
 

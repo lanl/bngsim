@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from bngsim.convert._bngl_writer import bngl_capability_report, write_bngl
 from bngsim.convert._net_writer import (
+    FLUX_HELPER_PREFIX,
     SYNTHETIC_PREFIX,
     capability_report,
     write_net,
@@ -67,7 +68,9 @@ from bngsim.convert._sedml import (
 from bngsim.convert._validate import (
     ConversionValidationReport,
     LevelResult,
+    _ar_report_delta,
     _dynamic_stoich_signatures,
+    _effective_n_reactions,
     _max_rhs_delta,
     _stoich_signatures,
     grade_conversion,
@@ -155,6 +158,7 @@ class ConversionReport:
     lossy: list[str] = field(default_factory=list)
     structural: StructuralReport | None = None
     max_rhs_delta: float | None = None
+    max_ar_report_delta: float | None = None
     rhs_faithful: bool | None = None
     validation: ConversionValidationReport | None = None
     protocol: ProtocolSpec | None = None  # parsed from a source .bngl, when given
@@ -177,13 +181,14 @@ class ConversionReport:
 
         When a full L0–L4 gate ran (``validate="full"``) its verdict is
         authoritative — every hard gate (L0–L3) must have passed; L4 never
-        blocks. When the ``"L2"`` RHS-identity self-check ran, :attr:`rhs_faithful`
-        (the round-tripped network reproduces the source ODE right-hand side) is
-        the authoritative reaction-level gate: the writer may legitimately rewrite
-        a reactant-independent functional law as per-species flux, changing the
-        reaction count/topology, so only species conservation is gated
-        structurally there. Otherwise (``"L1"`` counts-only) the full structural
-        equivalence decides.
+        blocks. When the ``"L2"`` self-check ran, :attr:`rhs_faithful` is the
+        authoritative gate: the round-tripped network reproduces the source's
+        *reported ODE dynamics* — both the ODE right-hand side
+        (:attr:`max_rhs_delta`) and any AssignmentRule-target species' reported
+        value (:attr:`max_ar_report_delta`). The writer may legitimately rewrite a
+        functional law as per-species signed flux, changing the reaction
+        count/topology, so only species conservation is gated structurally there.
+        Otherwise (``"L1"`` counts-only) the full structural equivalence decides.
         """
         if self.validation is not None:
             return self.validation.ok
@@ -242,12 +247,17 @@ def validate_structural_l1(source_model: Model, net_model: Model) -> StructuralR
     mismatches: list[str] = []
 
     def _n_params(m: Model) -> int:
-        # Exclude writer-synthesized helper functions' shadow parameters — they
-        # are .net encoding overhead, not source structure.
-        return sum(1 for n in m.param_names if not n.startswith(SYNTHETIC_PREFIX))
+        # Exclude writer-synthesized helper functions' shadow parameters (rate
+        # wrappers and per-species flux helpers) — they are .net encoding
+        # overhead, not source structure.
+        return sum(
+            1 for n in m.param_names if not n.startswith((SYNTHETIC_PREFIX, FLUX_HELPER_PREFIX))
+        )
 
     n_sp = (source_model.n_species, net_model.n_species)
-    n_rxn = (source_model.n_reactions, net_model.n_reactions)
+    # Fold signed-flux fragments back to their source reaction so the count
+    # compares original topology, not the RHS-identical .net re-encoding.
+    n_rxn = (_effective_n_reactions(source_model), _effective_n_reactions(net_model))
     n_par = (_n_params(source_model), _n_params(net_model))
     n_obs = (source_model.n_observables, net_model.n_observables)
 
@@ -304,14 +314,19 @@ def sbml_to_net(
         Where to write the ``.net``. If None, the text is returned in the report
         but no file is written.
     validate : {"L1", "L2", "full", None}
-        ``"L2"`` (default) runs the lightweight structural check **plus** a direct
-        ODE-RHS identity self-check — it reloads the ``.net`` and confirms it
-        reproduces the source right-hand side (the project's faithfulness
-        measure) at the initial and a nonlinear-probe state, no integration. This
-        is what closes the GH #223 silent-loss hole: a network whose constructs
+        ``"L2"`` (default) runs the lightweight structural check **plus** two
+        trajectory-free faithfulness probes at the initial and a nonlinear-probe
+        state (no integration): a direct ODE-RHS identity self-check
+        (:attr:`~ConversionReport.max_rhs_delta`) that reloads the ``.net`` and
+        confirms it reproduces the source right-hand side, and an assignment-rule
+        report check (:attr:`~ConversionReport.max_ar_report_delta`) that catches a
+        varying AssignmentRule-target species emitted ``fixed`` (its live value is a
+        Simulator report transform the flat ``.net`` cannot carry — invisible to the
+        RHS probe because its ``dy/dt`` is zero in both models; GH #18). Together
+        they close the GH #223 / GH #18 silent-loss hole: a network whose constructs
         were emitted as constants the ``.net`` cannot drive (assignment/rate-rule
-        forcing the writer can't carry) diverges here and is flagged
-        (``strict=True`` raises; ``strict=False`` warns and records
+        forcing the writer can't carry) is flagged (``strict=True`` raises;
+        ``strict=False`` warns and records
         :attr:`ConversionReport.rhs_faithful` False). ``"L1"`` runs only the
         structural-equivalence check (counts + topology). ``"full"`` runs the
         complete L0–L4 conversion-validation ladder (GH #217) and gates on the
@@ -358,6 +373,7 @@ def sbml_to_net(
     structural: StructuralReport | None = None
     rhs_faithful: bool | None = None
     max_rhs_delta: float | None = None
+    max_ar_report_delta: float | None = None
     validation: ConversionValidationReport | None = None
     if validate in ("L1", "L2"):
         # Reload through the .net reader to validate the writer↔reader round-trip.
@@ -394,21 +410,39 @@ def sbml_to_net(
             )
         structural = validate_structural_l1(model, net_model)
         if validate == "L2":
-            # Direct ODE-RHS identity: does the reloaded .net reproduce the source
-            # right-hand side? Species order is preserved across the conversion, so
-            # the comparison is index-aligned. Catches forcing the flat .net cannot
-            # carry (assignment/rate-rule constructs frozen to constants) that the
-            # structural counts miss — the GH #223 silent-loss class.
+            # Does the reloaded .net reproduce the source's *reported ODE dynamics*?
+            # Two independent probes at the initial + a nonlinear-perturbation state:
+            #   • max_rhs_delta — direct ODE-RHS identity (species order is preserved,
+            #     so index-aligned). Catches forcing the flat .net cannot carry
+            #     (assignment/rate-rule constructs frozen to constants) that the
+            #     structural counts miss — the GH #223 silent-loss class.
+            #   • max_ar_report_delta — whether any AssignmentRule-target species
+            #     (emitted ``fixed``, its live value applied only as a Simulator
+            #     report transform the .net cannot carry) has a rule that actually
+            #     varies. The RHS probe is *blind* to this: the frozen species has
+            #     dy/dt = 0 in both models, so a varying rule gives max_rhs_delta ≈ 0
+            #     yet the .net reports it frozen at its initial value (GH #18).
             max_rhs_delta = _max_rhs_delta(model, net_model)
-            rhs_faithful = max_rhs_delta <= rhs_tol
+            max_ar_report_delta = _ar_report_delta(model)
+            rhs_faithful = max_rhs_delta <= rhs_tol and max_ar_report_delta <= rhs_tol
             if not rhs_faithful:
-                note = (
-                    f"the round-tripped .net does not reproduce the source ODE "
-                    f"right-hand side (max scale-relative |Δ dy/dt| = "
-                    f"{max_rhs_delta:.2e} > {rhs_tol:.0e}) — a construct was emitted "
-                    "as a constant the flat .net cannot drive (e.g. assignment-rule "
-                    "or time-dependent forcing); the network is not faithful"
-                )
+                if max_rhs_delta > rhs_tol:
+                    note = (
+                        f"the round-tripped .net does not reproduce the source ODE "
+                        f"right-hand side (max scale-relative |Δ dy/dt| = "
+                        f"{max_rhs_delta:.2e} > {rhs_tol:.0e}) — a construct was emitted "
+                        "as a constant the flat .net cannot drive (e.g. assignment-rule "
+                        "or time-dependent forcing); the network is not faithful"
+                    )
+                else:
+                    note = (
+                        f"one or more assignment-rule-target species vary over the "
+                        f"trajectory (max scale-relative |Δ| = {max_ar_report_delta:.2e} "
+                        f"> {rhs_tol:.0e}) but are emitted as fixed species frozen at "
+                        "their initial value — the rule's live value is a run-time "
+                        "report transform the flat .net cannot carry; the network "
+                        "reports these species unfaithfully"
+                    )
                 if strict:
                     raise ConversionError(
                         f"{sbml_path.name}: {note}. Pass strict=False "
@@ -449,6 +483,7 @@ def sbml_to_net(
         lossy=caps["lossy"],
         structural=structural,
         max_rhs_delta=max_rhs_delta,
+        max_ar_report_delta=max_ar_report_delta,
         rhs_faithful=rhs_faithful,
         validation=validation,
         protocol=protocol,
