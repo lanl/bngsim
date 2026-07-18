@@ -19,7 +19,6 @@ to the simulation-protocol channel (a SED-ML sidecar), not the network.
 
 from __future__ import annotations
 
-import contextlib
 import re
 import warnings
 from pathlib import Path
@@ -36,6 +35,12 @@ if TYPE_CHECKING:
 # out of its counts (the helpers are encoding overhead, not model structure).
 SYNTHETIC_PREFIX = "__s2n_"
 _WRAPPER_PREFIX = f"{SYNTHETIC_PREFIX}rxn"
+# Per-species signed-flux helper functions (``__flux{n}_{k}``) synthesized by
+# _expand_functional_reactions. Format-neutral (both the .net and cBNGL writers
+# emit them), so *not* under SYNTHETIC_PREFIX; carried as its own prefix so the
+# structural checks filter their shadow parameters and fold the fragments back to
+# their source reaction ``n``. Every helper name matches ``FLUX_HELPER_PREFIX + f"{n}_{k}"``.
+FLUX_HELPER_PREFIX = "__flux"
 
 
 def _fmt(x: float) -> str:
@@ -271,57 +276,6 @@ def _flux_expandable(rxn: dict[str, Any]) -> bool:
     )
 
 
-def _guard_unsafe_reactions(model) -> set[int]:
-    """Indices of within-compartment ``asf=False`` functional reactions the
-    reactant-division guard (``if(r>1e-300, P/r, 0)``) would wrongly zero **at the
-    model's own state** — i.e. a reactant is zero at the initial state while the
-    reaction's propensity ``P`` is non-negligible there (a constant influx, a
-    saturable/Hill activation, a reversible flux — ``P`` not a multiple of the
-    reactant). The guard reports rate 0 for such a reaction, dropping a real flux;
-    only these need the topology-changing per-species signed-flux rewrite.
-
-    Most functional reactions are mass-action in disguise (``P = rate·∏reactants``)
-    or have nonzero reactants, so ``P`` vanishes exactly when the guard does and
-    the topology-preserving ordinary emission is faithful. We therefore probe at
-    the **initial state** — the state the faithfulness check itself evaluates —
-    rather than over-flagging every reactant-independent law whose reactant never
-    actually reaches zero. ``P`` is evaluated at ``t=0`` and ``t=1`` (a constant or
-    time-ramped influx onto an initially-empty species still counts). A miss cannot
-    ship silently: :func:`sbml_to_net`'s default ``"L2"`` RHS self-check measures
-    any residual loss.
-    """
-    import numpy as np
-
-    core = model._core
-    reactions = core.codegen_data()["reactions"]
-    cands = {
-        n: r
-        for n, r in enumerate(reactions)
-        if _flux_expandable(r)
-        and not r.get("per_species_volume_scaling", False)
-        and r["reactants"]
-    }
-    if not cands:
-        return set()
-
-    y0 = np.asarray(model.get_state(), dtype=float)
-    fn_vals: dict[str, float] = {}
-    for t in (0.0, 1.0):
-        try:
-            for name, v in core._eval_functions(t, y0).items():
-                with contextlib.suppress(TypeError, ValueError):
-                    fn_vals[name] = max(fn_vals.get(name, 0.0), abs(float(v)))
-        except Exception:  # out-of-domain at the initial state → leave undecided
-            pass
-
-    return {
-        n
-        for n, r in cands.items()
-        if any(y0[i] <= 1e-12 for i in r["reactants"])
-        and fn_vals.get(r["function_name"], 0.0) > 1e-12
-    }
-
-
 def _expand_functional_reactions(
     reactions: list[dict[str, Any]],
     species: list[dict[str, Any]],
@@ -349,12 +303,12 @@ def _expand_functional_reactions(
     transport) reactions: cBNGL expands them (``True``); the flat ``.net`` writer
     refuses them at the capability gate, so it passes ``False`` to leave them on
     the ordinary path. ``only_indices``, when given, restricts the rewrite to that
-    set of reaction indices (the flat ``.net`` writer passes the
-    :func:`_guard_unsafe_reactions` set so it rewrites *only* the reactions the
-    reactant guard would break, preserving topology elsewhere); ``None`` rewrites
-    every expandable reaction (cBNGL, whose volume split needs all of them).
-    Returns ``(labeled_reactions, helper_functions)``; a reaction kept on the
-    ordinary path passes through as ``(str(index), rxn)``.
+    set of reaction indices; ``None`` (both the flat ``.net`` and cBNGL writers)
+    rewrites *every* expandable reaction — the reactant-division guard is unsafe
+    for any reactant that reaches zero or goes negative (GH #18), a whole-trajectory
+    property no writer-time probe can decide, so it is never used. Returns
+    ``(labeled_reactions, helper_functions)``; a reaction kept on the ordinary path
+    passes through as ``(str(index), rxn)``.
     """
     out: list[tuple[str, dict[str, Any]]] = []
     helpers: list[tuple[str, str]] = []
@@ -383,7 +337,7 @@ def _expand_functional_reactions(
             if s_i == 0:  # a catalyst nets to zero — no ODE contribution
                 continue
             factor = (s_i / _vol(i)) if psvs else float(s_i)
-            fname = f"__flux{n}_{k}"
+            fname = f"{FLUX_HELPER_PREFIX}{n}_{k}"
             helpers.append((fname, f"{_fmt(factor)} * ({base})"))
             out.append(
                 (
@@ -491,17 +445,23 @@ def write_net(
     lines.append("end groups")
     lines.append("")
 
-    # Rewrite *only* the within-compartment asf=False functional reactions whose
-    # propensity the reactant-division guard would wrongly zero (a reactant-
-    # independent / saturable / reversible law) as per-species signed-flux
-    # reactions, so they survive the round-trip; the topology of every other
-    # reaction is preserved. Cross-compartment (per-species-volume-scaled)
-    # reactions are refused at the capability gate (expand_psvs=False).
+    # Rewrite *every* within-compartment asf=False functional reaction as
+    # per-species signed-flux reactions, so they survive the round-trip. The
+    # reader multiplies a functional rate by the reactant amounts, so the only
+    # alternative — the reactant-division guard ``if(r>1e-300, P/r, 0)`` — cancels
+    # that re-multiplication only while every reactant stays strictly positive.
+    # It silently zeroes the flux the instant a reactant reaches zero *or goes
+    # negative* (rate/assignment-driven pseudo-species legitimately do — GH #18),
+    # and whether a reactant ever does so is a whole-trajectory property no
+    # writer-time probe can decide. The zero-reactant signed-flux form needs no
+    # such cancellation and is RHS-identical for any P and any reactant value, so
+    # we always use it. Cross-compartment (per-species-volume-scaled) reactions
+    # are refused at the capability gate (expand_psvs=False).
     labeled_reactions, flux_helpers = _expand_functional_reactions(
         reactions,
         species,
         expand_psvs=False,
-        only_indices=_guard_unsafe_reactions(model),
+        only_indices=None,
     )
     func_names_all = func_names | {h for h, _ in flux_helpers}
 

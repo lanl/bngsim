@@ -585,7 +585,11 @@ def test_l2_net_sbml_net_identity(name: str, data_dir: Path, tmp_path: Path) -> 
         sbml_to_net(tmp_path / "rt.xml", tmp_path / "rt.net", validate=None, strict=True)
         back = bngsim.Model.from_net(tmp_path / "rt.net")
     assert back.n_species == original.n_species
-    assert back.n_reactions == original.n_reactions
+    # sbml_to_net re-encodes functional laws as per-species signed flux, so the raw
+    # reaction count may grow; fold those fragments back to compare source topology.
+    from bngsim.convert._validate import _effective_n_reactions
+
+    assert _effective_n_reactions(back) == _effective_n_reactions(original)
     assert _rhs_max_delta(original, back) <= 1e-9
 
 
