@@ -111,8 +111,18 @@ def _golden_worker(spec: dict, q) -> None:
                 p["atol"],
             )
         else:
+            # Integrate from the SED-ML initialTime (GH #21, SSA counterpart of
+            # #19): the golden must integrate [initial_time, t_end] so any
+            # pre-outputStartTime dynamics/events fire. initial_time == t_start
+            # except for the outputStartTime > initialTime models; .get keeps
+            # pre-field job files integrating from t_start.
             t, reps, names = rc.bn_ssa(
-                xml, p["t_start"], p["t_end"], p["n_points"], 1, DEFAULT_SEED
+                xml,
+                p.get("initial_time", p["t_start"]),
+                p["t_end"],
+                p["n_points"],
+                1,
+                DEFAULT_SEED,
             )
             values = reps[0]
         res["wall"] = round(time.perf_counter() - t0, 3)
