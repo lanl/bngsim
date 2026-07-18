@@ -122,7 +122,16 @@ ENGINE_ORDER = ["run_network", "bngsim", "roadrunner", "amici_klu", "amici_dense
 
 # run_network-vs-bngsim final-state agreement required to trust the run_network cell
 # (the derived-.net path is novel to this table, so it is verified, not assumed).
+# PARITY_TOL gates the *conversion*-faithfulness check (bngsim from_net vs from_sbml —
+# must be tight) and is the informational "matches bngsim to solver tolerance" flag.
 PARITY_TOL = 1e-3
+# The run_network *engine*-parity cell is EXCLUDED only when it grossly disagrees with
+# bngsim beyond this looser bar — the same cross-engine "same trajectory" tolerance the
+# companion agreement check uses (check_sbml_engine_agreement.DISAGREE_TOL = 5e-2). On a
+# numerically ill-conditioned model (Koo2013: ~1% cross-engine spread across bngsim, RR,
+# COPASI) run_network then keeps its timing, consistent with how the SBML-native engines
+# are treated on that same model; a truly wrong (unfaithful/misread) .net still exceeds it.
+RN_ENGINE_TOL = 5e-2
 
 
 # --------------------------------------------------------------------------- #
@@ -1051,16 +1060,26 @@ def main() -> int:
                 elif rn.get("status") == "ok" and rn.get("final_state"):
                     pm = _final_state_mre(rn["final_state"], bn_sbml["final_state"])
                     rn["parity_vs_bngsim_mre"] = pm
+                    # parity_ok = matches bngsim to solver tolerance (informational);
+                    # exclude the cell only on GROSS disagreement (> RN_ENGINE_TOL), the
+                    # cross-engine "same trajectory" bar. Between the two, run_network is
+                    # tabulated but flagged parity_ok=False (agrees only to the model's
+                    # cross-engine spread, e.g. Koo2013 ~0.7%).
                     rn["parity_ok"] = None if pm is None else pm <= PARITY_TOL
-                    if pm is not None and pm > PARITY_TOL:
+                    if pm is not None and pm > RN_ENGINE_TOL:
                         rn["status"] = "parity_fail"
                         rn["error"] = (
-                            f"run_network disagrees with bngsim on a faithful .net "
-                            f"(mre={pm:.2e} > {PARITY_TOL:g})"
+                            f"run_network grossly disagrees with bngsim on a faithful .net "
+                            f"(mre={pm:.2e} > {RN_ENGINE_TOL:g})"
                         )
                         print(f"       run_network    PARITY_FAIL mre={pm:.2e}")
                     elif pm is not None:
-                        print(f"       run_network    parity_ok mre={pm:.2e}")
+                        tag = (
+                            "parity_ok"
+                            if rn["parity_ok"]
+                            else "tabulated (within cross-engine spread)"
+                        )
+                        print(f"       run_network    {tag} mre={pm:.2e}")
         # final_state fingerprints served the guards; drop them from the persisted JSON.
         for e in engines.values():
             if isinstance(e, dict):
