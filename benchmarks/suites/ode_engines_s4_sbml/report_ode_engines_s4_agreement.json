@@ -10,7 +10,7 @@
   "metric": "sorted final-state species multiset, max relative error",
   "disagree_tol": 0.05,
   "versions": {
-   "bngsim": "0.11.30",
+   "bngsim": "0.11.35",
    "roadrunner": "2.9.2",
    "copasi": "4.46.300 (Source)"
   },
@@ -39,9 +39,9 @@
    "bngsim_vs_roadrunner_sorted_mre": 1.4943988061459726e-05,
    "bngsim_vs_roadrunner_name_mre": 1.4943988061459726e-05,
    "n_common_species": 75,
-   "bngsim_vs_copasi_sorted_mre": 3.569822424300115e-05,
+   "bngsim_vs_copasi_sorted_mre": 3.569637560551917e-05,
    "agree": true,
-   "worst_mre": 3.569822424300115e-05
+   "worst_mre": 3.569637560551917e-05
   },
   {
    "model_id": "BIOMD0000000468",
@@ -60,7 +60,7 @@
    "bngsim_vs_roadrunner_sorted_mre": 0.01085130676302375,
    "bngsim_vs_roadrunner_name_mre": 0.01085130676302375,
    "n_common_species": 79,
-   "bngsim_vs_copasi_sorted_mre": 0.009636492345910618,
+   "bngsim_vs_copasi_sorted_mre": 0.010515694788928895,
    "agree": true,
    "worst_mre": 0.01085130676302375
   },
@@ -81,9 +81,9 @@
    "bngsim_vs_roadrunner_sorted_mre": 9.432525509296562e-07,
    "bngsim_vs_roadrunner_name_mre": 9.432525509296562e-07,
    "n_common_species": 90,
-   "bngsim_vs_copasi_sorted_mre": 5.9717025547319174e-06,
+   "bngsim_vs_copasi_sorted_mre": 6.946539985621054e-06,
    "agree": true,
-   "worst_mre": 5.9717025547319174e-06
+   "worst_mre": 6.946539985621054e-06
   },
   {
    "model_id": "BIOMD0000000667",
@@ -102,9 +102,9 @@
    "bngsim_vs_roadrunner_sorted_mre": 3.9843588203223626e-06,
    "bngsim_vs_roadrunner_name_mre": 3.9843588203223626e-06,
    "n_common_species": 103,
-   "bngsim_vs_copasi_sorted_mre": 4.426326264290013e-06,
+   "bngsim_vs_copasi_sorted_mre": 4.460517692718344e-06,
    "agree": true,
-   "worst_mre": 4.426326264290013e-06
+   "worst_mre": 4.460517692718344e-06
   },
   {
    "model_id": "BIOMD0000000474",
@@ -121,9 +121,9 @@
    "n_species": 133,
    "disagree_tol": 0.05,
    "roadrunner_error": "RuntimeError: CVODE Error: CV_CONV_FAILURE: Convergence test failures occurred too many times (= MXNCF = 10) during one internal timestep or occurred with |h| = hmin.; In virtual double rr::CVODEIntegrator::integrate(double, double)",
-   "bngsim_vs_copasi_sorted_mre": 0.00026579369559815726,
+   "bngsim_vs_copasi_sorted_mre": 0.00026579378820015424,
    "agree": true,
-   "worst_mre": 0.00026579369559815726
+   "worst_mre": 0.00026579378820015424
   },
   {
    "model_id": "BIOMD0000001065",
@@ -142,9 +142,9 @@
    "bngsim_vs_roadrunner_sorted_mre": 3.9141529912277516e-09,
    "bngsim_vs_roadrunner_name_mre": 3.9141529912277516e-09,
    "n_common_species": 140,
-   "bngsim_vs_copasi_sorted_mre": 3.916785035190915e-09,
+   "bngsim_vs_copasi_sorted_mre": 3.916833594647825e-09,
    "agree": true,
-   "worst_mre": 3.916785035190915e-09
+   "worst_mre": 3.916833594647825e-09
   }
  ]
 }
