@@ -80,6 +80,23 @@ def parse_timecourse(path: str) -> dict | None:
     """Extract the first uniformTimeCourse + its model source from a SED-ML file.
 
     Returns None if the file has no uniformTimeCourse (steady-state / plot-only).
+
+    A SED-ML ``uniformTimeCourse`` carries THREE time fields, which we keep
+    distinct (GH #19):
+
+      ``initialTime``     -- where INTEGRATION starts (the model's initial state
+                             is applied here). Pre-``outputStartTime`` dynamics and
+                             events fire iff we integrate from this time.
+      ``outputStartTime`` -- where the plotted/compared OUTPUT window starts;
+                             recorded as ``t_start``. May be > ``initialTime``.
+      ``outputEndTime``   -- end of both integration and output; recorded as ``t_end``.
+
+    Collapsing ``initialTime`` into ``outputStartTime`` (the old behavior) makes the
+    runners integrate ``[outputStartTime, outputEndTime]`` from the initial state,
+    skipping everything before ``outputStartTime`` -- e.g. BIOMD834/Verma2016's
+    ``H:=1.8 @ t>=200`` event with window ``[400,700]``. We therefore return
+    ``initial_time`` separately so the ODE runners can integrate ``[initial_time,
+    t_end]``.
     """
     try:
         root = ET.parse(path).getroot()
@@ -104,7 +121,11 @@ def parse_timecourse(path: str) -> dict | None:
                 n_points = int(steps) + 1 if steps is not None else None
             except ValueError:
                 n_points = None
+            init_t = float(a.get("initialTime", 0.0))
             return {
+                # initial_time = integration start; t_start = outputStartTime =
+                # plotted/compared window start (>= initial_time). See GH #19.
+                "initial_time": init_t,
                 "t_start": float(a.get("outputStartTime", a.get("initialTime", 0.0))),
                 "t_end": float(a["outputEndTime"]),
                 "n_points": n_points,
@@ -149,6 +170,11 @@ def main() -> int:
     models = keep_models()
     jobs = []
     tier_counts = {"figure_sedml": 0, "template_sedml": 0, "invented": 0}
+    # GH #19 detection pass: SED-ML horizons whose outputStartTime > initialTime.
+    # The old flattening integrated from outputStartTime, dropping pre-window
+    # dynamics/events; the ODE runners now integrate from initial_time. Recorded
+    # in _meta so the affected models are auditable from the committed spec.
+    output_start_offset = []
 
     for mid in models:
         mdir = args.mirror / mid
@@ -157,6 +183,7 @@ def main() -> int:
 
         if tc:
             sbml = tc["model_source"] or f"{mid}.xml"
+            initial_time = tc["initial_time"]
             t_start, t_end = tc["t_start"], tc["t_end"]
             n_points = tc["n_points"] or INVENTED_N_POINTS
             rtol = tc["rtol"] or DEFAULT_RTOL
@@ -164,9 +191,14 @@ def main() -> int:
             sbml_origin = "temp-biomodels"
         else:
             sbml = f"{mid}.xml"
-            t_start, t_end, n_points = 0.0, INVENTED_T_END, INVENTED_N_POINTS
+            initial_time, t_start, t_end, n_points = 0.0, 0.0, INVENTED_T_END, INVENTED_N_POINTS
             rtol, atol = DEFAULT_RTOL, DEFAULT_ATOL
             sbml_origin = "biomodels_dir"
+
+        if abs(t_start - initial_time) > 1e-12:
+            output_start_offset.append(
+                {"model_id": mid, "initial_time": initial_time, "output_start": t_start}
+            )
 
         sedml = os.path.basename(path) if path else None
         tier_counts[tier] += 1
@@ -183,6 +215,10 @@ def main() -> int:
                     "sbml_origin": sbml_origin,
                     "sedml": sedml,
                     "horizon_source": tier,
+                    # initial_time = integration start (SED-ML initialTime); the
+                    # runners integrate [initial_time, t_end]. t_start = SED-ML
+                    # outputStartTime = plotted/compared window start (GH #19).
+                    "initial_time": initial_time,
                     "t_start": t_start,
                     "t_end": t_end,
                     "n_points": n_points,
@@ -207,9 +243,23 @@ def main() -> int:
             "invented_t_end": INVENTED_T_END,
             "compare_tol": COMPARE_TOL,
         },
+        # GH #19: models whose SED-ML outputStartTime (t_start) > initialTime
+        # (initial_time). The ODE runners integrate [initial_time, t_end] so
+        # pre-window dynamics/events fire; these are the jobs where that matters.
+        "output_start_offset": {
+            "count": len(output_start_offset),
+            "note": (
+                "SED-ML outputStartTime > initialTime; runners integrate from "
+                "initial_time, not t_start (GH #19)."
+            ),
+            "models": output_start_offset,
+        },
         "notes": (
             "model = models/<model_id>/<sbml>; materialize.py places the SBML (gitignored) and "
-            "SED-ML there. invented-tier horizons are placeholders for calibrate_horizons.py."
+            "SED-ML there. invented-tier horizons are placeholders for calibrate_horizons.py. "
+            "params.initial_time = integration start (SED-ML initialTime); params.t_start = "
+            "outputStartTime = plotted/compared window start; the ODE runners integrate "
+            "[initial_time, t_end] (GH #19)."
         ),
     }
     stale = ov.stale_keys({j.model_id for j in jobs}, "ode")
@@ -218,6 +268,12 @@ def main() -> int:
     n_ov = sum(1 for j in jobs if j.overrides)
     write_manifest(args.out, jobs, meta=meta)
     print(f"wrote {args.out} : {len(jobs)} jobs  tiers={tier_counts}  overrides={n_ov}")
+    if output_start_offset:
+        ids = ", ".join(o["model_id"] for o in output_start_offset)
+        print(
+            f"GH #19: {len(output_start_offset)} job(s) have outputStartTime > initialTime "
+            f"(runners integrate from initial_time): {ids}"
+        )
     return 0
 
 
