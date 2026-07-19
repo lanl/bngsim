@@ -1,0 +1,601 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA             6.02214076e23  # Constant
+    2 V_ref          2e-12  # Constant
+    3 Atot           1e5  # Constant
+    4 Btot           1e5  # Constant
+    5 Ctot           5e5  # Constant
+    6 Stot           1e5  # Constant
+    7 S              1  # Constant
+    8 a              1e-6  # Constant
+    9 d1             0.1  # Constant
+   10 d2             100  # Constant
+   11 pscaff         100  # Constant
+   12 u              0.1  # Constant
+end parameters
+begin species
+    1 MAP3K(S~I,s) Atot
+    2 MAP2K(R1~Y,R2~Y,s) Btot
+    3 MAPK(R1~Y,R2~Y,s) Ctot
+    4 Scaff(map2k,map3k,mapk) Stot
+    5 MAP3K(S~A,s) 0
+    6 MAP2K(R1~Y,R2~Y,s!1).Scaff(map2k!1,map3k,mapk) 0
+    7 MAPK(R1~Y,R2~Y,s!1).Scaff(map2k,map3k,mapk!1) 0
+    8 MAP3K(S~A,s!1).Scaff(map2k,map3k!1,mapk) 0
+    9 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   10 MAP3K(S~A,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   11 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   12 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   13 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   14 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   15 MAP3K(S~I,s!1).Scaff(map2k,map3k!1,mapk) 0
+   16 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   17 MAP3K(S~I,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   18 MAP2K(R1~Yp,R2~Y,s!1).Scaff(map2k!1,map3k,mapk) 0
+   19 MAP2K(R1~Y,R2~Yp,s!1).Scaff(map2k!1,map3k,mapk) 0
+   20 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   21 MAP2K(R1~Yp,R2~Y,s) 0
+   22 MAP2K(R1~Y,R2~Yp,s) 0
+   23 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   24 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   25 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   26 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   27 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   28 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   29 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   30 MAP2K(R1~Yp,R2~Yp,s!1).Scaff(map2k!1,map3k,mapk) 0
+   31 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   32 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   33 MAP2K(R1~Yp,R2~Yp,s) 0
+   34 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   35 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).Scaff(map2k!1,map3k!2,mapk) 0
+   36 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Y,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   37 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   38 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   39 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   40 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   41 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   42 MAP3K(S~A,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   43 MAP3K(S~A,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   44 MAPK(R1~Yp,R2~Y,s) 0
+   45 MAPK(R1~Y,R2~Yp,s) 0
+   46 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   47 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   48 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   49 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   50 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   51 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   52 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   53 MAPK(R1~Yp,R2~Y,s!1).Scaff(map2k,map3k,mapk!1) 0
+   54 MAPK(R1~Y,R2~Yp,s!1).Scaff(map2k,map3k,mapk!1) 0
+   55 MAP2K(R1~Yp,R2~Yp,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   56 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   57 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   58 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   59 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   60 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   61 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   62 MAP3K(S~I,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   63 MAP3K(S~A,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   64 MAP3K(S~I,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   65 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Yp,R2~Y,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   66 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   67 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   68 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Y,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   69 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Y,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   70 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   71 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   72 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Y,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   73 MAPK(R1~Yp,R2~Yp,s) 0
+   74 MAP2K(R1~Yp,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   75 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   76 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   77 MAPK(R1~Yp,R2~Yp,s!1).Scaff(map2k,map3k,mapk!1) 0
+   78 MAP2K(R1~Y,R2~Yp,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   79 MAP2K(R1~Yp,R2~Y,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   80 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~A,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   81 MAP3K(S~I,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k,map3k!1,mapk!2) 0
+   82 MAP2K(R1~Y,R2~Yp,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   83 MAP2K(R1~Yp,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+   84 MAP2K(R1~Y,R2~Y,s!1).MAPK(R1~Yp,R2~Yp,s!2).Scaff(map2k!1,map3k,mapk!2) 0
+   85 MAP2K(R1~Y,R2~Y,s!1).MAP3K(S~I,s!2).MAPK(R1~Yp,R2~Yp,s!3).Scaff(map2k!1,map3k!2,mapk!3) 0
+end species
+begin reactions
+    1 1 5 S #R_activate_MAP3K
+    2 2,4 6 a #R_bind_MAP2K_YY
+    3 3,4 7 a #R_bind_MAPK_YY
+    4 4,5 8 a #R_bind_MAP3K
+    5 5,6 9 a #R_bind_MAP3K
+    6 5,7 10 a #R_bind_MAP3K
+    7 2,7 11 a #R_bind_MAP2K_YY
+    8 6 2,4 d1 #_reverse_R_bind_MAP2K_YY
+    9 3,6 11 a #R_bind_MAPK_YY
+   10 7 3,4 d1 #_reverse_R_bind_MAPK_YY
+   11 5 1 u #R_inactivate_MAP3K
+   12 5,11 12 a #R_bind_MAP3K
+   13 8 4,5 d1 #_reverse_R_bind_MAP3K
+   14 9 5,6 d1 #_reverse_R_bind_MAP3K
+   15 10 5,7 d1 #_reverse_R_bind_MAP3K
+   16 2,8 9 a #R_bind_MAP2K_YY
+   17 2,10 12 a #R_bind_MAP2K_YY
+   18 9 2,8 d1 #_reverse_R_bind_MAP2K_YY
+   19 11 2,7 d1 #_reverse_R_bind_MAP2K_YY
+   20 3,8 10 a #R_bind_MAPK_YY
+   21 3,9 12 a #R_bind_MAPK_YY
+   22 10 3,8 d1 #_reverse_R_bind_MAPK_YY
+   23 11 3,6 d1 #_reverse_R_bind_MAPK_YY
+   24 9 13 pscaff #R_phos_MAP2K_R1
+   25 9 14 pscaff #R_phos_MAP2K_R2
+   26 8 15 u #R_inactivate_MAP3K
+   27 9 16 u #R_inactivate_MAP3K
+   28 10 17 u #R_inactivate_MAP3K
+   29 12 5,11 d1 #_reverse_R_bind_MAP3K
+   30 13 5,18 d1 #_reverse_R_bind_MAP3K
+   31 14 5,19 d1 #_reverse_R_bind_MAP3K
+   32 15 1,4 d2 #R_release_MAP3K_I
+   33 16 1,6 d2 #R_release_MAP3K_I
+   34 17 1,7 d2 #R_release_MAP3K_I
+   35 2,15 16 a #R_bind_MAP2K_YY
+   36 2,17 20 a #R_bind_MAP2K_YY
+   37 12 2,10 d1 #_reverse_R_bind_MAP2K_YY
+   38 16 2,15 d1 #_reverse_R_bind_MAP2K_YY
+   39 13 8,21 d1 #_reverse_R_bind_MAP2K_pY
+   40 14 8,22 d1 #_reverse_R_bind_MAP2K_Yp
+   41 3,13 23 a #R_bind_MAPK_YY
+   42 3,14 24 a #R_bind_MAPK_YY
+   43 3,15 17 a #R_bind_MAPK_YY
+   44 3,16 20 a #R_bind_MAPK_YY
+   45 12 3,9 d1 #_reverse_R_bind_MAPK_YY
+   46 17 3,15 d1 #_reverse_R_bind_MAPK_YY
+   47 12 23 pscaff #R_phos_MAP2K_R1
+   48 14 25 pscaff #R_phos_MAP2K_R1
+   49 12 24 pscaff #R_phos_MAP2K_R2
+   50 13 25 pscaff #R_phos_MAP2K_R2
+   51 12 20 u #R_inactivate_MAP3K
+   52 13 26 u #R_inactivate_MAP3K
+   53 14 27 u #R_inactivate_MAP3K
+   54 13 9 u #R_dephos_MAP2K_R1
+   55 14 9 u #R_dephos_MAP2K_R2
+   56 5,18 13 a #R_bind_MAP3K
+   57 5,19 14 a #R_bind_MAP3K
+   58 23 5,28 d1 #_reverse_R_bind_MAP3K
+   59 24 5,29 d1 #_reverse_R_bind_MAP3K
+   60 25 5,30 d1 #_reverse_R_bind_MAP3K
+   61 20 1,11 d2 #R_release_MAP3K_I
+   62 26 1,18 d2 #R_release_MAP3K_I
+   63 27 1,19 d2 #R_release_MAP3K_I
+   64 20 2,17 d1 #_reverse_R_bind_MAP2K_YY
+   65 4,21 18 a #R_bind_MAP2K_pY
+   66 7,21 28 a #R_bind_MAP2K_pY
+   67 8,21 13 a #R_bind_MAP2K_pY
+   68 10,21 23 a #R_bind_MAP2K_pY
+   69 15,21 26 a #R_bind_MAP2K_pY
+   70 17,21 31 a #R_bind_MAP2K_pY
+   71 18 4,21 d1 #_reverse_R_bind_MAP2K_pY
+   72 23 10,21 d1 #_reverse_R_bind_MAP2K_pY
+   73 26 15,21 d1 #_reverse_R_bind_MAP2K_pY
+   74 4,22 19 a #R_bind_MAP2K_Yp
+   75 7,22 29 a #R_bind_MAP2K_Yp
+   76 8,22 14 a #R_bind_MAP2K_Yp
+   77 10,22 24 a #R_bind_MAP2K_Yp
+   78 15,22 27 a #R_bind_MAP2K_Yp
+   79 17,22 32 a #R_bind_MAP2K_Yp
+   80 19 4,22 d1 #_reverse_R_bind_MAP2K_Yp
+   81 24 10,22 d1 #_reverse_R_bind_MAP2K_Yp
+   82 27 15,22 d1 #_reverse_R_bind_MAP2K_Yp
+   83 25 8,33 d1 #_reverse_R_bind_MAP2K_pp
+   84 3,18 28 a #R_bind_MAPK_YY
+   85 3,19 29 a #R_bind_MAPK_YY
+   86 3,25 34 a #R_bind_MAPK_YY
+   87 3,26 31 a #R_bind_MAPK_YY
+   88 3,27 32 a #R_bind_MAPK_YY
+   89 20 3,16 d1 #_reverse_R_bind_MAPK_YY
+   90 23 3,13 d1 #_reverse_R_bind_MAPK_YY
+   91 24 3,14 d1 #_reverse_R_bind_MAPK_YY
+   92 24 34 pscaff #R_phos_MAP2K_R1
+   93 23 34 pscaff #R_phos_MAP2K_R2
+   94 23 31 u #R_inactivate_MAP3K
+   95 24 32 u #R_inactivate_MAP3K
+   96 25 35 u #R_inactivate_MAP3K
+   97 18 6 u #R_dephos_MAP2K_R1
+   98 21 2 u #R_dephos_MAP2K_R1
+   99 23 12 u #R_dephos_MAP2K_R1
+  100 25 14 u #R_dephos_MAP2K_R1
+  101 26 16 u #R_dephos_MAP2K_R1
+  102 19 6 u #R_dephos_MAP2K_R2
+  103 22 2 u #R_dephos_MAP2K_R2
+  104 24 12 u #R_dephos_MAP2K_R2
+  105 25 13 u #R_dephos_MAP2K_R2
+  106 27 16 u #R_dephos_MAP2K_R2
+  107 5,28 23 a #R_bind_MAP3K
+  108 5,29 24 a #R_bind_MAP3K
+  109 5,30 25 a #R_bind_MAP3K
+  110 34 5,36 d1 #_reverse_R_bind_MAP3K
+  111 31 1,28 d2 #R_release_MAP3K_I
+  112 32 1,29 d2 #R_release_MAP3K_I
+  113 35 1,30 d2 #R_release_MAP3K_I
+  114 28 7,21 d1 #_reverse_R_bind_MAP2K_pY
+  115 31 17,21 d1 #_reverse_R_bind_MAP2K_pY
+  116 29 7,22 d1 #_reverse_R_bind_MAP2K_Yp
+  117 32 17,22 d1 #_reverse_R_bind_MAP2K_Yp
+  118 4,33 30 a #R_bind_MAP2K_pp
+  119 7,33 36 a #R_bind_MAP2K_pp
+  120 8,33 25 a #R_bind_MAP2K_pp
+  121 10,33 34 a #R_bind_MAP2K_pp
+  122 15,33 35 a #R_bind_MAP2K_pp
+  123 17,33 37 a #R_bind_MAP2K_pp
+  124 30 4,33 d1 #_reverse_R_bind_MAP2K_pp
+  125 34 10,33 d1 #_reverse_R_bind_MAP2K_pp
+  126 35 15,33 d1 #_reverse_R_bind_MAP2K_pp
+  127 3,30 36 a #R_bind_MAPK_YY
+  128 3,35 37 a #R_bind_MAPK_YY
+  129 28 3,18 d1 #_reverse_R_bind_MAPK_YY
+  130 29 3,19 d1 #_reverse_R_bind_MAPK_YY
+  131 31 3,26 d1 #_reverse_R_bind_MAPK_YY
+  132 32 3,27 d1 #_reverse_R_bind_MAPK_YY
+  133 34 3,25 d1 #_reverse_R_bind_MAPK_YY
+  134 34 38 pscaff #R_phos_MAPK_R1
+  135 34 39 pscaff #R_phos_MAPK_R2
+  136 34 37 u #R_inactivate_MAP3K
+  137 28 11 u #R_dephos_MAP2K_R1
+  138 30 19 u #R_dephos_MAP2K_R1
+  139 31 20 u #R_dephos_MAP2K_R1
+  140 33 22 u #R_dephos_MAP2K_R1
+  141 34 24 u #R_dephos_MAP2K_R1
+  142 35 27 u #R_dephos_MAP2K_R1
+  143 29 11 u #R_dephos_MAP2K_R2
+  144 30 18 u #R_dephos_MAP2K_R2
+  145 32 20 u #R_dephos_MAP2K_R2
+  146 33 21 u #R_dephos_MAP2K_R2
+  147 34 23 u #R_dephos_MAP2K_R2
+  148 35 26 u #R_dephos_MAP2K_R2
+  149 5,36 34 a #R_bind_MAP3K
+  150 38 5,40 d1 #_reverse_R_bind_MAP3K
+  151 39 5,41 d1 #_reverse_R_bind_MAP3K
+  152 37 1,36 d2 #R_release_MAP3K_I
+  153 36 7,33 d1 #_reverse_R_bind_MAP2K_pp
+  154 37 17,33 d1 #_reverse_R_bind_MAP2K_pp
+  155 38 33,42 d1 #_reverse_R_bind_MAP2K_pp
+  156 39 33,43 d1 #_reverse_R_bind_MAP2K_pp
+  157 36 3,30 d1 #_reverse_R_bind_MAPK_YY
+  158 37 3,35 d1 #_reverse_R_bind_MAPK_YY
+  159 38 25,44 d1 #_reverse_R_bind_MAPK_pY
+  160 39 25,45 d1 #_reverse_R_bind_MAPK_Yp
+  161 36 40 pscaff #R_phos_MAPK_R1
+  162 37 46 pscaff #R_phos_MAPK_R1
+  163 39 47 pscaff #R_phos_MAPK_R1
+  164 36 41 pscaff #R_phos_MAPK_R2
+  165 37 48 pscaff #R_phos_MAPK_R2
+  166 38 47 pscaff #R_phos_MAPK_R2
+  167 38 46 u #R_inactivate_MAP3K
+  168 39 48 u #R_inactivate_MAP3K
+  169 36 29 u #R_dephos_MAP2K_R1
+  170 37 32 u #R_dephos_MAP2K_R1
+  171 38 49 u #R_dephos_MAP2K_R1
+  172 39 50 u #R_dephos_MAP2K_R1
+  173 36 28 u #R_dephos_MAP2K_R2
+  174 37 31 u #R_dephos_MAP2K_R2
+  175 38 51 u #R_dephos_MAP2K_R2
+  176 39 52 u #R_dephos_MAP2K_R2
+  177 38 34 u #R_dephos_MAPK_R1
+  178 39 34 u #R_dephos_MAPK_R2
+  179 5,40 38 a #R_bind_MAP3K
+  180 5,41 39 a #R_bind_MAP3K
+  181 42 5,53 d1 #_reverse_R_bind_MAP3K
+  182 43 5,54 d1 #_reverse_R_bind_MAP3K
+  183 47 5,55 d1 #_reverse_R_bind_MAP3K
+  184 49 5,56 d1 #_reverse_R_bind_MAP3K
+  185 50 5,57 d1 #_reverse_R_bind_MAP3K
+  186 51 5,58 d1 #_reverse_R_bind_MAP3K
+  187 52 5,59 d1 #_reverse_R_bind_MAP3K
+  188 46 1,40 d2 #R_release_MAP3K_I
+  189 48 1,41 d2 #R_release_MAP3K_I
+  190 2,42 60 a #R_bind_MAP2K_YY
+  191 2,43 61 a #R_bind_MAP2K_YY
+  192 21,42 51 a #R_bind_MAP2K_pY
+  193 21,43 52 a #R_bind_MAP2K_pY
+  194 51 21,42 d1 #_reverse_R_bind_MAP2K_pY
+  195 52 21,43 d1 #_reverse_R_bind_MAP2K_pY
+  196 22,42 49 a #R_bind_MAP2K_Yp
+  197 22,43 50 a #R_bind_MAP2K_Yp
+  198 49 22,42 d1 #_reverse_R_bind_MAP2K_Yp
+  199 50 22,43 d1 #_reverse_R_bind_MAP2K_Yp
+  200 33,42 38 a #R_bind_MAP2K_pp
+  201 33,43 39 a #R_bind_MAP2K_pp
+  202 40 33,53 d1 #_reverse_R_bind_MAP2K_pp
+  203 41 33,54 d1 #_reverse_R_bind_MAP2K_pp
+  204 46 33,62 d1 #_reverse_R_bind_MAP2K_pp
+  205 47 33,63 d1 #_reverse_R_bind_MAP2K_pp
+  206 48 33,64 d1 #_reverse_R_bind_MAP2K_pp
+  207 4,44 53 a #R_bind_MAPK_pY
+  208 6,44 65 a #R_bind_MAPK_pY
+  209 8,44 42 a #R_bind_MAPK_pY
+  210 9,44 60 a #R_bind_MAPK_pY
+  211 13,44 51 a #R_bind_MAPK_pY
+  212 14,44 49 a #R_bind_MAPK_pY
+  213 15,44 62 a #R_bind_MAPK_pY
+  214 16,44 66 a #R_bind_MAPK_pY
+  215 18,44 58 a #R_bind_MAPK_pY
+  216 19,44 56 a #R_bind_MAPK_pY
+  217 25,44 38 a #R_bind_MAPK_pY
+  218 26,44 67 a #R_bind_MAPK_pY
+  219 27,44 68 a #R_bind_MAPK_pY
+  220 30,44 40 a #R_bind_MAPK_pY
+  221 35,44 46 a #R_bind_MAPK_pY
+  222 40 30,44 d1 #_reverse_R_bind_MAPK_pY
+  223 42 8,44 d1 #_reverse_R_bind_MAPK_pY
+  224 46 35,44 d1 #_reverse_R_bind_MAPK_pY
+  225 49 14,44 d1 #_reverse_R_bind_MAPK_pY
+  226 51 13,44 d1 #_reverse_R_bind_MAPK_pY
+  227 4,45 54 a #R_bind_MAPK_Yp
+  228 6,45 69 a #R_bind_MAPK_Yp
+  229 8,45 43 a #R_bind_MAPK_Yp
+  230 9,45 61 a #R_bind_MAPK_Yp
+  231 13,45 52 a #R_bind_MAPK_Yp
+  232 14,45 50 a #R_bind_MAPK_Yp
+  233 15,45 64 a #R_bind_MAPK_Yp
+  234 16,45 70 a #R_bind_MAPK_Yp
+  235 18,45 59 a #R_bind_MAPK_Yp
+  236 19,45 57 a #R_bind_MAPK_Yp
+  237 25,45 39 a #R_bind_MAPK_Yp
+  238 26,45 71 a #R_bind_MAPK_Yp
+  239 27,45 72 a #R_bind_MAPK_Yp
+  240 30,45 41 a #R_bind_MAPK_Yp
+  241 35,45 48 a #R_bind_MAPK_Yp
+  242 41 30,45 d1 #_reverse_R_bind_MAPK_Yp
+  243 43 8,45 d1 #_reverse_R_bind_MAPK_Yp
+  244 48 35,45 d1 #_reverse_R_bind_MAPK_Yp
+  245 50 14,45 d1 #_reverse_R_bind_MAPK_Yp
+  246 52 13,45 d1 #_reverse_R_bind_MAPK_Yp
+  247 47 25,73 d2 #R_release_MAPK_pp
+  248 49 38 pscaff #R_phos_MAP2K_R1
+  249 50 39 pscaff #R_phos_MAP2K_R1
+  250 51 38 pscaff #R_phos_MAP2K_R2
+  251 52 39 pscaff #R_phos_MAP2K_R2
+  252 41 55 pscaff #R_phos_MAPK_R1
+  253 48 74 pscaff #R_phos_MAPK_R1
+  254 40 55 pscaff #R_phos_MAPK_R2
+  255 46 74 pscaff #R_phos_MAPK_R2
+  256 42 62 u #R_inactivate_MAP3K
+  257 43 64 u #R_inactivate_MAP3K
+  258 47 74 u #R_inactivate_MAP3K
+  259 49 68 u #R_inactivate_MAP3K
+  260 50 72 u #R_inactivate_MAP3K
+  261 51 67 u #R_inactivate_MAP3K
+  262 52 71 u #R_inactivate_MAP3K
+  263 40 56 u #R_dephos_MAP2K_R1
+  264 41 57 u #R_dephos_MAP2K_R1
+  265 46 68 u #R_dephos_MAP2K_R1
+  266 47 75 u #R_dephos_MAP2K_R1
+  267 48 72 u #R_dephos_MAP2K_R1
+  268 51 60 u #R_dephos_MAP2K_R1
+  269 52 61 u #R_dephos_MAP2K_R1
+  270 40 58 u #R_dephos_MAP2K_R2
+  271 41 59 u #R_dephos_MAP2K_R2
+  272 46 67 u #R_dephos_MAP2K_R2
+  273 47 76 u #R_dephos_MAP2K_R2
+  274 48 71 u #R_dephos_MAP2K_R2
+  275 49 60 u #R_dephos_MAP2K_R2
+  276 50 61 u #R_dephos_MAP2K_R2
+  277 40 36 u #R_dephos_MAPK_R1
+  278 42 10 u #R_dephos_MAPK_R1
+  279 44 3 u #R_dephos_MAPK_R1
+  280 46 37 u #R_dephos_MAPK_R1
+  281 47 39 u #R_dephos_MAPK_R1
+  282 49 24 u #R_dephos_MAPK_R1
+  283 51 23 u #R_dephos_MAPK_R1
+  284 41 36 u #R_dephos_MAPK_R2
+  285 43 10 u #R_dephos_MAPK_R2
+  286 45 3 u #R_dephos_MAPK_R2
+  287 47 38 u #R_dephos_MAPK_R2
+  288 48 37 u #R_dephos_MAPK_R2
+  289 50 24 u #R_dephos_MAPK_R2
+  290 52 23 u #R_dephos_MAPK_R2
+  291 5,53 42 a #R_bind_MAP3K
+  292 5,54 43 a #R_bind_MAP3K
+  293 5,55 47 a #R_bind_MAP3K
+  294 5,56 49 a #R_bind_MAP3K
+  295 5,57 50 a #R_bind_MAP3K
+  296 5,58 51 a #R_bind_MAP3K
+  297 5,59 52 a #R_bind_MAP3K
+  298 5,65 60 a #R_bind_MAP3K
+  299 5,69 61 a #R_bind_MAP3K
+  300 60 5,65 d1 #_reverse_R_bind_MAP3K
+  301 61 5,69 d1 #_reverse_R_bind_MAP3K
+  302 63 5,77 d1 #_reverse_R_bind_MAP3K
+  303 75 5,78 d1 #_reverse_R_bind_MAP3K
+  304 76 5,79 d1 #_reverse_R_bind_MAP3K
+  305 62 1,53 d2 #R_release_MAP3K_I
+  306 64 1,54 d2 #R_release_MAP3K_I
+  307 66 1,65 d2 #R_release_MAP3K_I
+  308 67 1,58 d2 #R_release_MAP3K_I
+  309 68 1,56 d2 #R_release_MAP3K_I
+  310 70 1,69 d2 #R_release_MAP3K_I
+  311 71 1,59 d2 #R_release_MAP3K_I
+  312 72 1,57 d2 #R_release_MAP3K_I
+  313 74 1,55 d2 #R_release_MAP3K_I
+  314 2,53 65 a #R_bind_MAP2K_YY
+  315 2,54 69 a #R_bind_MAP2K_YY
+  316 2,62 66 a #R_bind_MAP2K_YY
+  317 2,63 80 a #R_bind_MAP2K_YY
+  318 2,64 70 a #R_bind_MAP2K_YY
+  319 60 2,42 d1 #_reverse_R_bind_MAP2K_YY
+  320 61 2,43 d1 #_reverse_R_bind_MAP2K_YY
+  321 65 2,53 d1 #_reverse_R_bind_MAP2K_YY
+  322 66 2,62 d1 #_reverse_R_bind_MAP2K_YY
+  323 69 2,54 d1 #_reverse_R_bind_MAP2K_YY
+  324 70 2,64 d1 #_reverse_R_bind_MAP2K_YY
+  325 21,53 58 a #R_bind_MAP2K_pY
+  326 21,54 59 a #R_bind_MAP2K_pY
+  327 21,62 67 a #R_bind_MAP2K_pY
+  328 21,63 76 a #R_bind_MAP2K_pY
+  329 21,64 71 a #R_bind_MAP2K_pY
+  330 58 21,53 d1 #_reverse_R_bind_MAP2K_pY
+  331 59 21,54 d1 #_reverse_R_bind_MAP2K_pY
+  332 67 21,62 d1 #_reverse_R_bind_MAP2K_pY
+  333 71 21,64 d1 #_reverse_R_bind_MAP2K_pY
+  334 76 21,63 d1 #_reverse_R_bind_MAP2K_pY
+  335 22,53 56 a #R_bind_MAP2K_Yp
+  336 22,54 57 a #R_bind_MAP2K_Yp
+  337 22,62 68 a #R_bind_MAP2K_Yp
+  338 22,63 75 a #R_bind_MAP2K_Yp
+  339 22,64 72 a #R_bind_MAP2K_Yp
+  340 56 22,53 d1 #_reverse_R_bind_MAP2K_Yp
+  341 57 22,54 d1 #_reverse_R_bind_MAP2K_Yp
+  342 68 22,62 d1 #_reverse_R_bind_MAP2K_Yp
+  343 72 22,64 d1 #_reverse_R_bind_MAP2K_Yp
+  344 75 22,63 d1 #_reverse_R_bind_MAP2K_Yp
+  345 33,53 40 a #R_bind_MAP2K_pp
+  346 33,54 41 a #R_bind_MAP2K_pp
+  347 33,62 46 a #R_bind_MAP2K_pp
+  348 33,63 47 a #R_bind_MAP2K_pp
+  349 33,64 48 a #R_bind_MAP2K_pp
+  350 55 33,77 d1 #_reverse_R_bind_MAP2K_pp
+  351 74 33,81 d1 #_reverse_R_bind_MAP2K_pp
+  352 53 4,44 d1 #_reverse_R_bind_MAPK_pY
+  353 56 19,44 d1 #_reverse_R_bind_MAPK_pY
+  354 58 18,44 d1 #_reverse_R_bind_MAPK_pY
+  355 60 9,44 d1 #_reverse_R_bind_MAPK_pY
+  356 62 15,44 d1 #_reverse_R_bind_MAPK_pY
+  357 65 6,44 d1 #_reverse_R_bind_MAPK_pY
+  358 66 16,44 d1 #_reverse_R_bind_MAPK_pY
+  359 67 26,44 d1 #_reverse_R_bind_MAPK_pY
+  360 68 27,44 d1 #_reverse_R_bind_MAPK_pY
+  361 54 4,45 d1 #_reverse_R_bind_MAPK_Yp
+  362 57 19,45 d1 #_reverse_R_bind_MAPK_Yp
+  363 59 18,45 d1 #_reverse_R_bind_MAPK_Yp
+  364 61 9,45 d1 #_reverse_R_bind_MAPK_Yp
+  365 64 15,45 d1 #_reverse_R_bind_MAPK_Yp
+  366 69 6,45 d1 #_reverse_R_bind_MAPK_Yp
+  367 70 16,45 d1 #_reverse_R_bind_MAPK_Yp
+  368 71 26,45 d1 #_reverse_R_bind_MAPK_Yp
+  369 72 27,45 d1 #_reverse_R_bind_MAPK_Yp
+  370 55 30,73 d2 #R_release_MAPK_pp
+  371 63 8,73 d2 #R_release_MAPK_pp
+  372 74 35,73 d2 #R_release_MAPK_pp
+  373 75 14,73 d2 #R_release_MAPK_pp
+  374 76 13,73 d2 #R_release_MAPK_pp
+  375 60 51 pscaff #R_phos_MAP2K_R1
+  376 61 52 pscaff #R_phos_MAP2K_R1
+  377 75 47 pscaff #R_phos_MAP2K_R1
+  378 60 49 pscaff #R_phos_MAP2K_R2
+  379 61 50 pscaff #R_phos_MAP2K_R2
+  380 76 47 pscaff #R_phos_MAP2K_R2
+  381 60 66 u #R_inactivate_MAP3K
+  382 61 70 u #R_inactivate_MAP3K
+  383 63 81 u #R_inactivate_MAP3K
+  384 75 82 u #R_inactivate_MAP3K
+  385 76 83 u #R_inactivate_MAP3K
+  386 55 78 u #R_dephos_MAP2K_R1
+  387 58 65 u #R_dephos_MAP2K_R1
+  388 59 69 u #R_dephos_MAP2K_R1
+  389 67 66 u #R_dephos_MAP2K_R1
+  390 71 70 u #R_dephos_MAP2K_R1
+  391 74 82 u #R_dephos_MAP2K_R1
+  392 76 80 u #R_dephos_MAP2K_R1
+  393 55 79 u #R_dephos_MAP2K_R2
+  394 56 65 u #R_dephos_MAP2K_R2
+  395 57 69 u #R_dephos_MAP2K_R2
+  396 68 66 u #R_dephos_MAP2K_R2
+  397 72 70 u #R_dephos_MAP2K_R2
+  398 74 83 u #R_dephos_MAP2K_R2
+  399 75 80 u #R_dephos_MAP2K_R2
+  400 53 7 u #R_dephos_MAPK_R1
+  401 55 41 u #R_dephos_MAPK_R1
+  402 56 29 u #R_dephos_MAPK_R1
+  403 58 28 u #R_dephos_MAPK_R1
+  404 60 12 u #R_dephos_MAPK_R1
+  405 62 17 u #R_dephos_MAPK_R1
+  406 63 43 u #R_dephos_MAPK_R1
+  407 65 11 u #R_dephos_MAPK_R1
+  408 66 20 u #R_dephos_MAPK_R1
+  409 67 31 u #R_dephos_MAPK_R1
+  410 68 32 u #R_dephos_MAPK_R1
+  411 73 45 u #R_dephos_MAPK_R1
+  412 74 48 u #R_dephos_MAPK_R1
+  413 75 50 u #R_dephos_MAPK_R1
+  414 76 52 u #R_dephos_MAPK_R1
+  415 54 7 u #R_dephos_MAPK_R2
+  416 55 40 u #R_dephos_MAPK_R2
+  417 57 29 u #R_dephos_MAPK_R2
+  418 59 28 u #R_dephos_MAPK_R2
+  419 61 12 u #R_dephos_MAPK_R2
+  420 63 42 u #R_dephos_MAPK_R2
+  421 64 17 u #R_dephos_MAPK_R2
+  422 69 11 u #R_dephos_MAPK_R2
+  423 70 20 u #R_dephos_MAPK_R2
+  424 71 31 u #R_dephos_MAPK_R2
+  425 72 32 u #R_dephos_MAPK_R2
+  426 73 44 u #R_dephos_MAPK_R2
+  427 74 46 u #R_dephos_MAPK_R2
+  428 75 49 u #R_dephos_MAPK_R2
+  429 76 51 u #R_dephos_MAPK_R2
+  430 5,77 63 a #R_bind_MAP3K
+  431 5,78 75 a #R_bind_MAP3K
+  432 5,79 76 a #R_bind_MAP3K
+  433 80 5,84 d1 #_reverse_R_bind_MAP3K
+  434 81 1,77 d2 #R_release_MAP3K_I
+  435 82 1,78 d2 #R_release_MAP3K_I
+  436 83 1,79 d2 #R_release_MAP3K_I
+  437 2,77 84 a #R_bind_MAP2K_YY
+  438 2,81 85 a #R_bind_MAP2K_YY
+  439 80 2,63 d1 #_reverse_R_bind_MAP2K_YY
+  440 21,77 79 a #R_bind_MAP2K_pY
+  441 21,81 83 a #R_bind_MAP2K_pY
+  442 79 21,77 d1 #_reverse_R_bind_MAP2K_pY
+  443 83 21,81 d1 #_reverse_R_bind_MAP2K_pY
+  444 22,77 78 a #R_bind_MAP2K_Yp
+  445 22,81 82 a #R_bind_MAP2K_Yp
+  446 78 22,77 d1 #_reverse_R_bind_MAP2K_Yp
+  447 82 22,81 d1 #_reverse_R_bind_MAP2K_Yp
+  448 33,77 55 a #R_bind_MAP2K_pp
+  449 33,81 74 a #R_bind_MAP2K_pp
+  450 77 4,73 d2 #R_release_MAPK_pp
+  451 78 19,73 d2 #R_release_MAPK_pp
+  452 79 18,73 d2 #R_release_MAPK_pp
+  453 80 9,73 d2 #R_release_MAPK_pp
+  454 81 15,73 d2 #R_release_MAPK_pp
+  455 82 27,73 d2 #R_release_MAPK_pp
+  456 83 26,73 d2 #R_release_MAPK_pp
+  457 80 76 pscaff #R_phos_MAP2K_R1
+  458 80 75 pscaff #R_phos_MAP2K_R2
+  459 80 85 u #R_inactivate_MAP3K
+  460 79 84 u #R_dephos_MAP2K_R1
+  461 83 85 u #R_dephos_MAP2K_R1
+  462 78 84 u #R_dephos_MAP2K_R2
+  463 82 85 u #R_dephos_MAP2K_R2
+  464 77 54 u #R_dephos_MAPK_R1
+  465 78 57 u #R_dephos_MAPK_R1
+  466 79 59 u #R_dephos_MAPK_R1
+  467 80 61 u #R_dephos_MAPK_R1
+  468 81 64 u #R_dephos_MAPK_R1
+  469 82 72 u #R_dephos_MAPK_R1
+  470 83 71 u #R_dephos_MAPK_R1
+  471 77 53 u #R_dephos_MAPK_R2
+  472 78 56 u #R_dephos_MAPK_R2
+  473 79 58 u #R_dephos_MAPK_R2
+  474 80 60 u #R_dephos_MAPK_R2
+  475 81 62 u #R_dephos_MAPK_R2
+  476 82 68 u #R_dephos_MAPK_R2
+  477 83 67 u #R_dephos_MAPK_R2
+  478 5,84 80 a #R_bind_MAP3K
+  479 85 1,84 d2 #R_release_MAP3K_I
+  480 84 2,77 d1 #_reverse_R_bind_MAP2K_YY
+  481 85 2,81 d1 #_reverse_R_bind_MAP2K_YY
+  482 84 6,73 d2 #R_release_MAPK_pp
+  483 85 16,73 d2 #R_release_MAPK_pp
+  484 84 69 u #R_dephos_MAPK_R1
+  485 85 70 u #R_dephos_MAPK_R1
+  486 84 65 u #R_dephos_MAPK_R2
+  487 85 66 u #R_dephos_MAPK_R2
+end reactions
+begin groups
+    1 Obs_R                73
+    2 Obs_MAPK_pp          47,55,63,73,74,75,76,77,78,79,80,81,82,83,84,85
+    3 Obs_MAP2K_pp         25,30,33,34,35,36,37,38,39,40,41,46,47,48,55,74
+    4 Obs_MAP3K_A          5,8,9,10,12,13,14,23,24,25,34,38,39,42,43,47,49,50,51,52,60,61,63,75,76,80
+    5 Obs_MAP3K_tot        1,5,8,9,10,12,13,14,15,16,17,20,23,24,25,26,27,31,32,34,35,37,38,39,42,43,46,47,48,49,50,51,52,60,61,62,63,64,66,67,68,70,71,72,74,75,76,80,81,82,83,85
+    6 Obs_MAP2K_tot        2,6,9,11,12,13,14,16,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,46,47,48,49,50,51,52,55,56,57,58,59,60,61,65,66,67,68,69,70,71,72,74,75,76,78,79,80,82,83,84,85
+    7 Obs_MAPK_tot         3,7,10,11,12,17,20,23,24,28,29,31,32,34,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85
+    8 Obs_Scaff_tot        4,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,23,24,25,26,27,28,29,30,31,32,34,35,36,37,38,39,40,41,42,43,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,74,75,76,77,78,79,80,81,82,83,84,85
+end groups

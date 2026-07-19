@@ -92,50 +92,86 @@ XCHECK_ATOL = 1e-6
 # ``effort`` buckets the model by cost for the --effort tiers: mwc settles
 # fastest (t_end_hint 10), RAFi_ground slowest (t_end_hint 1e5).
 
+# Six published, real-world models whose parameter_scan readout is a
+# steady-state dose-response curve (arXiv Table 9/10). Nets are the
+# generated networks vendored under models/net/ode/ (copied from
+# suites/ode_fullnet/nets/, RuleHub commit 479d6d62). Scan ranges follow
+# each model's native parameter_scan; n_scan_pts standardized to 20.
+# ``bistable`` flags the two designed switches (toggle, lac operon) whose
+# f(y)=0 has multiple roots — see the reference-branch handling in
+# benchmark_dose().
 MODELS = [
     {
-        "name": "RAFi_ground",
-        "net_file": "models/net/ode/RAFi_ground.net",
-        "scan_param": "Ifree",
-        "par_min": 1e-4,
-        "par_max": 1e2,
-        "n_scan_pts": 20,
-        "log_scale": True,
-        "t_end_hint": 1e5,
-        "effort": "high",
-    },
-    {
-        "name": "Scaff_22_ground",
-        "net_file": "models/net/ode/Scaff_22_ground.net",
-        "scan_param": "S",
+        "name": "kinetic_proofreading",
+        "net_file": "models/net/ode/kinetic_proofreading.net",
+        "scan_param": "koff",
         "par_min": 1e-3,
         "par_max": 1.0,
         "n_scan_pts": 20,
         "log_scale": True,
         "t_end_hint": 1e3,
-        "effort": "medium",
-    },
-    {
-        "name": "mwc",
-        "net_file": "models/net/ode/mwc.net",
-        "scan_param": "log_P_ox",
-        "par_min": 0.0,
-        "par_max": 1.0,
-        "n_scan_pts": 20,
-        "log_scale": False,
-        "t_end_hint": 10.0,
         "effort": "low",
+        "bistable": False,
     },
     {
-        "name": "wofsy_goldstein",
-        "net_file": "models/net/ode/wofsy_goldstein.net",
-        "scan_param": "logConcLig",
-        "par_min": -10.0,
-        "par_max": -6.0,
+        "name": "genetic_switch",
+        "net_file": "models/net/ode/genetic_switch.net",
+        "scan_param": "alpha_2",
+        "par_min": 1.0,
+        "par_max": 500.0,
         "n_scan_pts": 20,
         "log_scale": False,
-        "t_end_hint": 100.0,
+        "t_end_hint": 1e2,
+        "effort": "low",
+        "bistable": True,
+    },
+    {
+        "name": "lac_operon",
+        "net_file": "models/net/ode/lac_operon.net",
+        "scan_param": "l_ext",
+        "par_min": 1e-2,
+        "par_max": 1e6,
+        "n_scan_pts": 20,
+        "log_scale": True,
+        "t_end_hint": 1e3,
+        "effort": "low",
+        "bistable": True,
+    },
+    {
+        "name": "Kocieniewski_2012",
+        "net_file": "models/net/ode/Kocieniewski_2012.net",
+        "scan_param": "Stot",
+        "par_min": 1e1,
+        "par_max": 1e6,
+        "n_scan_pts": 20,
+        "log_scale": True,
+        "t_end_hint": 2e3,
         "effort": "medium",
+        "bistable": False,
+    },
+    {
+        "name": "Barua_2007",
+        "net_file": "models/net/ode/Barua_2007.net",
+        "scan_param": "Rtot",
+        "par_min": 0.05,
+        "par_max": 0.5,
+        "n_scan_pts": 20,
+        "log_scale": False,
+        "t_end_hint": 1e3,
+        "effort": "medium",
+        "bistable": False,
+    },
+    {
+        "name": "Barua_2013",
+        "net_file": "models/net/ode/Barua_2013.net",
+        "scan_param": "APCtot",
+        "par_min": 3.2e4,
+        "par_max": 3.2e6,
+        "n_scan_pts": 20,
+        "log_scale": True,
+        "t_end_hint": 2.5e5,
+        "effort": "high",
+        "bistable": False,
     },
 ]
 
@@ -331,6 +367,25 @@ def _make_sim(net_path: str, param_name: str, param_val: float):
     return bngsim.Simulator(model, method="ode"), model
 
 
+def run_bngsim_integration_ss(
+    net_path: str, param_name: str, param_val: float, max_time: float
+) -> dict:
+    """Physical steady state via CVODE integration to the BNG2.pl parity
+    criterion ``||f(y)||_2 / n < tol``. This is the ground-truth reference for
+    the correctness gate: unlike Newton-from-IC it always returns the steady
+    state the dynamics actually reach, with no spurious f(y)=0 roots and no
+    NaN. Untimed."""
+    try:
+        sim, _ = _make_sim(net_path, param_name, param_val)
+        res = sim.steady_state(method="integration", max_time=float(max_time))
+        conc = np.asarray(res.concentrations, dtype=float)
+        if not bool(getattr(res, "converged", True)) or not np.all(np.isfinite(conc)):
+            return {"error": "integration reference did not converge"}
+        return {"final_conc": conc}
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 def run_bngsim_cvode_to_horizon(
     net_path: str, param_name: str, param_val: float, t_end: float, n_points: int
 ) -> dict:
@@ -372,11 +427,15 @@ def run_bngsim_kinsol_strict(net_path: str, param_name: str, param_val: float) -
             res = sim.steady_state(method="newton")
             elapsed = time.perf_counter() - t0
             converged = bool(getattr(res, "converged", True))
-            species = np.asarray(
-                res.species[-1, :] if hasattr(res, "species") else res, dtype=float
-            )
-            if not converged:
-                return {"wall_time": elapsed, "error": "newton did not converge"}
+            species = np.asarray(res.concentrations, dtype=float)
+            # Guard: KINSOL can diverge into unphysical space (negative conc →
+            # NaN in Hill/power rate laws, e.g. the genetic toggle). The C++
+            # solver currently mislabels a NaN-residual result as converged
+            # (`NaN >= tol` is false), so its integration fallback never fires
+            # — detect the non-finite result here and force the harness
+            # fallback to CVODE. See lanl/bngsim steady-state NaN-convergence bug.
+            if not converged or not np.all(np.isfinite(species)):
+                return {"wall_time": elapsed, "error": "newton did not converge (non-finite)"}
             return {"wall_time": elapsed, "final_conc": species}
         except Exception as e:
             elapsed = time.perf_counter() - t0
@@ -414,17 +473,14 @@ def run_bngsim_kinsol_two_tier(net_path: str, param_name: str, param_val: float)
         t0 = time.perf_counter()
         refined = sim.steady_state(method="newton")
         refine_t = time.perf_counter() - t0
-        if not bool(getattr(refined, "converged", True)):
+        species = np.asarray(refined.concentrations, dtype=float)
+        if not bool(getattr(refined, "converged", True)) or not np.all(np.isfinite(species)):
             return {
                 "wall_time": burst_t + refine_t,
                 "burst": burst_t,
                 "refine": refine_t,
-                "error": "newton refinement did not converge",
+                "error": "newton refinement did not converge (non-finite)",
             }
-        species = np.asarray(
-            refined.species[-1, :] if hasattr(refined, "species") else refined,
-            dtype=float,
-        )
         return {
             "wall_time": burst_t + refine_t,
             "burst": burst_t,
@@ -550,17 +606,27 @@ def benchmark_dose(
     pname = mdef["scan_param"]
     T_char = T_CHAR_FACTOR * mdef["t_end_hint"]
 
-    # 1. Reference KINSOL attempt → y_ss (untimed run, just for analysis).
-    ks_attempt = run_bngsim_kinsol_strict(net_path, pname, pval)
+    # 1. Reference y_ss = the PHYSICAL steady state (CVODE integration to the
+    #    parity criterion). Newton-from-IC is deliberately NOT the reference:
+    #    seeded at the initial condition it can converge to a spurious root of
+    #    f(y)=0 that the dynamics never reach (kinetic_proofreading at small
+    #    koff: reldiff 1e3 vs the integrated state) or diverge to NaN (genetic
+    #    toggle), so a Newton "reference" would silently mis-anchor the gate.
+    ref = run_bngsim_integration_ss(net_path, pname, pval, T_char)
     y_ss: np.ndarray | None = None
-    if "final_conc" in ks_attempt:
-        y_ss = np.asarray(ks_attempt["final_conc"], dtype=float)
-    else:
+    if "final_conc" in ref:
+        y_ss = np.asarray(ref["final_conc"], dtype=float)
+
+    # Record whether strict Newton (the KINSOL-first strategy) reaches the
+    # physical state; it is checked against y_ss in the correctness gate below.
+    ks_attempt = run_bngsim_kinsol_strict(net_path, pname, pval)
+    if "final_conc" not in ks_attempt:
         rec.kinsol_failed = True
         rec.notes.append(f"newton: {ks_attempt.get('error', '?')[:120]}")
 
-    # 2. Dense reference trajectory to T_char (untimed). Doubles as fallback
-    #    target for y_ss when KINSOL did not converge.
+    # 2. Dense reference trajectory to T_char (untimed) for the settling time.
+    #    Doubles as the y_ss fallback if the integration reference did not
+    #    converge within T_char.
     traj = run_bngsim_dense_trajectory(net_path, pname, pval, T_char, N_DENSE_POINTS)
     if "error" in traj:
         rec.censored = True
@@ -570,7 +636,7 @@ def benchmark_dose(
     y_dense = traj["species"]
     if y_ss is None:
         y_ss = y_dense[-1, :].copy()
-        rec.notes.append("y_ss from CVODE-fallback (KINSOL did not converge)")
+        rec.notes.append("y_ss from dense-trajectory tail (integration ref did not converge)")
 
     # 3. Settling time on the "enter and never leave" definition.
     t_s = settling_time(t_dense, y_dense, y_ss)

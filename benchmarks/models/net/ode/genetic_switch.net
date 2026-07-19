@@ -1,0 +1,26 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 alpha_1     156.25  # Constant
+    2 alpha_2     15.6  # Constant
+    3 beta        2.5  # Constant
+    4 gamma       1.0  # Constant
+    5 k_deg       1.0  # Constant
+end parameters
+begin functions
+    1 syn_R1() alpha_1/(1+(Obs_Tot_R2^beta))
+    2 syn_R2() alpha_2/(1+(Obs_Tot_R1^gamma))
+end functions
+begin species
+    1 R1() 0
+    2 R2() 0
+end species
+begin reactions
+    1 0 1 syn_R1 #_R1
+    2 0 2 syn_R2 #_R2
+    3 1 0 k_deg #_R3
+    4 2 0 k_deg #_R4
+end reactions
+begin groups
+    1 Obs_Tot_R1           1
+    2 Obs_Tot_R2           2
+end groups

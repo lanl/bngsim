@@ -1,0 +1,56 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA                6.02214076e23  # Constant
+    2 V_ref             1e-9  # Constant
+    3 NR                300000  # Constant
+    4 NL                602  # Constant
+    5 kon1              1.661e-8  # Constant
+    6 kon2              3.333e-6  # Constant
+    7 koff              0.1  # Constant
+    8 kp                0.4  # Constant
+end parameters
+begin functions
+    1 alpha() kp/(kp+(2*koff))
+    2 frac_dimers() (2*Obs_Tot_Dimers)/NR
+    3 frac_term() Obs_D5/(Obs_Tot_Dimers+1e-30)
+    4 frac_R_term() (2*Obs_D5)/NR
+end functions
+begin species
+    1 L(mod~0,r,r) NL
+    2 R(l) NR
+    3 L(mod~0,r!1,r).R(l!1) 0
+    4 L(mod~0,r!1,r!2).R(l!1).R(l!2) 0
+    5 L(mod~1,r!1,r!2).R(l!1).R(l!2) 0
+    6 L(mod~2,r!1,r!2).R(l!1).R(l!2) 0
+    7 L(mod~3,r!1,r!2).R(l!1).R(l!2) 0
+    8 L(mod~4,r!1,r!2).R(l!1).R(l!2) 0
+    9 L(mod~5,r!1,r!2).R(l!1).R(l!2) 0
+end species
+begin reactions
+    1 1,2 3 2*kon1 #_R1
+    2 2,3 4 kon2 #_R2
+    3 3 1,2 koff #_R3
+    4 4 2,3 2*koff #_R3
+    5 4 5 kp #_R9
+    6 5 2,3 2*koff #_R4
+    7 5 6 kp #_R10
+    8 6 2,3 2*koff #_R5
+    9 6 7 kp #_R11
+   10 7 2,3 2*koff #_R6
+   11 7 8 kp #_R12
+   12 8 2,3 2*koff #_R7
+   13 8 9 kp #_R13
+   14 9 2,3 2*koff #_R8
+end reactions
+begin groups
+    1 Obs_Free_L           1
+    2 Obs_Free_R           2
+    3 Obs_Singly_Bound     3
+    4 Obs_Tot_Dimers       4,5,6,7,8,9
+    5 Obs_D0               4
+    6 Obs_D1               5
+    7 Obs_D2               6
+    8 Obs_D3               7
+    9 Obs_D4               8
+   10 Obs_D5               9
+end groups

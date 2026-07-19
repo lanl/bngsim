@@ -1,0 +1,1236 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA             6.02214076e23  # Constant
+    2 V_ref          1e-12  # Constant
+    3 kopen          10  # Constant
+    4 kclose         500  # Constant
+    5 kon_CSH2       1  # Constant
+    6 kon_NSH2       1  # Constant
+    7 koff           1  # Constant
+    8 koff_CSH2      koff  # ConstantExpression
+    9 koff_NSH2      koff  # ConstantExpression
+   10 kon_PTP        1  # Constant
+   11 koff_PTP       10  # Constant
+   12 kcat_PTP       1  # Constant
+   13 kkin_Y1        0.1  # Constant
+   14 chi_r1         1000  # Constant
+   15 chi_r2         100  # Constant
+   16 chi_r3         1000  # Constant
+   17 chi_r4         1000  # Constant
+   18 chi_r5         100  # Constant
+   19 chi_r6         100  # Constant
+   20 chi_r7         100  # Constant
+   21 chi_r8         1000  # Constant
+   22 chi_r9         100  # Constant
+   23 chi_r10        100  # Constant
+   24 chi_r11        1000  # Constant
+   25 Rtot           0.05  # Constant
+   26 R_dim          Rtot/2  # ConstantExpression
+   27 S_tot          0.10  # Constant
+   28 _rateLaw1      chi_r1*kon_NSH2  # ConstantExpression
+   29 _rateLaw2      chi_r2*kon_PTP  # ConstantExpression
+   30 _rateLaw3      chi_r3*kon_PTP  # ConstantExpression
+   31 _rateLaw4      chi_r1*kon_CSH2  # ConstantExpression
+   32 _rateLaw5      chi_r4*kon_PTP  # ConstantExpression
+   33 _rateLaw6      chi_r5*kon_PTP  # ConstantExpression
+   34 _rateLaw7      chi_r2*kon_CSH2  # ConstantExpression
+   35 _rateLaw8      chi_r3*kon_CSH2  # ConstantExpression
+   36 _rateLaw9      chi_r4*kon_NSH2  # ConstantExpression
+   37 _rateLaw10     chi_r5*kon_NSH2  # ConstantExpression
+   38 _rateLaw11     chi_r6*kon_PTP  # ConstantExpression
+   39 _rateLaw12     chi_r7*kon_PTP  # ConstantExpression
+   40 _rateLaw13     chi_r8*kon_NSH2  # ConstantExpression
+   41 _rateLaw14     chi_r9*kon_NSH2  # ConstantExpression
+   42 _rateLaw15     chi_r10*kon_CSH2  # ConstantExpression
+   43 _rateLaw16     chi_r11*kon_CSH2  # ConstantExpression
+end parameters
+begin species
+    1 Shp2(CSH2,NSH2~C,PTP~C) S_tot
+    2 R(DD!1,Y1~U,Y2~P).R(DD!1,Y1~U,Y2~P) R_dim
+    3 Shp2(CSH2,NSH2~O,PTP~O) 0
+    4 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!2,NSH2~C,PTP~C) 0
+    5 R(DD!1,Y1~P,Y2~P).R(DD!1,Y1~U,Y2~P) 0
+    6 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!2,NSH2~O,PTP~O) 0
+    7 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~C,PTP~C) 0
+    8 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+    9 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!2,NSH2~C,PTP~C) 0
+   10 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!2,NSH2~O,PTP~O) 0
+   11 R(DD!1,Y1~P,Y2~P).R(DD!1,Y1~U,Y2~P!2).Shp2(CSH2!2,NSH2~C,PTP~C) 0
+   12 R(DD!1,Y1~P,Y2~P).R(DD!1,Y1~U,Y2~P!2).Shp2(CSH2!2,NSH2~O,PTP~O) 0
+   13 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   14 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   15 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   16 R(DD!1,Y1~P,Y2~P).R(DD!1,Y1~U,Y2~P!2).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   17 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   18 R(DD!1,Y1~P,Y2~P).R(DD!1,Y1~P,Y2~P) 0
+   19 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O,PTP~O).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   20 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   21 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~C,PTP~C) 0
+   22 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   23 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!2,NSH2~O,PTP~O) 0
+   24 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O,PTP~O).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   25 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   26 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   27 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   28 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   29 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   30 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   31 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   32 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   33 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P).Shp2(CSH2!2,NSH2~C,PTP~C) 0
+   34 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P).Shp2(CSH2!2,NSH2~O,PTP~O) 0
+   35 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2,NSH2~O!2,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   36 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2,NSH2~O!2,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   37 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   38 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   39 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   40 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   41 R(DD!1,Y1~U,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O!3,PTP~O) 0
+   42 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!2,NSH2~O!3,PTP~O) 0
+   43 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~O!2,PTP~O) 0
+   44 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+   45 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+   46 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~U,Y2~P!3).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   47 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   48 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   49 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   50 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   51 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   52 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~C,PTP~C) 0
+   53 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!2,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   54 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!2,NSH2~O,PTP~O).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   55 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   56 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   57 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   58 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   59 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   60 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!2,PTP~O) 0
+   61 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   62 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   63 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   64 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   65 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+   66 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2!4,NSH2~O,PTP~O) 0
+   67 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~O,PTP~O!2) 0
+   68 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O!2).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+   69 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!4,PTP~O!2) 0
+   70 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O!2) 0
+   71 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   72 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   73 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   74 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2,NSH2~O!2,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   75 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   76 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   77 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O!4,PTP~O) 0
+   78 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   79 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2,NSH2~O!4,PTP~O!2).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+   80 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O!4,PTP~O) 0
+   81 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P!3,Y2~P).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!3) 0
+   82 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   83 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   84 R(DD!1,Y1~P,Y2~P!2).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!2,NSH2~O!3,PTP~O) 0
+   85 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+   86 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+   87 R(DD!1,Y1~P!2,Y2~P).R(DD!1,Y1~P,Y2~P!3).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   88 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+   89 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!3,NSH2~O!4,PTP~O!2) 0
+   90 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~U,Y2~P!4).Shp2(CSH2!4,NSH2~O!3,PTP~O!2) 0
+   91 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   92 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   93 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   94 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   95 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   96 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   97 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   98 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+   99 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  100 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  101 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O!2) 0
+  102 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2!4,NSH2~O,PTP~O) 0
+  103 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!4,NSH2~O,PTP~O!2) 0
+  104 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O!2).Shp2(CSH2!3,NSH2~O,PTP~O) 0
+  105 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!4,PTP~O!2) 0
+  106 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O!2) 0
+  107 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+  108 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+  109 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  110 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  111 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O!4,PTP~O) 0
+  112 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+  113 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2,NSH2~O!4,PTP~O!2).Shp2(CSH2,NSH2~O!3,PTP~O) 0
+  114 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O!4,PTP~O) 0
+  115 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O!4,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  116 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  117 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  118 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2!3,NSH2~O,PTP~O!4).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  119 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O!4).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  120 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  121 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!3,NSH2~O!4,PTP~O!2) 0
+  122 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P,Y2~P!4).Shp2(CSH2!4,NSH2~O!3,PTP~O!2) 0
+  123 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  124 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~C,PTP~C).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  125 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  126 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  127 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  128 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  129 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  130 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2!3,NSH2~O,PTP~O!4).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  131 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!4).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  132 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O!4).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  133 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O!4).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  134 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~C,PTP~C).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  135 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O,PTP~O).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  136 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2,NSH2~O!3,PTP~O).Shp2(CSH2,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  137 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  138 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!4).Shp2(CSH2,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  139 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2,NSH2~O!3,PTP~O!4).Shp2(CSH2,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2) 0
+  140 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  141 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O!5,PTP~O).Shp2(CSH2,NSH2~O,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  142 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O!5,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  143 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O,PTP~O!4) 0
+  144 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!2).Shp2(CSH2!5,NSH2~O,PTP~O!4) 0
+  145 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O,PTP~O!4).Shp2(CSH2,NSH2~O!3,PTP~O!2) 0
+  146 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!5,NSH2~O,PTP~O!2).Shp2(CSH2!3,NSH2~O,PTP~O!4) 0
+  147 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2!3,NSH2~O,PTP~O!4).Shp2(CSH2,NSH2~O!5,PTP~O!2) 0
+  148 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2,NSH2~O!5,PTP~O!2).Shp2(CSH2,NSH2~O!3,PTP~O!4) 0
+  149 R(DD!1,Y1~P!2,Y2~P!3).R(DD!1,Y1~P!4,Y2~P!5).Shp2(CSH2,NSH2~O!3,PTP~O!2).Shp2(CSH2,NSH2~O!5,PTP~O!4) 0
+end species
+begin reactions
+    1 1 3 kopen #R_conf_openclose
+    2 1,2 4 2*kon_CSH2 #R_bind_CSH2_cyto
+    3 2 5 2*kkin_Y1 #R_kin_Y1
+    4 4 6 kopen #R_conf_openclose
+    5 3 1 kclose #_reverse_R_conf_openclose
+    6 2,3 6 2*kon_CSH2 #R_bind_CSH2_cyto
+    7 1,4 7 kon_CSH2 #R_bind_CSH2_cyto
+    8 3,4 8 kon_CSH2 #R_bind_CSH2_cyto
+    9 1,5 9 kon_CSH2 #R_bind_CSH2_cyto
+   10 3,5 10 kon_CSH2 #R_bind_CSH2_cyto
+   11 1,5 11 kon_CSH2 #R_bind_CSH2_cyto
+   12 3,5 12 kon_CSH2 #R_bind_CSH2_cyto
+   13 4 1,2 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   14 2,3 13 2*kon_NSH2 #R_bind_NSH2_cyto
+   15 3,4 14 kon_NSH2 #R_bind_NSH2_cyto
+   16 3,5 15 kon_NSH2 #R_bind_NSH2_cyto
+   17 3,5 16 kon_NSH2 #R_bind_NSH2_cyto
+   18 3,5 17 kon_PTP #R_bind_PTP_cyto
+   19 4 9 kkin_Y1 #R_kin_Y1
+   20 4 11 kkin_Y1 #R_kin_Y1
+   21 5 18 kkin_Y1 #R_kin_Y1
+   22 7 8 2*kopen #R_conf_openclose
+   23 8 19 kopen #R_conf_openclose
+   24 9 10 kopen #R_conf_openclose
+   25 11 12 kopen #R_conf_openclose
+   26 14 20 kopen #R_conf_openclose
+   27 6 4 kclose #_reverse_R_conf_openclose
+   28 8 7 kclose #_reverse_R_conf_openclose
+   29 10 9 kclose #_reverse_R_conf_openclose
+   30 12 11 kclose #_reverse_R_conf_openclose
+   31 1,6 8 kon_CSH2 #R_bind_CSH2_cyto
+   32 3,6 19 kon_CSH2 #R_bind_CSH2_cyto
+   33 1,9 21 kon_CSH2 #R_bind_CSH2_cyto
+   34 3,9 22 kon_CSH2 #R_bind_CSH2_cyto
+   35 1,10 23 kon_CSH2 #R_bind_CSH2_cyto
+   36 3,10 24 kon_CSH2 #R_bind_CSH2_cyto
+   37 1,11 21 kon_CSH2 #R_bind_CSH2_cyto
+   38 3,11 23 kon_CSH2 #R_bind_CSH2_cyto
+   39 1,12 22 kon_CSH2 #R_bind_CSH2_cyto
+   40 3,12 24 kon_CSH2 #R_bind_CSH2_cyto
+   41 1,13 14 kon_CSH2 #R_bind_CSH2_cyto
+   42 3,13 20 kon_CSH2 #R_bind_CSH2_cyto
+   43 1,15 25 kon_CSH2 #R_bind_CSH2_cyto
+   44 3,15 26 kon_CSH2 #R_bind_CSH2_cyto
+   45 1,16 27 kon_CSH2 #R_bind_CSH2_cyto
+   46 3,16 28 kon_CSH2 #R_bind_CSH2_cyto
+   47 1,17 29 kon_CSH2 #R_bind_CSH2_cyto
+   48 3,17 30 kon_CSH2 #R_bind_CSH2_cyto
+   49 1,17 31 kon_CSH2 #R_bind_CSH2_cyto
+   50 3,17 32 kon_CSH2 #R_bind_CSH2_cyto
+   51 1,18 33 2*kon_CSH2 #R_bind_CSH2_cyto
+   52 3,18 34 2*kon_CSH2 #R_bind_CSH2_cyto
+   53 6 2,3 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   54 7 1,4 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   55 8 1,6 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   56 8 3,4 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   57 9 1,5 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   58 10 3,5 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   59 11 1,5 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   60 12 3,5 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   61 14 1,13 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+   62 3,6 20 kon_NSH2 #R_bind_NSH2_cyto
+   63 3,9 27 kon_NSH2 #R_bind_NSH2_cyto
+   64 3,10 28 kon_NSH2 #R_bind_NSH2_cyto
+   65 3,11 25 kon_NSH2 #R_bind_NSH2_cyto
+   66 3,12 26 kon_NSH2 #R_bind_NSH2_cyto
+   67 3,13 35 kon_NSH2 #R_bind_NSH2_cyto
+   68 3,15 36 kon_NSH2 #R_bind_NSH2_cyto
+   69 3,16 36 kon_NSH2 #R_bind_NSH2_cyto
+   70 3,17 37 kon_NSH2 #R_bind_NSH2_cyto
+   71 3,17 38 kon_NSH2 #R_bind_NSH2_cyto
+   72 3,18 39 2*kon_NSH2 #R_bind_NSH2_cyto
+   73 13 2,3 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+   74 14 3,4 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+   75 15 3,5 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+   76 16 3,5 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+   77 3,9 29 kon_PTP #R_bind_PTP_cyto
+   78 3,10 30 kon_PTP #R_bind_PTP_cyto
+   79 3,11 31 kon_PTP #R_bind_PTP_cyto
+   80 3,12 32 kon_PTP #R_bind_PTP_cyto
+   81 3,15 37 kon_PTP #R_bind_PTP_cyto
+   82 3,16 38 kon_PTP #R_bind_PTP_cyto
+   83 3,18 40 2*kon_PTP #R_bind_PTP_cyto
+   84 17 3,5 koff_PTP #_reverse_R_bind_PTP_cyto
+   85 6 10 kkin_Y1 #R_kin_Y1
+   86 6 12 kkin_Y1 #R_kin_Y1
+   87 7 21 2*kkin_Y1 #R_kin_Y1
+   88 8 22 kkin_Y1 #R_kin_Y1
+   89 8 23 kkin_Y1 #R_kin_Y1
+   90 9 33 kkin_Y1 #R_kin_Y1
+   91 10 34 kkin_Y1 #R_kin_Y1
+   92 11 33 kkin_Y1 #R_kin_Y1
+   93 12 34 kkin_Y1 #R_kin_Y1
+   94 13 15 kkin_Y1 #R_kin_Y1
+   95 13 16 kkin_Y1 #R_kin_Y1
+   96 14 27 kkin_Y1 #R_kin_Y1
+   97 14 25 kkin_Y1 #R_kin_Y1
+   98 15 39 kkin_Y1 #R_kin_Y1
+   99 16 39 kkin_Y1 #R_kin_Y1
+  100 17 40 kkin_Y1 #R_kin_Y1
+  101 17 2,3 kcat_PTP #R_cat_dephos_release
+  102 6 41 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  103 10 42 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  104 12 43 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  105 10 44 _rateLaw2 #R_intra02_CSH2_PTP_same
+  106 12 45 _rateLaw3 #R_intra03_CSH2_PTP_other
+  107 13 41 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  108 15 43 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  109 16 42 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  110 16 46 _rateLaw5 #R_intra05_NSH2_PTP_other
+  111 15 47 _rateLaw6 #R_intra06_NSH2_PTP_same
+  112 17 44 _rateLaw7 #R_intra07_PTP_CSH2_same
+  113 17 45 _rateLaw8 #R_intra08_PTP_CSH2_other
+  114 17 46 _rateLaw9 #R_intra09_PTP_NSH2_other
+  115 17 47 _rateLaw10 #R_intra10_PTP_NSH2_same
+  116 21 23 kopen #R_conf_openclose
+  117 21 22 kopen #R_conf_openclose
+  118 22 24 kopen #R_conf_openclose
+  119 23 24 kopen #R_conf_openclose
+  120 25 26 kopen #R_conf_openclose
+  121 27 28 kopen #R_conf_openclose
+  122 29 30 kopen #R_conf_openclose
+  123 31 32 kopen #R_conf_openclose
+  124 33 34 kopen #R_conf_openclose
+  125 19 8 2*kclose #_reverse_R_conf_openclose
+  126 20 14 kclose #_reverse_R_conf_openclose
+  127 22 21 kclose #_reverse_R_conf_openclose
+  128 23 21 kclose #_reverse_R_conf_openclose
+  129 24 22 kclose #_reverse_R_conf_openclose
+  130 24 23 kclose #_reverse_R_conf_openclose
+  131 26 25 kclose #_reverse_R_conf_openclose
+  132 28 27 kclose #_reverse_R_conf_openclose
+  133 30 29 kclose #_reverse_R_conf_openclose
+  134 32 31 kclose #_reverse_R_conf_openclose
+  135 34 33 kclose #_reverse_R_conf_openclose
+  136 1,29 48 kon_CSH2 #R_bind_CSH2_cyto
+  137 3,29 49 kon_CSH2 #R_bind_CSH2_cyto
+  138 1,30 50 kon_CSH2 #R_bind_CSH2_cyto
+  139 3,30 51 kon_CSH2 #R_bind_CSH2_cyto
+  140 1,31 48 kon_CSH2 #R_bind_CSH2_cyto
+  141 3,31 50 kon_CSH2 #R_bind_CSH2_cyto
+  142 1,32 49 kon_CSH2 #R_bind_CSH2_cyto
+  143 3,32 51 kon_CSH2 #R_bind_CSH2_cyto
+  144 1,33 52 kon_CSH2 #R_bind_CSH2_cyto
+  145 3,33 53 kon_CSH2 #R_bind_CSH2_cyto
+  146 1,34 53 kon_CSH2 #R_bind_CSH2_cyto
+  147 3,34 54 kon_CSH2 #R_bind_CSH2_cyto
+  148 1,37 55 kon_CSH2 #R_bind_CSH2_cyto
+  149 3,37 56 kon_CSH2 #R_bind_CSH2_cyto
+  150 1,38 57 kon_CSH2 #R_bind_CSH2_cyto
+  151 3,38 58 kon_CSH2 #R_bind_CSH2_cyto
+  152 1,39 59 kon_CSH2 #R_bind_CSH2_cyto
+  153 3,39 60 kon_CSH2 #R_bind_CSH2_cyto
+  154 1,40 61 kon_CSH2 #R_bind_CSH2_cyto
+  155 3,40 62 kon_CSH2 #R_bind_CSH2_cyto
+  156 1,40 63 kon_CSH2 #R_bind_CSH2_cyto
+  157 3,40 64 kon_CSH2 #R_bind_CSH2_cyto
+  158 1,44 65 kon_CSH2 #R_bind_CSH2_cyto
+  159 3,44 66 kon_CSH2 #R_bind_CSH2_cyto
+  160 1,45 67 kon_CSH2 #R_bind_CSH2_cyto
+  161 3,45 68 kon_CSH2 #R_bind_CSH2_cyto
+  162 1,46 69 kon_CSH2 #R_bind_CSH2_cyto
+  163 3,46 70 kon_CSH2 #R_bind_CSH2_cyto
+  164 1,47 71 kon_CSH2 #R_bind_CSH2_cyto
+  165 3,47 72 kon_CSH2 #R_bind_CSH2_cyto
+  166 19 3,6 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  167 20 3,13 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  168 21 1,11 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  169 21 1,9 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  170 22 1,12 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  171 22 3,9 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  172 23 3,11 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  173 23 1,10 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  174 24 3,12 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  175 24 3,10 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  176 25 1,15 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  177 26 3,15 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  178 27 1,16 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  179 28 3,16 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  180 29 1,17 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  181 30 3,17 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  182 31 1,17 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  183 32 3,17 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  184 33 1,18 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  185 34 3,18 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  186 3,29 57 kon_NSH2 #R_bind_NSH2_cyto
+  187 3,30 58 kon_NSH2 #R_bind_NSH2_cyto
+  188 3,31 55 kon_NSH2 #R_bind_NSH2_cyto
+  189 3,32 56 kon_NSH2 #R_bind_NSH2_cyto
+  190 3,33 59 kon_NSH2 #R_bind_NSH2_cyto
+  191 3,34 60 kon_NSH2 #R_bind_NSH2_cyto
+  192 3,37 73 kon_NSH2 #R_bind_NSH2_cyto
+  193 3,38 73 kon_NSH2 #R_bind_NSH2_cyto
+  194 3,39 74 kon_NSH2 #R_bind_NSH2_cyto
+  195 3,40 75 kon_NSH2 #R_bind_NSH2_cyto
+  196 3,40 76 kon_NSH2 #R_bind_NSH2_cyto
+  197 3,44 77 kon_NSH2 #R_bind_NSH2_cyto
+  198 3,45 78 kon_NSH2 #R_bind_NSH2_cyto
+  199 3,46 79 kon_NSH2 #R_bind_NSH2_cyto
+  200 3,47 80 kon_NSH2 #R_bind_NSH2_cyto
+  201 20 3,6 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  202 25 3,11 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  203 26 3,12 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  204 27 3,9 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  205 28 3,10 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  206 35 3,13 2*koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  207 36 3,16 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  208 36 3,15 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  209 37 3,17 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  210 38 3,17 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  211 39 3,18 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  212 3,21 48 kon_PTP #R_bind_PTP_cyto
+  213 3,22 49 kon_PTP #R_bind_PTP_cyto
+  214 3,23 50 kon_PTP #R_bind_PTP_cyto
+  215 3,24 51 kon_PTP #R_bind_PTP_cyto
+  216 3,25 55 kon_PTP #R_bind_PTP_cyto
+  217 3,26 56 kon_PTP #R_bind_PTP_cyto
+  218 3,27 57 kon_PTP #R_bind_PTP_cyto
+  219 3,28 58 kon_PTP #R_bind_PTP_cyto
+  220 3,33 61 kon_PTP #R_bind_PTP_cyto
+  221 3,33 63 kon_PTP #R_bind_PTP_cyto
+  222 3,34 62 kon_PTP #R_bind_PTP_cyto
+  223 3,34 64 kon_PTP #R_bind_PTP_cyto
+  224 3,36 73 kon_PTP #R_bind_PTP_cyto
+  225 3,39 75 kon_PTP #R_bind_PTP_cyto
+  226 3,39 76 kon_PTP #R_bind_PTP_cyto
+  227 3,40 81 kon_PTP #R_bind_PTP_cyto
+  228 3,42 82 kon_PTP #R_bind_PTP_cyto
+  229 3,43 83 kon_PTP #R_bind_PTP_cyto
+  230 29 3,9 koff_PTP #_reverse_R_bind_PTP_cyto
+  231 30 3,10 koff_PTP #_reverse_R_bind_PTP_cyto
+  232 31 3,11 koff_PTP #_reverse_R_bind_PTP_cyto
+  233 32 3,12 koff_PTP #_reverse_R_bind_PTP_cyto
+  234 37 3,15 koff_PTP #_reverse_R_bind_PTP_cyto
+  235 38 3,16 koff_PTP #_reverse_R_bind_PTP_cyto
+  236 40 3,18 koff_PTP #_reverse_R_bind_PTP_cyto
+  237 19 24 2*kkin_Y1 #R_kin_Y1
+  238 20 28 kkin_Y1 #R_kin_Y1
+  239 20 26 kkin_Y1 #R_kin_Y1
+  240 21 52 kkin_Y1 #R_kin_Y1
+  241 22 53 kkin_Y1 #R_kin_Y1
+  242 23 53 kkin_Y1 #R_kin_Y1
+  243 24 54 kkin_Y1 #R_kin_Y1
+  244 25 59 kkin_Y1 #R_kin_Y1
+  245 26 60 kkin_Y1 #R_kin_Y1
+  246 27 59 kkin_Y1 #R_kin_Y1
+  247 28 60 kkin_Y1 #R_kin_Y1
+  248 29 61 kkin_Y1 #R_kin_Y1
+  249 30 62 kkin_Y1 #R_kin_Y1
+  250 31 63 kkin_Y1 #R_kin_Y1
+  251 32 64 kkin_Y1 #R_kin_Y1
+  252 35 36 2*kkin_Y1 #R_kin_Y1
+  253 36 74 kkin_Y1 #R_kin_Y1
+  254 37 75 kkin_Y1 #R_kin_Y1
+  255 38 76 kkin_Y1 #R_kin_Y1
+  256 41 42 kkin_Y1 #R_kin_Y1
+  257 41 43 kkin_Y1 #R_kin_Y1
+  258 42 84 kkin_Y1 #R_kin_Y1
+  259 43 84 kkin_Y1 #R_kin_Y1
+  260 44 85 kkin_Y1 #R_kin_Y1
+  261 45 86 kkin_Y1 #R_kin_Y1
+  262 46 87 kkin_Y1 #R_kin_Y1
+  263 47 88 kkin_Y1 #R_kin_Y1
+  264 29 3,4 kcat_PTP #R_cat_dephos_release
+  265 30 3,6 kcat_PTP #R_cat_dephos_release
+  266 31 3,4 kcat_PTP #R_cat_dephos_release
+  267 32 3,6 kcat_PTP #R_cat_dephos_release
+  268 37 3,13 kcat_PTP #R_cat_dephos_release
+  269 38 3,13 kcat_PTP #R_cat_dephos_release
+  270 40 3,5 kcat_PTP #R_cat_dephos_release
+  271 44 6 kcat_PTP #R_cat_dephos_tethered
+  272 45 6 kcat_PTP #R_cat_dephos_tethered
+  273 46 13 kcat_PTP #R_cat_dephos_tethered
+  274 47 13 kcat_PTP #R_cat_dephos_tethered
+  275 30 82 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  276 32 83 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  277 34 84 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  278 41 6 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  279 42 10 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  280 43 12 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  281 23 65 _rateLaw2 #R_intra02_CSH2_PTP_same
+  282 24 66 _rateLaw2 #R_intra02_CSH2_PTP_same
+  283 28 77 _rateLaw2 #R_intra02_CSH2_PTP_same
+  284 34 85 _rateLaw2 #R_intra02_CSH2_PTP_same
+  285 44 10 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  286 22 67 _rateLaw3 #R_intra03_CSH2_PTP_other
+  287 24 68 _rateLaw3 #R_intra03_CSH2_PTP_other
+  288 26 78 _rateLaw3 #R_intra03_CSH2_PTP_other
+  289 34 86 _rateLaw3 #R_intra03_CSH2_PTP_other
+  290 45 12 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  291 37 83 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  292 38 82 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  293 39 84 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  294 41 13 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  295 42 16 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  296 43 15 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  297 27 69 _rateLaw5 #R_intra05_NSH2_PTP_other
+  298 28 70 _rateLaw5 #R_intra05_NSH2_PTP_other
+  299 36 79 _rateLaw5 #R_intra05_NSH2_PTP_other
+  300 39 87 _rateLaw5 #R_intra05_NSH2_PTP_other
+  301 46 16 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  302 25 71 _rateLaw6 #R_intra06_NSH2_PTP_same
+  303 26 72 _rateLaw6 #R_intra06_NSH2_PTP_same
+  304 36 80 _rateLaw6 #R_intra06_NSH2_PTP_same
+  305 39 88 _rateLaw6 #R_intra06_NSH2_PTP_same
+  306 47 15 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  307 31 65 _rateLaw7 #R_intra07_PTP_CSH2_same
+  308 32 66 _rateLaw7 #R_intra07_PTP_CSH2_same
+  309 38 77 _rateLaw7 #R_intra07_PTP_CSH2_same
+  310 40 85 _rateLaw7 #R_intra07_PTP_CSH2_same
+  311 44 17 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  312 29 67 _rateLaw8 #R_intra08_PTP_CSH2_other
+  313 30 68 _rateLaw8 #R_intra08_PTP_CSH2_other
+  314 37 78 _rateLaw8 #R_intra08_PTP_CSH2_other
+  315 40 86 _rateLaw8 #R_intra08_PTP_CSH2_other
+  316 45 17 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  317 29 69 _rateLaw9 #R_intra09_PTP_NSH2_other
+  318 30 70 _rateLaw9 #R_intra09_PTP_NSH2_other
+  319 37 79 _rateLaw9 #R_intra09_PTP_NSH2_other
+  320 40 87 _rateLaw9 #R_intra09_PTP_NSH2_other
+  321 46 17 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  322 31 71 _rateLaw10 #R_intra10_PTP_NSH2_same
+  323 32 72 _rateLaw10 #R_intra10_PTP_NSH2_same
+  324 38 80 _rateLaw10 #R_intra10_PTP_NSH2_same
+  325 40 88 _rateLaw10 #R_intra10_PTP_NSH2_same
+  326 47 17 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  327 42 89 _rateLaw11 #R_intra11_CSH2NSH2_PTP_csh2
+  328 43 90 _rateLaw12 #R_intra12_CSH2NSH2_PTP_nsh2
+  329 44 89 _rateLaw13 #R_intra13_CSH2PTP_same_NSH2
+  330 45 90 _rateLaw14 #R_intra14_CSH2PTP_diff_NSH2
+  331 46 89 _rateLaw15 #R_intra15_PTPNSH2_diff_CSH2
+  332 47 90 _rateLaw16 #R_intra16_PTPNSH2_same_CSH2
+  333 48 50 kopen #R_conf_openclose
+  334 48 49 kopen #R_conf_openclose
+  335 49 51 kopen #R_conf_openclose
+  336 50 51 kopen #R_conf_openclose
+  337 52 53 2*kopen #R_conf_openclose
+  338 53 54 kopen #R_conf_openclose
+  339 55 56 kopen #R_conf_openclose
+  340 57 58 kopen #R_conf_openclose
+  341 59 60 kopen #R_conf_openclose
+  342 61 62 kopen #R_conf_openclose
+  343 63 64 kopen #R_conf_openclose
+  344 65 66 kopen #R_conf_openclose
+  345 67 68 kopen #R_conf_openclose
+  346 69 70 kopen #R_conf_openclose
+  347 71 72 kopen #R_conf_openclose
+  348 49 48 kclose #_reverse_R_conf_openclose
+  349 50 48 kclose #_reverse_R_conf_openclose
+  350 51 49 kclose #_reverse_R_conf_openclose
+  351 51 50 kclose #_reverse_R_conf_openclose
+  352 53 52 kclose #_reverse_R_conf_openclose
+  353 54 53 2*kclose #_reverse_R_conf_openclose
+  354 56 55 kclose #_reverse_R_conf_openclose
+  355 58 57 kclose #_reverse_R_conf_openclose
+  356 60 59 kclose #_reverse_R_conf_openclose
+  357 62 61 kclose #_reverse_R_conf_openclose
+  358 64 63 kclose #_reverse_R_conf_openclose
+  359 66 65 kclose #_reverse_R_conf_openclose
+  360 68 67 kclose #_reverse_R_conf_openclose
+  361 70 69 kclose #_reverse_R_conf_openclose
+  362 72 71 kclose #_reverse_R_conf_openclose
+  363 1,61 91 kon_CSH2 #R_bind_CSH2_cyto
+  364 3,61 92 kon_CSH2 #R_bind_CSH2_cyto
+  365 1,62 93 kon_CSH2 #R_bind_CSH2_cyto
+  366 3,62 94 kon_CSH2 #R_bind_CSH2_cyto
+  367 1,63 91 kon_CSH2 #R_bind_CSH2_cyto
+  368 3,63 93 kon_CSH2 #R_bind_CSH2_cyto
+  369 1,64 92 kon_CSH2 #R_bind_CSH2_cyto
+  370 3,64 94 kon_CSH2 #R_bind_CSH2_cyto
+  371 1,75 95 kon_CSH2 #R_bind_CSH2_cyto
+  372 3,75 96 kon_CSH2 #R_bind_CSH2_cyto
+  373 1,76 97 kon_CSH2 #R_bind_CSH2_cyto
+  374 3,76 98 kon_CSH2 #R_bind_CSH2_cyto
+  375 1,81 99 2*kon_CSH2 #R_bind_CSH2_cyto
+  376 3,81 100 2*kon_CSH2 #R_bind_CSH2_cyto
+  377 1,85 101 kon_CSH2 #R_bind_CSH2_cyto
+  378 3,85 102 kon_CSH2 #R_bind_CSH2_cyto
+  379 1,86 103 kon_CSH2 #R_bind_CSH2_cyto
+  380 3,86 104 kon_CSH2 #R_bind_CSH2_cyto
+  381 1,87 105 kon_CSH2 #R_bind_CSH2_cyto
+  382 3,87 106 kon_CSH2 #R_bind_CSH2_cyto
+  383 1,88 107 kon_CSH2 #R_bind_CSH2_cyto
+  384 3,88 108 kon_CSH2 #R_bind_CSH2_cyto
+  385 48 1,31 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  386 48 1,29 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  387 49 1,32 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  388 49 3,29 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  389 50 3,31 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  390 50 1,30 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  391 51 3,32 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  392 51 3,30 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  393 52 1,33 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  394 53 1,34 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  395 53 3,33 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  396 54 3,34 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  397 55 1,37 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  398 56 3,37 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  399 57 1,38 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  400 58 3,38 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  401 59 1,39 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  402 60 3,39 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  403 61 1,40 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  404 62 3,40 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  405 63 1,40 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  406 64 3,40 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  407 65 1,44 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  408 66 3,44 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  409 67 1,45 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  410 68 3,45 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  411 69 1,46 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  412 70 3,46 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  413 71 1,47 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  414 72 3,47 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  415 3,61 97 kon_NSH2 #R_bind_NSH2_cyto
+  416 3,62 98 kon_NSH2 #R_bind_NSH2_cyto
+  417 3,63 95 kon_NSH2 #R_bind_NSH2_cyto
+  418 3,64 96 kon_NSH2 #R_bind_NSH2_cyto
+  419 3,75 109 kon_NSH2 #R_bind_NSH2_cyto
+  420 3,76 109 kon_NSH2 #R_bind_NSH2_cyto
+  421 3,81 110 2*kon_NSH2 #R_bind_NSH2_cyto
+  422 3,85 111 kon_NSH2 #R_bind_NSH2_cyto
+  423 3,86 112 kon_NSH2 #R_bind_NSH2_cyto
+  424 3,87 113 kon_NSH2 #R_bind_NSH2_cyto
+  425 3,88 114 kon_NSH2 #R_bind_NSH2_cyto
+  426 55 3,31 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  427 56 3,32 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  428 57 3,29 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  429 58 3,30 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  430 59 3,33 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  431 60 3,34 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  432 73 3,38 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  433 73 3,37 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  434 74 3,39 2*koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  435 75 3,40 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  436 76 3,40 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  437 77 3,44 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  438 78 3,45 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  439 79 3,46 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  440 80 3,47 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  441 3,52 91 2*kon_PTP #R_bind_PTP_cyto
+  442 3,53 92 kon_PTP #R_bind_PTP_cyto
+  443 3,53 93 kon_PTP #R_bind_PTP_cyto
+  444 3,54 94 2*kon_PTP #R_bind_PTP_cyto
+  445 3,59 95 kon_PTP #R_bind_PTP_cyto
+  446 3,59 97 kon_PTP #R_bind_PTP_cyto
+  447 3,60 96 kon_PTP #R_bind_PTP_cyto
+  448 3,60 98 kon_PTP #R_bind_PTP_cyto
+  449 3,61 99 kon_PTP #R_bind_PTP_cyto
+  450 3,62 100 kon_PTP #R_bind_PTP_cyto
+  451 3,63 99 kon_PTP #R_bind_PTP_cyto
+  452 3,64 100 kon_PTP #R_bind_PTP_cyto
+  453 3,74 109 2*kon_PTP #R_bind_PTP_cyto
+  454 3,75 110 kon_PTP #R_bind_PTP_cyto
+  455 3,76 110 kon_PTP #R_bind_PTP_cyto
+  456 3,84 115 kon_PTP #R_bind_PTP_cyto
+  457 3,84 116 kon_PTP #R_bind_PTP_cyto
+  458 3,85 117 kon_PTP #R_bind_PTP_cyto
+  459 3,86 118 kon_PTP #R_bind_PTP_cyto
+  460 3,87 119 kon_PTP #R_bind_PTP_cyto
+  461 3,88 120 kon_PTP #R_bind_PTP_cyto
+  462 48 3,21 koff_PTP #_reverse_R_bind_PTP_cyto
+  463 49 3,22 koff_PTP #_reverse_R_bind_PTP_cyto
+  464 50 3,23 koff_PTP #_reverse_R_bind_PTP_cyto
+  465 51 3,24 koff_PTP #_reverse_R_bind_PTP_cyto
+  466 55 3,25 koff_PTP #_reverse_R_bind_PTP_cyto
+  467 56 3,26 koff_PTP #_reverse_R_bind_PTP_cyto
+  468 57 3,27 koff_PTP #_reverse_R_bind_PTP_cyto
+  469 58 3,28 koff_PTP #_reverse_R_bind_PTP_cyto
+  470 61 3,33 koff_PTP #_reverse_R_bind_PTP_cyto
+  471 62 3,34 koff_PTP #_reverse_R_bind_PTP_cyto
+  472 63 3,33 koff_PTP #_reverse_R_bind_PTP_cyto
+  473 64 3,34 koff_PTP #_reverse_R_bind_PTP_cyto
+  474 73 3,36 koff_PTP #_reverse_R_bind_PTP_cyto
+  475 75 3,39 koff_PTP #_reverse_R_bind_PTP_cyto
+  476 76 3,39 koff_PTP #_reverse_R_bind_PTP_cyto
+  477 81 3,40 2*koff_PTP #_reverse_R_bind_PTP_cyto
+  478 82 3,42 koff_PTP #_reverse_R_bind_PTP_cyto
+  479 83 3,43 koff_PTP #_reverse_R_bind_PTP_cyto
+  480 48 91 kkin_Y1 #R_kin_Y1
+  481 49 92 kkin_Y1 #R_kin_Y1
+  482 50 93 kkin_Y1 #R_kin_Y1
+  483 51 94 kkin_Y1 #R_kin_Y1
+  484 55 95 kkin_Y1 #R_kin_Y1
+  485 56 96 kkin_Y1 #R_kin_Y1
+  486 57 97 kkin_Y1 #R_kin_Y1
+  487 58 98 kkin_Y1 #R_kin_Y1
+  488 65 101 kkin_Y1 #R_kin_Y1
+  489 66 102 kkin_Y1 #R_kin_Y1
+  490 67 103 kkin_Y1 #R_kin_Y1
+  491 68 104 kkin_Y1 #R_kin_Y1
+  492 69 105 kkin_Y1 #R_kin_Y1
+  493 70 106 kkin_Y1 #R_kin_Y1
+  494 71 107 kkin_Y1 #R_kin_Y1
+  495 72 108 kkin_Y1 #R_kin_Y1
+  496 73 109 kkin_Y1 #R_kin_Y1
+  497 77 111 kkin_Y1 #R_kin_Y1
+  498 78 112 kkin_Y1 #R_kin_Y1
+  499 79 113 kkin_Y1 #R_kin_Y1
+  500 80 114 kkin_Y1 #R_kin_Y1
+  501 82 115 kkin_Y1 #R_kin_Y1
+  502 83 116 kkin_Y1 #R_kin_Y1
+  503 89 121 kkin_Y1 #R_kin_Y1
+  504 90 122 kkin_Y1 #R_kin_Y1
+  505 48 3,7 kcat_PTP #R_cat_dephos_release
+  506 49 3,8 kcat_PTP #R_cat_dephos_release
+  507 50 3,8 kcat_PTP #R_cat_dephos_release
+  508 51 3,19 kcat_PTP #R_cat_dephos_release
+  509 55 3,14 kcat_PTP #R_cat_dephos_release
+  510 56 3,20 kcat_PTP #R_cat_dephos_release
+  511 57 3,14 kcat_PTP #R_cat_dephos_release
+  512 58 3,20 kcat_PTP #R_cat_dephos_release
+  513 61 3,11 kcat_PTP #R_cat_dephos_release
+  514 62 3,12 kcat_PTP #R_cat_dephos_release
+  515 63 3,9 kcat_PTP #R_cat_dephos_release
+  516 64 3,10 kcat_PTP #R_cat_dephos_release
+  517 73 3,35 kcat_PTP #R_cat_dephos_release
+  518 75 3,16 kcat_PTP #R_cat_dephos_release
+  519 76 3,15 kcat_PTP #R_cat_dephos_release
+  520 81 3,17 2*kcat_PTP #R_cat_dephos_release
+  521 82 3,41 kcat_PTP #R_cat_dephos_release
+  522 83 3,41 kcat_PTP #R_cat_dephos_release
+  523 65 8 kcat_PTP #R_cat_dephos_tethered
+  524 66 19 kcat_PTP #R_cat_dephos_tethered
+  525 67 8 kcat_PTP #R_cat_dephos_tethered
+  526 68 19 kcat_PTP #R_cat_dephos_tethered
+  527 69 14 kcat_PTP #R_cat_dephos_tethered
+  528 70 20 kcat_PTP #R_cat_dephos_tethered
+  529 71 14 kcat_PTP #R_cat_dephos_tethered
+  530 72 20 kcat_PTP #R_cat_dephos_tethered
+  531 77 20 kcat_PTP #R_cat_dephos_tethered
+  532 78 20 kcat_PTP #R_cat_dephos_tethered
+  533 79 35 kcat_PTP #R_cat_dephos_tethered
+  534 80 35 kcat_PTP #R_cat_dephos_tethered
+  535 85 12 kcat_PTP #R_cat_dephos_tethered
+  536 86 10 kcat_PTP #R_cat_dephos_tethered
+  537 87 15 kcat_PTP #R_cat_dephos_tethered
+  538 88 16 kcat_PTP #R_cat_dephos_tethered
+  539 89 41 kcat_PTP #R_cat_dephos_tethered
+  540 90 41 kcat_PTP #R_cat_dephos_tethered
+  541 62 115 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  542 64 116 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  543 82 30 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  544 83 32 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  545 84 34 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  546 53 101 _rateLaw2 #R_intra02_CSH2_PTP_same
+  547 54 102 2*_rateLaw2 #R_intra02_CSH2_PTP_same
+  548 60 111 _rateLaw2 #R_intra02_CSH2_PTP_same
+  549 64 117 _rateLaw2 #R_intra02_CSH2_PTP_same
+  550 65 23 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  551 66 24 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  552 77 28 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  553 85 34 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  554 53 103 _rateLaw3 #R_intra03_CSH2_PTP_other
+  555 54 104 2*_rateLaw3 #R_intra03_CSH2_PTP_other
+  556 60 112 _rateLaw3 #R_intra03_CSH2_PTP_other
+  557 62 118 _rateLaw3 #R_intra03_CSH2_PTP_other
+  558 67 22 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  559 68 24 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  560 78 26 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  561 86 34 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  562 75 116 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  563 76 115 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  564 82 38 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  565 83 37 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  566 84 39 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  567 59 105 _rateLaw5 #R_intra05_NSH2_PTP_other
+  568 60 106 _rateLaw5 #R_intra05_NSH2_PTP_other
+  569 74 113 2*_rateLaw5 #R_intra05_NSH2_PTP_other
+  570 75 119 _rateLaw5 #R_intra05_NSH2_PTP_other
+  571 69 27 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  572 70 28 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  573 79 36 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  574 87 39 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  575 59 107 _rateLaw6 #R_intra06_NSH2_PTP_same
+  576 60 108 _rateLaw6 #R_intra06_NSH2_PTP_same
+  577 74 114 2*_rateLaw6 #R_intra06_NSH2_PTP_same
+  578 76 120 _rateLaw6 #R_intra06_NSH2_PTP_same
+  579 71 25 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  580 72 26 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  581 80 36 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  582 88 39 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  583 63 101 _rateLaw7 #R_intra07_PTP_CSH2_same
+  584 64 102 _rateLaw7 #R_intra07_PTP_CSH2_same
+  585 76 111 _rateLaw7 #R_intra07_PTP_CSH2_same
+  586 81 117 2*_rateLaw7 #R_intra07_PTP_CSH2_same
+  587 65 31 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  588 66 32 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  589 77 38 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  590 85 40 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  591 61 103 _rateLaw8 #R_intra08_PTP_CSH2_other
+  592 62 104 _rateLaw8 #R_intra08_PTP_CSH2_other
+  593 75 112 _rateLaw8 #R_intra08_PTP_CSH2_other
+  594 81 118 2*_rateLaw8 #R_intra08_PTP_CSH2_other
+  595 67 29 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  596 68 30 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  597 78 37 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  598 86 40 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  599 61 105 _rateLaw9 #R_intra09_PTP_NSH2_other
+  600 62 106 _rateLaw9 #R_intra09_PTP_NSH2_other
+  601 75 113 _rateLaw9 #R_intra09_PTP_NSH2_other
+  602 81 119 2*_rateLaw9 #R_intra09_PTP_NSH2_other
+  603 69 29 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  604 70 30 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  605 79 37 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  606 87 40 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  607 63 107 _rateLaw10 #R_intra10_PTP_NSH2_same
+  608 64 108 _rateLaw10 #R_intra10_PTP_NSH2_same
+  609 76 114 _rateLaw10 #R_intra10_PTP_NSH2_same
+  610 81 120 2*_rateLaw10 #R_intra10_PTP_NSH2_same
+  611 71 31 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  612 72 32 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  613 80 38 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  614 88 40 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  615 84 121 _rateLaw11 #R_intra11_CSH2NSH2_PTP_csh2
+  616 89 42 koff_PTP #_reverse_R_intra11_CSH2NSH2_PTP_csh2
+  617 84 122 _rateLaw12 #R_intra12_CSH2NSH2_PTP_nsh2
+  618 90 43 koff_PTP #_reverse_R_intra12_CSH2NSH2_PTP_nsh2
+  619 85 121 _rateLaw13 #R_intra13_CSH2PTP_same_NSH2
+  620 89 44 koff_NSH2 #_reverse_R_intra13_CSH2PTP_same_NSH2
+  621 86 122 _rateLaw14 #R_intra14_CSH2PTP_diff_NSH2
+  622 90 45 koff_NSH2 #_reverse_R_intra14_CSH2PTP_diff_NSH2
+  623 87 121 _rateLaw15 #R_intra15_PTPNSH2_diff_CSH2
+  624 89 46 koff_CSH2 #_reverse_R_intra15_PTPNSH2_diff_CSH2
+  625 88 122 _rateLaw16 #R_intra16_PTPNSH2_same_CSH2
+  626 90 47 koff_CSH2 #_reverse_R_intra16_PTPNSH2_same_CSH2
+  627 91 93 kopen #R_conf_openclose
+  628 91 92 kopen #R_conf_openclose
+  629 92 94 kopen #R_conf_openclose
+  630 93 94 kopen #R_conf_openclose
+  631 95 96 kopen #R_conf_openclose
+  632 97 98 kopen #R_conf_openclose
+  633 99 100 kopen #R_conf_openclose
+  634 101 102 kopen #R_conf_openclose
+  635 103 104 kopen #R_conf_openclose
+  636 105 106 kopen #R_conf_openclose
+  637 107 108 kopen #R_conf_openclose
+  638 92 91 kclose #_reverse_R_conf_openclose
+  639 93 91 kclose #_reverse_R_conf_openclose
+  640 94 92 kclose #_reverse_R_conf_openclose
+  641 94 93 kclose #_reverse_R_conf_openclose
+  642 96 95 kclose #_reverse_R_conf_openclose
+  643 98 97 kclose #_reverse_R_conf_openclose
+  644 100 99 kclose #_reverse_R_conf_openclose
+  645 102 101 kclose #_reverse_R_conf_openclose
+  646 104 103 kclose #_reverse_R_conf_openclose
+  647 106 105 kclose #_reverse_R_conf_openclose
+  648 108 107 kclose #_reverse_R_conf_openclose
+  649 1,99 123 kon_CSH2 #R_bind_CSH2_cyto
+  650 3,99 124 kon_CSH2 #R_bind_CSH2_cyto
+  651 1,100 124 kon_CSH2 #R_bind_CSH2_cyto
+  652 3,100 125 kon_CSH2 #R_bind_CSH2_cyto
+  653 1,110 126 kon_CSH2 #R_bind_CSH2_cyto
+  654 3,110 127 kon_CSH2 #R_bind_CSH2_cyto
+  655 1,117 128 kon_CSH2 #R_bind_CSH2_cyto
+  656 3,117 129 kon_CSH2 #R_bind_CSH2_cyto
+  657 1,118 130 kon_CSH2 #R_bind_CSH2_cyto
+  658 3,118 131 kon_CSH2 #R_bind_CSH2_cyto
+  659 1,119 132 kon_CSH2 #R_bind_CSH2_cyto
+  660 3,119 133 kon_CSH2 #R_bind_CSH2_cyto
+  661 1,120 134 kon_CSH2 #R_bind_CSH2_cyto
+  662 3,120 135 kon_CSH2 #R_bind_CSH2_cyto
+  663 91 1,63 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  664 91 1,61 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  665 92 1,64 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  666 92 3,61 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  667 93 3,63 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  668 93 1,62 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  669 94 3,64 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  670 94 3,62 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  671 95 1,75 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  672 96 3,75 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  673 97 1,76 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  674 98 3,76 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  675 99 1,81 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  676 100 3,81 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  677 101 1,85 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  678 102 3,85 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  679 103 1,86 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  680 104 3,86 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  681 105 1,87 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  682 106 3,87 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  683 107 1,88 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  684 108 3,88 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  685 3,99 126 kon_NSH2 #R_bind_NSH2_cyto
+  686 3,100 127 kon_NSH2 #R_bind_NSH2_cyto
+  687 3,110 136 kon_NSH2 #R_bind_NSH2_cyto
+  688 3,117 137 kon_NSH2 #R_bind_NSH2_cyto
+  689 3,118 138 kon_NSH2 #R_bind_NSH2_cyto
+  690 3,119 139 kon_NSH2 #R_bind_NSH2_cyto
+  691 3,120 140 kon_NSH2 #R_bind_NSH2_cyto
+  692 95 3,63 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  693 96 3,64 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  694 97 3,61 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  695 98 3,62 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  696 109 3,76 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  697 109 3,75 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  698 110 3,81 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  699 111 3,85 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  700 112 3,86 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  701 113 3,87 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  702 114 3,88 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  703 3,91 123 kon_PTP #R_bind_PTP_cyto
+  704 3,92 124 kon_PTP #R_bind_PTP_cyto
+  705 3,93 124 kon_PTP #R_bind_PTP_cyto
+  706 3,94 125 kon_PTP #R_bind_PTP_cyto
+  707 3,95 126 kon_PTP #R_bind_PTP_cyto
+  708 3,96 127 kon_PTP #R_bind_PTP_cyto
+  709 3,97 126 kon_PTP #R_bind_PTP_cyto
+  710 3,98 127 kon_PTP #R_bind_PTP_cyto
+  711 3,101 128 kon_PTP #R_bind_PTP_cyto
+  712 3,102 129 kon_PTP #R_bind_PTP_cyto
+  713 3,103 130 kon_PTP #R_bind_PTP_cyto
+  714 3,104 131 kon_PTP #R_bind_PTP_cyto
+  715 3,105 132 kon_PTP #R_bind_PTP_cyto
+  716 3,106 133 kon_PTP #R_bind_PTP_cyto
+  717 3,107 134 kon_PTP #R_bind_PTP_cyto
+  718 3,108 135 kon_PTP #R_bind_PTP_cyto
+  719 3,109 136 kon_PTP #R_bind_PTP_cyto
+  720 3,111 137 kon_PTP #R_bind_PTP_cyto
+  721 3,112 138 kon_PTP #R_bind_PTP_cyto
+  722 3,113 139 kon_PTP #R_bind_PTP_cyto
+  723 3,114 140 kon_PTP #R_bind_PTP_cyto
+  724 3,115 141 kon_PTP #R_bind_PTP_cyto
+  725 3,116 141 kon_PTP #R_bind_PTP_cyto
+  726 3,121 142 kon_PTP #R_bind_PTP_cyto
+  727 3,122 143 kon_PTP #R_bind_PTP_cyto
+  728 91 3,52 koff_PTP #_reverse_R_bind_PTP_cyto
+  729 92 3,53 koff_PTP #_reverse_R_bind_PTP_cyto
+  730 93 3,53 koff_PTP #_reverse_R_bind_PTP_cyto
+  731 94 3,54 koff_PTP #_reverse_R_bind_PTP_cyto
+  732 95 3,59 koff_PTP #_reverse_R_bind_PTP_cyto
+  733 96 3,60 koff_PTP #_reverse_R_bind_PTP_cyto
+  734 97 3,59 koff_PTP #_reverse_R_bind_PTP_cyto
+  735 98 3,60 koff_PTP #_reverse_R_bind_PTP_cyto
+  736 99 3,63 koff_PTP #_reverse_R_bind_PTP_cyto
+  737 99 3,61 koff_PTP #_reverse_R_bind_PTP_cyto
+  738 100 3,64 koff_PTP #_reverse_R_bind_PTP_cyto
+  739 100 3,62 koff_PTP #_reverse_R_bind_PTP_cyto
+  740 109 3,74 koff_PTP #_reverse_R_bind_PTP_cyto
+  741 110 3,76 koff_PTP #_reverse_R_bind_PTP_cyto
+  742 110 3,75 koff_PTP #_reverse_R_bind_PTP_cyto
+  743 115 3,84 koff_PTP #_reverse_R_bind_PTP_cyto
+  744 116 3,84 koff_PTP #_reverse_R_bind_PTP_cyto
+  745 117 3,85 koff_PTP #_reverse_R_bind_PTP_cyto
+  746 118 3,86 koff_PTP #_reverse_R_bind_PTP_cyto
+  747 119 3,87 koff_PTP #_reverse_R_bind_PTP_cyto
+  748 120 3,88 koff_PTP #_reverse_R_bind_PTP_cyto
+  749 91 3,21 kcat_PTP #R_cat_dephos_release
+  750 92 3,23 kcat_PTP #R_cat_dephos_release
+  751 93 3,22 kcat_PTP #R_cat_dephos_release
+  752 94 3,24 kcat_PTP #R_cat_dephos_release
+  753 95 3,27 kcat_PTP #R_cat_dephos_release
+  754 96 3,28 kcat_PTP #R_cat_dephos_release
+  755 97 3,25 kcat_PTP #R_cat_dephos_release
+  756 98 3,26 kcat_PTP #R_cat_dephos_release
+  757 99 3,31 kcat_PTP #R_cat_dephos_release
+  758 99 3,29 kcat_PTP #R_cat_dephos_release
+  759 100 3,32 kcat_PTP #R_cat_dephos_release
+  760 100 3,30 kcat_PTP #R_cat_dephos_release
+  761 109 3,36 kcat_PTP #R_cat_dephos_release
+  762 110 3,38 kcat_PTP #R_cat_dephos_release
+  763 110 3,37 kcat_PTP #R_cat_dephos_release
+  764 115 3,43 kcat_PTP #R_cat_dephos_release
+  765 116 3,42 kcat_PTP #R_cat_dephos_release
+  766 117 3,44 kcat_PTP #R_cat_dephos_release
+  767 118 3,45 kcat_PTP #R_cat_dephos_release
+  768 119 3,46 kcat_PTP #R_cat_dephos_release
+  769 120 3,47 kcat_PTP #R_cat_dephos_release
+  770 101 22 kcat_PTP #R_cat_dephos_tethered
+  771 102 24 kcat_PTP #R_cat_dephos_tethered
+  772 103 23 kcat_PTP #R_cat_dephos_tethered
+  773 104 24 kcat_PTP #R_cat_dephos_tethered
+  774 105 25 kcat_PTP #R_cat_dephos_tethered
+  775 106 26 kcat_PTP #R_cat_dephos_tethered
+  776 107 27 kcat_PTP #R_cat_dephos_tethered
+  777 108 28 kcat_PTP #R_cat_dephos_tethered
+  778 111 26 kcat_PTP #R_cat_dephos_tethered
+  779 112 28 kcat_PTP #R_cat_dephos_tethered
+  780 113 36 kcat_PTP #R_cat_dephos_tethered
+  781 114 36 kcat_PTP #R_cat_dephos_tethered
+  782 117 32 kcat_PTP #R_cat_dephos_tethered
+  783 118 30 kcat_PTP #R_cat_dephos_tethered
+  784 119 37 kcat_PTP #R_cat_dephos_tethered
+  785 120 38 kcat_PTP #R_cat_dephos_tethered
+  786 121 43 kcat_PTP #R_cat_dephos_tethered
+  787 122 42 kcat_PTP #R_cat_dephos_tethered
+  788 100 141 _rateLaw1 #R_intra01_CSH2_NSH2_other
+  789 115 62 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  790 116 64 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  791 92 128 _rateLaw2 #R_intra02_CSH2_PTP_same
+  792 94 129 _rateLaw2 #R_intra02_CSH2_PTP_same
+  793 96 137 _rateLaw2 #R_intra02_CSH2_PTP_same
+  794 102 144 _rateLaw2 #R_intra02_CSH2_PTP_same
+  795 108 145 _rateLaw2 #R_intra02_CSH2_PTP_same
+  796 101 53 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  797 102 54 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  798 111 60 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  799 117 64 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  800 93 130 _rateLaw3 #R_intra03_CSH2_PTP_other
+  801 94 131 _rateLaw3 #R_intra03_CSH2_PTP_other
+  802 98 138 _rateLaw3 #R_intra03_CSH2_PTP_other
+  803 104 146 _rateLaw3 #R_intra03_CSH2_PTP_other
+  804 106 147 _rateLaw3 #R_intra03_CSH2_PTP_other
+  805 103 53 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  806 104 54 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  807 112 60 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  808 118 62 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  809 110 141 _rateLaw4 #R_intra04_NSH2_CSH2_other
+  810 115 76 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  811 116 75 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  812 95 132 _rateLaw5 #R_intra05_NSH2_PTP_other
+  813 96 133 _rateLaw5 #R_intra05_NSH2_PTP_other
+  814 109 139 _rateLaw5 #R_intra05_NSH2_PTP_other
+  815 112 147 _rateLaw5 #R_intra05_NSH2_PTP_other
+  816 113 148 _rateLaw5 #R_intra05_NSH2_PTP_other
+  817 105 59 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  818 106 60 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  819 113 74 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  820 119 75 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  821 97 134 _rateLaw6 #R_intra06_NSH2_PTP_same
+  822 98 135 _rateLaw6 #R_intra06_NSH2_PTP_same
+  823 109 140 _rateLaw6 #R_intra06_NSH2_PTP_same
+  824 111 145 _rateLaw6 #R_intra06_NSH2_PTP_same
+  825 114 149 _rateLaw6 #R_intra06_NSH2_PTP_same
+  826 107 59 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  827 108 60 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  828 114 74 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  829 120 76 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+  830 99 128 _rateLaw7 #R_intra07_PTP_CSH2_same
+  831 100 129 _rateLaw7 #R_intra07_PTP_CSH2_same
+  832 110 137 _rateLaw7 #R_intra07_PTP_CSH2_same
+  833 117 144 _rateLaw7 #R_intra07_PTP_CSH2_same
+  834 120 145 _rateLaw7 #R_intra07_PTP_CSH2_same
+  835 101 63 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  836 102 64 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  837 111 76 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  838 117 81 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+  839 99 130 _rateLaw8 #R_intra08_PTP_CSH2_other
+  840 100 131 _rateLaw8 #R_intra08_PTP_CSH2_other
+  841 110 138 _rateLaw8 #R_intra08_PTP_CSH2_other
+  842 118 146 _rateLaw8 #R_intra08_PTP_CSH2_other
+  843 119 147 _rateLaw8 #R_intra08_PTP_CSH2_other
+  844 103 61 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  845 104 62 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  846 112 75 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  847 118 81 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+  848 99 132 _rateLaw9 #R_intra09_PTP_NSH2_other
+  849 100 133 _rateLaw9 #R_intra09_PTP_NSH2_other
+  850 110 139 _rateLaw9 #R_intra09_PTP_NSH2_other
+  851 118 147 _rateLaw9 #R_intra09_PTP_NSH2_other
+  852 119 148 _rateLaw9 #R_intra09_PTP_NSH2_other
+  853 105 61 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  854 106 62 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  855 113 75 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  856 119 81 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+  857 99 134 _rateLaw10 #R_intra10_PTP_NSH2_same
+  858 100 135 _rateLaw10 #R_intra10_PTP_NSH2_same
+  859 110 140 _rateLaw10 #R_intra10_PTP_NSH2_same
+  860 117 145 _rateLaw10 #R_intra10_PTP_NSH2_same
+  861 120 149 _rateLaw10 #R_intra10_PTP_NSH2_same
+  862 107 63 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  863 108 64 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  864 114 76 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  865 120 81 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+  866 116 142 _rateLaw11 #R_intra11_CSH2NSH2_PTP_csh2
+  867 121 84 koff_PTP #_reverse_R_intra11_CSH2NSH2_PTP_csh2
+  868 115 143 _rateLaw12 #R_intra12_CSH2NSH2_PTP_nsh2
+  869 122 84 koff_PTP #_reverse_R_intra12_CSH2NSH2_PTP_nsh2
+  870 117 142 _rateLaw13 #R_intra13_CSH2PTP_same_NSH2
+  871 121 85 koff_NSH2 #_reverse_R_intra13_CSH2PTP_same_NSH2
+  872 118 143 _rateLaw14 #R_intra14_CSH2PTP_diff_NSH2
+  873 122 86 koff_NSH2 #_reverse_R_intra14_CSH2PTP_diff_NSH2
+  874 119 142 _rateLaw15 #R_intra15_PTPNSH2_diff_CSH2
+  875 121 87 koff_CSH2 #_reverse_R_intra15_PTPNSH2_diff_CSH2
+  876 120 143 _rateLaw16 #R_intra16_PTPNSH2_same_CSH2
+  877 122 88 koff_CSH2 #_reverse_R_intra16_PTPNSH2_same_CSH2
+  878 123 124 2*kopen #R_conf_openclose
+  879 124 125 kopen #R_conf_openclose
+  880 126 127 kopen #R_conf_openclose
+  881 128 129 kopen #R_conf_openclose
+  882 130 131 kopen #R_conf_openclose
+  883 132 133 kopen #R_conf_openclose
+  884 134 135 kopen #R_conf_openclose
+  885 124 123 kclose #_reverse_R_conf_openclose
+  886 125 124 2*kclose #_reverse_R_conf_openclose
+  887 127 126 kclose #_reverse_R_conf_openclose
+  888 129 128 kclose #_reverse_R_conf_openclose
+  889 131 130 kclose #_reverse_R_conf_openclose
+  890 133 132 kclose #_reverse_R_conf_openclose
+  891 135 134 kclose #_reverse_R_conf_openclose
+  892 123 1,99 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  893 124 1,100 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  894 124 3,99 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  895 125 3,100 2*koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  896 126 1,110 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  897 127 3,110 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  898 128 1,117 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  899 129 3,117 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  900 130 1,118 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  901 131 3,118 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  902 132 1,119 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  903 133 3,119 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  904 134 1,120 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  905 135 3,120 koff_CSH2 #_reverse_R_bind_CSH2_cyto
+  906 126 3,99 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  907 127 3,100 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  908 136 3,110 2*koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  909 137 3,117 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  910 138 3,118 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  911 139 3,119 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  912 140 3,120 koff_NSH2 #_reverse_R_bind_NSH2_cyto
+  913 123 3,91 2*koff_PTP #_reverse_R_bind_PTP_cyto
+  914 124 3,93 koff_PTP #_reverse_R_bind_PTP_cyto
+  915 124 3,92 koff_PTP #_reverse_R_bind_PTP_cyto
+  916 125 3,94 2*koff_PTP #_reverse_R_bind_PTP_cyto
+  917 126 3,97 koff_PTP #_reverse_R_bind_PTP_cyto
+  918 126 3,95 koff_PTP #_reverse_R_bind_PTP_cyto
+  919 127 3,98 koff_PTP #_reverse_R_bind_PTP_cyto
+  920 127 3,96 koff_PTP #_reverse_R_bind_PTP_cyto
+  921 128 3,101 koff_PTP #_reverse_R_bind_PTP_cyto
+  922 129 3,102 koff_PTP #_reverse_R_bind_PTP_cyto
+  923 130 3,103 koff_PTP #_reverse_R_bind_PTP_cyto
+  924 131 3,104 koff_PTP #_reverse_R_bind_PTP_cyto
+  925 132 3,105 koff_PTP #_reverse_R_bind_PTP_cyto
+  926 133 3,106 koff_PTP #_reverse_R_bind_PTP_cyto
+  927 134 3,107 koff_PTP #_reverse_R_bind_PTP_cyto
+  928 135 3,108 koff_PTP #_reverse_R_bind_PTP_cyto
+  929 136 3,109 2*koff_PTP #_reverse_R_bind_PTP_cyto
+  930 137 3,111 koff_PTP #_reverse_R_bind_PTP_cyto
+  931 138 3,112 koff_PTP #_reverse_R_bind_PTP_cyto
+  932 139 3,113 koff_PTP #_reverse_R_bind_PTP_cyto
+  933 140 3,114 koff_PTP #_reverse_R_bind_PTP_cyto
+  934 141 3,116 koff_PTP #_reverse_R_bind_PTP_cyto
+  935 141 3,115 koff_PTP #_reverse_R_bind_PTP_cyto
+  936 142 3,121 koff_PTP #_reverse_R_bind_PTP_cyto
+  937 143 3,122 koff_PTP #_reverse_R_bind_PTP_cyto
+  938 123 3,48 2*kcat_PTP #R_cat_dephos_release
+  939 124 3,50 kcat_PTP #R_cat_dephos_release
+  940 124 3,49 kcat_PTP #R_cat_dephos_release
+  941 125 3,51 2*kcat_PTP #R_cat_dephos_release
+  942 126 3,57 kcat_PTP #R_cat_dephos_release
+  943 126 3,55 kcat_PTP #R_cat_dephos_release
+  944 127 3,58 kcat_PTP #R_cat_dephos_release
+  945 127 3,56 kcat_PTP #R_cat_dephos_release
+  946 128 3,65 kcat_PTP #R_cat_dephos_release
+  947 129 3,66 kcat_PTP #R_cat_dephos_release
+  948 130 3,67 kcat_PTP #R_cat_dephos_release
+  949 131 3,68 kcat_PTP #R_cat_dephos_release
+  950 132 3,69 kcat_PTP #R_cat_dephos_release
+  951 133 3,70 kcat_PTP #R_cat_dephos_release
+  952 134 3,71 kcat_PTP #R_cat_dephos_release
+  953 135 3,72 kcat_PTP #R_cat_dephos_release
+  954 136 3,73 2*kcat_PTP #R_cat_dephos_release
+  955 137 3,77 kcat_PTP #R_cat_dephos_release
+  956 138 3,78 kcat_PTP #R_cat_dephos_release
+  957 139 3,79 kcat_PTP #R_cat_dephos_release
+  958 140 3,80 kcat_PTP #R_cat_dephos_release
+  959 141 3,83 kcat_PTP #R_cat_dephos_release
+  960 141 3,82 kcat_PTP #R_cat_dephos_release
+  961 142 3,89 kcat_PTP #R_cat_dephos_release
+  962 143 3,90 kcat_PTP #R_cat_dephos_release
+  963 128 49 kcat_PTP #R_cat_dephos_tethered
+  964 129 51 kcat_PTP #R_cat_dephos_tethered
+  965 130 50 kcat_PTP #R_cat_dephos_tethered
+  966 131 51 kcat_PTP #R_cat_dephos_tethered
+  967 132 55 kcat_PTP #R_cat_dephos_tethered
+  968 133 56 kcat_PTP #R_cat_dephos_tethered
+  969 134 57 kcat_PTP #R_cat_dephos_tethered
+  970 135 58 kcat_PTP #R_cat_dephos_tethered
+  971 137 56 kcat_PTP #R_cat_dephos_tethered
+  972 138 58 kcat_PTP #R_cat_dephos_tethered
+  973 139 73 kcat_PTP #R_cat_dephos_tethered
+  974 140 73 kcat_PTP #R_cat_dephos_tethered
+  975 142 83 kcat_PTP #R_cat_dephos_tethered
+  976 143 82 kcat_PTP #R_cat_dephos_tethered
+  977 144 66 2*kcat_PTP #R_cat_dephos_tethered
+  978 145 77 kcat_PTP #R_cat_dephos_tethered
+  979 145 72 kcat_PTP #R_cat_dephos_tethered
+  980 146 68 2*kcat_PTP #R_cat_dephos_tethered
+  981 147 78 kcat_PTP #R_cat_dephos_tethered
+  982 147 70 kcat_PTP #R_cat_dephos_tethered
+  983 148 79 2*kcat_PTP #R_cat_dephos_tethered
+  984 149 80 2*kcat_PTP #R_cat_dephos_tethered
+  985 141 100 koff_NSH2 #_reverse_R_intra01_CSH2_NSH2_other
+  986 128 92 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  987 129 94 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  988 137 96 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  989 144 102 2*koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  990 145 108 koff_PTP #_reverse_R_intra02_CSH2_PTP_same
+  991 130 93 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  992 131 94 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  993 138 98 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  994 146 104 2*koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  995 147 106 koff_PTP #_reverse_R_intra03_CSH2_PTP_other
+  996 141 110 koff_CSH2 #_reverse_R_intra04_NSH2_CSH2_other
+  997 132 95 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  998 133 96 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+  999 139 109 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+ 1000 147 112 koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+ 1001 148 113 2*koff_PTP #_reverse_R_intra05_NSH2_PTP_other
+ 1002 134 97 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+ 1003 135 98 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+ 1004 140 109 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+ 1005 145 111 koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+ 1006 149 114 2*koff_PTP #_reverse_R_intra06_NSH2_PTP_same
+ 1007 128 99 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+ 1008 129 100 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+ 1009 137 110 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+ 1010 144 117 2*koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+ 1011 145 120 koff_CSH2 #_reverse_R_intra07_PTP_CSH2_same
+ 1012 130 99 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+ 1013 131 100 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+ 1014 138 110 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+ 1015 146 118 2*koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+ 1016 147 119 koff_CSH2 #_reverse_R_intra08_PTP_CSH2_other
+ 1017 132 99 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+ 1018 133 100 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+ 1019 139 110 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+ 1020 147 118 koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+ 1021 148 119 2*koff_NSH2 #_reverse_R_intra09_PTP_NSH2_other
+ 1022 134 99 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+ 1023 135 100 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+ 1024 140 110 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+ 1025 145 117 koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+ 1026 149 120 2*koff_NSH2 #_reverse_R_intra10_PTP_NSH2_same
+ 1027 142 116 koff_PTP #_reverse_R_intra11_CSH2NSH2_PTP_csh2
+ 1028 143 115 koff_PTP #_reverse_R_intra12_CSH2NSH2_PTP_nsh2
+ 1029 142 117 koff_NSH2 #_reverse_R_intra13_CSH2PTP_same_NSH2
+ 1030 143 118 koff_NSH2 #_reverse_R_intra14_CSH2PTP_diff_NSH2
+ 1031 142 119 koff_CSH2 #_reverse_R_intra15_PTPNSH2_diff_CSH2
+ 1032 143 120 koff_CSH2 #_reverse_R_intra16_PTPNSH2_same_CSH2
+end reactions
+begin groups
+    1 Obs_pYR              5,9,10,11,12,15,16,17,2*18,21,22,23,24,25,26,27,28,29,30,31,32,2*33,2*34,36,37,38,2*39,2*40,42,43,44,45,46,47,48,49,50,51,2*52,2*53,2*54,55,56,57,58,2*59,2*60,2*61,2*62,2*63,2*64,65,66,67,68,69,70,71,72,73,2*74,2*75,2*76,77,78,79,80,2*81,82,83,2*84,2*85,2*86,2*87,2*88,89,90,2*91,2*92,2*93,2*94,2*95,2*96,2*97,2*98,2*99,2*100,2*101,2*102,2*103,2*104,2*105,2*106,2*107,2*108,2*109,2*110,2*111,2*112,2*113,2*114,2*115,2*116,2*117,2*118,2*119,2*120,2*121,2*122,2*123,2*124,2*125,2*126,2*127,2*128,2*129,2*130,2*131,2*132,2*133,2*134,2*135,2*136,2*137,2*138,2*139,2*140,2*141,2*142,2*143,2*144,2*145,2*146,2*147,2*148,2*149
+    2 Obs_D_free           2,5,18
+    3 Obs_Shp2_free        1,3
+end groups

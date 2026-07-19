@@ -1,0 +1,48 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA           6.02214076e23  # Constant
+    2 V_ref        1e-15  # Constant
+    3 f            1.0  # Constant
+    4 l_ext        1000.0  # Constant
+    5 growth_rate  0.0231  # Constant
+    6 alpha        600.0  # Constant
+    7 phi          0.5  # Constant
+    8 rho          0.1  # Constant
+    9 K_i          500.0  # Constant
+   10 beta         2.85e4  # Constant
+   11 nu           0.468  # Constant
+   12 K_m_l        2530.0  # Constant
+   13 delta        2.30e4  # Constant
+   14 K_m_a        1200.0  # Constant
+   15 eps          34.285  # Constant
+   16 c_basal      0.0343  # Constant
+   17 K_z          105.0  # Constant
+   18 n_Hill       2.0  # Constant
+end parameters
+begin functions
+    1 transport_L() ((alpha*Obs_Tot_Z)*(l_ext-((phi*rho)*Obs_Tot_L)))/((K_i+l_ext)+(rho*Obs_Tot_L))
+    2 metab_L() ((beta/K_m_l)*Obs_Tot_Z)/((1+(Obs_Tot_A/K_m_a))+(Obs_Tot_L/K_m_l))
+    3 prod_A() (((nu*(beta/K_m_l))*Obs_Tot_Z)*Obs_Tot_L)/((1+(Obs_Tot_A/K_m_a))+(Obs_Tot_L/K_m_l))
+    4 metab_A() ((delta/K_m_a)*Obs_Tot_Z)/((1+(Obs_Tot_A/K_m_a))+(Obs_Tot_L/K_m_l))
+    5 syn_Z() growth_rate*(c_basal+((eps*(Obs_Tot_A^n_Hill))/((K_z^n_Hill)+(Obs_Tot_A^n_Hill))))
+end functions
+begin species
+    1 L() 0
+    2 A() 0
+    3 Z() c_basal
+end species
+begin reactions
+    1 0 1 transport_L #_R1
+    2 1 0 metab_L #_R2
+    3 1 0 growth_rate #_R3
+    4 0 2 prod_A #_R4
+    5 2 0 metab_A #_R5
+    6 2 0 growth_rate #_R6
+    7 0 3 syn_Z #_R7
+    8 3 0 growth_rate #_R8
+end reactions
+begin groups
+    1 Obs_Tot_L            1
+    2 Obs_Tot_A            2
+    3 Obs_Tot_Z            3
+end groups
