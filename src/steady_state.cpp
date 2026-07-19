@@ -1,7 +1,11 @@
 // bngsim/src/steady_state.cpp -- steady-state solver
 //
-// Default (newton): KINSOL Newton solver with analytical Jacobian, falling
-//   back to integration on non-convergence.
+// Default (newton): two-tier integrate-first solver (GH #27). Tier 1 is a CVODE
+//   burst that carries the state into the physical root's basin; tier 2 is a
+//   KINSOL Newton polish, accepted only once it is seed-stable (agrees across
+//   two successively tighter bursts). Falls back to integration otherwise. See
+//   solve_by_newton_two_tier for the rationale (why Newton-first returned wrong
+//   / NaN roots).
 // integration: CVODE integration with early termination on the BNG2.pl
 //   parity criterion ||f(y)||_2 / n_species < tol (run_network -c).
 // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
@@ -18,10 +22,12 @@
 #include <kinsol/kinsol.h>
 #include <nvector/nvector_serial.h>
 #include <sundials/sundials_context.h>
+#include <sundials/sundials_logger.h>
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 
 #include "bngsim/lapack_dense_linsol.hpp"
+#include "bngsim/platform_compat.hpp"
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
@@ -56,6 +62,52 @@ static double compute_residual(NetworkModel &model, const double *y, int ns) {
         sumsq += f[i] * f[i];
     }
     return (ns > 0) ? std::sqrt(sumsq) / static_cast<double>(ns) : 0.0;
+}
+
+// A steady state must be finite and (up to a small scale-relative slack)
+// non-negative. Newton can walk a species negative, where Hill/power rate laws
+// return NaN — compute_residual then returns NaN, and `NaN >= tol` is false, so
+// the old convergence check accepted it (GH #27 Bug 1). This predicate rejects
+// any non-finite or clearly-negative concentration. The negativity floor is
+// relative to the largest concentration so a root that lands a near-zero species
+// at -1e-9 (roundoff around a true zero, e.g. simple decay's A*≈0) still passes.
+static bool ss_state_is_physical(const std::vector<double> &y) {
+    double maxabs = 0.0;
+    for (double v : y) {
+        if (!std::isfinite(v))
+            return false;
+        maxabs = std::max(maxabs, std::abs(v));
+    }
+    const double neg_floor = -1e-7 * std::max(maxabs, 1e-300);
+    for (double v : y) {
+        if (v < neg_floor)
+            return false;
+    }
+    return true;
+}
+
+// Do two candidate steady states agree to AGREE_RTOL? Used by the two-tier
+// solver (GH #27 Bug 2) to accept a KINSOL root only once it is *seed-stable*:
+// two Newton solves from successively tighter integration bursts landing on the
+// same state. The floor `1e-6*max|b|` keeps near-zero species (relative diff
+// explodes as a component → 0) from dominating; this is the scale-robust analog
+// of the benchmark's XCHECK metric.
+static bool ss_states_agree(const std::vector<double> &a, const std::vector<double> &b,
+                            double agree_rtol) {
+    if (a.size() != b.size())
+        return false;
+    double maxabs = 0.0;
+    for (double v : a)
+        maxabs = std::max(maxabs, std::abs(v));
+    for (double v : b)
+        maxabs = std::max(maxabs, std::abs(v));
+    const double floor = 1e-6 * std::max(maxabs, 1e-300);
+    double worst = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double denom = floor + std::abs(b[i]);
+        worst = std::max(worst, std::abs(a[i] - b[i]) / denom);
+    }
+    return worst < agree_rtol;
 }
 
 // Build the dense direct linear solver for an n×n steady-state system,
@@ -302,6 +354,20 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
         throw std::runtime_error("SUNContext_Create failed (kinsol)");
     }
 
+    // Route this KINSOL context's error/warning log to the null sink. In the
+    // two-tier solver a KINSOL failure (non-convergence, or the unrecoverable
+    // dense linear-solver setup failure on a structurally singular reduced
+    // Jacobian — GH #27 Bug 3, e.g. Barua 2013's 404×404 rank-deficient system)
+    // is EXPECTED and handled by falling back to integration, so its stderr
+    // spam is noise. Hard misuse still surfaces via the flag checks below.
+    {
+        SUNLogger logger = nullptr;
+        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
+            SUNLogger_SetErrorFilename(logger, bngsim::null_device);
+            SUNLogger_SetWarningFilename(logger, bngsim::null_device);
+        }
+    }
+
     NVectorGuard y(N_VNew_Serial(n_ind, ctx));
     double *y_data = y.data();
 
@@ -387,15 +453,170 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
             result.concentrations[i] = y_data[i];
     }
 
-    // Compute actual residual using full state
+    // Compute actual residual using full state and verify convergence.
+    //
+    // GH #27 Bug 1: the old guard was `if (residual >= tol) converged = false`.
+    // When Newton walks a species negative, Hill/power rate laws yield NaN, so
+    // compute_residual returns NaN — and `NaN >= tol` is false, so a NaN result
+    // was reported converged (returning conc=[nan, …]). Use the positive test
+    // `!(residual < tol)` (true for NaN) and additionally reject any non-finite
+    // or clearly-negative concentration, so an unphysical Newton root never
+    // passes as a converged steady state.
     result.residual = compute_residual(model, result.concentrations.data(), ns);
-    if (result.residual >= opts.tol) {
+    if (!(result.residual < opts.tol) || !ss_state_is_physical(result.concentrations)) {
         result.converged = false;
     }
 
     // RAII guards handle cleanup automatically
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier steady-state solver (GH #27): integrate FIRST, then Newton
+// ---------------------------------------------------------------------------
+//
+// The manuscript's two-tier method is tier 1 = CVODE integration with early
+// termination, tier 2 = KINSOL Newton polish. The previous default ran them in
+// the OPPOSITE order — Newton seeded at the raw initial condition, integration
+// only as a non-convergence fallback — so on any model whose f(y)=0 has several
+// roots (e.g. kinetic proofreading) Newton would *converge* to a spurious root
+// the dynamics never reach and the fallback never fired (GH #27 Bug 2).
+//
+// Here integration carries the state into the physical root's basin and Newton
+// polishes from there. The open question the issue flags is how tight the burst
+// must be — it is model-dependent. We make it ADAPTIVE without ever trusting a
+// single unvalidated Newton solve: a KINSOL root is accepted only when it is
+// *seed-stable*, i.e. two Newton solves from successively tighter integration
+// bursts land on the same state (ss_states_agree). A unique-root model confirms
+// on the first pair of bursts (fast — the speedup the issue wants to see); a
+// multi-root model's Newton roots keep drifting with the seed until the burst
+// has essentially converged, so it simply integrates to the physical root. Any
+// non-finite / non-converged / structurally-singular (Bug 3) Newton attempt is
+// discarded and integration continues. The result is correct on every model,
+// with the root-finding speedup surfacing exactly where it is trustworthy.
+//
+// Burst tolerances form a scale-free ladder: the residual ||f||_2/n at the IC,
+// reduced by a decade for the first burst and by two decades per rung after,
+// floored at opts.tol. Each rung CONTINUES from the previous burst's end state
+// (integration conserves mass, so the reduced Newton's conservation constants,
+// recomputed from that state, are unchanged) — so the total integration work is
+// a single march to the tightest rung, not a restart per rung.
+
+// Newton polish seeded from `seed`; returns the KINSOL result. The model's live
+// species are set to `seed` first (solve_by_integration / solve_by_newton read
+// the IC from there). KINSOL construction can throw (KINInit/KINCreate) — the
+// caller treats a throw as a failed, non-accepted attempt.
+static SteadyStateResult ss_newton_from(NetworkModel &model, const SteadyStateOptions &opts,
+                                        const std::vector<double> &seed) {
+    model.set_state_from(seed.data());
+    return solve_by_newton(model, opts);
+}
+
+static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
+                                                  const SteadyStateOptions &opts) {
+    const int ns = model.n_species();
+
+    // Snapshot the initial condition so the model is restored on return (the
+    // public contract: steady_state() without sensitivity leaves ICs intact).
+    std::vector<double> ic(ns);
+    model.get_state_into(ic.data());
+
+    auto restore = [&]() { model.set_state_from(ic.data()); };
+
+    // Accept a KINSOL result only if it converged to a finite, physical root.
+    auto accept = [&](const SteadyStateResult &r) {
+        return r.converged && r.method_used == "newton" && (r.residual < opts.tol) &&
+               ss_state_is_physical(r.concentrations);
+    };
+
+    const double r0 = compute_residual(model, ic.data(), ns);
+
+    // IC already at steady state: a single Newton polish (which converges
+    // immediately) reports the canonical "newton" without any integration.
+    if (r0 < opts.tol) {
+        SteadyStateResult r;
+        try {
+            r = ss_newton_from(model, opts, ic);
+        } catch (...) {
+            r.converged = false;
+        }
+        if (accept(r)) {
+            restore();
+            return r;
+        }
+    }
+
+    constexpr double AGREE_RTOL = 1e-4; // seed-stability tolerance (see header)
+    constexpr int MAX_RUNGS = 14;
+    // Cap on burst-seeded Newton attempts. Two agreeing attempts accept a
+    // unique-root model on rung 1; a multi-root model's attempts keep drifting,
+    // so after this many we stop probing and just integrate (KINSOL adds only
+    // cost there, e.g. Barua 2013 whose reduced Jacobian is singular at every
+    // seed — Bug 3). Correctness is unaffected: integration is always the answer.
+    constexpr int MAX_NEWTON_ATTEMPTS = 6;
+
+    std::vector<double> prev_newton;
+    bool have_prev = false;
+    int newton_attempts = 0;
+
+    std::vector<double> seed = ic;
+    double bt = std::max(r0 * 0.1, opts.tol);
+
+    for (int rung = 0; rung < MAX_RUNGS; ++rung) {
+        // Tier 1: continue integrating from the previous rung's end state to bt.
+        SteadyStateOptions bopts = opts;
+        bopts.tol = bt;
+        model.set_state_from(seed.data());
+        SteadyStateResult burst = solve_by_integration(model, bopts);
+        seed = burst.concentrations;
+
+        if (burst.residual < opts.tol) {
+            // Integration itself reached the parity tolerance — done.
+            restore();
+            return burst;
+        }
+        if (!burst.converged) {
+            // Could not reach even this (looser) burst tolerance within max_time
+            // (a slow/oscillatory system, or a residual floor above tol like
+            // Barua 2013). Integration is the best available answer.
+            restore();
+            return burst;
+        }
+
+        // Tier 2: Newton polish from the burst state. Accept only when a second
+        // attempt lands on the same root (seed-stable); the first attempt just
+        // seeds the comparison. A raw-IC Newton is never trusted alone — that is
+        // exactly the Bug 2 hazard.
+        if (newton_attempts < MAX_NEWTON_ATTEMPTS) {
+            ++newton_attempts;
+            SteadyStateResult nr;
+            try {
+                nr = ss_newton_from(model, opts, seed);
+            } catch (...) {
+                nr.converged = false;
+            }
+            if (accept(nr)) {
+                if (have_prev && ss_states_agree(nr.concentrations, prev_newton, AGREE_RTOL)) {
+                    restore();
+                    return nr; // seed-stable root — accept
+                }
+                prev_newton = nr.concentrations;
+                have_prev = true;
+            }
+        }
+
+        if (bt <= opts.tol)
+            break;
+        bt = std::max(bt * 0.01, opts.tol);
+    }
+
+    // Ladder exhausted without a seed-stable Newton: integrate to the full
+    // tolerance from the tightest burst state (a correct, if slower, answer).
+    model.set_state_from(seed.data());
+    SteadyStateResult fin = solve_by_integration(model, opts);
+    restore();
+    return fin;
 }
 
 // ---------------------------------------------------------------------------
@@ -784,22 +1005,14 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     if (method == "integration") {
         result = solve_by_integration(model, opts);
     } else {
-        // "newton" (default): KINSOL Newton solver. On non-convergence (or a
-        // KINSOL exception) fall back EXPLICITLY to the parity integration
-        // path so the result still honors the ||f||_2/n < tol criterion.
-        bool newton_ok = false;
-        try {
-            result = solve_by_newton(model, opts);
-            newton_ok = result.converged;
-        } catch (...) {
-            newton_ok = false;
-        }
-
-        if (!newton_ok) {
-            // Reset model state, then run the parity integration fallback.
-            model.reset();
-            result = solve_by_integration(model, opts);
-        }
+        // "newton" (default): two-tier integrate-first solver (GH #27). A short
+        // CVODE burst carries the state into the physical root's basin, then
+        // KINSOL polishes; the polish is accepted only once it is seed-stable
+        // (agrees across two successively tighter bursts), otherwise integration
+        // continues. This is correct on multi-root and NaN-prone models where
+        // the old Newton-first ordering returned spurious / non-finite roots,
+        // while still surfacing the root-finding speedup on unique-root models.
+        result = solve_by_newton_two_tier(model, opts);
     }
 
     // Compute sensitivity if requested and converged

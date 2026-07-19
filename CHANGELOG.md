@@ -38,6 +38,33 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **Steady-state solver (`method="newton"` / `Simulator.steady_state`) returned
+  wrong or NaN roots for several published dose-response models (issue #27).**
+  The default seeded KINSOL at the raw initial condition and only fell back to
+  integration on non-*convergence*, so it silently returned a spurious root of
+  `f(y)=0` (or `NaN`) the dynamics never reach. Three defects are fixed:
+  - **Bug 1 — a `NaN` result was reported `converged=True`.** `solve_by_newton`
+    marked convergence with `if (residual >= tol) converged = false`; when Newton
+    walks a species negative, Hill/power laws yield `NaN`, and `NaN >= tol` is
+    false, so `NaN` residuals passed as converged (Gardner 2000 genetic toggle
+    returned `conc=[nan, nan]`). The guard is now the positive test
+    `!(residual < tol)` (true for `NaN`) plus a finite/non-negative concentration
+    check, so an unphysical Newton root never passes.
+  - **Bug 2 — Newton converged to a spurious `f(y)=0` root.** The default now
+    runs the manuscript's two-tier method in the intended order: **integrate
+    first** (a CVODE burst carries the state into the physical root's basin),
+    **then** KINSOL polishes. The burst tolerance is adaptive — a KINSOL root is
+    accepted only once it is *seed-stable* (two Newton solves from successively
+    tighter bursts land on the same state); otherwise integration continues. This
+    is correct on multi-root models (e.g. Hlavacek 2001 kinetic proofreading,
+    previously ~52% off; Kocieniewski 2012) while still surfacing the root-finding
+    speedup on unique-root models (e.g. Barua 2007).
+  - **Bug 3 — the dense KINSOL linear-solver setup failed at ~400 species.** The
+    reduced steady-state Jacobian is structurally singular for Barua 2013 (409
+    sp), so KINSOL cannot factor it at any seed. The two-tier solver falls back to
+    integration (a correct answer), stops probing KINSOL after a bounded number of
+    failed attempts, and routes the KINSOL context's error log to the null sink so
+    the expected failure no longer spams stderr.
 - **PSA now scales zeroth-order synthesis reactions and bounds every reaction's
   leap by its products as well as its reactants (issue #14).** The partial-scaling
   leap factor `iScaling = max(1, ⌊N_min/N_c⌋)` previously took `N_min` over

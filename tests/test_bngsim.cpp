@@ -259,8 +259,9 @@ int test_ode_steady_state_early_stop() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 int test_find_steady_state_methods() {
-    // Default method is "newton" (KINSOL with explicit parity-integration
-    // fallback). On a reversible A<->B model it converges to f(y)=0.
+    // Default method is "newton" (two-tier integrate-first: CVODE burst into
+    // the physical basin, then a seed-stable KINSOL polish; GH #27). On a
+    // reversible A<->B model the polish is accepted and reports "newton".
     {
         auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
         bngsim::SteadyStateOptions opts; // method defaults to "newton"

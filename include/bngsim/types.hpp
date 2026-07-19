@@ -664,11 +664,12 @@ struct SensitivityOptions {
 
 // --- Steady-state options -----------------------------------------------------
 //
-// Steady-state solver. Default method "newton" runs the KINSOL Newton solver
-// (fast dose-response sweeps) and falls back to integration on non-convergence.
-// method "integration" runs CVODE with early termination on the BNG2.pl
-// parity criterion ||f(y)||_2 / n_species < tol (run_network -c). "kinsol" is
-// an accepted input alias for "newton".
+// Steady-state solver. Default method "newton" runs the two-tier integrate-
+// first solver (GH #27): a CVODE burst carries the state into the physical
+// root's basin, then a KINSOL Newton polish is accepted only once it is seed-
+// stable, else integration continues. method "integration" runs CVODE with
+// early termination on the BNG2.pl parity criterion ||f(y)||_2 / n_species <
+// tol (run_network -c). "kinsol" is an accepted input alias for "newton".
 struct SteadyStateOptions {
     double tol = 1e-9;     // convergence tolerance: ||f(y)||_2 / n_species < tol
     double max_time = 1e6; // max integration time for the integration path

@@ -13,8 +13,13 @@ namespace bngsim {
 
 // Find the steady state of the ODE system f(y) = 0.
 //
-// method="newton" (default): KINSOL Newton solver; on non-convergence it
-//                falls back EXPLICITLY to the parity integration path.
+// method="newton" (default): two-tier integrate-first solver (GH #27). A CVODE
+//                burst carries the state into the physical root's basin, then
+//                KINSOL polishes; the polish is accepted only once it is
+//                seed-stable (agrees across two successively tighter bursts),
+//                otherwise integration continues. Correct on multi-root and
+//                NaN-prone models where seeding Newton at the raw IC returned
+//                spurious / non-finite roots.
 // method="integration": CVODE parity early-stop only.
 // method="kinsol": accepted alias for "newton".
 SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOptions &opts = {});

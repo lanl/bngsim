@@ -3048,9 +3048,15 @@ class Simulator:
 
         Solver methods:
 
-        - ``"newton"`` (default): KINSOL Newton solver with analytical
-          Jacobian; on non-convergence it falls back EXPLICITLY to the
-          parity integration path.
+        - ``"newton"`` (default): two-tier integrate-first solver. A short
+          CVODE burst carries the state into the physical root's basin, then
+          KINSOL polishes with an analytical Jacobian; the polish is accepted
+          only once it is *seed-stable* (agrees across two successively tighter
+          bursts), otherwise integration continues. This returns the steady
+          state the dynamics actually reach — seeding Newton at the raw initial
+          condition instead can converge to a spurious root of ``f(y)=0`` the
+          trajectory never reaches, or walk a species negative into ``NaN``
+          (GH #27).
         - ``"integration"``: CVODE BDF integrated until the BNG2.pl parity
           criterion ``||f(y)||_2 / n_species < tol`` (``run_network -c``).
         - ``"kinsol"``: accepted alias for ``"newton"``.
