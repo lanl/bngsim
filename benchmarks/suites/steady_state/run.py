@@ -2,24 +2,32 @@
 """``steady_state`` suite runner — KINSOL dose-response correctness + timing.
 
 Promoted from ``harness/comparison/bench_kinsol_dose_response.py``. Computes
-dose-response curves under five distinct steady-state strategies and compares
-their wall-clock cost (paper Supplementary Table S7; see the table-number note
-in ``_dev/phase4_plan.md``):
+dose-response curves under three steady-state strategies and compares their
+wall-clock cost:
 
-  A. ``run_network`` long-time integration (BNG2.pl subprocess).
-  B. BNGsim CVODE long-time integration (in-process).
-  C. BNGsim KINSOL — Newton-first with simulation fallback (matches
-     BNGsim ``method="auto"``).
-  D. BNGsim KINSOL — integration burst then Newton refinement.
+  A. ``run_network`` simulated until its steady-state check passes
+     (BNG2.pl subprocess, ``-c -t SS_TOL``).
+  B. BNGsim CVODE simulated until the same check passes (in-process,
+     ``steady_state(method="integration")``).
+  C. BNGsim KINSOL two-tier root solve (``steady_state(method="newton")``:
+     CVODE burst into the physical basin, then a KINSOL polish accepted only
+     when seed-stable — lanl/bngsim#27).
+
+A and B stop on the SAME rule, ``||f(y)||_2 / n_species < SS_TOL``, so the two
+long-simulation baselines are directly comparable; neither is charged a
+pre-computed settling time, which would presume oracle knowledge of ``t_s``.
+(A legacy column D re-times C and is retained only as a consistency check.)
 
 Two gates per dose:
 
 1. correctness — every engine that reports a steady state is cross-checked
-   against the ``y_ss`` reference (strict Newton, or the long-horizon CVODE
-   tail when Newton does not converge). A dose passes when all engines agree
-   within ``rtol`` (just above the 99.73% settling band). Timing is only
-   reported for doses that pass — a wall time is meaningless if the engines
-   landed on different steady states.
+   against the ``y_ss`` reference, which is the PHYSICAL steady state from
+   integration. Newton is deliberately not the reference: from the initial
+   condition it can converge to a spurious root of f(y)=0 that the dynamics
+   never reach. A dose passes when all engines agree within ``rtol`` (just
+   above the 99.73% settling band). Timing is only reported for doses that
+   pass — a wall time is meaningless if the engines landed on different
+   steady states.
 2. timing — warmup + timed-run wall-clock comparison, median reported.
 
 Per-dose reference quantities (settling time ``t_s``, censoring) carry over
@@ -81,6 +89,12 @@ EPS_ABS = 1e-9
 # that genuinely settled is not failed by ordinary band-edge noise.
 XCHECK_RTOL = 1e-2
 XCHECK_ATOL = 1e-6
+
+# ── Steady-state stopping criterion ───────────────────────────────────────
+# Shared by every "integrate until steady state" path so the engines stop on
+# the SAME rule: ||f(y)||_2 / n_species < SS_TOL. This is BNGsim's
+# steady_state() default tol, and is handed to run_network as `-c -t SS_TOL`.
+SS_TOL = 1e-9
 
 # ── Model definitions ─────────────────────────────────────────────────────
 # t_end_hint is a per-model guess at the settling time. The dense
@@ -277,7 +291,16 @@ def _override_net_param(net_text: str, param_name: str, param_val: float) -> str
 def run_rn_to_horizon(
     net_path: str, param_name: str, param_val: float, t_end: float, n_steps: int
 ) -> dict:
-    """Run BNG2.pl run_network to t_end with the dose parameter overridden."""
+    """Run ``run_network`` to steady state with the dose parameter overridden.
+
+    Strategy A = "simulate until a steady-state check passes". ``-c`` enables
+    run_network's steady-state check and ``-t SS_TOL`` sets it to the same
+    ``||f(y)||_2 / n_species < tol`` criterion BNGsim's ``method="integration"``
+    uses, so A and B stop on the *same* rule. ``t_end`` is therefore only an
+    upper bound: the run terminates as soon as the criterion is met. (It is NOT
+    the settling time -- charging the engines a pre-computed t_s would presume
+    oracle knowledge a real user does not have.)
+    """
     sample_time = t_end / max(n_steps, 1)
     with tempfile.TemporaryDirectory(prefix="rn_ss_") as tmpdir:
         try:
@@ -292,6 +315,9 @@ def run_rn_to_horizon(
         prefix = os.path.join(tmpdir, "out")
         cmd = [
             RUN_NETWORK,
+            "-c",  # stop on the steady-state check
+            "-t",
+            f"{SS_TOL:.15g}",  # ...using the same criterion as BNGsim
             "-o",
             prefix,
             "-g",
@@ -389,13 +415,34 @@ def run_bngsim_integration_ss(
 def run_bngsim_cvode_to_horizon(
     net_path: str, param_name: str, param_val: float, t_end: float, n_points: int
 ) -> dict:
+    """Strategy B = BNGsim "simulate until a steady-state check passes".
+
+    CVODE integration with early termination on ``||f(y)||_2 / n < SS_TOL`` --
+    the same rule ``run_network -c -t SS_TOL`` applies in strategy A, so the two
+    long-simulation baselines are directly comparable. ``t_end`` is an upper
+    bound (max_time), not a target horizon; ``n_points`` is unused now that the
+    stop is criterion-driven rather than grid-driven.
+    """
     try:
         sim, _ = _make_sim(net_path, param_name, param_val)
         t0 = time.perf_counter()
-        result = sim.run(t_span=(0.0, float(t_end)), n_points=n_points)
+        res = sim.steady_state(method="integration", tol=SS_TOL, max_time=float(t_end))
         elapsed = time.perf_counter() - t0
-        species = np.asarray(result.species)
-        return {"wall_time": elapsed, "final_conc": species[-1, :]}
+        conc = np.asarray(res.concentrations, dtype=float)
+        if not np.all(np.isfinite(conc)):
+            return {"wall_time": elapsed, "error": "integration produced a non-finite state"}
+        # Not reaching SS_TOL within max_time is NOT an error: ||f||_2/n is an
+        # ABSOLUTE criterion, so a model carrying large molecule counts (e.g.
+        # Barua_2013, ~1e5-1e6 copies) floors at the integrator's own noise
+        # level (~7.5e-3) and can never meet a 1e-9 test however long it runs.
+        # run_network -c behaves the same way: the check simply never fires and
+        # it integrates to the horizon. Return that state and let the
+        # correctness gate judge it, so both baselines are charged the same
+        # honest cost (run-to-horizon) on such models.
+        out = {"wall_time": elapsed, "final_conc": conc}
+        if not bool(getattr(res, "converged", True)):
+            out["ss_criterion_unmet"] = True
+        return out
     except Exception as e:
         return {"wall_time": -1.0, "error": str(e)[:300]}
 
@@ -446,12 +493,20 @@ def run_bngsim_kinsol_strict(net_path: str, param_name: str, param_val: float) -
 
 # ── Engine: BNGsim KINSOL (integration burst, then Newton refinement) ────
 
-BURST_TOL = 1e-3  # relaxed convergence tolerance for the integration burst
-BURST_MAX_TIME = 1e6  # passes through to ``solve_by_integration`` max_time
-
 
 def run_bngsim_kinsol_two_tier(net_path: str, param_name: str, param_val: float) -> dict:
-    """Integration burst followed by strict Newton refinement."""
+    """The two-tier solve, timed as a single call.
+
+    As of lanl/bngsim#27 ``method="newton"`` IS the two-tier solver: it runs
+    the CVODE burst internally, then polishes with KINSOL and accepts the
+    root only once it is seed-stable. The manual burst this function used to
+    do first is therefore redundant double integration, so it is gone.
+
+    That makes this column a duplicate of the ``kinsol_first`` column (C);
+    it is kept only as a consistency check and should be dropped (or
+    repurposed, e.g. to early-stop ``method="integration"``) when the
+    reporting schema is next revised.
+    """
     try:
         sim, _ = _make_sim(net_path, param_name, param_val)
     except Exception as e:
@@ -460,16 +515,6 @@ def run_bngsim_kinsol_two_tier(net_path: str, param_name: str, param_val: float)
     burst_t = 0.0
     refine_t = 0.0
     try:
-        t0 = time.perf_counter()
-        burst = sim.steady_state(method="integration", tol=BURST_TOL, max_time=BURST_MAX_TIME)
-        burst_t = time.perf_counter() - t0
-        if not bool(getattr(burst, "converged", True)):
-            return {
-                "wall_time": burst_t,
-                "burst": burst_t,
-                "refine": 0.0,
-                "error": "integration burst did not reach BURST_TOL",
-            }
         t0 = time.perf_counter()
         refined = sim.steady_state(method="newton")
         refine_t = time.perf_counter() - t0
@@ -548,26 +593,28 @@ class DoseRecord:
 
 
 def _correctness_check(
-    net_path: str, pname: str, pval: float, t_s: float, n_steps_long: int, y_ss: np.ndarray
+    net_path: str, pname: str, pval: float, max_time: float, n_steps_long: int, y_ss: np.ndarray
 ) -> tuple[bool, dict, str]:
     """Run each engine once (untimed) and cross-check its steady state vs y_ss.
 
     Returns (ok, {engine: max_rel_err}, detail). A dose passes when every
     engine that produced a steady state agrees with y_ss to XCHECK_RTOL.
+    ``max_time`` caps the two long-simulation strategies, which stop early on
+    the shared ``SS_TOL`` criterion.
     """
     errs: dict[str, float] = {}
     detail_parts: list[str] = []
 
     probes = {
-        "run_network": run_rn_to_horizon(net_path, pname, pval, t_s, n_steps_long),
-        "cvode": run_bngsim_cvode_to_horizon(net_path, pname, pval, t_s, n_steps_long + 1),
+        "run_network": run_rn_to_horizon(net_path, pname, pval, max_time, n_steps_long),
+        "cvode": run_bngsim_cvode_to_horizon(net_path, pname, pval, max_time, n_steps_long + 1),
         "kinsol_first": run_bngsim_kinsol_strict(net_path, pname, pval),
         "kinsol_two_tier": run_bngsim_kinsol_two_tier(net_path, pname, pval),
     }
     # Both KINSOL strategies are fallback-capable — their timing columns
-    # charge a CVODE fallback when the native solve fails (Newton diverges,
-    # the burst misses BURST_TOL). A KINSOL strategy that falls back is
-    # therefore *not* a correctness failure: its result is then CVODE's,
+    # charge a CVODE fallback when the native solve fails (the two-tier
+    # solve does not produce a seed-stable root). A strategy that falls back
+    # is therefore *not* a correctness failure: its result is then CVODE's,
     # which is checked on its own row. Only run_network and CVODE must
     # always produce a steady state.
     _FALLBACK_ENGINES = {"kinsol_first", "kinsol_two_tier"}
@@ -648,7 +695,7 @@ def benchmark_dose(
 
     # 4. Correctness gate — every engine must reach the same steady state.
     if mode in ("correctness", "both"):
-        ok, errs, detail = _correctness_check(net_path, pname, pval, t_s, n_steps_long, y_ss)
+        ok, errs, detail = _correctness_check(net_path, pname, pval, T_char, n_steps_long, y_ss)
         rec.correctness_ok = ok
         rec.correctness_err = errs
         rec.correctness_detail = detail
@@ -663,12 +710,12 @@ def benchmark_dose(
 
     # 5a. Wall-time engines at t_end = t_s.
     rec.rn_time, _ = timed_median(
-        lambda: run_rn_to_horizon(net_path, pname, pval, t_s, n_steps_long),
+        lambda: run_rn_to_horizon(net_path, pname, pval, T_char, n_steps_long),
         warmup=warmup,
         runs=runs,
     )
     rec.cvode_time, _ = timed_median(
-        lambda: run_bngsim_cvode_to_horizon(net_path, pname, pval, t_s, n_steps_long + 1),
+        lambda: run_bngsim_cvode_to_horizon(net_path, pname, pval, T_char, n_steps_long + 1),
         warmup=warmup,
         runs=runs,
     )
@@ -679,7 +726,7 @@ def benchmark_dose(
         strict_t = float(a.get("wall_time", 0.0))
         if "final_conc" in a:
             return {"wall_time": strict_t, "strict": strict_t, "fallback": 0.0}
-        b = run_bngsim_cvode_to_horizon(net_path, pname, pval, t_s, n_steps_long + 1)
+        b = run_bngsim_cvode_to_horizon(net_path, pname, pval, T_char, n_steps_long + 1)
         if "error" in b:
             return {"wall_time": -1.0, "error": f"kinsol-first fallback failed: {b['error']}"}
         fb_t = float(b["wall_time"])
@@ -715,7 +762,7 @@ def benchmark_dose(
                 "refine": refine_t,
                 "fallback": 0.0,
             }
-        b = run_bngsim_cvode_to_horizon(net_path, pname, pval, t_s, n_steps_long + 1)
+        b = run_bngsim_cvode_to_horizon(net_path, pname, pval, T_char, n_steps_long + 1)
         if "error" in b:
             return {"wall_time": -1.0, "error": f"two-tier fallback failed: {b['error']}"}
         fb_t = float(b["wall_time"])
