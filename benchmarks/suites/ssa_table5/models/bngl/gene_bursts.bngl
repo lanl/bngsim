@@ -1,0 +1,62 @@
+begin model
+# Lin YT, Doering CR (2016) Phys Rev E 93: 022409
+begin parameters
+# Avogadro constant
+NA 6.02214076e23 # molecules per mole (exact value)
+# bacterial (Escherichia coli) cell volume (L)
+V 1e-15 # L per cell (1e-18 m^3)
+# mean lifetime of mRNA
+tau_mRNA 120 # s (NB: 120 s = 2 min)
+# mean lifetime of Protein
+tau_Protein 3600 # s (NB: 3600 s = 60 min)
+# rate constant for mRNA degradation via a (pseudo) first-order process
+gamma=1/tau_mRNA # /s (NB: gamma=30*gamma0)
+# rate constant for dilution of stable protein through cell growth
+#   NB: 1 cell cycle is taken to last 60 min = 3600 s
+gamma0=1/tau_Protein # /s
+B 40 # number of translation events per transcript 
+# rate constant for translation of mRNA into Protein
+gammaB=B*gamma # translation events per transcript per s
+# basal rate of transcription
+r0 2/3600 # number of transcripts per cell per s
+# maximal rate of induced transcription
+r1 10/3600 # number of transcripts per cell per s
+# Hill number
+n 4 # dimensionless, n=1,2,4
+# Hill constant
+K 200 # copies per cell
+end parameters
+begin molecule types
+mRNA()
+Protein()
+end molecule types
+begin seed species
+mRNA() 0
+Protein() 0
+end seed species
+begin observables
+Molecules mRNA mRNA() # number of transcripts per cell
+Molecules NP Protein() # number of proteins per cell 
+end observables
+begin functions
+H()=r0+r1*NP^n/(K^n+NP^n)
+end functions
+begin reaction rules
+# positive autoregulation of transcription by gene product
+#   NB: transcription is bursty
+0->mRNA() H()
+# translation
+mRNA()->mRNA()+Protein() gammaB
+# mRNA degradation (fast)
+mRNA()->0 gamma
+# protein dilution (slow)
+Protein()->0 gamma0
+end reaction rules
+end model
+begin actions
+# equilibration (10 cell cycle times = 10 hrs)
+simulate({suffix=>"equil",method=>"ode",t_end=>360000,n_steps=>100,print_functions=>1})
+saveConcentrations()
+# stochastic simulation (1 hr)
+simulate({suffix=>"stoch",method=>"ssa",t_end=>3600,n_steps=>360,print_functions=>1})
+end actions

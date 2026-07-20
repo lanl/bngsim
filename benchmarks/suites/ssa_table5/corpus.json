@@ -1,0 +1,295 @@
+{
+  "corpus": "ssa_table5",
+  "title": "arXiv Table 5 -- exact Gillespie SSA cost, published real-world models",
+  "generated": "2026-07-18",
+  "revision": "2026-07-18h: removed the BNGL vilar_circadian (a modified delta_R=0.05 variant); kept the SBML BIOMD35 (published delta_R=0.2). Vilar now SBML-only. Set now 8 BNGL + 6 SBML.",
+  "bng_version": "2.9.3",
+  "selection_rule": "Every model is (1) published and (2) simulated with exact Gillespie SSA IN ITS SOURCE STUDY, at (3) the published time horizon. The three Lin-2019 systems (tcr/erk/prion) are the exact-SSA baseline here and the PSA approximation in Table 7, by design.",
+  "provenance_legend": {
+    "confirmed": "source study demonstrably used SSA; reference solid.",
+    "verify": "originally-SSA is probable but Bill should confirm the reference / that the source study used SSA."
+  },
+  "engine_columns": {
+    "bngl": [
+      "bngsim",
+      "run_network"
+    ],
+    "sbml": [
+      "bngsim",
+      "roadrunner",
+      "copasi"
+    ],
+    "sbml_note": "All three SBML columns are EXACT SSA (bngsim SSA, RoadRunner gillespie, COPASI SSA). Every engine is run on every model; where an engine cannot produce a valid trajectory, its cell is marked N/A with a footnote. Known gap: RoadRunner-gillespie silently does not fire time-triggered events (860/862/864), so those RR cells are expected N/A."
+  },
+  "notes": [
+    "BNGL rows are exact SSA on the pre-generated .net (both engines run the SAME network).",
+    "BNGL Lin-2019 nets (tcr/erk/prion) were regenerated from RuleHub Published/Lin2019/*.bngl with BNG 2.9.3; horizons are the Lin-2019 'exact' SSA actions.",
+    "Timings are NOT recorded here -- this file defines the CORPUS (models + horizons + provenance). A timing run is a separate step.",
+    "SBML inclusion rule: molecule-count encodings ONLY (initialAmount / hasOnlySubstanceUnits=true). Concentration-unit SBML (hasOnlySubstanceUnits=false) is an ODE encoding -- exact SSA on it is ill-posed. Dropped for this reason: Smith2013/474 (ROS went negative) and Karapetyan/586+587."
+  ],
+  "bngl": [
+    {
+      "name": "tcr_signaling",
+      "file": "models/bngl/tcr_signaling.net",
+      "species": 37,
+      "reactions": 97,
+      "t_end": 10000,
+      "n_steps": 1000,
+      "tier": "medium",
+      "reference": "Lipniacki T, Hat B, Faeder JR, Hlavacek WS (2008) J Theor Biol 254:110-122. Formulation + horizon: Lin YT, Feng S, Hlavacek WS (2019) J Chem Phys 150:244101.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "Regenerated from RuleHub Lin-2019 TCR_model.bngl at the Lin-2019 exact-SSA horizon t_end=10000."
+      ]
+    },
+    {
+      "name": "erk_activation",
+      "file": "models/bngl/erk_activation.net",
+      "species": 34,
+      "reactions": 65,
+      "t_end": 8640,
+      "n_steps": 1000,
+      "tier": "slow",
+      "reference": "Kochanczyk M et al. (2017) Sci Rep 7:38244. Formulation + horizon: Lin et al. (2019).",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "caveats": [
+        "Regenerated from RuleHub Lin-2019 ERK_model.bngl at t_end=8640 (Lin-2019 exact-SSA action).",
+        "EXACT SSA IS THE SLOW ANCHOR: populations up to 3e6 (set via *_tot params) -> ~6e8 events/replicate (~77 s/rep in bng_parity). Feasible; budget for it.",
+        "Confirm the Kochanczyk 2017 reference and SSA origin."
+      ]
+    },
+    {
+      "name": "prion_aggregation",
+      "file": "models/bngl/prion_aggregation.net",
+      "species": 104,
+      "reactions": 2809,
+      "t_end": 300,
+      "n_steps": 30000,
+      "tier": "medium-slow",
+      "reference": "Rubenstein et al. (2007), nucleated polymerization. Formulation + horizon: Lin et al. (2019).",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "caveats": [
+        "Regenerated from RuleHub Lin-2019 prion_model.bngl at t_end=300, n_steps=30000 (Lin-2019 exact-SSA action; generate_network uses max_stoich PrP=>120).",
+        "Confirm the Rubenstein 2007 reference and SSA origin."
+      ]
+    },
+    {
+      "name": "gene_expr_3stage",
+      "file": "models/bngl/gene_expr_3stage.net",
+      "species": 6,
+      "reactions": 6,
+      "t_end": 200000000,
+      "n_steps": 10000,
+      "tier": "high (long horizon)",
+      "reference": "Shahrezaei V, Swain PS (2008) Analytical distributions for stochastic gene expression. PNAS 105:17256-17261.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "Three-stage single-gene model: DNA(promoter on/off) -> mRNA -> Protein. Small network, very long horizon (t_end=2e8) drives the event count.",
+        "DISTINCT from gene_expression (Munsky) -- single-gene protein cascade vs multi-gene mRNA telegraph."
+      ]
+    },
+    {
+      "name": "gene_expression",
+      "file": "models/bngl/gene_expression.net",
+      "species": 10,
+      "reactions": 14,
+      "t_end": 60000,
+      "n_steps": 1000,
+      "tier": "medium",
+      "reference": "Munsky B, Neuert G, van Oudenaarden A (2012) Science 336:183-187. BNGL encoding: Chylek LA, Harris LA, Faeder JR, Hlavacek WS (2015) Phys Biol 12:045007, Fig 9.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "Munsky Fig-9 model: 1 constitutive gene + 3 two-state regulated genes at equal mean but distinct transcript distributions (mRNA-level telegraph).",
+        "BNGL is an illustrative re-implementation from the Chylek 2015 review; the model originates in Munsky 2012. Both used SSA."
+      ]
+    },
+    {
+      "name": "mckane_predator_prey",
+      "file": "models/bngl/mckane_predator_prey.net",
+      "source_bngl": "models/bngl/mckane_predator_prey.bngl",
+      "species": 3,
+      "reactions": 5,
+      "t_end": 1200,
+      "n_steps": 1200,
+      "tier": "fast",
+      "reference": "McKane AJ, Newman TJ (2005) Predator-prey cycles from resonant amplification of demographic stochasticity. Phys Rev Lett 94:218102.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "DEMOGRAPHIC (ecological) stochasticity -- individuals, not molecules. It is exact SSA of a Markov jump process, but ecological rather than biochemical; keep or prune depending on table scope.",
+        "IC n=m=800 per the header note; network generated here with BNG 2.9.3 (3 sp / 5 rx). Source BNGL is Bill's encoding of the McKane-Newman reactions."
+      ]
+    },
+    {
+      "name": "gene_bursts",
+      "file": "models/bngl/gene_bursts.net",
+      "source_bngl": "models/bngl/gene_bursts.bngl",
+      "species": 2,
+      "reactions": 4,
+      "t_end": 3600,
+      "n_steps": 360,
+      "tier": "fast-medium",
+      "reference": "Lin YT, Doering CR (2016) Gene expression dynamics with stochastic bursts: construction and exact results for a coarse-grained model. Phys Rev E 93:022409.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "Coarse-grained bursty gene expression (mRNA + protein). Thematically near gene_expr_3stage / gene_expression but a distinct model.",
+        "ICs BAKED: seed species set to the ODE-equilibrated steady state (mRNA=0, Protein=467) so exact SSA measures the intended post-equilibration regime. The source runs an ODE equilibration (t_end=360000) then SSA; from bare mRNA=0/Protein=0 ICs the model is near-inert (basal transcription only)."
+      ]
+    },
+    {
+      "name": "samoilov_futile_cycle",
+      "file": "models/bngl/samoilov_futile_cycle.net",
+      "source_bngl": "models/bngl/samoilov_futile_cycle.bngl",
+      "species": 6,
+      "reactions": 6,
+      "t_end": 0.0018,
+      "n_steps": 180,
+      "tier": "fast",
+      "reference": "Samoilov M, Plyasunov S, Arkin AP (2005) Stochastic amplification and signaling in enzymatic futile cycles through noise-induced bistability and oscillations. PNAS 102:2310-2315.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "caveats": [
+        "Enzymatic futile cycle with noise-induced bistability (Arkin group). Very short horizon (t_end=0.0018), small network (6 sp / 6 rx).",
+        "BNGL is a from_antimony conversion (mass-action, molecule counts) -- verify parameters match Samoilov 2005 before final use."
+      ]
+    }
+  ],
+  "sbml": [
+    {
+      "id": "BIOMD0000000860",
+      "file": "models/sbml/BIOMD0000000860.xml",
+      "title": "Proctor2017 - microRNAs in osteoarthritis (positive feedforward, incoherent)",
+      "species": 4,
+      "reactions": 5,
+      "t_end": 14400,
+      "n_points": 1001,
+      "tier": "fast",
+      "reference": "Proctor CJ, Smith GR (2017) role of microRNAs in osteoarthritis -- confirm citation.",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "N/A (time-triggered events not fired)",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "Time-triggered events: RoadRunner-gillespie silently does not fire them -> RR cell N/A. bngsim and COPASI both run it. Provenance strong (Proctor group)."
+      ]
+    },
+    {
+      "id": "BIOMD0000000862",
+      "file": "models/sbml/BIOMD0000000862.xml",
+      "title": "Proctor2017 - microRNAs in osteoarthritis (positive feedback)",
+      "species": 9,
+      "reactions": 11,
+      "t_end": 28800,
+      "n_points": 101,
+      "tier": "fast",
+      "reference": "Proctor CJ, Smith GR (2017) -- confirm citation.",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "N/A (time-triggered events not fired)",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "Time-triggered events: RoadRunner-gillespie does not fire them -> RR cell N/A. bngsim and COPASI run it. Provenance strong (Proctor group)."
+      ]
+    },
+    {
+      "id": "BIOMD0000000864",
+      "file": "models/sbml/BIOMD0000000864.xml",
+      "title": "Proctor2017 - microRNAs in osteoarthritis (negative feedback)",
+      "species": 7,
+      "reactions": 9,
+      "t_end": 48800,
+      "n_points": 101,
+      "tier": "fast",
+      "reference": "Proctor CJ, Smith GR (2017) -- confirm citation.",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "N/A (time-triggered events not fired)",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "Time-triggered events: RoadRunner-gillespie does not fire them -> RR cell N/A. bngsim and COPASI run it. Provenance strong (Proctor group)."
+      ]
+    },
+    {
+      "id": "BIOMD0000000344",
+      "file": "models/sbml/BIOMD0000000344.xml",
+      "title": "Proctor2011 - protein homeostasis (high stress)",
+      "species": 54,
+      "reactions": 80,
+      "t_end": 10,
+      "n_points": 1001,
+      "tier": "slow",
+      "reference": "Proctor CJ, Lorimer IA (2011) protein homeostasis (Hsp70/Hsp90) -- confirm citation.",
+      "originally_ssa": "verify",
+      "provenance_status": "verify",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "yes (no events; slow)",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "No time-triggered events -- all three engines run it (it is just slow). Run to the FULL horizon (feasible -- the source study ran the full simulation); the parity screen flagged partial_horizon only because of its short wall cap.",
+        "CONFIRM the paper's real horizon: the inherited figure-SED-ML value t_end=10 looks short for a proteostasis time course."
+      ]
+    },
+    {
+      "id": "BIOMD0000000478",
+      "file": "models/sbml/BIOMD0000000478.xml",
+      "title": "Besozzi2012 - oscillatory regimes in the Ras/cAMP/PKA pathway (S. cerevisiae)",
+      "species": 33,
+      "reactions": 39,
+      "t_end": "confirm from paper (screen placeholder 10)",
+      "n_points": 1001,
+      "tier": "medium",
+      "reference": "Besozzi D, Cazzaniga P, Pescini D, Mauri G, Colombo S, Martegani E (2012) EURASIP J Bioinform Syst Biol 2012:10. PMID 22818197.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "yes (no events)",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "Model NOTES state it explicitly: 'defined according to the stochastic formulation of chemical kinetics [Gillespie 1977] ... performing stochastic simulations'. Non-Proctor group (Milano-Bicocca stochastic-simulation lab). Adds a signaling-oscillator dimension.",
+        "No events/rules -> all three engines run it. DIFF in the screen was partial_horizon (wall cap); run to the full paper horizon."
+      ]
+    },
+    {
+      "id": "BIOMD0000000035",
+      "file": "models/sbml/BIOMD0000000035.xml",
+      "title": "Vilar2002 - circadian oscillator (molecule-count SBML)",
+      "species": 10,
+      "reactions": 16,
+      "t_end": 400,
+      "n_points": 1000,
+      "tier": "medium",
+      "reference": "Vilar JMG, Kueh HY, Barkai N, Leibler S (2002) Mechanisms of noise-resistance in genetic oscillators. PNAS 99:5988-5992.",
+      "originally_ssa": "confirmed",
+      "provenance_status": "confirmed",
+      "engine_coverage": {
+        "bngsim": "yes",
+        "roadrunner": "yes",
+        "copasi": "yes"
+      },
+      "caveats": [
+        "Molecule-count encoding (hasOnlySubstanceUnits=true for all 10 species; DA=DR=1, rest 0) -- passes the SSA molecule-count rule; runs clean (no negative species).",
+        "The BNGL twin (vilar_circadian) was REMOVED: it differed in exactly one rate constant -- repressor degradation delta_R = 0.05 (written 0.2/4 in the RuleHub source) vs the published Vilar-2002 value 0.2 used here. All 14 other rate constants and the 16-reaction network are identical. This SBML is the faithful encoding.",
+        "Non-Proctor -- one of two non-Proctor SBML rows (with Besozzi/478)."
+      ]
+    }
+  ]
+}

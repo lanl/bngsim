@@ -1,0 +1,36 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA          6.02214076e23  # Constant
+    2 V_ref       1.0  # Constant
+    3 f           1.0  # Constant
+    4 k1_f        40  # Constant
+    5 k1_r        2e4  # Constant
+    6 k1_cat      1e4  # Constant
+    7 k2_f        200  # Constant
+    8 k2_r        100  # Constant
+    9 k2_cat      5e3  # Constant
+end parameters
+begin species
+    1 X() 1
+    2 X_star() 2000
+    3 E1() 20
+    4 C1() 1
+    5 E2() 50
+    6 C2() 1
+end species
+begin reactions
+    1 1,3 4 k1_f #_R1
+    2 4 1,3 k1_r #_R2
+    3 4 2,3 k1_cat #_R3
+    4 2,5 6 k2_f #_R4
+    5 6 2,5 k2_r #_R5
+    6 6 1,5 k2_cat #_R6
+end reactions
+begin groups
+    1 Obs_X                1
+    2 Obs_X_star           2
+    3 Obs_E1               3
+    4 Obs_C1               4
+    5 Obs_E2               5
+    6 Obs_C2               6
+end groups

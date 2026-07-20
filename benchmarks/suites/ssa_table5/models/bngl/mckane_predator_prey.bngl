@@ -1,0 +1,53 @@
+begin model
+# McKane AJ, Newman TJ (2005) Phys Rev Lett 94: 218102.
+# Predator-prey cycles from resonant amplification of demographic stochasticity.
+begin parameters
+# Parameter values are given in the caption of FIG. 1.
+# However, I don't see where the initial condition is stated. I assume n=m=800 at t=0.
+N 3200
+ninit 800
+minit 800
+bb 0.1/N
+d1 0.1
+d2 0
+p1 0.25/N
+p2 0.05/N
+end parameters
+begin molecule types
+A
+B
+E
+end molecule types
+begin seed species
+A ninit
+B minit
+E N-ninit-minit
+end seed species
+begin observables
+Species A A
+Species B B
+Species E E
+end observables
+begin functions
+f1()=A/N
+f2()=B/N
+E_fromConservationLaw()=N-A-B
+f1ss()=(2*bb*N*p1*N-bb*N*d1-p1*N*d2)/(2*p1*N*(p1*N+p2*N+bb*N)) # See Eq (5).
+f2ss()=d1/(2*p1*N) # See Eq (5).
+end functions
+begin reaction rules
+# Reactions are listed in the 4th paragraph. See also Eq. (1).
+B+E->B+B 2*bb
+A->E d1
+B->E d2
+A+B->A+A 2*p1
+A+B->A+E 2*p2
+end reaction rules
+end model
+begin actions
+generate_network({overwrite=>1})
+saveConcentrations()
+simulate({suffix=>"stochastic",method=>"ssa",n_steps=>1200,t_end=>1200,print_functions=>1})
+resetConcentrations()
+simulate({suffix=>"deterministic",method=>"ode",n_steps=>1200,t_end=>1200,print_functions=>1})
+end actions

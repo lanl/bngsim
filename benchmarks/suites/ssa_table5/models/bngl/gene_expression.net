@@ -1,0 +1,59 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 lifetime     300.0  # Constant
+    2 gammaR       1.0/lifetime  # ConstantExpression
+    3 m_avg_const  5.0  # Constant
+    4 kR_const     m_avg_const*gammaR  # ConstantExpression
+    5 kR_reg       100.0/lifetime  # ConstantExpression
+    6 kOn1         (2.0/15.0)*gammaR  # ConstantExpression
+    7 kOff1        0.4*gammaR  # ConstantExpression
+    8 kOn2         (2.0/3.0)*gammaR  # ConstantExpression
+    9 kOff2        2.0*gammaR  # ConstantExpression
+   10 kOn3         (10.0/3.0)*gammaR  # ConstantExpression
+   11 kOff3        10.0*gammaR  # ConstantExpression
+   12 m_avg_gene1  ((kR_reg/gammaR)*kOn1)/(kOn1+kOff1)  # ConstantExpression
+   13 m_avg_gene2  ((kR_reg/gammaR)*kOn2)/(kOn2+kOff2)  # ConstantExpression
+   14 m_avg_gene3  ((kR_reg/gammaR)*kOn3)/(kOn3+kOff3)  # ConstantExpression
+end parameters
+begin functions
+    1 _rateLaw1() if((g1>0),kR_reg,0.0)
+    2 _rateLaw2() if((g2>0),kR_reg,0.0)
+    3 _rateLaw3() if((g3>0),kR_reg,0.0)
+end functions
+begin species
+    1 m_const() m_avg_const
+    2 m_I() m_avg_gene1
+    3 m_II() m_avg_gene2
+    4 m_III() m_avg_gene3
+    5 gene1(state~off) 1
+    6 gene2(state~off) 1
+    7 gene3(state~off) 1
+    8 gene1(state~on) 0
+    9 gene2(state~on) 0
+   10 gene3(state~on) 0
+end species
+begin reactions
+    1 0 1 kR_const #_R1
+    2 0 2 _rateLaw1 #_R2
+    3 0 3 _rateLaw2 #_R3
+    4 0 4 _rateLaw3 #_R4
+    5 1 0 gammaR #_R5
+    6 2 0 gammaR #_R6
+    7 3 0 gammaR #_R7
+    8 4 0 gammaR #_R8
+    9 5 8 kOn1 #_R9
+   10 6 9 kOn2 #_R10
+   11 7 10 kOn3 #_R11
+   12 8 5 kOff1 #_R12
+   13 9 6 kOff2 #_R13
+   14 10 7 kOff3 #_R14
+end reactions
+begin groups
+    1 m0                   1
+    2 m1                   2
+    3 m2                   3
+    4 m3                   4
+    5 g1                   8
+    6 g2                   9
+    7 g3                   10
+end groups

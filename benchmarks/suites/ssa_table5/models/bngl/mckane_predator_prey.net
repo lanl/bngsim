@@ -1,0 +1,39 @@
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 N                      3200  # Constant
+    2 ninit                  800  # Constant
+    3 minit                  800  # Constant
+    4 bb                     0.1/N  # ConstantExpression
+    5 d1                     0.1  # Constant
+    6 d2                     0  # Constant
+    7 p1                     0.25/N  # ConstantExpression
+    8 p2                     0.05/N  # ConstantExpression
+    9 _InitialConc1          (N-ninit)-minit  # ConstantExpression
+   10 _rateLaw1              2*bb  # ConstantExpression
+   11 _rateLaw2              2*p1  # ConstantExpression
+   12 _rateLaw3              2*p2  # ConstantExpression
+end parameters
+begin functions
+    1 f1() A/N
+    2 f2() B/N
+    3 E_fromConservationLaw() (N-A)-B
+    4 f1ss() ((((((2*bb)*N)*p1)*N)-((bb*N)*d1))-((p1*N)*d2))/(((2*p1)*N)*(((p1*N)+(p2*N))+(bb*N)))
+    5 f2ss() d1/((2*p1)*N)
+end functions
+begin species
+    1 A() ninit
+    2 B() minit
+    3 E() _InitialConc1
+end species
+begin reactions
+    1 2,3 2,2 _rateLaw1 #_R1
+    2 1 3 d1 #_R2
+    3 2 3 d2 #_R3
+    4 1,2 1,1 _rateLaw2 #_R4
+    5 1,2 1,3 _rateLaw3 #_R5
+end reactions
+begin groups
+    1 A                    1
+    2 B                    2
+    3 E                    3
+end groups
