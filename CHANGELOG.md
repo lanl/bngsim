@@ -52,6 +52,50 @@ in `CMakeLists.txt`) is derived from it.
   **Migration:** pass `method="newton"` explicitly to keep the old behavior.
   Code that asserts on `ss.method_used` should expect `"integration"`.
 
+- **`method="newton"` no longer rebuilds its integrator once per ladder rung,
+  nor re-probes a KINSOL solve that cannot be factored (issue #28).** The
+  two-tier solver's header has always claimed its burst ladder is "a single
+  march to the tightest rung, not a restart per rung", but only the *state*
+  carried across rungs: each rung called `solve_by_integration`, which built a
+  fresh `SUNContext`, CVODE memory, dense `SUNMatrix` and linear solver, and
+  restarted BDF at order 1 with a fresh initial step — discarding the step-size
+  and order history the previous rung had paid to build up. The CVODE session
+  now lives in a `SteadyStateMarcher` held across the whole ladder, and a rung
+  only tightens the stop criterion, so the claim is true of the integrator as
+  well as the state. Each march still gets `max_time` of *additional* simulated
+  time, preserving the per-rung budget of the restart-per-rung code.
+
+  Separately, a model whose reduced Jacobian is structurally singular failed
+  every one of the `MAX_NEWTON_ATTEMPTS = 6` KINSOL probes at ~equal cost, since
+  singularity is a property of the sparsity pattern and not of the seed.
+  `solve_by_newton` now reports an unrecoverable linear-solver failure
+  (`KIN_LSETUP_FAIL` and siblings) distinctly from ordinary non-convergence, and
+  the ladder stops probing after the first one. Barua 2013 (409 species, GH #27
+  Bug 3) returns `KIN_LSETUP_FAIL` on attempt 1 and now builds one doomed
+  404×404 factorization instead of six.
+
+  Re-measuring the six-model suite above, against the same `integration`
+  baseline:
+
+  | Model | species | `newton` before | `newton` after | vs `integration` |
+  |-------|--------:|----------------:|---------------:|-----------------:|
+  | kinetic_proofreading | 9 | 19.00 ms | 16.87 ms | 3.8× → 3.1× |
+  | genetic_switch | 2 | 10.22 ms | 9.10 ms | 3.3× → 2.9× |
+  | lac_operon | 3 | 11.17 ms | 12.10 ms | 3.5× → 3.6× |
+  | Kocieniewski_2012 | 85 | 183.18 ms | 136.10 ms | 1.7× → 1.3× |
+  | Barua_2007 | 149 | 269.73 ms | 231.15 ms | 1.4× → 1.2× |
+  | Barua_2013 | 409 | 19467 ms | 17917 ms | 2.2× → 2.0× |
+
+  Geometric mean of the gap to `integration` narrows from 2.5× to 2.2×. The
+  three larger models carry the signal and reproduce across repeat runs
+  (Kocieniewski_2012 136–143 ms, Barua_2007 227–231 ms, with the `integration`
+  control stable to within 3%); at 2–9 species there is almost no setup cost to
+  hoist and the per-dose work is small enough that run-to-run spread on the
+  measuring host exceeds the effect, which is why `lac_operon` reads as a slight
+  loss. `integration` remains the default and remains faster on every model —
+  this narrows the gap for callers who opt into `newton` for its ~`1e-13`
+  residual, it does not close it.
+
 ### Added
 - **ODE Jacobian characterization harness**
   (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each

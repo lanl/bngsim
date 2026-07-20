@@ -137,103 +137,137 @@ static int cvode_ss_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
     return 0;
 }
 
-static SteadyStateResult solve_by_integration(NetworkModel &model, const SteadyStateOptions &opts) {
+// A CVODE session held across successive marches of the SAME trajectory.
+//
+// The two-tier solver's burst ladder (solve_by_newton_two_tier) walks one
+// trajectory to a progressively tighter residual, so building a SUNContext,
+// CVODE memory, dense SUNMatrix and linear solver per rung is pure overhead —
+// and worse, it restarts BDF at order 1 with a fresh initial step, discarding
+// the step-size/order history the previous rung paid to build up. Holding one
+// session across the rungs makes the ladder what its header claims: a single
+// march to the tightest rung, not a restart per rung. solve_by_integration is
+// then just the one-leg case of the same code.
+class SteadyStateMarcher {
+  public:
+    SteadyStateMarcher(NetworkModel &model, const SteadyStateOptions &opts)
+        : model_(model), opts_(opts), ud_{&model}, ns_(model.n_species()) {
 
-    const int ns = model.n_species();
-    SteadyStateResult result;
-    result.method_used = "integration";
-    result.species_names = model.species_names();
-    result.concentrations.resize(ns);
+        if (!ctx_) {
+            throw std::runtime_error("SUNContext_Create failed (steady_state)");
+        }
 
-    // RAII guards
-    SunContextGuard ctx;
-    if (!ctx) {
-        throw std::runtime_error("SUNContext_Create failed (steady_state)");
-    }
+        y_ = NVectorGuard(N_VNew_Serial(ns_, ctx_));
+        double *y_data = y_.data();
+        for (int i = 0; i < ns_; ++i) {
+            y_data[i] = model.species()[i].concentration;
+        }
 
-    NVectorGuard y(N_VNew_Serial(ns, ctx));
-    double *y_data = y.data();
-    for (int i = 0; i < ns; ++i) {
-        y_data[i] = model.species()[i].concentration;
-    }
+        cvode_mem_ = CvodeMemGuard(CVodeCreate(CV_BDF, ctx_));
+        if (CVodeInit(cvode_mem_, cvode_ss_rhs, 0.0, y_) != CV_SUCCESS) {
+            throw std::runtime_error("CVodeInit failed (steady_state)");
+        }
 
-    CvodeMemGuard cvode_mem(CVodeCreate(CV_BDF, ctx));
-    SteadyStateUserData ud{&model};
+        CVodeSStolerances(cvode_mem_, opts.rtol, opts.atol);
+        CVodeSetUserData(cvode_mem_, &ud_);
+        CVodeSetMaxNumSteps(cvode_mem_, opts.max_steps);
 
-    int flag = CVodeInit(cvode_mem, cvode_ss_rhs, 0.0, y);
-    if (flag != CV_SUCCESS) {
-        throw std::runtime_error("CVodeInit failed (steady_state)");
-    }
+        A_ = SUNMatrixGuard(SUNDenseMatrix(ns_, ns_, ctx_));
+        LS_ = SUNLinSolGuard(ss_make_dense_linsol(y_, A_, ctx_, model, ns_));
+        CVodeSetLinearSolver(cvode_mem_, LS_, A_);
 
-    CVodeSStolerances(cvode_mem, opts.rtol, opts.atol);
-    CVodeSetUserData(cvode_mem, &ud);
-    CVodeSetMaxNumSteps(cvode_mem, opts.max_steps);
-
-    SUNMatrixGuard A_guard(SUNDenseMatrix(ns, ns, ctx));
-    SUNLinSolGuard LS_guard(ss_make_dense_linsol(y, A_guard, ctx, model, ns));
-    CVodeSetLinearSolver(cvode_mem, LS_guard, A_guard);
-
-    // Analytical Jacobian if available and not "fd"
-    if (opts.jacobian != "fd") {
-        // We reuse the existing dense analytical Jacobian callback from
-        // cvode_simulator.cpp. But since we can't call that static function
-        // directly, we compute derivs manually and let CVODE do FD.
-        // For this implementation, we rely on CVODE's internal FD Jacobian.
-        // The analytical Jacobian is used by KINSOL (Tier 2) instead.
+        // Analytical Jacobian if available and not "fd"
+        if (opts.jacobian != "fd") {
+            // We reuse the existing dense analytical Jacobian callback from
+            // cvode_simulator.cpp. But since we can't call that static function
+            // directly, we compute derivs manually and let CVODE do FD.
+            // For this implementation, we rely on CVODE's internal FD Jacobian.
+            // The analytical Jacobian is used by KINSOL (Tier 2) instead.
+        }
     }
 
     // March forward one internal CVODE step at a time, checking the BNG2.pl
     // parity criterion ||f(y)||_2 / n_species < tol after each step. This is
     // the SAME rule Simulator.run(steady_state=True) applies (run_network -c);
     // the old geometric time-horizon (t = 10, 100, 1000, ...) has been
-    // removed so there is one convergence rule everywhere. We cap integration
-    // at max_time via CVodeSetStopTime so a non-equilibrating system returns
-    // unconverged rather than running forever.
-    result.converged = false;
-    CVodeSetStopTime(cvode_mem, opts.max_time);
+    // removed so there is one convergence rule everywhere. Each march is capped
+    // at max_time of ADDITIONAL simulated time via CVodeSetStopTime, so a
+    // non-equilibrating system returns unconverged rather than running forever
+    // — and a ladder rung gets exactly the budget it got back when every rung
+    // built its own integrator starting from t = 0.
+    bool march(double tol, double *residual_out) {
+        const sunrealtype t_stop = t_ + static_cast<sunrealtype>(opts_.max_time);
+        CVodeSetStopTime(cvode_mem_, t_stop);
 
-    sunrealtype t_ret = 0.0;
-    while (t_ret < opts.max_time) {
-        flag = CVode(cvode_mem, opts.max_time, y, &t_ret, CV_ONE_STEP);
-        if (flag < 0) {
-            // Integration failed -- return unconverged.
-            break;
+        double *y_data = y_.data();
+        bool converged = false;
+
+        while (t_ < t_stop) {
+            int flag = CVode(cvode_mem_, t_stop, y_, &t_, CV_ONE_STEP);
+            if (flag < 0) {
+                // Integration failed -- report unconverged.
+                break;
+            }
+
+            // compute_residual re-evaluates observables/functions at y internally.
+            double resid = compute_residual(model_, y_data, ns_);
+            if (resid < tol) {
+                converged = true;
+                *residual_out = resid;
+                break;
+            }
+
+            if (flag == CV_TSTOP_RETURN) {
+                // Exhausted this march's time budget without converging.
+                break;
+            }
         }
 
-        // compute_residual re-evaluates observables/functions at y internally.
-        double resid = compute_residual(model, y_data, ns);
-        if (resid < opts.tol) {
-            result.converged = true;
-            result.residual = resid;
-            break;
+        if (!converged) {
+            *residual_out = compute_residual(model_, y_data, ns_);
         }
-
-        if (flag == CV_TSTOP_RETURN) {
-            // Reached max_time without converging.
-            break;
-        }
+        return converged;
     }
 
-    // Collect stats
-    long int nst = 0, nfe = 0;
-    CVodeGetNumSteps(cvode_mem, &nst);
-    CVodeGetNumRhsEvals(cvode_mem, &nfe);
-    result.n_steps = static_cast<int>(nst);
-    result.n_rhs_evals = static_cast<int>(nfe);
+    // Snapshot the march so far as a solver result. Step / RHS-eval counts are
+    // cumulative over every march on this session, which is what a caller that
+    // laddered through several rungs wants to see.
+    SteadyStateResult make_result(bool converged, double residual) {
+        SteadyStateResult result;
+        result.method_used = "integration";
+        result.species_names = model_.species_names();
+        const double *y_data = y_.data();
+        result.concentrations.assign(y_data, y_data + ns_);
+        result.converged = converged;
+        result.residual = residual;
 
-    // Copy final concentrations
-    for (int i = 0; i < ns; ++i) {
-        result.concentrations[i] = y_data[i];
+        long int nst = 0, nfe = 0;
+        CVodeGetNumSteps(cvode_mem_, &nst);
+        CVodeGetNumRhsEvals(cvode_mem_, &nfe);
+        result.n_steps = static_cast<int>(nst);
+        result.n_rhs_evals = static_cast<int>(nfe);
+        return result;
     }
 
-    // If not converged, compute final residual
-    if (!result.converged) {
-        result.residual = compute_residual(model, y_data, ns);
-    }
+  private:
+    NetworkModel &model_;
+    const SteadyStateOptions &opts_;
+    SteadyStateUserData ud_;
+    int ns_;
+    // Declared in construction order; the guards tear down in reverse, so the
+    // SUNContext outlives everything created from it.
+    SunContextGuard ctx_;
+    NVectorGuard y_;
+    CvodeMemGuard cvode_mem_;
+    SUNMatrixGuard A_;
+    SUNLinSolGuard LS_;
+    sunrealtype t_ = 0.0;
+};
 
-    // RAII guards handle cleanup automatically
-
-    return result;
+static SteadyStateResult solve_by_integration(NetworkModel &model, const SteadyStateOptions &opts) {
+    SteadyStateMarcher marcher(model, opts);
+    double residual = 0.0;
+    const bool converged = marcher.march(opts.tol, &residual);
+    return marcher.make_result(converged, residual);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +359,20 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
     return 0;
 }
 
-static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateOptions &opts) {
+// `linsolv_failed`, when non-null, reports whether KINSOL failed because it
+// could not set up or apply the dense linear solver at all — as opposed to
+// merely failing to converge. For a *structurally* singular reduced Jacobian
+// (GH #27 Bug 3, e.g. Barua 2013's 404×404 rank-deficient system) that is a
+// property of the sparsity pattern, not of the seed, so every subsequent
+// attempt fails identically. The two-tier ladder uses this to stop probing
+// KINSOL instead of building MAX_NEWTON_ATTEMPTS dense n_ind×n_ind
+// factorizations that are all doomed.
+static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateOptions &opts,
+                                         bool *linsolv_failed = nullptr) {
+
+    if (linsolv_failed) {
+        *linsolv_failed = false;
+    }
 
     const int ns = model.n_species();
     const auto &cl = model.conservation_laws();
@@ -431,6 +478,13 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
     // handles convergence failure gracefully).
     flag = KINSol(kin_mem, y, KIN_NONE, scale, scale);
 
+    // Distinguish "the linear solver is unusable on this system" from ordinary
+    // non-convergence — see the note on `linsolv_failed` above.
+    if (linsolv_failed) {
+        *linsolv_failed = (flag == KIN_LINSOLV_NO_RECOVERY || flag == KIN_LINIT_FAIL ||
+                           flag == KIN_LSETUP_FAIL || flag == KIN_LSOLVE_FAIL);
+    }
+
     // Check result
     long int nfe = 0, nni = 0;
     KINGetNumFuncEvals(kin_mem, &nfe);
@@ -500,19 +554,22 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
 //
 // Burst tolerances form a scale-free ladder: the residual ||f||_2/n at the IC,
 // reduced by a decade for the first burst and by two decades per rung after,
-// floored at opts.tol. Each rung CONTINUES from the previous burst's end state
-// (integration conserves mass, so the reduced Newton's conservation constants,
-// recomputed from that state, are unchanged) — so the total integration work is
-// a single march to the tightest rung, not a restart per rung.
+// floored at opts.tol. Each rung CONTINUES the previous burst's march on a
+// single SteadyStateMarcher — same CVODE memory, so the BDF order and step size
+// carry over too, not just the state (integration conserves mass, so the reduced
+// Newton's conservation constants, recomputed from that state, are unchanged).
+// The total integration work is therefore one march to the tightest rung, not a
+// restart per rung; only the stop criterion tightens.
 
 // Newton polish seeded from `seed`; returns the KINSOL result. The model's live
 // species are set to `seed` first (solve_by_integration / solve_by_newton read
 // the IC from there). KINSOL construction can throw (KINInit/KINCreate) — the
 // caller treats a throw as a failed, non-accepted attempt.
 static SteadyStateResult ss_newton_from(NetworkModel &model, const SteadyStateOptions &opts,
-                                        const std::vector<double> &seed) {
+                                        const std::vector<double> &seed,
+                                        bool *linsolv_failed = nullptr) {
     model.set_state_from(seed.data());
-    return solve_by_newton(model, opts);
+    return solve_by_newton(model, opts, linsolv_failed);
 }
 
 static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
@@ -554,23 +611,33 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
     // Cap on burst-seeded Newton attempts. Two agreeing attempts accept a
     // unique-root model on rung 1; a multi-root model's attempts keep drifting,
     // so after this many we stop probing and just integrate (KINSOL adds only
-    // cost there, e.g. Barua 2013 whose reduced Jacobian is singular at every
-    // seed — Bug 3). Correctness is unaffected: integration is always the answer.
+    // cost there). Correctness is unaffected: integration is always the answer.
     constexpr int MAX_NEWTON_ATTEMPTS = 6;
 
     std::vector<double> prev_newton;
     bool have_prev = false;
     int newton_attempts = 0;
+    // Cleared the moment KINSOL reports it cannot factor the system at all
+    // (Bug 3: Barua 2013's reduced Jacobian is structurally singular, so it is
+    // singular at EVERY seed). Retrying then only buys MAX_NEWTON_ATTEMPTS
+    // doomed dense n_ind×n_ind factorizations, which on a 409-species model is
+    // the dominant cost of a solve that was always going to end in integration.
+    bool newton_viable = true;
 
     std::vector<double> seed = ic;
     double bt = std::max(r0 * 0.1, opts.tol);
 
+    // One integrator for the whole ladder: each rung CONTINUES this march (the
+    // early-exit Newton probe above may have left the model's live state
+    // elsewhere, so re-seed it from the IC the marcher is about to read).
+    restore();
+    SteadyStateMarcher marcher(model, opts);
+
     for (int rung = 0; rung < MAX_RUNGS; ++rung) {
         // Tier 1: continue integrating from the previous rung's end state to bt.
-        SteadyStateOptions bopts = opts;
-        bopts.tol = bt;
-        model.set_state_from(seed.data());
-        SteadyStateResult burst = solve_by_integration(model, bopts);
+        double burst_residual = 0.0;
+        const bool burst_converged = marcher.march(bt, &burst_residual);
+        SteadyStateResult burst = marcher.make_result(burst_converged, burst_residual);
         seed = burst.concentrations;
 
         if (burst.residual < opts.tol) {
@@ -590,13 +657,20 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
         // attempt lands on the same root (seed-stable); the first attempt just
         // seeds the comparison. A raw-IC Newton is never trusted alone — that is
         // exactly the Bug 2 hazard.
-        if (newton_attempts < MAX_NEWTON_ATTEMPTS) {
+        if (newton_viable && newton_attempts < MAX_NEWTON_ATTEMPTS) {
             ++newton_attempts;
             SteadyStateResult nr;
+            bool linsolv_failed = false;
             try {
-                nr = ss_newton_from(model, opts, seed);
+                nr = ss_newton_from(model, opts, seed, &linsolv_failed);
             } catch (...) {
+                // KINCreate / KINInit failed: as unrecoverable as a singular
+                // factorization, and just as seed-independent.
                 nr.converged = false;
+                linsolv_failed = true;
+            }
+            if (linsolv_failed) {
+                newton_viable = false;
             }
             if (accept(nr)) {
                 if (have_prev && ss_states_agree(nr.concentrations, prev_newton, AGREE_RTOL)) {
@@ -613,10 +687,11 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
         bt = std::max(bt * 0.01, opts.tol);
     }
 
-    // Ladder exhausted without a seed-stable Newton: integrate to the full
-    // tolerance from the tightest burst state (a correct, if slower, answer).
-    model.set_state_from(seed.data());
-    SteadyStateResult fin = solve_by_integration(model, opts);
+    // Ladder exhausted without a seed-stable Newton: continue the same march to
+    // the full tolerance (a correct, if slower, answer).
+    double fin_residual = 0.0;
+    const bool fin_converged = marcher.march(opts.tol, &fin_residual);
+    SteadyStateResult fin = marcher.make_result(fin_converged, fin_residual);
     restore();
     return fin;
 }
