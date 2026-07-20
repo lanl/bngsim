@@ -28,20 +28,30 @@ import bngsim
 import numpy as np
 import pytest
 
-# Published RuleHub .net files the bug report was found with. Skip cleanly when
-# running against an installed wheel without the benchmark tree.
-_NETS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "suites" / "ode_fullnet" / "nets"
+# Published RuleHub .net files the bug report was found with. These are the
+# copies VENDORED (and git-tracked) under benchmarks/models/net/ode/ — byte
+# identical to the generated benchmarks/suites/ode_fullnet/nets/ corpus these
+# tests used to read, but that corpus is a build artifact: it is untracked and
+# exists only in a checkout that has run the ode_fullnet suite. Pointed there,
+# all four tests skipped silently in any fresh clone or git worktree — the
+# regression guards for GH #27 were effectively not running in CI-like trees.
+_NETS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode"
 
-_GARDNER = "slow__rulehub__Published__Gardner2000__genetic_switch_gardner2000.bngl.net"
-_KINETIC = "fast__rulehub__Published__Hlavacek2001__kinetic_proofreading_hlavacek2001.bngl.net"
-_KOCIEN = "slow__rulehub__Published__Kocieniewski2012__Kocieniewski_2012.bngl.net"
-_BARUA13 = "slow__rulehub__Published__Barua2013__Barua_2013__PATCHED.bngl.net"
+_GARDNER = "genetic_switch.net"  # Gardner 2000 genetic toggle
+_KINETIC = "kinetic_proofreading.net"  # Hlavacek 2001
+_KOCIEN = "Kocieniewski_2012.net"
+_BARUA13 = "Barua_2013.net"
 
 
 def _net(name: str) -> str:
     path = _NETS_DIR / name
-    if not path.is_file():
-        pytest.skip(f"published net not available: {path}")
+    if not _NETS_DIR.is_dir():
+        # No benchmark tree at all (e.g. testing an installed wheel) — the only
+        # legitimate reason to skip.
+        pytest.skip(f"benchmark net corpus not available: {_NETS_DIR}")
+    # The tree is here, so a missing file means the corpus moved or lost a
+    # model. Fail loudly rather than skipping a regression guard into silence.
+    assert path.is_file(), f"vendored net missing from tracked corpus: {path}"
     return str(path)
 
 

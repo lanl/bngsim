@@ -120,6 +120,17 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The GH #27 steady-state regression guards were silently skipping in any
+  fresh clone or git worktree.** `python/tests/test_steady_state_gh27.py` read
+  its four published models from `benchmarks/suites/ode_fullnet/nets/`, which is
+  a *build artifact* of the `ode_fullnet` suite — untracked, and present only in
+  a checkout that has run it. Everywhere else `_net()` hit its
+  "published net not available" `pytest.skip`, so all four tests reported as
+  skipped and the wrong/NaN-root contract went unverified. They now read the
+  byte-identical copies vendored (and tracked) under `benchmarks/models/net/ode/`,
+  and a net missing from that tracked corpus is an assertion failure rather than
+  a skip; only the absence of the whole benchmark tree (testing an installed
+  wheel) still skips.
 - **Steady-state solver (`method="newton"` / `Simulator.steady_state`) returned
   wrong or NaN roots for several published dose-response models (issue #27).**
   The default seeded KINSOL at the raw initial condition and only fell back to
