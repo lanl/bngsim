@@ -14,6 +14,44 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+- **`Simulator.steady_state()` and `steady_state_batch()` now default to
+  `method="integration"` instead of `method="newton"` (issue #28).** Once #27
+  reordered the two-tier solver to integrate *first*, its KINSOL polish stopped
+  being an alternative to the integration path and became extra work layered on
+  top of it — so wherever the burst already reaches the parity criterion, the
+  polish is time spent buying a tighter root than `tol` asked for. The
+  `steady_state` suite measures that cost across six published dose-response
+  models (20 doses each), and `newton` loses on every one:
+
+  | Model | species | `newton` | `integration` | ratio |
+  |-------|--------:|---------:|--------------:|------:|
+  | kinetic_proofreading | 9 | 19.00 ms | 5.05 ms | 3.8× |
+  | genetic_switch | 2 | 10.22 ms | 3.14 ms | 3.3× |
+  | lac_operon | 3 | 11.17 ms | 3.20 ms | 3.5× |
+  | Kocieniewski_2012 | 85 | 183.18 ms | 108.25 ms | 1.7× |
+  | Barua_2007 | 149 | 269.73 ms | 194.31 ms | 1.4× |
+  | Barua_2013 | 409 | 19467 ms | 8929 ms | 2.2× |
+
+  Geometric mean 2.5×. Both methods return the same steady state on all six
+  (the suite's correctness gate cross-checks every engine against the physical
+  integration reference at `rtol=1e-2`), so this trades no accuracy for the
+  speedup. A wider sweep over the 41 vendored ODE models under 600 species
+  (`benchmarks/models/net/ode/`, excluding known non-equilibrating systems)
+  reproduced the gap — geometric mean 2.7×, `integration` ahead on 34 of 41 —
+  and turned up no model at the default `max_time=1e6` where `integration`
+  fails to converge but `newton` succeeds.
+
+  `method="newton"` / `"kinsol"` remain available unchanged, and are still
+  worth requesting when either applies: the polish resolves the root to a
+  residual around `1e-13` where integration stops the moment it crosses `tol`
+  (~`1e-9`); and because Newton reaches `tol` from a looser burst than
+  integration needs alone, it can still converge under a `max_time` cut well
+  below the default (no corpus model shows this at `1e6`; several do at `1e3`).
+
+  **Migration:** pass `method="newton"` explicitly to keep the old behavior.
+  Code that asserts on `ss.method_used` should expect `"integration"`.
+
 ### Added
 - **ODE Jacobian characterization harness**
   (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each

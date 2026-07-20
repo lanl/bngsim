@@ -56,9 +56,11 @@ PyBNF's `BngsimModel` parses this action and dispatches to:
 - **strict BNG2.pl parity (default)** when `steady_state=>1`: each scan point
   runs `sim.run(steady_state=True)` — the same `run_network -c`
   integrate-to-`||f||_2/n` early-stop BNG2.pl uses.
-- `sim.steady_state_batch()` (KINSOL Newton, parity fallback) when the model
-  opts in with `ss_method=>"newton"` (or its alias `ss_method=>"kinsol"`) —
-  a speed accelerator for monostable dose-response sweeps.
+- `sim.steady_state_batch()` when the model opts in with `ss_method=>"newton"`
+  (or its alias `ss_method=>"kinsol"`) — the two-tier integrate-then-polish
+  solver, which resolves the root far tighter than the parity criterion asks
+  for. It is *not* a speed accelerator: since the burst is the integration path
+  itself, the polish is net overhead (issue #28).
 - Time-course simulation to `t_end` when `steady_state=>0`.
 
 `ss_method=>"newton"` is **rejected for `bifurcate` continuation scans**

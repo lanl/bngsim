@@ -108,29 +108,36 @@ class TestNewton:
         assert ss.method_used in ("newton", "integration")
 
 
-# -- Default method (newton) ---------------------------------------
+# -- Default method (integration) ----------------------------------
 
 
 class TestDefaultMethod:
-    """Default method is 'newton' (KINSOL + explicit parity fallback)."""
+    """Default method is 'integration' (BNG2.pl parity early-stop, GH #28)."""
 
-    def test_default_is_newton(self, simple_decay_model):
-        """Calling steady_state() with no method defaults to newton."""
+    def test_default_is_integration(self, simple_decay_model):
+        """Calling steady_state() with no method defaults to integration."""
         sim = bngsim.Simulator(simple_decay_model, method="ode")
         ss = sim.steady_state(tol=1e-9)
         assert ss.converged
-        assert ss.method_used in ("newton", "integration")
+        assert ss.method_used == "integration"
 
-    def test_integration_and_default_agree(self, reversible_model):
-        """Integration and the default newton give similar results."""
+    def test_batch_default_is_integration(self, reversible_model):
+        """steady_state_batch() defaults to integration too."""
         sim = bngsim.Simulator(reversible_model, method="ode")
-        ss_int = sim.steady_state(method="integration", tol=1e-8)
-        reversible_model.reset()
+        results = sim.steady_state_batch([{"kf": 0.1}, {"kf": 1.0}], tol=1e-8)
+        assert all(r.converged for r in results)
+        assert all(r.method_used == "integration" for r in results)
+
+    def test_newton_and_default_agree(self, reversible_model):
+        """The opt-in newton path lands on the same state as the default."""
+        sim = bngsim.Simulator(reversible_model, method="ode")
         ss_def = sim.steady_state(tol=1e-8)
-        assert ss_int.converged
+        reversible_model.reset()
+        ss_newton = sim.steady_state(method="newton", tol=1e-8)
         assert ss_def.converged
+        assert ss_newton.converged
         np.testing.assert_allclose(
-            ss_int.concentrations,
+            ss_newton.concentrations,
             ss_def.concentrations,
             atol=1e-4,
         )

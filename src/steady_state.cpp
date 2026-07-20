@@ -1,13 +1,15 @@
 // bngsim/src/steady_state.cpp -- steady-state solver
 //
-// Default (newton): two-tier integrate-first solver (GH #27). Tier 1 is a CVODE
-//   burst that carries the state into the physical root's basin; tier 2 is a
-//   KINSOL Newton polish, accepted only once it is seed-stable (agrees across
-//   two successively tighter bursts). Falls back to integration otherwise. See
+// Default (integration): CVODE integration with early termination on the
+//   BNG2.pl parity criterion ||f(y)||_2 / n_species < tol (run_network -c).
+// newton: two-tier integrate-first solver (GH #27). Tier 1 is a CVODE burst
+//   that carries the state into the physical root's basin; tier 2 is a KINSOL
+//   Newton polish, accepted only once it is seed-stable (agrees across two
+//   successively tighter bursts). Falls back to integration otherwise. See
 //   solve_by_newton_two_tier for the rationale (why Newton-first returned wrong
-//   / NaN roots).
-// integration: CVODE integration with early termination on the BNG2.pl
-//   parity criterion ||f(y)||_2 / n_species < tol (run_network -c).
+//   / NaN roots). Since tier 1 IS the integration path, tier 2 can only add
+//   work; GH #28 measured that net cost at 1.4-3.9x across six published
+//   dose-response models, which is why "integration" is now the default.
 // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
 //
 // Convergence criterion: every integrate-to-steady-state path here uses the
@@ -1003,15 +1005,17 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     SteadyStateResult result;
 
     if (method == "integration") {
+        // Default: CVODE marched to the BNG2.pl parity criterion.
         result = solve_by_integration(model, opts);
     } else {
-        // "newton" (default): two-tier integrate-first solver (GH #27). A short
-        // CVODE burst carries the state into the physical root's basin, then
-        // KINSOL polishes; the polish is accepted only once it is seed-stable
-        // (agrees across two successively tighter bursts), otherwise integration
+        // "newton": two-tier integrate-first solver (GH #27). A short CVODE
+        // burst carries the state into the physical root's basin, then KINSOL
+        // polishes; the polish is accepted only once it is seed-stable (agrees
+        // across two successively tighter bursts), otherwise integration
         // continues. This is correct on multi-root and NaN-prone models where
-        // the old Newton-first ordering returned spurious / non-finite roots,
-        // while still surfacing the root-finding speedup on unique-root models.
+        // the old Newton-first ordering returned spurious / non-finite roots.
+        // Opt in for the tighter residual the polish delivers; it costs more
+        // wall clock than plain integration (GH #28).
         result = solve_by_newton_two_tier(model, opts);
     }
 

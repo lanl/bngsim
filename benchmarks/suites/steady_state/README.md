@@ -49,9 +49,13 @@ python run.py --model RAFi        # substring filter on model name
 top-level `benchmarks/README.md`). Results are written to the
 git-ignored `results/` (`steady_state_results.json` + `.md`).
 
-## Open question
+## Outcome
 
-Whether BNGsim's steady-state default should switch from
-`method="newton"` (with manual fallback) to `method="auto"` is still
-undecided — see memory note `project_kinsol_s8_open_question`. It does
-not affect this suite, which exercises both paths explicitly.
+This suite settled the steady-state default. `method="newton"` lost to
+`method="integration"` on all six models — 1.4–3.9×, geometric mean 2.5× —
+because #27 made the two-tier solver integrate *first*, so its KINSOL polish
+is work layered on top of the integration path rather than an alternative to
+it. `steady_state()` now defaults to `method="integration"` (issue #28); the
+`newton` columns stay in the table as the standing regression check that the
+polish has not silently become the cheaper path on some model class. The suite
+exercises both paths explicitly, so it is unaffected by the default itself.

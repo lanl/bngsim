@@ -10,24 +10,43 @@ All paths share **one** convergence criterion, matching BNG2.pl's
 `run_network -c`: the parity residual `||f(y)||_2 / n_species < tol`. This is
 the same quantity `run(steady_state=True)` checks (see below).
 
-**`method="newton"` (default)**: KINSOL Newton solver for direct root-finding
-of f(y) = 0 — milliseconds instead of simulating to t = ∞. Uses the analytical
-Jacobian when available (all-Elementary models) or KINSOL's internal finite
+**`method="integration"` (default)**: CVODE BDF integration that marches
+forward one step at a time and stops when the parity residual
+`||f(y)||_2 / n_species` drops below `tol` (capped at `max_time`). This is the
+strict BNG2.pl-parity path, and it always returns the steady state the
+dynamics actually reach.
+
+**`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
+*same* CVODE burst as `"integration"`, carrying the state into the physical
+root's basin; tier 2 is a KINSOL Newton polish using the analytical Jacobian
+when available (all-Elementary models) or KINSOL's internal finite
 differences. For models with conservation laws, BNGsim automatically uses a
 reduced-space Newton formulation (see [Conservation laws](#conservation-laws)).
-**On non-convergence it falls back EXPLICITLY to the integration path**, so a
-`method="newton"` call always honors the parity criterion.
-
-**`method="integration"`**: CVODE BDF integration that marches forward one
-step at a time and stops when the parity residual `||f(y)||_2 / n_species`
-drops below `tol` (capped at `max_time`). This is the strict BNG2.pl-parity
-path and handles slow transients that Newton can miss.
+The polish is accepted only once it is *seed-stable* — two Newton solves from
+successively tighter bursts landing on the same state — otherwise integration
+simply continues, so a `method="newton"` call always honors the parity
+criterion.
 
 **`method="kinsol"`**: accepted alias for `"newton"` (the canonical name is
 always echoed in `ss.method_used`).
 
+> **Which one?** Since tier 1 *is* the integration path, `"newton"` can only
+> add work on top of `"integration"` — and on six published dose-response
+> models it added 1.4–3.9× (geometric mean 2.5×) of it (issue #28). Use the
+> default unless one of these applies:
+>
+> - **You want the root resolved far below `tol`.** Newton lands at a residual
+>   around `1e-13` where integration stops the moment it crosses `tol`
+>   (~`1e-9`). That headroom matters mainly when the steady state feeds a stiff
+>   downstream solve.
+> - **You have cut `max_time` well below its default.** Newton reaches `tol`
+>   from a looser burst than integration needs on its own, so under a tight
+>   time budget it can converge where integration runs out of horizon. At the
+>   default `max_time=1e6` no model in the benchmark corpus shows this; at
+>   `max_time=1e3` several do.
+
 > The old `method="auto"` and the `max|f|` / geometric-time-horizon Tier-1
-> criterion were removed: `"newton"` already means try-Newton-then-parity-
+> criterion were removed: `"newton"` already means integrate-then-polish-with-
 > fallback, and every integration path now uses the single `||f||_2/n` rule.
 
 ```python
@@ -36,11 +55,11 @@ import bngsim
 model = bngsim.Model.from_net("model.net")
 sim = bngsim.Simulator(model, method="ode")
 
-# Basic steady-state (default method="newton", parity fallback)
+# Basic steady-state (default method="integration", BNG2.pl parity criterion)
 ss = sim.steady_state()
 print(ss.converged)          # True
-print(ss.method_used)        # "newton" (or "integration" if Newton fell back)
-print(ss.residual)           # ||f(y)||_2 / n_species at convergence, e.g. 1.2e-12
+print(ss.method_used)        # "integration"
+print(ss.residual)           # ||f(y)||_2 / n_species at convergence, e.g. 8.6e-10
 
 # Access species by name (dict-like)
 print(ss["A(b)"])            # steady-state concentration of A(b)
@@ -48,9 +67,9 @@ print(ss.concentrations)     # full array, shape (n_species,)
 print(ss.to_dict())          # {"A(b)": 50.0, "B(a)": 25.0, ...}
 
 # Force a specific method
-ss = sim.steady_state(method="newton")       # Newton (with parity fallback)
-ss = sim.steady_state(method="integration")  # CVODE parity early-stop only
-ss = sim.steady_state(method="kinsol")        # alias for "newton"
+ss = sim.steady_state(method="integration")  # CVODE parity early-stop (default)
+ss = sim.steady_state(method="newton")       # burst, then Newton polish
+ss = sim.steady_state(method="kinsol")       # alias for "newton"
 
 # Custom tolerances
 ss = sim.steady_state(

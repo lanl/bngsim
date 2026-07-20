@@ -3038,7 +3038,7 @@ class Simulator:
         *,
         tol: float = 1e-9,
         max_time: float = 1e6,
-        method: str = "newton",
+        method: str = "integration",
         rtol=None,
         atol=None,
         max_steps=None,
@@ -3048,18 +3048,34 @@ class Simulator:
 
         Solver methods:
 
-        - ``"newton"`` (default): two-tier integrate-first solver. A short
-          CVODE burst carries the state into the physical root's basin, then
-          KINSOL polishes with an analytical Jacobian; the polish is accepted
-          only once it is *seed-stable* (agrees across two successively tighter
-          bursts), otherwise integration continues. This returns the steady
-          state the dynamics actually reach — seeding Newton at the raw initial
-          condition instead can converge to a spurious root of ``f(y)=0`` the
-          trajectory never reaches, or walk a species negative into ``NaN``
-          (GH #27).
-        - ``"integration"``: CVODE BDF integrated until the BNG2.pl parity
-          criterion ``||f(y)||_2 / n_species < tol`` (``run_network -c``).
+        - ``"integration"`` (default): CVODE BDF integrated until the BNG2.pl
+          parity criterion ``||f(y)||_2 / n_species < tol``
+          (``run_network -c``).
+        - ``"newton"``: two-tier integrate-first solver. The *same* CVODE burst
+          carries the state into the physical root's basin, then KINSOL
+          polishes with an analytical Jacobian; the polish is accepted only
+          once it is *seed-stable* (agrees across two successively tighter
+          bursts), otherwise integration continues. Seeding Newton at the raw
+          initial condition instead can converge to a spurious root of
+          ``f(y)=0`` the trajectory never reaches, or walk a species negative
+          into ``NaN`` (GH #27) — hence the burst.
         - ``"kinsol"``: accepted alias for ``"newton"``.
+
+        Because ``"newton"`` integrates first and only then polishes, it is
+        ``"integration"`` plus extra work: across six published dose-response
+        models it cost 1.4-3.9x more wall clock (GH #28), which is why
+        ``"integration"`` is the default. Two things still argue for
+        ``"newton"``:
+
+        - **A much tighter root.** The polish lands near a residual of ~1e-13
+          where integration stops the moment it crosses ``tol`` (~1e-9) — worth
+          having when the steady state feeds a stiff downstream solve.
+        - **A tight ``max_time`` budget.** Newton reaches ``tol`` from a
+          *looser* burst than integration needs on its own, so when ``max_time``
+          is cut well below the default it can converge where integration runs
+          out of time. At the default ``max_time=1e6`` this does not happen on
+          any model in the benchmark corpus, but at ``max_time=1e3`` several
+          models flip.
 
         Parameters
         ----------
@@ -3068,7 +3084,7 @@ class Simulator:
         max_time : float
             Max integration time for the integration path. Default 1e6.
         method : str
-            ``"newton"`` (default), ``"integration"``, or ``"kinsol"``
+            ``"integration"`` (default), ``"newton"``, or ``"kinsol"``
             (alias for ``"newton"``).
         sensitivity_params : list[str], optional
             Parameter names for dY_ss/dp sensitivity.
@@ -3132,7 +3148,7 @@ class Simulator:
         *,
         tol: float = 1e-9,
         max_time: float = 1e6,
-        method: str = "newton",
+        method: str = "integration",
         rtol=None,
         atol=None,
         max_steps=None,
@@ -3145,7 +3161,7 @@ class Simulator:
         params : sequence of dict[str, float]
             Parameter sets.
         method : str
-            ``"newton"`` (default), ``"integration"``, or ``"kinsol"``
+            ``"integration"`` (default), ``"newton"``, or ``"kinsol"``
             (alias for ``"newton"``). See :meth:`steady_state`.
         n_workers : int, optional
             Number of parallel threads.
