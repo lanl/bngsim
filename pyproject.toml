@@ -68,6 +68,12 @@ test = [
     # test_ssa_time_dependent_rate imports antimony at module scope.
     "antimony>=3.1.1",
     "scipy>=1.15",
+    # parity_checks/tests/test_corpus_manifest_schema.py validates manifest.json
+    # against manifest.schema.json behind a pytest.importorskip("jsonschema").
+    # Undeclared, that guard skipped in EVERY environment — and because `uv sync`
+    # prunes anything not in the lock, hand-installing it never survived the next
+    # sync. Declaring it is what makes the check actually run.
+    "jsonschema>=4.0",
 ]
 jax = [
     "jax>=0.4",

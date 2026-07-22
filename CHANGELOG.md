@@ -162,6 +162,25 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`parity_checks/tests/test_corpus_manifest_schema.py` had never run, in any
+  environment.** It guards on `pytest.importorskip("jsonschema")`, but
+  `jsonschema` was declared nowhere — not in `pyproject.toml`, zero occurrences
+  in `uv.lock` — so the import always failed and all 13 of its checks always
+  skipped. Hand-installing it did not stick either: `uv sync` prunes anything
+  absent from the lock, so the package vanished again on the next sync. Now
+  declared in the `test` extra; the 13 checks (manifest-vs-schema conformance,
+  record-id uniqueness, `patched` iff repairs, and BNGL license/source
+  agreement, each across the `biomodels` / `bng_parity` / `dsmts` /
+  `rr_parity_sedml` corpora) run and pass. Same class as the GH #27 guard fix
+  above: a test that skips everywhere is not a test.
+- **`scripts/ship_wheel.py` could not build from the project venv at all.** Its
+  canonical `python -m pip wheel . --no-build-isolation` assumes pip is present,
+  but `uv venv` — the venv CONTRIBUTING tells you to create (`uv sync --extra
+  test`) — ships no pip, so the script died with "No module named pip" before
+  building anything. It now falls back to `uv build` when the interpreter has no
+  pip, keeping build isolation (an env without pip generally has no
+  scikit-build-core either) and passing `--python` so the wheel carries this
+  interpreter's ABI tag. Errors clearly when neither pip nor uv is available.
 - **`scripts/ship_wheel.py` produced an uninstallable wheel when run on Apple
   Silicon.** It forced `MACOSX_DEPLOYMENT_TARGET=10.15` unconditionally to match
   the `wheelhouse-local` convention — correct on the x86_64 build box, but on

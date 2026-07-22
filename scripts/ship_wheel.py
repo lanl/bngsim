@@ -6,7 +6,9 @@ This is the supported one-command path for the "rebuild → ship" loop. It
   1. builds a wheel for the *current* interpreter using the canonical command
      (``pip wheel . --no-build-isolation --no-deps``; note that ``python -m
      build`` is unreliable here because the importable ``build`` package in
-     the dev venv is not pypa/build), pinning ``MACOSX_DEPLOYMENT_TARGET`` per
+     the dev venv is not pypa/build), falling back to ``uv build`` when the
+     interpreter has no pip — as a `uv venv` does not — and pinning
+     ``MACOSX_DEPLOYMENT_TARGET`` per
      build architecture (10.15 on x86_64, the ``wheelhouse-local`` convention;
      11.0 on arm64, which has no valid 10.x tag), then
   2. force-installs that wheel into each downstream consumer venv, handling
@@ -187,13 +189,25 @@ def _macos_deployment_target() -> str:
     return "10.15" if platform.machine() == "x86_64" else "11.0"
 
 
-def _build_wheel(wheelhouse: Path, version: str) -> Path:
-    wheelhouse.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    if sys.platform == "darwin" and not env.get("MACOSX_DEPLOYMENT_TARGET"):
-        env["MACOSX_DEPLOYMENT_TARGET"] = _macos_deployment_target()
-    _run(
-        [
+def _has_pip(python_exe: str) -> bool:
+    """Whether ``python_exe -m pip`` is usable."""
+    return subprocess.run([python_exe, "-c", "import pip"], capture_output=True).returncode == 0
+
+
+def _build_command(wheelhouse: Path) -> list[str]:
+    """The wheel-build command for the current interpreter.
+
+    ``pip wheel . --no-build-isolation`` is the canonical form (the dev venv
+    already carries the build deps, so skipping isolation is both faster and
+    what the wheel matrix validates). But a `uv venv` — which is how
+    CONTRIBUTING says to create the project venv — ships **no pip at all**, so
+    that command dies with "No module named pip" before it builds anything.
+    Fall back to `uv build` there, which reaches the same backend; it keeps
+    build isolation (an env without pip generally has no scikit-build-core
+    either) and `--python` pins the wheel to this interpreter's ABI tag.
+    """
+    if _has_pip(sys.executable):
+        return [
             sys.executable,
             "-m",
             "pip",
@@ -203,9 +217,30 @@ def _build_wheel(wheelhouse: Path, version: str) -> Path:
             "--no-deps",
             "-w",
             str(wheelhouse),
-        ],
-        env=env,
+        ]
+    if shutil.which("uv"):
+        return [
+            "uv",
+            "build",
+            "--wheel",
+            "--python",
+            sys.executable,
+            "--out-dir",
+            str(wheelhouse),
+            str(SOURCE_DIR),
+        ]
+    raise RuntimeError(
+        f"{sys.executable} has no pip and uv is not on PATH; cannot build a wheel. "
+        "Install pip into this interpreter, or put uv on PATH."
     )
+
+
+def _build_wheel(wheelhouse: Path, version: str) -> Path:
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    if sys.platform == "darwin" and not env.get("MACOSX_DEPLOYMENT_TARGET"):
+        env["MACOSX_DEPLOYMENT_TARGET"] = _macos_deployment_target()
+    _run(_build_command(wheelhouse), env=env)
     return _find_wheel(wheelhouse, version)
 
 
