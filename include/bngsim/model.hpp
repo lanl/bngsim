@@ -128,6 +128,16 @@ class NetworkModel {
     const std::vector<int> &discontinuity_triggers() const;
     const std::vector<StoichEntry> &stoichiometry() const;
     const JacobianSparsity &jacobian_sparsity() const;
+
+    // Same pattern jacobian_sparsity() returns, with the Curtis-Powell-Reid
+    // coloring materialized (computed on first call, then cached and shared
+    // across clones). build() does not color — only the sparse colored-FD
+    // Jacobian callback consumes it — so this is the only accessor whose result
+    // has n_colors / colors / color_groups populated. Every pattern with at
+    // least one structural nonzero gets a coloring, however dense: a fully dense
+    // one degenerates to one column per color, i.e. plain FD.
+    const JacobianSparsity &ensure_jacobian_coloring() const;
+
     const AnalyticalJacobianData &analytical_jacobian() const;
     const ConservationLaws &conservation_laws() const;
 

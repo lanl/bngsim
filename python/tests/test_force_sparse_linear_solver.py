@@ -46,8 +46,9 @@ def _mesh(n: int, span: int):
 
     Large *and* dense — the other half of the corpus the auto rule sends to the
     dense solver. span=4 at n=60 gives density ≈ 0.18 (≥ the 0.10 ceiling, so
-    auto → dense) while staying under 0.5, so the pattern still carries a graph
-    coloring. span=12 crosses 0.5, where no coloring is built.
+    auto → dense) while staying under 0.5. span=12 crosses 0.5, the density that
+    used to be left uncolored and so unreachable under the flag without an
+    analytical Jacobian.
     """
     b = ModelBuilder()
     b.add_parameter("k", 1e-4)
@@ -128,6 +129,30 @@ class TestForcedSparseReachesKLU:
         r = _run(_mesh(60, 4), force_sparse_linear_solver=True, jacobian="fd")
         assert r.solver_stats["linear_solver"] == LS_KLU
 
+    def test_near_dense_fd_model_forced_is_klu(self):
+        """Density ≥ 0.5 with no analytical Jacobian still reaches KLU.
+
+        This is the case that used to refuse: coloring was computed at build
+        time only below density 0.5, so a near-dense pattern with the analytical
+        path suppressed had nothing to fill the CSC matrix KLU factorizes.
+        Coloring is now materialized on demand at any density (GH #29) — for a
+        fully dense pattern it degenerates to one column per color, i.e. plain
+        FD, which is the honest cost to measure here rather than a reason to
+        refuse the run.
+        """
+        core = _mesh(60, 12)
+        assert _density(core) >= 0.5
+        r = _run(core, force_sparse_linear_solver=True, jacobian="fd")
+        assert r.solver_stats["linear_solver"] == LS_KLU
+
+    def test_near_dense_fd_model_forced_matches_dense_trajectory(self):
+        """Degenerate coloring must still produce the same Jacobian, hence answer."""
+        sparse = _run(_mesh(60, 12), force_sparse_linear_solver=True, jacobian="fd")
+        dense = _run(_mesh(60, 12), force_dense_linear_solver=True, jacobian="fd")
+        assert sparse.solver_stats["linear_solver"] == LS_KLU
+        assert dense.solver_stats["linear_solver"] != LS_KLU
+        np.testing.assert_allclose(sparse.species, dense.species, rtol=1e-8, atol=1e-10)
+
     def test_already_sparse_model_is_unchanged(self):
         """On a model the auto rule already sends to KLU, the flag is inert."""
         auto = _run(_chain(60))
@@ -169,21 +194,6 @@ class TestHardRequirementsStillHold:
         times.t_start, times.t_end, times.n_points = 0.0, 20.0, 21
         with pytest.raises(ValueError, match="mutually exclusive"):
             CvodeSimulator(_chain(10)).run(times, opts)
-
-    @requires_klu
-    def test_uncolorable_model_without_analytical_jacobian_refuses(self):
-        """No sparse Jacobian to fill ⇒ refuse, rather than silently go dense.
-
-        A Jacobian too dense to have been colored (density ≥ 0.5) and with the
-        analytical path suppressed by ``jacobian="fd"`` leaves nothing to fill
-        the CSC matrix KLU factorizes — and CVODE's difference-quotient fallback
-        covers dense/band matrices only. Unreachable via auto-selection, which
-        requires density < 0.10.
-        """
-        core = _mesh(60, 12)
-        assert _density(core) >= 0.5
-        with pytest.raises(Exception, match="force_sparse_linear_solver"):
-            _run(core, force_sparse_linear_solver=True, jacobian="fd")
 
     @pytest.mark.skipif(HAS_KLU, reason="requires a build without SuiteSparse/KLU")
     def test_no_op_without_klu(self):

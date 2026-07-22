@@ -1189,45 +1189,54 @@ int test_graph_coloring() {
     // Uses the reversible binding model (3 species) to test basic coloring,
     // and verifies that coloring data is populated and valid.
 
-    // 1. Small model: coloring should still be computed (or skipped for N<50)
+    // 1. Coloring is lazy: absent until asked for, then valid.
     {
         auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
-        const auto& sp = model.jacobian_sparsity();
+
+        // build() does not color (GH #29) — only the sparse colored-FD callback
+        // consumes it, so nothing is computed until ensure_jacobian_coloring().
+        CHECK(!model.jacobian_sparsity().has_coloring(),
+              "build() leaves the pattern uncolored");
+
+        const auto& sp = model.ensure_jacobian_coloring();
         CHECK(sp.n == 3, "Reversible model has 3 species");
         CHECK(sp.nnz > 0, "Sparsity pattern should have nonzeros");
 
-        // Small models (N < 50) won't use sparse, but coloring is still
-        // computed if density < 50% for testing/correctness.
-        if (sp.has_coloring()) {
-            CHECK(sp.n_colors > 0, "n_colors should be positive");
-            CHECK(sp.n_colors <= sp.n, "n_colors <= n_species");
-            CHECK(static_cast<int>(sp.colors.size()) == sp.n,
-                  "colors vector size == n_species");
-            CHECK(static_cast<int>(sp.color_groups.size()) == sp.n_colors,
-                  "color_groups size == n_colors");
+        // Any pattern with a structural nonzero colors, at any density: a fully
+        // dense one just degenerates to one column per color.
+        CHECK(sp.has_coloring(), "Pattern with nonzeros is colored on demand");
+        CHECK(sp.n_colors > 0, "n_colors should be positive");
+        CHECK(sp.n_colors <= sp.n, "n_colors <= n_species");
+        CHECK(static_cast<int>(sp.colors.size()) == sp.n,
+              "colors vector size == n_species");
+        CHECK(static_cast<int>(sp.color_groups.size()) == sp.n_colors,
+              "color_groups size == n_colors");
 
-            // Verify all columns are assigned valid colors
-            for (int j = 0; j < sp.n; ++j) {
-                CHECK(sp.colors[j] >= 0 && sp.colors[j] < sp.n_colors,
-                      "Color in valid range for column " + std::to_string(j));
-            }
+        // Verify all columns are assigned valid colors
+        for (int j = 0; j < sp.n; ++j) {
+            CHECK(sp.colors[j] >= 0 && sp.colors[j] < sp.n_colors,
+                  "Color in valid range for column " + std::to_string(j));
+        }
 
-            // Verify coloring validity: no two same-color columns share a row
-            for (int c = 0; c < sp.n_colors; ++c) {
-                const auto& group = sp.color_groups[c];
-                // Collect all rows covered by this color group
-                std::vector<bool> row_used(sp.n, false);
-                for (int j : group) {
-                    for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
-                        int row = static_cast<int>(sp.row_indices[k]);
-                        CHECK(!row_used[row],
-                              "Color " + std::to_string(c) + ": row " +
-                              std::to_string(row) + " used by multiple columns");
-                        row_used[row] = true;
-                    }
+        // Verify coloring validity: no two same-color columns share a row
+        for (int c = 0; c < sp.n_colors; ++c) {
+            const auto& group = sp.color_groups[c];
+            // Collect all rows covered by this color group
+            std::vector<bool> row_used(sp.n, false);
+            for (int j : group) {
+                for (int64_t k = sp.col_ptrs[j]; k < sp.col_ptrs[j + 1]; ++k) {
+                    int row = static_cast<int>(sp.row_indices[k]);
+                    CHECK(!row_used[row],
+                          "Color " + std::to_string(c) + ": row " +
+                          std::to_string(row) + " used by multiple columns");
+                    row_used[row] = true;
                 }
             }
         }
+
+        // Idempotent: a second call returns the same materialized coloring.
+        CHECK(model.ensure_jacobian_coloring().n_colors == sp.n_colors,
+              "ensure_jacobian_coloring is idempotent");
 
         // Simulate with ODE — should produce same results as before
         // (graph coloring doesn't affect small models using dense solver,
@@ -1242,15 +1251,19 @@ int test_graph_coloring() {
         CHECK_CLOSE(A_eq + C_eq, 100.0, 1e-3, "Conservation A + C = 100 (with coloring)");
     }
 
-    // 2. Clone preserves coloring
+    // 2. Clone shares the coloring — including one materialized only by the clone
     {
         auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
         auto clone = model.clone();
+
+        // Neither has colored yet; the clone triggers the shared compute, and
+        // the original sees it without asking (same SharedModelData).
+        const auto& sp_clone = clone.ensure_jacobian_coloring();
         const auto& sp_orig = model.jacobian_sparsity();
-        const auto& sp_clone = clone.jacobian_sparsity();
 
         CHECK(sp_clone.n == sp_orig.n, "Clone n matches");
         CHECK(sp_clone.nnz == sp_orig.nnz, "Clone nnz matches");
+        CHECK(sp_orig.has_coloring(), "Coloring materialized by the clone is shared");
         CHECK(sp_clone.n_colors == sp_orig.n_colors, "Clone n_colors matches");
         CHECK(sp_clone.colors == sp_orig.colors, "Clone colors vector matches");
 
@@ -1264,11 +1277,21 @@ int test_graph_coloring() {
     // 3. Verify the func_composition model (has Functional rate laws → denser Jacobian)
     {
         auto model = bngsim::NetworkModel::from_net(data_path("func_composition.net"));
-        const auto& sp = model.jacobian_sparsity();
+        const auto& sp = model.ensure_jacobian_coloring();
         CHECK(sp.n == 3, "func_composition has 3 species");
 
-        // Functional rate laws make the Jacobian denser (all species as deps)
-        // but model should still load and simulate correctly
+        // Functional rate laws conservatively mark every species as a
+        // dependency, which densifies the pattern. Coloring no longer has a
+        // density ceiling (GH #29), so these are colored like any other — the
+        // denser the pattern the closer n_colors gets to n, until a fully dense
+        // one degenerates to one column per color (plain FD). That degenerate
+        // case is exactly what force_sparse_linear_solver needs to fill the CSC
+        // matrix on small functional models; python/tests/
+        // test_force_sparse_linear_solver.py drives it end-to-end.
+        CHECK(sp.has_coloring(), "Functional-rate-law pattern is colored on demand");
+        CHECK(sp.n_colors <= sp.n, "n_colors <= n_species however dense");
+
+        // ... and the model should still load and simulate correctly
         bngsim::CvodeSimulator sim(model);
         bngsim::TimeSpec times{0.0, 1.0, 11};
         auto result = sim.run(times);
