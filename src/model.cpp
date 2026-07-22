@@ -507,6 +507,10 @@ const std::vector<StoichEntry> &NetworkModel::stoichiometry() const {
 const JacobianSparsity &NetworkModel::jacobian_sparsity() const {
     return impl_->shared->jac_sparsity;
 }
+const JacobianSparsity &NetworkModel::ensure_jacobian_coloring() const {
+    // Qualified: the member name hides the namespace-scope helper it forwards to.
+    return bngsim::ensure_jacobian_coloring(*impl_->shared);
+}
 const AnalyticalJacobianData &NetworkModel::analytical_jacobian() const {
     return impl_->shared->analytical_jac;
 }

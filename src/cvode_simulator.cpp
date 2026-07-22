@@ -655,6 +655,10 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
     auto *data = static_cast<CvodeUserData *>(user_data);
     NetworkModel *model = data->model;
     const int ns = model->n_species();
+    // Bare accessor, not ensure_jacobian_coloring(): setup_linsol_and_jac only
+    // installs this callback after materializing the coloring and seeing
+    // has_coloring(), and the materialized value never changes afterward — so
+    // the coloring reads below are valid without a call_once check per Jacobian.
     const auto &sp = model->jacobian_sparsity();
 
     double *y_data = N_VGetArrayPointer(y);
@@ -988,7 +992,10 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
     const std::string &jac_strategy = opts.jacobian;
 #ifdef BNGSIM_HAS_KLU
     if (use_sparse) {
-        const auto &sp = model.jacobian_sparsity();
+        // Materializes the coloring if this is the first sparse setup for the
+        // model (GH #29) — build() no longer computes it, and this is the only
+        // consumer. Cheap and idempotent afterward, including on the warm path.
+        const auto &sp = model.ensure_jacobian_coloring();
         const bool analytical_ready = model.analytical_jacobian_complete();
         CVLsJacFn jac_fn = nullptr;
 
@@ -1015,20 +1022,25 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
         }
 
         if (!jac_fn) {
-            // CVODE's built-in difference-quotient Jacobian covers SUNMATRIX_DENSE
-            // and SUNMATRIX_BAND only — with a sparse matrix and no callback,
-            // CVodeSetLinearSolver's initialization fails with an opaque "no
-            // Jacobian constructor available". Unreachable on the auto path, which
-            // requires density < SPARSE_DENSITY_MAX (0.10) and so always has a
-            // coloring (built whenever density < 0.5, model_builder.cpp). Only
-            // force_sparse_linear_solver (GH #29) can steer a model here: one that
-            // is both too dense to color and without a usable analytical Jacobian.
+            // Backstop, expected unreachable. CVODE's built-in difference-quotient
+            // Jacobian covers SUNMATRIX_DENSE and SUNMATRIX_BAND only — with a
+            // sparse matrix and no callback, CVodeSetLinearSolver's initialization
+            // fails with an opaque "no Jacobian constructor available", so refuse
+            // here with something legible instead.
+            //
+            // Every pattern with a structural nonzero now colors (GH #29 removed
+            // the density < 0.5 ceiling that used to skip near-dense ones, which
+            // was the last way force_sparse_linear_solver could land here), so
+            // reaching this means sp.nnz == 0: a structurally empty Jacobian, with
+            // no column to perturb and nothing for KLU to factorize. sparse_ok
+            // only rejects n == 0, so a model with species but no reactions can
+            // still get here under the flag.
             throw std::runtime_error(
                 "force_sparse_linear_solver: this model cannot supply a sparse "
                 "Jacobian — its analytical Jacobian is unavailable" +
                 std::string(jac_strategy == "fd" ? " (suppressed by jacobian=\"fd\")" : "") +
-                " and its Jacobian is too dense (density >= 0.5) to have been "
-                "colored for finite differences, leaving nothing to fill the CSC "
+                " and its Jacobian sparsity pattern has no structural nonzeros to "
+                "color for finite differences, leaving nothing to fill the CSC "
                 "matrix KLU factorizes. Drop the flag to use the dense solver, "
                 "which finite-differences the full matrix directly.");
         }

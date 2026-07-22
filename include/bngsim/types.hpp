@@ -325,6 +325,13 @@ struct JacobianSparsity {
     // (no row index in common). This allows simultaneous perturbation of
     // all same-color columns in one RHS evaluation, reducing Jacobian cost
     // from O(N) to O(n_colors) ≈ 5–20 RHS evals for typical BNG networks.
+    //
+    // NOT populated by build() (GH #29): only the sparse-FD Jacobian callback
+    // consumes the coloring, so it is materialized on first use by
+    // NetworkModel::ensure_jacobian_coloring() — read these fields only through
+    // that accessor, never off a bare jacobian_sparsity(). A fully dense pattern
+    // colors to one column per color, i.e. colored FD degenerates to plain FD;
+    // that is correct (just not a speedup), so there is no density ceiling.
     int n_colors = 0;                           // chromatic number (0 = not computed)
     std::vector<int> colors;                    // color assignment per column (size n)
     std::vector<std::vector<int>> color_groups; // columns grouped by color (size n_colors)
