@@ -13,6 +13,13 @@ name: windows-tail
 # Python-side codegen entry points — test_ssa_propensity_export.py fails here if
 # the emit drops it.
 #
+# KLU off is what makes this the ONLY job that can run the no-KLU half of
+# test_force_sparse_linear_solver.py (issue #29). force_sparse_linear_solver
+# documents itself as a no-op in a build without SuiteSparse, and the assertion
+# that it really is one skips on every other job in the matrix — all of which
+# build with KLU. The rest of that file's KLU-dependent cases skip here in turn,
+# which is the point: the two halves are covered by disjoint jobs.
+#
 # An MSVC developer environment is set up first so the runtime codegen path
 # (bngsim compiles the generated C RHS with cl.exe + LoadLibrary at simulate
 # time) has a C compiler on PATH — otherwise every codegen test would fail with
@@ -51,6 +58,7 @@ on:
       - "python/tests/test_version_consistency.py"
       - "python/tests/test_method_normalization.py"
       - "python/tests/test_lazy_jacobian.py"
+      - "python/tests/test_force_sparse_linear_solver.py"
       - "python/tests/test_exprtk_vendoring.py"
       - ".github/workflows/windows-tail.yml"
   pull_request:
@@ -112,6 +120,7 @@ jobs:
             python/tests/test_seed_semantics.py \
             python/tests/test_seed_count_rounding.py \
             python/tests/test_lazy_jacobian.py \
+            python/tests/test_force_sparse_linear_solver.py \
             python/tests/test_exprtk_vendoring.py \
             python/tests/test_timeout.py \
             python/tests/test_codegen.py \
