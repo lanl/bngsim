@@ -254,22 +254,22 @@ int test_ode_steady_state_early_stop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test: find_steady_state method routing — default newton, kinsol alias,
-// integration parity criterion, invalid method (ss_method plan)
+// Test: find_steady_state method routing — default integration, kinsol alias
+// for newton, integration parity criterion, invalid method (ss_method plan)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 int test_find_steady_state_methods() {
-    // Default method is "newton" (two-tier integrate-first: CVODE burst into
-    // the physical basin, then a seed-stable KINSOL polish; GH #27). On a
-    // reversible A<->B model the polish is accepted and reports "newton".
+    // Default method is "integration" (CVODE parity early-stop only, no KINSOL
+    // polish; GH #28 measured the polish as a 1.4-3.9x net cost). On a
+    // reversible A<->B model it converges and reports "integration".
     {
         auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
-        bngsim::SteadyStateOptions opts; // method defaults to "newton"
-        CHECK(opts.method == "newton", "Default steady-state method is newton");
+        bngsim::SteadyStateOptions opts; // method defaults to "integration"
+        CHECK(opts.method == "integration", "Default steady-state method is integration");
         auto ss = bngsim::find_steady_state(model, opts);
-        CHECK(ss.converged, "Default newton converges on reversible model");
-        CHECK(ss.method_used == "newton", "Default reports method_used=newton");
-        CHECK(ss.residual < opts.tol, "Newton residual below tol (||f||_2/n)");
+        CHECK(ss.converged, "Default integration converges on reversible model");
+        CHECK(ss.method_used == "integration", "Default reports method_used=integration");
+        CHECK(ss.residual < opts.tol, "Default residual below tol (||f||_2/n)");
     }
 
     // "kinsol" is an input alias for "newton"; the canonical name is echoed.
