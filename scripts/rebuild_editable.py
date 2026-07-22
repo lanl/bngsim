@@ -16,6 +16,23 @@ keeps Python mode on, keeps tests off, and rebuilds only ``_bngsim_core``
 before reinstalling it. It then regenerates the ``_bngsim_core.pyi`` type stub
 from the freshly built module (via pybind11-stubgen) so the stub mypy checks
 against never drifts from the bindings.
+
+Two things differ under ``uv`` (the environment manager CONTRIBUTING.md
+documents), and both used to make this script unusable there:
+
+* uv builds the package in an **ephemeral isolated venv**, so scikit-build-core
+  records a ``python_executable`` under ``~/.cache/uv/builds-v0/.tmpXXXX/`` that
+  is deleted the moment the build finishes — and ``CMakeCache.txt`` caches the
+  same dead path in ``Python_EXECUTABLE``. Matching build metadata on that
+  recorded interpreter can therefore never succeed. ``_load_build_info`` falls
+  back to selecting by extension ABI, and the configure line pins
+  ``Python_EXECUTABLE`` to the running interpreter so the stale cache entry is
+  overridden rather than trusted.
+* a uv-created venv has **no ``pip``**, so ``python -m pip install -e`` fails
+  outright. The install steps route through ``uv pip`` in that case (see
+  ``_editable_install_cmd``). Note the happy path needs no installer at all —
+  it is pure cmake — so this only matters for the bootstrap and version-drift
+  branches.
 """
 
 from __future__ import annotations
@@ -168,9 +185,24 @@ def _requested_macos_architectures() -> str | None:
     return None
 
 
-def _bootstrap_editable(source_dir: Path, *, env: dict[str, str] | None) -> None:
-    _run(
-        [
+def _editable_install_cmd(source_dir: Path) -> list[str]:
+    """Build the argv that (re)registers the editable install for this interpreter.
+
+    ``python -m pip`` is the historical path and stays preferred: where pip
+    exists the project's build deps are expected alongside it, so
+    ``--no-build-isolation`` reuses the already-configured build tree instead of
+    paying for a from-scratch one.
+
+    A uv-created venv ships no pip at all, which made every call site here die
+    with ``No module named pip``. Fall back to ``uv pip`` against this exact
+    interpreter. Build isolation is deliberately left ON for that branch: uv
+    venvs do not carry scikit-build-core or pybind11 (they live only in the
+    transient build env), so ``--no-build-isolation`` would fail to find the
+    backend. The isolated build records a dead ``python_executable``, which is
+    precisely the case ``_load_build_info`` now tolerates.
+    """
+    if importlib.util.find_spec("pip") is not None:
+        return [
             sys.executable,
             "-m",
             "pip",
@@ -179,30 +211,82 @@ def _bootstrap_editable(source_dir: Path, *, env: dict[str, str] | None) -> None
             "--no-deps",
             "-e",
             str(source_dir),
-        ],
-        env=env,
+        ]
+
+    uv = shutil.which("uv")
+    if uv is not None:
+        return [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--no-deps",
+            "-e",
+            str(source_dir),
+        ]
+
+    raise RuntimeError(
+        "Cannot register the editable install: this interpreter has no pip "
+        f"({sys.executable}) and no `uv` was found on PATH. Install one of them, "
+        "or provision the environment directly with "
+        "`uv sync --extra dev --reinstall-package bngsim`."
     )
 
 
+def _bootstrap_editable(source_dir: Path, *, env: dict[str, str] | None) -> None:
+    _run(_editable_install_cmd(source_dir), env=env)
+
+
 def _load_build_info(source_dir: Path) -> dict[str, str]:
+    """Locate the build tree belonging to the running interpreter.
+
+    Preferred key is the interpreter scikit-build-core recorded at build time.
+    That is exact when the build ran in the target environment (pip with
+    ``--no-build-isolation``), and useless when it ran under build isolation:
+    uv builds in a throwaway venv beneath ``~/.cache/uv/builds-v0/`` and records
+    that path, so the recorded interpreter is both unequal to ours and gone from
+    disk by the time we look.
+
+    The fallback keys on what actually has to match — the extension ABI. A tree
+    holding a built ``_bngsim_core`` with this interpreter's ``EXT_SUFFIX`` is
+    loadable by this interpreter; the newest such tree is the one whose artifact
+    the environment is currently running. That is a heuristic, not a proof: two
+    venvs on the same CPython version share an ``EXT_SUFFIX``, so this can pick a
+    sibling venv's tree. Retargeting is harmless for *us* — main() pins
+    ``Python_EXECUTABLE`` and installs into our own platlib — but it does leave
+    the sibling needing a rebuild.
+    """
     build_root = source_dir / "build"
     current_python = Path(sys.executable).resolve()
-    candidates = sorted(build_root.glob("*/.skbuild-info.json"))
 
-    matches: list[dict[str, str]] = []
-    for candidate in candidates:
+    infos: list[dict[str, str]] = []
+    for candidate in sorted(build_root.glob("*/.skbuild-info.json")):
         data = json.loads(candidate.read_text())
-        if Path(data["source_dir"]).resolve() != source_dir.resolve():
-            continue
-        python_executable = Path(data["python_executable"]).resolve()
-        if python_executable == current_python:
-            matches.append(data)
+        if Path(data["source_dir"]).resolve() == source_dir.resolve():
+            infos.append(data)
 
-    if matches:
-        return matches[0]
+    for data in infos:
+        if Path(data["python_executable"]).resolve() == current_python:
+            return data
 
-    if len(candidates) == 1:
-        return json.loads(candidates[0].read_text())
+    ext_suffix = _ext_suffix()
+    abi_matches: list[tuple[float, dict[str, str]]] = []
+    for data in infos:
+        built = Path(data["build_dir"]) / f"_bngsim_core{ext_suffix}"
+        if built.is_file():
+            abi_matches.append((built.stat().st_mtime, data))
+    if abi_matches:
+        newest = max(abi_matches, key=lambda pair: pair[0])[1]
+        print(
+            f"build metadata: no tree recorded for {sys.executable}; "
+            f"selected {newest['build_dir']} by extension ABI ({ext_suffix})",
+            flush=True,
+        )
+        return newest
+
+    if len(infos) == 1:
+        return infos[0]
 
     raise FileNotFoundError(
         "No editable build metadata found for this interpreter. "
@@ -252,20 +336,12 @@ def _refresh_editable_metadata(source_dir: Path, *, env: dict[str, str] | None) 
     after a ``pyproject.toml`` version change. Re-running the editable install
     with ``--no-build-isolation --no-deps`` re-registers the metadata cheaply
     (it reuses the already-built extension; no from-scratch C++ rebuild).
+
+    On the ``uv pip`` fallback (see ``_editable_install_cmd``) the build is
+    isolated, so this costs a real rebuild rather than a metadata-only refresh.
+    It runs only on a detected version drift, so that is a rare price.
     """
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-build-isolation",
-            "--no-deps",
-            "-e",
-            str(source_dir),
-        ],
-        env=env,
-    )
+    _run(_editable_install_cmd(source_dir), env=env)
 
 
 def _ext_suffix() -> str:
@@ -366,6 +442,14 @@ def main() -> int:
             str(build_dir),
             "-DBNGSIM_BUILD_PYTHON=ON",
             "-DBNGSIM_BUILD_TESTS=OFF",
+            # Pin the interpreter we are building *for*. Without this, FindPython
+            # reuses the cache, and a tree produced under build isolation cached a
+            # Python_EXECUTABLE inside a build venv that no longer exists (uv wipes
+            # ~/.cache/uv/builds-v0/.tmpXXXX after each build). Passing it also
+            # makes the ABI-selected fallback in _load_build_info safe: whichever
+            # tree we reuse is retargeted at this interpreter before it is built.
+            f"-DPython_EXECUTABLE={sys.executable}",
+            f"-DPython3_EXECUTABLE={sys.executable}",
         ]
         if cmake_sdkroot:
             configure_cmd.append(f"-DCMAKE_OSX_SYSROOT={cmake_sdkroot}")
