@@ -1,0 +1,106 @@
+name: native-tests
+
+# CI gate for the C++ unit suite (tests/test_bngsim).
+#
+# Until now NOTHING in CI built it. Every workflow that compiles the project
+# passes BNGSIM_BUILD_TESTS=OFF (mir.yml, windows-nfsim.yml, windows-tail.yml),
+# and no job ever invoked the binary — so the suite's only gate was a developer
+# remembering to build it by hand. The pre-push hook covers python/tests; the
+# C++ side had no equivalent at any stage, local or remote.
+#
+# That is not hypothetical. #28 flipped SteadyStateOptions::method from "newton"
+# to "integration" and updated the Python side, leaving the C++ assertion in
+# test_find_steady_state_methods asserting the old default. The suite sat at
+# 49/50 on every branch from that merge until someone built it locally and
+# noticed. No CI run could have caught it, which is also why it survived so
+# long: a permanently-red suite is worse than a smaller green one, because a
+# genuine regression arrives looking exactly like the failure everyone has
+# learned to wave off.
+#
+# Scope: Linux only, and deliberately lean. KLU, NFsim and RuleMonkey are all
+# OFF — test_bngsim links none of them, and skipping the vendored builds takes
+# the target count from 146 to 81. The wheels/MIR/Windows jobs already cover
+# those subsystems; duplicating them here would buy nothing and cost minutes.
+# LAPACK is left at its default: find_package(LAPACK QUIET) degrades to the
+# reference dense solver when absent, so the build is fine either way.
+#
+# Not covered here: the other native binaries in tests/CMakeLists.txt
+# (test_validation, test_c_api, test_lapack_dense_linsol,
+# test_seed_count_rounding, the NFsim pair). They remain ungated. Extending
+# this job to ctest is a reasonable follow-up; this one closes the gap that
+# actually drew blood.
+
+on:
+  push:
+    branches: [main]
+    paths: &native_paths
+      - "tests/**"
+      - "src/**"
+      - "include/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/native-tests.yml"
+  pull_request:
+    paths: *native_paths
+
+concurrency:
+  group: native-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-tests:
+    name: C++ unit suite · ubuntu-latest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Configure (tests ON; KLU / NFsim / RuleMonkey OFF)
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBNGSIM_BUILD_TESTS=ON \
+            -DBNGSIM_ENABLE_KLU=OFF \
+            -DBNGSIM_REQUIRE_KLU=OFF \
+            -DBNGSIM_BUILD_NFSIM=OFF \
+            -DBNGSIM_BUILD_RULEMONKEY=OFF
+
+      - name: Build test_bngsim
+        run: |
+          set -euxo pipefail
+          cmake --build build --target test_bngsim -j"$(nproc)"
+
+      - name: Run the C++ unit suite
+        run: |
+          set -euxo pipefail
+          # test_bngsim exits 0 only when tests_passed == tests_run, and pipefail
+          # propagates that through the tee, so this line is the gate. Output is
+          # teed because the guard below re-reads the summary.
+          ./build/tests/test_bngsim 2>&1 | tee /tmp/native-tests.log
+
+      - name: Guard against a false green
+        run: |
+          set -euo pipefail
+          # Every RUN_TEST in test_bngsim.cpp is unconditionally compiled — there
+          # is no #if around any of them — so the total is an invariant, not a
+          # platform-dependent count. Asserting a floor catches the one failure
+          # mode the exit code cannot see: a suite that passes because tests
+          # stopped being registered. Raise FLOOR when tests are added; adding
+          # them never breaks this, only removing them does.
+          FLOOR=50
+          summary="$(grep -oE '[0-9]+/[0-9]+ tests passed' /tmp/native-tests.log | tail -1)"
+          if [ -z "$summary" ]; then
+            echo "::error::No 'N/N tests passed' summary found — the suite did not run to completion."
+            exit 1
+          fi
+          ran="${summary#*/}"; ran="${ran%% *}"
+          echo "Suite reported: $summary (floor $FLOOR)"
+          if [ "$ran" -lt "$FLOOR" ]; then
+            echo "::error::Only $ran tests registered, expected >= $FLOOR — tests disappeared rather than failed."
+            exit 1
+          fi
