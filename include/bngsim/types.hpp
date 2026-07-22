@@ -752,6 +752,18 @@ struct SolverOptions {
     // effect in a build without KLU (already always dense).
     bool force_dense_linear_solver = false;
 
+    // Force sparse KLU even when the model is below the size threshold or above
+    // the density ceiling that the auto rule uses (GH #29). The mirror image of
+    // force_dense_linear_solver above: that flag can only push the decision
+    // toward dense, so without this one the auto rule cannot be measured
+    // against its own alternative on the models it sends to dense. Bypasses
+    // only the SPARSE_THRESHOLD / SPARSE_DENSITY_MAX gates — the hard
+    // requirements (KLU compiled in, non-empty sparsity pattern, non-JAX
+    // Jacobian) still hold, so this is a no-op in a build without KLU. Setting
+    // it together with force_dense_linear_solver is an error, not a precedence
+    // question; CvodeSimulator::run() rejects the pair.
+    bool force_sparse_linear_solver = false;
+
     // JAX AD Jacobian callback.
     // If set, CVODE calls this function to fill the dense Jacobian matrix.
     // Signature: fn(t, y_ptr, jac_col_major_ptr, n_species)

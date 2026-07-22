@@ -331,6 +331,22 @@ class Simulator:
         the dense path against KLU on the same model; it has no effect in a
         build compiled without KLU (already always dense).
 
+    force_sparse_linear_solver : bool, optional
+        Only used for ``method="ode"``. Default ``False``. The mirror image of
+        ``force_dense_linear_solver``: force sparse KLU even on a model the auto
+        rule would send to the dense solver for being too small (``n_species <
+        50``) or too dense (Jacobian density ``>= 10%``). Only those two gates
+        are bypassed — KLU still needs a real sparsity pattern and a non-JAX
+        Jacobian — so it is likewise a no-op in a build without KLU. Passing
+        both force flags raises :class:`ValueError`.
+
+        Intended for measuring the auto-selection rule against its own
+        alternative: forced-dense shows what KLU buys on large sparse networks,
+        forced-sparse shows KLU's setup and indexing overhead on the small dense
+        ones. A model that is *both* too dense to have been graph-colored and
+        without a usable analytical Jacobian has no way to fill a sparse matrix
+        at all; ``run()`` raises there rather than quietly reverting to dense.
+
     Examples
     --------
     >>> model = bngsim.Model.from_net("model.net")
@@ -393,6 +409,8 @@ class Simulator:
         "_ode_jacobian_fell_back",
         # Force dense linear solver over auto-selected sparse KLU (benchmarking)
         "_force_dense_linear_solver",
+        # ...and the mirror flag, forcing KLU past the size/density gates (GH #29)
+        "_force_sparse_linear_solver",
         # Code-generated RHS support
         "_codegen",
         "_codegen_so_path",
@@ -424,6 +442,7 @@ class Simulator:
         traversal_limit: int | None = None,
         jacobian: str = "auto",
         force_dense_linear_solver: bool = False,
+        force_sparse_linear_solver: bool = False,
         codegen: bool | None = None,
         net_path: str = "",
         sensitivity_params: list[str] | None = None,
@@ -644,7 +663,17 @@ class Simulator:
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
+        # GH #29: the two pins contradict each other, and a benchmark that got
+        # auto-selected numbers back under a "forced" label would be worse than
+        # one that failed. Refuse at construction rather than letting either win.
+        if force_dense_linear_solver and force_sparse_linear_solver:
+            raise ValueError(
+                "force_dense_linear_solver and force_sparse_linear_solver are "
+                "mutually exclusive; pass at most one. Omit both for the "
+                "size/density auto-selection."
+            )
         self._force_dense_linear_solver = bool(force_dense_linear_solver)
+        self._force_sparse_linear_solver = bool(force_sparse_linear_solver)
         self._jax_jac_evaluator = None
         self._volume_factors_cache: list[float] | None = None
 
@@ -1816,6 +1845,7 @@ class Simulator:
                 opts.max_steps = max_steps if max_steps is not None else self._max_steps
                 opts.jacobian = self._jacobian
                 opts.force_dense_linear_solver = self._force_dense_linear_solver
+                opts.force_sparse_linear_solver = self._force_sparse_linear_solver
                 opts.timeout_seconds = timeout_seconds
                 opts.steady_state = bool(steady_state)
                 opts.steady_state_tol = ss_tol_value

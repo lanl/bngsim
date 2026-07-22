@@ -599,6 +599,7 @@ class SolverOptions:
     codegen_c_source: str
     codegen_so_path: str
     force_dense_linear_solver: bool
+    force_sparse_linear_solver: bool
     jacobian: str
     steady_state: bool
     def __init__(self) -> None:

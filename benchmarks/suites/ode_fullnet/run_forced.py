@@ -15,10 +15,10 @@ horizon, tolerances, adaptive warm-rep policy) is held identical to Phase 2, so 
 per-model point is comparable across panels.
 
   --mode dense   force the dense direct solver (``force_dense_linear_solver``)
-  --mode sparse  force sparse KLU on every model — NEEDS lanl/bngsim#29, which
-                 adds ``force_sparse_linear_solver``. Until that lands and the
-                 extension is rebuilt, this mode aborts with a clear message
-                 rather than silently recording auto-selected numbers.
+  --mode sparse  force sparse KLU on every model (``force_sparse_linear_solver``,
+                 lanl/bngsim#29). Against an installed bngsim predating that
+                 flag this mode aborts with a clear message rather than silently
+                 recording auto-selected numbers.
   --mode auto    re-measure the shipping policy through this same script (a
                  cross-check on Phase 2, not a published arm)
 
