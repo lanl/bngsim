@@ -932,7 +932,13 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
     return cl;
 }
 
-// Graph coloring (same as net_file_loader.cpp)
+// Curtis-Powell-Reid graph coloring of the Jacobian sparsity pattern: two
+// columns may share a color iff their patterns share no row, so all columns of
+// a color can be perturbed in one RHS eval. Greedy first-fit, so n_colors is an
+// upper bound on the chromatic number — for a fully dense pattern every column
+// gets its own color and colored FD degenerates to plain column-by-column FD,
+// which is correct, just not a speedup. Called only via
+// ensure_jacobian_coloring() below.
 void compute_coloring(JacobianSparsity &sp) {
     const int n = sp.n;
     if (n == 0 || sp.nnz == 0)
@@ -982,6 +988,15 @@ const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
         });
     }
     return sd.conservation_laws;
+}
+
+// Lazily materialize the Jacobian coloring (declared in model_impl.hpp). Same
+// shape as ensure_conservation_laws above, and here for the same reason:
+// compute_coloring() has internal linkage, this wrapper does not, so
+// NetworkModel::ensure_jacobian_coloring() (model.cpp) can reach it.
+const JacobianSparsity &ensure_jacobian_coloring(const SharedModelData &sd) {
+    std::call_once(sd.jac_coloring_once, [&] { compute_coloring(sd.jac_sparsity); });
+    return sd.jac_sparsity;
 }
 
 // ─── Build ───────────────────────────────────────────────────────────────────
@@ -1365,7 +1380,7 @@ NetworkModel ModelBuilder::build() {
     // ── 6. Build stoichiometry ───────────────────────────────────────────
     sd->stoichiometry = build_stoich(sd->reactions);
 
-    // ── 7. Jacobian sparsity + analytical Jacobian + coloring ────────────
+    // ── 7. Jacobian sparsity + analytical Jacobian ───────────────────────
     const int ns = static_cast<int>(impl.species.size());
     const int np = static_cast<int>(impl.parameters.size());
 
@@ -1375,9 +1390,10 @@ NetworkModel ModelBuilder::build() {
 
     sd->analytical_jac = build_anal_jac(sd->reactions, ns, np, sd->jac_sparsity, impl.species);
 
-    if (!sd->jac_sparsity.empty() && sd->jac_sparsity.density < 0.5) {
-        compute_coloring(sd->jac_sparsity);
-    }
+    // The Curtis-Powell-Reid coloring is NOT computed here (GH #29): it is
+    // consumed only by the sparse colored-FD Jacobian callback, so
+    // ensure_jacobian_coloring() materializes it on first use (once, shared
+    // across clones). See model_impl.hpp for the immutability contract.
 
     // ── 7b. Conservation laws ───────────────────────────────────────────
     // Deferred (GH #102): the detector is dense O(ns^3) Gaussian elimination and

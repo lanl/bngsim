@@ -15,6 +15,34 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Changed
+- **The Curtis-Powell-Reid Jacobian coloring is computed on first use instead of
+  at model load, and no longer skipped on dense patterns (issue #29).** `build()`
+  used to color only when Jacobian density was `< 0.5`, on the reasoning that
+  coloring a near-dense matrix saves nothing. That held while sparse KLU was
+  reachable only through the auto rule, which requires density `< 0.10` and so
+  always had a coloring to hand. `force_sparse_linear_solver` broke the
+  invariant: a model at density `>= 0.5` with no complete analytical Jacobian had
+  nothing to fill the CSC matrix KLU factorizes, and CVODE has no
+  difference-quotient fallback for `SUNMATRIX_SPARSE`, so the run was refused. On
+  the 585-model corpus that hit 7 models — all `N <= 5` with functional rate laws,
+  which conservatively mark every species as a Jacobian dependency and so land at
+  density 0.52–1.00.
+
+  The density ceiling is gone: every pattern with a structural nonzero is now
+  colored, however dense. A fully dense one degenerates to one column per color,
+  i.e. colored FD becomes plain FD — correct, just not a speedup, which is the
+  right answer for a flag whose purpose is measuring KLU's overhead on small
+  dense models. Forced-sparse now reaches KLU on 585/585 rather than 578, and
+  each of the 7 matches its forced-dense trajectory to within 5e-9 relative.
+
+  Removing the ceiling would otherwise have charged every model load for a flag
+  almost nobody sets, so the coloring moved off the build path entirely:
+  `NetworkModel::ensure_jacobian_coloring()` materializes it once on first use,
+  thread-safe and shared across clones, following `ensure_conservation_laws()`
+  (#102). Only the sparse colored-FD Jacobian callback consumes it, so models
+  that never take that path — including every dense-solver run — no longer pay
+  for a coloring at all. Auto-selection is unchanged: the same corpus still
+  splits 541 dense / 44 KLU.
 - **`Simulator.steady_state()` and `steady_state_batch()` now default to
   `method="integration"` instead of `method="newton"` (issue #28).** Once #27
   reordered the two-tier solver to integrate *first*, its KINSOL polish stopped
@@ -160,12 +188,10 @@ in `CMakeLists.txt`) is derived from it.
   between `run()` calls on one `Simulator` invalidates the warm CVODE cache, so
   the solver is rebuilt rather than reused.
 
-  One case the auto rule could never reach is now possible and is refused loudly:
-  a Jacobian too dense to have been graph-colored (density `>= 0.5`) whose
-  analytical path is also unavailable has nothing to fill the CSC matrix KLU
-  factorizes, and CVODE's difference-quotient fallback covers dense/band matrices
-  only. That run raises with a message naming the flag instead of failing inside
-  CVODE with "no Jacobian constructor available".
+  Forced-sparse reaches KLU on all 585 models. Getting the last 7 there took
+  making the Curtis-Powell-Reid coloring lazy (below); a run that still cannot
+  supply a sparse Jacobian is refused with a message naming the flag, rather
+  than failing inside CVODE with "no Jacobian constructor available".
 
   `benchmarks/suites/ode_fullnet/run_forced.py --mode sparse` is unblocked.
 - **One BNG2.pl resolver for the whole suite (`parity_checks/_core/bngpath.py`),

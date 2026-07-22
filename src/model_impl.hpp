@@ -55,7 +55,22 @@ struct SharedModelData {
     std::string net_file_dir;
 
     // Jacobian sparsity pattern (CSC format) for sparse ODE solver.
-    JacobianSparsity jac_sparsity;
+    //
+    // The CSC structure (n/nnz/col_ptrs/row_indices/density) is computed by
+    // build() and immutable thereafter. The Curtis-Powell-Reid coloring fields
+    // inside it are NOT: they are lazily materialized (GH #29) by
+    // ensure_jacobian_coloring() on first use, because only the sparse-FD
+    // Jacobian callback consumes them and only a minority of models ever take
+    // that path. `mutable` covers exactly that one deferred write — the same
+    // sanctioned exception to the "immutable after build()" contract above as
+    // conservation_laws below, with the same guarantee: the coloring is written
+    // exactly once under jac_coloring_once and never changes afterward, so every
+    // const ref returned by jacobian_sparsity() stays valid across it. The CSC
+    // structure is never touched after build(), so a reader holding `jac_sparsity`
+    // for its col_ptrs/row_indices races with no one; readers of the *coloring*
+    // must go through ensure_jacobian_coloring().
+    mutable JacobianSparsity jac_sparsity;
+    mutable std::once_flag jac_coloring_once;
 
     // Analytical Jacobian pre-computed structure.
     AnalyticalJacobianData analytical_jac;
@@ -88,6 +103,15 @@ struct SharedModelData {
 // Defined in model_builder.cpp next to detect_conservation_laws().
 const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
                                                  const std::vector<Species> &species);
+
+// Lazily compute (once) the Curtis-Powell-Reid coloring of the Jacobian
+// sparsity pattern and return the pattern with it materialized. The coloring is
+// consumed ONLY by the sparse colored-FD Jacobian callback, so build() does not
+// compute it; the first caller that needs it pays, later calls and other clones
+// reuse it. A pattern with no structural nonzeros is left uncolored (n_colors
+// stays 0) — there is nothing to perturb. Defined in model_builder.cpp next to
+// compute_coloring().
+const JacobianSparsity &ensure_jacobian_coloring(const SharedModelData &sd);
 
 // Full definition of NetworkModel::Impl.
 // model.hpp forward-declares it; this header provides the body.

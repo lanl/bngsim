@@ -6,7 +6,7 @@
 int main() {
     auto model = bngsim::NetworkModel::from_net(
         "../benchmarks/models/net/ode/metapop_sir_100.net");
-    auto& sp = model.jacobian_sparsity();
+    auto& sp = model.ensure_jacobian_coloring(); // coloring is lazy (GH #29)
     double comp = (sp.n_colors > 0) ? (double)sp.n / sp.n_colors : 0;
     std::cout << "metapop_sir_100: " << sp.n << " sp, "
               << model.n_reactions() << " rxn"

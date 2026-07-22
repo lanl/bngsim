@@ -19,7 +19,7 @@ int main() {
             else if (r.rate_law_type == bngsim::RateLawType::Functional) func++;
             else mm++;
         }
-        auto& sp = model.jacobian_sparsity();
+        auto& sp = model.ensure_jacobian_coloring(); // coloring is lazy (GH #29)
         double comp = (sp.n_colors > 0) ? (double)sp.n / sp.n_colors : 0;
         std::cout << m.name << ": " << sp.n << " sp, "
                   << model.n_reactions() << " rxn"
