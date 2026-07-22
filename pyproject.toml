@@ -105,6 +105,31 @@ dev = [
     "pybind11-stubgen>=2.5",
 ]
 
+# PEP 735 dependency groups — local-only, NEVER part of published metadata.
+# `parity` has to live here rather than in [project.optional-dependencies]
+# because it carries a `git+https://` direct reference, and PyPI rejects any
+# distribution whose metadata contains one. A group keeps bngsim publishable
+# while still giving `uv sync --group parity` a one-command provisioning path.
+[dependency-groups]
+# The legacy BioNetGen stack for parity_checks/. PyBioNetGen bundles BNG2.pl
+# (plus bin/run_network and bin/NFsim), which is the ONLY thing bngsim cannot do
+# itself — it has no BNGL parser, so every BNGL job shells out to BNG2.pl for
+# network generation before simulating in-process. Installing this group is what
+# turns the parity suite's engine tests from skipped into run.
+#
+# The commit MUST match parity_checks/requirements-pybionetgen.txt — that file
+# is the source of truth (it carries the rationale for the pin, and GH #4 bumped
+# it). parity_checks/tests/test_pin_agreement.py fails if the two drift.
+parity = [
+    "bionetgen @ git+https://github.com/RuleWorld/PyBioNetGen.git@43b09a5",
+]
+
+[tool.uv]
+# PyBioNetGen's setup.py shells out to `pip install numpy` and downloads BNG2.pl
+# at build time, so it cannot build in an isolated env that lacks them. Same
+# reason bootstrap_parity_env.py passes --no-build-isolation by hand.
+no-build-isolation-package = ["bionetgen"]
+
 [project.scripts]
 # SBML → .net network converter (GH #215). Also runnable as
 # ``python -m bngsim.convert``.

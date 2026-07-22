@@ -139,6 +139,24 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **One BNG2.pl resolver for the whole suite (`parity_checks/_core/bngpath.py`),
+  plus a `parity` dependency group that provisions it.** BNG2.pl was located by
+  six near-duplicate helpers across eleven files that disagreed about precedence
+  (see Fixed). They are replaced by `resolve_bng()` / `require_bng()` /
+  `skip_reason()`, which try `$BNG2_PL` → `$BNGPATH` → PyBioNetGen's bundled copy
+  and record every attempt, so a failure names each location searched and what it
+  yielded instead of reporting a bare absence. Two consequences beyond the fix:
+  the sweep entrypoints (`parity_golden.py`, `bng_ode_run.py`, `bng_stoch_run.py`)
+  now find the bundled BNG2.pl on their own — no `export BNGPATH` needed to
+  regenerate a golden — and a stale env var falls through to a working install
+  rather than poisoning the lookup. `uv sync --extra dev --group parity` installs
+  the pinned PyBioNetGen (which bundles BNG2.pl, `bin/run_network` and
+  `bin/NFsim`), taking `parity_checks/tests/` from 264 passed / 14 skipped to
+  **288 passed / 0 skipped** with no environment variables set. The group lives
+  in PEP 735 `[dependency-groups]`, not `[project.optional-dependencies]`, because
+  its `git+https://` direct reference would otherwise land in published metadata
+  and make the distribution unpublishable to PyPI; `test_pin_agreement.py` fails
+  if its commit drifts from `requirements-pybionetgen.txt`, the source of truth.
 - **ODE Jacobian characterization harness**
   (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each
   ODE model in the `bng_parity` corpus by structural Jacobian density
@@ -162,6 +180,16 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **An explicit `$BNGPATH` was silently ignored whenever PyBioNetGen was
+  installed.** The test-side BNG2.pl helpers asked `bionetgen.main.get_conf()`
+  for its bundled copy first and read `$BNGPATH` / `$BNG2_PL` only from an
+  `except` branch — so with bionetgen importable, `export
+  BNGPATH=/path/to/BioNetGen-2.9.3` changed nothing and said nothing, and an
+  install whose `get_conf()` returned no `bngpath` resolved to `None` with the
+  env var sitting there unread. Precedence is now explicit-beats-implicit
+  (`_core.bngpath`, see Added), and `test_bngpath_resolver.py` pins it so the
+  inversion cannot return. The symptom was a machine holding three separate
+  BioNetGen installs reporting "needs BNG2.pl".
 - **`parity_checks/tests/test_corpus_manifest_schema.py` had never run, in any
   environment.** It guards on `pytest.importorskip("jsonschema")`, but
   `jsonschema` was declared nowhere — not in `pyproject.toml`, zero occurrences

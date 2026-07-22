@@ -29,13 +29,12 @@ These tests pin:
 from __future__ import annotations
 
 import importlib.util
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import _core
 import numpy as np
 import pytest
 
@@ -229,31 +228,29 @@ def test_protocol_session_replayable_rejects_cross_engine():
 # --------------------------------------------------------------------------- #
 # Engine: replay reproduces native BNG2.pl's multi-phase trajectory.
 # --------------------------------------------------------------------------- #
+_BNG = _core.resolve_bng()
+
+
+def _bngsim_ready() -> bool:
+    """Whether the bridge's ``run_bngsim_job`` has a usable bngsim behind it."""
+    try:
+        import bionetgen  # noqa: PLC0415 — engine-only import
+
+        return bool(getattr(bionetgen, "BNGSIM_AVAILABLE", False))
+    except Exception:
+        return False
+
+
 def _bng2_pl():
-    bngpath = None
-    try:
-        from bionetgen.main import get_conf
-
-        bngpath = get_conf().get("bngpath")
-    except Exception:
-        bngpath = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not bngpath:
-        return None
-    p = Path(bngpath)
-    bng2 = p / "BNG2.pl" if p.is_dir() else p
-    if not bng2.exists() or shutil.which("perl") is None:
-        return None
-    try:
-        import bionetgen  # noqa: F401 — the bridge run_bngsim_job needs a usable bngsim
-
-        if not getattr(bionetgen, "BNGSIM_AVAILABLE", False):
-            return None
-    except Exception:
-        return None
-    return str(bng2)
+    return str(_BNG.bng2_pl) if _BNG.ok and _bngsim_ready() else None
 
 
-engine = pytest.mark.skipif(_bng2_pl() is None, reason="needs BNG2.pl + perl + a built bngsim")
+# Skips name what the resolver searched (and the fix) rather than just reporting
+# absence — see _core.bngpath.
+engine = pytest.mark.skipif(
+    _bng2_pl() is None,
+    reason=_BNG.why_not() if not _BNG.ok else "needs a built bngsim (bionetgen.BNGSIM_AVAILABLE)",
+)
 
 
 def _native_oracle_cdat(bng2: str, bngl_path: Path):

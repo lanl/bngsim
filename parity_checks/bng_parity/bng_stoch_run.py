@@ -77,6 +77,7 @@ from _core import (  # noqa: E402
     differ,
     oracles,
     read_manifest,
+    require_bng,
     tally,
     versions,
     write_report,
@@ -151,27 +152,20 @@ TRACKS = {
 # Tool resolution
 # --------------------------------------------------------------------------- #
 def _resolve_bng_tools(track: str) -> tuple[str, str]:
-    """(BNG2.pl, legacy_bin) from $BNGPATH/$BNG2_PL; never hardcoded.
+    """(BNG2.pl, legacy_bin) via the shared resolver; never hardcoded.
 
-    ``$BNGPATH`` may be the BioNetGen folder (containing BNG2.pl + bin/) or a direct
-    BNG2.pl path. The legacy binary is ``run_network`` (SSA) or ``NFsim`` (NF),
-    under ``<root>/bin/``.
+    ``_core.require_bng`` takes ``$BNG2_PL`` / ``$BNGPATH`` first (either the
+    BioNetGen folder or a direct BNG2.pl path) and falls back to the copy
+    PyBioNetGen bundles, reporting every place it looked if none works. The
+    legacy binary is ``run_network`` (SSA) or ``NFsim`` (NF), under ``<root>/bin/``.
     """
-    cand = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not cand:
-        sys.exit(
-            "ABORT: set $BNGPATH (the BioNetGen folder with BNG2.pl + bin/) or "
-            "$BNG2_PL (a direct BNG2.pl path) so the reference stack is resolvable. "
-            "No path is hardcoded."
-        )
-    p = Path(cand)
-    if not p.exists():
-        sys.exit(f"ABORT: $BNGPATH/$BNG2_PL points at a nonexistent path: {cand}")
-    root = p.parent if p.is_file() else p
-    bng2_pl = str(p if p.is_file() else root / "BNG2.pl")
+    r = require_bng(
+        "the reference stack (BNG2.pl netgen + the legacy stochastic binary) must "
+        "be resolvable to run this matrix."
+    )
+    root = r.root
+    bng2_pl = str(r.bng2_pl)
     legacy = str(root.joinpath(*TRACKS[track]["legacy_rel"]))
-    if not Path(bng2_pl).exists():
-        sys.exit(f"ABORT: BNG2.pl not found at {bng2_pl}")
     if not Path(legacy).exists():
         sys.exit(
             f"ABORT: {TRACKS[track]['legacy_label']} not found at {legacy} "

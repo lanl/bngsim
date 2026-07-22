@@ -9,7 +9,8 @@ engine/bridge layers.
 
 from __future__ import annotations
 
-from . import differ, fingerprint, oracles, versions
+from . import bngpath, differ, fingerprint, oracles, versions
+from .bngpath import BngResolution, require_bng, resolve_bng, skip_reason
 from .schema import (
     SCHEMA_VERSION,
     Golden,
@@ -28,6 +29,11 @@ from .taxonomy import ALL, CLEAN, FAILING, Outcome, tally
 
 __all__ = [
     "SCHEMA_VERSION",
+    "BngResolution",
+    "bngpath",
+    "require_bng",
+    "resolve_bng",
+    "skip_reason",
     "Outcome",
     "ALL",
     "CLEAN",

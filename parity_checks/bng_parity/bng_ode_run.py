@@ -69,6 +69,7 @@ from _core import (  # noqa: E402
     Outcome,
     differ,
     read_manifest,
+    require_bng,
     tally,
     versions,
     write_report,
@@ -83,26 +84,19 @@ DEFAULT_ODE_TIMEOUT = 240.0  # per-job wall cap: netgen + both integrators + war
 # Tool resolution
 # --------------------------------------------------------------------------- #
 def _resolve_bng_tools() -> tuple[str, str]:
-    """(BNG2.pl, run_network) from $BNGPATH/$BNG2_PL; never hardcoded.
+    """(BNG2.pl, run_network) via the shared resolver; never hardcoded.
 
-    $BNGPATH may be the BioNetGen folder (containing BNG2.pl + bin/run_network) or
-    a direct BNG2.pl path; run_network lives at ``<root>/bin/run_network``.
+    ``_core.require_bng`` takes ``$BNG2_PL`` / ``$BNGPATH`` first (either the
+    BioNetGen folder or a direct BNG2.pl path) and falls back to the copy
+    PyBioNetGen bundles, reporting every place it looked if none works.
+    run_network lives at ``<root>/bin/run_network``.
     """
-    cand = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not cand:
-        sys.exit(
-            "ABORT: set $BNGPATH (the BioNetGen folder with BNG2.pl) or $BNG2_PL "
-            "(a direct BNG2.pl path) so the reference stack (BNG2.pl netgen + "
-            "run_network ODE) is resolvable. No path is hardcoded."
-        )
-    p = Path(cand)
-    if not p.exists():
-        sys.exit(f"ABORT: $BNGPATH/$BNG2_PL points at a nonexistent path: {cand}")
-    root = p.parent if p.is_file() else p
-    bng2_pl = str(p if p.is_file() else root / "BNG2.pl")
-    run_network = str(root / "bin" / "run_network")
-    if not Path(bng2_pl).exists():
-        sys.exit(f"ABORT: BNG2.pl not found at {bng2_pl}")
+    r = require_bng(
+        "the reference stack (BNG2.pl netgen + run_network ODE) must be "
+        "resolvable to run this matrix."
+    )
+    bng2_pl = str(r.bng2_pl)
+    run_network = str(r.root / "bin" / "run_network")
     if not Path(run_network).exists():
         sys.exit(f"ABORT: run_network not found at {run_network} (expected under <BNGPATH>/bin/)")
     return bng2_pl, run_network

@@ -24,11 +24,11 @@ These tests pin the fix:
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 import tempfile
 from pathlib import Path
 
+import _core
 import pytest
 
 _BNG_PARITY = Path(__file__).resolve().parent.parent / "bng_parity"
@@ -105,31 +105,32 @@ def _bngsim_available() -> bool:
         return False
 
 
+_BNG = _core.resolve_bng()
+
+
 def _bng_paths():
-    """(bngpath, bng2_pl, run_network) the active bionetgen actually uses, or None."""
-    try:
-        from bionetgen.main import get_conf
+    """(bngpath, bng2_pl, run_network), or None when any piece is unavailable.
 
-        bngpath = get_conf().get("bngpath")
-    except Exception:
-        bngpath = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not bngpath:
+    This suite needs the legacy binary too — the decisive GH #175 lever moves
+    ``run_network`` aside — so a resolution without it does not count.
+    """
+    if not _BNG.ok:
         return None
-    p = Path(bngpath)
-    bng2 = p / "BNG2.pl" if p.is_dir() else p
-    run_network = (p if p.is_dir() else p.parent) / "bin" / "run_network"
-    if not (bng2.exists() and run_network.exists()):
+    run_network = _BNG.root / "bin" / "run_network"
+    if not run_network.exists():
         return None
-    import shutil
-
-    if shutil.which("perl") is None:
-        return None
-    return str(bngpath), str(bng2), run_network
+    return str(_BNG.root), str(_BNG.bng2_pl), run_network
 
 
 engine = pytest.mark.skipif(
     not _bngsim_available() or _bng_paths() is None,
-    reason="needs an importable, version-compatible bngsim + a bundled BNG2.pl/run_network + perl",
+    # The resolver's trail names every place BNG2.pl was looked for; append the
+    # two extra preconditions this suite has beyond a bare BNG2.pl.
+    reason=(
+        _BNG.why_not()
+        if not _BNG.ok
+        else "needs an importable, version-compatible bngsim + run_network under <BNGPATH>/bin/"
+    ),
 )
 
 

@@ -26,12 +26,12 @@ These tests pin:
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import sys
 import tempfile
 from pathlib import Path
 
+import _core
 import pytest
 
 _BNG_PARITY = Path(__file__).resolve().parent.parent / "bng_parity"
@@ -194,27 +194,17 @@ def test_netgen_preserves_NumberPerQuantityUnit_setoption():
 # --------------------------------------------------------------------------- #
 # Engine: the decisive proof — the prefix actually bakes the state into the XML.
 # --------------------------------------------------------------------------- #
+_BNG = _core.resolve_bng()
+
+
 def _bng2_pl():
-    """The bundled BNG2.pl path (+ perl), or None when unavailable."""
-    import shutil
-
-    bngpath = None
-    try:
-        from bionetgen.main import get_conf
-
-        bngpath = get_conf().get("bngpath")
-    except Exception:
-        bngpath = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not bngpath:
-        return None
-    p = Path(bngpath)
-    bng2 = p / "BNG2.pl" if p.is_dir() else p
-    if not bng2.exists() or shutil.which("perl") is None:
-        return None
-    return str(bng2)
+    """The resolved BNG2.pl path (+ perl), or None when unavailable."""
+    return str(_BNG.bng2_pl) if _BNG.ok else None
 
 
-engine = pytest.mark.skipif(_bng2_pl() is None, reason="needs a bundled BNG2.pl + perl")
+# Skips carry the resolver's full trail (what was searched, and the fix), so a
+# machine that HAS BioNetGen somewhere never reads as a machine that has none.
+engine = pytest.mark.skipif(not _BNG.ok, reason=_BNG.why_not())
 
 
 def _xml_param(xml: str, pid: str) -> str | None:

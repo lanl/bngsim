@@ -67,7 +67,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # so `from _core import ...` resolves
 
-from _core import Golden, read_manifest, versions, write_golden  # noqa: E402
+from _core import Golden, read_manifest, require_bng, versions, write_golden  # noqa: E402
 from _core.fingerprint import CHECKSUM_SIGFIGS, _round_sig, golden_pair  # noqa: E402
 from _core.versions import git_rev  # noqa: E402
 
@@ -129,26 +129,22 @@ def _load_parity_diff():
 
 
 def _resolve_bngpath() -> str:
-    """Resolve legacy-BNG (for BNGL network generation) from the environment.
+    """Resolve legacy-BNG (for BNGL network generation) via the shared resolver.
 
     bngsim has no BNGL parser, so a BNGL/.net job needs BNG2.pl to generate its
-    network before bngsim simulates it in-process. Accepts ``$BNGPATH`` (a dir or
-    a direct BNG2.pl path) or ``$BNG2_PL``; sets ``$BNGPATH`` for the child sweep.
-    Nothing is hardcoded.
+    network before bngsim simulates it in-process. ``_core.require_bng`` takes
+    ``$BNG2_PL`` / ``$BNGPATH`` first and falls back to the BNG2.pl PyBioNetGen
+    bundles (`uv sync --group parity`), so an env var is an override rather than
+    the only way in; it exports ``$BNGPATH`` for the child sweep. Nothing is
+    hardcoded, and a failure names every place it looked.
     """
-    cand = os.environ.get("BNGPATH") or os.environ.get("BNG2_PL")
-    if not cand:
-        sys.exit(
-            "ABORT: set $BNGPATH (the BioNetGen folder containing BNG2.pl) or "
-            "$BNG2_PL (a direct path to BNG2.pl). Golden generation never compares "
-            "against legacy BNG, but bngsim still needs BNG2.pl to generate the "
-            "reaction network from BNGL before it simulates in-process."
-        )
-    p = Path(cand)
-    if not p.exists():
-        sys.exit(f"ABORT: $BNGPATH/$BNG2_PL points at a nonexistent path: {cand}")
-    os.environ["BNGPATH"] = str(p)
-    return str(p)
+    return str(
+        require_bng(
+            "golden generation never compares against legacy BNG, but bngsim still "
+            "needs BNG2.pl to generate the reaction network from BNGL before it "
+            "simulates in-process."
+        ).root
+    )
 
 
 def _run_sweep(sweep_out: Path, jobs_path: Path, args) -> None:
