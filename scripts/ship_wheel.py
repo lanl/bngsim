@@ -6,8 +6,9 @@ This is the supported one-command path for the "rebuild → ship" loop. It
   1. builds a wheel for the *current* interpreter using the canonical command
      (``pip wheel . --no-build-isolation --no-deps``; note that ``python -m
      build`` is unreliable here because the importable ``build`` package in
-     the dev venv is not pypa/build), pinning ``MACOSX_DEPLOYMENT_TARGET`` to
-     match the existing ``wheelhouse-local`` convention, then
+     the dev venv is not pypa/build), pinning ``MACOSX_DEPLOYMENT_TARGET`` per
+     build architecture (10.15 on x86_64, the ``wheelhouse-local`` convention;
+     11.0 on arm64, which has no valid 10.x tag), then
   2. force-installs that wheel into each downstream consumer venv, handling
      the pip-vs-uv split automatically (PyBioNetGen's venv has no pip), and
   3. verifies the installed version in each.
@@ -39,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -172,13 +174,24 @@ def _detect_manager(consumer: Consumer) -> str:
 # ─── build + install ─────────────────────────────────────────────────────
 
 
+def _macos_deployment_target() -> str:
+    """Lowest macOS a wheel built HERE can claim, per build architecture.
+
+    x86_64 keeps 10.15 (the Intel build box's convention — broad compatibility).
+    arm64 must not: Apple Silicon starts at macOS 11.0, so pip/uv never generate
+    a ``macosx_10_*_arm64`` compatibility tag and a wheel carrying one is
+    installable NOWHERE — including on the machine that built it. Keying off
+    ``platform.machine()`` is what makes one script correct on both boxes; it
+    also reports ``x86_64`` under Rosetta, which is the right answer there.
+    """
+    return "10.15" if platform.machine() == "x86_64" else "11.0"
+
+
 def _build_wheel(wheelhouse: Path, version: str) -> Path:
     wheelhouse.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     if sys.platform == "darwin" and not env.get("MACOSX_DEPLOYMENT_TARGET"):
-        # Match the existing wheelhouse-local tag so wheels stay broadly
-        # installable on older macOS.
-        env["MACOSX_DEPLOYMENT_TARGET"] = "10.15"
+        env["MACOSX_DEPLOYMENT_TARGET"] = _macos_deployment_target()
     _run(
         [
             sys.executable,

@@ -4,8 +4,17 @@
 # merged integration in RuleWorld/PyBioNetGen#102. Pin the exact RuleWorld commit
 # that carries that bridge so every machine runs the SAME engine routing: no local
 # checkout, no PR-branch, no PYTHONPATH dance, no reliance on whatever bionetgen
-# happens to be importable. `5109a46` is the PR #102 merge commit on
-# RuleWorld/PyBioNetGen@main.
+# happens to be importable. `43b09a5` is RuleWorld/PyBioNetGen@main at the point
+# the strict-routing fix landed (see below), with upstream CI green.
+#
+# Why not the older `5109a46` (the PR #102 merge): that commit carried
+# RuleWorld/PyBioNetGen#109 — under `simulator='bngsim'`, a model whose actions
+# the Python parser can't inspect was routed SILENTLY to legacy BNG2.pl instead
+# of raising, so a run could produce legacy output labelled bngsim. PR #111
+# (`d40470ca`) fixed it: strict `simulator='bngsim'` now returns ROUTE_ERROR with
+# the parse reason, and it also made the list-arg grammar Perl-faithful (#110).
+# `43b09a5` is that fix plus the merges after it (GH #104/#105/#107/#108/#112).
+# See lanl/bngsim#4 for the bump's verification record.
 #
 # Install notes (PyBioNetGen's setup.py shells out to `pip install numpy` and
 # downloads BNG2.pl at build time, so the build needs pip+setuptools+numpy in the
@@ -20,8 +29,8 @@
 # Provenance is recorded so a consumer can confirm a run used this exact pin:
 #   * each sweep's _summary.json -> bngsim_backend.bionetgen_commit
 #   * golden.json -> _meta.bionetgen_commit
-# A machine whose installed commit differs from 5109a46 is using a different
+# A machine whose installed commit differs from 43b09a5 is using a different
 # bridge; the engine pre-flight + per-job audit (bngsim_backend.py) will still
 # refuse/flag a run that does not actually exercise bngsim.
 
-bionetgen @ git+https://github.com/RuleWorld/PyBioNetGen.git@5109a46
+bionetgen @ git+https://github.com/RuleWorld/PyBioNetGen.git@43b09a5

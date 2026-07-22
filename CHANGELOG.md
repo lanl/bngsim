@@ -95,6 +95,48 @@ in `CMakeLists.txt`) is derived from it.
   loss. `integration` remains the default and remains faster on every model —
   this narrows the gap for callers who opt into `newton` for its ~`1e-13`
   residual, it does not close it.
+- **Re-pinned PyBioNetGen for the parity/benchmark suite, `5109a46` →
+  `43b09a5` (issue #4).** The old pin carried RuleWorld/PyBioNetGen#109: under
+  `simulator='bngsim'`, a model whose actions PyBioNetGen's Python parser could
+  not inspect was routed **silently** to the legacy BNG2.pl subprocess instead
+  of raising — so a caller who explicitly demanded bngsim could receive legacy
+  output with no error and no warning. RuleWorld/PyBioNetGen#111 fixed it
+  (strict `simulator='bngsim'` now returns `ROUTE_ERROR` carrying the underlying
+  parse reason; `simulator='auto'` keeps the subprocess fallback and adds a
+  one-time warning) and also made the list-arg grammar Perl-faithful (#110).
+  `43b09a5` is RuleWorld/PyBioNetGen@main at that fix plus the merges after it,
+  with upstream CI green. The fix is verified live rather than assumed from the
+  merge: on issue #109's own repro (a `simulate` carrying a typo'd `atoll`
+  argument, which `bngmodel()` rejects and BNG2.pl tolerates) the bootstrapped
+  env routes `simulator='bngsim'` to `error` and `simulator='auto'` to
+  `subprocess`. Note this could never have altered the suite's *numbers*: since
+  GH #175 the sweep drives bngsim in-process via `run_bngsim_job` rather than
+  through `bionetgen.run(simulator='bngsim')`, so the bridge's routing pass is
+  provenance, not the execution path.
+- **Regenerated the `bng_parity` golden references on the new pin** (all 895
+  manifest jobs `ok`; `_meta.bionetgen_commit` `5109a46e58ec` →
+  `43b09a534640`). 885 of 895 records reproduce the previous golden's checksum
+  **byte-for-byte** across a bngsim 0.9.59 → 0.11.35 gap, which is what makes
+  the 10 that moved readable: **6 are exactly the `CURATED_SIX`**
+  (`Lang_2024`, `Kocieniewski_2012`, `Barua_2007`, `Blinov_2006`,
+  `Barua_2013__PATCHED`, `fceri_fyn`) — re-sourced to house-curated, bug-fixed
+  bodies after the golden was last generated, so those records had gone stale
+  and now fingerprint different observables and horizons (`fceri_fyn` also moves
+  off the D1 `.cdat` fallback, since its re-sourced body has observables). Of
+  the remaining four, `ml_q_learning` is ODE drift at `max_rel` 1.0e-06 and the
+  three Lin2019 stochastic models (`ERK_model`, `prion_model`, `TCR_model`) are
+  single fixed-`seed=1` trajectories, which are chaotic and not stable across a
+  bngsim version change by construction (per the golden contract's D2, the byte
+  checksum — not the fingerprint — is their meaningful check).
+- **`bootstrap_parity_env.py` now builds its venv on the interpreter that
+  matches the bngsim wheel.** bngsim ships as an ABI-tagged wheel, so a venv on
+  whatever `uv venv` picked by default failed at the *last* step — after the
+  whole PyBioNetGen build — with "no wheels with a matching Python version tag".
+  The venv now defaults to the version of the interpreter running the script
+  (the one `--build-bngsim` targets), with `--python` as an explicit override.
+  Re-running the bootstrap is also idempotent again (`uv venv --allow-existing`);
+  current uv aborts on an existing venv rather than reusing it, which made a
+  re-bootstrap after a pin bump fail on step one.
 
 ### Added
 - **ODE Jacobian characterization harness**
@@ -120,6 +162,19 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`scripts/ship_wheel.py` produced an uninstallable wheel when run on Apple
+  Silicon.** It forced `MACOSX_DEPLOYMENT_TARGET=10.15` unconditionally to match
+  the `wheelhouse-local` convention — correct on the x86_64 build box, but on
+  arm64 it yields a `macosx_10_15_arm64` tag, and since Apple Silicon starts at
+  macOS 11.0 neither pip nor uv ever generates a `macosx_10_*_arm64`
+  compatibility tag. Such a wheel installs **nowhere**, including on the machine
+  that built it (`uv`: "wheel is compatible with macOS (`macosx_10_15_arm64`),
+  but you're on macOS (`macosx_26_0_arm64`)"; `pip`: "not a supported wheel on
+  this platform"). The target is now chosen per build architecture — 10.15 on
+  x86_64, 11.0 on arm64 — so one script is correct on both boxes;
+  `platform.machine()` also reports `x86_64` under Rosetta, which is the right
+  answer there. Surfaced by `bootstrap_parity_env.py`, whose contract is to
+  install bngsim from this repo's own wheel.
 - **The GH #27 steady-state regression guards were silently skipping in any
   fresh clone or git worktree.** `python/tests/test_steady_state_gh27.py` read
   its four published models from `benchmarks/suites/ode_fullnet/nets/`, which is

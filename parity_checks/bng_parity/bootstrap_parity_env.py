@@ -4,7 +4,7 @@ PyBioNetGen — identically on every machine, whether it has run bngsim before o
 
 What it guarantees:
   * PyBioNetGen pinned to the exact RuleWorld commit carrying the merged BNGsim
-    bridge (``../requirements-pybionetgen.txt`` → RuleWorld/PyBioNetGen@5109a46) —
+    bridge (``../requirements-pybionetgen.txt`` → RuleWorld/PyBioNetGen@43b09a5) —
     no local checkout, no PR-branch, no PYTHONPATH dance.
   * bngsim installed from THIS repo's wheel (``scripts/ship_wheel.py`` builds it;
     bngsim is not on PyPI). Pass ``--bngsim-wheel`` for an explicit wheel, or
@@ -112,7 +112,9 @@ def main() -> int:
     ap.add_argument(
         "--python",
         default="",
-        help="for --check-only: the interpreter to verify (default: this one)",
+        help="interpreter version for the new venv (`uv venv --python`, e.g. 3.12); "
+        "defaults to the version running this script, which is the one --build-bngsim "
+        "builds the wheel for. With --check-only: the interpreter to verify instead.",
     )
     ap.add_argument("--bngsim-wheel", default="", help="explicit bngsim wheel to install")
     ap.add_argument(
@@ -136,8 +138,17 @@ def main() -> int:
     venv = Path(args.venv).expanduser().resolve()
     python_exe = str(venv / ("Scripts" if os.name == "nt" else "bin") / "python3")
 
-    print(f"=== bootstrapping parity env at {venv} ===")
-    _run([uv, "venv", str(venv)])
+    # The venv's interpreter VERSION is load-bearing: bngsim ships as an ABI-tagged
+    # wheel (cp312-...), so a venv on a version the wheel has no tag for fails at the
+    # LAST step, after the whole PyBioNetGen build. Default to THIS interpreter's
+    # version — that is the one `--build-bngsim` builds the wheel for — instead of
+    # whatever `uv venv` would pick on its own. `--python` overrides.
+    py_version = args.python or f"{sys.version_info.major}.{sys.version_info.minor}"
+    # `--allow-existing` keeps re-running the bootstrap idempotent: current uv aborts
+    # on an existing venv rather than reusing it, which would make a re-bootstrap
+    # after a pin bump fail on step one.
+    print(f"=== bootstrapping parity env at {venv} (python {py_version}) ===")
+    _run([uv, "venv", "--allow-existing", "--python", py_version, str(venv)])
     # Build prerequisites PyBioNetGen's setup.py needs (it shells `pip install numpy`).
     _run([uv, "pip", "install", "--python", python_exe, "pip", "setuptools", "wheel", "numpy"])
     # Pinned PyBioNetGen from RuleWorld (no build isolation: setup.py runs in this env).

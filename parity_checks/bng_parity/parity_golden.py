@@ -465,10 +465,12 @@ def main() -> int:
         )
 
     # Fold the sweep's BNGsim-backend provenance + per-job engine audit into the
-    # golden so it RECORDS which PyBioNetGen/bngsim produced it and, crucially,
-    # which entries (if any) silently fell back to the legacy BNG2.pl stack rather
-    # than running bngsim (the bridge does this for models whose actions it cannot
-    # inspect — see bngsim_backend.py). Best-effort: older sweeps lack these keys.
+    # golden so it RECORDS which PyBioNetGen/bngsim produced it and which engine each
+    # job ran on. Neither layer can silently substitute the legacy stack anymore: the
+    # sweep drives bngsim directly (run_bngsim_job — GH #175), and since the pin moved
+    # to 43b09a5 the bridge itself raises instead of quietly routing an un-inspectable
+    # model to BNG2.pl under simulator='bngsim' (RuleWorld/PyBioNetGen#109, GH #4).
+    # See bngsim_backend.py. Best-effort: older sweeps lack these keys.
     sweep_summary = {}
     try:
         summary_file = sweep_out / "_summary.json"

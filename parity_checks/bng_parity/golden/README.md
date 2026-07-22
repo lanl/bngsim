@@ -102,9 +102,12 @@ biology, each is given a short fixture that exercises bngsim and yields an
 artifact — see `overrides.REHAB` (model_id-keyed; the runner strips the model's
 existing actions and appends the protocol). 33 were rehabilitated; one
 (`BSA_v1`) was a content-free stub (no rules/species/observables) and was
-removed from the suite. **8 of the rehabbed records ride the `.cdat` fallback**
+removed from the suite. **7 of the rehabbed records ride the `.cdat` fallback**
 (observable-less models: a time-only `.gdat` + a full species `.cdat`), so the
 D1 degenerate→`.cdat` path is exercised by real fixtures, not just asserted.
+(It was 8 until `fceri_fyn` was re-sourced from BNGL-Models — see
+`vendor_corpus.CURATED_SIX` — whose corrected body has observables and so emits
+a real `.gdat`.)
 
 The model's directory (`my_models/{nf,ode,ssa}/`) is its *intended* method, and
 the rehab matches it where the engine allows. Two unavoidable exceptions run as

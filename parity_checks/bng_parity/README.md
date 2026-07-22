@@ -165,7 +165,7 @@ only method is unsupported (`pla`) is **skipped** — never silently run on the 
 stack. To make this identical and provable on every machine, three pieces:
 
 - **Pin (`../requirements-pybionetgen.txt`).** PyBioNetGen pinned to the exact
-  RuleWorld commit (`git+…RuleWorld/PyBioNetGen@5109a46`) — no local checkout, no
+  RuleWorld commit (`git+…RuleWorld/PyBioNetGen@43b09a5`) — no local checkout, no
   PR-branch, no `PYTHONPATH`. bngsim is not on PyPI, so it ships from this repo's
   wheel (`scripts/ship_wheel.py`).
 - **Bootstrap (`bootstrap_parity_env.py`).** Turnkey: `uv venv` → install the
@@ -347,7 +347,7 @@ python parity_golden.py --no-run-sweep --sweep-out runs/core/bngsim  # reuse a r
   checksum (byte-identity, verified reproducible across independent runs for ODE
   *and* SSA) + per-artifact fingerprint, full trajectory for a hand-picked
   subset. Committed set covers **all 895 manifest jobs** (ODE + stochastic
-  `seed=1`), regenerated under a confirmed in-process bngsim engine (the merged
-  PyBioNetGen BNGsim bridge, RuleWorld/PyBioNetGen#102) at **bngsim 0.9.49** — see
+  `seed=1`), regenerated under a confirmed in-process bngsim engine at **bngsim
+  0.11.35** against the PyBioNetGen pin `43b09a5` (GH #4) — see
   `golden/README.md` for the regeneration provenance (`_meta.bngsim`/`bngpath`).
 - ⏳ migrate override keys basename → relpath/sha256 to kill the 6 fan-outs.
