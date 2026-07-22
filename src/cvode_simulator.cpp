@@ -802,6 +802,7 @@ struct CvodeSimulator::Impl {
         std::string codegen_so_path;
         std::string codegen_c_source; // MIR-JIT source fingerprint (GH #78)
         bool force_dense = false;
+        bool force_sparse = false;
         bool use_sparse = false;
         int linear_solver = LINEAR_SOLVER_DENSE;
     };
@@ -1013,11 +1014,27 @@ void CvodeSimulator::Impl::setup_linsol_and_jac(void *cvode_mem, SUNContext ctx,
             user_data.colored_jac_h_vals.assign(ns, 0.0);
         }
 
-        if (jac_fn) {
-            flag = CVodeSetJacFn(cvode_mem, jac_fn);
-            if (flag != CV_SUCCESS) {
-                throw std::runtime_error("CVodeSetJacFn failed");
-            }
+        if (!jac_fn) {
+            // CVODE's built-in difference-quotient Jacobian covers SUNMATRIX_DENSE
+            // and SUNMATRIX_BAND only — with a sparse matrix and no callback,
+            // CVodeSetLinearSolver's initialization fails with an opaque "no
+            // Jacobian constructor available". Unreachable on the auto path, which
+            // requires density < SPARSE_DENSITY_MAX (0.10) and so always has a
+            // coloring (built whenever density < 0.5, model_builder.cpp). Only
+            // force_sparse_linear_solver (GH #29) can steer a model here: one that
+            // is both too dense to color and without a usable analytical Jacobian.
+            throw std::runtime_error(
+                "force_sparse_linear_solver: this model cannot supply a sparse "
+                "Jacobian — its analytical Jacobian is unavailable" +
+                std::string(jac_strategy == "fd" ? " (suppressed by jacobian=\"fd\")" : "") +
+                " and its Jacobian is too dense (density >= 0.5) to have been "
+                "colored for finite differences, leaving nothing to fill the CSC "
+                "matrix KLU factorizes. Drop the flag to use the dense solver, "
+                "which finite-differences the full matrix directly.");
+        }
+        flag = CVodeSetJacFn(cvode_mem, jac_fn);
+        if (flag != CV_SUCCESS) {
+            throw std::runtime_error("CVodeSetJacFn failed");
         }
     } else
 #endif
@@ -1123,7 +1140,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     const bool reuse =
         w.valid && w.ns == ns && w.rtol == rtol && w.atol == atol && w.max_steps == max_steps &&
         w.max_step_size == opts.max_step_size && w.jacobian == jac_strategy &&
-        w.force_dense == opts.force_dense_linear_solver && w.use_sparse == use_sparse &&
+        w.force_dense == opts.force_dense_linear_solver &&
+        w.force_sparse == opts.force_sparse_linear_solver && w.use_sparse == use_sparse &&
         w.linear_solver == desired_linear_solver && w.codegen_so_path == opts.codegen_so_path &&
         w.codegen_c_source == opts.codegen_c_source;
 
@@ -1187,6 +1205,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         w.max_step_size = opts.max_step_size;
         w.jacobian = jac_strategy;
         w.force_dense = opts.force_dense_linear_solver;
+        w.force_sparse = opts.force_sparse_linear_solver;
         w.use_sparse = use_sparse;
         w.linear_solver = desired_linear_solver;
         w.codegen_so_path = opts.codegen_so_path;
@@ -1420,6 +1439,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     const int ns = model.n_species();
     const int n_obs = model.n_observables();
 
+    // Contradictory linear-solver pin (GH #29). Checked ahead of everything
+    // else because it is a property of the request, not of the model: silently
+    // letting one flag win would hand a benchmark auto-selected numbers under a
+    // "forced" label. Both flags exist to measure the auto rule, so a run that
+    // does not honor the pin is worse than no run at all.
+    if (opts.force_dense_linear_solver && opts.force_sparse_linear_solver) {
+        throw std::invalid_argument(
+            "force_dense_linear_solver and force_sparse_linear_solver are mutually "
+            "exclusive; set at most one. Leave both false for the size/density "
+            "auto-selection.");
+    }
+
     if (ns == 0) {
         // Algebraic-only model (GH #229): no ODE state, but assignment rules and
         // functions of the SBML `time` csymbol — plus any constant outputs —
@@ -1488,11 +1519,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Also guards against models where Functional rate laws make the sparsity
     // pattern nearly dense.
     // JAX Jacobians always produce dense matrices, so force dense mode there.
+    //
+    // The two force flags (GH #102, GH #29) straddle the size/density test but
+    // not the hard requirements below it: KLU needs a real sparsity pattern to
+    // build its CSC matrix, and a JAX Jacobian only ever fills a dense one, so
+    // sparse_ok gates both overrides. force_dense wins the (rejected upstream)
+    // both-set case only as a belt-and-braces default.
 #ifdef BNGSIM_HAS_KLU
     const auto &sp = model.jacobian_sparsity();
-    const bool use_sparse = !opts.force_dense_linear_solver && (opts.jacobian != "jax") &&
-                            (ns >= SPARSE_THRESHOLD) && !sp.empty() &&
-                            (sp.density < SPARSE_DENSITY_MAX);
+    const bool sparse_ok = (opts.jacobian != "jax") && !sp.empty();
+    const bool use_sparse = sparse_ok && !opts.force_dense_linear_solver &&
+                            (opts.force_sparse_linear_solver ||
+                             ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX)));
 #else
     const bool use_sparse = false;
 #endif

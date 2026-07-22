@@ -289,6 +289,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("jacobian", &bngsim::SolverOptions::jacobian)
         .def_readwrite("force_dense_linear_solver",
                        &bngsim::SolverOptions::force_dense_linear_solver)
+        .def_readwrite("force_sparse_linear_solver",
+                       &bngsim::SolverOptions::force_sparse_linear_solver)
         .def_readwrite("codegen_so_path", &bngsim::SolverOptions::codegen_so_path)
         .def_readwrite("codegen_c_source", &bngsim::SolverOptions::codegen_c_source)
         .def_readwrite("timeout_seconds", &bngsim::SolverOptions::timeout_seconds)

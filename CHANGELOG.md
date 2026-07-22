@@ -139,6 +139,35 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **`Simulator(..., force_sparse_linear_solver=True)` for `method="ode"`, the
+  missing counterpart to `force_dense_linear_solver` (issue #29).** The ODE
+  linear-solver kind is auto-selected — sparse KLU when a model is both large
+  (`n_species >= 50`) and sparse (Jacobian density `< 0.10`), dense otherwise —
+  and until now the only override pushed toward dense. That made the rule
+  unfalsifiable on the half of a corpus it sends to dense: forced-dense shows
+  what KLU buys on large sparse networks, but nothing showed KLU's setup and
+  indexing overhead on the small dense ones, which is the evidence that the rule
+  does real work rather than being replaceable by "always KLU". Under the auto
+  rule the 585-model BNGL ODE corpus splits 541 dense / 44 KLU; the forced-sparse
+  arm now covers the other 541.
+
+  The flag bypasses the size and density gates and nothing else — KLU still
+  needs a real sparsity pattern and a non-JAX Jacobian, so it stays a no-op in a
+  build without KLU, exactly as `force_dense_linear_solver` documents itself.
+  Passing both force flags raises `ValueError` (and the C++ `SolverOptions` path
+  rejects the pair too) rather than letting one quietly win, which would hand a
+  benchmark auto-selected numbers under a "forced" label. Flipping the flag
+  between `run()` calls on one `Simulator` invalidates the warm CVODE cache, so
+  the solver is rebuilt rather than reused.
+
+  One case the auto rule could never reach is now possible and is refused loudly:
+  a Jacobian too dense to have been graph-colored (density `>= 0.5`) whose
+  analytical path is also unavailable has nothing to fill the CSC matrix KLU
+  factorizes, and CVODE's difference-quotient fallback covers dense/band matrices
+  only. That run raises with a message naming the flag instead of failing inside
+  CVODE with "no Jacobian constructor available".
+
+  `benchmarks/suites/ode_fullnet/run_forced.py --mode sparse` is unblocked.
 - **One BNG2.pl resolver for the whole suite (`parity_checks/_core/bngpath.py`),
   plus a `parity` dependency group that provisions it.** BNG2.pl was located by
   six near-duplicate helpers across eleven files that disagreed about precedence
