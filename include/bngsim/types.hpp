@@ -662,11 +662,33 @@ struct Event {
 // the codegen sens RHS path (the codegen .so dispatches df/dp = 0 via a
 // sentinel parameter index, so no codegen change is needed; but the CVODES
 // internal-FD fallback can't perturb a non-existent parameter).
+// One initial-condition sensitivity seed: species ``species_idx0`` gets its IC
+// from a parameter, and ``d_ic_d_primary`` is ∂(that IC)/∂(primary parameter
+// ``primary_param_idx0``), i.e. the entry of the IC Jacobian column that seeds
+// yS_species(0) for the requested primary (issue #43). A direct-primary IC
+// contributes coefficient 1; a derived (ConstantExpression) IC contributes the
+// chain-rule partial ∂(expr)/∂primary computed by the Python codegen layer.
+struct ICParamSensSeed {
+    int species_idx0;
+    int primary_param_idx0;
+    double d_ic_d_primary;
+};
+
 struct SensitivityOptions {
     std::vector<std::string> param_names;      // which params to differentiate w.r.t.
     std::vector<std::string> ic_species_names; // species names for IC sens
     std::string method = "staggered";          // "simultaneous" or "staggered"
     bool error_control = true;                 // include sensitivities in error test
+
+    // Initial-condition sensitivity seeds ∂x_i(0)/∂p for species whose IC is a
+    // parameter reference (issue #43). Computed by the Python codegen layer via
+    // the sympy derived-parameter chain rule and injected here; when non-empty
+    // they are used EXCLUSIVELY for fresh-start seeding (they already cover the
+    // direct-parameter ICs with coefficient 1), so the seeding loop no longer
+    // assumes the coefficient is 1 or that the requested parameter is the exact
+    // one named on the species line. Empty ⇒ fall back to the model's
+    // species_ic_param_refs() (direct-parameter ICs only, coefficient 1).
+    std::vector<ICParamSensSeed> ic_param_sens;
 };
 
 // --- Steady-state options -----------------------------------------------------

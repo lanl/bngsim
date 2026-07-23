@@ -1,0 +1,20 @@
+# Regression fixture for issue #43 (baseline): a species initial condition set
+# by a DIRECT primary parameter (R0). R0 appears in NO rate law, so its only
+# influence on the trajectory is through the initial condition of R. This is the
+# case that already seeded correctly (∂R(0)/∂R0 = 1); it anchors the derived-IC
+# counterpart (ic_derived.net) — both must match a rebuild finite difference.
+begin parameters
+    1 R0   100.0   # Constant
+    2 kf   0.5     # Constant
+end parameters
+begin species
+    1 R() R0
+    2 P() 0.0
+end species
+begin reactions
+    1 1 2 kf   #_R_decay
+end reactions
+begin groups
+    1 R_tot 1
+    2 P_tot 2
+end groups

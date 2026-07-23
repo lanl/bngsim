@@ -1859,24 +1859,50 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     col[i] = seed[static_cast<size_t>(i) * n_sens_p + iS];
                 }
             }
-        } else if (n_sens_p > 0 && !model.species_ic_param_refs().empty()) {
+        } else if (n_sens_p > 0) {
             std::unordered_map<int, int> param_to_sens_idx;
             param_to_sens_idx.reserve(static_cast<size_t>(n_sens_p));
             for (int iS = 0; iS < n_sens_p; ++iS) {
                 param_to_sens_idx.emplace(sens_param_indices[iS], iS);
             }
-            for (const auto &ref : model.species_ic_param_refs()) {
-                const int species_idx0 = ref.first;
-                const int param_idx0 = ref.second;
-                auto it = param_to_sens_idx.find(param_idx0);
-                if (it == param_to_sens_idx.end()) {
-                    continue; // parameter not requested for sensitivity
+            const auto &ic_param_sens = opts.sensitivity.ic_param_sens;
+            if (!ic_param_sens.empty()) {
+                // Issue #43: Python-computed ∂x_i(0)/∂p seeds. These cover BOTH
+                // direct-parameter ICs (coefficient 1) and derived-parameter ICs
+                // (Rtot = R0, Rtot = 2*R0, …) whose chain-rule partial the C++
+                // seeding cannot compute, so when supplied they replace the
+                // legacy identity-only loop entirely. `+=` accumulates in case a
+                // species IC depends on the same requested primary through more
+                // than one path.
+                for (const auto &seed : ic_param_sens) {
+                    auto it = param_to_sens_idx.find(seed.primary_param_idx0);
+                    if (it == param_to_sens_idx.end()) {
+                        continue; // primary not requested for sensitivity
+                    }
+                    const int iS = it->second;
+                    if (seed.species_idx0 < 0 || seed.species_idx0 >= ns) {
+                        continue;
+                    }
+                    N_VGetArrayPointer(yS_guard[iS])[seed.species_idx0] += seed.d_ic_d_primary;
                 }
-                const int iS = it->second;
-                if (species_idx0 < 0 || species_idx0 >= ns) {
-                    continue;
+            } else {
+                // Legacy fallback (no Python injection, e.g. sympy unavailable):
+                // a species IC that names a requested primary directly seeds
+                // yS_species(0) = 1. Derived-parameter ICs stay unseeded here —
+                // the pre-#43 behavior — but direct ICs remain correct.
+                for (const auto &ref : model.species_ic_param_refs()) {
+                    const int species_idx0 = ref.first;
+                    const int param_idx0 = ref.second;
+                    auto it = param_to_sens_idx.find(param_idx0);
+                    if (it == param_to_sens_idx.end()) {
+                        continue; // parameter not requested for sensitivity
+                    }
+                    const int iS = it->second;
+                    if (species_idx0 < 0 || species_idx0 >= ns) {
+                        continue;
+                    }
+                    N_VGetArrayPointer(yS_guard[iS])[species_idx0] = 1.0;
                 }
-                N_VGetArrayPointer(yS_guard[iS])[species_idx0] = 1.0;
             }
         }
         for (int k = 0; k < n_sens_ic; ++k) {

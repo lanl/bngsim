@@ -1,0 +1,22 @@
+# Regression fixture for issue #43: a species initial condition set by a DERIVED
+# (ConstantExpression) parameter Rtot = R0. The fitted primary R0 reaches the
+# state ONLY through this derived initial condition (R0 is in no rate law). The
+# forward-sensitivity seed ∂R(0)/∂R0 must chain through Rtot = R0 (coefficient
+# 1); before the fix the derived-parameter IC dropped the seed and the analytic
+# ∂R/∂R0 came back 0 instead of the rebuild-FD value 1.
+begin parameters
+    1 R0     100.0   # Constant
+    2 kf     0.5     # Constant
+    3 Rtot   R0      # ConstantExpression
+end parameters
+begin species
+    1 R() Rtot
+    2 P() 0.0
+end species
+begin reactions
+    1 1 2 kf   #_R_decay
+end reactions
+begin groups
+    1 R_tot 1
+    2 P_tot 2
+end groups

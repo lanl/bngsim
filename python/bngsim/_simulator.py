@@ -998,6 +998,26 @@ class Simulator:
                 "subclasses are tracked there."
             )
 
+    def _apply_ic_param_sens_seed(self, opts, core) -> None:
+        """Inject ∂x_i(0)/∂p initial-condition sensitivity seeds (issue #43).
+
+        When a species initial condition is a parameter reference — directly
+        (``R() R0``) or through a derived ConstantExpression (``R() Rtot`` with
+        ``Rtot = R0``) — the forward-sensitivity seed yS_i(0) must carry the IC
+        Jacobian column ∂(IC)/∂p. The C++ seeding cannot differentiate a derived
+        IC, so the coefficients are computed from the model's parameter graph via
+        the sympy chain rule and passed through ``SolverOptions``. A no-op for the
+        common model with no parameter-referenced species ICs, and for IC-only
+        sensitivity (no ``sensitivity_params``), where param columns don't exist.
+        """
+        if not self._sensitivity_params:
+            return
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        seeds = compute_ic_param_sens_seed(core)
+        if seeds:
+            opts.set_ic_param_sens(seeds)
+
     def _auto_codegen_for_sensitivity(
         self, *, jit_backend: str, n_sens_dirs: int | None = None
     ) -> None:
@@ -1864,6 +1884,7 @@ class Simulator:
                 # Pass the requested sensitivity parameter / IC species lists to CVODES.
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
+                    self._apply_ic_param_sens_seed(opts, self._model._core)
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -2625,6 +2646,10 @@ class Simulator:
                     opts.codegen_c_source = self._codegen_c_source
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
+                    # Seed ∂x_i(0)/∂p from the CLONE's params (this row's point):
+                    # a nonlinear derived IC (e.g. Rtot = R0*scale) has a
+                    # param-dependent coefficient, so it must track set_params.
+                    self._apply_ic_param_sens_seed(opts, clone._core)
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -2945,6 +2970,7 @@ class Simulator:
         if self._codegen_c_source:
             opts.codegen_c_source = self._codegen_c_source
         opts.set_sensitivity_params(sens_params)
+        self._apply_ic_param_sens_seed(opts, clone._core)
         opts.set_sensitivity_method(self._sensitivity_method)
 
         try:

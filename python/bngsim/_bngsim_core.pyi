@@ -239,9 +239,19 @@ class NetworkModel:
         Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``).
         """
     @property
+    def param_expressions(self) -> list[str]:
+        """
+        Per-parameter defining expression string, parallel to ``param_names`` (empty for primary/constant parameters). Used by the codegen sensitivity layer to chain-rule ∂(derived IC)/∂primary for derived-parameter species initial conditions (issue #43).
+        """
+    @property
     def param_names(self) -> list[str]:
         """
         List of all parameter names
+        """
+    @property
+    def species_ic_param_refs(self) -> list[tuple[int, int]]:
+        """
+        List of (species_idx0, param_idx0) pairs recording each species whose initial concentration is set by a parameter reference in the .net ``begin species`` block. Consumed by the forward-sensitivity IC-seed chain rule (issue #43).
         """
     @property
     def pending_sensitivity_seed_param_names(self) -> list[str]:
@@ -604,6 +614,10 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
+    def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[int, int, float]]) -> None:
+        """
+        Set the initial-condition sensitivity seeds ∂x_i(0)/∂p as (species_idx0, primary_param_idx0, ∂IC/∂primary) triples (issue #43). Computed by the Python codegen layer via the sympy derived-parameter chain rule so a species IC named by a derived (ConstantExpression) parameter — e.g. Rtot = R0 — seeds the forward sensitivity w.r.t. the underlying primary. When set, these replace the model's species_ic_param_refs() identity seeding entirely (they already cover direct-parameter ICs with coefficient 1).
+        """
     def set_jax_jac_fn(self, fn: typing.Any) -> None:
         """
         Set JAX AD Jacobian callback. fn(t, y_array) -> flat_jac_array (col-major)

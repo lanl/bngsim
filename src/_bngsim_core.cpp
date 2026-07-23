@@ -22,6 +22,7 @@
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 
 namespace py = pybind11;
 
@@ -335,6 +336,27 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "sensitivities solved together as one coupled nonlinear "
             "system at every step. Often a touch faster per step on "
             "small / well-conditioned problems. AMICI's default.")
+        .def(
+            "set_ic_param_sens",
+            [](bngsim::SolverOptions &self,
+               const std::vector<std::tuple<int, int, double>> &triples) {
+                self.sensitivity.ic_param_sens.clear();
+                self.sensitivity.ic_param_sens.reserve(triples.size());
+                for (const auto &t : triples) {
+                    self.sensitivity.ic_param_sens.push_back(
+                        {std::get<0>(t), std::get<1>(t), std::get<2>(t)});
+                }
+            },
+            py::arg("triples"),
+            "Set the initial-condition sensitivity seeds ∂x_i(0)/∂p as "
+            "(species_idx0, primary_param_idx0, ∂IC/∂primary) triples (issue "
+            "#43). Computed by the Python codegen layer via the sympy "
+            "derived-parameter chain rule so a species IC named by a derived "
+            "(ConstantExpression) parameter — e.g. Rtot = R0 — seeds the "
+            "forward sensitivity w.r.t. the underlying primary. When set, these "
+            "replace the model's species_ic_param_refs() identity seeding "
+            "entirely (they already cover direct-parameter ICs with "
+            "coefficient 1).")
         .def(
             "set_sensitivity_error_control",
             [](bngsim::SolverOptions &self, bool val) { self.sensitivity.error_control = val; },
@@ -742,6 +764,34 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             "Per-parameter ``is_expression`` flag (True for derived ConstantExpression "
             "parameters such as BNG2.pl-emitted ``_rateLaw{N}``).")
+
+        .def_property_readonly(
+            "param_expressions",
+            [](const bngsim::NetworkModel &self) {
+                const auto &params = self.parameters();
+                std::vector<std::string> out;
+                out.reserve(params.size());
+                for (const auto &p : params)
+                    out.push_back(p.expression);
+                return out;
+            },
+            "Per-parameter defining expression string, parallel to "
+            "``param_names`` (empty for primary/constant parameters). Used by the "
+            "codegen sensitivity layer to chain-rule ∂(derived IC)/∂primary for "
+            "derived-parameter species initial conditions (issue #43).")
+
+        .def_property_readonly(
+            "species_ic_param_refs",
+            [](const bngsim::NetworkModel &self) {
+                py::list out;
+                for (const auto &ref : self.species_ic_param_refs())
+                    out.append(py::make_tuple(ref.first, ref.second));
+                return out;
+            },
+            "List of (species_idx0, param_idx0) pairs recording each species "
+            "whose initial concentration is set by a parameter reference in the "
+            ".net ``begin species`` block. Consumed by the forward-sensitivity "
+            "IC-seed chain rule (issue #43).")
 
         // State management
         .def("reset", &bngsim::NetworkModel::reset, "Reset species to initial concentrations")

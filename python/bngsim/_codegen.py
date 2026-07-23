@@ -1079,6 +1079,144 @@ def _compute_derived_param_jacobian(
     return result or None
 
 
+def _derived_expr_partials_numeric(
+    expr: str,
+    primary_param_names: set,
+    param_idx: dict,
+    param_values: list,
+    derived_exprs: dict[str, str],
+) -> dict[str, float]:
+    """Numeric ∂(expr)/∂primary at the nominal parameter values, for every
+    primary that appears in ``expr`` once nested derived references are inlined.
+
+    The IC counterpart of :func:`_compute_derived_param_jacobian` (issue #43):
+    a species initial condition set by a derived (ConstantExpression) parameter
+    ``d = expr`` seeds ∂x_i(0)/∂primary with the *numeric* partial ∂expr/∂primary
+    evaluated at the current parameter point — a constant (``Rtot = R0`` → 1,
+    ``Rtot = 2*R0`` → 2, ``Rtot = R0*scale`` → nominal ``scale``). Reuses the same
+    nesting-aware inlining (:func:`_inline_derived_param_refs`), ``if``→Piecewise
+    rewrite, and Python-keyword aliasing as the rate-constant chain rule, but
+    substitutes values instead of emitting C source.
+
+    Returns ``{primary_name: float_partial}`` over the primaries with a non-zero
+    partial, or ``{}`` when sympy is unavailable, nothing parses, or no primary
+    appears (the caller then leaves that species's derived IC unseeded — the
+    pre-#43 behavior — while direct-parameter ICs stay correct).
+    """
+    s = expr.strip()
+    if not s:
+        return {}
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+    except ImportError:
+        return {}
+
+    # Flatten nested derived references down to primaries (issue #41), then
+    # rewrite BNGL if(c, t, f) → sympy Piecewise, mirroring the rate-constant path.
+    s = _inline_derived_param_refs(s, derived_exprs)
+    s_pre = _translate_bngl_if_to_piecewise(s)
+
+    referenced = sorted(p for p in primary_param_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
+    if not referenced:
+        return {}
+
+    sym_name_of: dict[str, str] = {
+        p: (_alias_keyword_param(p) if p in _PY_KEYWORD_PARAM_NAMES else p) for p in referenced
+    }
+    s_aliased = s_pre
+    for p_name in sorted(referenced, key=len, reverse=True):
+        if p_name in _PY_KEYWORD_PARAM_NAMES:
+            s_aliased = re.sub(rf"\b{re.escape(p_name)}\b", sym_name_of[p_name], s_aliased)
+
+    sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
+    local_dict: dict = dict(sym_map)
+    local_dict["Piecewise"] = sp.Piecewise
+
+    try:
+        sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)
+    except Exception:
+        return {}
+
+    # A free symbol that is not a known primary means the inline pass could not
+    # fully reduce to primaries (e.g. a reference cycle) — bail rather than seed
+    # a partial that silently ignores it.
+    allowed_sym_names = {sym_name_of[p] for p in referenced}
+    if not {str(sym) for sym in sym_expr.free_symbols}.issubset(allowed_sym_names):
+        return {}
+
+    subs = {
+        sym_map[sym_name_of[p]]: param_values[param_idx[p]] for p in referenced if p in param_idx
+    }
+    out: dict[str, float] = {}
+    for p_name in referenced:
+        deriv = sp.diff(sym_expr, sym_map[sym_name_of[p_name]])
+        if deriv == 0:
+            continue
+        try:
+            val = float(deriv.subs(subs).evalf())
+        except (TypeError, ValueError):
+            continue
+        if val != 0.0:
+            out[p_name] = val
+    return out
+
+
+def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
+    """Forward-sensitivity initial-condition seeds for parameter-referenced
+    species initial conditions (issue #43).
+
+    A species whose IC is a parameter reference (``R() R0`` or ``R() Rtot`` with
+    ``Rtot = R0``) contributes ∂x_i(0)/∂p to the sensitivity seed yS_i(0). The
+    C++ seeding cannot compute the chain-rule partial for a *derived* IC, so it
+    is computed here from the model's parameter graph and injected via
+    ``SolverOptions.set_ic_param_sens``.
+
+    ``core`` is the C++ ``NetworkModel``. Returns
+    ``[(species_idx0, primary_param_idx0, ∂IC/∂primary), ...]``:
+
+      * a **direct** primary IC (``R() R0``) contributes coefficient 1 on that
+        primary — identical to the legacy identity seeding;
+      * a **derived** IC (``R() Rtot``, ``Rtot = f(primaries)``) contributes one
+        entry per primary with a non-zero ∂f/∂primary, chained through nested
+        derived parameters and evaluated at the current parameter values.
+
+    Returns ``[]`` when no species IC is a parameter reference (the overwhelming
+    majority of models — one cheap C++ vector fetch, no sympy import). A derived
+    IC whose expression cannot be differentiated is simply omitted, leaving that
+    species unseeded (pre-#43 behavior) without disturbing the others.
+    """
+    refs = list(core.species_ic_param_refs)  # [(species_idx0, param_idx0)]
+    if not refs:
+        return []
+
+    names = list(core.param_names)
+    is_expr = list(core.param_is_expression)
+    exprs = list(core.param_expressions)
+    values = [core.get_param(n) for n in names]
+    param_idx = {n: i for i, n in enumerate(names)}
+    primary_names = {names[i] for i in range(len(names)) if not is_expr[i]}
+    derived_exprs = {names[i]: exprs[i] for i in range(len(names)) if is_expr[i] and exprs[i]}
+
+    seeds: list[tuple[int, int, float]] = []
+    for species_idx0, param_idx0 in refs:
+        pname = names[param_idx0]
+        if is_expr[param_idx0] and derived_exprs.get(pname):
+            partials = _derived_expr_partials_numeric(
+                derived_exprs[pname], primary_names, param_idx, values, derived_exprs
+            )
+            # An unparseable derived expression yields no partials, so this
+            # species is simply left unseeded (pre-#43 behavior) rather than
+            # mis-seeded on the derived index.
+            for prim_name, coeff in partials.items():
+                seeds.append((species_idx0, param_idx[prim_name], float(coeff)))
+        else:
+            # Direct primary IC: seed coefficient 1 on the exact named
+            # parameter, matching the legacy C++ identity seeding.
+            seeds.append((species_idx0, param_idx0, 1.0))
+    return seeds
+
+
 # ─── C code generation ───────────────────────────────────────────────
 
 

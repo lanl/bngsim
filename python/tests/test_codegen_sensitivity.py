@@ -49,6 +49,18 @@ def _get_nested_derived_net() -> str:
     return str(p)
 
 
+def _get_ic_direct_net() -> str:
+    p = DATA_DIR / "ic_direct.net"
+    assert p.exists(), f"Test data not found: {p}"
+    return str(p)
+
+
+def _get_ic_derived_net() -> str:
+    p = DATA_DIR / "ic_derived.net"
+    assert p.exists(), f"Test data not found: {p}"
+    return str(p)
+
+
 class TestSensRhsCodeGeneration:
     """Test the C code generation for sensitivity RHS."""
 
@@ -445,3 +457,124 @@ class TestNestedDerivedChainRule:
             "species-C sensitivity is ~0: the nested a2prime chain was dropped"
         )
         np.testing.assert_allclose(sx[:, 2], fd[:, 2], rtol=1e-3, atol=1e-6)
+
+
+class TestDerivedICParamSens:
+    """Issue #43 regression: a species initial condition set by a DERIVED
+    (ConstantExpression) parameter must seed the forward-sensitivity initial
+    condition ∂x_i(0)/∂primary for the underlying fitted primary.
+
+    ``ic_derived.net`` sets ``R() Rtot`` with ``Rtot = R0`` and a fitted primary
+    ``R0`` that appears in NO rate law — its only influence on the trajectory is
+    the initial condition of R. Pre-#43 the derived-parameter IC dropped the seed
+    (the C++ seeding matched only the EXACT named parameter and hard-coded the
+    coefficient to 1), so the analytic ∂R/∂R0 came back identically 0 instead of
+    the rebuild-FD value 1. The direct-IC baseline (``ic_direct.net``, ``R() R0``)
+    already seeded correctly and anchors the comparison.
+
+    The finite-difference reference REBUILDS the model from a perturbed .net (a
+    fresh ``Model.from_net``), NOT ``set_param``: ``set_param`` re-evaluates
+    derived parameters but does not re-resolve baked species initial
+    concentrations (issue #43 design question 1), so a set_param-based FD would
+    silently miss the very IC dependence under test.
+    """
+
+    @staticmethod
+    def _clear_cache(net):
+        import platform
+
+        from bngsim._codegen import CACHE_DIR, compute_model_hash
+
+        h = compute_model_hash(net)
+        suffix = ".dylib" if platform.system() == "Darwin" else ".so"
+        for prefix in ("rhs_", "sens_"):
+            cached = CACHE_DIR / f"{prefix}{h}{suffix}"
+            if cached.exists():
+                cached.unlink()
+
+    _SAMPLE_TIMES = list(np.linspace(0.0, 3.0, 31))
+
+    @classmethod
+    def _rebuild_fd(cls, net, tmp_path, r0_lo=99.99, r0_hi=100.01):
+        """Central FD of the trajectory w.r.t. R0, taken by REBUILDING the model
+        from a perturbed .net (see class docstring)."""
+        import re
+
+        import bngsim
+
+        src = Path(net).read_text()
+
+        def _traj(r0):
+            # Replace the numeric value on the ``R0`` parameter line only; the
+            # first (and only) name-then-number match is that declaration.
+            txt = re.sub(r"(\bR0\s+)[0-9.]+", rf"\g<1>{r0}", src, count=1)
+            p = tmp_path / f"ic_{r0}.net"
+            p.write_text(txt)
+            m = bngsim.Model.from_net(str(p))
+            r = bngsim.Simulator(m, method="ode").run(
+                sample_times=cls._SAMPLE_TIMES, rtol=1e-11, atol=1e-13, max_steps=10**6
+            )
+            return np.asarray(r.species)
+
+        return (_traj(r0_hi) - _traj(r0_lo)) / (r0_hi - r0_lo)
+
+    @classmethod
+    def _analytic(cls, net):
+        import bngsim
+
+        m = bngsim.Model.from_net(net)
+        r = bngsim.Simulator(
+            m, method="ode", sensitivity_params=["R0"], codegen=True, net_path=net
+        ).run(sample_times=cls._SAMPLE_TIMES, rtol=1e-11, atol=1e-13, max_steps=10**6)
+        return np.asarray(r.sensitivities)[:, :, 0]
+
+    def test_seed_helper_coefficients(self):
+        """compute_ic_param_sens_seed maps each parameter-referenced species IC
+        to (species_idx0, PRIMARY_idx0, coeff): coefficient 1 for the direct IC
+        and — the fix — for the derived ``Rtot = R0``, keyed on R0 (the primary),
+        never on the derived Rtot index."""
+        import bngsim
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        m_direct = bngsim.Model.from_net(_get_ic_direct_net())
+        names_d = list(m_direct._core.param_names)
+        seeds_d = compute_ic_param_sens_seed(m_direct._core)
+        assert (0, names_d.index("R0"), 1.0) in seeds_d  # species R (idx 0) ← R0
+
+        m_der = bngsim.Model.from_net(_get_ic_derived_net())
+        names = list(m_der._core.param_names)
+        seeds = compute_ic_param_sens_seed(m_der._core)
+        assert (0, names.index("R0"), 1.0) in seeds, (
+            "derived IC Rtot = R0 must seed R0 with coefficient 1 (issue #43)"
+        )
+        rtot_idx = names.index("Rtot")
+        assert all(prim != rtot_idx for _, prim, _ in seeds), (
+            "seed must key on the primary R0, never on the derived Rtot index"
+        )
+
+    def test_direct_ic_matches_rebuild_fd(self, tmp_path):
+        net = _get_ic_direct_net()
+        self._clear_cache(net)
+        fd = self._rebuild_fd(net, tmp_path)
+        sx = self._analytic(net)
+        assert abs(sx[0, 0] - 1.0) < 1e-6, "∂R(0)/∂R0 must seed to 1 for a direct IC"
+        np.testing.assert_allclose(sx[:, 0], fd[:, 0], rtol=1e-4, atol=1e-6)
+
+    def test_derived_ic_matches_rebuild_fd(self, tmp_path):
+        """The core #43 regression: derived-parameter IC must seed ∂R/∂R0."""
+        net = _get_ic_derived_net()
+        self._clear_cache(net)
+        fd = self._rebuild_fd(net, tmp_path)
+        sx = self._analytic(net)
+        assert np.abs(sx[:, 0]).max() > 1e-3, (
+            "derived-parameter IC seed dropped: ∂R/∂R0 is ~0 (issue #43)"
+        )
+        assert abs(sx[0, 0] - 1.0) < 1e-6, "∂R(0)/∂R0 must seed to 1 through Rtot = R0"
+        np.testing.assert_allclose(sx[:, 0], fd[:, 0], rtol=1e-4, atol=1e-6)
+
+    def test_direct_and_derived_ic_agree(self):
+        """The two fixtures are identical up to the derived indirection, so their
+        R0-sensitivity trajectories must coincide."""
+        direct = self._analytic(_get_ic_direct_net())
+        derived = self._analytic(_get_ic_derived_net())
+        np.testing.assert_allclose(direct[:, 0], derived[:, 0], rtol=1e-6, atol=1e-9)
