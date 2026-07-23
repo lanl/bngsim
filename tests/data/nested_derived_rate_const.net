@@ -1,0 +1,36 @@
+# Regression fixture for issue #41: NESTED derived (ConstantExpression) rate
+# constants. Mirrors the igf1r (Erickson 2019 / Kiselyov 2009) detailed-balance
+# structure that surfaced the bug:
+#
+#   a1prime = kcr                 (first-level derived; kcr is a fitted primary)
+#   a2prime = 3*a1prime           (SECOND-level derived; references a1prime)
+#
+# The reactions use a1prime AND a2prime directly, and the fitted primary kcr
+# reaches the rate laws ONLY through these derived parameters. The single-level
+# chain (kcr -> a1prime -> rate) was already handled (issue #2); the nested
+# chain (kcr -> a1prime -> a2prime -> rate) was silently dropped by the analytic
+# forward-sensitivity RHS until issue #41 taught _compute_derived_param_jacobian
+# to inline nested derived references before differentiating.
+begin parameters
+    1 kcr        0.33         # Constant
+    2 kf         1.5          # Constant
+    3 a1prime    kcr          # ConstantExpression
+    4 a2prime    3*a1prime    # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+    3 C() 0.0
+    4 D() 0.0
+end species
+begin reactions
+    1 1 2 a1prime   #_R_A_to_B
+    2 1 3 a2prime   #_R_A_to_C
+    3 2 4 kf        #_R_B_to_D
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+    3 C_tot 3
+    4 D_tot 4
+end groups

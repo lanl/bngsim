@@ -912,10 +912,52 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
     return "".join(out_parts)
 
 
+def _inline_derived_param_refs(
+    expr: str,
+    derived_exprs: dict[str, str],
+    max_passes: int = 64,
+) -> str:
+    """Recursively inline references to *derived* (ConstantExpression)
+    parameters in ``expr`` until only primary parameters remain.
+
+    ``derived_exprs`` maps each derived parameter name to its defining
+    expression string. A derived parameter whose expression references another
+    derived parameter — e.g. a detailed-balance constraint ``a2prime =
+    f(a1prime)`` where ``a1prime = kcr`` — is flattened here so the downstream
+    sympy Jacobian sees an expression in primary parameters only. This is what
+    lets the forward-sensitivity chain rule reach through nested derived
+    parameters (issue #41). Without it, ``_compute_derived_param_jacobian``
+    rejects the nested expression (a non-primary free symbol) and silently
+    drops the ``primary -> derived -> derived -> rate`` contribution.
+
+    Each substitution is whole-word (``\\b``-anchored) and parenthesized to
+    preserve operator precedence. The per-pass scan first checks which derived
+    names are actually present, so the overwhelmingly common single-level case
+    (an expression already in primaries) returns after one tokenize with the
+    string untouched — byte-identical to the pre-#41 output. A bounded pass
+    count guards against reference cycles in an ill-formed .net: if a derived
+    name still remains after ``max_passes``, the string is returned as-is and
+    the caller's free-symbol check falls back to the no-analytic-Jacobian path.
+    """
+    if not derived_exprs:
+        return expr
+    s = expr
+    for _ in range(max_passes):
+        present = {t for t in re.findall(r"[A-Za-z_]\w*", s)} & derived_exprs.keys()
+        if not present:
+            break
+        # Longest names first so an outer name is never partially rewritten by a
+        # shorter one sharing a prefix (belt-and-suspenders over the \b anchors).
+        for name in sorted(present, key=len, reverse=True):
+            s = re.sub(rf"\b{re.escape(name)}\b", f"({derived_exprs[name]})", s)
+    return s
+
+
 def _compute_derived_param_jacobian(
     expr: str,
     primary_param_names: set,
     param_idx: dict,
+    derived_exprs: dict[str, str] | None = None,
 ) -> dict[str, str] | None:
     """Compute ∂(expr)/∂primary as a C source string for each primary that
     appears in ``expr``.
@@ -925,6 +967,13 @@ def _compute_derived_param_jacobian(
     expression in primary parameter names. Returns ``None`` if sympy is
     unavailable or the expression cannot be parsed; the caller then treats
     ``p_d`` as an independent rate constant (``∂p_d/∂primary = 0``).
+
+    ``derived_exprs`` (optional) maps every derived parameter name to its
+    defining expression. When supplied, nested derived references in ``expr``
+    are inlined down to primaries first (issue #41), so ``p_d = f(p_e)`` with
+    ``p_e`` itself derived still yields the full chain rule. Omitting it (or
+    passing ``None``) preserves the pre-#41 behavior of rejecting any
+    non-primary free symbol.
 
     Two preprocessing passes (issue #27) widen the set of expressions that
     yield an analytic Jacobian instead of the silent zero-contribution fallback:
@@ -952,6 +1001,13 @@ def _compute_derived_param_jacobian(
         from sympy.parsing.sympy_parser import parse_expr
     except ImportError:
         return None
+
+    # Pass 0 (issue #41): flatten nested derived-parameter references so the
+    # expression is expressed purely in primaries before differentiation. A
+    # no-op for single-level derived params (whose expressions carry no derived
+    # name tokens), so single-level output stays byte-identical.
+    if derived_exprs:
+        s = _inline_derived_param_refs(s, derived_exprs)
 
     # Pass 1: BNGL if(c, t, f) → sympy Piecewise. Applied to the raw string
     # so whole-word matching of ``if`` sees the source as written.
@@ -1562,11 +1618,14 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
     # parameters are wrong (issue #2). The chain-rule contribution to
     # ``∂rate/∂primary`` is ``(∂p_d/∂primary) * sf * ∏y^m``.
     primary_param_names = {name for (_, name, expr, is_const) in params if is_const}
+    derived_exprs = {name: expr for (_, name, expr, is_const) in params if not is_const and expr}
     derived_expansion: dict[str, dict[str, str]] = {}
     for _, name, expr, is_const in params:
         if is_const:
             continue
-        jac = _compute_derived_param_jacobian(expr, primary_param_names, param_idx)
+        jac = _compute_derived_param_jacobian(
+            expr, primary_param_names, param_idx, derived_exprs=derived_exprs
+        )
         if jac is not None:
             derived_expansion[name] = jac
 
@@ -4468,6 +4527,11 @@ def generate_sens_from_model(model) -> str | None:
     # ``primary -> p[idx]`` so it can be inlined into ``bngsim_dfdp``.
     param_idx_by_name = {p["name"]: i for i, p in enumerate(params)}
     primary_param_names = {p["name"] for p in params if p.get("is_const", True)}
+    derived_exprs = {
+        p["name"]: p.get("expression", "")
+        for p in params
+        if not p.get("is_const", True) and p.get("expression", "")
+    }
     derived_expansion: dict[str, dict[str, str]] = {}
     for p in params:
         if p.get("is_const", True):
@@ -4475,7 +4539,9 @@ def generate_sens_from_model(model) -> str | None:
         expr = p.get("expression", "")
         if not expr:
             continue
-        jac = _compute_derived_param_jacobian(expr, primary_param_names, param_idx_by_name)
+        jac = _compute_derived_param_jacobian(
+            expr, primary_param_names, param_idx_by_name, derived_exprs=derived_exprs
+        )
         if jac is not None:
             derived_expansion[p["name"]] = jac
 
@@ -4809,6 +4875,11 @@ def _analyze_output_sens(model) -> dict:
     # Derived-parameter chain rule (#15 machinery): ∂p_d/∂primary as C strings.
     param_idx_by_name = {n: i for i, n in enumerate(param_names)}
     primary_param_names = {p["name"] for p in params if p.get("is_const", True)}
+    derived_exprs = {
+        p["name"]: p.get("expression", "")
+        for p in params
+        if not p.get("is_const", True) and p.get("expression", "")
+    }
     derived_expansion: dict[str, dict[str, str]] = {}
     for p in params:
         if p.get("is_const", True):
@@ -4816,7 +4887,9 @@ def _analyze_output_sens(model) -> dict:
         expr = p.get("expression", "")
         if not expr:
             continue
-        jac = _compute_derived_param_jacobian(expr, primary_param_names, param_idx_by_name)
+        jac = _compute_derived_param_jacobian(
+            expr, primary_param_names, param_idx_by_name, derived_exprs=derived_exprs
+        )
         if jac is not None:
             derived_expansion[p["name"]] = jac
 

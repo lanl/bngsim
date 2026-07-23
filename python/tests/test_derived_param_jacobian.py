@@ -299,3 +299,101 @@ class TestIssue27CorpusShapes:
             # The Piecewise switch must reference the keyword-aliased primary
             # as p[0], not as the raw alias or the keyword itself.
             assert "p[0] > 0" in c_str
+
+
+class TestNestedDerivedParams:
+    """Issue #41: a derived (ConstantExpression) parameter whose expression
+    references ANOTHER derived parameter must be flattened to primaries before
+    differentiation, so the forward-sensitivity chain rule reaches the
+    underlying primary. Without ``derived_exprs`` the nested reference is a
+    non-primary free symbol and the whole partial is silently dropped (``None``)
+    — the pre-#41 behavior, preserved for callers that pass no map."""
+
+    def test_nested_ref_dropped_without_map(self):
+        # a2prime = 3*a1prime, a1prime = kcr. With no derived_exprs, a1prime is
+        # an unknown (non-primary) free symbol → rejected, as before #41.
+        result = _compute_derived_param_jacobian(
+            "3*a1prime",
+            primary_param_names={"kcr", "kf"},
+            param_idx={"kcr": 0, "kf": 1, "a1prime": 2, "a2prime": 3},
+        )
+        assert result is None
+
+    def test_nested_ref_resolved_with_map(self):
+        # Same expression, now with the derived-expression map: a1prime inlines
+        # to kcr, so ∂(3*a1prime)/∂kcr = 3.
+        result = _compute_derived_param_jacobian(
+            "3*a1prime",
+            primary_param_names={"kcr", "kf"},
+            param_idx={"kcr": 0, "kf": 1, "a1prime": 2, "a2prime": 3},
+            derived_exprs={"a1prime": "kcr", "a2prime": "3*a1prime"},
+        )
+        assert result is not None
+        assert set(result.keys()) == {"kcr"}
+        # ∂/∂kcr = 3 (referencing the primary index for kcr, not a1prime).
+        assert result["kcr"].replace(" ", "").lstrip("+") in {"3", "3.0", "3.0*1", "1*3.0"}
+        assert "a1prime" not in result["kcr"]
+
+    def test_nested_quotient_multiple_primaries(self):
+        # igf1r-shaped: a2prime = (a2*a1prime*d1)/(a1*d2), a1prime = kcr. The
+        # partial w.r.t. kcr must survive AND the directly-referenced primaries
+        # (a1, a2, d1, d2) must all get their partials (all dropped pre-#41).
+        primaries = {"kcr", "a1", "a2", "d1", "d2"}
+        param_idx = {n: i for i, n in enumerate(sorted(primaries | {"a1prime", "a2prime"}))}
+        result = _compute_derived_param_jacobian(
+            "(a2*a1prime*d1)/(a1*d2)",
+            primary_param_names=primaries,
+            param_idx=param_idx,
+            derived_exprs={"a1prime": "kcr", "a2prime": "(a2*a1prime*d1)/(a1*d2)"},
+        )
+        assert result is not None
+        # kcr enters only through a1prime; a1/a2/d1/d2 enter directly.
+        assert set(result.keys()) == {"kcr", "a1", "a2", "d1", "d2"}
+        for c_str in result.values():
+            assert "a1prime" not in c_str and "a2prime" not in c_str
+
+    def test_three_level_nesting(self):
+        # p3 -> p2 -> p1 -> base. All three inlined down to the primary ``base``.
+        result = _compute_derived_param_jacobian(
+            "2*p2",
+            primary_param_names={"base"},
+            param_idx={"base": 0, "p1": 1, "p2": 2, "p3": 3},
+            derived_exprs={"p1": "base", "p2": "5*p1", "p3": "2*p2"},
+        )
+        assert result is not None
+        assert set(result.keys()) == {"base"}  # ∂(2*(5*base))/∂base = 10
+        assert result["base"].replace(" ", "").lstrip("+") in {"10", "10.0", "2*5.0", "10.0*1"}
+
+
+class TestInlineDerivedParamRefs:
+    """Direct coverage of the nested-reference flattening helper (issue #41)."""
+
+    def test_single_level_is_noop(self):
+        from bngsim._codegen import _inline_derived_param_refs
+
+        # An expression already in primaries is returned untouched, so
+        # single-level derived params stay byte-identical to pre-#41 output.
+        assert _inline_derived_param_refs("chi*kon", {"a1prime": "kcr"}) == "chi*kon"
+
+    def test_parenthesizes_to_preserve_precedence(self):
+        from bngsim._codegen import _inline_derived_param_refs
+
+        # a1prime = kcr + 1 must inline as (kcr + 1), not bare kcr + 1.
+        out = _inline_derived_param_refs("2*a1prime", {"a1prime": "kcr + 1"})
+        assert out == "2*(kcr + 1)"
+
+    def test_whole_word_only(self):
+        from bngsim._codegen import _inline_derived_param_refs
+
+        # ``a1`` must not be substituted inside ``a1prime``.
+        out = _inline_derived_param_refs("a1prime + a1", {"a1": "kcr"})
+        assert out == "a1prime + (kcr)"
+
+    def test_cycle_is_bounded(self):
+        from bngsim._codegen import _inline_derived_param_refs
+
+        # A pathological reference cycle must terminate (bounded passes) rather
+        # than loop forever; the derived names simply remain in the output and
+        # the caller's free-symbol check then rejects it.
+        out = _inline_derived_param_refs("x", {"x": "y", "y": "x"}, max_passes=4)
+        assert isinstance(out, str)

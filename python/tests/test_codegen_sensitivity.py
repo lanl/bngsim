@@ -43,6 +43,12 @@ def _get_derived_quotient_net() -> str:
     return str(p)
 
 
+def _get_nested_derived_net() -> str:
+    p = DATA_DIR / "nested_derived_rate_const.net"
+    assert p.exists(), f"Test data not found: {p}"
+    return str(p)
+
+
 class TestSensRhsCodeGeneration:
     """Test the C code generation for sensitivity RHS."""
 
@@ -342,3 +348,100 @@ class TestDerivedQuotientChainRule:
             f"codegen sens for MEK does not match FD (max relerr={rel.max():.3e}); "
             f"chain rule through m1 = 5/MEK likely dropped"
         )
+
+
+class TestNestedDerivedChainRule:
+    """Issue #41 regression: a NESTED derived rate constant — a
+    ConstantExpression that references ANOTHER ConstantExpression — must
+    propagate the chain rule down to the underlying primary. Mirrors the igf1r
+    detailed-balance structure ``a1prime = kcr``, ``a2prime = 3*a1prime`` where
+    the fitted primary ``kcr`` reaches the rate laws only through the derived
+    parameters. Pre-#41 the single-level ``kcr -> a1prime`` term survived but the
+    nested ``kcr -> a1prime -> a2prime`` term was silently dropped, so the
+    analytic sensitivity came back too small.
+    """
+
+    @staticmethod
+    def _clear_cache(net):
+        import platform
+
+        from bngsim._codegen import CACHE_DIR, compute_model_hash
+
+        h = compute_model_hash(net)
+        suffix = ".dylib" if platform.system() == "Darwin" else ".so"
+        for prefix in ("rhs_", "sens_"):
+            cached = CACHE_DIR / f"{prefix}{h}{suffix}"
+            if cached.exists():
+                cached.unlink()
+
+    def test_dfdp_case_includes_nested_reaction(self):
+        """The generated ``bngsim_dfdp`` case for ``kcr`` must carry the
+        contribution from the a2prime reaction (species C), not only the
+        a1prime reaction — that species-C term is exactly what was dropped."""
+        import re
+
+        from bngsim._codegen import _parse_net_file, generate_sens_rhs_c
+
+        net = _get_nested_derived_net()
+        code = generate_sens_rhs_c(net)
+        assert code is not None
+
+        m = _parse_net_file(net)
+        idxs = {name: i for i, (_, name, _, _) in enumerate(m["parameters"])}
+        kcr_idx = idxs["kcr"]
+
+        case_match = re.search(rf"    case {kcr_idx}:.*?break;", code, re.DOTALL)
+        assert case_match, "kcr case missing from generated dfdp switch"
+        snippet = case_match.group(0)
+        # Species C is index 2 (0-based); it is produced only by the a2prime
+        # reaction, so its dfdp entry appears iff the nested chain was followed.
+        assert "dfdp_out[2]" in snippet, (
+            f"nested chain kcr -> a1prime -> a2prime dropped from dfdp; got:\n{snippet}"
+        )
+
+    def test_nested_chain_rule_matches_fd(self):
+        """Codegen analytic sens for ``kcr`` must match finite difference,
+        including species C which depends on kcr only through the nested
+        a2prime = 3*a1prime = 3*kcr path."""
+        import bngsim
+
+        net = _get_nested_derived_net()
+        self._clear_cache(net)
+
+        sample_times = list(np.linspace(0.0, 5.0, 51))
+        nominal = 0.33  # kcr in the fixture
+
+        def _traj(kcr_val):
+            mod = bngsim.Model.from_net(net)
+            mod.set_param("kcr", kcr_val)
+            sim = bngsim.Simulator(mod, method="ode")
+            r = sim.run(sample_times=sample_times, rtol=1e-10, atol=1e-12, max_steps=10**6)
+            return r.species
+
+        eps = 1e-6
+        fd = (_traj(nominal + eps) - _traj(nominal - eps)) / (2.0 * eps)
+
+        mod = bngsim.Model.from_net(net)
+        sim = bngsim.Simulator(
+            mod, method="ode", sensitivity_params=["kcr"], codegen=True, net_path=net
+        )
+        r = sim.run(sample_times=sample_times, rtol=1e-10, atol=1e-12, max_steps=10**6)
+        sx = r.sensitivities[:, :, 0]
+
+        denom = np.maximum(np.abs(fd[1:]), np.abs(sx[1:]))
+        mask = denom > 1e-9
+        assert mask.any(), "FD reference is identically zero — bad test setup"
+        rel = np.abs(fd[1:] - sx[1:])[mask] / denom[mask]
+        assert rel.max() < 1e-3, (
+            f"codegen sens for kcr does not match FD (max relerr={rel.max():.3e}); "
+            f"nested chain kcr -> a1prime -> a2prime likely dropped (issue #41)"
+        )
+
+        # Species C (index 2) is driven ONLY by the nested a2prime chain, so its
+        # sensitivity is the direct witness that the fix took effect: it must be
+        # substantially non-zero and agree with FD.
+        c_analytic = np.abs(sx[:, 2]).max()
+        assert c_analytic > 1e-3, (
+            "species-C sensitivity is ~0: the nested a2prime chain was dropped"
+        )
+        np.testing.assert_allclose(sx[:, 2], fd[:, 2], rtol=1e-3, atol=1e-6)
