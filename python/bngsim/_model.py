@@ -811,6 +811,31 @@ class Model:
         return self._core.n_functions
 
     @property
+    def n_events(self) -> int:
+        """Number of events (SBML/Antimony ``at (...)`` triggers) in the model."""
+        return self._core.n_events
+
+    @property
+    def conservation_laws(self) -> dict:
+        """
+        Conservation laws detected from the stoichiometry matrix.
+
+        Detected at model load time for every input format (``.net``, Antimony,
+        SBML, programmatic ``ModelBuilder``). The returned dict has keys:
+
+        - ``n_laws``: number of independent conservation laws
+        - ``n_species``: number of species the laws are expressed over
+        - ``dependent`` / ``independent``: 0-based species index lists
+        - ``constants``: conservation constants evaluated from the initial conditions
+        - ``coefficients``: ``n_laws`` x ``n_species`` coefficient matrix
+
+        Consumed internally by the reduced-space Newton steady-state solver,
+        which needs the independent subspace to sidestep the rank-deficient
+        Jacobian these laws imply.
+        """
+        return self._core.conservation_laws
+
+    @property
     def param_names(self) -> list[str]:
         """List of all parameter names."""
         return self._core.param_names

@@ -24,6 +24,7 @@ print(laws["dependent"])        # dependent species indices (0-based)
 print(laws["independent"])      # independent species indices
 print(laws["constants"])        # conservation constants from ICs
 print(laws["coefficients"])     # n_laws × n_species coefficient matrix
+print(laws["n_species"])        # species count the coefficient rows span
 ```
 
 **Impact on the steady-state solver**: Models with conservation laws have

@@ -51,7 +51,7 @@ class TestConservationLawDetection:
 
     def test_reversible_has_conservation_laws(self, reversible_model):
         """A+B<->C: 2 conservation laws (A+C, B+C)."""
-        cl = reversible_model._core.conservation_laws
+        cl = reversible_model.conservation_laws
         assert cl["n_laws"] == 2
         assert cl["n_species"] == 3
         assert len(cl["dependent"]) == 2
@@ -61,7 +61,7 @@ class TestConservationLawDetection:
 
     def test_simple_decay_has_conservation_law(self, simple_decay_model):
         """A -> B has one conservation law: A + B = const."""
-        cl = simple_decay_model._core.conservation_laws
+        cl = simple_decay_model.conservation_laws
         assert cl["n_laws"] == 1
         assert cl["n_species"] == 2
         assert len(cl["dependent"]) == 1
@@ -69,16 +69,16 @@ class TestConservationLawDetection:
 
     def test_conservation_constants(self, simple_decay_model):
         """Conservation constant = A(0)+B(0) = 100."""
-        cl = simple_decay_model._core.conservation_laws
+        cl = simple_decay_model.conservation_laws
         assert cl["n_laws"] == 1
         c = cl["constants"][0]
         assert abs(c - 100.0) < 1e-10 or abs(c + 100.0) < 1e-10
 
     def test_clone_preserves_conservation_laws(self, reversible_model):
         """Clone preserves conservation laws."""
-        cl1 = reversible_model._core.conservation_laws
+        cl1 = reversible_model.conservation_laws
         clone = reversible_model.clone()
-        cl2 = clone._core.conservation_laws
+        cl2 = clone.conservation_laws
         assert cl1["n_laws"] == cl2["n_laws"]
         assert cl1["n_species"] == cl2["n_species"]
 

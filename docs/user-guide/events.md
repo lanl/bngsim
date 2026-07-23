@@ -56,6 +56,8 @@ trigger crosses zero, applies the assignments, and restarts.
 | Parameter → species promotion | ✅ | Parameters targeted by events auto-promoted |
 | Priority ordering | ✅ | Real-valued priority; equal-priority ties broken by seed-keyed RNG (§4.11.6) |
 | Same-instant cascade | ✅ | Delay-0 events an assignment triggers join the batch (§4.11.6) |
+| `useValuesFromTriggerTime` | ✅ | SBML L3 default (`True`): assignment RHS frozen at trigger time. `False` evaluates at firing time |
+| SSA / PSA events | ✅ | Non-delayed events only — see limitations below |
 
 ### Delayed events
 
@@ -68,15 +70,42 @@ before the delay expires are cancelled.
 model = bngsim.Model.from_antimony_string("""
     S = 0; k = 0.1;
     J1: -> S; k;
-    at (time > 5), delay=3: S = 100;  # trigger at t=5, apply at t=8
+    at 3 after (time > 5): S = 100;  # trigger at t=5, apply at t=8
 """)
 ```
 
+### Events under SSA and PSA
+
+Events also fire in the stochastic engines. Triggers are checked at every
+reaction-fire boundary, and a time-only trigger is honored at its exact crossing
+time rather than at the next τ-step — so a bolus at `time > 10` lands at `t=10`,
+not somewhere in the interval that straddles it.
+
+```python
+model = bngsim.Model.from_antimony_string("""
+    S = 100; k_decay = 0.1;
+    J1: S -> ; k_decay * S;
+
+    at (time > 10): S = 200;   # bolus, no delay — supported under SSA
+""")
+
+sim = bngsim.Simulator(model, method="ssa")
+result = sim.run(t_span=(0, 20), n_points=21, seed=42)
+```
+
+Delay-bearing events are the one gap: `method="ssa"` and `method="psa"` reject
+them at run entry with an error naming the offending event. Use `method="ode"`
+for models that need delayed events.
+
 ### Known limitations
 
-- **ODE only**: Events work with `method="ode"`. SSA events are not yet supported.
-- **`useValuesFromTriggerTime`**: Not implemented — values are computed at
-  application time, not trigger time.
+- **Delays are ODE-only**: `method="ode"` supports the full event feature set.
+  `method="ssa"` and `method="psa"` support events *without* delays; a
+  delay-bearing event is rejected at run entry with an error naming the event id.
+  Use `method="ode"` or drop the `delay` attribute.
+- **`rateOf` triggers are ODE-only**: models using the SBML `rateOf` csymbol are
+  rejected under SSA/PSA — the instantaneous dx/dt it refers to has no
+  well-defined value in a discrete stochastic trajectory.
 - **Cross-validated**: 62/153 (40.5%) BioModels event models pass vs RoadRunner
   at max_rel_err < 1e-3. Including marginal matches: 79/138 = 57.2%.
   Remaining failures are due to event timing precision differences between
@@ -105,6 +134,7 @@ builder.add_event(
     priority=0,
     persistent=True,
     initial_value=True,
+    use_values_from_trigger_time=True,  # SBML L3 default; freeze RHS at trigger
 )
 
 model = builder.build()

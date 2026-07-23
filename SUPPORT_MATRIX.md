@@ -5,12 +5,15 @@ Reference for downstream consumers (most importantly PyBNF) of what
 
 ## Wheel availability
 
-CI builds prebuilt wheels via `cibuildwheel` on every push to `main` /
-`feature/bngsim*` and on PRs targeting `main`. The matrix is:
+`.github/workflows/wheels.yml` builds prebuilt wheels via `cibuildwheel` on
+pushes to `main` that touch the build inputs (`pyproject.toml`, `CMakeLists.txt`,
+`src/`, `include/`, `third_party/`, `python/bngsim/`, `ci/`) and on manual
+`workflow_dispatch`. Those runs upload artifacts only; `release.yml` publishes to
+PyPI on a `v*` tag. The matrix is:
 
 | Runner OS      | Architecture | Deployment target  | Python versions       |
 |----------------|--------------|--------------------|-----------------------|
-| ubuntu-latest  | x86_64       | manylinux2014      | 3.10, 3.11, 3.12, 3.13|
+| ubuntu-latest  | x86_64       | manylinux_2_28     | 3.10, 3.11, 3.12, 3.13|
 | macos-14       | arm64        | macOS 11           | 3.10, 3.11, 3.12, 3.13|
 | macos-15-intel | x86_64       | macOS 10.15        | 3.10, 3.11, 3.12, 3.13|
 | windows-latest | AMD64        | Windows Server 2022| 3.10, 3.11, 3.12, 3.13|
@@ -19,7 +22,8 @@ Source distributions (sdist) are published alongside; sdist users will
 build from source and need a C++17 compiler, CMake ≥ 3.20, and Ninja.
 
 Not covered: Linux ARM64, macOS x86_64 < 10.15, Windows ARM64, musllinux,
-PyPy. These are skipped by `CIBW_SKIP`.
+PyPy. These fall out of the `build` / `skip` selectors in
+`[tool.cibuildwheel]`.
 
 ## Bundled vs optional features
 
@@ -32,84 +36,85 @@ PyPy. These are skipped by `CIBW_SKIP`.
 | RuleMonkey           | Bundled (vendored under `third_party/rulemonkey`) | `HAS_RULEMONKEY=True` everywhere |
 | SBML loader          | Runtime dep `python-libsbml>=5.20`            | `HAS_LIBSBML=True` everywhere      |
 | Antimony loader      | Optional extra: `pip install bngsim[antimony]`| `HAS_ANTIMONY` depends on extra    |
-| KLU sparse solver    | Disabled in macOS wheels (no SuiteSparse vendoring); on by default in Linux/Windows wheels | `BNGSIM_ENABLE_KLU=ON` build flag |
+| KLU sparse solver    | Bundled in every wheel (Linux/macOS/Windows) — SuiteSparse vendored by auditwheel/delocate/delvewheel | `HAS_KLU=True` everywhere |
 | HDF5 save/load       | Optional extra: `pip install bngsim[hdf5]`    | requires `h5py`                    |
 | pandas integration   | Optional extra: `pip install bngsim[pandas]`  | requires `pandas`                  |
 | JAX gradient bridge  | Optional extra: `pip install bngsim[jax]`     | requires `jax`, `jaxlib`, `diffrax`|
 
 Use `bngsim.capabilities()` at runtime to introspect what is available.
 
-## Local validation log
+### KLU is never optional in a published wheel
 
-GitHub Actions are paused (workflow_dispatch only) through 2026-06-01 — see
-`bngsim/dev/plans/CI_LOCAL_FIX_AND_ACTIONS_PAUSE_PLAN_2026-05-12.md`. While
-paused, the four-platform wheel matrix is validated via the local-CI
-harness under `bngsim/scripts/` (see `bngsim/scripts/LOCAL_CI.md`); each
-reporter runs `uv run python bngsim/scripts/local_ci.py matrix` on their
-target platform and produces a verifiable Markdown report.
+Every wheel is smoke-tested for the sparse solver before it can be published:
 
-For each Python version below, the wheel is built in a fresh `uv venv`,
-installed (with `[antimony,pandas]` extras when antimony has a wheel for
-that platform/Python) into a *second* fresh venv, and smoke-tested via
-`bngsim/scripts/local_ci_smoke.py` — covering `capabilities()`, the
-`.net`/SBML/Antimony loaders, and `NfsimSession` + `RuleMonkeySession`.
+```
+test-command = 'python -c "import bngsim; print(bngsim.__version__); assert bngsim.HAS_KLU"'
+```
 
-### darwin-x86_64 / Python 3.10–3.13  (this development box; 2026-05-12)
+so a wheel that fell back to the dense solver would fail its own build. Linux
+takes SuiteSparse from EPEL inside the manylinux image; macOS and Windows build
+the KLU subset from source (`ci/build_suitesparse.sh`, `ci/build_suitesparse.ps1`)
+— on macOS at the wheel's own deployment target, which is what makes vendoring
+viable where linking Homebrew dylibs was not.
 
-bngsim 0.5.5, macOS 15.7.4 Sequoia, deployment target 10.15.
+Source installs get the same guarantee: `[tool.scikit-build.cmake.define]` sets
+`BNGSIM_REQUIRE_KLU=ON` for every pip build, and when no system SuiteSparse is
+found CMake builds a pinned KLU subset from source (GH #209) instead of silently
+degrading. `HAS_KLU=False` therefore only happens on a deliberate
+`-DBNGSIM_ENABLE_KLU=OFF` build.
 
-| Python | Wheel                                             | capabilities | .net+ODE | SBML+ODE | NFsim | RuleMonkey | Antimony |
-|--------|---------------------------------------------------|--------------|----------|----------|-------|------------|----------|
-| 3.10   | `bngsim-0.5.5-cp310-cp310-macosx_10_15_x86_64.whl` | PASS         | PASS     | PASS     | PASS  | PASS       | PASS     |
-| 3.11   | `bngsim-0.5.5-cp311-cp311-macosx_10_15_x86_64.whl` | PASS         | PASS     | PASS     | PASS  | PASS       | PASS     |
-| 3.12   | `bngsim-0.5.5-cp312-cp312-macosx_10_15_x86_64.whl` | PASS         | PASS     | PASS     | PASS  | PASS       | PASS     |
-| 3.13   | `bngsim-0.5.5-cp313-cp313-macosx_10_15_x86_64.whl` | PASS         | PASS     | PASS     | PASS  | PASS       | PASS     |
+This matters for performance, not just capability: automatic sparse-solver
+selection is the main reason BNGsim's advantage over dense-only paths grows with
+network size, so it is on wherever the ODE backend is.
 
-### linux-x86_64 (manylinux2014, via Colima Docker)  (this development box; 2026-05-12)
+## Validation
 
-bngsim 0.5.5, cibuildwheel 2.22.0 host-side, container image
-`quay.io/pypa/manylinux2014_x86_64:2024.11.16-1`. Wheel built inside the
-container, pytest + smoke run inside the container against the freshly
-installed wheel.
+GitHub Actions is the source of truth for the four-platform matrix. The
+per-platform wheel legs (`wheels.yml`) each build with `BNGSIM_REQUIRE_KLU=ON`
+and run the `cibuildwheel` `test-command` against the repaired wheel, so a leg
+that is green is a wheel that imports and reports `HAS_KLU=True` in a clean
+environment. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
+`windows-tail.yml` cover the pre-commit hooks, the C++ unit suite, the MIR JIT
+backend, and the Windows NFsim/RuleMonkey paths respectively.
 
-| Python | Wheel                                                                              | build | pytest | smoke |
-|--------|------------------------------------------------------------------------------------|-------|--------|-------|
-| 3.12   | `bngsim-0.5.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl` (3.8 MB) | PASS  | 766 passed, 54 skipped, 12 deselected | PASS |
+Check the latest results before trusting this table:
 
-Notes: antimony and libroadrunner are unavailable *inside* the
-manylinux2014 container (antimony only ships `manylinux_2_28`;
-libroadrunner's wheel needs `libpython3.X.so.1.0` which manylinux2014
-strips). The tests that need them skip via `pytest.importorskip`.
-Outside the container, on any real Linux distro with glibc ≥ 2.28,
-`pip install bngsim[antimony]` resolves cleanly.
+```bash
+gh run list --workflow wheels.yml --limit 5
+```
 
-cp310 / cp311 / cp313 in-container runs are deferred (each is ~35 min
-on this hardware due to SUNDIALS rebuild); cp312 is the leg that
-actually failed in CI run 25736978049 and is the one that needed
-explicit validation post-fix.
+For pre-push validation without burning CI minutes, the local-CI harness under
+`scripts/` reproduces a matrix leg on the current box — see
+[scripts/LOCAL_CI.md](scripts/LOCAL_CI.md):
 
-### darwin-arm64 / Python 3.10–3.13 (M4 Max)
+```bash
+uv run python scripts/local_ci.py matrix
+```
 
-_Pending; will be filled in from the M4 Max reporter's matrix run._
+It builds each wheel in a fresh `uv venv`, installs it (with `[antimony,pandas]`
+extras where antimony ships a wheel for that platform/Python) into a *second*
+fresh venv, and smoke-tests via `scripts/local_ci_smoke.py` — `capabilities()`,
+the `.net`/SBML/Antimony loaders, and `NfsimSession` + `RuleMonkeySession`.
 
-### windows-amd64 / Python 3.10–3.13
-
-_Pending; will be filled in from efm46's matrix run._
-
-A single confirmation GitHub Actions run on or after 2026-06-01 (quota
-reset) is the final validation that the local-CI matrix and the
-GitHub-runner matrix agree.
+One known environment quirk: inside the manylinux container, `antimony` and
+`libroadrunner` are unavailable (antimony ships `manylinux_2_28` only;
+libroadrunner's wheel needs the `libpython3.X.so.1.0` that manylinux images
+strip). Tests needing them skip via `pytest.importorskip`. On any real Linux
+distro with glibc ≥ 2.28, `pip install bngsim[antimony]` resolves cleanly.
 
 ## Verifying an installed wheel
 
-The wheel build matrix runs the full `pytest` suite (skipping HDF5 tests
-that need `bngsim[hdf5]`). To self-verify after installing:
+Each wheel leg runs the `cibuildwheel` `test-command` — an import plus the
+`HAS_KLU` assertion — against the repaired wheel in a clean environment. The full
+`pytest` suite runs against the source tree, not against every wheel. To
+self-verify after installing:
 
 ```python
 import bngsim
 caps = bngsim.capabilities()
 print(caps["version"], caps["features"])
-# Expected: {"libsbml": True, "nfsim": True, "rulemonkey": True, ...}
+# Expected: {"libsbml": True, "nfsim": True, "rulemonkey": True, "klu": True, ...}
+assert bngsim.HAS_KLU  # sparse solver is bundled in every published wheel
 
 # Load + simulate a tiny model
 m = bngsim.Model.from_net("simple_decay.net")
@@ -119,10 +124,14 @@ assert r.n_times == 11
 
 ## Release checklist (for cutting a new bngsim version)
 
-1. Bump `bngsim/pyproject.toml` `version` and `bngsim/python/bngsim/__init__.py` `__version__` (single source of truth — see issue #31).
-2. Update `bngsim/CHANGELOG.md` with the user-visible diff.
-3. Push to `feature/bngsim`; verify all four CI legs are green on cp310–cp313.
-4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — the `publish` job will run.
+1. Bump `version` in `pyproject.toml` — the single source of truth.
+   `python/bngsim/_version.py` reads it back through `importlib.metadata`, so
+   there is no second literal to keep in sync.
+2. Update `CHANGELOG.md` with the user-visible diff.
+3. Push to `main`; verify all four wheel legs are green on cp310–cp313.
+4. Tag `git tag v<x.y.z> && git push origin v<x.y.z>` — `release.yml` builds and
+   publishes to PyPI via Trusted Publishing. Rehearse first with a manual
+   `workflow_dispatch` run targeting `testpypi`.
 5. Confirm wheels appear on PyPI (one per OS × Python combination, plus sdist).
 6. From a clean venv on each target OS (or via a temporary CI matrix), install
    with `pip install bngsim==<x.y.z>` and run the verification snippet above.
@@ -132,11 +141,6 @@ assert r.n_times == 11
 
 ## Known caveats
 
-- macOS wheels build with `-DBNGSIM_ENABLE_KLU=OFF` so they do not need to bundle
-  Homebrew SuiteSparse dylibs that would conflict with the 10.15 deployment
-  target. KLU is rarely the rate-limiting linear solver for BioNetGen-scale
-  networks, but Jacobian-heavy ODE workloads may be measurably faster on
-  Linux/Windows where KLU is on.
 - `python-libsbml` is a hard runtime dependency. Wheels for it exist on PyPI for
   every target in the matrix above; users on exotic platforms may need to build
   it from source.
