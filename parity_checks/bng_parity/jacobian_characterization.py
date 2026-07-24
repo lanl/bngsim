@@ -22,6 +22,13 @@ The intent (see the paper supplement) is to partition the ODE test set into the
 cost~N regression that validates it live in ``--analyze`` mode, which joins this
 report with ``runs/report_ode.json`` (per-model N and warm integration cost).
 
+Alongside the Jacobian quantities each row also carries the two model-composition
+counts the paper's representative-models table needs (issue #42):
+``n_seed_nonzero`` (seed species whose RESOLVED initial value is nonzero) and
+``n_independent_parameters`` (numeric-valued independent parameters), the latter
+with the ``excluded_parameters`` names + reasons that produced it, so the count is
+reviewable rather than a hidden judgment. See :func:`seed_and_parameter_census`.
+
 Environment: run with the bngsim editable checkout venv, e.g.
     BNGPATH=/path/to/BioNetGen-2.9.3 \
       ~/Code/bngsim/.venv/bin/python jacobian_characterization.py --limit 5
@@ -36,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -60,6 +68,43 @@ DENSE_TIME_SAMPLES = 64  # N >  this: this many log-spaced trajectory points (wa
 EIG_MAX_N = 5000  # N > this: skip eigen-work (dense eig too costly); density only
 DEFAULT_TIMEOUT = 240.0
 RNG_SEED = 12345
+
+# ---- parameter-census policy (see seed_and_parameter_census) ---------------
+# Unit-conversion constants: symbols a model carries so molecule counts and
+# concentrations can be interconverted. They are physical constants / unit
+# bookkeeping, not model parameters, so the paper's caption excludes them. Both
+# name sets are matched CASE-SENSITIVELY and kept deliberately narrow — a name
+# not listed is counted, and every exclusion is emitted per model in
+# ``excluded_parameters`` so the count stays auditable.
+#
+# Avogadro's number, in whatever unit scaling a model works in (6.022e23 /mol,
+# 6.02e8 /um^3, 6.022e5 /uM at 1 pL, ...). The magnitude guard is what keeps the
+# short spellings safe: ``nA 5`` in ``race.bngl`` is an Erlang step count, and
+# ``Na`` in an electrophysiology model would be sodium, not Avogadro.
+AVOGADRO_PARAM_NAMES = frozenset({"NA", "Na", "N_A", "NAv", "NaV", "Nav", "NA_V", "Avogadro"})
+AVOGADRO_MIN_VALUE = 1e5
+# Reference volumes and geometric factors carried purely to convert counts to
+# concentrations (a cell volume, a membrane-adjacent layer thickness). No
+# magnitude guard: a volume is any magnitude, so these rest on the name alone.
+UNIT_GEOMETRY_PARAM_NAMES = frozenset(
+    {"V_ref", "Vref", "V_cell", "Vcell", "vol_ref", "h_mem", "hmem"}
+)
+# BNG2.pl's own synthetic parameters (``_rateLaw{N}``, emitted when a BNGL rate
+# law is a compound expression such as ``chi*kon``) live in the reserved
+# leading-underscore namespace and are not model parameters at all.
+SYNTHETIC_PARAM_RE = re.compile(r"^_")
+
+
+def _is_unit_conversion(name: str, value_expr: str) -> bool:
+    """Whether a PRIMARY (numeric-valued) parameter is unit-conversion bookkeeping."""
+    if name in UNIT_GEOMETRY_PARAM_NAMES:
+        return True
+    if name not in AVOGADRO_PARAM_NAMES:
+        return False
+    try:
+        return abs(float(value_expr)) >= AVOGADRO_MIN_VALUE
+    except ValueError:  # not a literal -> already classified as derived
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +231,96 @@ def _classify_eigs(eigs: np.ndarray) -> dict:
     }
 
 
+def _parse_net_parameters(net_text: str) -> list[tuple[str, str, bool]]:
+    """``(name, value_expr, is_derived)`` per ``begin parameters`` line of a .net file.
+
+    The block is ``<index> <name> <value-or-expression>  # Constant|ConstantExpression``.
+    A parameter is DERIVED when its value column is not a numeric literal (``R_dim
+    Rtot/2``) — the version-independent reading of the caption's "numeric-valued" — or
+    when BNG2.pl tags the line ``ConstantExpression``, whichever fires first.
+
+    The .net block is the authority here rather than ``Model.param_names``: the loaded
+    model's parameter table also carries BNGL global functions (``obs_X() a+b*c``), which
+    are expressions over the model's state, not declared parameters.
+    """
+    out: list[tuple[str, str, bool]] = []
+    in_block = False
+    for raw in net_text.splitlines():
+        s = raw.strip()
+        if s.startswith("begin parameters"):
+            in_block = True
+            continue
+        if in_block and s.startswith("end parameters"):
+            break
+        if not in_block or not s or s.startswith("#"):
+            continue
+        body, _, comment = s.partition("#")
+        fields = body.split()
+        if len(fields) < 3:
+            continue
+        name, expr = fields[1], " ".join(fields[2:])
+        try:
+            float(expr)
+            numeric = True
+        except ValueError:
+            numeric = False
+        out.append((name, expr, (not numeric) or "ConstantExpression" in comment))
+    return out
+
+
+def seed_and_parameter_census(m, net_text: str) -> dict:
+    """Model-composition counts for the paper's representative-models table (issue #42).
+
+    ``n_seed_nonzero`` — species whose RESOLVED initial value is nonzero. Read off the
+    LOADED network instead of counting ``seed species`` lines, so parameter-valued ICs
+    are already evaluated (BNG substituted ``Rtot`` / ``ic_wt_cell__X`` / ...): seed
+    lines whose parameter resolves to 0 are correctly not counted, and every species BNG
+    did not seed is exactly 0.0. Must be called BEFORE the trajectory run, while the
+    state is still the initial condition. When a state-setup prefix was replayed into
+    netgen (``dirty_carryover`` / ``setConcentration`` actions) this is the state the
+    benchmarked run actually starts from, which is the intended reading.
+
+    ``n_independent_parameters`` — primary, numeric-valued model parameters that are not
+    unit-conversion constants, i.e. the caption's "numeric-valued independent parameters,
+    including those that set initial amounts; unit-conversion constants and parameters
+    derived from others are excluded". A bare count is only meaningful together with the
+    policy that produced it, so every excluded name is emitted with its reason:
+
+      ``derived``          the value is an expression over other parameters (``R_dim
+                           Rtot/2``, Blinov's ``loop1..loop5``), so it is not an
+                           independent knob — see :func:`_parse_net_parameters`.
+      ``unit_conversion``  the parameter is unit bookkeeping rather than model content
+                           — Avogadro's number or a reference volume / layer thickness;
+                           see :func:`_is_unit_conversion`.
+
+    ``_rateLaw{N}`` (BNG's own synthetic compound-rate-law parameters) are dropped up
+    front and appear in neither ``n_parameters`` nor ``excluded_parameters``, so
+    ``n_independent_parameters == n_parameters - len(excluded_parameters)`` holds.
+    """
+    n_declared = 0
+    excluded: list[str] = []
+    reasons: dict[str, str] = {}
+    for name, expr, derived in _parse_net_parameters(net_text):
+        if SYNTHETIC_PARAM_RE.match(name):
+            continue
+        n_declared += 1
+        if derived:
+            reason = "derived"
+        elif _is_unit_conversion(name, expr):
+            reason = "unit_conversion"
+        else:
+            continue
+        excluded.append(name)
+        reasons[name] = reason
+    return {
+        "n_seed_nonzero": int(np.count_nonzero(np.asarray(m._core.get_state(), float))),
+        "n_parameters": n_declared,
+        "n_independent_parameters": n_declared - len(excluded),
+        "excluded_parameters": excluded,
+        "excluded_parameter_reasons": reasons,
+    }
+
+
 def characterize_model(
     model_id: str,
     horizon: dict,
@@ -222,6 +357,7 @@ def characterize_model(
         if net_path is None:
             return {**row, "status": "netgen_failed", "detail": netgen_err}
 
+        net_text = Path(net_path).read_text(errors="replace")
         m = Model.from_net(str(net_path))
         core = m._core
         n = int(_prop(m, "n_species"))
@@ -231,6 +367,8 @@ def characterize_model(
         row["n_conservation_laws"] = int(cl["n_laws"])
         row["rank"] = n - int(cl["n_laws"])
         row["dirty_carryover"] = dirty
+        # Composition counts must be read while the state is still the IC (before run()).
+        row.update(seed_and_parameter_census(m, net_text))
 
         # BNGsim's own codegen'd analytical Jacobian (exact; what the integrator uses).
         # core._dense_analytical_jacobian(t, conc) -> flat column-major; reshape order="F".
@@ -556,6 +694,7 @@ def main() -> int:
                 f"stiff[max/med]={r.get('stiffness_ratio_max', float('nan')):.3g}/"
                 f"{r.get('stiffness_ratio_median', float('nan')):.3g} "
                 f"npts={r.get('n_time_points', '-')} "
+                f"ic0={r.get('n_seed_nonzero', '-')} par={r.get('n_independent_parameters', '-')} "
                 f"{'OSC ' if r.get('oscillatory') else ''}"
             )
         print(f"[{k:3d}/{len(ids)}] {tag:16s} {extra}{mid}", flush=True)
@@ -573,6 +712,9 @@ def main() -> int:
                 "FULL_GRID_MAX_N": FULL_GRID_MAX_N,
                 "DENSE_TIME_SAMPLES": args.dense_time_samples,
                 "EIG_MAX_N": EIG_MAX_N,
+                "AVOGADRO_PARAM_NAMES": sorted(AVOGADRO_PARAM_NAMES),
+                "AVOGADRO_MIN_VALUE": AVOGADRO_MIN_VALUE,
+                "UNIT_GEOMETRY_PARAM_NAMES": sorted(UNIT_GEOMETRY_PARAM_NAMES),
             },
             "elapsed_sec": round(time.perf_counter() - t0, 2),
         },

@@ -167,6 +167,35 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **Per-model composition counts in the ODE Jacobian characterization report
+  (issue #42).** `jacobian_characterization.py` recorded rich Jacobian-side
+  structure (`N`, `rank`, `n_reactions`, `density`, `stiffness_ratio_*`) but
+  nothing about model composition, so the paper's representative-BNGL-models
+  table had to carry its IC-not-zero and parameter-count columns as hand-curated
+  constants — the one column pair in that table not derived from data. Each
+  result row now also carries `n_seed_nonzero`, `n_parameters`,
+  `n_independent_parameters`, `excluded_parameters` and
+  `excluded_parameter_reasons`.
+
+  `n_seed_nonzero` is read off the loaded network rather than by counting `seed
+  species` lines, so parameter-valued initial conditions are already evaluated:
+  `Lang_2024`'s 73 seed lines resolve to 65 nonzero species, and a line whose
+  parameter is `0` is correctly not counted. `n_independent_parameters` applies
+  the table caption's rule — numeric-valued independent parameters, with
+  unit-conversion constants and parameters derived from others excluded — which no
+  single parse rule reproduces on its own, so every excluded name is emitted with
+  its reason (`derived` or `unit_conversion`) and
+  `n_independent_parameters == n_parameters - len(excluded_parameters)` holds by
+  construction. BNG's synthetic `_rateLaw{N}` symbols are dropped before the
+  census and appear in neither, and the unit-conversion name sets are recorded in
+  the report's `_meta.params`. Avogadro's number is matched case-sensitively and
+  guarded by magnitude, so `race.bngl`'s `nA 5` — an Erlang step count — stays a
+  model parameter while `Na 6.022e23` and the RuleHub tutorials' `NaV 6.02e8`
+  (Avogadro rescaled to /um^3) are excluded. Across the 278-model `bngl_models`
+  slice the only names the policy excludes are `NA`, `Na` and `Vref`. The six
+  exemplars reproduce the curated values exactly: `Lang2024` 65/205,
+  `Kocieniewski2012` 4/10, `Barua2007` 2/22, `Blinov2006` 6/43, `Barua2013` 6/25,
+  `fceri_fyn` 5/31.
 - **`Simulator(..., force_sparse_linear_solver=True)` for `method="ode"`, the
   missing counterpart to `force_dense_linear_solver` (issue #29).** The ODE
   linear-solver kind is auto-selected — sparse KLU when a model is both large
