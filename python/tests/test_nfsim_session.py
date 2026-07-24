@@ -282,6 +282,65 @@ class TestSetParamSeedConcentration:
             assert nf.get_molecule_count("Y") == 1
 
 
+# ─── Issue #44: post-init set_param activates a rule that loaded at rate 0 ────
+
+
+class TestPostInitRateActivation:
+    """A rule whose rate is exactly 0 at load must still be activatable post-init.
+
+    NFsim drops reaction rules with a zero base rate at parse time — the rule is
+    gone for good, and no later setParameter() can resurrect it. bngsim keeps
+    zero-rate rules in the session System (GH #44) so the common "equilibrate,
+    then switch a rate on, continue" protocol works. Before the fix the post-init
+    write updated get_parameter() but the rule stayed absent, so the next
+    simulate() segment was silently a no-op (AB never rose above 0).
+    """
+
+    @staticmethod
+    def _ab(nf, result):
+        names = list(nf.get_observable_names())
+        return result.observables[-1][names.index("AB")]
+
+    def test_post_init_activates_zero_rate_rule(self, nfsim_switchable_rate_xml):
+        with bngsim.NfsimSession(str(nfsim_switchable_rate_xml)) as nf:
+            nf.initialize(seed=1)  # kf = 0 from the XML: binding is off
+            r0 = nf.simulate(0, 5, n_points=2)
+            assert self._ab(nf, r0) == 0  # nothing binds while kf = 0
+            nf.set_param("kf", 1.0)  # switch binding on mid-protocol
+            r1 = nf.simulate(5, 10, n_points=2)
+            assert nf.get_parameter("kf") == pytest.approx(1.0)
+            assert self._ab(nf, r1) > 0  # the rule now fires
+
+    def test_post_init_reaches_pre_init_equilibrium(self, nfsim_switchable_rate_xml):
+        """Switching kf on post-init reaches the same binding as loading kf on."""
+        with bngsim.NfsimSession(str(nfsim_switchable_rate_xml)) as nf:
+            nf.set_param("kf", 1.0)  # pre-init: binding on from the start
+            nf.initialize(seed=1)
+            pre = self._ab(nf, nf.simulate(0, 20, n_points=2))
+
+        with bngsim.NfsimSession(str(nfsim_switchable_rate_xml)) as nf:
+            nf.initialize(seed=1)  # kf = 0
+            nf.simulate(0, 5, n_points=2)
+            nf.set_param("kf", 1.0)  # post-init: binding on from t=5
+            post = self._ab(nf, nf.simulate(5, 25, n_points=2))
+
+        # ~94/100 pairs bind at equilibrium for kf=kr=1; both paths get there.
+        assert pre >= 80
+        assert post >= 80
+
+    def test_clear_overrides_after_activation_deactivates_rule(self, nfsim_switchable_rate_xml):
+        """clear_param_overrides() reverts kf to its XML value (0) on the live System."""
+        with bngsim.NfsimSession(str(nfsim_switchable_rate_xml)) as nf:
+            nf.initialize(seed=1)
+            nf.set_param("kf", 1.0)
+            assert nf.get_parameter("kf") == pytest.approx(1.0)
+            nf.clear_param_overrides()
+            assert nf.get_parameter("kf") == pytest.approx(0.0)
+            # With binding back off, no AB forms from the unbound seed pool.
+            r = nf.simulate(0, 10, n_points=2)
+            assert self._ab(nf, r) == 0
+
+
 # ─── Molecule mutations ──────────────────────────────────────────────────
 
 

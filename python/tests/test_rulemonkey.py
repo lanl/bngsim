@@ -82,6 +82,60 @@ class TestRuleMonkeySession:
         assert np.all(np.asarray(result.observables)[:, xy_idx] == 0)
 
 
+class TestRuleMonkeySessionDerivedSeedAmounts:
+    """Issue #44 Bug 2: pre-init set_param must re-derive derived seed amounts.
+
+    A seed species whose amount is a *derived* expression (``Ntot = 100*scale``)
+    must respond to a pre-init ``set_param('scale', ...)`` the same way the NFsim
+    session does — otherwise the two engines silently run different initial
+    conditions. Upstream RuleMonkey records only each parameter's precomputed
+    ``value=`` and never re-derives dependents under an override; bngsim closes
+    the gap by baking the propagated parameter namespace into the XML before the
+    engine parses (mirroring the NFsim path).
+    """
+
+    def test_pre_init_rederives_derived_seed_amount(self, nfsim_switchable_rate_xml):
+        with bngsim.RuleMonkeySession(str(nfsim_switchable_rate_xml)) as rm:
+            rm.set_param("scale", 0.5)  # Ntot = 100*scale -> 50
+            rm.initialize(seed=1)
+            assert rm.get_parameter("Ntot") == pytest.approx(50.0)
+            assert rm.get_species_count("A(b)") == 50
+            assert rm.get_species_count("B(b)") == 50
+
+    def test_matches_nfsim_initial_condition(self, nfsim_switchable_rate_xml):
+        """Both engines must start from identical seed-species counts."""
+        counts = {}
+        for name, Sess in (
+            ("nf", bngsim.NfsimSession),
+            ("rm", bngsim.RuleMonkeySession),
+        ):
+            with Sess(str(nfsim_switchable_rate_xml)) as s:
+                s.set_param("scale", 0.5)
+                s.initialize(seed=1)
+                counts[name] = s.get_species_count("A(b)")
+        assert counts["rm"] == counts["nf"] == 50
+
+    def test_fractional_derived_seed_rounds_like_nfsim(self, nfsim_switchable_rate_xml):
+        """Fractional derived seed amounts round half-up identically (GH #51)."""
+        counts = {}
+        for name, Sess in (
+            ("nf", bngsim.NfsimSession),
+            ("rm", bngsim.RuleMonkeySession),
+        ):
+            with Sess(str(nfsim_switchable_rate_xml)) as s:
+                s.set_param("scale", 0.337)  # Ntot = 33.7 -> round-half-up 34
+                s.initialize(seed=1)
+                counts[name] = s.get_species_count("A(b)")
+        assert counts["rm"] == counts["nf"] == 34
+
+    def test_clear_overrides_reverts_seed_amount(self, nfsim_switchable_rate_xml):
+        with bngsim.RuleMonkeySession(str(nfsim_switchable_rate_xml)) as rm:
+            rm.set_param("scale", 0.5)
+            rm.clear_param_overrides()
+            rm.initialize(seed=1)
+            assert rm.get_species_count("A(b)") == 100  # back to Ntot = 100
+
+
 # RuleMonkey canonicalizes X's components as `X(y,p~0)` — note this is the
 # component order the runtime pattern parser accepts for exact-species lookup
 # (see TestRuleMonkeySessionPatternOrder for the order-sensitivity caveat).

@@ -523,6 +523,17 @@ namespace NFcore
 			void setNFsimV1143Compatibility(bool value) { this->nfsimV1143Compatibility = value; }
 			bool getNFsimV1143Compatibility() const { return nfsimV1143Compatibility; }
 
+			// When true, reaction rules whose base rate is exactly zero at parse
+			// time are still registered with the System (instead of being dropped
+			// by NFinput). Their propensity is zero, so trajectories are
+			// unchanged — but keeping the reaction means a later setParameter()
+			// that raises the rate can activate it. bngsim's stateful session API
+			// (set_param after initialize) relies on this; the upstream default of
+			// dropping zero-rate rules assumes rates never change at runtime. See
+			// bngsim GH #44.
+			void setKeepZeroRateReactions(bool value) { this->keepZeroRateReactions = value; }
+			bool getKeepZeroRateReactions() const { return keepZeroRateReactions; }
+
 			void setMaxCpuTime(double time) { max_cpu_time = time; };
 
 			clock_t start,finish;
@@ -575,6 +586,7 @@ namespace NFcore
 		    bool anyRxnTagged; /*< sets whether any reaction is tagged for output when it fires */
 		    bool connectivityFlag; /* Whether to infer and use reaction connectivity  for updating molecule rxn membership*/
 		    bool nfsimV1143Compatibility = false; /* Preserve NFsim v1.14.3 selector double-draw behavior */
+		    bool keepZeroRateReactions = false; /* Keep zero-base-rate rules in the System so a later setParameter can activate them (bngsim GH #44) */
 		    bool trackConnected; /* Whether to track connected reactions after each reaction firing. Useful for debugging */
 		    bool printConnected; /* Whether to print connected reactions at the beginning of the simulation. Useful for debugging */
 			bool outputMoleculeTypesFile; /* Output molecule types (default: false) */

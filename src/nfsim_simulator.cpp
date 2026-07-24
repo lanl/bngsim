@@ -10,6 +10,7 @@
 #include "bngsim/result.hpp"
 #include "bngsim/types.hpp"
 #include "bngsim/wallclock.hpp"
+#include "param_override_xml.hpp" // shared <Parameter> table + override baking
 #include "seed_count_rounding.hpp"
 
 // NFsim headers (from vendored libnfsim)
@@ -574,118 +575,18 @@ matching_molecules(const ResolvedSingleMoleculePattern &pattern) {
 // ─── BNG XML <Parameter> table for ExprTk-driven override propagation ────────
 //
 // NFsim's loader records only the precomputed `value=` for each `<Parameter>`,
-// dropping the `expr=` attribute. That makes setParameter() a flat write —
-// dependents like `LT = LT_conc_M*NA*V_sim` or `_rateLawN = kf1*(1-use_excess)`
-// stay pinned to their XML-time values when callers move a base parameter.
-//
-// XmlParamTable closes the gap: it parses every `<Parameter>` tag once, holds
-// the BNG-emitted expression strings, and re-evaluates the whole table through
-// bngsim's ExprTk evaluator whenever overrides change. The new values are
-// pushed into NFsim's paramMap and updateSystemWithNewParameters() cascades
-// them through global / composite / local functions and reaction base rates.
-//
-// Extract a quoted attribute value: name="..." (or name='...').
-// BNG2.pl uses double quotes throughout; supporting both keeps this
-// resilient to any future XML-emitter tweaks.
-//
-// Returns the inner string and (out-param) the [open_quote_index,
-// close_quote_index] range so callers that want to splice replacement
-// text into the original line can do so without re-scanning.
-static std::optional<std::string> extract_xml_attr(const std::string &line, const std::string &attr,
-                                                   std::size_t *out_value_begin = nullptr,
-                                                   std::size_t *out_value_end = nullptr) {
-    const std::string needle = attr + "=";
-    size_t pos = 0;
-    while ((pos = line.find(needle, pos)) != std::string::npos) {
-        if (pos > 0) {
-            char prev = line[pos - 1];
-            if (std::isalnum(static_cast<unsigned char>(prev)) || prev == '_') {
-                pos += needle.size();
-                continue;
-            }
-        }
-        size_t q = pos + needle.size();
-        if (q >= line.size() || (line[q] != '"' && line[q] != '\'')) {
-            return std::nullopt;
-        }
-        char quote = line[q];
-        size_t end = line.find(quote, q + 1);
-        if (end == std::string::npos) {
-            return std::nullopt;
-        }
-        if (out_value_begin) {
-            *out_value_begin = q + 1;
-        }
-        if (out_value_end) {
-            *out_value_end = end;
-        }
-        return line.substr(q + 1, end - q - 1);
-    }
-    return std::nullopt;
-}
-
-struct XmlParam {
-    std::string name;
-    std::string expr;
-    double xml_value = 0.0;
-};
-
-class XmlParamTable {
-  public:
-    bool loaded = false;
-    std::vector<XmlParam> params;                       // declaration order
-    std::unordered_map<std::string, std::size_t> index; // name → params slot
-
-    void load(const std::string &xml_path) {
-        if (loaded) {
-            return;
-        }
-        std::ifstream in(xml_path);
-        if (!in) {
-            throw std::runtime_error("XmlParamTable: cannot open XML file '" + xml_path + "'");
-        }
-        std::string line;
-        // BNG2.pl emits one <Parameter id="..." [type="..."] value="..." [expr="..."]/> per line
-        // inside <ListOfParameters>...</ListOfParameters>. We scan linewise and stop at the
-        // closing tag — anything later in the XML (functions, observables, reactions) does
-        // not concern this table.
-        bool in_list = false;
-        while (std::getline(in, line)) {
-            if (!in_list) {
-                if (line.find("<ListOfParameters>") != std::string::npos) {
-                    in_list = true;
-                }
-                continue;
-            }
-            if (line.find("</ListOfParameters>") != std::string::npos) {
-                break;
-            }
-            auto trimmed = trim_ascii(line);
-            if (trimmed.rfind("<Parameter", 0) != 0) {
-                continue;
-            }
-            auto id = extract_xml_attr(trimmed, "id");
-            if (!id) {
-                continue;
-            }
-            XmlParam p;
-            p.name = *id;
-            if (auto v = extract_xml_attr(trimmed, "value")) {
-                try {
-                    p.xml_value = std::stod(*v);
-                } catch (const std::exception &) {
-                    p.xml_value = 0.0;
-                }
-            }
-            if (auto e = extract_xml_attr(trimmed, "expr")) {
-                p.expr = *e;
-            }
-            index[p.name] = params.size();
-            params.push_back(std::move(p));
-        }
-        loaded = true;
-    }
-};
+// dropping the `expr=` attribute, so setParameter() is a flat write that leaves
+// dependents (`LT = LT_conc_M*NA*V_sim`, `_rateLawN`, ...) pinned at their
+// XML-time values when a base parameter moves. The param-override machinery in
+// param_override_xml.hpp closes the gap: it parses every `<Parameter>` once,
+// keeps the BNG-emitted expression strings, and re-evaluates the whole table
+// under overrides. The re-evaluated values are pushed into NFsim's paramMap and
+// updateSystemWithNewParameters() cascades them through global / composite /
+// local functions and reaction base rates. Shared with the RuleMonkey backend.
+using bngsim::paramxml::evaluate_param_table_with_overrides;
+using bngsim::paramxml::extract_xml_attr;
+using bngsim::paramxml::write_param_overridden_xml;
+using bngsim::paramxml::XmlParamTable;
 
 // ─── BNG XML <ListOfFunctions> → expression (function) output columns ────────
 //
@@ -812,158 +713,6 @@ static void eval_function_set(const std::vector<NfsimOutputFunction> &funcs,
     for (std::size_t k = 0; k < funcs.size(); ++k) {
         out[k] = eval_output_function(funcs[k]);
     }
-}
-
-// Re-evaluate every parameter through ExprTk with `overrides` applied.
-//
-// Returns name→value for every parameter in the table (overrides included).
-// Evaluation walks the table in declaration order — BNG2.pl emits parameters
-// such that every reference is to a previously-declared name, so a single
-// pass produces a fixed point.
-//
-// Throws std::runtime_error if any parameter expression fails to compile or
-// evaluate; that is intentionally loud because silently leaving downstream
-// parameters at stale values is exactly the bug we are fixing.
-static std::unordered_map<std::string, double>
-evaluate_param_table_with_overrides(const XmlParamTable &table,
-                                    const std::unordered_map<std::string, double> &overrides) {
-    std::unordered_map<std::string, double> out;
-    if (table.params.empty()) {
-        return out;
-    }
-
-    ExprTkEvaluator evaluator;
-    std::vector<double> slots(table.params.size());
-
-    for (size_t i = 0; i < table.params.size(); ++i) {
-        slots[i] = table.params[i].xml_value;
-        try {
-            evaluator.define_variable(table.params[i].name, &slots[i]);
-        } catch (const std::exception &e) {
-            throw std::runtime_error("XmlParamTable: cannot register parameter '" +
-                                     table.params[i].name + "' with ExprTk evaluator (" + e.what() +
-                                     "). Note: BNG built-in names like "
-                                     "'time' clash with ExprTk's built-in functions.");
-        }
-    }
-
-    std::vector<int> compiled(table.params.size(), -1);
-    for (size_t i = 0; i < table.params.size(); ++i) {
-        const auto &p = table.params[i];
-        if (p.expr.empty()) {
-            continue;
-        }
-        try {
-            compiled[i] = evaluator.compile(p.expr);
-        } catch (const std::exception &e) {
-            throw std::runtime_error("XmlParamTable: failed to compile expression for parameter '" +
-                                     p.name + "' (expr='" + p.expr + "'): " + e.what());
-        }
-    }
-
-    for (size_t i = 0; i < table.params.size(); ++i) {
-        const auto &p = table.params[i];
-        auto it = overrides.find(p.name);
-        if (it != overrides.end()) {
-            slots[i] = it->second;
-        } else if (compiled[i] >= 0) {
-            slots[i] = evaluator.evaluate(compiled[i]);
-        }
-        out[p.name] = slots[i];
-    }
-    return out;
-}
-
-// Write a per-process unique temp XML alongside `tmp_dir`. Caller owns
-// the returned path and must remove the file when done.
-//
-// Why a temp file (and not in-memory string): `NFinput::initializeFromXML`
-// takes a path. The cost (one ~50 KB write + one ~50 KB read) is
-// negligible next to NFsim parsing.
-static std::filesystem::path make_unique_tmp_xml_path() {
-    namespace fs = std::filesystem;
-    static std::atomic<uint64_t> counter{0};
-    const auto pid = static_cast<long>(::getpid());
-    const auto n = counter.fetch_add(1, std::memory_order_relaxed);
-    fs::path tmp_dir = fs::temp_directory_path();
-    return tmp_dir / ("bngsim_nfsim_" + std::to_string(pid) + "_" + std::to_string(n) + ".xml");
-}
-
-// Format an override-resolved value with full IEEE 754 precision so the
-// rewritten XML round-trips exactly to the same bit pattern. NFsim parses
-// `value=` via convertToDouble → strtod, which accepts `%.17g` output.
-static std::string format_override_value(double v) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.17g", v);
-    return std::string(buf);
-}
-
-// Splice a new `value="..."` attribute payload into a `<Parameter ...>` line,
-// leaving everything else (including any `expr="..."` attribute) untouched.
-// Returns the line unchanged if `value=` is missing or malformed.
-static std::string rewrite_parameter_value_attr(const std::string &line, double new_value) {
-    std::size_t value_begin = 0;
-    std::size_t value_end = 0;
-    auto current = extract_xml_attr(line, "value", &value_begin, &value_end);
-    if (!current) {
-        return line;
-    }
-    return line.substr(0, value_begin) + format_override_value(new_value) + line.substr(value_end);
-}
-
-// Write a copy of `src_xml_path` to a fresh temp file, replacing the
-// `value="..."` attribute on every `<Parameter id="X" .../>` line whose id
-// appears in `values`. All other content (including `<Species
-// concentration="X">` references and `<RateConstant value="_rateLawN"/>`
-// pointers) is preserved verbatim — NFsim resolves those through the
-// parameter map, so rewriting `<Parameter value=>` cascades automatically.
-//
-// Throws std::runtime_error on I/O failure. Caller must remove the
-// returned path when done.
-static std::filesystem::path
-write_param_overridden_xml(const std::string &src_xml_path,
-                           const std::unordered_map<std::string, double> &values) {
-    namespace fs = std::filesystem;
-    std::ifstream in(src_xml_path);
-    if (!in) {
-        throw std::runtime_error("write_param_overridden_xml: cannot open source XML '" +
-                                 src_xml_path + "'");
-    }
-
-    fs::path tmp_path = make_unique_tmp_xml_path();
-    std::ofstream out(tmp_path);
-    if (!out) {
-        throw std::runtime_error("write_param_overridden_xml: cannot open temp XML '" +
-                                 tmp_path.string() + "'");
-    }
-
-    bool in_param_list = false;
-    std::string line;
-    while (std::getline(in, line)) {
-        if (!in_param_list) {
-            if (line.find("<ListOfParameters>") != std::string::npos) {
-                in_param_list = true;
-            }
-        } else if (line.find("</ListOfParameters>") != std::string::npos) {
-            in_param_list = false;
-        } else if (trim_ascii(line).rfind("<Parameter", 0) == 0) {
-            if (auto id = extract_xml_attr(line, "id")) {
-                auto it = values.find(*id);
-                if (it != values.end()) {
-                    line = rewrite_parameter_value_attr(line, it->second);
-                }
-            }
-        }
-        out << line << '\n';
-    }
-    out.close();
-    if (!out) {
-        std::error_code ec;
-        fs::remove(tmp_path, ec);
-        throw std::runtime_error("write_param_overridden_xml: write failure on temp XML '" +
-                                 tmp_path.string() + "'");
-    }
-    return tmp_path;
 }
 
 // RAII wrapper that removes the temp XML on scope exit. Best-effort: any
@@ -1105,7 +854,12 @@ struct NfsimSimulator::Impl {
             /*blockSameComplexBinding=*/block_same_complex_binding, molecule_limit,
             /*verbose=*/false, suggestedTraversalLimit,
             /*evaluateComplexScopedLocalFunctions=*/true,
-            /*connectivityFlag=*/connectivity_flag);
+            /*connectivityFlag=*/connectivity_flag,
+            // Keep zero-base-rate rules so a post-init set_param can activate a
+            // rule that loaded with rate 0 (e.g. equilibrate then switch a rate
+            // on). Without this NFsim drops such rules at parse and the write is
+            // silently a no-op (GH #44).
+            /*keepZeroRateReactions=*/true);
 
         if (changed_cwd) {
             try {

@@ -2,13 +2,18 @@
 
 #include "bngsim/rulemonkey_simulator.hpp"
 #include "bngsim/wallclock.hpp"
+#include "param_override_xml.hpp" // shared <Parameter> table + override baking
 #include "seed_count_rounding.hpp"
 
 #include <rulemonkey/simulator.hpp>
 #include <rulemonkey/types.hpp>
 
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -145,22 +150,74 @@ rulemonkey::TimeSpec to_rulemonkey_times(const TimeSpec &times) {
 } // namespace
 
 struct RuleMonkeySimulator::Impl {
-    explicit Impl(std::string path)
-        : xml_path(std::move(path)),
-          // Round fractional seed-species concentrations to integer counts at
-          // the bngsim handoff so RuleMonkey's truncating loader sees an
-          // already-integer value (GH #51). Fail-safe: no temp → load the
-          // original XML unchanged. `seed_rounded` is declared before `sim`, so
-          // it is destroyed *after* sim — the temp file outlives every read
-          // RuleMonkey makes of it.
-          seed_rounded(bngsim::seedround::write_seed_rounded_xml(xml_path)),
-          sim(seed_rounded.path_or(xml_path), rulemonkey::Method::NfExact) {
-        reject_unsupported_errors(sim);
+    explicit Impl(std::string path) : xml_path(std::move(path)) { build_sim(/*resolved=*/{}); }
+
+    // (Re)build the upstream sim from `xml_path`. When `resolved` is non-empty,
+    // its fully-propagated parameter values are baked into the XML's <Parameter
+    // value=> attributes first, so the loader resolves seed-species
+    // concentrations and rate constants against the overridden namespace. This
+    // is how a pre-init set_param reaches a *derived* seed amount such as
+    // `Ntot = 100*scale`: upstream RuleMonkey records only <Parameter value=>
+    // and never re-derives dependent parameters under an override, so without
+    // the re-bake the derived seed count silently stays at its XML-time value
+    // (GH #44). Mirrors NfsimSimulator::create_system.
+    //
+    // Then fractional seed-species concentrations are rounded half-up
+    // (override-aware overlay) so RuleMonkey's truncating loader matches the
+    // cold-start seed policy (GH #51). Reapplies the instance configuration
+    // (molecule limit, same-complex-binding) the caller set before initialize.
+    //
+    // Temp files are declared before `sim` (destroyed after it) and reassigned
+    // here before the new sim is built, so each parsed sim sees a live file.
+    void build_sim(const std::unordered_map<std::string, double> &resolved) {
+        std::string src = xml_path;
+        if (!resolved.empty()) {
+            param_baked = bngsim::seedround::TempXmlFile{
+                bngsim::paramxml::write_param_overridden_xml(xml_path, resolved)};
+            src = param_baked.path_or(xml_path);
+        } else {
+            param_baked = bngsim::seedround::TempXmlFile{};
+        }
+        seed_rounded = bngsim::seedround::TempXmlFile{
+            bngsim::seedround::write_seed_rounded_xml(src, resolved)};
+        const std::string load_path = seed_rounded.path_or(src);
+
+        sim = std::make_unique<rulemonkey::RuleMonkeySimulator>(load_path,
+                                                                rulemonkey::Method::NfExact);
+        reject_unsupported_errors(*sim);
+        if (molecule_limit) {
+            sim->set_molecule_limit(*molecule_limit);
+        }
+        sim->set_block_same_complex_binding(bscb);
+    }
+
+    // Resolve the pending pre-init overrides through the XML <Parameter expr=>
+    // graph and rebuild the sim with them baked in. No-op (leaves the existing
+    // sim in place) when nothing is pending.
+    void rebuild_with_overrides() {
+        if (param_overrides.empty()) {
+            return;
+        }
+        std::unordered_map<std::string, double> resolved;
+        param_table.load(xml_path);
+        if (!param_table.params.empty()) {
+            resolved =
+                bngsim::paramxml::evaluate_param_table_with_overrides(param_table, param_overrides);
+        }
+        build_sim(resolved);
     }
 
     std::string xml_path;
+    std::optional<int> molecule_limit;
+    bool bscb = true;
+    // Pending pre-init parameter overrides, propagated into the XML at the next
+    // initialize(). Also forwarded to the live sim so get_parameter() reflects a
+    // direct override before initialize().
+    std::unordered_map<std::string, double> param_overrides;
+    bngsim::paramxml::XmlParamTable param_table;
+    bngsim::seedround::TempXmlFile param_baked;
     bngsim::seedround::TempXmlFile seed_rounded;
-    rulemonkey::RuleMonkeySimulator sim;
+    std::unique_ptr<rulemonkey::RuleMonkeySimulator> sim;
 };
 
 RuleMonkeySimulator::RuleMonkeySimulator(const std::string &xml_path)
@@ -169,6 +226,10 @@ RuleMonkeySimulator::RuleMonkeySimulator(const std::string &xml_path)
 RuleMonkeySimulator::~RuleMonkeySimulator() = default;
 
 Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
+    // Bake any pending parameter overrides into the XML before the stateless
+    // run, so derived seed-species amounts follow a set_param the same way the
+    // session path does (GH #44). No-op when no overrides are pending.
+    impl_->rebuild_with_overrides();
     WallClockBudget budget(timeout_seconds);
     try {
         // Both the uniform grid and explicit sample_times (GH #169) go through
@@ -179,7 +240,7 @@ Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double tim
         // with the requested time, so convert_rulemonkey_result needs no explicit
         // time labels and solver_stats().n_steps now reports for both paths.
         auto rm_result =
-            impl_->sim.run(to_rulemonkey_times(times), seed, make_cancel_callback(budget));
+            impl_->sim->run(to_rulemonkey_times(times), seed, make_cancel_callback(budget));
         return convert_rulemonkey_result(rm_result);
     } catch (const rulemonkey::Cancelled &) {
         // Upstream raises Cancelled iff our callback returned false, which it
@@ -189,12 +250,19 @@ Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double tim
     }
 }
 
-void RuleMonkeySimulator::initialize(uint64_t seed) { impl_->sim.initialize(seed); }
+void RuleMonkeySimulator::initialize(uint64_t seed) {
+    // Bake any pending pre-init parameter overrides into the XML and rebuild the
+    // sim before the session is created, so derived seed-species amounts are
+    // re-derived against the overridden namespace (GH #44). No-op when no
+    // overrides are pending.
+    impl_->rebuild_with_overrides();
+    impl_->sim->initialize(seed);
+}
 
 void RuleMonkeySimulator::step_to(double time, double timeout_seconds) {
     WallClockBudget budget(timeout_seconds);
     try {
-        impl_->sim.step_to(time, make_cancel_callback(budget));
+        impl_->sim->step_to(time, make_cancel_callback(budget));
     } catch (const rulemonkey::Cancelled &) {
         throw TimeoutError(budget.limit_seconds(), budget.elapsed());
     }
@@ -204,7 +272,7 @@ Result RuleMonkeySimulator::simulate(double t_start, double t_end, int n_points,
                                      double timeout_seconds,
                                      const std::vector<double> &sample_times) {
     WallClockBudget budget(timeout_seconds);
-    const double internal_start = impl_->sim.current_time();
+    const double internal_start = impl_->sim->current_time();
 
     try {
         if (!sample_times.empty()) {
@@ -227,14 +295,14 @@ Result RuleMonkeySimulator::simulate(double t_start, double t_end, int n_points,
             }
             rm_ts.t_start = internal_start;
             rm_ts.t_end = rm_ts.sample_times.back();
-            auto rm_result = impl_->sim.simulate(rm_ts, make_cancel_callback(budget));
+            auto rm_result = impl_->sim->simulate(rm_ts, make_cancel_callback(budget));
             return convert_rulemonkey_result(rm_result, &sample_times);
         }
 
         const double internal_end = internal_start + (t_end - t_start);
         auto rm_result =
-            impl_->sim.simulate(internal_start, internal_end, rulemonkey_interval_count(n_points),
-                                make_cancel_callback(budget));
+            impl_->sim->simulate(internal_start, internal_end, rulemonkey_interval_count(n_points),
+                                 make_cancel_callback(budget));
         auto labels = uniform_time_labels(t_start, t_end, n_points);
         return convert_rulemonkey_result(rm_result, &labels);
     } catch (const rulemonkey::Cancelled &) {
@@ -243,71 +311,86 @@ Result RuleMonkeySimulator::simulate(double t_start, double t_end, int n_points,
 }
 
 void RuleMonkeySimulator::add_molecules(const std::string &molecule_type_name, int count) {
-    impl_->sim.add_molecules(molecule_type_name, count);
+    impl_->sim->add_molecules(molecule_type_name, count);
 }
 
 int RuleMonkeySimulator::get_molecule_count(const std::string &molecule_type_name) const {
-    return impl_->sim.get_molecule_count(molecule_type_name);
+    return impl_->sim->get_molecule_count(molecule_type_name);
 }
 
 int RuleMonkeySimulator::get_species_count(const std::string &pattern) const {
-    return impl_->sim.get_species_count(pattern);
+    return impl_->sim->get_species_count(pattern);
 }
 
 void RuleMonkeySimulator::add_species(const std::string &pattern, int count) {
-    impl_->sim.add_species(pattern, count);
+    impl_->sim->add_species(pattern, count);
 }
 
 void RuleMonkeySimulator::remove_species(const std::string &pattern, int count) {
-    impl_->sim.remove_species(pattern, count);
+    impl_->sim->remove_species(pattern, count);
 }
 
 void RuleMonkeySimulator::set_species_count(const std::string &pattern, int count) {
-    impl_->sim.set_species_count(pattern, count);
+    impl_->sim->set_species_count(pattern, count);
 }
 
 void RuleMonkeySimulator::save_species(const std::string &path) const {
-    impl_->sim.write_species_file(path);
+    impl_->sim->write_species_file(path);
 }
 
 double
 RuleMonkeySimulator::evaluate_expression(const std::string &expr,
                                          const std::unordered_map<std::string, double> &extra) {
-    return impl_->sim.evaluate_expression(expr, extra);
+    return impl_->sim->evaluate_expression(expr, extra);
 }
 
 std::vector<std::string> RuleMonkeySimulator::get_observable_names() const {
-    return impl_->sim.observable_names();
+    return impl_->sim->observable_names();
 }
 
 std::vector<double> RuleMonkeySimulator::get_observable_values() {
-    return impl_->sim.get_observable_values();
+    return impl_->sim->get_observable_values();
 }
 
 double RuleMonkeySimulator::get_parameter(const std::string &name) const {
-    return impl_->sim.get_parameter(name);
+    return impl_->sim->get_parameter(name);
 }
 
-bool RuleMonkeySimulator::has_session() const { return impl_->sim.has_session(); }
+bool RuleMonkeySimulator::has_session() const { return impl_->sim->has_session(); }
 
-double RuleMonkeySimulator::current_time() const { return impl_->sim.current_time(); }
+double RuleMonkeySimulator::current_time() const { return impl_->sim->current_time(); }
 
-void RuleMonkeySimulator::destroy_session() { impl_->sim.destroy_session(); }
+void RuleMonkeySimulator::destroy_session() { impl_->sim->destroy_session(); }
 
-void RuleMonkeySimulator::save_state(const std::string &path) const { impl_->sim.save_state(path); }
+void RuleMonkeySimulator::save_state(const std::string &path) const {
+    impl_->sim->save_state(path);
+}
 
-void RuleMonkeySimulator::load_state(const std::string &path) { impl_->sim.load_state(path); }
+void RuleMonkeySimulator::load_state(const std::string &path) { impl_->sim->load_state(path); }
 
 void RuleMonkeySimulator::set_param(const std::string &name, double value) {
-    impl_->sim.set_param(name, value);
+    // Forward to the live sim first: it validates the name and enforces
+    // "no override while a session is active", and keeps get_parameter()
+    // reflecting a direct override before initialize(). Only on success do we
+    // record the override for the initialize()-time XML re-bake that also
+    // re-derives dependent parameters and seed-species amounts (GH #44).
+    impl_->sim->set_param(name, value);
+    impl_->param_overrides[name] = value;
 }
 
-void RuleMonkeySimulator::clear_param_overrides() { impl_->sim.clear_param_overrides(); }
+void RuleMonkeySimulator::clear_param_overrides() {
+    impl_->sim->clear_param_overrides();
+    impl_->param_overrides.clear();
+}
 
-void RuleMonkeySimulator::set_molecule_limit(int limit) { impl_->sim.set_molecule_limit(limit); }
+void RuleMonkeySimulator::set_molecule_limit(int limit) {
+    impl_->molecule_limit = limit;
+    impl_->sim->set_molecule_limit(limit);
+}
 
 void RuleMonkeySimulator::set_block_same_complex_binding(bool enabled) {
-    impl_->sim.set_block_same_complex_binding(enabled);
+    impl_->bscb = enabled;
+    impl_->sim->set_block_same_complex_binding(enabled);
 }
 
 const std::string &RuleMonkeySimulator::xml_path() const { return impl_->xml_path; }

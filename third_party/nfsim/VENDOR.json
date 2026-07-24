@@ -7,7 +7,7 @@
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "8478a3c85c6ed382ff27b4c5f145cf97525b873d",
+    "commit": "ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a",
     "base_ref": "origin/master",
     "base_commit": "4c3da839f6c1ecdf1a1ea32942c5de52904e0377"
   },
@@ -178,6 +178,17 @@
         {
           "commit": "f1f21e84cd182e62263ece6ef56c69427c2c00ee",
           "summary": "bngsim: restore stepTo cache compatibility hook"
+        }
+      ]
+    },
+    {
+      "topic": "bngsim/carry-keep-zero-rate-reactions",
+      "kind": "local",
+      "status": "Keep reaction rules whose base rate is exactly zero at parse time in the System instead of dropping them, gated behind an opt-in System::keepZeroRateReactions flag threaded through initializeFromXML. bngsim's stateful session API changes a rate after initialize() (equilibrate, then switch a rate on); a dropped zero-rate rule can never be resurrected by a later setParameter(). A kept rule has zero propensity, so trajectories are unchanged; the default (off) preserves upstream behavior. See bngsim GH #44.",
+      "commits": [
+        {
+          "commit": "ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a",
+          "summary": "bngsim: keep zero-base-rate reactions so post-init set_param can activate them"
         }
       ]
     }

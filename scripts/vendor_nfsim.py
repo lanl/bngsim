@@ -305,6 +305,29 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-keep-zero-rate-reactions",
+        "kind": "local",
+        "status": (
+            "Keep reaction rules whose base rate is exactly zero at parse time "
+            "in the System instead of dropping them, gated behind an opt-in "
+            "System::keepZeroRateReactions flag threaded through "
+            "initializeFromXML. bngsim's stateful session API changes a rate "
+            "after initialize() (equilibrate, then switch a rate on); a dropped "
+            "zero-rate rule can never be resurrected by a later setParameter(). "
+            "A kept rule has zero propensity, so trajectories are unchanged; the "
+            "default (off) preserves upstream behavior. See bngsim GH #44."
+        ),
+        "commits": [
+            {
+                "commit": "ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a",
+                "summary": (
+                    "bngsim: keep zero-base-rate reactions so post-init "
+                    "set_param can activate them"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

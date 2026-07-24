@@ -264,6 +264,28 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`set_param` was not propagated on two network-free session paths, both
+  silently (issue #44).** Two independent gaps let a network-free session run
+  with plausible-but-wrong state. (1) `NfsimSession.set_param` after
+  `initialize()` updated the parameter value (`get_parameter` reflected it) but
+  did not refresh the reaction rate — a rule whose rate loaded at exactly zero
+  had been *dropped* by NFsim's parser (`NFinput` only registers a rule when its
+  base rate is `> 0`), so no later write could resurrect it, and the common
+  "equilibrate, then switch a rate on, continue" protocol was a no-op. NFsim now
+  keeps zero-base-rate rules when the host asks (new opt-in
+  `System::keepZeroRateReactions`, threaded through `initializeFromXML` and
+  carried as vendor patch 0015); their propensity is zero so trajectories are
+  unchanged, but a post-init `set_param` can now activate them. (2)
+  `RuleMonkeySession.set_param` before `initialize()` did not re-derive a
+  seed-species amount given by a derived expression (`Ntot = 100*scale`): upstream
+  RuleMonkey records only each parameter's precomputed `value=` and never
+  cascades an override through dependent parameters, so the count stayed at the
+  XML-time value while `NfsimSession` scaled correctly — the two engines silently
+  started from different initial conditions. The RuleMonkey wrapper now bakes the
+  override-resolved parameter namespace into the XML before the engine parses
+  (and re-rounds fractional seed amounts), mirroring the NFsim path, so both
+  engines start identically. The `<Parameter>`-table + override-baking machinery
+  is now shared between the two backends in `src/param_override_xml.hpp`.
 - **An explicit `$BNGPATH` was silently ignored whenever PyBioNetGen was
   installed.** The test-side BNG2.pl helpers asked `bionetgen.main.get_conf()`
   for its bundled copy first and read `$BNGPATH` / `$BNG2_PL` only from an
