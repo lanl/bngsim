@@ -11,6 +11,8 @@ add_test(NAME bngsim_tests COMMAND test_bngsim)
 # Validation against run_network reference outputs
 add_executable(test_validation test_validation.cpp)
 target_link_libraries(test_validation PRIVATE bngsim)
+target_compile_definitions(test_validation PRIVATE TEST_DATA_DIR="${TEST_DATA_DIR}")
+add_test(NAME bngsim_validation COMMAND test_validation)
 
 # ─── Optimized dense linear solver (GH #84) ─────────────────────────────────
 add_executable(test_lapack_dense_linsol test_lapack_dense_linsol.cpp)
@@ -18,15 +20,24 @@ target_link_libraries(test_lapack_dense_linsol PRIVATE bngsim)
 add_test(NAME lapack_dense_linsol_test COMMAND test_lapack_dense_linsol)
 
 # ─── C API tests (Session 61, NEXT_STEPS P3) ────────────────────────────────
+# test_c_api reads its model from argv[1] (a .net path) rather than a
+# TEST_DATA_DIR compile define, and exits non-zero if given none. Register it
+# with a minimal valid model; it is model-agnostic (the reserved-name and
+# error-path cases dominate), so simple_decay.net exercises every branch.
 add_executable(test_c_api test_c_api.cpp)
 target_link_libraries(test_c_api PRIVATE bngsim)
-target_compile_definitions(test_validation PRIVATE TEST_DATA_DIR="${TEST_DATA_DIR}")
-add_test(NAME bngsim_validation COMMAND test_validation)
+add_test(NAME c_api_test COMMAND test_c_api "${TEST_DATA_DIR}/simple_decay.net")
 
 # ─── Cold-start seed-count rounding policy (GH #51) ──────────────────────────
-# Header-only target: seed_count_rounding.hpp has no link dependencies.
+# Header-only target: seed_count_rounding.hpp has no link dependencies, so it
+# does not pull bngsim's interface include dirs transitively. It still needs
+# both src/ (for the header itself) and include/ (seed_count_rounding.hpp
+# includes bngsim/platform_compat.hpp, the Windows getpid() shim from GH #150)
+# on the search path, or the standalone target fails to compile.
 add_executable(test_seed_count_rounding test_seed_count_rounding.cpp)
-target_include_directories(test_seed_count_rounding PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(test_seed_count_rounding PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include)
 set_target_properties(test_seed_count_rounding PROPERTIES
     CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME seed_count_rounding_test COMMAND test_seed_count_rounding)

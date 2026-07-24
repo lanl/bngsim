@@ -1,34 +1,42 @@
 name: native-tests
 
-# CI gate for the C++ unit suite (tests/test_bngsim).
+# CI gate for the native C++ test suite, driven through ctest.
 #
-# Until now NOTHING in CI built it. Every workflow that compiles the project
-# passes BNGSIM_BUILD_TESTS=OFF (mir.yml, windows-nfsim.yml, windows-tail.yml),
-# and no job ever invoked the binary — so the suite's only gate was a developer
-# remembering to build it by hand. The pre-push hook covers python/tests; the
-# C++ side had no equivalent at any stage, local or remote.
+# Until #38 NOTHING in CI built these tests. Every workflow that compiles the
+# project passes BNGSIM_BUILD_TESTS=OFF (mir.yml, windows-nfsim.yml,
+# windows-tail.yml), and no job ever invoked the binaries — so the suite's only
+# gate was a developer remembering to build it by hand. The pre-push hook
+# covers python/tests; the C++ side had no equivalent at any stage.
 #
 # That is not hypothetical. #28 flipped SteadyStateOptions::method from "newton"
 # to "integration" and updated the Python side, leaving the C++ assertion in
 # test_find_steady_state_methods asserting the old default. The suite sat at
 # 49/50 on every branch from that merge until someone built it locally and
-# noticed. No CI run could have caught it, which is also why it survived so
-# long: a permanently-red suite is worse than a smaller green one, because a
+# noticed (#36). No CI run could have caught it, which is also why it survived
+# so long: a permanently-red suite is worse than a smaller green one, because a
 # genuine regression arrives looking exactly like the failure everyone has
 # learned to wave off.
 #
-# Scope: Linux only, and deliberately lean. KLU, NFsim and RuleMonkey are all
-# OFF — test_bngsim links none of them, and skipping the vendored builds takes
-# the target count from 146 to 81. The wheels/MIR/Windows jobs already cover
-# those subsystems; duplicating them here would buy nothing and cost minutes.
-# LAPACK is left at its default: find_package(LAPACK QUIET) degrades to the
-# reference dense solver when absent, so the build is fine either way.
+# #38 closed that gap for test_bngsim alone. This job (#39) drives the WHOLE
+# registered suite through `ctest` rather than one named target, so any binary
+# added with add_test() in tests/CMakeLists.txt is picked up here without
+# editing this workflow: test_bngsim, test_validation, test_lapack_dense_linsol,
+# test_c_api, test_seed_count_rounding.
 #
-# Not covered here: the other native binaries in tests/CMakeLists.txt
-# (test_validation, test_c_api, test_lapack_dense_linsol,
-# test_seed_count_rounding, the NFsim pair). They remain ungated. Extending
-# this job to ctest is a reasonable follow-up; this one closes the gap that
-# actually drew blood.
+# Scope: Linux only, and deliberately lean. KLU, NFsim and RuleMonkey are all
+# OFF — the tests run here link none of them, and skipping the vendored builds
+# takes the target count from 146 to 81. LAPACK is left at its default:
+# find_package(LAPACK QUIET) degrades to the reference dense solver when
+# absent, so the build is fine either way.
+#
+# NFsim tradeoff (called out explicitly per #39): the two NFsim tests
+# (nfsim_library_test, nfsim_simulator_test) exist only when
+# BNGSIM_BUILD_NFSIM=ON, so they are NOT registered on this leg and ctest does
+# not run them here. That is intentional — windows-nfsim.yml exercises the NFsim
+# subsystem, and duplicating the vendored NFsim/RuleMonkey build on this Linux
+# gate would cost minutes for no new coverage. If NFsim ever needs Linux CI, add
+# a second ctest leg with NFsim ON rather than letting the pair fall through the
+# gap the way test_bngsim once did.
 
 on:
   push:
@@ -70,37 +78,64 @@ jobs:
             -DBNGSIM_BUILD_NFSIM=OFF \
             -DBNGSIM_BUILD_RULEMONKEY=OFF
 
-      - name: Build test_bngsim
+      - name: Build the test suite
         run: |
           set -euxo pipefail
-          cmake --build build --target test_bngsim -j"$(nproc)"
+          # Build everything (not one named target) so every test binary ctest
+          # might run is compiled — new tests are picked up without editing this.
+          cmake --build build -j"$(nproc)"
 
-      - name: Run the C++ unit suite
+      - name: Run the full C++ suite (ctest)
         run: |
           set -euxo pipefail
-          # test_bngsim exits 0 only when tests_passed == tests_run, and pipefail
-          # propagates that through the tee, so this line is the gate. Output is
-          # teed because the guard below re-reads the summary.
-          ./build/tests/test_bngsim 2>&1 | tee /tmp/native-tests.log
+          # ctest drives every add_test() target, so newly-registered binaries
+          # run without a workflow edit. --no-tests=error turns a mis-scoped run
+          # that matches zero tests into a failure instead of a vacuous
+          # "100% passed, 0 tests". The exit code is the gate; teed for the guard.
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            2>&1 | tee /tmp/ctest.log
 
       - name: Guard against a false green
         run: |
           set -euo pipefail
-          # Every RUN_TEST in test_bngsim.cpp is unconditionally compiled — there
-          # is no #if around any of them — so the total is an invariant, not a
-          # platform-dependent count. Asserting a floor catches the one failure
-          # mode the exit code cannot see: a suite that passes because tests
-          # stopped being registered. Raise FLOOR when tests are added; adding
-          # them never breaks this, only removing them does.
-          FLOOR=50
-          summary="$(grep -oE '[0-9]+/[0-9]+ tests passed' /tmp/native-tests.log | tail -1)"
-          if [ -z "$summary" ]; then
-            echo "::error::No 'N/N tests passed' summary found — the suite did not run to completion."
+          # Two denominators, two ways coverage can silently shrink to green:
+          #
+          #   1. A whole binary loses its add_test() registration. ctest's own
+          #      count drops; --no-tests=error only catches the zero case, so
+          #      assert a floor to trip on losing any single binary too.
+          #   2. RUN_TEST cases vanish from *inside* test_bngsim. ctest still
+          #      sees one passing binary — only that binary's own "N/N tests
+          #      passed" line reveals it. This is the exact #28/#36 failure mode.
+          #
+          # Both floors only rise as tests are added; additions never break them,
+          # only silent removals do.
+          CTEST_FLOOR=5
+          BNGSIM_FLOOR=50
+
+          total="$(grep -oE 'tests failed out of [0-9]+' /tmp/ctest.log \
+            | tail -1 | grep -oE '[0-9]+$' || true)"
+          if [ -z "$total" ]; then
+            echo "::error::No ctest summary line — the suite did not run to completion."
             exit 1
           fi
-          ran="${summary#*/}"; ran="${ran%% *}"
-          echo "Suite reported: $summary (floor $FLOOR)"
-          if [ "$ran" -lt "$FLOOR" ]; then
-            echo "::error::Only $ran tests registered, expected >= $FLOOR — tests disappeared rather than failed."
+          echo "ctest registered $total test binaries (floor $CTEST_FLOOR)."
+          if [ "$total" -lt "$CTEST_FLOOR" ]; then
+            echo "::error::Only $total ctest tests, expected >= $CTEST_FLOOR — a binary lost its add_test()."
+            exit 1
+          fi
+
+          # ctest sees test_bngsim as a single passing binary and cannot see
+          # cases disappear from within it. Re-run it alone (fast, no external
+          # deps) and assert its own case count.
+          ./build/tests/test_bngsim 2>&1 | tee /tmp/test_bngsim.log
+          ran="$(grep -oE '[0-9]+/[0-9]+ tests passed' /tmp/test_bngsim.log | tail -1 || true)"
+          ran="${ran#*/}"; ran="${ran%% *}"
+          if [ -z "$ran" ]; then
+            echo "::error::No 'N/N tests passed' summary from test_bngsim."
+            exit 1
+          fi
+          echo "test_bngsim ran $ran cases (floor $BNGSIM_FLOOR)."
+          if [ "$ran" -lt "$BNGSIM_FLOOR" ]; then
+            echo "::error::Only $ran test_bngsim cases, expected >= $BNGSIM_FLOOR — cases vanished rather than failed."
             exit 1
           fi
