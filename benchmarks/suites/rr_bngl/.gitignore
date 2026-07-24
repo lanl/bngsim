@@ -1,0 +1,13 @@
+# Working directory for run_rr_bngl.py (BNGsim vs RoadRunner/AMICI on the BNGL
+# corpus -- Figures 4a / 5a of the paper). Everything here is regenerated on every
+# run and large/machine-specific, so it is never committed; the figures' committed
+# provenance lives in the paper repo (latex/generated/). Mirrors the sibling caches
+# ignored by amici_parity/.gitignore (runs/, amici_cache/) and ode_fullnet (/nets/).
+#
+# cached .net -> SBML exports (~170 MB)
+sbml/
+# OMEX export intermediates
+omex/
+# _core parity reports (report_rr_bngl.json / report_amici_bngl.json + smokes)
+report_*.json
+__pycache__/
