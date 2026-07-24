@@ -1,0 +1,114 @@
+From ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <hlavacek@lanl.gov>
+Date: Fri, 24 Jul 2026 14:44:10 -0600
+Subject: [PATCH 15/15] bngsim: keep zero-base-rate reactions so post-init
+ set_param can activate them
+
+NFsim drops reaction rules whose base rate is exactly zero at parse time
+(NFinput.cpp), so a rule that loads with rate 0 is never registered with
+the System and no later setParameter() can activate it. bngsim's stateful
+session API supports changing a rate after initialize() (equilibrate, then
+switch a rate on, continue), which needs the rule to exist. Add an opt-in
+System::keepZeroRateReactions flag, threaded through initializeFromXML, so
+zero-rate rules are still registered (their propensity is zero, so the
+trajectory is unchanged). Default off preserves upstream behavior. See
+bngsim GH #44.
+---
+ src/NFcore/NFcore.hh    | 12 ++++++++++++
+ src/NFinput/NFinput.cpp | 21 +++++++++++++++++----
+ src/NFinput/NFinput.hh  |  3 ++-
+ 3 files changed, 31 insertions(+), 5 deletions(-)
+
+diff --git a/src/NFcore/NFcore.hh b/src/NFcore/NFcore.hh
+index e0359b5..2991ad6 100644
+--- a/src/NFcore/NFcore.hh
++++ b/src/NFcore/NFcore.hh
+@@ -523,6 +523,17 @@ namespace NFcore
+ 			void setNFsimV1143Compatibility(bool value) { this->nfsimV1143Compatibility = value; }
+ 			bool getNFsimV1143Compatibility() const { return nfsimV1143Compatibility; }
+ 
++			// When true, reaction rules whose base rate is exactly zero at parse
++			// time are still registered with the System (instead of being dropped
++			// by NFinput). Their propensity is zero, so trajectories are
++			// unchanged — but keeping the reaction means a later setParameter()
++			// that raises the rate can activate it. bngsim's stateful session API
++			// (set_param after initialize) relies on this; the upstream default of
++			// dropping zero-rate rules assumes rates never change at runtime. See
++			// bngsim GH #44.
++			void setKeepZeroRateReactions(bool value) { this->keepZeroRateReactions = value; }
++			bool getKeepZeroRateReactions() const { return keepZeroRateReactions; }
++
+ 			void setMaxCpuTime(double time) { max_cpu_time = time; };
+ 
+ 			clock_t start,finish;
+@@ -575,6 +586,7 @@ namespace NFcore
+ 		    bool anyRxnTagged; /*< sets whether any reaction is tagged for output when it fires */
+ 		    bool connectivityFlag; /* Whether to infer and use reaction connectivity  for updating molecule rxn membership*/
+ 		    bool nfsimV1143Compatibility = false; /* Preserve NFsim v1.14.3 selector double-draw behavior */
++		    bool keepZeroRateReactions = false; /* Keep zero-base-rate rules in the System so a later setParameter can activate them (bngsim GH #44) */
+ 		    bool trackConnected; /* Whether to track connected reactions after each reaction firing. Useful for debugging */
+ 		    bool printConnected; /* Whether to print connected reactions at the beginning of the simulation. Useful for debugging */
+ 			bool outputMoleculeTypesFile; /* Output molecule types (default: false) */
+diff --git a/src/NFinput/NFinput.cpp b/src/NFinput/NFinput.cpp
+index 8f5a72c..f1cb32c 100644
+--- a/src/NFinput/NFinput.cpp
++++ b/src/NFinput/NFinput.cpp
+@@ -74,7 +74,8 @@ System * NFinput::initializeFromXML(
+ 		bool verbose,
+ 		int &suggestedTraversalLimit,
+ 		bool evaluateComplexScopedLocalFunctions,
+-		bool connectivityFlag)
++		bool connectivityFlag,
++		bool keepZeroRateReactions)
+ {
+ 	if(!verbose) cout<<"reading xml file ("+filename+")  \n\t[";
+ 	if(verbose) cout<<"\tTrying to read xml model specification file: \t\n'"<<filename<<"'"<<endl;
+@@ -135,6 +136,11 @@ System * NFinput::initializeFromXML(
+ 		// set inferring and using reaction connectivity flag
+ 		s->useConnectivityFlag(connectivityFlag);
+ 
++		// keep zero-base-rate reaction rules in the System (bngsim GH #44) so a
++		// later setParameter() can activate them. Must be set before
++		// initReactionRules() below, where the guard is applied.
++		s->setKeepZeroRateReactions(keepZeroRateReactions);
++
+ 		//Read the key lists needed for the simulation and make sure they exist...
+ 		TiXmlElement *pListOfParameters = pModel->FirstChildElement("ListOfParameters");
+ 		if(!pListOfParameters) { cout<<"\tNo 'ListOfParameters' tag found.  Quitting."; delete s; return NULL; }
+@@ -2767,9 +2773,16 @@ bool NFinput::initReactionRulePermutation(
+ 							}
+ 						}
+ 
+-					//Finally, add the completed rxn rule to the system only
+-					//base rate is non-zero.
+-					if (r->getBaseRate() > 0) {
++					//Finally, add the completed rxn rule to the system.
++					//Normally rules with a zero base rate are dropped (they can
++					//never fire), but when the System is told to keep them
++					//(bngsim GH #44) we register them anyway: their propensity is
++					//zero so the trajectory is unchanged, yet a later
++					//setParameter() that raises the rate can activate the rule
++					//(NFsim's stateful "equilibrate, then switch a rate on"
++					//protocol). A dropped rule is gone for good — no parameter
++					//write can resurrect it.
++					if (r->getBaseRate() > 0 || s->getKeepZeroRateReactions()) {
+ 						s->addReaction(r);
+ 						reaction_name_id_map[rxnName] = reaction_count;
+ 						reaction_count++;
+diff --git a/src/NFinput/NFinput.hh b/src/NFinput/NFinput.hh
+index 968d0a2..cb42b0b 100644
+--- a/src/NFinput/NFinput.hh
++++ b/src/NFinput/NFinput.hh
+@@ -66,7 +66,8 @@ namespace NFinput {
+ 			bool verbose,
+ 			int &suggestedTraversalLimit,
+ 			bool evaluateComplexScopedLocalFunctions=false,
+-			bool connectivityFlag=false);
++			bool connectivityFlag=false,
++			bool keepZeroRateReactions=false);
+ 
+ 	//! Reads the parameter XML block and puts them in the parameter map.
+ 	/*!
+-- 
+2.50.1 (Apple Git-155)
+

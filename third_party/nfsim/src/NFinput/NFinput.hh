@@ -66,7 +66,8 @@ namespace NFinput {
 			bool verbose,
 			int &suggestedTraversalLimit,
 			bool evaluateComplexScopedLocalFunctions=false,
-			bool connectivityFlag=false);
+			bool connectivityFlag=false,
+			bool keepZeroRateReactions=false);
 
 	//! Reads the parameter XML block and puts them in the parameter map.
 	/*!

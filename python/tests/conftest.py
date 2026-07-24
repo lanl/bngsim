@@ -404,6 +404,21 @@ def nfsim_seed_concentration_xml(data_dir: Path) -> Path:
 
 
 @pytest.fixture
+def nfsim_switchable_rate_xml(data_dir: Path) -> Path:
+    """A(b)+B(b)<->A.B with a switchable rate and a derived seed amount (GH #44).
+
+    ``kf`` (the binding rate) is 0 at load, so the bind rule would be dropped by
+    NFsim's parser unless the session keeps zero-rate rules — this exercises Bug
+    1 (a post-init ``set_param('kf', ...)`` must be able to activate the rule).
+    Both seed species use ``concentration="Ntot"`` where ``Ntot = 100*scale``, a
+    *derived* parameter — this exercises Bug 2 (a pre-init ``set_param('scale',
+    ...)`` must re-derive the seed-species amount, matching NFsim). Shared by the
+    NFsim and RuleMonkey session tests.
+    """
+    return data_dir / "nfsim" / "switchable_rate.xml"
+
+
+@pytest.fixture
 def fractional_init_xml(data_dir: Path) -> Path:
     """Path to XML fixture with non-integer initial species count."""
     return data_dir / "nfsim" / "fractional_init.xml"

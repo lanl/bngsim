@@ -74,7 +74,8 @@ System * NFinput::initializeFromXML(
 		bool verbose,
 		int &suggestedTraversalLimit,
 		bool evaluateComplexScopedLocalFunctions,
-		bool connectivityFlag)
+		bool connectivityFlag,
+		bool keepZeroRateReactions)
 {
 	if(!verbose) cout<<"reading xml file ("+filename+")  \n\t[";
 	if(verbose) cout<<"\tTrying to read xml model specification file: \t\n'"<<filename<<"'"<<endl;
@@ -134,6 +135,11 @@ System * NFinput::initializeFromXML(
 
 		// set inferring and using reaction connectivity flag
 		s->useConnectivityFlag(connectivityFlag);
+
+		// keep zero-base-rate reaction rules in the System (bngsim GH #44) so a
+		// later setParameter() can activate them. Must be set before
+		// initReactionRules() below, where the guard is applied.
+		s->setKeepZeroRateReactions(keepZeroRateReactions);
 
 		//Read the key lists needed for the simulation and make sure they exist...
 		TiXmlElement *pListOfParameters = pModel->FirstChildElement("ListOfParameters");
@@ -2767,9 +2773,16 @@ bool NFinput::initReactionRulePermutation(
 							}
 						}
 
-					//Finally, add the completed rxn rule to the system only
-					//base rate is non-zero.
-					if (r->getBaseRate() > 0) {
+					//Finally, add the completed rxn rule to the system.
+					//Normally rules with a zero base rate are dropped (they can
+					//never fire), but when the System is told to keep them
+					//(bngsim GH #44) we register them anyway: their propensity is
+					//zero so the trajectory is unchanged, yet a later
+					//setParameter() that raises the rate can activate the rule
+					//(NFsim's stateful "equilibrate, then switch a rate on"
+					//protocol). A dropped rule is gone for good — no parameter
+					//write can resurrect it.
+					if (r->getBaseRate() > 0 || s->getKeepZeroRateReactions()) {
 						s->addReaction(r);
 						reaction_name_id_map[rxnName] = reaction_count;
 						reaction_count++;
