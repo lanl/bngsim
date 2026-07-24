@@ -35,6 +35,136 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError("\n" + report)
 
 
+# ─── Skip audit ────────────────────────────────────────────────────────────────
+#
+# Sibling in spirit to the stale-binary preflight above: that guard stops the
+# suite reporting on code that isn't running, this one stops it reporting on
+# tests that aren't running. A skipped test and a passing test are the same
+# character in the summary line, so a permanently-dead test is invisible.
+#
+# That is not hypothetical. test_sbml_reversible_split.py::test_copasi_abc_xml_loads
+# resolved its fixture one directory level too high and had therefore NEVER run,
+# on any machine, since it was written — the first draft of this audit is what
+# surfaced it. Separately, three whole classes skipped on every CI leg we have
+# because they imported PyBNF (lanl/bngsim#45); one had been red for months on the
+# only boxes that could run it.
+#
+# Nothing in CI runs the full Python suite (every workflow pytest call is a
+# curated file list), so the audience for this is the pre-push hook — the one
+# gate that runs everything. Printing the table there means a dev sees, on every
+# push, exactly what did not run.
+#
+# Undeclared reasons warn by default. Set BNGSIM_SKIP_AUDIT=strict to make them
+# fail instead; BNGSIM_SKIP_AUDIT=off silences the block entirely. Strict is
+# opt-in because the per-environment reason set is still settling — a curated CI
+# leg skips a different subset than a full local run, and a guard that cries wolf
+# gets disabled, which would leave us worse off than a quiet one.
+
+# Declared skip reasons: (substring to match, why this skip is legitimate).
+# A skip whose reason matches none of these is reported as undeclared. Adding an
+# entry is the point — it forces a new permanent skip to be justified in a diff
+# rather than blending into the summary count.
+_DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
+    # Build-configuration variants — the feature is genuinely absent from this build.
+    ("without the MIR backend", "MIR JIT is off unless -DBNGSIM_ENABLE_MIR=ON"),
+    ("KLU not compiled", "KLU-off builds are a supported configuration"),
+    ("requires a build without SuiteSparse/KLU", "inverse of the above; KLU-off builds only"),
+    ("LAPACK-dense not built", "LAPACK is optional; CMake degrades to the reference solver"),
+    ("RuleMonkey compiled in", "inverse-condition test; runs only on RuleMonkey-off builds"),
+    ("RuleMonkey not compiled in", "RuleMonkey is a build-time opt-in"),
+    # Optional / developer-only Python dependencies.
+    ("could not import", "optional extra (h5py, jax, pandas, sympy, xarray, ...) absent"),
+    ("roadrunner", "DEVELOPER-ONLY reference engine; never a base dependency"),
+    ("scipy", "optional extra"),
+    ("antimony", "optional extra; loaders fall back to SBML"),
+    # External tools and corpora that are not vendored.
+    ("BNG2.pl", "external perl toolchain, not a bngsim dependency"),
+    ("biomodels", "BioModels corpus is fetched, not vendored ($BIOMODELS_SBML_DIR)"),
+    ("benchmark", "benchmark corpus lives outside the packaged tree"),
+    ("abc.xml not at", "fixture in a sibling PyBNF checkout; dev-only"),
+    # Source-tree vs installed-wheel context.
+    ("installed wheel", "source-tree-only guard, correctly inert against a wheel"),
+    ("source root", "version-consistency check needs the source tree"),
+    ("CMake", "CMakeCache cross-checks need a configured build dir"),
+    ("explicitly bypassed via env", "the escape hatch reporting that it was used"),
+    # Missing .net / .xml fixtures. Deliberately last and deliberately narrow:
+    # this is the category that rots silently, so it matches the exact phrasings
+    # in use rather than a blanket "not found".
+    ("not present", "optional fixture absent from this checkout"),
+    ("not found", "optional fixture absent from this checkout"),
+    ("not available", "optional fixture absent from this checkout"),
+)
+
+
+def _skip_reason(report: object) -> str:
+    """Pull the human reason out of a skip report, minus pytest's prefix."""
+    longrepr = getattr(report, "longrepr", None)
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        reason = str(longrepr[2])
+    else:
+        reason = str(longrepr or "")
+    return reason[len("Skipped: ") :] if reason.startswith("Skipped: ") else reason
+
+
+def _audit_skips(terminalreporter: object) -> tuple[dict[str, int], dict[str, int]]:
+    """Return (reason -> count, undeclared subset thereof).
+
+    Recomputed by each hook rather than shared through the stash: conftest's
+    pytest_sessionfinish can run *before* the terminal reporter's (which is what
+    invokes pytest_terminal_summary), so anything the summary stashes is not yet
+    there when the exit code is decided.
+    """
+    counts: dict[str, int] = {}
+    for report in getattr(terminalreporter, "stats", {}).get("skipped", []):
+        reason = _skip_reason(report)
+        counts[reason] = counts.get(reason, 0) + 1
+    undeclared = {
+        reason: n
+        for reason, n in counts.items()
+        if not any(pattern.lower() in reason.lower() for pattern, _ in _DECLARED_SKIPS)
+    }
+    return counts, undeclared
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_terminal_summary(
+    terminalreporter: object, exitstatus: object, config: pytest.Config
+) -> None:
+    """Print what did not run, and flag reasons nobody has declared."""
+    mode = os.environ.get("BNGSIM_SKIP_AUDIT", "warn").lower()
+    if mode == "off":
+        return
+    counts, undeclared = _audit_skips(terminalreporter)
+    if not counts:
+        return
+
+    write = terminalreporter.write_line  # type: ignore[attr-defined]
+    terminalreporter.write_sep("─", "skip audit")  # type: ignore[attr-defined]
+    for reason, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        mark = "??" if reason in undeclared else "  "
+        write(f" {mark} {n:>3}  {reason[:96]}")
+    if undeclared:
+        write("")
+        write(f" {len(undeclared)} undeclared skip reason(s), marked ?? above.")
+        write(" Add each to _DECLARED_SKIPS in python/tests/conftest.py with a rationale,")
+        write(" or fix the test so it runs. A skip nobody declared is usually a test that")
+        write(" stopped running without anyone deciding it should.")
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Fail the run for undeclared skips under BNGSIM_SKIP_AUDIT=strict."""
+    if os.environ.get("BNGSIM_SKIP_AUDIT", "warn").lower() != "strict":
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None:
+        return
+    _, undeclared = _audit_skips(reporter)
+    # Only escalate a run that would otherwise pass; a real failure keeps its
+    # own exit code, which is the more actionable one.
+    if undeclared and exitstatus == 0:
+        session.exitstatus = 1
+
+
 @pytest.fixture
 def data_dir() -> Path:
     """Path to the C++ test data directory (shared with Phase A tests).

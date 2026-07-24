@@ -5,7 +5,6 @@ Covers:
 - Reduced-space Newton convergence for models with conservation laws
 - Newton method now works via auto for reversible model
 - Sensitivity at steady state with conservation laws
-- parameter_scan integration in BngsimModel
 """
 
 from __future__ import annotations
@@ -13,20 +12,6 @@ from __future__ import annotations
 import bngsim
 import numpy as np
 import pytest
-
-
-def _import_parameter_scan_action():
-    """Import PyBNF's parameter_scan parser when its optional stack is present.
-
-    Bngsim wheels/releases may be used without a full PyBNF install; these
-    tests then skip instead of failing at import time.
-    """
-    try:
-        from pybnf.bngsim_model import _parse_parameter_scan_action
-    except ModuleNotFoundError as exc:
-        pytest.skip(f"PyBNF parameter_scan parser unavailable in this environment: {exc.name}")
-    return _parse_parameter_scan_action
-
 
 # -- Fixtures -------------------------------------------------------
 
@@ -184,32 +169,15 @@ class TestSensitivityWithConservation:
         np.testing.assert_allclose(fd_sens, 0.0, atol=1e-3)
 
 
-# -- Part B: parameter_scan in BngsimModel -------------------------
-
-
-class TestParameterScan:
-    """Test parameter_scan() action parsing and routing in BngsimModel."""
-
-    def test_parse_parameter_scan_action(self):
-        """_parse_parameter_scan_action parses correctly."""
-        _parse_parameter_scan_action = _import_parameter_scan_action()
-        line = (
-            'parameter_scan({parameter=>"kf",method=>"ode",'
-            "par_min=>0.001,par_max=>1.0,n_scan_pts=>5,"
-            'suffix=>"dose",t_end=>1000,steady_state=>1})'
-        )
-        result = _parse_parameter_scan_action(line)
-        assert result is not None
-        assert result["parameter"] == "kf"
-        assert result["par_min"] == "0.001"
-        assert result["par_max"] == "1.0"
-        assert result["n_scan_pts"] == "5"
-        assert result["suffix"] == "dose"
-        assert result["t_end"] == "1000"
-        assert result["steady_state"] == "1"
-
-    def test_parse_parameter_scan_returns_none(self):
-        """Non-parameter_scan lines return None."""
-        _parse_parameter_scan_action = _import_parameter_scan_action()
-        assert _parse_parameter_scan_action("simulate({method=>ode})") is None
-        assert _parse_parameter_scan_action("# comment") is None
+# -- Part B: parameter_scan parsing — tested in PyBNF ---------------
+#
+# The `_parse_parameter_scan_action` unit tests that lived here imported a private
+# PyBNF helper across the repo boundary; they now sit with the code they cover, in
+# PyBNF tests/test_bngsim_parsing.py (canonical keys + the decline-foreign-lines
+# parametrization). Removed as part of lanl/bngsim#45 — see the longer note at the
+# foot of test_sample_times.py for why this direction of coupling kept going stale
+# without anyone's CI noticing.
+#
+# The prose above (`parameter_scan` routing through BNGsim's batch steady-state
+# and time-course paths) still describes real behavior; what it does NOT need is
+# for us to assert PyBNF's parser is correct.

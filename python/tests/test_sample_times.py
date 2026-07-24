@@ -309,139 +309,25 @@ class TestSampleTimesValidation:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# _resolve_sample_times() helper
+# PyBNF's _resolve_sample_times / _parse_simulate_action — tested in PyBNF
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-_pybnf_available = True
-try:
-    from pybnf.bngsim_model import _parse_simulate_action, _resolve_sample_times
-except ImportError:
-    _pybnf_available = False
-
-
-@pytest.mark.skipif(not _pybnf_available, reason="pybnf not importable (missing roadrunner)")
-class TestResolveSampleTimes:
-    """Unit tests for the _resolve_sample_times helper."""
-
-    def _resolve(self, params):
-        return _resolve_sample_times(params)
-
-    def test_not_present(self):
-        assert self._resolve({}) is None
-
-    def test_none_value(self):
-        assert self._resolve({"sample_times": None}) is None
-
-    def test_empty_list(self):
-        assert self._resolve({"sample_times": []}) is None
-
-    def test_basic(self):
-        result = self._resolve({"sample_times": ["0", "5", "10"]})
-        assert result == [0.0, 5.0, 10.0]
-
-    def test_auto_sort(self):
-        result = self._resolve({"sample_times": ["10", "0", "5"]})
-        assert result == [0.0, 5.0, 10.0]
-
-    def test_single_point_returns_none(self):
-        """One point is the only "too few" case the helper rejects.
-
-        The guard is `len < 2` — see the two-point test below for why it is not
-        `len < 3`. A lone instant cannot describe a span, so it is dropped.
-        """
-        assert self._resolve({"sample_times": ["5"]}) is None
-
-    def test_two_points_accepted(self):
-        """Two points is a valid request, and this boundary has moved once.
-
-        The helper shipped with a 3-point minimum, then PyBNF 14a8e25c lowered
-        it to 2 "to match bngsim update" — bngsim's own contract is 2 (see
-        `resolve_sample_times` in `python/bngsim/_sample_times.py`, which raises
-        below 2 and accepts exactly 2). This asserts the lowered bound directly
-        so a future re-tightening fails loudly here rather than silently
-        diverging from ours (lanl/bngsim#45).
-        """
-        assert self._resolve({"sample_times": ["0", "10"]}) == [0.0, 10.0]
-
-    def test_n_steps_precedence(self):
-        """n_steps takes precedence over sample_times (BioNetGen compat)."""
-        result = self._resolve(
-            {
-                "sample_times": ["0", "5", "10"],
-                "n_steps": "100",
-            }
-        )
-        assert result is None
-
-    def test_n_output_steps_precedence(self):
-        result = self._resolve(
-            {
-                "sample_times": ["0", "5", "10"],
-                "n_output_steps": "50",
-            }
-        )
-        assert result is None
-
-    def test_t_end_appended(self):
-        """t_end is appended to sample_times if larger than last point."""
-        result = self._resolve(
-            {
-                "sample_times": ["0", "5", "10"],
-                "t_end": "20",
-            }
-        )
-        assert result == [0.0, 5.0, 10.0, 20.0]
-
-    def test_t_end_not_appended_if_not_larger(self):
-        result = self._resolve(
-            {
-                "sample_times": ["0", "5", "10"],
-                "t_end": "10",
-            }
-        )
-        assert result == [0.0, 5.0, 10.0]
-
-    def test_exponential_notation(self):
-        result = self._resolve({"sample_times": ["5e-1", "1", "1E1"]})
-        assert result == [0.5, 1.0, 10.0]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# BNGL action parsing — _parse_simulate_action with sample_times
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-@pytest.mark.skipif(not _pybnf_available, reason="pybnf not importable (missing roadrunner)")
-class TestParseSimulateActionSampleTimes:
-    """Verify _parse_simulate_action handles sample_times=>[...] syntax."""
-
-    def _parse(self, line):
-        return _parse_simulate_action(line)
-
-    def test_basic_simulate_still_works(self):
-        result = self._parse('simulate({method=>"ode", t_end=>100, n_steps=>50})')
-        assert result is not None
-        assert result["method"] == "ode"
-        assert result["t_end"] == "100"
-        assert result["n_steps"] == "50"
-
-    def test_sample_times_parsed_as_list(self):
-        result = self._parse('simulate({method=>"ode", sample_times=>[0,1,5,10,50]})')
-        assert result is not None
-        assert isinstance(result["sample_times"], list)
-        assert result["sample_times"] == ["0", "1", "5", "10", "50"]
-
-    def test_sample_times_with_exponential(self):
-        result = self._parse('simulate({method=>"ode", sample_times=>[5e-1,1,1E1]})')
-        assert result is not None
-        assert result["sample_times"] == ["5e-1", "1", "1E1"]
-
-    def test_not_simulate_returns_none(self):
-        assert self._parse("setParameter('k1', 0.5)") is None
-
-    def test_sample_times_with_other_params(self):
-        result = self._parse('simulate({method=>"ode", sample_times=>[0,5,10], suffix=>"tc"})')
-        assert result is not None
-        assert result["sample_times"] == ["0", "5", "10"]
-        assert result["suffix"] == "tc"
+#
+# This file used to unit-test those two private PyBNF helpers by importing them
+# across the repo boundary. That coverage now lives with the code it covers:
+#
+#   PyBNF tests/test_bngsim_bridge.py::TestResolveSampleTimes
+#   PyBNF tests/test_bngsim_parsing.py (action-dict + value parsing)
+#
+# Removed rather than fixed in place (lanl/bngsim#45). PyBNF already had its own
+# TestResolveSampleTimes — same class name, broader coverage — so ours was a fork
+# that drifted: when PyBNF deliberately lowered the sample_times minimum from 3
+# points to 2, their copy was updated and ours kept asserting the old rule. It sat
+# red for months because the class skipped wherever roadrunner was absent, which
+# is every CI leg we have, so only a dev box with the full PyBNF stack ever ran it
+# — and there it looked like a pre-existing failure to wave off.
+#
+# What belongs here instead is our own half of the contract, which needs no PyBNF:
+# TestSampleTimesValidation above pins `resolve_sample_times` (>= 2 points, sorted,
+# finite), and TestSampleTimesODE/SSA/NetworkFree pin that a request is honored
+# exactly. If PyBNF changes how it *derives* sample_times, that is their test's
+# job; if we change what we *accept*, it is ours.

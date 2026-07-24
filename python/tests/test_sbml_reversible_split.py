@@ -250,9 +250,15 @@ def test_split_trajectory_fluctuates_not_locked():
 def test_copasi_abc_xml_loads():
     """The original PyBNF abc.xml — COPASI-style 3-species reversible
     chain with `compartment * (kf*A - kr*B)` shape — must load cleanly
-    under SSA after Phase 7. Fixture lives in the PyBNF tree; skip if
-    not present."""
-    abc_path = Path(__file__).resolve().parents[4] / "PyBNF" / "tests" / "bngl_files" / "abc.xml"
+    under SSA after Phase 7. Fixture lives in a sibling PyBNF checkout; skip if
+    not present.
+
+    parents[3] is the directory *containing* this checkout, so a sibling PyBNF
+    resolves as <dev root>/PyBNF — matching the same assumption in
+    test_protocol.py. It read parents[4] until the skip audit surfaced it, which
+    resolved one level too high and made the skip unconditional: the test had
+    never run anywhere."""
+    abc_path = Path(__file__).resolve().parents[3] / "PyBNF" / "tests" / "bngl_files" / "abc.xml"
     if not abc_path.exists():
         pytest.skip(f"abc.xml not at {abc_path}")
     model = bngsim.Model.from_sbml(str(abc_path))
