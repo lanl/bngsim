@@ -51,6 +51,7 @@ def _import_copasi():
         with contextlib.suppress(Exception):
             locale.setlocale(locale.LC_CTYPE, saved)
 
+
 # Reuse the bngsim adapter + engine-agnostic helpers from rr_parity. _rr_common
 # resolves on sys.path because copasi_run.py inserts parity_checks/ (its parent)
 # before importing this module — the same bootstrap amici_parity uses.
@@ -173,7 +174,11 @@ def co_ode(
         # 2. Import (libSBML parse + COPASI model build). importSBML returns False
         #    on an unsupported construct; the reason is in the message deque.
         t1 = time.perf_counter()
-        ok = dm.importSBML(sbml_path) if sbml_path is not None else dm.importSBMLFromString(sbml_str)
+        ok = (
+            dm.importSBML(sbml_path)
+            if sbml_path is not None
+            else dm.importSBMLFromString(sbml_str)
+        )
         if not ok:
             raise RuntimeError(f"COPASI importSBML failed: {_copasi_msg()}")
         load_sec = time.perf_counter() - t1
@@ -240,9 +245,7 @@ def co_ode(
         ts = task.getTimeSeries()
         n_rec = ts.getRecordedSteps()
         n_var = ts.getNumVariables()
-        state_cols = [
-            v for v in range(n_var) if ts.getTitle(v) != "Time" and ts.getSBMLId(v, dm)
-        ]
+        state_cols = [v for v in range(n_var) if ts.getTitle(v) != "Time" and ts.getSBMLId(v, dm)]
         names = [ts.getSBMLId(v, dm) for v in state_cols]
         raw_t = np.array([ts.getConcentrationData(s, 0) for s in range(n_rec)], dtype=float)
         raw_v = np.array(
