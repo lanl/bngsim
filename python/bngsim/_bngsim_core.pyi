@@ -234,24 +234,19 @@ class NetworkModel:
     def observable_names(self) -> list[str]:
         ...
     @property
-    def param_is_expression(self) -> list[bool]:
-        """
-        Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``).
-        """
-    @property
     def param_expressions(self) -> list[str]:
         """
         Per-parameter defining expression string, parallel to ``param_names`` (empty for primary/constant parameters). Used by the codegen sensitivity layer to chain-rule ∂(derived IC)/∂primary for derived-parameter species initial conditions (issue #43).
         """
     @property
+    def param_is_expression(self) -> list[bool]:
+        """
+        Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``).
+        """
+    @property
     def param_names(self) -> list[str]:
         """
         List of all parameter names
-        """
-    @property
-    def species_ic_param_refs(self) -> list[tuple[int, int]]:
-        """
-        List of (species_idx0, param_idx0) pairs recording each species whose initial concentration is set by a parameter reference in the .net ``begin species`` block. Consumed by the forward-sensitivity IC-seed chain rule (issue #43).
         """
     @property
     def pending_sensitivity_seed_param_names(self) -> list[str]:
@@ -272,6 +267,11 @@ class NetworkModel:
     def rhs_observable_eval_count(self) -> int:
         """
         Number of RHS evaluations that ran update_observables + evaluate_functions.
+        """
+    @property
+    def species_ic_param_refs(self) -> list:
+        """
+        List of (species_idx0, param_idx0) pairs recording each species whose initial concentration is set by a parameter reference in the .net ``begin species`` block. Consumed by the forward-sensitivity IC-seed chain rule (issue #43).
         """
     @property
     def species_names(self) -> list[str]:
@@ -614,7 +614,7 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
-    def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[int, int, float]]) -> None:
+    def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
         Set the initial-condition sensitivity seeds ∂x_i(0)/∂p as (species_idx0, primary_param_idx0, ∂IC/∂primary) triples (issue #43). Computed by the Python codegen layer via the sympy derived-parameter chain rule so a species IC named by a derived (ConstantExpression) parameter — e.g. Rtot = R0 — seeds the forward sensitivity w.r.t. the underlying primary. When set, these replace the model's species_ic_param_refs() identity seeding entirely (they already cover direct-parameter ICs with coefficient 1).
         """
@@ -971,5 +971,5 @@ HAS_LAPACK_DENSE: bool = True
 HAS_MIR: bool = False
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
-__build_commit__: str = '771a40931f4d+dirty'
+__build_commit__: str = '9a85d9b6c2cf'
 __version__: str = '0.11.35'
