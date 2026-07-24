@@ -254,10 +254,14 @@ def test_copasi_abc_xml_loads():
     not present.
 
     parents[3] is the directory *containing* this checkout, so a sibling PyBNF
-    resolves as <dev root>/PyBNF — matching the same assumption in
-    test_protocol.py. It read parents[4] until the skip audit surfaced it, which
-    resolved one level too high and made the skip unconditional: the test had
-    never run anywhere."""
+    resolves as <dev root>/PyBNF. It read parents[4] until the skip audit
+    surfaced it, which resolved one level too high and made the skip
+    unconditional: the test had never run anywhere.
+
+    This is the last test in the suite that reaches into a sibling PyBNF
+    checkout; the method=>protocol tests that shared the pattern now live in
+    PyBNF itself (lanl/bngsim#45). It stays because the abc.xml fixture is not
+    vendored here and duplicating it buys nothing."""
     abc_path = Path(__file__).resolve().parents[3] / "PyBNF" / "tests" / "bngl_files" / "abc.xml"
     if not abc_path.exists():
         pytest.skip(f"abc.xml not at {abc_path}")
