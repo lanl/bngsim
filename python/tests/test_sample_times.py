@@ -344,8 +344,25 @@ class TestResolveSampleTimes:
         result = self._resolve({"sample_times": ["10", "0", "5"]})
         assert result == [0.0, 5.0, 10.0]
 
-    def test_too_few_returns_none(self):
-        assert self._resolve({"sample_times": ["0", "10"]}) is None
+    def test_single_point_returns_none(self):
+        """One point is the only "too few" case the helper rejects.
+
+        The guard is `len < 2` — see the two-point test below for why it is not
+        `len < 3`. A lone instant cannot describe a span, so it is dropped.
+        """
+        assert self._resolve({"sample_times": ["5"]}) is None
+
+    def test_two_points_accepted(self):
+        """Two points is a valid request, and this boundary has moved once.
+
+        The helper shipped with a 3-point minimum, then PyBNF 14a8e25c lowered
+        it to 2 "to match bngsim update" — bngsim's own contract is 2 (see
+        `resolve_sample_times` in `python/bngsim/_sample_times.py`, which raises
+        below 2 and accepts exactly 2). This asserts the lowered bound directly
+        so a future re-tightening fails loudly here rather than silently
+        diverging from ours (lanl/bngsim#45).
+        """
+        assert self._resolve({"sample_times": ["0", "10"]}) == [0.0, 10.0]
 
     def test_n_steps_precedence(self):
         """n_steps takes precedence over sample_times (BioNetGen compat)."""
