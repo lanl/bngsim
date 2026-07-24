@@ -31,6 +31,10 @@ pytestmark = pytest.mark.skipif(
 _BNGSIM = Path(__file__).resolve().parents[2]
 _DATA = _BNGSIM / "tests" / "data"
 _SMITH = _BNGSIM / "benchmarks" / "models" / "sbml" / "Smith2013_BIOMD0000000474_petab.xml"
+# Mitra2019 JNK fit-iteration nets (66 species / 330 reactions, every reaction a
+# functional rate law over ~30-species observable sums) — the GH #40 hang repro.
+_JNK_NET_DIR = _BNGSIM / "benchmarks" / "suites" / "ode_fullnet" / "nets"
+_JNK_NETS = sorted(_JNK_NET_DIR.glob("*24-jnk*.net"))
 
 # Tracked, network-clean .net models that convert faithfully (unit volume).
 _CLEAN_NETS = [
@@ -213,6 +217,86 @@ def test_l4_cancellation_residual_is_inconclusive_not_not_equal(monkeypatch) -> 
     status, detail = _validate._symbolic_verdict(_FakeModel([1.0, 1.0]), _FakeModel([1.0, 1.0]))
     assert status == "inconclusive", detail
     assert "could not be symbolically reduced" in detail
+
+
+# ─── L4 bounded-time guard: functional rate laws over observables (GH #40) ──
+
+
+def test_l4_verdict_never_calls_simplify(monkeypatch) -> None:
+    """GH #40: L4 must adjudicate a functional rate law over a large observable
+    sum *without* ``sympy.simplify`` — combining a division by a many-term species
+    sum over hundreds of reactions does not terminate in bounded time. The verdict
+    comes from the expand-based coefficient screen plus a numeric probe; a
+    round-off-only Δ is still ``equal``. Guard the contract directly: any call to
+    ``sympy.simplify`` is the regression, so make it a hard failure."""
+    import sympy as sp
+    from bngsim.convert import _validate
+
+    n = 24
+    s = [sp.Symbol(f"_s{i}") for i in range(n)]
+    obs = sum(s[1:], sp.Integer(0))  # a large observable sum (the pathological denom)
+
+    def _rhs(dust: float) -> dict:
+        acc = sp.Integer(0)
+        for j in range(12):  # many rational fluxes accumulating into one species
+            num = sp.Float(0.5 + 0.01 * j) * s[j % n] * s[(j + 3) % n]
+            acc += num / (sp.Float(10.0 + j) + obs)
+        return {0: acc + sp.Float(dust) * s[0] * s[1]}
+
+    a, b = _rhs(0.0), _rhs(1.3e-15)  # identical up to machine-precision coefficient dust
+    rhs_iter = iter([(a, n), (b, n)])
+    monkeypatch.setattr(_validate, "_symbolic_rhs", lambda _m: next(rhs_iter))
+
+    def _boom(*_a, **_k):
+        raise AssertionError("L4 must not call sympy.simplify (GH #40)")
+
+    monkeypatch.setattr(sp, "simplify", _boom)
+    status, detail = _validate._symbolic_verdict(_FakeModel([1.0] * n), _FakeModel([1.0] * n))
+    assert status == "equal", detail
+    assert "round-off" in detail
+
+
+def _run_bounded(fn, *, timeout: float):
+    """Run ``fn`` on a daemon thread, failing fast if it outlives ``timeout``.
+
+    A regression to the unbounded ``sympy.simplify`` would hang for many minutes;
+    this surfaces it as a prompt test failure instead of stalling the suite (the
+    abandoned daemon thread does not block interpreter exit)."""
+    import threading
+
+    box: dict = {}
+
+    def _target() -> None:
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — re-raised on the main thread
+            box["error"] = exc
+
+    th = threading.Thread(target=_target, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        pytest.fail(f"did not complete within {timeout}s (GH #40: L4 unbounded again?)")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
+@pytest.mark.skipif(not _JNK_NETS, reason="Mitra2019 JNK benchmark nets not present")
+def test_full_gate_terminates_on_jnk_functional_rate_laws() -> None:
+    """GH #40: ``net_to_omex(gate="full")`` on a Mitra2019 JNK fit-iteration net
+    hung for >1200s — every one of its 330 reactions carries a functional rate law
+    over ~30-species observable sums, and L4's ``sympy.simplify`` on the resulting
+    rational RHS never returned. The full L0–L4 ladder must now complete in bounded
+    time (seconds); L4 stays non-gating and reports a real verdict, not a hang."""
+    src = _JNK_NETS[0]  # the "fast" fit_ss variant sorts first
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        report = _run_bounded(lambda: validate_conversion(src), timeout=120)
+    assert report.ok, report.summary()  # L0–L3 hard gates pass
+    l4 = report.level("L4")
+    assert l4 is not None and l4.gating is False
+    assert l4.status in ("equal", "inconclusive"), l4.detail
 
 
 # ─── Lossy conversion: L0/L1 pass but L2/L3 catch the semantic loss ─────────

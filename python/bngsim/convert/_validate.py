@@ -19,7 +19,10 @@ A single entry point, :func:`validate_conversion`, grades a format conversion
   the shipped converter carries no parity-suite dependency).
 * **L4 — symbolic/algebraic equivalence** (best-effort, **non-gating**). The
   per-species ODE right-hand side is reconstructed symbolically from each
-  representation and compared with ``sympy.simplify``. Reports
+  representation and their difference adjudicated by a **bounded** probe (an
+  ``expand``-based coefficient screen plus a two-state numeric evaluation — never
+  the unbounded ``sympy.simplify``, which does not terminate on functional rate
+  laws over large observable sums; GH #40). Reports
   **equal / not-equal / inconclusive**; it never blocks a conversion and is
   allowed to punt on Michaelis–Menten/volume-scaled/transcendental kinetics it
   cannot reconstruct faithfully.
@@ -567,9 +570,20 @@ def _symbolic_verdict(a_model: Model, b_model: Model) -> tuple[str, str]:
     noted in the detail), since the conversion round-trip leaves coefficient dust
     sympy cannot crush to 0 even when the math is identical; a magnitude-carrying
     Δ is still ``not-equal``.
+
+    Each residual is adjudicated by a **bounded** two-step probe — an
+    ``expand``-based coefficient screen, then a two-state numeric evaluation — and
+    never by ``sympy.simplify``. ``simplify`` on a functional rate law whose
+    observables expand to large species sums (a division by a ~30-term sum, over
+    hundreds of reactions) does not terminate in bounded time (GH #40), and this
+    is a best-effort, non-gating level: the two cheap steps decide *equal* /
+    *not-equal* / *inconclusive* in milliseconds, which is all L4 needs. A
+    residual that is genuinely — but non-obviously — zero (an equal rational form
+    ``expand`` cannot cancel) is honestly reported *inconclusive* rather than
+    proven *equal*; that is exactly the punt L4 is allowed.
     """
     try:
-        import sympy as sp
+        import sympy  # noqa: F401  (probe: the RHS reconstruction below needs sympy)
     except ImportError:
         return "inconclusive", "sympy not installed"
 
@@ -594,11 +608,13 @@ def _symbolic_verdict(a_model: Model, b_model: Model) -> tuple[str, str]:
     worst_resid = 0.0
     unprovable = 0
     for i in shared:
-        diff = sp.simplify(rhs_a[i] - rhs_b[i])
-        if diff == 0:
-            continue
-        # Cheap screen: an all-small-coefficient residual is unambiguous dust.
+        diff = rhs_a[i] - rhs_b[i]
+        # Cheap coefficient screen on the *expanded* difference. A polynomial
+        # (mass-action) RHS cancels to exactly 0 here; the round-trip's float
+        # dust shows up as an all-tiny-coefficient residual we forgive.
         resid = _max_numeric_coeff(diff)
+        if resid == 0.0:
+            continue  # expands to 0 → algebraically equal
         if resid is not None:
             scale = max(
                 _max_numeric_coeff(rhs_a[i]) or 0.0,
@@ -609,23 +625,25 @@ def _symbolic_verdict(a_model: Model, b_model: Model) -> tuple[str, str]:
                 forgiven += 1
                 worst_resid = max(worst_resid, resid)
                 continue
-        # The screen did not clear it — a large coefficient may still cancel
-        # numerically (catastrophic cancellation), so adjudicate by evaluation.
+        # The screen did not clear it — a rational residual whose numerator does
+        # not visibly cancel, or huge coefficients that cancel numerically
+        # (catastrophic cancellation). Adjudicate by evaluation.
         verdict = _residual_numerically_zero(diff, rhs_a[i], n_a, state)
         if verdict is False:
             return "not-equal", (
-                f"species index {i} RHS differs (numerically confirmed): simplify(Δ) = {diff}"
+                f"species index {i} RHS differs (numerically confirmed): Δ = {diff}"
             )
-        # True (numerically ~0 via cancellation) or None (uncomputable) → simplify
-        # could not symbolically reduce it; we do not claim algebraic equality.
+        # True (numerically ~0 via cancellation) or None (uncomputable): the
+        # residual is consistent with equality but the cheap screens could not
+        # prove it symbolically; we do not claim algebraic equality.
         unprovable += 1
 
     skipped = n_a - len(shared)
     if unprovable:
         return "inconclusive", (
             f"{unprovable} species' RHS residual could not be symbolically "
-            "reduced to 0 (numerically consistent with equality — likely "
-            "round-off/cancellation simplify cannot crack; best-effort L4 punts)"
+            "reduced to 0 by the bounded screen (numerically consistent with "
+            "equality — likely round-off/cancellation; best-effort L4 punts)"
         )
     note = f" ({skipped} fixed/boundary species excluded)" if skipped else ""
     if forgiven:
