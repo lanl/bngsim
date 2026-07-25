@@ -674,6 +674,54 @@ struct ICParamSensSeed {
     double d_ic_d_primary;
 };
 
+// One *switch-time* crossing whose time depends on a requested sensitivity
+// parameter (issue #48). A switch time is a fitted parameter that sets *when* a
+// step in the dynamics happens — the `if(t>=sigma, ...)` onset times of the
+// Lin2021 COVID model, gated on a unit-rate counter clock.
+//
+// The variational source term carries no information about such a parameter:
+// ∂f/∂sigma is a clean 0 inside each smooth branch (sympy drops the boundary
+// delta when the parameter appears only in the condition). The ENTIRE gradient
+// is a finite jump in the sensitivity column at the crossing t*:
+//
+//     s(t*⁺) = s(t*⁻) + (f⁻ − f⁺)·∂t*/∂p
+//
+// with f⁻/f⁺ the RHS on the before/after branch at the crossing state x(t*).
+// This is the GH #212 event-sensitivity jump generalized to ∂t*/∂p ≠ 0 (there
+// the state jumps and the event time is fixed; here the time moves and the
+// state is continuous).
+//
+// The crossing must additionally be *reached* cleanly on the before-branch:
+// with sensitivities active CVODES fails error control on the step approaching
+// the kink and collapses h to ~1e-15 before any root can fire, so a
+// discontinuity-trigger root alone cannot break the step. CvodeSimulator::run()
+// uses CVodeSetStopTime(t_star) instead — the crossing time of a time/counter
+// clock is known a priori.
+//
+// Detection and the chain rule live in the Python layer
+// (bngsim._switch_sensitivity), which resolves each `if()` condition's threshold
+// to its fitted primaries (`sigma = t0 + t_delta` ⇒ a jump for `t0` at BOTH the
+// t0 and sigma switches, for `t_delta` only at sigma) and evaluates
+// ∂(threshold)/∂primary with the same sympy machinery as the #43 IC seeds.
+struct SwitchTimeSens {
+    // Model time of the crossing. For a unit-rate counter clock c (dc/dt = 1),
+    // t_star = t_start + (threshold − c(t_start)); for literal `time`, the
+    // threshold itself.
+    double t_star = 0.0;
+    // The clock whose crossing of `threshold` flips the branch: a 0-based
+    // species index for a counter clock, or -1 for literal simulation `time`.
+    // run() perturbs this variable by a few ulp on either side of `threshold`
+    // to read off f⁻ and f⁺ at the SAME state x(t*), so the smooth part of the
+    // RHS cancels to roundoff and the difference is the branch jump alone.
+    int clock_species_idx0 = -1;
+    double threshold = 0.0;
+    // ∂t*/∂p for each sensitivity *parameter* column, in param_names order
+    // (size n_sens_p). IC-sensitivity columns are not covered: a clock IC that
+    // is itself a fitted initial condition would move t*, which the Python
+    // detector refuses rather than silently zeroing.
+    std::vector<double> dtstar_dp;
+};
+
 struct SensitivityOptions {
     std::vector<std::string> param_names;      // which params to differentiate w.r.t.
     std::vector<std::string> ic_species_names; // species names for IC sens
@@ -689,6 +737,23 @@ struct SensitivityOptions {
     // one named on the species line. Empty ⇒ fall back to the model's
     // species_ic_param_refs() (direct-parameter ICs only, coefficient 1).
     std::vector<ICParamSensSeed> ic_param_sens;
+
+    // Switch-time crossings to stop at and jump across (issue #48). Empty for
+    // every model without a fitted switch time among param_names — the
+    // integration loop then never sets a stop time and the run is byte-identical
+    // to the pre-#48 path. Sorted ascending by t_star by the Python layer.
+    std::vector<SwitchTimeSens> switch_times;
+
+    // 0-based indices of parameters to hold at their nominal value against
+    // CVODES' internal finite-difference sensitivity probe (issue #48). These
+    // are switch-time parameters, which enter f only through an `if()`
+    // condition: ∂f/∂p is 0 in each branch interior, so pinning yields the
+    // correct source term AND stops the probe from displacing the switch into
+    // the approach to it (which stalls the solver). See
+    // CvodeUserData::sens_param_pinned. The Python detector only lists a
+    // parameter here after verifying every occurrence of it is inside a
+    // condition.
+    std::vector<int> switch_pinned_params;
 };
 
 // --- Steady-state options -----------------------------------------------------

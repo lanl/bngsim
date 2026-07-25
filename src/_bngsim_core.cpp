@@ -18,6 +18,7 @@
 #include <bngsim/steady_state.hpp>
 #include <bngsim/wallclock.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <sstream>
@@ -357,6 +358,53 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "replace the model's species_ic_param_refs() identity seeding "
             "entirely (they already cover direct-parameter ICs with "
             "coefficient 1).")
+        .def(
+            "set_switch_time_sens",
+            [](bngsim::SolverOptions &self,
+               const std::vector<std::tuple<double, int, double, std::vector<double>>> &records) {
+                self.sensitivity.switch_times.clear();
+                self.sensitivity.switch_times.reserve(records.size());
+                for (const auto &r : records) {
+                    bngsim::SwitchTimeSens sw;
+                    sw.t_star = std::get<0>(r);
+                    sw.clock_species_idx0 = std::get<1>(r);
+                    sw.threshold = std::get<2>(r);
+                    sw.dtstar_dp = std::get<3>(r);
+                    self.sensitivity.switch_times.push_back(std::move(sw));
+                }
+                std::stable_sort(
+                    self.sensitivity.switch_times.begin(), self.sensitivity.switch_times.end(),
+                    [](const bngsim::SwitchTimeSens &a, const bngsim::SwitchTimeSens &b) {
+                        return a.t_star < b.t_star;
+                    });
+            },
+            py::arg("records"),
+            "Set the switch-time crossings to stop at and jump across, as "
+            "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column]) "
+            "records (issue #48). A switch time is a fitted parameter that sets "
+            "WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset "
+            "time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at "
+            "the crossing, since ∂f/∂p is a clean 0 inside each smooth branch. "
+            "clock_species_idx0 is the unit-rate counter species whose crossing "
+            "of `threshold` flips the branch (-1 for literal simulation time). "
+            "Detection and the chain rule to fitted primaries are done by "
+            "bngsim._switch_sensitivity; empty (the default) leaves the "
+            "integration loop untouched.")
+        .def(
+            "set_switch_pinned_params",
+            [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {
+                self.sensitivity.switch_pinned_params = param_idx0;
+            },
+            py::arg("param_idx0"),
+            "Hold these parameters (0-based indices) at their nominal value "
+            "against CVODES' internal finite-difference sensitivity probe "
+            "(issue #48). A switch-time parameter enters the RHS only through an "
+            "`if()` condition, so ∂f/∂p is 0 in every branch interior — but an FD "
+            "probe of it MOVES the switch, dragging the kink into the approach to "
+            "the crossing and stalling the solver at mxstep. Pinning returns the "
+            "correct (zero) source term and leaves the switch where the model puts "
+            "it. Set only for parameters bngsim._switch_sensitivity has verified "
+            "appear solely in conditions.")
         .def(
             "set_sensitivity_error_control",
             [](bngsim::SolverOptions &self, bool val) { self.sensitivity.error_control = val; },

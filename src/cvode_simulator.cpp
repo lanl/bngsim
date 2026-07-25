@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -187,6 +188,29 @@ struct CvodeUserData {
     double *sens_p = nullptr; // pointer to sens_p vector (owned by run())
     int n_params = 0;         // number of parameters in sens_p
 
+    // Switch-time parameters held at their nominal value against CVODES'
+    // finite-difference sensitivity probe (issue #48). Non-null only when a
+    // fitted switch time was detected; sized n_params, 1 = pinned.
+    //
+    // A switch time enters f ONLY through an `if()` condition, so ∂f/∂p ≡ 0
+    // inside every branch and the parameter's whole gradient is the jump applied
+    // at the crossing. But when the model has no analytic sensitivity RHS (any
+    // non-Elementary reaction — which every `if()`-gated rate law is), CVODES
+    // falls back to its internal FD and perturbs the parameter by
+    // √rtol·|p| ≈ 1e-5·|p|. That MOVES the switch, so the perturbed RHS carries
+    // the kink a finite distance from t* and the solver hits it while still
+    // approaching the stop time: error control then collapses h to ~1e-16 and
+    // the run stalls at mxstep, exactly the issue #48 symptom. Pinning makes the
+    // probe return f(p) − f(p) = 0 — the true ∂f/∂p in the branch interior — and
+    // leaves the kink where the model actually puts it. The state RHS is
+    // unaffected: outside a probe sens_p already holds the nominal value.
+    //
+    // Correct only for a parameter that appears solely in conditions; the Python
+    // detector verifies that and refuses rather than pin a parameter whose
+    // in-branch ∂f/∂p is genuinely non-zero.
+    const char *sens_param_pinned = nullptr;
+    const double *sens_param_nominal = nullptr;
+
     // Throwaway RHS output for the rateOf probe the root function runs before
     // evaluating event triggers (GH #106). compute_derivs() publishes the live
     // dx/dt into the model's current_derivs as a side effect; this buffer just
@@ -311,7 +335,13 @@ static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) 
     if (data->sens_p) {
         auto &params = const_cast<std::vector<Parameter> &>(data->model->parameters());
         for (int i = 0; i < data->n_params; ++i) {
-            params[i].value = data->sens_p[i];
+            // A pinned switch-time parameter ignores the FD probe (issue #48):
+            // ∂f/∂p is 0 in the branch interior, and letting the probe move the
+            // switch instead drags the kink into the approach and stalls the
+            // solver. See CvodeUserData::sens_param_pinned.
+            params[i].value = (data->sens_param_pinned != nullptr && data->sens_param_pinned[i])
+                                  ? data->sens_param_nominal[i]
+                                  : data->sens_p[i];
         }
         // Re-evaluate constant-expression parameters (e.g., ``_rateLaw{N}``
         // from BNG2.pl that encode ``chi*kon`` style products) so derived
@@ -370,7 +400,10 @@ static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *use
     if (data->sens_p) {
         auto &params = const_cast<std::vector<Parameter> &>(data->model->parameters());
         for (int i = 0; i < data->n_params; ++i) {
-            params[i].value = data->sens_p[i];
+            // Pinned switch-time parameters, as in cvode_rhs above (issue #48).
+            params[i].value = (data->sens_param_pinned != nullptr && data->sens_param_pinned[i])
+                                  ? data->sens_param_nominal[i]
+                                  : data->sens_p[i];
         }
         auto &evaluator = const_cast<NetworkModel *>(data->model)->evaluator();
         for (auto &p : params) {
@@ -1687,6 +1720,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<double> pbar;                 // parameter scaling factors for CVODES
     std::vector<double> sens_p;               // contiguous parameter values (CVODES reads this)
     std::vector<int> sens_plist;              // which indices in sens_p to perturb
+    std::vector<char> sens_pin_mask;          // switch-time params held nominal (issue #48)
+    std::vector<double> sens_pin_nominal;     // their nominal values
     // Hoisted so the event-fire sensitivity jump (GH #212) can re-init the
     // sensitivity vectors with the same method CVodeSensInit1 was given.
     int sens_method = CV_STAGGERED;
@@ -1980,6 +2015,24 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         user_data.sens_p = sens_p.data();
         user_data.n_params = static_cast<int>(params.size());
+
+        // Pin switch-time parameters against the internal-FD probe (issue #48).
+        // Only populated when a fitted switch time was detected, so every other
+        // model keeps CVODES' probe exactly as it was.
+        if (!opts.sensitivity.switch_pinned_params.empty()) {
+            sens_pin_mask.assign(params.size(), 0);
+            sens_pin_nominal.resize(params.size());
+            for (size_t i = 0; i < params.size(); ++i) {
+                sens_pin_nominal[i] = params[i].value;
+            }
+            for (int pidx : opts.sensitivity.switch_pinned_params) {
+                if (pidx >= 0 && pidx < static_cast<int>(params.size())) {
+                    sens_pin_mask[static_cast<size_t>(pidx)] = 1;
+                }
+            }
+            user_data.sens_param_pinned = sens_pin_mask.data();
+            user_data.sens_param_nominal = sens_pin_nominal.data();
+        }
     }
 
     // ─── Allocate result ─────────────────────────────────────────────────────
@@ -2681,6 +2734,160 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     };
 
+    // ─── Forward-sensitivity jump across a switch time (issue #48) ───────────
+    // A *switch time* is a fitted parameter that sets WHEN a step in the
+    // dynamics happens — the `if(t>=sigma, ...)` onset times of the Lin2021
+    // COVID model, gated on a unit-rate counter clock. Unlike a GH #212 event,
+    // the state is continuous across the crossing and it is the crossing TIME
+    // that moves with the parameter, so the jump above (∂t*/∂p = 0, x jumps)
+    // becomes its mirror image (∂t*/∂p ≠ 0, x continuous):
+    //
+    //     s(t*⁺) = s(t*⁻) + (f⁻ − f⁺)·∂t*/∂p
+    //
+    // This is the ENTIRE gradient: ∂f/∂p is a clean 0 inside each smooth branch
+    // (sympy drops the boundary delta when the parameter appears only in the
+    // `if` condition), so without this jump the switch-time column comes back
+    // silently zero. Validated against finite differences on both a minimal
+    // model and the 26-species Lin2021 exemplar — see issue #48.
+    //
+    // Two mechanics are worth spelling out:
+    //
+    //   * **Reaching the crossing.** With sensitivities active CVODES fails
+    //     error control on the step APPROACHING the kink and collapses h to
+    //     ~1e-15 (mxstep, never returns) — before any root can fire, so the GH
+    //     #72 discontinuity root cannot break that step. CVodeSetStopTime()
+    //     below clamps the step so the last one lands exactly on t* with the
+    //     before-branch RHS smooth over the whole interval. That is what makes
+    //     the crossing reachable at all; the root machinery is untouched.
+    //
+    //   * **Reading off f⁻ and f⁺.** Both must be the RHS at the SAME crossing
+    //     state x(t*), differing only in which branch is live. Rather than
+    //     rebuild the model per branch (what the Python prototype did), we nudge
+    //     the *clock* a few ulp either side of its threshold: the branch flips
+    //     exactly, while the smooth part of the RHS moves by O(ulp) and cancels
+    //     in the difference. This works for every comparison operator (`>=`,
+    //     `<`, …) because "before" is always the smaller clock value, and it
+    //     needs no knowledge of the condition's structure.
+    //
+    // IC-sensitivity columns are not jumped: a clock whose own initial condition
+    // is a fitted parameter would move t*, which the Python detector refuses
+    // rather than silently zeroing.
+    std::vector<const SwitchTimeSens *> switch_list;
+    if (wants_sensitivity && n_sens_p > 0 && !opts.sensitivity.switch_times.empty()) {
+        for (const auto &sw : opts.sensitivity.switch_times) {
+            // A crossing outside the reported window contributes nothing, and a
+            // record whose width doesn't match this run's parameter columns is
+            // stale — drop both rather than index out of range. The window is
+            // half-open: a crossing ON t_end still jumps (the recorded column is
+            // right-continuous, as at any interior crossing), while one on
+            // t_start would jump before the run's own initial recording.
+            if (sw.t_star > t_out.front() && sw.t_star <= t_out.back() &&
+                sw.dtstar_dp.size() == static_cast<size_t>(n_sens_p)) {
+                switch_list.push_back(&sw);
+            }
+        }
+    }
+    size_t next_switch = 0; // index into switch_list of the next crossing
+    // Time tolerance for "reached / already past" a crossing, scaled to the run
+    // horizon so it stays meaningful for both day-scale and second-scale models.
+    const double switch_t_eps = 1e-9 * std::max(1.0, std::fabs(t_out.back() - t_out.front()));
+    std::vector<double> sw_f_minus, sw_f_plus, sw_ywork;
+    if (!switch_list.empty()) {
+        sw_f_minus.resize(static_cast<size_t>(ns));
+        sw_f_plus.resize(static_cast<size_t>(ns));
+        sw_ywork.resize(static_cast<size_t>(ns));
+    }
+
+    auto apply_switch_sensitivity_jump = [&](double t_evt, const SwitchTimeSens &sw) {
+        // Restore the nominal parameter point first. CVODES leaves the model's
+        // parameter values wherever its last finite-difference probe put them —
+        // the RHS callbacks mirror sens_p into params and nothing writes them
+        // back afterwards — so f⁻/f⁺ would be read at p ± √rtol·|p| and the whole
+        // jump would come out scaled by (1 ∓ √rtol). sens_p itself IS nominal
+        // between probes (CVODES restores the perturbed entry), so re-running the
+        // callbacks' own sync is enough. The resumed integration re-syncs on its
+        // next RHS call, so nothing needs undoing.
+        if (!sens_p.empty()) {
+            auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
+            const size_t np = std::min(params_live.size(), sens_p.size());
+            for (size_t i = 0; i < np; ++i) {
+                params_live[i].value = sens_p[i];
+            }
+            for (auto &p : params_live) {
+                if (p.is_expression && p.evaluator_id >= 0) {
+                    p.value = eval_ref_outer.evaluate(p.evaluator_id);
+                }
+            }
+        }
+
+        // f⁻ / f⁺ at x(t*), branch selected by nudging the clock across its
+        // threshold. eps_clock is a few ulp of the threshold: large enough that
+        // threshold ± eps_clock are distinct doubles, small enough that the
+        // smooth part of the RHS is unchanged to roundoff.
+        std::copy(y_data, y_data + ns, sw_ywork.begin());
+        const bool time_clock = (sw.clock_species_idx0 < 0);
+        const double eps_clock = 64.0 * std::numeric_limits<double>::epsilon() *
+                                 std::max(std::fabs(time_clock ? t_evt : sw.threshold), 1.0);
+        auto rhs_on_branch = [&](double offset, std::vector<double> &out) {
+            if (!time_clock) {
+                sw_ywork[static_cast<size_t>(sw.clock_species_idx0)] = sw.threshold + offset;
+            }
+            // Sync the evaluator's species symbols, as the root handler does:
+            // compute_derivs() refreshes observables and functions from the
+            // passed array but does not write back the bound concentrations.
+            for (int i = 0; i < ns; ++i) {
+                sp_vec_outer[i].concentration = sw_ywork[i];
+            }
+            model.compute_derivs(time_clock ? t_evt + offset : t_evt, sw_ywork.data(), out.data());
+        };
+        rhs_on_branch(-eps_clock, sw_f_minus);
+        rhs_on_branch(+eps_clock, sw_f_plus);
+
+        // Restore the evaluator to the true crossing state so the resumed
+        // integration (and any downstream reader) sees x(t*), not the nudge.
+        for (int i = 0; i < ns; ++i) {
+            sp_vec_outer[i].concentration = y_data[i];
+        }
+        model.update_observables(y_data);
+        model.evaluate_functions(t_evt);
+        if (model.uses_rateof()) {
+            model.refresh_rateof_derivs(t_evt, y_data);
+        }
+
+        // s⁻ MUST be read before CVodeReInit — after it, CVodeGetSens no longer
+        // returns the pre-crossing columns (the same ordering hazard the GH #212
+        // jump documents above).
+        sunrealtype t_tmp = static_cast<sunrealtype>(t_evt);
+        int gf = CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr);
+        if (gf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeGetSens for switch-time sensitivity capture failed: " +
+                                     std::to_string(gf));
+        }
+        for (int c = 0; c < n_sens_p; ++c) {
+            const double dtstar = sw.dtstar_dp[static_cast<size_t>(c)];
+            if (dtstar == 0.0) {
+                continue; // this parameter does not move this crossing
+            }
+            double *col = N_VGetArrayPointer(yS_guard[c]);
+            for (int i = 0; i < ns; ++i) {
+                col[i] += (sw_f_minus[i] - sw_f_plus[i]) * dtstar;
+            }
+        }
+
+        // Restart the state stepper AT the kink (order drops to 1, history
+        // discarded) — the same reason the GH #72 discontinuity root reinits —
+        // then resume CVODES from the jumped sensitivities.
+        int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
+        if (rf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeReInit at switch time failed: " + std::to_string(rf));
+        }
+        rf = CVodeSensReInit(cvode_mem, sens_method, yS_guard.arr);
+        if (rf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeSensReInit after switch-time sensitivity jump failed: " +
+                                     std::to_string(rf));
+        }
+    };
+
     if (n_roots > 0) {
         // Root function callback: evaluate each event trigger then each
         // discontinuity-trigger condition, subtracting 0.5 so a false→true (or
@@ -2921,6 +3128,46 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
             }
 
+            // ─── Stop cleanly at the next switch time (issue #48) ────────────
+            // CVodeSetStopTime clamps the final step to land exactly on t*, so
+            // the whole approach stays on the before-branch and the kink never
+            // enters an error test. Without it, CVODES collapses h at the
+            // crossing once sensitivities are active and never gets across.
+            // Skipped entirely when no switch-time crossing was detected, which
+            // leaves every other model's stepping bit-for-bit unchanged.
+            bool stop_at_switch = false;
+            double t_switch = 0.0;
+            while (next_switch < switch_list.size() &&
+                   switch_list[next_switch]->t_star <= static_cast<double>(t_now) + switch_t_eps) {
+                ++next_switch; // defensive: a crossing we are already past
+            }
+            if (next_switch < switch_list.size()) {
+                t_switch = switch_list[next_switch]->t_star;
+                int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_switch));
+                if (sf != CV_SUCCESS) {
+                    throw std::runtime_error(
+                        "CVodeSetStopTime for switch time t=" + std::to_string(t_switch) +
+                        " failed: " + std::to_string(sf));
+                }
+                stop_at_switch = true;
+            } else if (!switch_list.empty()) {
+                // Every crossing is behind us — clear the stop time explicitly
+                // rather than trusting CVODE to have cleared it. CVODE only
+                // clears tstop on a CV_TSTOP_RETURN; when a root lands on the
+                // same instant it returns CV_ROOT_RETURN instead and tstop stays
+                // armed at a time now behind us, which the next CVode() rejects
+                // outright (CV_ILL_INPUT, "tstop is behind current t"). An SBML
+                // piecewise-in-time law hits this every time: the loader
+                // registers a GH #72 discontinuity root at exactly the threshold
+                // this stop time targets.
+                int cf = CVodeClearStopTime(cvode_mem);
+                if (cf != CV_SUCCESS) {
+                    throw std::runtime_error(
+                        "CVodeClearStopTime after the last switch time failed: " +
+                        std::to_string(cf));
+                }
+            }
+
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, CV_NORMAL);
 
@@ -3090,6 +3337,23 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 // Inner-while-loop will continue to t_out[i] (or to the next
                 // pending apply_time if one is closer) on its next pass.
+            }
+
+            // ─── Switch-time crossing: jump dx/dp (issue #48) ────────────────
+            // We stopped ON the crossing (CV_TSTOP_RETURN, or CV_ROOT_RETURN if
+            // an event root happened to land on the same instant — keyed on the
+            // reached time rather than the flag so either is handled). Apply
+            // every crossing scheduled at this instant; each is an independent
+            // additive jump on the same unchanged state, so coincident switches
+            // simply sum.
+            if (stop_at_switch && static_cast<double>(t_ret) >= t_switch - switch_t_eps) {
+                while (next_switch < switch_list.size() &&
+                       switch_list[next_switch]->t_star <=
+                           static_cast<double>(t_ret) + switch_t_eps) {
+                    apply_switch_sensitivity_jump(static_cast<double>(t_ret),
+                                                  *switch_list[next_switch]);
+                    ++next_switch;
+                }
             }
 
             // ─── Pending delayed events ──────────────────────────────────────
