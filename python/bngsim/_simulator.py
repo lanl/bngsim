@@ -1018,6 +1018,58 @@ class Simulator:
         if seeds:
             opts.set_ic_param_sens(seeds)
 
+    def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
+        """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
+
+        A *switch time* is a fitted parameter that sets **when** a step in the
+        dynamics occurs — the ``if(t>=sigma, ...)`` onset times of the Lin2021
+        COVID model. ``∂f/∂sigma`` is a clean ``0`` inside each smooth branch, so
+        the variational source term carries no information about it and the whole
+        gradient is a jump ``s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p`` at the crossing, which the
+        core applies after stopping there with ``CVodeSetStopTime``.
+
+        Detection (which ``if()`` conditions threshold a unit-rate clock) and the
+        chain rule from each threshold to its fitted primaries live in
+        :mod:`bngsim._switch_sensitivity`; this is the plumbing that hands the
+        result to the solver. ``param_names`` is the column order this run will
+        use — the chunked path differentiates a subset per chunk, so it cannot be
+        assumed to be ``self._sensitivity_params``.
+
+        A no-op unless some ``if()`` threshold actually moves with a requested
+        parameter, which leaves every other model's integration untouched.
+        """
+        names = list(param_names) if param_names is not None else list(self._sensitivity_params)
+        if not names:
+            return
+        from bngsim._switch_sensitivity import compute_switch_time_sens
+
+        try:
+            records, pinned = compute_switch_time_sens(core, names, float(t_start), float(t_end))
+        except ValueError:
+            # An unsupported switch parameter (one that also acts in-branch) is a
+            # refusal the caller must see, not a detection hiccup to swallow.
+            raise
+        except Exception as e:  # pragma: no cover - defensive
+            # Detection is best-effort: failing it leaves the pre-#48 behavior
+            # (a switch-time column of zeros), so degrade rather than break a run
+            # that may not have a switch time at all. Warn, though — for a model
+            # that DOES fit one, this is the difference between a gradient and a
+            # silent zero.
+            logger.warning(
+                "Switch-time sensitivity detection failed (%s); any switch-time "
+                "parameter's gradient will be zero (issue #48).",
+                e,
+            )
+            return
+        if records:
+            logger.info(
+                "Switch-time forward sensitivity: %d crossing(s) at t=%s (issue #48)",
+                len(records),
+                ", ".join(f"{r[0]:.6g}" for r in records),
+            )
+            opts.set_switch_time_sens(records)
+            opts.set_switch_pinned_params(pinned)
+
     def _auto_codegen_for_sensitivity(
         self, *, jit_backend: str, n_sens_dirs: int | None = None
     ) -> None:
@@ -1885,6 +1937,7 @@ class Simulator:
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
                     self._apply_ic_param_sens_seed(opts, self._model._core)
+                    self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -2650,6 +2703,9 @@ class Simulator:
                     # a nonlinear derived IC (e.g. Rtot = R0*scale) has a
                     # param-dependent coefficient, so it must track set_params.
                     self._apply_ic_param_sens_seed(opts, clone._core)
+                    # Likewise the switch times: this row's t0/sigma set where the
+                    # crossings are, so they must be detected on the clone.
+                    self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -2971,6 +3027,9 @@ class Simulator:
             opts.codegen_c_source = self._codegen_c_source
         opts.set_sensitivity_params(sens_params)
         self._apply_ic_param_sens_seed(opts, clone._core)
+        # This chunk differentiates only `sens_params`, so the ∂t*/∂p columns
+        # must be built against that subset rather than the full request.
+        self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
         opts.set_sensitivity_method(self._sensitivity_method)
 
         try:

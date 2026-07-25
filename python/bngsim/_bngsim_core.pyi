@@ -637,6 +637,14 @@ class SolverOptions:
           'staggered' (default, CV_STAGGERED): state first, then sensitivities as a separate solve. Two smaller nonlinear solves per step. Often more robust for stiff or large systems; CVODES' default.
           'simultaneous' (CV_SIMULTANEOUS): state and all sensitivities solved together as one coupled nonlinear system at every step. Often a touch faster per step on small / well-conditioned problems. AMICI's default.
         """
+    def set_switch_pinned_params(self, param_idx0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
+        """
+        Hold these parameters (0-based indices) at their nominal value against CVODES' internal finite-difference sensitivity probe (issue #48). A switch-time parameter enters the RHS only through an `if()` condition, so ∂f/∂p is 0 in every branch interior — but an FD probe of it MOVES the switch, dragging the kink into the approach to the crossing and stalling the solver at mxstep. Pinning returns the correct (zero) source term and leaves the switch where the model puts it. Set only for parameters bngsim._switch_sensitivity has verified appear solely in conditions.
+        """
+    def set_switch_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsFloat | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
+        """
+        Set the switch-time crossings to stop at and jump across, as (t_star, clock_species_idx0, threshold, [∂t*/∂p per param column]) records (issue #48). A switch time is a fitted parameter that sets WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at the crossing, since ∂f/∂p is a clean 0 inside each smooth branch. clock_species_idx0 is the unit-rate counter species whose crossing of `threshold` flips the branch (-1 for literal simulation time). Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) leaves the integration loop untouched.
+        """
     def set_sensitivity_params(self, params: collections.abc.Sequence[str]) -> None:
         """
         Set parameter names for forward sensitivity analysis
