@@ -505,7 +505,7 @@ class TestObservableOutputSensitivityStitching:
     def test_observable_block_matches_single_shot(self):
         """compute_all_sensitivities(chunk_size=1) == single-shot for the
         observable output-sensitivity block, on a model with no expressions
-        (stays on the interpreted path — observables need no codegen)."""
+        (the block itself is a runtime chain rule — it needs no codegen)."""
         net = _get_reversible_net()
         params = ["kf", "kr"]
         t_span, n_points = (0, 10), 11
@@ -529,17 +529,23 @@ class TestObservableOutputSensitivityStitching:
             **_OUT_SENS_TOL,
         )
 
-    def test_no_expression_model_stays_interpreted(self):
-        """A model with no global functions must not trigger codegen in the
-        chunk path (keeps the species/observable interpreted behavior)."""
+    def test_no_expression_model_still_gets_sensitivity_codegen(self):
+        """A model with no global functions emits no *expression* block, but it
+        still gets the sensitivity codegen the chunks integrate (GH #62).
+
+        The observable block itself is a runtime chain rule and needs no codegen;
+        the state-sensitivity RHS underneath it does. This assertion used to read
+        ``not sim._codegen_so_path`` — the ``n_functions`` gate that made the
+        chunked path finite-difference the sensitivity RHS interpreted."""
         m = bngsim.Model.from_net(_get_reversible_net())
         assert m._core.n_functions == 0
         sim = bngsim.Simulator(m, method="ode")
-        sim.compute_all_sensitivities(
+        r = sim.compute_all_sensitivities(
             t_span=(0, 10), n_points=11, params=["kf", "kr"], chunk_size=1, n_workers=1
         )
-        assert not sim._codegen_so_path
-        assert not sim._codegen_c_source
+        assert sim._codegen_so_path or sim._codegen_c_source
+        # No expression outputs to emit, so that block stays legitimately empty.
+        assert r._expression_sensitivities.size == 0
 
 
 class TestExpressionOutputSensitivityStitching:
@@ -691,3 +697,114 @@ class TestExpressionOutputSensitivityStitching:
         assert stitched._expression_sensitivities.size == 0
         # The species block still stitched along the param axis (sanity).
         assert stitched.sensitivities.shape[2] == 2
+
+
+# ── GH #62: function-free models get the SAME sensitivity codegen ────────────
+#
+# compute_all_sensitivities used to attach the sensitivity codegen only when
+# ``model.n_functions > 0``. A function-free model therefore ran every chunk on
+# the interpreted RHS, with CVODES finite-differencing the whole sensitivity RHS
+# — the exact path GH #214 retired for the single-shot solve. Two consequences,
+# and a test for each, both against the single-shot run as ground truth:
+#
+#   * cost — the FD sensitivity RHS costs extra evaluations AND (through its
+#     noise) extra steps, so the chunked call ran up to 49x slower than the
+#     identical single-shot solve on large function-free networks (fceri_fyn
+#     768 s vs 15.7 s), which made parameter sharding a pessimization exactly
+#     where it should help;
+#   * robustness — that ~sqrt(eps) noise cannot support tight tolerances, so the
+#     error test micro-steps: even the 3-species fixture below takes ~24k steps
+#     at rtol=1e-10 and trips the CVODES step cap on the old path.
+#
+# Cost is asserted through the solver's own RHS-evaluation count rather than
+# wall-clock, so the test is deterministic: with ``chunk_size == len(params)``
+# and ``n_workers=1`` the chunked call is one chunk over the same parameters as
+# the coupled call, i.e. exactly the same work.
+
+
+class TestFunctionFreeSensitivityCodegen:
+    """The chunked path must not fall back to the interpreted sensitivity RHS."""
+
+    _PARAMS = ["kf", "kr"]
+    # Tight enough that the retired FD sensitivity path visibly fails.
+    _RUN = dict(rtol=1e-10, atol=1e-12)
+    _T_SPAN = (0.0, 10.0)
+    _N_POINTS = 11
+
+    @pytest.fixture(autouse=True)
+    def _allow_codegen(self, monkeypatch):
+        monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
+
+    def _single_shot(self):
+        m = bngsim.Model.from_net(_get_reversible_net())
+        assert m._core.n_functions == 0, "fixture must be function-free to test the gate"
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=list(self._PARAMS))
+        return sim, sim.run(t_span=self._T_SPAN, n_points=self._N_POINTS, **self._RUN)
+
+    def _chunked(self):
+        m = bngsim.Model.from_net(_get_reversible_net())
+        sim = bngsim.Simulator(m, method="ode")
+        return sim, sim.compute_all_sensitivities(
+            t_span=self._T_SPAN,
+            n_points=self._N_POINTS,
+            params=list(self._PARAMS),
+            chunk_size=len(self._PARAMS),
+            n_workers=1,
+            **self._RUN,
+        )
+
+    def test_codegen_attached_like_single_shot(self):
+        """Both entry points end up with a codegen sensitivity RHS attached."""
+        single, _ = self._single_shot()
+        chunked, _ = self._chunked()
+        assert single._codegen_so_path or single._codegen_c_source
+        assert chunked._codegen_so_path or chunked._codegen_c_source
+
+    def test_matches_single_shot_at_tight_tolerance(self):
+        """Switching the chunks onto the analytical sensitivity RHS must not
+        move the answer: same tensor as the coupled solve. (This one also passes
+        pre-fix on a model this small — it guards the new path, while
+        ``test_costs_the_same_as_single_shot`` is what locks the fix.)"""
+        _, r_single = self._single_shot()
+        _, r_chunk = self._chunked()
+        np.testing.assert_allclose(
+            r_chunk.sensitivities,
+            r_single.sensitivities,
+            rtol=1e-6,
+            atol=1e-9,
+            err_msg="chunked sensitivities != single-shot (interpreted FD fallback?)",
+        )
+
+    def test_costs_the_same_as_single_shot(self):
+        """One chunk over the same parameters must not cost more RHS
+        evaluations than the coupled solve. Under the old gate CVODES
+        finite-differenced the sensitivity RHS and burned ~100x as many."""
+        _, r_single = self._single_shot()
+        _, r_chunk = self._chunked()
+        single_evals = r_single.solver_stats["n_rhs_evals"]
+        chunk_evals = r_chunk.solver_stats["n_rhs_evals"]
+        assert chunk_evals <= 3 * single_evals, (
+            f"chunked run used {chunk_evals} RHS evaluations vs {single_evals} "
+            "for the identical coupled solve — the chunks are not using the "
+            "codegen sensitivity RHS"
+        )
+
+    def test_refuses_without_codegen_like_single_shot(self, monkeypatch):
+        """GH #214's refusal now reaches function-free models too: with codegen
+        unavailable both entry points raise instead of silently returning
+        finite-difference sensitivities."""
+        monkeypatch.setenv("BNGSIM_NO_CODEGEN", "1")
+        m = bngsim.Model.from_net(_get_reversible_net())
+        with pytest.raises(ValueError, match="requires code generation"):
+            bngsim.Simulator(m, method="ode", sensitivity_params=list(self._PARAMS))
+
+        m2 = bngsim.Model.from_net(_get_reversible_net())
+        sim = bngsim.Simulator(m2, method="ode")
+        with pytest.raises(ValueError, match="requires code generation"):
+            sim.compute_all_sensitivities(
+                t_span=self._T_SPAN,
+                n_points=self._N_POINTS,
+                params=list(self._PARAMS),
+                chunk_size=1,
+                n_workers=1,
+            )

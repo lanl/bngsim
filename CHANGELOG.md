@@ -264,6 +264,64 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`compute_all_sensitivities` skipped sensitivity codegen on models with no
+  functions and ran the interpreted RHS, up to 49x slower than the identical
+  coupled solve (issue #62).** The chunked entry point attached the analytical
+  sensitivity RHS only when `model.n_functions > 0`. That gate belongs to the
+  #198 *expression* output-sensitivity evaluator, which genuinely has nothing to
+  emit for a function-free model — but it also decided whether the chunks got a
+  sensitivity RHS at all, so those models ran every chunk interpreted, with
+  CVODES finite-differencing the whole `∂f/∂y·s + ∂f/∂p`. `Simulator(model,
+  sensitivity_params=...)` has no such gate: since #214 it requires the
+  analytical RHS unconditionally, because the finite-difference one silently
+  fails at tight tolerances. Two entry points computing the same tensor from the
+  same work therefore disagreed, and `n_functions` separated the two groups
+  exactly — models with functions at parity with the coupled solve, every
+  function-free one degraded, and the degradation growing with the network.
+
+  Measured at `rtol = atol = 1e-8`, `t_span = (0, 1000)`, `n_points = 101`, all
+  primary parameters, `chunk_size = Np`, `n_workers = 1` — one chunk over exactly
+  the parameter list the coupled call differentiates, i.e. identical work:
+
+  | model | species | reactions | funcs | Np | coupled | chunked (before) | chunked (after) |
+  |-------|--------:|----------:|------:|---:|--------:|-----------------:|----------------:|
+  | SHP2_base_model_2 | 149 | 1032 | 0 | 24 | 32 ms | 78 ms (2.5×) | 33 ms (1.0×) |
+  | egfr_net_6 | 356 | 3749 | 0 | 43 | 1.44 s | 27.9 s (19.3×) | 1.43 s (1.0×) |
+  | IGF1R_model_v1 | 589 | 4198 | 0 | 10 | 212 ms | 262 ms (1.2×) | 210 ms (1.0×) |
+  | fceri_fyn | 1281 | 15328 | 0 | 34 | 15.7 s | 768 s (48.8×) | 15.8 s (1.0×) |
+  | MTORC1_assembly_v3 | 330 | 2519 | 13 | 41 | 560 ms | n/a — gate passed | 508 ms (0.9×) |
+
+  The extra cost is not only the finite-difference evaluations. Their ~sqrt(eps)
+  noise also degrades step-size control, so the gap compounds with the
+  integration horizon: on `egfr_net_6` the old chunked path took 8750 internal
+  steps against the coupled solve's 658, and on `fceri_fyn` 40202 against 656.
+  The new path matches the coupled step count exactly on every function-free
+  model in the table, which is the sharper statement of the fix — the chunk is
+  now doing the coupled solve's work, not a noisier version of it.
+
+  The attach is now unconditional, matching the constructor. What is genuinely
+  expression-specific stays gated: only the output-sensitivity *rebuild* — the
+  clear-and-regenerate that upgrades an already-attached plain-RHS codegen to one
+  carrying the #198 evaluator — still tests `n_functions`, because
+  `_codegen_emit_flags` emits that evaluator only for models that have functions.
+  For a function-free model the generated source is byte-identical either way, so
+  there is nothing to rebuild and an inherited plain-RHS codegen is already the
+  right artifact.
+
+  Parameter sharding is built on `compute_all_sensitivities`, so this turns it
+  from a pessimization back into a speedup on exactly the large function-free
+  networks it exists for, and removes the inflation in any speedup measured
+  against an `n_shards = 1` baseline that was itself degraded.
+
+  **Behavior change:** #214's refusal now reaches function-free models too.
+  `compute_all_sensitivities` with `codegen=False`, `BNGSIM_NO_CODEGEN`, no
+  codegen backend, or rate laws that do not differentiate to closed form raises
+  instead of silently returning finite-difference sensitivities — the same answer
+  `Simulator(..., sensitivity_params=...)` has given since #214. On the 585-model
+  corpus that reaches 2 of the 293 function-free models, and both already refuse
+  the single-shot path today (their codegen emits invalid C — a separate defect,
+  not a differentiability limit), so no model that gets a sensitivity tensor from
+  one entry point now fails at the other.
 - **A collapsed step size at a rate-law discontinuity made `Simulator.run` never
   return, and no step bound stopped it (issue #54).** At an `if(t >= sigma)` rate
   jump CVODE drives the step size to ~1e-15 until `t + h == t` and returns

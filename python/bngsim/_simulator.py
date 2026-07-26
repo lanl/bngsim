@@ -2808,7 +2808,13 @@ class Simulator:
         Raises
         ------
         ValueError
-            If method is not 'ode', or params contains unknown names.
+            If method is not 'ode', or params contains unknown names, or the
+            analytical sensitivity RHS every chunk needs cannot be built —
+            ``codegen=False`` / ``BNGSIM_NO_CODEGEN``, no codegen backend, or
+            rate laws that do not differentiate to closed form. That is the same
+            hard requirement ``Simulator(..., sensitivity_params=...)`` carries
+            (GH #214): the interpreted finite-difference sensitivity path is not
+            reliable at tight tolerances, so it is refused rather than used.
         SimulationError
             If any chunk simulation fails.
 
@@ -2910,12 +2916,29 @@ class Simulator:
         # compute_all_sensitivities entry point), the constructor's sensitivity
         # auto-codegen never fired, so the chunks would run interpreted and every
         # chunk's expression-sensitivity block would come back empty. Trigger the
-        # SAME auto-codegen the single-shot sensitivity path uses, but only when
-        # the model actually has expression (function) outputs: species and
-        # observable sensitivities need no codegen, so expression-free models stay
-        # on the interpreted path unchanged. The helper is a no-op if a codegen
-        # .so/JIT source is already attached (e.g. a large-model or explicit
-        # codegen build), so this never double-compiles.
+        # SAME auto-codegen the single-shot sensitivity path uses. The helper is a
+        # no-op if a codegen .so/JIT source is already attached (e.g. a large-model
+        # or explicit codegen build), so this never double-compiles.
+        #
+        # GH #62 — that attach is UNCONDITIONAL, exactly as in the constructor.
+        # It used to be gated on ``n_functions > 0`` ("expression-free models stay
+        # on the interpreted path unchanged"), which is right for the *expression*
+        # output block but wrong for the state-sensitivity RHS every chunk needs:
+        # a function-free model never reached the helper, so each chunk finite-
+        # differenced the whole sensitivity RHS interpreted. That is the path GH
+        # #214 retired for the single-shot solve — unreliable at tight tolerances,
+        # and its FD noise degrades step-size control on top of costing extra RHS
+        # evaluations. One chunk over the same parameters as the coupled
+        # ``Simulator(sensitivity_params=...)`` solve therefore ran up to 49x
+        # slower on large function-free networks (fceri_fyn 768 s vs 15.7 s,
+        # 40202 internal steps vs 656), making parameter sharding a pessimization
+        # exactly where it should help. Gating what is expression-
+        # specific stays below: only the output-sens *rebuild* looks at
+        # ``n_functions``, because ``_codegen_emit_flags`` emits the GH #198
+        # evaluator only when the model has functions — for a function-free model
+        # the source is byte-identical with or without ``_want_output_sens``, so
+        # there is nothing to rebuild and an inherited plain-RHS codegen is
+        # already the right artifact.
         #
         # GH #205 — the GH #198 output-sensitivity evaluator is emitted only when
         # ``_want_output_sens`` is set (both the .net and model-based codegen paths
@@ -2939,17 +2962,16 @@ class Simulator:
         #     regeneration produces nothing so the RHS speed-up survives. When it
         #     was already True (a sensitivity_params-built sim), skip the clear so a
         #     large model is not needlessly re-generated.
-        if self._model._core.n_functions > 0:
-            if self._model._want_output_sens:
-                self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
-            else:
-                self._model._want_output_sens = True
-                prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
-                self._codegen_so_path = ""
-                self._codegen_c_source = ""
-                self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
-                if not self._codegen_so_path and not self._codegen_c_source:
-                    self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+        if self._model._core.n_functions > 0 and not self._model._want_output_sens:
+            self._model._want_output_sens = True
+            prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
+            self._codegen_so_path = ""
+            self._codegen_c_source = ""
+            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+            if not self._codegen_so_path and not self._codegen_c_source:
+                self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+        else:
+            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
 
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
