@@ -170,7 +170,15 @@ _compile_counter = itertools.count()
 # built library on Windows (an MSVC/MinGW DLL exports nothing by default, so the
 # C++ loader's GetProcAddress failed). The prelude + one macro token per entry
 # point change the emitted source on every platform, so invalidate v20 cached .so.
-_CODEGEN_VERSION = "21"
+# v22: bngsim._jacobian now accepts ExprTk's symbolic logical operators
+# (``&&``/``||``/``&``/``|``) and rewrites all logical forms precedence-safely,
+# so a rate law whose condition combines comparisons — the overwhelmingly common
+# hand-written .net spelling, ``if(((t>=sigma)&&(t<tau1)),lambda0,0)`` — now
+# differentiates instead of falling back. generate_jacobian_from_model therefore
+# emits bngsim_codegen_jac for models that previously got none, and the .net
+# cache key is content+version (not source), so v21 .so files for those models
+# must be invalidated or the stale Jacobian-less .so would be reused.
+_CODEGEN_VERSION = "22"
 
 # Accessor-token prefix for the SBML rateOf csymbol (GH #106). MUST match
 # _RATEOF_PREFIX in bngsim/_sbml_loader.py and register_rateof_accessors() in
