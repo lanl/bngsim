@@ -178,7 +178,15 @@ _compile_counter = itertools.count()
 # emits bngsim_codegen_jac for models that previously got none, and the .net
 # cache key is content+version (not source), so v21 .so files for those models
 # must be invalidated or the stale Jacobian-less .so would be reused.
-_CODEGEN_VERSION = "22"
+# v23: lanl/bngsim #56 — the derived-parameter chain rule now handles compound
+# conditions (and ``^`` / ``not()``), so the emitted sensitivity RHS gains
+# ∂p_d/∂primary terms it previously zeroed; and a derived rate constant that
+# cannot be differentiated now declines the analytic sens RHS outright rather
+# than emitting one with a hole. Both directions change the emitted source, and
+# the .net cache key is content+version (not source), so a v22 .so would keep
+# serving the pre-fix numbers — the exact silent-inertness issue #51 documents
+# for #41/#43. Invalidate v22.
+_CODEGEN_VERSION = "23"
 
 # Accessor-token prefix for the SBML rateOf csymbol (GH #106). MUST match
 # _RATEOF_PREFIX in bngsim/_sbml_loader.py and register_rateof_accessors() in

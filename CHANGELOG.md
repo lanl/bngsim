@@ -320,6 +320,12 @@ in `CMakeLists.txt`) is derived from it.
   render as C, which used to escape as `PrintMethodNotImplementedError` and abort
   the entire codegen build, against the differentiator's documented
   `None`-or-dict contract.
+
+  `_CODEGEN_VERSION` is bumped to `23`. Both directions of this change alter the
+  emitted `.net` sensitivity RHS, and that path's cache key is content+version
+  rather than the generated source, so without the bump a warm
+  `~/.cache/bngsim/codegen` would keep serving the pre-fix `.so` and the fix
+  would be silently inert — the failure mode issue #51 documents for #41 and #43.
 - **`set_param` was not propagated on two network-free session paths, both
   silently (issue #44).** Two independent gaps let a network-free session run
   with plausible-but-wrong state. (1) `NfsimSession.set_param` after
