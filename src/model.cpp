@@ -449,11 +449,35 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         sens_param_addrs.insert(&match->value);
     }
 
-    // State-variable addresses (species concentrations the trigger may read).
-    std::unordered_set<const double *> species_addrs;
-    species_addrs.reserve(species.size());
+    // Addresses that carry live state, i.e. anything whose value moves with the
+    // trajectory. A trigger reading one of these has a crossing time that
+    // depends on the sensitivity parameters *through the state*, even when the
+    // trigger names no parameter at all, so dt*/dp is non-zero exactly as for an
+    // explicitly parameter-dependent trigger.
+    //
+    // Issue #52: this deliberately covers more than species concentrations.
+    // ModelBuilder registers a species as an ExprTk variable only when its name
+    // is not already taken (model_builder.cpp), and SBML models routinely give
+    // each species an observable of the same name — so in `v > 30` the token `v`
+    // binds to the *observable total*, not to &sp.concentration. Checking
+    // concentrations alone therefore missed every SBML state-dependent trigger
+    // and answered those models instead of refusing them: on AMICI's `neuron`
+    // (Izhikevich, trigger `v > 30`) the returned sensitivities were 6x-135x off,
+    // in one direction, across every parameter.
+    //
+    // An observable total is a linear functional of the state and a rateOf
+    // accessor is dx/dt, so both move with the trajectory just as a
+    // concentration does.
+    std::unordered_set<const double *> state_addrs;
+    state_addrs.reserve(species.size() + impl_->observables.size() + impl_->current_derivs.size());
     for (const Species &sp : species) {
-        species_addrs.insert(&sp.concentration);
+        state_addrs.insert(&sp.concentration);
+    }
+    for (const Observable &obs : impl_->observables) {
+        state_addrs.insert(&obs.total);
+    }
+    for (const double &deriv : impl_->current_derivs) {
+        state_addrs.insert(&deriv);
     }
 
     for (const Event &ev : events) {
@@ -471,10 +495,13 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         const std::vector<const double *> refs =
             eval.referenced_variable_addresses(ev.trigger_expr_idx);
         for (const double *addr : refs) {
-            if (species_addrs.count(addr) != 0) {
+            if (state_addrs.count(addr) != 0) {
                 return "event '" + id +
-                       "' has a state-dependent trigger (it reads a species concentration); "
-                       "only fixed-time triggers are supported for forward sensitivity so far "
+                       "' has a state-dependent trigger (it reads a species concentration, an "
+                       "observable, or a rate); its crossing time therefore depends on the "
+                       "sensitivity parameters through the trajectory even though the trigger "
+                       "names none of them, so the event-time sensitivity dt*/dp is non-zero. "
+                       "Only fixed-time triggers are supported for forward sensitivity so far "
                        "(GH #212 Phase 2).";
             }
         }

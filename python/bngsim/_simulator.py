@@ -976,7 +976,11 @@ class Simulator:
         (:func:`NetworkModel.event_sensitivity_unsupported_reason`), which knows
         each event's persistence/delay and — via the trigger's referenced
         variables — whether it is fixed-time and whether its crossing time
-        depends on a requested sensitivity parameter. ``param_names`` is the set
+        depends on a requested sensitivity parameter. "Fixed-time" is judged
+        against every address that carries live state, not just species
+        concentrations: an observable total or a rateOf accessor moves with the
+        trajectory too, so a trigger reading one has a parameter-dependent
+        crossing time even though it names no parameter (issue #52). ``param_names`` is the set
         of parameters whose sensitivities this call requests (defaults to
         ``self._sensitivity_params``); an IC-only request passes an empty list,
         which still exercises the persistence/delay/state-dependence checks.

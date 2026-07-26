@@ -264,6 +264,28 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The event-time sensitivity guard missed state-dependent triggers reached
+  through SBML, answering those models instead of refusing them (issue #52).**
+  The guard refuses forward sensitivities when an event's crossing time depends
+  on a requested parameter, and it decides that from the trigger's *bound
+  addresses*. It compared against species concentrations only. But ModelBuilder
+  registers a species as an ExprTk variable only when its name is still free, and
+  SBML models routinely give each species an observable of the same name — so the
+  species registration is skipped and a trigger token binds to the observable
+  total, never to `&sp.concentration`. Every SBML state-dependent trigger
+  therefore slipped the guard and was answered, with the event contributions
+  missing entirely. On AMICI's `neuron` fixture (Izhikevich, trigger `v > 30`,
+  which names no parameter but whose crossing time depends on `a` and `b` through
+  the trajectory) the returned sensitivities were 6x–135x off, uniformly in one
+  direction, across all four parameters.
+
+  The guard now tests against every address that carries live state: species
+  concentrations, observable totals, and rateOf accessors. An observable total is
+  a linear functional of the state and a rateOf accessor is dx/dt, so a trigger
+  reading either has a non-zero `dt*/dp` exactly as a concentration read does.
+  Refusing is unchanged as a policy — this is only the coverage of what counts as
+  state — and the message now says which of the three it saw and why that implies
+  a moving crossing time.
 - **The codegen cache did not invalidate on a codegen change, so a fix could be
   silently inert on a warm cache (issue #51).** The `.net` path keys its compiled
   `.so` on the model content plus the hand-maintained `_CODEGEN_VERSION` constant

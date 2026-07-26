@@ -74,6 +74,19 @@ SBML_EVENT = """<?xml version="1.0" encoding="UTF-8"?>
   </model>
 </sbml>"""
 
+
+def _sbml_event_with_state_trigger() -> str:
+    """``SBML_EVENT`` with its fixed-time trigger swapped for a state-dependent
+    one (``S < 5``) — the shape of AMICI's ``neuron`` fixture, whose ``v > 30``
+    reads a state variable while naming no parameter (issue #52)."""
+    fixed_time = """<apply><geq/>
+              <csymbol encoding="text"
+                definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>
+              <cn>1</cn></apply>"""
+    assert fixed_time in SBML_EVENT, "SBML_EVENT trigger changed; update this helper"
+    return SBML_EVENT.replace(fixed_time, "<apply><lt/><ci>S</ci><cn>5</cn></apply>")
+
+
 # ── Discontinuity-trigger model: a piecewise-time forcing pulse on parameter
 # `inp` drives production of X. n_discontinuity_triggers > 0 but n_events == 0 —
 # the pulse breaks the integrator step yet never jumps state, so forward
@@ -233,6 +246,40 @@ class TestStillUnsupported:
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
         with pytest.raises(ValueError, match="state-dependent"):
             sim.run(t_span=(0, 10), n_points=11)
+
+    def test_sbml_state_dependent_trigger_raises(self):
+        """Issue #52: the same refusal, reached through SBML.
+
+        The guard tests the trigger's *bound addresses*, and ModelBuilder
+        registers a species as an ExprTk variable only when the name is free.
+        SBML models routinely give each species an observable of the same name,
+        so the species registration is skipped and the trigger's token binds to
+        the observable total instead of ``&sp.concentration``. Checking
+        concentrations alone therefore saw no state dependence here and answered
+        the model — on AMICI's ``neuron`` fixture (Izhikevich, trigger
+        ``v > 30``) the sensitivities came back 6x-135x off, uniformly in one
+        direction, rather than being refused.
+        """
+        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
+        assert m._core.n_events == 1
+        # Precondition for the bug: species and observable share the name, which
+        # is what pushed the trigger's binding onto the observable total.
+        assert "S" in list(m._core.species_names)
+        assert "S" in list(m._core.observable_names)
+
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        with pytest.raises(ValueError, match="state-dependent"):
+            sim.run(t_span=(0, 10), n_points=11)
+
+    def test_sbml_state_dependent_trigger_refused_for_every_entry_point(self):
+        """``compute_all_sensitivities`` takes the same guard, so it must refuse
+        the same model rather than quietly returning a tensor missing the event
+        contributions."""
+        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
+        with pytest.raises(ValueError, match="state-dependent"):
+            bngsim.Simulator(m, method="ode").compute_all_sensitivities(
+                t_span=(0, 10), n_points=11
+            )
 
     def test_delayed_event_raises(self):
         m, _ = _decay_with_event("2.0", delay=1.0)
