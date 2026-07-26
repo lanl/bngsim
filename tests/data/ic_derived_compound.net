@@ -1,0 +1,25 @@
+# Regression fixture for issue #56, IC-seed call site. Same shape as
+# ic_derived.net — a species initial condition set by a DERIVED
+# (ConstantExpression) parameter, with the fitted primary R0 reaching the state
+# ONLY through that IC — but the derived expression now uses a COMPOUND
+# condition. At sel = 5 the true branch is live, so ∂R(0)/∂R0 is 1, exactly as
+# in ic_derived.net. Before the fix _derived_expr_partials_numeric could not
+# parse the compound condition, returned {}, and the seed was silently left at
+# 0 while the forward trajectory stayed correct.
+begin parameters
+    1 R0     100.0   # Constant
+    2 kf     0.5     # Constant
+    3 sel    5.0     # Constant
+    4 Rtot   if((sel>=1)&&(sel<10), R0, 0.5*R0)   # ConstantExpression
+end parameters
+begin species
+    1 R() Rtot
+    2 P() 0.0
+end species
+begin reactions
+    1 1 2 kf   #_R_decay
+end reactions
+begin groups
+    1 R_tot 1
+    2 P_tot 2
+end groups

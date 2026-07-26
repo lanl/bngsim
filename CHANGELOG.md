@@ -264,6 +264,62 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A derived parameter with a compound condition silently zeroed its
+  forward-sensitivity chain rule (issue #56).** A `ConstantExpression` parameter
+  defined by `if((sel>=1)&&(sel<10), kA, kB)` produced the same trajectory as the
+  equivalent simple condition but a gradient component of exactly `0.0` — not an
+  approximation, a wrong number. The two derived-parameter differentiators in
+  `_codegen.py` (`_compute_derived_param_jacobian` for rate constants,
+  `_derived_expr_partials_numeric` for initial-condition seeds and switch-time
+  thresholds) rewrote only `if()` before `parse_expr`, never the logical
+  operators; `parse_expr` then raised, both functions caught it, and their
+  callers read the missing partial as `∂p_d/∂primary = 0` — indistinguishable
+  from a primary that genuinely does not appear. In a fitting workflow that
+  surfaced as an optimizer that simply never moved one parameter. This is the
+  same gap #53 closed in `_jacobian._preprocess_exprtk`, where the consequence
+  was only a fall back to a finite-difference Jacobian: slower, but right.
+
+  Both functions now run the same ExprTk-to-sympy pipeline the rate-law
+  differentiator uses. `_rewrite_logicals` and its helpers moved from `_jacobian`
+  to `_codegen`, next to the `if()`→`Piecewise` rewriter — one implementation,
+  and the import keeps going one way only. That also picks up two neighboring
+  silent zeroes in the same expressions: `^` (BNGL exponentiation, which Python
+  reads as XOR) and `not(x)`. Four of the five call sites were affected — the
+  `.net` and model-path sensitivity RHS (#15), the derived-IC sensitivity seed
+  (#43), and #48's switch-time `∂t*/∂p`; `_analyze_output_sens` already failed
+  loudly.
+
+  Failures that remain are no longer silent, and where there is a correct
+  alternative they are no longer wrong. `_derived_param_jacobian_checked`
+  separates "this expression references no primary, so zero is the right answer"
+  from "a real contribution was lost", which `None` alone could not express. The
+  two sensitivity-RHS generators act on that: if a derived parameter that is
+  actually some reaction's **rate constant** cannot be differentiated, the whole
+  analytic sensitivity RHS is declined with a warning, so the run falls back to
+  CVODES' internal difference quotient — slower, but right — instead of emitting
+  a gradient component of exact zeros. This is the same trade #53 made. Only rate
+  constants are considered, so a derived parameter used purely for reporting (an
+  observable or a function) no longer costs a model its analytic sensitivities,
+  and no longer warns about a chain rule that never fed the RHS. On the
+  585-model `ode_fullnet` corpus this changes 7 models: 5 that previously
+  *crashed* codegen now get an analytic sensitivity RHS, and 2 whose derived rate
+  constant is genuinely undifferentiable now decline cleanly with a warning; no
+  model lost an analytic RHS it previously had, and the corpus produces 2
+  warnings in total.
+
+  The initial-condition seeding path has no such fallback — the seed is either
+  computed or left at zero — so there a lost partial is reported as a warning
+  naming the expression, the reason, and the parameters whose sensitivities will
+  read as zero. It warns rather than raises because the seeding scan visits every
+  parameter-referenced initial condition in the model, most unrelated to the
+  requested sensitivity parameters.
+
+  Two adjacent hazards are now refused outright: a primary parameter whose name
+  shadows a sympy class (`And`, `Or`, `Piecewise`), which would have been
+  captured by the class and differentiated to zero; and a derivative sympy cannot
+  render as C, which used to escape as `PrintMethodNotImplementedError` and abort
+  the entire codegen build, against the differentiator's documented
+  `None`-or-dict contract.
 - **`set_param` was not propagated on two network-free session paths, both
   silently (issue #44).** Two independent gaps let a network-free session run
   with plausible-but-wrong state. (1) `NfsimSession.set_param` after

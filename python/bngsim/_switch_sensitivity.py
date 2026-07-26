@@ -405,8 +405,20 @@ def compute_switch_time_sens(
                 ):
                     continue
 
+                # ``warn_on_failure=False``: this is a *scan* over candidate
+                # thresholds, so an expression that does not reduce to primaries
+                # is the supported "not a switch time" answer (see the comment
+                # above), not a chain rule this feature lost. The warning that
+                # issue #56 added is for callers where empty means a dropped
+                # gradient; here it would fire on every state-dependent
+                # condition in the model.
                 partials = _derived_expr_partials_numeric(
-                    threshold_expr, primary_names, param_idx, values, derived_exprs
+                    threshold_expr,
+                    primary_names,
+                    param_idx,
+                    values,
+                    derived_exprs,
+                    warn_on_failure=False,
                 )
                 dtstar = [0.0] * len(names)
                 moved = False

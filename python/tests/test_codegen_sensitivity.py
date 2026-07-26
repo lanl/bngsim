@@ -61,6 +61,12 @@ def _get_ic_derived_net() -> str:
     return str(p)
 
 
+def _get_ic_derived_compound_net() -> str:
+    p = DATA_DIR / "ic_derived_compound.net"
+    assert p.exists(), f"Test data not found: {p}"
+    return str(p)
+
+
 class TestSensRhsCodeGeneration:
     """Test the C code generation for sensitivity RHS."""
 
@@ -578,3 +584,23 @@ class TestDerivedICParamSens:
         direct = self._analytic(_get_ic_direct_net())
         derived = self._analytic(_get_ic_derived_net())
         np.testing.assert_allclose(direct[:, 0], derived[:, 0], rtol=1e-6, atol=1e-9)
+
+    def test_compound_condition_ic_matches_rebuild_fd(self, tmp_path):
+        """Issue #56 at the IC-seed call site: the same derived IC, but written
+        with a compound condition (``if((sel>=1)&&(sel<10), R0, 0.5*R0)``). The
+        live branch is the same one ``ic_derived.net`` takes unconditionally, so
+        the answer is unchanged — but the condition used to defeat the partial
+        and leave the seed at 0, with the trajectory itself unaffected."""
+        net = _get_ic_derived_compound_net()
+        self._clear_cache(net)
+        fd = self._rebuild_fd(net, tmp_path)
+        sx = self._analytic(net)
+        assert np.abs(sx[:, 0]).max() > 1e-3, (
+            "compound-condition IC seed dropped: ∂R/∂R0 is ~0 (issue #56)"
+        )
+        assert abs(sx[0, 0] - 1.0) < 1e-6, "∂R(0)/∂R0 must seed to 1 through the true branch"
+        np.testing.assert_allclose(sx[:, 0], fd[:, 0], rtol=1e-4, atol=1e-6)
+        # And it must agree with the plain derived IC, which it is equivalent to.
+        np.testing.assert_allclose(
+            sx[:, 0], self._analytic(_get_ic_derived_net())[:, 0], rtol=1e-6, atol=1e-9
+        )
