@@ -33,6 +33,7 @@ DATA_DIR = Path(_env) if _env else Path(__file__).resolve().parent.parent.parent
 
 CLOSED_NET = str(DATA_DIR / "ss_output_sens.net")  # A<->B<->C, conserved
 OPEN_NET = str(DATA_DIR / "ss_birthdeath.net")  # dS/dt = k_prod - k_deg*S
+DERIVED_NET = str(DATA_DIR / "ss_expr_sens_derived.net")  # A<->B, _rateLaw1 = chi*kon
 
 # High-accuracy CVODES so the last time point is a faithful steady-state oracle.
 _RUN = dict(rtol=1e-11, atol=1e-13, max_steps=10**6)
@@ -168,6 +169,113 @@ class TestExplicitParameterTerm:
         got = ss.output_sensitivities(["expression:sq"])[0]
         # columns: [k_prod, k_deg, scale]
         assert got[2] == pytest.approx(s_star, rel=1e-6)
+
+
+# ── Function explicit-parameter term through a DERIVED parameter ─────────────
+
+
+class TestDerivedParameterChain:
+    """``flux() = _rateLaw1*A_tot`` with ``_rateLaw1 = chi*kon``.
+
+    The explicit ∂flux/∂p term is finite-differenced by perturbing the Parameter
+    vector directly, and neither ``update_observables`` nor ``evaluate_functions``
+    re-derives ConstantExpression parameters — only ``set_param`` does. So a probe
+    of ``kon`` used to leave ``_rateLaw1`` at its nominal value, dropping
+    ∂flux/∂_rateLaw1 · ∂_rateLaw1/∂kon and returning the bare state-chain term:
+    sign-flipped and 20x too large. Same defect class as issues #2 / #41 and the
+    ∂f/∂p hole fixed under #63; the probe now routes through
+    ``SteadyStateRhs::sync_params(pi)``.
+
+    ``ss_expr_sens_derived.net`` is A ⇌ B with a = chi·kon and b = koff, so
+    conservation gives A+B = 1 and every quantity below has a closed form.
+    """
+
+    KON, CHI, KOFF = 1.0, 10.0, 0.5
+
+    def _closed_form(self):
+        a, b = self.CHI * self.KON, self.KOFF
+        d = (a + b) ** 2
+        return {
+            # A_ss = b/(a+b); flux = a·A_ss = a·b/(a+b)
+            "A_ss": b / (a + b),
+            "flux": a * b / (a + b),
+            # dflux/da = b²/(a+b)², and a = chi·kon
+            "dflux": {
+                "kon": self.CHI * b**2 / d,
+                "chi": self.KON * b**2 / d,
+                "koff": a**2 / d,  # dflux/db = a²/(a+b)²
+                "_rateLaw1": b**2 / d,
+            },
+            # dA_ss/da = -b/(a+b)², dA_ss/db = a/(a+b)²
+            "dA": {
+                "kon": -self.CHI * b / d,
+                "chi": -self.KON * b / d,
+                "koff": a / d,
+                "_rateLaw1": -b / d,
+            },
+        }
+
+    def test_expression_sensitivity_matches_closed_form(self):
+        params = ["kon", "chi", "koff", "_rateLaw1"]
+        ss = _steady_state(DERIVED_NET, params)
+        assert ss.converged
+        cf = self._closed_form()
+
+        # The state the derivatives are taken at, and the species sensitivity the
+        # projection rides on — both pinned so a failure localizes.
+        assert ss["A()"] == pytest.approx(cf["A_ss"], rel=1e-7)
+        ia = list(ss.species_names).index("A()")
+        np.testing.assert_allclose(
+            ss.sensitivity[ia], [cf["dA"][p] for p in params], rtol=1e-5, atol=1e-9
+        )
+
+        got = ss.output_sensitivities(["expression:flux"])[0]
+        np.testing.assert_allclose(got, [cf["dflux"][p] for p in params], rtol=1e-5, atol=1e-8)
+
+    def test_state_chain_alone_is_not_accepted(self):
+        """Pin the failure mode, not just the answer.
+
+        Dropping the derived chain leaves ``a·dA_ss/dkon`` — a NEGATIVE number
+        where the total derivative is positive. An rtol-only assertion on a
+        near-cancelling sum can pass for the wrong reason; this asserts the two
+        candidates are far apart and that the right one was returned.
+        """
+        params = ["kon", "chi"]
+        ss = _steady_state(DERIVED_NET, params)
+        cf = self._closed_form()
+        a = self.CHI * self.KON
+
+        state_chain_only = np.array([a * cf["dA"][p] for p in params])
+        total = np.array([cf["dflux"][p] for p in params])
+        assert np.all(state_chain_only < 0) and np.all(total > 0)
+
+        got = ss.output_sensitivities(["expression:flux"])[0]
+        np.testing.assert_allclose(got, total, rtol=1e-5, atol=1e-8)
+
+    def test_matches_long_cvode_run(self):
+        """Independent oracle: the compiled ``bngsim_codegen_output_sens`` chain
+        rule at the last point of a converged forward-sensitivity run."""
+        params = ["kon", "chi", "koff"]
+        ss = _steady_state(DERIVED_NET, params)
+        run = _run_to_steady_state(DERIVED_NET, params, 50.0)
+        np.testing.assert_allclose(run.species[-1], ss.concentrations, rtol=1e-6, atol=1e-8)
+        np.testing.assert_allclose(
+            ss.output_sensitivities(["expression:flux"]),
+            run.output_sensitivities(["expression:flux"], axis="parameter")[-1],
+            rtol=1e-4,
+            atol=1e-8,
+        )
+
+    def test_model_is_left_with_nominal_parameter_values(self):
+        """The probe writes the Parameter vector and re-derives; the restore must
+        undo BOTH, or the derived parameters keep their perturbed values and
+        corrupt every later column and the caller's model."""
+        m = bngsim.Model.from_net(DERIVED_NET)
+        sim = bngsim.Simulator(m, method="ode")
+        ss = sim.steady_state(sensitivity_params=["kon", "chi", "koff"])
+        assert ss.converged
+        assert m.get_param("kon") == pytest.approx(self.KON, rel=0, abs=0)
+        assert m.get_param("_rateLaw1") == pytest.approx(self.CHI * self.KON, rel=1e-15)
 
 
 # ── Names / shapes / species passthrough ─────────────────────────────────────

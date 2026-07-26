@@ -1253,10 +1253,36 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 // perturbations at the fixed steady state. BOTH terms are needed for the total
 // derivative and match the CVODES codegen output-sensitivity chain rule.
 //
+// The ∂func/∂p probe goes through SteadyStateRhs::sync_params for the same reason
+// the ∂f/∂p probe does (issue #63, and #2 before it): neither update_observables
+// nor evaluate_functions re-derives ConstantExpression parameters — only
+// set_param does — so writing `kon` straight into the Parameter vector leaves a
+// BNG2.pl-derived `_rateLaw{N} = chi*kon` at its nominal value, and a function
+// that reads `_rateLaw{N}` silently loses the ∂func/∂_rateLaw1·∂_rateLaw1/∂kon
+// chain-rule term. sync_params(pi) re-derives everything except the probed
+// parameter itself, matching set_param's detach-then-refresh rule; the restore
+// needs the same call, or the derived parameters stay at their perturbed values
+// and corrupt every later column and the caller's model.
+//
+// Why not the compiled evaluator. `bngsim_codegen_output_sens` (GH #198) already
+// carries this chain rule analytically, and replacing the whole block with it is
+// the obvious next step — but it is an enhancement, not this fix. It is emitted
+// only when the model carries `_want_output_sens`, which Simulator.__init__ sets
+// from its CONSTRUCTOR sensitivity_params; steady_state() takes its own
+// sensitivity_params as a METHOD argument, so the artifact reaching here in the
+// ordinary `Simulator(m, method="ode").steady_state(sensitivity_params=[...])`
+// call has no such symbol. Wiring it up needs the GH #205 re-prep dance
+// compute_all_sensitivities does (set the flag, drop the plain artifact,
+// regenerate), the dY_ss/dp rows transposed into the per-column pointers the ABI
+// wants, and NaN-sentinel handling for the functions the codegen marks
+// unsupported — which this block would still have to answer for. So it becomes a
+// preferred path with this as its fallback, exactly as ∂f/∂p is structured above.
+//
 // Precondition: result.sensitivity is populated and the model species are set to
 // the steady state. The model is left evaluated at the steady state with the
 // original parameter values on return.
-static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateResult &result,
+static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
+                                          SteadyStateResult &result,
                                           const std::vector<std::string> &param_names) {
     const int ns = model.n_species();
     const int np = static_cast<int>(param_names.size());
@@ -1298,7 +1324,10 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateResult
 
         // Base function values at the steady state with the original parameters.
         // function_value_cache() returns a reference reused by every subsequent
-        // evaluate_functions() call, so snapshot it into f0.
+        // evaluate_functions() call, so snapshot it into f0. sync_params() first,
+        // so the baseline is taken against freshly derived expression parameters
+        // — the same ordering compute_ss_sensitivity uses for its own f0.
+        rhs.sync_params();
         model.update_observables(y_ss);
         model.evaluate_functions(0.0);
         const std::vector<double> f0(model.function_value_cache());
@@ -1344,11 +1373,16 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateResult
             }
             const double pval = params[pi].value;
             const double h = eps * std::max(std::abs(pval), 1.0);
+            // Perturb, re-deriving every expression parameter but the probed one.
             const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+            rhs.sync_params(pi);
             model.update_observables(y_ss);
             model.evaluate_functions(0.0);
             f1 = model.function_value_cache();
+            // Restore, and re-derive again — otherwise the derived parameters
+            // keep the perturbed values this probe just gave them.
             const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+            rhs.sync_params(pi);
             for (int m = 0; m < n_func; ++m) {
                 result.function_sensitivity[static_cast<size_t>(m) * np + p] += (f1[m] - f0[m]) / h;
             }
@@ -1418,7 +1452,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian);
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
-        compute_ss_output_sensitivity(model, result, opts.sensitivity_params);
+        compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);
     }
 
     return result;
