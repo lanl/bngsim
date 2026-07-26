@@ -157,6 +157,110 @@ class TestPerSpeciesChainRule:
         assert float(fs(**base)) == pytest.approx(4.0 * float(fp(**base)))
 
 
+class TestLogicalOperators:
+    """ExprTk spells logical AND/OR three ways each (``and``/``&&``/``&``,
+    ``or``/``||``/``|``); hand-written BNGL ``.net`` conditions overwhelmingly use
+    the symbolic form. All spellings must parse, and — critically — must keep
+    ExprTk's precedence, where a comparison binds tighter than a logical. A naive
+    ``&&`` → ``&`` substitution does not: Python binds ``&`` tighter, so
+    ``a > b & c < d`` reassociates to ``a > (b & c) < d`` and raises.
+    """
+
+    # Four spellings of the same condition, all of which must parse identically.
+    EQUIVALENT = [
+        "if((A>Km)&&(A<2*Km),k*A,0)",
+        "if(A>Km && A<2*Km,k*A,0)",  # unparenthesized operands
+        "if((A>Km) and (A<2*Km),k*A,0)",
+        "if(A>Km & A<2*Km,k*A,0)",
+    ]
+
+    @pytest.mark.parametrize("expr", EQUIVALENT)
+    def test_and_spellings_agree(self, expr):
+        e = J._exprtk_to_sympy(expr)
+        assert e is not None, f"failed to parse {expr!r}"
+        assert e == J._exprtk_to_sympy("if((A>Km) and (A<2*Km),k*A,0)")
+
+    @pytest.mark.parametrize("expr", ["if((A>Km)||(B>Km),k,0)", "if(A>Km or B>Km,k,0)"])
+    def test_or_spellings_agree(self, expr):
+        e = J._exprtk_to_sympy(expr)
+        assert e is not None, f"failed to parse {expr!r}"
+        assert e == J._exprtk_to_sympy("if((A>Km)|(B>Km),k,0)")
+
+    def test_and_binds_tighter_than_or(self):
+        """``a && b || c`` is ``(a && b) || c``, matching ExprTk and BNGL."""
+        got = J._exprtk_to_sympy("if(A>1 && B>2 || C>3,k,0)")
+        want = J._exprtk_to_sympy("if((A>1 && B>2) || C>3,k,0)")
+        assert got is not None and got == want
+        assert got != J._exprtk_to_sympy("if(A>1 && (B>2 || C>3),k,0)")
+
+    def test_comma_is_not_a_logical_boundary(self):
+        """A depth-0 comma separates arguments; a logical inside one argument must
+        not swallow it (``Piecewise((v, cond), …)``, ``max(a, b)``)."""
+        A, B, k, Km = sp.symbols("A B k Km")
+        e = J._exprtk_to_sympy("if(A>1 && B>2,k*A,k*Km)")
+        assert e is not None
+        assert e == sp.Piecewise((k * A, sp.And(A > 1, B > 2)), (k * Km, True))
+        # a non-logical multi-arg call keeps its arguments too
+        assert J._exprtk_to_sympy("max(A,B)+min(A,2)") == sp.Max(A, B) + sp.Min(A, 2)
+
+    def test_word_operators_are_not_matched_inside_identifiers(self):
+        """``land`` / ``orbit`` are identifiers, not operator occurrences."""
+        e = J._exprtk_to_sympy("k*land + orbit")
+        assert e is not None
+        assert {str(s) for s in e.free_symbols} == {"k", "land", "orbit"}
+
+    def test_derivative_of_compound_condition_matches_fd_in_each_branch(self):
+        """The whole point: a compound-condition rate law differentiates per
+        branch instead of falling back, and matches an FD of the original."""
+        expr = "if((A>Km)&&(A<3*Km),k*A,0)"
+        obs, const = {"A"}, {"k", "Km"}
+        terms = J.build_per_observable_terms(expr, {}, obs, const)
+        assert terms is not None, "compound condition unexpectedly fell back"
+        varnames = sorted(obs | const) + [_TIME]
+        f = _lambdify(expr, varnames)
+        for region in (  # inside the window, below it, above it
+            {"A": 1.7, "k": 0.5, "Km": 0.8, _TIME: 0.0},
+            {"A": 0.3, "k": 0.5, "Km": 0.8, _TIME: 0.0},
+            {"A": 9.9, "k": 0.5, "Km": 0.8, _TIME: 0.0},
+        ):
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+    def test_emitted_derivative_round_trips(self):
+        """The emitted ExprTk derivative must re-parse — it did not before, since
+        the emitter writes word-form logicals with unparenthesized operands."""
+        terms = J.build_per_observable_terms("if((A>Km)&&(A<3*Km),k*A,0)", {}, {"A"}, {"k", "Km"})
+        assert terms
+        for _obs, s in terms:
+            assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
+
+    def test_unbalanced_parens_still_fall_back(self):
+        assert (
+            J.build_per_observable_terms("if((A>Km)&&(A<2*Km,k*A,0)", {}, {"A"}, {"k", "Km"})
+            is None
+        )
+
+    def test_deeply_nested_logical_free_expression_is_untouched(self):
+        """A logical-free expression must not be walked at all. Real models nest
+        `if()` hundreds deep — the mallela2024 COVID model has a 354-level daily
+        lookup table — and a rewrite that descended per paren level blew Python's
+        recursion limit on it."""
+        expr = "0"
+        for i in range(400):
+            expr = f"if((t<={i}),{i}.0,{expr})"
+        assert J._rewrite_logicals(expr) == expr  # no descent, no RecursionError
+
+    def test_pathologically_nested_logical_falls_back_not_crashes(self):
+        """Past the rewrite budget the string is returned untouched, so the caller
+        gets the FD fallback rather than a RecursionError."""
+        expr = "A>0"
+        for _ in range(400):
+            expr = f"({expr}) && (A>0)"
+        J._rewrite_logicals(expr)  # must not raise
+        assert J.build_per_observable_terms(f"if({expr},k*A,0)", {}, {"A"}, {"k"}) is None
+
+
 class TestFallbackContract:
     """Inputs the path cannot guarantee must return None (→ FD Jacobian), never
     a silently-wrong derivative."""

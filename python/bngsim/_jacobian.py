@@ -119,10 +119,154 @@ _IDENT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 # ─── ExprTk string → sympy ────────────────────────────────────────────────
 
 
+# ExprTk spells logical AND / OR three ways each: the word form and the doubled
+# and single symbolic forms. Hand-written BNGL ``.net`` conditions overwhelmingly
+# use ``&&`` / ``||`` (e.g. ``if(((t>=sigma)&&(t<tau1)),lambda0,0)``). Ordered
+# loosest-binding level first, so ``a && b || c`` splits at ``||`` first — ExprTk
+# binds ``and`` tighter than ``or``, as does BNGL.
+_LOGICAL_LEVELS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
+    ("Or", (("||", False), ("|", False), ("or", True))),
+    ("And", (("&&", False), ("&", False), ("and", True))),
+)
+
+
+_COMMA_TOKEN: tuple[tuple[str, bool], ...] = ((",", False),)
+
+
+def _depth0_token_spans(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[tuple[int, int]]:
+    """Spans of every ``tokens`` occurrence at paren depth 0 in ``s``.
+
+    ``tokens`` is ``(text, is_word)``; a word token additionally requires
+    identifier boundaries so ``land`` / ``orbit`` are not split. Longer
+    spellings are listed first so ``&&`` is never mistaken for two ``&``.
+    """
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth < 0:
+                return []  # unbalanced — leave the string alone
+            i += 1
+            continue
+        matched = 0
+        if depth == 0:
+            for tok, is_word in tokens:
+                if not s.startswith(tok, i):
+                    continue
+                if is_word:
+                    before = s[i - 1] if i else ""
+                    after = s[i + len(tok)] if i + len(tok) < n else ""
+                    if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
+                        continue
+                matched = len(tok)
+                break
+        if matched:
+            spans.append((i, i + matched))
+            i += matched
+        else:
+            i += 1
+    return spans if depth == 0 else []
+
+
+# Cheap pre-filter: a substring with no logical token at all is returned as-is,
+# which keeps the rewrite off the hot path *and* stops it descending into deeply
+# nested logical-free expressions (e.g. the 354-deep nested-if daily lookup table
+# in the mallela2024 COVID model).
+_LOGICAL_PRESENT_RE = re.compile(r"[&|]|\band\b|\bor\b")
+
+# Nesting budget for the rewrite. A logical nested deeper than this is
+# pathological; exhausting the budget returns the substring untouched, so
+# parse_expr raises and the caller falls back to the FD Jacobian — the pre-fix
+# behavior, never a wrong derivative. Each level costs ~3 Python frames.
+_LOGICAL_REWRITE_BUDGET = 100
+
+
+def _rewrite_logicals(expr: str) -> str:
+    """Rewrite ExprTk logical AND / OR into sympy ``And(...)`` / ``Or(...)`` calls.
+
+    A direct ``&&`` → ``&`` substitution is **not** correct. Python binds ``&``
+    tighter than a comparison, so ``a >= b & c < d`` reassociates to
+    ``a >= (b & c) < d`` and ``parse_expr`` then raises on the chained
+    comparison. Rewriting to the call form preserves ExprTk's precedence
+    (comparisons bind tighter than logicals), which is what BNGL means — and it
+    holds whether or not the author parenthesized each operand.
+    """
+    if not _LOGICAL_PRESENT_RE.search(expr):
+        return expr
+    if expr.count("(") != expr.count(")"):
+        return expr  # malformed; parse_expr will raise and the caller falls back
+    return _rewrite_logicals_checked(expr, _LOGICAL_REWRITE_BUDGET)
+
+
+def _split_depth0(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[str] | None:
+    """``s`` split at every depth-0 ``tokens`` occurrence, or ``None`` if none."""
+    spans = _depth0_token_spans(s, tokens)
+    if not spans:
+        return None
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(s[cursor:start])
+        cursor = end
+    parts.append(s[cursor:])
+    return [p.strip() for p in parts]
+
+
+def _rewrite_logicals_checked(s: str, budget: int) -> str:
+    if budget <= 0 or not _LOGICAL_PRESENT_RE.search(s):
+        return s
+    # A depth-0 comma is an argument separator (``Piecewise((v, cond), …)``,
+    # ``max(a, b)``), never a logical operand boundary — recurse per argument
+    # first so a logical inside one argument cannot swallow the comma.
+    args = _split_depth0(s, _COMMA_TOKEN)
+    if args is not None:
+        return ", ".join(_rewrite_logicals_checked(a, budget - 1) for a in args)
+    for fn, tokens in _LOGICAL_LEVELS:
+        operands = _split_depth0(s, tokens)
+        if operands is None:
+            continue
+        return (
+            f"{fn}(" + ", ".join(_rewrite_logicals_checked(p, budget - 1) for p in operands) + ")"
+        )
+    return _rewrite_logicals_in_groups(s, budget)
+
+
+def _rewrite_logicals_in_groups(s: str, budget: int) -> str:
+    """Recurse into each depth-0 ``(...)`` group of a string that has no depth-0
+    logical operator, so nested conditions are rewritten too."""
+    out: list[str] = []
+    depth = 0
+    start = -1
+    for i, c in enumerate(s):
+        if c == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                inner = s[start + 1 : i]
+                out.append("(" + _rewrite_logicals_checked(inner, budget - 1) + ")")
+                start = -1
+            continue
+        if depth == 0:
+            out.append(c)
+    return "".join(out)
+
+
 def _preprocess_exprtk(expr: str) -> str:
     """Rewrite an ExprTk expression string into a form ``sympy.parse_expr`` can
     tokenize: ``time()``→placeholder, ``if(c,t,f)``→Piecewise, ``^``→``**``,
-    word logicals → symbolic logicals."""
+    logicals → sympy ``And``/``Or``/``Not`` calls."""
     s = expr.strip()
     # time() / t() → constant placeholder (whole-word, parens required so a
     # parameter literally named ``t`` is untouched).
@@ -131,13 +275,11 @@ def _preprocess_exprtk(expr: str) -> str:
     s = _translate_bngl_if_to_piecewise(s)
     # power operator
     s = s.replace("^", "**")
-    # word-form logicals → symbolic so parse_expr does not try to evaluate the
-    # truth value of a symbolic operand. ExprTk parenthesizes each operand
-    # (see _ast_to_exprtk_recursive), so operator precedence is preserved. ``not(x)``
-    # becomes ``Not(x)`` (bound in the local dict).
+    # Logicals → sympy call form, so parse_expr never evaluates the truth value
+    # of a symbolic operand and BNGL's precedence survives. ``not(x)`` becomes
+    # ``Not(x)`` first (all three are bound in the local dict).
     s = re.sub(r"\bnot\s*\(", "Not(", s)
-    s = re.sub(r"\band\b", "&", s)
-    s = re.sub(r"\bor\b", "|", s)
+    s = _rewrite_logicals(s)
     return s
 
 
