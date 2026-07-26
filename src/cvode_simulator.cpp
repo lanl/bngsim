@@ -44,9 +44,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -64,6 +67,61 @@ namespace bngsim {
 // factorization slower than dense LAPACK LU. Only models with truly sparse
 // Jacobians (metapopulation, compartmental transport) tend to benefit.
 // The density cutoff reflects internal benchmarking.
+// Retry a CV_TOO_MUCH_WORK return, but only while the integrator is still
+// getting somewhere (issue #54).
+//
+// CV_TOO_MUCH_WORK is ordinarily recoverable: CVODE spent its per-output-point
+// step budget (max_steps) without reaching t_target, but t, y, the step size and
+// the order are all intact, so calling CVode again just continues. That is why
+// max_steps is documented as a batch size per output point rather than a ceiling
+// on the whole run.
+//
+// It stops being recoverable when the step size collapses at a discontinuity —
+// an `if(t >= sigma)` rate jump drives h to ~1e-15 until t + h == t, and every
+// retry then buys zero progress. The loop had no exit for that: `max_steps`
+// bounded a batch and never the number of batches, so raising it to 1,000,000
+// changed nothing and only the wall-clock `timeout` ever ended the run. In a fit
+// that spends the caller's entire per-trial budget before scoring the trial inf.
+//
+// A batch that advances t by nothing is that stall and no other case: a model
+// that legitimately needs many steps advances every batch, however slowly. So
+// retry while t moves and raise a diagnosable error the moment it does not,
+// naming the t and h CVODE wedged at.
+static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vector y,
+                                  sunrealtype *t_ret, int &flag, const char *context,
+                                  const std::function<void()> &check_budget) {
+    while (flag == CV_TOO_MUCH_WORK) {
+        if (check_budget)
+            check_budget();
+
+        sunrealtype t_before = 0.0;
+        CVodeGetCurrentTime(cvode_mem, &t_before);
+
+        flag = CVode(cvode_mem, t_target, y, t_ret, CV_NORMAL);
+        if (flag != CV_TOO_MUCH_WORK)
+            return;
+
+        sunrealtype t_after = 0.0;
+        CVodeGetCurrentTime(cvode_mem, &t_after);
+        if (t_after > t_before)
+            continue; // still climbing, however slowly — keep going
+
+        sunrealtype h_now = 0.0;
+        CVodeGetCurrentStep(cvode_mem, &h_now);
+        long n_steps = 0;
+        CVodeGetNumSteps(cvode_mem, &n_steps);
+        std::ostringstream msg;
+        msg << "CVODE made no progress " << context << ": an entire max_steps batch advanced the "
+            << "internal time not at all, at t=" << std::setprecision(17) << t_after
+            << " with step size h=" << h_now << " (after " << n_steps << " steps). Retrying "
+            << "cannot help — the step size has collapsed, typically at a discontinuity such as "
+            << "an if(t >= sigma) rate jump, where t + h == t. Loosen rtol/atol, or move the "
+            << "discontinuity onto an event or a sample time so the integrator can restart "
+            << "across it.";
+        throw std::runtime_error(msg.str());
+    }
+}
+
 static constexpr int SPARSE_THRESHOLD = 50;
 static constexpr double SPARSE_DENSITY_MAX = 0.10; // 10%
 
@@ -1370,11 +1428,11 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
 
         sunrealtype t_ret;
         int flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
-        while (flag == CV_TOO_MUCH_WORK) {
-            if (budget.active())
-                budget.check();
-            flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
-        }
+        retry_while_advancing(cvode_mem, t_out[i], w.y, &t_ret, flag,
+                              "while integrating to the next output point", [&budget] {
+                                  if (budget.active())
+                                      budget.check();
+                              });
         if (flag < 0) {
             throw std::runtime_error("CVODE integration failed at t=" + std::to_string(t_out[i]) +
                                      " with flag=" + std::to_string(flag));
@@ -3171,18 +3229,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, CV_NORMAL);
 
-            // CV_TOO_MUCH_WORK is recoverable, not a failure: CVODE merely
-            // used its per-call step budget (max_steps) without reaching
-            // t_target. The integrator state (t, y, step size, order) is
-            // intact, so we simply call CVode again to continue -- max_steps
-            // acts as a batch size, not a hard ceiling. The wall-clock
-            // budget is re-checked between batches so a genuinely
-            // non-terminating integration is still bounded by `timeout`.
-            while (flag == CV_TOO_MUCH_WORK) {
-                if (budget.active())
-                    budget.check();
-                flag = CVode(cvode_mem, t_target, y, &t_ret, CV_NORMAL);
-            }
+            // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
+            // size per output point, not a ceiling on the run — so retry, but
+            // only while the integrator is actually advancing. See
+            // retry_while_advancing: a batch that moves t not at all is a
+            // collapsed step size at a discontinuity, where retrying forever is
+            // what made this never return (issue #54). The wall-clock budget is
+            // still re-checked between batches.
+            retry_while_advancing(cvode_mem, t_target, y, &t_ret, flag,
+                                  "while integrating to the next output point", [&budget] {
+                                      if (budget.active())
+                                          budget.check();
+                                  });
 
             if (flag < 0) {
                 throw std::runtime_error(

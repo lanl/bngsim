@@ -264,6 +264,29 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A collapsed step size at a rate-law discontinuity made `Simulator.run` never
+  return, and no step bound stopped it (issue #54).** At an `if(t >= sigma)` rate
+  jump CVODE drives the step size to ~1e-15 until `t + h == t` and returns
+  `CV_TOO_MUCH_WORK`. That return is ordinarily recoverable — `max_steps` is a
+  batch size *per output point*, not a ceiling on the run, so the integrator's
+  state is intact and calling `CVode` again simply continues. The retry loop had
+  no exit for a batch that bought no progress, so the run never ended:
+  `max_steps=1_000_000` changed nothing, `max_step=0.5` changed nothing, and only
+  the wall-clock `timeout` ever stopped it. In a PyBNF fit with
+  `wall_time_sim = 60` every such trial burned a full minute before being scored
+  `inf`.
+
+  The retry now stops the moment a batch fails to advance the integrator's
+  internal time and raises a `SimulationError` naming the `t` and `h` it wedged
+  at, plus the likely cause. On the reported reproducer that turns a run that
+  never returned into a failure in **0.14 s**, pointing at `t = 68.3718` — which
+  is exactly `sigma` — with `h = 6.6e-15`.
+
+  Bounding on *progress* rather than on a step count is what keeps this free of
+  false positives. A model that legitimately needs many steps advances every
+  batch, however slowly, so it is untouched; the same reproducer at
+  `rtol = atol = 1e-7` still integrates normally, as the issue's own table
+  records, where a cumulative step ceiling would have refused it.
 - **The event-time sensitivity guard missed state-dependent triggers reached
   through SBML, answering those models instead of refusing them (issue #52).**
   The guard refuses forward sensitivities when an event's crossing time depends
