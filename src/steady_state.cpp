@@ -15,8 +15,21 @@
 // Convergence criterion: every integrate-to-steady-state path here uses the
 // SAME rule as Simulator.run(steady_state=True) / BNG2.pl run_network -c:
 // the L2 norm of the derivative vector divided by n_species, ||f||_2 / n.
+//
+// Codegen (issue #63): every RHS evaluation in this file goes through
+// SteadyStateRhs, which dispatches to the code-generated `bngsim_codegen_rhs`
+// when SteadyStateOptions carries a .so path or a MIR-JIT source and to
+// NetworkModel::compute_derivs otherwise. The same object also exposes the
+// compiled analytical Jacobian and the analytical ∂f/∂p the codegen sensitivity
+// RHS emits, which is what dY_ss/dp is assembled from when they are available.
+// Before #63 this file read no codegen option at all: a Simulator whose
+// codegen_backend reported "cc" still solved for steady state on the interpreted
+// path, and both factors of dY_ss/dp were always finite differences.
 
 #include "bngsim/steady_state.hpp"
+#include "bngsim/codegen_abi.hpp"
+#include "bngsim/dynamic_library.hpp"
+#include "bngsim/mir_jit.hpp"
 #include "bngsim/model.hpp"
 #include "bngsim/types.hpp"
 
@@ -42,10 +55,223 @@
 namespace bngsim {
 
 // ---------------------------------------------------------------------------
+// The RHS this solver evaluates: codegen when one is attached, else interpreted
+// ---------------------------------------------------------------------------
+
+// Every f(y) in this file is evaluated through here (issue #63).
+//
+// Backends. A non-empty SteadyStateOptions::codegen_c_source JIT-compiles the
+// emitted C in-process (MIR); otherwise a non-empty codegen_so_path is dlopen'd;
+// otherwise the interpreted NetworkModel::compute_derivs runs. The precedence
+// and the symbol set match CvodeSimulator::Impl::setup_codegen_rhs, so a
+// Simulator gets the same RHS from steady_state() as from run(). A load or
+// compile failure THROWS rather than quietly reverting to the interpreter — a
+// silent downgrade to a 10x slower path is exactly the failure mode #63 is about.
+//
+// Beyond f(y) this also carries the two derivative callbacks the sensitivity
+// assembly wants, when the artifact provides them:
+//   * `bngsim_codegen_jac` — the dense column-major analytical Jacobian, the
+//     compiled mirror of NetworkModel::fill_dense_analytical_jacobian;
+//   * `bngsim_codegen_sens_rhs` — evaluated at yS = 0, whose J·yS term then
+//     vanishes and leaves the bare analytical ∂f/∂p column.
+//
+// Parameter values reach the compiled code through a contiguous mirror rather
+// than the model's Parameter vector, so any caller that mutates a parameter
+// (the finite-difference ∂f/∂p fallback below) must call sync_params()
+// afterwards. The interpreted backend reads the model directly and does not care.
+class SteadyStateRhs {
+  public:
+    SteadyStateRhs(NetworkModel &model, const SteadyStateOptions &opts) : model_(model) {
+        const bool use_jit = !opts.codegen_c_source.empty();
+        if (!use_jit && opts.codegen_so_path.empty()) {
+            return; // interpreted
+        }
+
+        // The compiled Jacobian comes in two shapes and the codegen emits exactly
+        // one of them per model: dense for a dense-routed model, CSC for a
+        // sparse/KLU-routed one (GH #162). The steady-state sensitivity solve
+        // always factors densely, so both are resolved and the sparse one is
+        // scattered into the dense buffer — otherwise every large sparse model,
+        // which is precisely the case worth compiling, would silently drop back
+        // to the interpreted Jacobian fill.
+        if (use_jit) {
+            jit_ = MirJit(opts.codegen_c_source);
+            rhs_fn_ = jit_.symbol<CodegenRhsFn>("bngsim_codegen_rhs");
+            jac_fn_ = jit_.try_symbol<CodegenJacFn>("bngsim_codegen_jac");
+            jac_sparse_fn_ = jit_.try_symbol<CodegenJacSparseFn>("bngsim_codegen_jac_sparse");
+            sens_fn_ = jit_.try_symbol<CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            backend_ = "codegen-jit";
+        } else {
+            lib_ = DynamicLibrary(opts.codegen_so_path);
+            rhs_fn_ = lib_.symbol<CodegenRhsFn>("bngsim_codegen_rhs");
+            jac_fn_ = lib_.try_symbol<CodegenJacFn>("bngsim_codegen_jac");
+            jac_sparse_fn_ = lib_.try_symbol<CodegenJacSparseFn>("bngsim_codegen_jac_sparse");
+            sens_fn_ = lib_.try_symbol<CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            backend_ = "codegen-so";
+        }
+
+        so_data_.tfun_ctx = &model_;
+        so_data_.tfun_eval = tfun_eval_thunk;
+        sync_params();
+    }
+
+    // Non-copyable / non-movable: so_data_.param_values points into param_buf_.
+    SteadyStateRhs(const SteadyStateRhs &) = delete;
+    SteadyStateRhs &operator=(const SteadyStateRhs &) = delete;
+
+    const std::string &backend() const { return backend_; }
+
+    // Re-mirror the model's live parameter values into the buffer the compiled
+    // code reads, re-deriving constant-expression parameters first.
+    //
+    // The re-derivation is the same one cvode_rhs/cvode_codegen_rhs perform
+    // under a sensitivity probe (issue #2): BNG2.pl encodes a rate law like
+    // `chi*kon` as a derived parameter `_rateLaw{N}`, so perturbing `kon`
+    // without re-evaluating `_rateLaw{N}` leaves the rate constant at its
+    // nominal value and the chain-rule term silently drops out of ∂f/∂p. It runs
+    // on the interpreted backend too — compute_derivs()/evaluate_functions()
+    // never refresh derived parameters, only set_param() does, so before #63 the
+    // finite-difference ∂f/∂p below inherited exactly that hole.
+    //
+    // `held` is the index of a parameter the caller has just written by hand and
+    // wants left alone. Re-deriving it would overwrite the write — and when that
+    // write is a finite-difference probe of a *derived* parameter, silently
+    // return a zero column. Holding it and re-deriving everything else is
+    // exactly NetworkModel::set_param's rule (it detaches the target from its
+    // expression, then refreshes the rest), so the FD probe and an explicit
+    // set_param see the same model.
+    void sync_params(int held = -1) {
+        auto &params = const_cast<std::vector<Parameter> &>(model_.parameters());
+        auto &evaluator = model_.evaluator();
+        for (size_t i = 0; i < params.size(); ++i) {
+            auto &p = params[i];
+            if (p.is_expression && p.evaluator_id >= 0 && static_cast<int>(i) != held) {
+                p.value = evaluator.evaluate(p.evaluator_id);
+            }
+        }
+        if (!rhs_fn_) {
+            return; // interpreted backend reads the model directly
+        }
+        param_buf_.resize(params.size());
+        for (size_t i = 0; i < params.size(); ++i) {
+            param_buf_[i] = params[i].value;
+        }
+        so_data_.param_values = param_buf_.data();
+    }
+
+    // f(t, y) -> ydot. The interpreted branch is compute_derivs() alone:
+    // compute_derivs_core() already refreshes observable totals and
+    // function-bound parameters for every model that has functions, and skips
+    // both for pure mass-action models where they are dead work (the GH #106/T1
+    // gate). The compiled RHS evaluates observables and functions internally.
+    void eval(double t, const double *y, double *ydot) {
+        if (rhs_fn_) {
+            rhs_fn_(t, const_cast<double *>(y), ydot, &so_data_);
+            return;
+        }
+        model_.compute_derivs(t, y, ydot);
+    }
+
+    // Is a closed-form Jacobian available at all — compiled or interpreted?
+    // A compiled Jacobian (either shape) is emitted only when the interpreted
+    // one is complete, so the model predicate alone would answer this; both are
+    // checked so the two never drift.
+    bool has_analytical_jacobian() const {
+        return jac_fn_ != nullptr || jac_sparse_fn_ != nullptr ||
+               model_.analytical_jacobian_complete();
+    }
+    // "codegen" / "analytical" / "finite-difference" for SteadyStateResult.
+    const char *jacobian_source() const {
+        if (jac_fn_ || jac_sparse_fn_)
+            return "codegen";
+        if (model_.analytical_jacobian_complete())
+            return "analytical";
+        return "finite-difference";
+    }
+    // Dense COLUMN-MAJOR n×n: jac[j*n + i] = ∂f_i/∂x_j. Precondition:
+    // has_analytical_jacobian(). Every fill memsets the buffer itself.
+    void fill_dense_jacobian(double t, const double *y, double *jac) {
+        if (jac_fn_) {
+            jac_fn_(t, const_cast<double *>(y), jac, &so_data_);
+            return;
+        }
+        if (jac_sparse_fn_) {
+            // CSC values → dense column-major. The emitted C zeroes the value
+            // array; the dense buffer is ours to clear.
+            const int ns = model_.n_species();
+            const auto &sp = model_.jacobian_sparsity();
+            const int nnz = sp.col_ptrs[ns];
+            csc_vals_.assign(static_cast<size_t>(nnz), 0.0);
+            jac_sparse_fn_(t, const_cast<double *>(y), csc_vals_.data(), &so_data_);
+            std::memset(jac, 0, static_cast<size_t>(ns) * ns * sizeof(double));
+            for (int col = 0; col < ns; ++col) {
+                for (int k = sp.col_ptrs[col]; k < sp.col_ptrs[col + 1]; ++k) {
+                    jac[static_cast<size_t>(col) * ns + sp.row_indices[k]] = csc_vals_[k];
+                }
+            }
+            return;
+        }
+        model_.fill_dense_analytical_jacobian(t, y, jac);
+    }
+
+    // The analytical ∂f/∂p exists only in the compiled artifact — there is no
+    // interpreted counterpart, so an absent symbol (every Functional/MM model:
+    // generate_sens_rhs_c declines on those) means the caller must difference.
+    bool has_analytical_dfdp() const { return sens_fn_ != nullptr; }
+
+    // ∂f/∂p_{param_index} at (t, y) into `out` (n_species).
+    //
+    // The emitted bngsim_codegen_sens_rhs computes ySdot = J(t,y)·yS + ∂f/∂p_iP.
+    // Handing it an all-zero yS zeroes the first term exactly (it is a matrix
+    // product, not a difference quotient), leaving the analytical ∂f/∂p column —
+    // the same derivative CVODES integrates against on the time-course path.
+    void eval_dfdp(double t, const double *y, int param_index, double *out) {
+        const int ns = model_.n_species();
+        zero_seed_.assign(static_cast<size_t>(ns), 0.0);
+        tmp1_.assign(static_cast<size_t>(ns), 0.0);
+        tmp2_.assign(static_cast<size_t>(ns), 0.0);
+        ydot_scratch_.assign(static_cast<size_t>(ns), 0.0);
+        plist_[0] = param_index;
+
+        CodegenSensUserDataForSO sens_data;
+        sens_data.param_values = so_data_.param_values;
+        sens_data.plist = plist_;
+        sens_data.n_sens = 1;
+
+        sens_fn_(/*Ns=*/1, t, const_cast<double *>(y), ydot_scratch_.data(), /*iS=*/0,
+                 zero_seed_.data(), out, &sens_data, tmp1_.data(), tmp2_.data());
+    }
+
+  private:
+    // Trampoline the codegen .so calls to evaluate a table function; ctx is the
+    // owning NetworkModel (mirrors codegen_tfun_eval_thunk in cvode_simulator).
+    static double tfun_eval_thunk(int tf_id, double x, void *ctx) {
+        return static_cast<NetworkModel *>(ctx)->evaluate_table_function_at(tf_id, x);
+    }
+
+    NetworkModel &model_;
+    DynamicLibrary lib_;
+    MirJit jit_;
+    CodegenRhsFn rhs_fn_ = nullptr;
+    CodegenJacFn jac_fn_ = nullptr;
+    CodegenJacSparseFn jac_sparse_fn_ = nullptr;
+    CodegenSensRhsFn sens_fn_ = nullptr;
+    CodegenUserDataForSO so_data_{};
+    std::vector<double> param_buf_;
+    std::string backend_ = "exprtk";
+    // eval_dfdp scratch, kept on the object so a per-parameter loop does not
+    // reallocate four n_species vectors per column.
+    std::vector<double> zero_seed_, tmp1_, tmp2_, ydot_scratch_;
+    std::vector<double> csc_vals_; // CSC → dense Jacobian scatter buffer
+    int plist_[1] = {0};
+};
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
 struct SteadyStateUserData {
+    SteadyStateRhs *rhs;
     NetworkModel *model;
 };
 
@@ -54,11 +280,9 @@ struct SteadyStateUserData {
 // output point (Network3 network.cpp run_network -c). It is the single
 // convergence criterion used by every integrate-to-steady-state path and by
 // the post-solve verification of the Newton path, so there is one rule.
-static double compute_residual(NetworkModel &model, const double *y, int ns) {
+static double compute_residual(SteadyStateRhs &rhs, const double *y, int ns) {
     std::vector<double> f(ns, 0.0);
-    model.update_observables(y);
-    model.evaluate_functions(0.0); // steady state: time irrelevant
-    model.compute_derivs(0.0, y, f.data());
+    rhs.eval(0.0, y, f.data()); // steady state: time irrelevant
     double sumsq = 0.0;
     for (int i = 0; i < ns; ++i) {
         sumsq += f[i] * f[i];
@@ -112,6 +336,40 @@ static bool ss_states_agree(const std::vector<double> &a, const std::vector<doub
     return worst < agree_rtol;
 }
 
+// How close to singular was the factored matrix? min|U_jj| / max|U_jj| read off
+// the U diagonal of an in-place LU (both SUNLinSol_Dense and SUNLinSol_LapackDense
+// leave the factors in the SUNMatrix data, column-major, so A[j*n+j] is U_jj).
+//
+// Why this is worth reporting (issue #63). dY_ss/dp = -J⁻¹·(∂f/∂p) is only
+// defined when the (reduced) Jacobian at the root has full rank, and on real
+// models it often does not: across eight large corpus models, three came back
+// rank-deficient by 1-3 — a steady state that is a continuum rather than a point,
+// so there is no unique dY_ss/dp to report. That was previously invisible in a
+// different way: the finite-difference Jacobian carried ~sqrt(eps) noise which
+// perturbed the singular direction just enough for the LU to return a finite,
+// modest-looking, and entirely meaningless answer. An exact analytical Jacobian
+// does not launder the singularity, so the same models now produce obviously
+// large numbers instead of quietly wrong ones. Neither is usable; this ratio is
+// how a caller can tell.
+//
+// A rank-revealing factorization would be stronger, but the separation is not
+// subtle: the five well-posed models sit at 1e-4 - 1e-1 and the three singular
+// ones at 1e-12 - 1e-9, six orders of magnitude apart.
+static double lu_diag_rcond(const double *lu, int n) {
+    if (n <= 0)
+        return 0.0;
+    double dmin = std::abs(lu[0]);
+    double dmax = dmin;
+    for (int j = 1; j < n; ++j) {
+        const double d = std::abs(lu[static_cast<size_t>(j) * n + j]);
+        dmin = std::min(dmin, d);
+        dmax = std::max(dmax, d);
+    }
+    if (!(dmax > 0.0) || !std::isfinite(dmax) || !std::isfinite(dmin))
+        return 0.0;
+    return dmin / dmax;
+}
+
 // Build the dense direct linear solver for an n×n steady-state system,
 // applying the GH #84 gate (bngsim/lapack_dense_linsol.hpp). The steady-state
 // paths have no KLU option — they always factor densely — so the density floor
@@ -133,7 +391,7 @@ static int cvode_ss_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
     auto *data = static_cast<SteadyStateUserData *>(ud);
     const double *yp = N_VGetArrayPointer(y);
     double *yp_dot = N_VGetArrayPointer(ydot);
-    data->model->compute_derivs(static_cast<double>(t), yp, yp_dot);
+    data->rhs->eval(static_cast<double>(t), yp, yp_dot);
     return 0;
 }
 
@@ -149,8 +407,8 @@ static int cvode_ss_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
 // then just the one-leg case of the same code.
 class SteadyStateMarcher {
   public:
-    SteadyStateMarcher(NetworkModel &model, const SteadyStateOptions &opts)
-        : model_(model), opts_(opts), ud_{&model}, ns_(model.n_species()) {
+    SteadyStateMarcher(NetworkModel &model, SteadyStateRhs &rhs, const SteadyStateOptions &opts)
+        : model_(model), rhs_(rhs), opts_(opts), ud_{&rhs, &model}, ns_(model.n_species()) {
 
         if (!ctx_) {
             throw std::runtime_error("SUNContext_Create failed (steady_state)");
@@ -208,8 +466,9 @@ class SteadyStateMarcher {
                 break;
             }
 
-            // compute_residual re-evaluates observables/functions at y internally.
-            double resid = compute_residual(model_, y_data, ns_);
+            // compute_residual evaluates f at y through the same backend the
+            // integrator just used, refreshing observables/functions internally.
+            double resid = compute_residual(rhs_, y_data, ns_);
             if (resid < tol) {
                 converged = true;
                 *residual_out = resid;
@@ -223,7 +482,7 @@ class SteadyStateMarcher {
         }
 
         if (!converged) {
-            *residual_out = compute_residual(model_, y_data, ns_);
+            *residual_out = compute_residual(rhs_, y_data, ns_);
         }
         return converged;
     }
@@ -250,6 +509,7 @@ class SteadyStateMarcher {
 
   private:
     NetworkModel &model_;
+    SteadyStateRhs &rhs_;
     const SteadyStateOptions &opts_;
     SteadyStateUserData ud_;
     int ns_;
@@ -263,8 +523,9 @@ class SteadyStateMarcher {
     sunrealtype t_ = 0.0;
 };
 
-static SteadyStateResult solve_by_integration(NetworkModel &model, const SteadyStateOptions &opts) {
-    SteadyStateMarcher marcher(model, opts);
+static SteadyStateResult solve_by_integration(NetworkModel &model, SteadyStateRhs &rhs,
+                                              const SteadyStateOptions &opts) {
+    SteadyStateMarcher marcher(model, rhs, opts);
     double residual = 0.0;
     const bool converged = marcher.march(opts.tol, &residual);
     return marcher.make_result(converged, residual);
@@ -276,6 +537,7 @@ static SteadyStateResult solve_by_integration(NetworkModel &model, const SteadyS
 
 // User data for reduced-space KINSOL
 struct ReducedKinsolData {
+    SteadyStateRhs *rhs;
     NetworkModel *model;
     const ConservationLaws *cl;
 };
@@ -327,9 +589,7 @@ static int kinsol_reduced_rhs(N_Vector y_ind, N_Vector fval, void *ud) {
 
     // Compute full f(y)
     std::vector<double> f_full(ns, 0.0);
-    model->update_observables(y_full.data());
-    model->evaluate_functions(0.0);
-    model->compute_derivs(0.0, y_full.data(), f_full.data());
+    data->rhs->eval(0.0, y_full.data(), f_full.data());
 
     // Extract independent species residuals
     for (int k = 0; k < n_ind; ++k) {
@@ -345,11 +605,10 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
     double *fp = N_VGetArrayPointer(fval);
     int ns = data->model->n_species();
 
-    data->model->update_observables(yp);
-    data->model->evaluate_functions(0.0);
-    data->model->compute_derivs(0.0, yp, fp);
+    data->rhs->eval(0.0, yp, fp);
 
-    // Zero out fixed species residuals
+    // Zero out fixed species residuals (the codegen RHS already zeroes them;
+    // this keeps the interpreted path identical and is a no-op otherwise)
     const auto &species = data->model->species();
     for (const auto &s : species) {
         if (s.fixed) {
@@ -367,7 +626,8 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
 // attempt fails identically. The two-tier ladder uses this to stop probing
 // KINSOL instead of building MAX_NEWTON_ATTEMPTS dense n_ind×n_ind
 // factorizations that are all doomed.
-static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateOptions &opts,
+static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rhs,
+                                         const SteadyStateOptions &opts,
                                          bool *linsolv_failed = nullptr) {
 
     if (linsolv_failed) {
@@ -440,8 +700,8 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
     }
 
     int flag;
-    ReducedKinsolData rd{&model, &cl_copy};
-    SteadyStateUserData ud{&model};
+    ReducedKinsolData rd{&rhs, &model, &cl_copy};
+    SteadyStateUserData ud{&rhs, &model};
 
     if (use_reduced) {
         flag = KINInit(kin_mem, kinsol_reduced_rhs, y);
@@ -518,7 +778,7 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
     // `!(residual < tol)` (true for NaN) and additionally reject any non-finite
     // or clearly-negative concentration, so an unphysical Newton root never
     // passes as a converged steady state.
-    result.residual = compute_residual(model, result.concentrations.data(), ns);
+    result.residual = compute_residual(rhs, result.concentrations.data(), ns);
     if (!(result.residual < opts.tol) || !ss_state_is_physical(result.concentrations)) {
         result.converged = false;
     }
@@ -565,14 +825,15 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, const SteadyStateO
 // species are set to `seed` first (solve_by_integration / solve_by_newton read
 // the IC from there). KINSOL construction can throw (KINInit/KINCreate) — the
 // caller treats a throw as a failed, non-accepted attempt.
-static SteadyStateResult ss_newton_from(NetworkModel &model, const SteadyStateOptions &opts,
+static SteadyStateResult ss_newton_from(NetworkModel &model, SteadyStateRhs &rhs,
+                                        const SteadyStateOptions &opts,
                                         const std::vector<double> &seed,
                                         bool *linsolv_failed = nullptr) {
     model.set_state_from(seed.data());
-    return solve_by_newton(model, opts, linsolv_failed);
+    return solve_by_newton(model, rhs, opts, linsolv_failed);
 }
 
-static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
+static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadyStateRhs &rhs,
                                                   const SteadyStateOptions &opts) {
     const int ns = model.n_species();
 
@@ -589,14 +850,14 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
                ss_state_is_physical(r.concentrations);
     };
 
-    const double r0 = compute_residual(model, ic.data(), ns);
+    const double r0 = compute_residual(rhs, ic.data(), ns);
 
     // IC already at steady state: a single Newton polish (which converges
     // immediately) reports the canonical "newton" without any integration.
     if (r0 < opts.tol) {
         SteadyStateResult r;
         try {
-            r = ss_newton_from(model, opts, ic);
+            r = ss_newton_from(model, rhs, opts, ic);
         } catch (...) {
             r.converged = false;
         }
@@ -631,7 +892,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
     // early-exit Newton probe above may have left the model's live state
     // elsewhere, so re-seed it from the IC the marcher is about to read).
     restore();
-    SteadyStateMarcher marcher(model, opts);
+    SteadyStateMarcher marcher(model, rhs, opts);
 
     for (int rung = 0; rung < MAX_RUNGS; ++rung) {
         // Tier 1: continue integrating from the previous rung's end state to bt.
@@ -662,7 +923,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
             SteadyStateResult nr;
             bool linsolv_failed = false;
             try {
-                nr = ss_newton_from(model, opts, seed, &linsolv_failed);
+                nr = ss_newton_from(model, rhs, opts, seed, &linsolv_failed);
             } catch (...) {
                 // KINCreate / KINInit failed: as unrecoverable as a singular
                 // factorization, and just as seed-independent.
@@ -700,8 +961,29 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model,
 // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
 // ---------------------------------------------------------------------------
 
-static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &result,
-                                   const std::vector<std::string> &param_names) {
+// dY_ss/dp = -J⁻¹·(∂f/∂p) by the implicit function theorem.
+//
+// Both factors prefer closed form and fall back to differencing (issue #63):
+//
+//   J      — the compiled `bngsim_codegen_jac`, else the interpreted
+//            fill_dense_analytical_jacobian when analytical_jacobian_complete,
+//            else one-sided finite differences (n_species RHS evaluations).
+//            This is the same "analytical when complete, FD otherwise" rule
+//            jacobian="auto" applies everywhere else, and the same matrix the
+//            newton path's KINSOL polish already uses.
+//   ∂f/∂p  — the analytical column the codegen sensitivity RHS emits (see
+//            SteadyStateRhs::eval_dfdp), else one-sided finite differences in
+//            the parameter (one RHS evaluation per parameter).
+//
+// Before #63 both were unconditionally finite-differenced, at a fixed
+// √eps step, through the *interpreted* RHS — ~1300 ExprTk RHS evaluations to
+// assemble one Jacobian on a 1281-species model, for a matrix the model already
+// had in closed form. Which path ran is now recorded on the result
+// (sens_jacobian_source / sens_dfdp_source) rather than being invisible.
+static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
+                                   SteadyStateResult &result,
+                                   const std::vector<std::string> &param_names,
+                                   const std::string &opts_jacobian) {
 
     const int ns = model.n_species();
     const int np = static_cast<int>(param_names.size());
@@ -728,55 +1010,70 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &resul
         }
     }
 
-    // Step 1: Compute dense Jacobian J at y_ss
-    // We use finite differences (works for all rate law types)
-    std::vector<double> J(ns * ns, 0.0); // column-major for LAPACK
+    // ── Step 1: dense Jacobian J at y_ss, column-major (J[j*ns+i] = ∂f_i/∂x_j) ──
+    std::vector<double> J(static_cast<size_t>(ns) * ns, 0.0);
     std::vector<double> f0(ns), f1(ns), y_pert(ns);
     const double eps = 1.4901161193847656e-8; // sqrt(machine eps)
 
-    // Evaluate f(y_ss)
-    model.update_observables(y_ss);
-    model.evaluate_functions(0.0);
-    model.compute_derivs(0.0, y_ss, f0.data());
-
-    // J[:,j] = (f(y+h*e_j) - f(y)) / h
-    for (int j = 0; j < ns; ++j) {
-        std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-        double h = eps * std::max(std::abs(y_ss[j]), 1.0);
-        y_pert[j] += h;
-        model.update_observables(y_pert.data());
-        model.evaluate_functions(0.0);
-        model.compute_derivs(0.0, y_pert.data(), f1.data());
-        for (int i = 0; i < ns; ++i) {
-            J[j * ns + i] = (f1[i] - f0[i]) / h; // column-major
+    // jacobian="fd" pins the finite-difference assembly, the same escape hatch it
+    // is everywhere else in the library (and the A/B lever for checking the
+    // closed-form path against the one that predates #63). "jax" has no
+    // steady-state analogue — there is no Python callback plumbed through here —
+    // so it also takes the FD path rather than pretending otherwise.
+    const bool want_analytical_jac = (opts_jacobian == "auto" || opts_jacobian == "analytical");
+    result.sens_jacobian_source = want_analytical_jac ? rhs.jacobian_source() : "finite-difference";
+    if (want_analytical_jac && rhs.has_analytical_jacobian()) {
+        rhs.fill_dense_jacobian(0.0, y_ss, J.data());
+    } else {
+        // Finite differences: works for every rate-law type, at the cost of one
+        // RHS evaluation per column. J[:,j] = (f(y + h·e_j) − f(y)) / h.
+        rhs.eval(0.0, y_ss, f0.data());
+        for (int j = 0; j < ns; ++j) {
+            std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
+            double h = eps * std::max(std::abs(y_ss[j]), 1.0);
+            y_pert[j] += h;
+            rhs.eval(0.0, y_pert.data(), f1.data());
+            for (int i = 0; i < ns; ++i) {
+                J[static_cast<size_t>(j) * ns + i] = (f1[i] - f0[i]) / h; // column-major
+            }
         }
     }
 
-    // Step 2: Compute df/dp for each sensitivity parameter
-    // df/dp[:,p] = (f(y_ss; p+h) - f(y_ss; p)) / h
-    std::vector<double> dfdp(ns * np, 0.0); // column-major: dfdp[p*ns+i]
+    // ── Step 2: ∂f/∂p for each sensitivity parameter ──────────────────────────
+    std::vector<double> dfdp(static_cast<size_t>(ns) * np, 0.0); // column-major: dfdp[p*ns+i]
 
-    // Restore observables at y_ss with original params
-    model.update_observables(y_ss);
-    model.evaluate_functions(0.0);
-    model.compute_derivs(0.0, y_ss, f0.data());
+    if (rhs.has_analytical_dfdp()) {
+        result.sens_dfdp_source = "codegen";
+        for (int p = 0; p < np; ++p) {
+            rhs.eval_dfdp(0.0, y_ss, pidx[p], dfdp.data() + static_cast<size_t>(p) * ns);
+        }
+    } else {
+        // Finite differences in the parameter, at the fixed steady state:
+        // ∂f/∂p[:,p] = (f(y_ss; p+h) − f(y_ss; p)) / h. sync_params() re-derives
+        // constant-expression parameters after each write, so a rate law stored
+        // as a derived `_rateLaw{N}` picks up the chain rule (issue #2).
+        result.sens_dfdp_source = "finite-difference";
+        rhs.sync_params();
+        rhs.eval(0.0, y_ss, f0.data());
 
-    for (int p = 0; p < np; ++p) {
-        int pi = pidx[p];
-        double pval = params[pi].value;
-        double h = eps * std::max(std::abs(pval), 1.0);
+        for (int p = 0; p < np; ++p) {
+            int pi = pidx[p];
+            double pval = params[pi].value;
+            double h = eps * std::max(std::abs(pval), 1.0);
 
-        // Perturb parameter
-        const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
-        model.update_observables(y_ss);
-        model.evaluate_functions(0.0);
-        model.compute_derivs(0.0, y_ss, f1.data());
+            // Perturb parameter, holding it against re-derivation so a probe of a
+            // derived parameter is not immediately undone.
+            const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+            rhs.sync_params(pi);
+            rhs.eval(0.0, y_ss, f1.data());
 
-        // Restore parameter
-        const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+            // Restore parameter
+            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+            rhs.sync_params(pi);
 
-        for (int i = 0; i < ns; ++i) {
-            dfdp[p * ns + i] = (f1[i] - f0[i]) / h;
+            for (int i = 0; i < ns; ++i) {
+                dfdp[static_cast<size_t>(p) * ns + i] = (f1[i] - f0[i]) / h;
+            }
         }
     }
 
@@ -797,62 +1094,64 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &resul
         // Reduced-space sensitivity solve
         const int n_ind = static_cast<int>(cl.independent.size());
 
-        // Build reduced Jacobian J_red (n_ind × n_ind) from independent species
-        // J_red[i][j] = dfi/dyj where i,j ∈ independent, but including
-        // the chain rule through dependent species:
-        // dfi/dyj_ind = J[ind_i][ind_j] + Σ_k J[ind_i][dep_k] * (ddep_k/dyj_ind)
-        // where ddep_k/dyj_ind comes from differentiating the conservation law.
+        // Build the reduced Jacobian J_red (n_ind × n_ind) by projecting the full
+        // J through the conservation-law reconstruction, rather than running a
+        // SECOND finite-difference sweep over the reduced residual:
+        //
+        //   J_red[i][j] = ∂f_{ind_i}/∂y_{ind_j}
+        //               = J[ind_i][ind_j] + Σ_k J[ind_i][dep_k] · D[k][j]
+        //
+        // where D[k][j] = ∂y_{dep_k}/∂y_{ind_j} is exactly what differentiating
+        // reconstruct_full() gives. That is the chain rule the old comment here
+        // described and then abandoned ("for simplicity and robustness, use FD on
+        // the reduced residual directly"); with a closed-form J to project it is
+        // both exact and cheaper — the FD sweep cost n_ind more RHS evaluations
+        // on top of the ns that had already built a full J the reduced path then
+        // never looked at.
+        //
+        // D follows reconstruct_full()'s ordering: law k solves for its dependent
+        // from every OTHER species, so it sees the dependents of laws k' < k
+        // already updated (derivative D[k'][j]) and those of laws k' > k still at
+        // their unperturbed values (derivative 0). A degenerate law (|L[k,dep]|
+        // below the reconstruction floor) is skipped there, so its row stays 0.
+        std::vector<double> D(static_cast<size_t>(cl.n_laws) * n_ind, 0.0);
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const int dep = cl.dependent[k];
+            const double coeff_dep = cl.coefficients[k][dep];
+            if (std::abs(coeff_dep) < 1e-15)
+                continue; // degenerate — reconstruct_full skips it too
+            double *Dk = D.data() + static_cast<size_t>(k) * n_ind;
+            for (int j = 0; j < n_ind; ++j) {
+                // i = ind_j contributes L[k][ind_j]·1; every other independent
+                // contributes 0.
+                double acc = cl.coefficients[k][cl.independent[j]];
+                // i = dep_{k'} for k' < k contributes L[k][dep_k']·D[k'][j].
+                for (int kp = 0; kp < k; ++kp) {
+                    const int dep_p = cl.dependent[kp];
+                    if (dep_p == dep)
+                        continue; // excluded by the i ≠ dep sum
+                    acc += cl.coefficients[k][dep_p] * D[static_cast<size_t>(kp) * n_ind + j];
+                }
+                Dk[j] = -acc / coeff_dep;
+            }
+        }
 
-        // For simplicity and robustness, use FD on the reduced residual directly
-        std::vector<double> f_ind0(n_ind), f_ind1(n_ind), y_ind(n_ind);
-        std::vector<double> y_full(ns), f_full(ns);
-
-        // Get current y_full = y_ss
-        std::memcpy(y_full.data(), y_ss, ns * sizeof(double));
-        for (int k = 0; k < n_ind; ++k)
-            y_ind[k] = y_ss[cl.independent[k]];
-
-        // Evaluate f_ind at y_ss
-        model.update_observables(y_ss);
-        model.evaluate_functions(0.0);
-        model.compute_derivs(0.0, y_ss, f_full.data());
-        for (int k = 0; k < n_ind; ++k)
-            f_ind0[k] = f_full[cl.independent[k]];
-
-        // Build reduced J_red via FD
-        std::vector<double> J_red(n_ind * n_ind, 0.0);
+        std::vector<double> J_red(static_cast<size_t>(n_ind) * n_ind, 0.0);
         for (int j = 0; j < n_ind; ++j) {
-            std::vector<double> y_pert_full(y_full);
-            double h = eps * std::max(std::abs(y_ind[j]), 1.0);
-            y_pert_full[cl.independent[j]] += h;
-
-            // Recompute dependent species from perturbed independents
-            // (This accounts for the chain rule through conservation laws)
-            ConservationLaws cl_tmp = cl;
-            for (int kk = 0; kk < cl_tmp.n_laws; ++kk) {
-                double c = 0.0;
-                for (int ii = 0; ii < ns; ++ii)
-                    c += cl_tmp.coefficients[kk][ii] * y_ss[ii];
-                cl_tmp.constants[kk] = c;
+            double *col = J_red.data() + static_cast<size_t>(j) * n_ind; // column-major
+            const double *Jcol_ind = J.data() + static_cast<size_t>(cl.independent[j]) * ns;
+            for (int i = 0; i < n_ind; ++i) {
+                col[i] = Jcol_ind[cl.independent[i]];
             }
-            // Reconstruct dependent species
-            for (int kk = 0; kk < cl_tmp.n_laws; ++kk) {
-                int dep = cl_tmp.dependent[kk];
-                double coeff_dep = cl_tmp.coefficients[kk][dep];
-                if (std::abs(coeff_dep) < 1e-15)
+            for (int k = 0; k < cl.n_laws; ++k) {
+                const double d = D[static_cast<size_t>(k) * n_ind + j];
+                if (d == 0.0)
                     continue;
-                double rhs = cl_tmp.constants[kk];
-                for (int ii = 0; ii < ns; ++ii)
-                    if (ii != dep)
-                        rhs -= cl_tmp.coefficients[kk][ii] * y_pert_full[ii];
-                y_pert_full[dep] = rhs / coeff_dep;
+                const double *Jcol_dep = J.data() + static_cast<size_t>(cl.dependent[k]) * ns;
+                for (int i = 0; i < n_ind; ++i) {
+                    col[i] += Jcol_dep[cl.independent[i]] * d;
+                }
             }
-
-            model.update_observables(y_pert_full.data());
-            model.evaluate_functions(0.0);
-            model.compute_derivs(0.0, y_pert_full.data(), f_full.data());
-            for (int i = 0; i < n_ind; ++i)
-                J_red[j * n_ind + i] = (f_full[cl.independent[i]] - f_ind0[i]) / h;
         }
 
         // Build reduced df/dp
@@ -861,17 +1160,25 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &resul
             for (int i = 0; i < n_ind; ++i)
                 dfdp_red[p * n_ind + i] = dfdp[p * ns + cl.independent[i]];
 
-        // Solve J_red * sens_ind = -dfdp_red using SUNDIALS with RAII guards
+        // Solve J_red * sens_ind = -dfdp_red using SUNDIALS with RAII guards.
+        //
+        // ONE factorization for all np right-hand sides. The loop used to re-copy
+        // J_red into A and re-run SUNLinSolSetup on every parameter, paying np
+        // dense n_ind³ LU factorizations of the SAME matrix — on a 1276-wide
+        // reduced system that is the dominant cost of the whole assembly. Dense
+        // LU solve does not modify the stored factors, so hoisting is a pure win.
         SunContextGuard ctx;
         SUNMatrixGuard A_guard(SUNDenseMatrix(n_ind, n_ind, ctx));
         NVectorGuard bv(N_VNew_Serial(n_ind, ctx));
         NVectorGuard xv(N_VNew_Serial(n_ind, ctx));
         SUNLinSolGuard LS_guard(ss_make_dense_linsol(xv, A_guard, ctx, model, n_ind));
 
+        sunrealtype *A_data = SUNDenseMatrix_Data(A_guard);
+        std::memcpy(A_data, J_red.data(), static_cast<size_t>(n_ind) * n_ind * sizeof(double));
+        SUNLinSolSetup(LS_guard, A_guard);
+        result.sens_jacobian_rcond = lu_diag_rcond(A_data, n_ind);
+
         for (int p = 0; p < np; ++p) {
-            sunrealtype *A_data = SUNDenseMatrix_Data(A_guard);
-            std::memcpy(A_data, J_red.data(), n_ind * n_ind * sizeof(double));
-            SUNLinSolSetup(LS_guard, A_guard);
             double *b_data = N_VGetArrayPointer(bv);
             for (int i = 0; i < n_ind; ++i)
                 b_data[i] = -dfdp_red[p * n_ind + i];
@@ -908,14 +1215,14 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateResult &resul
         NVectorGuard b(N_VNew_Serial(ns, ctx));
         NVectorGuard x(N_VNew_Serial(ns, ctx));
         SUNLinSolGuard LS_guard(ss_make_dense_linsol(x, A_guard, ctx, model, ns));
+        // One factorization, np solves — see the note on the reduced branch.
         SUNLinSolSetup(LS_guard, A_guard);
+        result.sens_jacobian_rcond = lu_diag_rcond(A_data, ns);
 
         for (int p = 0; p < np; ++p) {
             double *b_data = N_VGetArrayPointer(b);
             for (int i = 0; i < ns; ++i)
                 b_data[i] = -dfdp[p * ns + i];
-            std::memcpy(A_data, J.data(), ns * ns * sizeof(double));
-            SUNLinSolSetup(LS_guard, A_guard);
             SUNLinSolSolve(LS_guard, A_guard, x, b, 0.0);
             const double *x_data = N_VGetArrayPointer(x);
             for (int i = 0; i < ns; ++i)
@@ -1077,11 +1384,16 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
                                  "(alias for \"newton\").");
     }
 
+    // Resolve the RHS backend once for the whole solve: the codegen artifact is
+    // loaded (or JIT-compiled) a single time and shared by the march, the KINSOL
+    // polish, the residual check and the sensitivity assembly (issue #63).
+    SteadyStateRhs rhs(model, opts);
+
     SteadyStateResult result;
 
     if (method == "integration") {
         // Default: CVODE marched to the BNG2.pl parity criterion.
-        result = solve_by_integration(model, opts);
+        result = solve_by_integration(model, rhs, opts);
     } else {
         // "newton": two-tier integrate-first solver (GH #27). A short CVODE
         // burst carries the state into the physical root's basin, then KINSOL
@@ -1091,8 +1403,10 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // the old Newton-first ordering returned spurious / non-finite roots.
         // Opt in for the tighter residual the polish delivers; it costs more
         // wall clock than plain integration (GH #28).
-        result = solve_by_newton_two_tier(model, opts);
+        result = solve_by_newton_two_tier(model, rhs, opts);
     }
+
+    result.rhs_backend = rhs.backend();
 
     // Compute sensitivity if requested and converged
     if (result.converged && !opts.sensitivity_params.empty()) {
@@ -1101,7 +1415,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         for (int i = 0; i < ns; ++i) {
             species[i].concentration = result.concentrations[i];
         }
-        compute_ss_sensitivity(model, result, opts.sensitivity_params);
+        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian);
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, result, opts.sensitivity_params);

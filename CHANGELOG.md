@@ -264,6 +264,91 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`steady_state()` never received the compiled RHS, and finite-differenced all
+  of `dY_ss/dp` — including the Jacobian the model already had analytically
+  (issue #63).** Two defects, both invisible from Python.
+
+  *The codegen artifact never reached the solver.* `Simulator.steady_state()` and
+  `steady_state_batch()` built a `SteadyStateOptions` and set `tol`, `max_time`,
+  `method`, `rtol`, `atol`, `max_steps` and `jacobian` — but never
+  `codegen_so_path`, and `steady_state.cpp` never read it either (the string
+  "codegen" appeared in that file exactly once, in a comment). There was no
+  `codegen_c_source` field at all, so the MIR JIT backend was not even
+  *representable* for a steady-state solve. A Simulator whose `codegen_backend`
+  reported `"cc"` therefore solved on the interpreted ExprTk RHS,
+  indistinguishably from one built with `codegen=False`: on fceri_fyn (1281
+  species) the two took **13686.5 ms and 13686.2 ms** and reported the same 685
+  steps and 931 RHS evaluations. Every RHS evaluation in the file — the CVODE
+  march, the KINSOL polish, the residual check, the sensitivity assembly — now
+  goes through one backend-dispatching object, and `ss.rhs_backend` reports which
+  ran.
+
+  *Both factors of `dY_ss/dp` were finite differences.* `compute_ss_sensitivity`
+  built `J` by one interpreted RHS evaluation per species (~1300 of them on a
+  1281-species model) at a fixed `sqrt(eps)` step, never consulting the complete
+  analytical Jacobian that `jacobian="auto"` selects everywhere else and that the
+  `newton` path's KINSOL polish in the same file already uses; and `∂f/∂p` by
+  perturbing each parameter in place. `J` now prefers the compiled analytical
+  Jacobian, then the interpreted one, then finite differences — the same rule as
+  everywhere else, with `jacobian="fd"` still pinning the difference quotient —
+  and `∂f/∂p` uses the analytical column the codegen sensitivity RHS emits
+  (evaluated at `yS = 0`, which zeroes its `J·yS` term exactly). Like `run()` and
+  `compute_all_sensitivities()` since GH #214, `sensitivity_params` now *requires*
+  codegen and refuses rather than degrading. `ss.sens_jacobian_source` and
+  `ss.sens_dfdp_source` report each factor's provenance; a model whose rate laws
+  are not all Elementary has no analytical `∂f/∂p` to emit (issue #55) and still
+  differences that factor, now with a warning.
+
+  Measured on `benchmarks/suites/ode_fullnet/nets` (best of 2, `tol=1e-9`,
+  4 sensitivity parameters). "assembly" is the sensitivity solve minus the
+  identical solve without it, so the Jacobian and `∂f/∂p` work is not buried under
+  the march:
+
+  | Model | species | solve before | solve after | assembly before | assembly after |
+  |-------|--------:|-------------:|------------:|----------------:|---------------:|
+  | egfr_net | 356 | 234.9 ms | 174.3 ms | 27.9 ms | 7.9 ms (3.5×) |
+  | IGF1R_model_v1 | 589 | 285.7 ms | 242.3 ms | 75.4 ms | 14.8 ms (5.1×) |
+  | before_bunching | 593 | 474.3 ms | 398.6 ms | 86.1 ms | 15.1 ms (5.7×) |
+  | Models_n | 624 | 519.7 ms | 457.2 ms | 95.5 ms | 25.2 ms (3.8×) |
+  | fceri_fyn | 1281 | 13157 ms | 15489 ms | 903.2 ms | 375.1 ms (2.4×) |
+
+  Two honest caveats in that table. The compiled RHS is *slower* on fceri_fyn: it
+  is arithmetically the same function but rounds differently, which walks CVODE
+  down a 19% longer step path (812 steps / 1185 RHS evals versus 685 / 931), and
+  this model's cost is dominated by 1281×1281 dense LU rather than RHS
+  evaluation, so cheaper steps do not pay for more of them. Both backends land on
+  the same root (1.1e-8 relative). And below the codegen crossover the usual rule
+  applies — a 20-species model with an explicit `codegen=True` spends more on the
+  compiled call than it saves (0.8 ms → 2.0 ms), exactly as `run()` does, which is
+  why the auto-attach threshold is 256 species.
+
+  Part of the assembly speedup is independent of codegen: the linear solve
+  factorized the *same* Jacobian once per sensitivity parameter. It now factors
+  once and solves `np` right-hand sides.
+
+  Two further corrections fell out of making the two paths agree:
+
+  * The finite-difference `∂f/∂p` wrote perturbed values straight into the
+    Parameter vector, which nothing re-derives — only `set_param()` refreshes
+    constant-expression parameters. So on a model where BNG2.pl encodes a rate law
+    as `_rateLaw1 = chi*kon`, perturbing `kon` left `_rateLaw1` at its nominal
+    value and the chain-rule term silently vanished (the issue #2 / #41 defect,
+    surviving here). Parameter writes now route through a sync that re-derives
+    every expression parameter except the one being probed — `set_param`'s own
+    detach-then-refresh rule — so the FD fallback and the analytical path agree
+    with the closed form on `derived_rate_const.net`, including the `_rateLaw1`
+    column that used to come back zero.
+  * `dY_ss/dp` only exists when the Jacobian at the root has full rank, and on
+    real models it often does not: of eight large corpus models, three came back
+    rank-deficient by 1–3 (IGF1R_model_v1, Reduced_IGF1R_hela, fceri_fyn) — a
+    steady state that is a continuum rather than an isolated point. The old
+    finite-difference Jacobian's `sqrt(eps)` noise perturbed the singular
+    direction just enough for the LU to return a finite, modest-looking, entirely
+    meaningless answer; an exact Jacobian does not launder that. The result now
+    carries `ss.sens_jacobian_rcond` (`min|U|/max|U|` off the LU: 1e-4 to 1e-1 for
+    the five well-posed models, 1e-12 to 1e-9 for the three singular ones) and
+    warns below `1e-8`. It warns rather than refusing because eight models is not
+    enough to set a refusal threshold.
 - **A parameter named `p` or named after a C keyword made the sensitivity RHS
   emit C that does not compile, so forward sensitivity refused the model.**
   `_derived_param_jacobian_checked` differentiates a derived rate constant with

@@ -778,8 +778,18 @@ struct SteadyStateOptions {
     std::string method = "integration";
     std::string jacobian = "auto"; // Jacobian strategy (same as SolverOptions)
 
-    // Code-generated RHS shared library path
+    // Code-generated RHS shared library path. Honored by every steady-state
+    // path — the CVODE march, the KINSOL polish, the residual check, and the
+    // sensitivity assembly — exactly as SolverOptions::codegen_so_path is by the
+    // time-course solve (issue #63). Empty ⇒ the interpreted ExprTk RHS.
     std::string codegen_so_path;
+
+    // In-process MIR micro-JIT source (GH #78), the JIT-backend analogue of
+    // codegen_so_path: the SAME C the codegen emits, compiled in-process instead
+    // of being built into a .so by `cc`. Takes precedence when both are set,
+    // matching SolverOptions. Added by issue #63 — without it the MIR backend was
+    // not even representable for a steady-state solve.
+    std::string codegen_c_source;
 
     // Sensitivity: parameter names for steady-state sensitivity dY_ss/dp
     std::vector<std::string> sensitivity_params;
@@ -800,6 +810,32 @@ struct SteadyStateResult {
     std::vector<double> sensitivity; // empty if no sensitivity requested
     std::vector<std::string> sens_param_names;
     int n_sens_params = 0;
+
+    // ─── Which numerical path actually ran (issue #63) ────────────────────────
+    // Before #63 a steady-state solve was opaque: an interpreted run and a
+    // codegen run were indistinguishable from Python, and dY_ss/dp came back
+    // looking the same whether both of its factors were finite-differenced or
+    // derived in closed form. These three fields say which, so a caller can
+    // assert on it and a benchmark can attribute its numbers.
+    //
+    // rhs_backend: "exprtk" (interpreted), "codegen-so" (dlopen'd .so), or
+    // "codegen-jit" (in-process MIR). Mirrors Simulator.codegen_backend.
+    std::string rhs_backend = "exprtk";
+    // jacobian_source: how J in dY_ss/dp = -J⁻¹·(∂f/∂p) was built —
+    // "codegen" (compiled analytical), "analytical" (interpreted analytical),
+    // "finite-difference", or "" when no sensitivity was requested.
+    std::string sens_jacobian_source;
+    // dfdp_source: how ∂f/∂p was built — "codegen" (the analytical
+    // ∂f/∂p the codegen sensitivity RHS emits) or "finite-difference"; ""
+    // when no sensitivity was requested.
+    std::string sens_dfdp_source;
+    // How close to singular the factored (reduced) Jacobian was:
+    // min|U_jj| / max|U_jj| from its LU. dY_ss/dp only exists when that Jacobian
+    // has full rank; a steady state that is a continuum rather than an isolated
+    // point makes it rank-deficient and there is then no unique answer to report.
+    // Well-posed corpus models land at 1e-4 - 1e-1; singular ones at 1e-12 - 1e-9.
+    // 0.0 when no sensitivity was requested. See lu_diag_rcond in steady_state.cpp.
+    double sens_jacobian_rcond = 0.0;
 
     // ─── Observable / function output sensitivities at steady state (GH #12) ───
     // The chain-rule projection of the species dY_ss/dp above onto the model's
