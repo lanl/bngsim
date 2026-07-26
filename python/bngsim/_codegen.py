@@ -929,6 +929,127 @@ def _alias_keyword_param(name: str) -> str:
     return f"_BNG_KW_{name}"
 
 
+# Identifiers that sympy's C code printer *renames on output*: a symbol whose
+# name is in ``CodePrinter.reserved_words`` is printed with the printer's
+# ``reserved_word_suffix`` ("_") appended, so ``Symbol("const")`` comes back out
+# of ``sp.ccode`` as ``const_``. Nothing downstream declares ``const_``, so the
+# name-keyed round-trip below never rewrites it to ``p[idx]`` and the emitted
+# sensitivity RHS fails to compile with "use of undeclared identifier". A BNGL
+# parameter named ``const`` is real (``ode/pulses_demo_fixed.bngl``), so alias
+# these the same way Python keywords are aliased — the alias is not reserved, so
+# it survives ccode verbatim and round-trips by name.
+#
+# This is sympy's own list (1.14 ``C89CodePrinter.reserved_words``, unchanged in
+# the C99/C11 subclasses) plus the C99/C11 keywords sympy does not list. Listing
+# a name sympy would *not* have mangled is harmless — it just takes the alias
+# path — so the superset is the safe direction. ``test_derived_param_jacobian``
+# asserts this stays a superset of whatever sympy's table actually holds.
+_C_RESERVED_PARAM_NAMES = frozenset(
+    {
+        # sympy C89CodePrinter.reserved_words
+        "auto",
+        "break",
+        "case",
+        "char",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "entry",
+        "enum",
+        "extern",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "register",
+        "restrict",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "struct",
+        "switch",
+        "typedef",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "while",
+        # C99 / C11 keywords absent from sympy's table
+        "_Alignas",
+        "_Alignof",
+        "_Atomic",
+        "_Bool",
+        "_Complex",
+        "_Generic",
+        "_Imaginary",
+        "_Noreturn",
+        "_Static_assert",
+        "_Thread_local",
+    }
+)
+
+
+def _sympy_symbol_alias_map(referenced: list[str]) -> dict[str, str] | None:
+    """Map each referenced primary parameter name to the sympy symbol name that
+    stands in for it while differentiating.
+
+    A name is aliased when leaving it as-is would break the parse-differentiate-
+    print round trip:
+
+    * **Python keywords** (issue #27) — ``parse_expr`` cannot tokenize them.
+    * **C reserved words** — ``sp.ccode`` renames the symbol on output
+      (``const`` → ``const_``), so the printed partial no longer carries a name
+      the caller can map back to ``p[idx]``.
+
+    Every other name maps to itself, so expressions over ordinary parameter
+    names differentiate and print exactly as before.
+
+    Returns ``None`` if two distinct parameters would share a symbol name (a
+    model with both ``const`` and ``_BNG_KW_const``): the round trip could not
+    tell them apart, and silently merging them would corrupt the chain rule.
+    """
+    out = {
+        p: (
+            _alias_keyword_param(p)
+            if p in _PY_KEYWORD_PARAM_NAMES or p in _C_RESERVED_PARAM_NAMES
+            else p
+        )
+        for p in referenced
+    }
+    if len(set(out.values())) != len(out):
+        return None
+    return out
+
+
+def _substitute_symbols_once(c_str: str, replacements: dict[str, str]) -> str:
+    """Whole-word-replace every key of ``replacements`` in ``c_str`` in a
+    **single** left-to-right pass.
+
+    Applying the replacements one regex at a time is wrong: each rewrite injects
+    ``p[idx]`` into the string, and a later pattern can match *inside* text an
+    earlier one just wrote. A model with a parameter literally named ``p``
+    (``ode/localfunc_2.bngl``) hits this — ``k`` → ``p[0]`` first, then ``\\bp\\b``
+    matches the ``p`` of ``p[0]`` and yields ``p[1][0]``, which fails to compile
+    with "subscripted value is not an array". One alternation pass never
+    revisits substituted text, so injected array references are inert.
+
+    Longest names first so a name that is a prefix of another still loses to the
+    longer match (belt-and-suspenders over the ``\\b`` anchors).
+    """
+    if not replacements:
+        return c_str
+    pattern = "|".join(re.escape(k) for k in sorted(replacements, key=len, reverse=True))
+    return re.sub(rf"\b(?:{pattern})\b", lambda m: replacements[m.group(0)], c_str)
+
+
 def _split_top_level_commas(s: str) -> list[str]:
     """Split ``s`` on top-level (paren-depth-zero) commas. No comma → one part."""
     parts: list[str] = []
@@ -1352,15 +1473,17 @@ def _derived_param_jacobian_checked(
     if not _DERIVED_RESERVED_NAMES.isdisjoint(referenced):
         return None, "a primary parameter shadows a sympy name"
 
-    # Pass 2: alias Python-keyword-named primaries so parse_expr can tokenize
-    # the expression. Sort by length descending so e.g. an ``if_thresh`` param
-    # is not partially matched by the alias of ``if``.
-    sym_name_of: dict[str, str] = {
-        p: (_alias_keyword_param(p) if p in _PY_KEYWORD_PARAM_NAMES else p) for p in referenced
-    }
+    # Pass 2: alias primaries whose names would not survive the
+    # parse-differentiate-print round trip — Python keywords (``parse_expr``
+    # cannot tokenize them) and C reserved words (``sp.ccode`` renames them).
+    # Sort by length descending so e.g. an ``if_thresh`` param is not partially
+    # matched by the alias of ``if``.
+    sym_name_of = _sympy_symbol_alias_map(referenced)
+    if sym_name_of is None:
+        return None, "two primary parameters collide on the same sympy alias"
     s_aliased = s_pre
     for p_name in sorted(referenced, key=len, reverse=True):
-        if p_name in _PY_KEYWORD_PARAM_NAMES:
+        if sym_name_of[p_name] != p_name:
             s_aliased = re.sub(
                 rf"\b{re.escape(p_name)}\b",
                 sym_name_of[p_name],
@@ -1389,13 +1512,12 @@ def _derived_param_jacobian_checked(
         return None, f"unresolved symbol(s) {sorted(free - allowed_sym_names)}"
 
     # For round-tripping the ccode output: map each (possibly-aliased) sympy
-    # symbol name back to ``p[idx]`` using the ORIGINAL primary's index.
-    # Sort by sympy-name length so longer (aliased) names substitute first.
-    sub_pairs: list[tuple[str, int]] = sorted(
-        ((sym_name_of[p], param_idx[p]) for p in referenced if p in param_idx),
-        key=lambda kv: len(kv[0]),
-        reverse=True,
-    )
+    # symbol name back to ``p[idx]`` using the ORIGINAL primary's index. Applied
+    # as one pass (see :func:`_substitute_symbols_once`) so the ``p[idx]`` text a
+    # rewrite injects is never itself rewritten by a parameter named ``p``.
+    cref_of_sym: dict[str, str] = {
+        sym_name_of[p]: f"p[{param_idx[p]}]" for p in referenced if p in param_idx
+    }
 
     result: dict[str, str] = {}
     for p_name in referenced:
@@ -1410,13 +1532,7 @@ def _derived_param_jacobian_checked(
             # than emit a partial chain rule — and never let it escape, since an
             # exception here aborts the entire codegen build.
             return None, f"not expressible in C ({exc})"
-        for sym_n, idx in sub_pairs:
-            c_str = re.sub(
-                rf"\b{re.escape(sym_n)}\b",
-                f"p[{idx}]",
-                c_str,
-            )
-        result[p_name] = c_str
+        result[p_name] = _substitute_symbols_once(c_str, cref_of_sym)
     return (result or None), None
 
 
@@ -1474,12 +1590,20 @@ def _derived_expr_partials_numeric(
             _warn_chain_rule_dropped(expr, referenced, "a primary parameter shadows a sympy name")
         return {}
 
-    sym_name_of: dict[str, str] = {
-        p: (_alias_keyword_param(p) if p in _PY_KEYWORD_PARAM_NAMES else p) for p in referenced
-    }
+    # Same aliasing as the C-emitting twin, so both agree on which symbol stands
+    # for which parameter. (This path substitutes *values*, never prints C, so
+    # the C-reserved-word half of the aliasing is inert here — it is applied
+    # anyway to keep the two functions' symbol namespaces identical.)
+    sym_name_of = _sympy_symbol_alias_map(referenced)
+    if sym_name_of is None:
+        if warn_on_failure:
+            _warn_chain_rule_dropped(
+                expr, referenced, "two primary parameters collide on the same sympy alias"
+            )
+        return {}
     s_aliased = s_pre
     for p_name in sorted(referenced, key=len, reverse=True):
-        if p_name in _PY_KEYWORD_PARAM_NAMES:
+        if sym_name_of[p_name] != p_name:
             s_aliased = re.sub(rf"\b{re.escape(p_name)}\b", sym_name_of[p_name], s_aliased)
 
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}

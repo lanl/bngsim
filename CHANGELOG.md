@@ -264,6 +264,46 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A parameter named `p` or named after a C keyword made the sensitivity RHS
+  emit C that does not compile, so forward sensitivity refused the model.**
+  `_derived_param_jacobian_checked` differentiates a derived rate constant with
+  sympy and then maps `sp.ccode`'s output back to `p[idx]` *by parameter name*.
+  Two names break that round trip, and both are real in the 585-model
+  `ode_fullnet` corpus:
+
+  A parameter literally named `p` (`ode/localfunc_2.bngl`) collided with the
+  parameter array the rewrite writes. The rewrites ran one `re.sub` per name over
+  a string they were themselves editing, so for `_rateLaw = k*p` the `k` → `p[0]`
+  pass went first and `\bp\b` then matched the `p` it had just written:
+  `v = (p[1][0]) * y[1];` — *error: subscripted value is not an array, pointer,
+  or vector*. The rewrites are now a single alternation pass, so text a
+  substitution injects is never rescanned.
+
+  A parameter named `const` (`ode/pulses_demo_fixed.bngl`) was renamed by sympy
+  on the way out: the C printer appends `reserved_word_suffix` to any symbol
+  whose name is a C reserved word, so `Symbol("const")` printed as `const_` — a
+  name no rewrite matched and nothing declares: *error: use of undeclared
+  identifier 'const_'*. C reserved words now take the same alias path
+  `lambda` and the other Python keywords already took (issue #27); the alias is
+  not reserved, so it survives `ccode` verbatim. Two parameters that would land
+  on the same alias are refused with a reason rather than silently merged into
+  one chain rule.
+
+  Both models are function-free, so forward sensitivity requires the analytic
+  RHS and a failed build is a hard `RuntimeError`, not a fallback to CVODES'
+  difference quotient. Across the corpus this moves the sensitivity Simulator
+  from 578/585 to 584/585 — the two above plus `4var_model`,
+  `4var_model_with_FDC`, `simple_1` (the `p` shape) and `kinetics_mb1n` (the
+  `const` shape). Every recovered parameter's sensitivities match a
+  finite-difference reference taken over the `.net` source to ~1e-6 relative.
+  The one model still refused, `ode/proliferation.bngl`, fails for an unrelated
+  reason: a zero-arg observable call `divide()` inside a function is emitted as
+  `obs[1]()`.
+
+  `localfunc_2` and `pulses_demo_fixed` are the two function-free models the
+  issue #62 entry below records as refusing the single-shot path over "a separate
+  defect, not a differentiability limit". That defect is this one, so both entry
+  points now answer them.
 - **`compute_all_sensitivities` skipped sensitivity codegen on models with no
   functions and ran the interpreted RHS, up to 49x slower than the identical
   coupled solve (issue #62).** The chunked entry point attached the analytical

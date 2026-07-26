@@ -22,6 +22,13 @@ contribution that #26 silently zeroed out:
 to parse and the whole chain rule was silently zeroed. Pass 1 now runs the same
 ExprTk-to-sympy pipeline the rate-law differentiator uses, and a failure that
 zeroes a real contribution is logged instead of passing for a legitimate zero.
+
+Round-trip name hazards: pass 2's inverse — mapping ``sp.ccode``'s output back
+to ``p[idx]`` *by parameter name* — emitted C that does not compile for two
+``ode_fullnet`` corpus models. A parameter named ``p`` had the array reference
+of an earlier rewrite clobbered by a later one (``p[1][0]``), and a parameter
+named ``const`` came back out of ccode renamed to ``const_``, which no rewrite
+matched and nothing declares. See ``TestCcodeRoundTripNameHazards``.
 """
 
 from __future__ import annotations
@@ -751,3 +758,302 @@ class TestInlineDerivedParamRefs:
         # the caller's free-symbol check then rejects it.
         out = _inline_derived_param_refs("x", {"x": "y", "y": "x"}, max_passes=4)
         assert isinstance(out, str)
+
+
+# ─── ccode round-trip name hazards ────────────────────────────────────────
+#
+# Both nets below are verbatim ``benchmarks/suites/ode_fullnet/nets`` corpus
+# entries (BioNetGen output for ``bngl_models/my_models/ode/localfunc_2.bngl``
+# and ``.../pulses_demo_fixed.bngl``). They are inlined rather than read from
+# the suite because that directory is generated, not checked in.
+
+_LOCALFUNC_2_NET = """\
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 k            1  # Constant
+    2 p            10  # Constant
+    3 Atot         100  # Constant
+    4 __R1_local1  k*if(((0>0)&&(0<2)),p,1)  # ConstantExpression
+    5 __R2_local1  k*if(((1>0)&&(1<2)),p,1)  # ConstantExpression
+end parameters
+begin species
+    1 A(x~0) Atot
+    2 A(x~P) 0
+    3 A(x~PP) 0
+end species
+begin reactions
+    1 1 2 __R1_local1 #_R1
+    2 2 3 __R2_local1 #_R2
+end reactions
+begin groups
+    1 allA                 1,2,3
+    2 uA                   1
+    3 pA                   2
+    4 ppA                  3
+end groups
+"""
+
+_PULSES_DEMO_FIXED_NET = """\
+# Created by BioNetGen 2.9.3
+begin parameters
+    1 NA         6.02214e23  # Constant
+    2 ncells     20000  # Constant
+    3 V          100.0e-6/ncells  # ConstantExpression
+    4 mwtAg      22400  # Constant
+    5 koff       0.001264  # Constant
+    6 KD         7.435e-10  # Constant
+    7 kon        (koff/KD)/(NA*V)  # ConstantExpression
+    8 IgEtot     9838  # Constant
+    9 Agconc     10  # Constant
+   10 const      1  # Constant
+   11 Agtot      ((Agconc*1.0e-6)*(NA*V))/mwtAg  # ConstantExpression
+   12 kon_pulse  (kon*Agtot)*const  # ConstantExpression
+end parameters
+begin species
+    1 IgE(Fab) IgEtot
+    2 Ag(site!1).IgE(Fab!1) 0
+end species
+begin reactions
+    1 1 2 kon_pulse #_R1
+    2 2 1 koff #_R2
+end reactions
+begin groups
+    1 FreeIgE              1
+    2 BoundIgE             2
+end groups
+"""
+
+
+# tag -> (net source, integration end time, primaries y actually responds to).
+# The last field is asserted exactly so a future change that silently drops a
+# column to zero fails loudly instead of quietly shrinking the comparison.
+_CORPUS_NETS = {
+    "localfunc_2": (_LOCALFUNC_2_NET, 5.0, ["k", "p", "Atot"]),
+    "pulses_demo_fixed": (
+        _PULSES_DEMO_FIXED_NET,
+        2000.0,
+        ["mwtAg", "koff", "KD", "IgEtot", "Agconc", "const"],
+    ),
+}
+
+
+def _write_net(tmp_path, name, text):
+    path = tmp_path / f"{name}.net"
+    path.write_text(text)
+    return str(path)
+
+
+def _net_with_param(text, name, value):
+    """Return ``text`` with primary parameter ``name``'s literal value replaced.
+
+    Perturbing the .net source (rather than ``Model.set_param``) is what makes
+    the finite-difference reference below valid for *every* primary: reloading
+    re-derives the ConstantExpression parameters **and** the species initial
+    conditions, so an IC-driven parameter such as ``Atot`` shows up in the
+    reference instead of differencing to a flat zero.
+    """
+    out, hits = [], 0
+    for line in text.splitlines(keepends=True):
+        m = re.match(rf"(\s*\d+\s+{re.escape(name)}\s+)(\S+)(.*\n?)", line)
+        if m:
+            hits += 1
+            out.append(f"{m.group(1)}{value!r}{m.group(3)}")
+        else:
+            out.append(line)
+    assert hits == 1, f"expected exactly one parameter line for {name!r}, found {hits}"
+    return "".join(out)
+
+
+class TestCcodeRoundTripNameHazards:
+    """Pass 2's inverse — rewriting ``sp.ccode``'s output back to ``p[idx]`` by
+    parameter name — produced C the compiler rejects. Six of the 585
+    ``ode_fullnet`` corpus models were affected, in two shapes; both fixtures
+    below are function-free ``.net`` models, so forward sensitivity requires the
+    analytic RHS and a failed build is a hard ``RuntimeError``, not a fallback.
+
+    ``ode/localfunc_2.bngl`` (also ``4var_model``, ``4var_model_with_FDC``,
+    ``simple_1``) — parameter literally named ``p``. The rewrites ran one regex
+    at a time over a string they were themselves editing: ``k`` → ``p[0]`` went
+    first, then ``\\bp\\b`` matched the ``p`` it had just written and produced
+    ``p[1][0]`` — *error: subscripted value is not an array, pointer, or
+    vector*.
+
+    ``ode/pulses_demo_fixed.bngl`` (also ``kinetics_mb1n``) — parameter named
+    ``const``. sympy's C printer appends its ``reserved_word_suffix`` to any
+    symbol whose name is a C reserved word, so ``Symbol("const")`` printed as
+    ``const_``; no rewrite matched that name and nothing declares it — *error:
+    use of undeclared identifier 'const_'*.
+    """
+
+    # ── the two defects, at the level of the emitted partial ──────────────
+
+    def test_param_named_p_does_not_clobber_its_own_output(self):
+        """``localfunc_2`` shape: ∂(k*p)/∂p is ``k`` → ``p[0]``. Pre-fix the
+        ``p`` → ``p[1]`` rewrite reached into that freshly written ``p[0]``."""
+        result = _compute_derived_param_jacobian(
+            "k*if(((1>0)&&(1<2)),p,1)",
+            primary_param_names={"k", "p", "Atot"},
+            param_idx={"k": 0, "p": 1, "Atot": 2},
+        )
+        assert result is not None
+        assert set(result.keys()) == {"k", "p"}
+        # ∂/∂p = k → p[0]; ∂/∂k = p → p[1]. Neither may be doubly subscripted.
+        assert result["p"].strip() == "p[0]"
+        assert result["k"].strip() == "p[1]"
+        for c_str in result.values():
+            assert "][" not in c_str, f"double subscript in emitted partial: {c_str!r}"
+
+    def test_c_reserved_word_param_round_trips(self):
+        """``pulses_demo_fixed`` shape: a parameter named ``const`` must come
+        back as ``p[idx]``, not as ccode's renamed ``const_``."""
+        result = _compute_derived_param_jacobian(
+            "(kon*Agtot)*const",
+            primary_param_names={"kon", "Agtot", "const"},
+            param_idx={"kon": 0, "Agtot": 1, "const": 2},
+        )
+        assert result is not None
+        assert set(result.keys()) == {"kon", "Agtot", "const"}
+        for name, c_str in result.items():
+            assert "const" not in c_str, f"unmapped symbol survived in ∂/∂{name}: {c_str!r}"
+            assert "_BNG_KW_" not in c_str
+        # ∂/∂const = kon*Agtot → both other indices, and no const_ in sight.
+        assert "p[0]" in result["const"] and "p[1]" in result["const"]
+
+    @pytest.mark.parametrize("kw", ["const", "int", "double", "long", "short", "register"])
+    def test_every_c_keyword_name_round_trips(self, kw):
+        """Not just ``const``: any C reserved word is renamed by ccode."""
+        result = _compute_derived_param_jacobian(
+            f"kf*{kw}",
+            primary_param_names={"kf", kw},
+            param_idx={"kf": 0, kw: 1},
+        )
+        assert result is not None
+        assert result["kf"].strip() == "p[1]"
+        assert result[kw].strip() == "p[0]"
+
+    def test_reserved_word_table_covers_sympy(self):
+        """The alias predicate is a hardcoded table, so it has to stay a
+        superset of whatever sympy's C printer actually renames. A sympy upgrade
+        that adds a reserved word would otherwise reintroduce the ``const_``
+        class of failure silently."""
+        from bngsim._codegen import _C_RESERVED_PARAM_NAMES
+        from sympy.printing.c import C89CodePrinter, C99CodePrinter
+
+        for printer in (C89CodePrinter, C99CodePrinter):
+            missing = set(printer.reserved_words) - _C_RESERVED_PARAM_NAMES
+            assert not missing, (
+                f"{printer.__name__}.reserved_words has names the alias table misses: "
+                f"{sorted(missing)} — sp.ccode will rename them and the p[idx] "
+                f"round trip will emit an undeclared identifier"
+            )
+
+    def test_ordinary_names_are_not_aliased(self):
+        """The alias path is opt-in: ordinary parameter names still parse,
+        differentiate and print exactly as before."""
+        result = _compute_derived_param_jacobian(
+            "kf*kr/(kf+kr)",
+            primary_param_names={"kf", "kr"},
+            param_idx={"kf": 3, "kr": 7},
+        )
+        assert result is not None
+        for c_str in result.values():
+            assert "_BNG_KW_" not in c_str
+            assert re.search(r"\bkf\b|\bkr\b", c_str) is None
+
+    def test_alias_collision_is_refused_not_merged(self):
+        """A model carrying both ``const`` and the alias ``_BNG_KW_const`` would
+        map two distinct parameters onto one symbol. Refuse with a reason — the
+        caller then declines the whole analytic RHS — rather than silently merge
+        their chain rules."""
+        jac, reason = _derived_param_jacobian_checked(
+            "const*_BNG_KW_const",
+            primary_param_names={"const", "_BNG_KW_const"},
+            param_idx={"const": 0, "_BNG_KW_const": 1},
+        )
+        assert jac is None
+        assert reason is not None and "alias" in reason
+
+    def test_numeric_twin_agrees_on_c_keyword_names(self):
+        """``_derived_expr_partials_numeric`` (the IC-seed path) substitutes
+        values rather than printing C, so it was never broken — but it must keep
+        agreeing with the C-emitting twin about which symbol is which."""
+        out = _derived_expr_partials_numeric(
+            "(kon*Agtot)*const",
+            primary_param_names={"kon", "Agtot", "const"},
+            param_idx={"kon": 0, "Agtot": 1, "const": 2},
+            param_values=[2.0, 3.0, 5.0],
+            derived_exprs={},
+        )
+        assert out == pytest.approx({"kon": 15.0, "Agtot": 10.0, "const": 6.0})
+
+    # ── end to end: the generated C must compile ──────────────────────────
+
+    @pytest.mark.parametrize("tag", sorted(_CORPUS_NETS), ids=sorted(_CORPUS_NETS))
+    def test_sensitivity_simulator_constructs(self, tmp_path, tag):
+        """The reported repro. Constructing the Simulator builds and *compiles*
+        the analytic sensitivity RHS, so this is the compile assertion: pre-fix
+        it raised ``RuntimeError: ... Codegen compilation failed``."""
+        import bngsim
+
+        net_text = _CORPUS_NETS[tag][0]
+        net_path = _write_net(tmp_path, tag, net_text)
+        model = bngsim.Model.from_net(net_path)
+        primaries = list(model.primary_param_names)
+        assert primaries, "corpus model has no primary parameters — bad fixture"
+
+        # No try/except: a codegen compile failure must surface as a test error.
+        bngsim.Simulator(model, method="ode", sensitivity_params=primaries)
+
+    @pytest.mark.parametrize("tag", sorted(_CORPUS_NETS), ids=sorted(_CORPUS_NETS))
+    def test_sensitivities_match_finite_differences(self, tmp_path, tag):
+        """Compiling is necessary but not sufficient — a round trip that mapped
+        a symbol to the *wrong* ``p[idx]`` would also compile. Every primary's
+        analytic sensitivity must match a central difference taken over the .net
+        source itself.
+
+        Comparisons are on the **scaled** sensitivity ``p·∂y/∂p``, which shares
+        the species' units: these models span parameter magnitudes from 7e-10
+        (``KD``) to 6e23 (``NA``), so a raw ∂y/∂p threshold would either drown
+        the small-parameter columns or admit pure differencing noise."""
+        import bngsim
+        import numpy as np
+
+        net_text, t_end, expected_signals = _CORPUS_NETS[tag]
+        sample_times = list(np.linspace(0.0, t_end, 21))
+        run_kw = dict(sample_times=sample_times, rtol=1e-12, atol=1e-14, max_steps=10**7)
+
+        net_path = _write_net(tmp_path, tag, net_text)
+        model = bngsim.Model.from_net(net_path)
+        primaries = list(model.primary_param_names)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=primaries)
+        result = sim.run(**run_kw)
+        analytic = np.asarray(result.sensitivities)
+        y_scale = np.abs(np.asarray(result.species)).max()
+
+        def species_at(name, value, side):
+            text = _net_with_param(net_text, name, value)
+            path = _write_net(tmp_path, f"{tag}_{name}_{side}", text)
+            perturbed = bngsim.Simulator(bngsim.Model.from_net(path), method="ode")
+            return np.asarray(perturbed.run(**run_kw).species)
+
+        checked = []
+        for j, name in enumerate(primaries):
+            v0 = model.get_param(name)
+            col = v0 * analytic[:, :, j]
+            if np.abs(col).max() < 1e-6 * y_scale:
+                # y genuinely does not respond to this parameter. ``NA`` and
+                # ``ncells`` are the real case: both enter only through ``NA*V``,
+                # which cancels out of ``kon*Agtot``, so the analytic column is
+                # an exact zero and the difference quotient is pure noise.
+                continue
+            h = abs(v0) * 1e-6
+            fd = v0 * (species_at(name, v0 + h, "hi") - species_at(name, v0 - h, "lo")) / (2.0 * h)
+            err = np.abs(fd - col).max() / max(np.abs(col).max(), np.abs(fd).max())
+            checked.append(name)
+            assert err < 1e-3, (
+                f"{tag}: analytic ∂y/∂{name} disagrees with the finite-difference "
+                f"reference (max relative error {err:.3e})"
+            )
+        assert checked == expected_signals, (
+            f"{tag}: parameters with a testable signal changed: {checked} != {expected_signals}"
+        )
