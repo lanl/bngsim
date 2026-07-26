@@ -1,0 +1,46 @@
+# Regression fixture for issue #28 on the *codegen* path: an Observable
+# referenced as a zero-arg call (`obs()`) inside a global function body.
+#
+# BNGL accepts `obs()` wherever the bareword `obs` is valid and BNG2.pl
+# preserves whichever form the user wrote (see obs_zero_arg_call.net for the
+# interpreter-side story). The codegen emitters substitute the observable with
+# a C *scalar* — `obs[0]` / `obs_Atot` — so the trailing `()` must be dropped
+# too, or the generated C is `obs[0]()`: "called object type 'double' is not a
+# function or function pointer". Distilled from the ode_fullnet corpus model
+# `original/bngl_models/my_models/ode/proliferation.bngl`, whose functions read
+# `(1-divide())*1` and `100*divide()` against the observable `divide`.
+#
+# Reaction is elementary (rate constant `k1`), so the analytical codegen
+# sensitivity RHS engages and the functions here are pure *outputs* — the GH
+# #198 `d func/dθ` chain rule then has to differentiate the zero-arg-call
+# bodies. The same missing strip made sympy read `Atot()` as an applied
+# undefined function: `100*Atot()` differentiated to nothing (a silently ZERO
+# output sensitivity, and a silently zero Jacobian entry when such a body is a
+# rate law) while `scale*Atot()` produced a derivative the C printer could not
+# render (a spurious "unsupported" decline).
+#
+# Closed forms with A(0)=10, B(0)=0:
+#   A(t)  = 10*exp(-k1*t)          dA/dk1  = -10*t*exp(-k1*t)
+#   plain  = 100*Atot              d/dk1   = 100*dA/dk1,   d/dscale = 0
+#   scaled = scale*Atot            d/dscale = Atot,        d/dk1 = scale*dA/dk1
+#   mixed  = Atot + Btot = 10      d/dθ    = 0 for every θ (conservation)
+begin parameters
+    1 k1    0.5  # Constant
+    2 scale 3.0  # Constant
+end parameters
+begin species
+    1 A() 10
+    2 B() 0
+end species
+begin reactions
+    1 1 2 k1 #A_to_B
+end reactions
+begin groups
+    1 Atot 1
+    2 Btot 2
+end groups
+begin functions
+    1 plain() 100*Atot()
+    2 scaled() scale*Atot()
+    3 mixed() Atot()+Btot
+end functions
