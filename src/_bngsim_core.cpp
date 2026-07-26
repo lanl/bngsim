@@ -1907,6 +1907,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("method", &bngsim::SteadyStateOptions::method)
         .def_readwrite("jacobian", &bngsim::SteadyStateOptions::jacobian)
         .def_readwrite("codegen_so_path", &bngsim::SteadyStateOptions::codegen_so_path)
+        .def_readwrite("codegen_c_source", &bngsim::SteadyStateOptions::codegen_c_source)
         .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params);
 
     // --- SteadyStateResult ---
@@ -1921,6 +1922,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("n_rhs_evals", &bngsim::SteadyStateResult::n_rhs_evals)
         .def_readonly("n_sens_params", &bngsim::SteadyStateResult::n_sens_params)
         .def_readonly("sens_param_names", &bngsim::SteadyStateResult::sens_param_names)
+        // Issue #63 — which numerical path actually ran, so a caller can tell an
+        // interpreted solve from a compiled one and a closed-form dY_ss/dp from
+        // a finite-differenced one.
+        .def_readonly("rhs_backend", &bngsim::SteadyStateResult::rhs_backend)
+        .def_readonly("sens_jacobian_source", &bngsim::SteadyStateResult::sens_jacobian_source)
+        .def_readonly("sens_dfdp_source", &bngsim::SteadyStateResult::sens_dfdp_source)
+        .def_readonly("sens_jacobian_rcond", &bngsim::SteadyStateResult::sens_jacobian_rcond)
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::SteadyStateResult &r) {

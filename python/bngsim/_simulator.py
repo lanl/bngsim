@@ -3228,11 +3228,31 @@ class Simulator:
             ``"integration"`` (default), ``"newton"``, or ``"kinsol"``
             (alias for ``"newton"``).
         sensitivity_params : list[str], optional
-            Parameter names for dY_ss/dp sensitivity.
+            Parameter names for dY_ss/dp sensitivity. Requires code generation,
+            exactly as :meth:`run` and :meth:`compute_all_sensitivities` do —
+            see the sensitivity note below.
 
         Returns
         -------
         SteadyStateResult
+
+        Notes
+        -----
+        **Codegen (issue #63).** The solve runs whatever RHS this Simulator's
+        :attr:`codegen_backend` reports — the compiled ``.so``, the MIR JIT, or
+        the ExprTk interpreter. Until #63 the steady-state path read no codegen
+        option at all, so a Simulator built with ``codegen=True`` still solved
+        interpreted; ``ss.rhs_backend`` now reports which backend actually ran.
+
+        **Sensitivity requires codegen.** ``dY_ss/dp = -J⁻¹·(∂f/∂p)`` used to
+        build *both* factors from finite differences. It now prefers the model's
+        analytical Jacobian and the analytical ``∂f/∂p`` the codegen sensitivity
+        RHS emits, and — like :meth:`run` and :meth:`compute_all_sensitivities`
+        since GH #214 — refuses rather than silently degrading when codegen is
+        unavailable. ``ss.sens_jacobian_source`` / ``ss.sens_dfdp_source`` report
+        which path each factor took; a Functional/MM model has no analytical
+        ``∂f/∂p`` to emit (issue #55) and still differences that factor, with a
+        warning.
         """
         if self._method != "ode":
             raise ValueError(
@@ -3244,6 +3264,13 @@ class Simulator:
         # classified against this call's requested sensitivity_params.
         if sensitivity_params:
             self._raise_if_event_sensitivities(sensitivity_params)
+            # Issue #63 — the same hard codegen requirement run() and
+            # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
+            # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request
+            # that cannot get one is refused rather than quietly answered from
+            # √eps-noisy difference quotients. A no-op when codegen is already
+            # attached.
+            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,
@@ -3258,6 +3285,10 @@ class Simulator:
         opts.atol = atol if atol is not None else self._atol
         opts.max_steps = max_steps if max_steps is not None else self._max_steps
         opts.jacobian = self._jacobian
+        if self._codegen_so_path:
+            opts.codegen_so_path = self._codegen_so_path
+        if self._codegen_c_source:
+            opts.codegen_c_source = self._codegen_c_source
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
 
@@ -3275,13 +3306,60 @@ class Simulator:
         result = SteadyStateResult(core_result)
 
         logger.info(
-            "Steady state %s: method=%s, residual=%.2e, steps=%d",
+            "Steady state %s: method=%s, backend=%s, residual=%.2e, steps=%d",
             "converged" if result.converged else "FAILED",
             result.method_used,
+            result.rhs_backend,
             result.residual,
             result.n_steps,
         )
+        self._warn_about_ss_sensitivity(result)
         return result
+
+    #: Below this ``min|U_jj| / max|U_jj|`` the steady-state sensitivity system is
+    #: treated as rank-deficient. Well-posed corpus models measure 1e-4 to 1e-1
+    #: and rank-deficient ones 1e-12 to 1e-9, so this sits several decades clear
+    #: of both. It gates a warning, not a refusal — picking a refusal threshold
+    #: wants the full 585-model corpus sweep, not eight models.
+    _SS_SENS_RCOND_FLOOR = 1e-8
+
+    @classmethod
+    def _warn_about_ss_sensitivity(cls, result: SteadyStateResult) -> None:
+        """Surface the two ways a dY_ss/dp can be less than it appears (issue #63).
+
+        Both used to be invisible — the result came back looking like every other
+        sensitivity result.
+        """
+        # 1. ∂f/∂p had to be differenced. Reaching here means codegen IS attached
+        #    (steady_state refuses otherwise) but the artifact carries no
+        #    bngsim_codegen_sens_rhs — the Functional/MM case generate_sens_rhs_c
+        #    declines on, which issue #55 tracks. Still the best available answer,
+        #    but it rests on a ~sqrt(eps) difference quotient.
+        if result.sens_dfdp_source == "finite-difference":
+            logger.warning(
+                "Steady-state dY_ss/dp: no analytical ∂f/∂p is available for this "
+                "model (its rate laws are not all Elementary, so the codegen "
+                "sensitivity RHS was not emitted — issue #55), so ∂f/∂p was "
+                "computed by finite differences at a ~sqrt(eps) step. The "
+                "Jacobian factor used the %s path.",
+                result.sens_jacobian_source,
+            )
+
+        # 2. The Jacobian at the root is rank-deficient, so dY_ss/dp does not
+        #    exist: the steady state is a continuum, not an isolated point, and
+        #    the returned numbers are whatever the LU made of a singular system.
+        rcond = result.sens_jacobian_rcond
+        if result.sensitivity is not None and 0.0 <= rcond < cls._SS_SENS_RCOND_FLOOR:
+            logger.warning(
+                "Steady-state dY_ss/dp is NOT RELIABLE for this model: the "
+                "Jacobian at the steady state is numerically rank-deficient "
+                "(min|U|/max|U| = %.2e from its LU, versus ~1e-4 or better for a "
+                "well-posed system). That means the steady state is a continuum "
+                "rather than an isolated point, so -J⁻¹·(∂f/∂p) has no unique "
+                "value and the returned matrix should not be used as a gradient. "
+                "Read ss.sens_jacobian_rcond to test this in code.",
+                rcond,
+            )
 
     def steady_state_batch(
         self,
@@ -3310,6 +3388,14 @@ class Simulator:
         Returns
         -------
         list[SteadyStateResult]
+
+        Notes
+        -----
+        Every entry runs this Simulator's :attr:`codegen_backend`, the same as
+        :meth:`steady_state` (issue #63). Each entry resolves the artifact for
+        itself — one ``dlopen`` of the shared path, or one JIT compile of the
+        shared source, per solve — so a dose-response sweep pays that per entry
+        rather than once for the batch. ``r.rhs_backend`` reports what ran.
         """
         if self._method != "ode":
             raise ValueError(
@@ -3340,6 +3426,10 @@ class Simulator:
             opts.atol = eff_atol
             opts.max_steps = eff_max_steps
             opts.jacobian = self._jacobian
+            if self._codegen_so_path:
+                opts.codegen_so_path = self._codegen_so_path
+            if self._codegen_c_source:
+                opts.codegen_c_source = self._codegen_c_source
             try:
                 core_result = find_steady_state(clone._core, opts)
             except RuntimeError as e:
@@ -4088,6 +4178,28 @@ class SteadyStateResult:
     sensitivity : ndarray or None
         Species ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``. ``None``
         if no sensitivity was requested.
+    rhs_backend : str
+        Which RHS actually evaluated ``f(y)``: ``"exprtk"`` (interpreted),
+        ``"codegen-so"`` (compiled + ``dlopen``'d), or ``"codegen-jit"``
+        (in-process MIR). Issue #63 — before it, a steady-state solve ignored
+        the Simulator's codegen artifact, so this was always effectively
+        ``"exprtk"`` no matter what :attr:`Simulator.codegen_backend` reported.
+    sens_jacobian_source, sens_dfdp_source : str
+        How each factor of ``dY_ss/dp = -J⁻¹·(∂f/∂p)`` was built.
+        ``sens_jacobian_source`` is ``"codegen"`` (compiled analytical Jacobian),
+        ``"analytical"`` (interpreted analytical), or ``"finite-difference"``;
+        ``sens_dfdp_source`` is ``"codegen"`` or ``"finite-difference"``. Both
+        are ``""`` when no sensitivity was requested. Issue #63 — both factors
+        were unconditionally finite-differenced before it, and the result gave
+        no way to tell.
+    sens_jacobian_rcond : float
+        ``min|U_jj| / max|U_jj|`` from the LU of the (reduced) Jacobian that was
+        inverted — how close to singular the sensitivity system was.
+        ``dY_ss/dp`` exists only when that Jacobian has full rank; a steady state
+        that is a *continuum* rather than an isolated point makes it
+        rank-deficient, and the returned matrix is then meaningless. Well-posed
+        corpus models measure 1e-4 to 1e-1; rank-deficient ones 1e-12 to 1e-9.
+        ``0.0`` when no sensitivity was requested.
 
     Notes
     -----
@@ -4123,6 +4235,10 @@ class SteadyStateResult:
         "converged",
         "n_steps",
         "n_rhs_evals",
+        "rhs_backend",
+        "sens_jacobian_source",
+        "sens_dfdp_source",
+        "sens_jacobian_rcond",
         "_sensitivity",
         "_sens_param_names",
         "_observable_names",
@@ -4142,6 +4258,12 @@ class SteadyStateResult:
         self.converged = core.converged
         self.n_steps = core.n_steps
         self.n_rhs_evals = core.n_rhs_evals
+        # Issue #63 — which numerical path ran. getattr-guarded like the GH #12
+        # blocks below so an older core stays loadable.
+        self.rhs_backend = getattr(core, "rhs_backend", "exprtk")
+        self.sens_jacobian_source = getattr(core, "sens_jacobian_source", "")
+        self.sens_dfdp_source = getattr(core, "sens_dfdp_source", "")
+        self.sens_jacobian_rcond = getattr(core, "sens_jacobian_rcond", 0.0)
 
         self._sensitivity: np.ndarray | None
         if core.n_sens_params > 0:

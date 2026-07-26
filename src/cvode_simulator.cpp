@@ -13,6 +13,7 @@
 //
 // Uses Jacobian sparsity computed at model load time for sparse linear solves.
 
+#include "bngsim/codegen_abi.hpp"
 #include "bngsim/functional_jac_scatter.hpp"
 #include "bngsim/lapack_dense_linsol.hpp"
 #include "bngsim/mm_jacobian.hpp"
@@ -140,27 +141,17 @@ static constexpr double SPARSE_DENSITY_MAX = 0.10; // 10%
 // Zero-crossing at 0.5 detects the false→true transition.
 // SUNDIALS signature: int g(sunrealtype t, N_Vector y, sunrealtype* gout, void* user_data)
 
-// Tfun callback type: invoked by codegen .so to evaluate a table function at
-// the given index value. ctx is opaque on the .so side; we set it to the
-// owning NetworkModel pointer.
-using CodegenTfunEvalFn = double (*)(int tf_id, double x, void *ctx);
-
-// Lightweight struct matching the CodegenUserData layout expected by .so.
-// MUST mirror the typedef emitted by bngsim/python/bngsim/_codegen.py
-// (generate_rhs_c). Field order is part of the ABI contract between
-// the codegen .so and the simulator.
-struct CodegenUserDataForSO {
-    double *param_values;
-    void *tfun_ctx;
-    CodegenTfunEvalFn tfun_eval;
-};
+// The codegen calling contract (symbol signatures + the two user_data structs)
+// lives in bngsim/codegen_abi.hpp: the steady-state solver resolves the same
+// symbols, and two hand-maintained copies of an ABI struct diverge silently.
+// The nested aliases below keep the historical CvodeUserData::Codegen*Fn spelling.
 
 struct CvodeUserData {
     NetworkModel *model;
     // Code-generated RHS function pointer.
     // If non-null, used instead of model->compute_derivs().
     // The codegen function reads parameters from param_values.
-    using CodegenRhsFn = int (*)(double t, double *y, double *ydot, void *user_data);
+    using CodegenRhsFn = bngsim::CodegenRhsFn;
     CodegenRhsFn codegen_fn = nullptr;
     void *codegen_dl_handle = nullptr; // dlopen handle (for cleanup)
     // Struct expected by codegen: first field is double* param_values.
@@ -177,8 +168,7 @@ struct CvodeUserData {
     // CVSensRhs1Fn-compatible: (Ns, t, y, ydot, iS, yS, ySdot, user_data, tmp1, tmp2)
     // The codegen .so expects a CodegenSensUserData struct as user_data,
     // which we build on the stack in the callback wrapper.
-    using CodegenSensRhsFn = int (*)(int Ns, double t, double *y, double *ydot, int iS, double *yS,
-                                     double *ySdot, void *user_data, double *tmp1, double *tmp2);
+    using CodegenSensRhsFn = bngsim::CodegenSensRhsFn;
     CodegenSensRhsFn codegen_sens_fn = nullptr;
     // plist for sensitivity codegen (maps iS → param index)
     int *codegen_plist = nullptr;
@@ -190,7 +180,7 @@ struct CvodeUserData {
     // jacobian over the interpreted cvode_analytical_dense_jac. jac is the n×n
     // column-major SUNDenseMatrix data; the emitted C memsets it itself. Reads
     // params from the same CodegenUserDataForSO the RHS uses.
-    using CodegenJacFn = int (*)(double t, double *y, double *jac_colmajor, void *user_data);
+    using CodegenJacFn = bngsim::CodegenJacFn;
     CodegenJacFn codegen_jac_fn = nullptr;
 
     // Code-generated *sparse* (CSC) analytical Jacobian function pointer (GH
@@ -203,7 +193,7 @@ struct CvodeUserData {
     // memsets the value array itself; the CSC structure (col_ptrs/row_indices) is
     // reinstalled by the C++ callback. Reads params from the same
     // CodegenUserDataForSO the RHS uses.
-    using CodegenJacSparseFn = int (*)(double t, double *y, double *jac_data, void *user_data);
+    using CodegenJacSparseFn = bngsim::CodegenJacSparseFn;
     CodegenJacSparseFn codegen_jac_sparse_fn = nullptr;
 
     // Code-generated observable/expression output evaluator (GH #136). When
@@ -213,8 +203,7 @@ struct CvodeUserData {
     // dominated wall time on large models. Reads params from the same
     // CodegenUserDataForSO the RHS uses (so on the warm path, where params are
     // constant, the buffer is always current). Null ⇒ interpreted recording.
-    using CodegenOutputsFn = int (*)(double t, double *y, double *obs_out, double *func_out,
-                                     void *user_data);
+    using CodegenOutputsFn = bngsim::CodegenOutputsFn;
     CodegenOutputsFn codegen_outputs_fn = nullptr;
 
     // Code-generated observable + expression output-sensitivity evaluator (GH
@@ -228,10 +217,7 @@ struct CvodeUserData {
     // parameter term). Null ⇒ no expression output sensitivities (blocks stay
     // empty; an expression: selector raises). Reads params from the same
     // CodegenUserDataForSO the RHS uses.
-    using CodegenOutputSensFn = int (*)(double t, const double *y, const double *p,
-                                        const double *const *state_sens, const int *plist,
-                                        int n_sens, double *obs_sens_out, double *func_sens_out,
-                                        void *user_data);
+    using CodegenOutputSensFn = bngsim::CodegenOutputSensFn;
     CodegenOutputSensFn codegen_output_sens_fn = nullptr;
 
     // JAX AD Jacobian callback.
@@ -506,11 +492,7 @@ static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *use
 // This callback is set on CVodeSensInit1 when the codegen .so provides
 // bngsim_codegen_sens_rhs. Otherwise, CVODES uses its internal FD.
 
-struct CodegenSensUserDataForSO {
-    double *param_values;
-    int *plist;
-    int n_sens;
-};
+// CodegenSensUserDataForSO — bngsim/codegen_abi.hpp
 
 static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector ydot, int iS,
                                   N_Vector yS, N_Vector ySdot, void *user_data, N_Vector tmp1,

@@ -49,6 +49,12 @@ always echoed in `ss.method_used`).
 > criterion were removed: `"newton"` already means integrate-then-polish-with-
 > fallback, and every integration path now uses the single `||f||_2/n` rule.
 
+Every path evaluates whatever RHS the Simulator's
+[`codegen_backend`](codegen.md) reports — the compiled `.so`, the in-process MIR
+JIT, or the ExprTk interpreter — and `ss.rhs_backend` echoes which one ran.
+(Before issue #63 the steady-state solver read no codegen option at all, so a
+Simulator built with `codegen=True` still solved interpreted.)
+
 ```python
 import bngsim
 
@@ -138,13 +144,39 @@ parallelism.
 ### Steady-state sensitivity
 
 BNGsim computes the steady-state sensitivity matrix `dY_ss/dp` via the
-implicit function theorem: `dY_ss/dp = -J⁻¹ · (∂f/∂p)`, where J is the
-Jacobian at steady state and `∂f/∂p` is computed by finite differences.
+implicit function theorem: `dY_ss/dp = -J⁻¹ · (∂f/∂p)`.
+
+Both factors are taken in closed form where the model supports it:
+
+- **J** — the analytical Jacobian at the steady state, compiled when the codegen
+  artifact carries one and interpreted otherwise. This is the same
+  "analytical when complete, finite differences otherwise" rule
+  `jacobian="auto"` applies everywhere else, and the same matrix the
+  `method="newton"` polish uses; `jacobian="fd"` pins the difference quotient.
+- **∂f/∂p** — the analytical parameter derivative the code-generated
+  sensitivity RHS emits, the same one CVODES integrates against on the
+  time-course path. Models whose rate laws are not all Elementary have no such
+  derivative to emit (issue #55), so that factor is still finite-differenced —
+  with a warning, and `ss.sens_dfdp_source` says so.
+
+Because the analytical `∂f/∂p` comes from codegen, `sensitivity_params` **requires
+code generation**, exactly as `Simulator(..., sensitivity_params=...)` and
+`compute_all_sensitivities()` do since GH #214: a request that cannot get one is
+refused rather than answered from `sqrt(eps)`-noisy difference quotients. The
+analytical RHS is built automatically via `cc` or the in-process MIR JIT, so this
+does not require a system compiler — but `codegen=False` and `BNGSIM_NO_CODEGEN`
+now raise here.
+
+`ss.rhs_backend`, `ss.sens_jacobian_source` and `ss.sens_dfdp_source` report which
+path each piece actually took.
 
 ```python
 ss = sim.steady_state(
     sensitivity_params=["kf", "kr", "kcat"],
 )
+print(ss.rhs_backend)             # "codegen-so" | "codegen-jit" | "exprtk"
+print(ss.sens_jacobian_source)    # "codegen" | "analytical" | "finite-difference"
+print(ss.sens_dfdp_source)        # "codegen" | "finite-difference"
 
 # Sensitivity matrix: (n_species, n_params)
 print(ss.sensitivity.shape)       # (50, 3)
