@@ -188,6 +188,64 @@ _compile_counter = itertools.count()
 # for #41/#43. Invalidate v22.
 _CODEGEN_VERSION = "23"
 
+
+# Modules whose *source* determines the emitted C. ``_codegen`` holds the
+# emitters; ``_jacobian`` is the symbolic core feeding the Jacobian / sensitivity
+# emitters; ``_saturable_jacobian`` is the saturable-rate-law branch _jacobian
+# delegates to. A change to any of them can change the generated source.
+_CODEGEN_SOURCE_MODULES = ("_codegen", "_jacobian", "_saturable_jacobian")
+
+
+def _compute_codegen_source_digest(src_dir: Path | None = None) -> str:
+    """Digest of the codegen modules' own source, for the cache key (issue #51).
+
+    ``src_dir`` defaults to this module's directory and exists so the digest's
+    react-to-an-edit behavior can be tested without editing the live package.
+
+    The ``.net`` path keys its compiled ``.so`` on the model content plus
+    ``_CODEGEN_VERSION`` rather than on the generated C, because hashing the C
+    would mean a full source-gen on every cache probe. That made the constant
+    load-bearing: a change that altered the emitted sensitivity RHS *without*
+    bumping it was invisible to any machine with a warm cache, which kept
+    loading the stale ``.so`` and returning the pre-change numbers. #41 and #43
+    both shipped that way — on a warm cache they appeared to do nothing at all.
+
+    Folding this digest in makes the omission harmless: editing an emitter
+    changes the key whether or not anyone remembers the constant. It is computed
+    once at import from three file reads (~350 KB, well under a millisecond) and
+    costs nothing per probe, so the fast path stays fast.
+
+    Deliberately conservative in two directions. It hashes source text, so a
+    comment-only edit also invalidates — over-invalidation costs one recompile,
+    while under-invalidation is a silently wrong gradient. And it covers the
+    Python emitters only: a C++ change that alters ``codegen_data()`` is not
+    caught here, so ``_CODEGEN_VERSION`` is still the escape hatch for that (and
+    for deliberately invalidating a release's caches).
+
+    Returns ``""`` when the sources cannot be read (a ``.pyc``-only or zipped
+    install), which degrades the key to ``_CODEGEN_VERSION`` alone — the
+    pre-issue-#51 behavior, never something weaker.
+    """
+    h = hashlib.sha256()
+    here = src_dir if src_dir is not None else Path(__file__).resolve().parent
+    for name in _CODEGEN_SOURCE_MODULES:
+        try:
+            data = (here / f"{name}.py").read_bytes()
+        except OSError:
+            return ""
+        h.update(name.encode())
+        h.update(b"\0")
+        h.update(data)
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
+_CODEGEN_SOURCE_DIGEST = _compute_codegen_source_digest()
+
+# The token every codegen cache key mixes in. Use this, never ``_CODEGEN_VERSION``
+# alone, anywhere a cached artifact's validity is decided (issue #51).
+_CODEGEN_CACHE_KEY = f"{_CODEGEN_VERSION}+{_CODEGEN_SOURCE_DIGEST}"
+
 # Accessor-token prefix for the SBML rateOf csymbol (GH #106). MUST match
 # _RATEOF_PREFIX in bngsim/_sbml_loader.py and register_rateof_accessors() in
 # src/model_impl.hpp — a rate_of__<species> token resolves to current_derivs[i].
@@ -2540,13 +2598,15 @@ def generate_combined_c(
 def compute_model_hash(net_path: str) -> str:
     """Compute a hash of the .net file content for caching.
 
-    The hash mixes in ``_CODEGEN_VERSION`` so a codegen behavior change
-    invalidates previously-cached .so files automatically. Any .tfun data
-    files referenced by the .net's function block are also folded in, so
-    editing a tfun's y-values triggers a recompile.
+    The hash mixes in ``_CODEGEN_CACHE_KEY`` — the hand-maintained
+    ``_CODEGEN_VERSION`` *and* a digest of the emitters' own source (issue #51)
+    — so a codegen behavior change invalidates previously-cached .so files
+    whether or not the constant was bumped. Any .tfun data files referenced by
+    the .net's function block are also folded in, so editing a tfun's y-values
+    triggers a recompile.
     """
     h = hashlib.sha256()
-    h.update(_CODEGEN_VERSION.encode())
+    h.update(_CODEGEN_CACHE_KEY.encode())
     h.update(b"\0")
     with open(net_path, "rb") as f:
         net_bytes = f.read()
@@ -5935,7 +5995,7 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
     # a codegen-behavior bump invalidates stale files. v2 = structure-specialized
     # signature (params runtime arg); invalidates any v1 value-specialized .so.
     h = hashlib.sha256()
-    h.update(_CODEGEN_VERSION.encode())
+    h.update(_CODEGEN_CACHE_KEY.encode())
     h.update(b"ssa_propensity_v2_structure")
     h.update(src.encode())
     model_hash = "ssaprop_" + h.hexdigest()[:16]
@@ -5963,8 +6023,9 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # read, no parse, no hash. dep_stamps captures the same file set
 # compute_model_hash() folds into the cache key, so editing the .net or any
 # referenced .tfun changes an mtime and forces a recompute, exactly matching the
-# no-memo behavior. _CODEGEN_VERSION is part of the validity test so a codegen
-# behavior bump invalidates stale memo entries too.
+# no-memo behavior. _CODEGEN_CACHE_KEY is part of the validity test so a codegen
+# behavior change invalidates stale memo entries too — including one that edits an
+# emitter without bumping _CODEGEN_VERSION (issue #51).
 # Keyed by (net_abspath, want_jac, want_outputs, want_output_sens): the compiled
 # Jacobian (GH #162), output evaluator (GH #163), and expression output-sensitivity
 # evaluator (GH #198) are independent content-distinct callbacks, so all three flags
@@ -6083,7 +6144,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         if entry is not None:
             memo_so, dep_stamps, ver = entry
             if (
-                ver == _CODEGEN_VERSION
+                ver == _CODEGEN_CACHE_KEY
                 and memo_so.exists()
                 and _codegen_dep_stamps_unchanged(dep_stamps)
             ):
@@ -6147,7 +6208,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             _PREPARE_CODEGEN_MEMO[memo_key] = (
                 so_path,
                 _codegen_dep_stamps(net_path),
-                _CODEGEN_VERSION,
+                _CODEGEN_CACHE_KEY,
             )
         return so_path
     finally:

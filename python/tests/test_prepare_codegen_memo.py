@@ -3,7 +3,7 @@
 Repeated ``Simulator(codegen=True, net_path=...)`` construction on an unchanged
 .net otherwise re-reads, re-parses, and SHA-256-hashes the file on every call
 just to resolve an already-cached .so. The memo keyed by ``(net_path, mtime,
-_CODEGEN_VERSION)`` returns the cached .so after only a few ``stat()`` calls.
+_CODEGEN_CACHE_KEY)`` returns the cached .so after only a few ``stat()`` calls.
 
 These tests prove the file is parsed+hashed once across N calls, that touching
 the .net (mtime change) forces a recompute, and that the resolved .so is
@@ -97,10 +97,15 @@ def test_memo_invalidates_on_mtime_change(simple_decay_net: Path, tmp_path, monk
 
 
 @needs_cc
-def test_memo_invalidates_on_codegen_version_bump(
+def test_memo_invalidates_on_codegen_cache_key_change(
     simple_decay_net: Path, tmp_path, monkeypatch
 ) -> None:
-    """A _CODEGEN_VERSION change must invalidate stale memo entries."""
+    """A codegen cache-key change must invalidate stale memo entries.
+
+    The key is ``_CODEGEN_VERSION`` plus a digest of the emitters' own source
+    (issue #51), so this covers both an explicit constant bump and an emitter
+    edit that forgot one — the memo must not hand back a .so built by the
+    previous codegen any more than the on-disk cache may."""
     net = tmp_path / "memo_version.net"
     shutil.copy(simple_decay_net, net)
 
@@ -115,7 +120,7 @@ def test_memo_invalidates_on_codegen_version_bump(
         return real_hash(p)
 
     monkeypatch.setattr(cg, "compute_model_hash", counting_hash)
-    monkeypatch.setattr(cg, "_CODEGEN_VERSION", cg._CODEGEN_VERSION + "_bump")
+    monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", cg._CODEGEN_CACHE_KEY + "_bump")
 
     cg.prepare_codegen(str(net))
-    assert hash_calls["n"] == 1  # stale-version memo entry was ignored
+    assert hash_calls["n"] == 1  # stale-key memo entry was ignored

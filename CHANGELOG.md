@@ -264,6 +264,35 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The codegen cache did not invalidate on a codegen change, so a fix could be
+  silently inert on a warm cache (issue #51).** The `.net` path keys its compiled
+  `.so` on the model content plus the hand-maintained `_CODEGEN_VERSION` constant
+  rather than on the generated C — hashing the C would mean a full source-gen on
+  every cache probe. That made the constant load-bearing: a change altering the
+  emitted forward-sensitivity RHS *without* bumping it was invisible to any
+  machine with a warm `~/.cache/bngsim/codegen`, which kept loading the stale
+  library and returning the pre-change numbers. #41 and #43 both shipped that
+  way. On the reported model the difference is stark: warm cache gives
+  `max|dy/dp| == 0` for all six fitted parameters, an empty cache gives values up
+  to `1.0e6` agreeing with AMICI to `1.5e-5` — same wheel, same model.
+
+  The cache key is now `_CODEGEN_CACHE_KEY`: the constant *plus* a digest of the
+  source of every module that determines the emitted C (`_codegen.py`,
+  `_jacobian.py`, `_saturable_jacobian.py`). Editing an emitter changes the key
+  whether or not anyone remembers the constant, which makes the omission
+  harmless rather than silent. The digest is computed once at import from three
+  file reads (~350 KB, well under a millisecond) and costs nothing per probe, so
+  the memo fast path stays fast. It applies to every codegen artifact keyed this
+  way, including the SSA propensity `.so` and the `prepare_codegen` memo.
+
+  Deliberately conservative in two directions: it hashes source text, so a
+  comment-only edit also invalidates — over-invalidation costs one recompile,
+  under-invalidation is a silently wrong gradient — and it covers the Python
+  emitters only, so `_CODEGEN_VERSION` remains the escape hatch for a C++ change
+  that alters `codegen_data()`, and for deliberately invalidating a release's
+  caches. On a `.pyc`-only or zipped install the sources cannot be read and the
+  key degrades to the constant alone, the pre-fix behavior. `CONTRIBUTING.md`
+  now documents when a manual bump is still required.
 - **A derived parameter with a compound condition silently zeroed its
   forward-sensitivity chain rule (issue #56).** A `ConstantExpression` parameter
   defined by `if((sel>=1)&&(sel<10), kA, kB)` produced the same trajectory as the
