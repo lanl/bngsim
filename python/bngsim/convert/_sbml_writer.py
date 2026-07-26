@@ -201,18 +201,32 @@ def _unique_name(name: str, used: set[str]) -> str:
 def _sanitize_sid(name: str, used: set[str], *, fallback: str) -> str:
     """Return a valid, unique SBML ``SId`` derived from ``name``.
 
-    Valid ``SId`` is ``[A-Za-z_][A-Za-z0-9_]*``. Pattern characters
-    (``() ~ , . !`` …) are replaced with ``_``; a name that starts with a digit
-    (or empties out) is prefixed with ``fallback``. Uniqueness is enforced by
-    appending ``_2``, ``_3``, … on collision, and the same bump avoids the MathML
-    reserved constant barewords (:data:`_MATHML_RESERVED_SIDS`) case-insensitively
-    so no ``SId`` can be mis-read as ``<pi/>`` / the time csymbol / etc. (GH #8).
+    Valid ``SId`` is ``[A-Za-z_][A-Za-z0-9_]*``. A name that is already one is
+    kept verbatim — including its own leading/trailing underscores, which belong
+    to the modeller (``Kd_EGF__``, ``_InitialConc1``) and are not ours to trim.
+    Only a name that must be rewritten is rewritten: pattern characters
+    (``() ~ , . !`` …) become ``_``, and the underscore run that substitution
+    leaves behind is stripped (so a species ``S1()`` reads ``S1``, not ``S1__``);
+    a name that starts with a digit (or empties out) is prefixed with
+    ``fallback``. Uniqueness is enforced by appending ``_2``, ``_3``, … on
+    collision, and the same bump avoids the MathML reserved constant barewords
+    (:data:`_MATHML_RESERVED_SIDS`) case-insensitively so no ``SId`` can be
+    mis-read as ``<pi/>`` / the time csymbol / etc. (GH #8).
+
+    Trimming unconditionally is what made ``Kd_EGF__`` and ``Kd_EGF`` — two
+    distinct parameters of the same network — compete for one id: the first
+    seen took ``Kd_EGF`` and the *real* ``Kd_EGF`` was bumped to ``Kd_EGF_2``,
+    so every consumer that resolves a parameter by id (AMICI, COPASI, PEtab
+    tooling) silently read the wrong one's value.
     """
-    base = _SID_BAD.sub("_", name).strip("_")
-    if not base or not base[0].isalpha() and base[0] != "_":
-        base = f"{fallback}{base}" if base else fallback
-    if not _SID_OK.match(base):  # paranoia; e.g. all-underscore collapse
-        base = fallback
+    if _SID_OK.match(name):
+        base = name
+    else:
+        base = _SID_BAD.sub("_", name).strip("_")
+        if not base or not base[0].isalpha() and base[0] != "_":
+            base = f"{fallback}{base}" if base else fallback
+        if not _SID_OK.match(base):  # paranoia; e.g. all-underscore collapse
+            base = fallback
     sid = base
     n = 2
     while sid in used or sid.lower() in _MATHML_RESERVED_SIDS:
@@ -814,6 +828,17 @@ def write_sbml(
         _check(sp.setConstant(fixed), "species constant")
 
     # ── parameters ─────────────────────────────────────────────────────────
+    # A derived (`# ConstantExpression`) parameter also gets an
+    # <initialAssignment> carrying the expression it was computed from. Its
+    # `value` is the same number either way, so this changes nothing about the
+    # nominal trajectory — but it is the only thing that keeps the *parameter
+    # dependency graph* in the document. Without it a primary that reaches the
+    # reactions solely through a derived value (a unit conversion `a1 =
+    # a1_perMpers/(NA*Vecf)`, a detailed-balance relation, a kphos/kdephos ratio)
+    # appears in the SBML as an unreferenced constant, and every downstream
+    # forward-sensitivity engine correctly reports d(anything)/dp = 0 for it. The
+    # RHS-identity gates cannot see that loss: they evaluate at the nominal point,
+    # where the frozen constant and the expression agree exactly.
     for p, sid in param_emit:
         pp = m.createParameter()
         _check(pp.setId(sid), "parameter id")
@@ -822,6 +847,69 @@ def write_sbml(
             pp.setName(disp)
         _check(pp.setConstant(True), "parameter constant")
         _check(pp.setValue(float(p["value"])), "parameter value")
+        if not p.get("is_const", True):
+            ast = _exprtk_to_ast(
+                p["expression"],
+                where=f"derived parameter {p['name']!r}",
+                scalar_names=scalar_names,
+            )
+            ia = m.createInitialAssignment()
+            _check(ia.setSymbol(sid), "derived parameter initialAssignment symbol")
+            _check(ia.setMath(ast), "derived parameter initialAssignment math")
+
+    # ── species initial conditions set by a parameter ──────────────────────
+    # The other half of the dependency graph: a `.net` species whose initial
+    # value is written as a parameter name (`3 IGF1R(...) _InitialConc1`, `3
+    # GRB2(SH2) GRB2_total`) rather than a literal. The loader records the
+    # reference in ``species_ic_param_refs``; carrying it as an
+    # <initialAssignment> is what lets a fitted total-copy-number parameter reach
+    # the trajectory at all. Emitted only when the parameter's value really is the
+    # initial value the species block above wrote — a mismatch would mean the two
+    # halves of the document disagree, which is worse than the plain constant.
+    ic_refs: list[tuple[int, int]] = []
+    try:
+        ic_refs = [(int(a), int(b)) for a, b in core.species_ic_param_refs]
+    except Exception:  # noqa: BLE001 — an older core simply has no such record
+        ic_refs = []
+    all_param_names = list(core.param_names)
+    param_value_by_name = {p["name"]: float(p["value"]) for p in params}
+    for sp_idx, p_idx in ic_refs:
+        if not (0 <= sp_idx < len(species) and 0 <= p_idx < len(all_param_names)):
+            continue
+        p_name = all_param_names[p_idx]
+        p_sid = sym_sid.get(p_name)
+        if p_sid is None or p_name not in param_value_by_name:
+            continue  # a function/observable shadow, not an emitted parameter
+        s = species[sp_idx]
+        vol = float(s.get("volume_factor", 1.0))
+        stored = float(init_state[sp_idx]) if sp_idx < len(init_state) else 0.0
+        emitted = stored * vol if bool(s.get("amount_valued", False)) else stored
+        p_value = param_value_by_name[p_name]
+        if abs(p_value - emitted) > 1e-9 * max(1.0, abs(emitted)):
+            _apply_capability_policy(
+                {
+                    "dropped": [],
+                    "lossy": [
+                        f"species {s['name']!r} takes its initial value from parameter "
+                        f"{p_name!r} (= {p_value!r}) but the loaded initial state is "
+                        f"{emitted!r}; the initial-condition reference is not emitted, so "
+                        "a fitted parameter acting only through this initial condition "
+                        "would read as having no effect"
+                    ],
+                },
+                strict=strict,
+                model_name=str(raw_name),
+            )
+            continue
+        ia = m.createInitialAssignment()
+        _check(ia.setSymbol(species_sid[sp_idx]), "species initialAssignment symbol")
+        ast = libsbml.parseL3Formula(p_sid)
+        if ast is None:
+            raise ConversionError(
+                f"species {s['name']!r}: could not build initial-assignment reference to {p_sid!r}"
+            )
+        _walk_fix_pi(ast)
+        _check(ia.setMath(ast), "species initialAssignment math")
 
     # ── observables → parameter + linear assignmentRule over species ───────
     for o in observables:
@@ -909,13 +997,14 @@ def write_sbml(
 
 
 def _remap_rule_symbols(m: Any, sym_sid: dict[str, str]) -> None:
-    """Rewrite AST_NAME references in every assignment rule to sanitized SIds.
+    """Rewrite AST_NAME references in every rule and initialAssignment to SIds.
 
-    Function/observable bodies reference other symbols by their *engine* name;
-    when sanitization rewrote that name (rare — only pattern-charactered
-    symbols), the parsed reference would dangle. Walk each rule's math and
-    rename any AST_NAME whose engine name maps to a different SId. A no-op for
-    the common case where every symbol name is already a valid SId.
+    Function/observable bodies and derived-parameter expressions reference other
+    symbols by their *engine* name; when sanitization rewrote that name (rare —
+    only pattern-charactered symbols), the parsed reference would dangle. Walk
+    each math tree and rename any AST_NAME whose engine name maps to a different
+    SId. A no-op for the common case where every symbol name is already a valid
+    SId.
     """
     import libsbml
 
@@ -935,6 +1024,8 @@ def _remap_rule_symbols(m: Any, sym_sid: dict[str, str]) -> None:
 
     for i in range(m.getNumRules()):
         _walk(m.getRule(i).getMath())
+    for i in range(m.getNumInitialAssignments()):
+        _walk(m.getInitialAssignment(i).getMath())
 
 
 def _multiset(indices: list[int]) -> dict[int, int]:
