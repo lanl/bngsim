@@ -264,6 +264,46 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A zero-arg observable call inside a function made the codegen emitters emit C
+  that does not compile, so forward sensitivity refused the model (issue #28, the
+  codegen half).** BNGL accepts an Observable written as a zero-arg call —
+  `divide()` — anywhere the bareword is valid, and BNG2.pl preserves whichever
+  form the user wrote when it emits the `.net`. `ExprTkEvaluator::compile` already
+  strips `name()` → `name` for every name registered as a scalar variable
+  (`strip_empty_parens`, `src/expression.cpp`), so the interpreted engine has run
+  these models since #28. The two codegen identifier tables did not: they set
+  `eats_empty_parens` only for *functions*, so an observable was rewritten to its
+  C scalar with the empty call still attached — `func[0] = (1.0-obs[1]())*1.0;`
+  and `double func__rateLaw1 = (1.0-obs_divide())*1.0;` — and the compile failed
+  with *error: called object type 'double' is not a function or function pointer*.
+  Every model name resolves to a scalar in the emitted C (`obs[j]`, `p[k]`,
+  `y[i]`, `func[m]`, `current_derivs[i]`, `M_PI`), so all of them now eat the
+  parens; `eats_empty_parens=False` is left only for the built-ins that really are
+  C functions or operators (`fabs`/`log`/`round`/`fmax`/`fmin`, `&&`/`||`/`!`),
+  where an empty argument list is not valid ExprTk to begin with.
+
+  The same missing strip reached the sympy-facing differentiator, where it was
+  worse than a build failure. `parse_expr` reads `divide()` as an *applied
+  undefined function* that shares no symbol with the bareword, so `∂/∂divide` of
+  `100*divide()` came back empty: a silently zero analytical-Jacobian entry when
+  such a body is a rate law, and a silently zero `d func/dθ` in the #198
+  expression output sensitivities — both reported as ordinary results, neither
+  refused. A body like `scale*Atot()` instead differentiated to something the C
+  printer cannot render, i.e. a spurious "not representable" decline.
+  `_preprocess_exprtk` now strips the parens for the sympy path too, after the
+  `time()` rewrite that needs them.
+
+  `ode/proliferation.bngl` — whose functions read `(1-divide())*1`, `100*divide()`
+  and `10*divide()` against the observable `divide` — is the one refusal the #69
+  entry below left open, and the only model in the 585-model `ode_fullnet` corpus
+  that calls an observable or parameter as `name()` inside a function body. Its
+  sensitivity Simulator now builds, taking the corpus to 585/585, and its compiled
+  trajectory matches the interpreted RHS to 4.5e-11 over `t ∈ [0, 20]`. A new
+  fixture (`tests/data/obs_zero_arg_call_sens.net`, distilled from that model)
+  pins the emitted C against a call on any C scalar, and checks `d func/dθ` for
+  the call form against the model's closed forms on both the constant-coefficient
+  shape (which used to come back as exactly 0.0) and the parameter-coefficient
+  shape (which used to decline).
 - **`steady_state()` never received the compiled RHS, and finite-differenced all
   of `dY_ss/dp` — including the Jacobian the model already had analytically
   (issue #63).** Two defects, both invisible from Python.

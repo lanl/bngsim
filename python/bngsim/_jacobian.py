@@ -118,6 +118,13 @@ _SYMPY_FUNC_TO_EXPRTK = {
 
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 _IDENT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
+# A zero-arg call: `divide()`. BNGL accepts an Observable (and any other
+# scalar) written as a call wherever the bareword is valid, and BNG2.pl
+# preserves whichever form the user wrote (issue #28). No ExprTk built-in
+# takes zero arguments except ``time()``/``t()`` — which _preprocess_exprtk
+# rewrites to a placeholder *before* this pattern runs — so an empty argument
+# list is unambiguously a scalar reference and the parens must go.
+_EMPTY_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(\s*\)")
 
 
 # ─── ExprTk string → sympy ────────────────────────────────────────────────
@@ -125,12 +132,22 @@ _IDENT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 
 def _preprocess_exprtk(expr: str) -> str:
     """Rewrite an ExprTk expression string into a form ``sympy.parse_expr`` can
-    tokenize: ``time()``→placeholder, ``if(c,t,f)``→Piecewise, ``^``→``**``,
-    logicals → sympy ``And``/``Or``/``Not`` calls."""
+    tokenize: ``time()``→placeholder, ``obs()``→``obs``, ``if(c,t,f)``→Piecewise,
+    ``^``→``**``, logicals → sympy ``And``/``Or``/``Not`` calls."""
     s = expr.strip()
     # time() / t() → constant placeholder (whole-word, parens required so a
     # parameter literally named ``t`` is untouched).
     s = re.sub(r"\b(?:time|t)\s*\(\s*\)", _TIME_SYM, s)
+    # obs() → obs for every remaining zero-arg call (issue #28), mirroring
+    # ``ExprTkEvaluator::compile``'s strip_empty_parens (src/expression.cpp).
+    # Without it ``parse_expr`` builds an *applied undefined function* with no
+    # arguments, which shares no symbol with the bareword form: differentiating
+    # ``100*divide()`` w.r.t. the observable ``divide`` then yields 0 — a
+    # silently wrong Jacobian entry / output-sensitivity partial — while
+    # ``k1*Atot()`` yields a derivative the C printer cannot render, i.e. a
+    # spurious "not representable" decline. Runs after the time rewrite, which
+    # needs the parens it matches on.
+    s = _EMPTY_CALL_RE.sub(r"\1", s)
     # if(c, t, f) → Piecewise((t, c), (f, True))
     s = _translate_bngl_if_to_piecewise(s)
     # power operator

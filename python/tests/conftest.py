@@ -242,6 +242,12 @@ def obs_zero_arg_call_net(data_dir: Path) -> Path:
 
 
 @pytest.fixture
+def obs_zero_arg_call_sens_net(data_dir: Path) -> Path:
+    """Path to obs_zero_arg_call_sens.net (issue #28 on the codegen path)."""
+    return data_dir / "obs_zero_arg_call_sens.net"
+
+
+@pytest.fixture
 def sign_as_parameter_net(data_dir: Path) -> Path:
     """Path to sign_as_parameter.net (sign-collision regression)."""
     return data_dir / "sign_as_parameter.net"

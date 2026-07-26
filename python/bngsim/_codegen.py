@@ -2035,18 +2035,23 @@ def _build_ident_lookup(
     ``func[idx]`` array slots used when the obs/func computation is sharded into
     NOINLINE blocks (GH #165) — there the named locals are not in scope, so the
     blocks read and write the passed arrays instead.
+
+    Every model name eats a trailing ``()`` (issue #28 — see
+    ``_BUILTIN_IDENT_MAP``): each resolves to a scalar in the emitted C, so
+    ``divide()`` in a function body must become ``obs_divide``, not
+    ``obs_divide()``.
     """
     lookup: dict[str, tuple[str, bool]] = dict(_BUILTIN_IDENT_MAP)
     for name, idx in param_idx.items():
-        lookup[name] = (f"p[{idx}]", False)
+        lookup[name] = (f"p[{idx}]", True)
     if use_arrays:
         for name, oi in obs_idx.items():
-            lookup[name] = (f"obs[{oi}]", False)
+            lookup[name] = (f"obs[{oi}]", True)
         for fi, (_, fname, _) in enumerate(functions):
             lookup[fname] = (f"func[{fi}]", True)
     else:
         for name in obs_idx:
-            lookup[name] = (f"obs_{_safe_c_name(name)}", False)
+            lookup[name] = (f"obs_{_safe_c_name(name)}", True)
         for _, fname, _ in functions:
             lookup[fname] = (f"func_{_safe_c_name(fname)}", True)
     return lookup
@@ -3561,12 +3566,25 @@ def _floatify_int_literals(expr: str) -> str:
 
 # ExprTk → C builtins for bare-identifier and word-form-operator replacements.
 # Values are (replacement, eats_empty_parens). Func/obs/species/param maps are
-# merged on top with eats_empty_parens=True only for funcs.
+# merged on top, all with eats_empty_parens=True: BNGL accepts a zero-arg call
+# (`name()`) wherever the bareword is valid, and BNG2.pl preserves whichever
+# form the user wrote when emitting the .net (issue #28). Every one of those
+# names denotes a *scalar* in the generated C — `obs[3]`, `p[7]`, `y[2]`,
+# `func[0]` — so the trailing `()` must be dropped, exactly as
+# ``ExprTkEvaluator::compile`` does via ``strip_empty_parens`` (src/expression.cpp)
+# for every name registered as a scalar variable. Leaving it in emits
+# `obs[3]()`, which C rejects with "called object type 'double' is not a
+# function". eats_empty_parens=False survives only for the entries that really
+# are C *functions* (fabs/log/round/fmax/fmin) or operators (&&/||/!), where
+# `name()` is not valid ExprTk in the first place and the parens must survive
+# for the arguments that follow.
 _BUILTIN_IDENT_MAP: dict[str, tuple[str, bool]] = {
     "time": ("t", True),
     "t": ("t", True),
-    "_pi": ("M_PI", False),
-    "_e": ("M_E", False),
+    # Registered as remapped *constants* on the ExprTk evaluator, so
+    # strip_empty_parens() strips `_pi()` → `_pi` there too.
+    "_pi": ("M_PI", True),
+    "_e": ("M_E", True),
     "and": ("&&", False),
     "or": ("||", False),
     "not": ("!", False),
@@ -3603,14 +3621,18 @@ def _build_ident_lookup_model(
     Priority (later overrides earlier, so it wins): parameter < species <
     observable < function, then rateOf accessors (GH #106) — matching the prior
     cascade.
+
+    Every model name eats a trailing ``()`` (issue #28 — see
+    ``_BUILTIN_IDENT_MAP``): each resolves to a scalar in the emitted C, so
+    ``divide()`` in a function body must become ``obs[1]``, not ``obs[1]()``.
     """
     lookup: dict[str, tuple[str, bool]] = dict(_BUILTIN_IDENT_MAP)
     for name, rep in param_map.items():
-        lookup[name] = (rep, False)
+        lookup[name] = (rep, True)
     for name, rep in species_map.items():
-        lookup[name] = (rep, False)
+        lookup[name] = (rep, True)
     for name, rep in obs_map.items():
-        lookup[name] = (rep, False)
+        lookup[name] = (rep, True)
     for name, rep in func_map.items():
         lookup[name] = (rep, True)
     # rateOf accessors (GH #106): rate_of__<species> → current_derivs[idx], a
@@ -3618,7 +3640,7 @@ def _build_ident_lookup_model(
     # current_derivs via the two-pass probe; non-rateOf models pass nothing.
     if rateof_map:
         for name, rep in rateof_map.items():
-            lookup[name] = (rep, False)
+            lookup[name] = (rep, True)
     return lookup
 
 
