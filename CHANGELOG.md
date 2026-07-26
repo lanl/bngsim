@@ -264,6 +264,24 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The committed type stub carried whatever commit the last local rebuild came
+  from, `+dirty` marker and all.** `scripts/rebuild_editable.py` regenerates
+  `python/bngsim/_bngsim_core.pyi` from the freshly built module, and
+  pybind11-stubgen faithfully copies the module's `__build_commit__` — which
+  CMake stamps with the current git commit, suffixed `+dirty` when the tree has
+  uncommitted changes. Since every C++ change runs that script, the stub picked
+  up a new value on each rebuild: a spurious one-line diff every time, and a
+  standing invitation to commit one developer's build stamp. PR #70 merged
+  `'e61f83d57358+dirty'` exactly that way.
+
+  The regeneration now rewrites that line to `'unknown'` — CMake's own default
+  when git provenance is unavailable, which is precisely a type stub's
+  situation. Nothing downstream reads it (mypy checks the declared *type*, and
+  the provenance guard from #125 reads the compiled module's runtime attribute,
+  never the stub), so pinning it costs nothing and makes the stub reproducible
+  across machines and working-tree states. A test asserts the committed stub
+  carries no build stamp, so a dropped normalization fails loudly instead of
+  landing in the next merge.
 - **A zero-arg observable call inside a function made the codegen emitters emit C
   that does not compile, so forward sensitivity refused the model (issue #28, the
   codegen half).** BNGL accepts an Observable written as a zero-arg call —

@@ -992,5 +992,5 @@ HAS_LAPACK_DENSE: bool = True
 HAS_MIR: bool = False
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
-__build_commit__: str = 'e61f83d57358+dirty'
+__build_commit__: str = 'unknown'
 __version__: str = '0.11.35'

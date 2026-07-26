@@ -51,6 +51,48 @@ def test_build_commit_stamp_present() -> None:
     )
 
 
+def test_committed_stub_carries_no_build_stamp() -> None:
+    """The *committed* stub must NOT carry anyone's build commit.
+
+    The runtime attribute above is per-build and must be real. The ``.pyi`` is
+    the opposite: pybind11-stubgen copies whatever the just-built module reports,
+    so ``scripts/rebuild_editable.py`` — which every C++ change runs — rewrites
+    that one line into a committed file on every invocation. Left alone it
+    produces a spurious diff per rebuild and bakes in one developer's commit, or
+    a ``+dirty`` marker from a half-finished tree. PR #70 merged
+    ``'e61f83d57358+dirty'`` exactly that way.
+
+    ``_normalize_stub_build_commit`` in that script pins the value to
+    ``'unknown'`` (CMake's own no-provenance default); this is the check that
+    notices if the normalization is ever dropped or bypassed. Nothing reads the
+    stub's value — mypy checks the declared *type* — so pinning it costs nothing.
+    """
+    prov = bp.gather()
+    if not prov.is_source_checkout:
+        pytest.skip("installed wheel (no source tree) — no committed stub to check")
+
+    # Resolve via the imported package, not __file__: run_tests.sh copies the
+    # test modules to a temp dir, which would strand a __file__-relative path.
+    # The editable install points bngsim.__file__ at python/bngsim/__init__.py,
+    # so the committed stub is its sibling.
+    import bngsim
+
+    stub = Path(bngsim.__file__).resolve().parent / "_bngsim_core.pyi"
+    assert stub.is_file(), f"committed stub missing from the source package ({stub})"
+
+    stamps = [
+        line
+        for line in stub.read_text().splitlines()
+        if line.startswith("__build_commit__: str = ")
+    ]
+    assert len(stamps) == 1, f"expected exactly one __build_commit__ line, got {stamps}"
+    assert stamps[0] == "__build_commit__: str = 'unknown'", (
+        f"committed stub carries a machine-specific build stamp ({stamps[0]!r}). "
+        "Re-run scripts/rebuild_editable.py, or normalize the line by hand — the "
+        "stub must not record the commit any particular build came from."
+    )
+
+
 # ── Staleness verdict logic ───────────────────────────────────────────────────
 
 

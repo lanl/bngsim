@@ -351,6 +351,37 @@ def _ext_suffix() -> str:
     return str(ext_suffix)
 
 
+#: The one value in the generated stub that changes on *every* rebuild, and the
+#: placeholder it is rewritten to. CMake stamps `__build_commit__` with the
+#: current git commit plus a `+dirty` suffix when the tree has uncommitted
+#: changes, and pybind11-stubgen faithfully copies whatever the just-built module
+#: reports — so a stub regenerated mid-change carries one developer's commit, or
+#: worse a `+dirty` marker, into a committed file. That is a spurious diff on
+#: every rebuild and a claim about a build nobody else made; PR #70 merged an
+#: `e61f83d57358+dirty` stamp exactly this way.
+#:
+#: "unknown" is CMake's own default when git provenance is unavailable
+#: (CMakeLists.txt), which is precisely the stub's situation: a type stub cannot
+#: know the commit any given build came from. The value in a `.pyi` is
+#: documentation — mypy checks the *type* — so nothing downstream reads it, and
+#: `test_build_provenance.py` asserts on the runtime attribute of the compiled
+#: module, never on this line.
+_STUB_BUILD_COMMIT_RE = re.compile(r"^(__build_commit__: str = )'[^']*'", re.MULTILINE)
+_STUB_BUILD_COMMIT_PLACEHOLDER = "unknown"
+
+
+def _normalize_stub_build_commit(stub_text: str) -> str:
+    """Replace the generated ``__build_commit__`` value with a stable placeholder.
+
+    Keeps the committed stub reproducible across machines, commits, and dirty
+    working trees. A no-op when the module reported no stamp at all.
+    """
+    return _STUB_BUILD_COMMIT_RE.sub(
+        rf"\1'{_STUB_BUILD_COMMIT_PLACEHOLDER}'",
+        stub_text,
+    )
+
+
 def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     """Regenerate the committed ``_bngsim_core.pyi`` from the freshly built module.
 
@@ -364,6 +395,9 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     Opt out with ``BNGSIM_SKIP_STUBGEN=1``. Best-effort on a missing generator:
     pybind11-stubgen ships in the ``dev`` extra, but a plain rebuild without it
     warns and skips rather than failing (the binary is already built by now).
+
+    The generated ``__build_commit__`` value is normalized away before the stub
+    lands — see :func:`_normalize_stub_build_commit`.
     """
     if os.environ.get("BNGSIM_SKIP_STUBGEN", "") not in ("", "0"):
         print("stubgen=skipped (BNGSIM_SKIP_STUBGEN)", flush=True)
@@ -401,7 +435,7 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
         generated = Path(tmp) / "bngsim" / "_bngsim_core.pyi"
         if not generated.is_file():
             raise FileNotFoundError(f"pybind11-stubgen did not produce {generated}")
-        shutil.copyfile(generated, stub_dest)
+        stub_dest.write_text(_normalize_stub_build_commit(generated.read_text()))
     print(f"stub_regenerated={stub_dest}", flush=True)
 
 
