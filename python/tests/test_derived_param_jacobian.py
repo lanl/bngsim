@@ -1,4 +1,4 @@
-"""Regression tests for issues #26 and #27 in
+"""Regression tests for issues #26, #27 and #56 in
 ``bngsim._codegen._compute_derived_param_jacobian``.
 
 #26 (minimum fix, already in place): widen the ``parse_expr`` except clause
@@ -16,14 +16,25 @@ contribution that #26 silently zeroed out:
   Pass 2 — Python-keyword-named primaries (``lambda``, ``if``, ``class``,
   ``for``, ...) are aliased to ``_BNG_KW_<name>`` before parse_expr, then
   round-tripped back to ``p[idx]`` when ``sp.ccode`` emits the partial.
+
+#56: pass 1 only ever rewrote ``if()``, so a *compound* condition
+(``if((sel>=1)&&(sel<10), kA, kB)``) — and equally ``^`` or ``not()`` — failed
+to parse and the whole chain rule was silently zeroed. Pass 1 now runs the same
+ExprTk-to-sympy pipeline the rate-law differentiator uses, and a failure that
+zeroes a real contribution is logged instead of passing for a legitimate zero.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 
 import pytest
-from bngsim._codegen import _compute_derived_param_jacobian
+from bngsim._codegen import (
+    _compute_derived_param_jacobian,
+    _derived_expr_partials_numeric,
+    _derived_param_jacobian_checked,
+)
 
 
 class TestPythonKeywordParamNames:
@@ -363,6 +374,349 @@ class TestNestedDerivedParams:
         assert result is not None
         assert set(result.keys()) == {"base"}  # ∂(2*(5*base))/∂base = 10
         assert result["base"].replace(" ", "").lstrip("+") in {"10", "10.0", "2*5.0", "10.0*1"}
+
+
+# ─── Issue #56 ────────────────────────────────────────────────────────────
+
+# The six spellings ExprTk accepts for logical AND / OR. Every one of them
+# selects the ``kA`` branch at ``sel = 5``, so all six must produce the same
+# chain rule as the simple single-comparison control.
+_COMPOUND_CONDITIONS = [
+    "if((sel>=1)&&(sel<10), kA, kB)",
+    "if((sel>=1)&(sel<10), kA, kB)",
+    "if((sel>=1) and (sel<10), kA, kB)",
+    "if((sel>=1)||(sel>100), kA, kB)",
+    "if((sel>=1)|(sel>100), kA, kB)",
+    "if((sel>=1) or (sel>100), kA, kB)",
+]
+
+
+class TestIssue56CompoundConditions:
+    """A compound condition in a derived parameter must yield the same analytic
+    chain rule as the equivalent simple condition. Pre-#56 every one of these
+    returned ``None`` and the caller read that as ``∂p_d/∂primary = 0`` — a
+    gradient component that came back exactly zero rather than merely
+    approximate."""
+
+    _PRIMARIES = {"kA", "kB", "sel"}
+    _IDX = {"kA": 0, "kB": 1, "sel": 2}
+
+    @pytest.mark.parametrize("expr", _COMPOUND_CONDITIONS)
+    def test_compound_condition_yields_chain_rule(self, expr):
+        result = _compute_derived_param_jacobian(expr, self._PRIMARIES, self._IDX)
+        assert result is not None, f"{expr!r} still falls back to the silent zero"
+        # kA and kB each appear in one branch; sel only gates, so (ignoring the
+        # boundary delta) it has no partial.
+        assert set(result.keys()) == {"kA", "kB"}
+        for c_str in result.values():
+            # A C ternary switching on a C logical — never the word form, which
+            # would not compile.
+            assert "?" in c_str and ":" in c_str
+            assert "&&" in c_str or "||" in c_str
+            assert not re.search(r"\b(and|or|not)\b", c_str)
+
+    @pytest.mark.parametrize("expr", _COMPOUND_CONDITIONS)
+    def test_compound_partial_evaluates_like_the_simple_control(self, expr):
+        """Not just "parses" — the emitted C must select the same branch the
+        single-comparison control does at ``sel = 5``."""
+        got = _compute_derived_param_jacobian(expr, self._PRIMARIES, self._IDX)
+        want = _compute_derived_param_jacobian("if(sel>=1, kA, kB)", self._PRIMARIES, self._IDX)
+        assert got is not None and want is not None
+        assert _eval_c_partials(got, {0: 0.3, 1: 0.9, 2: 5.0}) == _eval_c_partials(
+            want, {0: 0.3, 1: 0.9, 2: 5.0}
+        )
+
+    def test_and_binds_tighter_than_or(self):
+        """``a && b || c`` is ``(a && b) || c`` in ExprTk and BNGL. Getting this
+        backwards would silently pick the wrong branch's derivative."""
+        got = _compute_derived_param_jacobian(
+            "if(sel>1 && sel>2 || sel>3, kA, kB)", self._PRIMARIES, self._IDX
+        )
+        want = _compute_derived_param_jacobian(
+            "if((sel>1 && sel>2) || sel>3, kA, kB)", self._PRIMARIES, self._IDX
+        )
+        other = _compute_derived_param_jacobian(
+            "if(sel>1 && (sel>2 || sel>3), kA, kB)", self._PRIMARIES, self._IDX
+        )
+        assert got is not None and got == want
+        assert got != other
+
+    def test_caret_is_exponentiation_not_xor(self):
+        """BNGL/ExprTk ``^`` is power. It reached ``parse_expr`` untranslated,
+        where Python reads it as XOR — another silent zero."""
+        result = _compute_derived_param_jacobian("kA^2*kB", self._PRIMARIES, self._IDX)
+        assert result is not None
+        assert set(result.keys()) == {"kA", "kB"}
+        # ∂(kA²·kB)/∂kA = 2·kA·kB = 0.54, ∂/∂kB = kA² = 0.09
+        vals = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 5.0})
+        assert vals["kA"] == pytest.approx(0.54)
+        assert vals["kB"] == pytest.approx(0.09)
+
+    def test_not_call_is_translated(self):
+        """``not(x)`` is ExprTk's negation; untranslated it parsed as a call to
+        an unknown function ``not``."""
+        result = _compute_derived_param_jacobian(
+            "if(not(sel<1), kA, kB)", self._PRIMARIES, self._IDX
+        )
+        assert result is not None
+        # sel = 5 ⇒ ``not(sel<1)`` is true ⇒ the kA branch is live.
+        vals = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 5.0})
+        assert vals["kA"] == pytest.approx(1.0)
+        assert vals["kB"] == pytest.approx(0.0)
+
+
+class TestIssue56NumericPartials:
+    """The IC-seed / switch-threshold counterpart
+    (``_derived_expr_partials_numeric``) had the identical hole: it returned
+    ``{}`` on a compound condition and the caller left the seed at zero."""
+
+    _PRIMARIES = {"R0", "scale", "sel"}
+    _IDX = {"R0": 0, "scale": 1, "sel": 2}
+    _VALUES = [100.0, 2.0, 5.0]
+
+    @pytest.mark.parametrize(
+        "expr,expected",
+        [
+            ("if((sel>=1)&&(sel<10), R0*scale, R0)", {"R0": 2.0, "scale": 100.0}),
+            ("if((sel>=1) and (sel<10), R0*scale, R0)", {"R0": 2.0, "scale": 100.0}),
+            # The false branch is live here: sel = 5 is not > 100.
+            ("if((sel>100)||(sel<0), R0*scale, R0)", {"R0": 1.0}),
+            ("R0*scale^2", {"R0": 4.0, "scale": 400.0}),
+        ],
+    )
+    def test_compound_condition_seeds_are_recovered(self, expr, expected):
+        out = _derived_expr_partials_numeric(expr, self._PRIMARIES, self._IDX, self._VALUES, {})
+        assert out == pytest.approx(expected)
+
+
+class TestIssue56FailuresAreNotSilent:
+    """Even with the logical operators handled, some expressions will still fail
+    to differentiate — and ``None`` alone cannot be told apart from a primary
+    that genuinely does not appear, because both mean zero downstream.
+    ``_derived_param_jacobian_checked`` separates the two: a reason string only
+    when a real contribution was lost."""
+
+    _PRIMARIES = {"kA", "kB"}
+    _IDX = {"kA": 0, "kB": 1}
+
+    def test_unparseable_expression_reports_a_reason(self):
+        jac, reason = _derived_param_jacobian_checked("kA +* kB", self._PRIMARIES, self._IDX)
+        assert jac is None
+        assert reason and "SyntaxError" in reason
+
+    def test_underivable_expression_returns_none_instead_of_raising(self):
+        """An un-inlined function call differentiates fine in sympy but cannot
+        be rendered as C. That used to escape as ``PrintMethodNotImplementedError``
+        and abort the whole codegen build, against this function's None-or-dict
+        contract."""
+        assert _compute_derived_param_jacobian("kA*foo(kB)", self._PRIMARIES, self._IDX) is None
+        jac, reason = _derived_param_jacobian_checked("kA*foo(kB)", self._PRIMARIES, self._IDX)
+        assert jac is None
+        assert reason and "not expressible in C" in reason
+
+    def test_genuine_absence_is_not_a_failure(self, caplog):
+        """A derived parameter that references no primary is a real zero, not a
+        failure — no reason, and no warning, or the signal is worthless."""
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            assert _derived_param_jacobian_checked("3*4", self._PRIMARIES, self._IDX) == (
+                None,
+                None,
+            )
+            assert (
+                _derived_expr_partials_numeric("3*4", self._PRIMARIES, self._IDX, [1.0], {}) == {}
+            )
+        assert not caplog.records
+
+    def test_primary_shadowing_a_sympy_name_is_refused(self):
+        """A primary named ``And``/``Or``/``Piecewise`` would be shadowed by the
+        sympy class we bind, and differentiate to a silent zero. Refuse it."""
+        jac, reason = _derived_param_jacobian_checked(
+            "And*2", primary_param_names={"And"}, param_idx={"And": 0}
+        )
+        assert jac is None
+        assert reason == "a primary parameter shadows a sympy name"
+
+    def test_ic_seed_path_warns_because_it_has_no_fallback(self, caplog):
+        """The IC-seed path cannot decline the way the sensitivity RHS can — the
+        seed is either computed or left at zero — so there a lost partial is
+        reported as a warning."""
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            assert (
+                _derived_expr_partials_numeric(
+                    "R0*foo(scale)", {"R0", "scale"}, {"R0": 0, "scale": 1}, [1.0, 2.0], {}
+                )
+                == {}
+            )
+        assert any("could not differentiate" in r.message for r in caplog.records)
+
+
+class TestIssue56SensRhsDeclinedNotWrong:
+    """When a derived *rate constant* cannot be differentiated, the analytic
+    sensitivity RHS must be declined outright so the run falls back to CVODES'
+    internal difference quotient — correct, just slower. Emitting the RHS
+    without that chain rule would report the gradient as exactly zero, which is
+    strictly worse than being slow (issue #56, and the precedent set by #53).
+
+    A derived parameter that is *not* a rate constant — a reporting quantity
+    used only by an observable or a function — cannot affect this RHS, so it
+    must not cost the model its analytic sensitivities."""
+
+    _HEAD = (
+        "begin parameters\n"
+        "    1 kf    0.5   # Constant\n"
+        "    2 scale 2.0   # Constant\n"
+        "    3 {decl}\n"
+        "end parameters\n"
+    )
+    _TAIL = (
+        "begin species\n"
+        "    1 A() 100\n"
+        "    2 B() 0\n"
+        "end species\n"
+        "begin reactions\n"
+        "    1 1 2 {rate}   #_R1\n"
+        "end reactions\n"
+        "begin groups\n"
+        "    1 A_tot 1\n"
+        "    2 B_tot 2\n"
+        "end groups\n"
+    )
+
+    def _write(self, tmp_path, decl, rate, name="m.net"):
+        p = tmp_path / name
+        p.write_text(self._HEAD.format(decl=decl) + self._TAIL.format(rate=rate))
+        return str(p)
+
+    def test_undifferentiable_rate_constant_declines_the_rhs(self, tmp_path, caplog):
+        from bngsim._codegen import generate_sens_rhs_c
+
+        net = self._write(tmp_path, "kd  kf*foo(scale)  # ConstantExpression", "kd")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            assert generate_sens_rhs_c(net) is None, (
+                "an undifferentiable derived rate constant must decline the analytic "
+                "sens RHS, not emit one with a zeroed chain rule (issue #56)"
+            )
+        assert any("analytic sensitivity RHS is declined" in r.message for r in caplog.records)
+
+    def test_differentiable_rate_constant_still_emits(self, tmp_path):
+        from bngsim._codegen import generate_sens_rhs_c
+
+        net = self._write(tmp_path, "kd  kf*scale  # ConstantExpression", "kd")
+        assert generate_sens_rhs_c(net) is not None
+
+    def test_compound_condition_rate_constant_still_emits(self, tmp_path):
+        """The headline #56 case must now produce an RHS rather than decline."""
+        from bngsim._codegen import generate_sens_rhs_c
+
+        net = self._write(
+            tmp_path, "kd  if((scale>=1)&&(scale<10), kf, 2*kf)  # ConstantExpression", "kd"
+        )
+        assert generate_sens_rhs_c(net) is not None
+
+    def test_undifferentiable_non_rate_constant_does_not_decline(self, tmp_path, caplog):
+        """``kd`` is never a rate constant here — only ``kf`` drives the
+        reaction — so its undifferentiable expression is irrelevant to this RHS
+        and must neither decline it nor warn."""
+        from bngsim._codegen import generate_sens_rhs_c
+
+        net = self._write(tmp_path, "kd  kf*foo(scale)  # ConstantExpression", "kf")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            assert generate_sens_rhs_c(net) is not None
+        assert not caplog.records
+
+
+class TestIssue56EndToEndForwardSens:
+    """The reported symptom: a model whose rate constant is a derived parameter
+    with a compound condition returns ``dB/dkA == 0.0`` exactly, while the
+    forward trajectory is unaffected — so nothing looks broken and a fitting run
+    simply never moves ``kA``.
+
+    ``A -> B`` with rate constant ``k_eff`` has the closed form
+    ``B(t) = A0·(1 - e^{-k·t})``, so ``∂B/∂kA = A0·t·e^{-k·t}`` exactly whenever
+    the condition selects the ``kA`` branch. All conditions here do, at
+    ``sel = 5``.
+    """
+
+    A0, KA, KB, SEL, T_END = 10.0, 0.3, 0.9, 5.0, 5.0
+
+    def _build(self, cond_expr):
+        import bngsim
+        from bngsim._bngsim_core import ModelBuilder
+
+        b = ModelBuilder()
+        b.add_parameter("kA", self.KA, "", False)
+        b.add_parameter("kB", self.KB, "", False)
+        b.add_parameter("sel", self.SEL, "", False)
+        b.add_parameter("k_eff", 0.0, cond_expr, True)  # ConstantExpression
+        b.add_species("A", self.A0, False)
+        b.add_species("B", 0.0, False)
+        b.add_observable("Atot", [(0, 1.0)])
+        b.add_observable("Btot", [(1, 1.0)])
+        b.add_reaction([0], [1], "elementary", "k_eff", 1.0)
+        return bngsim.Model(_core=b.build())
+
+    @pytest.mark.parametrize("cond", ["if(sel>=1, kA, kB)", *_COMPOUND_CONDITIONS])
+    def test_sens_matches_closed_form(self, cond):
+        import bngsim
+        import numpy as np
+
+        model = self._build(cond)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kA"], codegen=True)
+        model.reset()
+        result = sim.run(
+            sample_times=list(np.linspace(0.0, self.T_END, 11)),
+            rtol=1e-10,
+            atol=1e-12,
+            max_steps=10**7,
+        )
+
+        # Forward trajectory: identical for every spelling (it was never the
+        # broken part) and equal to the closed form.
+        b_final = float(np.asarray(result.species)[-1][1])
+        assert b_final == pytest.approx(self.A0 * (1.0 - np.exp(-self.KA * self.T_END)), rel=1e-6)
+
+        expected = self.A0 * self.T_END * np.exp(-self.KA * self.T_END)
+        got = float(np.asarray(result.sensitivities)[-1][1, 0])
+        assert got == pytest.approx(expected, rel=1e-5), (
+            f"dB/dkA = {got} for k_eff = {cond!r}; expected {expected}. A value of "
+            f"exactly 0.0 means the derived-parameter chain rule was dropped — issue #56"
+        )
+
+
+def _eval_c_partials(result: dict[str, str], p_values: dict[int, float]) -> dict[str, float]:
+    """Evaluate the emitted C partial-derivative sources at ``p_values``.
+
+    The emitted strings are C ternaries over ``p[idx]``; Python's conditional
+    expression has the same semantics once ``a ? b : c`` and the C logical
+    operators are rewritten, which is enough to check which branch a Piecewise
+    derivative selects.
+    """
+    p = [p_values[i] for i in sorted(p_values)]
+    out: dict[str, float] = {}
+    for name, c_str in result.items():
+        py = c_str.replace("\n", " ").replace("&&", " and ").replace("||", " or ")
+        # ``(cond ? (a) : (b))`` → ``((a) if cond else (b))``, innermost last.
+        while "?" in py:
+            m = re.search(r"\(([^()]*(?:\([^()]*\)[^()]*)*)\?(.*)\)\Z", py, re.S)
+            assert m, f"unparsed C ternary: {c_str!r}"
+            cond, rest = m.group(1), m.group(2)
+            colon = _depth0_colon(rest)
+            py = f"(({rest[:colon]}) if ({cond}) else ({rest[colon + 1 :]}))"
+        out[name] = float(eval(py, {"p": p}))  # noqa: S307
+    return out
+
+
+def _depth0_colon(s: str) -> int:
+    """Index of the ternary's ``:``, i.e. the first one outside any parens."""
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == ":" and depth == 0:
+            return i
+    raise AssertionError(f"no top-level ':' in C ternary tail: {s!r}")
 
 
 class TestInlineDerivedParamRefs:

@@ -40,11 +40,15 @@ import re
 import time
 from collections.abc import Callable
 
-# Reuse the BNGL/ExprTk ``if(c,t,f)`` → sympy ``Piecewise`` rewriter and the
-# balanced-paren / top-level-comma helpers from the codegen path (issue #27).
+# Reuse the BNGL/ExprTk string rewriters from the codegen path: ``if(c,t,f)`` →
+# sympy ``Piecewise`` (issue #27) and the logical-operator rewrite (issues #53,
+# #56). Both live in ``_codegen`` so the derived-parameter chain-rule path there
+# and this symbolic core share one implementation, with the import going one
+# way only.
 from bngsim._codegen import (
     _PY_KEYWORD_PARAM_NAMES,
     _alias_keyword_param,
+    _rewrite_logicals,
     _translate_bngl_if_to_piecewise,
 )
 
@@ -117,150 +121,6 @@ _IDENT_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 
 
 # ─── ExprTk string → sympy ────────────────────────────────────────────────
-
-
-# ExprTk spells logical AND / OR three ways each: the word form and the doubled
-# and single symbolic forms. Hand-written BNGL ``.net`` conditions overwhelmingly
-# use ``&&`` / ``||`` (e.g. ``if(((t>=sigma)&&(t<tau1)),lambda0,0)``). Ordered
-# loosest-binding level first, so ``a && b || c`` splits at ``||`` first — ExprTk
-# binds ``and`` tighter than ``or``, as does BNGL.
-_LOGICAL_LEVELS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
-    ("Or", (("||", False), ("|", False), ("or", True))),
-    ("And", (("&&", False), ("&", False), ("and", True))),
-)
-
-
-_COMMA_TOKEN: tuple[tuple[str, bool], ...] = ((",", False),)
-
-
-def _depth0_token_spans(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[tuple[int, int]]:
-    """Spans of every ``tokens`` occurrence at paren depth 0 in ``s``.
-
-    ``tokens`` is ``(text, is_word)``; a word token additionally requires
-    identifier boundaries so ``land`` / ``orbit`` are not split. Longer
-    spellings are listed first so ``&&`` is never mistaken for two ``&``.
-    """
-    spans: list[tuple[int, int]] = []
-    depth = 0
-    i = 0
-    n = len(s)
-    while i < n:
-        c = s[i]
-        if c == "(":
-            depth += 1
-            i += 1
-            continue
-        if c == ")":
-            depth -= 1
-            if depth < 0:
-                return []  # unbalanced — leave the string alone
-            i += 1
-            continue
-        matched = 0
-        if depth == 0:
-            for tok, is_word in tokens:
-                if not s.startswith(tok, i):
-                    continue
-                if is_word:
-                    before = s[i - 1] if i else ""
-                    after = s[i + len(tok)] if i + len(tok) < n else ""
-                    if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
-                        continue
-                matched = len(tok)
-                break
-        if matched:
-            spans.append((i, i + matched))
-            i += matched
-        else:
-            i += 1
-    return spans if depth == 0 else []
-
-
-# Cheap pre-filter: a substring with no logical token at all is returned as-is,
-# which keeps the rewrite off the hot path *and* stops it descending into deeply
-# nested logical-free expressions (e.g. the 354-deep nested-if daily lookup table
-# in the mallela2024 COVID model).
-_LOGICAL_PRESENT_RE = re.compile(r"[&|]|\band\b|\bor\b")
-
-# Nesting budget for the rewrite. A logical nested deeper than this is
-# pathological; exhausting the budget returns the substring untouched, so
-# parse_expr raises and the caller falls back to the FD Jacobian — the pre-fix
-# behavior, never a wrong derivative. Each level costs ~3 Python frames.
-_LOGICAL_REWRITE_BUDGET = 100
-
-
-def _rewrite_logicals(expr: str) -> str:
-    """Rewrite ExprTk logical AND / OR into sympy ``And(...)`` / ``Or(...)`` calls.
-
-    A direct ``&&`` → ``&`` substitution is **not** correct. Python binds ``&``
-    tighter than a comparison, so ``a >= b & c < d`` reassociates to
-    ``a >= (b & c) < d`` and ``parse_expr`` then raises on the chained
-    comparison. Rewriting to the call form preserves ExprTk's precedence
-    (comparisons bind tighter than logicals), which is what BNGL means — and it
-    holds whether or not the author parenthesized each operand.
-    """
-    if not _LOGICAL_PRESENT_RE.search(expr):
-        return expr
-    if expr.count("(") != expr.count(")"):
-        return expr  # malformed; parse_expr will raise and the caller falls back
-    return _rewrite_logicals_checked(expr, _LOGICAL_REWRITE_BUDGET)
-
-
-def _split_depth0(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[str] | None:
-    """``s`` split at every depth-0 ``tokens`` occurrence, or ``None`` if none."""
-    spans = _depth0_token_spans(s, tokens)
-    if not spans:
-        return None
-    parts: list[str] = []
-    cursor = 0
-    for start, end in spans:
-        parts.append(s[cursor:start])
-        cursor = end
-    parts.append(s[cursor:])
-    return [p.strip() for p in parts]
-
-
-def _rewrite_logicals_checked(s: str, budget: int) -> str:
-    if budget <= 0 or not _LOGICAL_PRESENT_RE.search(s):
-        return s
-    # A depth-0 comma is an argument separator (``Piecewise((v, cond), …)``,
-    # ``max(a, b)``), never a logical operand boundary — recurse per argument
-    # first so a logical inside one argument cannot swallow the comma.
-    args = _split_depth0(s, _COMMA_TOKEN)
-    if args is not None:
-        return ", ".join(_rewrite_logicals_checked(a, budget - 1) for a in args)
-    for fn, tokens in _LOGICAL_LEVELS:
-        operands = _split_depth0(s, tokens)
-        if operands is None:
-            continue
-        return (
-            f"{fn}(" + ", ".join(_rewrite_logicals_checked(p, budget - 1) for p in operands) + ")"
-        )
-    return _rewrite_logicals_in_groups(s, budget)
-
-
-def _rewrite_logicals_in_groups(s: str, budget: int) -> str:
-    """Recurse into each depth-0 ``(...)`` group of a string that has no depth-0
-    logical operator, so nested conditions are rewritten too."""
-    out: list[str] = []
-    depth = 0
-    start = -1
-    for i, c in enumerate(s):
-        if c == "(":
-            if depth == 0:
-                start = i
-            depth += 1
-            continue
-        if c == ")":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                inner = s[start + 1 : i]
-                out.append("(" + _rewrite_logicals_checked(inner, budget - 1) + ")")
-                start = -1
-            continue
-        if depth == 0:
-            out.append(c)
-    return "".join(out)
 
 
 def _preprocess_exprtk(expr: str) -> str:

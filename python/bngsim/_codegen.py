@@ -178,7 +178,15 @@ _compile_counter = itertools.count()
 # emits bngsim_codegen_jac for models that previously got none, and the .net
 # cache key is content+version (not source), so v21 .so files for those models
 # must be invalidated or the stale Jacobian-less .so would be reused.
-_CODEGEN_VERSION = "22"
+# v23: lanl/bngsim #56 — the derived-parameter chain rule now handles compound
+# conditions (and ``^`` / ``not()``), so the emitted sensitivity RHS gains
+# ∂p_d/∂primary terms it previously zeroed; and a derived rate constant that
+# cannot be differentiated now declines the analytic sens RHS outright rather
+# than emitting one with a hole. Both directions change the emitted source, and
+# the .net cache key is content+version (not source), so a v22 .so would keep
+# serving the pre-fix numbers — the exact silent-inertness issue #51 documents
+# for #41/#43. Invalidate v22.
+_CODEGEN_VERSION = "23"
 
 # Accessor-token prefix for the SBML rateOf csymbol (GH #106). MUST match
 # _RATEOF_PREFIX in bngsim/_sbml_loader.py and register_rateof_accessors() in
@@ -920,6 +928,226 @@ def _translate_bngl_if_to_piecewise(expr: str) -> str:
     return "".join(out_parts)
 
 
+# ─── ExprTk logical operators → sympy And / Or call form ──────────────────
+#
+# Lives here, next to the ``if()`` → Piecewise rewriter, because both the
+# derived-parameter chain rule below and ``_jacobian``'s symbolic core need it
+# (issues #53 and #56) and ``_jacobian`` already imports from this module.
+
+# ExprTk spells logical AND / OR three ways each: the word form and the doubled
+# and single symbolic forms. Hand-written BNGL ``.net`` conditions overwhelmingly
+# use ``&&`` / ``||`` (e.g. ``if(((t>=sigma)&&(t<tau1)),lambda0,0)``). Ordered
+# loosest-binding level first, so ``a && b || c`` splits at ``||`` first — ExprTk
+# binds ``and`` tighter than ``or``, as does BNGL.
+_LOGICAL_LEVELS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
+    ("Or", (("||", False), ("|", False), ("or", True))),
+    ("And", (("&&", False), ("&", False), ("and", True))),
+)
+
+
+_COMMA_TOKEN: tuple[tuple[str, bool], ...] = ((",", False),)
+
+
+def _depth0_token_spans(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[tuple[int, int]]:
+    """Spans of every ``tokens`` occurrence at paren depth 0 in ``s``.
+
+    ``tokens`` is ``(text, is_word)``; a word token additionally requires
+    identifier boundaries so ``land`` / ``orbit`` are not split. Longer
+    spellings are listed first so ``&&`` is never mistaken for two ``&``.
+    """
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth < 0:
+                return []  # unbalanced — leave the string alone
+            i += 1
+            continue
+        matched = 0
+        if depth == 0:
+            for tok, is_word in tokens:
+                if not s.startswith(tok, i):
+                    continue
+                if is_word:
+                    before = s[i - 1] if i else ""
+                    after = s[i + len(tok)] if i + len(tok) < n else ""
+                    if (before.isalnum() or before == "_") or (after.isalnum() or after == "_"):
+                        continue
+                matched = len(tok)
+                break
+        if matched:
+            spans.append((i, i + matched))
+            i += matched
+        else:
+            i += 1
+    return spans if depth == 0 else []
+
+
+# Cheap pre-filter: a substring with no logical token at all is returned as-is,
+# which keeps the rewrite off the hot path *and* stops it descending into deeply
+# nested logical-free expressions (e.g. the 354-deep nested-if daily lookup table
+# in the mallela2024 COVID model).
+_LOGICAL_PRESENT_RE = re.compile(r"[&|]|\band\b|\bor\b")
+
+# Nesting budget for the rewrite. A logical nested deeper than this is
+# pathological; exhausting the budget returns the substring untouched, so
+# parse_expr raises and the caller falls back — the pre-fix behavior, never a
+# wrong derivative. Each level costs ~3 Python frames.
+_LOGICAL_REWRITE_BUDGET = 100
+
+
+def _rewrite_logicals(expr: str) -> str:
+    """Rewrite ExprTk logical AND / OR into sympy ``And(...)`` / ``Or(...)`` calls.
+
+    A direct ``&&`` → ``&`` substitution is **not** correct. Python binds ``&``
+    tighter than a comparison, so ``a >= b & c < d`` reassociates to
+    ``a >= (b & c) < d`` and ``parse_expr`` then raises on the chained
+    comparison. Rewriting to the call form preserves ExprTk's precedence
+    (comparisons bind tighter than logicals), which is what BNGL means — and it
+    holds whether or not the author parenthesized each operand.
+    """
+    if not _LOGICAL_PRESENT_RE.search(expr):
+        return expr
+    if expr.count("(") != expr.count(")"):
+        return expr  # malformed; parse_expr will raise and the caller falls back
+    return _rewrite_logicals_checked(expr, _LOGICAL_REWRITE_BUDGET)
+
+
+def _split_depth0(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[str] | None:
+    """``s`` split at every depth-0 ``tokens`` occurrence, or ``None`` if none."""
+    spans = _depth0_token_spans(s, tokens)
+    if not spans:
+        return None
+    parts: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(s[cursor:start])
+        cursor = end
+    parts.append(s[cursor:])
+    return [p.strip() for p in parts]
+
+
+def _rewrite_logicals_checked(s: str, budget: int) -> str:
+    if budget <= 0 or not _LOGICAL_PRESENT_RE.search(s):
+        return s
+    # A depth-0 comma is an argument separator (``Piecewise((v, cond), …)``,
+    # ``max(a, b)``), never a logical operand boundary — recurse per argument
+    # first so a logical inside one argument cannot swallow the comma.
+    args = _split_depth0(s, _COMMA_TOKEN)
+    if args is not None:
+        return ", ".join(_rewrite_logicals_checked(a, budget - 1) for a in args)
+    for fn, tokens in _LOGICAL_LEVELS:
+        operands = _split_depth0(s, tokens)
+        if operands is None:
+            continue
+        return (
+            f"{fn}(" + ", ".join(_rewrite_logicals_checked(p, budget - 1) for p in operands) + ")"
+        )
+    return _rewrite_logicals_in_groups(s, budget)
+
+
+def _rewrite_logicals_in_groups(s: str, budget: int) -> str:
+    """Recurse into each depth-0 ``(...)`` group of a string that has no depth-0
+    logical operator, so nested conditions are rewritten too."""
+    out: list[str] = []
+    depth = 0
+    start = -1
+    for i, c in enumerate(s):
+        if c == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                inner = s[start + 1 : i]
+                out.append("(" + _rewrite_logicals_checked(inner, budget - 1) + ")")
+                start = -1
+            continue
+        if depth == 0:
+            out.append(c)
+    return "".join(out)
+
+
+# Names bound to sympy classes/functions in the derived-parameter local dict.
+# A primary parameter sharing one of these names would be shadowed by the class
+# and silently differentiate to zero, so the chain rule refuses the expression
+# instead (see ``_preprocess_derived_expr``'s callers).
+_DERIVED_RESERVED_NAMES = frozenset({"Piecewise", "And", "Or", "Not", "True", "False"})
+
+
+def _preprocess_derived_expr(expr: str) -> str:
+    """Rewrite a derived-parameter (ConstantExpression) string into a form
+    ``sympy.parse_expr`` can tokenize.
+
+    The same pipeline ``_jacobian._preprocess_exprtk`` runs for rate laws, minus
+    the ``time()`` placeholder (a ConstantExpression is evaluated once, off the
+    integration clock): ``if(c,t,f)`` → ``Piecewise``, ``^`` → ``**``,
+    ``not(x)`` → ``Not(x)``, and logical AND / OR → sympy ``And``/``Or`` call
+    form. Anything this pass leaves untranslated makes ``parse_expr`` raise, and
+    the caller then drops the chain rule for that parameter (issue #56).
+    """
+    s = _translate_bngl_if_to_piecewise(expr)
+    s = s.replace("^", "**")
+    s = re.sub(r"\bnot\s*\(", "Not(", s)
+    return _rewrite_logicals(s)
+
+
+def _warn_sens_rhs_refused(name: str, expr: str, reason: str) -> None:
+    """Report that the analytic sensitivity RHS was declined because a derived
+    rate constant could not be differentiated (issue #56).
+
+    This is the *good* outcome — the run falls back to CVODES' internal
+    difference quotient and the gradient stays correct, just slower — but it is
+    worth saying out loud, because the alternative the caller is avoiding is a
+    sensitivity column of exact zeros that looks like a converged answer.
+    """
+    logger.warning(
+        "Forward sensitivity: the derived rate constant %s = %r could not be "
+        "differentiated (%s), so the analytic sensitivity RHS is declined for "
+        "this model and CVODES' internal difference quotient is used instead "
+        "(correct, but slower).",
+        name,
+        expr,
+        reason,
+    )
+
+
+def _warn_chain_rule_dropped(expr: str, referenced: list[str], reason: str) -> None:
+    """Report a derived-parameter expression whose chain rule could not be
+    differentiated even though it *does* reference primary parameters.
+
+    Used on the initial-condition seeding path, where — unlike the sensitivity
+    RHS — there is nothing to fall back to: the seed ∂x_i(0)/∂primary is either
+    computed here or left at zero. Issue #56: the caller reads a missing partial
+    as a real zero, indistinguishable from a primary that genuinely does not
+    appear, so this warning is the only signal that separates the two cases.
+
+    It is deliberately not an exception. The seeding scan covers every
+    parameter-referenced initial condition in the model, most of which have
+    nothing to do with the requested sensitivity parameters, and raising would
+    refuse models that simulate correctly today.
+    """
+    logger.warning(
+        "Forward sensitivity: could not differentiate the derived parameter "
+        "expression %r (%s). The chain rule through it is dropped, so "
+        "sensitivities w.r.t. %s will read as exactly zero along this path "
+        "even if they are not.",
+        expr,
+        reason,
+        ", ".join(sorted(referenced)),
+    )
+
+
 def _inline_derived_param_refs(
     expr: str,
     derived_exprs: dict[str, str],
@@ -983,16 +1211,27 @@ def _compute_derived_param_jacobian(
     passing ``None``) preserves the pre-#41 behavior of rejecting any
     non-primary free symbol.
 
-    Two preprocessing passes (issue #27) widen the set of expressions that
+    Two preprocessing passes (issues #27, #56) widen the set of expressions that
     yield an analytic Jacobian instead of the silent zero-contribution fallback:
 
-    1. BNGL ``if(c, t, f)`` is rewritten to ``Piecewise((t, c), (f, True))``
-       so sympy differentiates the conditional analytically. The boundary
-       delta is sympy's standard Piecewise convention.
+    1. The ExprTk surface syntax is rewritten for sympy by
+       :func:`_preprocess_derived_expr`: BNGL ``if(c, t, f)`` becomes
+       ``Piecewise((t, c), (f, True))`` so sympy differentiates the conditional
+       analytically (the boundary delta is sympy's standard Piecewise
+       convention), ``^`` becomes ``**``, and logical operators become sympy
+       ``And``/``Or``/``Not`` calls. Without the logical rewrite a *compound*
+       condition — ``if((sel>=1)&&(sel<10), kA, kB)``, in any of ExprTk's six
+       spellings — failed to parse and its whole chain rule was silently zeroed
+       (issue #56).
     2. Primary parameter names that happen to be Python keywords (e.g.
        ``lambda`` in ``ode/scaling_example.bngl``) are aliased to safe
        placeholders before ``parse_expr`` and round-tripped back to
        ``p[idx]`` on the way out.
+
+    A ``None`` here is indistinguishable downstream from a genuine zero, so
+    callers that cannot afford that ambiguity use
+    :func:`_derived_param_jacobian_checked` instead, which also reports *why*
+    (issue #56).
 
     Returns
     -------
@@ -1001,14 +1240,38 @@ def _compute_derived_param_jacobian(
         partial derivative is non-zero. Primary names appearing in the C
         expression have already been rewritten as ``p[idx]``.
     """
+    return _derived_param_jacobian_checked(expr, primary_param_names, param_idx, derived_exprs)[0]
+
+
+def _derived_param_jacobian_checked(
+    expr: str,
+    primary_param_names: set,
+    param_idx: dict,
+    derived_exprs: dict[str, str] | None = None,
+) -> tuple[dict[str, str] | None, str | None]:
+    """:func:`_compute_derived_param_jacobian`, plus the reason it gave up.
+
+    Returns ``(jacobian, failure_reason)``. ``failure_reason`` is ``None`` when
+    the Jacobian was computed *and* when the expression legitimately has no
+    partial to compute (it references no primary at all, e.g. ``_rateLaw1 = 2``);
+    it is a human-readable string only when a real chain-rule contribution was
+    lost. Issue #56: those two outcomes are both ``jacobian is None``, and the
+    sensitivity RHS reads that as ``∂p_d/∂primary = 0`` — so a caller that emits
+    an analytic sensitivity RHS must refuse the whole RHS on a failure (falling
+    back to CVODES' correct-but-slower internal difference quotient) rather than
+    ship a gradient component that is confidently, exactly wrong.
+    """
     s = expr.strip()
     if not s:
-        return None
+        return None, None
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import parse_expr
     except ImportError:
-        return None
+        # No sympy at all is an environment fact, not a property of this
+        # expression — every derived parameter is affected equally and the
+        # caller's own sympy import has already failed.
+        return None, None
 
     # Pass 0 (issue #41): flatten nested derived-parameter references so the
     # expression is expressed purely in primaries before differentiation. A
@@ -1017,13 +1280,19 @@ def _compute_derived_param_jacobian(
     if derived_exprs:
         s = _inline_derived_param_refs(s, derived_exprs)
 
-    # Pass 1: BNGL if(c, t, f) → sympy Piecewise. Applied to the raw string
-    # so whole-word matching of ``if`` sees the source as written.
-    s_pre = _translate_bngl_if_to_piecewise(s)
+    # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
+    # And/Or call form). Applied to the raw string so whole-word matching of
+    # ``if`` sees the source as written.
+    s_pre = _preprocess_derived_expr(s)
 
     referenced = sorted(p for p in primary_param_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
     if not referenced:
-        return None
+        return None, None  # references no primary — a genuine zero, not a failure
+
+    # A primary named like one of the sympy classes we bind below would be
+    # shadowed by the class and differentiate to a silent zero. Refuse instead.
+    if not _DERIVED_RESERVED_NAMES.isdisjoint(referenced):
+        return None, "a primary parameter shadows a sympy name"
 
     # Pass 2: alias Python-keyword-named primaries so parse_expr can tokenize
     # the expression. Sort by length descending so e.g. an ``if_thresh`` param
@@ -1045,14 +1314,13 @@ def _compute_derived_param_jacobian(
     # ``Piecewise`` so the if-translation in pass 1 resolves to sympy's class.
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
     local_dict: dict = dict(sym_map)
-    local_dict["Piecewise"] = sp.Piecewise
+    local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
 
     try:
         sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)
-    except Exception:
-        # Anything still unparseable (malformed BNGL, unsupported call, etc.)
-        # → fall back to the no-analytic-Jacobian path.
-        return None
+    except Exception as exc:
+        # Anything still unparseable (malformed BNGL, unsupported call, etc.).
+        return None, f"{type(exc).__name__}: {exc}"
 
     # Reject if the expression introduced any free symbol that isn't a
     # known primary parameter (e.g., a derived param appearing inside another
@@ -1060,7 +1328,7 @@ def _compute_derived_param_jacobian(
     allowed_sym_names = {sym_name_of[p] for p in referenced}
     free = {str(sym) for sym in sym_expr.free_symbols}
     if not free.issubset(allowed_sym_names):
-        return None
+        return None, f"unresolved symbol(s) {sorted(free - allowed_sym_names)}"
 
     # For round-tripping the ccode output: map each (possibly-aliased) sympy
     # symbol name back to ``p[idx]`` using the ORIGINAL primary's index.
@@ -1076,7 +1344,14 @@ def _compute_derived_param_jacobian(
         deriv = sp.diff(sym_expr, sym_map[sym_name_of[p_name]])
         if deriv == 0:
             continue
-        c_str = sp.ccode(deriv)
+        try:
+            c_str = sp.ccode(deriv)
+        except Exception as exc:
+            # A derivative sympy cannot render as C (an un-inlined user function
+            # call, erf, DiracDelta, ...). Refuse the whole expression rather
+            # than emit a partial chain rule — and never let it escape, since an
+            # exception here aborts the entire codegen build.
+            return None, f"not expressible in C ({exc})"
         for sym_n, idx in sub_pairs:
             c_str = re.sub(
                 rf"\b{re.escape(sym_n)}\b",
@@ -1084,7 +1359,7 @@ def _compute_derived_param_jacobian(
                 c_str,
             )
         result[p_name] = c_str
-    return result or None
+    return (result or None), None
 
 
 def _derived_expr_partials_numeric(
@@ -1093,6 +1368,7 @@ def _derived_expr_partials_numeric(
     param_idx: dict,
     param_values: list,
     derived_exprs: dict[str, str],
+    warn_on_failure: bool = True,
 ) -> dict[str, float]:
     """Numeric ∂(expr)/∂primary at the nominal parameter values, for every
     primary that appears in ``expr`` once nested derived references are inlined.
@@ -1102,14 +1378,20 @@ def _derived_expr_partials_numeric(
     ``d = expr`` seeds ∂x_i(0)/∂primary with the *numeric* partial ∂expr/∂primary
     evaluated at the current parameter point — a constant (``Rtot = R0`` → 1,
     ``Rtot = 2*R0`` → 2, ``Rtot = R0*scale`` → nominal ``scale``). Reuses the same
-    nesting-aware inlining (:func:`_inline_derived_param_refs`), ``if``→Piecewise
-    rewrite, and Python-keyword aliasing as the rate-constant chain rule, but
-    substitutes values instead of emitting C source.
+    nesting-aware inlining (:func:`_inline_derived_param_refs`), ExprTk-to-sympy
+    rewrite (:func:`_preprocess_derived_expr`, which as of issue #56 also covers
+    compound ``&&`` / ``and`` conditions), and Python-keyword aliasing as the
+    rate-constant chain rule, but substitutes values instead of emitting C source.
 
     Returns ``{primary_name: float_partial}`` over the primaries with a non-zero
     partial, or ``{}`` when sympy is unavailable, nothing parses, or no primary
     appears (the caller then leaves that species's derived IC unseeded — the
-    pre-#43 behavior — while direct-parameter ICs stay correct).
+    pre-#43 behavior — while direct-parameter ICs stay correct). A ``{}`` that
+    follows a *failure* rather than a genuine absence is logged as a warning,
+    since the caller cannot tell the two apart (issue #56). Callers for which an
+    empty result is a *supported* outcome rather than a lost gradient — the
+    switch-time scan, which probes candidate thresholds and expects
+    non-parameter ones to come back empty — pass ``warn_on_failure=False``.
     """
     s = expr.strip()
     if not s:
@@ -1121,12 +1403,17 @@ def _derived_expr_partials_numeric(
         return {}
 
     # Flatten nested derived references down to primaries (issue #41), then
-    # rewrite BNGL if(c, t, f) → sympy Piecewise, mirroring the rate-constant path.
+    # rewrite the ExprTk surface syntax, mirroring the rate-constant path.
     s = _inline_derived_param_refs(s, derived_exprs)
-    s_pre = _translate_bngl_if_to_piecewise(s)
+    s_pre = _preprocess_derived_expr(s)
 
     referenced = sorted(p for p in primary_param_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
     if not referenced:
+        return {}
+
+    if not _DERIVED_RESERVED_NAMES.isdisjoint(referenced):
+        if warn_on_failure:
+            _warn_chain_rule_dropped(expr, referenced, "a primary parameter shadows a sympy name")
         return {}
 
     sym_name_of: dict[str, str] = {
@@ -1139,18 +1426,27 @@ def _derived_expr_partials_numeric(
 
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
     local_dict: dict = dict(sym_map)
-    local_dict["Piecewise"] = sp.Piecewise
+    local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
 
     try:
         sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)
-    except Exception:
+    except Exception as exc:
+        if warn_on_failure:
+            _warn_chain_rule_dropped(expr, referenced, f"{type(exc).__name__}: {exc}")
         return {}
 
     # A free symbol that is not a known primary means the inline pass could not
     # fully reduce to primaries (e.g. a reference cycle) — bail rather than seed
     # a partial that silently ignores it.
     allowed_sym_names = {sym_name_of[p] for p in referenced}
-    if not {str(sym) for sym in sym_expr.free_symbols}.issubset(allowed_sym_names):
+    free = {str(sym) for sym in sym_expr.free_symbols}
+    if not free.issubset(allowed_sym_names):
+        if warn_on_failure:
+            _warn_chain_rule_dropped(
+                expr,
+                referenced,
+                f"unresolved symbol(s) {sorted(free - allowed_sym_names)}",
+            )
         return {}
 
     subs = {
@@ -1163,7 +1459,12 @@ def _derived_expr_partials_numeric(
             continue
         try:
             val = float(deriv.subs(subs).evalf())
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            # Not numeric at this parameter point — the other primaries' seeds
+            # are still valid, so keep them, but say that this one is missing
+            # rather than let it read as a real zero (issue #56).
+            if warn_on_failure:
+                _warn_chain_rule_dropped(expr, [p_name], f"{type(exc).__name__}: {exc}")
             continue
         if val != 0.0:
             out[p_name] = val
@@ -1747,10 +2048,12 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
     func_names = {name for _, name, _ in functions}
 
     # Check: all reactions must be Elementary for analytical sensitivity RHS
+    rate_const_names: set[str] = set()
     for _, _reactants, _products, rate_law, _ in reactions:
         kind = _classify_rate_law(rate_law, func_names)
         if kind[0] != "elementary":
             return None  # Fall back to CVODES internal FD
+        rate_const_names.add(kind[1])
 
     # Identify fixed species
     fixed_sp = {sp[0] - 1 for sp in species if sp[3]}
@@ -1767,11 +2070,23 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
     derived_exprs = {name: expr for (_, name, expr, is_const) in params if not is_const and expr}
     derived_expansion: dict[str, dict[str, str]] = {}
     for _, name, expr, is_const in params:
-        if is_const:
+        # Only a derived parameter that actually serves as a reaction's rate
+        # constant reaches the sens RHS, so only those are differentiated — and
+        # only those can invalidate it. A derived parameter used solely by an
+        # observable or a function (a reporting quantity like a mean or a
+        # standard deviation) has no bearing here.
+        if is_const or name not in rate_const_names:
             continue
-        jac = _compute_derived_param_jacobian(
+        jac, reason = _derived_param_jacobian_checked(
             expr, primary_param_names, param_idx, derived_exprs=derived_exprs
         )
+        if reason is not None:
+            # Issue #56: emitting the RHS without this chain rule would report
+            # ∂/∂primary as exactly zero. Refuse the analytic RHS instead so the
+            # caller falls back to CVODES' internal difference quotient, which
+            # is slower but right.
+            _warn_sens_rhs_refused(name, expr, reason)
+            return None
         if jac is not None:
             derived_expansion[name] = jac
 
@@ -4659,9 +4974,14 @@ def generate_sens_from_model(model) -> str | None:
     # Bail if any reaction is non-Elementary — analytical sens RHS is only
     # defined for k * sf * ∏y^m kinetics. Same constraint as
     # generate_sens_rhs_c (line 762-765) for the .net path.
+    # ``function_name`` is the key the derived-expansion lookup below uses, so
+    # collect the same key here (not the parameter index) when deciding which
+    # derived parameters can reach this RHS.
+    rate_const_names: set[str] = set()
     for rxn in reactions:
         if rxn["type"] != "elementary":
             return None
+        rate_const_names.add(rxn.get("function_name", ""))
 
     fixed_sp = {i for i, s in enumerate(species) if s["fixed"]}
 
@@ -4680,14 +5000,23 @@ def generate_sens_from_model(model) -> str | None:
     }
     derived_expansion: dict[str, dict[str, str]] = {}
     for p in params:
-        if p.get("is_const", True):
+        # As in generate_sens_rhs_c: only a derived parameter that is some
+        # reaction's rate constant reaches this RHS, so only those are
+        # differentiated, and only those can invalidate it.
+        if p.get("is_const", True) or p["name"] not in rate_const_names:
             continue
         expr = p.get("expression", "")
         if not expr:
             continue
-        jac = _compute_derived_param_jacobian(
+        jac, reason = _derived_param_jacobian_checked(
             expr, primary_param_names, param_idx_by_name, derived_exprs=derived_exprs
         )
+        if reason is not None:
+            # Issue #56 — see generate_sens_rhs_c: a dropped chain rule here
+            # reads downstream as a hard zero, so refuse the analytic RHS and
+            # let CVODES' internal difference quotient answer correctly.
+            _warn_sens_rhs_refused(p["name"], expr, reason)
+            return None
         if jac is not None:
             derived_expansion[p["name"]] = jac
 
