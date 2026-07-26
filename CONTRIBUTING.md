@@ -80,6 +80,26 @@ push, run via `uv run`) with:
 uv run pre-commit install
 ```
 
+## Changing generated code
+
+Compiled codegen artifacts are cached under `~/.cache/bngsim/codegen` and keyed by
+model content plus `_CODEGEN_CACHE_KEY` — **not** by the generated C, because
+hashing the C would mean regenerating it on every cache probe.
+
+`_CODEGEN_CACHE_KEY` is `_CODEGEN_VERSION` (a hand-maintained constant in
+`python/bngsim/_codegen.py`) plus a digest of the source of every module that
+determines the emitted C: `_codegen.py`, `_jacobian.py`, and
+`_saturable_jacobian.py`. The digest means an edit to any of those invalidates
+stale artifacts on its own, so a change cannot go silently inert on a machine
+with a warm cache the way issues #41 and #43 did — there, the fixes appeared to
+do nothing at all, reporting `dy/dp == 0` where a cold cache gave correct values.
+
+Two cases the digest does not cover, where you must bump `_CODEGEN_VERSION`
+yourself and say why in the comment block above it:
+
+- a **C++** change that alters `codegen_data()` and therefore the emitted source;
+- any time you want to deliberately invalidate a release's caches.
+
 ## Before opening a PR
 
 - Keep new code consistent with the surrounding style (`.clang-format` for C++,
