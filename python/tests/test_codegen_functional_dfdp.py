@@ -6,12 +6,15 @@ difference quotient. This stage derives the missing half,
 
     ∂f_i/∂p = Σ_r  stat_r · netstoich_ir · (∂func_r/∂p) · ∏R_r
 
-behind a keyword that defaults to **off**, and proves it against an oracle. Two
-things are being tested, and they pull in opposite directions:
+behind a keyword, and proves it against an oracle. (GH #67 has since supplied the
+other half — the Functional ``J·yS`` — and turned the keyword on for production
+callers; ``test_codegen_functional_sens_rhs.py`` covers that. This file stays the
+∂f/∂p half's test.) Two things are being tested, and they pull in opposite
+directions:
 
-* **Nothing moved.** The gate is shut for every production caller, and an
-  all-Elementary model must emit byte-identical C whether or not the keyword is
-  set — a Functional model is the only input the new code can even reach.
+* **Nothing moved for Elementary models.** They emit byte-identical C whether or
+  not the keyword is set — a Functional model is the only input the new code can
+  even reach.
 * **The derivative is right.** The oracle is a central finite difference of the
   *emitted* ``bngsim_codegen_rhs`` with respect to each parameter, compared
   against the emitted ``∂f/∂p``, both called through ctypes. No integrator, no
@@ -196,22 +199,21 @@ def _scope(**over):
     return cg._FunctionalDfdpScope(**fields)
 
 
-# ─── the gate is shut ──────────────────────────────────────────────────────
+# ─── the keyword ───────────────────────────────────────────────────────────
 
 
-class TestGateStaysShut:
-    def test_functional_model_still_declines_by_default(self, tmp_path):
+class TestTheKeyword:
+    """``functional=`` is what reaches the ∂f/∂p derived below. GH #67 has since
+    turned it on for production callers (see
+    ``test_codegen_functional_sens_rhs.py``), so what is pinned here is the
+    keyword's own contract, not the old no-behavior-change claim."""
+
+    def test_a_functional_model_declines_without_it(self, tmp_path):
         assert cg.generate_sens_from_model(_model(tmp_path, SIR)) is None
 
     def test_the_keyword_is_what_opens_it(self, tmp_path):
         src = cg.generate_sens_from_model(_model(tmp_path, SIR), functional=True)
         assert src is not None and "bngsim_dfdp" in src
-
-    def test_combined_source_never_sets_it(self, tmp_path):
-        """The whole no-behavior-change claim in one assertion: the only
-        production path to the sensitivity emitter still gets ``None``."""
-        _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, SIR))
-        assert has_sens is False
 
     def test_elementary_emission_is_byte_identical(self, tmp_path):
         """An Elementary model reaches none of the new code, so opening the gate
@@ -222,13 +224,6 @@ class TestGateStaysShut:
         assert shut is not None
         assert shut == open_
         assert "GH #66" not in shut
-
-    def test_emitted_source_says_it_is_incomplete(self, tmp_path):
-        """``bngsim_jac_vec`` is still Elementary-only (GH #67), so a Functional
-        model's sens RHS is not installable — the C has to say so where it is
-        read, not only in the Python docstring."""
-        src = cg.generate_sens_from_model(_model(tmp_path, SIR), functional=True)
-        assert "INCOMPLETE" in src and "GH #67" in src
 
 
 # ─── the derivative itself ─────────────────────────────────────────────────

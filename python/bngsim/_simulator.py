@@ -3250,9 +3250,11 @@ class Simulator:
         RHS emits, and — like :meth:`run` and :meth:`compute_all_sensitivities`
         since GH #214 — refuses rather than silently degrading when codegen is
         unavailable. ``ss.sens_jacobian_source`` / ``ss.sens_dfdp_source`` report
-        which path each factor took; a Functional/MM model has no analytical
-        ``∂f/∂p`` to emit (issue #55) and still differences that factor, with a
-        warning.
+        which path each factor took. Since GH #67 a Functional model whose rate
+        laws are smooth algebra has an analytical ``∂f/∂p`` here too — it is the
+        same emitted ``bngsim_codegen_sens_rhs``, read at ``yS = 0``. What still
+        differences that factor, with a warning, is Michaelis-Menten and the
+        Functional laws carrying a condition or a non-smooth builtin.
         """
         if self._method != "ode":
             raise ValueError(
@@ -3354,14 +3356,18 @@ class Simulator:
         """
         # 1. ∂f/∂p had to be differenced. Reaching here means codegen IS attached
         #    (steady_state refuses otherwise) but the artifact carries no
-        #    bngsim_codegen_sens_rhs — the Functional/MM case generate_sens_rhs_c
-        #    declines on, which issue #55 tracks. Still the best available answer,
-        #    but it rests on a ~sqrt(eps) difference quotient.
+        #    bngsim_codegen_sens_rhs. Since GH #67 that is a narrower set than
+        #    "not all Elementary": a Functional model whose rate laws are smooth
+        #    algebra does get one, and what is left declining is Michaelis-Menten
+        #    and the rate laws carrying a condition or a non-smooth builtin.
+        #    Still the best available answer, but it rests on a ~sqrt(eps)
+        #    difference quotient.
         if result.sens_dfdp_source == "finite-difference":
             logger.warning(
                 "Steady-state dY_ss/dp: no analytical ∂f/∂p is available for this "
-                "model (its rate laws are not all Elementary, so the codegen "
-                "sensitivity RHS was not emitted — issue #55), so ∂f/∂p was "
+                "model (the codegen sensitivity RHS declined its rate laws — "
+                "Michaelis-Menten, or a Functional law with a condition or a "
+                "non-smooth builtin; see issues #55/#68), so ∂f/∂p was "
                 "computed by finite differences at a ~sqrt(eps) step. The "
                 "Jacobian factor used the %s path.",
                 result.sens_jacobian_source,
