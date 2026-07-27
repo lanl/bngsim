@@ -200,9 +200,11 @@ end groups
 """
 
 # A condition puts the model in GH #68's class: sympy differentiates the
-# Piecewise to a clean 0 w.r.t. a condition-only parameter, dropping the jump,
-# so #67 must keep declining it rather than ship a fast wrong gradient.
+# Piecewise to a clean 0 w.r.t. a condition-only parameter, dropping the jump.
+# #67 declined both of these; #68 separated them — a threshold on simulation
+# time is a crossing issue #48 compensates, a threshold on an observable is not.
 SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(time() > 3, beta, 0)*I\n")
+STATE_SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(I > 3, beta, 0)*I\n")
 
 # Michaelis–Menten written as an SBML kinetic law: loaded as a *Functional*
 # reaction with apply_species_factor off, so the whole rate (including the
@@ -232,10 +234,17 @@ class TestTheGate:
         _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, SIR))
         assert has_sens is True
 
-    def test_a_conditional_rate_law_still_declines(self, tmp_path):
-        """GH #68's class. #67 deliberately does not widen to it — a switch-time
-        parameter's derivative is not the smooth-segment one sympy returns."""
+    def test_a_clock_conditional_rate_law_is_admitted_by_68(self, tmp_path):
+        """GH #68's class. #67 declined every condition; #68 admits the ones
+        whose crossing issue #48 stops at and jumps across — here a threshold on
+        simulation time, which needs no counter species."""
         _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, SWITCHED))
+        assert has_sens is True
+
+    def test_a_state_conditional_rate_law_still_declines(self, tmp_path):
+        """The other half of #68: `if(I>3, ...)` reads an observable, so its
+        crossing moves with the trajectory and nothing compensates the jump."""
+        _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, STATE_SWITCHED))
         assert has_sens is False
 
     def test_the_ab_hatch_restores_the_difference_quotient(self, tmp_path, monkeypatch):

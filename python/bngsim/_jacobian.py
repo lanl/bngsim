@@ -334,7 +334,16 @@ def differentiate_rate_law(
         return None
 
     result: dict = {}
-    for alias, obs_name in obs_alias.items():
+    # Sorted so the emitted ExprTk/C derivative ordering is deterministic
+    # regardless of set hash-seed — ``observable_names`` is a set, so iterating it
+    # ordered the result (and every downstream ``d0``/``d1`` temporary and its
+    # scatter) by PYTHONHASHSEED. Codegen output is content-addressed and cached,
+    # so a rate law reading two or more observables re-hashed on every process and
+    # missed its own ``.so``. The saturable twin
+    # (``_saturable_jacobian.differentiate_rate_law_native``) already sorts for
+    # exactly this reason; this is the sympy branch catching up. Ordering never
+    # affects the numerical result.
+    for alias, obs_name in sorted(obs_alias.items()):
         if alias not in free:
             continue
         if deadline is not None and time.perf_counter() > deadline:
@@ -737,27 +746,56 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
 # only reliable rejection). Each maps to the human-readable reason surfaced in
 # the error. Names are matched only as call heads (``\bname\s*\(``) so a model
 # symbol like ``absorbance`` or ``minutes`` is never falsely flagged.
-_UNSUPPORTED_EXPR_CONSTRUCTS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"\bif\s*\("), "if() conditional"),
-    (re.compile(r"==|!=|<=|>=|<|>"), "comparison operator"),
-    (re.compile(r"&&|\|\||\band\b|\bor\b|\bnot\b"), "logical operator"),
-    (re.compile(r"(?<![=!<>])!(?!=)"), "logical-not operator"),
-    (re.compile(r"\babs\s*\("), "abs()"),
-    (re.compile(r"\bmin\s*\("), "min()"),
-    (re.compile(r"\bmax\s*\("), "max()"),
-    (re.compile(r"\bfloor\s*\("), "floor()"),
-    (re.compile(r"\bceil\s*\("), "ceil()"),
-    (re.compile(r"\b(?:round|rint|nint)\s*\("), "rounding function (round/rint/nint)"),
+#
+# The third field marks the **conditional class** — the constructs that select a
+# branch rather than bend a curve. Their dropped delta is a jump at a *crossing
+# time*, which is the one flavour of dropped delta something else can supply:
+# issue #48's switch-time jump does exactly that for a clock threshold. So
+# ``allow_conditions=True`` lets a caller that has checked the crossings are
+# compensated (GH #68's gate, :func:`bngsim._switch_sensitivity.
+# uncompensated_condition_params`) accept them, while ``abs``/``min``/``max``/
+# ``floor``/``ceil``/``round`` — kinks in the *state*, with no crossing time and
+# nothing to compensate them — stay rejected for every caller.
+_UNSUPPORTED_EXPR_CONSTRUCTS: list[tuple[re.Pattern, str, bool]] = [
+    (re.compile(r"\bif\s*\("), "if() conditional", True),
+    (re.compile(r"==|!=|<=|>=|<|>"), "comparison operator", True),
+    (re.compile(r"&&|\|\||\band\b|\bor\b|\bnot\b"), "logical operator", True),
+    (re.compile(r"(?<![=!<>])!(?!=)"), "logical-not operator", True),
+    (re.compile(r"\babs\s*\("), "abs()", False),
+    (re.compile(r"\bmin\s*\("), "min()", False),
+    (re.compile(r"\bmax\s*\("), "max()", False),
+    (re.compile(r"\bfloor\s*\("), "floor()", False),
+    (re.compile(r"\bceil\s*\("), "ceil()", False),
+    (re.compile(r"\b(?:round|rint|nint)\s*\("), "rounding function (round/rint/nint)", False),
 ]
 
 
-def unsupported_expr_construct(body: str) -> str | None:
+def unsupported_expr_construct(body: str, *, allow_conditions: bool = False) -> str | None:
     """Return the reason a function body is unsupported for #198 output
-    sensitivities, or ``None`` if no rejected construct is present."""
-    for pat, name in _UNSUPPORTED_EXPR_CONSTRUCTS:
+    sensitivities, or ``None`` if no rejected construct is present.
+
+    ``allow_conditions`` skips the conditional class (``if()``, comparisons,
+    logicals). Only a caller that has separately established the crossings are
+    compensated may set it — see the table above.
+    """
+    for pat, name, conditional in _UNSUPPORTED_EXPR_CONSTRUCTS:
+        if conditional and allow_conditions:
+            continue
         if pat.search(body):
             return name
     return None
+
+
+def has_condition_construct(body: str) -> bool:
+    """True when *body* carries a construct from the conditional class.
+
+    The cheap pre-check that decides whether a caller needs to build the
+    switch-condition scope at all — same table, so it cannot drift from what
+    ``allow_conditions`` actually waives.
+    """
+    return any(
+        pat.search(body) for pat, _name, conditional in _UNSUPPORTED_EXPR_CONSTRUCTS if conditional
+    )
 
 
 def differentiate_expression_output_partials(

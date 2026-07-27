@@ -35,6 +35,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
+from typing import NamedTuple
 
 from bngsim._codegen import (
     _derived_expr_partials_numeric,
@@ -296,6 +299,221 @@ def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
     return symbols
 
 
+def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
+    """Split a relational atom into ``(clock_symbol, threshold_expr)``, or
+    ``None`` when it is not a clock-versus-threshold comparison.
+
+    This is the *one* place that decides what a **recognized clock threshold**
+    is, and it has two callers that must never drift apart (issue #68, and the
+    #56 lesson before it):
+
+    * :func:`compute_switch_time_sens`, which turns each one it finds into a
+      crossing to stop at and a ``∂t*/∂p`` to jump by;
+    * :func:`uncompensated_condition_reason`, the codegen gate that decides
+      whether a condition-bearing Functional rate law may use the analytic
+      sensitivity RHS — which is sound *only* for the conditions the first
+      caller compensates.
+
+    An atom qualifies when exactly one side is bare clock symbol and the other
+    side reads no clock back. ``t < 2*t`` fails the second test (no fixed
+    crossing time) and ``X > thresh`` fails the first (a state threshold, whose
+    crossing moves with the trajectory and is nobody's ``∂t*/∂p``).
+    """
+    split = _relational_split(atom)
+    if split is None:
+        return None
+    lhs_bare = _strip_redundant_parens(split[0])
+    rhs_bare = _strip_redundant_parens(split[1])
+    lhs_clock = lhs_bare in clock_symbols
+    rhs_clock = rhs_bare in clock_symbols
+    # Exactly one side must be the clock; `t < 2*t` is not a fixed crossing, and
+    # neither-side is not a time threshold at all.
+    if lhs_clock == rhs_clock:
+        return None
+    clock_sym, threshold_expr = (lhs_bare, rhs_bare) if lhs_clock else (rhs_bare, lhs_bare)
+    # A threshold that reads the clock back (`t < 2*t`) has no fixed crossing
+    # time. A threshold over some *other* state is caught a step later by the
+    # caller: the partials come back empty because the expression has a free
+    # symbol that is not a primary parameter.
+    if any(
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(sym)}(?![A-Za-z0-9_])", threshold_expr)
+        for sym in clock_symbols
+    ):
+        return None
+    return clock_sym, threshold_expr
+
+
+class SwitchConditionScope(NamedTuple):
+    """Everything :func:`uncompensated_condition_reason` needs about a model.
+
+    Built once by :func:`switch_condition_scope` from the same ``core`` the
+    switch-time detector reads, so the gate and the detector cannot disagree
+    about which symbols are clocks or which parameters a threshold reduces to.
+    """
+
+    # Unit-rate clock symbol → the species index it reads. Literal simulation
+    # `time` is not in here (it is no species); ``clock_symbols`` is the union.
+    clocks: dict[str, int]
+    clock_symbols: frozenset[str]
+    param_names: tuple[str, ...]
+    param_pats: dict[str, re.Pattern]
+    primary_names: frozenset[str]
+    param_idx: dict[str, int]
+    values: tuple[float, ...]
+    derived_exprs: dict[str, str]
+
+
+def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
+    """Assemble the model-level context both switch-condition callers read.
+
+    One RHS probe for the clocks, one pass over the parameter table, shared by
+    :func:`compute_switch_time_sens` and :func:`uncompensated_condition_reason`
+    so neither can be built on a different view of the model than the other.
+    """
+    param_names = list(core.param_names)
+    is_expr = list(core.param_is_expression)
+    exprs = list(core.param_expressions)
+    clocks = _unit_rate_clock_species(core, ctx)
+    return SwitchConditionScope(
+        clocks=clocks,
+        clock_symbols=frozenset(clocks) | _TIME_SYMBOLS,
+        param_names=tuple(param_names),
+        param_pats={
+            n: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])") for n in param_names
+        },
+        primary_names=frozenset(n for i, n in enumerate(param_names) if not is_expr[i]),
+        param_idx={n: i for i, n in enumerate(param_names)},
+        values=tuple(core.get_param(n) for n in param_names),
+        derived_exprs={
+            param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
+        },
+    )
+
+
+# An identifier, excluding the exponent letter of a numeric literal (`1e5`) and
+# a member-ish suffix. An atom with none of these is a comparison between
+# literals — a compile-time constant, with no crossing at all.
+_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*")
+
+# A bare `!` that is not part of `!=`; the rest of the operator surface is
+# covered by _RELATIONAL / _LOGICAL.
+_NOT_OP = re.compile(r"(?<![=!<>])!(?!=)")
+
+
+def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> str | None:
+    """Why *expr*'s conditions block the analytic sensitivity RHS, or ``None``
+    when every one of them is a discontinuity issue #48 already compensates
+    (issue #68).
+
+    ``sympy.diff`` of the ``Piecewise`` an ``if(c, a, b)`` becomes returns a
+    clean ``0`` w.r.t. a parameter appearing only in ``c`` — no Dirac delta — so
+    :func:`bngsim._jacobian._is_emittable` will never reject it and nothing
+    downstream notices. That ``0`` is:
+
+    * **correct** for a clock threshold (``if(t>=sigma, ...)``): it is the whole
+      in-branch story, and :func:`compute_switch_time_sens` supplies the rest as
+      the crossing jump ``s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂sigma``;
+    * **wrong** for anything else. A state threshold (``if(X>=thresh, ...)``)
+      has a crossing time that moves with *every* parameter through the
+      trajectory — the rate-law twin of the state-dependent event trigger
+      :func:`NetworkModel::event_sensitivity_unsupported_reason` refuses for
+      issue #52 — and nothing supplies that term.
+
+    So an atom is admissible on exactly two grounds:
+
+    1. :func:`_clock_threshold_split` recognizes it *and* the threshold reduces
+       to primaries and evaluates to a constant — the two conditions under which
+       the detector actually emits the compensating record. A threshold it would
+       silently skip is no better than a state threshold here.
+    2. it names no symbol at all (``0>0``), so it is a constant and never
+       crosses.
+
+    Derived-parameter references are inlined before the scan, so a threshold
+    spelled ``sigma = t0 + t_delta`` clears ``t0`` and ``t_delta`` too, and a
+    condition written over a derived parameter is reported against its primaries.
+    """
+    # A comparison that is not inside an if() condition — `beta*(I>1)`, the
+    # boolean-as-a-number idiom — is a branch with no locatable threshold at all.
+    # Checked first, and over the whole expression, because everything below
+    # reasons about `if()` conditions and would simply not see it.
+    spans = _condition_spans(expr)
+    for pat in (_RELATIONAL, _LOGICAL, _NOT_OP):
+        for m in pat.finditer(expr):
+            if not any(lo <= m.start() and m.end() <= hi for lo, hi in spans):
+                return (
+                    f"the comparison {m.group(0)!r} in {expr!r} is not inside an if() "
+                    "condition, so there is no threshold to locate its crossing at and "
+                    "nothing can compensate the jump"
+                )
+
+    for cond in _iter_if_conditions(expr):
+        for atom in _split_logical_atoms(cond):
+            atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+            split = _clock_threshold_split(atom, scope.clock_symbols)
+            if split is None:
+                if not _IDENTIFIER.search(atom_flat):
+                    continue  # a literal comparison: constant, never crosses
+                return _not_a_clock_threshold(atom, atom_flat, scope)
+            threshold_expr = split[1]
+            thr_flat = _inline_derived_param_refs(threshold_expr, scope.derived_exprs) or (
+                threshold_expr
+            )
+            if not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names):
+                continue  # a literal threshold (`t<14`) — fixed, nothing to move
+            # ``warn_on_failure=False`` for the same reason the detector passes
+            # it: an empty result here is the supported "not a switch time"
+            # answer, which this function *reports* rather than warns about.
+            partials = _derived_expr_partials_numeric(
+                threshold_expr,
+                set(scope.primary_names),
+                scope.param_idx,
+                list(scope.values),
+                scope.derived_exprs,
+                warn_on_failure=False,
+            )
+            value = _evaluate_threshold(
+                threshold_expr, scope.param_idx, scope.values, scope.derived_exprs
+            )
+            if not partials or value is None:
+                # The detector would skip this crossing (no primary moves it, or
+                # the threshold is not a constant at this parameter point), so
+                # its ∂t*/∂p never reaches the solver and the Piecewise zero
+                # would be the whole answer.
+                return (
+                    f"the clock threshold {threshold_expr!r} in the condition {atom!r} does "
+                    "not reduce to a constant expression over the model's primary "
+                    "parameters, so the issue #48 detector would skip its crossing and the "
+                    "Piecewise derivative's zero would be the whole gradient"
+                )
+    return None
+
+
+def _not_a_clock_threshold(atom: str, atom_flat: str, scope: SwitchConditionScope) -> str:
+    """The decline message for a condition atom that is not a clock threshold.
+
+    Names the parameters it carries when it has any — a *fitted* threshold is
+    the case issue #68 is most concerned with — and otherwise says that the
+    crossing moves through the trajectory instead.
+    """
+    named = sorted(n for n in scope.param_names if scope.param_pats[n].search(atom_flat))
+    if named:
+        many = len(named) > 1
+        return (
+            f"the parameter{'s' if many else ''} "
+            + ", ".join(repr(n) for n in named)
+            + f" appear{'' if many else 's'} in the condition {atom!r}, which is not a "
+            f"recognized clock threshold, so moving {'them' if many else 'it'} moves the "
+            "branch crossing and the issue #48 switch-time jump — which only covers a "
+            "threshold on simulation time or a unit-rate counter — cannot compensate it"
+        )
+    return (
+        f"the condition {atom!r} is not a recognized clock threshold (it reads model state), "
+        "so its crossing time moves with the trajectory and therefore with every parameter, "
+        "and the issue #48 switch-time jump cannot compensate it — the rate-law twin of the "
+        "state-dependent event trigger refused for issue #52"
+    )
+
+
 def compute_switch_time_sens(
     core,
     sens_param_names,
@@ -350,18 +568,16 @@ def compute_switch_time_sens(
     # SBML's `time` csymbol emits, and what a BNGL model may write directly).
     # `time` needs no counter, so this is never empty — an SBML piecewise-in-time
     # rate law is detected on exactly the same path as a `.net` counter switch.
-    clocks = _unit_rate_clock_species(core, ctx)
-    clock_symbols = set(clocks) | set(_TIME_SYMBOLS)
-
-    param_names = list(core.param_names)
-    is_expr = list(core.param_is_expression)
-    exprs = list(core.param_expressions)
-    param_idx = {n: i for i, n in enumerate(param_names)}
-    values = [core.get_param(n) for n in param_names]
-    primary_names = {param_names[i] for i in range(len(param_names)) if not is_expr[i]}
-    derived_exprs = {
-        param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
-    }
+    # Assembled through the scope #68's codegen gate also builds, so the two
+    # cannot disagree about which symbols are clocks or what a threshold reduces
+    # to (that divergence is the whole hazard #68 was filed against).
+    scope = switch_condition_scope(core, ctx)
+    clocks = scope.clocks
+    clock_symbols = set(scope.clock_symbols)
+    param_idx = scope.param_idx
+    values = list(scope.values)
+    primary_names = set(scope.primary_names)
+    derived_exprs = scope.derived_exprs
     # A requested parameter that is itself derived has no independent axis: its
     # partials are attributed to the primaries it is built from, exactly as the
     # #41/#43 chain rules do. Columns for such a name stay 0.
@@ -375,35 +591,13 @@ def compute_switch_time_sens(
     for body in function_bodies:
         for cond in _iter_if_conditions(body):
             for atom in _split_logical_atoms(cond):
-                split = _relational_split(atom)
+                # The recognizer #68's codegen gate shares (see
+                # _clock_threshold_split): the gate may only admit a condition
+                # this loop turns into a compensating jump.
+                split = _clock_threshold_split(atom, clock_symbols)
                 if split is None:
                     continue
-                lhs, rhs = split
-                lhs_bare = _strip_redundant_parens(lhs)
-                rhs_bare = _strip_redundant_parens(rhs)
-                # Exactly one side must be the clock; `t < 2*t` is not a fixed
-                # crossing, and neither-side is not a time threshold at all.
-                lhs_clock = lhs_bare in clock_symbols
-                rhs_clock = rhs_bare in clock_symbols
-                if lhs_clock == rhs_clock:
-                    continue
-                clock_sym, threshold_expr = (
-                    (lhs_bare, rhs_bare) if lhs_clock else (rhs_bare, lhs_bare)
-                )
-                # A threshold that reads the clock back (`t < 2*t`) has no fixed
-                # crossing time. A threshold over some *other* state is caught a
-                # step later: the partials come back empty because the expression
-                # has a free symbol that is not a primary parameter, so the
-                # crossing is skipped rather than pinned to a time it does not
-                # have.
-                if any(
-                    re.search(
-                        rf"(?<![A-Za-z0-9_]){re.escape(sym)}(?![A-Za-z0-9_])",
-                        threshold_expr,
-                    )
-                    for sym in clock_symbols
-                ):
-                    continue
+                clock_sym, threshold_expr = split
 
                 # ``warn_on_failure=False``: this is a *scan* over candidate
                 # thresholds, so an expression that does not reduce to primaries
@@ -512,7 +706,7 @@ def compute_switch_time_sens(
 def _evaluate_threshold(
     expr: str,
     param_idx: dict,
-    values: list,
+    values: Sequence[float],
     derived_exprs: dict[str, str],
 ) -> float | None:
     """Numeric value of a threshold expression at the current parameter point.

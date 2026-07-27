@@ -106,6 +106,91 @@ def test_codegen_hash_is_pythonhashseed_independent():
     assert len(distinct) == 1, f"codegen hash varies with PYTHONHASHSEED: {hashes}"
 
 
+# ─── GH #68: the same leak, in the per-observable derivative ordering ─────────
+#
+# ``differentiate_rate_law`` iterated ``observable_names`` — a *set* — so a rate
+# law reading two or more observables ordered its ``{observable: ∂rate/∂obs}``
+# result, and with it every ``double d0``/``d1`` temporary and the ``v[j]``
+# column each is scattered into, by ``PYTHONHASHSEED``. Same class of bug as the
+# product-index one above, one layer down, and the saturable twin
+# (``_saturable_jacobian.differentiate_rate_law_native``) had already sorted for
+# it. The single-observable laws that dominate the corpus hid it: with one
+# derivative there is only one ordering.
+#
+# It reached the *sensitivity* RHS when GH #68 admitted condition-bearing
+# Functional laws, which is where it was caught — the four biggest models it
+# unblocked re-hashed on every process and so could never hit their own ``.so``.
+
+_TWO_OBSERVABLE_NET = """\
+begin parameters
+    1 ka     0.7  # Constant
+    2 kb     1.3  # Constant
+    3 kc     0.9  # Constant
+    4 c0     2.0  # Constant
+end parameters
+begin functions
+    1 drive() c0*sin(ka*Atot)*Btot + kc*Ctot + kb*Atot*Ctot
+end functions
+begin species
+    1 A() 3.0
+    2 B() 5.0
+    3 C() 2.0
+    4 D() 0.0
+end species
+begin reactions
+    1 1 4 drive #_R1
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+    3 Ctot                 3
+end groups
+"""
+
+_FUNCTIONAL_CHILD = textwrap.dedent(
+    """
+    import hashlib, sys, tempfile, os
+    import bngsim
+    from bngsim import _codegen
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "m.net")
+    open(p, "w").write(sys.stdin.read())
+    m = bngsim.Model.from_net(p)
+    src = _codegen.generate_sens_from_model(m, functional=True)
+    assert src is not None, "the fixture must reach the Functional sens emitter"
+    sys.stdout.write(hashlib.sha256(src.encode()).hexdigest())
+    """
+)
+
+
+def test_functional_sens_rhs_hash_is_pythonhashseed_independent():
+    """A three-observable Functional rate law, through the sensitivity emitter.
+    Both halves are covered at once: the ∂f/∂p switch and the fused ``J·v``,
+    which is where the per-observable ordering actually lands.
+
+    ``sin()`` is load-bearing: it puts the law outside the saturable family, so
+    ``differentiate_rate_law_c`` takes the **sympy** branch. The native branch
+    already sorted, so a saturable fixture passes this test with the bug still
+    in place."""
+    hashes = {}
+    for seed in (0, 1, 2, 3):
+        env = dict(os.environ, PYTHONHASHSEED=str(seed))
+        proc = subprocess.run(
+            [sys.executable, "-c", _FUNCTIONAL_CHILD],
+            input=_TWO_OBSERVABLE_NET,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        assert proc.returncode == 0, f"child failed (seed={seed}):\n{proc.stderr}"
+        hashes[seed] = proc.stdout.strip()
+        assert len(hashes[seed]) == 64, f"unexpected output (seed={seed}): {proc.stdout!r}"
+    assert len(set(hashes.values())) == 1, (
+        f"Functional sens RHS hash varies with PYTHONHASHSEED: {hashes}"
+    )
+
+
 # ─── GH #65: the Elementary sensitivity emission is frozen ────────────────────
 
 # The full emitted ``bngsim_dfdp`` for the model above: one mass-action reaction

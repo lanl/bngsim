@@ -45,6 +45,7 @@ on:
       - "third_party/mir/**"
       - "python/bngsim/_codegen.py"
       - "python/bngsim/_simulator.py"
+      - "python/bngsim/_switch_sensitivity.py"
       - "python/bngsim/__init__.py"
       - "python/tests/test_mir_equivalence.py"
       - "python/tests/test_codegen*.py"
