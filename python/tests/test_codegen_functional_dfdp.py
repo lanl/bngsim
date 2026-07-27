@@ -340,6 +340,22 @@ class TestDeclinesLoudly:
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert any("if() conditional" in m and "betaI" in m for m in warnings), warnings
 
+    def test_every_decline_path_warns_not_just_the_differentiation_ones(self, tmp_path, caplog):
+        """A decline that returns a reason and drops it on the floor is still a
+        silent decline. The rate-law-type and unresolvable-law paths bypass the
+        differentiation entirely, so they need their own coverage."""
+        mm = _model(
+            tmp_path,
+            "begin parameters\n    1 kcat  1  # Constant\n    2 Km    1  # Constant\n"
+            "end parameters\nbegin species\n    1 S() 100\n    2 E() 100\n    3 P() 0\n"
+            "end species\nbegin reactions\n    1 1,2 3,2 MM kcat Km #_R1\nend reactions\n"
+            "begin groups\n    1 St                   1\nend groups\n",
+        )
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            assert cg.generate_sens_from_model(mm, functional=True) is None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("rate-law type 'mm'" in m for m in warnings), warnings
+
     def test_an_unreachable_table_function_value_declines_out_loud_too(self, tmp_path, caplog):
         """The one decline the per-reaction loop cannot see coming: every rate law
         differentiates, but ``bngsim_dfdp`` is written in ``func[]`` and one of the

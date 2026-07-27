@@ -5350,23 +5350,21 @@ def _exprtk_call_heads() -> frozenset[str]:
 _MATH_CONSTANT_C = {"_pi": "M_PI", "_e": "M_E"}
 
 
-def _warn_functional_sens_rhs_refused(rxn_label: str, expr: str, reason: str) -> None:
-    """Report that the analytic sensitivity RHS was declined because a Functional
-    rate law could not be differentiated (GH #66, following the #56 precedent).
+def _warn_functional_sens_rhs_refused(reason: str) -> None:
+    """Report that the analytic sensitivity RHS was declined over a Functional
+    reaction (GH #66, following the #56 precedent).
 
     ``CVodeSensInit1`` takes ONE sensitivity-RHS callback for every column, so a
     single undifferentiable rate law has to decline the whole model — there is no
     per-reaction fallback to mix in. Saying so out loud is the point: the
     alternative this avoids is emitting ``∂func/∂p = 0`` for that reaction, which
-    reads downstream as a converged gradient of exactly zero.
+    reads downstream as a converged gradient of exactly zero. Every decline routes
+    through here, so none of them can be the quiet one.
     """
     logger.warning(
-        "Forward sensitivity: the Functional rate law for %s (%r) could not be "
-        "differentiated (%s), so the analytic sensitivity RHS is declined for "
+        "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
         "this model and CVODES' internal difference quotient is used instead "
         "(correct, but slower).",
-        rxn_label,
-        expr,
         reason,
     )
 
@@ -5581,6 +5579,11 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
     # the expression text (the only per-reaction input the differentiation reads).
     cache: dict[str, tuple[list[tuple[int, str]] | None, str | None]] = {}
     out: dict[int, list[tuple[int, str]]] = {}
+
+    def _decline(reason: str) -> tuple[dict[int, list[tuple[int, str]]], str]:
+        _warn_functional_sens_rhs_refused(reason)
+        return {}, reason
+
     for rxn_idx, rxn in enumerate(reactions):
         rtype = rxn["type"]
         if rtype == "elementary":
@@ -5589,18 +5592,20 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
         if rtype != "functional":
             # Michaelis–Menten is closed-form and out of scope for #66 (it is
             # worth exactly one extra corpus model); anything else is unknown.
-            return {}, f"{label} has rate-law type {rtype!r}, which has no analytic ∂f/∂p yet"
+            return _decline(
+                f"{label} has rate-law type {rtype!r}, which has no analytic ∂f/∂p yet"
+            )
         frxn = frxn_by_idx.get(rxn_idx)
         if frxn is None:
             # functional_jacobian_context() skips a reaction whose function name
             # resolves to no expression — there is nothing to differentiate.
-            return {}, f"{label} has no resolvable rate-law expression"
+            return _decline(f"{label} has no resolvable rate-law expression")
         if bool(frxn["per_species_volume_scaling"]):
             # The ∂f/∂p scatter would have to divide each affected row by that
             # species's (possibly live, GH #171) compartment volume, which the
             # emitted switch has no form for. Decline rather than emit the
             # undivided term.
-            return {}, f"{label} is cross-compartment (per-species volume scaling)"
+            return _decline(f"{label} is cross-compartment (per-species volume scaling)")
         rate_expr = frxn["rate_expr"]
         hit = cache.get(rate_expr)
         if hit is None:
@@ -5608,8 +5613,10 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
             cache[rate_expr] = hit
         terms, why = hit
         if terms is None:
-            _warn_functional_sens_rhs_refused(label, rate_expr, why or "unknown reason")
-            return {}, f"{label}: {why}"
+            return _decline(
+                f"the Functional rate law for {label} ({rate_expr!r}) could not be "
+                f"differentiated — {why or 'unknown reason'}"
+            )
         out[rxn_idx] = terms
     return out, None
 
@@ -5805,12 +5812,10 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         # reachable only through ``data->tfun_eval``, or a rateOf body (GH #65).
         # Declining is right; doing it silently is not, since this is the one
         # decline the per-reaction loop above cannot see coming.
-        logger.warning(
-            "Forward sensitivity: the Functional rate laws of this model were "
-            "differentiated, but the observable/function values they read cannot be "
-            "recomputed inside the sensitivity RHS (a table function or rateOf), so "
-            "the analytic sensitivity RHS is declined and CVODES' internal difference "
-            "quotient is used instead (correct, but slower)."
+        _warn_functional_sens_rhs_refused(
+            "every Functional rate law was differentiated, but the observable/function "
+            "values they read cannot be recomputed inside the sensitivity RHS (a table "
+            "function or rateOf)"
         )
     return src
 
