@@ -12,6 +12,14 @@ independent ``ydot[p] += rate`` accumulations is irrelevant; products do not ent
 the rate expression). This test pins determinism by generating the codegen hash
 in several child processes with different ``PYTHONHASHSEED`` values and asserting
 they all agree — it fails if any set/dict-ordered iteration leaks into the C.
+
+GH #65 adds the other axis of determinism: the Elementary ``bngsim_dfdp``
+emission is pinned to its exact text, so a change to the sensitivity emitter that
+is supposed to be Elementary-neutral cannot quietly shift it. ``bngsim_dfdp``
+gained the ability to take ``obs[]``/``func[]`` for the Functional ``∂f/∂p`` of
+#66; an Elementary derivative ``∂(k·sf·∏y^m)/∂k`` is written purely in
+``p[]``/``y[]``, so it must keep the original five-parameter signature and the
+original body.
 """
 
 from __future__ import annotations
@@ -96,3 +104,67 @@ def test_codegen_hash_is_pythonhashseed_independent():
     hashes = {seed: _codegen_hash_with_seed(seed) for seed in (0, 1, 2, 3)}
     distinct = set(hashes.values())
     assert len(distinct) == 1, f"codegen hash varies with PYTHONHASHSEED: {hashes}"
+
+
+# ─── GH #65: the Elementary sensitivity emission is frozen ────────────────────
+
+# The full emitted ``bngsim_dfdp`` for the model above: one mass-action reaction
+# A → B+C+D+E+F+G with rate constant p[1], so ∂f/∂k is `v = y[0]` scattered by
+# the net stoichiometry. Written out rather than hashed so a diff on this test
+# shows *what* moved.
+_EXPECTED_ELEMENTARY_DFDP = """\
+static void bngsim_dfdp(int iP, double t, const double* y,
+                        const double* p, double* dfdp_out) {
+    memset(dfdp_out, 0, N_SPECIES * sizeof(double));
+
+    double v;
+    switch (iP) {
+    case 1:
+        v = y[0];
+        dfdp_out[0] -= v;
+        dfdp_out[1] += v;
+        dfdp_out[2] += v;
+        dfdp_out[3] += v;
+        dfdp_out[4] += v;
+        dfdp_out[5] += v;
+        dfdp_out[6] += v;
+        break;
+    default:
+        break;  /* parameter not a rate constant - dfdp = 0 */
+    }
+
+}
+"""
+
+
+def _emitted_dfdp() -> str:
+    import bngsim
+    from bngsim import _codegen
+
+    model = bngsim.Model.from_sbml_string(_SBML)
+    c_source, has_sens = _codegen.generate_combined_from_model(model)
+    assert has_sens, "an all-Elementary model must still get an analytical sens RHS"
+    start = c_source.index("static void bngsim_dfdp")
+    return c_source[start : c_source.index("\n}\n", start) + 3]
+
+
+def test_elementary_dfdp_emission_is_unchanged():
+    """The #65 guard. The signature line is the load-bearing part: gaining
+    ``const double* obs`` / ``const double* func`` here would mean an Elementary
+    model started paying for context it has no derivative to use."""
+    assert _emitted_dfdp() == _EXPECTED_ELEMENTARY_DFDP
+
+
+def test_elementary_sens_rhs_carries_no_observable_context():
+    """The driver half: no obs[]/func[] arrays are declared or filled, and the
+    dispatch keeps its five arguments."""
+    import bngsim
+    from bngsim import _codegen
+
+    model = bngsim.Model.from_sbml_string(_SBML)
+    sens = _codegen.generate_sens_from_model(model)
+    assert sens is not None
+    assert "    bngsim_dfdp(iP, t, y, p, dfdp);" in sens
+    assert "double obs[" not in sens
+    assert "double func[" not in sens
+    assert "sens_obs_blk" not in sens and "sens_func_blk" not in sens

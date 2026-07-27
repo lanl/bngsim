@@ -25,6 +25,7 @@ import subprocess
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger("bngsim")
@@ -461,6 +462,19 @@ _FUNC_BLK_SIG = (
 )
 _FUNC_BLK_ARGS = "t, y, p, obs, func, user_data"
 _FUNC_BLK_PREAMBLE = ("CodegenUserData* data = (CodegenUserData*)user_data;",)
+
+# The same func-block split for the *sensitivity* RHS (GH #65), minus the
+# ``user_data`` parameter. ``bngsim_codegen_sens_rhs`` is handed a
+# ``CodegenSensUserData``, which carries no ``tfun_ctx``/``tfun_eval`` — so a
+# whole-body table function (the one construct ``_emit_function_lines`` emits as
+# ``data->tfun_eval(...)``) is unreachable from here. Rather than smuggle a
+# second user-data shape through the ABI, ``_emit_sens_rhs_body`` declines a
+# model whose df/dp needs a tfun-backed function value, mirroring
+# ``_analyze_output_sens``'s embedded-tfun decline; the emitted blocks therefore
+# never reference ``data``, and the parameter would only ever be dead weight.
+_SENS_FUNC_BLK_SIG = "double t, const double* y, const double* p, const double* obs, double* func"
+_SENS_FUNC_BLK_ARGS = "t, y, p, obs, func"
+_SENS_FUNC_BLK_ARGS_NO_OBS = "t, y, p, NULL, func"
 
 
 def _shard_value_lines(
@@ -2321,6 +2335,14 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
             }
         )
 
+    # No ``value_lines_fn`` (GH #65): every derivative this path emits is a
+    # ``p[]``/``y[]`` expression, so none can reference obs[]/func[] and the
+    # context is never asked for. The .net parse also carries neither the
+    # observable-entry nor the table-function shapes ``_emit_observable_lines`` /
+    # ``_emit_function_lines`` consume — the same reason ``generate_combined_c``
+    # sources its Jacobian from the *model*, not from the .net. Should a caller
+    # ever produce an obs-referencing term here, _emit_sens_rhs_body declines
+    # rather than emitting C that names an undeclared array.
     return _emit_sens_rhs_body(rxn_data, n_sp, n_params, fixed_sp)
 
 
@@ -2329,7 +2351,9 @@ def _emit_sens_rhs_body(
     n_sp: int,
     n_params: int,
     fixed_sp: set[int],
-) -> str:
+    *,
+    value_lines_fn: Callable[[], tuple[list[str], list[str]] | None] | None = None,
+) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
 
@@ -2348,6 +2372,25 @@ def _emit_sens_rhs_body(
     Both ``generate_sens_rhs_c`` (.net path) and ``generate_sens_from_model``
     (model path) feed this helper, so the emitted C is byte-identical for the
     same normalized input.
+
+    ``value_lines_fn`` (GH #65) supplies the ``obs[]``/``func[]`` recomputation a
+    Functional ``∂f/∂p`` reads. An Elementary rate law is ``k·sf·∏y^m``, whose
+    parameter derivative is written purely in ``p[]``/``y[]``, so the emitted
+    switch never mentions ``obs[``/``func[`` and the thunk is **never called** —
+    Elementary models pay nothing, at emit time or at run time, and their source
+    is byte-identical to the pre-#65 output. When a caller does emit a derivative
+    that reads them, the thunk is invoked once and must return
+    ``(obs_value_lines, func_value_lines)`` from the shared
+    ``_emit_observable_lines`` / ``_emit_function_lines`` emitters, so derivative
+    and value can never diverge; ``bngsim_dfdp`` then gains the corresponding
+    ``const double*`` parameters (independently, mirroring the analytical
+    Jacobian's block signature) and the driver computes the arrays once per call
+    before dispatching.
+
+    Returns ``None`` — decline, never a silently zeroed derivative — when the
+    switch needs values the caller cannot deliver (no thunk, or a thunk that
+    declines because a needed function dispatches through ``data->tfun_eval``,
+    which this RHS's ``CodegenSensUserData`` cannot reach).
     """
     lines: list[str] = []
     _emit = lines.append
@@ -2358,6 +2401,64 @@ def _emit_sens_rhs_body(
     # alone. Same threshold as the RHS ⇒ a model that chunks one chunks both.
     chunk = _should_chunk(len(rxn_data))
     block_size = _chunk_block_size()
+
+    # ── Resolve the obs[]/func[] context the switch will need (GH #65) ──
+    # Decided *before* anything is emitted, because it fixes bngsim_dfdp's
+    # signature, which is written above the body.
+    #
+    # Read off the input rather than off the emitted text. Every other term in a
+    # case is built here — `_build_geom_terms` produces only numeric literals and
+    # y[…], and the scatter is dfdp_out[…] += v — so a derived term's C
+    # expression is the *only* place obs[]/func[] can enter. Deciding from the
+    # data costs O(#derived terms) (zero for the overwhelming majority of
+    # reactions); scanning the emitted body would cost O(source size), which at
+    # genome scale is ~100k lines and shows up in emit time.
+    #
+    # An Elementary derivative is written purely in p[]/y[], so both flags stay
+    # False, the thunk is never called, and every line below is skipped — the
+    # source is byte-identical to the pre-#65 emitter.
+    _derived_exprs = [t[1] for rxn in rxn_data for t in rxn.get("derived_terms", ())]
+    need_obs = any("obs[" in e for e in _derived_exprs)
+    need_func = any("func[" in e for e in _derived_exprs)
+    obs_in: list[str] = []
+    obs_fs: list[str] = []
+    func_in: list[str] = []
+    func_fs: list[str] = []
+    if need_obs or need_func:
+        values = value_lines_fn() if value_lines_fn is not None else None
+        if values is None:
+            # No context available (the .net path), or the caller declined (a
+            # tfun-backed function value). Refuse the analytic RHS rather than
+            # emit a derivative that cannot compile — CVODES' internal
+            # difference quotient is slower but right (the #56 precedent).
+            return None
+        obs_value_lines, func_value_lines = values
+        # Function bodies are written in obs[] symbols, so obs[] is emitted
+        # whenever a func[] that references one is — otherwise only when the
+        # switch itself reads it, so no unused array is ever declared.
+        want_obs = need_obs or (need_func and any("obs[" in ln for ln in func_value_lines))
+        if want_obs:
+            if not obs_value_lines:
+                return None
+            obs_in, obs_fs = _shard_value_lines(
+                obs_value_lines,
+                chunk=chunk,
+                fn_prefix="sens_obs_blk",
+                signature_params=_OBS_BLK_SIG,
+                call_args=_OBS_BLK_ARGS,
+            )
+        if need_func:
+            if not func_value_lines:
+                return None
+            # A model with no observables declares no obs[] array; the blocks
+            # still take the parameter (one fixed signature) and never read it.
+            func_in, func_fs = _shard_value_lines(
+                func_value_lines,
+                chunk=chunk,
+                fn_prefix="sens_func_blk",
+                signature_params=_SENS_FUNC_BLK_SIG,
+                call_args=_SENS_FUNC_BLK_ARGS if want_obs else _SENS_FUNC_BLK_ARGS_NO_OBS,
+            )
 
     # ── Header ──────────────────────────────────────────────────────
     _emit("/* Auto-generated CVODES sensitivity RHS - DO NOT EDIT */")
@@ -2383,7 +2484,21 @@ def _emit_sens_rhs_body(
     _emit("   For derived rate constants (e.g., _rateLaw{N} = chi_X*kon_Y or 5/MEK),")
     _emit("   the chain-rule contributions to each primary parameter are also emitted */")
     _emit("static void bngsim_dfdp(int iP, double t, const double* y,")
-    _emit("                        const double* p, double* dfdp_out) {")
+    # GH #65: obs and func are appended independently — the way the analytical
+    # Jacobian picks its shard-block signature — so a derivative that reads only
+    # one does not carry the other, and an Elementary body carries neither
+    # (byte-identical to the pre-#65 two-line signature). Continuation lines pack
+    # two parameters each, mirroring bngsim_output_sens_dfdp one level up.
+    _dfdp_params = ["const double* p"]
+    if need_obs:
+        _dfdp_params.append("const double* obs")
+    if need_func:
+        _dfdp_params.append("const double* func")
+    _dfdp_params.append("double* dfdp_out")
+    for _i in range(0, len(_dfdp_params), 2):
+        _pair = ", ".join(_dfdp_params[_i : _i + 2])
+        _tail = ") {" if _i + 2 >= len(_dfdp_params) else ","
+        _emit(f"                        {_pair}{_tail}")
     _emit("    memset(dfdp_out, 0, N_SPECIES * sizeof(double));")
     _emit("")
 
@@ -2432,6 +2547,13 @@ def _emit_sens_rhs_body(
             else:
                 # chain rule: rate uses derived param p_d = f(primaries).
                 # ∂rate/∂p_iP = (∂p_d/∂p_iP) * sf * ∏y^m
+                #
+                # GH #65: this is also the shape a Functional ∂f/∂p takes —
+                # ∂f_i/∂p = Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r is the same
+                # "(derivative expression) × geometry" product with ∂func_r/∂p in
+                # place of ∂p_d/∂primary. That expression is the one that may be
+                # written in obs[]/func[] symbols, which is why the signature
+                # above is decided from these terms.
                 _, _, dpd_dprimary_c = entry
                 parts = [f"({dpd_dprimary_c})", *geom]
 
@@ -2572,6 +2694,14 @@ def _emit_sens_rhs_body(
     _emit("")
 
     # ── Complete sensitivity RHS: ySdot = J * yS + df/dp_{iS} ──────
+    # The obs[]/func[] fill blocks (GH #65, chunked models only) live at file
+    # scope ahead of the driver, like the jacv blocks above; compile_rhs lifts
+    # both into parallel translation units on the sentinel comments.
+    for ln in (*obs_fs, *func_fs):
+        _emit(ln)
+    if obs_fs or func_fs:
+        _emit("")
+
     _emit("/* CVODES sensitivity RHS (CVSensRhs1Fn signature).")
     _emit("   Computes: ySdot = J(t,y) * yS + df/dp_{iS}")
     _emit("   where iS is the sensitivity index and plist maps iS to param index. */")
@@ -2591,9 +2721,22 @@ def _emit_sens_rhs_body(
     _emit("    double* p = data->param_values;")
     _emit("    int iP = data->plist[iS];  /* actual parameter index */")
     _emit("")
+    if obs_in or func_in:
+        # GH #65: the same emitters the RHS uses, so a Functional ∂f/∂p and the
+        # RHS it differentiates never read divergent intermediates. Computed per
+        # call — CVSensRhs1Fn is invoked once per sensitivity column, so an
+        # Ns-column step recomputes these Ns times. Deduplicating that would mean
+        # caller-owned buffers on CodegenSensUserData (an ABI widening mirrored in
+        # two C++ translation units); the block is a handful of statements on the
+        # models this serves, so it is recomputed instead.
+        _emit("    /* Observables / functions (needed by Functional df/dp) */")
+        for ln in (*obs_in, *func_in):
+            _emit(ln)
+        _emit("")
+    _dfdp_ctx = "".join(s for s, want in ((", obs", need_obs), (", func", need_func)) if want)
     _emit("    /* 1. Compute df/dp_{iP} */")
     _emit("    double dfdp[N_SPECIES];")
-    _emit("    bngsim_dfdp(iP, t, y, p, dfdp);")
+    _emit(f"    bngsim_dfdp(iP, t, y, p{_dfdp_ctx}, dfdp);")
     _emit("")
     _emit("    /* 2. Compute J * yS */")
     _emit("    double Jv[N_SPECIES];")
@@ -5285,7 +5428,72 @@ def generate_sens_from_model(model) -> str | None:
             }
         )
 
-    return _emit_sens_rhs_body(rxn_data, n_sp, n_params, fixed_sp)
+    return _emit_sens_rhs_body(
+        rxn_data,
+        n_sp,
+        n_params,
+        fixed_sp,
+        value_lines_fn=lambda: _sens_value_lines(data),
+    )
+
+
+def _sens_value_lines(data: dict) -> tuple[list[str], list[str]] | None:
+    """The ``obs[]``/``func[]`` recomputation ``bngsim_dfdp`` reads (GH #65).
+
+    Returns ``(obs_value_lines, func_value_lines)`` from the same emitters the
+    RHS, the analytical Jacobian and the output evaluator use, so the values a
+    derivative is written against are the values the RHS computed. Returns
+    ``None`` — decline the whole analytic sensitivity RHS — when a function
+    cannot be evaluated from ``(t, y, p)`` alone:
+
+    * a **whole-body table function**, which ``_emit_function_lines`` emits as
+      ``data->tfun_eval(tf_id, x, data->tfun_ctx)``. That callback lives on
+      ``CodegenUserData``; ``bngsim_codegen_sens_rhs`` is handed a
+      ``CodegenSensUserData``, which has neither field.
+    * an **embedded tfun wrapper**, which even the value codegen declines
+      (``generate_outputs_from_model``) because the ``tfun_<table>(...)`` token
+      would be emitted as an undeclared C call.
+    * **rateOf**, which needs the live dx/dt buffer no sensitivity-RHS call has.
+
+    Called lazily and at most once per emit, and only when the ∂f/∂p switch
+    actually references ``obs[``/``func[`` — an Elementary model never does, so
+    it never pays the translation cost and never reaches these declines.
+    """
+    species = data["species"]
+    observables = data["observables"]
+    functions = data["functions"]
+    tfun_specs = data.get("table_functions", [])
+
+    if any(_RATEOF_PREFIX in f["expression"] for f in functions):
+        return None
+
+    tfun_names = [spec["name"] for spec in tfun_specs]
+    for f in functions:
+        if f["name"] in tfun_names:
+            return None  # whole-body tfun → data->tfun_eval, unreachable here
+        if any(f"tfun_{tname}(" in f["expression"] for tname in tfun_names):
+            return None  # embedded wrapper → the value codegen declines too
+
+    # GH #75 amount factor, exactly as generate_rhs_from_model folds it in.
+    av_factor = {
+        i: float(s.get("volume_factor", 1.0))
+        for i, s in enumerate(species)
+        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
+    }
+    param_map = {p["name"]: f"p[{i}]" for i, p in enumerate(data["parameters"])}
+    species_map = {s["name"]: f"y[{i}]" for i, s in enumerate(species)}
+    obs_map = {o["name"]: f"obs[{j}]" for j, o in enumerate(observables)}
+    func_map = {f["name"]: f"func[{m}]" for m, f in enumerate(functions)}
+
+    obs_lines = _emit_observable_lines(observables, av_factor) if observables else []
+    # tfun_call_by_name is empty by construction — every tfun-backed function was
+    # declined above, so no emitted line can reference ``data``.
+    func_lines = (
+        _emit_function_lines(functions, {}, param_map, species_map, obs_map, func_map, None)
+        if functions
+        else []
+    )
+    return obs_lines, func_lines
 
 
 def generate_outputs_from_model(model) -> str | None:
