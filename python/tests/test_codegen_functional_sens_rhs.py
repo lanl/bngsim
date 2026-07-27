@@ -706,13 +706,23 @@ class TestEndToEnd:
             np.testing.assert_allclose(got[:, k], fd, rtol=1e-6, err_msg=p)
 
     def test_the_analytic_rhs_is_actually_the_one_installed(self, tmp_path):
-        """Agreement proves nothing if the run did not take the new path. The .so
-        the Simulator installed has to carry the symbol — and for a .net-loaded
-        model that means the emitter reached it through ``generate_combined_c``,
-        which is a different hook from the model-based entry points."""
+        """Agreement proves nothing if the run did not take the new path. The
+        artifact the Simulator installed has to carry the symbol — and for a
+        .net-loaded model that means the emitter reached it through
+        ``generate_combined_c``, which is a different hook from the model-based
+        entry points.
+
+        Written against whichever artifact this backend produces, because the MIR
+        matrix runs this file with ``BNGSIM_CODEGEN_JIT=mir``: there is a C source
+        string and no ``.so`` then, and asserting on the ``.so`` alone would turn
+        the JIT legs into a false failure (or, if skipped, a false green)."""
         model = _model(tmp_path, SIR)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["gamma"])
         so = getattr(model, "_codegen_so_path", "")
-        assert so, "no compiled .so was installed for the sensitivity run"
-        assert hasattr(ctypes.CDLL(str(so)), "bngsim_codegen_sens_rhs")
+        src = getattr(model, "_codegen_c_source", "")
+        assert so or src, "no codegen artifact was installed for the sensitivity run"
+        if so:
+            assert hasattr(ctypes.CDLL(str(so)), "bngsim_codegen_sens_rhs")
+        else:
+            assert "bngsim_codegen_sens_rhs" in src
         assert sim.run(t_span=(0.0, 10.0), n_points=11).sensitivities is not None
