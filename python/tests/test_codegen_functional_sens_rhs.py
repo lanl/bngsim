@@ -57,6 +57,31 @@ def _has_cc() -> bool:
 
 requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available")
 
+# GH #85, open and pre-existing on main: under the MIR JIT backend a Functional
+# model *constructed with* ``sensitivity_params`` does not compile — c2mir
+# rejects the GH #198 ``bngsim_codegen_output_sens`` block that ``cc`` accepts.
+# Only the tests that build such a Simulator are blocked. Everything else in this
+# file runs on both backends, including both finite-difference oracles and the
+# steady-state case below, which reaches the sensitivity codegen without ever
+# setting ``_want_output_sens`` and so never emits the offending block.
+#
+# xfail(strict) rather than skipif so the marker retires itself: the day c2mir
+# compiles these models the tests XPASS, the run goes red, and the quarantine
+# comes out — instead of waiting on someone to remember. ``raises`` keeps it
+# honest, because a quarantine that absorbs any failure is how a second bug hides
+# behind the first: this one only covers the backend refusing to compile (MirJit
+# raises RuntimeError, and SimulationError subclasses it), so an assertion that
+# starts failing for an unrelated reason is still a red test.
+#
+# The same marker is spelled out in test_codegen_switch_condition_sens.py, whose
+# TestEndToEnd is blocked identically. Both retire with #85.
+blocked_on_mir_jit = pytest.mark.xfail(
+    cg._codegen_jit_backend() == "mir",
+    reason="GH #85: c2mir cannot compile bngsim_codegen_output_sens",
+    raises=RuntimeError,
+    strict=True,
+)
+
 
 # ─── fixtures ──────────────────────────────────────────────────────────────
 #
@@ -612,6 +637,7 @@ class TestEndToEnd:
     """The claim that matters to a caller: the trajectory sensitivities CVODES
     integrates from the analytic RHS are the right ones."""
 
+    @blocked_on_mir_jit
     @pytest.mark.parametrize(
         ("text", "params", "t_end"),
         [
@@ -630,6 +656,7 @@ class TestEndToEnd:
                 got[:, :, k], fd, rtol=1e-5, atol=1e-6 * scale, err_msg=f"parameter {name}"
             )
 
+    @blocked_on_mir_jit
     @pytest.mark.parametrize(
         ("text", "params", "t_end"),
         [(HILL, ["kmax", "Km"], 20.0), (TWO_LAWS, ["kf", "Kd", "kr"], 20.0)],
@@ -653,6 +680,7 @@ class TestEndToEnd:
         # far looser than the two integrations' step-history difference.
         np.testing.assert_allclose(a, d, rtol=1e-5, atol=1e-5 * scale)
 
+    @blocked_on_mir_jit
     def test_the_step_count_collapse_on_sir(self, tmp_path, monkeypatch):
         """SIR is why #55 was filed. Its difference-quotient sensitivity run
         exhausts CVODES' step budget and returns a gradient of exactly zero —
@@ -714,6 +742,7 @@ class TestEndToEnd:
             fd = (y_ss(p, v + h) - y_ss(p, v - h)) / (2.0 * h)
             np.testing.assert_allclose(got[:, k], fd, rtol=1e-6, err_msg=p)
 
+    @blocked_on_mir_jit
     def test_the_analytic_rhs_is_actually_the_one_installed(self, tmp_path):
         """Agreement proves nothing if the run did not take the new path. The
         artifact the Simulator installed has to carry the symbol — and for a
@@ -724,7 +753,9 @@ class TestEndToEnd:
         Written against whichever artifact this backend produces, because the MIR
         matrix runs this file with ``BNGSIM_CODEGEN_JIT=mir``: there is a C source
         string and no ``.so`` then, and asserting on the ``.so`` alone would turn
-        the JIT legs into a false failure (or, if skipped, a false green)."""
+        the JIT legs into a false failure (or, if skipped, a false green). That
+        branch is dead code until GH #85 lets the JIT compile this model at all —
+        it is written and waiting, not speculative."""
         model = _model(tmp_path, SIR)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["gamma"])
         so = getattr(model, "_codegen_so_path", "")
