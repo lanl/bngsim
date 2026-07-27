@@ -199,7 +199,12 @@ _compile_counter = itertools.count()
 # declining to CVODES' difference quotient, so eight corpus models emit a
 # bngsim_codegen_sens_rhs (with a ternary in both ∂f/∂p and J·v) where v23
 # emitted none. Invalidate v23.
-_CODEGEN_VERSION = "24"
+# v25: lanl/bngsim #55 — Michaelis–Menten reactions get the analytic sensitivity
+# RHS (closed-form ∂rate/∂kcat and ∂rate/∂Km, plus their J·v from the same
+# builder the analytical Jacobian uses), so an MM model emits a
+# bngsim_codegen_sens_rhs where v24 declined to CVODES' difference quotient.
+# Invalidate v24.
+_CODEGEN_VERSION = "25"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -2570,6 +2575,14 @@ def _emit_sens_rhs_body(
         for term in rxn.get("derived_terms", []):
             primary_pidx, dpd_dprimary_c = term
             rxns_by_param.setdefault(primary_pidx, []).append(("derived", rxn, dpd_dprimary_c))
+        # GH #55: a Michaelis–Menten ∂rate/∂p is closed form but needs locals
+        # (sFree and friends), so it arrives as C lines that assign ``v`` rather
+        # than as an expression the geometry gets multiplied into — its rate is
+        # not k·sf·∏y^m, so there is no geometry to multiply. Never present for
+        # the .net path or for an Elementary/Functional model, so their emission
+        # is untouched.
+        for primary_pidx, v_lines in rxn.get("mm_terms", []):
+            rxns_by_param.setdefault(primary_pidx, []).append(("mm", rxn, v_lines))
 
     _emit("    double v;")
     _emit("    switch (iP) {")
@@ -2597,6 +2610,26 @@ def _emit_sens_rhs_body(
         for entry in rxns_by_param[pidx]:
             kind = entry[0]
             rxn = entry[1]
+            if kind == "mm":
+                for _ln in entry[2]:
+                    _emit(_ln)
+                for sp_idx, coeff in sorted(rxn["stoich"].items()):
+                    # A Michaelis–Menten enzyme sits on both sides, so its net
+                    # stoichiometry is always 0. The Elementary branch below emits
+                    # `+= (0) * v` for such a spectator; skipping it here keeps
+                    # every MM reaction from carrying one dead line per column,
+                    # and Elementary emission is left exactly as it was.
+                    if coeff == 0:
+                        continue
+                    if coeff == 1:
+                        _emit(f"        dfdp_out[{sp_idx}] += v;")
+                    elif coeff == -1:
+                        _emit(f"        dfdp_out[{sp_idx}] -= v;")
+                    elif coeff > 0:
+                        _emit(f"        dfdp_out[{sp_idx}] += {coeff} * v;")
+                    else:
+                        _emit(f"        dfdp_out[{sp_idx}] += ({coeff}) * v;")
+                continue
             geom = _build_geom_terms(rxn)
             if kind == "direct":
                 parts = list(geom) if geom else ["1.0"]
@@ -4760,6 +4793,231 @@ def _jac_vpow(s: int, av_factor: dict) -> str:
     return f"({_jac_c_float(av_factor[s])}*y[{s}])" if s in av_factor else f"y[{s}]"
 
 
+def _mm_v_lines(
+    *, kcat_c: str, km_c: str, e_idx: int, s_idx: int, stat: float, wrt: str, chain_c: str | None
+) -> list[str]:
+    """C lines setting ``v`` to ∂(MM rate)/∂kcat or ∂(MM rate)/∂Km (GH #55).
+
+    Written as a braced block with locals rather than one inline expression, and
+    grouped exactly as ``_mm_jacobian_groups`` groups ∂rate/∂E and ∂rate/∂S,
+    because the grouping is load-bearing: the algebraically-identical "simplified"
+    form of ∂/∂Km (with the ½ factors cancelled) loses every significant digit on
+    log-spread parameters, while this one tracks ``sFree`` itself. No derivative
+    can beat the value it differentiates — see the note in
+    ``_mm_dfdp_terms`` about ``sFree``'s own cancellation.
+
+    ``chain_c`` is the #15/#41 factor ∂(kcat or Km)/∂primary when the rate
+    constant is a derived parameter; ``None`` for the direct column.
+    """
+    tail = f" * ({chain_c})" if chain_c else ""
+    stat_c = "" if stat == 1.0 else f"{_jac_c_float(stat)} * "
+    out = ["        {"]
+    if wrt == "Km":
+        out.append(f"            double kcat = {kcat_c}, Km = {km_c};")
+    else:
+        out.append(f"            double Km = {km_c};")
+    out += [
+        f"            double E = y[{e_idx}], S = y[{s_idx}];",
+        "            double delta = S - Km - E;",
+        "            double Dmm = sqrt(delta*delta + 4.0*Km*S);",
+        "            double sFree = 0.5*(delta + Dmm);",
+        "            v = 0.0;",
+        # At sFree == 0 the rate is 0 for every kcat/Km (S = 0 forces sFree = 0
+        # whatever Km is), so both partials are genuinely 0 — the same guard the
+        # Jacobian uses, meaning the same thing.
+        "            if (sFree > 0.0 && Dmm > 0.0) {",
+    ]
+    if wrt == "kcat":
+        out.append(f"                v = {stat_c}E*sFree/(Km + sFree){tail};")
+    else:
+        out += [
+            "                double dsF_dKm = 0.5*(-1.0 + (2.0*S - delta)/Dmm);",
+            "                double KpsF = Km + sFree;",
+            f"                v = kcat * {stat_c}E*(dsF_dKm*Km - sFree)/(KpsF*KpsF){tail};",
+        ]
+    out += ["            }", "        }"]
+    return out
+
+
+def _mm_dfdp_terms(data, plan_mm, param_idx_by_name, primary_param_names, derived_exprs):
+    """``∂(MM rate)/∂p`` for every Michaelis–Menten reaction, as C line-blocks.
+
+    Returns ``({rxn_idx: [(param_idx, v_lines)]}, None)`` or ``({}, reason)`` to
+    decline the whole model — ``CVodeSensInit1`` is all-or-nothing, as everywhere
+    else on this path.
+
+    The tQSSA rate is closed form, so unlike the Functional path (GH #66) there is
+    no sympy here at all: ∂/∂kcat = rate/kcat and ∂/∂Km follows from
+    ``∂sFree/∂Km = ½(−1 + (2S − δ)/D)``. Both were checked against ``sympy.diff``
+    symbolically and over random parameter points before being written down.
+
+    Cross-checked against ``plan_mm`` entry by entry rather than trusted: the
+    plan is what ``_mm_jacobian_groups`` builds ``J·v`` from, so if the two
+    disagree about which species is the enzyme, this declines instead of emitting
+    a ∂f/∂p that belongs to a different reaction than the ``J·v`` beside it.
+
+    **Accuracy floor.** ``sFree = ½(δ + D)`` cancels catastrophically once
+    ``|δ| ≫ √(4·Km·S)`` — roughly two digits per decade — and that is shipped
+    behaviour in the RHS and the analytical Jacobian, not something introduced
+    here. These partials are exactly as accurate as the rate they differentiate
+    and as the Jacobian's own ∂rate/∂E; a model in that regime has a wrong
+    trajectory before it has a wrong gradient.
+    """
+    mm_rxns = [(i, r) for i, r in enumerate(data["reactions"]) if r["type"] == "mm"]
+    if not mm_rxns:
+        return {}, None
+    if len(mm_rxns) != len(plan_mm):
+        return {}, (
+            f"the model has {len(mm_rxns)} Michaelis–Menten reaction(s) but the analytical "
+            f"Jacobian plan describes {len(plan_mm)}, so ∂f/∂p and J·v would not be built "
+            "from the same reactions"
+        )
+
+    params = data["parameters"]
+    out: dict[int, list[tuple[int, list[str]]]] = {}
+    for (rxn_idx, rxn), mt in zip(mm_rxns, plan_mm, strict=True):
+        label = f"reaction {rxn_idx + 1} (Michaelis–Menten)"
+        rate_params = list(rxn["rate_param_indices"])
+        reactants = list(rxn["reactants"])
+        if len(rate_params) < 2 or len(reactants) < 2:
+            return {}, f"{label} does not carry the kcat/Km and enzyme/substrate pair"
+        # model.cpp's MM branch: enzyme is reactant_indices[0], substrate [1].
+        e_idx, s_idx = int(reactants[0]), int(reactants[1])
+        kcat_i, km_i = int(rate_params[0]), int(rate_params[1])
+        if (
+            int(mt["e_idx"]) != e_idx
+            or int(mt["s_idx"]) != s_idx
+            or int(mt["kcat_param_idx0"]) != kcat_i
+            or int(mt["km_param_idx0"]) != km_i
+            or float(mt["stat_factor"]) != float(rxn["stat_factor"])
+        ):
+            return {}, (
+                f"{label} disagrees with the analytical Jacobian plan about its enzyme, "
+                "substrate, rate constants or statistical factor"
+            )
+
+        stat = float(rxn["stat_factor"])
+        kcat_c, km_c = f"p[{kcat_i}]", f"p[{km_i}]"
+        terms: list[tuple[int, list[str]]] = []
+        for wrt, pidx in (("kcat", kcat_i), ("Km", km_i)):
+            terms.append(
+                (
+                    pidx,
+                    _mm_v_lines(
+                        kcat_c=kcat_c,
+                        km_c=km_c,
+                        e_idx=e_idx,
+                        s_idx=s_idx,
+                        stat=stat,
+                        wrt=wrt,
+                        chain_c=None,
+                    ),
+                )
+            )
+            # #15/#41: a derived kcat/Km is re-derived whenever a primary moves,
+            # so ∂f/∂primary carries (∂rate/∂p_d)·(∂p_d/∂primary). Losing that
+            # reads downstream as an exact zero, so a failure declines (#56).
+            pname = params[pidx]["name"]
+            if pname not in derived_exprs:
+                continue
+            jac, why = _derived_param_jacobian_checked(
+                derived_exprs[pname],
+                primary_param_names,
+                param_idx_by_name,
+                derived_exprs=derived_exprs,
+            )
+            if why is not None:
+                return {}, (
+                    f"{label}'s derived rate constant {pname} = {derived_exprs[pname]!r} "
+                    f"could not be differentiated ({why})"
+                )
+            for primary_name, dpd_c in (jac or {}).items():
+                k = param_idx_by_name.get(primary_name, -1)
+                if k < 0:
+                    continue
+                terms.append(
+                    (
+                        k,
+                        _mm_v_lines(
+                            kcat_c=kcat_c,
+                            km_c=km_c,
+                            e_idx=e_idx,
+                            s_idx=s_idx,
+                            stat=stat,
+                            wrt=wrt,
+                            chain_c=dpd_c,
+                        ),
+                    )
+                )
+        out[rxn_idx] = terms
+    return out, None
+
+
+def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
+    """Reconstruct every Michaelis–Menten reaction's Jacobian contribution as a
+    balanced ``{ … }`` C line-group, scattered through the caller's ``add``.
+
+    The tQSSA rate is ``kcat·stat·E·sFree/(Km + sFree)`` with
+    ``sFree = ½(δ + D)``, ``δ = S − Km − E``, ``D = √(δ² + 4·Km·S)`` — closed
+    form, so unlike the Functional path there is no symbolic differentiation
+    here, just the two partials written out.
+
+    ``add(col, row, value_c, prefix)`` writes one accumulation of ``value_c``
+    into entry ``(row, col)`` of ∂f/∂x and returns the C line, or ``None`` if the
+    entry has no home (a sparse CSC-pattern miss); this then returns ``None``
+    rather than a partial reconstruction. Same contract as
+    :func:`_functional_jacobian_groups`, and for the same reason (GH #67):
+    ``generate_jacobian_from_model`` passes a dense/CSC element writer and the
+    sensitivity RHS passes :func:`_jacv_add`, which fuses the matvec — so
+    ``bngsim_jac_vec`` covers Michaelis–Menten with one reconstruction, not two
+    that can drift.
+
+    Mirrors ``NetworkModel``'s own MM branch (``src/model.cpp``): the enzyme is
+    ``reactant_indices[0]`` and the substrate ``[1]`` — the reverse of the
+    obvious reading — and the ``sFree > 0 && D > 0`` guard is the interpreted
+    path's ``if (sf < 0) sf = 0`` seen from the derivative side, where both
+    partials are genuinely 0 (at ``S = 0`` the rate is 0 for every ``kcat``/``Km``).
+    """
+    groups: list[list[str]] = []
+    for mt in plan_mm:
+        e = int(mt["e_idx"])
+        s = int(mt["s_idx"])
+        grp: list[str] = []
+        g = grp.append
+        g("    {")
+        g(
+            f"        double kcat = p[{int(mt['kcat_param_idx0'])}], "
+            f"Km = p[{int(mt['km_param_idx0'])}];"
+        )
+        g(f"        double E = y[{e}], S = y[{s}];")
+        g("        double delta = S - Km - E;")
+        g("        double Dmm = sqrt(delta*delta + 4.0*Km*S);")
+        g("        double sFree = 0.5*(delta + Dmm);")
+        g("        double dE = 0.0, dS = 0.0;")
+        g("        if (sFree > 0.0 && Dmm > 0.0) {")
+        g("            double dsF_dE = 0.5*(-1.0 - delta/Dmm);")
+        g("            double dsF_dS = 0.5*(1.0 + (delta + 2.0*Km)/Dmm);")
+        g(f"            double Cmm = kcat * {_jac_c_float(mt['stat_factor'])};")
+        g("            double KpsF = Km + sFree;")
+        g("            double common = Cmm*E*Km/(KpsF*KpsF);")
+        g("            dE = Cmm*sFree/KpsF + common*dsF_dE;")
+        g("            dS = common*dsF_dS;")
+        g("        }")
+        for col, affected, deriv in ((e, mt["e_affected"], "dE"), (s, mt["s_affected"], "dS")):
+            if not affected:
+                continue
+            g(f"        if ({deriv} != 0.0) {{")
+            for row_i, coeff in affected:
+                line = add(col, int(row_i), f"{_jac_c_float(coeff)} * {deriv}", "            ")
+                if line is None:
+                    return None
+                g(line)
+            g("        }")
+        g("    }")
+        groups.append(grp)
+    return groups
+
+
 def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] | None:
     """Reconstruct every Functional reaction's Jacobian contribution as balanced
     ``{ … }`` C line-groups, scattered through the caller's ``add``.
@@ -5240,47 +5498,9 @@ def generate_jacobian_from_model(model) -> str | None:
         g("    }")
         elem_groups.append(grp)
 
-    mm_groups: list[list[str]] = []
-    for mt in plan["mm"]:
-        e = int(mt["e_idx"])
-        s = int(mt["s_idx"])
-        grp = []
-        g = grp.append
-        g("    {")
-        g(
-            f"        double kcat = p[{int(mt['kcat_param_idx0'])}], "
-            f"Km = p[{int(mt['km_param_idx0'])}];"
-        )
-        g(f"        double E = y[{e}], S = y[{s}];")
-        g("        double delta = S - Km - E;")
-        g("        double Dmm = sqrt(delta*delta + 4.0*Km*S);")
-        g("        double sFree = 0.5*(delta + Dmm);")
-        g("        double dE = 0.0, dS = 0.0;")
-        g("        if (sFree > 0.0 && Dmm > 0.0) {")
-        g("            double dsF_dE = 0.5*(-1.0 - delta/Dmm);")
-        g("            double dsF_dS = 0.5*(1.0 + (delta + 2.0*Km)/Dmm);")
-        g(f"            double Cmm = kcat * {_jac_c_float(mt['stat_factor'])};")
-        g("            double KpsF = Km + sFree;")
-        g("            double common = Cmm*E*Km/(KpsF*KpsF);")
-        g("            dE = Cmm*sFree/KpsF + common*dsF_dE;")
-        g("            dS = common*dsF_dS;")
-        g("        }")
-        if mt["e_affected"]:
-            g("        if (dE != 0.0) {")
-            e_csc = mt.get("e_affected_csc")
-            for ai, (row_i, coeff) in enumerate(mt["e_affected"]):
-                csc = int(e_csc[ai][0]) if is_sparse else None
-                g(f"            {_lv(e, int(row_i), csc)} += {_jac_c_float(coeff)} * dE;")
-            g("        }")
-        if mt["s_affected"]:
-            g("        if (dS != 0.0) {")
-            s_csc = mt.get("s_affected_csc")
-            for ai, (row_i, coeff) in enumerate(mt["s_affected"]):
-                csc = int(s_csc[ai][0]) if is_sparse else None
-                g(f"            {_lv(s, int(row_i), csc)} += {_jac_c_float(coeff)} * dS;")
-            g("        }")
-        g("    }")
-        mm_groups.append(grp)
+    mm_groups = _mm_jacobian_groups(plan["mm"], _jac_add)
+    if mm_groups is None:
+        return None
 
     # ── Tier-1 chunking decision (GH #165) ──────────────────────────────────
     # The whole analytical Jacobian otherwise lands in the single serial *driver*
@@ -5818,9 +6038,12 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
         if rtype == "elementary":
             continue
         label = f"reaction {rxn_idx + 1} ({rxn['function_name']})"
+        if rtype == "mm":
+            # Michaelis–Menten is closed form and handled by _mm_dfdp_terms, which
+            # the caller runs over the whole model at once (it has to cross-check
+            # the analytical Jacobian plan entry by entry).
+            continue
         if rtype != "functional":
-            # Michaelis–Menten is closed-form and out of scope for #66 (it is
-            # worth exactly one extra corpus model); anything else is unknown.
             return _decline(
                 f"{label} has rate-law type {rtype!r}, which has no analytic ∂f/∂p yet"
             )
@@ -5956,6 +6179,7 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
             functional_jacv_groups = [g for gs in groups for g in gs]
 
     fixed_sp = {i for i, s in enumerate(species) if s["fixed"]}
+    mm_terms_by_rxn: dict[int, list[tuple[int, list[str]]]] = {}
 
     # Chain-rule expansion for derived rate constants (#15). Each codegen_data
     # parameter carries ``is_const`` (False ⇒ derived) and ``expression``
@@ -5970,6 +6194,36 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         for p in params
         if not p.get("is_const", True) and p.get("expression", "")
     }
+    # GH #55: the Michaelis–Menten half. Closed form, so no sympy and no
+    # per-reaction cache — but it needs the analytical Jacobian plan, both for
+    # ``J·v`` and to cross-check which species is the enzyme, so a model whose
+    # plan is unavailable declines rather than guessing. Derived after the
+    # Functional pass so a model carrying both is refused by whichever fails
+    # first, with that pass's reason.
+    if functional:
+        plan = core.codegen_jacobian_plan()
+        mm_rxn_count = sum(1 for r in reactions if r["type"] == "mm")
+        if mm_rxn_count:
+            if not plan.get("available"):
+                _warn_functional_sens_rhs_refused(
+                    f"the model has {mm_rxn_count} Michaelis–Menten reaction(s) but no "
+                    "analytical Jacobian plan to build their J*yS from"
+                )
+                return None
+            mm_terms_by_rxn, mm_decline = _mm_dfdp_terms(
+                data, plan["mm"], param_idx_by_name, primary_param_names, derived_exprs
+            )
+            if mm_decline is not None:
+                _warn_functional_sens_rhs_refused(mm_decline)
+                return None
+            mm_jacv = _mm_jacobian_groups(plan["mm"], _jacv_add)
+            if mm_jacv is None:  # pragma: no cover - a dense vector never misses
+                _warn_functional_sens_rhs_refused(
+                    "a Michaelis–Menten Jacobian entry had no home in J*yS"
+                )
+                return None
+            functional_jacv_groups = functional_jacv_groups + mm_jacv
+
     derived_expansion: dict[str, dict[str, str]] = {}
     for p in params:
         # As in generate_sens_rhs_c: only a derived parameter that is some
@@ -6031,7 +6285,14 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         # instead. Mirrors the ``rtype == "functional"`` branch of
         # generate_rhs_from_model, so the geometry the derivative is multiplied
         # by is the geometry the RHS used. Always set for Elementary.
-        with_species_factor = is_elementary or bool(rxn.get("apply_species_factor", True))
+        # GH #55: a Michaelis–Menten rate already carries E and sFree(S), so it
+        # has no ∏R geometry to be multiplied by — its terms arrive as ``mm_terms``
+        # (which bypass _build_geom_terms) and its J·v comes from the shared
+        # Jacobian builder, so an empty rmult also keeps it out of the Elementary
+        # jac_vec loop.
+        with_species_factor = is_elementary or (
+            rxn["type"] != "mm" and bool(rxn.get("apply_species_factor", True))
+        )
         rmult = Counter(reactants) if with_species_factor else Counter()
 
         amount_factor = 1.0
@@ -6056,16 +6317,18 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         # stoichiometry, which is exactly Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r.
         derived_terms.extend(functional_terms.get(rxn_idx, ()))
 
-        rxn_data.append(
-            {
-                "param_idx": pidx,
-                "stat_factor": sf,
-                "stoich": stoich,
-                "reactant_mult": dict(rmult),
-                "derived_terms": derived_terms,
-                "amount_factor": amount_factor,
-            }
-        )
+        entry = {
+            "param_idx": pidx,
+            "stat_factor": sf,
+            "stoich": stoich,
+            "reactant_mult": dict(rmult),
+            "derived_terms": derived_terms,
+            "amount_factor": amount_factor,
+        }
+        mm_terms = mm_terms_by_rxn.get(rxn_idx)
+        if mm_terms:
+            entry["mm_terms"] = mm_terms
+        rxn_data.append(entry)
 
     src = _emit_sens_rhs_body(
         rxn_data,
@@ -6073,7 +6336,7 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         n_params,
         fixed_sp,
         value_lines_fn=lambda: _sens_value_lines(data),
-        functional_dfdp=bool(functional_terms),
+        functional_dfdp=bool(functional_terms) or bool(mm_terms_by_rxn),
         functional_jacv_groups=functional_jacv_groups,
     )
     if src is None and functional_terms:
