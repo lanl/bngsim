@@ -27,7 +27,13 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    # Import-time cycle: _switch_sensitivity imports this module. Only the
+    # annotation needs the name, and `from __future__ import annotations` keeps
+    # it a string at runtime, so the real import stays function-local (GH #68).
+    from bngsim._switch_sensitivity import SwitchConditionScope
 
 logger = logging.getLogger("bngsim")
 
@@ -188,14 +194,28 @@ _compile_counter = itertools.count()
 # the .net cache key is content+version (not source), so a v22 .so would keep
 # serving the pre-fix numbers — the exact silent-inertness issue #51 documents
 # for #41/#43. Invalidate v22.
-_CODEGEN_VERSION = "23"
+# v24: lanl/bngsim #68 — a Functional rate law whose ``if()`` conditions are all
+# recognized clock thresholds now gets the analytic sensitivity RHS instead of
+# declining to CVODES' difference quotient, so eight corpus models emit a
+# bngsim_codegen_sens_rhs (with a ternary in both ∂f/∂p and J·v) where v23
+# emitted none. Invalidate v23.
+_CODEGEN_VERSION = "24"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
 # emitters; ``_jacobian`` is the symbolic core feeding the Jacobian / sensitivity
 # emitters; ``_saturable_jacobian`` is the saturable-rate-law branch _jacobian
-# delegates to. A change to any of them can change the generated source.
-_CODEGEN_SOURCE_MODULES = ("_codegen", "_jacobian", "_saturable_jacobian")
+# delegates to; ``_switch_sensitivity`` owns the clock-threshold recognizer that
+# decides whether a conditional Functional rate law is emitted at all (issue
+# #68), so an edit there changes which models get a sensitivity RHS — exactly the
+# kind of silent inertness this digest exists to prevent. A change to any of them
+# can change the generated source.
+_CODEGEN_SOURCE_MODULES = (
+    "_codegen",
+    "_jacobian",
+    "_saturable_jacobian",
+    "_switch_sensitivity",
+)
 
 
 def _compute_codegen_source_digest(src_dir: Path | None = None) -> str:
@@ -5530,6 +5550,10 @@ class _FunctionalDfdpScope(NamedTuple):
     its value; ``param_of_alias`` is the subset of those symbols that are real
     differentiation variables, i.e. parameters not shadowed by an observable and
     not function-bound.
+
+    ``switch_scope`` is GH #68's gate context: non-``None`` only for a model that
+    has a condition to gate *and* whose clock/parameter view could be assembled.
+    ``None`` keeps the pre-#68 behaviour — every condition declines the model.
     """
 
     func_map: dict[str, str]
@@ -5538,6 +5562,7 @@ class _FunctionalDfdpScope(NamedTuple):
     param_idx_by_name: dict[str, int]
     primary_param_names: set[str]
     derived_exprs: dict[str, str]
+    switch_scope: SwitchConditionScope | None = None
 
 
 def _functional_rate_law_partials(
@@ -5577,15 +5602,38 @@ def _functional_rate_law_partials(
 
     # Reject on the *inlined* text so a construct hidden inside a referenced
     # function is caught, not just one written in the rate law itself.
-    reason = unsupported_expr_construct(inlined)
+    reason = unsupported_expr_construct(inlined, allow_conditions=scope.switch_scope is not None)
     if reason is not None:
         return None, f"uses unsupported construct: {reason}"
+
+    # GH #68: with the conditional class waived above, the ``if()`` survives to
+    # sympy, which differentiates the ``Piecewise`` w.r.t. a condition-only
+    # parameter to a clean ``0`` — no Dirac delta, so neither ``_is_emittable``
+    # nor anything downstream would notice. That ``0`` is the correct in-branch
+    # answer only when issue #48 supplies the crossing jump for the rest of it,
+    # which it does for a recognized clock threshold and nothing else. Ask the
+    # detector's own recognizer, so the gate cannot admit a condition the
+    # detector would not compensate.
+    if scope.switch_scope is not None:
+        from bngsim._switch_sensitivity import uncompensated_condition_reason
+
+        why = uncompensated_condition_reason(inlined, scope.switch_scope)
+        if why is not None:
+            return None, why
 
     # Strip the two zero-argument forms ``_preprocess_exprtk`` accepts
     # (``time()``/``t()`` and an observable written as a call, #28) before looking
     # for call heads, so neither is mistaken for an unknown function.
     probe = _EMPTY_CALL_RE.sub(r"\1", re.sub(r"\b(?:time|t)\s*\(\s*\)", " ", inlined))
-    stray = sorted({m.group(1) for m in _IDENT_CALL_RE.finditer(probe)} - _exprtk_call_heads())
+    known = _exprtk_call_heads()
+    if scope.switch_scope is not None:
+        # ``if`` is a recognized head, just not through _EXPRTK_TO_SYMPY_FUNC:
+        # _exprtk_to_sympy rewrites it to a sympy ``Piecewise`` before parsing
+        # (_translate_bngl_if_to_piecewise), so it never reaches a function
+        # lookup. Admitted only alongside the gate above, so a model whose
+        # conditions were NOT cleared still reports it as unsupported.
+        known = known | {"if"}
+    stray = sorted({m.group(1) for m in _IDENT_CALL_RE.finditer(probe)} - known)
     if stray:
         return None, "calls unsupported function(s): " + ", ".join(stray)
 
@@ -5665,11 +5713,13 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
       :func:`_derived_param_jacobian_checked` — which is also what keeps a
       *nested* derived parameter reachable.
 
-    Every rejection carries a reason naming what blocked it (#56 precedent):
-    the ``if()`` / comparison / logical and ``abs``/``min``/``max``/``floor``/
-    ``ceil``/``round`` constructs :func:`bngsim._jacobian.unsupported_expr_construct`
-    already rejects for #198 (reused rather than re-spelled — the conditional
-    class is GH #68's to lift, and only behind the shared switch-time guard), an
+    Every rejection carries a reason naming what blocked it (#56 precedent): the
+    ``abs``/``min``/``max``/``floor``/``ceil``/``round`` constructs
+    :func:`bngsim._jacobian.unsupported_expr_construct` already rejects for #198
+    (reused rather than re-spelled), a condition whose crossing moves with a
+    parameter that issue #48 does not compensate (GH #68 — the ``if()`` /
+    comparison / logical class is waived by ``allow_conditions`` and re-gated by
+    :func:`bngsim._switch_sensitivity.uncompensated_condition_reason`), an
     unresolved call head, a free symbol that is neither observable nor parameter
     nor ``time`` (this is what catches ``rateOf``, whose accessor is an evaluator
     variable and not a model parameter), a derivative sympy cannot render as C,
@@ -5679,6 +5729,8 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
     observables = data["observables"]
     functions = data["functions"]
     reactions = data["reactions"]
+
+    from bngsim._jacobian import has_condition_construct
 
     ctx = core.functional_jacobian_context()
     frxn_by_idx = {int(r["rxn_idx"]): r for r in (ctx.get("functional_reactions") or [])}
@@ -5718,6 +5770,29 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
     for f in functions:
         param_of_alias.pop(_alias(f["name"]), None)
 
+    # GH #68: a condition-bearing rate law is emittable only behind the
+    # switch-time detector's own clock-threshold recognizer. Building that view
+    # costs two RHS probes and a pass over the parameter table, so skip it
+    # entirely for the condition-free majority (GH #67's population), where the
+    # construct pre-scan rejects a condition before this could matter. Scanned
+    # over the reaction rate expressions as well as the function bodies: for a
+    # ``.net`` model the rate expression *is* one of the bodies, but the check
+    # should not depend on that. A model whose scope cannot be assembled keeps
+    # the pre-#68 behaviour — conditions decline it.
+    switch_scope = None
+    conditional_text = list(func_map.values()) + [
+        str(r.get("rate_expr", "")) for r in frxn_by_idx.values()
+    ]
+    if any(has_condition_construct(body) for body in conditional_text):
+        from bngsim._switch_sensitivity import switch_condition_scope
+
+        try:
+            switch_scope = switch_condition_scope(core, ctx)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "GH #68: switch-condition scope unavailable (%s); conditions decline", exc
+            )
+
     scope = _FunctionalDfdpScope(
         func_map=func_map,
         c_ref=c_ref,
@@ -5725,6 +5800,7 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
         param_idx_by_name=param_idx_by_name,
         primary_param_names=primary_param_names,
         derived_exprs=derived_exprs,
+        switch_scope=switch_scope,
     )
 
     # A rule-generated network reuses one rate-law expression across many
@@ -5804,14 +5880,15 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     has no model to read a rate law off) keeps declining as it always has.
 
     A Functional model is emitted only when **every** rate law it must
-    differentiate is smooth algebra. A condition (``if()``, a comparison, a
-    logical) or a non-smooth builtin (``abs``/``min``/``max``/``floor``/``ceil``/
-    ``round``) declines the whole model — ``CVodeSensInit1`` takes one callback for
-    every column, so a single such law taints all of them — with a warning naming
-    what blocked it. The conditional class is GH #68's to lift, behind the shared
-    switch-time guard; sympy differentiates a ``Piecewise`` w.r.t. a
-    condition-only parameter to a clean ``0``, so nothing downstream would catch
-    it, which is exactly why the pre-scan rejects on tokens instead.
+    differentiate is smooth algebra, or is conditional in a way issue #48 already
+    compensates. A non-smooth builtin (``abs``/``min``/``max``/``floor``/
+    ``ceil``/``round``), or a condition whose crossing moves with a parameter and
+    is not a recognized clock threshold (GH #68), declines the whole model —
+    ``CVodeSensInit1`` takes one callback for every column, so a single such law
+    taints all of them — with a warning naming what blocked it. sympy
+    differentiates a ``Piecewise`` w.r.t. a condition-only parameter to a clean
+    ``0``, so nothing downstream would catch a bad condition, which is exactly why
+    the pre-scan rejects on tokens and the gate is a separate, explicit check.
 
     Closes #15: parameters whose ``is_const`` field is False (derived
     expressions like ``_rateLaw_<rid>`` synthesized by the SBML loader for

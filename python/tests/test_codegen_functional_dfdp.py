@@ -285,9 +285,12 @@ class TestDeclinesLoudly:
             # sympy differentiates every one of these happily, dropping the
             # boundary jump — a token pre-scan is the only reliable rejection,
             # which is why unsupported_expr_construct is reused rather than
-            # re-spelled. if()/comparison/logical are GH #68's to lift.
-            ("if(I > 3, beta, 0)*I", "if() conditional"),
-            ("beta*(I > 1)", "comparison operator"),
+            # re-spelled. GH #68 lifted the conditional class *conditionally*:
+            # these two still decline, but now for the specific reason that
+            # nothing compensates their crossing, not for carrying an `if` at
+            # all (see test_codegen_switch_condition_sens.py).
+            ("if(I > 3, beta, 0)*I", "is not a recognized clock threshold"),
+            ("beta*(I > 1)", "is not inside an if() condition"),
             ("beta*abs(I)", "abs()"),
             ("beta*max(I, 1)", "max()"),
             ("beta*min(I, 1)", "min()"),
@@ -333,7 +336,9 @@ class TestDeclinesLoudly:
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             assert cg.generate_sens_from_model(model, functional=True) is None
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("if() conditional" in m and "betaI" in m for m in warnings), warnings
+        assert any(
+            "is not a recognized clock threshold" in m and "betaI" in m for m in warnings
+        ), warnings
 
     def test_every_decline_path_warns_not_just_the_differentiation_ones(self, tmp_path, caplog):
         """A decline that returns a reason and drops it on the floor is still a
