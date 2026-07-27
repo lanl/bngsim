@@ -755,6 +755,11 @@ AnalyticalJacobianData build_anal_jac(const std::vector<Reaction> &reactions, in
 // meaning L * (dy/dt) = 0, so L * y = const for all time.
 // We find L by computing the reduced row echelon form of S^T and extracting
 // the null space from the non-pivot rows.
+//
+// The rows alone are not the whole answer: the consumers eliminate one species
+// per law, so which species each law is solved FOR has to make that elimination
+// well posed. L is therefore also row-reduced over the species columns, and the
+// dependents are its pivots — see the long note at that step below.
 ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions,
                                           const std::vector<Species> &species) {
 
@@ -856,15 +861,11 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
 
     // Extract conservation law coefficients from zero rows of transformed S.
     // Row i is a zero row if all S columns are zero.
-    cl.n_laws = n_laws;
-    cl.coefficients.reserve(n_laws);
-    cl.dependent.reserve(n_laws);
-
-    // Track which species are already chosen as dependent (avoid collision)
-    std::vector<bool> already_dep(ns, false);
-
+    //
     // Rows [0..rank-1] are pivot rows → independent species
     // Rows [rank..ns-1] are null space → conservation laws
+    std::vector<std::vector<double>> laws;
+    laws.reserve(n_laws);
     for (int i = rank; i < ns; ++i) {
         // Verify the S part is indeed zero
         bool all_zero = true;
@@ -881,31 +882,96 @@ ConservationLaws detect_conservation_laws(const std::vector<Reaction> &reactions
         std::vector<double> coeffs(ns);
         for (int j = 0; j < ns; ++j)
             coeffs[j] = aug[i][nr + j];
-
-        // Choose dependent species: the one with largest absolute coefficient
-        // that hasn't already been chosen (for numerical stability + uniqueness)
-        int dep = -1;
-        double dep_val = 0.0;
-        for (int j = 0; j < ns; ++j) {
-            if (species[j].fixed)
-                continue;
-            if (already_dep[j])
-                continue; // already used by another law
-            double v = std::abs(coeffs[j]);
-            if (v > dep_val) {
-                dep_val = v;
-                dep = j;
-            }
-        }
-        if (dep < 0)
-            continue; // degenerate law
-
-        already_dep[dep] = true;
-        cl.coefficients.push_back(std::move(coeffs));
-        cl.dependent.push_back(dep);
+        laws.push_back(std::move(coeffs));
     }
 
-    // Adjust n_laws in case some were skipped
+    // ── Choose the dependent species by ROW-REDUCING the law matrix ───────────
+    //
+    // Every consumer of these laws eliminates dependent species one law at a
+    // time: reconstruct_full() solves law k for y[dep_k] from the *current* value
+    // of every other species, and compute_ss_sensitivity()'s D matrix forward-
+    // substitutes the same walk to get ∂y_dep/∂y_ind. Both are exact only if
+    // L[:, dependent] is the identity — one pass cannot satisfy law k once a
+    // LATER law overwrites a dependent that law k also constrains.
+    //
+    // The old rule picked each law's dependent greedily (largest |coefficient|
+    // not already claimed), which guarantees neither. On real models it does not
+    // merely lose accuracy, it picks a set for which L[:, dependent] is SINGULAR
+    // — the elimination has no solution at all. Measured on the ode_fullnet
+    // corpus, that silently violated the constraints it was enforcing
+    // (|L_ind + L_dep·D| = 1.0 instead of 0) and handed the reduced Jacobian a
+    // null space of the reduction's own making: IGF1R_model_v1 came back rank
+    // 578/579, Reduced_IGF1R_hela 546/549, fceri_fyn 1274/1276, so
+    // steady_state(sensitivity_params=...) reported dY_ss/dp from a system it
+    // could not invert (issue #63). With a valid dependent set the same three are
+    // full rank and well conditioned (min|U|/max|U| of 1.5e-3, 4.7e-3, 7.1e-5).
+    //
+    // Row-reducing L over the species columns and taking the PIVOT columns as the
+    // dependents makes L[:, dependent] = I by construction, so the invariant both
+    // consumers assume is now a property of the data instead of a hope. Pivots are
+    // selected by largest magnitude over all remaining rows and admissible columns
+    // (full pivoting), which also keeps the elimination away from tiny divisors.
+    // n_laws is at most a few dozen even on the largest corpus networks, so this
+    // costs nothing next to the O(ns·(nr+ns)) elimination above that produced the
+    // rows in the first place.
+    const int nl = static_cast<int>(laws.size());
+    cl.coefficients.reserve(nl);
+    cl.dependent.reserve(nl);
+    std::vector<bool> is_pivot_col(ns, false);
+    for (int r = 0; r < nl; ++r) {
+        int best_row = -1, best_col = -1;
+        double best_val = 0.0;
+        for (int i = r; i < nl; ++i) {
+            for (int j = 0; j < ns; ++j) {
+                // A fixed species is held constant, so it is never eliminated.
+                if (species[j].fixed || is_pivot_col[j])
+                    continue;
+                const double v = std::abs(laws[i][j]);
+                if (v > best_val) {
+                    best_val = v;
+                    best_row = i;
+                    best_col = j;
+                }
+            }
+        }
+        // No admissible pivot left: the remaining rows are supported entirely on
+        // fixed species, are linearly dependent on the rows already taken (row
+        // reduction has zeroed them), or are numerical noise — none of which
+        // constrains anything solvable. The old code dropped these one at a time
+        // via `dep < 0`; dropping the whole tail here is the same set, since row
+        // reduction has already eliminated every pivot column from them. The tol
+        // floor matters because dividing a noise-level row by its own noise-level
+        // pivot would promote round-off into an O(1) "law".
+        if (best_row < 0 || best_val < tol)
+            break;
+
+        if (best_row != r)
+            std::swap(laws[best_row], laws[r]);
+
+        // Normalize the pivot to 1, then clear the pivot column from every other
+        // row, so the finished matrix has L[k][dependent[k']] = δ_kk'.
+        const double pivot = laws[r][best_col];
+        for (int j = 0; j < ns; ++j)
+            laws[r][j] /= pivot;
+        laws[r][best_col] = 1.0; // exact, against round-off in the divide
+        for (int i = 0; i < nl; ++i) {
+            if (i == r)
+                continue;
+            const double factor = laws[i][best_col];
+            if (factor == 0.0)
+                continue;
+            for (int j = 0; j < ns; ++j)
+                laws[i][j] -= factor * laws[r][j];
+            laws[i][best_col] = 0.0;
+        }
+
+        is_pivot_col[best_col] = true;
+        cl.dependent.push_back(best_col);
+    }
+
+    for (size_t k = 0; k < cl.dependent.size(); ++k)
+        cl.coefficients.push_back(std::move(laws[k]));
+
     cl.n_laws = static_cast<int>(cl.dependent.size());
     if (cl.n_laws == 0)
         return cl;

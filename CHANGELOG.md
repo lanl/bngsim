@@ -264,6 +264,93 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The conservation-law reduction chose dependent species it could not solve
+  for, so the reduced system was singular on models that are perfectly well posed
+  (follow-up to issue #63).** `detect_conservation_laws` found every law — the
+  count matches `ns_free - rank(S_free)` on all 408 solvable corpus models, so
+  nothing was missing — but then picked each law's *dependent* species
+  independently: the largest-|coefficient| species no earlier law had claimed.
+
+  Every consumer eliminates one species per law in a single pass.
+  `reconstruct_full` solves law `k` for `y[dep_k]` from the current value of every
+  other species, and `compute_ss_sensitivity` forward-substitutes the same walk to
+  build `D = ∂y_dep/∂y_ind`. Both are exact only when `L[:, dependent]` is the
+  identity. The greedy rule guaranteed neither triangularity nor even
+  invertibility, and on 52 of 374 corpus models with laws it chose a set for which
+  `L[:, dependent]` is outright **singular** — an elimination with no solution.
+  The smallest case is four species (now `tests/data/conservation_singular_dep.net`):
+  the two laws are `Xtot = X0 + Xp + XY` and `Ytot = Y + XY`, and choosing `X0` and
+  `Xp` as the dependents gives `L[:, dep] = [[-1,-1],[1,1]]`, rank 1.
+
+  The failure was silent in three places at once. The reduction violated the
+  constraints it was enforcing (`|L_ind + L_dep·D|` reached 2.0 instead of 0); the
+  reduced Jacobian inherited a null space of the reduction's own making, so
+  `dY_ss/dp` was whatever the LU made of a singular system; and the reduced-space
+  KINSOL solve failed and quietly downgraded to `method_used="integration"`.
+
+  Dependents are now the pivot columns of the row-reduced law matrix, chosen by
+  full pivoting, so `L[:, dependent] = I` by construction and the invariant both
+  consumers assume is a property of the data rather than a hope.
+
+  Measured over the 585-model `ode_fullnet` corpus (408 reach a steady state with
+  a complete analytical Jacobian), before → after:
+
+  | | before | after |
+  |---|---|---|
+  | `L[:, dependent]` is the identity | 156/374 | **374/374** |
+  | `L[:, dependent]` singular | 52 | **0** |
+  | worst constraint violation `\|L_ind + L_dep·D\|` | 2.0 | **0** |
+  | rank-deficient reduced Jacobian | 93/408 | **48/408** |
+  | `dY_ss/dp` wrong vs. a finite difference of the root | 104/332 | **32/332** |
+
+  The three models issue #63 reported as having continuum steady states were all
+  this bug, not their dynamics:
+
+  | model | rank before | `min\|U\|/max\|U\|` before | rank after | after |
+  |---|---|---|---|---|
+  | `IGF1R_model_v1` | 578/579 | 9.8e-10 | **579/579** | **1.5e-3** |
+  | `Reduced_IGF1R_hela` | 546/549 | 4.8e-12 | **549/549** | **4.7e-3** |
+  | `fceri_fyn` | 1274/1276 | 5.9e-13 | **1276/1276** | **1.6e-4** |
+
+  On all three, `steady_state(method="newton")` now converges as Newton instead of
+  falling back to integration (residual 9e-9 → 3e-14, 8e-9 → 4e-13, 9e-9 → 1e-13),
+  and `dY_ss/dp` matches a central difference of the steady state itself to ~1e-5
+  where it previously did not agree at all.
+
+- **A steady-state sensitivity solve that returns NaN now raises instead of
+  handing back the NaN (follow-up to issue #63).** When the reduced LU hits an
+  exact zero pivot the dense SUNDIALS solver has no least-squares fallback, so
+  `ss.sensitivity` came back non-finite behind nothing louder than a log warning —
+  the shape a fitter silently turns into a non-update. `steady_state()` now raises
+  `SimulationError`, naming the species whose gradient is non-finite. Driving the
+  real entry point over the corpus: 395 models return a gradient, 31 are refused,
+  and no NaN reaches the caller. `steady_state_batch()` is unchanged, as the
+  warning never covered it either.
+
+  The `min|U|/max|U| < 1e-8` **warning was deliberately not promoted to a
+  refusal**, which is what the follow-up set out to do. The full 585-model sweep
+  says no threshold on that ratio can carry one. Ground truth: solve for
+  `dY_ss/dp` as `compute_ss_sensitivity` does, then check it against a central
+  difference of the steady state itself (re-solve at `p ± h` from the same initial
+  conditions), keeping only probes that converge in the step size. Of the 308
+  models where the reduced solve returns a finite answer, 286 are right and 22 are
+  wrong — and the populations interleave:
+
+  * correct gradients go arbitrarily low — `ode/simplifications_v1` measures
+    1.5e-42 and is accurate to 7e-7; `RBM_covid_v2` (n=112) measures 1.1e-13 and
+    is accurate to 1.2e-6;
+  * wrong gradients go arbitrarily high — 6 of the 22 have a *perfectly*
+    conditioned reduced Jacobian, two of them at exactly 1.0, wrong by >100%.
+    Those are not conditioning failures, so no conditioning number can see them.
+
+  The best available cut on the ratio (4.3e-9) still misclassifies 10; the shipped
+  1e-8 would discard 6 correct results and let 6 wrong ones through. `1/κ₁` and
+  `σ_min/σ_max` do no better (9 and 10 errors at their best cuts). The warning
+  therefore stays a warning, and its text no longer asserts the steady state is a
+  continuum — about half the models it fires on return a correct gradient — but
+  says what was measured and tells the reader to check against a finite
+  difference.
+
 - **The committed type stub carried whatever commit the last local rebuild came
   from, `+dirty` marker and all.** `scripts/rebuild_editable.py` regenerates
   `python/bngsim/_bngsim_core.pyi` from the freshly built module, and

@@ -3317,18 +3317,40 @@ class Simulator:
         return result
 
     #: Below this ``min|U_jj| / max|U_jj|`` the steady-state sensitivity system is
-    #: treated as rank-deficient. Well-posed corpus models measure 1e-4 to 1e-1
-    #: and rank-deficient ones 1e-12 to 1e-9, so this sits several decades clear
-    #: of both. It gates a warning, not a refusal — picking a refusal threshold
-    #: wants the full 585-model corpus sweep, not eight models.
+    #: reported as badly conditioned. It gates a WARNING and deliberately not a
+    #: refusal: the full 585-model ``ode_fullnet`` sweep says no threshold on this
+    #: ratio — or on ``1/κ₁``, or on ``σ_min/σ_max`` — can support one.
+    #:
+    #: Method: solve for ``dY_ss/dp`` the way ``compute_ss_sensitivity`` does, then
+    #: check it against a central difference of the steady state itself (re-solve
+    #: at ``p ± h`` from the same initial conditions), keeping only probes that
+    #: converge in the step size. Of 308 models where the reduced solve returns a
+    #: finite answer, 286 are right and 22 are wrong — and the two populations are
+    #: not separable:
+    #:
+    #:   * Correct gradients sit arbitrarily low. ``ode/simplifications_v1``
+    #:     measures 1.5e-42 here and is accurate to 7e-7; ``RBM_covid_v2`` (n=112)
+    #:     measures 1.1e-13 and is accurate to 1.2e-6. Six correct results fall
+    #:     below 1e-8.
+    #:   * Wrong gradients sit arbitrarily high. Six of the 22 have a *perfectly*
+    #:     conditioned reduced Jacobian — ``NativeTutorials/ABpapprox`` and
+    #:     ``ode/temp`` both measure exactly 1.0 and are wrong by more than 100%.
+    #:     Those are not conditioning failures and no conditioning number can see
+    #:     them.
+    #:
+    #: The best single cut on this ratio (4.3e-9) still misclassifies 10; the
+    #: shipped 1e-8 discards 6 correct results and lets 6 wrong ones through.
+    #: ``1/κ₁`` and ``σ_min/σ_max`` do no better (9 and 10 errors at their best
+    #: cuts). Refusal is instead gated on the one unambiguous signal — the solve
+    #: produced a non-finite gradient — which needs no threshold at all.
     _SS_SENS_RCOND_FLOOR = 1e-8
 
     @classmethod
     def _warn_about_ss_sensitivity(cls, result: SteadyStateResult) -> None:
-        """Surface the two ways a dY_ss/dp can be less than it appears (issue #63).
+        """Surface the ways a dY_ss/dp can be less than it appears (issue #63).
 
-        Both used to be invisible — the result came back looking like every other
-        sensitivity result.
+        All of these used to be invisible — the result came back looking like
+        every other sensitivity result.
         """
         # 1. ∂f/∂p had to be differenced. Reaching here means codegen IS attached
         #    (steady_state refuses otherwise) but the artifact carries no
@@ -3345,20 +3367,62 @@ class Simulator:
                 result.sens_jacobian_source,
             )
 
-        # 2. The Jacobian at the root is rank-deficient, so dY_ss/dp does not
-        #    exist: the steady state is a continuum, not an isolated point, and
-        #    the returned numbers are whatever the LU made of a singular system.
+        # 2. The Jacobian at the root is badly conditioned. The solve returned
+        #    finite numbers (case 0 above catches the ones that did not), but they
+        #    may still be meaningless.
+        #
+        #    This deliberately does NOT claim the steady state is a continuum, as
+        #    it used to. Measured on the corpus, roughly half the models this
+        #    fires on return a gradient that is in fact correct — one at
+        #    min|U|/max|U| = 1.5e-42 is accurate to 7e-7 — because the ratio is a
+        #    heuristic read off the LU diagonal, not a rank test. Say what was
+        #    measured and what to do about it, not what it implies.
         rcond = result.sens_jacobian_rcond
         if result.sensitivity is not None and 0.0 <= rcond < cls._SS_SENS_RCOND_FLOOR:
             logger.warning(
-                "Steady-state dY_ss/dp is NOT RELIABLE for this model: the "
-                "Jacobian at the steady state is numerically rank-deficient "
-                "(min|U|/max|U| = %.2e from its LU, versus ~1e-4 or better for a "
-                "well-posed system). That means the steady state is a continuum "
-                "rather than an isolated point, so -J⁻¹·(∂f/∂p) has no unique "
-                "value and the returned matrix should not be used as a gradient. "
-                "Read ss.sens_jacobian_rcond to test this in code.",
+                "Steady-state dY_ss/dp may not be reliable for this model: the "
+                "Jacobian at the steady state is badly conditioned (min|U|/max|U| "
+                "= %.2e from its LU, versus ~1e-4 or better for a typical "
+                "well-posed system). The solve returned finite numbers, but if the "
+                "root is not isolated they are not a gradient. This ratio is a "
+                "heuristic, not a rank test, and it is wrong in both directions on "
+                "real models — verify against a finite difference of the steady "
+                "state (re-solve at p ± h and difference) before trusting or "
+                "discarding this result. Read ss.sens_jacobian_rcond to test it in "
+                "code.",
                 rcond,
+            )
+
+        # 3. The reduced solve failed outright: a zero pivot put NaN/inf in the
+        #    result. SUNDIALS' dense LU has no least-squares fallback, so this is
+        #    not an ill-conditioned answer to round off — it is no answer at all,
+        #    and dY_ss/dp genuinely does not exist at this root. Refuse rather than
+        #    return a NaN matrix a fitter will quietly turn into a non-update.
+        #
+        #    This is the ONLY refusal the corpus supports, and it is deliberately
+        #    not a threshold: see _SS_SENS_RCOND_FLOOR for why no cut on the
+        #    conditioning can separate right answers from wrong ones. Checked last
+        #    so the diagnostics above are still emitted on the way out. Driving the
+        #    real entry point over the 585-model corpus: 395 return a gradient, 31
+        #    are refused, and no NaN reaches the caller.
+        sens = result.sensitivity
+        if sens is not None and not np.all(np.isfinite(sens)):
+            arr = np.asarray(sens)
+            finite_rows = np.all(np.isfinite(arr), axis=1)
+            bad = [n for n, ok in zip(result.species_names, finite_rows, strict=True) if not ok]
+            raise SimulationError(
+                "Steady-state dY_ss/dp does not exist for this model: the Jacobian "
+                "at the steady state is singular on the reduced (conservation-law) "
+                "subspace, so -J⁻¹·(∂f/∂p) has no solution and the linear solve "
+                f"returned non-finite values for {len(bad)} of {arr.shape[0]} "
+                f"species (first: {', '.join(bad[:3])}"
+                f"{', ...' if len(bad) > 3 else ''}). The steady state is a "
+                "continuum rather than an isolated point — there is a direction you "
+                "can move along without leaving equilibrium — so no unique gradient "
+                "exists to report. A common cause is two species that are only "
+                "produced and never consumed, fed from a common irreversible step: "
+                "that makes the equilibrium set a line. "
+                f"ss.sens_jacobian_rcond is {result.sens_jacobian_rcond:.2e}."
             )
 
     def steady_state_batch(

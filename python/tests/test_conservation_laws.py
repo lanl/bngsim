@@ -28,6 +28,17 @@ def simple_decay_model(data_dir):
     return bngsim.Model.from_net(str(data_dir / "simple_decay.net"))
 
 
+@pytest.fixture
+def singular_dep_net(data_dir):
+    """Enzyme-substrate motif whose two laws both constrain the complex.
+
+    See the header of the .net file. Choosing each law's dependent independently
+    used to land on ``L[:, dependent] = [[-1,-1],[1,1]]`` — rank 1, so the
+    elimination it sets up has no solution.
+    """
+    return str(data_dir / "conservation_singular_dep.net")
+
+
 # -- Part A1: Conservation law detection ----------------------------
 
 
@@ -66,6 +77,116 @@ class TestConservationLawDetection:
         cl2 = clone.conservation_laws
         assert cl1["n_laws"] == cl2["n_laws"]
         assert cl1["n_species"] == cl2["n_species"]
+
+
+# -- Part A1b: the reduction has to be SOLVABLE, not just present ---
+
+
+class TestDependentSpeciesChoice:
+    """``L[:, dependent]`` must be the identity (issue #63 follow-up).
+
+    Every consumer of these laws eliminates one species per law in a single pass:
+    ``reconstruct_full`` solves law k for ``y[dep_k]`` from the current value of
+    every other species, and ``compute_ss_sensitivity`` forward-substitutes the
+    same walk to get ∂y_dep/∂y_ind. Both are exact only when no law constrains
+    another law's dependent — i.e. when the dependent block is the identity.
+
+    Picking each law's dependent independently guaranteed neither, and on 52 of
+    the 374 ode_fullnet corpus models that have conservation laws it chose a set
+    for which the block is outright SINGULAR. The failures were silent: the
+    constraints came back violated, the reduced Jacobian picked up a null space of
+    the reduction's own making, and the reduced Newton solve quietly fell back to
+    integration.
+    """
+
+    @pytest.mark.parametrize(
+        "net_name",
+        [
+            "conservation_singular_dep.net",  # singular block before the fix
+            "two_species_reversible.net",
+            "ssa_abc.net",
+            "per_observable_jac.net",
+            "simple_decay.net",
+        ],
+    )
+    def test_dependent_block_is_identity(self, data_dir, net_name):
+        model = bngsim.Model.from_net(str(data_dir / net_name))
+        cl = model.conservation_laws
+        if cl["n_laws"] == 0:
+            pytest.skip(f"{net_name} has no conservation laws")
+        coeffs = np.array([np.asarray(c, dtype=float) for c in cl["coefficients"]])
+        dep = np.asarray(cl["dependent"], dtype=int)
+        np.testing.assert_allclose(coeffs[:, dep], np.eye(dep.size), atol=1e-12)
+
+    def test_reduction_satisfies_its_own_constraints(self, singular_dep_net):
+        """D = ∂y_dep/∂y_ind must annihilate the constraints: L_ind + L_dep·D = 0.
+
+        This is the quantity that came back as 1.0 instead of 0 — the reduction
+        reporting sensitivities that break the conservation laws it enforces.
+        """
+        model = bngsim.Model.from_net(singular_dep_net)
+        cl = model.conservation_laws
+        coeffs = np.array([np.asarray(c, dtype=float) for c in cl["coefficients"]])
+        dep = np.asarray(cl["dependent"], dtype=int)
+        ind = np.asarray(cl["independent"], dtype=int)
+
+        # D by the same forward substitution compute_ss_sensitivity uses.
+        n_laws, n_ind = cl["n_laws"], ind.size
+        D = np.zeros((n_laws, n_ind))
+        for k in range(n_laws):
+            d = dep[k]
+            c_dep = coeffs[k][d]
+            for j in range(n_ind):
+                acc = coeffs[k][ind[j]] + sum(
+                    coeffs[k][dep[kp]] * D[kp, j] for kp in range(k) if dep[kp] != d
+                )
+                D[k, j] = -acc / c_dep
+        np.testing.assert_allclose(coeffs[:, ind] + coeffs[:, dep] @ D, 0.0, atol=1e-12)
+
+    def test_reduced_newton_converges_and_conserves(self, singular_dep_net):
+        """An unsolvable elimination made KINSOL fail and drop back to integration."""
+        model = bngsim.Model.from_net(singular_dep_net)
+        totals = model.conservation_laws["constants"]
+        sim = bngsim.Simulator(model, method="ode")
+        ss = sim.steady_state(method="newton", tol=1e-8)
+        assert ss.converged
+        assert ss.method_used == "newton"
+
+        coeffs = np.array(
+            [np.asarray(c, dtype=float) for c in model.conservation_laws["coefficients"]]
+        )
+        np.testing.assert_allclose(coeffs @ np.asarray(ss.concentrations), totals, rtol=1e-8)
+
+    def test_steady_state_sensitivity_matches_finite_difference(self, singular_dep_net):
+        """dY_ss/dp is a real gradient again, not the output of a singular solve.
+
+        Before the fix the reduced Jacobian here was rank 1 of 2, so
+        ``-J_red⁻¹·∂f/∂p`` was whatever the LU made of a singular system. The
+        central difference of the steady state itself owes that solve nothing.
+        """
+        pname, h_frac = "kcat", 1e-4
+
+        model = bngsim.Model.from_net(singular_dep_net)
+        ss = bngsim.Simulator(model, method="ode").steady_state(
+            sensitivity_params=[pname], tol=1e-12
+        )
+        assert ss.converged
+        assert ss.sens_jacobian_rcond > 1e-6
+        analytic = np.asarray(ss.sensitivity)[:, 0]
+
+        p0 = bngsim.Model.from_net(singular_dep_net).get_param(pname)
+        h = h_frac * abs(p0)
+        roots = []
+        for value in (p0 + h, p0 - h):
+            m = bngsim.Model.from_net(singular_dep_net)
+            m.set_param(pname, value)
+            m.reset()
+            r = bngsim.Simulator(m, method="ode").steady_state(tol=1e-12)
+            assert r.converged
+            roots.append(np.asarray(r.concentrations))
+        fd = (roots[0] - roots[1]) / (2 * h)
+
+        np.testing.assert_allclose(analytic, fd, rtol=1e-4, atol=1e-6 * np.abs(fd).max())
 
 
 # -- Part A2: Reduced-space Newton ---------------------------------

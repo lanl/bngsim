@@ -341,20 +341,35 @@ static bool ss_states_agree(const std::vector<double> &a, const std::vector<doub
 // leave the factors in the SUNMatrix data, column-major, so A[j*n+j] is U_jj).
 //
 // Why this is worth reporting (issue #63). dY_ss/dp = -J⁻¹·(∂f/∂p) is only
-// defined when the (reduced) Jacobian at the root has full rank, and on real
-// models it often does not: across eight large corpus models, three came back
-// rank-deficient by 1-3 — a steady state that is a continuum rather than a point,
-// so there is no unique dY_ss/dp to report. That was previously invisible in a
-// different way: the finite-difference Jacobian carried ~sqrt(eps) noise which
-// perturbed the singular direction just enough for the LU to return a finite,
-// modest-looking, and entirely meaningless answer. An exact analytical Jacobian
-// does not launder the singularity, so the same models now produce obviously
-// large numbers instead of quietly wrong ones. Neither is usable; this ratio is
-// how a caller can tell.
+// defined when the (reduced) Jacobian at the root has full rank. When it is not,
+// the returned matrix is whatever the LU made of a singular system, and nothing
+// else on the result says so — the finite-difference Jacobian this predates
+// carried ~sqrt(eps) noise that perturbed the singular direction just enough to
+// return a finite, modest-looking, entirely meaningless answer. An exact
+// analytical Jacobian does not launder that.
 //
-// A rank-revealing factorization would be stronger, but the separation is not
-// subtle: the five well-posed models sit at 1e-4 - 1e-1 and the three singular
-// ones at 1e-12 - 1e-9, six orders of magnitude apart.
+// Read this as a diagnostic, NOT as a rank test, and do not build a refusal on
+// it. Two measurements on the 585-model ode_fullnet corpus say why:
+//
+//   * min|U_jj|/max|U_jj| is not rank-revealing. Before the conservation-law
+//     reduction was repaired (see detect_conservation_laws in model_builder.cpp),
+//     97 of 419 solvable models had a genuinely rank-deficient reduced Jacobian,
+//     and the two populations OVERLAPPED across five decades: full-rank models ran
+//     down to 1.5e-13 while rank-deficient ones reached 1.7e-8. The best single
+//     threshold still misclassified 6; the shipped 1e-8 misclassified 10. The
+//     six-orders-of-magnitude separation the first version of this comment
+//     claimed was an artifact of an eight-model sample.
+//   * Most of what it was flagging was not the model. IGF1R_model_v1 (rank
+//     578/579), Reduced_IGF1R_hela (546/549) and fceri_fyn (1274/1276) were
+//     singular because the reduction picked a dependent-species set it could not
+//     solve for, not because their steady states were continua. With that fixed
+//     all three are full rank and well conditioned (1.5e-3, 4.7e-3, 1.6e-4), and
+//     their dY_ss/dp now matches a finite difference of the steady state itself.
+//
+// What remains below the floor is a real minority — models like
+// tests/data/nested_derived_rate_const.net, whose equilibrium set is a line — so
+// the warning still earns its place. A refusal would need a rank-revealing
+// factorization or a proper condition estimator (LAPACK dgecon), not this ratio.
 static double lu_diag_rcond(const double *lu, int n) {
     if (n <= 0)
         return 0.0;
