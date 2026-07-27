@@ -1,0 +1,40 @@
+# Enzyme-substrate motif with two conservation laws whose dependent-species
+# choice used to be ill-posed (issue #63 follow-up).
+#
+#   X(p~0) + Y <-> X(p~0).Y -> X(p~1) + Y,   X(p~1) -> X(p~0)
+#
+# Conserved: Xtotal = X0 + Xp + XY and Ytotal = Y + XY. Both laws constrain XY,
+# so picking each law's dependent independently (largest |coefficient| not
+# already claimed) can land on a pair for which L[:, dependent] is SINGULAR --
+# the elimination "solve law k for y[dep_k]" then has no solution, and every
+# consumer of the reduction (reconstruct_full, the sensitivity D matrix) silently
+# produces a state that violates the constraints it is enforcing.
+#
+# Distilled from rulehub Tutorials/simplesystem, the smallest of the 66 corpus
+# models that hit this. Kept tiny so the invariant is checkable by hand.
+begin parameters
+    1 kon        10  # Constant
+    2 koff       5  # Constant
+    3 kcat       0.7  # Constant
+    4 dephos     0.5  # Constant
+end parameters
+begin species
+    1 X(p~0,y) 5000
+    2 X(p~1,y) 0
+    3 Y(x) 500
+    4 X(p~0,y!1).Y(x!1) 0
+end species
+begin reactions
+    1 1,3 4 kon #_R1
+    2 2 1 dephos #_R4
+    3 4 1,3 koff #_R2
+    4 4 2,3 kcat #_R3
+end reactions
+begin groups
+    1 X_free               1
+    2 X_p_total            2
+    3 Xp_free              2
+    4 XY                   4
+    5 Ytotal               3,4
+    6 Xtotal               1,2,4
+end groups

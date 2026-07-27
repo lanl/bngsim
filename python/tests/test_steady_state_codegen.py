@@ -158,13 +158,26 @@ class TestSensitivityUsesAnalyticalRhs:
 
     def test_non_elementary_model_differences_dfdp_and_says_so(self, caplog):
         """A Functional/MM model has no analytical ∂f/∂p to emit (issue #55), so
-        that factor is still differenced — but no longer silently."""
+        that factor is still differenced — but no longer silently.
+
+        ``mm_tqssa.net`` also happens to land on a degenerate root (the solve
+        overshoots to ``S = -7e-8``, where the tQSSA rate is identically zero in a
+        neighborhood, so ``f ≡ 0`` and every direction is an equilibrium
+        direction). The Python entry point therefore refuses it — but the ∂f/∂p
+        diagnostic must still reach the log on the way out, which is what this
+        pins. ``sens_dfdp_source`` is checked on the core result, which has no
+        such gate.
+        """
         sim = bngsim.Simulator(bngsim.Model.from_net(net("mm_tqssa.net")), method="ode")
-        with caplog.at_level(logging.WARNING, logger="bngsim"):
-            ss = sim.steady_state(sensitivity_params=["kcat", "Km"], tol=1e-10)
-        assert ss.converged
-        assert ss.sens_dfdp_source == "finite-difference"
+        with (
+            caplog.at_level(logging.WARNING, logger="bngsim"),
+            pytest.raises(bngsim.SimulationError, match="does not exist"),
+        ):
+            sim.steady_state(sensitivity_params=["kcat", "Km"], tol=1e-10)
         assert any("finite differences" in r.message for r in caplog.records)
+
+        core = _core_sensitivity(net("mm_tqssa.net"), ["kcat", "Km"])
+        assert core.sens_dfdp_source == "finite-difference"
 
 
 # ── 3. The closed-form assembly is numerically right ──────────────────────────
@@ -281,8 +294,14 @@ class TestSensitivityNumerics:
 
         With the old finite-difference Jacobian its ~sqrt(eps) noise perturbed the
         singular direction into invertibility and the solve returned a modest,
-        meaningless answer. An exact Jacobian does not launder that, so the
-        conditioning is now reported and warned about instead.
+        meaningless answer. An exact Jacobian does not launder that.
+
+        This is a TRUE degeneracy, unlike the three large models issue #63
+        originally reported: those were an ill-posed conservation-law reduction
+        (see test_conservation_laws.py) and are full rank once it is repaired.
+        Here the equilibrium set really is a line, so the LU returns finite
+        numbers only because the pivots stay nonzero — the conditioning warning is
+        what surfaces it.
         """
         model = bngsim.Model.from_net(net("nested_derived_rate_const.net"))
         sim = bngsim.Simulator(model, method="ode")
@@ -290,7 +309,31 @@ class TestSensitivityNumerics:
             ss = sim.steady_state(sensitivity_params=["kcr", "kf"], tol=1e-12)
         assert ss.converged
         assert ss.sens_jacobian_rcond < 1e-8
-        assert any("rank-deficient" in r.message for r in caplog.records)
+        assert any("badly conditioned" in r.message for r in caplog.records)
+
+    def test_singular_solve_is_refused_rather_than_returning_nan(self):
+        """When the reduced LU hits an exact zero pivot there is no answer at all.
+
+        SUNDIALS' dense solver has no least-squares fallback, so the result comes
+        back NaN. That is the one case a refusal needs no threshold for — and the
+        only refusal the corpus supports, since no cut on the conditioning
+        separates correct gradients from wrong ones (see
+        ``Simulator._SS_SENS_RCOND_FLOOR``).
+        """
+        sim = bngsim.Simulator(bngsim.Model.from_net(net("mm_tqssa.net")), method="ode")
+        with pytest.raises(bngsim.SimulationError) as exc:
+            sim.steady_state(sensitivity_params=["kcat"], tol=1e-10)
+        msg = str(exc.value)
+        assert "does not exist" in msg
+        assert "continuum" in msg
+        assert "S()" in msg  # names the species whose gradient came back non-finite
+
+    def test_well_conditioned_sensitivity_is_not_refused(self, reversible):
+        """The refusal must stay scoped to a solve that actually failed."""
+        sim = bngsim.Simulator(reversible, method="ode")
+        ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-12)
+        assert ss.converged
+        assert np.all(np.isfinite(ss.sensitivity))
 
     def test_jacobian_fd_still_pins_the_difference_quotient(self, reversible):
         """jacobian="fd" is the escape hatch everywhere else; keep it meaningful

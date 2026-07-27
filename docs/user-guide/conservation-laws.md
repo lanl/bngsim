@@ -27,6 +27,12 @@ print(laws["coefficients"])     # n_laws × n_species coefficient matrix
 print(laws["n_species"])        # species count the coefficient rows span
 ```
 
+`dependent` lists the species eliminated by the reduction — one per law, chosen
+as the pivot columns of the row-reduced coefficient matrix, so
+`coefficients[k][dependent[j]]` is `1` when `k == j` and `0` otherwise. That
+invariant is what makes "solve law *k* for its dependent species" a well-posed
+elimination; picking each law's dependent independently does not guarantee it.
+
 **Impact on the steady-state solver**: Models with conservation laws have
 a rank-deficient Jacobian, which causes standard Newton solvers to fail.
 BNGsim's reduced-space Newton solver automatically handles this:
@@ -38,6 +44,11 @@ BNGsim's reduced-space Newton solver automatically handles this:
 
 This is transparent to the user — `sim.steady_state()` just works, regardless
 of whether the model has conservation laws.
+
+The same reduction carries the steady-state sensitivities: `dY_ss/dp` is solved
+on the independent subspace and the dependent species follow from differentiating
+the constraints. `ss.sens_jacobian_rcond` reports how close to singular that
+reduced Jacobian was — see [Steady state](steady-state.md).
 
 ## `parameter_scan` integration
 
