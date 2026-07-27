@@ -322,6 +322,42 @@ in `CMakeLists.txt`) is derived from it.
   the call form against the model's closed forms on both the constant-coefficient
   shape (which used to come back as exactly 0.0) and the parameter-coefficient
   shape (which used to decline).
+- **Steady-state expression output sensitivities dropped the derived-parameter
+  chain rule.** `compute_ss_output_sensitivity`'s explicit-parameter term
+  `∂func/∂p` is a finite difference taken by writing the perturbed value straight
+  into the model's `Parameter` vector — and neither `update_observables` nor
+  `evaluate_functions` re-derives ConstantExpression parameters; only `set_param`
+  does. So when BNG2.pl encodes a rate law or function coefficient as a derived
+  parameter (`_rateLaw1 = chi*kon`), perturbing the primary `kon` left `_rateLaw1`
+  at its nominal value and `∂func/∂_rateLaw1 · ∂_rateLaw1/∂kon` silently vanished
+  from `ss.output_sensitivities(["expression:..."])`. The same defect class as
+  issues #2 / #41, and the same hole `compute_ss_sensitivity`'s `∂f/∂p` had until
+  #63 — that one was repaired by routing parameter writes through
+  `SteadyStateRhs::sync_params(held)`; this one was left behind because it
+  computes a different derivative.
+
+  The probe now takes the same route: `sync_params(pi)` after the perturb *and*
+  after the restore, re-deriving every expression parameter except the one being
+  probed (matching `set_param`'s detach-then-refresh rule, so a probe of a
+  derived parameter is not immediately undone). The restore call matters
+  independently — without it the derived parameters keep the values the last
+  probe gave them and corrupt every later column and the caller's model.
+
+  What came back before was not a small error. On a fixture in the shape of
+  `tests/data/derived_rate_const.net` with `flux() = _rateLaw1*A_tot` over
+  A ⇌ B (a = chi·kon, b = koff, so flux = a·b/(a+b)), the returned value was the
+  bare state-chain term `a·dA_ss/dp` — the wrong sign and 21× too large:
+
+  | | d flux/d kon | d flux/d chi | d flux/d koff |
+  |---|---:|---:|---:|
+  | before | −0.4535 | −0.04535 | 0.9070 |
+  | after / closed form | 0.02268 | 0.002268 | 0.9070 |
+
+  `koff` was always right (it reaches the function only through the state), and
+  so was a probe of `_rateLaw1` itself (a direct write needs no chain) — only the
+  primaries feeding a derived parameter were wrong. The CVODES codegen
+  output-sensitivity chain rule (GH #198) agrees with the closed form to 1e-4,
+  and is used as an independent oracle in the regression test.
 - **`steady_state()` never received the compiled RHS, and finite-differenced all
   of `dY_ss/dp` — including the Jacobian the model already had analytically
   (issue #63).** Two defects, both invisible from Python.

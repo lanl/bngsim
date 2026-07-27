@@ -1,0 +1,40 @@
+# Steady-state expression output-sensitivity fixture: derived-parameter chain.
+#
+# Same `_rateLaw1 = chi*kon` shape as derived_rate_const.net, plus a global
+# function that reads the DERIVED parameter rather than the primary one:
+#
+#     flux() = _rateLaw1*A_tot
+#
+# A <-> B is reversible, so unlike expr_sens_derived.net this has a non-trivial
+# steady state (A_ss > 0) and the function's derivative is not degenerate.
+# With a = chi*kon and b = koff, conservation gives A+B = 1 and
+#
+#     A_ss  = b/(a+b),   flux = a·A_ss = a·b/(a+b)
+#     dflux/dkon = chi·b²/(a+b)²
+#
+# which splits into a state-chain term a·dA_ss/dkon = -chi·a·b/(a+b)² and an
+# explicit-parameter term A_ss·chi. The explicit term reaches `kon` ONLY through
+# `_rateLaw1`, so a d(flux)/dp probe that fails to re-derive expression
+# parameters drops it entirely and returns the sign-flipped state-chain term
+# alone (issue #2 / #41 / #63, output-sensitivity edition).
+begin parameters
+    1 kon        1.0      # Constant
+    2 chi        10.0     # Constant
+    3 koff       0.5      # Constant
+    4 _rateLaw1  chi*kon  # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 _rateLaw1   #_Rfwd
+    2 2 1 koff        #_Rrev
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups
+begin functions
+    1 flux() _rateLaw1*A_tot
+end functions
