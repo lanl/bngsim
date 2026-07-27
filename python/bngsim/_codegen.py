@@ -27,6 +27,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 logger = logging.getLogger("bngsim")
 
@@ -2353,6 +2354,7 @@ def _emit_sens_rhs_body(
     fixed_sp: set[int],
     *,
     value_lines_fn: Callable[[], tuple[list[str], list[str]] | None] | None = None,
+    functional_dfdp: bool = False,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -2391,6 +2393,12 @@ def _emit_sens_rhs_body(
     switch needs values the caller cannot deliver (no thunk, or a thunk that
     declines because a needed function dispatches through ``data->tfun_eval``,
     which this RHS's ``CodegenSensUserData`` cannot reach).
+
+    ``functional_dfdp`` (GH #66) only labels the emitted source: ``rxn_data``
+    carrying a Functional ∂func/∂p needs no different emission, but the result is
+    an *incomplete* sensitivity RHS (``bngsim_jac_vec`` stays Elementary-only
+    until GH #67), and the header should say so wherever the C is read. Default
+    ``False`` ⇒ byte-identical output.
     """
     lines: list[str] = []
     _emit = lines.append
@@ -2463,6 +2471,12 @@ def _emit_sens_rhs_body(
     # ── Header ──────────────────────────────────────────────────────
     _emit("/* Auto-generated CVODES sensitivity RHS - DO NOT EDIT */")
     _emit("/* Analytical sensitivity RHS for Elementary models */")
+    if functional_dfdp:
+        _emit("/* GH #66: bngsim_dfdp below also covers Functional rate laws, but")
+        _emit("   bngsim_jac_vec is still Elementary-only (GH #67) — so this")
+        _emit("   bngsim_codegen_sens_rhs is INCOMPLETE and must not be installed as")
+        _emit("   a model's sensitivity RHS. It is emitted to be differenced against")
+        _emit("   the compiled bngsim_codegen_rhs, nothing else. */")
     _emit("")
     _emit("#include <math.h>")
     _emit("#include <string.h>")
@@ -5293,12 +5307,335 @@ def generate_jacobian_from_model(model) -> str | None:
     return "\n".join(lines) + "\n"
 
 
-def generate_sens_from_model(model) -> str | None:
+# ─── GH #66: analytic ∂f/∂p for Functional rate laws ───────────────────────
+#
+# A Functional reaction's rate mirrors ``compute_rxn_rate`` (src/model.cpp) and
+# the ``rtype == "functional"`` branch of ``generate_rhs_from_model``:
+#
+#     rate_r = stat_r · func_r(obs, p, t) · [af_r · ∏_j y_j^{m_j}]
+#
+# with the bracketed species factor present only when ``apply_species_factor``.
+# That factor is parameter-free, and an observable is a *fixed* linear
+# combination of species (so ∂obs/∂p = 0 at fixed y), which leaves
+#
+#     ∂f_i/∂p = Σ_r stat_r · netstoich_ir · (∂func_r/∂p) · af_r · ∏R_r
+#
+# — no product rule and no chain rule through observable groups. That is the very
+# shape ``_emit_sens_rhs_body`` already emits for a derived rate constant
+# (``(∂p_d/∂primary) × geometry``, #15/#41), so these terms are handed to it
+# through the existing ``derived_terms`` channel with ∂func_r/∂p in place of
+# ∂p_d/∂primary, and no emitter surgery is needed. What is new is only the
+# differentiation below.
+
+
+# Call heads an inlined rate law may still contain: the ExprTk builtins the
+# symbolic core knows how to parse and re-emit. Anything else — a table function
+# (``tfun_<table>(…)``), a user function ``_inline_functions`` could not resolve,
+# an SBML helper — would parse as an *applied undefined function*, whose
+# derivative sympy renders as ``Subs(Derivative(…))``. That is not a symbol the
+# free-symbol check below can see, so it is rejected here by name instead, where
+# the message can say which call blocked the model. Read from the symbolic core
+# rather than re-listed, so the two cannot drift (the #56 lesson).
+def _exprtk_call_heads() -> frozenset[str]:
+    from bngsim._jacobian import _EXPRTK_TO_SYMPY_FUNC
+
+    return frozenset(_EXPRTK_TO_SYMPY_FUNC)
+
+
+# ``_pi`` / ``_e`` are ExprTk's math constants, not model parameters (they appear
+# in no ``codegen_data()["parameters"]`` entry), so they need their own resolution
+# — same pair, same C spellings, as ``differentiate_expression_output_partials``.
+# Looked up only *after* the parameter/observable map, so a model that really does
+# declare a parameter by one of these names keeps it.
+_MATH_CONSTANT_C = {"_pi": "M_PI", "_e": "M_E"}
+
+
+def _warn_functional_sens_rhs_refused(reason: str) -> None:
+    """Report that the analytic sensitivity RHS was declined over a Functional
+    reaction (GH #66, following the #56 precedent).
+
+    ``CVodeSensInit1`` takes ONE sensitivity-RHS callback for every column, so a
+    single undifferentiable rate law has to decline the whole model — there is no
+    per-reaction fallback to mix in. Saying so out loud is the point: the
+    alternative this avoids is emitting ``∂func/∂p = 0`` for that reaction, which
+    reads downstream as a converged gradient of exactly zero. Every decline routes
+    through here, so none of them can be the quiet one.
+    """
+    logger.warning(
+        "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
+        "this model and CVODES' internal difference quotient is used instead "
+        "(correct, but slower).",
+        reason,
+    )
+
+
+class _FunctionalDfdpScope(NamedTuple):
+    """Everything :func:`_functional_rate_law_partials` needs that does not vary
+    per reaction — assembled once per model by :func:`_functional_dfdp_terms`.
+
+    ``c_ref`` maps a (keyword-aliased) symbol name to the C intermediate holding
+    its value; ``param_of_alias`` is the subset of those symbols that are real
+    differentiation variables, i.e. parameters not shadowed by an observable and
+    not function-bound.
+    """
+
+    func_map: dict[str, str]
+    c_ref: dict[str, str]
+    param_of_alias: dict[str, str]
+    param_idx_by_name: dict[str, int]
+    primary_param_names: set[str]
+    derived_exprs: dict[str, str]
+
+
+def _functional_rate_law_partials(
+    rate_expr: str, scope: _FunctionalDfdpScope
+) -> tuple[list[tuple[int, str]] | None, str | None]:
+    """``∂(rate law)/∂p`` for every parameter it reads, as C source.
+
+    Returns ``([(param_idx, c_expr)], None)`` — possibly empty, which is the
+    *success* case for a rate law with no parameter dependence at all — or
+    ``(None, reason)`` naming what blocked it. Never raises, and never returns a
+    partial list: a rate law is either fully differentiated or refused (#56).
+
+    The derivative is taken w.r.t. every parameter symbol surviving inlining,
+    *including* a derived (ConstantExpression) one, whose own column is that
+    direct partial — mirroring how the Elementary path emits ``case iP`` for a
+    ``_rateLaw{N}``. Each derived parameter then contributes
+    ``(∂func/∂p_d)·(∂p_d/∂primary)`` to its primaries' columns (#15/#41).
+    """
+    from bngsim._jacobian import (
+        _EMPTY_CALL_RE,
+        _IDENT_CALL_RE,
+        _TIME_SYM,
+        _exprtk_to_sympy,
+        _inline_functions,
+        sympy_to_c,
+        unsupported_expr_construct,
+    )
+
+    try:
+        import sympy as sp
+    except ImportError:
+        return None, "sympy is not installed"
+
+    inlined = _inline_functions(rate_expr, scope.func_map)
+    if inlined is None:
+        return None, "function references form a cycle or nest deeper than 64 levels"
+
+    # Reject on the *inlined* text so a construct hidden inside a referenced
+    # function is caught, not just one written in the rate law itself.
+    reason = unsupported_expr_construct(inlined)
+    if reason is not None:
+        return None, f"uses unsupported construct: {reason}"
+
+    # Strip the two zero-argument forms ``_preprocess_exprtk`` accepts
+    # (``time()``/``t()`` and an observable written as a call, #28) before looking
+    # for call heads, so neither is mistaken for an unknown function.
+    probe = _EMPTY_CALL_RE.sub(r"\1", re.sub(r"\b(?:time|t)\s*\(\s*\)", " ", inlined))
+    stray = sorted({m.group(1) for m in _IDENT_CALL_RE.finditer(probe)} - _exprtk_call_heads())
+    if stray:
+        return None, "calls unsupported function(s): " + ", ".join(stray)
+
+    sym_expr = _exprtk_to_sympy(inlined)
+    if sym_expr is None:
+        return None, "could not be parsed for differentiation"
+
+    def resolve_symbol(name: str) -> str | None:
+        if name == _TIME_SYM:
+            return "t"
+        mapped = scope.c_ref.get(name)
+        return mapped if mapped is not None else _MATH_CONSTANT_C.get(name)
+
+    allowed = set(scope.c_ref) | {_TIME_SYM} | set(_MATH_CONSTANT_C)
+    free = {str(s) for s in sym_expr.free_symbols}
+    unknown = free - allowed
+    if unknown:
+        return None, "references unrecognized symbol(s): " + ", ".join(sorted(unknown))
+
+    terms: list[tuple[int, str]] = []
+    for a in sorted(free & set(scope.param_of_alias)):
+        pname = scope.param_of_alias[a]
+        deriv = sp.diff(sym_expr, sp.Symbol(a))
+        if deriv == 0:
+            continue
+        c_expr = sympy_to_c(deriv, resolve_symbol)
+        if c_expr is None:
+            return None, (
+                f"the derivative w.r.t. {pname} is not representable in C "
+                "(non-differentiable or unsupported function)"
+            )
+        terms.append((scope.param_idx_by_name[pname], c_expr))
+
+        # #15/#41: a derived (ConstantExpression) parameter is re-derived from its
+        # primaries whenever one of them moves, so ∂f/∂primary carries
+        # (∂func/∂p_d)·(∂p_d/∂primary) on top of any direct occurrence. A lost
+        # chain rule here reads downstream as an exact zero, so a failure declines
+        # the model rather than shipping the truncated gradient (#56).
+        if pname not in scope.derived_exprs:
+            continue
+        jac, why = _derived_param_jacobian_checked(
+            scope.derived_exprs[pname],
+            scope.primary_param_names,
+            scope.param_idx_by_name,
+            derived_exprs=scope.derived_exprs,
+        )
+        if why is not None:
+            return None, (
+                f"the derived parameter {pname} = {scope.derived_exprs[pname]!r} it "
+                f"reads could not be differentiated ({why})"
+            )
+        for primary_name, dpd_c in (jac or {}).items():
+            k = scope.param_idx_by_name.get(primary_name, -1)
+            if k >= 0:
+                terms.append((k, f"({c_expr}) * ({dpd_c})"))
+    return terms, None
+
+
+def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]], str | None]:
+    """Differentiate every Functional rate law w.r.t. every parameter it reads.
+
+    Returns ``({reaction_idx: [(param_idx, c_expr_for_∂func/∂p)]}, None)``, or
+    ``({}, reason)`` to decline the **whole model** — the ``CVodeSensInit1``
+    callback is all-or-nothing, so there is no such thing as declining one
+    reaction. A reaction with no parameter dependence at all maps to ``[]``,
+    which is a *success* (a genuinely zero ∂f/∂p column), never a decline.
+
+    The rate law is read from ``functional_jacobian_context()`` — the same source
+    ``generate_jacobian_from_model`` reconstructs the analytical Jacobian from —
+    and flattened by the same helpers:
+
+    * :func:`bngsim._jacobian._inline_functions` resolves nested user functions,
+    * :func:`_inline_derived_param_refs` is *not* applied to the rate law; a
+      derived parameter stays a symbol so its own column is the direct partial
+      (matching how the Elementary path emits ``case iP`` for a ``_rateLaw{N}``),
+      and the #15/#41 chain rule to its primaries is added as extra terms via
+      :func:`_derived_param_jacobian_checked` — which is also what keeps a
+      *nested* derived parameter reachable.
+
+    Every rejection carries a reason naming what blocked it (#56 precedent):
+    the ``if()`` / comparison / logical and ``abs``/``min``/``max``/``floor``/
+    ``ceil``/``round`` constructs :func:`bngsim._jacobian.unsupported_expr_construct`
+    already rejects for #198 (reused rather than re-spelled — the conditional
+    class is GH #68's to lift, and only behind the shared switch-time guard), an
+    unresolved call head, a free symbol that is neither observable nor parameter
+    nor ``time`` (this is what catches ``rateOf``, whose accessor is an evaluator
+    variable and not a model parameter), a derivative sympy cannot render as C,
+    and a derived parameter whose own Jacobian was lost.
+    """
+    params = data["parameters"]
+    observables = data["observables"]
+    functions = data["functions"]
+    reactions = data["reactions"]
+
+    ctx = core.functional_jacobian_context()
+    frxn_by_idx = {int(r["rxn_idx"]): r for r in (ctx.get("functional_reactions") or [])}
+    func_map = dict(ctx["function_map"])
+
+    param_idx_by_name = {p["name"]: i for i, p in enumerate(params)}
+    primary_param_names = {p["name"] for p in params if p.get("is_const", True)}
+    derived_exprs = {
+        p["name"]: p.get("expression", "")
+        for p in params
+        if not p.get("is_const", True) and p.get("expression", "")
+    }
+
+    def _alias(n: str) -> str:
+        return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
+
+    # Symbol → C, and (separately) symbol → the parameter it is a derivative
+    # variable for. Registration order is ``generate_jacobian_from_model``'s:
+    # parameters first, observables last so an observable wins a name collision,
+    # matching the interpreted ExprTk variable binding. A shadowed parameter is
+    # dropped from the differentiation set too — otherwise a model with an
+    # observable and a parameter of the same name would report ∂f/∂p for a symbol
+    # that actually resolves to the observable.
+    c_ref: dict[str, str] = {}
+    param_of_alias: dict[str, str] = {}
+    for i, p in enumerate(params):
+        a = _alias(p["name"])
+        c_ref[a] = f"p[{i}]"
+        param_of_alias[a] = p["name"]
+    for j, o in enumerate(observables):
+        a = _alias(o["name"])
+        c_ref[a] = f"obs[{j}]"
+        param_of_alias.pop(a, None)
+    # A function-bound synthetic parameter (the ``betaI`` a .net rate law names)
+    # holds no independent value — ``_inline_functions`` replaces the token with
+    # the function body, so it is never a differentiation variable.
+    for f in functions:
+        param_of_alias.pop(_alias(f["name"]), None)
+
+    scope = _FunctionalDfdpScope(
+        func_map=func_map,
+        c_ref=c_ref,
+        param_of_alias=param_of_alias,
+        param_idx_by_name=param_idx_by_name,
+        primary_param_names=primary_param_names,
+        derived_exprs=derived_exprs,
+    )
+
+    # A rule-generated network reuses one rate-law expression across many
+    # reactions; the sympy differentiation is the expensive step, so memoize on
+    # the expression text (the only per-reaction input the differentiation reads).
+    cache: dict[str, tuple[list[tuple[int, str]] | None, str | None]] = {}
+    out: dict[int, list[tuple[int, str]]] = {}
+
+    def _decline(reason: str) -> tuple[dict[int, list[tuple[int, str]]], str]:
+        _warn_functional_sens_rhs_refused(reason)
+        return {}, reason
+
+    for rxn_idx, rxn in enumerate(reactions):
+        rtype = rxn["type"]
+        if rtype == "elementary":
+            continue
+        label = f"reaction {rxn_idx + 1} ({rxn['function_name']})"
+        if rtype != "functional":
+            # Michaelis–Menten is closed-form and out of scope for #66 (it is
+            # worth exactly one extra corpus model); anything else is unknown.
+            return _decline(
+                f"{label} has rate-law type {rtype!r}, which has no analytic ∂f/∂p yet"
+            )
+        frxn = frxn_by_idx.get(rxn_idx)
+        if frxn is None:
+            # functional_jacobian_context() skips a reaction whose function name
+            # resolves to no expression — there is nothing to differentiate.
+            return _decline(f"{label} has no resolvable rate-law expression")
+        if bool(frxn["per_species_volume_scaling"]):
+            # The ∂f/∂p scatter would have to divide each affected row by that
+            # species's (possibly live, GH #171) compartment volume, which the
+            # emitted switch has no form for. Decline rather than emit the
+            # undivided term.
+            return _decline(f"{label} is cross-compartment (per-species volume scaling)")
+        rate_expr = frxn["rate_expr"]
+        hit = cache.get(rate_expr)
+        if hit is None:
+            hit = _functional_rate_law_partials(rate_expr, scope)
+            cache[rate_expr] = hit
+        terms, why = hit
+        if terms is None:
+            return _decline(
+                f"the Functional rate law for {label} ({rate_expr!r}) could not be "
+                f"differentiated — {why or 'unknown reason'}"
+            )
+        out[rxn_idx] = terms
+    return out, None
+
+
+def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     """Generate C source for the CVODES analytical sensitivity RHS from a
     built model, parallel to ``generate_sens_rhs_c`` (.net path).
 
     Returns ``None`` if any reaction is non-Elementary — the caller then
     falls back to RHS-only codegen and CVODES uses internal FD.
+
+    ``functional`` (GH #66) lifts that gate for Functional rate laws, emitting
+    the analytic ``∂f/∂p`` derived by :func:`_functional_dfdp_terms`. It defaults
+    to **off** and no production caller sets it, so this stage changes no
+    behavior. It is not merely a feature flag to flip: the returned source's
+    other half, ``bngsim_jac_vec``, is still Elementary-only, so a Functional
+    model's ``bngsim_codegen_sens_rhs`` is *incomplete* until GH #67 supplies the
+    Functional ``J·yS``. The source is emitted here so the derivative can be
+    proven against a finite-difference oracle first.
 
     Closes #15: parameters whose ``is_const`` field is False (derived
     expressions like ``_rateLaw_<rid>`` synthesized by the SBML loader for
@@ -5329,8 +5666,25 @@ def generate_sens_from_model(model) -> str | None:
     rate_const_names: set[str] = set()
     for rxn in reactions:
         if rxn["type"] != "elementary":
-            return None
+            if not functional:
+                return None
+            # A Functional reaction's ``function_name`` names the rate-law
+            # *function*, not a rate-constant parameter, so it must not seed the
+            # derived-rate-constant expansion below. Its ∂func/∂p (including any
+            # chain rule through a derived parameter the law reads) comes from
+            # _functional_dfdp_terms instead.
+            continue
         rate_const_names.add(rxn.get("function_name", ""))
+
+    # GH #66: the Functional half of ∂f/∂p. Derived before anything is emitted so
+    # an undifferentiable rate law declines the model with a warning naming it,
+    # rather than reaching the emitter and contributing a silent zero. All-
+    # Elementary models never enter here (and the gate above already returned).
+    functional_terms: dict[int, list[tuple[int, str]]] = {}
+    if functional:
+        functional_terms, decline = _functional_dfdp_terms(core, data)
+        if decline is not None:
+            return None
 
     fixed_sp = {i for i, s in enumerate(species) if s["fixed"]}
 
@@ -5385,9 +5739,13 @@ def generate_sens_from_model(model) -> str | None:
     }
 
     rxn_data: list[dict] = []
-    for rxn in reactions:
+    for rxn_idx, rxn in enumerate(reactions):
+        is_elementary = rxn["type"] == "elementary"
         rate_params = list(rxn["rate_param_indices"])
-        pidx = rate_params[0] if rate_params else -1
+        # GH #66: a Functional reaction has no scalar rate constant, so it
+        # contributes no *direct* ∂f/∂k term (and no bngsim_jac_vec group) —
+        # only the ∂func/∂p terms collected below.
+        pidx = rate_params[0] if (rate_params and is_elementary) else -1
         sf = rxn["stat_factor"]
         reactants = list(rxn["reactants"])
         products = list(rxn["products"])
@@ -5398,11 +5756,19 @@ def generate_sens_from_model(model) -> str | None:
         for pi in products:
             stoich[pi] = stoich.get(pi, 0) + 1
 
-        rmult = Counter(reactants)
+        # GH #66: the species factor ∏R (and with it the GH #75 amount factor)
+        # multiplies the rate only when apply_species_factor is set — SBML's
+        # unified emission bakes the reactant factor into the kinetic law
+        # instead. Mirrors the ``rtype == "functional"`` branch of
+        # generate_rhs_from_model, so the geometry the derivative is multiplied
+        # by is the geometry the RHS used. Always set for Elementary.
+        with_species_factor = is_elementary or bool(rxn.get("apply_species_factor", True))
+        rmult = Counter(reactants) if with_species_factor else Counter()
 
         amount_factor = 1.0
-        for ri in reactants:
-            amount_factor *= av_factor.get(ri, 1.0)
+        if with_species_factor:
+            for ri in reactants:
+                amount_factor *= av_factor.get(ri, 1.0)
 
         # Resolve the rate-constant param's name so we can look up any
         # chain-rule expansion. ``rxn["function_name"]`` is the name passed
@@ -5416,6 +5782,10 @@ def generate_sens_from_model(model) -> str | None:
                 if p_idx_k < 0:
                     continue
                 derived_terms.append((p_idx_k, c_expr))
+        # ∂func_r/∂p rides the same channel: _emit_sens_rhs_body multiplies each
+        # entry's C expression by the geometry above and scatters it by net
+        # stoichiometry, which is exactly Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r.
+        derived_terms.extend(functional_terms.get(rxn_idx, ()))
 
         rxn_data.append(
             {
@@ -5428,13 +5798,26 @@ def generate_sens_from_model(model) -> str | None:
             }
         )
 
-    return _emit_sens_rhs_body(
+    src = _emit_sens_rhs_body(
         rxn_data,
         n_sp,
         n_params,
         fixed_sp,
         value_lines_fn=lambda: _sens_value_lines(data),
+        functional_dfdp=bool(functional_terms),
     )
+    if src is None and functional_terms:
+        # Every Functional rate law differentiated, but the emitter could not give
+        # the switch the obs[]/func[] values it is written in — a table function
+        # reachable only through ``data->tfun_eval``, or a rateOf body (GH #65).
+        # Declining is right; doing it silently is not, since this is the one
+        # decline the per-reaction loop above cannot see coming.
+        _warn_functional_sens_rhs_refused(
+            "every Functional rate law was differentiated, but the observable/function "
+            "values they read cannot be recomputed inside the sensitivity RHS (a table "
+            "function or rateOf)"
+        )
+    return src
 
 
 def _sens_value_lines(data: dict) -> tuple[list[str], list[str]] | None:
