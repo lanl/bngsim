@@ -15,6 +15,55 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Changed
+- **Forward sensitivities now use the analytic RHS for Functional rate laws whose
+  expressions are smooth algebra (issue #67, closing stage 3 of #55).** A single
+  Functional reaction used to put a whole model on CVODES' internal difference
+  quotient, because `CVodeSensInit1` installs one callback for every sensitivity
+  column and `generate_sens_rhs_c` declined on the first non-Elementary rate law.
+  On the 585-model corpus that was **187 models (32%)**, blocked by **1.1% of
+  reactions**. #66 supplied the analytic `∂f/∂p` behind a keyword; this change
+  supplies the other half of `ySdot = J·yS + ∂f/∂p` and turns the keyword on.
+
+  `J·yS` is not a second derivation. It is the *same* per-species chain rule and
+  per-observable product rule `generate_jacobian_from_model` already emits and
+  validates; both callers now share one reconstruction
+  (`_functional_jacobian_groups`) and differ only in where a contribution lands.
+  The sensitivity RHS passes a scatter that fuses the matvec —
+  `Jv_out[i] += coeff·dj·v[j]` instead of `jac[j*n+i] += coeff·dj` — so no `n×n`
+  scratch buffer is formed inside the CVODES callback (267 KiB on the widest
+  Functional corpus model, memset once per column per step), the work is O(nnz)
+  rather than O(n²), and `CodegenSensUserData` does not have to widen. The
+  analytical Jacobian's emitted C is byte-identical on all 585 models.
+
+  Corpus result: **535/585 models get the analytic sensitivity RHS, up from 398**
+  (+137), 0 models lost, and all 137 gained sources compile and export
+  `bngsim_codegen_sens_rhs`. The 50 that still decline are Michaelis–Menten and
+  the Functional laws carrying a condition (`if()`, a comparison, a logical —
+  issue #68 owns those, and lifting them needs the switch-time guard, because
+  sympy differentiates a `Piecewise` w.r.t. a condition-only parameter to a clean
+  `0` and drops the jump) or a non-smooth builtin
+  (`abs`/`min`/`max`/`floor`/`ceil`/`round`). Every decline warns and names what
+  blocked it, so none of them is the quiet one.
+
+  Sampled end-to-end on 46 gained models (every one above 100 reactions, plus a
+  random 24): **46/46 agree** with the difference-quotient path, median relative
+  disagreement 6.1e-08, worst 6.0e-05. Cost per analytic sensitivity column,
+  measured warm in plain-solve equivalents at 16 parameters: **0.59–1.04**,
+  against the difference quotient's **9.0–36.7**. The difference quotient needed
+  a median **295×** more steps and up to 177 060×, and on 2 of the 6 benchmarked
+  models it never converged at all — it exhausted `mxstep` and returned a
+  gradient of exactly zero, which reads downstream as a converged answer. Set
+  `BNGSIM_NO_FUNCTIONAL_SENS_RHS=1` to force the previous behaviour for an A/B
+  (it is part of the .net codegen cache key, so a hatched run cannot collide with
+  a .so compiled without it).
+
+  Two downstream consumers pick this up without asking. `steady_state.cpp` reads
+  the same `bngsim_codegen_sens_rhs` at `yS = 0` for the `∂f/∂p` factor of
+  `dY_ss/dp = -J⁻¹·(∂f/∂p)`, so `ss.sens_dfdp_source` on a Functional model moves
+  from `"finite-difference"` to `"codegen"` — retiring the √eps step floor issue
+  #76 describes for those models — and the `.net`-loaded path reaches the
+  model-based emitter through `generate_combined_c`, which is how a corpus model
+  gets here at all.
 - **The Curtis-Powell-Reid Jacobian coloring is computed on first use instead of
   at model load, and no longer skipped on dense patterns (issue #29).** `build()`
   used to color only when Jacobian density was `< 0.5`, on the reasoning that

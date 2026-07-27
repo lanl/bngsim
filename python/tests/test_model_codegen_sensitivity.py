@@ -99,21 +99,26 @@ class TestModelCodegenSensGeneration:
         assert "bngsim_codegen_rhs" in combined
         assert "bngsim_codegen_sens_rhs" in combined
 
-    def test_from_antimony_michaelis_menten_returns_none(self):
-        """Non-mass-action laws (MM here) still fall through to RHS-only —
-        the classifier in ``_sbml_loader._classify_mass_action`` rejects
-        anything with division/sums in the kinetic law.
+    def test_from_antimony_michaelis_menten_needs_the_functional_path(self):
+        """``_sbml_loader._classify_mass_action`` rejects a kinetic law with
+        division/sums, so this saturating law is loaded as a **Functional**
+        reaction, not an Elementary one — and the Elementary-only emitter still
+        declines it.
+
+        GH #67: the same model does get an analytic sensitivity RHS through the
+        Functional path, because ``Vmax*S/(Km + S)`` is smooth algebra. That is
+        the behaviour change, and it is what ``generate_combined_from_model``
+        now asks for.
         """
         pytest.importorskip("antimony")
         m = Model.from_antimony_string(
             "model mm; S=10; P=0; Vmax=1; Km=2; J0: S -> P; Vmax*S/(Km + S); end"
         )
-        sens = generate_sens_from_model(m)
-        assert sens is None
+        assert generate_sens_from_model(m) is None
         combined, has_sens = generate_combined_from_model(m)
-        assert has_sens is False
+        assert has_sens is True
         assert "bngsim_codegen_rhs" in combined
-        assert "bngsim_codegen_sens_rhs" not in combined
+        assert "bngsim_codegen_sens_rhs" in combined
 
 
 class TestModelCodegenSensCompilation:
@@ -199,20 +204,26 @@ class TestCodegenFDSensCorrectness:
     a separate buffer that was never re-synced from sens_p; the prior
     session's auto-trigger experiment surfaced this as 11 sens-test
     failures. See memory/project_codegen_default_for_sens.md.
+
+    GH #67 note: this model used to be RHS-only *by accident of the emitter* —
+    a saturating law now gets an analytic sensitivity RHS. The FD path it guards
+    is still reachable (a conditional or non-smooth rate law, and MM proper), so
+    the test forces RHS-only through the ``BNGSIM_NO_FUNCTIONAL_SENS_RHS`` A/B
+    hatch rather than relying on a decline that has moved once and may move
+    again — otherwise this would quietly stop testing FD at all.
     """
 
     @staticmethod
     def _antimony_mm() -> Model:
         # Michaelis-Menten kinetics — the classifier in _sbml_loader rejects
-        # this (division in the AST), so prepare_model_codegen produces
-        # RHS-only and CVODES uses internal FD for sensitivity, exercising
-        # the cvode_codegen_rhs sens_p sync path.
+        # this (division in the AST), so it loads as a Functional reaction.
         return Model.from_antimony_string(
             "model mm; S=10; P=0; k1=0.3; Km=2; J0: S -> P; k1*S/(Km + S); end"
         )
 
-    def test_rhs_only_codegen_uses_fd_correctly(self):
+    def test_rhs_only_codegen_uses_fd_correctly(self, monkeypatch):
         pytest.importorskip("antimony")
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
         m = self._antimony_mm()
         so = prepare_model_codegen(m)
         assert so is not None
@@ -516,10 +527,12 @@ class TestModelCodegenHosuAmountFactor:
         m = Model.from_sbml_string(_HOSU_FUNCTIONAL_SBML)
         so = prepare_model_codegen(m)
         assert so is not None and so.exists()
-        # Non-mass-action ⇒ RHS-only (no analytical sens RHS).
+        # GH #67: a smooth Functional law now carries an analytical sens RHS too.
+        # This test is about the *RHS* reading amounts, so the symbol's presence
+        # is incidental — pinned only so the .so's contents stay described.
         lib = ctypes.CDLL(str(so))
         assert hasattr(lib, "bngsim_codegen_rhs")
-        assert not hasattr(lib, "bngsim_codegen_sens_rhs")
+        assert hasattr(lib, "bngsim_codegen_sens_rhs")
         m._codegen_so_path = str(so)
         r_cg = bngsim.Simulator(m, method="ode").run(
             t_span=(0, 60), n_points=31, rtol=1e-10, atol=1e-14

@@ -155,9 +155,12 @@ Both factors are taken in closed form where the model supports it:
   `method="newton"` polish uses; `jacobian="fd"` pins the difference quotient.
 - **∂f/∂p** — the analytical parameter derivative the code-generated
   sensitivity RHS emits, the same one CVODES integrates against on the
-  time-course path. Models whose rate laws are not all Elementary have no such
-  derivative to emit (issue #55), so that factor is still finite-differenced —
-  with a warning, and `ss.sens_dfdp_source` says so.
+  time-course path. Since issue #67 this covers Functional rate laws too, as long
+  as they are smooth algebra. What has no such derivative to emit is
+  Michaelis–Menten, and any Functional law carrying a condition (`if()`, a
+  comparison, a logical — issue #68) or a non-smooth builtin
+  (`abs`/`min`/`max`/`floor`/`ceil`/`round`); for those the factor is still
+  finite-differenced — with a warning, and `ss.sens_dfdp_source` says so.
 
 Because the analytical `∂f/∂p` comes from codegen, `sensitivity_params` **requires
 code generation**, exactly as `Simulator(..., sensitivity_params=...)` and

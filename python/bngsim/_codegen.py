@@ -2355,6 +2355,7 @@ def _emit_sens_rhs_body(
     *,
     value_lines_fn: Callable[[], tuple[list[str], list[str]] | None] | None = None,
     functional_dfdp: bool = False,
+    functional_jacv_groups: list[list[str]] | None = None,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -2395,10 +2396,19 @@ def _emit_sens_rhs_body(
     which this RHS's ``CodegenSensUserData`` cannot reach).
 
     ``functional_dfdp`` (GH #66) only labels the emitted source: ``rxn_data``
-    carrying a Functional ∂func/∂p needs no different emission, but the result is
-    an *incomplete* sensitivity RHS (``bngsim_jac_vec`` stays Elementary-only
-    until GH #67), and the header should say so wherever the C is read. Default
-    ``False`` ⇒ byte-identical output.
+    carrying a Functional ∂func/∂p needs no different emission, so this just tells
+    the header which rate-law classes the switch covers. Default ``False`` ⇒
+    byte-identical output.
+
+    ``functional_jacv_groups`` (GH #67) supplies the other half — the Functional
+    reactions' ``J·v`` contributions, already emitted as balanced ``{ … }`` line
+    groups by :func:`_functional_jacobian_groups` with the matvec fused into the
+    scatter (``Jv_out[i] += coeff·dj·v[j]``). They are appended to the Elementary
+    groups this helper builds from ``rxn_data``, so ``bngsim_jac_vec`` covers the
+    whole model with no ``n×n`` buffer and no second derivation. The groups are
+    also what decides whether ``bngsim_jac_vec`` takes ``obs``/``func``/``t``:
+    Elementary bodies read none of the three, so an Elementary model's signature —
+    and its whole emitted source — is unchanged.
     """
     lines: list[str] = []
     _emit = lines.append
@@ -2425,9 +2435,20 @@ def _emit_sens_rhs_body(
     # An Elementary derivative is written purely in p[]/y[], so both flags stay
     # False, the thunk is never called, and every line below is skipped — the
     # source is byte-identical to the pre-#65 emitter.
+    #
+    # GH #67: bngsim_jac_vec's Functional groups read the same two arrays, so the
+    # need is the union of the two consumers, while each function's own signature
+    # is decided by what *it* reads — a model whose ∂f/∂p is parameter-free but
+    # whose J·v is not (or the reverse) carries neither array where it is unused.
     _derived_exprs = [t[1] for rxn in rxn_data for t in rxn.get("derived_terms", ())]
-    need_obs = any("obs[" in e for e in _derived_exprs)
-    need_func = any("func[" in e for e in _derived_exprs)
+    fjacv_groups = [list(g) for g in (functional_jacv_groups or ())]
+    _fjacv_text = "\n".join("\n".join(g) for g in fjacv_groups)
+    dfdp_need_obs = any("obs[" in e for e in _derived_exprs)
+    dfdp_need_func = any("func[" in e for e in _derived_exprs)
+    jacv_need_obs = "obs[" in _fjacv_text
+    jacv_need_func = "func[" in _fjacv_text
+    need_obs = dfdp_need_obs or jacv_need_obs
+    need_func = dfdp_need_func or jacv_need_func
     obs_in: list[str] = []
     obs_fs: list[str] = []
     func_in: list[str] = []
@@ -2472,11 +2493,12 @@ def _emit_sens_rhs_body(
     _emit("/* Auto-generated CVODES sensitivity RHS - DO NOT EDIT */")
     _emit("/* Analytical sensitivity RHS for Elementary models */")
     if functional_dfdp:
-        _emit("/* GH #66: bngsim_dfdp below also covers Functional rate laws, but")
-        _emit("   bngsim_jac_vec is still Elementary-only (GH #67) — so this")
-        _emit("   bngsim_codegen_sens_rhs is INCOMPLETE and must not be installed as")
-        _emit("   a model's sensitivity RHS. It is emitted to be differenced against")
-        _emit("   the compiled bngsim_codegen_rhs, nothing else. */")
+        _emit("/* GH #66/#67: both halves below also cover Functional rate laws —")
+        _emit("   bngsim_dfdp carries the analytic d(func)/dp and bngsim_jac_vec the")
+        _emit("   fused Functional J*v — so this bngsim_codegen_sens_rhs is complete")
+        _emit("   for this model. Rate laws with a condition or a non-smooth builtin")
+        _emit("   never reach here; those models decline to CVODES' difference")
+        _emit("   quotient (GH #68). */")
     _emit("")
     _emit("#include <math.h>")
     _emit("#include <string.h>")
@@ -2504,9 +2526,9 @@ def _emit_sens_rhs_body(
     # (byte-identical to the pre-#65 two-line signature). Continuation lines pack
     # two parameters each, mirroring bngsim_output_sens_dfdp one level up.
     _dfdp_params = ["const double* p"]
-    if need_obs:
+    if dfdp_need_obs:
         _dfdp_params.append("const double* obs")
-    if need_func:
+    if dfdp_need_func:
         _dfdp_params.append("const double* func")
     _dfdp_params.append("double* dfdp_out")
     for _i in range(0, len(_dfdp_params), 2):
@@ -2658,6 +2680,31 @@ def _emit_sens_rhs_body(
                     g(f"    Jv_out[{sp_i}] += ({coeff}) * contrib;")
         jacv_groups.append(grp)
 
+    # GH #67: the Functional reactions' J·v contributions, appended after every
+    # Elementary group so an Elementary model's accumulation order — and its whole
+    # emitted body — is untouched. These groups are self-contained ``{ … }`` blocks
+    # declaring their own locals, so they mix into the chunked blocks below without
+    # needing anything from the Elementary preamble.
+    jacv_groups.extend(fjacv_groups)
+
+    # The Functional groups are the only ones that read t / obs[] / func[]; the
+    # Elementary ones are written purely in y[]/p[]/v[], so the block signature is
+    # byte-identical whenever there are none (mirrors how the analytical Jacobian
+    # picks _blk_sig from what its bodies actually reference).
+    _jacv_blk_sig = ["const double* y", "const double* p", "const double* v"]
+    _jacv_blk_args = ["y", "p", "v"]
+    if fjacv_groups:
+        _jacv_blk_sig.insert(0, "double t")
+        _jacv_blk_args.insert(0, "t")
+    if jacv_need_obs:
+        _jacv_blk_sig.append("const double* obs")
+        _jacv_blk_args.append("obs")
+    if jacv_need_func:
+        _jacv_blk_sig.append("const double* func")
+        _jacv_blk_args.append("func")
+    _jacv_blk_sig.append("double* Jv_out")
+    _jacv_blk_args.append("Jv_out")
+
     jacv_block_defs: list[str] = []
     jacv_call_lines: list[str] = []
     jacv_block_protos: list[str] = []
@@ -2665,8 +2712,8 @@ def _emit_sens_rhs_body(
         jacv_block_defs, jacv_call_lines, jacv_block_protos = _emit_chunked_blocks(
             jacv_groups,
             fn_prefix="jacv_blk",
-            signature_params="const double* y, const double* p, const double* v, double* Jv_out",
-            call_args="y, p, v, Jv_out",
+            signature_params=", ".join(_jacv_blk_sig),
+            call_args=", ".join(_jacv_blk_args),
             block_size=block_size,
             preamble=("double dv_dxj, contrib;",),
         )
@@ -2683,10 +2730,24 @@ def _emit_sens_rhs_body(
     _emit("/* Compute J * v (Jacobian-vector product).")
     _emit("   J[i][j] = sum over reactions r: S[i][r] * dv_r/dx_j")
     _emit("   For elementary: dv_r/dx_j = k_r * sf * m_j * x_j^{m_j-1} * prod_{l!=j} x_l^{m_l}")
+    if fjacv_groups:
+        _emit("   For functional (GH #67): the same per-species chain rule and")
+        _emit("   per-observable product rule the analytical Jacobian emits, with the")
+        _emit("   matvec fused into the scatter — no n*n matrix is ever formed.")
     _emit("   Output: Jv_out[i] = sum_j J[i][j] * v[j] */")
-    _emit("static void bngsim_jac_vec(double t, const double* y,")
-    _emit("                           const double* p, const double* v,")
-    _emit("                           double* Jv_out) {")
+    # Two parameters per line, like bngsim_dfdp above, so the Elementary
+    # (t, y) / (p, v) / (Jv_out) packing is unchanged byte for byte.
+    _jacv_params = ["double t", "const double* y", "const double* p", "const double* v"]
+    if jacv_need_obs:
+        _jacv_params.append("const double* obs")
+    if jacv_need_func:
+        _jacv_params.append("const double* func")
+    _jacv_params.append("double* Jv_out")
+    for _i in range(0, len(_jacv_params), 2):
+        _pair = ", ".join(_jacv_params[_i : _i + 2])
+        _head = "static void bngsim_jac_vec(" if _i == 0 else " " * 27
+        _tail = ") {" if _i + 2 >= len(_jacv_params) else ","
+        _emit(f"{_head}{_pair}{_tail}")
     _emit("    memset(Jv_out, 0, N_SPECIES * sizeof(double));")
     _emit("")
     if chunk:
@@ -2747,14 +2808,19 @@ def _emit_sens_rhs_body(
         for ln in (*obs_in, *func_in):
             _emit(ln)
         _emit("")
-    _dfdp_ctx = "".join(s for s, want in ((", obs", need_obs), (", func", need_func)) if want)
+    _dfdp_ctx = "".join(
+        s for s, want in ((", obs", dfdp_need_obs), (", func", dfdp_need_func)) if want
+    )
+    _jacv_ctx = "".join(
+        s for s, want in ((", obs", jacv_need_obs), (", func", jacv_need_func)) if want
+    )
     _emit("    /* 1. Compute df/dp_{iP} */")
     _emit("    double dfdp[N_SPECIES];")
     _emit(f"    bngsim_dfdp(iP, t, y, p{_dfdp_ctx}, dfdp);")
     _emit("")
     _emit("    /* 2. Compute J * yS */")
     _emit("    double Jv[N_SPECIES];")
-    _emit("    bngsim_jac_vec(t, y, p, yS, Jv);")
+    _emit(f"    bngsim_jac_vec(t, y, p, yS{_jacv_ctx}, Jv);")
     _emit("")
     _emit("    /* 3. ySdot = J * yS + df/dp */")
     _emit("    for (int i = 0; i < N_SPECIES; ++i) {")
@@ -2810,6 +2876,24 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool]:
     return want_jac, want_outputs, want_output_sens
 
 
+def functional_sens_rhs_enabled() -> bool:
+    """Whether the analytic sensitivity RHS may cover Functional rate laws (GH #67).
+
+    ``BNGSIM_NO_FUNCTIONAL_SENS_RHS=1`` restores the pre-#67 behaviour — a
+    Functional model back on CVODES' internal difference quotient — for an A/B,
+    mirroring ``BNGSIM_NO_CODEGEN_JAC`` for the compiled Jacobian.
+
+    Read through this one predicate everywhere, because the hatch has to reach two
+    places that must agree: the emitter, and the **.net cache key**. The .net key is
+    built from the file's bytes plus cheap flags, not from the generated source, so
+    a hatch that only the emitter honoured would let a hatched run collide with a
+    .so compiled without it (and the other way round) — a silently wrong A/B. The
+    model-based path hashes its source, so it is safe either way; keying both off
+    this makes that not a thing to remember.
+    """
+    return os.environ.get("BNGSIM_NO_FUNCTIONAL_SENS_RHS") != "1"
+
+
 def generate_combined_c(
     net_path: str,
     model=None,
@@ -2855,6 +2939,17 @@ def generate_combined_c(
     """
     rhs_code = generate_rhs_c(net_path)
     sens_code = generate_sens_rhs_c(net_path)
+    if sens_code is None and model is not None and functional_sens_rhs_enabled():
+        # GH #67: the .net emitter reads rate laws as text and has no rate-law
+        # expression to differentiate, so it declines every Functional model. The
+        # built model does — and this is the path a .net-loaded model actually
+        # takes, so without this hook #67 would reach only the SBML/Antimony
+        # entry points. Same append-from-the-model shape as the Jacobian and the
+        # output evaluators above, and sound for the same reason: the model is
+        # built from this .net, so the two agree on species/parameter ordering.
+        # Only ever tried once the .net path has already declined, so an
+        # all-Elementary model's source stays byte-for-byte what it was.
+        sens_code = generate_sens_from_model(model, functional=True)
     parts = [rhs_code]
     if sens_code is not None:
         parts.append(sens_code)
@@ -4645,146 +4740,44 @@ def _jac_vpow(s: int, av_factor: dict) -> str:
     return f"({_jac_c_float(av_factor[s])}*y[{s}])" if s in av_factor else f"y[{s}]"
 
 
-def generate_jacobian_from_model(model) -> str | None:
-    """Emit the analytical Jacobian callback — a C mirror of the model's
-    ``NetworkModel::fill_*_analytical_jacobian`` (src/model.cpp). GH #76 Task 4,
-    GH #162.
+def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] | None:
+    """Reconstruct every Functional reaction's Jacobian contribution as balanced
+    ``{ … }`` C line-groups, scattered through the caller's ``add``.
 
-    Two forms, selected by how the CVODE solver routes the model (mirrors
-    cvode_simulator.cpp ``use_sparse``):
+    Returns ``(per_species, per_species_volume, per_observable)`` in the order
+    ``fill_dense_analytical_jacobian`` accumulates them, or ``None`` to decline —
+    an un-emittable derivative, an unresolvable rate-law function, or an ``add``
+    that could not place an entry. Never a partial reconstruction.
 
-      * **Dense** (``bngsim_codegen_jac``, GH #76) — column-major
-        ``jac[j*N_SPECIES + i] = ∂f_i/∂x_j`` (matching ``SUNDenseMatrix_Data``),
-        mirroring ``fill_dense_analytical_jacobian``.
-      * **Sparse CSC** (``bngsim_codegen_jac_sparse``, GH #162) — fills the
-        nnz-length CSC value array ``jac_data[data_idx]``, mirroring
-        ``fill_sparse_analytical_jacobian``, for large sparse/KLU models where a
-        dense ``n×n`` emit is infeasible (a 75k-species dense Jacobian ≈ 45 GB).
+    ``add(col, row, value_c, prefix)`` writes one accumulation of ``value_c`` into
+    entry ``(row, col)`` of ∂f/∂x and returns the C line, or ``None`` if that entry
+    has no home (the sparse Jacobian's CSC-pattern miss). Everything above it is
+    matrix-shape agnostic, which is the point: ``generate_jacobian_from_model``
+    passes a dense/CSC element writer, and the sensitivity RHS (GH #67) passes one
+    that fuses the matvec — ``Jv_out[row] += value·v[col]`` — so ``bngsim_jac_vec``
+    covers Functional models with no ``n×n`` buffer and no second derivation. The
+    two consumers cannot drift because there is one reconstruction.
 
-    The emitted function reuses the ``CodegenUserData`` typedef and the
-    ``N_SPECIES``/``N_OBS``/``N_FUNC`` macros declared by the RHS source it is
-    appended to (``generate_combined_from_model`` always prepends it).
-
-    Returns the C source, or ``None`` to *decline* — the simulator then keeps the
-    interpreted analytical / finite-difference Jacobian. Declines when:
-
-      * the interpreted analytical Jacobian is not complete for this model, so a
-        compiled Jacobian is never emitted where the interpreted dispatch would
-        not use one (this also guarantees the compiled scatter matches the
-        FD-self-checked interpreted assembly);
-      * any Functional derivative cannot be emitted as C (an un-resolvable symbol
-        or an un-representable construct) — never ship a partial/wrong Jacobian;
-      * (sparse) a Functional ``(col, row)`` falls outside the CSC pattern, which
-        would mean the Python reconstruction and the C++ sparsity disagree.
-
-    Elementary + Michaelis–Menten contributions come from the C++ scatter plan
-    (``codegen_jacobian_plan``): dense uses the pre-resolved rows, sparse uses the
-    parallel ``affected_csc`` data indices. Functional contributions are
-    reconstructed from ``functional_jacobian_context()`` exactly as
-    ``bngsim._jacobian.attach_functional_jacobian`` does — the per-species chain
-    rule and the per-observable product rule mirror ``set_functional_jacobian`` /
-    ``scatter_functional_observable_terms``, with the derivative math emitted via
-    the native saturable C emitters (``bngsim._jacobian.build_per_species_c`` /
-    ``differentiate_rate_law_c``, GH #151) and scattered by CSC index for sparse.
+    Mirrors ``bngsim._jacobian.attach_functional_jacobian``: the per-species chain
+    rule and the per-observable product rule follow ``set_functional_jacobian`` /
+    ``scatter_functional_observable_terms``, with the derivative math from the
+    native saturable C emitters (GH #151).
     """
-    import os
     from collections import Counter
 
-    # Escape hatch: force the interpreted analytical / FD Jacobian by declining to
-    # emit the compiled one (A/B the feature; mirrors
-    # BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0 for the interpreted path).
-    if os.environ.get("BNGSIM_NO_CODEGEN_JAC") == "1":
-        return None
-
-    # GH #151: per-species / per-observable C-derivative emission routes through
-    # native-first helpers (saturable family, no SymPy) with a SymPy fallback.
     from bngsim._jacobian import (
         _TIME_SYM,
         build_per_species_c,
         differentiate_rate_law_c,
     )
 
-    core = model._core if hasattr(model, "_core") else model
-    plan = core.codegen_jacobian_plan()
-    if not plan["available"]:
-        return None
-    ns = int(plan["n_species"])
-    if ns <= 0:
-        return None
-    # GH #162: emit the CSC *sparse* Jacobian (bngsim_codegen_jac_sparse) for
-    # models the CVODE solver routes to the sparse KLU path, and the dense one
-    # (bngsim_codegen_jac) otherwise. A dense n×n emit is infeasible at scale (a
-    # 75k-species dense Jacobian is ~45 GB), so large sparse models need the
-    # nnz-length CSC form. The structural gate mirrors cvode_simulator.cpp
-    # `use_sparse` (ns >= SPARSE_THRESHOLD=50, density < SPARSE_DENSITY_MAX=0.10,
-    # non-empty pattern, KLU build). The runtime-only factors (force_dense,
-    # jacobian="jax") only *relax* sparse routing, and a structurally-sparse model
-    # run dense simply finds no bngsim_codegen_jac symbol and falls back to the
-    # interpreted dense Jacobian — never a wrong one.
-    nnz = int(plan["nnz"])
-    is_sparse = bool(plan["has_klu"]) and ns >= 50 and nnz > 0 and float(plan["density"]) < 0.10
-
-    # Scatter target for a single contribution. Dense writes the column-major
-    # jac[col*N_SPECIES + row]; sparse writes the CSC value slot jac_data[csc].
-    # Elementary/MM carry their CSC indices in the plan (affected_csc); Functional
-    # terms resolve (col, row) -> csc lazily through the CSC structure below.
-    if is_sparse:
-        import numpy as np
-
-        col_ptrs = plan.get("col_ptrs")
-        row_indices = plan.get("row_indices")
-        if col_ptrs is None or row_indices is None:
-            # Stale core without the CSC plan → decline (interpreted sparse Jac).
-            return None
-        col_ptrs = np.asarray(col_ptrs)
-        row_indices = np.asarray(row_indices)
-
-        _col_row_to_csc: dict[int, dict[int, int]] = {}
-        _csc_miss = False
-
-        def _csc_of(col: int, row: int) -> int:
-            """CSC data index of (row, col); -1 (and a decline flag) on a miss.
-
-            Columns are indexed lazily — only the columns Functional terms touch —
-            so a genome-scale matrix never materializes its full nnz map. A miss
-            means the Python reconstruction disagrees with the CSC pattern; the
-            caller then declines rather than ship a partial/wrong Jacobian.
-            """
-            nonlocal _csc_miss
-            m = _col_row_to_csc.get(col)
-            if m is None:
-                if col < 0 or col + 1 >= len(col_ptrs):
-                    _csc_miss = True
-                    return -1
-                lo = int(col_ptrs[col])
-                hi = int(col_ptrs[col + 1])
-                m = {r: lo + off for off, r in enumerate(row_indices[lo:hi].tolist())}
-                _col_row_to_csc[col] = m
-            csc = m.get(int(row))
-            if csc is None:
-                _csc_miss = True
-                return -1
-            return csc
-
-        def _lv(col: int, row: int, csc) -> str:
-            return f"jac_data[{csc}]"
-    else:
-
-        def _lv(col: int, row: int, csc) -> str:
-            return f"jac[{col}*N_SPECIES + {row}]"
-
-    data = core.codegen_data()
     params = data["parameters"]
     species = data["species"]
     observables = data["observables"]
     functions = data["functions"]
     reactions_cd = data["reactions"]
 
-    param_names = [p["name"] for p in params]
-    species_names = [s["name"] for s in species]
-    obs_names = [o["name"] for o in observables]
-    func_names = [f["name"] for f in functions]
-    func_idx_by_name = {name: i for i, name in enumerate(func_names)}
+    func_idx_by_name = {f["name"]: i for i, f in enumerate(functions)}
 
     # GH #75 amount factor (mirrors generate_rhs_from_model).
     av_factor = {
@@ -4796,39 +4789,20 @@ def generate_jacobian_from_model(model) -> str | None:
     # GH #171: per-species live compartment-volume index (mirrors generate_rhs).
     species_live = {i: int(s.get("ode_live_volume_idx0", -1)) for i, s in enumerate(species)}
 
-    # Maps + tfun dispatch for the obs[]/func[] recomputation (same as the RHS).
-    _param_map = {name: f"p[{i}]" for i, name in enumerate(param_names)}
-    _species_map = {name: f"y[{i}]" for i, name in enumerate(species_names)}
-    _obs_map = {name: f"obs[{i}]" for i, name in enumerate(obs_names)}
-    _func_map = {name: f"func[{i}]" for i, name in enumerate(func_names)}
-    tfun_specs = data.get("table_functions", [])
-    tfun_call_by_name: dict[str, tuple[int, str]] = {}
-    for tf_id, spec in enumerate(tfun_specs):
-        kind = spec["index_kind"]
-        if kind == "time":
-            idx_c = "t"
-        elif kind == "parameter":
-            idx_c = f"p[{spec['index_param_idx']}]"
-        elif kind == "observable":
-            idx_c = f"obs[{spec['index_obs_idx']}]"
-        else:
-            continue
-        tfun_call_by_name[spec["name"]] = (tf_id, idx_c)
-
     # ── Symbol resolver for sympy_to_c ──────────────────────────────────────
     # Map each free-symbol name in a derivative (observable / constant param /
-    # time placeholder) to the C intermediate the Jacobian function computes.
-    # Keyword-named identifiers were aliased by the symbolic core, so key the
-    # map by the aliased name. Observables are registered last so they win on a
-    # name collision (matching the interpreted ExprTk variable binding).
+    # time placeholder) to the C intermediate the caller computes. Keyword-named
+    # identifiers were aliased by the symbolic core, so key the map by the aliased
+    # name. Observables are registered last so they win on a name collision
+    # (matching the interpreted ExprTk variable binding).
     def _alias(n: str) -> str:
         return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 
     c_ref: dict[str, str] = {}
-    for i, name in enumerate(param_names):
-        c_ref[_alias(name)] = f"p[{i}]"
-    for i, name in enumerate(obs_names):
-        c_ref[_alias(name)] = f"obs[{i}]"
+    for i, p in enumerate(params):
+        c_ref[_alias(p["name"])] = f"p[{i}]"
+    for i, o in enumerate(observables):
+        c_ref[_alias(o["name"])] = f"obs[{i}]"
 
     def resolve_symbol(name: str):
         if name == _TIME_SYM:
@@ -4870,13 +4844,10 @@ def generate_jacobian_from_model(model) -> str | None:
             out.append((i, stat * c_i, live_idx, static_divisor))
         return out
 
-    # Reconstruct the Functional contributions. Build them first so an
-    # un-emittable derivative short-circuits to None before any C is assembled.
-    # Each contribution is a balanced ``{ … }`` group so it can be spliced inline
-    # (flat) or wrapped whole in a NOINLINE shard block (chunked, GH #165).
     per_species_groups: list[list[str]] = []
     per_species_volume_groups: list[list[str]] = []
     per_observable_groups: list[list[str]] = []
+    missed = False
 
     # Scatter one existing-column contribution coeff·dj into (row i, col sp_j),
     # applying the GH #171 volume divide. A static-volume / non-varvol row folds
@@ -4885,12 +4856,15 @@ def generate_jacobian_from_model(model) -> str | None:
     # runtime divide by conc[live_idx] (fallback static_divisor when ≤0),
     # mirroring fill_*_analytical_jacobian's `a.coeff * dv / divisor`.
     def _scatter_existing(sp_j, i, coeff, live_idx, sdiv, rhs):
-        csc = _csc_of(sp_j, i) if is_sparse else None
-        lv = _lv(sp_j, i, csc)
+        nonlocal missed
         if live_idx >= 0:
             div = f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r})"
-            return f"        {lv} += {_jac_c_float(coeff)} * {rhs} / {div};"
-        return f"        {lv} += {_jac_c_float(coeff / sdiv)} * {rhs};"
+            line = add(sp_j, i, f"{_jac_c_float(coeff)} * {rhs} / {div}", "        ")
+        else:
+            line = add(sp_j, i, f"{_jac_c_float(coeff / sdiv)} * {rhs}", "        ")
+        if line is None:
+            missed = True
+        return line
 
     # Per-species (SBML) block — emitted for all reactions first so the scatter
     # accumulation order matches fill_dense_analytical_jacobian (all species_
@@ -4913,7 +4887,9 @@ def generate_jacobian_from_model(model) -> str | None:
                 f"        double dj = {c_deriv};",
             ]
             for i, coeff, live_idx, sdiv in affected:
-                grp.append(_scatter_existing(sp_j, i, coeff, live_idx, sdiv, "dj"))
+                line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, "dj")
+                if line is not None:
+                    grp.append(line)
             grp.append("    }")
             per_species_groups.append(grp)
 
@@ -4923,8 +4899,8 @@ def generate_jacobian_from_model(model) -> str | None:
     # (independent of the ∂func derivatives: the bare-law k·A·B has no ∂func/∂V_live
     # term, so the whole column is this contribution). Mirrors the volume_terms
     # scatter in fill_*_analytical_jacobian; func is func[fidx] (= the reaction's
-    # bound rate parameter). A live (row, col) missing from the CSC pattern means
-    # the reconstruction disagrees with the C++ sparsity → decline (via _csc_miss).
+    # bound rate parameter). A live (row, col) with no home means the
+    # reconstruction disagrees with the caller's matrix shape → decline.
     for rxn in frxns:
         if not bool(rxn["per_species_volume_scaling"]):
             continue
@@ -4943,12 +4919,16 @@ def generate_jacobian_from_model(model) -> str | None:
             f"        double fv = func[{fidx}];",
         ]
         for i, coeff, live_idx in live_rows:
-            csc = _csc_of(live_idx, i) if is_sparse else None
-            lv = _lv(live_idx, i, csc)
-            grp.append(
-                f"        if (y[{live_idx}] > 0.0) {lv} += "
-                f"{_jac_c_float(-coeff)} * fv / (y[{live_idx}] * y[{live_idx}]);"
+            line = add(
+                live_idx,
+                i,
+                f"{_jac_c_float(-coeff)} * fv / (y[{live_idx}] * y[{live_idx}])",
+                f"        if (y[{live_idx}] > 0.0) ",
             )
+            if line is None:
+                missed = True
+            else:
+                grp.append(line)
         grp.append("    }")
         per_species_volume_groups.append(grp)
 
@@ -5014,17 +4994,190 @@ def generate_jacobian_from_model(model) -> str | None:
             # so live_idx is always -1 and static_divisor 1.0 — coeff is the
             # unfolded stat·net_stoich (byte-identical to the pre-#171 folded value).
             for i, coeff, _live_idx, _sdiv in affected:
-                csc = _csc_of(sp_j, i) if is_sparse else None
-                grp.append(f"            {_lv(sp_j, i, csc)} += {_jac_c_float(coeff)} * val;")
+                line = add(sp_j, i, f"{_jac_c_float(coeff)} * val", "            ")
+                if line is None:
+                    missed = True
+                else:
+                    grp.append(line)
             grp.append("        }")
         grp.append("    }")
         per_observable_groups.append(grp)
 
-    # A Functional (col, row) that is not in the CSC pattern means the Python
-    # reconstruction and the C++ sparsity disagree — decline rather than emit a
-    # Jacobian missing those entries (the interpreted sparse path stays correct).
-    if is_sparse and _csc_miss:
+    # An entry the caller could not place means the reconstruction and the
+    # caller's matrix shape disagree — decline rather than emit a Jacobian
+    # missing those entries (the interpreted path stays correct).
+    if missed:
         return None
+    return per_species_groups, per_species_volume_groups, per_observable_groups
+
+
+def generate_jacobian_from_model(model) -> str | None:
+    """Emit the analytical Jacobian callback — a C mirror of the model's
+    ``NetworkModel::fill_*_analytical_jacobian`` (src/model.cpp). GH #76 Task 4,
+    GH #162.
+
+    Two forms, selected by how the CVODE solver routes the model (mirrors
+    cvode_simulator.cpp ``use_sparse``):
+
+      * **Dense** (``bngsim_codegen_jac``, GH #76) — column-major
+        ``jac[j*N_SPECIES + i] = ∂f_i/∂x_j`` (matching ``SUNDenseMatrix_Data``),
+        mirroring ``fill_dense_analytical_jacobian``.
+      * **Sparse CSC** (``bngsim_codegen_jac_sparse``, GH #162) — fills the
+        nnz-length CSC value array ``jac_data[data_idx]``, mirroring
+        ``fill_sparse_analytical_jacobian``, for large sparse/KLU models where a
+        dense ``n×n`` emit is infeasible (a 75k-species dense Jacobian ≈ 45 GB).
+
+    The emitted function reuses the ``CodegenUserData`` typedef and the
+    ``N_SPECIES``/``N_OBS``/``N_FUNC`` macros declared by the RHS source it is
+    appended to (``generate_combined_from_model`` always prepends it).
+
+    Returns the C source, or ``None`` to *decline* — the simulator then keeps the
+    interpreted analytical / finite-difference Jacobian. Declines when:
+
+      * the interpreted analytical Jacobian is not complete for this model, so a
+        compiled Jacobian is never emitted where the interpreted dispatch would
+        not use one (this also guarantees the compiled scatter matches the
+        FD-self-checked interpreted assembly);
+      * any Functional derivative cannot be emitted as C (an un-resolvable symbol
+        or an un-representable construct) — never ship a partial/wrong Jacobian;
+      * (sparse) a Functional ``(col, row)`` falls outside the CSC pattern, which
+        would mean the Python reconstruction and the C++ sparsity disagree.
+
+    Elementary + Michaelis–Menten contributions come from the C++ scatter plan
+    (``codegen_jacobian_plan``): dense uses the pre-resolved rows, sparse uses the
+    parallel ``affected_csc`` data indices. Functional contributions are
+    reconstructed from ``functional_jacobian_context()`` exactly as
+    ``bngsim._jacobian.attach_functional_jacobian`` does — the per-species chain
+    rule and the per-observable product rule mirror ``set_functional_jacobian`` /
+    ``scatter_functional_observable_terms``, with the derivative math emitted via
+    the native saturable C emitters (``bngsim._jacobian.build_per_species_c`` /
+    ``differentiate_rate_law_c``, GH #151) and scattered by CSC index for sparse.
+    """
+    import os
+
+    # Escape hatch: force the interpreted analytical / FD Jacobian by declining to
+    # emit the compiled one (A/B the feature; mirrors
+    # BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0 for the interpreted path).
+    if os.environ.get("BNGSIM_NO_CODEGEN_JAC") == "1":
+        return None
+
+    core = model._core if hasattr(model, "_core") else model
+    plan = core.codegen_jacobian_plan()
+    if not plan["available"]:
+        return None
+    ns = int(plan["n_species"])
+    if ns <= 0:
+        return None
+    # GH #162: emit the CSC *sparse* Jacobian (bngsim_codegen_jac_sparse) for
+    # models the CVODE solver routes to the sparse KLU path, and the dense one
+    # (bngsim_codegen_jac) otherwise. A dense n×n emit is infeasible at scale (a
+    # 75k-species dense Jacobian is ~45 GB), so large sparse models need the
+    # nnz-length CSC form. The structural gate mirrors cvode_simulator.cpp
+    # `use_sparse` (ns >= SPARSE_THRESHOLD=50, density < SPARSE_DENSITY_MAX=0.10,
+    # non-empty pattern, KLU build). The runtime-only factors (force_dense,
+    # jacobian="jax") only *relax* sparse routing, and a structurally-sparse model
+    # run dense simply finds no bngsim_codegen_jac symbol and falls back to the
+    # interpreted dense Jacobian — never a wrong one.
+    nnz = int(plan["nnz"])
+    is_sparse = bool(plan["has_klu"]) and ns >= 50 and nnz > 0 and float(plan["density"]) < 0.10
+
+    # Scatter target for a single contribution. Dense writes the column-major
+    # jac[col*N_SPECIES + row]; sparse writes the CSC value slot jac_data[csc].
+    # Elementary/MM carry their CSC indices in the plan (affected_csc), so they use
+    # ``_lv`` directly; Functional terms come back from _functional_jacobian_groups,
+    # which resolves (col, row) -> csc lazily through ``_jac_add``.
+    if is_sparse:
+        import numpy as np
+
+        col_ptrs = plan.get("col_ptrs")
+        row_indices = plan.get("row_indices")
+        if col_ptrs is None or row_indices is None:
+            # Stale core without the CSC plan → decline (interpreted sparse Jac).
+            return None
+        col_ptrs = np.asarray(col_ptrs)
+        row_indices = np.asarray(row_indices)
+
+        _col_row_to_csc: dict[int, dict[int, int]] = {}
+
+        def _csc_of(col: int, row: int) -> int:
+            """CSC data index of (row, col); -1 on a miss.
+
+            Columns are indexed lazily — only the columns Functional terms touch —
+            so a genome-scale matrix never materializes its full nnz map. A miss
+            means the Python reconstruction disagrees with the CSC pattern; the
+            caller then declines rather than ship a partial/wrong Jacobian.
+            """
+            m = _col_row_to_csc.get(col)
+            if m is None:
+                if col < 0 or col + 1 >= len(col_ptrs):
+                    return -1
+                lo = int(col_ptrs[col])
+                hi = int(col_ptrs[col + 1])
+                m = {r: lo + off for off, r in enumerate(row_indices[lo:hi].tolist())}
+                _col_row_to_csc[col] = m
+            csc = m.get(int(row))
+            return -1 if csc is None else csc
+
+        def _lv(col: int, row: int, csc) -> str:
+            return f"jac_data[{csc}]"
+
+        def _jac_add(col: int, row: int, value_c: str, prefix: str) -> str | None:
+            csc = _csc_of(col, row)
+            return None if csc < 0 else f"{prefix}jac_data[{csc}] += {value_c};"
+    else:
+
+        def _lv(col: int, row: int, csc) -> str:
+            return f"jac[{col}*N_SPECIES + {row}]"
+
+        def _jac_add(col: int, row: int, value_c: str, prefix: str) -> str | None:
+            return f"{prefix}jac[{col}*N_SPECIES + {row}] += {value_c};"
+
+    data = core.codegen_data()
+    params = data["parameters"]
+    species = data["species"]
+    observables = data["observables"]
+    functions = data["functions"]
+    reactions_cd = data["reactions"]
+
+    param_names = [p["name"] for p in params]
+    species_names = [s["name"] for s in species]
+    obs_names = [o["name"] for o in observables]
+    func_names = [f["name"] for f in functions]
+
+    # GH #75 amount factor (mirrors generate_rhs_from_model).
+    av_factor = {
+        i: float(s.get("volume_factor", 1.0))
+        for i, s in enumerate(species)
+        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
+    }
+
+    # Maps + tfun dispatch for the obs[]/func[] recomputation (same as the RHS).
+    _param_map = {name: f"p[{i}]" for i, name in enumerate(param_names)}
+    _species_map = {name: f"y[{i}]" for i, name in enumerate(species_names)}
+    _obs_map = {name: f"obs[{i}]" for i, name in enumerate(obs_names)}
+    _func_map = {name: f"func[{i}]" for i, name in enumerate(func_names)}
+    tfun_specs = data.get("table_functions", [])
+    tfun_call_by_name: dict[str, tuple[int, str]] = {}
+    for tf_id, spec in enumerate(tfun_specs):
+        kind = spec["index_kind"]
+        if kind == "time":
+            idx_c = "t"
+        elif kind == "parameter":
+            idx_c = f"p[{spec['index_param_idx']}]"
+        elif kind == "observable":
+            idx_c = f"obs[{spec['index_obs_idx']}]"
+        else:
+            continue
+        tfun_call_by_name[spec["name"]] = (tf_id, idx_c)
+
+    # ── Functional contributions (GH #76/#171) ──────────────────────────────
+    # Reconstructed by the shared builder the sensitivity RHS's bngsim_jac_vec
+    # also uses (GH #67); the only difference between the two consumers is where
+    # a contribution lands, which is what `_jac_add` supplies.
+    groups = _functional_jacobian_groups(core, data, _jac_add)
+    if groups is None:
+        return None
+    per_species_groups, per_species_volume_groups, per_observable_groups = groups
 
     # GH #171: the varvol column groups also read func[] (and the obs[] the func
     # recomputation depends on), so they count toward has_functional / need_func —
@@ -5039,7 +5192,7 @@ def generate_jacobian_from_model(model) -> str | None:
     # NOINLINE shard wrap below.
     elem_groups: list[list[str]] = []
     for erxn in plan["elementary"]:
-        grp = []
+        grp: list[str] = []
         g = grp.append
         ksf_parts = [f"p[{int(erxn['rate_param_idx0'])}]"]
         sf = float(erxn["stat_factor"])
@@ -5621,6 +5774,20 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
     return out, None
 
 
+def _jacv_add(col: int, row: int, value_c: str, prefix: str) -> str:
+    """``_functional_jacobian_groups`` scatter that fuses the matvec (GH #67).
+
+    The analytical Jacobian writes ``∂f_row/∂x_col`` into a matrix element; the
+    sensitivity RHS only ever needs that element multiplied by ``v[col]`` and
+    summed into ``Jv_out[row]``. Both indices are known at emit time, so the fusion
+    is a left-hand-side rewrite: no ``n×n`` scratch buffer inside the CVODES
+    callback (267 KiB on the widest Functional corpus model), no per-column memset
+    of it, O(nnz) work instead of O(n²), and no ``CodegenSensUserData`` widening.
+    Never declines — every entry has a home in a dense vector.
+    """
+    return f"{prefix}Jv_out[{row}] += ({value_c}) * v[{col}];"
+
+
 def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     """Generate C source for the CVODES analytical sensitivity RHS from a
     built model, parallel to ``generate_sens_rhs_c`` (.net path).
@@ -5628,14 +5795,23 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     Returns ``None`` if any reaction is non-Elementary — the caller then
     falls back to RHS-only codegen and CVODES uses internal FD.
 
-    ``functional`` (GH #66) lifts that gate for Functional rate laws, emitting
-    the analytic ``∂f/∂p`` derived by :func:`_functional_dfdp_terms`. It defaults
-    to **off** and no production caller sets it, so this stage changes no
-    behavior. It is not merely a feature flag to flip: the returned source's
-    other half, ``bngsim_jac_vec``, is still Elementary-only, so a Functional
-    model's ``bngsim_codegen_sens_rhs`` is *incomplete* until GH #67 supplies the
-    Functional ``J·yS``. The source is emitted here so the derivative can be
-    proven against a finite-difference oracle first.
+    ``functional`` lifts that gate for Functional rate laws, emitting both halves
+    of their sensitivity RHS: the analytic ``∂f/∂p`` derived by
+    :func:`_functional_dfdp_terms` (GH #66), and the ``J·yS`` reconstructed by
+    :func:`_functional_jacobian_groups` with the matvec fused into the scatter
+    (GH #67). ``generate_combined_from_model`` sets it; it stays a keyword so the
+    pre-#67 behaviour is one argument away for an A/B, and so the .net path (which
+    has no model to read a rate law off) keeps declining as it always has.
+
+    A Functional model is emitted only when **every** rate law it must
+    differentiate is smooth algebra. A condition (``if()``, a comparison, a
+    logical) or a non-smooth builtin (``abs``/``min``/``max``/``floor``/``ceil``/
+    ``round``) declines the whole model — ``CVodeSensInit1`` takes one callback for
+    every column, so a single such law taints all of them — with a warning naming
+    what blocked it. The conditional class is GH #68's to lift, behind the shared
+    switch-time guard; sympy differentiates a ``Piecewise`` w.r.t. a
+    condition-only parameter to a clean ``0``, so nothing downstream would catch
+    it, which is exactly why the pre-scan rejects on tokens instead.
 
     Closes #15: parameters whose ``is_const`` field is False (derived
     expressions like ``_rateLaw_<rid>`` synthesized by the SBML loader for
@@ -5681,10 +5857,26 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     # rather than reaching the emitter and contributing a silent zero. All-
     # Elementary models never enter here (and the gate above already returned).
     functional_terms: dict[int, list[tuple[int, str]]] = {}
+    functional_jacv_groups: list[list[str]] = []
     if functional:
         functional_terms, decline = _functional_dfdp_terms(core, data)
         if decline is not None:
             return None
+        if functional_terms:
+            # GH #67: the other half — J·yS over the Functional reactions. Same
+            # reconstruction the compiled analytical Jacobian uses, with the matvec
+            # fused into the scatter, so ∂f/∂x is derived once for both consumers.
+            # A decline here is the #151 emitters' ("this derivative is not
+            # representable in C"), which the ∂f/∂p pass cannot see: it
+            # differentiates w.r.t. parameters, this one w.r.t. species.
+            groups = _functional_jacobian_groups(core, data, _jacv_add)
+            if groups is None:
+                _warn_functional_sens_rhs_refused(
+                    "a Functional rate law's derivative with respect to the species it "
+                    "reads could not be emitted as C, so J*yS would be incomplete"
+                )
+                return None
+            functional_jacv_groups = [g for gs in groups for g in gs]
 
     fixed_sp = {i for i, s in enumerate(species) if s["fixed"]}
 
@@ -5805,6 +5997,7 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         fixed_sp,
         value_lines_fn=lambda: _sens_value_lines(data),
         functional_dfdp=bool(functional_terms),
+        functional_jacv_groups=functional_jacv_groups,
     )
     if src is None and functional_terms:
         # Every Functional rate law differentiated, but the emitter could not give
@@ -6510,9 +6703,19 @@ def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple
     functional models and is wasted when no sensitivity is requested. It is
     independent of ``has_sens_rhs`` — it consumes whatever state sensitivities
     CVODES produced (analytical sens RHS or internal FD).
+
+    GH #67: the sensitivity RHS is asked for Functional rate laws too. The gate is
+    per **model**, not per requested parameter — ``CVodeSensInit1`` installs one
+    callback for every sensitivity column, so there is nothing finer to key on —
+    and it is ``generate_sens_from_model``'s own: it emits only when every
+    Functional law it must differentiate is smooth algebra, and declines (loudly,
+    to CVODES' difference quotient) on the ``if()``/comparison class GH #68 owns
+    and on the non-smooth builtins that are permanently out of scope. Set
+    ``BNGSIM_NO_FUNCTIONAL_SENS_RHS=1`` to force the pre-#67 behaviour — a
+    Functional model back on the difference quotient — for an A/B.
     """
     rhs_code = generate_rhs_from_model(model)
-    sens_code = generate_sens_from_model(model)
+    sens_code = generate_sens_from_model(model, functional=functional_sens_rhs_enabled())
     jac_code = generate_jacobian_from_model(model)
     outputs_code = generate_outputs_from_model(model)
     parts = [rhs_code]
@@ -6763,12 +6966,14 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # no-memo behavior. _CODEGEN_CACHE_KEY is part of the validity test so a codegen
 # behavior change invalidates stale memo entries too — including one that edits an
 # emitter without bumping _CODEGEN_VERSION (issue #51).
-# Keyed by (net_abspath, want_jac, want_outputs, want_output_sens): the compiled
-# Jacobian (GH #162), output evaluator (GH #163), and expression output-sensitivity
-# evaluator (GH #198) are independent content-distinct callbacks, so all three flags
-# are part of the key — an entry for one combination must never satisfy another.
+# Keyed by (net_abspath, want_jac, want_outputs, want_output_sens,
+# functional_sens): the compiled Jacobian (GH #162), output evaluator (GH #163),
+# and expression output-sensitivity evaluator (GH #198) are independent
+# content-distinct callbacks, and the GH #67 A/B hatch changes the sensitivity RHS
+# in place — so every flag is part of the key, and an entry for one combination
+# must never satisfy another.
 _PREPARE_CODEGEN_MEMO: dict[
-    tuple[str, bool, bool, bool], tuple[Path, tuple[tuple[str, int], ...], str]
+    tuple[str, bool, bool, bool, bool], tuple[Path, tuple[tuple[str, int], ...], str]
 ] = {}
 _PREPARE_CODEGEN_MEMO_LOCK = threading.Lock()
 
@@ -6818,8 +7023,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     This is the main entry point for the codegen pipeline.
     It generates combined RHS + sensitivity RHS when possible.
     The sensitivity RHS is included for all-Elementary models (analytical
-    df/dp + J*v). For Functional/MM models, only the RHS is generated
-    and CVODES uses internal FD for sensitivity.
+    df/dp + J*v), and — when ``model`` is supplied (GH #67) — for a Functional
+    model whose rate laws are smooth algebra, reconstructed from the built model
+    because the .net text alone has no expression to differentiate. MM models, and
+    Functional ones carrying a condition or a non-smooth builtin, still get the RHS
+    only, and CVODES uses internal FD for sensitivity.
 
     GH #162: when ``model`` (the built model for this .net) is supplied, ``emit_jac``
     is set, and its analytical Jacobian is complete, the compiled analytical Jacobian
@@ -6871,7 +7079,16 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # emit_jac + completeness + A/B hatch) and the output evaluator (GH #163,
         # whenever the model has obs/func and no rateOf — independent of emit_jac).
         want_jac, want_outputs, want_output_sens = _codegen_emit_flags(model, emit_jac)
-        memo_key = (net_key, want_jac, want_outputs, want_output_sens)
+        # The GH #67 hatch is process-scoped, not file-scoped, so it belongs in the
+        # in-process memo key as well as the on-disk one below — a test that flips
+        # it mid-process must not be handed the other variant's .so.
+        memo_key = (
+            net_key,
+            want_jac,
+            want_outputs,
+            want_output_sens,
+            functional_sens_rhs_enabled(),
+        )
 
         # Fast path (T2): an unchanged .net (and its .tfun deps) resolves to the
         # already-cached .so via a few stat() calls, skipping the re-read +
@@ -6904,6 +7121,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             suffix += ":codegen_outputs"
         if want_output_sens:
             suffix += ":codegen_output_sens"
+        # GH #67: the A/B hatch changes the emitted source but nothing else in the
+        # key, so it needs its own namespace. Appended only when the hatch is SET,
+        # so the default key — and every .so already in the cache — is unchanged.
+        if not functional_sens_rhs_enabled():
+            suffix += ":no_functional_sens"
         if suffix:
             model_hash = hashlib.sha256((model_hash + suffix).encode()).hexdigest()[:16]
 
