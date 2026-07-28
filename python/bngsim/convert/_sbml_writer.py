@@ -1158,13 +1158,53 @@ def _mm_formula(
     """Closed-form Michaelis–Menten (tQSSA) kinetic law, matching ``model.cpp``.
 
     With E = first reactant, S = second reactant, and (kcat, Km) the two rate
-    parameters::
+    parameters, ``delta = S - Km - E`` and ``D = sqrt(delta^2 + 4*Km*S)``::
 
-        sFree = 0.5 * ((S - Km - E) + sqrt((S - Km - E)^2 + 4*Km*S))
+        sFree = piecewise(0.5 * (delta + D), delta >= 0, 2*Km*S / (D - delta))
         rate  = kcat * stat_factor * max(sFree, 0) * E / (Km + max(sFree, 0))
 
     (The engine floors a negative ``sFree`` to 0; ``max`` reproduces that. SBML
     expresses the whole law explicitly — net2sbml is the faithful half.)
+
+    **Why the export carries the branch and not the textbook one-liner (GH #89).**
+    ``sFree`` is the positive root of ``x^2 - delta*x - Km*S = 0``. Spelled
+    ``0.5*(delta + D)`` it subtracts two nearly-equal positive numbers once
+    ``delta < 0``, losing ~2 significant digits per decade of
+    ``|delta|/sqrt(4*Km*S)`` — no correct digit left by 1e8. This is not a
+    bngsim-internal concern that stops at the engine boundary: the *consumer*
+    evaluating the exported MathML in float64 performs the same subtraction. So
+    "stay a faithful transcription of the canonical literature formula" is not a
+    neutral choice — measured on ``tests/data/mm_tqssa_stiff.net`` (ratio ~1e7),
+    once the engine took the stable root in #89 the textbook export
+
+    * disagreed with its own source model by 2.17e-02 relative RHS (the branch
+      above reproduces the engine **bit-for-bit**, delta 0.0),
+    * therefore **failed its own conversion gate** at L2 (reverse round-trip) and
+      L3 (numerical), so ``net_to_sbml`` emitted an artifact ``report.ok`` marked
+      False, and
+    * made libRoadRunner's CVODE abort with ``CV_ERR_FAILURE`` instead of
+      integrating — where the branch above agrees with bngsim to 2.9e-11.
+
+    Both regressions are pinned by ``test_mm_tqssa_stiff_*`` in
+    ``python/tests/test_net2sbml.py``.
+
+    The branch mirrors ``_mm_sfree_c_lines`` in ``python/bngsim/_codegen.py``
+    operation-for-operation, so engine and export agree bit-for-bit; it omits only
+    that helper's ``(D - delta) > 0`` degenerate guard, which is unreachable here
+    (``delta < 0`` and ``D >= 0`` force ``D - delta > 0``) and which the enclosing
+    ``max(..., 0)`` would backstop anyway.
+
+    Cost of the ``piecewise``, weighed before adopting it: it is *not* a new
+    construct for this writer — the target is L3v2 chosen for exactly this MathML
+    (see ``_SBML_VERSION``), ``piecewise`` is already in
+    ``_EXPRTK_SUPPORTED_CALLS``, and every BNGL ``if()`` already exports as one.
+    It costs nothing at L4 either: that level is *already* ``inconclusive`` for MM
+    (pinned by ``test_full_gate_l4_is_non_gating``) because the law already
+    contains ``max``, and ``_validate.py`` lists ``Max`` and ``Piecewise`` in the
+    same ``_NONSMOOTH`` tuple. Note the asymmetry between the two: ``max(sFree, 0)``
+    is a genuine kink, whereas this branch is *removable* — both arms agree to the
+    last ulp at ``delta == 0`` and the function is smooth across it — so it adds no
+    discontinuity a consumer's integrator has to resolve.
     """
     reactants = list(rxn["reactants"])
     rate_idx = list(rxn.get("rate_param_indices", []))
@@ -1182,7 +1222,11 @@ def _mm_formula(
     sf = float(rxn["stat_factor"])
 
     delta = f"(({S}) - ({Km}) - ({E}))"
-    s_free = f"(0.5 * ({delta} + sqrt({delta}^2 + 4 * ({Km}) * ({S}))))"
+    d_root = f"sqrt({delta}^2 + 4 * ({Km}) * ({S}))"
+    s_free = (
+        f"piecewise(0.5 * ({delta} + {d_root}), {delta} >= 0, "
+        f"2 * ({Km}) * ({S}) / ({d_root} - {delta}))"
+    )
     s_free = f"max({s_free}, 0)"
     pre = f"({_fmt(sf)} * " if sf != 1.0 else "("
     return f"{pre}({kcat}) * ({s_free}) * ({E}) / (({Km}) + ({s_free})))"

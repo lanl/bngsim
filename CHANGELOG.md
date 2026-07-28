@@ -379,6 +379,57 @@ in `CMakeLists.txt`) is derived from it.
   the rate and returned the sign-flipped `∂rate/∂E` above. The C++ suite asserts
   that sign directly, so the sharpest symptom is the first thing to fail.
 
+- **The SBML exporter kept the cancelling tQSSA root after #89 fixed the engine,
+  so `net2sbml` emitted a model its own validator rejects (follow-up to issue
+  #89).** `_mm_formula` in `python/bngsim/convert/_sbml_writer.py` was the one
+  site deliberately left out of #89, on the reading that an interchange artifact
+  should stay a faithful transcription of the canonical literature formula. That
+  reading does not survive contact with the measurement: SBML MathML is evaluated
+  by the *consumer*, in float64, so the exported law performs the same
+  `0.5*(delta + D)` subtraction the engine had just stopped performing.
+
+  With #89 in place the two sides disagree, and the gate says so. On
+  `tests/data/mm_tqssa_stiff.net` (ratio ~1e7), before → after:
+
+  | | textbook export | stable export |
+  |---|---|---|
+  | RHS vs source model | 2.17e-02 | **0.0** (bit-for-bit) |
+  | conversion gate | L2 **fail**, L3 **fail**, `ok=False` | L0–L3 pass, `ok=True` |
+  | libRoadRunner on the artifact | `CV_ERR_FAILURE`, no trajectory | agrees with bngsim to 2.9e-11 |
+  | rate at t=0 (vs mpmath, 50 dps) | 2.09e-02 | 1.90e-16 |
+
+  So the faithful-transcription reading was shipping a model that bngsim itself
+  marks not-ok and that RoadRunner cannot integrate. The export now carries the
+  same branch as `_mm_sfree_c_lines`, spelled as the L3v2 `piecewise` the writer
+  already targets:
+
+  ```
+  sFree = piecewise(0.5*(delta + D), delta >= 0, 2*Km*S/(D - delta))
+  ```
+
+  It omits only that helper's `(D - delta) > 0` degenerate guard, unreachable
+  once `delta < 0` and backstopped by the enclosing `max(..., 0)`.
+
+  The `piecewise` costs less than it looks. It is not a new construct for this
+  writer — the target is L3v2 chosen for exactly this MathML, `piecewise` is
+  already in `_EXPRTK_SUPPORTED_CALLS`, and every BNGL `if()` already exports as
+  one. It does not move L4 either: that level is *already* `inconclusive` on MM
+  (pinned by `test_full_gate_l4_is_non_gating`) because the law already contains
+  `max`, and `_validate.py` lists `Max` and `Piecewise` in the same `_NONSMOOTH`
+  tuple. And unlike that `max` — a genuine kink — this branch is *removable*:
+  both arms agree to the last ulp at `delta == 0` (measured across
+  `delta = ±1e-3 … ±1e-12`, worst 1.11e-16), so no consumer's integrator gains a
+  discontinuity to resolve. The cost that is real is size: the emitted document
+  grows 6519 → 12121 bytes on the stiff fixture, because `sFree` appears twice in
+  the law and SBML has no `let` binding.
+
+  Where the corpus lives nothing moves at all: at ratio ~1 and on the `delta >= 0`
+  branch the emitted law is **bit-identical** to the textbook one, so both corpus
+  MM models (`test_MM`, `mCaMKII_Ca_Spike`) export unchanged. Pinned by
+  `test_mm_tqssa_stiff_rhs_exact` and `test_mm_tqssa_stiff_full_gate_passes`; the
+  reasoning is recorded in the `_mm_formula` docstring so the scope question does
+  not get re-opened from first principles.
+
 - **The conservation-law reduction chose dependent species it could not solve
   for, so the reduced system was singular on models that are perfectly well posed
   (follow-up to issue #63).** `detect_conservation_laws` found every law — the
