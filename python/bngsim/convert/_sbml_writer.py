@@ -1161,10 +1161,22 @@ def _mm_formula(
     parameters, ``delta = S - Km - E`` and ``D = sqrt(delta^2 + 4*Km*S)``::
 
         sFree = piecewise(0.5 * (delta + D), delta >= 0, 2*Km*S / (D - delta))
-        rate  = kcat * stat_factor * max(sFree, 0) * E / (Km + max(sFree, 0))
+        rate  = piecewise(kcat * stat_factor * sFree * E / (Km + sFree),
+                          Km + sFree > 0, 0)
 
-    (The engine floors a negative ``sFree`` to 0; ``max`` reproduces that. SBML
-    expresses the whole law explicitly — net2sbml is the faithful half.)
+    (SBML expresses the whole law explicitly — net2sbml is the faithful half.)
+
+    **The outer piecewise is the engine's guard, not a clamp (GH #93).** This
+    used to read ``max(sFree, 0)``, mirroring a floor the engine applied to a
+    negative ``sFree``. Both are gone: ``sFree`` is negative exactly when ``S``
+    is, and the rate continues smoothly through there, so the export carries the
+    continuation too. What remains is the rate's own denominator, which vanishes
+    only when ``Km·E == 0`` — and there the engine returns 0 rather than
+    evaluating ``0/0``, so a consumer must too or it integrates a NaN. Dropping
+    the guard entirely would agree with the engine everywhere a well-posed model
+    is evaluated and disagree exactly where it is not, which is the asymmetry
+    #93 was filed about; carrying it costs one more ``piecewise`` in an
+    expression that already has one.
 
     **Why the export carries the branch and not the textbook one-liner (GH #89).**
     ``sFree`` is the positive root of ``x^2 - delta*x - Km*S = 0``. Spelled
@@ -1191,20 +1203,29 @@ def _mm_formula(
     The branch mirrors ``_mm_sfree_c_lines`` in ``python/bngsim/_codegen.py``
     operation-for-operation, so engine and export agree bit-for-bit; it omits only
     that helper's ``(D - delta) > 0`` degenerate guard, which is unreachable here
-    (``delta < 0`` and ``D >= 0`` force ``D - delta > 0``) and which the enclosing
-    ``max(..., 0)`` would backstop anyway.
+    (``delta < 0`` and ``D >= 0`` force ``D - delta > 0``). Should a consumer
+    manufacture a NaN there anyway, the outer ``Km + sFree > 0`` piecewise takes
+    the 0 arm, since a NaN compares false.
 
     Cost of the ``piecewise``, weighed before adopting it: it is *not* a new
     construct for this writer — the target is L3v2 chosen for exactly this MathML
     (see ``_SBML_VERSION``), ``piecewise`` is already in
     ``_EXPRTK_SUPPORTED_CALLS``, and every BNGL ``if()`` already exports as one.
     It costs nothing at L4 either: that level is *already* ``inconclusive`` for MM
-    (pinned by ``test_full_gate_l4_is_non_gating``) because the law already
-    contains ``max``, and ``_validate.py`` lists ``Max`` and ``Piecewise`` in the
-    same ``_NONSMOOTH`` tuple. Note the asymmetry between the two: ``max(sFree, 0)``
-    is a genuine kink, whereas this branch is *removable* — both arms agree to the
-    last ulp at ``delta == 0`` and the function is smooth across it — so it adds no
-    discontinuity a consumer's integrator has to resolve.
+    (pinned by ``test_full_gate_l4_is_non_gating``) because ``_validate.py`` lists
+    ``Max`` and ``Piecewise`` in the same ``_NONSMOOTH`` tuple — so it was
+    inconclusive when the law carried ``max``, and it stays inconclusive now that
+    the two ``piecewise`` do. The inner branch is not a kink — both arms agree to
+    the last ulp at ``delta == 0`` and the function is smooth across it. The outer
+    one *is* a jump, but on a set no well-posed model reaches: it fires only where
+    ``Km·E == 0``, and approaching ``E = 0`` from above with ``S < -Km`` the rate
+    tends to ``kcat·(S + Km)``, not to 0. That is a real discontinuity in ``E``,
+    accepted because the alternative at ``E == 0`` is ``0/0`` and because a
+    reaction with no enzyme has rate 0 by definition. The engine makes the
+    identical trade at the identical place, which is the point. The difference
+    from the ``max`` that used to be here is *where*: ``max(sFree, 0)`` put its
+    kink at ``S = 0``, a state every substrate passes through on its way to
+    exhaustion.
     """
     reactants = list(rxn["reactants"])
     rate_idx = list(rxn.get("rate_param_indices", []))
@@ -1227,6 +1248,6 @@ def _mm_formula(
         f"piecewise(0.5 * ({delta} + {d_root}), {delta} >= 0, "
         f"2 * ({Km}) * ({S}) / ({d_root} - {delta}))"
     )
-    s_free = f"max({s_free}, 0)"
-    pre = f"({_fmt(sf)} * " if sf != 1.0 else "("
-    return f"{pre}({kcat}) * ({s_free}) * ({E}) / (({Km}) + ({s_free})))"
+    pre = f"{_fmt(sf)} * " if sf != 1.0 else ""
+    quotient = f"({pre}({kcat}) * ({s_free}) * ({E}) / (({Km}) + ({s_free})))"
+    return f"piecewise({quotient}, ({Km}) + ({s_free}) > 0, 0)"

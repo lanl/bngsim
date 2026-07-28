@@ -158,11 +158,16 @@ def _tqssa_sfree(Km, E, S):
 
 
 def _tqssa_partials(kcat, Km, E, S, stat=1.0):
-    """Exactly the arithmetic the emitted C performs."""
+    """Exactly the arithmetic the emitted C performs.
+
+    The guard is ``KpsF > 0``, not ``sFree > 0`` — GH #93. ``sFree`` is negative
+    exactly where ``S`` is and the rate is live there, so guarding on it made the
+    emitted derivatives contradict the emitted RHS.
+    """
     _delta, D, sF = _tqssa_sfree(Km, E, S)
-    if not (sF > 0.0 and D > 0.0):
-        return 0.0, 0.0
     KpsF = Km + sF
+    if not (KpsF > 0.0 and D > 0.0):
+        return 0.0, 0.0
     dkcat = stat * E * sF / KpsF
     dKm = -kcat * stat * E * sF / (KpsF * D)
     return dkcat, dKm
@@ -193,10 +198,38 @@ class TestThePartials:
 
     def test_both_partials_vanish_where_the_rate_does(self):
         """At S = 0 the rate is 0 for *every* kcat and Km (S = 0 forces
-        sFree = 0 whatever Km is), so the guard returning 0 is the correct
-        derivative, not a fallback."""
+        sFree = 0 whatever Km is), so 0 is the correct derivative, not a
+        fallback.
+
+        Still true after GH #93 dropped the ``sFree > 0`` guard, and now true for
+        a better reason: these two vanish because ``sFree`` is 0 in the
+        numerator, not because a guard intercepted them. ∂rate/∂S at the same
+        state does *not* vanish — see
+        ``test_dS_at_S_zero_is_not_zero`` in test_jacobian_symbolic.py.
+        """
         for Km in (0.1, 1.0, 100.0):
             assert _tqssa_partials(2.0, Km, 25.0, 0.0) == (0.0, 0.0)
+
+    def test_the_partials_are_live_below_zero(self):
+        """GH #93: at S < 0 the rate varies, so ∂/∂kcat and ∂/∂Km must be
+        nonzero. The old ``sFree > 0`` guard returned 0 for both while the
+        emitted RHS beside them returned a varying rate."""
+        dkcat, dKm = _tqssa_partials(2.0, 50.0, 10.0, -5.0)
+        assert dkcat < 0.0 and dKm > 0.0
+        # ...and they are still the derivatives of the rate: ∂/∂kcat = rate/kcat.
+        _delta, _D, sF = _tqssa_sfree(50.0, 10.0, -5.0)
+        rate = 2.0 * 10.0 * sF / (50.0 + sF)
+        assert abs(dkcat - rate / 2.0) <= 1e-15 * abs(rate / 2.0)
+
+    def test_the_guard_is_the_denominator_not_the_root(self):
+        """The guard fires only on the genuine degeneracy Km·E == 0 — where the
+        rate would be 0/0 — and nowhere else (GH #93)."""
+        # No enzyme, substrate driven past -Km: 0, not NaN.
+        assert _tqssa_partials(2.0, 50.0, 0.0, -60.0) == (0.0, 0.0)
+        # Km == 0 with S < E: sFree == 0, so the denominator is 0 too.
+        assert _tqssa_partials(2.0, 0.0, 5.0, 2.0) == (0.0, 0.0)
+        # But an ordinary negative-S probe with enzyme present is NOT guarded.
+        assert _tqssa_partials(2.0, 50.0, 10.0, -49.0) != (0.0, 0.0)
 
 
 # ─── the groupings, against mpmath (GH #89) ────────────────────────────────
@@ -625,6 +658,51 @@ class TestAgainstFiniteDifference:
                 if best > worst:
                     worst, where = best, (names[k], t)
         assert worst < 1e-6, f"worst {worst:.3e} at {where}"
+
+    def test_dfdp_is_live_at_a_negative_substrate(self, tmp_path, monkeypatch):
+        """GH #93: the same FD comparison at S < 0, where the emitted ∂f/∂p used
+        to return 0 while the emitted RHS beside it varied.
+
+        The old ``sFree > 0`` guard made ∂f/∂kcat and ∂f/∂Km both vanish for every
+        negative-substrate probe, so a gradient taken through the exhaustion
+        endgame silently lost those contributions. Comparing against a central
+        difference of the *emitted* RHS is what catches it: the two disagreed by
+        100%, and nothing else in the suite looked below zero.
+        """
+        model = _model(tmp_path, MM)
+        comp = _Compiled(model, tmp_path, monkeypatch)
+        params = comp.data["parameters"]
+        names = [p["name"] for p in params]
+        base = [float(p["value"]) for p in params]
+        states = [(0.0, [10.0, -1.0, 0.0]), (0.0, [10.0, -5.0, 0.0]), (0.0, [10.0, -1e-3, 0.0])]
+
+        worst, live = 0.0, 0
+        for k, name in enumerate(names):
+            if name not in ("kcat", "Km"):
+                continue
+            for t, y in states:
+                analytic = comp.dfdp(t, y, base, k)
+                floor = max(max(abs(v) for v in comp.f(t, y, base)), 1e-30) * 1e-9
+                best = None
+                for rel in _STEPS:
+                    h = rel * abs(base[k])
+                    pp, pm = list(base), list(base)
+                    pp[k], pm[k] = base[k] + h, base[k] - h
+                    fd = [
+                        (a - b) / (2 * h)
+                        for a, b in zip(comp.f(t, y, pp), comp.f(t, y, pm), strict=False)
+                    ]
+                    err = max(
+                        abs(a - d) / max(abs(d), floor) for a, d in zip(analytic, fd, strict=False)
+                    )
+                    best = err if best is None else min(best, err)
+                worst = max(worst, best)
+                # The P row must genuinely move with both rate constants here —
+                # an all-zero column would satisfy the comparison vacuously.
+                assert analytic[2] != 0.0, f"∂f/∂{name} is flat at S={y[1]}"
+                live += 1
+        assert live == 6
+        assert worst < 1e-6, f"worst {worst:.3e}"
 
 
 @requires_cc

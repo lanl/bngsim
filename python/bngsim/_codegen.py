@@ -210,7 +210,13 @@ _compile_counter = itertools.count()
 # the chain rule through ∂sFree/∂E,S,Km. This moves MM *trajectories*, not only
 # gradients, so a cached v25 .so would keep serving pre-fix numbers.
 # Invalidate v25.
-_CODEGEN_VERSION = "26"
+# v27: lanl/bngsim #93 — every emitted Michaelis–Menten site changes again. The
+# free substrate is no longer clamped to 0 and the derivative emitters no longer
+# guard on `sFree > 0`; both now guard the rate's own denominator, `Km + sFree`.
+# A cached v26 .so would keep serving an RHS whose emitted Jacobian contradicts
+# it wherever a species goes negative, and a zero ∂rate/∂S at S = 0.
+# Invalidate v26.
+_CODEGEN_VERSION = "27"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -2308,9 +2314,10 @@ def _rate_functional(
 
 
 def _mm_sfree_c_lines(km_c: str, e_idx: int, s_idx: int, indent: str) -> list[str]:
-    """C lines declaring ``Km``/``E``/``S``/``delta``/``Dmm``/``sFree`` for one
-    tQSSA Michaelis–Menten reaction — the single source of the free-substrate
-    root for every emitter on this path (GH #89).
+    """C lines declaring ``Km``/``E``/``S``/``delta``/``Dmm``/``sFree``/``KpsF``
+    for one tQSSA Michaelis–Menten reaction — the single source of the
+    free-substrate root *and of the guard* for every emitter on this path
+    (GH #89, GH #93).
 
     ``sFree`` is the positive root of ``x² − delta·x − Km·S = 0``. Writing it as
     ``½(delta + D)`` subtracts two nearly-equal positive numbers once
@@ -2319,6 +2326,15 @@ def _mm_sfree_c_lines(km_c: str, e_idx: int, s_idx: int, indent: str) -> list[st
     everything derived from it. The conjugate form ``2·Km·S/(D − delta)``
     multiplies out to the same value with no subtraction. ``delta ≥ 0`` keeps the
     textbook form, which is already cancellation-free, bit-for-bit.
+
+    ``KpsF`` (``Km + sFree``) is declared here rather than spelled out at each
+    use because it is the rate's denominator *and* the one guard every emitter
+    tests — GH #93 was filed because the RHS emitter and the derivative emitters
+    disagreed about that guard, so they now cannot: the RHS is live iff
+    ``KpsF > 0``, and the partials are live iff ``KpsF > 0 && Dmm > 0``.
+    ``sFree`` is deliberately *not* clamped to 0; see the header note in
+    ``include/bngsim/mm_jacobian.hpp`` for why the negative branch is the correct
+    smooth continuation and why the denominator is the only real degeneracy.
     """
     return [
         f"{indent}double Km = {km_c}, E = y[{e_idx}], S = y[{s_idx}];",
@@ -2326,6 +2342,7 @@ def _mm_sfree_c_lines(km_c: str, e_idx: int, s_idx: int, indent: str) -> list[st
         f"{indent}double Dmm = sqrt(delta*delta + 4.0*Km*S);",
         f"{indent}double sFree = (delta >= 0.0) ? 0.5*(delta + Dmm)",
         f"{indent}    : ((Dmm - delta) > 0.0 ? 2.0*Km*S/(Dmm - delta) : 0.0);",
+        f"{indent}double KpsF = Km + sFree;",
     ]
 
 
@@ -2342,12 +2359,17 @@ def _mm_rate_lines(
 
     ``e_idx``/``s_idx`` are 0-based species indices — the enzyme is the *first*
     reactant and the substrate the second, matching ``src/model.cpp``'s MM branch.
+
+    The ``KpsF > 0`` ternary is the same guard the derivative emitters below use,
+    from the same helper (GH #93). It is not a non-negativity clamp on ``sFree``:
+    a negative ``sFree`` (i.e. ``S < 0``) still produces a rate here, the smooth
+    restoring continuation that ``_mm_jacobian_groups`` differentiates.
     """
     sf_c = f"{sf} * " if sf != 1.0 else ""
     return [
         f"{indent}{{",
         *_mm_sfree_c_lines(km_c, e_idx, s_idx, indent + "    "),
-        f"{indent}    rate = {sf_c}{kcat_c} * sFree * E / (Km + sFree);",
+        f"{indent}    rate = KpsF > 0.0 ? {sf_c}{kcat_c} * sFree * E / KpsF : 0.0;",
         f"{indent}}}",
     ]
 
@@ -4959,15 +4981,18 @@ def _mm_v_lines(
     out += _mm_sfree_c_lines(km_c, e_idx, s_idx, "            ")
     out += [
         "            v = 0.0;",
-        # At sFree == 0 the rate is 0 for every kcat/Km (S = 0 forces sFree = 0
-        # whatever Km is), so both partials are genuinely 0 — the same guard the
-        # Jacobian uses, meaning the same thing.
-        "            if (sFree > 0.0 && Dmm > 0.0) {",
+        # The rate itself is 0 exactly where KpsF <= 0 (no enzyme, or Km == 0
+        # with S < E), so both partials are genuinely 0 there — the same guard
+        # _mm_rate_lines and _mm_jacobian_groups use, meaning the same thing
+        # (GH #93). Note this is *not* the old `sFree > 0`: at S = 0 the rate is
+        # 0 for every kcat/Km, so these two partials still vanish, but they do so
+        # because sFree is 0 in the numerator, not because a guard says so.
+        "            if (KpsF > 0.0 && Dmm > 0.0) {",
     ]
     if wrt == "kcat":
-        out.append(f"                v = {stat_c}E*sFree/(Km + sFree){tail};")
+        out.append(f"                v = {stat_c}E*sFree/KpsF{tail};")
     else:
-        out.append(f"                v = -kcat * {stat_c}E*sFree/((Km + sFree)*Dmm){tail};")
+        out.append(f"                v = -kcat * {stat_c}E*sFree/(KpsF*Dmm){tail};")
     out += ["            }", "        }"]
     return out
 
@@ -5122,9 +5147,16 @@ def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
 
     Mirrors ``NetworkModel``'s own MM branch (``src/model.cpp``): the enzyme is
     ``reactant_indices[0]`` and the substrate ``[1]`` — the reverse of the
-    obvious reading — and the ``sFree > 0 && D > 0`` guard is the interpreted
-    path's ``if (sf < 0) sf = 0`` seen from the derivative side, where both
-    partials are genuinely 0 (at ``S = 0`` the rate is 0 for every ``kcat``/``Km``).
+    obvious reading — and the ``KpsF > 0 && Dmm > 0`` guard is the interpreted
+    path's own guard, testing the same denominator on the same side of the same
+    inequality (GH #93).
+
+    That guard used to be ``sFree > 0``, which was the *clamp* seen from the
+    derivative side, and it made this function contradict the RHS emitted beside
+    it: ``_mm_rate_lines`` never clamped, so for ``S < 0`` the artifact returned a
+    varying rate while this said the rate was flat. It was also wrong at ``S = 0``
+    — a state every zero-IC species starts in — where ``∂rate/∂S`` is
+    ``kcat·stat·E/(Km + E)``, not 0, and the quotient below returns exactly that.
     """
     groups: list[list[str]] = []
     for mt in plan_mm:
@@ -5138,10 +5170,10 @@ def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
         for ln in _mm_sfree_c_lines(f"p[{int(mt['km_param_idx0'])}]", e, s, "        "):
             g(ln)
         g("        double dE = 0.0, dS = 0.0;")
-        g("        if (sFree > 0.0 && Dmm > 0.0) {")
+        g("        if (KpsF > 0.0 && Dmm > 0.0) {")
         g(f"            double Cmm = kcat * {_jac_c_float(mt['stat_factor'])};")
         g("            dE = Cmm*sFree/Dmm;")
-        g("            dS = Cmm*E*Km/((Km + sFree)*Dmm);")
+        g("            dS = Cmm*E*Km/(KpsF*Dmm);")
         g("        }")
         for col, affected, deriv in ((e, mt["e_affected"], "dE"), (s, mt["s_affected"], "dS")):
             if not affected:

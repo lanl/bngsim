@@ -398,7 +398,7 @@ struct AnalyticalJacobianData {
 
     /// Michaelis–Menten (tQSSA) closed-form Jacobian term (GH #76 task 3). For
     /// `rate = kcat·stat·sFree·E/(Km+sFree)` with
-    /// `sFree = ½·((S-Km-E) + √((S-Km-E)² + 4·Km·S))` (clamped ≥0), ∂rate/∂E and
+    /// `sFree = ½·((S-Km-E) + √((S-Km-E)² + 4·Km·S))` (unclamped — GH #93), ∂rate/∂E and
     /// ∂rate/∂S are emitted in closed form (the chain rule through sFree done
     /// analytically), exactly matching compute_rxn_rate's MM formula, and
     /// scattered by net stoichiometry. This makes MM models analytically
