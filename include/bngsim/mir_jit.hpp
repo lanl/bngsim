@@ -358,15 +358,43 @@ class MirJit {
     // Forward declarations for every libc/libm function the codegen can emit
     // (see _BUILTIN_IDENT_MAP, the ^→pow lowering, the MM sqrt, and ExprTk
     // builtins that pass through to <math.h>). M_PI/M_E are still provided by
-    // the generated source's own #ifndef/#define blocks. The memset/memcpy size
-    // argument must match c2mir's built-in size_t width (what sizeof yields in
-    // the generated call): unsigned long on the LP64 targets (macOS/Linux
-    // x86-64 + aarch64) and unsigned long long on Windows (LLP64) — mirroring
-    // c2mir/x86_64/mirc_x86_64_stddef.h. Getting this wrong on Windows would
-    // narrow the byte count passed to memset (GH #3).
+    // the generated source's own #ifndef/#define blocks.
+    //
+    // Stripping the headers also strips the *types and macros* they define, and
+    // the generated source names three of those (GH #85 — a missing one is a
+    // compile failure of the whole module, not a graceful decline):
+    //
+    //   size_t  the (size_t) index casts in bngsim_codegen_output_sens (#198).
+    //           Unknown as a typedef name, `(size_t)_c` stops being a cast and
+    //           the whole declaration fails to parse — which is why #85 showed
+    //           up as "syntax error on double (expected '<statement>')".
+    //   NULL    the no-observables function-block call args (both the sens RHS
+    //           and #198 pass NULL for `obs` when the model has no observables).
+    //   NAN     the unsupported-function sentinel in the #198 block.
+    //
+    // c2mir bundles its own <stddef.h> (it is in every target's
+    // TARGET_STD_INCLUDES; only <math.h>/<stdlib.h>/<string.h> have no bundled
+    // copy and fall through to the unparseable platform SDK), so including it
+    // here is what defines size_t — at the width c2mir's own sizeof yields, on
+    // every target, with no hand-maintained LP64/LLP64 table to get wrong. That
+    // is also why memset/memcpy below can now just say size_t: matching c2mir's
+    // width is what GH #3 needed, and this gets it by construction rather than
+    // by mirroring c2mir/x86_64/mirc_x86_64_stddef.h from the outside.
+    //
+    // NULL and NAN are defined here rather than taken from that header: c2mir's
+    // stddef.h omits NULL on macOS-x86_64 and Windows, and no bundled header
+    // defines NAN at all. Both are #ifndef-guarded so a target that does define
+    // them wins.
     static const char *jit_prelude() {
         return "/* bngsim MIR-JIT prelude (forward-declare libc/libm; resolved via the "
                "import resolver) */\n"
+               "#include <stddef.h>\n" // size_t (+ NULL where c2mir defines it)
+               "#ifndef NULL\n"
+               "#define NULL ((void *)0)\n"
+               "#endif\n"
+               "#ifndef NAN\n"
+               "#define NAN (0.0 / 0.0)\n"
+               "#endif\n"
                "extern double pow(double, double);\n"
                "extern double exp(double); extern double exp2(double); extern double "
                "expm1(double);\n"
@@ -392,15 +420,11 @@ class MirJit {
                "atanh(double);\n"
                "extern double erf(double); extern double erfc(double);\n"
                "extern double tgamma(double); extern double lgamma(double);\n"
-#ifdef _WIN32
-               // Windows is LLP64 — c2mir's size_t is unsigned long long (64-bit).
-               "extern void *memset(void *, int, unsigned long long);\n"
-               "extern void *memcpy(void *, const void *, unsigned long long);\n";
-#else
-               // LP64 — c2mir's size_t is unsigned long (64-bit).
-               "extern void *memset(void *, int, unsigned long);\n"
-               "extern void *memcpy(void *, const void *, unsigned long);\n";
-#endif
+               // size_t comes from c2mir's own <stddef.h> above, so these match
+               // whatever the generated sizeof() call passes on this target —
+               // unsigned long on LP64, unsigned long long on Windows (GH #3).
+               "extern void *memset(void *, int, size_t);\n"
+               "extern void *memcpy(void *, const void *, size_t);\n";
     }
 
     // Auto opt-level by JIT source size. MIR -O2's optimizer is superlinear on
