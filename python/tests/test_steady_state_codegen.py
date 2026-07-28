@@ -156,28 +156,63 @@ class TestSensitivityUsesAnalyticalRhs:
         ss = sim.steady_state(tol=1e-10)
         assert ss.converged and ss.rhs_backend == "exprtk"
 
-    def test_non_elementary_model_differences_dfdp_and_says_so(self, caplog):
-        """A Functional/MM model has no analytical ∂f/∂p to emit (issue #55), so
-        that factor is still differenced — but no longer silently.
+    def test_michaelis_menten_no_longer_differences_dfdp(self, caplog):
+        """Michaelis–Menten used to have no analytical ∂f/∂p, so the steady-state
+        solve differenced that factor. #55's MM stage supplies the closed form,
+        and ``steady_state.cpp`` picks the symbol up for free — the same
+        ``finite-difference`` → ``codegen`` move #67 made for Functional models,
+        retiring #76's √eps step floor for MM too.
 
-        ``mm_tqssa.net`` also happens to land on a degenerate root (the solve
-        overshoots to ``S = -7e-8``, where the tQSSA rate is identically zero in a
-        neighborhood, so ``f ≡ 0`` and every direction is an equilibrium
-        direction). The Python entry point therefore refuses it — but the ∂f/∂p
-        diagnostic must still reach the log on the way out, which is what this
-        pins. ``sens_dfdp_source`` is checked on the core result, which has no
-        such gate.
-        """
+        ``mm_tqssa.net`` also lands on a degenerate root (the solve overshoots to
+        ``S = -7e-8``, where the tQSSA rate is identically zero in a
+        neighbourhood, so ``f ≡ 0`` and every direction is an equilibrium
+        direction), which the Python entry point refuses. That is unrelated to
+        where ∂f/∂p came from, so the source is read off the core result, which
+        has no such gate."""
         sim = bngsim.Simulator(bngsim.Model.from_net(net("mm_tqssa.net")), method="ode")
         with (
             caplog.at_level(logging.WARNING, logger="bngsim"),
             pytest.raises(bngsim.SimulationError, match="does not exist"),
         ):
             sim.steady_state(sensitivity_params=["kcat", "Km"], tol=1e-10)
-        assert any("finite differences" in r.message for r in caplog.records)
+        assert not any("no analytical ∂f/∂p" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
 
-        core = _core_sensitivity(net("mm_tqssa.net"), ["kcat", "Km"])
-        assert core.sens_dfdp_source == "finite-difference"
+    def test_a_model_that_still_declines_differences_dfdp_and_says_so(self, tmp_path, caplog):
+        """The FD fallback has not gone away — a Functional law with a kink
+        (``abs()``) has no analytic ∂f/∂p at any stage of #55 — and when it is
+        taken it must still say so. Michaelis–Menten was this test's vehicle
+        until MM gained its closed form."""
+        text = """\
+begin parameters
+    1 kf     0.4  # Constant
+    2 kr     0.2  # Constant
+end parameters
+begin functions
+    1 kink() kf*abs(Atot - 1)
+end functions
+begin species
+    1 A() 5.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 kink #_R1
+    2 2 1 kr #_R2
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+end groups
+"""
+        path = tmp_path / "kink.net"
+        path.write_text(text)
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-10)
+        assert ss.converged
+        assert ss.sens_dfdp_source == "finite-difference"
+        assert any("no analytical ∂f/∂p" in r.message for r in caplog.records)
 
 
 # ── 3. The closed-form assembly is numerically right ──────────────────────────

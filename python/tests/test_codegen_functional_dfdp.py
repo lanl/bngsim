@@ -171,6 +171,28 @@ end groups
 """
 
 
+# The BNGL whitespace Michaelis–Menten form. Out of scope for #66, supported as
+# of #55's MM stage — kept here because two of this file's decline tests used to
+# ride on it.
+MM_NET = """\
+begin parameters
+    1 kcat  1  # Constant
+    2 Km    1  # Constant
+end parameters
+begin species
+    1 S() 100
+    2 E() 100
+    3 P() 0
+end species
+begin reactions
+    1 1,2 3,2 MM kcat Km #_R1
+end reactions
+begin groups
+    1 St                   1
+end groups
+"""
+
+
 def _model(tmp_path, text, name="m.net"):
     net = tmp_path / name
     net.write_text(text)
@@ -340,21 +362,31 @@ class TestDeclinesLoudly:
             "is not a recognized clock threshold" in m and "betaI" in m for m in warnings
         ), warnings
 
-    def test_every_decline_path_warns_not_just_the_differentiation_ones(self, tmp_path, caplog):
+    def test_every_decline_path_warns_not_just_the_differentiation_ones(
+        self, tmp_path, caplog, monkeypatch
+    ):
         """A decline that returns a reason and drops it on the floor is still a
-        silent decline. The rate-law-type and unresolvable-law paths bypass the
-        differentiation entirely, so they need their own coverage."""
-        mm = _model(
-            tmp_path,
-            "begin parameters\n    1 kcat  1  # Constant\n    2 Km    1  # Constant\n"
-            "end parameters\nbegin species\n    1 S() 100\n    2 E() 100\n    3 P() 0\n"
-            "end species\nbegin reactions\n    1 1,2 3,2 MM kcat Km #_R1\nend reactions\n"
-            "begin groups\n    1 St                   1\nend groups\n",
+        silent decline. The paths that bypass the differentiation entirely need
+        their own coverage.
+
+        Michaelis–Menten used to be this test's vehicle (it declined on
+        rate-law type); it is supported as of #55's MM stage, so the vehicle is
+        now the decline *that* stage introduced — an MM model whose analytical
+        Jacobian plan is unavailable, so there is nothing to build ``J·yS``
+        from. Both are non-differentiation declines reached before any rate law
+        is touched."""
+        mm = _model(tmp_path, MM_NET)
+        core = mm._core
+        monkeypatch.setattr(
+            type(core),
+            "codegen_jacobian_plan",
+            lambda self: {"available": False},
+            raising=False,
         )
         with caplog.at_level(logging.WARNING, logger="bngsim"):
             assert cg.generate_sens_from_model(mm, functional=True) is None
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-        assert any("rate-law type 'mm'" in m for m in warnings), warnings
+        assert any("no analytical Jacobian plan" in m for m in warnings), warnings
 
     def test_an_unreachable_table_function_value_declines_out_loud_too(self, tmp_path, caplog):
         """The one decline the per-reaction loop cannot see coming: every rate law
@@ -398,30 +430,17 @@ class TestDeclinesLoudly:
         assert terms == {} and "abs()" in decline
         assert cg.generate_sens_from_model(model, functional=True) is None
 
-    def test_michaelis_menten_is_out_of_scope_and_says_so(self, tmp_path):
-        text = """\
-begin parameters
-    1 kcat  1  # Constant
-    2 Km    1  # Constant
-end parameters
-begin species
-    1 S() 100
-    2 E() 100
-    3 P() 0
-end species
-begin reactions
-    1 1,2 3,2 MM kcat Km #_R1
-end reactions
-begin groups
-    1 St                   1
-end groups
-"""
-        model = _model(tmp_path, text)
+    def test_michaelis_menten_is_no_longer_out_of_scope(self, tmp_path):
+        """#66 declined MM on rate-law type; #55's MM stage supplies its closed
+        form. Kept as a marker of the reversal — the coverage lives in
+        ``test_codegen_mm_sens.py``."""
+        model = _model(tmp_path, MM_NET)
         core = model._core
         terms, decline = cg._functional_dfdp_terms(core, core.codegen_data())
-        assert terms == {}
-        assert "mm" in decline
-        assert cg.generate_sens_from_model(model, functional=True) is None
+        # The Functional pass has nothing to say about an MM reaction either way:
+        # no Functional rate laws, so no terms and no decline.
+        assert terms == {} and decline is None
+        assert cg.generate_sens_from_model(model, functional=True) is not None
 
 
 # ─── the finite-difference oracle ──────────────────────────────────────────
