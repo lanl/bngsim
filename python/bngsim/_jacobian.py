@@ -380,6 +380,57 @@ def _is_emittable(expr) -> bool:
     return True
 
 
+def _linear_multiple_quotient(base, sym, sp):
+    """``base / sym`` when ``base`` is a linear multiple of ``sym`` — i.e. when
+    the quotient is free of ``sym`` — computed structurally, or ``None`` (GH #96).
+
+    This is the exact question :func:`_remove_removable_power_denominators` asks,
+    and the only one it can act on: it needs ``base = c·sym`` so that
+    ``base^n / sym`` can become ``c · base^(n-1)``. ``sp.cancel`` answered it by
+    normalising the whole rational expression first, which is unbounded work on a
+    large ``Add`` and is thrown away whenever the quotient still contains ``sym``
+    — the overwhelmingly common case, since a base that merely *mentions* ``sym``
+    (``Km + sym``) is not a multiple of it.
+
+    Handles the three shapes that can be one:
+
+    * ``sym`` itself → ``1``;
+    * a ``Mul`` carrying ``sym`` as a first-power factor → the other factors,
+      provided none of *them* mentions ``sym`` (``sym·(a + sym)`` is quadratic,
+      not linear, so its quotient is rejected);
+    * an ``Add`` whose every term is itself a linear multiple → the sum of the
+      term quotients (``a·sym + b·sym`` → ``a + b``), which is the one case a
+      purely local ``Mul`` test would miss and ``cancel`` did catch.
+
+    Anything else — a genuine sum like ``Km + sym``, a power ``sym^2``, a
+    transcendental — is not a linear multiple and returns ``None``. That is the
+    same rejection ``cancel`` reached, just without the normalisation.
+    """
+    if base == sym:
+        return sp.S.One
+    if isinstance(base, sp.Mul):
+        rest = []
+        found = False
+        for arg in base.args:
+            if not found and arg == sym:
+                found = True
+                continue
+            rest.append(arg)
+        if not found:
+            return None
+        quotient = sp.Mul(*rest)
+        return None if quotient.has(sym) else quotient
+    if isinstance(base, sp.Add):
+        parts = []
+        for term in base.args:
+            part = _linear_multiple_quotient(term, sym, sp)
+            if part is None:
+                return None
+            parts.append(part)
+        return sp.Add(*parts)
+    return None
+
+
 def _remove_removable_power_denominators(expr):
     """Rewrite ``base(x)^n / x`` terms when ``base(x)`` is a linear multiple of
     ``x``.
@@ -390,6 +441,17 @@ def _remove_removable_power_denominators(expr):
     non-negative concentration domain BNGsim evaluates, but the raw emitted
     ExprTk/C form produces ``0/0`` at zero-valued initial conditions. This local
     rewrite avoids a global ``simplify()`` pass on large BioModels.
+
+    The quotient ``base/sym`` is taken **structurally**
+    (:func:`_linear_multiple_quotient`), never with ``sp.cancel`` (GH #96). That
+    call was the entire cost of this function, and it was cost with nothing to
+    show for it: it ran on every ``Pow`` base merely *containing* ``sym`` —
+    including whole rational ``Add`` sub-expressions, where it performs full
+    multivariate rational normalisation and then, because the result still
+    contains ``sym``, the caller discards it and moves on. On
+    ``BIOMD0000000217``'s ``∂vdead/∂l1`` one such call ran for minutes. The
+    structural test answers the same question in microseconds, for exactly the
+    set of bases the rewrite can actually use.
     """
     import sympy as sp
     from sympy.core.traversal import bottom_up
@@ -413,8 +475,8 @@ def _remove_removable_power_denominators(expr):
                     base, exp = power_factor.base, power_factor.exp
                     if exp == -1 or not base.has(sym):
                         continue
-                    quotient = sp.cancel(base / sym)
-                    if quotient.has(sym):
+                    quotient = _linear_multiple_quotient(base, sym, sp)
+                    if quotient is None:
                         continue
 
                     factors[power_i] = sp.Pow(base, exp - 1, evaluate=False)
@@ -890,7 +952,14 @@ def differentiate_expression_output_partials(
         "param": {},
         "function": {},
     }
-    for alias in free:
+    # Sorted, not set order: this dict's insertion order reaches the emitted C
+    # through the caller's per-kind partial maps, so iterating the `free` *set*
+    # made the #198 evaluator's source depend on PYTHONHASHSEED — a different
+    # artifact hash every process, and a content-addressed `.so` that can never
+    # hit. Measured on 121 of the 585 .net corpus models. Exactly the defect #68
+    # fixed in `differentiate_rate_law`; it survived here because a function with
+    # a single referenced symbol cannot show it.
+    for alias in sorted(free):
         if alias in ignored:
             continue
         deriv = sp.diff(sym_expr, sp.Symbol(alias))
