@@ -1603,9 +1603,10 @@ compute_rxn_rate(const Reaction &rxn, const std::vector<Parameter> &params, cons
                 double E = conc[e_si];
                 double S = conc[s_si];
 
-                // tQSSA: compute free substrate
-                double delta = S - Km - E;
-                double sFree = 0.5 * (delta + std::sqrt(delta * delta + 4.0 * Km * S));
+                // tQSSA: compute free substrate. mm_tqssa takes the conjugate
+                // root when delta < 0 — writing it as ½(delta + D) there loses
+                // ~2 digits per decade of |delta|/√(4·Km·S) (GH #89).
+                double sFree = mm_tqssa(Km, E, S).sFree;
 
                 // Guard against numerical issues (sFree should be non-negative)
                 if (sFree < 0.0)
@@ -1841,7 +1842,8 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
 
         // MichaelisMenten tQSSA — mirrors compute_rxn_rate's SSA MM branch exactly
         // (raw conc for E/S, no ssa_volume_factor): kcat=p[k0], Km=p[km0],
-        // E=x[e0], S=x[s0]; sFree = max(0, 0.5·((S−Km−E) + √((S−Km−E)²+4·Km·S))).
+        // E=x[e0], S=x[s0]; sFree = max(0, root of x²−d·x−Km·S with d = S−Km−E),
+        // taken through mm_tqssa's stable branch (GH #89).
         const bool mm_shape = rxn.rate_law_type == RateLawType::MichaelisMenten &&
                               rxn.rate_law_param_indices.size() >= 2 &&
                               rxn.reactant_indices.size() >= 2;
@@ -1857,7 +1859,10 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
             body += "  { double Km = p[" + std::to_string(km0) + "]; double E = x[" +
                     std::to_string(e0) + "]; double S = x[" + std::to_string(s0) + "];\n";
             body += "    double d = S - Km - E;\n";
-            body += "    double sf = 0.5 * (d + sqrt(d * d + 4.0 * Km * S));\n";
+            body += "    double D = sqrt(d * d + 4.0 * Km * S);\n";
+            body += "    double sf = (d >= 0.0) ? 0.5 * (d + D)\n";
+            body +=
+                "                           : ((D - d) > 0.0 ? 2.0 * Km * S / (D - d) : 0.0);\n";
             body += "    if (sf < 0.0) sf = 0.0;\n";
             body += "    a[" + std::to_string(r) + "] = p[" + std::to_string(kcat0) + "]";
             if (rxn.stat_factor != 1.0)

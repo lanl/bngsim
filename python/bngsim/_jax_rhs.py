@@ -298,7 +298,15 @@ def generate_jax_rhs(net_path: str) -> Any:
                 if len(reactants) >= 2:
                     e = y[reactants[0] - 1]
                     s = y[reactants[1] - 1]
-                    s_free = 0.5 * ((s - km - e) + jnp.sqrt((s - km - e) ** 2 + 4.0 * km * s))
+                    # Stable positive root of x² − delta·x − km·s = 0 (GH #89):
+                    # ½(delta + D) cancels for delta < 0, so that branch uses the
+                    # conjugate form. The denominator is masked before the divide
+                    # so the unselected branch cannot inject a NaN into a tangent.
+                    delta = s - km - e
+                    d_mm = jnp.sqrt(delta * delta + 4.0 * km * s)
+                    neg = delta < 0.0
+                    denom = jnp.where(neg, d_mm - delta, 1.0)
+                    s_free = jnp.where(neg, 2.0 * km * s / denom, 0.5 * (delta + d_mm))
                     rate = sf * kcat * s_free * e / (km + s_free)
                 else:
                     rate = 0.0

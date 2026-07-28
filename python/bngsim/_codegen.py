@@ -204,7 +204,13 @@ _compile_counter = itertools.count()
 # builder the analytical Jacobian uses), so an MM model emits a
 # bngsim_codegen_sens_rhs where v24 declined to CVODES' difference quotient.
 # Invalidate v24.
-_CODEGEN_VERSION = "25"
+# v26: lanl/bngsim #89 — every emitted Michaelis–Menten site changes. The free
+# substrate is now the stable quadratic root (the conjugate form for δ < 0), and
+# the Jacobian / ∂f/∂p partials are the subtraction-free quotients rather than
+# the chain rule through ∂sFree/∂E,S,Km. This moves MM *trajectories*, not only
+# gradients, so a cached v25 .so would keep serving pre-fix numbers.
+# Invalidate v25.
+_CODEGEN_VERSION = "26"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -1805,6 +1811,7 @@ def generate_rhs_c(net_path: str) -> str:
         grp: list[str] = []
         g = grp.append
         kind = _classify_rate_law(rate_law, func_names)
+        rate_expr: str | None = None
         if kind[0] == "elementary":
             _, pname, sf = kind
             rate_expr = _rate_elementary(pname, sf, reactants, param_idx, func_idx)
@@ -1812,11 +1819,25 @@ def generate_rhs_c(net_path: str) -> str:
             _, fname, sf = kind
             rate_expr = _rate_functional(fname, sf, reactants, func_idx, use_array=chunk)
         elif kind[0] == "mm":
+            # A braced block, not an expression: the stable free-substrate root
+            # is a branch on delta's sign (GH #89), and inlining it would repeat
+            # the sqrt four times.
             _, kcat, km, sf = kind
-            rate_expr = _rate_mm(kcat, km, sf, reactants, param_idx)
+            if len(reactants) >= 2:
+                for ln in _mm_rate_lines(
+                    f"p[{param_idx[kcat]}]" if kcat in param_idx else "0.0",
+                    f"p[{param_idx[km]}]" if km in param_idx else "0.0",
+                    sf,
+                    reactants[0] - 1,
+                    reactants[1] - 1,
+                ):
+                    g(ln)
+            else:
+                rate_expr = "0.0"
         else:
             rate_expr = "0.0"
-        g(f"    rate = {rate_expr};")
+        if rate_expr is not None:
+            g(f"    rate = {rate_expr};")
         # Subtract from reactants (index 0 = null reactant, skip)
         for ri in reactants:
             if ri > 0:
@@ -2201,35 +2222,49 @@ def _rate_functional(
     return " * ".join(parts)
 
 
-def _rate_mm(
-    kcat: str,
-    km: str,
+def _mm_sfree_c_lines(km_c: str, e_idx: int, s_idx: int, indent: str) -> list[str]:
+    """C lines declaring ``Km``/``E``/``S``/``delta``/``Dmm``/``sFree`` for one
+    tQSSA Michaelis–Menten reaction — the single source of the free-substrate
+    root for every emitter on this path (GH #89).
+
+    ``sFree`` is the positive root of ``x² − delta·x − Km·S = 0``. Writing it as
+    ``½(delta + D)`` subtracts two nearly-equal positive numbers once
+    ``delta < 0``, losing about two significant digits per decade of
+    ``|delta|/√(4·Km·S)`` — no correct digit left at 1e8, in the *rate* and so in
+    everything derived from it. The conjugate form ``2·Km·S/(D − delta)``
+    multiplies out to the same value with no subtraction. ``delta ≥ 0`` keeps the
+    textbook form, which is already cancellation-free, bit-for-bit.
+    """
+    return [
+        f"{indent}double Km = {km_c}, E = y[{e_idx}], S = y[{s_idx}];",
+        f"{indent}double delta = S - Km - E;",
+        f"{indent}double Dmm = sqrt(delta*delta + 4.0*Km*S);",
+        f"{indent}double sFree = (delta >= 0.0) ? 0.5*(delta + Dmm)",
+        f"{indent}    : ((Dmm - delta) > 0.0 ? 2.0*Km*S/(Dmm - delta) : 0.0);",
+    ]
+
+
+def _mm_rate_lines(
+    kcat_c: str,
+    km_c: str,
     sf: float,
-    reactants: list,
-    param_idx: dict,
-) -> str:
-    """Generate C expression for Michaelis-Menten tQSSA rate."""
-    kcat_c = f"p[{param_idx[kcat]}]" if kcat in param_idx else "0.0"
-    km_c = f"p[{param_idx[km]}]" if km in param_idx else "0.0"
+    e_idx: int,
+    s_idx: int,
+    indent: str = "    ",
+) -> list[str]:
+    """C lines assigning the Michaelis–Menten tQSSA ``rate`` (a braced block, so
+    the locals cannot collide with the caller's).
 
-    if len(reactants) >= 2:
-        e_idx = reactants[0] - 1
-        s_idx = reactants[1] - 1
-    else:
-        return "0.0"
-
+    ``e_idx``/``s_idx`` are 0-based species indices — the enzyme is the *first*
+    reactant and the substrate the second, matching ``src/model.cpp``'s MM branch.
+    """
     sf_c = f"{sf} * " if sf != 1.0 else ""
-
-    return (
-        f"({sf_c}{kcat_c} * (0.5 * ((y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-        f"sqrt((y[{s_idx}] - {km_c} - y[{e_idx}]) * "
-        f"(y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-        f"4.0 * {km_c} * y[{s_idx}]))) * y[{e_idx}] / "
-        f"({km_c} + 0.5 * ((y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-        f"sqrt((y[{s_idx}] - {km_c} - y[{e_idx}]) * "
-        f"(y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-        f"4.0 * {km_c} * y[{s_idx}]))))"
-    )
+    return [
+        f"{indent}{{",
+        *_mm_sfree_c_lines(km_c, e_idx, s_idx, indent + "    "),
+        f"{indent}    rate = {sf_c}{kcat_c} * sFree * E / (Km + sFree);",
+        f"{indent}}}",
+    ]
 
 
 # ─── Sensitivity RHS code generation ────────────────────────────────────
@@ -4395,23 +4430,17 @@ def generate_rhs_from_model(model) -> str:
             g(f"    rate = {' * '.join(parts)};")
 
         elif rtype == "mm":
-            # tQSSA Michaelis-Menten
+            # tQSSA Michaelis-Menten — the free substrate through the stable
+            # quadratic root (GH #89), shared with generate_rhs_c.
             if len(rate_params) >= 2 and len(reactants) >= 2:
-                kcat_c = f"p[{rate_params[0]}]"
-                km_c = f"p[{rate_params[1]}]"
-                e_idx = reactants[0]
-                s_idx = reactants[1]
-                sf_c = f"{sf} * " if sf != 1.0 else ""
-                g(
-                    f"    rate = ({sf_c}{kcat_c} * (0.5 * ((y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-                    f"sqrt((y[{s_idx}] - {km_c} - y[{e_idx}]) * "
-                    f"(y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-                    f"4.0 * {km_c} * y[{s_idx}]))) * y[{e_idx}] / "
-                    f"({km_c} + 0.5 * ((y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-                    f"sqrt((y[{s_idx}] - {km_c} - y[{e_idx}]) * "
-                    f"(y[{s_idx}] - {km_c} - y[{e_idx}]) + "
-                    f"4.0 * {km_c} * y[{s_idx}]))));"
-                )
+                for ln in _mm_rate_lines(
+                    f"p[{rate_params[0]}]",
+                    f"p[{rate_params[1]}]",
+                    sf,
+                    reactants[0],
+                    reactants[1],
+                ):
+                    g(ln)
             else:
                 g("    rate = 0.0;  /* malformed MM */")
         else:
@@ -4800,11 +4829,18 @@ def _mm_v_lines(
 
     Written as a braced block with locals rather than one inline expression, and
     grouped exactly as ``_mm_jacobian_groups`` groups ∂rate/∂E and ∂rate/∂S,
-    because the grouping is load-bearing: the algebraically-identical "simplified"
-    form of ∂/∂Km (with the ½ factors cancelled) loses every significant digit on
-    log-spread parameters, while this one tracks ``sFree`` itself. No derivative
-    can beat the value it differentiates — see the note in
-    ``_mm_dfdp_terms`` about ``sFree``'s own cancellation.
+    because the grouping is load-bearing:
+
+        ∂rate/∂kcat = stat·E·sFree/(Km + sFree)   ( = rate/kcat)
+        ∂rate/∂Km   = −kcat·stat·E·sFree/((Km + sFree)·D)   ( = −rate/D)
+
+    Every algebraically-identical alternative tried so far is worse in float64.
+    The "simplified" ∂/∂Km with the ½ factors cancelled loses every significant
+    digit on log-spread parameters; the chain rule through
+    ``∂sFree/∂Km = ½(−1 + (2S − δ)/D)`` cancels catastrophically in deep
+    saturation (1e+10 relative error there, vs machine precision for the form
+    above — GH #89). Both are pinned by
+    ``test_the_emitted_grouping_is_the_stable_one``.
 
     ``chain_c`` is the #15/#41 factor ∂(kcat or Km)/∂primary when the rate
     constant is a derived parameter; ``None`` for the direct column.
@@ -4813,14 +4849,9 @@ def _mm_v_lines(
     stat_c = "" if stat == 1.0 else f"{_jac_c_float(stat)} * "
     out = ["        {"]
     if wrt == "Km":
-        out.append(f"            double kcat = {kcat_c}, Km = {km_c};")
-    else:
-        out.append(f"            double Km = {km_c};")
+        out.append(f"            double kcat = {kcat_c};")
+    out += _mm_sfree_c_lines(km_c, e_idx, s_idx, "            ")
     out += [
-        f"            double E = y[{e_idx}], S = y[{s_idx}];",
-        "            double delta = S - Km - E;",
-        "            double Dmm = sqrt(delta*delta + 4.0*Km*S);",
-        "            double sFree = 0.5*(delta + Dmm);",
         "            v = 0.0;",
         # At sFree == 0 the rate is 0 for every kcat/Km (S = 0 forces sFree = 0
         # whatever Km is), so both partials are genuinely 0 — the same guard the
@@ -4830,11 +4861,7 @@ def _mm_v_lines(
     if wrt == "kcat":
         out.append(f"                v = {stat_c}E*sFree/(Km + sFree){tail};")
     else:
-        out += [
-            "                double dsF_dKm = 0.5*(-1.0 + (2.0*S - delta)/Dmm);",
-            "                double KpsF = Km + sFree;",
-            f"                v = kcat * {stat_c}E*(dsF_dKm*Km - sFree)/(KpsF*KpsF){tail};",
-        ]
+        out.append(f"                v = -kcat * {stat_c}E*sFree/((Km + sFree)*Dmm){tail};")
     out += ["            }", "        }"]
     return out
 
@@ -4847,21 +4874,22 @@ def _mm_dfdp_terms(data, plan_mm, param_idx_by_name, primary_param_names, derive
     else on this path.
 
     The tQSSA rate is closed form, so unlike the Functional path (GH #66) there is
-    no sympy here at all: ∂/∂kcat = rate/kcat and ∂/∂Km follows from
-    ``∂sFree/∂Km = ½(−1 + (2S − δ)/D)``. Both were checked against ``sympy.diff``
-    symbolically and over random parameter points before being written down.
+    no sympy here at all: ∂/∂kcat = rate/kcat and ∂/∂Km = −rate/D. Both were
+    checked against ``sympy.diff`` symbolically and over random parameter points
+    before being written down.
 
     Cross-checked against ``plan_mm`` entry by entry rather than trusted: the
     plan is what ``_mm_jacobian_groups`` builds ``J·v`` from, so if the two
     disagree about which species is the enzyme, this declines instead of emitting
     a ∂f/∂p that belongs to a different reaction than the ``J·v`` beside it.
 
-    **Accuracy floor.** ``sFree = ½(δ + D)`` cancels catastrophically once
-    ``|δ| ≫ √(4·Km·S)`` — roughly two digits per decade — and that is shipped
-    behaviour in the RHS and the analytical Jacobian, not something introduced
-    here. These partials are exactly as accurate as the rate they differentiate
-    and as the Jacobian's own ∂rate/∂E; a model in that regime has a wrong
-    trajectory before it has a wrong gradient.
+    **Accuracy.** ``sFree`` used to be written ``½(δ + D)``, which cancels
+    catastrophically once ``|δ| ≫ √(4·Km·S)`` — roughly two digits per decade, in
+    the RHS and the analytical Jacobian as much as here, so a model in that regime
+    had a wrong trajectory before it had a wrong gradient. GH #89 replaced the
+    root and these partials' grouping both; see :func:`_mm_sfree_c_lines` and
+    :func:`_mm_v_lines`. These partials remain exactly as accurate as the rate
+    they differentiate and as the Jacobian's own ∂rate/∂E.
     """
     mm_rxns = [(i, r) for i, r in enumerate(data["reactions"]) if r["type"] == "mm"]
     if not mm_rxns:
@@ -4957,10 +4985,24 @@ def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
     """Reconstruct every Michaelis–Menten reaction's Jacobian contribution as a
     balanced ``{ … }`` C line-group, scattered through the caller's ``add``.
 
-    The tQSSA rate is ``kcat·stat·E·sFree/(Km + sFree)`` with
-    ``sFree = ½(δ + D)``, ``δ = S − Km − E``, ``D = √(δ² + 4·Km·S)`` — closed
-    form, so unlike the Functional path there is no symbolic differentiation
-    here, just the two partials written out.
+    The tQSSA rate is ``kcat·stat·E·sFree/(Km + sFree)`` with ``sFree`` the
+    positive root of ``x² − δ·x − Km·S = 0``, ``δ = S − Km − E``,
+    ``D = √(δ² + 4·Km·S)`` — closed form, so unlike the Functional path there is
+    no symbolic differentiation here, just the two partials written out:
+
+        ∂rate/∂E = kcat·stat·sFree/D
+        ∂rate/∂S = kcat·stat·E·Km/((Km + sFree)·D)
+
+    Both are single subtraction-free quotients, and that is load-bearing (GH #89).
+    The obvious chain rule through ``sFree`` — ``∂sFree/∂E = ½(−1 − δ/D)``,
+    ``∂sFree/∂S = ½(1 + (δ + 2·Km)/D)`` — is algebraically identical and cancels
+    catastrophically wherever ``δ < 0`` with ``|δ| ≫ √(4·Km·S)``, which is the
+    same regime that used to break ``sFree`` itself: measured against mpmath at
+    60 digits, that grouping reached a relative error of 1e+10 in ∂rate/∂E on a
+    deep-saturation sweep *after* the root was fixed, while these forms stay at
+    machine precision. They fall out of differentiating the symmetric form of the
+    rate — the tQSSA complex is ``c = ½(A − D)`` with ``A = E + S + Km`` and the
+    same ``D = √(A² − 4·E·S)``, so ``∂c/∂E = (S − c)/D`` and ``S − c = sFree``.
 
     ``add(col, row, value_c, prefix)`` writes one accumulation of ``value_c``
     into entry ``(row, col)`` of ∂f/∂x and returns the C line, or ``None`` if the
@@ -4985,23 +5027,15 @@ def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
         grp: list[str] = []
         g = grp.append
         g("    {")
-        g(
-            f"        double kcat = p[{int(mt['kcat_param_idx0'])}], "
-            f"Km = p[{int(mt['km_param_idx0'])}];"
-        )
-        g(f"        double E = y[{e}], S = y[{s}];")
-        g("        double delta = S - Km - E;")
-        g("        double Dmm = sqrt(delta*delta + 4.0*Km*S);")
-        g("        double sFree = 0.5*(delta + Dmm);")
+        # Km/E/S are declared by _mm_sfree_c_lines; only kcat is extra here.
+        g(f"        double kcat = p[{int(mt['kcat_param_idx0'])}];")
+        for ln in _mm_sfree_c_lines(f"p[{int(mt['km_param_idx0'])}]", e, s, "        "):
+            g(ln)
         g("        double dE = 0.0, dS = 0.0;")
         g("        if (sFree > 0.0 && Dmm > 0.0) {")
-        g("            double dsF_dE = 0.5*(-1.0 - delta/Dmm);")
-        g("            double dsF_dS = 0.5*(1.0 + (delta + 2.0*Km)/Dmm);")
         g(f"            double Cmm = kcat * {_jac_c_float(mt['stat_factor'])};")
-        g("            double KpsF = Km + sFree;")
-        g("            double common = Cmm*E*Km/(KpsF*KpsF);")
-        g("            dE = Cmm*sFree/KpsF + common*dsF_dE;")
-        g("            dS = common*dsF_dS;")
+        g("            dE = Cmm*sFree/Dmm;")
+        g("            dS = Cmm*E*Km/((Km + sFree)*Dmm);")
         g("        }")
         for col, affected, deriv in ((e, mt["e_affected"], "dE"), (s, mt["s_affected"], "dS")):
             if not affected:

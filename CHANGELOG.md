@@ -313,6 +313,72 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The Michaelis–Menten (tQSSA) free substrate lost about two significant digits
+  per decade of `|δ|/√(4·Km·S)`, in the rate itself and not only in a derivative
+  (issue #89).** `sFree` was computed as
+
+  ```
+  delta = S - Km - E;  D = sqrt(delta*delta + 4*Km*S);  sFree = 0.5*(delta + D);
+  ```
+
+  When `delta < 0` — a large enzyme excess, or a small `Km·S` — that last line
+  subtracts two nearly-equal positive numbers. At `|δ|/√(4·Km·S) = 1e4` the result
+  has 8 correct digits, at 1e8 it has **none**. `sFree` is the positive root of
+  `x² − δ·x − Km·S = 0`, so the `delta < 0` branch now uses the conjugate form
+  `2·Km·S/(D − delta)`, which multiplies out to the same value with no subtraction
+  and is exact to 0–1 ulp at every ratio measured. `delta ≥ 0` keeps the textbook
+  expression bit-for-bit.
+
+  Fixing the root was necessary but not sufficient. The derivatives were written
+  as the chain rule through `sFree` — `∂sFree/∂E = ½(−1 − δ/D)`,
+  `∂sFree/∂S = ½(1 + (δ + 2·Km)/D)`, `∂sFree/∂Km = ½(−1 + (2S − δ)/D)` — and those
+  cancel in exactly the same regime, so `∂rate/∂E` stayed at a relative error of
+  **1e+10** with a correct `sFree` in hand. On the regression fixture the
+  cancellation went past magnitude and **flipped the sign**: `∂rate/∂E` came out
+  as `-3.83e-05` where the true value is `+4.96e-15`. A negative `∂rate/∂E` says
+  adding enzyme slows the reaction, and this entry feeds CVODE's Newton
+  iteration — a sign error there steps confidently the wrong way, which is worse
+  than converging slowly. Differentiating the symmetric form of
+  the rate instead (the tQSSA complex is `c = ½(A − D)` with `A = E + S + Km`, and
+  that same `D` is `√(A² − 4·E·S)`) collapses each partial to one subtraction-free
+  quotient:
+
+  ```
+  ∂rate/∂E = kcat·stat·sFree/D
+  ∂rate/∂S = kcat·stat·E·Km/((Km + sFree)·D)
+  ∂rate/∂Km = −rate/D
+  ```
+
+  Each is identical to `sympy.diff` of the shipped rate. Measured against mpmath
+  at 60 digits over the four regime sweeps from the issue — worst relative error
+  in float64, before → after:
+
+  | sweep | `sFree` | `rate` | `∂/∂E` | `∂/∂S` | `∂/∂Km` |
+  |---|---|---|---|---|---|
+  | uniform, O(1) | 4.5e-14 → 4.1e-16 | 4.3e-14 → 4.9e-16 | 5.6e-13 → 6.1e-16 | 2.6e-15 → 7.3e-16 | 1.4e-12 → 7.6e-16 |
+  | log-spread 1e-4..1e3 | 6.2e-04 → 3.5e-15 | 6.2e-04 → 5.8e-16 | 3.0e+03 → 1.8e-15 | 2.5e-10 → 6.1e-15 | 2.6e+03 → 2.4e-15 |
+  | Km ≫ S,E | 2.6e-09 → 5.4e-16 | 2.6e-09 → 6.5e-16 | 2.6e-09 → 7.6e-16 | 7.6e-16 → 4.7e-16 | 9.4e-09 → 7.9e-16 |
+  | Km ≪ S,E (deep saturation) | 2.1e-02 → 2.4e-13 | 2.1e-02 → 5.1e-16 | 2.3e+09 → 4.3e-14 | 5.3e-05 → 4.7e-13 | 8.7e+09 → 2.3e-13 |
+
+  This is a **trajectory** change, not only a gradient one, and it lands in every
+  place the three lines were open-coded: `compute_rxn_rate`'s MM branch and the
+  SSA propensity emitter (`src/model.cpp`), the closed-form analytical Jacobian
+  shared by the dense and sparse CVODE paths (`include/bngsim/mm_jacobian.hpp`),
+  the two compiled-RHS emitters, the analytical Jacobian / fused `J·v`, and the
+  analytic `∂f/∂p` from #55 (`python/bngsim/_codegen.py`), plus the JAX RHS
+  (`python/bngsim/_jax_rhs.py`). The expression was duplicated at each site; it is
+  now emitted from one helper per language. `_CODEGEN_VERSION` → 26, since a
+  cached v25 `.so` would keep serving pre-fix numbers.
+
+  Both corpus MM models (`test_MM`, `mCaMKII_Ca_Spike`) run at
+  `|δ|/√(4·Km·S) ≤ 5`, where the two forms differ by 1–3 ulp — measured largest
+  `sFree` shift 1.9e-16 and 6.0e-16 — so the corpus shows no trajectory change and
+  the emitted C is byte-identical on the 120 non-MM models sampled. The
+  regression fixture is therefore a deliberately stiff one
+  (`tests/data/mm_tqssa_stiff.net`, ratio ~1e7), where the old code was 2% out on
+  the rate and returned the sign-flipped `∂rate/∂E` above. The C++ suite asserts
+  that sign directly, so the sharpest symptom is the first thing to fail.
+
 - **The conservation-law reduction chose dependent species it could not solve
   for, so the reduced system was singular on models that are perfectly well posed
   (follow-up to issue #63).** `detect_conservation_laws` found every law — the

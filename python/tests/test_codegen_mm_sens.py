@@ -6,34 +6,34 @@ That is the wrong axis: ``MM(kcat, Km)`` is a first-class BNGL rate law, and a
 modeller who writes one should not silently lose the analytic gradient.
 
 Unlike the Functional path there is no symbolic differentiation here. The tQSSA
-rate is closed form,
+rate is closed form — ``sFree`` is the positive root of ``x² − δ·x − Km·S = 0``,
 
-    δ = S − Km − E,   D = √(δ² + 4·Km·S),   sFree = ½(δ + D)
+    δ = S − Km − E,   D = √(δ² + 4·Km·S)
     rate = kcat·stat·E·sFree/(Km + sFree)
 
 so both partials are written out:
 
     ∂rate/∂kcat = stat·E·sFree/(Km + sFree)                    ( = rate/kcat )
-    ∂rate/∂Km   = kcat·stat·E·(∂sFree/∂Km·Km − sFree)/(Km + sFree)²
-                  with ∂sFree/∂Km = ½(−1 + (2S − δ)/D)
+    ∂rate/∂Km   = −kcat·stat·E·sFree/((Km + sFree)·D)          ( = −rate/D  )
 
 Both were checked against ``sympy.diff`` — symbolically and over random parameter
 points — before being written down, and ``test_the_partials_match_sympy`` keeps
 that check in the suite rather than in a notebook someone has to trust.
 
-Two things are worth knowing about this file's tolerances.
+**The grouping is load-bearing**, and that is the one thing to keep in mind when
+touching this file. Every algebraically identical rewrite tried so far is worse
+in float64, some catastrophically:
 
-**The grouping is load-bearing.** An algebraically identical form of ∂/∂Km with
-the ½ factors cancelled is 14 digits worse on log-spread parameters. What is
-emitted mirrors the shipped Jacobian's own ∂rate/∂E grouping, and
-``test_the_emitted_grouping_is_the_stable_one`` pins that.
+* ``sFree = ½(δ + D)`` — the textbook root, and what shipped until GH #89 —
+  subtracts two nearly-equal positive numbers once ``δ < 0``, losing ~2 digits per
+  decade of ``|δ|/√(4·Km·S)`` and *every* digit by 1e8. It is now the conjugate
+  form ``2·Km·S/(D − δ)`` on that branch.
+* The chain rule through ``∂sFree/∂Km = ½(−1 + (2S − δ)/D)`` cancels in the same
+  regime, so it stayed at 1e+10 relative error even after the root was fixed.
+* ∂/∂Km with the ½ factors cancelled is 14 digits worse on log-spread parameters.
 
-**There is an accuracy floor, and it is not this stage's.** ``sFree = ½(δ + D)``
-cancels catastrophically once ``|δ| ≫ √(4·Km·S)``, roughly two digits per decade.
-That is shipped behaviour in the RHS and the analytical Jacobian; a model in that
-regime has a wrong trajectory before it has a wrong gradient. So the oracles here
-run in the well-conditioned regime, and the degenerate corner is asserted only to
-the extent that ∂f/∂p is no worse than the rate it differentiates.
+``TestNumericalStability`` pins all three against mpmath, so a future tidy-up
+fails there instead of silently in a trajectory or a gradient.
 """
 
 from __future__ import annotations
@@ -113,6 +113,32 @@ end groups
 """
 
 
+# Deliberately stiff root ratio: a large enzyme excess over a small Km·S puts
+# |δ|/√(4·Km·S) at ~1e7, where the pre-#89 root and partials fall apart. Both
+# corpus MM models sit at ratio ~1, so this is the only way to show the fix in
+# the emitted C. Same numbers as tests/data/mm_tqssa_stiff.net, which the C++
+# suite uses for the interpreted RHS and the native Jacobian.
+MM_STIFF = """\
+begin parameters
+    1 kcat  2.0  # Constant
+    2 Km    1.0e-8  # Constant
+end parameters
+begin species
+    1 E() 9000
+    2 S() 20
+    3 P() 0
+end species
+begin reactions
+    1 1,2 1,3 MM kcat Km #_R1
+end reactions
+begin groups
+    1 Et                   1
+    2 St                   2
+    3 Pt                   3
+end groups
+"""
+
+
 def _model(tmp_path, text, name="m.net"):
     net = tmp_path / name
     net.write_text(text)
@@ -122,17 +148,23 @@ def _model(tmp_path, text, name="m.net"):
 # ─── the derivative, against sympy ─────────────────────────────────────────
 
 
-def _tqssa_partials(kcat, Km, E, S, stat=1.0):
-    """Exactly the arithmetic the emitted C performs."""
+def _tqssa_sfree(Km, E, S):
+    """The free substrate exactly as ``_mm_sfree_c_lines`` emits it."""
     delta = S - Km - E
     D = math.sqrt(delta * delta + 4.0 * Km * S)
-    sF = 0.5 * (delta + D)
+    if delta >= 0.0:
+        return delta, D, 0.5 * (delta + D)
+    return delta, D, (2.0 * Km * S / (D - delta) if D - delta > 0.0 else 0.0)
+
+
+def _tqssa_partials(kcat, Km, E, S, stat=1.0):
+    """Exactly the arithmetic the emitted C performs."""
+    _delta, D, sF = _tqssa_sfree(Km, E, S)
     if not (sF > 0.0 and D > 0.0):
         return 0.0, 0.0
-    dkcat = stat * E * sF / (Km + sF)
-    dsF_dKm = 0.5 * (-1.0 + (2.0 * S - delta) / D)
     KpsF = Km + sF
-    dKm = kcat * stat * E * (dsF_dKm * Km - sF) / (KpsF * KpsF)
+    dkcat = stat * E * sF / KpsF
+    dKm = -kcat * stat * E * sF / (KpsF * D)
     return dkcat, dKm
 
 
@@ -150,18 +182,127 @@ class TestThePartials:
         rate = kcat * stat * E * sF / (Km + sF)
 
         mine_kcat = stat * E * sF / (Km + sF)
-        dsF_dKm = (-1 + (2 * S - delta) / D) / 2
-        mine_Km = kcat * stat * E * (dsF_dKm * Km - sF) / (Km + sF) ** 2
+        mine_Km = -kcat * stat * E * sF / ((Km + sF) * D)
 
         assert sp.simplify(sp.diff(rate, kcat) - mine_kcat) == 0
         assert sp.simplify(sp.diff(rate, Km) - mine_Km) == 0
 
-    def test_the_emitted_grouping_is_the_stable_one(self):
-        """Algebraic identity is not enough. The 'simplified' ∂/∂Km — the ½
-        factors cancelled, ``2·kcat·E·(E−S−D+Km·B/D)/(A+D)²`` — is identical on
-        paper and worthless in float64 on log-spread parameters. This pins that
-        the *emitted* grouping is the one that survives, so a future tidy-up
-        that 'simplifies' it fails here instead of silently in a gradient."""
+        # ...and the conjugate root the emitted C actually evaluates is the same
+        # sFree, so differentiating ½(δ + D) above describes what ships.
+        assert sp.simplify(2 * Km * S / (D - delta) - sF) == 0
+
+    def test_both_partials_vanish_where_the_rate_does(self):
+        """At S = 0 the rate is 0 for *every* kcat and Km (S = 0 forces
+        sFree = 0 whatever Km is), so the guard returning 0 is the correct
+        derivative, not a fallback."""
+        for Km in (0.1, 1.0, 100.0):
+            assert _tqssa_partials(2.0, Km, 25.0, 0.0) == (0.0, 0.0)
+
+
+# ─── the groupings, against mpmath (GH #89) ────────────────────────────────
+#
+# Reference is mpmath at 60 decimal digits; every candidate below is evaluated in
+# plain float64, which is exactly the arithmetic the emitted C performs. Symbolic
+# identity is checked above and is not enough on its own — each rejected form
+# here simplifies to zero against the one that ships.
+
+
+def _ref(kcat, Km, E, S, stat=1.0):
+    """The tQSSA rate and its three partials at 60 digits."""
+    import mpmath as mp
+
+    with mp.workdps(60):
+        kcat, Km, E, S, stat = (mp.mpf(repr(v)) for v in (kcat, Km, E, S, stat))
+        delta = S - Km - E
+        D = mp.sqrt(delta * delta + 4 * Km * S)
+        u = (delta + D) / 2
+        rate = kcat * stat * E * u / (Km + u)
+        return {
+            "sFree": u,
+            "rate": rate,
+            "dE": kcat * stat * u / D,
+            "dS": kcat * stat * E * Km / ((Km + u) * D),
+            "dKm": -rate / D,
+        }
+
+
+def _rel(got, want):
+    import mpmath as mp
+
+    with mp.workdps(60):
+        return float(abs((mp.mpf(repr(got)) - want) / want)) if want != 0 else float(got != 0)
+
+
+class TestNumericalStability:
+    """Each test states a rejected form, shows it is the same expression, and
+    measures both against mpmath. The point of the pairing is that no reviewer
+    can 'simplify' one of these back without the measurement disagreeing."""
+
+    def test_the_root_survives_a_huge_negative_delta(self):
+        """``½(δ + D)`` subtracts two nearly-equal positive numbers when δ < 0.
+        At ``|δ|/√(4·Km·S) = 1e8`` it has no correct digit left — and this is the
+        *rate*, so a trajectory in deep enzyme excess was wrong before any
+        derivative was."""
+        Km = S = 1.0
+        for exponent, floor in ((4, 1e-9), (8, 0.5)):
+            ratio = 10.0**exponent
+            E = ratio * math.sqrt(4.0 * Km * S) + S - Km  # δ = −ratio·√(4·Km·S)
+            want = _ref(1.0, Km, E, S)["sFree"]
+
+            delta = S - Km - E
+            D = math.sqrt(delta * delta + 4.0 * Km * S)
+            assert _rel(0.5 * (delta + D), want) > floor  # the old root
+            assert _rel(_tqssa_sfree(Km, E, S)[2], want) < 1e-15  # what ships
+
+    def test_the_root_is_bit_identical_for_a_non_negative_delta(self):
+        """The conjugate form is a branch, not a replacement: where ``½(δ + D)``
+        is already cancellation-free it is still what evaluates, bit for bit."""
+        for Km, E, S in ((50.0, 10.0, 100.0), (35.0, 25.0, 120.0), (1e-3, 1.0, 4.0)):
+            delta, D, sFree = _tqssa_sfree(Km, E, S)
+            assert delta >= 0.0
+            assert sFree == 0.5 * (delta + D)
+
+    def test_a_corpus_scale_ratio_moves_by_ulps_not_digits(self):
+        """Both MM models in the corpus *do* reach δ < 0, so they take the new
+        branch — the claim is not that nothing changed, it is that at their
+        ``|δ|/√(4·Km·S) ≤ 5`` the two forms differ at round-off scale. ~2 digits
+        per decade puts a ratio under 10 at ~1e-15 relative, against 2e-2 at the
+        1e7 of the stiff fixture. Measured over the corpus trajectories
+        themselves, the largest ``sFree`` shift was 1.9e-16 and 6.0e-16."""
+        for Km, E, S in ((3.0, 5.0, 1.0), (10.0, 40.0, 2.0), (0.5, 8.0, 1.5)):
+            delta, D, sFree = _tqssa_sfree(Km, E, S)
+            assert delta < 0.0 and abs(delta) / math.sqrt(4.0 * Km * S) < 10.0
+            assert abs(sFree - 0.5 * (delta + D)) <= 1e-13 * sFree
+
+    def test_the_partials_beat_the_chain_rule_through_sfree(self):
+        """Fixing the root alone is not enough. ``∂sFree/∂E = ½(−1 − δ/D)`` and
+        ``∂sFree/∂Km = ½(−1 + (2S − δ)/D)`` — the obvious chain rule, and what
+        shipped — cancel in exactly the regime the root did, so they stay wrong
+        after the root is right. Deep saturation, ``Km ≪ S,E``."""
+        kcat, Km, E, S = 2.0, 1e-8, 9000.0, 20.0
+        want = _ref(kcat, Km, E, S)
+        delta, D, sFree = _tqssa_sfree(Km, E, S)
+        KpsF = Km + sFree
+        common = kcat * E * Km / (KpsF * KpsF)
+
+        # ∂rate/∂E: the chain rule through sFree, vs the emitted single quotient.
+        chained = kcat * sFree / KpsF + common * (0.5 * (-1.0 - delta / D))
+        assert _rel(chained, want["dE"]) > 1e6  # ten orders of magnitude out
+        assert _rel(kcat * sFree / D, want["dE"]) < 1e-14
+
+        # ∂rate/∂Km: same story, same regime — 2.6% rather than 1e+10, because
+        # the surviving term is smaller, but still nothing a gradient can use.
+        chained_km = (
+            kcat * E * ((0.5 * (-1.0 + (2.0 * S - delta) / D)) * Km - sFree) / (KpsF * KpsF)
+        )
+        assert _rel(chained_km, want["dKm"]) > 1e-2
+        assert _rel(_tqssa_partials(kcat, Km, E, S)[1], want["dKm"]) < 1e-14
+
+    def test_the_simplified_dkm_is_still_rejected(self):
+        """The other identical-on-paper ∂/∂Km — the ½ factors cancelled,
+        ``2·kcat·E·(E−S−D+Km·B/D)/(A+D)²`` — remains worthless in float64 on
+        log-spread parameters. Kept from #55: it is a different rewrite from the
+        chain rule above and fails for a different reason."""
         kcat, Km, E, S = 29.9, 2.88e-4, 510.0, 2.4e-4
         emitted = _tqssa_partials(kcat, Km, E, S)[1]
 
@@ -172,13 +313,50 @@ class TestThePartials:
 
         # They are the same expression; they are not the same number.
         assert abs(simplified - emitted) > 0.1 * abs(emitted)
+        assert _rel(emitted, _ref(kcat, Km, E, S)["dKm"]) < 1e-12
 
-    def test_both_partials_vanish_where_the_rate_does(self):
-        """At S = 0 the rate is 0 for *every* kcat and Km (S = 0 forces
-        sFree = 0 whatever Km is), so the guard returning 0 is the correct
-        derivative, not a fallback."""
-        for Km in (0.1, 1.0, 100.0):
-            assert _tqssa_partials(2.0, Km, 25.0, 0.0) == (0.0, 0.0)
+    def test_every_emitted_quantity_holds_up_across_the_four_sweeps(self):
+        """The regime sweep from the issue, as an assertion rather than a table.
+        Worst relative error over each sweep, for every quantity the MM path
+        emits — rate, both Jacobian partials, both ∂f/∂p columns."""
+        import random
+
+        sweeps = {
+            "uniform": lambda r: [r.uniform(0.1, 10.0) for _ in range(4)],
+            "log-spread": lambda r: [10.0 ** r.uniform(-4, 3) for _ in range(4)],
+            "Km >> S,E": lambda r: [
+                10.0 ** r.uniform(-2, 2),
+                10.0 ** r.uniform(3, 6),
+                10.0 ** r.uniform(-2, 1),
+                10.0 ** r.uniform(-2, 1),
+            ],
+            "Km << S,E": lambda r: [
+                10.0 ** r.uniform(-2, 2),
+                10.0 ** r.uniform(-8, -4),
+                10.0 ** r.uniform(1, 4),
+                10.0 ** r.uniform(1, 4),
+            ],
+        }
+        for name, gen in sweeps.items():
+            rng = random.Random(12345)  # fixed: a flaky numerics test is useless
+            worst = dict.fromkeys(("rate", "dE", "dS", "dKm", "dkcat"), 0.0)
+            for _ in range(300):
+                kcat, Km, E, S = gen(rng)
+                want = _ref(kcat, Km, E, S)
+                _delta, D, sFree = _tqssa_sfree(Km, E, S)
+                KpsF = Km + sFree
+                dkcat, dKm = _tqssa_partials(kcat, Km, E, S)
+                got = {
+                    "rate": kcat * E * sFree / KpsF,
+                    "dE": kcat * sFree / D,
+                    "dS": kcat * E * Km / (KpsF * D),
+                    "dKm": dKm,
+                    "dkcat": dkcat,
+                }
+                for k, v in got.items():
+                    ref_k = want[k] if k != "dkcat" else want["rate"] / kcat
+                    worst[k] = max(worst[k], _rel(v, ref_k))
+            assert max(worst.values()) < 1e-11, (name, worst)
 
 
 # ─── the gate ──────────────────────────────────────────────────────────────
@@ -281,7 +459,10 @@ class TestTheEmission:
         names = [p["name"] for p in model._core.codegen_data()["parameters"]]
         for name in ("kcat", "Km"):
             assert f"    case {names.index(name)}:" in src
-        assert "double sFree = 0.5*(delta + Dmm);" in src
+        # The free substrate is the stable root, not ½(δ + D) — see
+        # TestNumericalStability (GH #89).
+        assert "double sFree = (delta >= 0.0) ? 0.5*(delta + Dmm)" in src
+        assert "2.0*Km*S/(Dmm - delta)" in src
 
     def test_the_enzyme_row_is_not_scattered(self, tmp_path):
         """An MM enzyme is on both sides, so its net stoichiometry is 0. Emitting
@@ -401,7 +582,9 @@ class TestAgainstFiniteDifference:
     """Central FD of the *emitted* RHS against the *emitted* ∂f/∂p, both called
     through ctypes on the same ``p[]``. No integrator, no tolerance tuning."""
 
-    @pytest.mark.parametrize("text", [MM, MM_DERIVED])
+    # Named, or pytest builds the id from the .net text and every -rA line in the
+    # CI log carries the whole fixture.
+    @pytest.mark.parametrize("text", [MM, MM_DERIVED], ids=["direct", "derived"])
     def test_dfdp_matches_a_finite_difference_of_the_rhs(self, tmp_path, monkeypatch, text):
         model = _model(tmp_path, text)
         comp = _Compiled(model, tmp_path, monkeypatch)
@@ -442,6 +625,49 @@ class TestAgainstFiniteDifference:
                 if best > worst:
                     worst, where = best, (names[k], t)
         assert worst < 1e-6, f"worst {worst:.3e} at {where}"
+
+
+@requires_cc
+class TestTheEmittedCAtAStiffRatio:
+    """The other tests in this file compare the emitted C to a finite difference
+    *of itself*, which is blind to a cancellation both sides share. This one
+    compiles the emitted RHS and ∂f/∂p and checks them against mpmath at a
+    ``|δ|/√(4·Km·S)`` of 1e7 — where the pre-#89 emission was 2% out on the rate
+    and 1e+10 out on ∂rate/∂E (GH #89)."""
+
+    def test_the_emitted_rhs_and_dfdp_hold_at_ratio_1e7(self, tmp_path, monkeypatch):
+        model = _model(tmp_path, MM_STIFF)
+        comp = _Compiled(model, tmp_path, monkeypatch)
+        params = comp.data["parameters"]
+        names = [p["name"] for p in params]
+        base = [float(p["value"]) for p in params]
+        kcat, Km, E, S = 2.0, 1.0e-8, 9000.0, 20.0
+
+        # The regime really is the pathological one, not a mild one.
+        delta, D, _sFree = _tqssa_sfree(Km, E, S)
+        assert delta < 0.0 and abs(delta) / math.sqrt(4.0 * Km * S) > 1e6
+
+        want = _ref(kcat, Km, E, S)
+        # E + S -> E + P, so the enzyme row is 0 and P gains what S loses.
+        ydot = comp.f(0.0, [E, S, 0.0], base)
+        assert ydot[0] == 0.0
+        assert _rel(-ydot[1], want["rate"]) < 1e-14
+        assert _rel(ydot[2], want["rate"]) < 1e-14
+
+        for name, ref in (("kcat", want["rate"] / kcat), ("Km", want["dKm"])):
+            col = comp.dfdp(0.0, [E, S, 0.0], base, names.index(name))
+            assert col[0] == 0.0
+            assert _rel(col[2], ref) < 1e-13, name
+            assert _rel(-col[1], ref) < 1e-13, name
+
+        # What the emission this replaced would have produced at this same point,
+        # so the numbers in the issue are reproducible from the suite.
+        old_sfree = 0.5 * (delta + D)
+        assert _rel(old_sfree, want["sFree"]) > 1e-3
+        old_dE = kcat * old_sfree / (Km + old_sfree) + (kcat * E * Km / (Km + old_sfree) ** 2) * (
+            0.5 * (-1.0 - delta / D)
+        )
+        assert _rel(old_dE, want["dE"]) > 1e9
 
 
 @requires_cc
