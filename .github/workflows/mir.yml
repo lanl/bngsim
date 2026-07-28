@@ -28,6 +28,19 @@ name: mir-jit
 # test_mir_equivalence's compiler-free MIR-vs-ExprTk check is the end-to-end
 # Windows verification. On Linux/macOS cc is present, so cc-vs-MIR bit-identity
 # is asserted too.
+#
+# The three Functional analytic-sensitivity files (#66's ∂f/∂p, #67's fused J·yS,
+# #68's clock-conditional laws) are in the list below, but their end-to-end half
+# — a Functional model built with sensitivity_params — cannot run on this
+# backend: c2mir rejects the GH #198 bngsim_codegen_output_sens block that `cc`
+# accepts (issue #85, open, and pre-existing on main). Everything else in them
+# runs here, including both finite-difference oracles and the whole switch-
+# condition rule.
+#
+# Those 10 tests are marked xfail(strict, raises=RuntimeError), not skipped, so
+# the quarantine removes itself: fixing #85 turns them XPASS and this job red
+# until the markers come out. They are the coverage that found #85, and #67's
+# first attempt at this list is what surfaced it.
 
 on:
   workflow_dispatch:
@@ -117,6 +130,9 @@ jobs:
             python/tests/test_codegen_jacobian.py \
             python/tests/test_codegen_sensitivity.py \
             python/tests/test_model_codegen_sensitivity.py \
+            python/tests/test_codegen_functional_dfdp.py \
+            python/tests/test_codegen_functional_sens_rhs.py \
+            python/tests/test_codegen_switch_condition_sens.py \
             python/tests/test_codegen_determinism.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
