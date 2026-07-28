@@ -78,6 +78,32 @@ treated as mandatory and is always derived to completion. Override the budget wi
 `BNGSIM_JAC_DERIV_BUDGET_S` (seconds, or `inf`/`none`/`0` to disable it entirely —
 the manual genome-scale escape hatch).
 
+**Sensitivity derivation budget (GH #90)**: a sensitivity run derives a second
+set of terms at build time — both halves of the compiled sensitivity RHS's
+`ySdot = J·yS + ∂f/∂p` — and that derivation has its own budget,
+`BNGSIM_SENS_DERIV_BUDGET_S`. It
+shares the Jacobian budget's base and its per-species scaling, and takes the same
+values (seconds, or `inf`/`none`/`0` for unbounded), but the two are independent:
+raising one does not raise the other.
+
+One difference is deliberate. The sensitivity budget **never becomes unbounded**,
+at any model size. Where a dropped analytical Jacobian falls back to something
+that may not converge at all, a declined sensitivity RHS falls back to CVODES'
+internal difference quotient, which is correct at every scale — so there is never
+a reason to let this derivation run without a bound, and a genome-scale model with
+Functional rate laws gets a decline it can read rather than a build that appears
+to hang.
+
+The fallback is correct but not cheap: measured 9–37x per sensitivity column, and
+on a stiff model at a tight `rtol` the difference quotient's own `~sqrt(rtol)`
+accuracy collapses the step size (it can exhaust `max_steps`). So the decline is
+logged as a warning naming this variable — if a model you care about reports it,
+raise the budget rather than accept the slower path:
+
+```bash
+BNGSIM_SENS_DERIV_BUDGET_S=inf python fit.py
+```
+
 ## Logging
 
 ```python

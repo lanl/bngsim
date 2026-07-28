@@ -216,6 +216,62 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **A build-time derivation budget for the sensitivity `∂f/∂p` path (issue #90),
+  the last unaddressed "still has to bail" item of #55.** #95/#187 bound the
+  symbolic derivation of the analytical *Jacobian*, so a model that does not
+  derive in time falls back to the finite-difference Jacobian instead of hanging
+  the load. The `∂f/∂p` path added by #55 (#65/#66/#67/#68) does the same kind of
+  sympy work and had no budget at all: `python/bngsim/_codegen.py` contained zero
+  references to `deadline`, and its three `sp.diff` sites were unguarded. The one
+  that scales badly runs **one `sp.diff` per (distinct rate law, parameter it
+  reads) pair** — the product of rate-law size and parameter count, exactly the
+  axis #95 found super-linear — so a genome-scale Functional model with a long
+  `sensitivity_params` list would present as a build that *hangs* rather than one
+  that declines and says why (and to a `rr_parity`-style harness, which times
+  build and solve together, as an ODE timeout).
+
+  The derivation is now bounded by `BNGSIM_SENS_DERIV_BUDGET_S`. It shares the
+  Jacobian budget's base, per-species slope and override grammar — one
+  implementation, so the two policies cannot drift — but is resolved
+  independently, so `BNGSIM_JAC_DERIV_BUDGET_S=inf` (the documented genome-scale
+  workaround for keeping an analytical Jacobian) does not silently uncap it.
+  The deadline is threaded down to every `sp.diff` on the path — the Functional
+  rate laws and both flavours of derived-parameter chain rule, on the model path
+  and the `.net` text path alike — and checked on entry to each rate law as well
+  as before each partial, so overshoot is bounded to one (law, parameter) pair
+  rather than one whole model. Expiry declines through the existing
+  `_warn_functional_sens_rhs_refused`, landing beside every other decline reason
+  with a warning naming how far the derivation got and the override to raise.
+
+  It also covers the *other* derivation on the same build, which the issue's
+  three-site table does not list: `ySdot = J·yS + ∂f/∂p`, and the `J·yS` half
+  re-derives ∂f/∂x through `_functional_jacobian_groups`. That is the same math
+  `attach_functional_jacobian` already ran at load under the #95 budget, but a
+  re-derivation with no clock of its own — and on a model whose load-time attach
+  was itself cut off there is no earlier bound to inherit, so bounding only ∂f/∂p
+  would have left the identical hang reachable one call later. The #151 native
+  saturable emitters run no sympy and are unaffected; only their fallback takes
+  the deadline.
+
+  **One difference from the Jacobian budget is deliberate: this one never becomes
+  unbounded by size.** `_FD_NONVIABLE_SPECIES` exists because past that scale an
+  FD Jacobian does not converge — there is nothing to fall back *to*, so the
+  analytical Jacobian is mandatory. Declining a sensitivity RHS only hands the
+  columns to CVODES' internal difference quotient, which is what every Functional
+  model used before #55 and which is correct at every scale. Correct is not cheap
+  (measured 9–37x per column, and on a stiff model at a tight `rtol` the DQ's
+  `~sqrt(rtol)` accuracy collapses the step size outright), which is why the
+  decline is a warning that names the knob rather than a silent downgrade.
+
+  Corpus A/B over all 585 `.net` models, default budget vs unbounded: **544 models
+  emit an analytic sensitivity RHS in both arms, 0 source hashes differ**, total
+  derivation 7.6 s with the slowest single model at 0.44 s — 46x headroom under
+  the 20 s base, so nothing real is near the cut-off. An explicit override also
+  joins the `.net` path's in-process memo key and its on-disk `model_hash`
+  (that path keys on the model's *content*, not on the generated C, so without it
+  a build made under a tight budget would be served back to one made without it —
+  the same trap #67's A/B hatch had to sidestep).
+
 - **Per-model composition counts in the ODE Jacobian characterization report
   (issue #42).** `jacobian_characterization.py` recorded rich Jacobian-side
   structure (`N`, `rank`, `n_reactions`, `density`, `stiffness_ratio_*`) but

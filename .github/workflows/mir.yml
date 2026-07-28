@@ -78,6 +78,9 @@ on:
       - "python/bngsim/_codegen.py"
       - "python/bngsim/_simulator.py"
       - "python/bngsim/_switch_sensitivity.py"
+      # In _CODEGEN_SOURCE_MODULES alongside the two above, i.e. it decides what
+      # gets emitted (the derivation budgets and every symbolic derivative).
+      - "python/bngsim/_jacobian.py"
       - "python/bngsim/__init__.py"
       - "python/tests/test_mir_equivalence.py"
       - "python/tests/test_codegen*.py"
@@ -153,6 +156,7 @@ jobs:
             python/tests/test_codegen_functional_sens_rhs.py \
             python/tests/test_codegen_switch_condition_sens.py \
             python/tests/test_codegen_mm_sens.py \
+            python/tests/test_codegen_sens_budget.py \
             python/tests/test_codegen_determinism.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log

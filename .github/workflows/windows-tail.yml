@@ -42,6 +42,9 @@ on:
     branches: [main]
     paths: &tail_paths
       - "python/bngsim/_codegen.py"
+      # In _CODEGEN_SOURCE_MODULES alongside _codegen.py, i.e. it decides what
+      # gets emitted (the derivation budgets and every symbolic derivative).
+      - "python/bngsim/_jacobian.py"
       - "python/bngsim/_simulator.py"
       - "python/bngsim/_version.py"
       - "python/bngsim/_net_reader.py"
@@ -128,6 +131,7 @@ jobs:
             python/tests/test_codegen_chunking.py \
             python/tests/test_codegen_jacobian.py \
             python/tests/test_model_codegen_sensitivity.py \
+            python/tests/test_codegen_sens_budget.py \
             python/tests/test_ssa_propensity_export.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee tail-windows.log
