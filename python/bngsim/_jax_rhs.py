@@ -307,7 +307,14 @@ def generate_jax_rhs(net_path: str) -> Any:
                     neg = delta < 0.0
                     denom = jnp.where(neg, d_mm - delta, 1.0)
                     s_free = jnp.where(neg, 2.0 * km * s / denom, 0.5 * (delta + d_mm))
-                    rate = sf * kcat * s_free * e / (km + s_free)
+                    # GH #93: no clamp on s_free (it is negative exactly when s
+                    # is, and the rate continues smoothly there), but the rate's
+                    # denominator is guarded — it vanishes when km*e == 0. Masked
+                    # before the divide for the same reason as above: an unmasked
+                    # 0/0 in the unselected branch NaNs the tangent.
+                    kps = km + s_free
+                    live = kps > 0.0
+                    rate = jnp.where(live, sf * kcat * s_free * e / jnp.where(live, kps, 1.0), 0.0)
                 else:
                     rate = 0.0
             else:

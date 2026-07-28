@@ -71,6 +71,33 @@ def _compiled_jac(core, so_path, t, conc):
     return np.array(jac, dtype=float)
 
 
+def _compiled_rhs(core, so_path, t, conc):
+    """Call ``bngsim_codegen_rhs`` from the *same* ``.so`` as ``bngsim_codegen_jac``
+    (GH #93 — the point is that the Jacobian and the RHS it differentiates are one
+    artifact); return ydot."""
+    lib = ctypes.CDLL(str(so_path))
+    fn = lib.bngsim_codegen_rhs
+    fn.restype = ctypes.c_int
+    fn.argtypes = [
+        ctypes.c_double,
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.POINTER(ctypes.c_double),
+        ctypes.c_void_p,
+    ]
+    params = [p["value"] for p in core.codegen_data()["parameters"]]
+    pbuf = (ctypes.c_double * len(params))(*params)
+    ud = _CodegenUserData(
+        param_values=ctypes.cast(pbuf, ctypes.POINTER(ctypes.c_double)),
+        tfun_ctx=None,
+        tfun_eval=None,
+    )
+    ns = core.n_species
+    y = (ctypes.c_double * ns)(*conc)
+    ydot = (ctypes.c_double * ns)()
+    assert fn(float(t), y, ydot, ctypes.byref(ud)) == 0
+    return list(ydot)
+
+
 def _assert_matches(model, states, tol=1e-12):
     # GH #145: the analytical Jacobian is derived lazily (off the load path), so
     # warm it before exercising the codegen emitter — the ODE-solve setup would do
@@ -140,6 +167,110 @@ def test_michaelis_menten_matches_interpreted(data_dir):
     _assert_matches(
         m, [(0.0, [10.0, 100.0, 0.0]), (0.0, [80.0, 30.0, 12.0]), (0.0, [5.0, 5.0, 50.0])]
     )
+
+
+_MM_NEGATIVE_STATES = [
+    (0.0, [10.0, 0.0, 0.0]),
+    (0.0, [10.0, -1e-9, 0.0]),
+    (0.0, [10.0, -1.0, 0.0]),
+    (0.0, [10.0, -5.0, 0.0]),
+    (0.0, [10.0, -49.0, 0.0]),
+]
+# S = 0 is in that list on purpose and is not a boundary case to wave through:
+# every species with a zero initial condition starts there, and it is where the
+# old `sFree > 0` guard reported ∂rate/∂S = 0 against a true kcat·E/(Km + E).
+
+
+@needs_cc
+def test_michaelis_menten_negative_substrate_rhs_agrees_between_backends(data_dir):
+    """GH #93 consequence 1: the interpreted and compiled backends must not
+    disagree on the same model at the same state.
+
+    Before the fix ``compute_rxn_rate`` floored a negative ``sFree`` to 0 and the
+    emitted RHS did not, so at S = -1e-9 the interpreted engine said dP/dt = 0
+    while the ``.so`` said -1.67e-10. These are the states the integrator
+    actually probes in the substrate-exhaustion endgame.
+    """
+    m = bngsim.Model.from_net(str(data_dir / "mm_tqssa.net"))
+    m.prepare_analytical_jacobian()
+    so = prepare_model_codegen(m)
+    assert so is not None and so.exists()
+    core = m._core
+
+    saw_nonzero = False
+    for t, conc in _MM_NEGATIVE_STATES:
+        interp = np.asarray(core._eval_rhs(t, conc), dtype=float)
+        comp = np.asarray(_compiled_rhs(core, so, t, conc), dtype=float)
+        denom = np.maximum(np.maximum(np.abs(interp), np.abs(comp)), 1e-30)
+        assert float((np.abs(interp - comp) / denom).max()) < 1e-14, (
+            f"interpreted vs compiled RHS disagree at {conc}: {interp} vs {comp}"
+        )
+        if conc[1] < 0.0:
+            # Both agreeing on 0 would pass the loop above vacuously — which is
+            # precisely what a clamp on *both* sides would have produced.
+            assert comp[2] < 0.0, f"the rate should be live (and restoring) at S={conc[1]}"
+            saw_nonzero = True
+    assert saw_nonzero
+
+
+@needs_cc
+def test_michaelis_menten_negative_substrate_matches_interpreted(data_dir):
+    """The compiled/interpreted *Jacobian* agreement at the same states.
+
+    Note this one passed before GH #93 too — both sides carried the same
+    ``sFree > 0`` guard, so they were wrong together. It is here to keep them
+    from drifting apart later, not as the regression;
+    ``test_emitted_jacobian_agrees_with_the_emitted_rhs_below_zero`` is the test
+    that fails without the fix.
+    """
+    m = bngsim.Model.from_net(str(data_dir / "mm_tqssa.net"))
+    _assert_matches(m, _MM_NEGATIVE_STATES)
+
+
+@needs_cc
+def test_emitted_jacobian_agrees_with_the_emitted_rhs_below_zero(data_dir):
+    """GH #93, the property the issue was filed about.
+
+    ``bngsim_codegen_jac`` and ``bngsim_codegen_rhs`` ship in the *same* ``.so``,
+    and the Jacobian is supposed to be the derivative of that RHS. Before the
+    fix the RHS had no ``sFree`` clamp and the Jacobian guarded on ``sFree > 0``,
+    so for S < 0 the artifact handed CVODE's Newton iteration a Jacobian
+    asserting no dependence on E over a region where its own RHS varied with E.
+
+    Differentiating the compiled RHS numerically is the whole point — comparing
+    the compiled Jacobian against the *interpreted* one (the test above) would
+    have passed just as happily when both were clamped and both were wrong.
+    """
+    m = bngsim.Model.from_net(str(data_dir / "mm_tqssa.net"))
+    m.prepare_analytical_jacobian()
+    so = prepare_model_codegen(m)
+    assert so is not None and so.exists()
+    core = m._core
+    ns = core.n_species
+
+    worst = 0.0
+    saw_live_entry = False
+    for conc in ([10.0, -1e-3, 0.0], [10.0, -1.0, 0.0], [10.0, -5.0, 0.0], [10.0, 0.0, 0.0]):
+        jac = _compiled_jac(core, so, 0.0, conc).reshape(ns, ns).T  # flat is column-major
+        for col in (0, 1):  # E and S; P does not enter the rate
+            h = 1e-5 * max(abs(conc[col]), 1.0)
+            up, dn = list(conc), list(conc)
+            up[col] += h
+            dn[col] -= h
+            fd = (
+                np.asarray(_compiled_rhs(core, so, 0.0, up), dtype=float)
+                - np.asarray(_compiled_rhs(core, so, 0.0, dn), dtype=float)
+            ) / (2 * h)
+            denom = np.maximum(np.maximum(np.abs(jac[:, col]), np.abs(fd)), 1e-9)
+            worst = max(worst, float((np.abs(jac[:, col] - fd) / denom).max()))
+        # The contradiction in the issue's last column, stated directly: at a
+        # negative substrate the rate genuinely depends on E, so d(dP/dt)/dE is
+        # not allowed to be 0. (dP/dt is the P row, E the first column.)
+        if conc[1] < 0.0:
+            assert jac[2, 0] != 0.0, f"Jacobian says the rate is flat in E at S={conc[1]}"
+            saw_live_entry = True
+    assert saw_live_entry
+    assert worst < 1e-6, f"emitted Jacobian vs FD of the emitted RHS: worst rel err {worst:g}"
 
 
 @needs_cc

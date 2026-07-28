@@ -163,21 +163,29 @@ class TestSensitivityUsesAnalyticalRhs:
         ``finite-difference`` → ``codegen`` move #67 made for Functional models,
         retiring #76's √eps step floor for MM too.
 
-        ``mm_tqssa.net`` also lands on a degenerate root (the solve overshoots to
-        ``S = -7e-8``, where the tQSSA rate is identically zero in a
-        neighbourhood, so ``f ≡ 0`` and every direction is an equilibrium
-        direction), which the Python entry point refuses. That is unrelated to
-        where ∂f/∂p came from, so the source is read off the core result, which
-        has no such gate."""
+        This test used to have to wrap the call in ``pytest.raises`` — the solve
+        overshoots to ``S = -7e-8``, and the *clamp* made the tQSSA rate
+        identically zero in a neighbourhood there, so ``f ≡ 0``, every direction
+        was an equilibrium direction, and the entry point refused the gradient as
+        a continuum. GH #93 removed the clamp, and with it that degeneracy: the
+        rate varies through negative S, ∂f_S/∂S at the root is the honest
+        ``-kcat·E/(Km + E)``, and the root is isolated. So the assertions below
+        are the ones the test always wanted to make and could not."""
         sim = bngsim.Simulator(bngsim.Model.from_net(net("mm_tqssa.net")), method="ode")
-        with (
-            caplog.at_level(logging.WARNING, logger="bngsim"),
-            pytest.raises(bngsim.SimulationError, match="does not exist"),
-        ):
-            sim.steady_state(sensitivity_params=["kcat", "Km"], tol=1e-10)
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            ss = sim.steady_state(sensitivity_params=["kcat", "Km"], tol=1e-10)
         assert not any("no analytical ∂f/∂p" in r.message for r in caplog.records), [
             r.message for r in caplog.records
         ]
+        assert ss.converged
+        assert ss.sens_dfdp_source == "codegen"
+        # GH #93: an isolated root, not the continuum this used to report. The
+        # pre-fix rcond was 0.0 and the solve returned NaN.
+        assert ss.sens_jacobian_rcond > 0.1
+        # The steady state is E=10, S=0, P=100 — all substrate converted — which
+        # does not depend on kcat or Km, so the gradient is 0. Cross-checked
+        # against a re-solve at kcat, Km ± h, which agrees to solver noise.
+        assert np.max(np.abs(np.asarray(ss.sensitivity))) < 1e-8
 
     def test_a_model_that_still_declines_differences_dfdp_and_says_so(self, tmp_path, caplog):
         """The FD fallback has not gone away — a Functional law with a kink
@@ -346,7 +354,7 @@ class TestSensitivityNumerics:
         assert ss.sens_jacobian_rcond < 1e-8
         assert any("badly conditioned" in r.message for r in caplog.records)
 
-    def test_singular_solve_is_refused_rather_than_returning_nan(self):
+    def test_singular_solve_is_refused_rather_than_returning_nan(self, tmp_path):
         """When the reduced LU hits an exact zero pivot there is no answer at all.
 
         SUNDIALS' dense solver has no least-squares fallback, so the result comes
@@ -354,14 +362,47 @@ class TestSensitivityNumerics:
         only refusal the corpus supports, since no cut on the conditioning
         separates correct gradients from wrong ones (see
         ``Simulator._SS_SENS_RCOND_FLOOR``).
+
+        The vehicle is ``A -> B``, ``A -> C``: B and C are only ever produced,
+        both fed from the same irreversible step, so the equilibrium set is the
+        line ``B + C = const`` and the reduced Jacobian is exactly singular. That
+        is the cause the refusal message itself names, and it is a *structural*
+        degeneracy — nothing about it depends on a rate law's numerics.
+
+        ``mm_tqssa.net`` was this test's vehicle until GH #93. It only looked
+        degenerate because the MM clamp flattened the rate below S = 0; without
+        the clamp that model has an isolated root and rcond 1.0, so it can no
+        longer reach this path (see
+        ``test_michaelis_menten_no_longer_differences_dfdp``).
         """
-        sim = bngsim.Simulator(bngsim.Model.from_net(net("mm_tqssa.net")), method="ode")
+        text = """\
+begin parameters
+    1 kf     0.4  # Constant
+end parameters
+begin species
+    1 A() 5.0
+    2 B() 0.0
+    3 C() 0.0
+end species
+begin reactions
+    1 1 2 kf #_R1
+    2 1 3 kf #_R2
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+    3 Ctot                 3
+end groups
+"""
+        path = tmp_path / "two_sinks.net"
+        path.write_text(text)
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
         with pytest.raises(bngsim.SimulationError) as exc:
-            sim.steady_state(sensitivity_params=["kcat"], tol=1e-10)
+            sim.steady_state(sensitivity_params=["kf"], tol=1e-10)
         msg = str(exc.value)
         assert "does not exist" in msg
         assert "continuum" in msg
-        assert "S()" in msg  # names the species whose gradient came back non-finite
+        assert "B()" in msg  # names the species whose gradient came back non-finite
 
     def test_well_conditioned_sensitivity_is_not_refused(self, reversible):
         """The refusal must stay scoped to a solve that actually failed."""

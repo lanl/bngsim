@@ -1014,6 +1014,83 @@ int test_mm_tqssa_stiff_root() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Test: MM tQSSA below zero substrate (GH #93)
+//
+// compute_rxn_rate used to floor sFree at 0 while mm_tqssa_derivatives guarded on
+// sFree > 0, so for S < 0 the engine returned rate = 0 and a zero Jacobian while
+// the *emitted* C returned a varying rate — the two backends disagreed and the
+// emitted artifact contradicted itself.
+//
+// Asserting the RHS against the Jacobian is not enough to catch that: both were 0
+// below zero, so they agreed. This test pins the interpreted path to hard-coded
+// 60-digit references instead, so a re-introduced clamp fails on the value.
+//
+// S < 0 is reachable in ordinary use: it is the substrate-exhaustion endgame,
+// where CVODE routinely oversteps zero.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_mm_tqssa_negative_substrate() {
+    // mm_tqssa.net at kcat=1, Km=50, E=10, S=-5. 60-digit references (mpmath),
+    // rounded to double. The pre-#93 engine returned exactly 0 for all four.
+    const double ref_sfree = -4.105458270998632;
+    const double ref_rate = -0.8945417290013681;
+    const double ref_dE = -0.07229308911165548;
+    const double ref_dS = 0.19184218278603166;
+
+    auto rel = [](double got, double want) { return std::abs(got - want) / std::abs(want); };
+
+    // 1. The shared root helper: negative, and the denominator it is guarded on
+    //    is still positive (Km + sFree vanishes only when Km*E == 0).
+    {
+        auto q = bngsim::mm_tqssa(50.0, 10.0, -5.0);
+        CHECK(rel(q.sFree, ref_sfree) < 1e-14, "mm_tqssa root below zero substrate");
+        CHECK(q.KpsF > 0.0, "Km + sFree stays positive for Km, E > 0");
+        CHECK(q.D > 0.0, "D is real below zero — delta^2 + 4*Km*S = (S+Km-E)^2 + 4*Km*E");
+    }
+
+    // 2. The interpreted RHS is live, and restoring: rate < 0 means dS/dt > 0,
+    //    pushing the substrate back toward zero rather than leaving it stranded
+    //    in a flat dead zone the way the clamp did.
+    auto model = bngsim::NetworkModel::from_net(data_path("mm_tqssa.net"));
+    std::vector<double> y = {10.0, -5.0, 0.0}, f(3);
+    model.compute_derivs(0.0, y.data(), f.data());
+    CHECK(rel(-f[1], ref_rate) < 1e-14, "interpreted MM rate below zero substrate");
+    CHECK(f[1] > 0.0, "dS/dt is restoring at S < 0");
+    CHECK_CLOSE(f[0], 0.0, 1e-30, "the enzyme is still conserved");
+
+    // 3. The closed-form Jacobian at the same state agrees that the rate varies.
+    std::vector<double> J(9);
+    model.fill_dense_analytical_jacobian(0.0, y.data(), J.data());
+    double dE = J[0 * 3 + 2]; // d(ydot[P])/d(E)
+    double dS = J[1 * 3 + 2]; // d(ydot[P])/d(S)
+    CHECK(dE != 0.0, "the Jacobian must not report the rate as flat in E at S < 0");
+    CHECK(rel(dE, ref_dE) < 1e-12, "MM d(rate)/dE below zero substrate");
+    CHECK(rel(dS, ref_dS) < 1e-13, "MM d(rate)/dS below zero substrate");
+
+    // 4. At S = 0 exactly — where every zero-IC species starts — the rate is 0
+    //    but d(rate)/dS is NOT: it is kcat*E/(Km + E) = 10/60. The old guard
+    //    reported 0 here, which is simply the wrong derivative; the unclamped
+    //    rate is differentiable at S = 0, with equal one-sided derivatives.
+    std::vector<double> y0 = {10.0, 0.0, 0.0};
+    model.compute_derivs(0.0, y0.data(), f.data());
+    CHECK_CLOSE(f[1], 0.0, 1e-30, "the rate really is 0 at S = 0");
+    model.fill_dense_analytical_jacobian(0.0, y0.data(), J.data());
+    CHECK_CLOSE(J[1 * 3 + 2], 10.0 / 60.0, 1e-14, "d(rate)/dS at S = 0 is kcat*E/(Km+E)");
+    CHECK_CLOSE(J[0 * 3 + 2], 0.0, 1e-30, "d(rate)/dE at S = 0 is 0 (sFree is 0)");
+
+    // 5. The one genuine degeneracy, Km + sFree <= 0, is guarded rather than
+    //    evaluated as 0/0: no enzyme and a substrate driven past -Km.
+    std::vector<double> yd = {0.0, -60.0, 0.0};
+    model.compute_derivs(0.0, yd.data(), f.data());
+    CHECK(std::isfinite(f[1]) && f[1] == 0.0, "E = 0 with S < -Km gives 0, not NaN");
+    model.fill_dense_analytical_jacobian(0.0, yd.data(), J.data());
+    for (int k = 0; k < 9; ++k)
+        CHECK(std::isfinite(J[k]), "the Jacobian stays finite on the degenerate set");
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Test: TFUN time-indexed — load .net with tfun(), simulate, verify interpolation
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1486,8 +1563,11 @@ int test_analytical_jacobian() {
         CHECK(ajd.mm_reactions.size() == 1, "One MM closed-form term built");
         CHECK(model.analytical_jacobian_complete(), "MM analytical Jacobian complete");
 
-        // fill_dense vs central FD at several states spanning E≷S and the
-        // sFree clamp.
+        // fill_dense vs central FD at several states spanning E≷S and a tiny
+        // substrate. Note this comparison cannot see GH #93 on its own: before
+        // that fix compute_derivs clamped and the Jacobian guarded, so the two
+        // agreed on 0 below zero and agreed with each other. See
+        // test_mm_tqssa_negative_substrate for the check that does see it.
         int ns = model.n_species();
         std::vector<std::vector<double>> states = {
             {10.0, 100.0, 0.0},   // initial (E<S)
@@ -2209,6 +2289,7 @@ int main() {
     RUN_TEST(test_hill_loads_with_rewrite_warning);
     RUN_TEST(test_mm_tqssa);
     RUN_TEST(test_mm_tqssa_stiff_root);
+    RUN_TEST(test_mm_tqssa_negative_substrate);
 
     // Table functions (ADR-001 §3.12)
     RUN_TEST(test_tfun_time_indexed);

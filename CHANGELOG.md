@@ -369,6 +369,62 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The Michaelis–Menten free substrate is no longer clamped to zero, so the
+  interpreted and compiled backends stop disagreeing and the emitted Jacobian
+  stops contradicting the emitted RHS beside it (issue #93).** `compute_rxn_rate`
+  floored a negative `sFree` to 0; `_mm_rate_lines` never did. Meanwhile
+  `mm_tqssa_derivatives`, `_mm_jacobian_groups` and `_mm_v_lines` all guarded on
+  `sFree > 0` and returned 0 — the clamp seen from the derivative side. So for
+  `S < 0` the one `.so` handed CVODE a Jacobian asserting no dependence on `E`
+  over a region where its own RHS varied with `E`, and the two backends returned
+  different numbers for the same model at the same state.
+
+  That is not a corner: `sFree < 0` requires only `S < 0`, which is the
+  substrate-exhaustion endgame, where the integrator routinely oversteps zero.
+  Both shipped MM fixtures reach it on an ordinary run (`mm_tqssa.net` to
+  `S = -1.0e-8`), and the disagreement reached the **trajectory**, not just a
+  probe: pre-fix, `mm_tqssa.net` finished at `S = 1.53e-9` compiled against
+  `-1.22e-8` interpreted, and `mm_tqssa_stiff.net` at `9.15e-14` against
+  `-8.32e-8`. Both backends now agree bit-for-bit (max relative gap exactly 0.0,
+  from 3.6e-10 and 4.4e-9).
+
+  The clamp is gone from every site rather than added to the ones that lacked it,
+  because the negative branch is a genuine smooth continuation and the clamp was
+  the artifact. `delta² + 4·Km·S` factors as `(S + Km − E)² + 4·Km·E`, so the
+  square root is real for *every* `S`; the continuation is restoring (as
+  `S → −∞` the rate tends to `kcat·S`, pushing `S` back toward 0) where the clamp
+  left a flat dead zone; and at `S = 0` the unclamped rate is differentiable,
+  with both one-sided derivatives equal to `kcat·E/(Km + E)`. The old guard
+  reported `∂rate/∂S = 0` at exactly that state — which every species with a zero
+  initial condition starts in.
+
+  What replaces the clamp is a guard on the rate's own denominator, `Km + sFree`,
+  used identically by the RHS and by all three derivative emitters (it is emitted
+  once, by the shared `_mm_sfree_c_lines`, so they cannot drift apart again).
+  `Km + sFree` vanishes only where `Km·E == 0`, and it also repairs a
+  pre-existing NaN at `Km = 0, S < E`, which used to evaluate `0/0`. Guarding the
+  denominator rather than `Km` or `E` keeps the correct `kcat·E` at `Km = 0,
+  S > E`. On the degenerate set the guard is a genuine jump, not a smooth patch —
+  approaching `E = 0` from above with `S < −Km` the rate tends to
+  `kcat·(S + Km)`, not 0 — which is accepted because at `E == 0` the alternative
+  is `0/0` and a reaction with no enzyme has rate 0 by definition.
+
+  A downstream consequence worth calling out: the clamp was manufacturing a
+  **false continuum** in steady-state sensitivities. `mm_tqssa.net` settles at
+  `S ≈ -7e-8`, and inside the clamped flat region `∂f_S/∂S` was 0, so the reduced
+  Jacobian was exactly singular and `steady_state(sensitivity_params=...)` refused
+  the model with "dY_ss/dp does not exist … the steady state is a continuum".
+  It is now solved with `rcond = 1.0`, and the gradient it returns (≈0, since the
+  root `E=10, S=0, P=100` does not depend on `kcat` or `Km`) agrees with a
+  re-solve at `p ± h`.
+
+  The SBML export moves with the engine, as it must — `_mm_formula` dropped
+  `max(sFree, 0)` and carries the denominator guard as a `piecewise`, keeping
+  `max_rhs_delta` at exactly 0.0 against the engine on both fixtures. (An export
+  that drifts is not a loud failure; it silently drops the model from parity.)
+  `_CODEGEN_VERSION` is bumped to 27 so a cached v26 `.so` cannot keep serving the
+  contradictory pair. The two corpus MM models (`test_MM`, `mCaMKII_Ca_Spike`) do
+  not move at all — trajectories byte-identical, same step counts.
 - **A Functional model built with `sensitivity_params` could not run on the MIR
   JIT backend at all — c2mir refused the generated source on every platform
   (issue #85).** `MirJit` does not hand c2mir the codegen's C unchanged: c2mir
