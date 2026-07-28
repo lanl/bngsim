@@ -20,7 +20,14 @@ The tests below pin both halves of the fix:
 
 * **the answer is unchanged** — the structural test accepts exactly the bases
   ``cancel`` accepted (including the ``a·x + b·x`` sum that a purely local ``Mul``
-  test would miss) and rejects exactly what it rejected;
+  test would miss) and rejects exactly what it rejected, with a quotient equal in
+  *value*. Equal in value, not always identical in printed form: over a rational
+  field ``cancel`` returns a ``Float`` ``1.0`` where the structural test returns
+  ``Integer`` ``1``, which the C printer parenthesises differently
+  (``1.0/(d)`` vs ``(1.0/(d))``). That is the entire emitted-source difference
+  across the corpora — 0 of 585 ``.net`` models, 5 of 456 BioModels SBML models,
+  and on those five all 138 differing ``(base, sym)`` pairs were checked to
+  differ by form only;
 * **the cost is bounded** — the pathological shape now finishes in well under a
   second, asserted as a hard wall-clock ceiling rather than a benchmark, so a
   reintroduced ``cancel`` fails the suite instead of quietly costing 15 minutes.
@@ -70,12 +77,26 @@ class TestLinearMultipleQuotient:
         not equal to it."""
         assert _linear_multiple_quotient(base, x, sp) is None
 
+    def test_a_float_coefficient_agrees_in_value_not_in_form(self):
+        """The one way the two forms differ, pinned so it stays a known property
+        rather than a surprise in the next corpus diff: over a rational field
+        ``cancel`` normalises the numerator to a ``Float``, so this base yields
+        ``1.0/(...)`` there and ``1/(...)`` here. Equal in value; the C printer
+        parenthesises them differently, which is the whole of why five BioModels
+        models' emitted source moved without anything semantic moving with it."""
+        base = x / (sp.Float("0.5") * y + sp.Float("0.25"))
+        cancelled = sp.cancel(base / x)
+        structural = _linear_multiple_quotient(base, x, sp)
+        assert not cancelled.has(x)
+        assert structural is not None
+        assert sp.simplify(structural - cancelled) == 0
+
     @pytest.mark.parametrize(
         "base", [x, x / K, 2 * x, x * y, a * x + b * x, K + x, x**2, sp.exp(x)]
     )
     def test_it_agrees_with_cancel(self, base):
         """The property the replacement rests on, stated directly against the
-        thing it replaced: same accept/reject verdict, same quotient."""
+        thing it replaced: same accept/reject verdict, same quotient value."""
         cancelled = sp.cancel(base / x)
         cancel_says = None if cancelled.has(x) else cancelled
         structural = _linear_multiple_quotient(base, x, sp)
