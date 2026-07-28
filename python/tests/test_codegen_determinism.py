@@ -191,6 +191,88 @@ def test_functional_sens_rhs_hash_is_pythonhashseed_independent():
     )
 
 
+# ─── GH #96: the same leak again, in the #198 output-sensitivity partials ─────
+#
+# Third instance of one bug. ``differentiate_expression_output_partials``
+# iterated ``free`` — the *set* of a function body's free symbols — so the order
+# its ``{symbol: ∂f/∂symbol}`` maps were built in, and with it the order the
+# chain-rule terms are emitted into ``bngsim_codegen_output_sens``, tracked
+# ``PYTHONHASHSEED``. Measured on **121 of the 585** ``.net`` corpus models,
+# whose #198 evaluator therefore hashed differently every process and could never
+# hit its content-addressed ``.so``.
+#
+# It surfaced while A/B-ing an unrelated change: 121 models' emitted C "changed",
+# and the same two hashes came back under different seeds with identical code.
+# Any before/after comparison of this emitter is meaningless until it is pinned,
+# which is the other reason it belongs in the suite rather than in a note.
+#
+# A one-symbol function body cannot show it — with one partial there is only one
+# ordering — so the fixture below gives every function several referenced
+# symbols of several kinds (species, observable, parameter, earlier function).
+
+_MULTI_SYMBOL_NET = """\
+begin parameters
+    1 ka     0.7  # Constant
+    2 kb     1.3  # Constant
+    3 kc     0.9  # Constant
+    4 kd     2.1  # Constant
+end parameters
+begin functions
+    1 base()  ka*Atot + kb*Btot + kc*Ctot
+    2 mixed() kd*base() + ka*Atot*Btot + kb*Ctot
+end functions
+begin species
+    1 A() 3.0
+    2 B() 5.0
+    3 C() 2.0
+    4 D() 0.0
+end species
+begin reactions
+    1 1 4 mixed #_R1
+end reactions
+begin groups
+    1 Atot                 1
+    2 Btot                 2
+    3 Ctot                 3
+end groups
+"""
+
+_OUTPUT_SENS_CHILD = textwrap.dedent(
+    """
+    import hashlib, sys, tempfile, os
+    import bngsim
+    from bngsim import _codegen
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "m.net")
+    open(p, "w").write(sys.stdin.read())
+    m = bngsim.Model.from_net(p)
+    src = _codegen.generate_output_sens_from_model(m)
+    assert src is not None, "the fixture must reach the #198 output-sens emitter"
+    sys.stdout.write(hashlib.sha256(src.encode()).hexdigest())
+    """
+)
+
+
+def test_output_sens_hash_is_pythonhashseed_independent():
+    hashes = {}
+    for seed in (0, 1, 2, 3):
+        env = dict(os.environ, PYTHONHASHSEED=str(seed))
+        proc = subprocess.run(
+            [sys.executable, "-c", _OUTPUT_SENS_CHILD],
+            input=_MULTI_SYMBOL_NET,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        assert proc.returncode == 0, f"child failed (seed={seed}):\n{proc.stderr}"
+        hashes[seed] = proc.stdout.strip()
+        assert len(hashes[seed]) == 64, f"unexpected output (seed={seed}): {proc.stdout!r}"
+    assert len(set(hashes.values())) == 1, (
+        f"#198 output-sens hash varies with PYTHONHASHSEED: {hashes}"
+    )
+
+
 # ─── GH #65: the Elementary sensitivity emission is frozen ────────────────────
 
 # The full emitted ``bngsim_dfdp`` for the model above: one mass-action reaction
