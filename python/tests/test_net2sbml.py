@@ -126,6 +126,47 @@ def test_mm_tqssa_rhs_exact(data_dir: Path, tmp_path: Path) -> None:
     assert _rhs_max_delta(src_model, sbml_model) <= 1e-9
 
 
+def test_mm_tqssa_stiff_rhs_exact(data_dir: Path, tmp_path: Path) -> None:
+    """The exported law must carry GH #89's *stable* free-substrate root.
+
+    ``mm_tqssa_stiff.net`` sits at ``|delta|/sqrt(4*Km*S) ~ 1e7``, where spelling
+    ``sFree`` as the textbook ``0.5*(delta + D)`` subtracts two nearly-equal
+    positive numbers. The engine takes the conjugate root there (#89); an export
+    that keeps the textbook form disagrees with it by ~2e-2 relative — this
+    assertion measured 2.17e-02 against the textbook form, and exactly 0.0
+    (bit-for-bit) against the piecewise the writer now emits.
+    """
+    src = data_dir / "mm_tqssa_stiff.net"
+    if not src.is_file():
+        pytest.skip("mm_tqssa_stiff.net not present")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        src_model = bngsim.Model.from_net(src)
+        write_sbml(src_model, tmp_path / "mm_stiff.xml", strict=True)
+        sbml_model = bngsim.Model.from_sbml(tmp_path / "mm_stiff.xml")
+    assert _rhs_max_delta(src_model, sbml_model) <= 1e-9
+
+
+def test_mm_tqssa_stiff_full_gate_passes(data_dir: Path, tmp_path: Path) -> None:
+    """The stiff fixture must clear the gating levels, not just L4's punt.
+
+    This is the end-to-end tripwire for the same regression: with the textbook
+    root the emitted artifact diverges from its source badly enough that **L2
+    (reverse round-trip) and L3 (numerical) both fail** and ``report.ok`` is
+    False — i.e. net2sbml would emit a model its own validator rejects.
+    """
+    src = data_dir / "mm_tqssa_stiff.net"
+    if not src.is_file():
+        pytest.skip("mm_tqssa_stiff.net not present")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", bngsim.ConversionWarning)
+        report = net_to_sbml(src, tmp_path / "mm_stiff.xml", validate="full", strict=True)
+    for lv in ("L0", "L1", "L2", "L3"):
+        level = report.validation.level(lv)
+        assert level is not None and level.status == "pass", report.summary()
+    assert report.ok, report.summary()
+
+
 # ─── ExprTk→MathML translator unit checks ──────────────────────────────────
 
 
