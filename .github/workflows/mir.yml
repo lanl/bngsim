@@ -38,28 +38,21 @@ name: mir-jit
 # no-compiler-at-all path that motivates MIR. If that path needs guarding, it
 # needs a leg with the compilers taken off PATH, not this one.
 #
-# The three Functional analytic-sensitivity files (#66's ∂f/∂p, #67's fused J·yS,
-# #68's clock-conditional laws) are in the list below, but their end-to-end half
-# — a Functional model built with sensitivity_params — cannot run on this
-# backend: c2mir rejects the GH #198 bngsim_codegen_output_sens block that `cc`
-# accepts (issue #85, open, and pre-existing on main). Everything else in them
-# runs here, including both finite-difference oracles and the whole switch-
-# condition rule.
+# The end-to-end half of the three Functional analytic-sensitivity files (#66's
+# ∂f/∂p, #67's fused J·yS, #68's clock-conditional laws) — a Functional model
+# built with sensitivity_params — spent a while quarantined here under
+# xfail(strict) for issue #85: c2mir rejected the GH #198
+# bngsim_codegen_output_sens block that `cc` accepts. The cause was not the
+# arithmetic but the JIT preamble — make_jit_source strips every `#include <…>`,
+# and the prelude re-declared the libm *functions* while supplying none of the
+# *types or macros* the block names (size_t, and NULL/NAN behind it). Fixed in
+# include/bngsim/mir_jit.hpp; the markers are gone and
+# python/tests/test_codegen_jit_prelude.py is the regression, listed below.
 #
-# Those 10 tests are marked xfail(strict, raises=RuntimeError), not skipped, so
-# the quarantine removes itself: fixing #85 turns them XPASS and this job red
-# until the markers come out. They are the coverage that found #85, and #67's
-# first attempt at this list is what surfaced it.
-#
-# The Michaelis-Menten file (#55's MM stage) needs no such marker, and the reason
-# is worth stating rather than rediscovering: #85 fires on
-# bngsim_codegen_output_sens, which generate_output_sens_from_model only emits
-# when the model has at least one *function*. The MM fixtures declare none, so
-# the symbol is absent even with emit_output_sens forced on, and their
-# Simulator-with-sensitivity_params cases compile here. c2mir already handles the
-# arithmetic: mm_tqssa.net goes through test_mir_equivalence and
-# test_codegen_jacobian on this job today, and the MM sensitivity block is the
-# same closed form as the Jacobian block, from the same builder.
+# Worth keeping from that episode: this job is the only place a #85-class bug can
+# surface, because it is the only one that compiles generated C with anything but
+# `cc`. The bug was pre-existing on main for as long as #198 had been emitted,
+# and it took adding #67's files to this list to find it.
 
 on:
   workflow_dispatch:
@@ -159,6 +152,7 @@ jobs:
             python/tests/test_codegen_sens_budget.py \
             python/tests/test_codegen_power_denominator.py \
             python/tests/test_codegen_determinism.py \
+            python/tests/test_codegen_jit_prelude.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
 

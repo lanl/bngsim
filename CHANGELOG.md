@@ -369,6 +369,42 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A Functional model built with `sensitivity_params` could not run on the MIR
+  JIT backend at all — c2mir refused the generated source on every platform
+  (issue #85).** `MirJit` does not hand c2mir the codegen's C unchanged: c2mir
+  cannot parse the platform SDK's `<math.h>` / `<stdlib.h>` / `<string.h>`, so
+  `make_jit_source` strips every `#include <…>` line and prepends a prelude that
+  re-declares the libc/libm *functions* the RHS can call. Stripping a header also
+  strips its **types and macros**, and the prelude re-declared none of those.
+  `bngsim_codegen_output_sens` (GH #198) casts its column index with `(size_t)`;
+  with `size_t` unknown as a typedef name that stops being a cast, the
+  declaration it sits in fails to parse, and c2mir reports the next token — the
+  `syntax error on double (expected '<statement>')` the issue opens with. `cc`
+  compiles the identical source, so this was never invalid C, and it was
+  pre-existing on `main` for as long as #198 had been emitted.
+
+  The prelude now includes c2mir's own bundled `<stddef.h>` for `size_t`, and
+  defines `NULL` and `NAN`. Those last two are the same hole one step behind
+  `size_t`, reachable and not theoretical: a model whose functions read no
+  observable passes `NULL` for the function blocks' `obs` argument, and #198
+  writes `NAN` as the sentinel for a function it cannot differentiate. Neither
+  can come from the bundled header — c2mir's `<stddef.h>` omits `NULL` on
+  macOS-x86_64 and on Windows, and no bundled header defines `NAN` at all.
+  Taking `size_t` from that header rather than a hand-written typedef also makes
+  the `memset`/`memcpy` size argument match what c2mir's `sizeof` yields by
+  construction, replacing the LP64/LLP64 branch GH #3 had to maintain from the
+  outside.
+
+  The 11 `xfail(strict)` quarantine markers this bug earned across
+  `test_codegen_functional_sens_rhs.py`, `test_codegen_switch_condition_sens.py`
+  and `test_codegen_sens_budget.py` are gone; the MIR job's list is 328 passed,
+  0 xfailed under `BNGSIM_CODEGEN_JIT=mir`, and unchanged under `cc`. The new
+  `test_codegen_jit_prelude.py` guards the class rather than the instance: it
+  diffs the libc names appearing in emitted C against what `jit_prelude()`
+  supplies, so the next such name the codegen starts emitting fails in a text
+  comparison — on every backend, and in the pre-push hook — instead of in c2mir
+  on the one CI job that compiles generated C with anything but `cc`.
+
 - **The Michaelis–Menten (tQSSA) free substrate lost about two significant digits
   per decade of `|δ|/√(4·Km·S)`, in the rate itself and not only in a derivative
   (issue #89).** `sFree` was computed as

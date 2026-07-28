@@ -53,27 +53,12 @@ def _has_cc() -> bool:
 
 requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available")
 
-# GH #85, open and pre-existing: under the MIR JIT backend a Functional model
-# *constructed with* ``sensitivity_params`` does not compile — c2mir rejects the
-# GH #198 ``bngsim_codegen_output_sens`` block that ``cc`` accepts. That is the
-# whole of TestEndToEnd below, and nothing else in this file: the rule and
-# detector tests read emitted source and never build a Simulator.
-#
-# xfail(strict) rather than skipif so the marker retires itself — the day c2mir
-# compiles these models the tests XPASS and the run goes red, instead of the
-# quarantine waiting on someone to remember it. ``raises`` keeps it from
-# absorbing an unrelated failure: MirJit raises RuntimeError, and
-# SimulationError subclasses it, so an assertion regression stays red.
-#
-# Spelled out here rather than shared, matching how each file carries its own
-# ``requires_cc``. The twin lives in test_codegen_functional_sens_rhs.py; both
-# retire with #85.
-blocked_on_mir_jit = pytest.mark.xfail(
-    cg._codegen_jit_backend() == "mir",
-    reason="GH #85: c2mir cannot compile bngsim_codegen_output_sens",
-    raises=RuntimeError,
-    strict=True,
-)
+# TestEndToEnd below carried an xfail(strict) quarantine for GH #85 — under the
+# MIR JIT backend a Functional model *constructed with* ``sensitivity_params``
+# did not compile, because the JIT prelude never supplied the ``size_t`` the
+# GH #198 ``bngsim_codegen_output_sens`` block names. Fixed in mir_jit.hpp;
+# it runs on both backends now, and test_codegen_jit_prelude.py owns the
+# regression.
 
 
 # ─── fixtures ──────────────────────────────────────────────────────────────
@@ -372,7 +357,6 @@ def _run_sens(model, params, t_end, n=61):
 
 
 @requires_cc
-@blocked_on_mir_jit  # every test here goes through _run_sens, so all of it is #85
 class TestEndToEnd:
     def test_the_analytic_rhs_reproduces_the_difference_quotient(self, tmp_path, monkeypatch):
         """The migration check, and the strongest statement available for this

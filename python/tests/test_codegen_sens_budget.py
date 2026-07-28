@@ -65,19 +65,11 @@ def _has_cc() -> bool:
 
 requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available")
 
-# GH #85, open and pre-existing on main: under the MIR JIT backend a Functional
-# model constructed *with* ``sensitivity_params`` does not compile — c2mir rejects
-# the GH #198 ``bngsim_codegen_output_sens`` block that ``cc`` accepts. Only the
-# one test here that builds such a Simulator is blocked; every source-level test
-# runs on both backends. Spelled the same way (and retiring the same day) as the
-# markers in test_codegen_functional_sens_rhs.py and
-# test_codegen_switch_condition_sens.py.
-blocked_on_mir_jit = pytest.mark.xfail(
-    cg._codegen_jit_backend() == "mir",
-    reason="GH #85: c2mir cannot compile bngsim_codegen_output_sens",
-    raises=RuntimeError,
-    strict=True,
-)
+# The one test here that builds a Simulator carried an xfail(strict) quarantine
+# for GH #85 — under the MIR JIT backend a Functional model constructed *with*
+# ``sensitivity_params`` did not compile, because the JIT prelude never supplied
+# the ``size_t`` the GH #198 ``bngsim_codegen_output_sens`` block names. Fixed in
+# mir_jit.hpp; test_codegen_jit_prelude.py owns the regression.
 
 
 @pytest.fixture(autouse=True)
@@ -429,7 +421,6 @@ class TestFallbackStillSolves:
     declining beats hanging, but it is not free.
     """
 
-    @blocked_on_mir_jit
     def test_a_declined_model_still_returns_sensitivities(self, tmp_path, monkeypatch):
         analytic = np.asarray(_run(_model(tmp_path, HILL), ["kmax", "Km"]).sensitivities)
 
