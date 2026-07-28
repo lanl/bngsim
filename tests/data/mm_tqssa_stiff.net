@@ -1,0 +1,36 @@
+# Michaelis-Menten tQSSA at a deliberately stiff root ratio — GH #89 regression.
+#
+# Same rate law as mm_tqssa.net, but a large enzyme excess over a small Km*S:
+#   delta = S - Km - E = 20 - 1e-8 - 9000 = -8980.00000001
+#   |delta| / sqrt(4*Km*S) ~= 1.0e7
+#
+# In that regime sFree = 0.5*(delta + sqrt(delta^2 + 4*Km*S)) subtracts two
+# nearly-equal positive numbers. Reference values at 50 decimal digits (mpmath),
+# against what plain float64 produced before the conjugate root landed:
+#
+#   sFree = 2.2271714922024141071e-11      old: 2.1e-02 relative error
+#   rate  = 39.99999999995545657           old: 2.1e-02
+#   dE    = 4.9602928556791156198e-15      old: 7.7e+09  (and the wrong SIGN)
+#   dS    = 1.9999999999977678682          old: 5.6e-05
+#
+# The corpus's two MM models both sit at ratio ~1, so nothing there moves; this
+# fixture is the honest way to show the fix does something.
+begin parameters
+    1 kcat   2.0
+    2 Km     1.0e-8
+    3 E_0    9000.0
+    4 S_0    20.0
+end parameters
+begin species
+    1 E()  E_0
+    2 S()  S_0
+    3 P()  0
+end species
+begin reactions
+    1 1,2 1,3 MM kcat Km #Rule1
+end reactions
+begin groups
+    1 Etot  1
+    2 Stot  2
+    3 Ptot  3
+end groups

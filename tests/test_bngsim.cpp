@@ -5,6 +5,7 @@
 
 #include <bngsim/bngsim.hpp>
 #include <bngsim/bngsim_api.h>
+#include <bngsim/mm_jacobian.hpp> // test_mm_tqssa_stiff_root calls mm_tqssa directly
 
 #include <cmath>
 #include <cstdio>
@@ -943,6 +944,71 @@ int test_mm_tqssa() {
     double approx_rate = P_1 / dt;
     CHECK(approx_rate > 6.0, "Initial MM rate should be > 6.0");
     CHECK(approx_rate < 7.0, "Initial MM rate should be < 7.0");
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test: MM tQSSA at a stiff root ratio (GH #89)
+//
+// mm_tqssa.net sits at |delta|/sqrt(4*Km*S) ~ 1, where every way of writing the
+// root agrees; so does every MM model in the corpus. mm_tqssa_stiff.net sits at
+// ~1e7, where the textbook 0.5*(delta + D) has lost all but two digits of the
+// RATE and the chain rule through sFree has the wrong SIGN for d(rate)/dE.
+//
+// Reference values are mpmath at 50 decimal digits (see the fixture header). They
+// are hard-coded rather than recomputed in long double, which is 64-bit on arm64
+// and would silently become a self-comparison.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_mm_tqssa_stiff_root() {
+    // 50-digit references, rounded to double. See tests/data/mm_tqssa_stiff.net.
+    const double ref_sfree = 2.2271714922024141071e-11;
+    const double ref_rate = 39.99999999995545657;
+    const double ref_dE = 4.9602928556791156198e-15;
+    const double ref_dS = 1.9999999999977678682;
+
+    auto rel = [](double got, double want) { return std::abs(got - want) / std::abs(want); };
+
+    // 1. The shared root helper, called directly.
+    {
+        auto q = bngsim::mm_tqssa(1.0e-8, 9000.0, 20.0);
+        CHECK(rel(q.sFree, ref_sfree) < 1e-14,
+              "mm_tqssa root at ratio 1e7 (rel=" + std::to_string(rel(q.sFree, ref_sfree)) + ")");
+        // The form it replaced, evaluated here so the regression is visible in
+        // the failure message rather than only in the issue.
+        double delta = 20.0 - 1.0e-8 - 9000.0;
+        double textbook = 0.5 * (delta + std::sqrt(delta * delta + 4.0 * 1.0e-8 * 20.0));
+        CHECK(rel(textbook, ref_sfree) > 1e-3, "the textbook root really is wrong here");
+    }
+
+    // 2. The interpreted RHS. Reaction is E + S -> E + P, so ydot = (0, -rate, +rate).
+    auto model = bngsim::NetworkModel::from_net(data_path("mm_tqssa_stiff.net"));
+    CHECK(model.n_species() == 3, "Expected 3 species");
+
+    std::vector<double> y = {9000.0, 20.0, 0.0}, f(3);
+    model.compute_derivs(0.0, y.data(), f.data());
+    CHECK(rel(-f[1], ref_rate) < 1e-14,
+          "interpreted MM rate at ratio 1e7 (rel=" + std::to_string(rel(-f[1], ref_rate)) + ")");
+    CHECK_CLOSE(f[2], -f[1], 1e-12, "P gains exactly what S loses");
+    CHECK_CLOSE(f[0], 0.0, 1e-30, "the enzyme is conserved");
+
+    // 3. The closed-form analytical Jacobian at the same point. d(rate)/dE is
+    //    ~1e-15 against a d(rate)/dS of ~2, so this is where the old grouping
+    //    returned -3.8e-05 — nine orders out, and negative.
+    const auto& ajd = model.analytical_jacobian();
+    CHECK(ajd.available && ajd.mm_reactions.size() == 1, "MM analytical Jac built");
+    std::vector<double> J(9);
+    model.fill_dense_analytical_jacobian(0.0, y.data(), J.data());
+    double dE = J[0 * 3 + 2]; // d(ydot[P])/d(E) = +d(rate)/dE
+    double dS = J[1 * 3 + 2]; // d(ydot[P])/d(S) = +d(rate)/dS
+    CHECK(dE > 0.0, "d(rate)/dE is positive — more enzyme cannot slow the reaction");
+    CHECK(rel(dE, ref_dE) < 1e-12,
+          "MM d(rate)/dE at ratio 1e7 (rel=" + std::to_string(rel(dE, ref_dE)) + ")");
+    CHECK(rel(dS, ref_dS) < 1e-14,
+          "MM d(rate)/dS at ratio 1e7 (rel=" + std::to_string(rel(dS, ref_dS)) + ")");
+    CHECK_CLOSE(J[0 * 3 + 1], -dE, 1e-30, "S row mirrors the P row");
+    CHECK_CLOSE(J[1 * 3 + 1], -dS, 1e-30, "S row mirrors the P row");
 
     return 0;
 }
@@ -2142,6 +2208,7 @@ int main() {
     RUN_TEST(test_sat_loads_with_rewrite_warning);
     RUN_TEST(test_hill_loads_with_rewrite_warning);
     RUN_TEST(test_mm_tqssa);
+    RUN_TEST(test_mm_tqssa_stiff_root);
 
     // Table functions (ADR-001 §3.12)
     RUN_TEST(test_tfun_time_indexed);
