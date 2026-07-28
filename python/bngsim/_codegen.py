@@ -1414,6 +1414,79 @@ def _inline_derived_param_refs(
     return s
 
 
+def _check_derivation_deadline(deadline: float | None) -> None:
+    """Raise :class:`_DerivationBudgetExceeded` if the build-time symbolic
+    derivation has run past ``deadline`` (GH #90).
+
+    ``deadline`` is a ``time.perf_counter()`` stamp, or ``None`` for unbounded —
+    which is what every caller outside the sensitivity build passes, so this is a
+    no-op for them. One spelling for every check site so the sensitivity budget
+    cannot drift from the Jacobian's, whose per-observable check
+    (``_jacobian.differentiate_rate_law``) this mirrors.
+    """
+    if deadline is not None and time.perf_counter() > deadline:
+        from bngsim._jacobian import _DerivationBudgetExceeded
+
+        raise _DerivationBudgetExceeded
+
+
+def _sens_derivation_deadline(n_species: int) -> float | None:
+    """Absolute ``time.perf_counter()`` deadline for one sensitivity-RHS build, or
+    ``None`` when the budget is disabled (GH #90).
+
+    Resolved once per :func:`generate_sens_from_model` / :func:`generate_sens_rhs_c`
+    call and threaded down, so every ``sp.diff`` on the ∂f/∂p path shares a single
+    wall-clock bound instead of each site getting its own.
+    """
+    from bngsim._jacobian import _sens_derivation_budget_s
+
+    budget = _sens_derivation_budget_s(n_species=n_species)
+    return None if budget is None else time.perf_counter() + budget
+
+
+def _sens_budget_cache_tag() -> str:
+    """Cache-key fragment for an explicitly overridden sensitivity derivation
+    budget (GH #90), or ``""`` when the env var is unset.
+
+    The budget decides whether a model gets an analytic sensitivity RHS at all, so
+    it belongs in the key of any cache that is not content-addressed on the
+    generated source — the ``.net`` path's in-process memo and its on-disk
+    ``model_hash``, which both key on the .net's *content*. Without it a build made
+    under a deliberately tight budget would be served back to one made without it,
+    the same trap ``functional_sens_rhs_enabled`` already sidesteps (GH #67).
+    Empty when unset, so the default key — and every ``.so`` already cached — is
+    byte-identical to before.
+
+    This does not make a *default*-budget expiry cache-safe: the budget is
+    wall-clock, so a model that derives near the limit can emit on one run and
+    decline on the next, and whichever came first is what the .net path cached.
+    Raising the budget is the fix, and doing so lands in a fresh namespace.
+    """
+    from bngsim._jacobian import _SENS_BUDGET_ENV
+
+    raw = os.environ.get(_SENS_BUDGET_ENV)
+    return "" if raw is None else f":sens_budget={raw.strip().lower()}"
+
+
+def _sens_budget_decline_reason(n_species: int, progress: str) -> str:
+    """The decline reason for a build-time ∂f/∂p derivation that ran past its
+    budget (GH #90), phrased for :func:`_warn_functional_sens_rhs_refused`.
+
+    A budget expiry is reported through that same channel as every other decline
+    rather than one of its own, and names both how far the derivation got and the
+    override — the alternative to declining is a build that appears to hang, which
+    is the whole point of the budget.
+    """
+    from bngsim._jacobian import _SENS_BUDGET_ENV, _sens_derivation_budget_s
+
+    budget = _sens_derivation_budget_s(n_species=n_species)
+    return (
+        f"the build-time ∂f/∂p derivation exceeded its {budget:g}s budget "
+        f"({progress}); set {_SENS_BUDGET_ENV} to raise or disable it (seconds, or "
+        "inf/none/0 for unbounded)"
+    )
+
+
 def _compute_derived_param_jacobian(
     expr: str,
     primary_param_names: set,
@@ -1473,6 +1546,7 @@ def _derived_param_jacobian_checked(
     primary_param_names: set,
     param_idx: dict,
     derived_exprs: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> tuple[dict[str, str] | None, str | None]:
     """:func:`_compute_derived_param_jacobian`, plus the reason it gave up.
 
@@ -1485,10 +1559,20 @@ def _derived_param_jacobian_checked(
     an analytic sensitivity RHS must refuse the whole RHS on a failure (falling
     back to CVODES' correct-but-slower internal difference quotient) rather than
     ship a gradient component that is confidently, exactly wrong.
+
+    ``deadline`` (GH #90) is a ``time.perf_counter()`` stamp bounding the caller's
+    whole build-time derivation. It is checked once on entry (parsing an
+    expression is itself unbounded work) and again before each ``sp.diff``, so a
+    single pathological expression overshoots by at most one partial. Expiry
+    raises :class:`bngsim._jacobian._DerivationBudgetExceeded` rather than
+    returning a reason: it is a property of the *build*, not of this expression,
+    and it must unwind past the per-expression caches to decline the whole model.
+    Callers that pass no deadline (the default) never see it.
     """
     s = expr.strip()
     if not s:
         return None, None
+    _check_derivation_deadline(deadline)
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import parse_expr
@@ -1567,6 +1651,7 @@ def _derived_param_jacobian_checked(
 
     result: dict[str, str] = {}
     for p_name in referenced:
+        _check_derivation_deadline(deadline)
         deriv = sp.diff(sym_expr, sym_map[sym_name_of[p_name]])
         if deriv == 0:
             continue
@@ -2284,6 +2369,10 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
 
     For Functional/MM: returns None (fall back to CVODES internal FD).
 
+    The only symbolic work here is the derived-rate-constant chain rule below; it
+    shares the GH #90 build-time budget with the model path, so a .net carrying
+    enough ``# ConstantExpression`` rate constants declines rather than hangs.
+
     Parameters
     ----------
     net_path : str
@@ -2304,6 +2393,11 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
 
     n_sp = len(species)
     n_params = len(params)
+
+    # GH #90: one deadline for this build's symbolic work, resolved before it.
+    from bngsim._jacobian import _DerivationBudgetExceeded
+
+    deadline = _sens_derivation_deadline(n_sp)
 
     # Build name→index maps
     param_idx = {name: i for i, (_, name, _, _) in enumerate(params)}
@@ -2339,9 +2433,21 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
         # standard deviation) has no bearing here.
         if is_const or name not in rate_const_names:
             continue
-        jac, reason = _derived_param_jacobian_checked(
-            expr, primary_param_names, param_idx, derived_exprs=derived_exprs
-        )
+        try:
+            jac, reason = _derived_param_jacobian_checked(
+                expr,
+                primary_param_names,
+                param_idx,
+                derived_exprs=derived_exprs,
+                deadline=deadline,
+            )
+        except _DerivationBudgetExceeded:
+            # GH #90: decline to CVODES' difference quotient rather than let the
+            # chain-rule derivation run unbounded (see generate_sens_from_model).
+            _warn_functional_sens_rhs_refused(
+                _sens_budget_decline_reason(n_sp, f"deriving the rate constant {name} = {expr!r}")
+            )
+            return None
         if reason is not None:
             # Issue #56: emitting the RHS without this chain rule would report
             # ∂/∂primary as exactly zero. Refuse the analytic RHS instead so the
@@ -5052,7 +5158,9 @@ def _mm_jacobian_groups(plan_mm, add) -> list[list[str]] | None:
     return groups
 
 
-def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] | None:
+def _functional_jacobian_groups(
+    core, data, add, deadline: float | None = None
+) -> tuple[list[list[str]], ...] | None:
     """Reconstruct every Functional reaction's Jacobian contribution as balanced
     ``{ … }`` C line-groups, scattered through the caller's ``add``.
 
@@ -5074,6 +5182,13 @@ def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] 
     rule and the per-observable product rule follow ``set_functional_jacobian`` /
     ``scatter_functional_observable_terms``, with the derivative math from the
     native saturable C emitters (GH #151).
+
+    ``deadline`` (GH #90) bounds the SymPy fallback of that derivative math. This
+    is a *re*-derivation — ``attach_functional_jacobian`` already ran it at load
+    under the #95 budget — but a re-derivation that ignores its own clock, and on
+    a model whose load-time attach was itself cut off there is no earlier bound to
+    inherit. The sensitivity RHS passes its build's deadline; the Jacobian emitter
+    passes ``None`` and is unchanged.
     """
     from collections import Counter
 
@@ -5187,7 +5302,13 @@ def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] 
             continue
         affected = _net_affected(rxn)
         terms = build_per_species_c(
-            rxn["rate_expr"], func_map, obs_groups, species_meta, constants, resolve_symbol
+            rxn["rate_expr"],
+            func_map,
+            obs_groups,
+            species_meta,
+            constants,
+            resolve_symbol,
+            deadline,
         )
         if terms is None:
             return None
@@ -5252,7 +5373,7 @@ def _functional_jacobian_groups(core, data, add) -> tuple[list[list[str]], ...] 
         affected = _net_affected(rxn)
         rxn_idx = int(rxn["rxn_idx"])
         od = differentiate_rate_law_c(
-            rxn["rate_expr"], func_map, ctx_obs_names, constants, resolve_symbol
+            rxn["rate_expr"], func_map, ctx_obs_names, constants, resolve_symbol, deadline
         )
         if od is None:
             return None
@@ -5808,6 +5929,9 @@ class _FunctionalDfdpScope(NamedTuple):
     ``switch_scope`` is GH #68's gate context: non-``None`` only for a model that
     has a condition to gate *and* whose clock/parameter view could be assembled.
     ``None`` keeps the pre-#68 behaviour — every condition declines the model.
+
+    ``deadline`` is GH #90's build-time derivation bound, shared by every rate law
+    of the model (see :func:`_sens_derivation_deadline`); ``None`` is unbounded.
     """
 
     func_map: dict[str, str]
@@ -5817,6 +5941,7 @@ class _FunctionalDfdpScope(NamedTuple):
     primary_param_names: set[str]
     derived_exprs: dict[str, str]
     switch_scope: SwitchConditionScope | None = None
+    deadline: float | None = None
 
 
 def _functional_rate_law_partials(
@@ -5826,8 +5951,12 @@ def _functional_rate_law_partials(
 
     Returns ``([(param_idx, c_expr)], None)`` — possibly empty, which is the
     *success* case for a rate law with no parameter dependence at all — or
-    ``(None, reason)`` naming what blocked it. Never raises, and never returns a
-    partial list: a rate law is either fully differentiated or refused (#56).
+    ``(None, reason)`` naming what blocked it. Never returns a partial list: a
+    rate law is either fully differentiated or refused (#56). The one exception
+    it raises is ``scope.deadline``'s :class:`_DerivationBudgetExceeded` (GH #90),
+    which is deliberately not a ``reason``: a reason is memoized per rate-law text
+    by the caller, and a wall-clock expiry is a property of the build, not of the
+    expression.
 
     The derivative is taken w.r.t. every parameter symbol surviving inlining,
     *including* a derived (ConstantExpression) one, whose own column is that
@@ -5849,6 +5978,12 @@ def _functional_rate_law_partials(
         import sympy as sp
     except ImportError:
         return None, "sympy is not installed"
+
+    # GH #90: bound the whole build, but check on entry as well as per-parameter —
+    # inlining, the construct scan and ``_exprtk_to_sympy`` are themselves
+    # unbounded work on a large enough law, so a check only at the ``sp.diff``
+    # loop would let a single rate law overshoot arbitrarily.
+    _check_derivation_deadline(scope.deadline)
 
     inlined = _inline_functions(rate_expr, scope.func_map)
     if inlined is None:
@@ -5910,6 +6045,7 @@ def _functional_rate_law_partials(
     terms: list[tuple[int, str]] = []
     for a in sorted(free & set(scope.param_of_alias)):
         pname = scope.param_of_alias[a]
+        _check_derivation_deadline(scope.deadline)
         deriv = sp.diff(sym_expr, sp.Symbol(a))
         if deriv == 0:
             continue
@@ -5933,6 +6069,7 @@ def _functional_rate_law_partials(
             scope.primary_param_names,
             scope.param_idx_by_name,
             derived_exprs=scope.derived_exprs,
+            deadline=scope.deadline,
         )
         if why is not None:
             return None, (
@@ -5946,7 +6083,9 @@ def _functional_rate_law_partials(
     return terms, None
 
 
-def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]], str | None]:
+def _functional_dfdp_terms(
+    core, data, deadline: float | None = None
+) -> tuple[dict[int, list[tuple[int, str]]], str | None]:
     """Differentiate every Functional rate law w.r.t. every parameter it reads.
 
     Returns ``({reaction_idx: [(param_idx, c_expr_for_∂func/∂p)]}, None)``, or
@@ -5978,13 +6117,19 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
     nor ``time`` (this is what catches ``rateOf``, whose accessor is an evaluator
     variable and not a model parameter), a derivative sympy cannot render as C,
     and a derived parameter whose own Jacobian was lost.
+
+    ``deadline`` (GH #90) bounds the sympy work: this loop runs one ``sp.diff``
+    per (distinct rate law, parameter it reads) pair, the one axis on this path
+    that grows super-linearly with model size, so an unbudgeted genome-scale
+    Functional model would appear to hang the build rather than decline. Expiry
+    declines like any other reason, naming how far it got.
     """
     params = data["parameters"]
     observables = data["observables"]
     functions = data["functions"]
     reactions = data["reactions"]
 
-    from bngsim._jacobian import has_condition_construct
+    from bngsim._jacobian import _DerivationBudgetExceeded, has_condition_construct
 
     ctx = core.functional_jacobian_context()
     frxn_by_idx = {int(r["rxn_idx"]): r for r in (ctx.get("functional_reactions") or [])}
@@ -6055,6 +6200,7 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
         primary_param_names=primary_param_names,
         derived_exprs=derived_exprs,
         switch_scope=switch_scope,
+        deadline=deadline,
     )
 
     # A rule-generated network reuses one rate-law expression across many
@@ -6095,7 +6241,19 @@ def _functional_dfdp_terms(core, data) -> tuple[dict[int, list[tuple[int, str]]]
         rate_expr = frxn["rate_expr"]
         hit = cache.get(rate_expr)
         if hit is None:
-            hit = _functional_rate_law_partials(rate_expr, scope)
+            try:
+                hit = _functional_rate_law_partials(rate_expr, scope)
+            except _DerivationBudgetExceeded:
+                # GH #90. The deadline is checked on entry to the differentiation
+                # as well as per-parameter, so this doubles as the between-laws
+                # check — and it costs nothing on a cache hit, which is what a
+                # rule-generated network is almost entirely made of.
+                return _decline(
+                    _sens_budget_decline_reason(
+                        len(data["species"]),
+                        f"after {len(cache)} distinct rate law(s), at {label}",
+                    )
+                )
             cache[rate_expr] = hit
         terms, why = hit
         if terms is None:
@@ -6156,6 +6314,12 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     ``(∂p_d/∂primary_k) * sf * ∏y^m`` to the sensitivity of every primary
     parameter that appears in ``expr``, exactly mirroring the .net path's
     ``derived_expansion`` machinery.
+
+    Every symbolic derivation this triggers — the Functional ∂func/∂p and both
+    flavours of derived-parameter chain rule — shares one wall-clock budget
+    (GH #90), so a model whose ``sp.diff`` work does not finish in time declines
+    with a warning and falls back to CVODES' internal difference quotient instead
+    of hanging the build.
     """
     core = model._core if hasattr(model, "_core") else model
     data = core.codegen_data()
@@ -6166,6 +6330,11 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
 
     n_sp = len(species)
     n_params = len(params)
+
+    # GH #90: one deadline for the whole build, resolved before any sympy runs.
+    from bngsim._jacobian import _DerivationBudgetExceeded
+
+    deadline = _sens_derivation_deadline(n_sp)
 
     # Bail if any reaction is non-Elementary — analytical sens RHS is only
     # defined for k * sf * ∏y^m kinetics. Same constraint as
@@ -6193,7 +6362,7 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     functional_terms: dict[int, list[tuple[int, str]]] = {}
     functional_jacv_groups: list[list[str]] = []
     if functional:
-        functional_terms, decline = _functional_dfdp_terms(core, data)
+        functional_terms, decline = _functional_dfdp_terms(core, data, deadline)
         if decline is not None:
             return None
         if functional_terms:
@@ -6203,7 +6372,19 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
             # A decline here is the #151 emitters' ("this derivative is not
             # representable in C"), which the ∂f/∂p pass cannot see: it
             # differentiates w.r.t. parameters, this one w.r.t. species.
-            groups = _functional_jacobian_groups(core, data, _jacv_add)
+            # GH #90: this half runs sympy too (the #151 native emitters cover the
+            # saturable family, everything else falls through to it), so it shares
+            # the build's deadline rather than being the one unbounded derivation
+            # left on the path.
+            try:
+                groups = _functional_jacobian_groups(core, data, _jacv_add, deadline)
+            except _DerivationBudgetExceeded:
+                _warn_functional_sens_rhs_refused(
+                    _sens_budget_decline_reason(
+                        n_sp, "deriving J*yS over the Functional reactions"
+                    )
+                )
+                return None
             if groups is None:
                 _warn_functional_sens_rhs_refused(
                     "a Functional rate law's derivative with respect to the species it "
@@ -6268,9 +6449,26 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         expr = p.get("expression", "")
         if not expr:
             continue
-        jac, reason = _derived_param_jacobian_checked(
-            expr, primary_param_names, param_idx_by_name, derived_exprs=derived_exprs
-        )
+        try:
+            jac, reason = _derived_param_jacobian_checked(
+                expr,
+                primary_param_names,
+                param_idx_by_name,
+                derived_exprs=derived_exprs,
+                deadline=deadline,
+            )
+        except _DerivationBudgetExceeded:
+            # GH #90: same budget as the Functional pass above, and the same
+            # outcome — decline to CVODES' difference quotient rather than let a
+            # model with thousands of derived rate constants hang the build. This
+            # loop is reached by Elementary-only models too, which have no other
+            # sympy on this path.
+            _warn_functional_sens_rhs_refused(
+                _sens_budget_decline_reason(
+                    n_sp, f"deriving the rate constant {p['name']} = {expr!r}"
+                )
+            )
+            return None
         if reason is not None:
             # Issue #56 — see generate_sens_rhs_c: a dropped chain rule here
             # reads downstream as a hard zero, so refuse the analytic RHS and
@@ -7347,7 +7545,7 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # in place — so every flag is part of the key, and an entry for one combination
 # must never satisfy another.
 _PREPARE_CODEGEN_MEMO: dict[
-    tuple[str, bool, bool, bool, bool], tuple[Path, tuple[tuple[str, int], ...], str]
+    tuple[str, bool, bool, bool, bool, str], tuple[Path, tuple[tuple[str, int], ...], str]
 ] = {}
 _PREPARE_CODEGEN_MEMO_LOCK = threading.Lock()
 
@@ -7455,13 +7653,17 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         want_jac, want_outputs, want_output_sens = _codegen_emit_flags(model, emit_jac)
         # The GH #67 hatch is process-scoped, not file-scoped, so it belongs in the
         # in-process memo key as well as the on-disk one below — a test that flips
-        # it mid-process must not be handed the other variant's .so.
+        # it mid-process must not be handed the other variant's .so. GH #90's
+        # derivation-budget override is process-scoped in exactly the same way and
+        # decides exactly the same thing (whether the analytic sens RHS is emitted),
+        # so it rides along in both keys.
         memo_key = (
             net_key,
             want_jac,
             want_outputs,
             want_output_sens,
             functional_sens_rhs_enabled(),
+            _sens_budget_cache_tag(),
         )
 
         # Fast path (T2): an unchanged .net (and its .tfun deps) resolves to the
@@ -7500,6 +7702,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # so the default key — and every .so already in the cache — is unchanged.
         if not functional_sens_rhs_enabled():
             suffix += ":no_functional_sens"
+        suffix += _sens_budget_cache_tag()
         if suffix:
             model_hash = hashlib.sha256((model_hash + suffix).encode()).hexdigest()[:16]
 

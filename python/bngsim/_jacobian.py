@@ -1096,14 +1096,19 @@ def _native_per_species_terms(rate_expr, func_map, obs_groups, species_amount, c
 
 
 def build_per_species_c(
-    rate_expr, func_map, obs_groups, species_amount, constant_names, resolve_symbol
+    rate_expr, func_map, obs_groups, species_amount, constant_names, resolve_symbol, deadline=None
 ) -> list[tuple[int, str]] | None:
     """Codegen per-species path: ``[(species_idx0, c_str)]`` or ``None``.
 
     Tries the native saturable family first (no SymPy), then the SymPy path
     (:func:`build_per_species_sympy` + :func:`sympy_to_c`). ``[]`` is a *success*
     (constant-rate ⇒ zero column). A native success whose C emission fails (an
-    unresolvable symbol) falls through to SymPy rather than declining outright."""
+    unresolvable symbol) falls through to SymPy rather than declining outright.
+
+    ``deadline`` (GH #90) is forwarded to the SymPy fallback only — the native
+    path runs no SymPy and needs no bound. Passed by the sensitivity RHS, whose
+    ``J·yS`` half re-derives this on its own build; ``None`` (the Jacobian
+    emitter's call) is the unbudgeted behaviour."""
     from bngsim import _saturable_jacobian as _sat
 
     native = _sat.build_per_species_native(
@@ -1122,7 +1127,7 @@ def build_per_species_c(
             return out
 
     terms = build_per_species_sympy(
-        rate_expr, func_map, obs_groups, species_amount, constant_names
+        rate_expr, func_map, obs_groups, species_amount, constant_names, deadline
     )
     if terms is None:
         return None
@@ -1136,10 +1141,13 @@ def build_per_species_c(
 
 
 def differentiate_rate_law_c(
-    rate_expr, func_map, observable_names, constant_names, resolve_symbol
+    rate_expr, func_map, observable_names, constant_names, resolve_symbol, deadline=None
 ) -> list[tuple[str, str]] | None:
     """Codegen per-observable path: ordered ``[(observable_name, c_str)]`` or
-    ``None``. Native saturable family first (no SymPy), then SymPy."""
+    ``None``. Native saturable family first (no SymPy), then SymPy.
+
+    ``deadline`` (GH #90) is forwarded to the SymPy fallback only; see
+    :func:`build_per_species_c`."""
     from bngsim import _saturable_jacobian as _sat
 
     nd = _sat.differentiate_rate_law_native(rate_expr, func_map, observable_names, constant_names)
@@ -1155,7 +1163,7 @@ def differentiate_rate_law_c(
         if emitted:
             return out
 
-    dd = differentiate_rate_law(rate_expr, func_map, observable_names, constant_names)
+    dd = differentiate_rate_law(rate_expr, func_map, observable_names, constant_names, deadline)
     if dd is None:
         return None
     out2: list[tuple[str, str]] = []
@@ -1264,10 +1272,58 @@ _FD_NONVIABLE_SPECIES = 20000
 _FD_COSTLY_SPECIES = 2000
 
 
+# GH #90: the sensitivity ∂f/∂p derivation (``_codegen._functional_dfdp_terms``
+# and the derived-parameter chain rules on the same build) gets its own budget,
+# resolved by _sens_derivation_budget_s below. Same base, same slope, same
+# override grammar as the Jacobian's — deliberately, so the two policies cannot
+# drift — but its own env var, and one substantive difference: it never goes
+# unbounded by size.
+#
+# The difference is about the FALLBACK, not the derivation. _FD_NONVIABLE_SPECIES
+# exists because past that size there is nothing to fall back TO: an FD Jacobian
+# needs ~n_species RHS evals per Newton setup and simply does not converge, so
+# cutting the derivation off breaks the solve outright and the analytical Jacobian
+# is mandatory. The sensitivity path has no such cliff — declining hands the
+# columns to CVODES' internal difference quotient, which is what every Functional
+# model used before #55 and is correct at every scale (measured 9-37x more
+# expensive per column, not divergent). So the sensitivity budget stays finite
+# everywhere: a build that would otherwise appear to HANG instead declines, says
+# so, and solves. Anyone who would rather wait sets BNGSIM_SENS_DERIV_BUDGET_S.
+_JAC_BUDGET_ENV = "BNGSIM_JAC_DERIV_BUDGET_S"
+_SENS_BUDGET_ENV = "BNGSIM_SENS_DERIV_BUDGET_S"
+
+
 class _DerivationBudgetExceeded(Exception):
     """Internal signal: the build-time symbolic derivation passed its wall-clock
     budget. Caught by :func:`attach_functional_jacobian`, which logs the fallback
-    and leaves the model on the finite-difference Jacobian (GH #95)."""
+    and leaves the model on the finite-difference Jacobian (GH #95), and by
+    ``_codegen.generate_sens_from_model`` / ``generate_sens_rhs_c``, which decline
+    the analytic sensitivity RHS and leave the model on CVODES' internal
+    difference quotient (GH #90)."""
+
+
+def _budget_env_override(env_var: str, default: float | None) -> float | None:
+    """Apply an explicit ``env_var`` budget over a size-derived ``default``.
+
+    The override grammar, shared by every derivation budget: an absolute number of
+    seconds, or ``inf``/``none``/``off``/``0`` for unbounded (the pre-#95 and
+    documented genome-scale workaround). A non-positive or non-finite value also
+    disables the budget; a value that does not parse falls through to ``default``,
+    so a typo degrades to the policy rather than to no budget at all.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return default
+    raw = raw.strip().lower()
+    if raw in ("inf", "none", "off", "0"):
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        return default
+    if val <= 0 or val != val or val == float("inf"):
+        return None
+    return val
 
 
 def _derivation_budget_s(n_species: int = 0) -> float | None:
@@ -1288,19 +1344,27 @@ def _derivation_budget_s(n_species: int = 0) -> float | None:
     else:
         default = max(_DEFAULT_DERIVATION_BUDGET_S, _BUDGET_PER_SPECIES_S * n_species)
 
-    raw = os.environ.get("BNGSIM_JAC_DERIV_BUDGET_S")
-    if raw is None:
-        return default
-    raw = raw.strip().lower()
-    if raw in ("inf", "none", "off", "0"):
-        return None
-    try:
-        val = float(raw)
-    except ValueError:
-        return default
-    if val <= 0 or val != val or val == float("inf"):
-        return None
-    return val
+    return _budget_env_override(_JAC_BUDGET_ENV, default)
+
+
+def _sens_derivation_budget_s(n_species: int = 0) -> float | None:
+    """Resolve the build-time budget for the *sensitivity* ∂f/∂p derivation in
+    seconds, or ``None`` for unbounded (GH #90).
+
+    The sensitivity counterpart of the Jacobian's :func:`_derivation_budget_s`,
+    sharing its base, its per-species slope and its override grammar — but read
+    from ``BNGSIM_SENS_DERIV_BUDGET_S``, and **never unbounded by species count**.
+    See the block comment above ``_SENS_BUDGET_ENV`` for why
+    ``_FD_NONVIABLE_SPECIES`` has no counterpart here: the sensitivity fallback
+    (CVODES' internal difference quotient) stays viable at every model size, so
+    there is never a reason to let this derivation run without a bound.
+
+    The two budgets are independent: setting ``BNGSIM_JAC_DERIV_BUDGET_S=inf`` to
+    keep a genome-scale model's analytical Jacobian does not also uncap this one,
+    because they buy different things and fall back to different paths.
+    """
+    default = max(_DEFAULT_DERIVATION_BUDGET_S, _BUDGET_PER_SPECIES_S * n_species)
+    return _budget_env_override(_SENS_BUDGET_ENV, default)
 
 
 def eager_jacobian_requested(defer_jacobian: bool | None = None) -> bool:
