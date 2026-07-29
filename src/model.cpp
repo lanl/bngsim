@@ -420,7 +420,8 @@ const std::vector<Function> &NetworkModel::functions() const { return impl_->fun
 const std::vector<Event> &NetworkModel::events() const { return impl_->events; }
 
 std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
-    const std::vector<std::string> &sens_param_names) const {
+    const std::vector<std::string> &sens_param_names,
+    const std::vector<int> &event_time_compensated) const {
     const auto &events = impl_->events;
     if (events.empty()) {
         return std::nullopt;
@@ -480,18 +481,47 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         state_addrs.insert(&deriv);
     }
 
-    for (const Event &ev : events) {
-        const std::string id = ev.id.empty() ? std::string("<unnamed>") : ev.id;
-        if (!ev.persistent) {
-            return "event '" + id +
-                   "' is non-persistent; forward sensitivity through non-persistent "
-                   "triggers is not yet supported (GH #212 Phase 3).";
+    // Issue #49 sub-finding: 25 of the 88 corpus events refused for a moving
+    // crossing time ALSO tripped the delay / persistence checks — and in every
+    // one of those cases the delay was a literal 0. A zero delay is not a
+    // delay: process_firing_batch takes the immediate path for `delay_now <=
+    // 0`, so nothing is queued and there is no trigger-time-to-execution-time
+    // window at all. Normalize it here rather than in the builder, so the
+    // runtime's own delay handling is untouched. A delay *expression* counts as
+    // vacuous only when it reads no model variable (so it cannot become
+    // non-zero later in the run) and evaluates to 0 now.
+    auto has_effective_delay = [&](const Event &ev) {
+        if (ev.delay_expr_idx >= 0) {
+            if (!eval.referenced_variable_addresses(ev.delay_expr_idx).empty()) {
+                return true;
+            }
+            // evaluate() is non-const on the evaluator but has no observable
+            // effect for a variable-free expression; the model is logically
+            // unchanged.
+            ExpressionEvaluator &mut = const_cast<ExpressionEvaluator &>(eval);
+            return mut.evaluate(ev.delay_expr_idx) != 0.0;
         }
-        if (ev.delay != 0.0 || ev.delay_expr_idx >= 0) {
+        return ev.delay != 0.0;
+    };
+
+    const std::unordered_set<int> compensated(event_time_compensated.begin(),
+                                              event_time_compensated.end());
+
+    for (std::size_t ei = 0; ei < events.size(); ++ei) {
+        const Event &ev = events[ei];
+        const std::string id = ev.id.empty() ? std::string("<unnamed>") : ev.id;
+        const bool delayed = has_effective_delay(ev);
+        if (delayed) {
             return "event '" + id +
                    "' has an execution delay; forward sensitivity through delayed events "
                    "is not yet supported (GH #212 Phase 3).";
         }
+        // No persistence check follows: `persistent` governs whether a fire
+        // queued at trigger time is cancelled when the trigger reverts before
+        // execution time (SBML L3v2 §4.11.3). With no effective delay — the
+        // only case that reaches here — trigger time IS execution time, so the
+        // flag has no window to act in and refusing on it refused nothing real.
+        // Ghanbari2020 and Zongo2020 were blocked by exactly this.
         const std::vector<const double *> refs =
             eval.referenced_variable_addresses(ev.trigger_expr_idx);
         for (const double *addr : refs) {
@@ -504,6 +534,12 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
                        "Only fixed-time triggers are supported for forward sensitivity so far "
                        "(GH #212 Phase 2).";
             }
+        }
+        if (compensated.count(static_cast<int>(ei)) != 0) {
+            // Issue #49: the Python detector resolved this trigger's threshold
+            // to the model's primary parameters and supplies ∂t*/∂p, so the
+            // crossing-time term is carried by the jump rather than dropped.
+            continue;
         }
         for (const double *addr : refs) {
             if (sens_param_addrs.count(addr) != 0) {
@@ -518,8 +554,10 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
                        "' has a trigger whose crossing time depends on the requested "
                        "sensitivity parameter '" +
                        pname +
-                       "' (the event-time sensitivity dt*/dp is non-zero); event-time "
-                       "sensitivity is not yet supported (GH #212 Phase 2). Drop '" +
+                       "' (the event-time sensitivity dt*/dp is non-zero), and bngsim "
+                       "could not resolve the trigger to a threshold on simulation time "
+                       "or on a unit-rate counter, so it has no dt*/dp to jump by "
+                       "(issue #49). Drop '" +
                        pname +
                        "' from the requested sensitivity parameters, or treat the trigger "
                        "time as fixed.";

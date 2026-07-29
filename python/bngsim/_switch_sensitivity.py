@@ -143,8 +143,8 @@ def _split_logical_atoms(cond: str) -> list[str]:
     return atoms
 
 
-def _relational_split(atom: str) -> tuple[str, str] | None:
-    """Split a relational atom into ``(lhs, rhs)`` at its depth-0 comparison.
+def _relational_split_op(atom: str) -> tuple[str, str, str] | None:
+    """Split a relational atom into ``(lhs, operator, rhs)``.
 
     Returns ``None`` when the atom carries no comparison (a bare boolean flag,
     say) — such a condition has no time threshold to stop at.
@@ -160,9 +160,22 @@ def _relational_split(atom: str) -> tuple[str, str] | None:
         elif depth == 0:
             m = _RELATIONAL.match(atom, i)
             if m is not None:
-                return atom[:i].strip(), atom[m.end() :].strip()
+                return atom[:i].strip(), m.group(0), atom[m.end() :].strip()
         i += 1
     return None
+
+
+def _relational_split(atom: str) -> tuple[str, str] | None:
+    """``(lhs, rhs)`` of a relational atom, discarding the operator.
+
+    The issue #48 callers care only about *where* the threshold is: the core
+    reads f⁻/f⁺ by evaluating the real RHS on each side of the crossing rather
+    than by interpreting the comparison. The issue #49 event detector does need
+    the operator (a trigger's rising edge is at its lower bound), and calls
+    :func:`_relational_split_op` directly.
+    """
+    split = _relational_split_op(atom)
+    return None if split is None else (split[0], split[2])
 
 
 def _condition_spans(expr: str) -> list[tuple[int, int]]:
@@ -343,6 +356,51 @@ def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[
     return clock_sym, threshold_expr
 
 
+# Which side of its threshold a clock has to be on for a relational atom to be
+# true: "lower" ⇒ true for large clock values (`t >= T0`, `T0 <= t`), so the
+# atom's own crossing is a false→true edge; "upper" ⇒ true for small ones
+# (`t <= toff`), so it bounds the interval from above and its crossing is a
+# true→false edge.
+_LOWER_OPS = frozenset({">", ">="})
+_UPPER_OPS = frozenset({"<", "<="})
+
+
+def _clock_threshold_split_oriented(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, str, str] | None:
+    """:func:`_clock_threshold_split` plus which side of the threshold is true.
+
+    Returns ``(clock_symbol, threshold_expr, "lower" | "upper")``, or ``None``
+    when the atom is not a clock-versus-threshold comparison *or* its operator
+    does not cut the time axis into a half-line. ``==`` / ``!=`` are rejected on
+    the second ground: an equality on a continuous clock is true on a measure-
+    zero set that the root finder cannot reliably straddle, so there is no
+    well-defined rising edge to differentiate.
+
+    Used only by the issue #49 event-time detector. The issue #48 rate-law path
+    keeps calling :func:`_clock_threshold_split`, which is deliberately
+    orientation-blind: an ``if()`` branch flips at the threshold whichever way
+    the comparison points, and the core reads f⁻/f⁺ by evaluating the RHS on
+    each side.
+    """
+    split = _clock_threshold_split(atom, clock_symbols)
+    if split is None:
+        return None
+    op_split = _relational_split_op(atom)
+    if op_split is None:  # pragma: no cover - _clock_threshold_split implies one
+        return None
+    _lhs, op, _rhs = op_split
+    clock_sym, threshold_expr = split
+    clock_on_left = _strip_redundant_parens(op_split[0]) == clock_sym
+    if op in _LOWER_OPS:
+        kind = "lower" if clock_on_left else "upper"
+    elif op in _UPPER_OPS:
+        kind = "upper" if clock_on_left else "lower"
+    else:
+        return None
+    return clock_sym, threshold_expr, kind
+
+
 class SwitchConditionScope(NamedTuple):
     """Everything :func:`uncompensated_condition_reason` needs about a model.
 
@@ -398,6 +456,10 @@ _IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*")
 # A bare `!` that is not part of `!=`; the rest of the operator surface is
 # covered by _RELATIONAL / _LOGICAL.
 _NOT_OP = re.compile(r"(?<![=!<>])!(?!=)")
+
+# `not` as a call — what the SBML loader emits for <not/> (_ast_to_exprtk),
+# and the only negation spelling ExprTk actually compiles.
+_NOT_CALL = re.compile(r"(?<![A-Za-z0-9_])not\s*\(")
 
 
 def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> str | None:
@@ -701,6 +763,328 @@ def compute_switch_time_sens(
 
     pinned = sorted(param_idx[p] for p in switch_params if p in param_idx)
     return records, pinned
+
+
+class ThresholdScope(NamedTuple):
+    """How an event trigger's threshold is allowed to be written (issue #49).
+
+    ``exprs`` is the inlining map: every name in it stands for the expression it
+    maps to, flattened recursively by :func:`_inline_derived_param_refs`.
+    ``primaries`` is what may survive that flattening — an identifier outside it
+    means the threshold is not a constant over the model's fitted parameters and
+    the trigger must be refused, not guessed at.
+    """
+
+    exprs: dict[str, str]
+    primaries: frozenset[str]
+
+
+def _threshold_scope(scope: SwitchConditionScope, ctx) -> ThresholdScope:
+    """Widen the derived-parameter map with *rule-bound* parameters.
+
+    An SBML ``<assignmentRule>`` on a parameter arrives as a model **function**
+    whose name matches a parameter's; the engine copies the function's value
+    into the parameter before each RHS evaluation (the ``var_param_binding``
+    idiom). Such a parameter is NOT a constant, even though
+    ``param_is_expression`` is false for it and reading its current value looks
+    like reading a literal.
+
+    That distinction is load-bearing. BIOMD0000000301 writes its pulse schedule
+    as ``pulse2_start = pulse1_start + pulse1_length + pulse_interval``, so an
+    event triggered on ``time >= pulse2_start`` moves when ``pulse1_start``
+    does. Treating ``pulse2_start`` as a primary put the entire ∂t*/∂p on the
+    wrong column and left ``pulse1_start``'s at zero — a confidently wrong
+    gradient, which is the failure mode this module exists to avoid.
+
+    A rule-bound parameter joins the inlining map only when its body reduces to
+    arithmetic over parameters (iterated to a fixed point, so a rule written
+    over another rule — ``pulse3_start`` over ``pulse2_start`` — is admitted on
+    a later pass). One that reads a species, an observable, ``time``, or any
+    function call is left out, and a threshold naming it is then refused by the
+    leftover-identifier check in :func:`_analyze_event_trigger` rather than
+    silently evaluated at its current value.
+    """
+    exprs = dict(scope.derived_exprs)
+    rule_bound = {
+        name: body
+        for name, body in dict(ctx["function_map"]).items()
+        if name in scope.param_idx and body
+    }
+    # `f(` anywhere means a call — a rule over floor()/if() is not arithmetic
+    # over parameters, and its derivative is not a constant.
+    call = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z_]\w*\s*\(")
+    resolvable: dict[str, str] = {}
+    for _ in range(len(rule_bound) + 1):
+        grew = False
+        for name, body in rule_bound.items():
+            if name in resolvable or call.search(body):
+                continue
+            idents = {m.group(0) for m in _IDENTIFIER.finditer(body)}
+            unknown = idents - set(exprs) - set(resolvable)
+            # A name that is a *parameter* is fine only when it is not itself an
+            # unresolved rule: otherwise the flattening would stop on it.
+            if unknown - (set(scope.param_idx) - set(rule_bound)):
+                continue
+            resolvable[name] = body
+            grew = True
+        if not grew:
+            break
+    exprs.update(resolvable)
+    return ThresholdScope(
+        exprs=exprs,
+        # `rule_bound` is subtracted whole, not just the resolvable part: a
+        # rule-bound parameter has ``param_is_expression`` false, so it is in
+        # ``primary_names`` and would otherwise pass the leftover check as a
+        # fitted constant — which is the silent-zero this scope exists to stop.
+        primaries=frozenset(scope.primary_names) - set(exprs) - set(rule_bound),
+    )
+
+
+class EventTimeSensResult(NamedTuple):
+    """What :func:`compute_event_time_sens` found about a model's events."""
+
+    # ``(event_idx0, [∂t*/∂p per requested column])`` for every event whose
+    # crossing lands in the reported window and moves with a requested
+    # parameter. Feeds ``SolverOptions.set_event_time_sens``.
+    records: list[tuple[int, list[float]]]
+    # 0-based indices of events whose trigger reduces entirely to clock
+    # thresholds, so ∂t*/∂p is known (possibly exactly 0) and the core's
+    # parameter-dependent-trigger refusal can be lifted for them.
+    compensated: list[int]
+    # event_idx0 → why the trigger could not be reduced, for the events that
+    # are NOT compensated. Only populated for triggers that carry a symbol at
+    # all, so an ordinary literal-time event contributes nothing.
+    reasons: dict[int, str]
+    # The subset of ``reasons`` whose event must be REFUSED rather than merely
+    # left uncompensated: the trigger transitively reads a requested
+    # sensitivity parameter, so ∂t*/∂p is non-zero and unavailable. The core's
+    # own check tests the trigger's *bound addresses*, which cannot see through
+    # an assignment-rule parameter (``t_rule = t_first + …`` binds the trigger
+    # to ``t_rule``'s address, never to ``t_first``'s) — so this closes the same
+    # hole for the wider notion of "threshold" issue #49 introduced.
+    blocked: dict[int, str]
+
+
+def compute_event_time_sens(
+    core,
+    sens_param_names,
+    t_start: float,
+    t_end: float,
+) -> EventTimeSensResult:
+    """Event-time sensitivities ``∂t*/∂p`` for time-triggered events (issue #49).
+
+    A switch time encoded as an SBML **event** — ``time >= T0`` firing
+    ``on := 1``, with the rate laws reading ``on`` — is the same modelling
+    intent as the ``piecewise(kin, time >= T0, 0)`` that issue #48 covers, and
+    has the same gradient. What differs is that the state jumps as well as the
+    time moving, so the forward-sensitivity jump carries all four terms::
+
+        s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
+
+    ``∂h/∂x`` and ``∂h/∂p`` are already differenced by the core at each fire
+    (GH #212); this function supplies the missing ``∂t*/∂p``.
+
+    A trigger qualifies when it is a conjunction of **clock thresholds** — the
+    same recognizer :func:`_clock_threshold_split` applies to ``if()``
+    conditions, so the event path and the rate-law path cannot drift about what
+    a locatable crossing is. The rising edge of a conjunction of half-lines is
+    the largest of its lower bounds, and it is that atom's threshold whose
+    derivative moves the fire, so ``∂t*/∂p = ∂(that threshold)/∂p``.
+
+    Everything else is left uncompensated (and refused upstream by
+    :func:`NetworkModel::event_sensitivity_unsupported_reason` when it actually
+    reads a requested parameter): a state-dependent trigger, whose crossing
+    moves through the trajectory; a disjunction, whose rising edge is the
+    minimum over branches and can hand off between them as a parameter moves; a
+    negation, which turns a rising edge into a falling one; an equality on a
+    continuous clock; and a tie between two lower bounds, where ``t*(p)`` has a
+    kink rather than a derivative.
+    """
+    names = list(sens_param_names)
+    n_events = core.n_events
+    if n_events == 0:
+        return EventTimeSensResult([], [], {}, {})
+
+    triggers = list(core.event_trigger_sources())
+    ctx = core.functional_jacobian_context()
+    scope = switch_condition_scope(core, ctx)
+    clocks = scope.clocks
+    clock_symbols = set(scope.clock_symbols)
+    thresholds = _threshold_scope(scope, ctx)
+    col_of = {name: c for c, name in enumerate(names)}
+    # Every body a trigger symbol can stand for, resolvable or not — used only
+    # to decide whether an UNREDUCED trigger still depends on a requested
+    # parameter. Kept separate from `thresholds.exprs`, which admits only the
+    # bodies that reduce to arithmetic over primaries.
+    all_bodies = dict(scope.derived_exprs)
+    all_bodies.update({n: b for n, b in dict(ctx["function_map"]).items() if b})
+    requested = set(names)
+
+    records: list[tuple[int, list[float]]] = []
+    compensated: list[int] = []
+    reasons: dict[int, str] = {}
+    blocked: dict[int, str] = {}
+
+    for ei in range(min(n_events, len(triggers))):
+        trigger = triggers[ei] or ""
+        analysis = _analyze_event_trigger(
+            core, trigger, scope, thresholds, clocks, clock_symbols, t_start
+        )
+        if isinstance(analysis, str):
+            # Only worth reporting when the trigger names something; a literal
+            # comparison the recognizer declined carries no gradient anyway.
+            if _IDENTIFIER.search(trigger):
+                reasons[ei] = analysis
+                flat = _inline_derived_param_refs(trigger, all_bodies) or trigger
+                moved_by = sorted(requested & {m.group(0) for m in _IDENTIFIER.finditer(flat)})
+                if moved_by:
+                    blocked[ei] = (
+                        "the crossing time of event "
+                        + repr(core.event_trigger_sources()[ei])
+                        + " moves with "
+                        + ", ".join(repr(n) for n in moved_by)
+                        + ", but "
+                        + analysis
+                    )
+            continue
+        compensated.append(ei)
+        if analysis is None:
+            continue  # no rising edge at all (or none inside the window)
+        t_star, partials = analysis
+        if not (t_start < t_star <= t_end):
+            # The event either already fired at (or before) t_start — where its
+            # firing time is pinned to the run's own start and does not move —
+            # or never fires in this run. Either way there is no jump to make,
+            # and ∂t*/∂p is correctly absent rather than merely unknown.
+            continue
+        dtstar = [0.0] * len(names)
+        moved = False
+        for prim_name, coeff in partials.items():
+            col = col_of.get(prim_name)
+            if col is not None and coeff != 0.0:
+                dtstar[col] += float(coeff)
+                moved = True
+        if moved:
+            records.append((ei, dtstar))
+
+    return EventTimeSensResult(records, compensated, reasons, blocked)
+
+
+def _analyze_event_trigger(
+    core,
+    trigger: str,
+    scope: SwitchConditionScope,
+    thresholds: ThresholdScope,
+    clocks: dict[str, int],
+    clock_symbols: set[str],
+    t_start: float,
+):
+    """Reduce an event trigger to its rising edge.
+
+    Returns ``(t_star, {primary: ∂threshold/∂primary})`` when the trigger is a
+    conjunction of clock thresholds with a well-defined false→true edge,
+    ``None`` when it is such a conjunction but has no rising edge (no lower
+    bound, or an empty true-interval), or a reason string when it cannot be
+    reduced at all.
+    """
+    expr = trigger.strip()
+    if not expr:
+        return "the event has no trigger expression"
+    # Only conjunction is reducible: the true-set of an `&&` of half-lines is an
+    # interval, whose left endpoint is one atom's threshold. `||` unions
+    # intervals (the rising edge is the earliest crossing and can hand off from
+    # one branch to another as a parameter moves), and nand/nor/xor negate.
+    for m in _LOGICAL.finditer(expr):
+        if m.group(0) not in ("&&", "and"):
+            return (
+                f"the trigger {trigger!r} joins its comparisons with {m.group(0)!r}; only a "
+                "conjunction has a rising edge that is one threshold's crossing, so ∂t*/∂p "
+                "is not a single threshold's derivative here"
+            )
+    # Both spellings: ExprTk's `!` and the `not(...)` call form the SBML loader
+    # emits for <not/> (_ast_to_exprtk). Negation turns the false→true edge this
+    # jump is derived for into a true→false one.
+    if _NOT_OP.search(expr) or _NOT_CALL.search(expr):
+        return (
+            f"the trigger {trigger!r} is negated; negation turns the false→true edge this "
+            "jump is derived for into a true→false one"
+        )
+
+    lower: list[tuple[float, dict[str, float]]] = []  # (t_star, partials)
+    upper: list[float] = []
+    for atom in _split_logical_atoms(expr):
+        split = _clock_threshold_split_oriented(atom, clock_symbols)
+        if split is None:
+            if not _IDENTIFIER.search(_inline_derived_param_refs(atom, thresholds.exprs) or atom):
+                continue  # a literal comparison: constant, never crosses
+            return (
+                f"the atom {atom!r} in the trigger {trigger!r} is not a comparison of "
+                "simulation time (or a unit-rate counter) against a threshold, so its "
+                "crossing time is not a threshold bngsim can differentiate"
+            )
+        clock_sym, threshold_expr, kind = split
+        # Everything that survives the flattening must be a primary parameter.
+        # An identifier that does not — an assignment-rule parameter whose rule
+        # is not arithmetic over parameters, a `floor()`/`ceil()` dose-schedule
+        # counter, a species name — means the threshold is not a constant, and
+        # reading its current value would hand back a plausible number attached
+        # to the wrong parameter (see :func:`_threshold_scope`).
+        thr_flat = _inline_derived_param_refs(threshold_expr, thresholds.exprs) or threshold_expr
+        leftover = sorted(
+            {m.group(0) for m in _IDENTIFIER.finditer(thr_flat)} - thresholds.primaries
+        )
+        if leftover:
+            return (
+                f"the threshold {threshold_expr!r} in the trigger {trigger!r} does not reduce "
+                "to arithmetic over the model's primary parameters — "
+                + ", ".join(repr(n) for n in leftover)
+                + " is not one, so the threshold is not a constant and ∂t*/∂p cannot be "
+                "attributed to a fitted parameter"
+            )
+        value = _evaluate_threshold(
+            threshold_expr, scope.param_idx, scope.values, thresholds.exprs
+        )
+        if value is None:
+            return (
+                f"the threshold {threshold_expr!r} in the trigger {trigger!r} does not "
+                "reduce to a constant expression over the model's primary parameters"
+            )
+        if clock_sym in _TIME_SYMBOLS:
+            t_atom = value
+        else:
+            # dc/dt = 1, so c(t) = c(t_start) + (t − t_start) and the crossing is
+            # offset by the clock's value at the start of the run.
+            clock_idx0 = clocks[clock_sym]
+            clock_now = core.get_concentration(core.species_names[clock_idx0])
+            t_atom = t_start + (value - clock_now)
+        if kind == "upper":
+            upper.append(t_atom)
+            continue
+        partials = _derived_expr_partials_numeric(
+            threshold_expr,
+            set(thresholds.primaries),
+            scope.param_idx,
+            list(scope.values),
+            thresholds.exprs,
+            warn_on_failure=False,
+        )
+        lower.append((t_atom, partials))
+
+    if not lower:
+        # `time <= toff` alone: true from t_start, so the event fires at the
+        # run's start (or not at all) and its firing time does not move.
+        return None
+    t_star = max(t for t, _ in lower)
+    winners = [p for t, p in lower if t == t_star]
+    if len(winners) > 1 and any(w != winners[0] for w in winners[1:]):
+        return (
+            f"two atoms of the trigger {trigger!r} put the rising edge at the same time "
+            f"t={t_star:.6g} with different derivatives, so t*(p) has a kink there rather "
+            "than a derivative"
+        )
+    if upper and t_star > min(upper):
+        return None  # the true-interval is empty; the event never fires
+    return t_star, winners[0]
 
 
 def _evaluate_threshold(

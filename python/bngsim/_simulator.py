@@ -991,16 +991,86 @@ class Simulator:
         if self._model._core.n_events <= 0:
             return
         names = list(param_names) if param_names is not None else list(self._sensitivity_params)
-        reason = self._model._core.event_sensitivity_unsupported_reason(names)
+        compensated, detail, blocked = self._event_time_compensation(names)
+        reason = self._model._core.event_sensitivity_unsupported_reason(names, compensated)
+        if reason is None and blocked:
+            # The core tests the trigger's *bound addresses*, which cannot see
+            # through an assignment-rule parameter: in `time >= t_rule` with
+            # `t_rule = t_first + …`, the trigger binds to `t_rule`'s address and
+            # never to `t_first`'s, so a requested `t_first` looks absent. The
+            # detector inlines the rule and knows better (issue #49).
+            reason = sorted(blocked.values())[0] + "."
+            detail = ""
         if reason:
             raise ValueError(
                 "Output sensitivities are not supported for this model's events: "
                 + reason
+                + detail
                 + " bngsim refuses rather than return silently-stale derivatives "
-                "(GH #205). Forward sensitivity through fixed-time / persistent / "
-                "no-delay events is supported (GH #212 Phase 1); the remaining "
-                "subclasses are tracked there."
+                "(GH #205). Forward sensitivity through fixed-time events is supported "
+                "(GH #212 Phase 1) and through events whose trigger thresholds a fitted "
+                "constant (issue #49); the remaining subclasses are tracked there."
             )
+
+    def _event_time_compensation(self, names: list[str]) -> tuple[list[int], str, dict]:
+        """Which events carry a known ``∂t*/∂p``, and why the others do not.
+
+        Compensation is a property of the trigger alone, not of the run window —
+        :func:`compute_event_time_sens` decides it before it looks at ``t_star``
+        — so this is safe to ask before ``t_span`` is resolved. Detection
+        failure degrades to "nothing compensated", i.e. the pre-#49 refusal.
+        """
+        from bngsim._switch_sensitivity import compute_event_time_sens
+
+        try:
+            res = compute_event_time_sens(self._model._core, names, float("-inf"), float("inf"))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("Event-time sensitivity detection failed (%s); refusing as before", e)
+            return [], "", {}
+        detail = ""
+        if res.reasons:
+            detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
+        return list(res.compensated), detail, dict(res.blocked)
+
+    def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
+        """Inject each event's ``∂t*/∂p`` (issue #49).
+
+        An event whose trigger thresholds a fitted constant — ``time >= T0``
+        with ``T0`` requested — fires at a time that moves with the parameter,
+        so its forward-sensitivity jump carries two terms the GH #212 state jump
+        does not: ``s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p``. This is
+        the plumbing that hands the detector's result to the solver; a no-op
+        unless some trigger threshold actually moves with a requested parameter,
+        which leaves every fixed-time event model byte-identical.
+
+        Unlike the issue #48 switch path this needs no ``CVodeSetStopTime`` and
+        no parameter pinning: an event trigger is not part of ``f``, so ``f`` is
+        smooth right up to the root (CVODE's root finder already stops exactly
+        at ``t*``) and ``∂f/∂T0`` is genuinely zero without help.
+        """
+        names = list(param_names) if param_names is not None else list(self._sensitivity_params)
+        if not names or core.n_events <= 0:
+            return
+        from bngsim._switch_sensitivity import compute_event_time_sens
+
+        try:
+            res = compute_event_time_sens(core, names, float(t_start), float(t_end))
+        except Exception as e:  # pragma: no cover - defensive
+            # The guard above already refused anything whose ∂t*/∂p is needed
+            # but unavailable, so reaching here means detection worked once and
+            # failed now. Warn rather than silently zero the event-time column.
+            logger.warning(
+                "Event-time sensitivity detection failed (%s); any event-time "
+                "parameter's gradient will be zero (issue #49).",
+                e,
+            )
+            return
+        if res.records:
+            logger.info(
+                "Event-time forward sensitivity: %d event(s) with a moving crossing (issue #49)",
+                len(res.records),
+            )
+            opts.set_event_time_sens(res.records)
 
     def _apply_ic_param_sens_seed(self, opts, core) -> None:
         """Inject ∂x_i(0)/∂p initial-condition sensitivity seeds (issue #43).
@@ -1942,6 +2012,7 @@ class Simulator:
                     opts.set_sensitivity_params(self._sensitivity_params)
                     self._apply_ic_param_sens_seed(opts, self._model._core)
                     self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
+                    self._apply_event_time_sens(opts, self._model._core, t_start, t_end)
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -2710,6 +2781,7 @@ class Simulator:
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone.
                     self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
+                    self._apply_event_time_sens(opts, clone._core, t_span[0], t_span[1])
                 if self._sensitivity_ic:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
@@ -3056,6 +3128,7 @@ class Simulator:
         # This chunk differentiates only `sens_params`, so the ∂t*/∂p columns
         # must be built against that subset rather than the full request.
         self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
+        self._apply_event_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
         opts.set_sensitivity_method(self._sensitivity_method)
 
         try:

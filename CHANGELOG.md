@@ -216,6 +216,70 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **Forward sensitivity w.r.t. an onset time encoded as an SBML *event* (issue
+  #49).** A switch time written as `piecewise(kin, time >= T0, 0)` has been
+  differentiable since #48; the *same* switch, same dynamics, same gradient,
+  written as an event (`time >= T0` → `on := 1`, rate `kin*on`) was refused.
+  Which encoding a model uses is usually decided by whichever tool exported it,
+  so the asymmetry was arbitrary from the modeller's side. A survey of
+  `parity_checks/rr_parity` found 24 models / 88 events whose trigger thresholds
+  a fitted constant, with names like `treatment_start`, `ton`/`toff`, `tstim`
+  and `Lockdown_start` — exactly the things one fits.
+
+  The general jump across an event at a parameter-dependent time is
+
+      s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
+
+  — shift `s⁻` along the pre-event flow by how far the event time moves, apply
+  the event Jacobian, shift back along the post-event flow. Both corners were
+  already implemented: `∂t*/∂p = 0` is the GH #212 state jump, `h = identity` is
+  the #48 switch jump. This adds the cross terms and the `∂t*/∂p` that feeds
+  them (`bngsim._switch_sensitivity.compute_event_time_sens`, which reduces the
+  trigger through the *same* `_clock_threshold_split` recognizer the rate-law
+  path uses, so the two cannot drift about what a locatable crossing is).
+
+  Unlike #48 this needs neither `CVodeSetStopTime` nor parameter pinning: an
+  event trigger is not part of `f`, so `f` is smooth right up to the root
+  (CVODE's root finder already stops exactly at `t*`) and `∂f/∂T0` is a genuine
+  zero without help. It does need #48's nominal-parameter restore — `f⁻`/`f⁺`
+  multiply `∂t*/∂p`, so reading them wherever CVODES' last finite-difference
+  probe left the parameters would scale the whole jump by `1 ∓ √rtol`, i.e. an
+  answer that moves when `rtol` does.
+
+  Two refusals were also retired as *vacuous* (the issue's sub-finding). A delay
+  of literal `0` is not a delay — `process_firing_batch` already takes the
+  immediate path for it, so there is no trigger-time-to-execution-time window;
+  and `persistent=false` can only cancel a fire inside that window (SBML L3v2
+  §4.11.3), so without a delay the flag has nothing to act on. Ghanbari2020 and
+  Zongo2020 were blocked by exactly this.
+
+  Corpus result on the 225 event-bearing `rr_parity` models, requesting **every**
+  parameter: **13 models newly allowed** (BIOMD1, 117, 152, 153, 244, 301, 327,
+  340, 422, 494, 650, 820, MODEL2310250001), 114 unchanged, 0 lost. Validated
+  against a central difference of the trajectory itself, normalized to the
+  observable's own scale and filtered to samples where the difference quotient
+  is self-consistent across two step sizes: the onset column's worst error sits
+  at or below the same model's *control* (non-trigger) parameters — 3.5e-4 vs
+  3.2e-4 on Owen1998 (BIOMD650), 2.1e-7 vs 2.7e-4 on BIOMD301, 8.3e-6 vs 3.3e-4
+  on BIOMD820. The two models where the onset column starts worse (BIOMD301
+  `pulse1_length` 1.0e-1, BIOMD327 `ton` 1.3e-2 at the default `rtol=1e-8`)
+  converge with the integration (1.0e-5 and 1.2e-3 at `rtol=1e-10`), which is
+  the CVODES difference-quotient sensitivity RHS's own accuracy on those models
+  rather than the jump.
+
+  One correctness trap worth recording, because it is the failure mode this
+  module exists to avoid rather than an omission. A threshold that is an SBML
+  `<assignmentRule>` parameter is *not* a constant, even though
+  `param_is_expression` is false for it and reading its current value looks like
+  reading a literal — the loader turns such a rule into a model function bound
+  to the same-named parameter. BIOMD0000000301 writes its pulse schedule as
+  `pulse2_start = pulse1_start + pulse1_length + pulse_interval`; attributing
+  the whole `∂t*/∂p` to `pulse2_start` put the gradient on a column no fitter
+  moves and left `pulse1_start`'s at zero. Rule-bound parameters now join the
+  inlining map when their body reduces to arithmetic over parameters, and every
+  identifier that survives the flattening must be a primary — anything else
+  (`floor()`-based dose schedules, a rule that reads state) is refused with a
+  reason instead of evaluated at its current value.
 - **A build-time derivation budget for the sensitivity `∂f/∂p` path (issue #90),
   the last unaddressed "still has to bail" item of #55.** #95/#187 bound the
   symbolic derivation of the analytical *Jacobian*, so a model that does not

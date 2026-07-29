@@ -627,8 +627,14 @@ struct ConservationLaws {
 // Events fire when a trigger expression transitions from false→true.
 // Supported by ODE (CVODE rootfinding) and SSA engines.
 struct Event {
-    std::string id;                               // unique identifier
-    int trigger_expr_idx = -1;                    // index into evaluator for trigger expression
+    std::string id;            // unique identifier
+    int trigger_expr_idx = -1; // index into evaluator for trigger expression
+    // The trigger expression AS WRITTEN by the loader, kept alongside the
+    // compiled id (issue #49). The evaluator only stores a *preprocessed* form
+    // (reserved-word mangling, `obs()` → `obs`), which is the wrong thing to
+    // hand a symbolic differentiator; the Python event-time detector needs the
+    // model's own spelling so a threshold parameter matches by name.
+    std::string trigger_source;
     std::vector<std::pair<int, int>> assignments; // (species_idx_0based, value_expr_idx)
     // GH #81 (Tier 1) — per-assignment "apply under ODE only" flag, parallel
     // to `assignments`. The SBML loader injects a per-species concentration
@@ -722,6 +728,27 @@ struct SwitchTimeSens {
     std::vector<double> dtstar_dp;
 };
 
+// One event whose crossing time moves with the sensitivity parameters (issue
+// #49). The GH #212 event jump assumes ∂t*/∂p = 0 (the event fires at a fixed
+// instant and only the state jumps); the issue #48 switch jump assumes the
+// mirror image (the state is continuous and only the time moves). An event
+// whose trigger thresholds a *fitted* constant — `time >= T0` with T0 in
+// sens_params — is neither corner, and the general jump carries both:
+//
+//     s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
+//
+// Read as: shift s⁻ along the pre-event flow by how far the event time moves,
+// apply the event's own Jacobian, then shift back along the post-event flow.
+// Setting ∂t*/∂p = 0 recovers the GH #212 jump exactly; setting h = identity
+// recovers the issue #48 jump exactly.
+struct EventTimeSens {
+    int event_idx0 = -1; // index into NetworkModel::events()
+    // ∂t*/∂p for each sensitivity *parameter* column, in param_names order
+    // (size n_sens_p). IC-sensitivity columns are not covered, for the same
+    // reason SwitchTimeSens does not cover them.
+    std::vector<double> dtstar_dp;
+};
+
 struct SensitivityOptions {
     std::vector<std::string> param_names;      // which params to differentiate w.r.t.
     std::vector<std::string> ic_species_names; // species names for IC sens
@@ -754,6 +781,13 @@ struct SensitivityOptions {
     // parameter here after verifying every occurrence of it is inside a
     // condition.
     std::vector<int> switch_pinned_params;
+
+    // Events whose crossing time moves with a requested parameter (issue #49).
+    // Empty for every model whose events fire at fixed instants — the event
+    // jump then collapses to the GH #212 form and the run is byte-identical to
+    // the pre-#49 path. Detection and the chain rule from each trigger
+    // threshold to its fitted primaries live in bngsim._switch_sensitivity.
+    std::vector<EventTimeSens> event_times;
 };
 
 // --- Steady-state options -----------------------------------------------------
