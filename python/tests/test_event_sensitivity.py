@@ -592,6 +592,48 @@ class TestEventTimeSensitivity:
             relerr = np.abs(sens[mask, col] - dx[mask]) / np.abs(dx[mask])
             assert relerr.max() < 1e-6, f"col {col}: {relerr.max():.3e}"
 
+    @pytest.mark.parametrize("name", ["onset_t", "del", "lambda"])
+    def test_a_python_keyword_threshold_parameter_is_just_a_name(self, name):
+        """Issue #105. ``time() >= del + gap`` used to come back with correct
+        partials but no *value*, because ``_evaluate_threshold`` parsed the
+        threshold without the keyword alias map its sibling already applied. The
+        trigger was then not compensated and the whole model was refused forward
+        sensitivity — ``MODEL1710030000`` (``time >= del + N*stepT``) is the one
+        corpus model that hit this.
+
+        Parametrized over ``lambda`` too: it is 43 of the 46 corpus models with a
+        keyword-named parameter, so it is the likelier next encounter.
+        """
+        from bngsim._switch_sensitivity import compute_event_time_sens
+
+        b = ModelBuilder()
+        b.add_parameter("kin", KIN)
+        b.add_parameter("kout", KOUT)
+        b.add_parameter(name, 1.5)
+        b.add_parameter("gap", 1.0)  # onset at 2.5 = T0
+        x = b.add_species("X", 0.0)
+        on = b.add_species("on", 0.0)
+        b.add_reaction([on], [on, x], "elementary", "kin")
+        b.add_reaction([x], [], "elementary", "kout")
+        b.add_observable("Xobs", [(x, 1.0)])
+        b.add_event("onset", f"time() >= {name} + gap", [(on, "1.0")])
+        m = bngsim.Model(_core=b.build())
+
+        res = compute_event_time_sens(m._core, [name, "gap"], 0.0, 10.0)
+        assert res.reasons == {}, res.reasons
+        assert res.compensated == [0]
+        assert res.records == [(0, [1.0, 1.0])]
+
+        # And the gradient itself, against the closed form the ordinary-name
+        # twin already matches — a compensated record that produced the wrong
+        # number would pass the assertions above.
+        t, sens = _xobs_sens(m, [name, "gap"])
+        _x, dx = _onset_closed_form(t)
+        mask = (np.abs(dx) > 1e-9) & (np.abs(t - T0) > 1e-12)
+        for col in (0, 1):
+            relerr = np.abs(sens[mask, col] - dx[mask]) / np.abs(dx[mask])
+            assert relerr.max() < 1e-6, f"col {col}: {relerr.max():.3e}"
+
     def test_unresolvable_rule_threshold_is_refused_not_guessed(self):
         """The same shape, but the rule reads state. Its value at the current
         point still *looks* like a number; treating it as one would attribute

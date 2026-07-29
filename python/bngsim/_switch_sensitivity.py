@@ -1096,11 +1096,26 @@ def _evaluate_threshold(
     """Numeric value of a threshold expression at the current parameter point.
 
     A bare parameter name (the common case: ``t>=sigma``) is a dict lookup. Any
-    other arithmetic expression — including one over derived parameters — is
-    evaluated by sympy after the same nested-derived inlining the partials use,
-    so the value and its derivative always come from the same expression.
+    other arithmetic expression — including one over derived parameters — goes
+    through the *same* preparation as :func:`_derived_expr_partials_numeric`:
+    nested-derived inlining, the ExprTk surface rewrite, and the keyword/reserved
+    symbol aliasing. The two functions therefore agree on which expressions they
+    can handle, so the value and its derivative always come from the same round
+    trip — which is the whole point, since a caller that gets partials but no
+    value (or the reverse) drops the crossing entirely (issue #105).
+
+    Without the aliasing, a threshold that is *arithmetic over* a parameter whose
+    name is a Python keyword (``del+gap``) fails at tokenization, so the value
+    came back ``None`` while the partials of the identical expression came back
+    correct. A *bare* keyword name never reached sympy, which is why only the
+    arithmetic form was affected.
     """
-    from bngsim._codegen import _inline_derived_param_refs
+    from bngsim._codegen import (
+        _inline_derived_param_refs,
+        _preprocess_derived_expr,
+        _substitute_symbols_once,
+        _sympy_symbol_alias_map,
+    )
 
     s = expr.strip()
     if s in param_idx:
@@ -1114,12 +1129,21 @@ def _evaluate_threshold(
         from sympy.parsing.sympy_parser import parse_expr
     except ImportError:  # pragma: no cover - sympy is a hard dep of codegen
         return None
-    flat = _inline_derived_param_refs(s, derived_exprs)
+    flat = _preprocess_derived_expr(_inline_derived_param_refs(s, derived_exprs))
     referenced = sorted(p for p in param_idx if re.search(rf"\b{re.escape(p)}\b", flat))
-    local = {p: sp.Symbol(p) for p in referenced}
+    sym_name_of = _sympy_symbol_alias_map(referenced)
+    if sym_name_of is None:
+        # Two parameters would collide on one symbol; the partials bail here too,
+        # and merging them would evaluate the wrong expression.
+        return None
+    # One left-to-right pass, never sequential `re.sub`: a rewrite must not be
+    # able to match inside text an earlier rewrite just wrote (issue #69).
+    flat = _substitute_symbols_once(flat, {p: sym_name_of[p] for p in referenced})
+    local: dict = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
+    local.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
     try:
         sym = parse_expr(flat, local_dict=local, evaluate=True)
-        subs = {local[p]: values[param_idx[p]] for p in referenced}
+        subs = {local[sym_name_of[p]]: values[param_idx[p]] for p in referenced}
         return float(sym.subs(subs).evalf())
     except Exception:
         return None
