@@ -474,6 +474,135 @@ class TestSbmlPiecewiseInTime:
             assert S[-1, 0, j] == pytest.approx(fd, rel=1e-4)
 
 
+# ─── Issue #82: the clock must land ON its threshold at the crossing ─────────
+# The stop time puts t exactly on t*, but the `if()` condition reads the COUNTER
+# SPECIES, and that counter is integrated: pre-#82 it came back 1–2e-14 BELOW the
+# threshold it defines. The restart at the crossing then re-entered on the
+# *before* branch, so the discontinuity landed inside the first step after the
+# restart — the one thing the stop time exists to prevent — and CVODES failed the
+# error test at every step size down to ~1e-10 before returning CV_ERR_FAILURE.
+#
+# Two guards below. The first is the invariant and is deterministic at every
+# threshold. The second is an end-to-end knife-edge point: a frozen pre-onset
+# phase, a wide magnitude spread (S ~ 1e7 against I = 1), and a second crossing
+# that moves with the same parameter — the Lin2021 `nyc_multiphase` shape that
+# lost 25% of otherwise-integrable fit candidates to this.
+SEIR_S0 = 1.0e7
+
+
+def _seir_lite(t0, t_delta, beta=2.0, lam=0.1, p0=0.9):
+    b = ModelBuilder()
+    b.add_parameter("t0", t0)
+    b.add_parameter("t_delta", t_delta)
+    b.add_parameter("sigma", t0 + t_delta, "t0+t_delta", True)
+    b.add_parameter("beta", beta)
+    b.add_parameter("lam", lam)
+    b.add_parameter("p0", p0)
+    b.add_parameter("S0", SEIR_S0)
+    b.add_parameter("kL", 0.9)
+    b.add_parameter("cI", 0.12)
+    b.add_parameter("rate_counter", 1.0)
+    c_idx = b.add_species("counter()", 1.0)
+    sm_idx = b.add_species("S(state~M)", SEIR_S0)
+    sp_idx = b.add_species("S(state~P)", 0.0)
+    e_idx = b.add_species("E()", 0.0)
+    i_idx = b.add_species("I()", 1.0)
+    r_idx = b.add_species("R()", 0.0)
+    b.add_observable("t", [(c_idx, 1.0)])
+    b.add_observable("Iobs", [(i_idx, 1.0)])
+    # Nothing at all happens before t0 — no transmission, no distancing — so the
+    # restart at the crossing sizes h from an identically-zero RHS.
+    b.add_function("phi", "if((t>=t0),Iobs,0)")
+    b.add_function("k_inf", "(beta/S0)*phi")
+    b.add_function("k_dist", "if((t>=sigma),lam*p0,0)")
+    b.add_reaction([], [c_idx], "elementary", "rate_counter")
+    b.add_reaction([sm_idx], [e_idx], "functional", "k_inf")
+    b.add_reaction([sm_idx], [sp_idx], "functional", "k_dist")
+    b.add_reaction([e_idx], [i_idx], "elementary", "kL")
+    b.add_reaction([i_idx], [r_idx], "elementary", "cI")
+    return bngsim.Model(_core=b.build()), c_idx
+
+
+class TestClockLandsOnItsThreshold:
+    """Issue #82: the crossing must resume on the after-branch, not one ulp short."""
+
+    @pytest.mark.parametrize("sigma", [2.9, 3.7, 11.3, 17.9, 23.7, 29.3, 32.904353, 47.7])
+    def test_counter_reaches_the_threshold_at_the_crossing(self, sigma):
+        """The recorded clock at t* is at or above the threshold it defines.
+
+        Pre-#82 this was *below* it at every one of these thresholds — by up to
+        2.5e-14 — which is exactly what put the resumed integration on the wrong
+        branch. Sampling lands on t* itself, so this reads the state CVODES
+        restarts from.
+        """
+        model, x_idx = _minimal(sigma=sigma, k=2.0e6)
+        clock_idx = 0  # T() is added first in _minimal
+        t_star = sigma  # _minimal's counter starts at 0, so t* == sigma
+        times = sorted({0.0, t_star, *np.linspace(0.0, sigma + 20.0, 41)})
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["sigma"], codegen=True)
+        r = sim.run(sample_times=times, rtol=1e-8, atol=1e-8, max_steps=10**6)
+        clock_at_crossing = np.asarray(r.species)[times.index(t_star), clock_idx]
+        assert clock_at_crossing >= sigma
+        # …and only by a rounding step: this is a correction, not a nudge.
+        assert clock_at_crossing - sigma <= 4.0 * np.spacing(sigma)
+        # The answer is untouched: X = k·max(0, t−sigma) ⇒ ∂X/∂sigma = −k.
+        assert np.asarray(r.sensitivities)[-1, x_idx, 0] == pytest.approx(-2.0e6, rel=1e-9)
+
+
+class TestWideSpreadSwitchOnIntegrates:
+    """Issue #82 end-to-end: the point that used to die at the second crossing."""
+
+    # t0=29.3 with the published Lin2021 t_delta is one of the isolated spikes:
+    # pre-#82 it returned CV_ERR_FAILURE at t≈29 while the plain solve was fine,
+    # and t_delta=3.0 at t0=23.7 is a second, unrelated one.
+    @pytest.mark.parametrize(
+        ("t0", "t_delta"), [(29.3, 0.072681), (23.7, 3.0), (32.831672, 0.072681)]
+    )
+    def test_switch_time_sensitivity_integrates(self, t0, t_delta):
+        model, _ = _seir_lite(t0, t_delta)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["t0"], codegen=True)
+        r = sim.run(
+            sample_times=list(np.linspace(0.0, 120.0, 121)),
+            rtol=1e-8,
+            atol=1e-8,
+            max_steps=10**6,
+        )
+        S = np.asarray(r.sensitivities)
+        assert np.all(np.isfinite(S))
+        assert np.abs(S).max() > 1.0e5  # the switch-on really is being felt
+
+    def test_matches_central_finite_difference(self):
+        """The gradient is right, not merely finite.
+
+        rtol/atol stop at 1e-10 deliberately: the FD oracle's own *plain* solves
+        step into the `if(t>=t0)` kink with no stop time to break the step, and
+        below 1e-10 that collapses h (the issue #54 case) — a limit of the oracle,
+        not of the answer under test. The 1e-9 relative floor below is that
+        oracle's noise: rtol·max|y|/h with max|y| ~ 1e7 and h ~ 3e-5.
+        """
+        t0, t_delta, t_end, tol = 29.3, 0.072681, 120.0, 1e-10
+        times = list(np.linspace(0.0, t_end, 121))
+
+        def end_state(t0_value):
+            r = bngsim.Simulator(_seir_lite(t0_value, t_delta)[0], method="ode").run(
+                sample_times=times, rtol=tol, atol=tol, max_steps=10**7
+            )
+            return np.asarray(r.species)[-1]
+
+        sim = bngsim.Simulator(
+            _seir_lite(t0, t_delta)[0], method="ode", sensitivity_params=["t0"], codegen=True
+        )
+        S = np.asarray(
+            sim.run(sample_times=times, rtol=tol, atol=tol, max_steps=10**7).sensitivities
+        )
+        h = 1e-6 * t0
+        fd = (end_state(t0 + h) - end_state(t0 - h)) / (2 * h)
+        floor = tol * SEIR_S0 / h
+        # The counter row is not differentiable w.r.t. t0 and is exactly 0 in
+        # both; compare the epidemic rows, which span 1 to 1e7.
+        assert S[-1, 1:, 0] == pytest.approx(fd[1:], rel=1e-5, abs=10.0 * floor)
+
+
 class TestNoRegression:
     """Models with no fitted switch time must be completely unaffected."""
 
