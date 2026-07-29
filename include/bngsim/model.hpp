@@ -111,18 +111,26 @@ class NetworkModel {
     const std::vector<Event> &events() const;
 
     // Forward-sensitivity support classification for this model's events
-    // (GH #212). Returns a human-readable reason string when the model has at
-    // least one event that is NOT in the Phase-1 (fixed-time) subclass for the
-    // requested sensitivity parameters, or std::nullopt when every event is
-    // Phase-1-safe (so the integrator can propagate dx/dp across the
-    // discontinuity via the s⁺ = J_h·s⁻ + ∂h/∂p jump). An event is Phase-1-safe
-    // iff it is persistent, has no delay, its trigger references no species
-    // (fixed-time, not state-dependent), and its trigger references none of the
-    // requested sensitivity parameters (so the crossing time ∂t*/∂p = 0). Names
-    // are resolved against parameters(); an unknown name yields a reason rather
-    // than throwing. A model with no events returns std::nullopt.
+    // (GH #212, widened by issue #49). Returns a human-readable reason string
+    // when the model has at least one event that forward sensitivity cannot
+    // propagate through for the requested sensitivity parameters, or
+    // std::nullopt when every event is covered by the jump
+    //     s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
+    // the integrator applies at each fire. An event is covered iff it has no
+    // *effective* delay, its trigger references no species/observable/rate
+    // (i.e. the crossing time does not move with the trajectory), and either
+    //   * its trigger references none of the requested sensitivity parameters,
+    //     so ∂t*/∂p = 0 (GH #212 Phase 1), or
+    //   * its index is in `event_time_compensated`, meaning the Python detector
+    //     resolved the trigger's threshold and will supply ∂t*/∂p (issue #49).
+    // Persistence only matters when there IS a delay: per SBML L3v2 §4.11.3 a
+    // non-persistent trigger can only cancel a fire during the window between
+    // trigger time and execution time, which a zero-delay event has none of.
+    // Names are resolved against parameters(); an unknown name yields a reason
+    // rather than throwing. A model with no events returns std::nullopt.
     std::optional<std::string>
-    event_sensitivity_unsupported_reason(const std::vector<std::string> &sens_param_names) const;
+    event_sensitivity_unsupported_reason(const std::vector<std::string> &sens_param_names,
+                                         const std::vector<int> &event_time_compensated = {}) const;
 
     // ExprTk expression-table indices of the discontinuity triggers (GH #72).
     const std::vector<int> &discontinuity_triggers() const;

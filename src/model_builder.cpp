@@ -1541,7 +1541,11 @@ NetworkModel ModelBuilder::build() {
             ev.initial_value = espec.initial_value;
             ev.use_values_from_trigger_time = espec.use_values_from_trigger_time;
 
-            // Compile trigger expression
+            // Compile trigger expression. The source is retained verbatim
+            // (issue #49): the event-time sensitivity detector differentiates
+            // the trigger's threshold symbolically and must see the model's own
+            // spelling, not the evaluator's preprocessed form.
+            ev.trigger_source = espec.trigger_expr;
             try {
                 ev.trigger_expr_idx = eval.compile(espec.trigger_expr);
             } catch (const std::exception &e) {

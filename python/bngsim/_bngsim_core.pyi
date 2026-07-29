@@ -123,9 +123,13 @@ class NetworkModel:
         """
         Dense analytical-Jacobian scatter plan (Elementary + MM, rows resolved) for the codegen .so. GH #76 Task 4.
         """
-    def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str]) -> str | None:
+    def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
-        Return a reason string if any event blocks Phase-1 forward sensitivity for the given sensitivity-parameter names, else None (GH #212).
+        Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
+        """
+    def event_trigger_sources(self) -> list[str]:
+        """
+        Each event's trigger expression as the loader wrote it, in events() order (issue #49). The event-time sensitivity detector differentiates the trigger's threshold symbolically, so it needs the model's own spelling rather than the evaluator's preprocessed form.
         """
     def functional_jacobian_context(self) -> dict:
         """
@@ -640,6 +644,10 @@ class SolverOptions:
     def set_sensitivity_params(self, params: collections.abc.Sequence[str]) -> None:
         """
         Set parameter names for forward sensitivity analysis
+        """
+    def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
+        """
+        Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form.
         """
     def set_switch_pinned_params(self, param_idx0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
         """

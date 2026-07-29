@@ -2644,6 +2644,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // actually reads, so the common constant/parameter assignment costs O(1).
     // Derived-parameter chains inside an assignment value (a param defined as
     // f(p_l)) are a Phase-1 limitation: only the direct ∂c/∂p_l is differenced.
+    // CVODES leaves the model's parameter values wherever its last
+    // finite-difference sensitivity probe put them — the RHS callbacks mirror
+    // sens_p into params and nothing writes them back afterwards — so any
+    // derivative read here would be taken at p ± √rtol·|p|. For a term that is
+    // MULTIPLIED into the jump (f⁻/f⁺ against ∂t*/∂p) that scales the whole
+    // jump by (1 ∓ √rtol), i.e. an answer that drifts with rtol. sens_p itself
+    // IS nominal between probes (CVODES restores the perturbed entry), so
+    // re-running the callbacks' own sync is enough; the resumed integration
+    // re-syncs on its next RHS call, so nothing needs undoing.
+    auto restore_nominal_params = [&]() {
+        if (sens_p.empty()) {
+            return;
+        }
+        auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
+        const size_t np = std::min(params_live.size(), sens_p.size());
+        for (size_t i = 0; i < np; ++i) {
+            params_live[i].value = sens_p[i];
+        }
+        for (auto &p : params_live) {
+            if (p.is_expression && p.evaluator_id >= 0) {
+                p.value = eval_ref_outer.evaluate(p.evaluator_id);
+            }
+        }
+    };
+
     auto capture_event_sens = [&](double t_evt) -> std::vector<std::vector<double>> {
         std::vector<std::vector<double>> s_minus;
         if (!wants_sensitivity || n_sens == 0) {
@@ -2672,12 +2697,70 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
         auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
+        // Every derivative below is read at the nominal parameter point, not at
+        // whatever CVODES' last FD probe left behind (see
+        // restore_nominal_params). ∂t*/∂p multiplies f⁻/f⁺ into the jump, so a
+        // probe-point read would make the answer drift with rtol.
+        restore_nominal_params();
+
+        // ─── ∂t*/∂p for this batch (issue #49) ───────────────────────────────
+        // Zero (the GH #212 Phase-1 case) unless the Python detector resolved a
+        // fired event's trigger to a threshold that moves with a requested
+        // parameter.
+        std::vector<double> tau(static_cast<size_t>(n_sens_p), 0.0);
+        bool tau_nonzero = false;
+        const EventTimeSens *tau_source = nullptr;
+        for (int ei : fired) {
+            for (const auto &et : opts.sensitivity.event_times) {
+                if (et.event_idx0 != ei || et.dtstar_dp.size() != static_cast<size_t>(n_sens_p)) {
+                    continue;
+                }
+                if (std::all_of(et.dtstar_dp.begin(), et.dtstar_dp.end(),
+                                [](double v) { return v == 0.0; })) {
+                    continue;
+                }
+                if (tau_source != nullptr && et.dtstar_dp != tau_source->dtstar_dp) {
+                    // Two events firing at the SAME instant whose crossing times
+                    // move differently. The assignments are applied as one
+                    // simultaneous batch, so there is no single t*(p) to shift
+                    // the flow along and the composition is genuinely ambiguous.
+                    // Refuse rather than pick one and return a plausible number.
+                    throw std::runtime_error(
+                        "Forward sensitivity: events '" + events_outer[tau_source->event_idx0].id +
+                        "' and '" + events_outer[ei].id +
+                        "' fire at the same instant t=" + std::to_string(t_evt) +
+                        " but their crossing times move differently with the requested "
+                        "parameters, so the event-time sensitivity jump is ambiguous "
+                        "(issue #49). Separate the trigger times, or drop the parameters "
+                        "that move them from sensitivity_params.");
+                }
+                tau_source = &et;
+                tau = et.dtstar_dp;
+                tau_nonzero = true;
+            }
+        }
+
         // Save the post-event state, then drive the evaluator to x⁻ so the
         // derivative evaluations below see pre-event values. Restored at the end.
         std::vector<double> x_post(static_cast<size_t>(ns));
         for (int i = 0; i < ns; ++i) {
             x_post[i] = sp_vec_outer[i].concentration;
         }
+
+        // f⁺ = f(t*, x⁺) while the evaluator still holds the post-event state,
+        // and f⁻ = f(t*, x⁻) once it has been driven back. Only needed when the
+        // crossing time actually moves; an ordinary fixed-time event pays
+        // nothing. Unlike the issue #48 switch jump these are the RHS at two
+        // DIFFERENT states rather than two branches at one state: an event
+        // trigger is not part of f, so f is the same smooth function on both
+        // sides and it is the state that jumps.
+        std::vector<double> f_minus, f_plus;
+        if (tau_nonzero) {
+            f_plus.assign(static_cast<size_t>(ns), 0.0);
+            f_minus.assign(static_cast<size_t>(ns), 0.0);
+            model.compute_derivs(t_evt, x_post.data(), f_plus.data());
+        }
+
         std::vector<double> xwork(x_minus.begin(), x_minus.end());
         auto sync_state = [&]() {
             for (int i = 0; i < ns; ++i) {
@@ -2687,6 +2770,35 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             model.evaluate_functions(t_evt);
         };
         sync_state();
+        if (tau_nonzero) {
+            model.compute_derivs(t_evt, xwork.data(), f_minus.data());
+            sync_state(); // compute_derivs may leave functions at its own state
+        }
+
+        // Rows the batch assigns take the ∂h/∂x·(…) + ∂h/∂p form below; every
+        // other row is continuous (h_k = x_k) and reduces to the issue #48 jump
+        // s⁺_k = s⁻_k + (f⁻_k − f⁺_k)·∂t*/∂p, applied here in place on yS_guard
+        // (which still holds s⁻). Done before the assigned rows are written so
+        // the two never see each other's output.
+        std::unordered_set<int> assigned_rows;
+        if (tau_nonzero) {
+            for (int ei : fired) {
+                for (const auto &asg : events_outer[ei].assignments) {
+                    assigned_rows.insert(asg.first);
+                }
+            }
+            for (int c = 0; c < n_sens_p; ++c) {
+                if (tau[static_cast<size_t>(c)] == 0.0) {
+                    continue;
+                }
+                double *col = N_VGetArrayPointer(yS_guard[c]);
+                for (int i = 0; i < ns; ++i) {
+                    if (assigned_rows.count(i) == 0) {
+                        col[i] += (f_minus[i] - f_plus[i]) * tau[static_cast<size_t>(c)];
+                    }
+                }
+            }
+        }
 
         for (int ei : fired) {
             const auto &ev = events_outer[ei];
@@ -2745,17 +2857,29 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
                 model.evaluate_functions(t_evt); // restore function state at (x⁻, p₀)
 
-                // Assemble s⁺_k for every sensitivity column.
+                // Assemble s⁺_k for every sensitivity column:
+                //     s⁺_k = Σ_j (∂h_k/∂x_j)·(s⁻_j + f⁻_j·∂t*/∂p)
+                //            + ∂h_k/∂p − f⁺_k·∂t*/∂p
+                // The pre-shift carries s⁻ along the pre-event flow by how far
+                // the event time moves, the event Jacobian maps it through the
+                // reset, and the post-shift carries it back along the
+                // post-event flow. With ∂t*/∂p = 0 both shifts vanish and this
+                // is the GH #212 jump unchanged.
                 for (int c = 0; c < n_sens; ++c) {
+                    const double tau_c =
+                        (c < n_sens_p) ? tau[static_cast<size_t>(c)] : 0.0; // IC cols: no shift
                     double acc = 0.0;
                     const std::vector<double> &sm = s_minus[c];
                     for (int j = 0; j < ns; ++j) {
                         if (dcdx[j] != 0.0) {
-                            acc += dcdx[j] * sm[j];
+                            acc += dcdx[j] * (sm[j] + (tau_c != 0.0 ? f_minus[j] * tau_c : 0.0));
                         }
                     }
                     if (c < n_sens_p) {
                         acc += dcdp[c];
+                    }
+                    if (tau_c != 0.0) {
+                        acc -= f_plus[k] * tau_c;
                     }
                     N_VGetArrayPointer(yS_guard[c])[k] = acc;
                 }
@@ -2839,26 +2963,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
 
     auto apply_switch_sensitivity_jump = [&](double t_evt, const SwitchTimeSens &sw) {
-        // Restore the nominal parameter point first. CVODES leaves the model's
-        // parameter values wherever its last finite-difference probe put them —
-        // the RHS callbacks mirror sens_p into params and nothing writes them
-        // back afterwards — so f⁻/f⁺ would be read at p ± √rtol·|p| and the whole
-        // jump would come out scaled by (1 ∓ √rtol). sens_p itself IS nominal
-        // between probes (CVODES restores the perturbed entry), so re-running the
-        // callbacks' own sync is enough. The resumed integration re-syncs on its
-        // next RHS call, so nothing needs undoing.
-        if (!sens_p.empty()) {
-            auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
-            const size_t np = std::min(params_live.size(), sens_p.size());
-            for (size_t i = 0; i < np; ++i) {
-                params_live[i].value = sens_p[i];
-            }
-            for (auto &p : params_live) {
-                if (p.is_expression && p.evaluator_id >= 0) {
-                    p.value = eval_ref_outer.evaluate(p.evaluator_id);
-                }
-            }
-        }
+        // Restore the nominal parameter point first, or the whole jump comes out
+        // scaled by (1 ∓ √rtol) — see restore_nominal_params.
+        restore_nominal_params();
 
         // f⁻ / f⁺ at x(t*), branch selected by nudging the clock across its
         // threshold. eps_clock is a few ulp of the threshold: large enough that

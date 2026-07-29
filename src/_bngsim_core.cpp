@@ -391,6 +391,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "bngsim._switch_sensitivity; empty (the default) leaves the "
             "integration loop untouched.")
         .def(
+            "set_event_time_sens",
+            [](bngsim::SolverOptions &self,
+               const std::vector<std::pair<int, std::vector<double>>> &records) {
+                self.sensitivity.event_times.clear();
+                self.sensitivity.event_times.reserve(records.size());
+                for (const auto &r : records) {
+                    bngsim::EventTimeSens et;
+                    et.event_idx0 = r.first;
+                    et.dtstar_dp = r.second;
+                    self.sensitivity.event_times.push_back(std::move(et));
+                }
+            },
+            py::arg("records"),
+            "Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p "
+            "per param column]) records (issue #49). An event whose trigger "
+            "thresholds a fitted constant — `time >= T0` with T0 requested — "
+            "fires at a time that moves with the parameter, so its "
+            "forward-sensitivity jump carries two extra terms beyond the GH "
+            "#212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. "
+            "Detection and the chain rule to fitted primaries are done by "
+            "bngsim._switch_sensitivity; empty (the default) collapses the jump "
+            "to the GH #212 form.")
+        .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {
                 self.sensitivity.switch_pinned_params = param_idx0;
@@ -1170,9 +1193,28 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def("event_sensitivity_unsupported_reason",
              &bngsim::NetworkModel::event_sensitivity_unsupported_reason,
              pybind11::arg("sens_param_names"),
-             "Return a reason string if any event blocks Phase-1 forward "
-             "sensitivity for the given sensitivity-parameter names, else None "
-             "(GH #212).")
+             pybind11::arg("event_time_compensated") = std::vector<int>{},
+             "Return a reason string if any event blocks forward sensitivity "
+             "for the given sensitivity-parameter names, else None (GH #212, "
+             "issue #49). event_time_compensated lists the 0-based indices of "
+             "events whose ∂t*/∂p the caller supplies via "
+             "SolverOptions.set_event_time_sens, which lifts the "
+             "parameter-dependent-trigger refusal for exactly those.")
+        .def(
+            "event_trigger_sources",
+            [](const bngsim::NetworkModel &self) {
+                std::vector<std::string> out;
+                out.reserve(self.events().size());
+                for (const auto &ev : self.events()) {
+                    out.push_back(ev.trigger_source);
+                }
+                return out;
+            },
+            "Each event's trigger expression as the loader wrote it, in "
+            "events() order (issue #49). The event-time sensitivity detector "
+            "differentiates the trigger's threshold symbolically, so it needs "
+            "the model's own spelling rather than the evaluator's preprocessed "
+            "form.")
         .def_property_readonly("n_discontinuity_triggers",
                                &bngsim::NetworkModel::n_discontinuity_triggers)
         .def_property_readonly("load_warnings", &bngsim::NetworkModel::load_warnings)
