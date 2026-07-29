@@ -286,6 +286,108 @@ class TestDerivedThresholds:
         assert sum("?" in ln for ln in src.splitlines()) >= 2
 
 
+def _kw_threshold(name: str) -> str:
+    """``SWITCHED`` with the onset spelled ``<name>+gap`` instead of ``sigma``.
+
+    Arithmetic on purpose: :func:`_evaluate_threshold` short-circuits on a bare
+    parameter name before it ever reaches sympy, so only the compound form
+    exercises the parse — which is exactly why issue #105 went unnoticed.
+    """
+    text = SWITCHED.replace(
+        "    5 sigma   3.0  # Constant\n",
+        f"    5 {name}   2.0  # Constant\n    8 gap     1.0  # Constant\n",
+    )
+    return text.replace("if(t>=sigma,beta,0)*I", f"if(t>={name}+gap,beta,0)*I")
+
+
+class TestPythonKeywordThresholdParameters:
+    """Issue #105. A threshold parameter whose *name* is a Python keyword —
+    ``del``, ``lambda``, ``as`` — must be treated exactly like any other name.
+
+    ``parse_expr("del+gap")`` raises at **tokenization**, so passing ``del`` in
+    ``local_dict`` cannot rescue it; the name has to be rewritten to an alias
+    first, which is what ``_sympy_symbol_alias_map`` (issue #27) already does on
+    the emitting path. Before the fix ``_evaluate_threshold`` returned ``None``
+    while ``_derived_expr_partials_numeric`` returned the correct partials for
+    the *same* string, so the detector emitted no crossing record at all and the
+    model dropped into issue #82's mxstep stall.
+
+    43 of the 46 corpus models with a keyword-named parameter use ``lambda``,
+    which is why this is parametrized over more than the one name that surfaced
+    it.
+    """
+
+    @pytest.mark.parametrize("name", ["onset", "del", "lambda", "as"])
+    def test_the_gate_and_the_detector_are_blind_to_the_name(self, tmp_path, name):
+        """The whole assertion is an equality against the ordinary-name case: a
+        keyword name is not a *feature*, it must simply not be visible anywhere
+        downstream."""
+        core = _model(tmp_path, _kw_threshold(name), name=f"{name}.net")._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, reason
+        records, pinned = sw.compute_switch_time_sens(core, [name, "gap"], 0.0, 100.0)
+        # onset = <name> + gap = 2.0 + 1.0, and ∂t*/∂p is 1 for both.
+        assert records == [(3.0, 3, 3.0, [1.0, 1.0])]
+        assert pinned
+
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("del+gap", 2.5),
+            ("del+(1.0*stepT)", 1801.0),  # the MODEL1710030000 trigger shape
+            ("2*gap", 3.0),  # an ordinary name still evaluates as before
+            ("del", 1.0),  # bare name: the short circuit, never sympy
+            ("14", 14.0),
+        ],
+    )
+    def test_evaluate_threshold_parses_keyword_arithmetic(self, expr, expected):
+        param_idx = {"del": 0, "stepT": 1, "gap": 2}
+        values = [1.0, 1800.0, 1.5]
+        assert sw._evaluate_threshold(expr, param_idx, values, {}) == expected
+
+    def test_the_value_and_its_partials_agree_on_what_they_can_handle(self):
+        """The invariant the fix restores, and the one the docstring already
+        claimed: both come from the same round trip. A threshold with partials
+        but no value (or the reverse) makes the caller drop the crossing, which
+        is a silent loss of the entire gradient for that parameter."""
+        param_idx = {"del": 0, "gap": 1}
+        values = [1.0, 1.5]
+        for expr in ("del+gap", "del*2+gap", "gap-del", "del^2"):
+            value = sw._evaluate_threshold(expr, param_idx, values, {})
+            partials = cg._derived_expr_partials_numeric(
+                expr, set(param_idx), param_idx, values, {}, warn_on_failure=False
+            )
+            assert (value is None) == (not partials), (
+                f"{expr!r}: value={value} but partials={partials}"
+            )
+
+    def test_a_derived_keyword_threshold_chain_rules_through(self, tmp_path):
+        """The keyword name need not appear in the condition at all: ``base =
+        del+gap`` is a ConstantExpression, and inlining runs *before* the parse,
+        so ``t >= base+lead`` still hands ``del+gap+lead`` to sympy. This is the
+        ordering the fix depends on — alias after inlining, not before."""
+        text = SWITCHED.replace(
+            "    5 sigma   3.0  # Constant\n",
+            "    5 del     1.0  # Constant\n"
+            "    8 gap     1.0  # Constant\n"
+            "    9 lead    1.0  # Constant\n"
+            "   10 base    del+gap  # ConstantExpression\n",
+        ).replace("if(t>=sigma,beta,0)*I", "if(t>=base+lead,beta,0)*I")
+        core = _model(tmp_path, text)._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None, reason
+        records, _pinned = sw.compute_switch_time_sens(core, ["del", "gap", "lead"], 0.0, 100.0)
+        assert records == [(3.0, 3, 3.0, [1.0, 1.0, 1.0])]
+
+    def test_colliding_aliases_bail_rather_than_merge(self):
+        """``_sympy_symbol_alias_map`` returns ``None`` when two parameters would
+        share one symbol. Evaluating anyway would silently substitute one
+        parameter's value for the other's, so ``None`` (which makes the caller
+        decline the crossing) is the only safe answer."""
+        param_idx = {"del": 0, "_BNG_KW_del": 1}
+        assert sw._evaluate_threshold("del+_BNG_KW_del", param_idx, [1.0, 2.0], {}) is None
+
+
 # ─── one predicate, two callers ────────────────────────────────────────────
 
 
