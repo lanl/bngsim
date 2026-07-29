@@ -433,6 +433,41 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A switch-time crossing now resumes on the branch it just crossed into, so
+  forward sensitivities stop dying at fitted `if(t>=p, …)` onsets (issue #82).**
+  The issue #48 stop time lands `t` exactly on the crossing `t*`, but the `if()`
+  condition is read off the *counter species*, and that counter is integrated:
+  it came back **1–2e-14 below** the threshold whose value defines `t*`. So the
+  `CVodeReInit` at the crossing re-entered on the **before** branch, and the
+  discontinuity fell inside the first step after the restart — the one thing the
+  stop time exists to prevent. CVODES sized `h` from the pre-switch RHS
+  (identically zero on the motivating model: no transmission, no distancing),
+  every corrector answered with the post-switch RHS, and the error test failed at
+  every step size down to ~1e-10: seven failures, no step completed,
+  `CV_ERR_FAILURE` **at the crossing**.
+
+  The clock is now set to the threshold (one ulp above, so a strict `>` lands on
+  the after-branch too) before the restart. `t*` is *defined* as the time a
+  unit-rate counter reaches that threshold, so this corrects accumulated
+  integration error rather than perturbing the state; a discrepancy too large to
+  be roundoff is left alone, since that would mean the crossing was detected in
+  the wrong place and moving state would only hide it.
+
+  Which side of the threshold the last bits fell on was deterministic but
+  effectively arbitrary, which is why issue #82 presented as isolated spikes in
+  parameter space, moved non-monotonically with `rtol` (1e-7 fine, 1e-8 fatal,
+  1e-9 fine) and ignored `max_steps` entirely. On `Lin-2021/nyc_multiphase` at
+  the published MAP, sensitivity w.r.t. `t0` failed while the plain solve and
+  sensitivity w.r.t. `beta`/`fD` succeeded. Over 200 parameter vectors drawn from
+  that job's own `uniform_var` box (5 seeds), the switch-time sensitivity solve
+  went from **losing 25% of points the plain solve integrated** to **200/200**,
+  with the gradient unchanged wherever it previously survived.
+
+  Diagnosis note for the issue's own hypothesis: this is **not** the CVODES
+  difference quotient. The analytic Functional sensitivity RHS from the #55 chain
+  is engaged on this model and the failure was unchanged by it, so #82 was not
+  closed by #66/#67/#68 landing.
+
 - **The Michaelis–Menten free substrate is no longer clamped to zero, so the
   interpreted and compiled backends stop disagreeing and the emitted Jacobian
   stops contradicting the emitted RHS beside it (issue #93).** `compute_rxn_rate`

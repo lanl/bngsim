@@ -2990,6 +2990,37 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         rhs_on_branch(-eps_clock, sw_f_minus);
         rhs_on_branch(+eps_clock, sw_f_plus);
 
+        // ── Land the clock ON its threshold, not a few ulp short (issue #82) ──
+        // The stop time puts t exactly on t*, but the condition is read off the
+        // CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
+        // 1–2e-14 BELOW the threshold it is supposed to have reached. So the
+        // restart below re-enters on the *before* branch and the discontinuity
+        // lands inside the first step after the restart — the one place the stop
+        // time exists to prevent it. CVODES then sizes h from the pre-switch RHS
+        // (identically 0 on this model: no transmission, no distancing), every
+        // corrector answers with the post-switch RHS, and the error test fails at
+        // every h down to ~1e-10 — 7 failures, no step completed, CV_ERR_FAILURE
+        // at the crossing. Which side of the threshold the last bits fall on is
+        // deterministic but effectively arbitrary, which is why issue #82 looks
+        // like isolated spikes in parameter space and moves non-monotonically
+        // with rtol: a fit lost 25% of otherwise-integrable candidates to it.
+        //
+        // t* is DEFINED as the time the clock reaches `threshold` (a unit-rate
+        // counter, so t* = threshold − offset exactly), so setting the clock
+        // there is a correction of accumulated integration error, not a
+        // perturbation. nextafter puts it on the after-branch of a strict `>` as
+        // well as a `>=`, at a cost of one ulp. Discrepancies too large to be
+        // roundoff are left alone: those would mean the crossing was detected in
+        // the wrong place, and silently moving state would only hide it.
+        if (!time_clock) {
+            const size_t clk = static_cast<size_t>(sw.clock_species_idx0);
+            const double drift = y_data[clk] - sw.threshold;
+            const double drift_max = 1e-9 * std::max(std::fabs(sw.threshold), 1.0);
+            if (drift < 0.0 && -drift <= drift_max) {
+                y_data[clk] = std::nextafter(sw.threshold, std::numeric_limits<double>::infinity());
+            }
+        }
+
         // Restore the evaluator to the true crossing state so the resumed
         // integration (and any downstream reader) sees x(t*), not the nudge.
         for (int i = 0; i < ns; ++i) {
