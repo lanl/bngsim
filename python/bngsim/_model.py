@@ -69,6 +69,7 @@ class Model:
         "_periodic_disc_max_step",
         "_want_output_sens",
         "_named_conc_states",
+        "_named_sens_seeds",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -187,6 +188,14 @@ class Model:
         # concentrations()/reset()) so today's single-slot behavior is preserved
         # byte-for-byte. Carried through clone().
         self._named_conc_states: dict[str, np.ndarray] = {}
+        # Issue #81: each named snapshot's forward-sensitivity seed dx/dθ, when it
+        # had one at save time — i.e. when the snapshot is a pre-equilibrated
+        # state whose ∂x/∂θ is nonzero. Maps the same label to
+        # (seed (n_species, n_params), param_names), so restore_concentrations()
+        # puts back the state AND its θ-derivative; a state restored without it
+        # would be re-seeded as a fresh start (∂x(0)/∂θ = 0), which is wrong
+        # rather than approximate. Labels with no seed are simply absent.
+        self._named_sens_seeds: dict[str, tuple[np.ndarray, list[str]]] = {}
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -493,6 +502,11 @@ class Model:
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)
         m._named_conc_states = {k: v.copy() for k, v in self._named_conc_states.items()}
+        # Issue #81: and each snapshot's dx/dθ, so the clone's restore is as
+        # faithful as the parent's (the live/baseline seeds ride the C++ clone).
+        m._named_sens_seeds = {
+            k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
+        }
         return m
 
     # ─── SSA validation ───────────────────────────────────────────────────
@@ -635,6 +649,15 @@ class Model:
         A named snapshot captures only the species concentrations (the bulk
         state vector, ordered like :attr:`species_names`); parameters and the
         current time are not part of it, matching BNG ``resetConcentrations``.
+
+        A snapshot taken of a *pre-equilibrated* state also captures that state's
+        forward-sensitivity matrix ``dx/dθ`` when one is pending, so
+        :meth:`restore_concentrations` puts the θ-derivative back with the
+        concentrations (issue #81). Without it, a restored equilibrated state
+        would be re-seeded as a fresh start (``∂x(0)/∂θ = 0``) — wrong, not
+        approximate, since the restored initial condition *is* a function of θ.
+        The unlabeled form hands the derivative to the new IC baseline instead,
+        so :meth:`reset` restores it too.
         """
         if label is None:
             self._core.save_concentrations()
@@ -642,7 +665,17 @@ class Model:
         # A named snapshot is a copy of the live state vector; storing get_state()
         # (which already returns a fresh array) is safe, but copy defensively so a
         # later set_state alias can never mutate a stored snapshot.
-        self._named_conc_states[str(label)] = np.array(self._core.get_state(), dtype=np.float64)
+        key = str(label)
+        self._named_conc_states[key] = np.array(self._core.get_state(), dtype=np.float64)
+        # ...and its θ-derivative, when this state carries one (issue #81).
+        core = self._core
+        if core.has_pending_sensitivity_seed:
+            self._named_sens_seeds[key] = (
+                np.array(core.pending_sensitivity_seed(), dtype=np.float64),
+                list(core.pending_sensitivity_seed_param_names),
+            )
+        else:
+            self._named_sens_seeds.pop(key, None)
 
     def restore_concentrations(self, label: str | None = None) -> None:
         """Restore species concentrations from a saved snapshot.
@@ -657,6 +690,12 @@ class Model:
             conditions, or the last unlabeled :meth:`save_concentrations`). When a
             ``label`` is given, restores the named snapshot saved by
             ``save_concentrations(label)``.
+
+        A snapshot saved with a forward-sensitivity seed (a pre-equilibrated
+        state — see :meth:`save_concentrations`) restores that ``dx/dθ`` along
+        with the concentrations, so a following
+        ``run(carry_sensitivities=True)`` measures from the right seed
+        (issue #81).
 
         Raises
         ------
@@ -674,7 +713,16 @@ class Model:
                 f"No saved concentration state named {key!r}. "
                 f"Saved states: {known}. Call save_concentrations({key!r}) first."
             )
+        # set_state drops any pending seed (it cannot know an externally supplied
+        # state's derivative) — so re-install this snapshot's own, if it has one.
         self._core.set_state(snapshot)
+        seeded = self._named_sens_seeds.get(key)
+        if seeded is not None:
+            seed, names = seeded
+            self._core.set_pending_sensitivity_seed(seed, names)
+            # The restored state is a θ-dependent initial condition: fresh-start
+            # seeding would be wrong, so keep the "needs carry_sensitivities" arm.
+            self._core.ic_state_dirty = True
 
     def has_saved_concentrations(self, label: str | None = None) -> bool:
         """Whether a named concentration snapshot is available to restore.

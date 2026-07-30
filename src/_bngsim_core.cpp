@@ -926,12 +926,17 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "ordered like species_names(). O(n_species), one Python call (GH #102).")
 
         // ── Pre-equilibration / carry-over sensitivity state (GH #210) ───────
-        .def_property_readonly(
-            "ic_state_dirty", &bngsim::NetworkModel::ic_state_dirty,
-            "True iff the current species state is carried-over dynamics from a "
-            "previous run() (not a fresh initial condition). Forward sensitivities "
-            "requested on a dirty state require carry_sensitivities=True (else "
-            "they raise). Cleared by reset()/save_concentrations() (GH #210).")
+        .def_property("ic_state_dirty", &bngsim::NetworkModel::ic_state_dirty,
+                      &bngsim::NetworkModel::set_ic_state_dirty,
+                      "True iff the current species state is carried-over dynamics from a "
+                      "previous run() (not a fresh initial condition). Forward sensitivities "
+                      "requested on a dirty state require carry_sensitivities=True (else "
+                      "they raise). Cleared by reset() — unless the IC baseline carries its "
+                      "own dx/dθ (GH #81) — and by save_concentrations() when there is no "
+                      "carried derivative to hand the new baseline (GH #210). Writable so a "
+                      "protocol primitive that restores a snapshot together with its dx/dθ "
+                      "(Simulator.parameter_scan) can put the flag back as it found it; "
+                      "setting it by hand otherwise just re-arms (or defeats) the raise.")
         .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },
@@ -960,6 +965,47 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "pending_sensitivity_seed_param_names",
             &bngsim::NetworkModel::pending_sens_seed_param_names,
             "Parameter names labeling the columns of pending_sensitivity_seed() (GH #210).")
+        .def(
+            "set_pending_sensitivity_seed",
+            [](bngsim::NetworkModel &self,
+               py::array_t<double, py::array::c_style | py::array::forcecast> arr,
+               std::vector<std::string> param_names) {
+                if (arr.ndim() != 2)
+                    throw py::value_error("set_pending_sensitivity_seed expects a 2-D "
+                                          "(n_species, n_params) array");
+                if (param_names.empty() && arr.size() == 0) {
+                    self.clear_pending_sens_seed();
+                    return;
+                }
+                if (arr.shape(0) != self.n_species())
+                    throw py::value_error("set_pending_sensitivity_seed: expected " +
+                                          std::to_string(self.n_species()) + " rows, got " +
+                                          std::to_string(arr.shape(0)));
+                if (arr.shape(1) != static_cast<py::ssize_t>(param_names.size()))
+                    throw py::value_error(
+                        "set_pending_sensitivity_seed: " + std::to_string(arr.shape(1)) +
+                        " columns but " + std::to_string(param_names.size()) +
+                        " param_names — the columns must be labeled 1:1");
+                const double *src = arr.data();
+                std::vector<double> seed(src, src + arr.size());
+                self.set_pending_sens_seed(std::move(seed), std::move(param_names));
+            },
+            py::arg("seed"), py::arg("param_names"),
+            "Install a carry-over forward-sensitivity seed dx/dθ from an "
+            "(n_species, n_params) ndarray whose columns are ``param_names``, as a "
+            "subsequent carry_sensitivities=True run would consume. This is the "
+            "write half of pending_sensitivity_seed(): it lets a protocol "
+            "primitive restore a species state TOGETHER WITH its θ-derivative — "
+            "set_state()/restore_concentrations() alone drop the derivative, which "
+            "is what blocked carrying sensitivities from a pre-equilibration into "
+            "a parameter scan (GH #81). An empty array with empty param_names "
+            "clears the pending seed.")
+        .def_property_readonly("has_baseline_sensitivity_seed",
+                               &bngsim::NetworkModel::has_baseline_sens_seed,
+                               "True iff the IC baseline itself carries a dx/dθ — i.e. "
+                               "save_concentrations() redefined the baseline to a pre-equilibrated "
+                               "state, so reset() returns to a θ-dependent initial condition and "
+                               "restores its derivative with it (GH #81).")
 
         // ── Functional analytical Jacobian (GH #76) ──────────────────────────
         // Python (bngsim._jacobian) reads this context, differentiates each

@@ -2470,6 +2470,188 @@ class Simulator:
             return [float(v) for v in np.geomspace(par_min, par_max, n)]
         return [float(v) for v in np.linspace(par_min, par_max, n)]
 
+    # ─── Scan-boundary sensitivity carry (issue #81) ────────────────────────
+
+    def _resolve_scan_sens_carry(
+        self, parameter: str, reset_conc: bool, reset_to: str | None
+    ) -> tuple[np.ndarray | None, list[str]]:
+        """Resolve the per-point ``∂x(0)/∂θ`` seed for a sensitivity scan.
+
+        A scan point's initial condition is the reset snapshot (or the previous
+        point's end-state), *not* the model's seed initial conditions. After a
+        pre-equilibration that snapshot is ``x_ss(θ)``, so the point's
+        forward-sensitivity seed is the equilibration's ``dx_ss/dθ``; seeding it
+        fresh would discard the equilibration's contribution and give derivatives
+        that are wrong rather than merely approximate (issue #81, and the reason
+        the scan used to refuse outright).
+
+        Returns ``(seed, names)`` — the ``(n_species, n_params)`` matrix each
+        point seeds from and the parameter names labeling its columns — or
+        ``(None, [])`` when this Simulator has no sensitivity columns and the scan
+        takes the plain path. Raises when a sensitivity scan cannot be made
+        correct, rather than returning a wrong gradient.
+        """
+        if not (self._sensitivity_params or self._sensitivity_ic):
+            return None, []
+
+        names = list(self._sensitivity_params)
+        if self._sensitivity_ic:
+            # The IC axis (∂y/∂y_k(0)) is meaningless across the boundary: the
+            # snapshot each point starts from is no longer the model's IC, so e_k
+            # is not a seed. Same posture as the single-run carry path in C++.
+            raise ValueError(
+                "parameter_scan / bifurcate do not support sensitivity_ic "
+                "(initial-condition axis) sensitivities: each point starts from a "
+                "snapshot rather than the model's initial conditions, so ∂y/∂y_k(0) "
+                "has no meaning across that boundary. Use sensitivity_params only, "
+                "or run_batch (which resets each point to the seed) for the IC axis."
+            )
+        if parameter in names:
+            # The scan overwrites the parameter per point, so the snapshot's
+            # ∂x/∂(that parameter) was taken at a different value of the same
+            # symbol — the two cannot be composed into one derivative.
+            raise ValueError(
+                f"parameter_scan / bifurcate cannot scan {parameter!r}: it is also a "
+                "sensitivity_params entry, and each point overwrites it. The carried "
+                f"∂x/∂{parameter} was accumulated at the pre-scan value, so composing it "
+                "with a point that pins the parameter to a scan value would mix two "
+                "values of one symbol. Scan a parameter you are not differentiating "
+                "(the usual dose / condition), or use run_batch for a sweep of a "
+                "differentiated parameter (each row re-seeds from the model seed)."
+            )
+
+        core = self._model._core
+        if reset_conc and reset_to is not None:
+            seeded = self._model._named_sens_seeds.get(str(reset_to))
+            seed, seed_names = seeded if seeded is not None else (None, [])
+            source = f"the saved state {reset_to!r}"
+            fix = (
+                f"save_concentrations({reset_to!r}) while the equilibrated dx/dθ is "
+                "pending (i.e. right after the equilibration run)"
+            )
+        else:
+            seed = core.pending_sensitivity_seed() if core.has_pending_sensitivity_seed else None
+            seed_names = list(core.pending_sensitivity_seed_param_names)
+            source = "the model's live state at scan invocation"
+            fix = (
+                "run the equilibration phase on this same Simulator with these "
+                "sensitivity_params and no reset in between"
+            )
+        if seed is None or list(seed_names) != names:
+            have = ", ".join(seed_names) if seed_names else "(none)"
+            raise ValueError(
+                "parameter_scan / bifurcate can only carry output sensitivities "
+                f"into a scan when {source} carries a matching forward-sensitivity "
+                "matrix dx/dθ: each point starts from that state, so its ∂x(0)/∂θ is "
+                "the carried derivative and re-seeding it fresh would be wrong, not "
+                f"approximate (issue #81). Requested sensitivity_params: {names}; "
+                f"carried columns: {have}. To fix, {fix} — note that a plain "
+                "(non-sensitivity) run, set_concentration(), or set_state() in "
+                "between drops the carried dx/dθ. For a sweep whose points start "
+                "from the model's own seed initial conditions, use run_batch."
+            )
+        return np.array(seed, dtype=np.float64), names
+
+    def _pending_scan_sens_seed(self, names: list[str], point_index: int) -> np.ndarray:
+        """The dx/dθ a continuation point inherits from the previous point's run."""
+        core = self._model._core
+        if not core.has_pending_sensitivity_seed or list(
+            core.pending_sensitivity_seed_param_names
+        ) != list(names):
+            raise SimulationError(
+                f"Continuation scan point {point_index} lost its carried "
+                "forward-sensitivity matrix dx/dθ: point "
+                f"{point_index - 1}'s run left no matching seed (columns "
+                f"{list(core.pending_sensitivity_seed_param_names)} vs requested "
+                f"{list(names)}). A continuation scan (reset_conc=False / bifurcate) "
+                "carries each point's ∂x(0)/∂θ from the previous point, so the chain "
+                "cannot be broken mid-scan (issue #81)."
+            )
+        return np.array(core.pending_sensitivity_seed(), dtype=np.float64)
+
+    def _install_scan_sens_seed(self, seed: np.ndarray, names: list[str]) -> None:
+        """Make ``seed`` the pending ∂x(0)/∂θ for the next per-point run."""
+        core = self._model._core
+        core.set_pending_sensitivity_seed(seed, names)
+        # The point's initial condition is a θ-dependent snapshot, so fresh-start
+        # seeding must stay refused: keep the carry-over arm engaged.
+        core.ic_state_dirty = True
+
+    def _seed_after_on_point(
+        self,
+        seed: np.ndarray,
+        names: list[str],
+        state_before: np.ndarray,
+        params_before: list[float],
+    ) -> np.ndarray:
+        """Fold an ``on_point`` hook's edits into the point's carried dx/dθ.
+
+        ``on_point`` exists to apply coupled ``setConcentration`` overrides — the
+        ligand dose of a dose-response scan. Assigning species *k* a literal value
+        makes that species' initial condition θ-independent, so its seed row
+        becomes ``∂x_k(0)/∂θ = 0`` while every other species keeps the carried
+        equilibration derivative. That is exactly what a literal assignment means,
+        and it is what ``set_concentration`` already documents about its own
+        θ-derivative.
+
+        Two things it cannot infer, and what happens instead:
+
+        * an override *computed from* a differentiated parameter (say a dose in
+          molecules that divides by a fitted volume) has a nonzero ``∂x_k(0)/∂θ``
+          this cannot see. A hook that needs one can install the right rows itself
+          with ``model._core.set_pending_sensitivity_seed(...)`` *after* its
+          concentration writes — a seed still pending when the hook returns is
+          taken verbatim.
+        * a hook that moves a differentiated parameter's *value* is refused: the
+          carried dx/dθ was accumulated at the pre-hook value, so the two cannot
+          be composed (the same argument as scanning a differentiated parameter).
+        """
+        core = self._model._core
+        for name, before in zip(names, params_before, strict=True):
+            if self._model.get_param(name) != before:
+                raise ValueError(
+                    f"on_point changed the sensitivity parameter {name!r} "
+                    f"({before!r} → {self._model.get_param(name)!r}). The carried "
+                    f"∂x/∂{name} was accumulated at the pre-hook value, so a point that "
+                    "overwrites it would mix two values of one symbol (issue #81). "
+                    "Use on_point for the point's conditions (doses, non-fitted "
+                    "parameters) only."
+                )
+        if core.has_pending_sensitivity_seed and list(
+            core.pending_sensitivity_seed_param_names
+        ) == list(names):
+            # Either the hook left the species state alone (the seed installed
+            # before it survived untouched), or it deliberately installed its own
+            # ∂x(0)/∂θ after writing concentrations. Both mean "use what's there".
+            return np.array(core.pending_sensitivity_seed(), dtype=np.float64)
+        changed = np.nonzero(np.asarray(self._model.get_state()) != np.asarray(state_before))[0]
+        seed = seed.copy()
+        if changed.size:
+            seed[changed, :] = 0.0
+        return seed
+
+    def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool]:
+        """Snapshot the model's carry-over sensitivity state (issue #81)."""
+        core = self._model._core
+        seed = (
+            np.array(core.pending_sensitivity_seed(), dtype=np.float64)
+            if core.has_pending_sensitivity_seed
+            else None
+        )
+        return seed, list(core.pending_sensitivity_seed_param_names), bool(core.ic_state_dirty)
+
+    def _restore_carryover_state(
+        self, snapshot: tuple[np.ndarray | None, list[str], bool]
+    ) -> None:
+        """Put back what :meth:`_capture_carryover_state` captured."""
+        seed, names, dirty = snapshot
+        core = self._model._core
+        if seed is None:
+            core.set_pending_sensitivity_seed(np.zeros((0, 0), dtype=np.float64), [])
+        else:
+            core.set_pending_sensitivity_seed(seed, names)
+        core.ic_state_dirty = dirty
+
     def parameter_scan(
         self,
         parameter: str,
@@ -2569,9 +2751,37 @@ class Simulator:
         Notes
         -----
         The persistent model + backend simulator are left as they were before
-        the call: the scanned parameter and the reset-target concentrations are
-        restored afterward, so a :class:`Simulator` can be scanned repeatedly
-        (and the returned trajectories, not the live model, are the product).
+        the call: the scanned parameter, the reset-target concentrations and the
+        carried sensitivity state are restored afterward, so a
+        :class:`Simulator` can be scanned repeatedly (and the returned
+        trajectories, not the live model, are the product).
+
+        **Output sensitivities across the scan boundary (issue #81).** On a
+        :class:`Simulator` built with ``sensitivity_params``, each point's
+        forward-sensitivity seed ``∂x(0)/∂θ`` is the *carried* ``dx/dθ`` of the
+        state it starts from — the pre-equilibration's steady-state sensitivity —
+        because that state, not the model's seed initial conditions, is the
+        point's initial condition. So a scan is run with sensitivities only when
+        that state carries a matching ``dx/dθ``:
+
+        * ``reset_conc=True`` — every point restores the reset target's state
+          *and* its ``dx/dθ``, then integrates with
+          ``carry_sensitivities=True``. The target must carry one: the live state
+          at invocation does after an equilibration run on this same
+          ``Simulator``, and a ``reset_to`` snapshot does when it was saved while
+          that ``dx/dθ`` was pending.
+        * ``reset_conc=False`` (:meth:`bifurcate`) — each point continues the
+          previous point's state *and* its ``dx/dθ``, so the whole continuation
+          is one differentiable protocol.
+
+        The scanned parameter must not be a ``sensitivity_params`` entry (each
+        point overwrites it, which cannot be composed with the derivative carried
+        into the point), ``sensitivity_ic`` is not supported across the boundary,
+        and an ``on_point`` hook may set species concentrations (a literal dose
+        zeroes that species' seed row) but not move a differentiated parameter.
+        Every one of those is a raise, never a silently-reseeded gradient. For a
+        sweep whose points start from the model's own seed initial conditions,
+        use :meth:`run_batch`.
         """
         self._require_interactive_backend_support()
         if steady_state and self._method != "ode":
@@ -2579,21 +2789,6 @@ class Simulator:
                 "steady_state=True is only supported for method='ode' "
                 f"(got method='{self._method}')."
             )
-        # A scan resets each point to a snapshot (or carries the prior point's
-        # state), so the per-point IC is not the model's seed. CVODES forward
-        # sensitivities would be mis-seeded across that boundary (∂y(0)/∂θ ≠ 0),
-        # so refuse rather than return silently-wrong derivatives — use run_batch
-        # for a seed-reset sensitivity scan (it clones + resets each point).
-        if self._sensitivity_params or self._sensitivity_ic:
-            raise ValueError(
-                "parameter_scan / bifurcate do not support output sensitivities: "
-                "each point resets to a snapshot rather than the seed initial "
-                "conditions, so the forward-sensitivity seed would be wrong across "
-                "that boundary. Build a Simulator without sensitivity_params for "
-                "the scan, or use run_batch (which resets each point to the seed) "
-                "for a sensitivity parameter sweep."
-            )
-
         values = self._resolve_scan_values(par_scan_vals, par_min, par_max, n_scan_pts, log_scale)
 
         # Validate the parameter and capture its pre-scan value so the model can
@@ -2614,6 +2809,17 @@ class Simulator:
         # model can be rewound afterward.
         invocation_state = self._model.get_state()
 
+        # Each point's forward-sensitivity seed ∂x(0)/∂θ (issue #81). A scan point
+        # starts from the snapshot, not the model seed, so re-seeding it fresh
+        # would be wrong; ``None`` = this Simulator has no sensitivity columns and
+        # the scan runs the plain path. Resolved after the reset-target validation
+        # above so a bad ``reset_to`` still reports itself, not a missing seed.
+        carry_seed, carry_names = self._resolve_scan_sens_carry(parameter, reset_conc, reset_to)
+        # ...and the carry-over state to put back afterward, so a scan still
+        # leaves the model exactly as it found it (the runs below both consume and
+        # overwrite the pending seed).
+        invocation_sens = self._capture_carryover_state()
+
         def _reset_point() -> None:
             if use_named:
                 self._model.restore_concentrations(reset_to)
@@ -2627,9 +2833,32 @@ class Simulator:
             for i, value in enumerate(values):
                 if reset_conc:
                     _reset_point()
+                # A continuation point (reset_conc=False) starts from the previous
+                # point's end-state, whose dx/dθ that run left pending — read it
+                # now, before anything below can clear it.
+                pt_sens_seed = carry_seed
+                if carry_seed is not None and not reset_conc and i > 0:
+                    pt_sens_seed = self._pending_scan_sens_seed(carry_names, i)
+                if pt_sens_seed is not None:
+                    # Restore it now: the per-point reset above (set_state /
+                    # restore_concentrations) drops the pending seed, and the
+                    # on_point hook needs to see the same state the run will.
+                    self._install_scan_sens_seed(pt_sens_seed, carry_names)
                 self._model.set_param(parameter, float(value))
                 if on_point is not None:
-                    on_point(self._model, float(value))
+                    if pt_sens_seed is None:
+                        on_point(self._model, float(value))
+                    else:
+                        # Watch what the hook does to the point's initial condition:
+                        # a literal setConcentration zeroes that species' seed row,
+                        # and moving a differentiated parameter is refused.
+                        state_before = self._model.get_state()
+                        params_before = [self._model.get_param(p) for p in carry_names]
+                        on_point(self._model, float(value))
+                        pt_sens_seed = self._seed_after_on_point(
+                            pt_sens_seed, carry_names, state_before, params_before
+                        )
+                        self._install_scan_sens_seed(pt_sens_seed, carry_names)
                 # Rebuild the backend so the scanned parameter (and any on_point
                 # rate-constant change) is picked up; run() then seeds from the
                 # model's current live concentrations.
@@ -2646,6 +2875,7 @@ class Simulator:
                     timeout=timeout,
                     steady_state=steady_state,
                     steady_state_tol=steady_state_tol,
+                    carry_sensitivities=pt_sens_seed is not None,
                 )
                 result.custom_attrs["scan_parameter"] = parameter
                 result.custom_attrs["scan_value"] = float(value)
@@ -2654,6 +2884,7 @@ class Simulator:
             # Leave the persistent model + simulator as we found them.
             self._model.set_param(parameter, original_value)
             self._model.set_state(invocation_state)
+            self._restore_carryover_state(invocation_sens)
             self._recreate_interactive_sim()
 
         if squeeze:

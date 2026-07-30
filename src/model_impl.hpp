@@ -200,6 +200,18 @@ struct NetworkModel::Impl {
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
 
+    // ── The IC baseline's own θ-derivative (GH #81) ───────────────────────────
+    // save_concentrations() redefines initial_conc to the *current* state, which
+    // in a pre-equilibration protocol is x_ss(θ) — a baseline whose ∂x(0)/∂θ is
+    // the carried dx/dθ, not zero. Stashing that derivative alongside the new
+    // baseline lets reset() restore the baseline WITH its derivative, instead of
+    // silently reverting a θ-dependent initial condition to fresh-start seeding.
+    // Empty ⇔ the baseline is θ-independent (literal .net ICs, or a
+    // save_concentrations() taken with no carried derivative), which is the
+    // pre-#81 behavior. clone() copies these with the baseline they describe.
+    std::vector<double> baseline_sens_seed;
+    std::vector<std::string> baseline_sens_seed_param_names;
+
     // RHS instrumentation counters (T1 — gate ODE RHS observable/function eval).
     // Diagnostics only: rhs_eval_count counts every compute_derivs_core() call;
     // rhs_obs_func_eval_count counts the subset of those calls that actually ran

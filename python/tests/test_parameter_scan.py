@@ -229,15 +229,28 @@ class TestScanErrors:
                 "k1", par_min=0.1, par_max=1.0, n_scan_pts=0, t_span=(0, 1), n_points=2
             )
 
-    def test_sensitivity_simulator_refused(self, simple_decay_net: Path):
-        """A scan resets each point off the seed, so per-point forward
-        sensitivities would be mis-seeded — refuse rather than mislead."""
+    def test_sensitivity_scan_without_a_carried_derivative_refused(self, reversible_net: Path):
+        """A scan point starts from the snapshot, not the seed ICs, so its
+        ∂x(0)/∂θ is that snapshot's carried dx/dθ. With nothing carried there is
+        no correct seed to use — refuse rather than mislead (issue #81; the carry
+        path itself is covered in test_preequilibration_sensitivity.py)."""
+        sim = bngsim.Simulator(
+            bngsim.Model.from_net(str(reversible_net)),
+            method="ode",
+            sensitivity_params=["kf"],
+        )
+        with pytest.raises(ValueError, match="carries a matching forward-sensitivity"):
+            sim.parameter_scan("kr", [0.1, 0.2], t_span=(0, 1), n_points=2)
+
+    def test_scanning_a_differentiated_parameter_refused(self, simple_decay_net: Path):
+        """Each point overwrites the scanned parameter, so a derivative carried
+        into the point w.r.t. that same parameter cannot be composed (issue #81)."""
         sim = bngsim.Simulator(
             bngsim.Model.from_net(str(simple_decay_net)),
             method="ode",
             sensitivity_params=["k1"],
         )
-        with pytest.raises(ValueError, match="do not support output sensitivities"):
+        with pytest.raises(ValueError, match="cannot scan 'k1'"):
             sim.parameter_scan("k1", [0.1, 0.2], t_span=(0, 1), n_points=2)
 
 

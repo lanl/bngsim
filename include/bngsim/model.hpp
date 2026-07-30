@@ -292,14 +292,17 @@ class NetworkModel {
     // the fresh load/reset ICs, and (b) thread the prior phase's final forward-
     // sensitivity matrix dx/dθ into the next phase's yS(0) seed.
 
-    // True iff the current species state is carried-over dynamics — i.e. it was
-    // produced by integrating a previous run() (whose θ-derivative dx/dθ is
-    // generally nonzero), as opposed to a fresh initial condition. The simulator
-    // sets it at each run's state write-back; reset()/save_concentrations()
-    // clear it. set_concentration()/set_state_from() (literal/external IC
-    // assignment, θ-independent) do NOT set it. Forward sensitivities requested
-    // on a dirty state without carry_sensitivities would be silently wrong
-    // (fresh seeding assumes ∂x(0)/∂θ = 0), so the simulator raises in that case.
+    // True iff the current species state's θ-derivative is NOT the fresh-start
+    // seed — i.e. the state was produced by integrating a previous run() (whose
+    // dx/dθ is generally nonzero) rather than being a θ-independent initial
+    // condition. The simulator sets it at each run's state write-back; reset()
+    // clears it unless the IC baseline itself carries a derivative (GH #81), and
+    // save_concentrations() clears it only when there is no carried derivative to
+    // hand the new baseline. set_concentration()/set_state_from()
+    // (literal/external IC assignment, θ-independent) do NOT set it. Forward
+    // sensitivities requested on a dirty state without carry_sensitivities would
+    // be silently wrong (fresh seeding assumes ∂x(0)/∂θ = 0), so the simulator
+    // raises in that case.
     bool ic_state_dirty() const;
     void set_ic_state_dirty(bool dirty);
 
@@ -308,13 +311,21 @@ class NetworkModel {
     // captured by the simulator at the end of a parameter-sensitivity run. The
     // accompanying parameter-name vector identifies the columns and must match
     // the next run's sensitivity_params for the seed to be consumed. Empty when
-    // no seed is pending. Cleared by reset()/save_concentrations()/
-    // set_concentration()/set_state_from() and by any non-sensitivity run
-    // (which advances state without tracking dx/dθ, invalidating the seed).
+    // no seed is pending. Cleared by set_concentration()/set_state_from() and by
+    // any non-sensitivity run (which advances state without tracking dx/dθ,
+    // invalidating the seed); reset() re-seeds it from the IC baseline's own
+    // derivative when there is one and clears it otherwise, and
+    // save_concentrations() hands it to the new baseline (GH #81).
     const std::vector<double> &pending_sens_seed() const;
     const std::vector<std::string> &pending_sens_seed_param_names() const;
     void set_pending_sens_seed(std::vector<double> seed, std::vector<std::string> param_names);
     void clear_pending_sens_seed();
+
+    // True iff the IC baseline (``species[].initial_conc``, as redefined by
+    // save_concentrations()) carries its own dx/dθ — i.e. reset() returns to a
+    // θ-dependent initial condition and restores that derivative with it. False
+    // for the literal .net/SBML ICs (GH #81).
+    bool has_baseline_sens_seed() const;
 
     // ─── Table functions ────────────────────────────────────────────────────
 
