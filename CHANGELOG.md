@@ -216,6 +216,94 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **Forward sensitivities carry from a pre-equilibration into a parameter scan
+  (issue #81).** A dose-response experiment that pre-equilibrates and then scans
+  could not be fit by a gradient method: `parameter_scan` / `bifurcate` refused
+  every sensitivity-configured `Simulator` outright. The refusal was right —
+  each point starts from the equilibrated snapshot, so re-seeding it as if it
+  were the model's seed ICs discards the `dx/dθ` accumulated during the
+  equilibration — but there was no *correct* option to offer instead. Now there
+  is: the state and its θ-derivative travel together.
+
+  `carry_sensitivities=True` (#210) already had the right semantics for a
+  sequential two-phase run; what was missing was that every primitive which
+  *restores* a state dropped the derivative. Three did, and each is fixed at the
+  level where the state lives:
+
+  * `Model.save_concentrations()` redefines the IC baseline to the current state.
+    That state's `dx/dθ` did not change, so the new baseline now **inherits** it
+    (stashed alongside `initial_conc`), and `reset()` restores both. A baseline
+    saved with nothing carried is θ-independent literal ICs, i.e. the pre-#81
+    fresh start — so `reset()` on an ordinary model still means "fresh start",
+    and the every-action-reset backends are unaffected.
+  * `Model.save_concentrations(label=…)` / `restore_concentrations(label)` capture
+    and restore a named snapshot's `dx/dθ` the same way.
+  * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
+    **and** its `dx/dθ` per point, integrate each point with
+    `carry_sensitivities=True`, and leave the model — state, scanned parameter,
+    carried derivative, dirty flag — exactly as they found it. A continuation
+    scan (`reset_conc=False`) instead chains each point's `dx/dθ` from the
+    previous point, making the whole sweep one differentiable protocol.
+
+  The `NetworkModel` seed accessor gained its write half
+  (`set_pending_sensitivity_seed(seed, param_names)`), which is what lets a
+  protocol restore a state together with its derivative;
+  `has_baseline_sensitivity_seed` introspects the baseline's own.
+
+  Measured against a closed form (`preequil_prod_deg.net`: `dA/dt = k_prod −
+  (k_deg + dose)·A` equilibrated at `dose=0`, so both `dA/dθ` columns are exact
+  for every dose), scanning four doses off one equilibration:
+
+  | dose | carried (this change) | re-seeded per point, `t=0` | re-seeded, `t=3` (`k_prod` / `k_deg`) |
+  | --- | --- | --- | --- |
+  | 0.5 | 1.2e-10 | **100%** | 9.5% / 15.3% |
+  | 1.0 | 1.7e-10 | **100%** | 3.3% / 8.4% |
+  | 2.0 | 2.3e-10 | **100%** | 0.3% / 1.3% |
+  | 4.0 | 1.2e-09 | **100%** | 0.0% / 0.0% |
+
+  The trajectories are identical to 1e-7 in every row — the seed is the only
+  difference — and the same scan scored at each point's own steady state
+  (`steady_state=True`) matches `dA_ss/dθ = (1/λ, −k_prod/λ²)` to 1e-12. Note the
+  shape of the wrong column: re-seeding is 100% wrong at `t=0` and its error
+  *decays* with dose, so it is worst at the low-dose end of a dose-response —
+  the informative part of the fit — and looks fine at saturating dose. That is
+  the failure mode a fit cannot detect on its own.
+
+  On the issue's own model family (`IGF1R_model_v1`, 589 species / 4198
+  reactions, equilibrated at a basal ligand dose so 1107 of 1178 carried seed
+  entries are live, then scanned over three doses applying each with `on_point` +
+  `set_concentration`): `d(pY980)/d{kp, kdp}` matches central FD of the measured
+  observable over the **full** protocol at **1e-8 to 1e-9**, stable across
+  `h/p = 1e-3, 1e-4, 1e-5` (so it is signal, not FD noise), and the whole scan
+  runs off ONE equilibration in 2.0 s. The scan is also bit-identical to the
+  hand-rolled equivalent — restore the snapshot, install the seed, `run(
+  carry_sensitivities=True)` — on every point.
+
+  This also closes a silent version of the same defect that needed no scan at
+  all: `equilibrate → save_concentrations() → run(sensitivities)` used to drop the
+  carry *and* clear the "state is carried-over" flag, so it re-seeded a
+  θ-dependent initial condition as a fresh start and returned wrong derivatives
+  with no warning (100% off at `t=0` on the model above). The BNG action ordering
+  `simulate(steady_state) → saveConcentrations() → parameter_scan` is exactly
+  that path, and now carries correctly.
+
+  Refusals (never a silently re-seeded gradient) when the reset target carries no
+  matching `dx/dθ`, when the scanned parameter is itself a `sensitivity_params`
+  entry (each point overwrites it, so the derivative carried into the point was
+  taken at a different value of the same symbol), when `sensitivity_ic` is
+  requested across the boundary, or when an `on_point` hook moves a differentiated
+  parameter. An `on_point` hook *may* apply the usual coupled `setConcentration`
+  dose override: a literal assignment to species *k* zeroes that species' seed
+  row (`∂x_k(0)/∂θ = 0` is what a literal means) and leaves the rest carried. The
+  one case bngsim cannot infer is an override *computed from* a differentiated
+  parameter; such a hook can install the correct rows itself with
+  `set_pending_sensitivity_seed` after its concentration writes, and a seed still
+  pending when the hook returns is used verbatim. `run_batch` remains the right
+  primitive for a sweep whose points start from the model's own seed ICs.
+
+  Side effect of the same restore work: a plain (non-sensitivity) scan no longer
+  leaves the model marked as carried-over dynamics — it rewinds the state it
+  advanced, so the flag it rewinds to is the one it found.
 - **Forward sensitivity w.r.t. an onset time encoded as an SBML *event* (issue
   #49).** A switch time written as `piecewise(kin, time >= T0, 0)` has been
   differentiable since #48; the *same* switch, same dynamics, same gradient,

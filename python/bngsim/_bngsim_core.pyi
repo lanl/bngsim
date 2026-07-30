@@ -183,6 +183,10 @@ class NetworkModel:
         """
         Set multiple parameters from a dict
         """
+    def set_pending_sensitivity_seed(self, seed: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], param_names: collections.abc.Sequence[str]) -> None:
+        """
+        Install a carry-over forward-sensitivity seed dx/dθ from an (n_species, n_params) ndarray whose columns are ``param_names``, as a subsequent carry_sensitivities=True run would consume. This is the write half of pending_sensitivity_seed(): it lets a protocol primitive restore a species state TOGETHER WITH its θ-derivative — set_state()/restore_concentrations() alone drop the derivative, which is what blocked carrying sensitivities from a pre-equilibration into a parameter scan (GH #81). An empty array with empty param_names clears the pending seed.
+        """
     def set_state(self, state: typing.Annotated[numpy.typing.ArrayLike, numpy.float64]) -> None:
         """
         Bulk-assign all species concentrations from a 1-D float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).
@@ -198,6 +202,11 @@ class NetworkModel:
         Conservation laws detected from stoichiometry matrix
         """
     @property
+    def has_baseline_sensitivity_seed(self) -> bool:
+        """
+        True iff the IC baseline itself carries a dx/dθ — i.e. save_concentrations() redefined the baseline to a pre-equilibrated state, so reset() returns to a θ-dependent initial condition and restores its derivative with it (GH #81).
+        """
+    @property
     def has_pending_sensitivity_seed(self) -> bool:
         """
         True iff a forward-sensitivity carry-over seed (dx/dθ) from a prior phase is pending, ready to seed a carry_sensitivities=True run (GH #210).
@@ -205,8 +214,11 @@ class NetworkModel:
     @property
     def ic_state_dirty(self) -> bool:
         """
-        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset()/save_concentrations() (GH #210).
+        True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset() — unless the IC baseline carries its own dx/dθ (GH #81) — and by save_concentrations() when there is no carried derivative to hand the new baseline (GH #210). Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
         """
+    @ic_state_dirty.setter
+    def ic_state_dirty(self, arg0: bool) -> None:
+        ...
     @property
     def load_warnings(self) -> list[str]:
         ...

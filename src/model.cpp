@@ -127,6 +127,11 @@ NetworkModel NetworkModel::clone() const {
     copy.impl_->ic_state_dirty = impl_->ic_state_dirty;
     copy.impl_->pending_sens_seed = impl_->pending_sens_seed;
     copy.impl_->pending_sens_seed_param_names = impl_->pending_sens_seed_param_names;
+    // Likewise the IC baseline's own dx/dθ (GH #81): the clone copies
+    // `species[].initial_conc` above, so it must copy that baseline's derivative
+    // too or the clone's reset() would forget it.
+    copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
+    copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
 
     // Create evaluator that shares the parser with the original
     copy.impl_->evaluator = impl_->evaluator->clone_empty();
@@ -314,20 +319,39 @@ void NetworkModel::reset() {
         s.concentration = s.initial_conc;
     }
     impl_->current_time = 0.0;
-    // Fresh ICs again: no carry-over, no pending sensitivity seed (GH #210).
-    impl_->ic_state_dirty = false;
-    clear_pending_sens_seed();
+    // Back at the IC baseline. When that baseline is θ-independent (the literal
+    // .net ICs) this is a fresh start: no carry-over, no pending seed (GH #210).
+    // But save_concentrations() can have redefined the baseline to a
+    // pre-equilibrated x_ss(θ), in which case the baseline carries its own
+    // dx/dθ — restore that with it rather than silently reverting a
+    // θ-dependent initial condition to fresh-start seeding (GH #81).
+    if (impl_->baseline_sens_seed.empty()) {
+        impl_->ic_state_dirty = false;
+        clear_pending_sens_seed();
+    } else {
+        impl_->pending_sens_seed = impl_->baseline_sens_seed;
+        impl_->pending_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
+        impl_->ic_state_dirty = true;
+    }
 }
 
 void NetworkModel::save_concentrations() {
     for (auto &s : impl_->species) {
         s.initial_conc = s.concentration;
     }
-    // The current state is now the baseline ICs, so a subsequent reset()
-    // returns here — treat it as a fresh start and drop any carried-over
-    // sensitivity seed, which referenced the old IC baseline (GH #210).
-    impl_->ic_state_dirty = false;
-    clear_pending_sens_seed();
+    // The current state is now the baseline ICs, so a subsequent reset() returns
+    // here. GH #81: the state itself did not change, so neither did its
+    // θ-derivative — the new baseline INHERITS the carried dx/dθ (a BNG
+    // pre-equilibrate → saveConcentrations → scan protocol otherwise loses it
+    // and silently re-seeds a θ-dependent IC as a fresh start). Stash it as the
+    // baseline's own derivative for reset(), and keep it pending so the next
+    // phase can carry. With no carried derivative the baseline is θ-independent
+    // literal ICs and this is the pre-#81 fresh start.
+    impl_->baseline_sens_seed = impl_->pending_sens_seed;
+    impl_->baseline_sens_seed_param_names = impl_->pending_sens_seed_param_names;
+    if (impl_->baseline_sens_seed.empty()) {
+        impl_->ic_state_dirty = false;
+    }
 }
 
 void NetworkModel::set_concentration(const std::string &name, double value) {
@@ -396,6 +420,8 @@ void NetworkModel::clear_pending_sens_seed() {
     impl_->pending_sens_seed.clear();
     impl_->pending_sens_seed_param_names.clear();
 }
+
+bool NetworkModel::has_baseline_sens_seed() const { return !impl_->baseline_sens_seed.empty(); }
 
 // ─── Accessors ───────────────────────────────────────────────────────────────
 

@@ -19,6 +19,9 @@ class of regression this file is meant to catch.
   * `table_functions`       — `test_clone_with_table_function`
   * `events`                — `test_clone_with_events_full_l3_flags`
   * Species variable rebind — `test_clone_event_trigger_references_species`
+  * `ic_state_dirty` +
+    `pending_sens_seed`     — `test_clone_carries_pending_sensitivity_seed`
+  * `baseline_sens_seed`    — `test_clone_carries_baseline_sensitivity_seed`
 
 `SharedModelData` (model_impl.hpp:32-64) is shared via `shared_ptr<const>`
 post-build; clones share the pointer, so the only correctness assertion
@@ -392,3 +395,56 @@ def test_clone_reset_independent():
     assert clone.get_concentration("S") == 100.0
     # Original still has 50
     assert model.get_concentration("S") == 50.0
+
+
+# ─── Carry-over sensitivity state (GH #210, issue #81) ───────────────────────
+
+
+def _seeded_model():
+    """A model carrying a pending dx/dθ, as a sensitivity run's write-back leaves it."""
+    b = ModelBuilder()
+    b.add_parameter("k", 0.5)
+    s_idx = b.add_species("S", 100.0)
+    b.add_reaction([s_idx], [], "elementary", "k")
+    model = b.build()
+    model.set_pending_sensitivity_seed(np.array([[2.5]]), ["k"])
+    model.ic_state_dirty = True
+    return model
+
+
+def test_clone_carries_pending_sensitivity_seed():
+    """A clone is a faithful snapshot of the live state, so it must carry that
+    state's θ-derivative and the "not fresh-start seedable" flag with it. Covers:
+    `ic_state_dirty`, `pending_sens_seed` (+ names).
+    """
+    model = _seeded_model()
+    clone = model.clone()
+    assert clone.ic_state_dirty is True
+    assert clone.has_pending_sensitivity_seed is True
+    np.testing.assert_array_equal(clone.pending_sensitivity_seed(), np.array([[2.5]]))
+    assert list(clone.pending_sensitivity_seed_param_names) == ["k"]
+    # ...and the two are independent afterward.
+    clone.set_pending_sensitivity_seed(np.array([[9.0]]), ["k"])
+    np.testing.assert_array_equal(model.pending_sensitivity_seed(), np.array([[2.5]]))
+
+
+def test_clone_carries_baseline_sensitivity_seed():
+    """save_concentrations() hands the carried dx/dθ to the new IC baseline; the
+    clone copies `initial_conc`, so it must copy that baseline derivative too or
+    the clone's reset() would silently return to a θ-dependent IC with a
+    fresh-start seed. Covers: `baseline_sens_seed` (+ names), issue #81.
+    """
+    model = _seeded_model()
+    model.set_concentration("S", 42.0)  # a literal write drops the *pending* seed...
+    model.set_pending_sensitivity_seed(np.array([[2.5]]), ["k"])  # ...re-arm it
+    model.save_concentrations()  # baseline := 42.0, inheriting dx/dθ = 2.5
+    assert model.has_baseline_sensitivity_seed is True
+
+    clone = model.clone()
+    assert clone.has_baseline_sensitivity_seed is True
+    clone.set_concentration("S", 7.0)  # move off the baseline, dropping the seed
+    assert clone.has_pending_sensitivity_seed is False
+    clone.reset()
+    assert clone.get_concentration("S") == 42.0
+    assert clone.ic_state_dirty is True
+    np.testing.assert_array_equal(clone.pending_sensitivity_seed(), np.array([[2.5]]))

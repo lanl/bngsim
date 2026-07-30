@@ -258,9 +258,10 @@ grad = r.output_sensitivities("observable:R_active")   # correct across the boun
 state *without* `carry_sensitivities=True` **raises** (fresh seeding would
 silently assume `∂x(0)/∂θ = 0`). So does `carry_sensitivities=True` when no
 matching seed is available — e.g. the equilibration phase was not run with the
-same `sensitivity_params`, or a `reset()` (as an SBML/RoadRunner every-action
-reset would do) wiped the carry-over. A fresh single sensitivity run is
-unaffected, and `reset()` returns to fresh-start seeding.
+same `sensitivity_params`, a plain (non-sensitivity) run advanced the state
+without tracking `dx/dθ`, or a `reset()` (as an SBML/RoadRunner every-action
+reset would do) returned to a θ-independent IC baseline and so wiped the
+carry-over. A fresh single sensitivity run is unaffected.
 
 Scope (matching the new-era pre-equilibration surface): the equilibration is a
 **steady state** (PEtab `time = -inf`) and the perturbation is an **absolute**
@@ -271,3 +272,63 @@ with **events** warns, since event-time sensitivity discontinuities are handled
 separately. The carried seed is model-level state alongside the concentrations,
 introspectable via `model._core.ic_state_dirty` /
 `model._core.has_pending_sensitivity_seed`.
+
+### …and into a parameter scan (dose-response, issue #81)
+
+A dose-response experiment pre-equilibrates **once** and then scans, and every
+scan point starts from that same equilibrated state — so each point's seed is
+the *same* `dx_ss/dθ`. Snapshot / restore primitives therefore carry the
+derivative with the state:
+
+* `save_concentrations()` (unlabeled) redefines the IC baseline to the current
+  state, so the new baseline **inherits** its `dx/dθ` — the state did not change,
+  so neither did its derivative — and `reset()` restores both. A baseline saved
+  with no carried derivative is θ-independent literal ICs, i.e. fresh-start
+  seeding as before.
+* `save_concentrations(label=...)` / `restore_concentrations(label)` capture and
+  restore a named snapshot's `dx/dθ` the same way.
+* `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
+  **and** its `dx/dθ` per point and integrate each point with
+  `carry_sensitivities=True`, then leave the model (state, parameter, carried
+  derivative) exactly as they found it.
+
+```python
+sim = bngsim.Simulator(model, method="ode", sensitivity_params=["kf", "kr", "kdeg"])
+
+# Pre-equilibrate once, with the sensitivity_params, so dx_ss/dθ is captured.
+sim.run(t_span=(0, 1e6), n_points=2, steady_state=True)
+
+# Scan the dose. Each point resets to the equilibrated state *and* its dx_ss/dθ.
+points = sim.parameter_scan(
+    "L_0", par_min=1e-3, par_max=1e2, n_scan_pts=12, log_scale=True,
+    t_span=(0, 600), n_points=61, steady_state=True,
+)
+grads = [p.output_sensitivities("observable:pReceptor") for p in points]
+```
+
+A continuation scan (`bifurcate`, `reset_conc=False`) instead carries each
+point's state *and* `dx/dθ` from the previous point, making the whole sweep one
+differentiable protocol.
+
+**Still no silent wrong derivatives.** A sensitivity scan raises — rather than
+re-seeding a point fresh — when:
+
+| Situation | Why it cannot be answered |
+| --- | --- |
+| the reset target carries no matching `dx/dθ` | nothing to seed from; the equilibration was not run on this `Simulator` with these `sensitivity_params`, or a plain run / `set_concentration()` / `set_state()` dropped it |
+| the scanned parameter is a `sensitivity_params` entry | each point overwrites it, so the derivative carried *into* the point was taken at a different value of the same symbol |
+| `sensitivity_ic` is requested | the point starts from a snapshot, not the model's ICs, so `∂y/∂y_k(0)` has no meaning across the boundary |
+| an `on_point` hook moves a differentiated parameter | same composition problem as scanning one |
+
+An `on_point` hook *may* apply the usual coupled `setConcentration` dose
+override: assigning species *k* a literal value makes `∂x_k(0)/∂θ = 0` for that
+species while the rest keep the carried derivative, which is what a literal
+assignment means. An override computed *from* a differentiated parameter is the
+one case bngsim cannot infer — such a hook should install the correct rows itself
+with `model._core.set_pending_sensitivity_seed(seed, param_names)` after its
+concentration writes, and a seed still pending when the hook returns is used
+verbatim.
+
+For a sweep whose points start from the model's own seed initial conditions (no
+pre-equilibration), use `run_batch` — it clones and resets each row, so
+fresh-start seeding is the correct one.
