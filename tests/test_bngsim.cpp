@@ -323,6 +323,126 @@ int test_find_steady_state_methods() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Test: steady_state_mask — solving f(y) = 0 on a subspace (issue #74)
+//
+// pure_sink_conserved.net is $S -> A -> Ad with a conserved binder (B + AB =
+// Btot). Ad is a write-only accumulator: dAd/dt = kdeg*A* = ksyn = 2 forever, so
+// ||f||_2/n has a floor at sqrt(4)/5 = 0.4 and the unmasked solve cannot
+// converge however long it integrates. Every number checked here is closed form
+// (derived in the .net header), not the solver's own answer.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_steady_state_mask_pure_sink() {
+    const double ksyn = 2.0, kon = 3.0, koff = 1.0, kdeg = 0.5, btot = 10.0;
+    const double a_ss = ksyn / kdeg;
+    const double den = koff + kon * a_ss;
+    const double b_ss = btot * koff / den;
+    const double ab_ss = btot * kon * a_ss / den;
+
+    // Structural detection: exactly Ad (index 4). Not $S (fixed), not B/AB
+    // (consumed by the unbinding reaction), not A (consumed by binding).
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        const auto sinks = model.pure_sink_species();
+        CHECK(sinks.size() == 1, "pure_sink_species finds exactly one accumulator");
+        CHECK(sinks[0] == 4, "the accumulator is Ad (index 4)");
+        CHECK(model.species_names()[sinks[0]] == "Ad()", "and it is named Ad()");
+    }
+
+    // Unmasked: fails at the structural floor, and says which species did it.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.max_time = 1e4;
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(!ss.converged, "unmasked solve does not converge past a pure sink");
+        CHECK_CLOSE(ss.residual, ksyn / 5.0, 1e-6, "residual sits at the ||f||/n floor");
+        CHECK(ss.n_residual_species == 5, "unmasked norm covers every species");
+        CHECK(ss.excluded_species.empty(), "unmasked excludes nothing");
+        CHECK(ss.unconverged_pure_sinks.size() == 1, "the failure names one accumulator");
+        CHECK(ss.unconverged_pure_sinks[0] == "Ad()", "and names it Ad()");
+    }
+
+    // Masked: converges to the closed-form root on BOTH methods. The KINSOL
+    // unknown set is `independent ∩ included`; getting that intersection wrong
+    // still yields a self-consistent (and wrong) answer, so this is checked
+    // against algebra rather than against the other method alone.
+    for (const std::string method : {std::string("integration"), std::string("newton")}) {
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.method = method;
+        opts.steady_state_mask = {1, 1, 1, 1, 0};
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(ss.converged, "masked solve converges");
+        CHECK(ss.n_residual_species == 4, "masked norm covers four species");
+        CHECK(ss.excluded_species.size() == 1 && ss.excluded_species[0] == 4,
+              "masked result reports the excluded index");
+        CHECK(ss.unconverged_pure_sinks.empty(), "a converged solve reports no sink");
+        CHECK_CLOSE(ss.concentrations[1], a_ss, 1e-6, "A* = ksyn/kdeg");
+        CHECK_CLOSE(ss.concentrations[2], b_ss, 1e-6, "B* = Btot*koff/(koff+kon*A*)");
+        CHECK_CLOSE(ss.concentrations[3], ab_ss, 1e-6, "AB* = Btot*kon*A*/(koff+kon*A*)");
+        CHECK_CLOSE(ss.concentrations[2] + ss.concentrations[3], btot, 1e-6,
+                    "the conserved moiety survives the reduced solve");
+        CHECK(ss.concentrations[4] > 0.0, "the excluded species still integrated");
+    }
+
+    // An all-true mask must mean exactly what no mask means — it is routed back
+    // onto the unmasked path rather than through the restricted one, which drops
+    // $-fixed species from the unknown set and so is NOT identical.
+    {
+        auto m0 = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions o0;
+        o0.max_time = 1e4;
+        auto plain = bngsim::find_steady_state(m0, o0);
+
+        auto m1 = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions o1;
+        o1.max_time = 1e4;
+        o1.steady_state_mask = {1, 1, 1, 1, 1};
+        auto all_true = bngsim::find_steady_state(m1, o1);
+
+        CHECK(plain.converged == all_true.converged, "all-true mask: same verdict");
+        CHECK(plain.residual == all_true.residual, "all-true mask: identical residual");
+        CHECK(plain.method_used == all_true.method_used, "all-true mask: same path");
+        CHECK(all_true.excluded_species.empty(), "all-true mask excludes nothing");
+        for (size_t i = 0; i < plain.concentrations.size(); ++i) {
+            CHECK(plain.concentrations[i] == all_true.concentrations[i],
+                  "all-true mask: bit-identical state");
+        }
+    }
+
+    // A wrong-length mask is an error, not a solve that tested other species.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.steady_state_mask = {1, 1};
+        bool threw = false;
+        try {
+            bngsim::find_steady_state(model, opts);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        CHECK(threw, "a mask of the wrong length is rejected");
+    }
+
+    // An empty subspace has no f(y) = 0 to solve.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.steady_state_mask = {0, 0, 0, 0, 0};
+        bool threw = false;
+        try {
+            bngsim::find_steady_state(model, opts);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        CHECK(threw, "an all-false mask is rejected");
+    }
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Test: SSA simulation produces reasonable results
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2259,6 +2379,7 @@ int main() {
     RUN_TEST(test_ode_reversible);
     RUN_TEST(test_ode_steady_state_early_stop);
     RUN_TEST(test_find_steady_state_methods);
+    RUN_TEST(test_steady_state_mask_pure_sink);
     RUN_TEST(test_ssa_simple_decay);
     RUN_TEST(test_ssa_reproducibility);
     RUN_TEST(test_ssa_fractional_initial_population_rounds);

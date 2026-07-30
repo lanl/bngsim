@@ -3843,6 +3843,7 @@ class Simulator:
         atol=None,
         max_steps=None,
         sensitivity_params=None,
+        mask=None,
     ):
         """Find the steady state of the ODE system f(y) = 0.
 
@@ -3890,6 +3891,11 @@ class Simulator:
             Parameter names for dY_ss/dp sensitivity. Requires code generation,
             exactly as :meth:`run` and :meth:`compute_all_sensitivities` do —
             see the sensitivity note below.
+        mask : array-like of bool, or sequence of str, optional
+            Which species the convergence test covers (issue #74). A boolean
+            array of length ``n_species`` (``True`` = keep), or the species
+            names to keep. ``None`` (default) tests every species, which is the
+            BNG2.pl parity criterion. See the accumulator note below.
 
         Returns
         -------
@@ -3897,6 +3903,35 @@ class Simulator:
 
         Notes
         -----
+        **Write-only accumulators (issue #74).** A species some reaction
+        produces and none consumes — a ``degraded`` / ``produced`` /
+        ``secreted`` pool counting cumulative flux, a common BNGL idiom — has a
+        constant non-zero derivative forever. ``||f(y)||_2 / n_species`` then has
+        a floor above ``tol`` and this method reports ``converged=False`` however
+        far it integrates, even when every other species is settled to 1e-10.
+        ``mask`` restricts the test to the subspace that *does* have a steady
+        state; :meth:`Model.is_pure_sink` finds the accumulators structurally, so
+        the recipe needs no hand-listed species::
+
+            ss = sim.steady_state(method="newton", mask=~model.is_pure_sink())
+
+        Everything still integrates — the excluded species' equations stay in
+        the RHS and their trajectories come back in ``ss.concentrations``. What
+        the mask restricts is the residual norm (over ``n_included``, so ``tol``
+        keeps its meaning), the KINSOL polish's unknown set, and the
+        ``dY_ss/dp`` linear system; those last two have to follow, because an
+        accumulator contributes a structurally zero Jacobian *column* and makes
+        both systems singular at every seed. Excluded species come back with a
+        NaN ``dY_ss/dp`` row: no steady value, no steady-state gradient.
+
+        When a solve fails, ``ss.unconverged_pure_sinks`` names any accumulator
+        that was in the test and is carrying flux — that is a structural floor,
+        not a slow tail, and no ``max_time`` will move it. Detection is not a
+        convergence verdict, though: ``A -> B`` with nothing feeding ``A`` has a
+        textbook pure sink and converges anyway, because the flux dies out. The
+        time-course early stop, ``run(steady_state=True)``, keeps the
+        unrestricted criterion and takes no mask.
+
         **Codegen (issue #63).** The solve runs whatever RHS this Simulator's
         :attr:`codegen_backend` reports — the compiled ``.so``, the MIR JIT, or
         the ExprTk interpreter. Until #63 the steady-state path read no codegen
@@ -3919,6 +3954,11 @@ class Simulator:
             raise ValueError(
                 f"steady_state() is only supported for method='ode', not method='{self._method}'."
             )
+
+        # Issue #74 — resolve the convergence-test subspace before anything
+        # expensive runs, so a bad mask is an immediate error rather than a solve
+        # that quietly tested the wrong species.
+        mask_selector = _resolve_ss_mask(mask, self._model)
 
         # GH #205/#212 — dY_ss/dp on event models: allowed only for the
         # fixed-time Phase-1 subclass with no parameter-valued trigger time,
@@ -3952,6 +3992,8 @@ class Simulator:
             opts.codegen_c_source = self._codegen_c_source
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
+        if mask_selector is not None:
+            opts.steady_state_mask = mask_selector
 
         logger.info(
             "Finding steady state: method=%s, tol=%.1e",
@@ -3967,15 +4009,42 @@ class Simulator:
         result = SteadyStateResult(core_result)
 
         logger.info(
-            "Steady state %s: method=%s, backend=%s, residual=%.2e, steps=%d",
+            "Steady state %s: method=%s, backend=%s, residual=%.2e, steps=%d, species_tested=%d",
             "converged" if result.converged else "FAILED",
             result.method_used,
             result.rhs_backend,
             result.residual,
             result.n_steps,
+            result.n_residual_species,
         )
+        self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    @staticmethod
+    def _warn_about_pure_sinks(result: SteadyStateResult) -> None:
+        """Name the structural cause of a failed solve (issue #74).
+
+        ``converged=False`` on its own reads as "needs more time", which is the
+        one remedy that cannot work when a write-only accumulator has put a floor
+        under the residual. Locating the species by hand on a 409-species network
+        is an afternoon; the solver already knows, so it says so.
+        """
+        sinks = result.unconverged_pure_sinks
+        if result.converged or not sinks:
+            return
+        shown = ", ".join(sinks[:4]) + (", ..." if len(sinks) > 4 else "")
+        logger.warning(
+            "Steady state FAILED for a structural reason, not a numerical one: "
+            "%d write-only accumulator species (produced by some reaction, "
+            "consumed by none) carry a non-zero derivative at the returned state, "
+            "so ||f(y)||_2/n cannot reach tol however long the solve integrates. "
+            "Species: %s. Exclude them from the convergence test to solve on the "
+            "subspace that does have a steady state: "
+            "sim.steady_state(mask=~model.is_pure_sink()).",
+            len(sinks),
+            shown,
+        )
 
     #: Below this ``min|U_jj| / max|U_jj|`` the steady-state sensitivity system is
     #: reported as badly conditioned. It gates a WARNING and deliberately not a
@@ -4074,6 +4143,25 @@ class Simulator:
         if sens is not None and not np.all(np.isfinite(sens)):
             arr = np.asarray(sens)
             finite_rows = np.all(np.isfinite(arr), axis=1)
+            # Issue #74 — a masked-out species' row is NaN *by construction*: it
+            # has no steady value, so it has no steady-state gradient, and 0.0
+            # would be a confident wrong answer. That is the caller's own
+            # decision, not a failed solve, so it is exempt from the refusal
+            # below (the species-level NaN is left in place, and the warning
+            # above it says so). Every other row still has to be finite.
+            for i in result.excluded_species:
+                finite_rows[i] = True
+            if result.excluded_species:
+                logger.warning(
+                    "Steady-state dY_ss/dp: %d species were excluded from the "
+                    "convergence test by mask=, so they have no steady value and "
+                    "their rows are NaN (first: %s). Any observable or expression "
+                    "sensitivity summing one of them is NaN for the same reason.",
+                    len(result.excluded_species),
+                    ", ".join(result.species_names[i] for i in list(result.excluded_species)[:3]),
+                )
+            if np.all(finite_rows):
+                return
             bad = [n for n, ok in zip(result.species_names, finite_rows, strict=True) if not ok]
             raise SimulationError(
                 "Steady-state dY_ss/dp does not exist for this model: the Jacobian "
@@ -4086,7 +4174,10 @@ class Simulator:
                 "can move along without leaving equilibrium — so no unique gradient "
                 "exists to report. A common cause is two species that are only "
                 "produced and never consumed, fed from a common irreversible step: "
-                "that makes the equilibrium set a line. "
+                "that makes the equilibrium set a line. Check "
+                "Model.pure_sink_species() — if it names them, they have no steady "
+                "value at all, and steady_state(mask=~model.is_pure_sink()) solves "
+                "for the gradient of the species that do (issue #74). "
                 f"ss.sens_jacobian_rcond is {result.sens_jacobian_rcond:.2e}."
             )
 
@@ -4101,6 +4192,7 @@ class Simulator:
         atol=None,
         max_steps=None,
         n_workers=None,
+        mask=None,
     ):
         """Compute steady states for multiple parameter sets.
 
@@ -4113,6 +4205,11 @@ class Simulator:
             (alias for ``"newton"``). See :meth:`steady_state`.
         n_workers : int, optional
             Number of parallel threads.
+        mask : array-like of bool, or sequence of str, optional
+            Which species the convergence test covers, applied identically to
+            every entry (issue #74). See :meth:`steady_state`. The species set is
+            structural, so it does not move with the parameter set — which is
+            what makes one mask correct for a whole dose scan.
 
         Returns
         -------
@@ -4133,6 +4230,8 @@ class Simulator:
             )
         if not params:
             raise ValueError("params must be non-empty")
+
+        mask_selector = _resolve_ss_mask(mask, self._model)
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,
@@ -4159,11 +4258,15 @@ class Simulator:
                 opts.codegen_so_path = self._codegen_so_path
             if self._codegen_c_source:
                 opts.codegen_c_source = self._codegen_c_source
+            if mask_selector is not None:
+                opts.steady_state_mask = mask_selector
             try:
                 core_result = find_steady_state(clone._core, opts)
             except RuntimeError as e:
                 raise SimulationError(f"Batch {i} failed: {e}") from e
-            return SteadyStateResult(core_result)
+            result = SteadyStateResult(core_result)
+            self._warn_about_pure_sinks(result)
+            return result
 
         if n_workers is not None and n_workers > 1:
             with ThreadPoolExecutor(max_workers=n_workers) as executor:
@@ -4873,6 +4976,68 @@ class _CallableStopCondition(_StopCondition):
         return None
 
 
+def _resolve_ss_mask(mask, model: Model) -> list[int] | None:
+    """Normalize a ``steady_state(mask=...)`` argument to the core's selector.
+
+    Issue #74. Two spellings, distinguished by element type so neither can be
+    mistaken for the other:
+
+    * a **boolean** array-like of length ``n_species`` — ``True`` keeps the
+      species in the convergence test. This is the form
+      ``~model.is_pure_sink()`` produces.
+    * a **sequence of species names** — the species to keep, in any order.
+
+    Integers are deliberately rejected: ``[0, 1]`` is ambiguous between a
+    two-species 0/1 mask and "keep species 0 and 1", and guessing would be a
+    silent wrong answer on exactly the kind of long species list where the
+    caller cannot eyeball it.
+
+    Returns ``None`` when ``mask`` is ``None``, so the caller leaves the core
+    option unset and the BNG2.pl parity criterion applies unchanged.
+    """
+    if mask is None:
+        return None
+
+    names = model.species_names
+    ns = len(names)
+
+    arr = np.asarray(mask)
+    if arr.dtype == np.bool_:
+        if arr.ndim != 1 or arr.size != ns:
+            raise ValueError(
+                f"steady_state(mask=...): a boolean mask must have one entry per "
+                f"species, got shape {arr.shape} for a model with {ns} species."
+            )
+        keep = [1 if v else 0 for v in arr.tolist()]
+    elif arr.dtype.kind in "US" or (arr.dtype == object and all(isinstance(x, str) for x in arr)):
+        wanted = [str(x) for x in arr.tolist()]
+        index = {n: i for i, n in enumerate(names)}
+        unknown = [n for n in wanted if n not in index]
+        if unknown:
+            raise ValueError(
+                f"steady_state(mask=...): unknown species name(s) "
+                f"{unknown[:5]}{', ...' if len(unknown) > 5 else ''}. Names must "
+                f"match Model.species_names exactly."
+            )
+        keep = [0] * ns
+        for n in wanted:
+            keep[index[n]] = 1
+    else:
+        raise TypeError(
+            "steady_state(mask=...) takes either a boolean array of length "
+            f"n_species ({ns}) or a sequence of species names to keep, not "
+            f"{arr.dtype!r}. Integer indices are rejected as ambiguous — build a "
+            "boolean array instead, e.g. ~model.is_pure_sink()."
+        )
+
+    if not any(keep):
+        raise ValueError(
+            "steady_state(mask=...) excludes every species: there is no subspace "
+            "left to solve f(y) = 0 on."
+        )
+    return keep
+
+
 def _ss_output_sens_block(core: Any, attr: str) -> np.ndarray:
     """Read a 2-D steady-state output-sensitivity block off a C++ core (GH #12).
 
@@ -4904,6 +5069,19 @@ class SteadyStateResult:
         Number of solver steps.
     n_rhs_evals : int
         Number of RHS evaluations.
+    n_residual_species : int
+        How many species entered ``||f||_2 / n`` — ``n_species`` unless
+        ``steady_state(mask=...)`` restricted it (issue #74). Assert on this
+        rather than inferring from a residual that moved.
+    excluded_species : list[int]
+        0-based indices the mask excluded, ascending; empty without a mask.
+        Their concentrations are returned but their settling was never tested,
+        and their ``sensitivity`` rows are NaN.
+    unconverged_pure_sinks : list[str]
+        On a *failed* solve, the write-only accumulator species that were in the
+        convergence test and are carrying flux at the returned state — the
+        structural reason the residual has a floor (issue #74). Empty otherwise,
+        including on every converged solve. See :meth:`Model.pure_sink_species`.
     sensitivity : ndarray or None
         Species ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``. ``None``
         if no sensitivity was requested.
@@ -4964,6 +5142,9 @@ class SteadyStateResult:
         "converged",
         "n_steps",
         "n_rhs_evals",
+        "n_residual_species",
+        "excluded_species",
+        "unconverged_pure_sinks",
         "rhs_backend",
         "sens_jacobian_source",
         "sens_dfdp_source",
@@ -4987,6 +5168,10 @@ class SteadyStateResult:
         self.converged = core.converged
         self.n_steps = core.n_steps
         self.n_rhs_evals = core.n_rhs_evals
+        # Issue #74 — what the convergence test covered, and why it failed.
+        self.n_residual_species = getattr(core, "n_residual_species", len(self._species_names))
+        self.excluded_species = list(getattr(core, "excluded_species", []))
+        self.unconverged_pure_sinks = list(getattr(core, "unconverged_pure_sinks", []))
         # Issue #63 — which numerical path ran. getattr-guarded like the GH #12
         # blocks below so an older core stays loadable.
         self.rhs_backend = getattr(core, "rhs_backend", "exprtk")

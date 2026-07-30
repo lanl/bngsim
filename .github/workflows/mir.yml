@@ -153,6 +153,7 @@ jobs:
             python/tests/test_codegen_power_denominator.py \
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_steady_state_mask.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
 

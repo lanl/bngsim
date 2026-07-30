@@ -1416,6 +1416,48 @@ std::vector<std::size_t> NetworkModel::reported_species_indices() const {
     return idx;
 }
 
+std::vector<int> NetworkModel::pure_sink_species() const {
+    const int ns = static_cast<int>(impl_->species.size());
+    if (ns == 0) {
+        return {};
+    }
+
+    // Clauses 1 and 2 in one pass over the reaction list (see model.hpp).
+    std::vector<char> is_reactant(ns, 0);
+    std::vector<char> is_product(ns, 0);
+    for (const auto &rxn : impl_->shared->reactions) {
+        for (int si_1 : rxn.reactant_indices) {
+            const int si_0 = si_1 - 1;
+            if (si_0 >= 0 && si_0 < ns)
+                is_reactant[si_0] = 1;
+        }
+        for (int si_1 : rxn.product_indices) {
+            const int si_0 = si_1 - 1;
+            if (si_0 >= 0 && si_0 < ns)
+                is_product[si_0] = 1;
+        }
+    }
+
+    // Clause 3: a structurally empty Jacobian column. The pattern is CSC, so
+    // column j is empty iff it spans no entries. A model whose sparsity was
+    // never built (n == 0) cannot answer clause 3, so it answers no sinks rather
+    // than asserting inertness it has not checked.
+    const JacobianSparsity &sp = jacobian_sparsity();
+    if (sp.n != ns || static_cast<int>(sp.col_ptrs.size()) != ns + 1) {
+        return {};
+    }
+
+    std::vector<int> sinks;
+    for (int j = 0; j < ns; ++j) {
+        if (!is_product[j] || is_reactant[j] || impl_->species[j].fixed)
+            continue;
+        if (sp.col_ptrs[j + 1] != sp.col_ptrs[j])
+            continue; // something's derivative reads it — not inert
+        sinks.push_back(j);
+    }
+    return sinks;
+}
+
 std::vector<double> NetworkModel::reported_volume_factors() const {
     // V_c for each reported species, in species order — mirrors the
     // codegen_data()["species"] filter `[s.volume_factor for s if s.reported]`

@@ -209,6 +209,37 @@ class NetworkModel {
     // this subset. When every species is reported (the common case) the caller
     // skips wiring it and the projection is a no-op.
     std::vector<std::size_t> reported_species_indices() const;
+
+    // ─── Pure sinks: write-only accumulator species (issue #74) ──────────────
+    // 0-based ascending indices of the species this network only ever writes to:
+    // the "degraded" / "produced" / "secreted" pools a BNGL model carries to
+    // count cumulative flux. Such a species has a constant non-zero derivative
+    // for as long as its producing reactions fire, so ||f(y)||₂/n can never
+    // reach tol and steady_state() reports failure however long it integrates —
+    // even when every other species has settled. This is what a caller passes
+    // (negated) as SteadyStateOptions::steady_state_mask to solve f(y) = 0 on
+    // the subspace that HAS a steady state.
+    //
+    // Three clauses, all structural — no user annotation, nothing measured:
+    //   1. the species appears as a product of at least one reaction, and
+    //   2. as a reactant of none, and
+    //   3. its Jacobian column is structurally empty, i.e. no species'
+    //      derivative depends on it.
+    //
+    // (1)+(2) are the issue's definition. (3) is what makes excluding it
+    // provably harmless to the rest of the system, and it is not implied: an
+    // Elementary rate law reads only its reactants, but a Functional one reads
+    // observables, so a product-only species named in an observable a rate law
+    // consumes still feeds back into the dynamics (as does a promoted
+    // compartment-volume species, GH #171). jacobian_sparsity() already
+    // resolves that dependency transitively through function references
+    // (GH #164), so clause 3 is one column-pointer comparison.
+    //
+    // `fixed` ($-prefixed boundary-condition) species are excluded: compute_derivs
+    // zeroes their derivative, so they contribute nothing to the residual and
+    // never block convergence in the first place.
+    std::vector<int> pure_sink_species() const;
+
     // Per-reported-species volume_factor (V_c), in reported-species order — the
     // narrow accessor the trajectory-output layer needs to convert stored
     // concentrations back to amounts (Result.as_roadrunner). Avoids

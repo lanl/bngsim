@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -278,19 +279,85 @@ struct SteadyStateUserData {
     NetworkModel *model;
 };
 
-// Compute the BNG2.pl parity steady-state residual ||f(y)||_2 / n_species.
-// This is the SAME quantity Simulator.run(steady_state=True) checks at each
-// output point (Network3 network.cpp run_network -c). It is the single
-// convergence criterion used by every integrate-to-steady-state path and by
-// the post-solve verification of the Newton path, so there is one rule.
-static double compute_residual(SteadyStateRhs &rhs, const double *y, int ns) {
+// The subspace f(y) = 0 is solved on (issue #74).
+//
+// Resolved once per solve from SteadyStateOptions::steady_state_mask and then
+// threaded through everything that asks a convergence question: the residual
+// norm, the KINSOL polish's unknown set, and the dY_ss/dp linear system. With no
+// mask `masked` is false, `included` is 0..ns-1 and every formula below reduces
+// to exactly what it computed before this existed.
+struct ResidualSubspace {
+    std::vector<int> included; // 0-based species indices, ascending
+    std::vector<int> excluded; // the complement, ascending (empty when !masked)
+    std::vector<char> keep;    // per-species selector, length ns
+    bool masked = false;       // false ⇒ every species (BNG2.pl parity)
+
+    bool includes(int i) const { return keep[static_cast<size_t>(i)] != 0; }
+};
+
+// Validate the caller's mask and expand it into the form the solver indexes.
+static ResidualSubspace make_subspace(const SteadyStateOptions &opts, int ns) {
+    ResidualSubspace sub;
+    const bool have_mask = !opts.steady_state_mask.empty();
+
+    if (have_mask && static_cast<int>(opts.steady_state_mask.size()) != ns) {
+        throw std::runtime_error(
+            "steady_state_mask has " + std::to_string(opts.steady_state_mask.size()) +
+            " entries but the model has " + std::to_string(ns) +
+            " species: the mask is one selector per species, in species order.");
+    }
+
+    sub.keep.assign(static_cast<size_t>(ns), 1);
+    if (have_mask) {
+        for (int i = 0; i < ns; ++i) {
+            sub.keep[static_cast<size_t>(i)] =
+                opts.steady_state_mask[static_cast<size_t>(i)] ? 1 : 0;
+        }
+    }
+    for (int i = 0; i < ns; ++i) {
+        if (sub.keep[static_cast<size_t>(i)]) {
+            sub.included.push_back(i);
+        } else {
+            sub.excluded.push_back(i);
+        }
+    }
+
+    // `masked` tracks whether anything was actually EXCLUDED, not whether a mask
+    // was supplied. An all-true mask therefore takes byte-for-byte the same code
+    // path as no mask — including the KINSOL and dY_ss/dp full-space branches,
+    // which the restricted path below deliberately does not reproduce
+    // (see solve_by_newton). Without this, `mask=ones(n)` would quietly mean
+    // something different from `mask=None`.
+    sub.masked = !sub.excluded.empty();
+
+    if (sub.included.empty()) {
+        throw std::runtime_error("steady_state_mask excludes every species: there is no subspace "
+                                 "left to solve f(y) = 0 on. Select at least one species.");
+    }
+    return sub;
+}
+
+// Compute the steady-state residual ||f(y)||_2 / n over the subspace.
+//
+// Unmasked this is the BNG2.pl parity criterion ||f(y)||_2 / n_species — the
+// SAME quantity Simulator.run(steady_state=True) checks at each output point
+// (Network3 network.cpp run_network -c). It is the single convergence criterion
+// used by every integrate-to-steady-state path and by the post-solve
+// verification of the Newton path, so there is one rule.
+//
+// Masked (issue #74) both the sum and the divisor run over the included species,
+// so `tol` still reads as a per-species residual scale rather than shrinking with
+// the number of species the caller dropped.
+static double compute_residual(SteadyStateRhs &rhs, const double *y, int ns,
+                               const ResidualSubspace &sub) {
     std::vector<double> f(ns, 0.0);
     rhs.eval(0.0, y, f.data()); // steady state: time irrelevant
     double sumsq = 0.0;
-    for (int i = 0; i < ns; ++i) {
+    for (int i : sub.included) {
         sumsq += f[i] * f[i];
     }
-    return (ns > 0) ? std::sqrt(sumsq) / static_cast<double>(ns) : 0.0;
+    const size_t n = sub.included.size();
+    return (n > 0) ? std::sqrt(sumsq) / static_cast<double>(n) : 0.0;
 }
 
 // A steady state must be finite and (up to a small scale-relative slack)
@@ -425,8 +492,10 @@ static int cvode_ss_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
 // then just the one-leg case of the same code.
 class SteadyStateMarcher {
   public:
-    SteadyStateMarcher(NetworkModel &model, SteadyStateRhs &rhs, const SteadyStateOptions &opts)
-        : model_(model), rhs_(rhs), opts_(opts), ud_{&rhs, &model}, ns_(model.n_species()) {
+    SteadyStateMarcher(NetworkModel &model, SteadyStateRhs &rhs, const SteadyStateOptions &opts,
+                       const ResidualSubspace &sub)
+        : model_(model), rhs_(rhs), opts_(opts), sub_(sub), ud_{&rhs, &model},
+          ns_(model.n_species()) {
 
         if (!ctx_) {
             throw std::runtime_error("SUNContext_Create failed (steady_state)");
@@ -486,7 +555,7 @@ class SteadyStateMarcher {
 
             // compute_residual evaluates f at y through the same backend the
             // integrator just used, refreshing observables/functions internally.
-            double resid = compute_residual(rhs_, y_data, ns_);
+            double resid = compute_residual(rhs_, y_data, ns_, sub_);
             if (resid < tol) {
                 converged = true;
                 *residual_out = resid;
@@ -500,7 +569,7 @@ class SteadyStateMarcher {
         }
 
         if (!converged) {
-            *residual_out = compute_residual(rhs_, y_data, ns_);
+            *residual_out = compute_residual(rhs_, y_data, ns_, sub_);
         }
         return converged;
     }
@@ -516,6 +585,8 @@ class SteadyStateMarcher {
         result.concentrations.assign(y_data, y_data + ns_);
         result.converged = converged;
         result.residual = residual;
+        result.n_residual_species = static_cast<int>(sub_.included.size());
+        result.excluded_species = sub_.excluded;
 
         long int nst = 0, nfe = 0;
         CVodeGetNumSteps(cvode_mem_, &nst);
@@ -529,6 +600,7 @@ class SteadyStateMarcher {
     NetworkModel &model_;
     SteadyStateRhs &rhs_;
     const SteadyStateOptions &opts_;
+    const ResidualSubspace &sub_;
     SteadyStateUserData ud_;
     int ns_;
     // Declared in construction order; the guards tear down in reverse, so the
@@ -542,8 +614,9 @@ class SteadyStateMarcher {
 };
 
 static SteadyStateResult solve_by_integration(NetworkModel &model, SteadyStateRhs &rhs,
-                                              const SteadyStateOptions &opts) {
-    SteadyStateMarcher marcher(model, rhs, opts);
+                                              const SteadyStateOptions &opts,
+                                              const ResidualSubspace &sub) {
+    SteadyStateMarcher marcher(model, rhs, opts, sub);
     double residual = 0.0;
     const bool converged = marcher.march(opts.tol, &residual);
     return marcher.make_result(converged, residual);
@@ -646,6 +719,7 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
 // factorizations that are all doomed.
 static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rhs,
                                          const SteadyStateOptions &opts,
+                                         const ResidualSubspace &sub,
                                          bool *linsolv_failed = nullptr) {
 
     if (linsolv_failed) {
@@ -658,6 +732,8 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     result.method_used = "newton";
     result.species_names = model.species_names();
     result.concentrations.resize(ns);
+    result.n_residual_species = static_cast<int>(sub.included.size());
+    result.excluded_species = sub.excluded;
 
     // ── Recompute conservation constants from CURRENT concentrations ──
     // (important: PSet may have changed ICs since model load time)
@@ -672,7 +748,57 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
         }
     }
 
-    const bool use_reduced = !cl_copy.empty();
+    // ── Which species Newton actually solves for (issue #74) ──────────────────
+    // The conservation-law reduction already drops the dependent species; a mask
+    // drops the ones whose settling was never asked about. Both mean the same
+    // thing here — "not an unknown, hold it at the value integration left" —
+    // because reconstruct_full() pre-fills y_full from the model's live
+    // concentrations, so an excluded species keeps that value and its equation
+    // leaves the system along with it. Leaving a write-only accumulator IN is
+    // precisely what makes this system singular at EVERY seed: nothing consumes
+    // it, so its Jacobian column is structurally zero (GH #27 Bug 3 called this
+    // out on Barua 2013's 404×404 reduced system without naming the cause).
+    //
+    // A mask with no conservation laws drives the same reduced machinery with a
+    // zero-law reduction, so there is one code path for "some species are not
+    // unknowns" rather than a second restricted full-space RHS.
+    //
+    // Both restricted forms also drop `fixed` ($-prefixed) species: their
+    // derivative is zeroed by definition, so keeping one as an unknown adds a
+    // structurally zero ROW and makes the system singular for a reason that has
+    // nothing to do with the model. The unmasked paths do NOT do this (kinsol_rhs
+    // zeroes those rows while leaving the unknowns in place, and cl.independent
+    // is taken verbatim) and are left exactly as they were — an all-true mask is
+    // not masked at all (see make_subspace), so no pre-#74 solve changes path.
+    const bool use_reduced = !cl_copy.empty() || sub.masked;
+    if (use_reduced) {
+        std::vector<int> unknowns;
+        if (cl_copy.empty()) {
+            cl_copy.n_species = ns;
+            for (int i : sub.included) {
+                if (!model.species()[i].fixed)
+                    unknowns.push_back(i);
+            }
+        } else if (sub.masked) {
+            unknowns.reserve(cl_copy.independent.size());
+            for (int i : cl_copy.independent) {
+                if (sub.includes(i) && !model.species()[i].fixed)
+                    unknowns.push_back(i);
+            }
+        } else {
+            unknowns = cl_copy.independent; // unmasked: verbatim, as before #74
+        }
+        if (unknowns.empty()) {
+            // Every included species is pinned by a conservation law, so there is
+            // no Newton system to build. Not an error — report it unconverged so
+            // the two-tier ladder answers from integration instead.
+            result.converged = false;
+            model.get_state_into(result.concentrations.data());
+            result.residual = compute_residual(rhs, result.concentrations.data(), ns, sub);
+            return result;
+        }
+        cl_copy.independent = std::move(unknowns);
+    }
     const int n_ind = use_reduced ? static_cast<int>(cl_copy.independent.size()) : ns;
 
     // RAII guards
@@ -796,7 +922,7 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     // `!(residual < tol)` (true for NaN) and additionally reject any non-finite
     // or clearly-negative concentration, so an unphysical Newton root never
     // passes as a converged steady state.
-    result.residual = compute_residual(rhs, result.concentrations.data(), ns);
+    result.residual = compute_residual(rhs, result.concentrations.data(), ns, sub);
     if (!(result.residual < opts.tol) || !ss_state_is_physical(result.concentrations)) {
         result.converged = false;
     }
@@ -844,15 +970,16 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
 // the IC from there). KINSOL construction can throw (KINInit/KINCreate) — the
 // caller treats a throw as a failed, non-accepted attempt.
 static SteadyStateResult ss_newton_from(NetworkModel &model, SteadyStateRhs &rhs,
-                                        const SteadyStateOptions &opts,
+                                        const SteadyStateOptions &opts, const ResidualSubspace &sub,
                                         const std::vector<double> &seed,
                                         bool *linsolv_failed = nullptr) {
     model.set_state_from(seed.data());
-    return solve_by_newton(model, rhs, opts, linsolv_failed);
+    return solve_by_newton(model, rhs, opts, sub, linsolv_failed);
 }
 
 static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadyStateRhs &rhs,
-                                                  const SteadyStateOptions &opts) {
+                                                  const SteadyStateOptions &opts,
+                                                  const ResidualSubspace &sub) {
     const int ns = model.n_species();
 
     // Snapshot the initial condition so the model is restored on return (the
@@ -868,14 +995,14 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
                ss_state_is_physical(r.concentrations);
     };
 
-    const double r0 = compute_residual(rhs, ic.data(), ns);
+    const double r0 = compute_residual(rhs, ic.data(), ns, sub);
 
     // IC already at steady state: a single Newton polish (which converges
     // immediately) reports the canonical "newton" without any integration.
     if (r0 < opts.tol) {
         SteadyStateResult r;
         try {
-            r = ss_newton_from(model, rhs, opts, ic);
+            r = ss_newton_from(model, rhs, opts, sub, ic);
         } catch (...) {
             r.converged = false;
         }
@@ -910,7 +1037,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
     // early-exit Newton probe above may have left the model's live state
     // elsewhere, so re-seed it from the IC the marcher is about to read).
     restore();
-    SteadyStateMarcher marcher(model, rhs, opts);
+    SteadyStateMarcher marcher(model, rhs, opts, sub);
 
     for (int rung = 0; rung < MAX_RUNGS; ++rung) {
         // Tier 1: continue integrating from the previous rung's end state to bt.
@@ -941,7 +1068,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
             SteadyStateResult nr;
             bool linsolv_failed = false;
             try {
-                nr = ss_newton_from(model, rhs, opts, seed, &linsolv_failed);
+                nr = ss_newton_from(model, rhs, opts, sub, seed, &linsolv_failed);
             } catch (...) {
                 // KINCreate / KINInit failed: as unrecoverable as a singular
                 // factorization, and just as seed-independent.
@@ -998,10 +1125,19 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
 // assemble one Jacobian on a 1281-species model, for a matrix the model already
 // had in closed form. Which path ran is now recorded on the result
 // (sens_jacobian_source / sens_dfdp_source) rather than being invisible.
+// Issue #74 — a mask restricts this solve to the same subspace the convergence
+// test used. It has to: a write-only accumulator contributes a structurally zero
+// Jacobian COLUMN, so including it makes -J⁻¹ singular at every root and the
+// gradient comes back NaN (which is honest, but useless). Restricting the system
+// to the included species, with the excluded ones held at the values integration
+// left, is exact whenever nothing else's derivative reads them — which is clause
+// 3 of NetworkModel::pure_sink_species(), so the recommended mask satisfies it by
+// construction. Excluded species get a NaN row: a species with no steady value
+// has no steady-state gradient, and 0.0 would be a confident wrong answer.
 static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                                    SteadyStateResult &result,
                                    const std::vector<std::string> &param_names,
-                                   const std::string &opts_jacobian) {
+                                   const std::string &opts_jacobian, const ResidualSubspace &sub) {
 
     const int ns = model.n_species();
     const int np = static_cast<int>(param_names.size());
@@ -1108,9 +1244,44 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     result.sens_param_names = param_names;
     result.n_sens_params = np;
 
-    if (!cl.empty()) {
-        // Reduced-space sensitivity solve
-        const int n_ind = static_cast<int>(cl.independent.size());
+    if (!cl.empty() || sub.masked) {
+        // Reduced-space sensitivity solve.
+        //
+        // `solve_idx` is the unknown set: the conservation-law independents,
+        // narrowed to the species the mask kept (issue #74). A mask with no
+        // conservation laws lands here too, with every law loop below a no-op —
+        // one code path for "some species are not unknowns", mirroring
+        // solve_by_newton.
+        // `fixed` species are dropped from the restricted forms for the same
+        // reason as in solve_by_newton — a zeroed derivative is a zero row — and
+        // their dY_ss/dp is genuinely 0: a boundary condition does not move with
+        // a rate constant. Their rows stay 0 rather than NaN, since it is the
+        // mask, not fixedness, that means "no answer". The unmasked branch keeps
+        // cl.independent verbatim, exactly as before #74.
+        std::vector<int> solve_idx;
+        if (cl.empty()) {
+            for (int i : sub.included) {
+                if (!model.species()[i].fixed)
+                    solve_idx.push_back(i);
+            }
+        } else if (sub.masked) {
+            solve_idx.reserve(cl.independent.size());
+            for (int i : cl.independent) {
+                if (sub.includes(i) && !model.species()[i].fixed)
+                    solve_idx.push_back(i);
+            }
+        } else {
+            solve_idx = cl.independent;
+        }
+        if (solve_idx.empty()) {
+            // Nothing left to differentiate (every included species is pinned by
+            // a law). Report NaN rather than a zero matrix a fitter would read as
+            // "this parameter does not matter".
+            std::fill(result.sensitivity.begin(), result.sensitivity.end(),
+                      std::numeric_limits<double>::quiet_NaN());
+            return;
+        }
+        const int n_ind = static_cast<int>(solve_idx.size());
 
         // Build the reduced Jacobian J_red (n_ind × n_ind) by projecting the full
         // J through the conservation-law reconstruction, rather than running a
@@ -1142,7 +1313,7 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             for (int j = 0; j < n_ind; ++j) {
                 // i = ind_j contributes L[k][ind_j]·1; every other independent
                 // contributes 0.
-                double acc = cl.coefficients[k][cl.independent[j]];
+                double acc = cl.coefficients[k][solve_idx[j]];
                 // i = dep_{k'} for k' < k contributes L[k][dep_k']·D[k'][j].
                 for (int kp = 0; kp < k; ++kp) {
                     const int dep_p = cl.dependent[kp];
@@ -1157,9 +1328,9 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         std::vector<double> J_red(static_cast<size_t>(n_ind) * n_ind, 0.0);
         for (int j = 0; j < n_ind; ++j) {
             double *col = J_red.data() + static_cast<size_t>(j) * n_ind; // column-major
-            const double *Jcol_ind = J.data() + static_cast<size_t>(cl.independent[j]) * ns;
+            const double *Jcol_ind = J.data() + static_cast<size_t>(solve_idx[j]) * ns;
             for (int i = 0; i < n_ind; ++i) {
-                col[i] = Jcol_ind[cl.independent[i]];
+                col[i] = Jcol_ind[solve_idx[i]];
             }
             for (int k = 0; k < cl.n_laws; ++k) {
                 const double d = D[static_cast<size_t>(k) * n_ind + j];
@@ -1167,7 +1338,7 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                     continue;
                 const double *Jcol_dep = J.data() + static_cast<size_t>(cl.dependent[k]) * ns;
                 for (int i = 0; i < n_ind; ++i) {
-                    col[i] += Jcol_dep[cl.independent[i]] * d;
+                    col[i] += Jcol_dep[solve_idx[i]] * d;
                 }
             }
         }
@@ -1176,7 +1347,7 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         std::vector<double> dfdp_red(n_ind * np, 0.0);
         for (int p = 0; p < np; ++p)
             for (int i = 0; i < n_ind; ++i)
-                dfdp_red[p * n_ind + i] = dfdp[p * ns + cl.independent[i]];
+                dfdp_red[p * n_ind + i] = dfdp[p * ns + solve_idx[i]];
 
         // Solve J_red * sens_ind = -dfdp_red using SUNDIALS with RAII guards.
         //
@@ -1203,9 +1374,9 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             SUNLinSolSolve(LS_guard, A_guard, xv, bv, 0.0);
             const double *x_data = N_VGetArrayPointer(xv);
 
-            // Fill independent species sensitivity
+            // Fill the solved species' sensitivity
             for (int i = 0; i < n_ind; ++i)
-                result.sensitivity[cl.independent[i] * np + p] = x_data[i];
+                result.sensitivity[solve_idx[i] * np + p] = x_data[i];
 
             // Reconstruct dependent species sensitivity from conservation:
             // Σ L[k,i] * dy_i/dp = 0 → dy_dep/dp = -(1/L[k,dep]) * Σ_{i≠dep} L[k,i] * dy_i/dp
@@ -1220,6 +1391,17 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
                         s += cl.coefficients[k][i] * result.sensitivity[i * np + p];
                 result.sensitivity[dep * np + p] = -s / cd;
             }
+        }
+
+        // A masked-out species was held fixed above, which is what made the
+        // system solvable — but "held fixed" is not a gradient. Its row read 0
+        // through the dependent reconstruction (correct: the law sees it as a
+        // constant) and is overwritten with NaN now that the reconstruction is
+        // done, because a species with no steady value has no ∂x*/∂p to report.
+        for (int i : sub.excluded) {
+            for (int p = 0; p < np; ++p)
+                result.sensitivity[static_cast<size_t>(i) * np + p] =
+                    std::numeric_limits<double>::quiet_NaN();
         }
 
         // RAII guards handle cleanup
@@ -1436,6 +1618,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
                                  "(alias for \"newton\").");
     }
 
+    // Which species the convergence test covers (issue #74). Validated up front
+    // so a wrong-length mask is a clear error rather than a solve that quietly
+    // tested the wrong species.
+    const ResidualSubspace sub = make_subspace(opts, ns);
+
     // Resolve the RHS backend once for the whole solve: the codegen artifact is
     // loaded (or JIT-compiled) a single time and shared by the march, the KINSOL
     // polish, the residual check and the sensitivity assembly (issue #63).
@@ -1445,7 +1632,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
 
     if (method == "integration") {
         // Default: CVODE marched to the BNG2.pl parity criterion.
-        result = solve_by_integration(model, rhs, opts);
+        result = solve_by_integration(model, rhs, opts, sub);
     } else {
         // "newton": two-tier integrate-first solver (GH #27). A short CVODE
         // burst carries the state into the physical root's basin, then KINSOL
@@ -1455,10 +1642,37 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // the old Newton-first ordering returned spurious / non-finite roots.
         // Opt in for the tighter residual the polish delivers; it costs more
         // wall clock than plain integration (GH #28).
-        result = solve_by_newton_two_tier(model, rhs, opts);
+        result = solve_by_newton_two_tier(model, rhs, opts, sub);
     }
 
     result.rhs_backend = rhs.backend();
+
+    // ── Why did it fail? (issue #74) ──────────────────────────────────────────
+    // A failed solve used to say only converged=false, which reads as "needs more
+    // time" — the one thing that cannot help when the residual has a structural
+    // floor. If any write-only accumulator was IN the convergence test and is
+    // carrying flux at the returned state, name it: that is the whole answer, and
+    // finding it by hand on a 409-species network is a long afternoon.
+    //
+    // The bar is "this species ALONE keeps the residual above tol": since
+    // ||f||₂/n ≥ |f_i|/n, that is |f_i| > tol·n_included. A sink whose production
+    // has genuinely stopped (every producing reaction dead at the root) is
+    // therefore not reported — it is not what is holding the residual up.
+    if (!result.converged) {
+        const std::vector<int> sinks = model.pure_sink_species();
+        if (!sinks.empty()) {
+            std::vector<double> f(ns, 0.0);
+            rhs.eval(0.0, result.concentrations.data(), f.data());
+            const auto &names = result.species_names;
+            const double floor = opts.tol * static_cast<double>(sub.included.size());
+            for (int i : sinks) {
+                if (sub.includes(i) && std::abs(f[i]) > floor) {
+                    result.unconverged_pure_sinks.push_back(
+                        i < static_cast<int>(names.size()) ? names[i] : std::to_string(i));
+                }
+            }
+        }
+    }
 
     // Compute sensitivity if requested and converged
     if (result.converged && !opts.sensitivity_params.empty()) {
@@ -1467,7 +1681,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         for (int i = 0; i < ns; ++i) {
             species[i].concentration = result.concentrations[i];
         }
-        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian);
+        compute_ss_sensitivity(model, rhs, result, opts.sensitivity_params, opts.jacobian, sub);
         // GH #12 — project dY_ss/dp onto observables/functions for direct
         // d(output)/dp access (mirrors Result.output_sensitivities).
         compute_ss_output_sensitivity(model, rhs, result, opts.sensitivity_params);

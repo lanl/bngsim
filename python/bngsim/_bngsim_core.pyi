@@ -155,6 +155,10 @@ class NetworkModel:
         """
         The pending carry-over forward-sensitivity seed dx/dθ as an (n_species, n_params) ndarray, or shape (0, 0) when none is pending. Columns are pending_sensitivity_seed_param_names() (GH #210).
         """
+    def pure_sink_species(self) -> list[int]:
+        """
+        0-based indices of write-only accumulator (pure sink) species
+        """
     def reported_volume_factors(self) -> list[float]:
         """
         Per-reported-species volume_factor (V_c), in reported-species order.
@@ -900,6 +904,12 @@ class SteadyStateOptions:
     def sensitivity_params(self, arg0: collections.abc.Sequence[str]) -> None:
         ...
     @property
+    def steady_state_mask(self) -> list[int]:
+        ...
+    @steady_state_mask.setter
+    def steady_state_mask(self, arg0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
+        ...
+    @property
     def tol(self) -> float:
         ...
     @tol.setter
@@ -907,6 +917,15 @@ class SteadyStateOptions:
         ...
 class SteadyStateResultCore:
     def __init__(self) -> None:
+        ...
+    @property
+    def excluded_species(self) -> list[int]:
+        ...
+    @property
+    def n_residual_species(self) -> int:
+        ...
+    @property
+    def unconverged_pure_sinks(self) -> list[str]:
         ...
     @property
     def concentrations(self) -> list[float]:

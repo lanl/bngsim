@@ -14,6 +14,61 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **`steady_state(mask=…)`: solve `f(y) = 0` on a subspace, and say when a
+  write-only accumulator is why a solve failed (issue #74).** Counting cumulative
+  flux with a "degraded" / "produced" / "secreted" pool — a species some reaction
+  produces and none consumes — is a common BNGL idiom, and it put every such model
+  outside `steady_state()`'s reach. The pool's derivative is a non-zero constant
+  for as long as its producing reactions fire, so `||f(y)||₂/n_species` has a floor
+  above `tol` and the solve reported failure however long it integrated, with
+  nothing on the result to distinguish that from ordinary numerical trouble. On
+  `beta_catenin_destruction_complex_barua2013` (409 species, 2737 reactions, four
+  pure sinks) the residual sits at **7.4990e-3 across `max_time` = 2.5e6 / 2.5e7 /
+  2.5e8** while `max|y|` grows linearly through 7.49e6 → 7.49e8 — a constant
+  derivative, not a slow tail — even though the other 405 species are settled to
+  1e-10 by the first horizon. The documented workaround was to edit the model file
+  and delete the accumulator's products, which is only provably safe *because* the
+  species is a pure sink, exactly the property the library can check itself.
+
+  Three pieces, mirroring AMICI's `Model.set_steadystate_mask`:
+
+  - `Simulator.steady_state(mask=…)` and `steady_state_batch(mask=…)` take a
+    boolean array over species (or the names to keep) selecting what enters the
+    convergence norm. The divisor follows the mask (`‖f_included‖₂ / n_included`),
+    so `tol` keeps its meaning as a per-species residual scale. Integer indices are
+    rejected as ambiguous between a 0/1 mask and a list of indices.
+  - `Model.pure_sink_species()` / `Model.is_pure_sink()` find the accumulators from
+    the reaction list, so the mask needs no hand-listed species:
+    `sim.steady_state(mask=~model.is_pure_sink())`. A species qualifies when it is
+    a product of ≥1 reaction, a reactant of none, **read by no other species'
+    derivative**, and not a `$`-fixed boundary condition. The third clause is not
+    implied by the first two — an Elementary rate law reads only its reactants, but
+    a Functional one reads observables — and is what makes excluding the species
+    provably harmless to the rest of the system.
+  - A failed solve now reports `ss.unconverged_pure_sinks` (and logs a WARNING)
+    naming any accumulator that was in the test and is carrying flux. An empty list
+    means the failure was *not* structural, so more `max_time` may still help.
+
+  Barua 2013 with the mask: **converged, residual 9.10e-10, 405 of 409 species in
+  the norm**, on both `method="integration"` and `method="newton"`.
+
+  The mask also restricts the KINSOL polish's unknown set and the `dY_ss/dp` linear
+  system, because it has to: an accumulator contributes a structurally zero
+  Jacobian *column*, so leaving it in makes both systems singular at every seed —
+  this is the unexplained half of GH #27 Bug 3 ("Barua 2013's 404×404 rank-deficient
+  system"). Excluded species are held at the values integration left them at, which
+  is exact precisely because nothing else's derivative reads them, and their
+  `dY_ss/dp` rows come back **NaN**: a species with no steady value has no
+  steady-state gradient, and `0.0` would be a confident wrong answer a fitter would
+  read as "this parameter does not matter". `ss.n_residual_species` and
+  `ss.excluded_species` report what the test covered.
+
+  Unmasked behaviour is unchanged, and an all-true mask is routed back onto the
+  unmasked path rather than through the restricted one, so `mask=ones(n)` cannot
+  quietly mean something different from `mask=None`. Verified as a no-op across the
+  585-model `ode_fullnet` corpus.
+
 ### Changed
 - **An assignment retires the parameter-graph IC sensitivity row it superseded
   (issue #113).** `∂(IC)/∂p` (issue #43) differentiates the initial condition the

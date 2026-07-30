@@ -1,0 +1,61 @@
+# Write-only accumulator alongside a conservation law (issue #74).
+#
+# The `preequil_prod_deg.net` reproducer covers the no-conservation-law case;
+# this one adds a conserved moiety so the masked solve exercises the reduced
+# (independent-species) Newton and dY_ss/dp path rather than the zero-law one.
+#
+#   $S : clamped source, held at 1   (synthesis flux into A = ksyn*[S] = ksyn)
+#   A  : the driven species
+#   B  : free binder      ┐ B + AB = Btot is conserved
+#   AB : bound complex    ┘
+#   Ad : degraded pool — a PURE SINK: produced by R4, consumed by nothing,
+#        read by no other species' derivative
+#
+# Reactions:
+#   R1: S       -> A        ksyn   (synthesis; S is clamped so it persists)
+#   R2: A + B   -> AB       kon
+#   R3: AB      -> A + B    koff
+#   R4: A       -> Ad       kdeg
+#
+# dA/dt  = ksyn - kon*A*B + koff*AB - kdeg*A
+# dB/dt  = -kon*A*B + koff*AB          = -dAB/dt   → B + AB conserved
+# dAd/dt = kdeg*A
+#
+# dB/dt = 0 kills the binding terms in dA/dt, so the steady state is closed form:
+#   A*  = ksyn/kdeg                       = 2.0/0.5   = 4
+#   B*  = Btot*koff/(koff + kon*A*)       = 10*1/(1+3*4) = 0.769230769230769...
+#   AB* = Btot*kon*A*/(koff + kon*A*)     = 10*12/13     = 9.230769230769231
+# and
+#   dA*/dksyn = 1/kdeg                    =  2.0
+#   dA*/dkdeg = -ksyn/kdeg^2              = -8.0
+#   dB*/dksyn = -Btot*koff*kon/(kdeg*(koff + kon*A*)^2)
+#             = -10*1*3/(0.5*169)         = -0.35502958579881655
+#   dAB*/dp   = -dB*/dp                   (B + AB is held at Btot)
+#
+# Ad has NO steady state: dAd/dt = kdeg*A* = ksyn = 2 forever, so ||f||_2/n has a
+# floor at sqrt(4)/5 = 0.4 and steady_state() cannot converge until Ad is masked
+# out of the convergence test.
+begin parameters
+    1 ksyn  2.0  # Constant
+    2 kon   3.0  # Constant
+    3 koff  1.0  # Constant
+    4 kdeg  0.5  # Constant
+end parameters
+begin species
+    1 $S() 1.0
+    2 A()  0.0
+    3 B()  10.0
+    4 AB() 0.0
+    5 Ad() 0.0
+end species
+begin reactions
+    1 1     2   ksyn  #_synthesis
+    2 2,3   4   kon   #_bind
+    3 4     2,3 koff  #_unbind
+    4 2     5   kdeg  #_degrade
+end reactions
+begin groups
+    1 A_tot   2
+    2 B_free  3
+    3 AB_tot  4
+end groups
