@@ -320,14 +320,45 @@ re-seeding a point fresh — when:
 | `sensitivity_ic` is requested | the point starts from a snapshot, not the model's ICs, so `∂y/∂y_k(0)` has no meaning across the boundary |
 | an `on_point` hook moves a differentiated parameter | same composition problem as scanning one |
 
-An `on_point` hook *may* apply the usual coupled `setConcentration` dose
-override: assigning species *k* a literal value makes `∂x_k(0)/∂θ = 0` for that
-species while the rest keep the carried derivative, which is what a literal
-assignment means. An override computed *from* a differentiated parameter is the
-one case bngsim cannot infer — such a hook should install the correct rows itself
-with `model._core.set_pending_sensitivity_seed(seed, param_names)` after its
-concentration writes, and a seed still pending when the hook returns is used
-verbatim.
+#### The dose an `on_point` hook applies (issue #111)
+
+An `on_point` hook *assigns* the initial condition its point starts from, so for
+the species it writes, `∂x_k(0)/∂θ` is whatever the hook's own arithmetic
+implies — not the carried equilibration derivative. Each row of the point's seed
+is resolved by the most specific thing available:
+
+1. a row the hook installed wholesale
+   (`model._core.set_pending_sensitivity_seed(...)` after its writes);
+2. a row **declared** with `model.declare_ic_sensitivity({species: {param: value}})`;
+3. a row **measured through the hook** — bngsim calls the hook at perturbed
+   inputs and differences the initial condition it assigns;
+4. otherwise the carried row, bit-exact.
+
+So the ordinary literal dose needs nothing: it measures `0`. A dose computed
+*from* a fitted parameter — nM converted to molecules through a fitted volume —
+measures its true derivative, and so does an *increment* of the carried pool
+(`x_k + dose`), which comes back as the carried row plus the dose's derivative.
+
+```python
+def on_point(model, dose_nM):
+    v = dose_nM * 1e-9 * NA * model.get_param("Vecf")   # Vecf is fitted
+    model.set_concentration("L(r)", v)
+    # Optional: declaring the row skips its measurement (exact, and it is the way
+    # out for an expensive hook or one with a non-differentiable dose).
+    model.declare_ic_sensitivity({"L(r)": {"Vecf": v / model.get_param("Vecf")}})
+```
+
+Measuring invokes the hook several extra times per point on the live model with
+perturbed inputs, so the hook must be a **deterministic** function of
+`(model, value)`; bngsim verifies that by re-running it and comparing. It also
+checks the measurement at two step sizes and **raises** rather than reporting a
+difference quotient of a jump — a dose rounded to whole molecules is not
+differentiable, and such a row must be declared.
+
+`declare_ic_sensitivity` is honoured on a plain `run()` too, which is the way to
+give a **hand-assigned** θ-dependent initial condition its derivative: outside a
+hook there is nothing to probe, and the parameter-graph seeding differentiates
+the `.net` IC *expression*, which a `set_concentration` has replaced.
 
 For a sweep whose points start from the model's own seed initial conditions (no
 pre-equilibration), use `run_batch` — it clones and resets each row, so
