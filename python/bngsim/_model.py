@@ -16,6 +16,8 @@ import numpy as np
 from bngsim._exceptions import ModelError, ParameterError
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from bngsim._bngsim_core import NetworkModel
 
 logger = logging.getLogger("bngsim")
@@ -70,6 +72,8 @@ class Model:
         "_want_output_sens",
         "_named_conc_states",
         "_named_sens_seeds",
+        "_declared_ic_sens",
+        "_ic_write_log",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -196,6 +200,19 @@ class Model:
         # would be re-seeded as a fresh start (∂x(0)/∂θ = 0), which is wrong
         # rather than approximate. Labels with no seed are simply absent.
         self._named_sens_seeds: dict[str, tuple[np.ndarray, list[str]]] = {}
+        # Issue #111: ∂x_k(0)/∂θ declared by a per-point hook for the initial
+        # conditions it assigns, ``{species: {param: value}}``. Written by
+        # declare_ic_sensitivity(); read and cleared per point by
+        # Simulator.parameter_scan, which uses a declared row verbatim instead of
+        # measuring it through the hook.
+        self._declared_ic_sens: dict[str, dict[str, float]] = {}
+        # Issue #111: when not None, the set of species whose concentration has
+        # been assigned since logging began (``"*"`` for a bulk write that
+        # rewrites every species). Armed by Simulator.parameter_scan around an
+        # on_point hook so it knows exactly which initial conditions the hook
+        # assigned — that is the set whose ∂x_k(0)/∂θ is no longer the carried
+        # derivative. Never observable to a caller that does not arm it.
+        self._ic_write_log: set[str] | None = None
 
     # ─── Factory methods ──────────────────────────────────────────────────
 
@@ -507,6 +524,11 @@ class Model:
         m._named_sens_seeds = {
             k: (s.copy(), list(names)) for k, (s, names) in self._named_sens_seeds.items()
         }
+        # Issue #111: pending IC-sensitivity declarations travel with the snapshot
+        # they describe. The write log does not: it belongs to whoever armed it on
+        # the original, and a clone is not inside that scope.
+        m._declared_ic_sens = {k: dict(v) for k, v in self._declared_ic_sens.items()}
+        m._ic_write_log = None
         return m
 
     # ─── SSA validation ───────────────────────────────────────────────────
@@ -624,6 +646,11 @@ class Model:
         (``save_concentrations(label=...)``) are unaffected.
         """
         self._core.reset()
+        # Wholesale IC change: any declared ∂x(0)/∂θ described the assignment this
+        # just discarded (issue #111).
+        self._declared_ic_sens.clear()
+        if self._ic_write_log is not None:
+            self._ic_write_log.add("*")
 
     def save_concentrations(self, label: str | None = None) -> None:
         """Snapshot the current species concentrations for later restore.
@@ -703,7 +730,7 @@ class Model:
             If ``label`` is given but no snapshot was saved under that name.
         """
         if label is None:
-            self._core.reset()
+            self.reset()
             return
         key = str(label)
         snapshot = self._named_conc_states.get(key)
@@ -716,6 +743,8 @@ class Model:
         # set_state drops any pending seed (it cannot know an externally supplied
         # state's derivative) — so re-install this snapshot's own, if it has one.
         self._core.set_state(snapshot)
+        if self._ic_write_log is not None:
+            self._ic_write_log.add("*")
         seeded = self._named_sens_seeds.get(key)
         if seeded is not None:
             seed, names = seeded
@@ -771,6 +800,11 @@ class Model:
             self._core.set_concentration(name, float(value))
         except (KeyError, RuntimeError) as e:
             raise ModelError(f"Species '{name}' not found in model") from e
+        # A fresh assignment supersedes whatever this species' initial condition
+        # was declared to depend on; declare again after the write (issue #111).
+        self._declared_ic_sens.pop(name, None)
+        if self._ic_write_log is not None:
+            self._ic_write_log.add(name)
 
     def get_concentration(self, name: str) -> float:
         """Get a single species concentration by name.
@@ -830,6 +864,78 @@ class Model:
             :attr:`n_species`.
         """
         self._core.set_state(np.asarray(state, dtype=np.float64))
+        self._declared_ic_sens.clear()
+        if self._ic_write_log is not None:
+            self._ic_write_log.add("*")
+
+    # ─── Per-point IC-sensitivity declarations (issue #111) ───────────────
+
+    def declare_ic_sensitivity(self, sens: Mapping[str, Mapping[str, float]]) -> None:
+        """Declare ``∂x_k(0)/∂θ`` for initial conditions a per-point hook assigns.
+
+        Call this from a :meth:`Simulator.parameter_scan` ``on_point`` hook when
+        the value it assigns is *computed from* a parameter being differentiated —
+        a ligand dose converted with a fitted volume, say. The scan then uses the
+        declared row verbatim instead of measuring it through the hook, which is
+        both exact and cheaper (a declared species is not probed).
+
+        Parameters
+        ----------
+        sens : mapping
+            ``{species_name: {param_name: d_ic_d_param}}``. A declared species'
+            row is taken as **fully specified**: parameters not named get
+            ``∂x_k(0)/∂θ = 0``. Declaring ``{}`` for a species therefore pins its
+            whole row to zero (an explicitly θ-independent literal). Repeated
+            calls merge per species; a species declared twice keeps the last row.
+
+        Raises
+        ------
+        ModelError
+            If a species or parameter name is unknown.
+
+        Notes
+        -----
+        Also honoured by a plain :meth:`Simulator.run` — an initial condition
+        assigned by hand is no longer described by the ``.net`` expression the
+        parameter-graph seeding (issue #43) differentiates, so for a hand-assigned
+        θ-dependent IC this declaration is the only way the engine can know
+        ``∂x_k(0)/∂θ``.
+
+        A declaration lasts until the initial condition it describes changes:
+        assigning the same species again (:meth:`set_concentration`), or a
+        wholesale :meth:`reset` / :meth:`set_state`, drops it. The scan primitive
+        additionally clears declarations before each ``on_point`` call, so a hook
+        declares afresh per point and points stay independent.
+
+        Nothing needs declaring for the ordinary dose: a literal
+        ``set_concentration`` inside an ``on_point`` hook has
+        ``∂x_k(0)/∂θ = 0``, which the scan measures on its own.
+
+        Examples
+        --------
+        >>> def on_point(model, dose_nM):    # dose in molecules, fitted volume
+        ...     v = dose_nM * 1e-9 * NA * model.get_param("Vecf")
+        ...     model.set_concentration("L(r)", v)
+        ...     model.declare_ic_sensitivity({"L(r)": {"Vecf": v / model.get_param("Vecf")}})
+        """
+        species = set(self.species_names)
+        params = set(self.param_names)
+        staged: dict[str, dict[str, float]] = {}
+        for sp, row in sens.items():
+            if sp not in species:
+                raise ModelError(
+                    f"declare_ic_sensitivity: species {sp!r} not found in model. "
+                    "Names must match species_names exactly."
+                )
+            staged[sp] = {}
+            for p, d in row.items():
+                if p not in params:
+                    raise ModelError(
+                        f"declare_ic_sensitivity: parameter {p!r} (for species "
+                        f"{sp!r}) not found in model."
+                    )
+                staged[sp][p] = float(d)
+        self._declared_ic_sens.update(staged)
 
     # ─── Properties ───────────────────────────────────────────────────────
 

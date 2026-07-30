@@ -32,6 +32,10 @@ DATA_DIR = Path(_env) if _env else Path(__file__).resolve().parent.parent.parent
 # steady state is A_ss = k_prod/k_deg, with closed-form sensitivities
 #   dA_ss/dk_prod = 1/k_deg,   dA_ss/dk_deg = -k_prod/k_deg^2.
 PREEQUIL_NET = str(DATA_DIR / "preequil_prod_deg.net")
+# Issue #43's fixture: species R's initial condition IS the parameter R0, so the
+# parameter-graph seeding gives ∂R(0)/∂R0 = 1 — the row a hand-assigned initial
+# condition has to be able to override (issue #111).
+IC_PARAM_NET = str(DATA_DIR / "ic_direct.net")
 
 K_PROD = 5.0
 K_DEG = 0.5
@@ -59,14 +63,19 @@ def _equilibrated(params=("k_prod", "k_deg")):
     return m, sim
 
 
-def _phase2_exact(t, dose, a0=None, kp=K_PROD, kd=K_DEG):
+def _phase2_exact(t, dose, a0=None, da0=(0.0, 0.0), kp=K_PROD, kd=K_DEG):
     """Exact (dA/dk_prod, dA/dk_deg) for the phase-2 relaxation at ``extra_deg=dose``.
 
     dA/dt = kp - (kd + dose)*A from A(0) = a0 gives A = P + (a0-P)e^{-λt} with
-    λ = kd + dose and P = kp/λ, so both columns are closed form. ``a0=None``
-    means the carried pre-equilibrated start A(0) = kp/kd (a *function of θ*,
-    which is what makes the carried seed dx_ss/dθ rather than zero); a float
-    means a literal, θ-independent start (an ``on_point`` dose override).
+    λ = kd + dose and P = kp/λ, so both columns are closed form:
+
+        dA/dθ = (∂P/∂θ)(1 - e^{-λt}) + (∂a0/∂θ) e^{-λt} - (a0-P) t e^{-λt} [θ=k_deg]
+
+    ``a0=None`` means the carried pre-equilibrated start A(0) = kp/kd — a
+    *function of θ*, which is what makes the carried seed dx_ss/dθ rather than
+    zero. A float is an ``on_point`` override's assigned start, with ``da0`` its
+    ``(∂a0/∂k_prod, ∂a0/∂k_deg)``: ``(0, 0)`` for a literal dose, nonzero for a
+    dose computed from a differentiated parameter (issue #111).
     """
     t = np.asarray(t, dtype=float)
     lam = kd + dose
@@ -78,8 +87,8 @@ def _phase2_exact(t, dose, a0=None, kp=K_PROD, kd=K_DEG):
         d_kd = -kp / lam**2 + (-kp / kd**2 + kp / lam**2) * e - q * t * e
     else:
         q = a0 - p
-        d_kp = (1.0 - e) / lam
-        d_kd = -kp / lam**2 * (1.0 - e) - q * t * e
+        d_kp = (1.0 - e) / lam + da0[0] * e
+        d_kd = -kp / lam**2 * (1.0 - e) + da0[1] * e - q * t * e
     return np.stack([d_kp, d_kd], axis=-1)
 
 
@@ -466,9 +475,10 @@ class TestScanCarryOver:
             np.testing.assert_allclose(a.species, b.species, rtol=1e-9, atol=1e-12)
             np.testing.assert_allclose(a.sensitivities, b.sensitivities, rtol=1e-9, atol=1e-12)
 
-    def test_on_point_literal_dose_zeroes_that_species_row(self):
-        """An on_point setConcentration override is a literal initial condition:
-        ∂x_k(0)/∂θ = 0 for that species, carried derivative for the rest."""
+    def test_on_point_literal_dose_measures_a_zero_row(self):
+        """A literal on_point setConcentration override is a θ-independent initial
+        condition, so its row measures ∂x_k(0)/∂θ = 0 (issue #111 measures what
+        #81 assumed) while the rest keep the carried derivative."""
         iA = _iA()
         a0 = 3.0
         m, sim = _equilibrated()
@@ -569,6 +579,273 @@ class TestScanCarryOver:
         m, sim = _equilibrated()
         with pytest.raises(ValueError, match=r"on_point changed the sensitivity parameter"):
             self._scan(sim, on_point=lambda model, v: model.set_param("k_deg", 0.6))
+
+
+# ── The IC an on_point hook assigns has its own ∂x(0)/∂θ (issue #111) ─────────
+
+
+class TestOnPointIcSensitivity:
+    """A hook assigns the state its point integrates from, so that state's
+    θ-derivative is the hook's own arithmetic — measured through the hook, or
+    declared. Oracles are closed form (``_phase2_exact`` with ``da0``), because the
+    failure this fixes is a *wrong* row, not a noisy one.
+    """
+
+    DOSES = [0.5, 1.0, 2.0]
+    SPAN = (0.0, 3.0)
+    NPTS = 11
+
+    def _times(self):
+        return np.linspace(*self.SPAN, self.NPTS)
+
+    def _scan(self, sim, hook):
+        return sim.parameter_scan(
+            "extra_deg", self.DOSES, t_span=self.SPAN, n_points=self.NPTS, on_point=hook, **_TOL
+        )
+
+    def _check(self, results, a0_of, da0_of):
+        iA = _iA()
+        for dose, r in zip(self.DOSES, results, strict=True):
+            np.testing.assert_allclose(
+                np.asarray(r.sensitivities)[:, iA, :],
+                _phase2_exact(self._times(), dose, a0=a0_of(dose), da0=da0_of(dose)),
+                rtol=1e-5,
+                atol=1e-8,
+            )
+
+    def test_dose_computed_from_a_differentiated_parameter(self):
+        """The issue: A(0) = dose·k_prod has ∂A(0)/∂k_prod = dose, not 0."""
+        iA = _iA()
+        m, sim = _equilibrated()
+        results = self._scan(
+            sim, lambda model, v: model.set_concentration("A()", v * model.get_param("k_prod"))
+        )
+        for dose, r in zip(self.DOSES, results, strict=True):
+            s0 = np.asarray(r.sensitivities)[0, iA, :]
+            assert s0[0] == pytest.approx(dose, rel=1e-6)  # ∂A(0)/∂k_prod = dose
+            assert s0[1] == pytest.approx(0.0, abs=1e-9)
+        self._check(results, lambda d: d * K_PROD, lambda d: (d, 0.0))
+
+    def test_nonlinear_dose_formula(self):
+        """A smooth but nonlinear formula is measured to difference-quotient
+        accuracy, not exactly — the only row that is not exact."""
+        m, sim = _equilibrated()
+        results = self._scan(
+            sim,
+            lambda model, v: model.set_concentration(
+                "A()", v * np.sqrt(model.get_param("k_prod") * model.get_param("k_deg"))
+            ),
+        )
+        self._check(
+            results,
+            lambda d: d * np.sqrt(K_PROD * K_DEG),
+            lambda d: (d * np.sqrt(K_DEG / K_PROD) / 2, d * np.sqrt(K_PROD / K_DEG) / 2),
+        )
+
+    def test_increment_of_the_carried_pool_keeps_the_carried_row(self):
+        """A(0) = A_ss + dose depends on θ *through the carried state*, so the row
+        is the carried derivative plus the dose's — which is why the measurement
+        differences along the carried column, not just in θ."""
+        iA = _iA()
+        m, sim = _equilibrated()
+        results = self._scan(
+            sim,
+            lambda model, v: model.set_concentration("A()", model.get_concentration("A()") + v),
+        )
+        for r in results:
+            s0 = np.asarray(r.sensitivities)[0, iA, :]
+            assert s0[0] == pytest.approx(1.0 / K_DEG, rel=1e-6)  # dA_ss/dk_prod
+            assert s0[1] == pytest.approx(-K_PROD / K_DEG**2, rel=1e-6)  # dA_ss/dk_deg
+        self._check(
+            results,
+            lambda d: K_PROD / K_DEG + d,
+            lambda d: (1.0 / K_DEG, -K_PROD / K_DEG**2),
+        )
+
+    def test_declared_row_is_used_verbatim_and_skips_probing(self):
+        """A declared row wins over the measurement — and the hook is then called
+        once per point, not once plus the probes."""
+        m, sim = _equilibrated()
+        calls = []
+
+        def hook(model, v):
+            calls.append(v)
+            model.set_concentration("A()", v * model.get_param("k_prod"))
+            model.declare_ic_sensitivity({"A()": {"k_prod": v}})
+
+        results = self._scan(sim, hook)
+        self._check(results, lambda d: d * K_PROD, lambda d: (d, 0.0))
+        assert len(calls) == len(self.DOSES)  # no probe invocations
+
+    def test_declaring_an_empty_row_pins_it_to_zero(self):
+        """An intentionally θ-independent assignment declares ``{}`` — which is
+        also how a non-differentiable dose opts out of measurement."""
+        iA = _iA()
+        m, sim = _equilibrated()
+
+        def hook(model, v):
+            model.set_concentration("A()", float(round(v * model.get_param("k_prod"))))
+            model.declare_ic_sensitivity({"A()": {}})
+
+        for r in self._scan(sim, hook):
+            np.testing.assert_allclose(
+                np.asarray(r.sensitivities)[0, iA, :], [0.0, 0.0], atol=1e-12
+            )
+
+    def test_species_the_hook_leaves_alone_keep_the_carried_row_bit_exact(self):
+        """An untouched row is never routed through the measurement, so it is
+        identical to the same scan with no hook at all."""
+        iA = _iA()
+        m, sim = _equilibrated()
+        plain = sim.parameter_scan(
+            "extra_deg", self.DOSES, t_span=self.SPAN, n_points=self.NPTS, **_TOL
+        )
+        m2, sim2 = _equilibrated()
+        hooked = self._scan(sim2, lambda model, v: model.set_concentration("Ad()", 0.0))
+        for a, b in zip(plain, hooked, strict=True):
+            np.testing.assert_array_equal(
+                np.asarray(a.sensitivities)[0, iA, :], np.asarray(b.sensitivities)[0, iA, :]
+            )
+
+    def test_non_differentiable_dose_refuses(self):
+        """A dose rounded to whole molecules has no derivative at the crossing;
+        the two step sizes disagree and bngsim refuses instead of reporting the
+        difference quotient of a jump."""
+        m, sim = _equilibrated()
+        with pytest.raises(ValueError, match=r"not differentiable in 'k_prod'"):
+            self._scan(
+                sim,
+                lambda model, v: model.set_concentration(
+                    "A()", float(round(v * model.get_param("k_prod")))
+                ),
+            )
+
+    def test_hook_that_raises_at_a_perturbed_input_refuses(self):
+        m, sim = _equilibrated()
+        nominal = m.get_param("k_prod")
+
+        def brittle(model, v):
+            if model.get_param("k_prod") != nominal:
+                raise RuntimeError("only the nominal value, please")
+            model.set_concentration("A()", 3.0)
+
+        with pytest.raises(ValueError, match=r"on_point raised while bngsim measured"):
+            self._scan(sim, brittle)
+
+    def test_non_deterministic_hook_refuses(self):
+        m, sim = _equilibrated()
+        state = {"n": 0}
+
+        def drifting(model, v):
+            state["n"] += 1
+            model.set_concentration("A()", 3.0 + state["n"])
+
+        with pytest.raises(ValueError, match=r"not a deterministic function"):
+            self._scan(sim, drifting)
+
+    def test_probe_leaves_the_point_and_the_model_as_the_hook_left_them(self):
+        """The measurement runs the hook at perturbed inputs on the live model, so
+        the point must integrate from the nominal assignment and the scan must
+        still leave the model as it found it."""
+        iA = _iA()
+        m, sim = _equilibrated()
+        state, seed = m.get_state().copy(), np.array(m._core.pending_sensitivity_seed())
+        results = self._scan(
+            sim, lambda model, v: model.set_concentration("A()", v * model.get_param("k_prod"))
+        )
+        for dose, r in zip(self.DOSES, results, strict=True):
+            # The integrated trajectory starts from the *nominal* assignment.
+            assert np.asarray(r.species)[0, iA] == pytest.approx(dose * K_PROD, rel=1e-12)
+        np.testing.assert_array_equal(m.get_state(), state)
+        np.testing.assert_array_equal(m._core.pending_sensitivity_seed(), seed)
+        assert m.get_param("k_prod") == K_PROD
+        assert m._declared_ic_sens == {}
+        assert m._ic_write_log is None
+
+
+# ── Declaring the derivative of a hand-assigned initial condition (issue #111) ─
+
+
+class TestDeclaredIcSensitivityOnAFreshRun:
+    """``set_concentration`` replaces the ``.net`` IC expression that the
+    parameter-graph seeding (issue #43) differentiates, so a *hand-assigned*
+    θ-dependent initial condition has no derivative the engine can infer — outside
+    a hook there is nothing to probe. ``declare_ic_sensitivity`` supplies it.
+    """
+
+    SPAN = (0.0, 3.0)
+    NPTS = 9
+    DOSE = 1.0  # extra_deg for the measurement run
+
+    def _fresh(self, *, declare):
+        m = bngsim.Model.from_net(PREEQUIL_NET)
+        m.set_param("k_prod", K_PROD)
+        m.set_param("k_deg", K_DEG)
+        m.set_param("extra_deg", self.DOSE)
+        a0 = 3.0 * m.get_param("k_prod")  # a θ-dependent hand-assigned IC
+        m.set_concentration("A()", a0)
+        if declare:
+            m.declare_ic_sensitivity({"A()": {"k_prod": 3.0}})
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k_prod", "k_deg"])
+        return m, sim.run(t_span=self.SPAN, n_points=self.NPTS, **_TOL), a0
+
+    def test_declared_row_matches_the_closed_form(self):
+        iA = _iA()
+        _, r, a0 = self._fresh(declare=True)
+        np.testing.assert_allclose(
+            np.asarray(r.sensitivities)[:, iA, :],
+            _phase2_exact(np.linspace(*self.SPAN, self.NPTS), self.DOSE, a0=a0, da0=(3.0, 0.0)),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+
+    def test_without_the_declaration_the_row_is_the_literal_zero(self):
+        """The undeclared reading — ∂A(0)/∂k_prod = 0 — is what a literal
+        assignment means, and is why a θ-dependent one must say so."""
+        iA = _iA()
+        _, r, _ = self._fresh(declare=False)
+        assert np.asarray(r.sensitivities)[0, iA, 0] == pytest.approx(0.0, abs=1e-12)
+
+    def test_declaration_replaces_the_parameter_graph_row(self):
+        """A species whose .net IC *is* a parameter reference gets its declared row
+        instead of the expression's (the assignment replaced the expression)."""
+        m = bngsim.Model.from_net(IC_PARAM_NET)
+        i_r = m.species_names.index("R()")
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["R0"])
+        # Without a declaration: ∂R(0)/∂R0 = 1 from the IC expression `R() R0`.
+        r = sim.run(t_span=(0, 1), n_points=3, **_TOL)
+        assert np.asarray(r.sensitivities)[0, i_r, 0] == pytest.approx(1.0, rel=1e-9)
+        # Pin R to a literal and say so: the row becomes 0.
+        m2 = bngsim.Model.from_net(IC_PARAM_NET)
+        m2.set_concentration("R()", 7.0)
+        m2.declare_ic_sensitivity({"R()": {}})
+        sim2 = bngsim.Simulator(m2, method="ode", sensitivity_params=["R0"])
+        r2 = sim2.run(t_span=(0, 1), n_points=3, **_TOL)
+        assert np.asarray(r2.sensitivities)[0, i_r, 0] == pytest.approx(0.0, abs=1e-12)
+
+    def test_lifecycle(self):
+        m = bngsim.Model.from_net(PREEQUIL_NET)
+        m.set_concentration("A()", 1.0)
+        m.declare_ic_sensitivity({"A()": {"k_prod": 2.0}})
+        assert m._declared_ic_sens == {"A()": {"k_prod": 2.0}}
+        # Re-assigning the species supersedes its declaration...
+        m.set_concentration("A()", 2.0)
+        assert m._declared_ic_sens == {}
+        # ...as does a wholesale state change.
+        m.declare_ic_sensitivity({"A()": {"k_prod": 2.0}})
+        m.reset()
+        assert m._declared_ic_sens == {}
+        m.declare_ic_sensitivity({"A()": {"k_prod": 2.0}})
+        m.set_state(m.get_state())
+        assert m._declared_ic_sens == {}
+
+    def test_unknown_names_raise(self):
+        m = bngsim.Model.from_net(PREEQUIL_NET)
+        with pytest.raises(bngsim.ModelError, match=r"species 'NoSuch\(\)' not found"):
+            m.declare_ic_sensitivity({"NoSuch()": {"k_prod": 1.0}})
+        with pytest.raises(bngsim.ModelError, match=r"parameter 'nope'"):
+            m.declare_ic_sensitivity({"A()": {"nope": 1.0}})
+        assert m._declared_ic_sens == {}  # validated before anything is staged
 
 
 # ── Event path: fixed-time events now run (GH #205 → #212 Phase 1) ───────────

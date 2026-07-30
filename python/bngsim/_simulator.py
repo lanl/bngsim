@@ -70,6 +70,23 @@ _DENSE_FALLBACK_WARN_NSPECIES = 2000
 # many large models (or repeated run() calls) warns at most once, not per run.
 _dense_fallback_warned = False
 
+# ─── on_point initial-condition sensitivity probe (issue #111) ────────
+# A parameter_scan on_point hook assigns the initial conditions its point starts
+# from, so the point's ∂x(0)/∂θ for those species is whatever the hook's own
+# arithmetic implies. bngsim measures it by calling the hook at perturbed inputs
+# (Simulator._probe_on_point_ic_sens). These set the perturbation and how much
+# the two step sizes may disagree before the hook is declared non-differentiable
+# there. EPS is relative (to |θ| for the parameter path, to ‖x‖∞ for the state
+# path), so a 1e-9 rate constant is probed at 1e-9 scale, not an absolute floor
+# (the mistake issue #76 reports on the steady-state FD). A dose formula is
+# almost always linear in each parameter, where a central difference is exact to
+# roundoff and the two step sizes agree to ~1e-10 — TOL is loose enough for a
+# genuinely nonlinear-but-smooth formula (O(h²) truncation) and far tighter than
+# the O(1/h) blow-up a jump produces.
+_IC_SENS_PROBE_EPS = 1e-6
+_IC_SENS_PROBE_COARSE = 4.0
+_IC_SENS_PROBE_TOL = 1e-4
+
 
 # ─── Network-free method normalization ───────────────────────────────
 
@@ -1072,7 +1089,7 @@ class Simulator:
             )
             opts.set_event_time_sens(res.records)
 
-    def _apply_ic_param_sens_seed(self, opts, core) -> None:
+    def _apply_ic_param_sens_seed(self, opts, model: Model) -> None:
         """Inject ∂x_i(0)/∂p initial-condition sensitivity seeds (issue #43).
 
         When a species initial condition is a parameter reference — directly
@@ -1083,14 +1100,51 @@ class Simulator:
         the sympy chain rule and passed through ``SolverOptions``. A no-op for the
         common model with no parameter-referenced species ICs, and for IC-only
         sensitivity (no ``sensitivity_params``), where param columns don't exist.
+
+        Rows the caller declared with :meth:`Model.declare_ic_sensitivity`
+        (issue #111) replace whatever the parameter graph implies for those
+        species: an initial condition assigned by hand is no longer described by
+        the ``.net`` expression, so only the caller knows what it depends on.
         """
         if not self._sensitivity_params:
             return
         from bngsim._codegen import compute_ic_param_sens_seed
 
-        seeds = compute_ic_param_sens_seed(core)
+        seeds = compute_ic_param_sens_seed(model._core)
+        declared = model._declared_ic_sens
+        if declared:
+            seeds = self._overlay_declared_ic_sens(seeds, model, declared)
+            if not seeds:
+                # An empty list means "no Python injection" to the C++ seeding,
+                # which then falls back to its legacy species_ic_param_refs
+                # identity loop — the very rows a declaration just overrode. A
+                # sentinel row keeps the list non-empty and seeds nothing: the
+                # consumer skips any entry with species_idx0 < 0.
+                seeds = [(-1, 0, 0.0)]
         if seeds:
             opts.set_ic_param_sens(seeds)
+
+    @staticmethod
+    def _overlay_declared_ic_sens(
+        seeds: list[tuple[int, int, float]],
+        model: Model,
+        declared: dict[str, dict[str, float]],
+    ) -> list[tuple[int, int, float]]:
+        """Replace the ∂x_k(0)/∂p rows of species the caller declared (issue #111)."""
+        param_idx = {name: i for i, name in enumerate(model.param_names)}
+        species_idx = {name: i for i, name in enumerate(model.species_names)}
+        replaced = {species_idx[sp] for sp in declared if sp in species_idx}
+        out = [entry for entry in seeds if entry[0] not in replaced]
+        for sp, row in declared.items():
+            i = species_idx.get(sp)
+            if i is None:
+                continue
+            for p, d in row.items():
+                # A zero contributes nothing to the seed; dropping it keeps the
+                # list the same length as the entries that actually seed.
+                if d != 0.0 and p in param_idx:
+                    out.append((i, param_idx[p], float(d)))
+        return out
 
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
@@ -2010,7 +2064,7 @@ class Simulator:
                 # Pass the requested sensitivity parameter / IC species lists to CVODES.
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
-                    self._apply_ic_param_sens_seed(opts, self._model._core)
+                    self._apply_ic_param_sens_seed(opts, self._model)
                     self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
                     self._apply_event_time_sens(opts, self._model._core, t_start, t_end)
                 if self._sensitivity_ic:
@@ -2577,58 +2631,302 @@ class Simulator:
         # seeding must stay refused: keep the carry-over arm engaged.
         core.ic_state_dirty = True
 
-    def _seed_after_on_point(
+    def _run_on_point_with_ic_sens(
         self,
+        on_point: Callable[[Model, float], None],
+        value: float,
         seed: np.ndarray,
         names: list[str],
-        state_before: np.ndarray,
-        params_before: list[float],
     ) -> np.ndarray:
-        """Fold an ``on_point`` hook's edits into the point's carried dx/dθ.
+        """Run an ``on_point`` hook and resolve the point's ``∂x(0)/∂θ`` around it.
 
         ``on_point`` exists to apply coupled ``setConcentration`` overrides — the
-        ligand dose of a dose-response scan. Assigning species *k* a literal value
-        makes that species' initial condition θ-independent, so its seed row
-        becomes ``∂x_k(0)/∂θ = 0`` while every other species keeps the carried
-        equilibration derivative. That is exactly what a literal assignment means,
-        and it is what ``set_concentration`` already documents about its own
-        θ-derivative.
+        ligand dose of a dose-response scan — so the initial condition a scan point
+        actually starts from is *the hook's output*, and the seed the point needs is
+        ``d(post-hook x)/dθ``. For the species the hook assigns, that is **not** the
+        carried equilibration derivative: it is whatever the hook's own arithmetic
+        implies (issue #111).
 
-        Two things it cannot infer, and what happens instead:
+        Each row of the point's seed is resolved by the most specific thing
+        available:
 
-        * an override *computed from* a differentiated parameter (say a dose in
-          molecules that divides by a fitted volume) has a nonzero ``∂x_k(0)/∂θ``
-          this cannot see. A hook that needs one can install the right rows itself
-          with ``model._core.set_pending_sensitivity_seed(...)`` *after* its
-          concentration writes — a seed still pending when the hook returns is
-          taken verbatim.
-        * a hook that moves a differentiated parameter's *value* is refused: the
-          carried dx/dθ was accumulated at the pre-hook value, so the two cannot
-          be composed (the same argument as scanning a differentiated parameter).
+        1. **The hook installed a whole seed** (``_core.set_pending_sensitivity_seed``
+           after its writes) — taken verbatim, the pre-#111 escape hatch.
+        2. **The row is declared** via :meth:`Model.declare_ic_sensitivity` — used
+           verbatim, and not probed.
+        3. **The hook assigned this species** — the row is *measured* through the
+           hook (see :meth:`_probe_on_point_ic_sens`): a literal dose comes back
+           ``0``, a dose computed from a differentiated parameter comes back with
+           its true ``∂x_k(0)/∂θ``, and an increment of the carried pool comes back
+           with the carried row plus the dose's derivative.
+        4. **Otherwise** — the carried row, bit-exact (never routed through the
+           measurement, which would only add noise to a known-exact number).
+
+        A hook that moves a differentiated parameter's *value* is refused: the
+        carried dx/dθ was accumulated at the pre-hook value, so the two cannot be
+        composed (the same argument as scanning a differentiated parameter).
         """
-        core = self._model._core
+        model = self._model
+        core = model._core
+        params_before = [model.get_param(p) for p in names]
+        base_state = np.asarray(model.get_state(), dtype=np.float64)
+
+        model._declared_ic_sens.clear()
+        model._ic_write_log = set()
+        try:
+            on_point(model, float(value))
+        finally:
+            written = model._ic_write_log or set()
+            model._ic_write_log = None
+        declared = {k: dict(v) for k, v in model._declared_ic_sens.items()}
+        model._declared_ic_sens.clear()
+
         for name, before in zip(names, params_before, strict=True):
-            if self._model.get_param(name) != before:
+            if model.get_param(name) != before:
                 raise ValueError(
                     f"on_point changed the sensitivity parameter {name!r} "
-                    f"({before!r} → {self._model.get_param(name)!r}). The carried "
+                    f"({before!r} → {model.get_param(name)!r}). The carried "
                     f"∂x/∂{name} was accumulated at the pre-hook value, so a point that "
                     "overwrites it would mix two values of one symbol (issue #81). "
                     "Use on_point for the point's conditions (doses, non-fitted "
                     "parameters) only."
                 )
+
+        # (1) The hook took over the whole matrix.
         if core.has_pending_sensitivity_seed and list(
             core.pending_sensitivity_seed_param_names
         ) == list(names):
-            # Either the hook left the species state alone (the seed installed
-            # before it survived untouched), or it deliberately installed its own
-            # ∂x(0)/∂θ after writing concentrations. Both mean "use what's there".
-            return np.array(core.pending_sensitivity_seed(), dtype=np.float64)
-        changed = np.nonzero(np.asarray(self._model.get_state()) != np.asarray(state_before))[0]
-        seed = seed.copy()
-        if changed.size:
-            seed[changed, :] = 0.0
+            resolved = np.array(core.pending_sensitivity_seed(), dtype=np.float64)
+            return self._apply_declared_ic_sens(resolved, names, declared)
+
+        post_state = np.asarray(model.get_state(), dtype=np.float64)
+        rows = self._assigned_ic_rows(written, base_state, post_state)
+        # A species whose row is declared needs no measurement.
+        declared_rows = {model.species_names.index(sp) for sp in declared}
+        probe_rows = sorted(rows - declared_rows)
+
+        resolved = seed.copy()
+        if probe_rows:
+            measured = self._probe_on_point_ic_sens(
+                on_point, value, seed, names, base_state, post_state, params_before, probe_rows
+            )
+            resolved[probe_rows, :] = measured[probe_rows, :]
+        return self._apply_declared_ic_sens(resolved, names, declared)
+
+    def _assigned_ic_rows(
+        self, written: set[str], base_state: np.ndarray, post_state: np.ndarray
+    ) -> set[int]:
+        """Species indices whose initial condition an ``on_point`` hook assigned.
+
+        The write log is exact for the documented API (``set_concentration`` /
+        ``set_state`` / ``reset`` / ``restore_concentrations`` on the :class:`Model`);
+        the value diff is the belt-and-braces half that also catches a hook writing
+        through ``model._core`` directly. Their union is what gets measured rather
+        than carried.
+        """
+        names = self._model.species_names
+        if "*" in written:
+            return set(range(len(names)))
+        rows = {names.index(sp) for sp in written if sp in names}
+        rows.update(int(i) for i in np.nonzero(post_state != base_state)[0])
+        return rows
+
+    def _apply_declared_ic_sens(
+        self, seed: np.ndarray, names: list[str], declared: dict[str, dict[str, float]]
+    ) -> np.ndarray:
+        """Overwrite the rows a hook declared via ``declare_ic_sensitivity``."""
+        if not declared:
+            return seed
+        species = self._model.species_names
+        col = {name: j for j, name in enumerate(names)}
+        for sp, row in declared.items():
+            i = species.index(sp)
+            # A declared row is fully specified: unnamed params are 0 (the hook
+            # said what this initial condition depends on).
+            seed[i, :] = 0.0
+            for p, d in row.items():
+                if p in col:
+                    seed[i, col[p]] = d
         return seed
+
+    def _probe_on_point_ic_sens(
+        self,
+        on_point: Callable[[Model, float], None],
+        value: float,
+        seed: np.ndarray,
+        names: list[str],
+        base_state: np.ndarray,
+        post_state: np.ndarray,
+        nominal_params: list[float],
+        probe_rows: list[int],
+    ) -> np.ndarray:
+        """Measure ``d(post-hook x)/dθ`` through an ``on_point`` hook (issue #111).
+
+        The hook is a map ``H: (x, θ) → x'`` from the point's pre-hook state to the
+        state it actually integrates from, so the chain rule wants
+
+            ``dx'/dθ_i = ∂H/∂θ_i + (∂H/∂x)·s_i``
+
+        with ``s_i`` the carried ``∂x/∂θ_i``. Both terms are obtained by calling the
+        hook at perturbed inputs — a central difference in θ_i for the first, and a
+        central difference along the carried column for the second (which is what
+        makes an *increment* of the carried pool come out right rather than being
+        mistaken for a literal). Each term is computed at two step sizes and the
+        two must agree, or the hook is not differentiable here (a dose rounded to
+        whole molecules, say) and this refuses rather than reporting a difference
+        quotient of a jump.
+
+        The hook is therefore invoked several extra times per point, on the live
+        model with a perturbed input, and must be a deterministic function of
+        ``(model, value)``. The model is restored — state, parameters, and a final
+        nominal hook call — before this returns, so what the point integrates is
+        exactly what the nominal call produced. Declaring a row with
+        :meth:`Model.declare_ic_sensitivity` skips its measurement entirely, which
+        is the way out for an expensive or side-effecting hook.
+        """
+        model = self._model
+        ns = base_state.size
+        measured = np.zeros((ns, len(names)), dtype=np.float64)
+        x_scale = max(float(np.max(np.abs(base_state))), 1.0)
+        # Determinism first, on the nominal inputs: a hook that answers differently
+        # every call would otherwise fail below as "not differentiable", which is
+        # the wrong diagnosis for the wrong hook.
+        self._replay_on_point(on_point, value, base_state, names, nominal_params)
+        again = np.asarray(model.get_state(), dtype=np.float64)
+        if not np.array_equal(again, post_state):
+            raise ValueError(
+                "on_point is not a deterministic function of (model, value): re-running "
+                "it on the same inputs produced a different initial condition. bngsim "
+                "calls the hook at perturbed inputs to measure ∂x(0)/∂θ for the initial "
+                "conditions it assigns (issue #111), which requires determinism. Make "
+                "the hook depend only on its arguments, or declare its rows with "
+                "model.declare_ic_sensitivity() inside it to skip the measurement."
+            )
+        for j, name in enumerate(names):
+            theta = nominal_params[j]
+            col = np.asarray(seed[:, j], dtype=np.float64)
+            # ∂H/∂θ_i — perturb the parameter, hold the pre-hook state.
+            h_t = _IC_SENS_PROBE_EPS * (abs(theta) if theta != 0.0 else 1.0)
+            d_theta = self._ic_sens_central(
+                on_point, value, base_state, name, theta, h_t, None, probe_rows, f"∂/∂{name}"
+            )
+            # (∂H/∂x)·s_i — perturb the state along the carried column, scaled so
+            # the state perturbation stays small relative to the state itself
+            # however large the carried derivative is. Zero column ⇒ zero term.
+            col_scale = float(np.max(np.abs(col)))
+            d_state = np.zeros(ns, dtype=np.float64)
+            if col_scale > 0.0:
+                h_x = _IC_SENS_PROBE_EPS * x_scale / col_scale
+                d_state = self._ic_sens_central(
+                    on_point,
+                    value,
+                    base_state,
+                    name,
+                    theta,
+                    h_x,
+                    col,
+                    probe_rows,
+                    f"∂/∂x along ∂x/∂{name}",
+                )
+            measured[:, j] = d_theta + d_state
+
+        # Re-establish the nominal point: restore the inputs and re-run the hook,
+        # so a parameter the hook set *from* a perturbed θ is recomputed at the
+        # nominal one (restoring `post_state` alone would leave it perturbed).
+        self._replay_on_point(on_point, value, base_state, names, nominal_params)
+        return measured
+
+    def _replay_on_point(
+        self,
+        on_point: Callable[[Model, float], None],
+        value: float,
+        base_state: np.ndarray,
+        names: list[str],
+        nominal_params: list[float],
+    ) -> None:
+        """Re-run the hook on the nominal inputs, leaving no declarations behind."""
+        model = self._model
+        model.set_state(base_state)
+        for name, val in zip(names, nominal_params, strict=True):
+            model.set_param(name, val)
+        model._declared_ic_sens.clear()
+        on_point(model, float(value))
+        model._declared_ic_sens.clear()
+
+    def _ic_sens_central(
+        self,
+        on_point: Callable[[Model, float], None],
+        value: float,
+        base_state: np.ndarray,
+        name: str,
+        theta: float,
+        h: float,
+        direction: np.ndarray | None,
+        probe_rows: list[int],
+        what: str,
+    ) -> np.ndarray:
+        """One central difference of the hook, validated across two step sizes."""
+        fine, fine_mag = self._ic_sens_diff(on_point, value, base_state, name, theta, h, direction)
+        coarse, coarse_mag = self._ic_sens_diff(
+            on_point, value, base_state, name, theta, h * _IC_SENS_PROBE_COARSE, direction
+        )
+        for i in probe_rows:
+            # Roundoff floor of the difference quotient at the finer step.
+            floor = 8.0 * float(np.finfo(float).eps) * max(fine_mag[i], coarse_mag[i]) / (2.0 * h)
+            tol = _IC_SENS_PROBE_TOL * max(abs(fine[i]), abs(coarse[i])) + floor
+            if abs(fine[i] - coarse[i]) > tol:
+                raise ValueError(
+                    f"on_point's initial condition for {self._model.species_names[i]!r} is "
+                    f"not differentiable in {name!r} at this scan point: the measured "
+                    f"{what} is {fine[i]:.6g} at step {h:.3g} but {coarse[i]:.6g} at step "
+                    f"{h * _IC_SENS_PROBE_COARSE:.3g}, so the hook has a jump or a kink "
+                    "there (a dose rounded to whole molecules does this). bngsim will "
+                    "not report a difference quotient of a jump as a derivative "
+                    "(issue #111) — declare the row explicitly with "
+                    "model.declare_ic_sensitivity({species: {param: value}}) inside the "
+                    "hook (an intentionally θ-independent assignment declares 0)."
+                )
+        return fine
+
+    def _ic_sens_diff(
+        self,
+        on_point: Callable[[Model, float], None],
+        value: float,
+        base_state: np.ndarray,
+        name: str,
+        theta: float,
+        h: float,
+        direction: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """``(central difference, |value| scale per row)`` for one step size."""
+        model = self._model
+        out = []
+        for sign in (1.0, -1.0):
+            if direction is None:
+                model.set_state(base_state)
+                model.set_param(name, theta + sign * h)
+            else:
+                model.set_state(base_state + (sign * h) * direction)
+                model.set_param(name, theta)
+            try:
+                on_point(model, float(value))
+            except Exception as e:
+                raise ValueError(
+                    f"on_point raised while bngsim measured d(initial condition)/d{name} "
+                    f"through it ({type(e).__name__}: {e}). The hook is called with "
+                    "perturbed inputs to obtain ∂x(0)/∂θ for the initial conditions it "
+                    "assigns (issue #111), so it must tolerate a nearby parameter value "
+                    "and state — or declare its rows with model.declare_ic_sensitivity() "
+                    "inside the hook, which skips the measurement."
+                ) from e
+            finally:
+                # The parameter goes back to nominal even when the hook raised, so
+                # the scan's own restore never has to guess what a probe left behind.
+                model.set_param(name, theta)
+            model._declared_ic_sens.clear()
+            out.append(np.asarray(model.get_state(), dtype=np.float64))
+        plus, minus = out
+        return (plus - minus) / (2.0 * h), np.maximum(np.abs(plus), np.abs(minus))
 
     def _capture_carryover_state(self) -> tuple[np.ndarray | None, list[str], bool]:
         """Snapshot the model's carry-over sensitivity state (issue #81)."""
@@ -2774,14 +3072,29 @@ class Simulator:
           previous point's state *and* its ``dx/dθ``, so the whole continuation
           is one differentiable protocol.
 
+        An ``on_point`` hook assigns the initial condition its point starts from,
+        so for the species it writes the seed is *its* derivative, not the carried
+        one (issue #111). Row by row, the most specific thing available wins: a
+        row the hook installed wholesale, then one declared with
+        :meth:`Model.declare_ic_sensitivity`, then one **measured through the
+        hook** (bngsim calls the hook at perturbed inputs, so a literal dose
+        measures ``0``, a dose computed from a differentiated parameter measures
+        its true derivative, and an increment of the carried pool measures the
+        carried row plus the dose's), and otherwise the carried row unchanged.
+        Measuring calls the hook several extra times per point, so it must be a
+        deterministic function of ``(model, value)``; declaring a row skips its
+        measurement.
+
         The scanned parameter must not be a ``sensitivity_params`` entry (each
         point overwrites it, which cannot be composed with the derivative carried
         into the point), ``sensitivity_ic`` is not supported across the boundary,
-        and an ``on_point`` hook may set species concentrations (a literal dose
-        zeroes that species' seed row) but not move a differentiated parameter.
-        Every one of those is a raise, never a silently-reseeded gradient. For a
-        sweep whose points start from the model's own seed initial conditions,
-        use :meth:`run_batch`.
+        an ``on_point`` hook may not move a differentiated parameter, and a hook
+        whose assigned initial condition is not differentiable in a parameter (a
+        dose rounded to whole molecules) must declare that row rather than have a
+        difference quotient of the jump reported as a derivative. Every one of
+        those is a raise, never a silently-reseeded gradient. For a sweep whose
+        points start from the model's own seed initial conditions, use
+        :meth:`run_batch`.
         """
         self._require_interactive_backend_support()
         if steady_state and self._method != "ode":
@@ -2849,14 +3162,12 @@ class Simulator:
                     if pt_sens_seed is None:
                         on_point(self._model, float(value))
                     else:
-                        # Watch what the hook does to the point's initial condition:
-                        # a literal setConcentration zeroes that species' seed row,
-                        # and moving a differentiated parameter is refused.
-                        state_before = self._model.get_state()
-                        params_before = [self._model.get_param(p) for p in carry_names]
-                        on_point(self._model, float(value))
-                        pt_sens_seed = self._seed_after_on_point(
-                            pt_sens_seed, carry_names, state_before, params_before
+                        # The hook assigns the initial condition this point starts
+                        # from, so ∂x(0)/∂θ for the species it writes is its own
+                        # arithmetic's — declared, measured through the hook, or
+                        # carried, row by row (issue #111).
+                        pt_sens_seed = self._run_on_point_with_ic_sens(
+                            on_point, float(value), pt_sens_seed, carry_names
                         )
                         self._install_scan_sens_seed(pt_sens_seed, carry_names)
                 # Rebuild the backend so the scanned parameter (and any on_point
@@ -3008,7 +3319,7 @@ class Simulator:
                     # Seed ∂x_i(0)/∂p from the CLONE's params (this row's point):
                     # a nonlinear derived IC (e.g. Rtot = R0*scale) has a
                     # param-dependent coefficient, so it must track set_params.
-                    self._apply_ic_param_sens_seed(opts, clone._core)
+                    self._apply_ic_param_sens_seed(opts, clone)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone.
                     self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
@@ -3355,7 +3666,7 @@ class Simulator:
         if self._codegen_c_source:
             opts.codegen_c_source = self._codegen_c_source
         opts.set_sensitivity_params(sens_params)
-        self._apply_ic_param_sens_seed(opts, clone._core)
+        self._apply_ic_param_sens_seed(opts, clone)
         # This chunk differentiates only `sens_params`, so the ∂t*/∂p columns
         # must be built against that subset rather than the full request.
         self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)

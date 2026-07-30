@@ -216,6 +216,63 @@ in `CMakeLists.txt`) is derived from it.
   re-bootstrap after a pin bump fail on step one.
 
 ### Added
+- **The initial condition an `on_point` hook assigns gets its own `∂x(0)/∂θ`
+  (issue #111).** #81 carried the pre-equilibration's `dx/dθ` into a scan and
+  treated a hook's `setConcentration` dose as a literal — `∂x_k(0)/∂θ = 0` for
+  that species. That is right for the ordinary dose and wrong, silently, for a
+  dose *computed from* a fitted parameter (nM converted to molecules through a
+  fitted volume) or for an *increment* of the carried pool (`x_k + dose`, which
+  should keep the carried row). The hook assigns the state its point integrates
+  from, so that state's derivative is the hook's own — and bngsim now obtains it
+  instead of assuming it.
+
+  Row by row, the most specific thing available wins: a row the hook installed
+  wholesale, then one **declared** with the new
+  `Model.declare_ic_sensitivity({species: {param: value}})`, then one **measured
+  through the hook**, and otherwise the carried row bit-exact (a known-exact
+  number is never routed through a measurement). The measurement is the chain rule
+  by difference quotient — the hook is a map `H: (x, θ) → x'`, so
+  `dx'/dθ_i = ∂H/∂θ_i + (∂H/∂x)·s_i` with `s_i` the carried column, and each term
+  is a central difference of the hook (in θ_i, and along `s_i`). That second term
+  is what makes an increment come out right rather than being mistaken for a
+  literal.
+
+  Measured against a closed form on `preequil_prod_deg.net` (four hook shapes,
+  three doses off one equilibration, `sensitivity_params=[k_prod, k_deg]`):
+
+  | `on_point` assigns | exact `∂A(0)/∂θ` | max rel err vs closed form |
+  | --- | --- | --- |
+  | `A(0) = 3.0` (literal) | `(0, 0)` | 1.3e-10 |
+  | `A(0) = dose·k_prod` | `(dose, 0)` | 1.8e-10 |
+  | `A(0) = dose·√(k_prod·k_deg)` | `(dose√(k_deg/k_prod)/2, dose√(k_prod/k_deg)/2)` | 3.1e-08 |
+  | `A(0) = A_ss + dose` (increment) | `(1/k_deg, −k_prod/k_deg²)` | 2.6e-10 |
+
+  Rows 2 and 4 were 100% wrong before this change (reported `0`); row 1 is
+  unchanged and row 3 carries the difference quotient's truncation, the only place
+  the answer is not exact.
+
+  On `IGF1R_model_v1` (589 species / 4198 reactions) with the *real* conversion —
+  ligand amount `= dose_nM·1e-9·NA·Vecf`, `Vecf = 2.1e-9·f`, `f` fitted — the
+  measured `d(pY980)/df` matches central FD over the **full** protocol at
+  **9.4e-11 … 5.5e-10** across two step sizes, and equals the declared route to
+  1.6e-11. The pre-#111 literal rule was off by **79% / 94% / 93%** at
+  dose = 0.1 / 1 / 10 nM. Probing cost 26 hook calls per point at three
+  parameters and no measurable wall clock (0.66 s either way) — the ODE solve
+  dominates; declaring every written row reduces it to the one nominal call.
+
+  Refusals rather than a plausible number: a hook whose assigned IC is not
+  differentiable in a parameter (a dose rounded to whole molecules — the two step
+  sizes disagree by the O(1/h) blow-up of a jump), a hook that raises at a
+  perturbed input, and a hook that is not a deterministic function of
+  `(model, value)` (checked by re-running it). Each names the species, the
+  parameter and the fix, which is to declare that row.
+
+  `declare_ic_sensitivity` is honoured on a plain `run()` too. That closes the same
+  hole in the *hand-assigned* case: `set_concentration` replaces the `.net` IC
+  expression that the parameter-graph seeding (issue #43) differentiates, so a
+  hand-assigned θ-dependent IC previously seeded `0` with no way to say otherwise
+  (measured on the toy model: reported `0` against a true `∂A(0)/∂k_prod = 3`;
+  with the declaration, 1.2e-10 against the closed form).
 - **Forward sensitivities carry from a pre-equilibration into a parameter scan
   (issue #81).** A dose-response experiment that pre-equilibrates and then scans
   could not be fit by a gradient method: `parameter_scan` / `bifurcate` refused
@@ -293,13 +350,10 @@ in `CMakeLists.txt`) is derived from it.
   taken at a different value of the same symbol), when `sensitivity_ic` is
   requested across the boundary, or when an `on_point` hook moves a differentiated
   parameter. An `on_point` hook *may* apply the usual coupled `setConcentration`
-  dose override: a literal assignment to species *k* zeroes that species' seed
-  row (`∂x_k(0)/∂θ = 0` is what a literal means) and leaves the rest carried. The
-  one case bngsim cannot infer is an override *computed from* a differentiated
-  parameter; such a hook can install the correct rows itself with
-  `set_pending_sensitivity_seed` after its concentration writes, and a seed still
-  pending when the hook returns is used verbatim. `run_batch` remains the right
-  primitive for a sweep whose points start from the model's own seed ICs.
+  dose override; how that override's own `∂x_k(0)/∂θ` is obtained is described in
+  the issue #111 entry above (it was a literal-⇒-zero rule as this shipped).
+  `run_batch` remains the right primitive for a sweep whose points start from the
+  model's own seed ICs.
 
   Side effect of the same restore work: a plain (non-sensitivity) scan no longer
   leaves the model marked as carried-over dynamics — it rewinds the state it
