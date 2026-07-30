@@ -383,6 +383,12 @@ void NetworkModel::get_state_into(double *out) const {
         out[i] = sp[i].concentration;
 }
 
+void NetworkModel::get_initial_state_into(double *out) const {
+    const auto &sp = impl_->species;
+    for (std::size_t i = 0; i < sp.size(); ++i)
+        out[i] = sp[i].initial_conc;
+}
+
 void NetworkModel::set_state_from(const double *in) {
     auto &sp = impl_->species;
     for (std::size_t i = 0; i < sp.size(); ++i)

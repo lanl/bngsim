@@ -795,6 +795,13 @@ class Model:
         Notes
         -----
         Implements BNG ``setConcentration("name", value)`` action.
+
+        For forward sensitivity, this is a **literal** initial condition:
+        ``∂x_k(0)/∂θ = 0``. It therefore supersedes whatever the species' declared
+        initial condition depended on — if the ``.net`` set it from a parameter
+        (``R() R0``), that parameter no longer reaches this species' IC and its seed
+        row is dropped (issue #113). When the value you assign *does* depend on a
+        differentiated parameter, say so with :meth:`declare_ic_sensitivity`.
         """
         try:
             self._core.set_concentration(name, float(value))

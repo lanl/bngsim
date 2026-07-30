@@ -1101,10 +1101,18 @@ class Simulator:
         common model with no parameter-referenced species ICs, and for IC-only
         sensitivity (no ``sensitivity_params``), where param columns don't exist.
 
-        Rows the caller declared with :meth:`Model.declare_ic_sensitivity`
-        (issue #111) replace whatever the parameter graph implies for those
-        species: an initial condition assigned by hand is no longer described by
-        the ``.net`` expression, so only the caller knows what it depends on.
+        Two things retire a row the parameter graph would otherwise supply:
+
+        * the caller declared it with :meth:`Model.declare_ic_sensitivity`
+          (issue #111) — an initial condition assigned by hand is no longer
+          described by the ``.net`` expression, so only the caller knows what it
+          depends on;
+        * the species is no longer *at* the initial condition that expression
+          describes (issue #113). ``∂(IC)/∂p`` is the derivative of
+          ``species[].initial_conc``; once an assignment has moved the live
+          concentration off that baseline, the parameter cannot reach this
+          species' initial condition at all, and seeding the row would report a
+          gradient through an initial condition the model no longer has.
         """
         if not self._sensitivity_params:
             return
@@ -1112,17 +1120,53 @@ class Simulator:
 
         seeds = compute_ic_param_sens_seed(model._core)
         declared = model._declared_ic_sens
+        retired = self._superseded_ic_rows(model, seeds, declared) if seeds else set()
+        if retired:
+            seeds = [entry for entry in seeds if entry[0] not in retired]
         if declared:
             seeds = self._overlay_declared_ic_sens(seeds, model, declared)
-            if not seeds:
-                # An empty list means "no Python injection" to the C++ seeding,
-                # which then falls back to its legacy species_ic_param_refs
-                # identity loop — the very rows a declaration just overrode. A
-                # sentinel row keeps the list non-empty and seeds nothing: the
-                # consumer skips any entry with species_idx0 < 0.
-                seeds = [(-1, 0, 0.0)]
+        if (retired or declared) and not seeds:
+            # An empty list means "no Python injection" to the C++ seeding, which
+            # then falls back to its legacy species_ic_param_refs identity loop —
+            # the very rows just retired. A sentinel row keeps the list non-empty
+            # and seeds nothing: the consumer skips any entry with
+            # species_idx0 < 0. (That loop applies the #113 rule too, but a
+            # declaration is invisible to it, so do not rely on it here.)
+            seeds = [(-1, 0, 0.0)]
         if seeds:
             opts.set_ic_param_sens(seeds)
+
+    @staticmethod
+    def _superseded_ic_rows(
+        model: Model,
+        seeds: list[tuple[int, int, float]],
+        declared: dict[str, dict[str, float]],
+    ) -> set[int]:
+        """Species whose ``.net`` IC expression no longer describes their state.
+
+        ``reset()`` returns the live concentrations to ``initial_conc``, so the two
+        differ exactly when an assignment (``set_concentration`` / ``set_state`` /
+        an external injection) has superseded the declared initial condition. Those
+        species' parameter-graph seeds are dropped (issue #113); a species the
+        caller declared is left to :meth:`_overlay_declared_ic_sens`, which is the
+        more specific statement.
+
+        A caller that re-asserts a species' *own* IC value keeps its row: the
+        assignment and the expression then agree numerically, and which of the two
+        was meant is genuinely ambiguous — ``declare_ic_sensitivity`` says so
+        either way.
+        """
+        rows = {entry[0] for entry in seeds}
+        if not rows:
+            return set()
+        live = np.asarray(model.get_state(), dtype=np.float64)
+        baseline = np.asarray(model._core.get_initial_state(), dtype=np.float64)
+        moved = set(int(i) for i in np.nonzero(live != baseline)[0])
+        if not moved:
+            return set()
+        species = model.species_names
+        spoken_for = {i for i, name in enumerate(species) if name in declared}
+        return (rows & moved) - spoken_for
 
     @staticmethod
     def _overlay_declared_ic_sens(

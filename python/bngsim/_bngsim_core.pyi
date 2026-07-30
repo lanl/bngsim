@@ -143,6 +143,10 @@ class NetworkModel:
         """
         Get a parameter value by name
         """
+    def get_initial_state(self) -> numpy.typing.NDArray[numpy.float64]:
+        """
+        Bulk-copy the IC baseline (species[].initial_conc) into a new float64 ndarray, ordered like species_names(). This is what reset() restores the live state to, so get_state() != get_initial_state() marks the species whose initial condition an assignment has superseded — the rows whose parameter-graph ∂x_i(0)/∂p seed no longer applies (GH #113).
+        """
     def get_state(self) -> numpy.typing.NDArray[numpy.float64]:
         """
         Bulk-copy all species concentrations into a new float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).

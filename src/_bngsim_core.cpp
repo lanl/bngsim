@@ -909,6 +909,20 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "Bulk-copy all species concentrations into a new float64 ndarray, "
             "ordered like species_names(). O(n_species), one Python call (GH #102).")
         .def(
+            "get_initial_state",
+            [](const bngsim::NetworkModel &self) {
+                const auto ns = static_cast<py::ssize_t>(self.n_species());
+                py::array_t<double> arr(ns);
+                if (ns > 0)
+                    self.get_initial_state_into(static_cast<double *>(arr.request().ptr));
+                return arr;
+            },
+            "Bulk-copy the IC baseline (species[].initial_conc) into a new float64 "
+            "ndarray, ordered like species_names(). This is what reset() restores "
+            "the live state to, so get_state() != get_initial_state() marks the "
+            "species whose initial condition an assignment has superseded — the "
+            "rows whose parameter-graph ∂x_i(0)/∂p seed no longer applies (GH #113).")
+        .def(
             "set_state",
             [](bngsim::NetworkModel &self,
                py::array_t<double, py::array::c_style | py::array::forcecast> arr) {

@@ -15,6 +15,37 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Changed
+- **An assignment retires the parameter-graph IC sensitivity row it superseded
+  (issue #113).** `∂(IC)/∂p` (issue #43) differentiates the initial condition the
+  model *declares* — `species[].initial_conc`, what `reset()` returns to. A
+  `set_concentration` replaces that initial condition with a literal, but the seed
+  kept being derived from the `.net` expression, so the engine reported a gradient
+  through an initial condition the model no longer had. On `ic_direct.net`
+  (`R() R0`, with `R0` in **no rate law**) pinning `R` to 7.0 reported
+  `dR/dR0 = 1.0, 0.779, 0.607, …` — the seed propagated as `e^{−kf t}` — where the
+  truth and a rebuild finite difference are both exactly `0`. Not approximate: a
+  gradient with respect to a quantity the trajectory does not depend on, with no
+  warning.
+
+  The engine can tell, and now does: an expression-derived row applies only while
+  the species is still *at* that baseline, so a row whose live concentration has
+  moved off `initial_conc` is dropped. A `Model.declare_ic_sensitivity` row
+  (issue #111) is the more specific statement and still wins — including a
+  deliberate nonzero one for an assignment computed from a fitted parameter. The
+  C++ fallback identity loop (used when Python injects nothing) applies the same
+  rule, so both seeding paths agree.
+
+  Scope of the behaviour change: nothing happens unless a caller has assigned
+  concentrations before a sensitivity run. Every model in the 585-model `.net`
+  corpus and 120 SBML event models loads with its live state exactly equal to its
+  baseline, so no freshly loaded model is affected, and `run_batch` /
+  `steady_state_batch` (which clone then `reset()`) are unaffected by construction.
+  A caller who re-asserts a species' *own* IC value keeps its row — the assignment
+  and the expression then agree numerically and which was meant is genuinely
+  ambiguous; declare to settle it either way.
+
+  `NetworkModel.get_initial_state()` exposes the baseline (bulk, ordered like
+  `species_names()`), the counterpart of `get_state()` this comparison needs.
 - **Forward sensitivities now use the analytic RHS for Functional rate laws whose
   expressions are smooth algebra (issue #67, closing stage 3 of #55).** A single
   Functional reaction used to put a whole model on CVODES' internal difference
