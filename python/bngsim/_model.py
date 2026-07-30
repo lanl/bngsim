@@ -1037,6 +1037,77 @@ class Model:
         """List of all observable group names."""
         return self._core.observable_names
 
+    # ─── Write-only accumulator species (issue #74) ───────────────────────
+
+    def pure_sink_species(self) -> list[str]:
+        """Names of the *write-only accumulator* species in this network.
+
+        A pure sink is a species this network only ever writes to — the
+        ``degraded`` / ``produced`` / ``secreted`` pool a BNGL model carries to
+        count cumulative flux. Its derivative is a non-zero constant for as long
+        as its producing reactions fire, so ``||f(y)||_2 / n_species`` has a
+        floor above ``tol`` and :meth:`Simulator.steady_state` reports failure
+        however long it integrates — even when every other species has settled.
+        These are the species to hand (negated) to ``steady_state(mask=...)``.
+
+        Detection is purely structural — nothing is measured, no annotation is
+        needed. A species qualifies when all of the following hold:
+
+        1. it is a product of at least one reaction,
+        2. it is a reactant of none,
+        3. no species' derivative depends on it, and
+        4. it is not a ``$``-prefixed (fixed / boundary-condition) species.
+
+        Clause 3 is not implied by clauses 1-2 and is what makes excluding the
+        species provably harmless to the rest of the system: an Elementary rate
+        law reads only its reactants, but a Functional one reads observables, so
+        a product-only species named in an observable that a rate law consumes
+        still feeds back into the dynamics. Clause 4 drops the boundary
+        conditions, whose derivative is zeroed anyway, so they never hold the
+        residual up.
+
+        What this does **not** claim is that the returned species are the only
+        obstacle to convergence, or that a species *not* returned is settled.
+        It answers exactly one question: which species can be dropped from the
+        convergence test without changing the problem the remaining ones solve.
+
+        Returns
+        -------
+        list[str]
+            Species names, in species order. Empty for the common case.
+
+        Examples
+        --------
+        >>> model.pure_sink_species()
+        ['Ad()']
+        >>> ss = sim.steady_state(mask=~model.is_pure_sink())
+        >>> ss.converged
+        True
+        """
+        names = self._core.species_names
+        return [names[i] for i in self._core.pure_sink_species()]
+
+    def is_pure_sink(self):
+        """Boolean mask of the pure-sink species, shape ``(n_species,)``.
+
+        The array form of :meth:`pure_sink_species`, so the convergence-test
+        mask is a negation::
+
+            ss = sim.steady_state(mask=~model.is_pure_sink())
+
+        Returns
+        -------
+        ndarray of bool
+            ``True`` where the species is a write-only accumulator.
+        """
+        import numpy as np
+
+        flags = np.zeros(self._core.n_species, dtype=bool)
+        idx = self._core.pure_sink_species()
+        if idx:
+            flags[list(idx)] = True
+        return flags
+
     # ─── Table functions ──────────────────────────────────────────────────
 
     def add_table_function(

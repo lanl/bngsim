@@ -1283,6 +1283,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("species_names", &bngsim::NetworkModel::species_names)
         .def_property_readonly("observable_names", &bngsim::NetworkModel::observable_names)
 
+        // Issue #74 — 0-based indices of the write-only accumulator species: a
+        // product of some reaction, a reactant of none, read by no other
+        // species' derivative, and not a $-fixed boundary condition. These are
+        // the species whose constant non-zero derivative puts a floor under
+        // ||f(y)||₂/n, i.e. what a steady_state_mask exists to exclude.
+        .def("pure_sink_species", &bngsim::NetworkModel::pure_sink_species,
+             "0-based indices of write-only accumulator (pure sink) species")
+
         // Table functions
         .def(
             "add_table_function_file",
@@ -2010,7 +2018,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("jacobian", &bngsim::SteadyStateOptions::jacobian)
         .def_readwrite("codegen_so_path", &bngsim::SteadyStateOptions::codegen_so_path)
         .def_readwrite("codegen_c_source", &bngsim::SteadyStateOptions::codegen_c_source)
-        .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params);
+        .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params)
+        .def_readwrite("steady_state_mask", &bngsim::SteadyStateOptions::steady_state_mask);
 
     // --- SteadyStateResult ---
     py::class_<bngsim::SteadyStateResult>(m, "SteadyStateResultCore")
@@ -2022,6 +2031,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("converged", &bngsim::SteadyStateResult::converged)
         .def_readonly("n_steps", &bngsim::SteadyStateResult::n_steps)
         .def_readonly("n_rhs_evals", &bngsim::SteadyStateResult::n_rhs_evals)
+        // Issue #74 — what the convergence test covered and why it failed.
+        .def_readonly("n_residual_species", &bngsim::SteadyStateResult::n_residual_species)
+        .def_readonly("excluded_species", &bngsim::SteadyStateResult::excluded_species)
+        .def_readonly("unconverged_pure_sinks", &bngsim::SteadyStateResult::unconverged_pure_sinks)
         .def_readonly("n_sens_params", &bngsim::SteadyStateResult::n_sens_params)
         .def_readonly("sens_param_names", &bngsim::SteadyStateResult::sens_param_names)
         // Issue #63 — which numerical path actually ran, so a caller can tell an

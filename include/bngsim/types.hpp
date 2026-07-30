@@ -827,6 +827,39 @@ struct SteadyStateOptions {
 
     // Sensitivity: parameter names for steady-state sensitivity dY_ss/dp
     std::vector<std::string> sensitivity_params;
+
+    // ─── Which species the convergence test is taken over (issue #74) ─────────
+    // Per-species selector, length n_species (or EMPTY, the default, meaning
+    // every species — byte-for-byte the BNG2.pl parity criterion). Non-zero ⇒
+    // that species enters the norm; zero ⇒ it is excluded and the solver stops
+    // asking whether it has settled.
+    //
+    // Why this exists. A write-only accumulator species — a "degraded" /
+    // "produced" pool some reaction produces and none consumes — has a constant
+    // non-zero derivative forever, so ||f(y)||₂/n has a floor above tol and the
+    // solve reports failure however far it integrates, even when every other
+    // species is settled to 1e-10. Before this option there was no way to say
+    // "solve f(y) = 0 on this subspace", so such a model was outside
+    // steady_state()'s reach entirely. NetworkModel::pure_sink_species()
+    // identifies the accumulators structurally; the mask is the caller's
+    // decision about them. AMICI spells the same knob
+    // Model.set_steadystate_mask.
+    //
+    // What it changes, and what it does NOT. Everything still integrates: the
+    // excluded species' equations stay in the RHS and their trajectories are
+    // returned as always. The mask restricts (a) the residual norm, and (b) the
+    // KINSOL polish's unknown set and the dY_ss/dp linear system, which are the
+    // same subspace question — a pure sink contributes a zero Jacobian COLUMN,
+    // so leaving it in makes both systems singular at every seed (this is
+    // exactly GH #27 Bug 3, "Barua 2013's 404×404 rank-deficient system").
+    // Excluded species are held at their integrated values there, and their
+    // dY_ss/dp rows come back NaN because a species with no steady value has no
+    // steady-state gradient.
+    //
+    // The divisor follows the mask: ||f_included||₂ / n_included, so `tol` keeps
+    // its meaning as a per-species residual scale no matter how many species
+    // were excluded. With no mask, n_included == n_species and nothing changes.
+    std::vector<uint8_t> steady_state_mask;
 };
 
 // --- Steady-state result ------------------------------------------------------
@@ -891,6 +924,27 @@ struct SteadyStateResult {
     std::vector<std::string> function_names;    // n_functions (raw, incl _rateLawN)
     std::vector<double> observable_sensitivity; // (n_observables × n_sens_params)
     std::vector<double> function_sensitivity;   // (n_functions × n_sens_params)
+
+    // ─── What the convergence test covered, and why it failed (issue #74) ─────
+    // How many species entered ||f||₂/n — n_species unless
+    // SteadyStateOptions::steady_state_mask restricted it. Lets a caller assert
+    // the mask took effect instead of inferring it from a residual that moved.
+    int n_residual_species = 0;
+
+    // 0-based indices of the species the mask excluded, ascending; empty when
+    // no mask was supplied. These are the species whose concentrations are
+    // returned but whose settling was never tested, and whose dY_ss/dp rows are
+    // NaN.
+    std::vector<int> excluded_species;
+
+    // Names of the write-only accumulator species (pure sinks, see
+    // NetworkModel::pure_sink_species) that were INCLUDED in the convergence
+    // test and carry a non-negligible |f| at the returned state. Non-empty only
+    // on a failed solve, and then it is the answer to "why": the residual has a
+    // structural floor, not a slow tail, and no amount of extra max_time will
+    // move it. Before issue #74 a model like this returned converged=false with
+    // nothing at all to distinguish that from ordinary numerical trouble.
+    std::vector<std::string> unconverged_pure_sinks;
 };
 
 // ─── Solver options ──────────────────────────────────────────────────────────

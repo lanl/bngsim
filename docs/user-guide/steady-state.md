@@ -87,6 +87,100 @@ ss = sim.steady_state(
 )
 ```
 
+### Write-only accumulator species (`mask=`, issue #74)
+
+Counting cumulative flux with a "degraded" / "produced" / "secreted" pool is a
+common BNGL idiom: some reaction produces the species and none consumes it. Such
+a **pure sink** has a constant non-zero derivative for as long as its producing
+reactions fire, so `||f(y)||_2 / n_species` has a floor above `tol` and
+`steady_state()` reports failure however long it integrates — even when every
+other species has settled. On `beta_catenin_destruction_complex_barua2013`
+(409 species, four pure sinks) the residual does not move across two decades of
+`max_time`, while the state grows linearly:
+
+| `max_time` | converged | residual   | `max\|y\|` |
+| ---------- | --------- | ---------- | -------- |
+| 2.5e6      | False     | 7.4990e-03 | 7.49e+06 |
+| 2.5e7      | False     | 7.4990e-03 | 7.49e+07 |
+| 2.5e8      | False     | 7.4990e-03 | 7.49e+08 |
+
+That is a constant derivative, not a slow tail. `mask=` restricts the
+convergence test to the subspace that *does* have a steady state, and
+`Model.is_pure_sink()` finds the accumulators structurally, so nothing has to be
+hand-listed:
+
+```python
+model.pure_sink_species()
+# ['bCat(ARM34,ARM59,s33s37~U,s45~U,ss~d)', ... ]   # 4 of 409
+
+ss = sim.steady_state(method="newton", mask=~model.is_pure_sink())
+ss.converged                # True
+ss.residual                 # 9.10e-10
+ss.n_residual_species       # 405 — how many species entered the norm
+ss.excluded_species         # [11, 151, 289, 359]
+```
+
+`mask` also takes the species names to keep, if you would rather be explicit:
+
+```python
+ss = sim.steady_state(mask=[n for n in model.species_names if not n.endswith("ss~d)")])
+```
+
+Integer indices are rejected: `[0, 1]` is ambiguous between a two-species 0/1
+mask and "keep species 0 and 1", and guessing would be a silent wrong answer on
+exactly the long species lists where you cannot eyeball it.
+
+**What the mask changes.** Everything still integrates — the excluded species'
+equations stay in the RHS and their trajectories come back in
+`ss.concentrations`. What is restricted is:
+
+- the **residual norm**, over `n_included` rather than `n_species`, so `tol`
+  keeps its meaning as a per-species residual scale no matter how many species
+  you dropped;
+- the **KINSOL unknown set** on `method="newton"`, and the **`dY_ss/dp` linear
+  system**. Those two have to follow: an accumulator contributes a structurally
+  zero Jacobian *column*, so leaving it in makes both systems singular at every
+  seed. Excluded species are held at the values integration left them at, which
+  is exact because nothing else's derivative reads them.
+
+Excluded species come back with a **NaN** `dY_ss/dp` row. A species with no
+steady value has no steady-state gradient, and `0.0` would be a confident wrong
+answer a fitter would read as "this parameter does not matter". Any observable
+or expression sensitivity that sums such a species is NaN for the same reason.
+
+`steady_state_batch(mask=...)` applies one mask to every entry — the pure-sink
+set is structural, so it does not move with the parameter set, which is what
+makes a single mask correct for a whole dose scan.
+
+**When a solve fails**, the result now says whether the cause was structural:
+
+```python
+ss = sim.steady_state()             # no mask
+ss.converged                        # False
+ss.unconverged_pure_sinks           # ['bCat(...ss~d)', ...] — 4 names
+```
+
+and the same is logged at WARNING level. An empty list means the failure was
+*not* an accumulator, so `max_time` / `tol` / `max_steps` are worth trying.
+
+`pure_sink_species()` is purely structural — a species qualifies when it is a
+product of at least one reaction, a reactant of none, read by no other species'
+derivative, and not a `$`-fixed boundary condition. The third clause is not
+implied by the first two (an Elementary rate law reads only its reactants, but a
+Functional one reads observables) and is what makes excluding the species
+provably harmless to the rest of the system.
+
+Detection is not a convergence verdict: `A -> B` with nothing feeding `A` makes
+`B` a textbook pure sink, and that model converges perfectly well because the
+flux dies out on its own. `pure_sink_species()` answers "can this be dropped
+from the test without changing the problem"; `unconverged_pure_sinks` answers
+"is this what held the solve up".
+
+`run(steady_state=True)` — the time-course early stop — keeps the unrestricted
+BNG2.pl criterion and takes no mask. On an accumulator model it simply never
+fires early and you get the full `t_span`, which is a complete and correct
+trajectory rather than a reported failure.
+
 ### Time course that stops at steady state (`run(steady_state=True)`)
 
 `steady_state()` above returns just the equilibrium point. If instead you

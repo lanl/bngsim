@@ -27,6 +27,8 @@ Methods:
 - `saved_concentration_labels` — Sorted names of saved named snapshots
 - **`set_concentration(name, value)`** — Set a single species concentration
 - **`get_concentration(name)`** — Get a single species concentration
+- **`pure_sink_species()`** → `list[str]` — write-only accumulator species: a product of ≥1 reaction, a reactant of none, read by no other species' derivative, and not `$`-fixed. These put a structural floor under `||f(y)||_2/n` (issue #74)
+- **`is_pure_sink()`** → `ndarray (n_species,) of bool` — the array form, so `mask=~model.is_pure_sink()`
 - **`add_table_function(name, *, file, times, values, index)`** — Add a piecewise-linear table function
 - `n_table_functions`, `table_function_names` — TFUN introspection
 
@@ -78,8 +80,10 @@ Stop conditions:
 - **`clear_stop_conditions()`**
 
 Steady-state (`method` ∈ `"newton"` (default), `"integration"`, `"kinsol"` alias):
-- **`steady_state(*, tol, max_time, method, rtol, atol, max_steps, sensitivity_params)`** → `SteadyStateResult`
-- **`steady_state_batch(params, *, tol, max_time, method, rtol, atol, max_steps, n_workers)`** → `list[SteadyStateResult]`
+- **`steady_state(*, tol, max_time, method, rtol, atol, max_steps, sensitivity_params, mask)`** → `SteadyStateResult`
+- **`steady_state_batch(params, *, tol, max_time, method, rtol, atol, max_steps, n_workers, mask)`** → `list[SteadyStateResult]`
+
+  `mask` (issue #74): which species enter the convergence norm — a boolean array of length `n_species`, or the species names to keep. Default `None` tests every species (BNG2.pl parity). It also restricts the KINSOL unknown set and the `dY_ss/dp` system to the same subspace; excluded species get a NaN `dY_ss/dp` row. See `Model.is_pure_sink()`.
 
 Configuration:
 - **`set_tolerances(rtol, atol)`** — ODE solver tolerances
@@ -204,6 +208,8 @@ Properties:
 - **`concentrations`** — `ndarray (n_species,)` species values at steady state
 - **`species_names`** — `list[str]`
 - **`residual`**, **`method_used`**, **`converged`**, **`n_steps`**, **`n_rhs_evals`** — solve diagnostics
+- **`n_residual_species`**, **`excluded_species`** — how many species entered `||f||_2/n`, and the 0-based indices `mask=` excluded (issue #74)
+- **`unconverged_pure_sinks`** — `list[str]`; on a *failed* solve, the write-only accumulators that were in the test and are carrying flux — i.e. the residual has a structural floor, not a slow tail. Empty otherwise
 - **`sensitivity`** — `ndarray (n_species, n_params)` species `dY_ss/dp` (or `None` if no `sensitivity_params`)
 - **`sensitivity_params`** — `list[str]`
 - **`observable_names`**, **`expression_names`** — `list[str]` labelling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
