@@ -5,9 +5,11 @@ identical results to CVODES internal FD sensitivity.
 """
 
 import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 from bngsim._codegen import (
     generate_combined_c,
     generate_sens_rhs_c,
@@ -604,3 +606,134 @@ class TestDerivedICParamSens:
         np.testing.assert_allclose(
             sx[:, 0], self._analytic(_get_ic_derived_net())[:, 0], rtol=1e-6, atol=1e-9
         )
+
+
+class TestSupersededICParamSens:
+    """An assignment retires the parameter-graph IC seed it superseded (issue #113).
+
+    ``∂(IC)/∂p`` differentiates ``species[].initial_conc`` — the initial condition
+    the model *declares*. Once ``set_concentration`` (or any bulk assignment) has
+    moved a species off that baseline, the parameter cannot reach its initial
+    condition at all, so keeping the row reports a gradient through an initial
+    condition the model no longer has.
+
+    ``ic_direct.net`` makes that exact: ``R0`` appears in **no rate law**, so with
+    ``R`` pinned to a literal the true ``∂R(t)/∂R0`` is identically zero — no
+    tolerance argument, and a rebuild finite difference confirms it.
+    """
+
+    _T = list(np.linspace(0.0, 3.0, 7))
+    _TOL = dict(rtol=1e-11, atol=1e-13)
+
+    def _sens(self, net, mutate=None, params=("R0",)):
+        import bngsim
+
+        m = bngsim.Model.from_net(net)
+        if mutate is not None:
+            mutate(m)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=list(params))
+        r = sim.run(sample_times=self._T, **self._TOL)
+        return m, np.asarray(r.sensitivities)[:, m.species_names.index("R()"), 0]
+
+    @staticmethod
+    def _pin(value=7.0):
+        return lambda m: m.set_concentration("R()", value)
+
+    def test_pinned_species_reports_no_gradient_through_its_ic(self):
+        """The issue's reproducer: reported `e^{-kf t}`, truth 0."""
+        _, sx = self._sens(_get_ic_direct_net(), self._pin())
+        np.testing.assert_allclose(sx, np.zeros_like(sx), atol=1e-12)
+
+    def test_pinned_species_matches_a_rebuild_finite_difference(self):
+        """The oracle, independent of the seeding code: rebuild at R0 ± h with the
+        same pin applied. R0 reaches nothing else, so the difference is exactly 0."""
+        import re
+
+        import bngsim
+
+        src = Path(_get_ic_direct_net()).read_text()
+
+        def traj(r0, tmp):
+            txt = re.sub(r"(\bR0\s+)[0-9.]+", rf"\g<1>{r0}", src, count=1)
+            p = tmp / f"ic_pinned_{r0}.net"
+            p.write_text(txt)
+            m = bngsim.Model.from_net(str(p))
+            m.set_concentration("R()", 7.0)
+            r = bngsim.Simulator(m, method="ode").run(sample_times=self._T, **self._TOL)
+            return np.asarray(r.species)[:, m.species_names.index("R()")]
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            fd = (traj(100.01, tmp) - traj(99.99, tmp)) / 0.02
+        np.testing.assert_array_equal(fd, np.zeros_like(fd))
+        _, sx = self._sens(_get_ic_direct_net(), self._pin())
+        np.testing.assert_allclose(sx, fd, atol=1e-12)
+
+    def test_untouched_model_keeps_its_seed(self):
+        """No behaviour change where nothing was assigned — the #43 seed stands."""
+        _, sx = self._sens(_get_ic_direct_net())
+        assert abs(sx[0] - 1.0) < 1e-9
+        assert np.abs(sx).max() > 1e-3
+
+    def test_derived_ic_is_retired_too(self):
+        """The rule is about the baseline, not about how the IC was written, so the
+        derived-parameter IC (``Rtot = R0``) retires the same way."""
+        _, pinned = self._sens(_get_ic_derived_net(), self._pin())
+        np.testing.assert_allclose(pinned, np.zeros_like(pinned), atol=1e-12)
+        _, plain = self._sens(_get_ic_derived_net())
+        assert abs(plain[0] - 1.0) < 1e-9
+
+    def test_reset_puts_the_species_back_and_the_row_returns(self):
+        """reset() restores the live state to the baseline, so the IC expression
+        describes it again."""
+
+        def pin_then_reset(m):
+            m.set_concentration("R()", 7.0)
+            m.reset()
+
+        _, sx = self._sens(_get_ic_direct_net(), pin_then_reset)
+        assert abs(sx[0] - 1.0) < 1e-9
+
+    def test_only_the_assigned_species_loses_its_row(self):
+        """Per species, not per model: assigning P() leaves R()'s seed alone."""
+        _, sx = self._sens(_get_ic_direct_net(), lambda m: m.set_concentration("P()", 5.0))
+        assert abs(sx[0] - 1.0) < 1e-9
+
+    def test_a_declaration_still_wins(self):
+        """issue #111's declaration is the more specific statement: it survives the
+        retirement, with the value the caller gave (0.5, not 1 and not 0)."""
+
+        def pin_and_declare(m):
+            m.set_concentration("R()", 7.0)
+            m.declare_ic_sensitivity({"R()": {"R0": 0.5}})
+
+        _, sx = self._sens(_get_ic_direct_net(), pin_and_declare)
+        assert sx[0] == pytest.approx(0.5, rel=1e-9)
+
+    def test_legacy_cpp_identity_seeding_applies_the_same_rule(self):
+        """The C++ fallback loop (no Python injection — sympy unavailable) has the
+        same defect and the same fix; reproduce it by neutering the injection.
+        ``Simulator`` uses ``__slots__``, so patch the class, not the instance."""
+        import bngsim
+
+        orig = bngsim.Simulator._apply_ic_param_sens_seed
+        bngsim.Simulator._apply_ic_param_sens_seed = lambda self, opts, model: None
+        try:
+            _, plain = self._sens(_get_ic_direct_net())
+            _, pinned = self._sens(_get_ic_direct_net(), self._pin())
+        finally:
+            bngsim.Simulator._apply_ic_param_sens_seed = orig
+        assert abs(plain[0] - 1.0) < 1e-9  # the legacy identity seed still fires...
+        np.testing.assert_allclose(pinned, np.zeros_like(pinned), atol=1e-12)  # ...but not here
+
+    def test_baseline_getter_tracks_the_lifecycle(self):
+        """get_initial_state() is the baseline reset() returns to, and
+        save_concentrations() redefines it to the live state."""
+        import bngsim
+
+        m = bngsim.Model.from_net(_get_ic_direct_net())
+        np.testing.assert_array_equal(m.get_state(), m._core.get_initial_state())
+        m.set_concentration("R()", 7.0)
+        assert not np.array_equal(m.get_state(), m._core.get_initial_state())
+        m.save_concentrations()
+        np.testing.assert_array_equal(m.get_state(), m._core.get_initial_state())

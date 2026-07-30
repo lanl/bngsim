@@ -1965,6 +1965,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // a species IC that names a requested primary directly seeds
                 // yS_species(0) = 1. Derived-parameter ICs stay unseeded here —
                 // the pre-#43 behavior — but direct ICs remain correct.
+                const auto &species_vec = model.species();
                 for (const auto &ref : model.species_ic_param_refs()) {
                     const int species_idx0 = ref.first;
                     const int param_idx0 = ref.second;
@@ -1974,6 +1975,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     }
                     const int iS = it->second;
                     if (species_idx0 < 0 || species_idx0 >= ns) {
+                        continue;
+                    }
+                    // GH #113: the IC expression describes `initial_conc`. Once an
+                    // assignment has moved this species off that baseline, the
+                    // parameter no longer reaches its initial condition and the
+                    // identity seed would report a gradient through an IC the model
+                    // no longer has. (The Python injection path above applies the
+                    // same rule, plus issue #111's explicit declarations.)
+                    const auto &sp = species_vec[static_cast<std::size_t>(species_idx0)];
+                    if (sp.concentration != sp.initial_conc) {
                         continue;
                     }
                     N_VGetArrayPointer(yS_guard[iS])[species_idx0] = 1.0;

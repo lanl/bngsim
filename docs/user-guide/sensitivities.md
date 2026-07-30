@@ -24,6 +24,37 @@ print(result.has_sensitivities)    # True
 print(result.sensitivities[-1, 0, 0])
 ```
 
+### Parameters that set an initial condition
+
+When a species' initial condition names a parameter — `R() R0` in the `.net`, or
+`R() Rtot` with `Rtot = R0` — that parameter reaches the trajectory through
+`x_R(0)`, so the seed `∂x_R(0)/∂R0` is part of the answer. BNGsim differentiates
+the IC expression (through nested derived parameters) and seeds it automatically.
+
+That seed describes the initial condition the *model declares*, which is what
+`reset()` returns the state to. If you **assign** the species instead —
+`set_concentration("R()", 7.0)`, a bulk `set_state`, an externally injected state —
+the parameter no longer reaches its initial condition, and the row is dropped: a
+literal assignment has `∂x_R(0)/∂θ = 0`, which is also what `set_concentration`
+documents about itself. Nothing changes for a model you have not assigned into
+(across the 585-model `.net` corpus and 120 SBML models, every one loads with its
+live state equal to its baseline).
+
+If the value you assign *does* depend on a fitted parameter — a dose in molecules
+computed through a fitted volume — say so, because only you know:
+
+```python
+v = dose_nM * 1e-9 * NA * model.get_param("Vecf")
+model.set_concentration("L(r)", v)
+model.declare_ic_sensitivity({"L(r)": {"Vecf": v / model.get_param("Vecf")}})
+```
+
+A declaration is the most specific statement available and wins over both the
+expression-derived row and the drop; declaring `{}` pins a row to zero explicitly.
+Inside a `parameter_scan` `on_point` hook the derivative is *measured* through the
+hook instead, so a dose there needs no declaration — see
+[Steady state](steady-state.md#the-dose-an-on_point-hook-applies-issue-111).
+
 ## Parallel sensitivity computation
 
 For models with many parameters (Np), computing all sensitivities serially

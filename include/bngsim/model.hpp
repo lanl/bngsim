@@ -91,6 +91,13 @@ class NetworkModel {
     void get_state_into(double *out) const;
     void set_state_from(const double *in);
 
+    // The IC baseline `species[].initial_conc` as one contiguous block, same
+    // ordering (GH #113). reset() returns the live state to exactly this, so
+    // comparing the two answers "is this species still at the initial condition
+    // the model declares, or has an assignment superseded it?" — which is what
+    // decides whether a parameter-graph ∂x_i(0)/∂p seed (issue #43) still applies.
+    void get_initial_state_into(double *out) const;
+
     // ─── Accessors ───────────────────────────────────────────────────────────
     int n_species() const;
     int n_reactions() const;
