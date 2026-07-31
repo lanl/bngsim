@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 
@@ -754,7 +755,15 @@ def _make_c_printer():
     return _CPrinter
 
 
-_c_printer_cache: list = []
+_c_printer_local = threading.local()
+
+
+def _c_printer():
+    printer = getattr(_c_printer_local, "printer", None)
+    if printer is None:
+        printer = _make_c_printer()()
+        _c_printer_local.printer = printer
+    return printer
 
 
 def sympy_to_c(expr, resolve_symbol) -> str | None:
@@ -778,9 +787,7 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
         expr = _remove_removable_power_denominators(expr)
     except Exception:
         return None
-    if not _c_printer_cache:
-        _c_printer_cache.append(_make_c_printer()())
-    printer = _c_printer_cache[0]
+    printer = _c_printer()
     printer._resolver = resolve_symbol
     try:
         s = printer.doprint(expr)
