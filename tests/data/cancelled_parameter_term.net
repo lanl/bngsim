@@ -1,0 +1,47 @@
+# Regression test for issue #123: a parameter whose own term is a tiny fraction
+# of the derivative it sits in, so a probe relative to the parameter moves that
+# derivative by less than its roundoff.
+#
+#   0 -> A   ksyn     flux 100     (the large term)
+#   0 -> A   ktrace   flux 1e-9    (ktrace = 1e-9 — the parameter under test)
+#   A -> 0   kdeg     flux kdeg*A
+#
+# dA/dt = ksyn + ktrace - kdeg*A, so
+#
+#   A*          = (ksyn + ktrace)/kdeg = 100.000000001
+#   dA*/dktrace = 1/kdeg               =    1.0
+#   dA*/dksyn   = 1/kdeg               =    1.0
+#   dA*/dkdeg   = -A*/kdeg             = -100.000000001
+#
+# — all three exact, since J = -kdeg and every ∂f/∂p is a constant, so the root's
+# own accuracy does not enter the gradient.
+#
+# The point is the roundoff floor of dA/dt. It is assembled from terms of size
+# 100, so its absolute roundoff is ~2.2e-16*100 = 2.2e-14. A probe relative to
+# ktrace is h = sqrt(eps)*1e-9 = 1.5e-17, which moves dA/dt by 1.5e-17 — three
+# orders BELOW that floor. The quotient is then pure roundoff, and dA*/dktrace
+# comes back as noise (a wrong magnitude, a wrong sign, or exactly zero) instead
+# of 1.0, which is what #76's relative step alone does here.
+#
+# The pre-#76 absolute step, 1.49e-8, moves dA/dt by 1.49e-8 — 6.7e5 times the
+# floor — and dA/dt is LINEAR in ktrace, so that quotient is good to ~1.5e-6.
+# #123 keeps the relative step wherever its response clears the floor and takes
+# the wide one only where it does not, so this column is usable again while
+# `ksyn` (whose response is 6.7e7 times the floor) keeps the relative step and
+# `kdeg` (>= 1) never had two steps to choose between.
+begin parameters
+    1 ksyn    100.0   # Constant
+    2 ktrace  1.0e-9  # Constant
+    3 kdeg    1.0     # Constant
+end parameters
+begin species
+    1 A() 0.0
+end species
+begin reactions
+    1 0 1 ksyn    #_Rsyn
+    2 0 1 ktrace  #_Rtrace
+    3 1 0 kdeg    #_Rdeg
+end reactions
+begin groups
+    1 A_tot 1
+end groups

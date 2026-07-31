@@ -262,9 +262,17 @@ max|y|)` for a species — floored at the state's own magnitude, so a species at
 zero still gets a probe on the scale of the model it belongs to. Before #76 both
 were floored at an absolute `sqrt(eps)`, which is a small probe only for a
 quantity of order 1: a rate constant of 1e-9 was moved by 1500% of itself, and a
-model carrying molecule counts was probed at 1e-14 of its state. Neither step is
-tunable — a model whose gradient depends on the step size wants the analytical
-`∂f/∂p`, which is what the refusal below is for.
+model carrying molecule counts was probed at 1e-14 of its state.
+
+A step relative to the parameter has its own failure, at the other end: when a
+parameter's own term is a small fraction of the derivative it sits in, that step
+moves the derivative by less than its roundoff and the quotient is noise rather
+than a gradient. So the parameter probe takes **two** steps — the relative one
+and an absolute `sqrt(eps)` — and each component of `∂f/∂p` keeps the quotient
+whose response cleared that component's own roundoff floor (issue #123). Nothing
+about this is tunable, and it is not a substitute for a closed form: a model
+whose gradient depends on the step size wants the analytical `∂f/∂p`, which is
+what the refusal below is for.
 
 Because the analytical `∂f/∂p` comes from codegen, `sensitivity_params` **requires
 code generation**, exactly as `Simulator(..., sensitivity_params=...)` and
