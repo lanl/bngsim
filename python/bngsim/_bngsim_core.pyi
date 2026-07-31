@@ -220,6 +220,11 @@ class NetworkModel:
         True iff a forward-sensitivity carry-over seed (dx/dθ) from a prior phase is pending, ready to seed a carry_sensitivities=True run (GH #210).
         """
     @property
+    def ic_baseline_saved(self) -> bool:
+        """
+        True once save_concentrations() has redefined the IC baseline (species[].initial_conc) to a captured state, so it is no longer the initial condition the .net / SBML input declares. From that point set_param() stops re-resolving parameter-named species ICs (issue #79) rather than overwrite a pre-equilibrated baseline; use set_concentration() to dose such a protocol. Latching — there is no un-save — and carried by clone().
+        """
+    @property
     def ic_state_dirty(self) -> bool:
         """
         True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset() — unless the IC baseline carries its own dx/dθ (GH #81) — and by save_concentrations() when there is no carried derivative to hand the new baseline (GH #210). Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.

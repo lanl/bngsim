@@ -733,6 +733,67 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`set_param` did not rebuild a species initial condition that references the
+  parameter (issue #79).** `A() Stot` in a `.net` species block — or an SBML
+  `initialAssignment` that is a bare `<ci>` — declares that species' initial
+  condition to *be* the parameter. `set_param("Stot", 1e6)` moved the parameter
+  and nothing else: `get_state()` returned the network-generation amount,
+  `reset()` restored it, and `get_param` confirmed the write, so **a dose scan
+  over a total amount silently ran every dose at the same initial condition**
+  with no error and no warning. **406 of the 585 `ode_fullnet` corpus models
+  (1,725 species) have such an initial condition**; before the fix `set_param`
+  moved none of them, after it, all of them. It was also a cross-engine trap —
+  AMICI reads the same system through SBML `initialAssignment` and recomputes
+  `x0`, so a comparison scanning such a parameter disagreed for a reason that
+  had nothing to do with the solver under test.
+
+  The dependency and the machinery were both already there — `species_ic_param_refs`
+  names the (species, parameter) pair — but nothing consulted them after load.
+  The issue proposed routing the invalidation through `ic_state_dirty`; that flag
+  is the GH #210 pre-equilibration carry-over marker ("this state is advanced
+  dynamics, not an initial condition"), and setting it from `set_param` would have
+  made the next forward-sensitivity run *raise* instead. `set_param` now
+  re-resolves the initial conditions directly, after the derived-parameter
+  re-evaluation so a species IC named by a `ConstantExpression` (`R() Rtot` with
+  `Rtot = 0.5*R0`) picks up its new value too, and over every ref rather than only
+  the refs naming the parameter just written.
+
+  Two fields, two rules. The **declared** initial condition (`initial_conc`)
+  always follows the parameter — which is what makes `reset()` rebuild from
+  current parameter values rather than a load-time snapshot, and what makes the
+  `set_params(); reset()` sequence inside `run_batch()` and
+  `steady_state_batch()` correct without their knowing anything about IC
+  parameters. The **live** concentration follows only while the species is still
+  sitting on that baseline, so a species the dynamics advanced (or a caller
+  assigned) keeps its value and picks the new IC up at the next `reset()` —
+  the same `concentration == initial_conc` test the issue #113 sensitivity
+  seeding uses, so the two agree. `save_concentrations()` (unlabeled) redefines
+  the baseline to a captured state that the declared IC no longer describes, and
+  latches the new read-only `NetworkModel.ic_baseline_saved`, retiring the
+  rebuild rather than discarding a pre-equilibration; dose such a protocol with
+  `set_concentration`. `clone()` carries the flag.
+
+  `Simulator.parameter_scan` needed one more turn of the crank: it restores each
+  point's live concentrations from the invocation snapshot, but the IC baseline
+  is model state too, so from point 1 on the species sat off a baseline the
+  *previous* point had moved and the scan would have applied only its first dose.
+  It now rewinds the scanned parameter before restoring the state.
+
+  Fixed alongside it, because it is the same three lines and the re-resolve had
+  to pick a rule: the load-time resolve wrote the raw parameter value over the
+  `amount / V` the SBML loader had computed for a
+  `hasOnlySubstanceUnits="true"` species, so such a species loaded **V times too
+  large** when its amount came from a single-`<ci>` `initialAssignment` — while
+  an identical model spelling the same amount as `initialAmount=` loaded
+  correctly. Both sites now share one conversion (`resolve_ic_from_param`). This
+  is the identity for every `.net` model and every `hOSU=false` species; a sweep
+  of all 5,482 SBML files in the repo finds **one** affected model,
+  `MODEL2002070001`, whose compartment sizes are `NaN` and which is already
+  recorded as a BAD_TEST in the RoadRunner parity overrides.
+
+  Regression coverage in `python/tests/test_set_param_ic_rebuild.py` (25 cases,
+  20 of which fail without the fix) and one clone-contract case in
+  `test_model_clone.py`. The 585-model `.net` corpus loads unchanged.
 - **The docs said the KINSOL polish uses an analytical Jacobian. It never has.**
   `solve_by_newton` does not call `KINSetJacFn`, so KINSOL installs its own
   difference-quotient Jacobian and each setup costs **one RHS evaluation per

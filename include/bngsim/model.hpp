@@ -61,6 +61,11 @@ class NetworkModel {
     NetworkModel clone() const;
 
     // ─── Parameter access ────────────────────────────────────────────────────
+    // Writes the parameter, re-evaluates every expression-valued parameter that
+    // reads it, and re-resolves every species initial condition that names one
+    // of those parameters (issue #79) — `A() Stot` declares A's IC to BE Stot,
+    // so a dose scan over Stot has to move it. See refresh_param_ref_ics() for
+    // which of `initial_conc` / `concentration` follows and when.
     void set_param(const std::string &name, double value);
     double get_param(const std::string &name) const;
     std::vector<std::string> param_names() const;
@@ -365,6 +370,14 @@ class NetworkModel {
     // for the literal .net/SBML ICs (GH #81).
     bool has_baseline_sens_seed() const;
 
+    // True once save_concentrations() has redefined the IC baseline to a
+    // captured state, so `species[].initial_conc` is no longer the initial
+    // condition the .net / SBML input declares. set_param() stops re-resolving
+    // parameter-named ICs from that point on (issue #79) rather than overwrite
+    // a pre-equilibrated baseline. Latching, per model instance; carried by
+    // clone(). Exposed for introspection and for the clone contract test.
+    bool ic_baseline_saved() const;
+
     // ─── Table functions ────────────────────────────────────────────────────
 
     /// Add a table function from a .tfun file.
@@ -427,6 +440,11 @@ class NetworkModel {
     /// Internal helper: register a TableFunction with the expression evaluator
     /// and bind its index pointer to the appropriate model variable.
     void register_table_function_(TableFunction &tf);
+
+    /// Re-resolve every species IC that a parameter names, from the current
+    /// parameter values (issue #79). Called at the end of set_param(), after
+    /// the derived-parameter re-evaluation. See model.cpp for the rules.
+    void refresh_param_ref_ics();
 };
 
 } // namespace bngsim
