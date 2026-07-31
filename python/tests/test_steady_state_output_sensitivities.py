@@ -11,17 +11,27 @@ gradient consumer reads ``∂(observable)/∂θ`` directly, mirroring
 The oracle is that CVODE path: a long forward-sensitivity ``run()`` converges to
 the steady state, so its last-time-point ``output_sensitivities`` must match the
 Newton steady-state ones. Observables use an exact linear projection; functions
-use a finite-difference total derivative (state chain + explicit ∂func/∂p) whose
-values are additionally pinned against closed-form derivatives.
+use the total derivative (state chain + explicit ∂func/∂p) whose values are
+additionally pinned against closed-form derivatives.
 
-Two fixtures span both steady-state sensitivity solves:
-- ``ss_output_sens.net`` — closed A↔B↔C, conserved ⇒ reduced-space solve.
-- ``ss_birthdeath.net``  — open birth-death, no conservation ⇒ full-space solve.
+Since issue #75 that function block prefers the compiled
+``bngsim_codegen_output_sens`` — literally the evaluator the CVODES oracle above
+runs — and falls back to finite differences per function where it declines.
+``TestCompiledOutputSensPath`` covers which path ran and that both give the same
+answer.
+
+Fixtures:
+- ``ss_output_sens.net``      — closed A↔B↔C, conserved ⇒ reduced-space solve.
+- ``ss_birthdeath.net``       — open birth-death, no conservation ⇒ full-space solve.
+- ``ss_expr_sens_derived.net``— A⇌B with ``_rateLaw1 = chi*kon``; full closed form.
+- ``ss_expr_sens_mixed.net``  — same skeleton carrying one function of each #198
+  status (ok / unsupported / skipped) ⇒ the mixed codegen+FD block.
 """
 
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import bngsim
@@ -34,6 +44,8 @@ DATA_DIR = Path(_env) if _env else Path(__file__).resolve().parent.parent.parent
 CLOSED_NET = str(DATA_DIR / "ss_output_sens.net")  # A<->B<->C, conserved
 OPEN_NET = str(DATA_DIR / "ss_birthdeath.net")  # dS/dt = k_prod - k_deg*S
 DERIVED_NET = str(DATA_DIR / "ss_expr_sens_derived.net")  # A<->B, _rateLaw1 = chi*kon
+MIXED_NET = str(DATA_DIR / "ss_expr_sens_mixed.net")  # ok / unsupported / skipped
+DECLINED_NET = str(DATA_DIR / "obs_zero_arg_call.net")  # no user-selectable functions
 
 # High-accuracy CVODES so the last time point is a faithful steady-state oracle.
 _RUN = dict(rtol=1e-11, atol=1e-13, max_steps=10**6)
@@ -41,10 +53,10 @@ _RUN = dict(rtol=1e-11, atol=1e-13, max_steps=10**6)
 
 @pytest.fixture(autouse=True)
 def _force_codegen(monkeypatch):
-    """Expression (global-function) output sensitivities on the CVODE ``run()``
-    oracle require the compiled ``.so``; force codegen on. The steady-state path
-    itself is finite-difference and needs no codegen. monkeypatch restores the
-    environment afterwards."""
+    """Expression (global-function) output sensitivities require the compiled
+    ``.so`` on the CVODE ``run()`` oracle, and prefer it on the steady-state path
+    since issue #75; force codegen on. monkeypatch restores the environment
+    afterwards."""
     monkeypatch.setenv("BNGSIM_CODEGEN_THRESHOLD", "1")
     monkeypatch.delenv("BNGSIM_NO_CODEGEN", raising=False)
 
@@ -352,3 +364,246 @@ class TestErrors:
         ss = _steady_state(OPEN_NET, ["k_prod"])
         with pytest.raises(ValueError, match="Unknown selector kind"):
             ss.output_sensitivities(["bogus:Stot"])
+
+
+# ── The compiled d(func)/dp evaluator, and its fallback (issue #75) ──────────
+
+
+@contextmanager
+def _as_before_75():
+    """Put ``steady_state()`` back on its pre-issue-#75 codegen prep: attach an
+    artifact without the ``_want_output_sens`` re-prep, so
+    ``bngsim_codegen_output_sens`` is never emitted and the block
+    finite-differences.
+
+    Reproduces the pre-fix path without stashing the source. The patch goes on the
+    class (``Simulator`` uses ``__slots__``), and is restored by hand rather than
+    through ``monkeypatch.undo()`` — the ``monkeypatch`` fixture is shared with the
+    autouse ``_force_codegen`` above, so an ``undo()`` mid-test would silently drop
+    its environment too.
+    """
+    from bngsim._simulator import _codegen_jit_backend
+
+    def _pre_75(sim):
+        sim._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+
+    saved = bngsim.Simulator._prepare_output_sens_codegen
+    bngsim.Simulator._prepare_output_sens_codegen = _pre_75
+    try:
+        yield
+    finally:
+        bngsim.Simulator._prepare_output_sens_codegen = saved
+
+
+def _core_steady_state(net, params):
+    """``Simulator.steady_state`` down at the core, for the RAW function block the
+    Python wrapper filters to the user-selectable rows."""
+    from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+    m = bngsim.Model.from_net(net)
+    sim = bngsim.Simulator(m, method="ode")
+    sim._prepare_output_sens_codegen()
+    opts = SteadyStateOptions()
+    opts.method = "integration"
+    opts.jacobian = "auto"
+    if sim._codegen_so_path:
+        opts.codegen_so_path = sim._codegen_so_path
+    if sim._codegen_c_source:
+        opts.codegen_c_source = sim._codegen_c_source
+    opts.sensitivity_params = list(params)
+    return find_steady_state(m._core, opts)
+
+
+class TestCompiledOutputSensPath:
+    """``d(func)/dp`` runs through ``bngsim_codegen_output_sens`` (issue #75).
+
+    The measured blocker #75 records: the symbol is emitted only when the model
+    carries ``_want_output_sens``, which ``Simulator.__init__`` sets from its
+    *constructor* ``sensitivity_params`` — while ``steady_state()`` takes its own
+    as a *method* argument. So the documented usage
+    ``Simulator(m, method="ode").steady_state(sensitivity_params=[...])`` reached
+    the solver with no symbol to call, and every test in this file measured the
+    finite-difference fallback.
+    """
+
+    @pytest.mark.parametrize(
+        "net, params",
+        [
+            (CLOSED_NET, ["k1", "k3", "amp", "Km"]),
+            (OPEN_NET, ["k_prod", "k_deg", "scale"]),
+            (DERIVED_NET, ["kon", "chi", "koff", "_rateLaw1"]),
+        ],
+    )
+    def test_ordinary_construction_gets_the_compiled_evaluator(self, net, params):
+        m = bngsim.Model.from_net(net)
+        sim = bngsim.Simulator(m, method="ode")  # no constructor sensitivity_params
+        assert m._want_output_sens is False
+        ss = sim.steady_state(sensitivity_params=params)
+        assert ss.converged
+        # The re-prep ran, and every function row came from the compiled chain rule.
+        assert m._want_output_sens is True
+        assert ss.sens_output_source == "codegen"
+
+    def test_plain_artifact_does_not_shadow_the_sensitivity_one(self):
+        """``codegen=True`` attaches a plain-RHS ``.so`` at construction, built
+        without output sens. ``_auto_codegen_for_sensitivity`` no-ops on an
+        already-attached artifact, so without the drop-and-regenerate half of the
+        dance that plain ``.so`` shadows the one carrying the symbol."""
+        m = bngsim.Model.from_net(DERIVED_NET)
+        sim = bngsim.Simulator(m, method="ode", codegen=True)
+        assert sim._codegen_so_path or sim._codegen_c_source  # attached at ctor
+        ss = sim.steady_state(sensitivity_params=["kon", "chi", "koff"])
+        assert ss.sens_output_source == "codegen"
+
+    def test_beats_finite_differences_against_the_closed_form(self):
+        """Accuracy, the reason #75 leads with it: the FD explicit term is a
+        one-sided √eps quotient. Same model, same closed form, both paths."""
+        params = ["kon", "chi", "koff", "_rateLaw1"]
+        cf = TestDerivedParameterChain()._closed_form()
+        exact = np.array([cf["dflux"][p] for p in params])
+
+        with _as_before_75():
+            fd = _steady_state(DERIVED_NET, params)
+        cg = _steady_state(DERIVED_NET, params)
+
+        assert fd.sens_output_source == "finite-difference"
+        assert cg.sens_output_source == "codegen"
+
+        fd_got = fd.output_sensitivities(["expression:flux"])[0]
+        cg_got = cg.output_sensitivities(["expression:flux"])[0]
+        # Both are right; the compiled one is right by a wide margin (measured
+        # 8.6e-8 vs 1.1e-9 — and that floor is the steady-state solve, not the
+        # chain rule). An order of magnitude is the assertion; the difference is
+        # nearly two.
+        np.testing.assert_allclose(fd_got, exact, rtol=1e-5)
+        fd_err = np.max(np.abs(fd_got - exact) / exact)
+        cg_err = np.max(np.abs(cg_got - exact) / exact)
+        assert cg_err < fd_err / 10.0
+
+    def test_fallback_still_answers_when_the_symbol_is_absent(self):
+        """The FD block is a live fallback, not dead code: with no symbol the
+        answers are unchanged (that is what every other test here measured before
+        #75), and the result says so."""
+        params = ["k1", "k3", "amp", "Km"]
+        with _as_before_75():
+            fd = _steady_state(CLOSED_NET, params)
+        cg = _steady_state(CLOSED_NET, params)
+
+        assert fd.sens_output_source == "finite-difference"
+        assert cg.sens_output_source == "codegen"
+        sel = ["expression:satA", "expression:lin"]
+        np.testing.assert_allclose(
+            cg.output_sensitivities(sel), fd.output_sensitivities(sel), rtol=1e-6, atol=1e-9
+        )
+
+    def test_regeneration_failure_keeps_the_working_artifact(self, monkeypatch):
+        """The re-prep DROPS an attached artifact to rebuild it with output sens.
+        If that rebuild fails, the drop must not turn a call that used to succeed
+        into a refusal — the old artifact goes back and the block differences."""
+        m = bngsim.Model.from_net(DERIVED_NET)
+        sim = bngsim.Simulator(m, method="ode", codegen=True)
+
+        def _boom(self, **kw):
+            if not (self._codegen_so_path or self._codegen_c_source):
+                raise RuntimeError("simulated codegen failure")
+
+        monkeypatch.setattr(bngsim.Simulator, "_auto_codegen_for_sensitivity", _boom)
+        ss = sim.steady_state(sensitivity_params=["kon", "chi", "koff"])
+        assert ss.converged
+        assert ss.rhs_backend.startswith("codegen")  # the old artifact came back
+        assert ss.sens_output_source == "finite-difference"
+
+    def test_regeneration_failure_with_nothing_to_restore_propagates(self, monkeypatch):
+        """With no artifact to put back, the refusal is the real GH #214 one."""
+        m = bngsim.Model.from_net(DERIVED_NET)
+        sim = bngsim.Simulator(m, method="ode")
+
+        def _boom(self, **kw):
+            raise RuntimeError("simulated codegen failure")
+
+        monkeypatch.setattr(bngsim.Simulator, "_auto_codegen_for_sensitivity", _boom)
+        with pytest.raises(RuntimeError, match="simulated codegen failure"):
+            sim.steady_state(sensitivity_params=["kon"])
+
+    def test_declined_model_is_all_finite_difference(self):
+        """A whole-model decline emits no symbol at all — here because every
+        function is an auto-generated ``_rateLawN`` and #198 differentiates only
+        the user-selectable closure. The block must still be filled."""
+        m = bngsim.Model.from_net(DECLINED_NET)
+        sim = bngsim.Simulator(m, method="ode")
+        ss = sim.steady_state(sensitivity_params=["k1"])
+        assert ss.converged
+        assert ss.expression_names == []  # nothing user-facing to select
+        assert ss.sens_output_source == "finite-difference"
+
+    # ── The mixed block ──────────────────────────────────────────────────────
+
+    KON, CHI, KOFF, GAIN = 1.0, 10.0, 0.5, 2.0
+
+    def _mixed_closed_form(self):
+        a, b = self.CHI * self.KON, self.KOFF
+        d = (a + b) ** 2
+        return {
+            # flux = a·A_ss = a·b/(a+b) — the "ok" row, from the codegen.
+            "flux": {
+                "kon": self.CHI * b**2 / d,
+                "chi": self.KON * b**2 / d,
+                "koff": a**2 / d,
+                "gain": 0.0,
+            },
+            # capA = gain·A_ss (max() selects A_tot) — the "unsupported" row, FD.
+            "capA": {
+                "kon": -self.GAIN * self.CHI * b / d,
+                "chi": -self.GAIN * self.KON * b / d,
+                "koff": self.GAIN * a / d,
+                "gain": b / (a + b),
+            },
+            # _rateLaw2 = koff — the "skipped" row, also FD.
+            "_rateLaw2": {"kon": 0.0, "chi": 0.0, "koff": 1.0, "gain": 0.0},
+        }
+
+    def test_mixed_block_is_reported_and_correct(self):
+        """One solve, one function of each #198 status. The compiled evaluator
+        answers ``flux``; ``capA`` (``max()``) comes back as a NaN sentinel and
+        ``_rateLaw2`` (outside the differentiated closure) is left untouched, so
+        both fall through to FD — and neither may leak a NaN or a silent zero.
+        """
+        params = ["kon", "chi", "koff", "gain"]
+        m = bngsim.Model.from_net(MIXED_NET)
+        sim = bngsim.Simulator(m, method="ode")
+        ss = sim.steady_state(sensitivity_params=params)
+        assert ss.converged
+        assert ss.sens_output_source == "mixed"
+        assert ss.expression_names == ["flux", "capA"]  # _rateLaw2 filtered out
+
+        cf = self._mixed_closed_form()
+        got = ss.output_sensitivities(["expression:flux", "expression:capA"])
+        assert np.all(np.isfinite(got)), "a declined row leaked its NaN sentinel"
+        np.testing.assert_allclose(
+            got,
+            [[cf["flux"][p] for p in params], [cf["capA"][p] for p in params]],
+            rtol=1e-5,
+            atol=1e-8,
+        )
+
+    def test_skipped_row_keeps_its_finite_difference_value(self):
+        """The emitter leaves a function outside the user closure at whatever the
+        caller pre-filled. Pre-filling with NaN is what routes it to FD instead —
+        pre-filling with zero would have made the RAW block read a confident 0.0
+        for ``d(_rateLaw2)/dkoff``, which is 1.0.
+
+        The skipped row is filtered out of the user-facing block, so this reads
+        the core result's ``raw_expression_*`` directly.
+        """
+        params = ["kon", "chi", "koff", "gain"]
+        core = _core_steady_state(MIXED_NET, params)
+        assert core.sens_output_source == "mixed"
+        raw_names = list(core.raw_expression_names)
+        assert raw_names == ["flux", "capA", "_rateLaw2"]
+        cf = self._mixed_closed_form()["_rateLaw2"]
+        np.testing.assert_allclose(
+            core.raw_expression_sensitivity_data[raw_names.index("_rateLaw2")],
+            [cf[p] for p in params],
+            rtol=1e-6,
+            atol=1e-9,
+        )

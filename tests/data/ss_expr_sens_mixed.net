@@ -1,0 +1,63 @@
+# Steady-state expression output-sensitivity fixture: MIXED codegen / FD block.
+#
+# Issue #75 routes d(func)/dp through the compiled `bngsim_codegen_output_sens`
+# and keeps the finite-difference block as a PER-FUNCTION fallback. This model
+# carries one function of each status #198's analysis assigns, so a single solve
+# exercises both halves and `ss.sens_output_source` must read "mixed":
+#
+#   "ok"          flux() = _rateLaw1*A_tot         the codegen answers this row
+#   "unsupported" capA() = gain*max(A_tot,floor_)  `max` is not differentiated;
+#                                                  the emitter writes a NaN
+#                                                  sentinel and the FD block
+#                                                  answers instead
+#   "skipped"     _rateLaw2() = koff               an auto rate law no user
+#                                                  function references, so it is
+#                                                  outside the differentiated
+#                                                  closure and the emitter leaves
+#                                                  the row untouched — the FD
+#                                                  block answers it too, which is
+#                                                  what keeps the RAW block
+#                                                  (raw_expression_sensitivity_data)
+#                                                  from silently reading zero
+#
+# Same A <-> B / `_rateLaw1 = chi*kon` skeleton as ss_expr_sens_derived.net, so
+# both rows have a closed form. With a = chi*kon and b = koff, conservation gives
+# A+B = 1 and
+#
+#     A_ss = b/(a+b) = 0.5/10.5,   flux = a·A_ss = a·b/(a+b)
+#
+# `floor_` = 0.001 sits far below A_ss (~0.0476) relative to the sqrt(eps) FD
+# step, so max() selects A_tot on both sides of every probe and
+#
+#     capA        = gain·A_ss
+#     dcapA/dgain = A_ss                       (explicit-parameter term)
+#     dcapA/dkon  = gain·dA_ss/dkon
+#                 = -gain·chi·b/(a+b)²         (state-chain term)
+#
+# `max` appears only in a global function, never in a rate law, so the analytical
+# sensitivity RHS the steady-state solve requires is unaffected.
+begin parameters
+    1 kon        1.0      # Constant
+    2 chi        10.0     # Constant
+    3 koff       0.5      # Constant
+    4 gain       2.0      # Constant; function-only
+    5 floor_     0.001    # Constant; function-only, below A_ss
+    6 _rateLaw1  chi*kon  # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 _rateLaw1   #_Rfwd
+    2 2 1 _rateLaw2   #_Rrev
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups
+begin functions
+    1 flux() _rateLaw1*A_tot
+    2 capA() gain*max(A_tot,floor_)
+    3 _rateLaw2() koff
+end functions

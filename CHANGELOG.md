@@ -70,6 +70,78 @@ in `CMakeLists.txt`) is derived from it.
   585-model `ode_fullnet` corpus.
 
 ### Changed
+- **Steady-state `d(func)/dp` runs through the compiled output-sensitivity
+  evaluator instead of finite differences (issue #75).**
+  `steady_state(sensitivity_params=[…])` projects the species `dY_ss/dp` onto the
+  model's observables and global functions. The observable half was always exact
+  (a linear group map); the function half built *both* of its terms — the state
+  chain `Σ_i (∂func/∂x_i)·dY_ss_i/dp` and the explicit `∂func/∂p` — from one-sided
+  √eps difference quotients. It now calls `bngsim_codegen_output_sens`, the GH #198
+  chain rule a CVODES forward-sensitivity `run()` already uses, handed the solved
+  `dY_ss/dp` columns. A steady-state gradient and a converged-long-run gradient
+  therefore come from the same evaluator rather than from two independent
+  derivations, and `#63`'s "prefer closed form, record which ran" shape now covers
+  all three factors of the output sensitivity instead of two.
+
+  On `ss_expr_sens_derived.net`, whose `flux() = _rateLaw1·A_tot` with
+  `_rateLaw1 = chi·kon` has a full closed form, max relative error against it goes
+  **8.6e-8 → 1.1e-9 (75x)** — and the remaining 1.1e-9 is the steady-state solve's
+  own tolerance, not the chain rule. The state-chain term also cost `n_species`
+  full observable+function re-evaluations, which the compiled evaluator does in one
+  call for all parameters at once.
+
+  On the corpus, 290 of the 585 `ode_fullnet` `.net` models carry global
+  functions; 138 reach a converged steady state under a 3-parameter probe. The
+  compiled evaluator answers **every** function on 90 of them, **some** on 33
+  more (`"mixed"` — a table function, a non-smooth builtin, an auto-`_rateLawN`
+  outside the user closure) and none on 15 (a whole-model decline). Against the
+  previous answers the median change is **5.6e-9** — FD noise — but **22 models
+  move by more than 1e-6**, and adjudicating those row-by-row against an
+  independent oracle (the last point of a converged CVODES forward-sensitivity
+  run) the compiled path is closer on **82 rows**, tied on 44, and nominally
+  behind on 6 — all 6 where the two paths agree with *each other* to 5+ digits
+  and both differ from the oracle, i.e. the steady-state solve disagrees, not the
+  output block (two of those models carry `sens_jacobian_rcond ≈ 5e-7`). The
+  large movers are the FD path having been confidently wrong:
+
+  | model | `d(function)/dp` | old (FD) | new (codegen) | CVODES-run oracle |
+  |---|---|---|---|---|
+  | `model1` | `d(controllability_PTEN)/dV` | `+4.94e10` | `-8.88e11` | `-8.88e11` |
+  | `inhibitors_1` | `d(f_PIKK_ATP_formula)/dVecf` | `-5.20e8` | `0.0` | `0.0` |
+
+  — a sign flip and an 18x magnitude error in the first, and a fabricated
+  gradient on a parameter the function does not depend on in the second. On
+  `inhibitors_1` the compiled block matches the oracle to exactly `0.0` on every
+  row.
+
+  Getting the symbol there was the actual work, and it was not "resolve one more
+  symbol". It is emitted only when the model carries `_want_output_sens`, which
+  `Simulator.__init__` sets from its **constructor** `sensitivity_params`, while
+  `steady_state()` takes its own as a **method** argument — so the documented usage
+  `Simulator(m, method="ode").steady_state(sensitivity_params=[…])` arrived at the
+  solver with no such symbol, on a `.so` that otherwise reported
+  `rhs_backend == "codegen-so"`. `steady_state()` now runs the same GH #205 re-prep
+  `compute_all_sensitivities` does (set the flag, drop a plain-RHS artifact that
+  would shadow the sensitivity one, regenerate, restore if regeneration yields
+  nothing), extracted as one shared helper so the two entry points cannot drift.
+
+  **Finite differences stay as the fallback, per function.** The compiled emitter
+  writes a NaN sentinel for a function it declines (a table function, `min`/`max`/
+  `abs`/`floor`, anything transitively depending on one) and leaves a function
+  outside the user-selectable closure untouched; the buffer is pre-filled with NaN
+  so both read as "no compiled answer" and route to the FD block, which is skipped
+  entirely when every row was answered. A whole-model decline (no compiled
+  artifact, `rateOf`, an embedded table-function wrapper) falls back wholesale, as
+  before. New `ss.sens_output_source` reports `"codegen"`, `"mixed"`, or
+  `"finite-difference"`; the observable block is exact either way and is not
+  covered by it.
+
+  One cost worth naming: a `steady_state(sensitivity_params=…)` call on a model
+  with global functions now pays the GH #198 build-time derivation, which it did
+  not before. That is the same derivation `compute_all_sensitivities` and a
+  `sensitivity_params`-built `Simulator` already pay, including its known
+  unbounded cases (issues #97 and #99); the `.so` cache makes repeats — a fitting
+  loop — free.
 - **An assignment retires the parameter-graph IC sensitivity row it superseded
   (issue #113).** `∂(IC)/∂p` (issue #43) differentiates the initial condition the
   model *declares* — `species[].initial_conc`, what `reset()` returns to. A

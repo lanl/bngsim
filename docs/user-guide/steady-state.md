@@ -274,6 +274,7 @@ ss = sim.steady_state(
 print(ss.rhs_backend)             # "codegen-so" | "codegen-jit" | "exprtk"
 print(ss.sens_jacobian_source)    # "codegen" | "analytical" | "finite-difference"
 print(ss.sens_dfdp_source)        # "codegen" | "finite-difference"
+print(ss.sens_output_source)      # "codegen" | "mixed" | "finite-difference"
 
 # Sensitivity matrix: (n_species, n_params)
 print(ss.sensitivity.shape)       # (50, 3)
@@ -311,9 +312,28 @@ ss.sensitivities_observables   # (n_observables, n_params) bulk array
 BNGsim projects `dY_ss/dp` internally: observables use the exact linear group
 map, and global functions use the full total derivative — the state-chain term
 `(∂func/∂x)·dY_ss/dp` **plus** the function's explicit parameter dependence
-`∂func/∂p` (e.g. a rate-law function `k3/(K4+G)` differentiated w.r.t. `k3`) —
-matching the CVODES codegen chain rule. A downstream gradient consumer can reuse
-its existing CVODE `output_sensitivities` code path unchanged.
+`∂func/∂p` (e.g. a rate-law function `k3/(K4+G)` differentiated w.r.t. `k3`). A
+downstream gradient consumer can reuse its existing CVODE
+`output_sensitivities` code path unchanged.
+
+Since issue #75 that total derivative is not merely *matching* the CVODES codegen
+chain rule — it **is** that chain rule: the compiled `bngsim_codegen_output_sens`
+evaluator, fed the solved `dY_ss/dp` columns, so a steady-state gradient and a
+converged long-run gradient come from one derivation. `ss.sens_output_source`
+reports which path the expression block took:
+
+- `"codegen"` — every function came from the compiled chain rule.
+- `"mixed"` — some did; the rest were finite-differenced. That is a function the
+  codegen declines to differentiate (a table function, or a non-smooth builtin
+  such as `abs`/`min`/`max`/`floor` — the same constructs listed for `∂f/∂p`
+  above), or an auto-generated `_rateLawN` intermediate outside the
+  user-selectable set.
+- `"finite-difference"` — none did, because the model has no compiled
+  output-sensitivity evaluator at all (a `rateOf` model, an embedded
+  table-function wrapper, or a model with no user-selectable global functions).
+
+The observable block is the exact linear projection either way, and is not
+covered by this field.
 
 A stable steady state forgets its initial conditions (`∂x*/∂x(0) = 0`), so the
 initial-condition axis is structurally zero and is not computed;

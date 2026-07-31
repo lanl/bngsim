@@ -1391,6 +1391,67 @@ class Simulator:
                 self._codegen_so_path,
             )
 
+    def _prepare_output_sens_codegen(self) -> None:
+        """Attach a codegen artifact that CARRIES ``bngsim_codegen_output_sens``.
+
+        :meth:`_auto_codegen_for_sensitivity` alone is not enough for any entry
+        point that takes ``sensitivity_params`` as a *method* argument. The GH #198
+        output-sensitivity evaluator is emitted only when the model carries
+        ``_want_output_sens``, which :meth:`__init__` sets from its own
+        ``sensitivity_params``; a method-argument request leaves it False, so the
+        artifact arrives with no symbol to call and the d(output)/dθ consumer
+        silently drops to finite differences (:meth:`compute_all_sensitivities`) or
+        an empty block (GH #205).
+
+        Two construction-time wrinkles to clear past:
+
+        * .net models never auto-codegen at construction (the species-threshold
+          attach is SBML/builder-only), so the helper below always fires fresh.
+        * an SBML/builder model CAN already carry a plain-RHS codegen ``.so`` /
+          source from construction (species-threshold attach, explicit
+          ``codegen=True``, or inherited) — built WITHOUT output sens because
+          ``_want_output_sens`` was then False. :meth:`_auto_codegen_for_sensitivity`
+          no-ops on an already-attached codegen, so that plain artifact would shadow
+          the sensitivity one. ``_want_output_sens`` doubles as the "the attached
+          codegen already has output sens" signal: when it was False, clear the
+          plain artifact so the helper regenerates with output sens (the result is a
+          superset; the ``.so`` cache keeps a repeat cheap), restoring it if
+          regeneration produces nothing so the RHS speed-up survives. When it was
+          already True (a ``sensitivity_params``-built sim, or a second call here),
+          skip the clear so a large model is not needlessly re-generated.
+
+        A function-free model needs none of this: ``_codegen_emit_flags`` gates the
+        evaluator on ``n_functions``, so the source is byte-identical with or
+        without the flag and an inherited plain-RHS codegen is already right.
+        """
+        model = self._model
+        if model._core.n_functions > 0 and not model._want_output_sens:
+            model._want_output_sens = True
+            prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
+            self._codegen_so_path = ""
+            self._codegen_c_source = ""
+            try:
+                self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+            except Exception:
+                # Dropping a WORKING artifact to regenerate it must not be able to
+                # turn a call that used to succeed into a refusal: the helper
+                # no-ops on an attached artifact, so before the drop this could
+                # not raise at all. Put the old one back and let the consumer take
+                # its finite-difference fallback. With nothing to put back the
+                # refusal is the real one (GH #214) and propagates.
+                if not prev_so and not prev_src:
+                    raise
+                self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+                logger.info(
+                    "Output-sensitivity codegen regeneration failed; keeping the "
+                    "previously attached artifact (d(output)/dp falls back to "
+                    "finite differences)."
+                )
+            if not self._codegen_so_path and not self._codegen_c_source:
+                self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
+        else:
+            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+
     def _expression_sens_support(self) -> dict[str, str | None]:
         """Memoized ``{function_name: unsupported_reason_or_None}`` for GH #198
         expression output sensitivities, from the model's codegen analysis.
@@ -3602,34 +3663,11 @@ class Simulator:
         # ``_want_output_sens`` is set (both the .net and model-based codegen paths
         # gate on it), which the constructor does for sensitivity_params runs but
         # this entry point (built without them) does not. compute_all_sensitivities
-        # always wants the output blocks, so mark the flag before generating.
-        #
-        # Two construction-time wrinkles to clear past:
-        #   * .net models never auto-codegen at construction (the species-threshold
-        #     attach is SBML/builder-only), so the helper below always fires fresh.
-        #   * an SBML/builder model CAN already carry a plain-RHS codegen .so/source
-        #     from construction (species-threshold attach, explicit codegen=True, or
-        #     inherited) — built WITHOUT output sens because _want_output_sens was
-        #     then False. The helper no-ops on an already-attached codegen, so that
-        #     plain .so would shadow the sensitivity codegen and the expression
-        #     block would come back empty. ``_want_output_sens`` (set once at
-        #     construction, gating both paths) doubles as the "attached codegen
-        #     already has output sens" signal: when it was False, clear the plain
-        #     artifact so the helper regenerates with output sens (the result is a
-        #     superset; the .so cache keeps a repeat cheap), restoring it if
-        #     regeneration produces nothing so the RHS speed-up survives. When it
-        #     was already True (a sensitivity_params-built sim), skip the clear so a
-        #     large model is not needlessly re-generated.
-        if self._model._core.n_functions > 0 and not self._model._want_output_sens:
-            self._model._want_output_sens = True
-            prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
-            self._codegen_so_path = ""
-            self._codegen_c_source = ""
-            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
-            if not self._codegen_so_path and not self._codegen_c_source:
-                self._codegen_so_path, self._codegen_c_source = prev_so, prev_src
-        else:
-            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+        # always wants the output blocks, so run the re-prep dance that marks the
+        # flag and regenerates a shadowing plain-RHS artifact. Shared with
+        # steady_state(), which has the same constructor-vs-method-argument gap
+        # (issue #75) — see _prepare_output_sens_codegen for the wrinkles.
+        self._prepare_output_sens_codegen()
 
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
@@ -3949,6 +3987,17 @@ class Simulator:
         same emitted ``bngsim_codegen_sens_rhs``, read at ``yS = 0``. What still
         differences that factor, with a warning, is Michaelis-Menten and the
         Functional laws carrying a condition or a non-smooth builtin.
+
+        The expression block ``d(func)/dp`` prefers compiled code the same way
+        (issue #75): it is evaluated by ``bngsim_codegen_output_sens``, the GH #198
+        chain rule a CVODES forward-sensitivity ``run()`` already uses, fed the
+        solved ``dY_ss/dp`` columns — so a steady-state gradient and a long-run
+        one now come from the same evaluator. Finite differences remain the
+        per-function fallback for what that evaluator declines (a table function,
+        a non-smooth construct, a whole-model ``rateOf`` decline);
+        ``ss.sens_output_source`` reports ``"codegen"``, ``"mixed"``, or
+        ``"finite-difference"``. The *observable* block is an exact linear
+        projection through the group factors and never differences anything.
         """
         if self._method != "ode":
             raise ValueError(
@@ -3969,9 +4018,16 @@ class Simulator:
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
             # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request
             # that cannot get one is refused rather than quietly answered from
-            # √eps-noisy difference quotients. A no-op when codegen is already
-            # attached.
-            self._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+            # √eps-noisy difference quotients.
+            #
+            # Issue #75 — and the artifact must carry bngsim_codegen_output_sens
+            # too, or d(func)/dp falls back to the finite-difference block in
+            # compute_ss_output_sensitivity. Bare _auto_codegen_for_sensitivity
+            # never emits that symbol from here: it is gated on the model's
+            # _want_output_sens, which the CONSTRUCTOR sets from its own
+            # sensitivity_params, while this is a METHOD argument. A no-op when a
+            # codegen artifact with output sens is already attached.
+            self._prepare_output_sens_codegen()
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,
@@ -5099,6 +5155,16 @@ class SteadyStateResult:
         are ``""`` when no sensitivity was requested. Issue #63 — both factors
         were unconditionally finite-differenced before it, and the result gave
         no way to tell.
+    sens_output_source : str
+        How the expression block ``d(func)/dp`` was built (issue #75):
+        ``"codegen"`` (the compiled ``bngsim_codegen_output_sens`` chain rule —
+        the same evaluator a CVODES forward-sensitivity ``run()`` uses — answered
+        every function), ``"finite-difference"`` (it answered none: no compiled
+        artifact, or the codegen declined the whole model), or ``"mixed"`` (it
+        answered some and the rest were differenced, e.g. a table function).
+        ``""`` when no sensitivity was requested or the model has no global
+        functions. The *observable* block is an exact linear projection either
+        way and is not covered by this field.
     sens_jacobian_rcond : float
         ``min|U_jj| / max|U_jj|`` from the LU of the (reduced) Jacobian that was
         inverted — how close to singular the sensitivity system was.
@@ -5148,6 +5214,7 @@ class SteadyStateResult:
         "rhs_backend",
         "sens_jacobian_source",
         "sens_dfdp_source",
+        "sens_output_source",
         "sens_jacobian_rcond",
         "_sensitivity",
         "_sens_param_names",
@@ -5177,6 +5244,9 @@ class SteadyStateResult:
         self.rhs_backend = getattr(core, "rhs_backend", "exprtk")
         self.sens_jacobian_source = getattr(core, "sens_jacobian_source", "")
         self.sens_dfdp_source = getattr(core, "sens_dfdp_source", "")
+        # Issue #75 — how d(func)/dp was built: the compiled chain rule, the
+        # finite-difference fallback, or "mixed" when it took both.
+        self.sens_output_source = getattr(core, "sens_output_source", "")
         self.sens_jacobian_rcond = getattr(core, "sens_jacobian_rcond", 0.0)
 
         self._sensitivity: np.ndarray | None

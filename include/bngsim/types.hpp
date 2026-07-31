@@ -896,6 +896,15 @@ struct SteadyStateResult {
     // ∂f/∂p the codegen sensitivity RHS emits) or "finite-difference"; ""
     // when no sensitivity was requested.
     std::string sens_dfdp_source;
+    // output_source: how the d(func)/dp block below was built (issue #75) —
+    // "codegen" (the compiled bngsim_codegen_output_sens chain rule answered
+    // every function), "finite-difference" (it answered none: no symbol, or a
+    // whole-model decline), or "mixed" (it answered some and the rest were
+    // differenced — a function it marks unsupported, or one outside the
+    // user-function closure). "" when no sensitivity was requested or the model
+    // has no global functions. The observable block is an exact linear
+    // projection either way and is not covered by this field.
+    std::string sens_output_source;
     // How close to singular the factored (reduced) Jacobian was:
     // min|U_jj| / max|U_jj| from its LU. dY_ss/dp only exists when that Jacobian
     // has full rank; a steady state that is a continuum rather than an isolated
@@ -910,10 +919,12 @@ struct SteadyStateResult {
     // d(observable)/dp and d(function)/dp directly instead of re-deriving the
     // output Jacobian:
     //   d(obs_j)/dp  = Σ_i (∂obs_j/∂x_i)·dY_ss_i/dp                (exact; linear groups)
-    //   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p  (finite differences)
+    //   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p
     // The function total derivative carries BOTH the state-chain term and the
-    // function's explicit parameter dependence (e.g. `k3/(K4+G)` w.r.t. k3),
-    // matching the CVODES codegen output-sensitivity chain rule. IC-axis output
+    // function's explicit parameter dependence (e.g. `k3/(K4+G)` w.r.t. k3). It
+    // comes from the same compiled bngsim_codegen_output_sens evaluator the CVODES
+    // forward-sensitivity path uses, falling back to finite differences per
+    // function where that evaluator declines — see sens_output_source. IC-axis output
     // sensitivities are structurally zero at a stable steady state (∂x*/∂x(0)=0)
     // and are not stored. Both blocks are row-major (n_rows × n_sens_params) and
     // empty unless sensitivity was requested AND the solve converged; the

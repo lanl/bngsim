@@ -979,6 +979,9 @@ class SteadyStateResultCore:
     def sens_jacobian_source(self) -> str:
         ...
     @property
+    def sens_output_source(self) -> str:
+        ...
+    @property
     def sens_param_names(self) -> list[str]:
         ...
     @property
