@@ -1550,6 +1550,7 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
     if (n_obs > 0) {
         result.observable_sensitivity.assign(static_cast<size_t>(n_obs) * np, 0.0);
         const auto &observables = model.observables();
+        const auto &species = model.species();
         for (int j = 0; j < n_obs; ++j) {
             double *out = result.observable_sensitivity.data() + static_cast<size_t>(j) * np;
             for (const auto &entry : observables[j].entries) {
@@ -1557,9 +1558,11 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
                 if (i < 0 || i >= ns) {
                     continue;
                 }
+                const double weight =
+                    entry.factor * (species[i].amount_valued ? species[i].volume_factor : 1.0);
                 const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
                 for (int p = 0; p < np; ++p) {
-                    out[p] += entry.factor * dxi[p];
+                    out[p] += weight * dxi[p];
                 }
             }
         }

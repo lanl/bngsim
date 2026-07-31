@@ -733,6 +733,12 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **Steady-state observable sensitivities now preserve SBML amount semantics
+  for `hasOnlySubstanceUnits` species (issue #119).** Observable values and
+  time-course sensitivities already multiply an amount-valued species's stored
+  sensitivity by its compartment volume. The steady-state projection now uses
+  the same weight, so `sensitivities_observables` and `output_sensitivities()`
+  no longer differ from the converged time-course result by that volume factor.
 - **A switch-time crossing now resumes on the branch it just crossed into, so
   forward sensitivities stop dying at fitted `if(t>=p, …)` onsets (issue #82).**
   The issue #48 stop time lands `t` exactly on the crossing `t*`, but the `if()`

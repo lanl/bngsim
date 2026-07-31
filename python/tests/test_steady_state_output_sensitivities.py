@@ -151,6 +151,53 @@ class TestObservableProjectionExact:
         stacked = ss.output_sensitivities([f"observable:{n}" for n in ss.observable_names])
         np.testing.assert_allclose(block, stacked, rtol=0, atol=0)
 
+    @pytest.mark.parametrize("volume", [1.0, 2.0, 3.0])
+    def test_sbml_amount_valued_observable_includes_volume_factor(self, volume):
+        """An hOSU observable reports amount sensitivity, not storage sensitivity."""
+        sbml = f"""<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core"
+                         level="3" version="1">
+  <model id="hosu_birthdeath">
+    <listOfCompartments>
+      <compartment id="cell" size="{volume}" constant="true" spatialDimensions="3"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="cell" initialAmount="0"
+               hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_prod" value="4" constant="true"/>
+      <parameter id="k_deg" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="birth" reversible="false">
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <ci>k_prod</ci>
+        </math></kineticLaw>
+      </reaction>
+      <reaction id="death" reversible="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k_deg</ci><ci>X</ci></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+        model = bngsim.Model.from_sbml_string(sbml)
+        ss = bngsim.Simulator(model, method="ode").steady_state(
+            sensitivity_params=["k_prod", "k_deg"]
+        )
+
+        assert ss.converged
+        np.testing.assert_allclose(ss.sensitivity[0], [2.0 / volume, -16.0 / volume])
+        np.testing.assert_allclose(ss.sensitivities_observables[0], [2.0, -16.0])
+        np.testing.assert_allclose(ss.output_sensitivities(["observable:X"])[0], [2.0, -16.0])
+
 
 # ── Function explicit-parameter term (isolated) ──────────────────────────────
 
