@@ -3239,6 +3239,15 @@ class Simulator:
         invocation_sens = self._capture_carryover_state()
 
         def _reset_point() -> None:
+            # Rewind the scanned parameter FIRST (issue #79). When it names a
+            # species initial condition, the previous point left that species'
+            # IC baseline at the previous point's value; restoring only the live
+            # concentrations below would leave the two disagreeing, and the
+            # `set_param` that follows would decline to move a species it no
+            # longer sees sitting on its baseline — so every point after the
+            # first would silently run at the invocation dose. A no-op for the
+            # parameter that names no IC, which is nearly all of them.
+            self._model.set_param(parameter, original_value)
             if use_named:
                 self._model.restore_concentrations(reset_to)
             else:

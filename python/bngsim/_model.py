@@ -567,6 +567,33 @@ class Model:
         ------
         ParameterError
             If the parameter name is not found.
+
+        Notes
+        -----
+        Writing a parameter also re-derives every expression-valued parameter
+        that reads it (BNG ``setParameter`` semantics), and — issue #79 — every
+        **species initial condition that names one of them**. ``A() Stot`` in a
+        ``.net`` species block, or an SBML ``initialAssignment`` that is a bare
+        ``<ci>``, declares that species' initial condition to *be* the
+        parameter, so a dose scan over a total amount moves it:
+
+        >>> model.set_param("Stot", 1e6)
+        >>> model.get_state()[0]        # doctest: +SKIP
+        1000000.0
+
+        The **declared** initial condition always follows, so :meth:`reset`
+        rebuilds from current parameter values rather than from a snapshot taken
+        at load. The **live** concentration follows only while the species is
+        still sitting on that initial condition: a species a :meth:`run` has
+        advanced, or that :meth:`set_concentration` has assigned, keeps its
+        value and picks the new initial condition up at the next :meth:`reset`.
+
+        Two cases where the write deliberately does *not* reach an initial
+        condition: after :meth:`save_concentrations` with no label (the baseline
+        is now a captured state, which the declared initial condition no longer
+        describes — dose such a protocol with :meth:`set_concentration`), and
+        for an SBML ``initialAssignment`` too complex to be a single parameter
+        reference (``2*init_X + offset``), which is evaluated once at load.
         """
         try:
             self._core.set_param(name, float(value))
@@ -613,6 +640,12 @@ class Model:
         Examples
         --------
         >>> model.set_params({"kf": 0.5, "kr": 0.1})
+
+        Notes
+        -----
+        Each write goes through the same path as :meth:`set_param`, so a
+        parameter that names a species initial condition re-resolves it here too
+        (issue #79).
         """
         # Phase 1: Validate all names
         known = set(self._core.param_names)
@@ -644,6 +677,11 @@ class Model:
         to the seed initial conditions, or — after an unlabeled
         :meth:`save_concentrations` — to that saved snapshot. Named snapshots
         (``save_concentrations(label=...)``) are unaffected.
+
+        The seed initial conditions are the ones the *current* parameter values
+        imply, not the ones the network was generated with: a species whose
+        initial condition names a parameter (``A() Stot``) returns to that
+        parameter's value as of now (issue #79).
         """
         self._core.reset()
         # Wholesale IC change: any declared ∂x(0)/∂θ described the assignment this

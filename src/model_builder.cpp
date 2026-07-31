@@ -1338,13 +1338,16 @@ NetworkModel ModelBuilder::build() {
     // concentration (e.g., "A0" instead of "100.0"), re-resolve the
     // species IC from the now-evaluated parameter value. Also persist the
     // (species, param) mapping on shared data so that forward sensitivity
-    // setup can seed s(0) = ∂y(0)/∂p with the IC Jacobian column.
+    // setup can seed s(0) = ∂y(0)/∂p with the IC Jacobian column, and so
+    // NetworkModel::set_param() can re-resolve the same ICs when a parameter
+    // moves after load (issue #79).
     for (const auto &ref : bimpl_->species_param_refs) {
         auto pit = sd->param_name_to_idx.find(ref.param_name);
         if (pit != sd->param_name_to_idx.end()) {
-            double val = impl.parameters[pit->second].value;
-            impl.species[ref.species_idx0].concentration = val;
-            impl.species[ref.species_idx0].initial_conc = val;
+            auto &sp = impl.species[ref.species_idx0];
+            const double val = resolve_ic_from_param(sp, impl.parameters[pit->second].value);
+            sp.concentration = val;
+            sp.initial_conc = val;
             sd->species_ic_param_refs.emplace_back(ref.species_idx0, pit->second);
         }
     }

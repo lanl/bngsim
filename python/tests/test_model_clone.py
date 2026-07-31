@@ -22,6 +22,7 @@ class of regression this file is meant to catch.
   * `ic_state_dirty` +
     `pending_sens_seed`     — `test_clone_carries_pending_sensitivity_seed`
   * `baseline_sens_seed`    — `test_clone_carries_baseline_sensitivity_seed`
+  * `ic_baseline_saved`     — `test_clone_carries_ic_baseline_saved`
 
 `SharedModelData` (model_impl.hpp:32-64) is shared via `shared_ptr<const>`
 post-build; clones share the pointer, so the only correctness assertion
@@ -448,3 +449,36 @@ def test_clone_carries_baseline_sensitivity_seed():
     assert clone.get_concentration("S") == 42.0
     assert clone.ic_state_dirty is True
     np.testing.assert_array_equal(clone.pending_sensitivity_seed(), np.array([[2.5]]))
+
+
+def test_clone_carries_ic_baseline_saved():
+    """save_concentrations() retires the parameter-named-IC rebuild (issue #79);
+    the clone copies the baseline it describes, so it must copy the retirement
+    too. Otherwise a clone of a pre-equilibrated model would let the next
+    set_param re-resolve a species IC over the captured state — exactly the
+    silent discard the flag exists to prevent. Covers: `ic_baseline_saved`.
+    """
+    b = ModelBuilder()
+    b.add_parameter("S0", 100.0)
+    b.add_parameter("k", 0.5)
+    s_idx = b.add_species("S", 100.0)
+    b.add_species_param_ref(s_idx, "S0")
+    b.add_reaction([s_idx], [], "elementary", "k")
+    model = b.build()
+
+    fresh = model.clone()
+    assert fresh.ic_baseline_saved is False
+    fresh.set_param("S0", 250.0)
+    assert fresh.get_concentration("S") == 250.0
+
+    model.set_concentration("S", 42.0)
+    model.save_concentrations()  # baseline := 42.0; the declared IC no longer applies
+    assert model.ic_baseline_saved is True
+
+    saved = model.clone()
+    assert saved.ic_baseline_saved is True
+    saved.set_param("S0", 250.0)
+    saved.reset()
+    assert saved.get_concentration("S") == 42.0
+    # ...and the fresh clone taken before the save is unaffected either way.
+    assert fresh.ic_baseline_saved is False

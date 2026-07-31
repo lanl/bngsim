@@ -113,6 +113,31 @@ const ConservationLaws &ensure_conservation_laws(const SharedModelData &sd,
 // compute_coloring().
 const JacobianSparsity &ensure_jacobian_coloring(const SharedModelData &sd);
 
+// The value to STORE in `species[i].concentration` / `.initial_conc` when
+// parameter `param_value` names species `sp`'s initial condition — i.e. one
+// entry of SharedModelData::species_ic_param_refs resolved at the current
+// parameter values.
+//
+// Two callers must agree on this, which is the whole reason it is a function:
+// ModelBuilder::build() resolves the refs once at load, and
+// NetworkModel::set_param() re-resolves them whenever a parameter moves
+// (issue #79). A rule that lived in only one of them is the drift that #79's
+// dose scan ran into from the other side.
+//
+// The conversion is the SBML loader's, inverted. A `.net` IC column and every
+// hOSU=false SBML species store a concentration and the parameter names it
+// directly, so the factor is 1 and this is the identity. A
+// hasOnlySubstanceUnits=true species's symbol denotes an AMOUNT (the loader's
+// `amount_valued`), and the engine stores amount/V_static — so a parameter that
+// names its IC names an amount and has to be divided by the compartment volume,
+// exactly as the loader's initialAmount / initialAssignment branches do. V = 0
+// is left undivided, matching those branches.
+inline double resolve_ic_from_param(const Species &sp, double param_value) {
+    if (sp.amount_valued && sp.volume_factor != 0.0)
+        return param_value / sp.volume_factor;
+    return param_value;
+}
+
 // Full definition of NetworkModel::Impl.
 // model.hpp forward-declares it; this header provides the body.
 //
@@ -199,6 +224,19 @@ struct NetworkModel::Impl {
     bool ic_state_dirty = false;
     std::vector<double> pending_sens_seed;
     std::vector<std::string> pending_sens_seed_param_names;
+
+    // ── Has save_concentrations() redefined the IC baseline? (issue #79) ──────
+    // set_param() re-resolves every species IC that names the written parameter
+    // (or a derived parameter that reads it), because `A() Stot` says A's
+    // initial condition IS Stot and a dose scan over Stot has to move it. That
+    // claim only holds while `initial_conc` is still the DECLARED initial
+    // condition. save_concentrations() redefines it to the current — typically
+    // pre-equilibrated — state, at which point the .net/SBML IC no longer
+    // describes the baseline and re-resolving it would silently discard the
+    // equilibration. Latching here retires the rebuild for the model's
+    // remaining life; there is no un-save. clone() copies it with the baseline
+    // it describes.
+    bool ic_baseline_saved = false;
 
     // ── The IC baseline's own θ-derivative (GH #81) ───────────────────────────
     // save_concentrations() redefines initial_conc to the *current* state, which

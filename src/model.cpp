@@ -132,6 +132,10 @@ NetworkModel NetworkModel::clone() const {
     // too or the clone's reset() would forget it.
     copy.impl_->baseline_sens_seed = impl_->baseline_sens_seed;
     copy.impl_->baseline_sens_seed_param_names = impl_->baseline_sens_seed_param_names;
+    // ...and whether that baseline is a saved state rather than the declared IC
+    // (issue #79), or the clone's set_param() would re-resolve a parameter-named
+    // IC over a baseline the original had already retired.
+    copy.impl_->ic_baseline_saved = impl_->ic_baseline_saved;
 
     // Create evaluator that shares the parser with the original
     copy.impl_->evaluator = impl_->evaluator->clone_empty();
@@ -293,6 +297,55 @@ void NetworkModel::set_param(const std::string &name, double value) {
             p.value = impl_->evaluator->evaluate(p.evaluator_id);
         }
     }
+
+    // ...and the species initial conditions those parameters name (issue #79).
+    // Must come AFTER the loop above: a species IC may name a *derived*
+    // parameter (`R() Rtot` with `Rtot = 2*R0`), whose value only just moved.
+    refresh_param_ref_ics();
+}
+
+// Re-resolve every species initial condition that a parameter names, from the
+// current parameter values (issue #79).
+//
+// `A() Stot` in the .net species block — or an SBML initialAssignment that is a
+// bare <ci> — says A's initial condition IS that parameter, so a later
+// set_param("Stot", …) has to move it. Without this the common dose scan over a
+// total amount silently ran every dose at the load-time value: get_param
+// confirmed the write, get_state() did not move, and nothing warned.
+//
+// Two fields, two different rules:
+//
+//   * `initial_conc` — the declared IC — always follows the parameter. That is
+//     what makes reset() rebuild from current parameter values (issue #79's
+//     other half) and what makes the `set_params(); reset()` sequence in
+//     run_batch() / steady_state_batch() correct without their knowing anything
+//     about IC parameters.
+//   * `concentration` — the live state — follows only while the species is
+//     still sitting ON that baseline. A species the dynamics advanced (or a
+//     caller assigned) holds a value this parameter no longer describes, and
+//     overwriting it would discard a pre-equilibration mid-protocol. The next
+//     reset() picks the new IC up regardless. The same
+//     `concentration == initial_conc` test decides whether a parameter still
+//     reaches a species IC in the #113 sensitivity seeding, so the two agree.
+//
+// Every ref is re-resolved, not just the refs naming the written parameter:
+// after the derived-parameter re-evaluation above, ANY ref may have moved, and
+// re-resolving one that did not is a no-op. Empty for all but a handful of
+// models — the loop is over species_ic_param_refs, not species.
+void NetworkModel::refresh_param_ref_ics() {
+    // save_concentrations() redefined the baseline to the current state; the
+    // declared IC no longer describes it (see Impl::ic_baseline_saved).
+    if (impl_->ic_baseline_saved)
+        return;
+    for (const auto &ref : impl_->shared->species_ic_param_refs) {
+        auto &sp = impl_->species[static_cast<std::size_t>(ref.first)];
+        const double val = resolve_ic_from_param(
+            sp, impl_->parameters[static_cast<std::size_t>(ref.second)].value);
+        const bool at_baseline = (sp.concentration == sp.initial_conc);
+        sp.initial_conc = val;
+        if (at_baseline)
+            sp.concentration = val;
+    }
 }
 
 double NetworkModel::get_param(const std::string &name) const {
@@ -352,6 +405,10 @@ void NetworkModel::save_concentrations() {
     if (impl_->baseline_sens_seed.empty()) {
         impl_->ic_state_dirty = false;
     }
+    // The baseline is now this state, not the declared IC — so a later
+    // set_param() must NOT re-resolve a parameter-named IC over it and discard
+    // the equilibration it just captured (issue #79).
+    impl_->ic_baseline_saved = true;
 }
 
 void NetworkModel::set_concentration(const std::string &name, double value) {
@@ -428,6 +485,8 @@ void NetworkModel::clear_pending_sens_seed() {
 }
 
 bool NetworkModel::has_baseline_sens_seed() const { return !impl_->baseline_sens_seed.empty(); }
+
+bool NetworkModel::ic_baseline_saved() const { return impl_->ic_baseline_saved; }
 
 // ─── Accessors ───────────────────────────────────────────────────────────────
 

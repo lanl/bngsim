@@ -952,6 +952,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
                       "(Simulator.parameter_scan) can put the flag back as it found it; "
                       "setting it by hand otherwise just re-arms (or defeats) the raise.")
         .def_property_readonly(
+            "ic_baseline_saved", &bngsim::NetworkModel::ic_baseline_saved,
+            "True once save_concentrations() has redefined the IC baseline "
+            "(species[].initial_conc) to a captured state, so it is no longer the initial "
+            "condition the .net / SBML input declares. From that point set_param() stops "
+            "re-resolving parameter-named species ICs (issue #79) rather than overwrite a "
+            "pre-equilibrated baseline; use set_concentration() to dose such a protocol. "
+            "Latching — there is no un-save — and carried by clone().")
+        .def_property_readonly(
             "has_pending_sensitivity_seed",
             [](const bngsim::NetworkModel &self) { return !self.pending_sens_seed().empty(); },
             "True iff a forward-sensitivity carry-over seed (dx/dθ) from a prior "
