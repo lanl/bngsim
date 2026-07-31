@@ -733,6 +733,24 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The docs said the KINSOL polish uses an analytical Jacobian. It never has.**
+  `solve_by_newton` does not call `KINSetJacFn`, so KINSOL installs its own
+  difference-quotient Jacobian and each setup costs **one RHS evaluation per
+  unknown** — measured directly: seeded at its steady state, `SHP2_base_model`
+  (147 unknowns) runs one polish that KINSOL reports as 1 iteration / 2 function
+  evaluations while the model sees **151**. Corrected in the `steady_state()`
+  docstring, the steady-state guide, `steady_state.hpp`, `SteadyStateOptions`,
+  and the stale comment in `SteadyStateMarcher`'s constructor that claimed the
+  march skipped the closed form because "the analytical Jacobian is used by
+  KINSOL (Tier 2) instead" (the march does not install one either).
+  `jacobian=` reaches the consumers that need the matrix *itself* — `dY_ss/dp`
+  and the issue #78 stability certificate — not either solver tier, so it cannot
+  move the polished root. Both facts are now pinned by
+  `python/tests/test_steady_state_polish_jacobian.py`, which fails if a Jacobian
+  function is installed — the cue to update the prose along with it. Installing
+  one is a real per-setup saving on codegen-backed models (the artifact already
+  carries `bngsim_codegen_jac`) but changes how both tiers converge, so it wants
+  its own before/after rather than a drive-by.
 - **`steady_state(method="newton")` no longer returns the saddle on a bistable
   model (issue #78).** On the Gardner 2000 toggle at `alpha_2 = 53.526315789`,
   one dose of the model's own 20-point scan, it returned `[28.245, 1.830]` with
