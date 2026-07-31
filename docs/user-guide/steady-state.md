@@ -23,9 +23,10 @@ when available (all-Elementary models) or KINSOL's internal finite
 differences. For models with conservation laws, BNGsim automatically uses a
 reduced-space Newton formulation (see [Conservation laws](#conservation-laws)).
 The polish is accepted only once it is *seed-stable* — two Newton solves from
-successively tighter bursts landing on the same state — otherwise integration
-simply continues, so a `method="newton"` call always honors the parity
-criterion.
+successively tighter bursts landing on the same state — **and** only once the
+root is *dynamically stable* (see [Unstable roots](#unstable-roots-saddles)),
+otherwise integration simply continues, so a `method="newton"` call always
+honors the parity criterion.
 
 **`method="kinsol"`**: accepted alias for `"newton"` (the canonical name is
 always echoed in `ss.method_used`).
@@ -180,6 +181,59 @@ from the test without changing the problem"; `unconverged_pure_sinks` answers
 BNG2.pl criterion and takes no mask. On an accumulator model it simply never
 fires early and you get the full `t_span`, which is a complete and correct
 trajectory rather than a reported failure.
+
+### Unstable roots (saddles)
+
+Not every root of `f(y) = 0` is a steady state the system can occupy. A bistable
+model has three: two attractors and, between them, a **saddle** on the
+separatrix — an equilibrium that satisfies `f(y) = 0` exactly and that no
+trajectory can rest on, because any perturbation grows.
+
+`method="newton"` used to be able to return one (issue #78). The trajectory
+*slows down* near a separatrix, so two successively tighter bursts hand KINSOL
+almost the same seed, both polish to the saddle, and the seed-stability test —
+which asks whether refining the seed moves the root — is satisfied precisely
+where it should not be. On the Gardner 2000 toggle at `alpha_2 = 53.53` that
+returned `[28.245, 1.830]` with `converged=True` and a residual of `2.8e-10`,
+while `method="integration"` returned the correct branch.
+
+The polish is now certified before it is accepted: BNGsim takes the eigenvalues
+of the Jacobian **restricted to the species the polish solved for** and rejects
+the root when any has a positive real part, continuing to integrate instead. The
+saddle above has eigenvalues `+0.406` and `-2.406`; the branch integration
+reaches has `-0.863` and `-1.137`.
+
+Two fields report it:
+
+```python
+ss = sim.steady_state(method="newton")
+ss.root_stability             # "stable" — the returned root is an attractor
+ss.n_unstable_roots_rejected  # 1 — a saddle was discarded on the way there
+```
+
+- `root_stability` is `"stable"`, `"undetermined"`, or `"unstable"` for a root a
+  Newton polish returned, and `""` for the integration path — a trajectory
+  cannot come to rest on an unstable equilibrium, so there is nothing to certify.
+- `"undetermined"` means the certificate declined and the root was accepted as
+  before: the restricted system has **more than 512 unknowns** (a full spectrum
+  is O(n³) and would cost more than the solve it is checking — 2.1 s at 1281
+  species), or its Jacobian is entirely zero. Six of the 585-model `ode_fullnet`
+  corpus land here, all on the size limit.
+- `"unstable"` is returned only when *your own initial condition* was already
+  that root. There is nowhere to fall back to then — integration would return the
+  same state — so the verdict is reported rather than acted on.
+- `n_unstable_roots_rejected > 0` on a result whose `method_used` is
+  `"integration"` explains why the polish did not answer.
+
+Rejecting a saddle does not cost the tighter residual the polish buys: the burst
+leaves the saddle's neighborhood on its own, and a later rung polishes the
+attractor. On the toggle dose above, `method="newton"` returns the correct branch
+at a residual of `7.5e-14` against integration's `3.2e-10`.
+
+The certificate is *not* a bifurcation analysis — it says whether the root that
+was returned is linearly stable, not how many other roots exist. For the full
+picture, scan the parameter and compare `method="integration"` from different
+initial conditions.
 
 ### Time course that stops at steady state (`run(steady_state=True)`)
 

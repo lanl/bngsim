@@ -948,6 +948,30 @@ struct SteadyStateResult {
     // NaN.
     std::vector<int> excluded_species;
 
+    // ─── Can the system rest on the returned root? (issue #78) ────────────────
+    // The linear-stability verdict on the root a KINSOL polish returned, from the
+    // eigenvalues of the Jacobian restricted to the species the polish solved
+    // for: "stable" (every eigenvalue in the closed left half-plane),
+    // "undetermined" (the certificate declined — too many unknowns for an O(n³)
+    // spectrum, a Jacobian it could not factor, or an entirely zero one), or
+    // "unstable". Empty when the result came from integration, which needs no
+    // certificate: a trajectory cannot come to rest on an unstable equilibrium.
+    //
+    // "unstable" appears only when the caller's own initial condition was already
+    // that root — there is then nowhere else to fall back to, and reporting it
+    // beats returning it silently. Every burst-seeded polish that certifies
+    // unstable is discarded and the solve keeps integrating; see
+    // n_unstable_roots_rejected.
+    std::string root_stability;
+
+    // How many candidate Newton roots this solve rejected as unstable (issue
+    // #78). Non-zero says the polish landed on a saddle the trajectory was
+    // passing near — on a bistable model the seed-stability guard cannot catch
+    // that, because near a separatrix the trajectory slows down and two
+    // successively tighter bursts hand Newton the same seed. Explains a
+    // method_used of "integration" from a method="newton" solve.
+    int n_unstable_roots_rejected = 0;
+
     // Names of the write-only accumulator species (pure sinks, see
     // NetworkModel::pure_sink_species) that were INCLUDED in the convergence
     // test and carry a non-negligible |f| at the returned state. Non-empty only

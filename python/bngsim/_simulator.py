@@ -5139,6 +5139,23 @@ class SteadyStateResult:
         convergence test and are carrying flux at the returned state — the
         structural reason the residual has a floor (issue #74). Empty otherwise,
         including on every converged solve. See :meth:`Model.pure_sink_species`.
+    root_stability : str
+        Whether the system can rest on the returned root (issue #78), from the
+        eigenvalues of the Jacobian restricted to the species the Newton polish
+        solved for: ``"stable"`` (every eigenvalue in the closed left half-plane),
+        ``"undetermined"`` (the certificate declined — more than 512 unknowns, or
+        a Jacobian whose spectrum it could not compute), or ``"unstable"``.
+        ``""`` when the result came from integration, which needs no certificate:
+        a trajectory cannot come to rest on an unstable equilibrium.
+        ``"unstable"`` is returned only when the *initial condition itself* was
+        that root; a polish that lands on one is discarded instead.
+    n_unstable_roots_rejected : int
+        How many candidate Newton roots this solve discarded as unstable (issue
+        #78). Non-zero means the polish landed on a saddle the trajectory was
+        merely passing near — on a bistable model the seed-stability guard cannot
+        catch that, because near a separatrix the trajectory slows down and two
+        successively tighter bursts hand Newton the same seed. Explains a
+        ``method_used`` of ``"integration"`` from a ``method="newton"`` solve.
     sensitivity : ndarray or None
         Species ``dY_ss/dp`` matrix, shape ``(n_species, n_params)``. ``None``
         if no sensitivity was requested.
@@ -5212,6 +5229,8 @@ class SteadyStateResult:
         "n_residual_species",
         "excluded_species",
         "unconverged_pure_sinks",
+        "root_stability",
+        "n_unstable_roots_rejected",
         "rhs_backend",
         "sens_jacobian_source",
         "sens_dfdp_source",
@@ -5240,6 +5259,10 @@ class SteadyStateResult:
         self.n_residual_species = getattr(core, "n_residual_species", len(self._species_names))
         self.excluded_species = list(getattr(core, "excluded_species", []))
         self.unconverged_pure_sinks = list(getattr(core, "unconverged_pure_sinks", []))
+        # Issue #78 — the linear-stability verdict on a Newton root, and how many
+        # candidate roots were thrown out for failing it.
+        self.root_stability = getattr(core, "root_stability", "")
+        self.n_unstable_roots_rejected = getattr(core, "n_unstable_roots_rejected", 0)
         # Issue #63 — which numerical path ran. getattr-guarded like the GH #12
         # blocks below so an older core stays loadable.
         self.rhs_backend = getattr(core, "rhs_backend", "exprtk")
