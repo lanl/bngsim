@@ -607,3 +607,125 @@ class TestCompiledOutputSensPath:
             rtol=1e-6,
             atol=1e-9,
         )
+
+
+# ── Amount-valued (hOSU) observables carry their volume factor (issue #119) ──
+
+
+# Birth-death on one SBML species with hasOnlySubstanceUnits="true", in a
+# compartment of size V. `{V}` is substituted per parametrization.
+#
+#   d(amount)/dt = k_prod - k_deg·amount,  k_prod = 4, k_deg = 0.5
+#     amount*            = k_prod/k_deg   = 8
+#     d(amount*)/dk_prod = 1/k_deg        = 2
+#     d(amount*)/dk_deg  = -k_prod/k_deg² = -16
+#
+# The loader registers a same-named observable shadowing the species, so the
+# observable denotes the AMOUNT and its sensitivity is the closed form above —
+# independent of V. The stored (concentration) state and its sensitivity are that
+# divided by V, which is what makes the two blocks distinguishable.
+_HOSU_BIRTHDEATH_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="hosu_birthdeath">
+    <listOfCompartments>
+      <compartment id="cell" size="{V}" constant="true" spatialDimensions="3"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="cell" initialAmount="0"
+               hasOnlySubstanceUnits="true"
+               boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_prod" value="4" constant="true"/>
+      <parameter id="k_deg" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="birth" reversible="false">
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <ci>k_prod</ci>
+        </math></kineticLaw>
+      </reaction>
+      <reaction id="death" reversible="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k_deg</ci><ci>X</ci></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+_HOSU_PARAMS = ["k_prod", "k_deg"]
+_HOSU_AMOUNT_SENS = np.array([2.0, -16.0])  # d(amount*)/d[k_prod, k_deg]
+
+
+def _hosu_steady_state(volume):
+    m = bngsim.Model.from_sbml_string(_HOSU_BIRTHDEATH_SBML.format(V=volume))
+    sim = bngsim.Simulator(m, method="ode")
+    return m, sim.steady_state(sensitivity_params=_HOSU_PARAMS)
+
+
+class TestAmountValuedObservableVolumeFactor:
+    """``d(observable)/dp`` must use the same weight the observable's VALUE does.
+
+    ``update_observables`` defines ``obs_j = Σ_i factor_ji·v_i·x_i``, where ``v_i``
+    is the species' ``volume_factor`` when it is ``amount_valued`` (SBML
+    ``hasOnlySubstanceUnits="true"``) — a hOSU symbol denotes an amount, not the
+    stored concentration. The steady-state projection used the bare
+    ``entry.factor``, so it returned a derivative of something the result does not
+    report, off by the compartment volume. The CVODES path (``obs_sens_terms``) and
+    the compiled emitter (``_emit_obs_sens_lines``) always carried ``v_i``.
+    """
+
+    @pytest.mark.parametrize("volume", [1.0, 2.0, 3.0])
+    def test_matches_closed_form_at_any_compartment_volume(self, volume):
+        """The sharpest statement of the bug: the true answer does not depend on
+        the compartment volume, and the pre-fix one was inversely proportional to
+        it (V=1 correct, V=2 half, V=3 a third)."""
+        m, ss = _hosu_steady_state(volume)
+        assert ss.converged
+        # The state is stored as a concentration, so it DOES scale with V — this
+        # pins that the fixture really has a non-unit factor to get wrong.
+        assert ss["X"] == pytest.approx(8.0 / volume, rel=1e-6)
+        np.testing.assert_allclose(
+            ss.sensitivities_observables[0], _HOSU_AMOUNT_SENS, rtol=1e-6, atol=1e-9
+        )
+
+    def test_species_row_is_not_given_the_factor(self):
+        """Guard against over-correcting: ``ss.sensitivity`` is the STORED-state
+        derivative and must stay unscaled, i.e. the amount row divided by V."""
+        m, ss = _hosu_steady_state(2.0)
+        np.testing.assert_allclose(
+            ss.sensitivity[0], _HOSU_AMOUNT_SENS / 2.0, rtol=1e-6, atol=1e-9
+        )
+        # ...and the two blocks must therefore genuinely differ, or this test and
+        # the one above could both pass on a single wrong weight.
+        assert not np.allclose(ss.sensitivity[0], ss.sensitivities_observables[0])
+
+    def test_pre_fix_value_is_far_from_the_answer(self):
+        """Pin the failure mode, not just the answer: the dropped-factor value is
+        a clean 2x away, so an rtol assertion cannot pass for the wrong reason."""
+        m, ss = _hosu_steady_state(2.0)
+        dropped_factor = _HOSU_AMOUNT_SENS / 2.0  # what entry.factor alone gave
+        got = ss.sensitivities_observables[0]
+        assert np.max(np.abs(got - dropped_factor)) > 0.5 * np.max(np.abs(got))
+        np.testing.assert_allclose(got, _HOSU_AMOUNT_SENS, rtol=1e-6, atol=1e-9)
+
+    def test_matches_the_cvode_run(self):
+        """Same-model consistency, the invariant the bug broke: the steady-state
+        block and a converged forward-sensitivity run's last point must agree."""
+        m, ss = _hosu_steady_state(2.0)
+        m2 = bngsim.Model.from_sbml_string(_HOSU_BIRTHDEATH_SBML.format(V=2.0))
+        sim2 = bngsim.Simulator(m2, method="ode", sensitivity_params=_HOSU_PARAMS)
+        m2.reset()
+        run = sim2.run(t_span=(0.0, 400.0), n_points=2, **_RUN)
+        np.testing.assert_allclose(run.species[-1], ss.concentrations, rtol=1e-6, atol=1e-8)
+        run_obs = run.output_sensitivities(["observable:X"], axis="parameter")[-1]
+        np.testing.assert_allclose(
+            ss.output_sensitivities(["observable:X"]), run_obs, rtol=1e-6, atol=1e-9
+        )

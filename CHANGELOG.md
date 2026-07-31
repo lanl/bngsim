@@ -733,6 +733,34 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **Steady-state observable sensitivities carry the amount-valued volume factor
+  (issue #119).** `compute_ss_output_sensitivity` projected `dY_ss/dp` onto the
+  observables with the bare `GroupEntry::factor`. Every other site that touches
+  that quantity multiplies in the species' `volume_factor` when it is
+  `amount_valued` — SBML `hasOnlySubstanceUnits="true"`, where the symbol denotes
+  an *amount* rather than the stored concentration — including
+  `update_observables`, which is what defines the observable's **value**. So the
+  steady-state block returned the derivative of something the same result does not
+  report, off by the compartment volume, while `Result.output_sensitivities(...,
+  axis="parameter")` at a converged run was right. Within one `SteadyStateResult`
+  the `expression:` rows were correct (both of their paths carry the factor) and
+  the `observable:` rows were not.
+
+  On a birth-death hOSU model with a closed form
+  (`d(amount*)/d[k_prod, k_deg] = [2, -16]`, independent of the compartment size):
+
+  | compartment size | before | after / run / closed form |
+  |---|---|---|
+  | `V = 1` | `[2, -16]` | `[2, -16]` |
+  | `V = 2` | `[1, -8]` | `[2, -16]` |
+  | `V = 3` | `[0.667, -5.33]` | `[2, -16]` |
+
+  The true answer does not depend on the compartment volume; the old one was
+  inversely proportional to it, which is why `V = 1` hid this. `.net` models are
+  unaffected (`amount_valued` is set only by the SBML loader), as are `V_c = 1`
+  and every `hasOnlySubstanceUnits="false"` species — the fix is a no-op wherever
+  the projection was already right. The species block is storage-based and
+  deliberately keeps its unscaled weight.
 - **A switch-time crossing now resumes on the branch it just crossed into, so
   forward sensitivities stop dying at fitted `if(t>=p, …)` onsets (issue #82).**
   The issue #48 stop time lands `t` exactly on the crossing `t*`, but the `if()`
