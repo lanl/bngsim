@@ -5319,7 +5319,12 @@ class SteadyStateResult:
         Shape ``(n_observables, n_params)`` on a sensitivity run, aligned with
         :attr:`observable_names` (rows) and :attr:`sensitivity_params` (columns);
         empty ``(0, 0)`` otherwise. This is the exact linear projection of the
-        species :attr:`sensitivity` through each observable's group factors.
+        species :attr:`sensitivity` through each observable's group factors —
+        including the amount-valued volume factor for an SBML
+        ``hasOnlySubstanceUnits="true"`` species, whose observable denotes an
+        amount rather than the stored concentration (issue #119). So for such a
+        species this block is *not* simply ``sensitivity`` re-weighted by the
+        group coefficients; it is the derivative of the observable's value.
         """
         return self._observable_sensitivity
 

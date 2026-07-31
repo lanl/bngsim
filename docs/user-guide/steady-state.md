@@ -333,7 +333,11 @@ reports which path the expression block took:
   table-function wrapper, or a model with no user-selectable global functions).
 
 The observable block is the exact linear projection either way, and is not
-covered by this field.
+covered by this field. Its weights are the group factors times the amount-valued
+volume factor for an SBML `hasOnlySubstanceUnits="true"` species — whose
+observable denotes an *amount*, not the stored concentration — matching what
+`update_observables` uses for the value and what the CVODE `run()` path uses for
+its derivative (issue #119).
 
 A stable steady state forgets its initial conditions (`∂x*/∂x(0) = 0`), so the
 initial-condition axis is structurally zero and is not computed;

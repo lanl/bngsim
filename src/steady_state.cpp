@@ -1546,10 +1546,28 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
     const double *y_ss = result.concentrations.data();
 
     // ── Observables: exact linear projection through the group factors ────────
-    // obs_j = Σ_{(i,f) ∈ group_j} f·x_i  ⇒  d(obs_j)/dp = Σ f·dY_ss_i/dp.
+    // obs_j = Σ_{(i,f) ∈ group_j} f·v_i·x_i  ⇒  d(obs_j)/dp = Σ f·v_i·dY_ss_i/dp,
+    // where v_i is the amount-valued volume factor (issue #119).
+    //
+    // v_i is NOT cosmetic and NOT 1 in general. update_observables() — the single
+    // site defining what an observable's VALUE is — multiplies an amount-valued
+    // species (SBML hasOnlySubstanceUnits="true", GH #75-SBML) by its
+    // volume_factor, because such a symbol denotes the species's amount rather
+    // than the stored concentration. A derivative that omits it is not the
+    // derivative of the value the same result reports: it is off by the
+    // compartment volume, and inversely proportional to a quantity the true answer
+    // does not depend on at all. The CVODES path (obs_sens_terms) and the compiled
+    // emitter (_emit_obs_sens_lines) both already fold it in, so this site was the
+    // lone dissenter — and within one SteadyStateResult its `expression:` rows
+    // were right (both of their paths carry the factor) while `observable:` rows
+    // were wrong.
+    //
+    // v_i = 1 for every .net model (amount_valued is SBML-only), for V_c = 1, and
+    // for hOSU=false, so this is a no-op everywhere it was previously correct.
     if (n_obs > 0) {
         result.observable_sensitivity.assign(static_cast<size_t>(n_obs) * np, 0.0);
         const auto &observables = model.observables();
+        const auto &species_list = model.species();
         for (int j = 0; j < n_obs; ++j) {
             double *out = result.observable_sensitivity.data() + static_cast<size_t>(j) * np;
             for (const auto &entry : observables[j].entries) {
@@ -1557,9 +1575,12 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
                 if (i < 0 || i >= ns) {
                     continue;
                 }
+                const auto &sp = species_list[i];
+                const double weight =
+                    sp.amount_valued ? entry.factor * sp.volume_factor : entry.factor;
                 const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
                 for (int p = 0; p < np; ++p) {
-                    out[p] += entry.factor * dxi[p];
+                    out[p] += weight * dxi[p];
                 }
             }
         }
