@@ -733,6 +733,91 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **`steady_state(method="newton")` no longer returns the saddle on a bistable
+  model (issue #78).** On the Gardner 2000 toggle at `alpha_2 = 53.526315789`,
+  one dose of the model's own 20-point scan, it returned `[28.245, 1.830]` with
+  `converged=True` and a residual of `2.82e-10`. That state is a genuine root of
+  `f(y) = 0` — and the **saddle** between the two branches, an equilibrium no
+  trajectory can rest on: perturb it by one part in `1e6` and it runs away to a
+  *different* attractor depending on the sign. Its Jacobian's eigenvalues are
+  `+0.40643` and `-2.40643`. `method="integration"` was right at that dose and at
+  the other 19.
+
+  The seed-stability guard could not catch it, and the reason is structural
+  rather than a tuning problem: it asks whether *refining the seed* moves the
+  root, which is not the question. Near a separatrix the trajectory slows to a
+  crawl — this one comes within 3% of the saddle by `t = 2` and stays within 10%
+  for about 4.5 time units — so two successively tighter bursts hand KINSOL
+  near-identical seeds, both polish to the saddle, and they agree. The guard is
+  satisfied precisely where it is needed.
+
+  A polished root is now certified before it is accepted: the eigenvalues of the
+  Jacobian **restricted to the species the polish solved for** (conservation-law
+  independents, narrowed by any `mask=`, minus `$`-fixed species — the same
+  unknown set KINSOL and `dY_ss/dp` use, now a shared helper rather than a third
+  copy) must all lie in the closed left half-plane. A root with
+  `max Re(λ) > 1e-6·max|λ|` is discarded and the ladder keeps integrating.
+  Rejecting the saddle costs nothing: the burst leaves its neighborhood on its
+  own and a later rung polishes the attractor, so that dose now returns the
+  correct branch at a residual of **7.5e-14** against integration's `3.2e-10`,
+  still reporting `method_used="newton"`.
+
+  Two new `SteadyStateResult` fields make the verdict readable:
+  `ss.root_stability` is `"stable"` / `"undetermined"` / `"unstable"` for a
+  Newton root and `""` for the integration path (a trajectory cannot come to rest
+  on an unstable equilibrium, so there is nothing to certify);
+  `ss.n_unstable_roots_rejected` counts the discards, which is what explains a
+  `method_used` of `"integration"` from a `method="newton"` call. `"unstable"` is
+  returned only when the *caller's own initial condition* was already that root —
+  integration would return the same state, so the verdict is reported rather than
+  acted on, which is an answer the library could not previously give at all.
+
+  The spectrum comes from a self-contained balance → Householder-Hessenberg →
+  Francis-QR eigensolver (`include/bngsim/dense_eigenvalues.hpp`), not LAPACK:
+  `dgeev` is only linked when CMake finds a BLAS backend, and a guard that
+  silently does not run on one platform is worse than no guard. Cross-checked
+  against LAPACK on ~1,000 corpus Jacobians, its `max Re(λ)` agrees to **1.1e-8**
+  of the spectral radius in the worst case (a defective eigenvalue, where
+  `eps^(1/m)` accuracy is all any method has) — a hundredfold under the `1e-6`
+  threshold, which itself sits five decades under the saddle's `+0.169`.
+
+  Measured over the `ode_fullnet` corpus — 449 models solved with
+  `method="newton"` both before and after (404 at the default horizon, 45 of the
+  slow tail at `max_time=1e4`), and 570 of the 585 after; the remainder are
+  oscillators and accumulators that do not settle within any horizon the sweep
+  could afford. **Exactly one model changed**, and it changed for the same reason
+  the Gardner toggle did. `ml/ml_q_learning` — a Q-learning model
+  whose rate laws are a stack of `if()` conditions — used to return
+  `converged=True` at `[10.0, 1.803e7, 1.803e7, 1.803e6, 50]` with a residual of
+  **exactly 0.0**: a real root, on which the Jacobian has an eigenvalue at
+  `+0.19·max|λ|` and from which a **one-part-in-1e6** nudge of either Q value
+  leaves by **19× the root's own magnitude within `t` = 500** (the perturb-and-
+  integrate test, run as an independent oracle). It now reports `converged=False`,
+  which is the honest answer for a model whose Q values accumulate without bound.
+  No other model moved: `method_used`, `converged` and the residual are unchanged
+  on the other 448 A/B'd models, and no root the solver accepts has
+  `max Re(λ)/max|λ|` above `1.7e-16` (the zero eigenvalues of a conserved system,
+  at roundoff).
+
+  The certificate costs one O(n³) eigen-decomposition per accepted root — 0.05 s
+  at 256 unknowns, 0.26 s at 624 — and **declines above 512 unknowns**, reporting
+  `"undetermined"` and accepting the root as before, because past that the
+  spectrum costs more than the solve it is checking (2.1 s against a 15.2 s solve
+  at 1281 species). Nine corpus models report `"undetermined"`: eight above the
+  size limit and one whose reduced Jacobian is identically zero.
+
+  Two cheaper tests were measured and rejected. A **Cayley-transform power
+  iteration** (`(I − sJ)⁻¹(I + sJ)` has spectral radius > 1 exactly when
+  `Re λ > 0`, for any `s > 0`) needs one LU instead of a full spectrum, but a
+  non-normal Jacobian's transient growth is indistinguishable from an unstable
+  mode in a finite number of iterations: it called **57 of 250** corpus roots
+  unstable, one at a growth factor of 1.028. The **determinant-parity screen**
+  (`sign(det) ≠ (−1)ⁿ` proves an odd number of eigenvalues with positive real
+  part, at `n³/3`) fails for the opposite reason — on the reduced Jacobians where
+  it would be the only available screen it flagged **6** corpus models whose true
+  `max Re(λ)/max|λ|` is `1e-16` or smaller, because `|det|` there is ~`1e-21` and
+  the sign is roundoff. An LU cannot tell that case apart, which is the same thing
+  `sens_jacobian_rcond` was measured to be unable to do in #63.
 - **A steady-state `∂f/∂p` component whose response is roundoff takes the wide
   probe instead of fabricating a gradient (issue #123).** #76 made the
   finite-difference parameter probe relative to the parameter, which is right

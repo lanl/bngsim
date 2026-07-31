@@ -28,6 +28,7 @@
 
 #include "bngsim/steady_state.hpp"
 #include "bngsim/codegen_abi.hpp"
+#include "bngsim/dense_eigenvalues.hpp"
 #include "bngsim/dynamic_library.hpp"
 #include "bngsim/mir_jit.hpp"
 #include "bngsim/model.hpp"
@@ -739,6 +740,46 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
     return 0;
 }
 
+// Which species a restricted steady-state system treats as UNKNOWNS.
+//
+// Three callers have to agree on this set or they are answering questions about
+// different systems: the KINSOL polish (solve_by_newton), the dY_ss/dp linear
+// solve (compute_ss_sensitivity), and the stability certificate at the accepted
+// root (issue #78).
+//
+//   * conservation laws present — the reduction's independent species; a
+//     dependent one is not an unknown but a linear function of the others.
+//   * mask present (issue #74) — narrowed to the species the mask kept.
+//   * `fixed` species — dropped from either restricted form: their derivative is
+//     zeroed by definition, so keeping one as an unknown adds a structurally
+//     zero ROW and makes the system singular for a reason that has nothing to do
+//     with the model.
+//
+// Unmasked WITH laws returns cl.independent verbatim (fixed species included),
+// exactly as before #74. A caller with neither laws nor a mask builds no
+// restricted system at all and does not come here.
+static std::vector<int> ss_unknown_species(const NetworkModel &model, const ConservationLaws &cl,
+                                           const ResidualSubspace &sub) {
+    if (!cl.empty() && !sub.masked) {
+        return cl.independent;
+    }
+    std::vector<int> unknowns;
+    if (cl.empty()) {
+        unknowns.reserve(sub.included.size());
+        for (int i : sub.included) {
+            if (!model.species()[i].fixed)
+                unknowns.push_back(i);
+        }
+    } else {
+        unknowns.reserve(cl.independent.size());
+        for (int i : cl.independent) {
+            if (sub.includes(i) && !model.species()[i].fixed)
+                unknowns.push_back(i);
+        }
+    }
+    return unknowns;
+}
+
 // `linsolv_failed`, when non-null, reports whether KINSOL failed because it
 // could not set up or apply the dense linear solver at all — as opposed to
 // merely failing to converge. For a *structurally* singular reduced Jacobian
@@ -793,31 +834,19 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     // zero-law reduction, so there is one code path for "some species are not
     // unknowns" rather than a second restricted full-space RHS.
     //
-    // Both restricted forms also drop `fixed` ($-prefixed) species: their
-    // derivative is zeroed by definition, so keeping one as an unknown adds a
-    // structurally zero ROW and makes the system singular for a reason that has
-    // nothing to do with the model. The unmasked paths do NOT do this (kinsol_rhs
-    // zeroes those rows while leaving the unknowns in place, and cl.independent
-    // is taken verbatim) and are left exactly as they were — an all-true mask is
-    // not masked at all (see make_subspace), so no pre-#74 solve changes path.
+    // Both restricted forms also drop `fixed` ($-prefixed) species — see
+    // ss_unknown_species, which is where that rule now lives, shared with the
+    // dY_ss/dp solve and the stability certificate. The unmasked paths do NOT do
+    // this (kinsol_rhs zeroes those rows while leaving the unknowns in place, and
+    // cl.independent is taken verbatim) and are left exactly as they were — an
+    // all-true mask is not masked at all (see make_subspace), so no pre-#74 solve
+    // changes path.
     const bool use_reduced = !cl_copy.empty() || sub.masked;
     if (use_reduced) {
-        std::vector<int> unknowns;
         if (cl_copy.empty()) {
             cl_copy.n_species = ns;
-            for (int i : sub.included) {
-                if (!model.species()[i].fixed)
-                    unknowns.push_back(i);
-            }
-        } else if (sub.masked) {
-            unknowns.reserve(cl_copy.independent.size());
-            for (int i : cl_copy.independent) {
-                if (sub.includes(i) && !model.species()[i].fixed)
-                    unknowns.push_back(i);
-            }
-        } else {
-            unknowns = cl_copy.independent; // unmasked: verbatim, as before #74
         }
+        std::vector<int> unknowns = ss_unknown_species(model, cl_copy, sub);
         if (unknowns.empty()) {
             // Every included species is pinned by a conservation law, so there is
             // no Newton system to build. Not an error — report it unconverged so
@@ -1007,6 +1036,42 @@ static SteadyStateResult ss_newton_from(NetworkModel &model, SteadyStateRhs &rhs
     return solve_by_newton(model, rhs, opts, sub, linsolv_failed);
 }
 
+// ── Is a polished root one the dynamics can actually rest on? (issue #78) ────
+//
+// Seed stability and dynamical stability are different properties, and only the
+// second is what a caller asking for a steady state wants. The ladder's
+// agreement test asks whether REFINING THE SEED moves the root; near a
+// separatrix the trajectory slows to a crawl, so two successively tighter bursts
+// hand KINSOL near-identical seeds a few percent from the saddle, both polish to
+// it, and the two agree — the guard is satisfied precisely where it is needed.
+// The Gardner toggle at alpha_2 = 53.53 returns the saddle [28.245, 1.830] with
+// residual 2.8e-10 and converged=True, a state one part in 1e6 either side of
+// which runs away to a DIFFERENT attractor.
+//
+// What settles it is the Jacobian's spectrum at the root: a steady state the
+// system can occupy has every eigenvalue in the closed left half-plane.
+// `Undetermined` means the certificate could not answer (see the definition
+// below) and the root is then accepted exactly as it was before #78 — a guard
+// that cannot decide must not overturn behavior.
+enum class RootStability { Undetermined, Stable, Unstable };
+
+static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
+                                            const SteadyStateOptions &opts,
+                                            const ResidualSubspace &sub,
+                                            const std::vector<double> &y);
+
+// SteadyStateResult::root_stability spelling of a verdict.
+static const char *root_stability_name(RootStability s) {
+    switch (s) {
+    case RootStability::Stable:
+        return "stable";
+    case RootStability::Unstable:
+        return "unstable";
+    default:
+        return "undetermined";
+    }
+}
+
 static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadyStateRhs &rhs,
                                                   const SteadyStateOptions &opts,
                                                   const ResidualSubspace &sub) {
@@ -1025,10 +1090,26 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
                ss_state_is_physical(r.concentrations);
     };
 
+    // How many burst-seeded roots the stability certificate turned down, carried
+    // onto whatever this solve ends up returning (issue #78) — otherwise a
+    // rejection is invisible from the outside and the fallback to integration
+    // reads as an ordinary slow solve.
+    int n_rejected = 0;
+    auto finish = [&](SteadyStateResult r) {
+        r.n_unstable_roots_rejected = n_rejected;
+        return r;
+    };
+
     const double r0 = compute_residual(rhs, ic.data(), ns, sub);
 
     // IC already at steady state: a single Newton polish (which converges
     // immediately) reports the canonical "newton" without any integration.
+    //
+    // The certificate runs here but does NOT reject: the caller's own initial
+    // condition is the root, so integration would return the very same state and
+    // there is nothing else to fall back to. An unstable verdict is reported
+    // instead of acted on — "you handed me an equilibrium the system cannot sit
+    // on" is the useful answer, and it is one the caller could not previously get.
     if (r0 < opts.tol) {
         SteadyStateResult r;
         try {
@@ -1037,8 +1118,10 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
             r.converged = false;
         }
         if (accept(r)) {
+            r.root_stability = root_stability_name(
+                certify_root_stability(model, rhs, opts, sub, r.concentrations));
             restore();
-            return r;
+            return finish(std::move(r));
         }
     }
 
@@ -1060,6 +1143,13 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
     // the dominant cost of a solve that was always going to end in integration.
     bool newton_viable = true;
 
+    // The root the certificate last turned down (issue #78). While the
+    // trajectory is still creeping past a saddle, every rung's polish lands back
+    // on it; without this, each landing would pay for another eigen-decomposition
+    // to reach the same verdict.
+    std::vector<double> rejected_root;
+    bool have_rejected = false;
+
     std::vector<double> seed = ic;
     double bt = std::max(r0 * 0.1, opts.tol);
 
@@ -1079,14 +1169,14 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
         if (burst.residual < opts.tol) {
             // Integration itself reached the parity tolerance — done.
             restore();
-            return burst;
+            return finish(std::move(burst));
         }
         if (!burst.converged) {
             // Could not reach even this (looser) burst tolerance within max_time
             // (a slow/oscillatory system, or a residual floor above tol like
             // Barua 2013). Integration is the best available answer.
             restore();
-            return burst;
+            return finish(std::move(burst));
         }
 
         // Tier 2: Newton polish from the burst state. Accept only when a second
@@ -1109,12 +1199,34 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
                 newton_viable = false;
             }
             if (accept(nr)) {
-                if (have_prev && ss_states_agree(nr.concentrations, prev_newton, AGREE_RTOL)) {
-                    restore();
-                    return nr; // seed-stable root — accept
+                if (have_rejected &&
+                    ss_states_agree(nr.concentrations, rejected_root, AGREE_RTOL)) {
+                    // The root the certificate already turned down. Keep
+                    // integrating; do not re-certify and do not let it re-pair.
+                } else if (have_prev &&
+                           ss_states_agree(nr.concentrations, prev_newton, AGREE_RTOL)) {
+                    // Seed-stable. Is it a state the dynamics can rest on?
+                    const RootStability st =
+                        certify_root_stability(model, rhs, opts, sub, nr.concentrations);
+                    if (st == RootStability::Unstable) {
+                        // A saddle the trajectory is merely passing near. Discard
+                        // it and keep integrating: the burst leaves the saddle's
+                        // neighborhood on its own, and a later rung polishes the
+                        // attractor the system actually reaches (issue #78).
+                        ++n_rejected;
+                        rejected_root = nr.concentrations;
+                        have_rejected = true;
+                        prev_newton.clear();
+                        have_prev = false;
+                    } else {
+                        nr.root_stability = root_stability_name(st);
+                        restore();
+                        return finish(std::move(nr)); // seed-stable and dynamically stable
+                    }
+                } else {
+                    prev_newton = nr.concentrations;
+                    have_prev = true;
                 }
-                prev_newton = nr.concentrations;
-                have_prev = true;
             }
         }
 
@@ -1129,7 +1241,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
     const bool fin_converged = marcher.march(opts.tol, &fin_residual);
     SteadyStateResult fin = marcher.make_result(fin_converged, fin_residual);
     restore();
-    return fin;
+    return finish(std::move(fin));
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,6 +1383,197 @@ static double state_probe_scale(const double *y, int ns, const std::vector<int> 
     return scale > 0.0 ? scale : 1.0;
 }
 
+// ---------------------------------------------------------------------------
+// The Jacobian at a state, and its restriction to the unknown subspace
+// ---------------------------------------------------------------------------
+
+// Dense column-major J (ns×ns) at `y`: closed form when the model has one, else
+// one-sided finite differences (one RHS evaluation per column). Returns the
+// SteadyStateResult::sens_jacobian_source spelling of which ran.
+//
+// Shared by dY_ss/dp and the stability certificate (issue #78) so the two read
+// the SAME matrix. Left as its own function rather than inlined twice: an FD
+// step rule that exists at two sites is a rule that will be improved at one of
+// them (the ∂f/∂p probes needed three passes — #63, #76, #123 — to get right).
+static const char *ss_fill_state_jacobian(SteadyStateRhs &rhs, const double *y, int ns,
+                                          const ResidualSubspace &sub, bool want_analytical,
+                                          double *J) {
+    if (want_analytical && rhs.has_analytical_jacobian()) {
+        rhs.fill_dense_jacobian(0.0, y, J);
+        return rhs.jacobian_source();
+    }
+    // J[:,j] = (f(y + h·e_j) − f(y)) / h.
+    std::vector<double> f0(ns), f1(ns), y_pert(ns);
+    const double y_scale = state_probe_scale(y, ns, sub.excluded);
+    rhs.eval(0.0, y, f0.data());
+    for (int j = 0; j < ns; ++j) {
+        std::memcpy(y_pert.data(), y, static_cast<size_t>(ns) * sizeof(double));
+        const double h = fd_probe(y[j], state_fd_step(y[j], y_scale), &y_pert[j]);
+        rhs.eval(0.0, y_pert.data(), f1.data());
+        for (int i = 0; i < ns; ++i) {
+            J[static_cast<size_t>(j) * ns + i] = (f1[i] - f0[i]) / h; // column-major
+        }
+    }
+    return "finite-difference";
+}
+
+// Restrict the full column-major J to the unknown species `idx`, projecting the
+// dependent species out through the conservation-law reconstruction:
+//
+//   J_red[i][j] = ∂f_{idx_i}/∂y_{idx_j}
+//               = J[idx_i][idx_j] + Σ_k J[idx_i][dep_k] · D[k][j]
+//
+// where D[k][j] = ∂y_{dep_k}/∂y_{idx_j} is exactly what differentiating
+// reconstruct_full() gives. That is the chain rule an older comment here
+// described and then abandoned ("for simplicity and robustness, use FD on the
+// reduced residual directly"); with a closed-form J to project it is both exact
+// and cheaper — the FD sweep cost n_ind more RHS evaluations on top of the ns
+// that had already built a full J the reduced path then never looked at.
+//
+// D follows reconstruct_full()'s ordering: law k solves for its dependent from
+// every OTHER species, so it sees the dependents of laws k' < k already updated
+// (derivative D[k'][j]) and those of laws k' > k still at their unperturbed
+// values (derivative 0). A degenerate law (|L[k,dep]| below the reconstruction
+// floor) is skipped there, so its row stays 0. With no laws this is a plain
+// submatrix, which is what a mask-only restriction wants.
+static void ss_reduce_jacobian(const double *J, int ns, const ConservationLaws &cl,
+                               const std::vector<int> &idx, std::vector<double> &J_red) {
+    const int n_ind = static_cast<int>(idx.size());
+    std::vector<double> D(static_cast<size_t>(cl.n_laws) * n_ind, 0.0);
+    for (int k = 0; k < cl.n_laws; ++k) {
+        const int dep = cl.dependent[k];
+        const double coeff_dep = cl.coefficients[k][dep];
+        if (std::abs(coeff_dep) < 1e-15)
+            continue; // degenerate — reconstruct_full skips it too
+        double *Dk = D.data() + static_cast<size_t>(k) * n_ind;
+        for (int j = 0; j < n_ind; ++j) {
+            // i = idx_j contributes L[k][idx_j]·1; every other independent
+            // contributes 0.
+            double acc = cl.coefficients[k][idx[j]];
+            // i = dep_{k'} for k' < k contributes L[k][dep_k']·D[k'][j].
+            for (int kp = 0; kp < k; ++kp) {
+                const int dep_p = cl.dependent[kp];
+                if (dep_p == dep)
+                    continue; // excluded by the i ≠ dep sum
+                acc += cl.coefficients[k][dep_p] * D[static_cast<size_t>(kp) * n_ind + j];
+            }
+            Dk[j] = -acc / coeff_dep;
+        }
+    }
+
+    J_red.assign(static_cast<size_t>(n_ind) * n_ind, 0.0);
+    for (int j = 0; j < n_ind; ++j) {
+        double *col = J_red.data() + static_cast<size_t>(j) * n_ind; // column-major
+        const double *Jcol_ind = J + static_cast<size_t>(idx[j]) * ns;
+        for (int i = 0; i < n_ind; ++i) {
+            col[i] = Jcol_ind[idx[i]];
+        }
+        for (int k = 0; k < cl.n_laws; ++k) {
+            const double d = D[static_cast<size_t>(k) * n_ind + j];
+            if (d == 0.0)
+                continue;
+            const double *Jcol_dep = J + static_cast<size_t>(cl.dependent[k]) * ns;
+            for (int i = 0; i < n_ind; ++i) {
+                col[i] += Jcol_dep[idx[i]] * d;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Linear-stability certificate at a Newton root (issue #78)
+// ---------------------------------------------------------------------------
+
+// How far right of the imaginary axis an eigenvalue has to be, RELATIVE to the
+// spectral radius, before the root is called unstable.
+//
+// The two populations are nowhere near each other, so this is picked from a gap
+// rather than tuned. Over the 585-model ode_fullnet corpus every root the
+// two-tier solver accepts has max Re(λ)/max|λ| ≤ 3.4e-17 — the zero eigenvalues
+// of a conserved system, at roundoff — while the Gardner saddle this issue
+// reports sits at +0.169. The floor under the threshold is this file's own
+// eigensolver: cross-checked against LAPACK on ~1,000 corpus Jacobians its
+// max Re(λ) agrees to 1.1e-8 of the spectral radius in the worst case (a
+// defective eigenvalue, where eps^(1/m) accuracy is all any method has), so
+// 1e-6 clears the measured error by a hundredfold and the observed instability
+// by five decades. Erring low would cost only speed — a rejected root falls back
+// to integration, which is the correct answer either way.
+static constexpr double kStabilityRelTol = 1e-6;
+
+// Above this many unknowns the certificate declines rather than pay for the
+// spectrum. The eigen-decomposition is O(n³) and unblocked: 0.05 s at n=256 and
+// 0.68 s at n=512 on a dense matrix, less on the structurally sparse Jacobians
+// this corpus has (0.05 s at 356 unknowns, 0.26 s at 624, 2.1 s at 1281 —
+// against KINSOL solves of 0.15 s, 0.55 s and 15.2 s on the same models). 512
+// bounds the worst case under a second and still covers all but 8 of the
+// 585-model corpus. A declined root is reported as "undetermined" and accepted,
+// exactly as before #78 — the limit is visible on the result rather than silent.
+static constexpr int kStabilitySpectrumMaxN = 512;
+
+static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs &rhs,
+                                            const SteadyStateOptions &opts,
+                                            const ResidualSubspace &sub,
+                                            const std::vector<double> &y) {
+    const int ns = model.n_species();
+    if (ns <= 0 || static_cast<int>(y.size()) != ns)
+        return RootStability::Undetermined;
+
+    // The unknown subspace the polish solved on — the same set, for the same
+    // reasons (see ss_unknown_species). It has to be this matrix and not the full
+    // one when a mask is in play: a species the caller excluded was held fixed
+    // during the solve, so its equation is not part of the dynamics that decides
+    // whether THIS root is an attractor. With conservation laws the two agree
+    // anyway (range(J) ⊆ ker(L) makes the full spectrum the reduced one plus a
+    // zero per law), but the reduced form says so exactly instead of relying on
+    // the threshold to ignore those zeros.
+    const auto &cl = model.conservation_laws();
+    const bool use_reduced = !cl.empty() || sub.masked;
+    std::vector<int> idx;
+    if (use_reduced) {
+        idx = ss_unknown_species(model, cl, sub);
+        if (idx.empty())
+            return RootStability::Undetermined; // every species pinned; no dynamics left
+    }
+    const int n = use_reduced ? static_cast<int>(idx.size()) : ns;
+    if (n > kStabilitySpectrumMaxN)
+        return RootStability::Undetermined;
+
+    // The analytical fill takes its observables from `y`, but the FD fallback
+    // runs the RHS, so put the model on the root first and hand it back after.
+    // The ns×ns buffer is the same one dY_ss/dp assembles for the same matrix.
+    std::vector<double> saved(ns);
+    model.get_state_into(saved.data());
+    model.set_state_from(y.data());
+    std::vector<double> J(static_cast<size_t>(ns) * ns, 0.0);
+    const bool want_analytical = (opts.jacobian == "auto" || opts.jacobian == "analytical");
+    ss_fill_state_jacobian(rhs, y.data(), ns, sub, want_analytical, J.data());
+    model.set_state_from(saved.data());
+
+    std::vector<double> M;
+    if (use_reduced) {
+        ss_reduce_jacobian(J.data(), ns, cl, idx, M);
+    } else {
+        M = std::move(J);
+    }
+
+    std::vector<double> wr(static_cast<size_t>(n)), wi(static_cast<size_t>(n));
+    if (!dense_eigenvalues(M.data(), n, wr.data(), wi.data()))
+        return RootStability::Undetermined;
+
+    double max_re = -std::numeric_limits<double>::infinity();
+    double radius = 0.0;
+    for (int i = 0; i < n; ++i) {
+        max_re = std::max(max_re, wr[i]);
+        radius = std::max(radius, std::hypot(wr[i], wi[i]));
+    }
+    if (!(radius > 0.0)) {
+        // Every eigenvalue is zero: the linearization says nothing at all about
+        // this root (a fully degenerate system, or one the mask emptied).
+        return RootStability::Undetermined;
+    }
+    return (max_re > kStabilityRelTol * radius) ? RootStability::Unstable : RootStability::Stable;
+}
+
 // dY_ss/dp = -J⁻¹·(∂f/∂p) by the implicit function theorem.
 //
 // Both factors prefer closed form and fall back to differencing (issue #63):
@@ -1331,7 +1634,7 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 
     // ── Step 1: dense Jacobian J at y_ss, column-major (J[j*ns+i] = ∂f_i/∂x_j) ──
     std::vector<double> J(static_cast<size_t>(ns) * ns, 0.0);
-    std::vector<double> f0(ns), f1(ns), y_pert(ns);
+    std::vector<double> f0(ns), f1(ns);
 
     // jacobian="fd" pins the finite-difference assembly, the same escape hatch it
     // is everywhere else in the library (and the A/B lever for checking the
@@ -1339,23 +1642,8 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     // steady-state analogue — there is no Python callback plumbed through here —
     // so it also takes the FD path rather than pretending otherwise.
     const bool want_analytical_jac = (opts_jacobian == "auto" || opts_jacobian == "analytical");
-    result.sens_jacobian_source = want_analytical_jac ? rhs.jacobian_source() : "finite-difference";
-    if (want_analytical_jac && rhs.has_analytical_jacobian()) {
-        rhs.fill_dense_jacobian(0.0, y_ss, J.data());
-    } else {
-        // Finite differences: works for every rate-law type, at the cost of one
-        // RHS evaluation per column. J[:,j] = (f(y + h·e_j) − f(y)) / h.
-        const double y_scale = state_probe_scale(y_ss, ns, sub.excluded);
-        rhs.eval(0.0, y_ss, f0.data());
-        for (int j = 0; j < ns; ++j) {
-            std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-            const double h = fd_probe(y_ss[j], state_fd_step(y_ss[j], y_scale), &y_pert[j]);
-            rhs.eval(0.0, y_pert.data(), f1.data());
-            for (int i = 0; i < ns; ++i) {
-                J[static_cast<size_t>(j) * ns + i] = (f1[i] - f0[i]) / h; // column-major
-            }
-        }
-    }
+    result.sens_jacobian_source =
+        ss_fill_state_jacobian(rhs, y_ss, ns, sub, want_analytical_jac, J.data());
 
     // ── Step 2: ∂f/∂p for each sensitivity parameter ──────────────────────────
     std::vector<double> dfdp(static_cast<size_t>(ns) * np, 0.0); // column-major: dfdp[p*ns+i]
@@ -1447,32 +1735,15 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     if (!cl.empty() || sub.masked) {
         // Reduced-space sensitivity solve.
         //
-        // `solve_idx` is the unknown set: the conservation-law independents,
-        // narrowed to the species the mask kept (issue #74). A mask with no
-        // conservation laws lands here too, with every law loop below a no-op —
-        // one code path for "some species are not unknowns", mirroring
-        // solve_by_newton.
-        // `fixed` species are dropped from the restricted forms for the same
-        // reason as in solve_by_newton — a zeroed derivative is a zero row — and
-        // their dY_ss/dp is genuinely 0: a boundary condition does not move with
-        // a rate constant. Their rows stay 0 rather than NaN, since it is the
-        // mask, not fixedness, that means "no answer". The unmasked branch keeps
-        // cl.independent verbatim, exactly as before #74.
-        std::vector<int> solve_idx;
-        if (cl.empty()) {
-            for (int i : sub.included) {
-                if (!model.species()[i].fixed)
-                    solve_idx.push_back(i);
-            }
-        } else if (sub.masked) {
-            solve_idx.reserve(cl.independent.size());
-            for (int i : cl.independent) {
-                if (sub.includes(i) && !model.species()[i].fixed)
-                    solve_idx.push_back(i);
-            }
-        } else {
-            solve_idx = cl.independent;
-        }
+        // `solve_idx` is the unknown set (ss_unknown_species): the
+        // conservation-law independents, narrowed to the species the mask kept
+        // (issue #74), minus the `fixed` ones. A mask with no conservation laws
+        // lands here too, with every law loop below a no-op — one code path for
+        // "some species are not unknowns", mirroring solve_by_newton.
+        // A fixed species' dY_ss/dp is genuinely 0 — a boundary condition does not
+        // move with a rate constant — so its row stays 0 rather than NaN: it is
+        // the mask, not fixedness, that means "no answer".
+        std::vector<int> solve_idx = ss_unknown_species(model, cl, sub);
         if (solve_idx.empty()) {
             // Nothing left to differentiate (every included species is pinned by
             // a law). Report NaN rather than a zero matrix a fitter would read as
@@ -1483,65 +1754,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         }
         const int n_ind = static_cast<int>(solve_idx.size());
 
-        // Build the reduced Jacobian J_red (n_ind × n_ind) by projecting the full
-        // J through the conservation-law reconstruction, rather than running a
-        // SECOND finite-difference sweep over the reduced residual:
-        //
-        //   J_red[i][j] = ∂f_{ind_i}/∂y_{ind_j}
-        //               = J[ind_i][ind_j] + Σ_k J[ind_i][dep_k] · D[k][j]
-        //
-        // where D[k][j] = ∂y_{dep_k}/∂y_{ind_j} is exactly what differentiating
-        // reconstruct_full() gives. That is the chain rule the old comment here
-        // described and then abandoned ("for simplicity and robustness, use FD on
-        // the reduced residual directly"); with a closed-form J to project it is
-        // both exact and cheaper — the FD sweep cost n_ind more RHS evaluations
-        // on top of the ns that had already built a full J the reduced path then
-        // never looked at.
-        //
-        // D follows reconstruct_full()'s ordering: law k solves for its dependent
-        // from every OTHER species, so it sees the dependents of laws k' < k
-        // already updated (derivative D[k'][j]) and those of laws k' > k still at
-        // their unperturbed values (derivative 0). A degenerate law (|L[k,dep]|
-        // below the reconstruction floor) is skipped there, so its row stays 0.
-        std::vector<double> D(static_cast<size_t>(cl.n_laws) * n_ind, 0.0);
-        for (int k = 0; k < cl.n_laws; ++k) {
-            const int dep = cl.dependent[k];
-            const double coeff_dep = cl.coefficients[k][dep];
-            if (std::abs(coeff_dep) < 1e-15)
-                continue; // degenerate — reconstruct_full skips it too
-            double *Dk = D.data() + static_cast<size_t>(k) * n_ind;
-            for (int j = 0; j < n_ind; ++j) {
-                // i = ind_j contributes L[k][ind_j]·1; every other independent
-                // contributes 0.
-                double acc = cl.coefficients[k][solve_idx[j]];
-                // i = dep_{k'} for k' < k contributes L[k][dep_k']·D[k'][j].
-                for (int kp = 0; kp < k; ++kp) {
-                    const int dep_p = cl.dependent[kp];
-                    if (dep_p == dep)
-                        continue; // excluded by the i ≠ dep sum
-                    acc += cl.coefficients[k][dep_p] * D[static_cast<size_t>(kp) * n_ind + j];
-                }
-                Dk[j] = -acc / coeff_dep;
-            }
-        }
-
-        std::vector<double> J_red(static_cast<size_t>(n_ind) * n_ind, 0.0);
-        for (int j = 0; j < n_ind; ++j) {
-            double *col = J_red.data() + static_cast<size_t>(j) * n_ind; // column-major
-            const double *Jcol_ind = J.data() + static_cast<size_t>(solve_idx[j]) * ns;
-            for (int i = 0; i < n_ind; ++i) {
-                col[i] = Jcol_ind[solve_idx[i]];
-            }
-            for (int k = 0; k < cl.n_laws; ++k) {
-                const double d = D[static_cast<size_t>(k) * n_ind + j];
-                if (d == 0.0)
-                    continue;
-                const double *Jcol_dep = J.data() + static_cast<size_t>(cl.dependent[k]) * ns;
-                for (int i = 0; i < n_ind; ++i) {
-                    col[i] += Jcol_dep[solve_idx[i]] * d;
-                }
-            }
-        }
+        // The reduced Jacobian (n_ind × n_ind), projected through the
+        // conservation-law reconstruction — see ss_reduce_jacobian, which the
+        // stability certificate shares.
+        std::vector<double> J_red;
+        ss_reduce_jacobian(J.data(), ns, cl, solve_idx, J_red);
 
         // Build reduced df/dp
         std::vector<double> dfdp_red(n_ind * np, 0.0);

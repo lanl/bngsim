@@ -2035,6 +2035,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("n_residual_species", &bngsim::SteadyStateResult::n_residual_species)
         .def_readonly("excluded_species", &bngsim::SteadyStateResult::excluded_species)
         .def_readonly("unconverged_pure_sinks", &bngsim::SteadyStateResult::unconverged_pure_sinks)
+        // Issue #78 — can the system rest on the returned root, and how many
+        // candidate roots were discarded because it cannot.
+        .def_readonly("root_stability", &bngsim::SteadyStateResult::root_stability)
+        .def_readonly("n_unstable_roots_rejected",
+                      &bngsim::SteadyStateResult::n_unstable_roots_rejected)
         .def_readonly("n_sens_params", &bngsim::SteadyStateResult::n_sens_params)
         .def_readonly("sens_param_names", &bngsim::SteadyStateResult::sens_param_names)
         // Issue #63 — which numerical path actually ran, so a caller can tell an

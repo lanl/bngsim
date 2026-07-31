@@ -19,6 +19,11 @@ add_executable(test_lapack_dense_linsol test_lapack_dense_linsol.cpp)
 target_link_libraries(test_lapack_dense_linsol PRIVATE bngsim)
 add_test(NAME lapack_dense_linsol_test COMMAND test_lapack_dense_linsol)
 
+# ─── Dense eigenvalues for the stability certificate (issue #78) ─────────────
+add_executable(test_dense_eigenvalues test_dense_eigenvalues.cpp)
+target_link_libraries(test_dense_eigenvalues PRIVATE bngsim)
+add_test(NAME dense_eigenvalues_test COMMAND test_dense_eigenvalues)
+
 # ─── C API tests (Session 61, NEXT_STEPS P3) ────────────────────────────────
 # test_c_api reads its model from argv[1] (a .net path) rather than a
 # TEST_DATA_DIR compile define, and exits non-zero if given none. Register it

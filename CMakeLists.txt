@@ -648,6 +648,7 @@ set(BNGSIM_SOURCES
     src/result.cpp
     src/bngsim_api.cpp
     src/steady_state.cpp
+    src/dense_eigenvalues.cpp
     src/lapack_dense_linsol.cpp
 )
 
