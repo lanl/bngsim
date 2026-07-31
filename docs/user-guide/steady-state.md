@@ -256,6 +256,16 @@ Both factors are taken in closed form where the model supports it:
   (`abs`/`min`/`max`/`floor`/`ceil`/`round`); for those the factor is still
   finite-differenced — with a warning, and `ss.sens_dfdp_source` says so.
 
+Where a factor *is* differenced, the one-sided step is **relative** to what it
+perturbs (issue #76): `sqrt(eps)·|p|` for a parameter, and `sqrt(eps)·max(|y_j|,
+max|y|)` for a species — floored at the state's own magnitude, so a species at
+zero still gets a probe on the scale of the model it belongs to. Before #76 both
+were floored at an absolute `sqrt(eps)`, which is a small probe only for a
+quantity of order 1: a rate constant of 1e-9 was moved by 1500% of itself, and a
+model carrying molecule counts was probed at 1e-14 of its state. Neither step is
+tunable — a model whose gradient depends on the step size wants the analytical
+`∂f/∂p`, which is what the refusal below is for.
+
 Because the analytical `∂f/∂p` comes from codegen, `sensitivity_params` **requires
 code generation**, exactly as `Simulator(..., sensitivity_params=...)` and
 `compute_all_sensitivities()` do since GH #214: a request that cannot get one is

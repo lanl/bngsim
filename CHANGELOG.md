@@ -733,6 +733,87 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **The steady-state finite-difference probes are relative to what they perturb
+  (issue #76).** `dY_ss/dp = -J⁻¹·(∂f/∂p)` differences either factor when no
+  closed form is available, and both probes sized their step as
+  `eps·max(|x|, 1)` with `eps = sqrt(machine eps)` = 1.49e-8. The floor is there
+  to survive `x == 0`, but it also overrides the relative step for everything
+  smaller than 1, and then the probe is no longer small compared with what it
+  perturbs. On `ode/before_bunching`, whose `KD` is 1e-9 and whose forward rate
+  constant is derived as `kon/KD`, the probe was **1500% of the parameter** — it
+  drags `kf` from 1.0 to 0.063, so the difference quotient is a secant across a
+  decade and a half of the rate law's curvature rather than a derivative:
+
+  | `max abs dY_ss/dKD` on `before_bunching` | |
+  |---|---|
+  | formula, shipped step | 6.754783e+10 |
+  | formula, relative step | 1.074089e+12 |
+  | truth, re-solved central difference at `h/p` = 1e-3 / 1e-4 / 1e-5 | 1.074089e+12 / 1.074089e+12 / 1.074091e+12 |
+
+  **15.9x low**, against a reference stable to 6 significant figures across three
+  step sizes. Each probe is now relative:
+
+  - **parameters** — `eps·|p|`, falling back to the old absolute step only for a
+    parameter that is exactly zero (no scale of its own) or subnormal (no
+    relative step survives the addition). Parameters have no common unit, so
+    `|p|` is the only scale the model offers, which is also why nothing better
+    than 1.0 is available for the zero case.
+  - **species** — `eps·max(|y_j|, max|y|)`, i.e. relative to the species but
+    floored at the state's own magnitude rather than at 1.0. Unlike parameters,
+    every species is a concentration in one unit, so the state *has* a typical
+    scale to probe a zero species against. The absolute floor was wrong in both
+    directions here: a nanomolar model was probed at 1 molar, and a model in
+    molecule counts (~1e6) was probed at 1e-14 of its own state, which is
+    cancellation noise rather than a derivative. The scale skips species a
+    `mask=` excluded (issue #74) — a write-only accumulator holds whatever
+    integration left it at and would otherwise set the scale for everyone else.
+
+  Both quotients now also divide by the step the write actually realized,
+  `(x + h) - x`, rather than the one requested.
+
+  **Blast radius.** The finite-difference `∂f/∂p` is reachable from
+  `Simulator.steady_state(sensitivity_params=…)` only when codegen emits no
+  `bngsim_codegen_sens_rhs` for the model — since #67/#89 that is Michaelis-Menten
+  and Functional laws carrying a condition or a non-smooth builtin, **41 of the
+  585 `ode_fullnet` models**. **15** of those 41 also carry a parameter the floor
+  probes at more than 0.1% of its value, with ratios up to 1.27e30
+  (`ode/AVdyn6`'s `epsilon` = 1.18e-38). Driving `find_steady_state` directly
+  without a codegen artifact — which is how the repo's own tests reach the
+  fallback, and how `before_bunching` was found — exposes any of the **267**
+  corpus models carrying such a parameter. The species probe is reachable
+  wherever the model has no complete analytical Jacobian, and through
+  `jacobian="fd"` everywhere.
+
+  **Corpus A/B.** Every corpus model was solved twice at the same root, once
+  with the compiled `∂f/∂p` and once forced onto the fallback, over the four
+  smallest parameters plus the largest as a control — 1,201 columns over 358
+  models that converge and have an analytical `∂f/∂p` to be scored against. Of
+  the 850 columns where the step rule changes at all (`|p| < 1`) and the
+  sensitivity system is not itself degenerate (`sens_jacobian_rcond > 1e-8`),
+  scored against the *model's* sensitivity scale rather than the column's own:
+
+  | | before | after |
+  |---|---|---|
+  | columns wrong by > 1e-3 | 103 | **57** |
+  | columns wrong by > 1e-1 | 70 | **42** |
+  | crossing 1e-3 | — | 51 fixed, 5 broken |
+  | crossing 1e-1 | — | 39 fixed, 11 broken |
+
+  The 278 `|p| >= 1` control columns move by at most 2.2e-9 (the realized-step
+  rounding), which is what confirms the change is confined to where the step
+  differs. The largest single class of fixes is compartment volumes: 37 columns
+  over 35 models — `Vcyt`, `V`, `Vecf` at 1e-12 — were **100% wrong** (the probe
+  is 15,000x the parameter) and now land within 1e-5.
+
+  The regressions are the opposite failure mode, and they are real: where a
+  parameter's own term is a tiny fraction of the RHS component it sits in, a
+  probe relative to the parameter can move `f` by less than its own roundoff,
+  where the old wide step did not. The five columns that cross 1e-3 the wrong way
+  are of that kind (`FceRI_viz`'s `kp1 = 1.7e-6`, `4.2e-07 -> 5.0e-01`, is the
+  worst). Fixing that needs a step chosen from the *response* rather than from
+  the parameter alone, which is a separate piece of work — filed as its own
+  issue rather than folded in here.
+
 - **Steady-state observable sensitivities carry the amount-valued volume factor
   (issue #119).** `compute_ss_output_sensitivity` projected `dY_ss/dp` onto the
   observables with the bare `GroupEntry::factor`. Every other site that touches

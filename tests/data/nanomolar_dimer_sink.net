@@ -1,0 +1,39 @@
+# nanomolar_dimer.net plus a write-only accumulator, for the issue #76 x #74
+# interaction: the species probe is floored at the state's own magnitude, and a
+# masked-out species must not be allowed to set it.
+#
+#   A + A <-> B     as in nanomolar_dimer.net — A* = 1e-9, B* = 2.5e-10, and the
+#                   same closed-form gradients (S and Ad enter neither balance)
+#   $S -> Ad        Ad is a PURE SINK: produced, consumed by nothing, read by no
+#                   other species' derivative. dAd/dt = kacc*[S] = 1e-6 forever,
+#                   so ||f||_2/n has a floor above tol and the solve converges
+#                   only once Ad is masked out of the convergence test (#74).
+#                   $S is clamped, and nanomolar like the rest of the state so
+#                   that Ad is the only thing offering a different scale.
+#
+# Ad starts at 1e3 rather than 0 so the scale it would contribute does not depend
+# on how long the solve integrated. Over every species that is 1e3; over the
+# species that have a steady value it is 1e-9. A probe floored at the former is
+# 1.49e-5, i.e. 1.5e4 times A* — the very failure #76 is about, reintroduced by
+# a species that is not part of the problem being solved.
+begin parameters
+    1 kdim  2.0e18  # Constant
+    2 kdis  4.0e9   # Constant
+    3 kacc  1.0e3   # Constant
+end parameters
+begin species
+    1 A()  1.5e-9
+    2 B()  0.0
+    3 $S() 1.0e-9
+    4 Ad() 1.0e3
+end species
+begin reactions
+    1 1,1 2   0.5*kdim  #_Rdim
+    2 2   1,1 kdis      #_Rdis
+    3 3   4   kacc      #_Racc
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+    3 Ad_tot 4
+end groups

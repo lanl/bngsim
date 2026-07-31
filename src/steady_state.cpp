@@ -1136,6 +1136,86 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
 // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
 // ---------------------------------------------------------------------------
 
+// √(machine eps): the standard one-sided difference-quotient fraction, where the
+// O(h) truncation error and the O(eps/h) cancellation error meet.
+static constexpr double kFdEps = 1.4901161193847656e-8;
+
+// One-sided step for probing a PARAMETER of value p (issue #76).
+//
+// Relative to the parameter itself, because the step has to stay inside the
+// region where the rate law is locally linear in p and |p| is the only scale
+// the model offers for that. What this replaced, `eps * max(|p|, 1)`, floored
+// the step at an absolute sqrt(eps) — a small probe only for a parameter of
+// order 1. `ode/before_bunching` carries KD = 1e-9, so the probe was 1500% of
+// it, the difference quotient was a secant across a decade and a half of the
+// rate law's curvature, and dY_ss/dKD came back 15.9x low. A parameter of
+// exactly zero has no scale of its own; 1.0 is what the old floor used and
+// there is nothing better to be had.
+//
+// The price is the other end of the tradeoff: where the parameter's own term is
+// a tiny fraction of the RHS component it sits in, a step this small can lose
+// the response to cancellation where the old wide step did not. Scored against
+// the analytical ∂f/∂p over 850 corpus columns, the relative step is well ahead
+// on balance — columns wrong by >1e-3 fall 103 -> 57, and 51 cross that line the
+// right way against 5 the wrong way — but the 5 are real, and closing them needs
+// a step chosen from the measured response rather than from |p| alone.
+static inline double param_fd_step(double p) { return kFdEps * (p != 0.0 ? std::abs(p) : 1.0); }
+
+// One-sided step for probing SPECIES j of a state whose largest concentration
+// is `y_scale`.
+//
+// Relative to the species, floored at the scale of the state it belongs to
+// rather than at 1.0 — unlike parameters, which have no common unit, every
+// species is a concentration in the same one, so the state HAS a typical
+// magnitude and a species at (or near) zero can be probed against it. The
+// absolute 1.0 was wrong in both directions: a nanomolar model was probed at
+// 1 molar, and a model in molecule counts (1e6) was probed at 1e-14 of itself,
+// which is cancellation noise rather than a derivative. Scored against the
+// analytical Jacobian over 1,066 corpus model-states, this rule beats both the
+// old one (511 better vs 54 worse, at 10x) and the floor-free relative step
+// (291 vs 13) — the floor is what a species far below the state's scale needs
+// to stay out of the cancellation noise.
+static inline double state_fd_step(double y, double y_scale) {
+    return kFdEps * std::max(std::abs(y), y_scale);
+}
+
+// The perturbed value to write (`*x_plus`) for a probe of `x` by `h`, and the
+// step the difference quotient must divide by — the REALIZED `(x + h) - x`,
+// which differs from the requested h by a rounding. For a subnormal x no
+// relative step survives the addition at all; dividing by that zero would fill
+// the column with infinities, so fall back to the absolute step the old rule
+// used (exact for a rate law linear in x, and nothing better exists at 1e-310).
+static inline double fd_probe(double x, double h, double *x_plus) {
+    double xp = x + h;
+    if (xp == x) {
+        xp = x + kFdEps;
+    }
+    *x_plus = xp;
+    return xp - x;
+}
+
+// The state's own magnitude, which `state_fd_step` floors its probe at.
+//
+// Over the species that HAVE a steady value only. A species the caller masked
+// out (issue #74) is a write-only accumulator holding whatever integration left
+// it at — a quantity that grows without bound, 7.5e8 on Barua 2013 while the
+// other 405 species are settled at 1e-10 — and letting it set the scale would
+// drag every other species' probe up with it. `excluded` is ascending, as both
+// callers' sources guarantee. An all-zero state offers no scale at all, so it
+// keeps the historical 1.0.
+static double state_probe_scale(const double *y, int ns, const std::vector<int> &excluded) {
+    double scale = 0.0;
+    size_t e = 0;
+    for (int i = 0; i < ns; ++i) {
+        if (e < excluded.size() && excluded[e] == i) {
+            ++e;
+            continue;
+        }
+        scale = std::max(scale, std::abs(y[i]));
+    }
+    return scale > 0.0 ? scale : 1.0;
+}
+
 // dY_ss/dp = -J⁻¹·(∂f/∂p) by the implicit function theorem.
 //
 // Both factors prefer closed form and fall back to differencing (issue #63):
@@ -1197,7 +1277,6 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     // ── Step 1: dense Jacobian J at y_ss, column-major (J[j*ns+i] = ∂f_i/∂x_j) ──
     std::vector<double> J(static_cast<size_t>(ns) * ns, 0.0);
     std::vector<double> f0(ns), f1(ns), y_pert(ns);
-    const double eps = 1.4901161193847656e-8; // sqrt(machine eps)
 
     // jacobian="fd" pins the finite-difference assembly, the same escape hatch it
     // is everywhere else in the library (and the A/B lever for checking the
@@ -1211,11 +1290,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
     } else {
         // Finite differences: works for every rate-law type, at the cost of one
         // RHS evaluation per column. J[:,j] = (f(y + h·e_j) − f(y)) / h.
+        const double y_scale = state_probe_scale(y_ss, ns, sub.excluded);
         rhs.eval(0.0, y_ss, f0.data());
         for (int j = 0; j < ns; ++j) {
             std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-            double h = eps * std::max(std::abs(y_ss[j]), 1.0);
-            y_pert[j] += h;
+            const double h = fd_probe(y_ss[j], state_fd_step(y_ss[j], y_scale), &y_pert[j]);
             rhs.eval(0.0, y_pert.data(), f1.data());
             for (int i = 0; i < ns; ++i) {
                 J[static_cast<size_t>(j) * ns + i] = (f1[i] - f0[i]) / h; // column-major
@@ -1243,11 +1322,12 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         for (int p = 0; p < np; ++p) {
             int pi = pidx[p];
             double pval = params[pi].value;
-            double h = eps * std::max(std::abs(pval), 1.0);
+            double p_plus = 0.0;
+            const double h = fd_probe(pval, param_fd_step(pval), &p_plus);
 
             // Perturb parameter, holding it against re-derivation so a probe of a
             // derived parameter is not immediately undone.
-            const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+            const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
             rhs.sync_params(pi);
             rhs.eval(0.0, y_ss, f1.data());
 
@@ -1589,7 +1669,6 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
     // ── Functions: compiled chain rule, differenced where it declines ─────────
     if (n_func > 0) {
         result.function_sensitivity.assign(static_cast<size_t>(n_func) * np, 0.0);
-        const double eps = 1.4901161193847656e-8; // sqrt(machine eps)
         const double nan = std::numeric_limits<double>::quiet_NaN();
 
         // param_names[p] was validated to exist by compute_ss_sensitivity, which
@@ -1693,10 +1772,10 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one
             // species, re-evaluate observables + functions), folded into
             // Σ_i (∂func_m/∂x_i)·dY_ss_i/dp as each species column is produced.
+            const double y_scale = state_probe_scale(y_ss, ns, result.excluded_species);
             for (int i = 0; i < ns; ++i) {
                 std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-                const double h = eps * std::max(std::abs(y_ss[i]), 1.0);
-                y_pert[i] += h;
+                const double h = fd_probe(y_ss[i], state_fd_step(y_ss[i], y_scale), &y_pert[i]);
                 model.update_observables(y_pert.data());
                 model.evaluate_functions(0.0);
                 f1 = model.function_value_cache();
@@ -1724,10 +1803,11 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
                     continue;
                 }
                 const double pval = params[pi].value;
-                const double h = eps * std::max(std::abs(pval), 1.0);
+                double p_plus = 0.0;
+                const double h = fd_probe(pval, param_fd_step(pval), &p_plus);
                 // Perturb, re-deriving every expression parameter but the probed
                 // one.
-                const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+                const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
                 rhs.sync_params(pi);
                 model.update_observables(y_ss);
                 model.evaluate_functions(0.0);
