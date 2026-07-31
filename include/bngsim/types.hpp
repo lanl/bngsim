@@ -796,8 +796,9 @@ struct SensitivityOptions {
 // termination on the BNG2.pl parity criterion ||f(y)||_2 / n_species < tol
 // (run_network -c). method "newton" runs the two-tier integrate-first solver
 // (GH #27): the same CVODE burst carries the state into the physical root's
-// basin, then a KINSOL Newton polish is accepted only once it is seed-stable,
-// else integration continues — so "newton" is "integration" plus a polish that
+// basin, then a KINSOL Newton polish is accepted only once it is seed-stable
+// AND linearly stable (issue #78), else integration continues — so "newton" is
+// "integration" plus a polish (on KINSOL's own difference-quotient Jacobian) that
 // GH #28 measured at 1.4-3.9x the wall clock across six published models. What
 // it buys for that is a far tighter root (residual ~1e-13 vs ~1e-9). "kinsol"
 // is an accepted input alias for "newton".
@@ -810,7 +811,12 @@ struct SteadyStateOptions {
     // "integration" (default; CVODE parity early-stop), "newton" (two-tier
     // integrate-then-polish), or "kinsol" (alias for newton).
     std::string method = "integration";
-    std::string jacobian = "auto"; // Jacobian strategy (same as SolverOptions)
+    // Jacobian strategy (same values as SolverOptions). Read by the consumers
+    // that need the MATRIX — dY_ss/dp and the issue #78 stability certificate,
+    // both via ss_fill_state_jacobian. Neither solver tier installs a closed
+    // form (no CVodeSetJacFn on the march, no KINSetJacFn on the polish), so
+    // this does not change how either of them converges.
+    std::string jacobian = "auto";
 
     // Code-generated RHS shared library path. Honored by every steady-state
     // path — the CVODE march, the KINSOL polish, the residual check, and the

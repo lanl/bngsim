@@ -3892,12 +3892,21 @@ class Simulator:
           (``run_network -c``).
         - ``"newton"``: two-tier integrate-first solver. The *same* CVODE burst
           carries the state into the physical root's basin, then KINSOL
-          polishes with an analytical Jacobian; the polish is accepted only
-          once it is *seed-stable* (agrees across two successively tighter
-          bursts), otherwise integration continues. Seeding Newton at the raw
-          initial condition instead can converge to a spurious root of
-          ``f(y)=0`` the trajectory never reaches, or walk a species negative
-          into ``NaN`` (GH #27) — hence the burst.
+          polishes. The polish is accepted only once it is *seed-stable*
+          (agrees across two successively tighter bursts) **and** carries no
+          eigenvalue in the right half-plane (issue #78, see
+          :attr:`SteadyStateResult.root_stability`); otherwise integration
+          continues. Seeding Newton at the raw initial condition instead can
+          converge to a spurious root of ``f(y)=0`` the trajectory never
+          reaches, or walk a species negative into ``NaN`` (GH #27) — hence the
+          burst.
+
+          KINSOL differences its own Jacobian here: no analytical one is
+          installed (``KINSetJacFn`` is never called), so each Jacobian setup
+          costs one RHS evaluation per unknown. ``jacobian=`` therefore does not
+          reach the polish — it selects how the *stability certificate* and
+          ``dY_ss/dp`` build their Jacobian, both of which do use the closed
+          form when the model has one.
         - ``"kinsol"``: accepted alias for ``"newton"``.
 
         Because ``"newton"`` integrates first and only then polishes, it is

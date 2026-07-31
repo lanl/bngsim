@@ -551,14 +551,19 @@ class SteadyStateMarcher {
         LS_ = SUNLinSolGuard(ss_make_dense_linsol(y_, A_, ctx_, model, ns_));
         CVodeSetLinearSolver(cvode_mem_, LS_, A_);
 
-        // Analytical Jacobian if available and not "fd"
-        if (opts.jacobian != "fd") {
-            // We reuse the existing dense analytical Jacobian callback from
-            // cvode_simulator.cpp. But since we can't call that static function
-            // directly, we compute derivs manually and let CVODE do FD.
-            // For this implementation, we rely on CVODE's internal FD Jacobian.
-            // The analytical Jacobian is used by KINSOL (Tier 2) instead.
-        }
+        // No CVodeSetJacFn: this march runs CVODE's internal difference-quotient
+        // Jacobian whatever opts.jacobian says. Neither tier installs a closed
+        // form — tier 2 does not call KINSetJacFn either, so KINSOL differences
+        // its own as well (one RHS evaluation per unknown per setup). Only the
+        // consumers that need the matrix ITSELF rather than a Newton step read
+        // opts.jacobian: dY_ss/dp and the #78 stability certificate, both
+        // through ss_fill_state_jacobian.
+        //
+        // What this leaves on the table is a per-setup cost, not correctness:
+        // a codegen-backed solve has `bngsim_codegen_jac` loaded and hands the
+        // solvers difference quotients anyway. Wiring it in is a change to how
+        // both tiers converge, so it wants its own before/after measurement
+        // rather than a drive-by.
     }
 
     // March forward one internal CVODE step at a time, checking the BNG2.pl
@@ -1583,7 +1588,10 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
 //            else one-sided finite differences (n_species RHS evaluations).
 //            This is the same "analytical when complete, FD otherwise" rule
 //            jacobian="auto" applies everywhere else, and the same matrix the
-//            newton path's KINSOL polish already uses.
+//            #78 stability certificate reads (both go through
+//            ss_fill_state_jacobian). NOT the matrix the KINSOL polish uses:
+//            that one is KINSOL's own difference quotient — see the note in
+//            SteadyStateMarcher's constructor.
 //   ∂f/∂p  — the analytical column the codegen sensitivity RHS emits (see
 //            SteadyStateRhs::eval_dfdp), else one-sided finite differences in
 //            the parameter (one RHS evaluation per parameter).

@@ -18,10 +18,14 @@ dynamics actually reach.
 
 **`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
 *same* CVODE burst as `"integration"`, carrying the state into the physical
-root's basin; tier 2 is a KINSOL Newton polish using the analytical Jacobian
-when available (all-Elementary models) or KINSOL's internal finite
-differences. For models with conservation laws, BNGsim automatically uses a
-reduced-space Newton formulation (see [Conservation laws](#conservation-laws)).
+root's basin; tier 2 is a KINSOL Newton polish. KINSOL differences its own
+Jacobian there — no analytical one is installed (`KINSetJacFn` is never
+called), so each Jacobian setup costs one RHS evaluation per unknown, and
+`jacobian=` does not reach the polish. It selects how the *stability
+certificate* below and `dY_ss/dp` build their Jacobian, and both of those do
+use the closed form when the model has one. For models with conservation laws,
+BNGsim automatically uses a reduced-space Newton formulation (see
+[Conservation laws](#conservation-laws)).
 The polish is accepted only once it is *seed-stable* — two Newton solves from
 successively tighter bursts landing on the same state — **and** only once the
 root is *dynamically stable* (see [Unstable roots](#unstable-roots-saddles)),
@@ -299,8 +303,10 @@ Both factors are taken in closed form where the model supports it:
 - **J** — the analytical Jacobian at the steady state, compiled when the codegen
   artifact carries one and interpreted otherwise. This is the same
   "analytical when complete, finite differences otherwise" rule
-  `jacobian="auto"` applies everywhere else, and the same matrix the
-  `method="newton"` polish uses; `jacobian="fd"` pins the difference quotient.
+  `jacobian="auto"` applies everywhere else, and the same matrix the stability
+  certificate reads; `jacobian="fd"` pins the difference quotient. (The KINSOL
+  polish is *not* one of the consumers — it differences its own Jacobian
+  internally, whatever `jacobian=` says.)
 - **∂f/∂p** — the analytical parameter derivative the code-generated
   sensitivity RHS emits, the same one CVODES integrates against on the
   time-course path. Since issue #67 this covers Functional rate laws too, as long
