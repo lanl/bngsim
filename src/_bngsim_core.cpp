@@ -2043,6 +2043,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("rhs_backend", &bngsim::SteadyStateResult::rhs_backend)
         .def_readonly("sens_jacobian_source", &bngsim::SteadyStateResult::sens_jacobian_source)
         .def_readonly("sens_dfdp_source", &bngsim::SteadyStateResult::sens_dfdp_source)
+        // Issue #75 — "codegen" / "mixed" / "finite-difference" for the d(func)/dp
+        // block, so a caller can tell the compiled chain rule from the fallback.
+        .def_readonly("sens_output_source", &bngsim::SteadyStateResult::sens_output_source)
         .def_readonly("sens_jacobian_rcond", &bngsim::SteadyStateResult::sens_jacobian_rcond)
         .def_property_readonly(
             "sensitivity_data",

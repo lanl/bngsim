@@ -215,6 +215,8 @@ Properties:
 - **`observable_names`**, **`expression_names`** — `list[str]` labelling the output-sensitivity rows (populated on a sensitivity run; `expression_names` filters the auto-generated `_rateLawN` functions, matching `Result`)
 - **`sensitivities_observables`** — `ndarray (n_observables, n_params)` exact `d(observable)/dp`
 - **`sensitivities_expressions`** — `ndarray (n_expressions, n_params)` `d(function)/dp` total derivative (state chain + explicit `∂func/∂p`)
+- **`rhs_backend`**, **`sens_jacobian_source`**, **`sens_dfdp_source`**, **`sens_output_source`** — which numerical path each piece took. `sens_output_source` (issue #75) is `"codegen"` / `"mixed"` / `"finite-difference"` for the `d(function)/dp` block: the compiled `bngsim_codegen_output_sens` chain rule answered every function, some of them, or none
+- **`sens_jacobian_rcond`** — `min|U_jj|/max|U_jj|` from the LU of the (reduced) Jacobian that was inverted; near-zero means the steady state is a continuum and `dY_ss/dp` does not exist
 
 Methods:
 - **`resolve_outputs(selectors)`** → `list[dict]` — same selector grammar as `Result.resolve_outputs`

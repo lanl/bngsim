@@ -74,7 +74,9 @@ namespace bngsim {
 //   * `bngsim_codegen_jac` — the dense column-major analytical Jacobian, the
 //     compiled mirror of NetworkModel::fill_dense_analytical_jacobian;
 //   * `bngsim_codegen_sens_rhs` — evaluated at yS = 0, whose J·yS term then
-//     vanishes and leaves the bare analytical ∂f/∂p column.
+//     vanishes and leaves the bare analytical ∂f/∂p column;
+//   * `bngsim_codegen_output_sens` — the compiled d(func)/dθ chain rule, fed the
+//     solved dY_ss/dp columns (issue #75).
 //
 // Parameter values reach the compiled code through a contiguous mirror rather
 // than the model's Parameter vector, so any caller that mutates a parameter
@@ -101,6 +103,7 @@ class SteadyStateRhs {
             jac_fn_ = jit_.try_symbol<CodegenJacFn>("bngsim_codegen_jac");
             jac_sparse_fn_ = jit_.try_symbol<CodegenJacSparseFn>("bngsim_codegen_jac_sparse");
             sens_fn_ = jit_.try_symbol<CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            output_sens_fn_ = jit_.try_symbol<CodegenOutputSensFn>("bngsim_codegen_output_sens");
             backend_ = "codegen-jit";
         } else {
             lib_ = DynamicLibrary(opts.codegen_so_path);
@@ -108,6 +111,7 @@ class SteadyStateRhs {
             jac_fn_ = lib_.try_symbol<CodegenJacFn>("bngsim_codegen_jac");
             jac_sparse_fn_ = lib_.try_symbol<CodegenJacSparseFn>("bngsim_codegen_jac_sparse");
             sens_fn_ = lib_.try_symbol<CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            output_sens_fn_ = lib_.try_symbol<CodegenOutputSensFn>("bngsim_codegen_output_sens");
             backend_ = "codegen-so";
         }
 
@@ -246,6 +250,31 @@ class SteadyStateRhs {
                  zero_seed_.data(), out, &sens_data, tmp1_.data(), tmp2_.data());
     }
 
+    // Is the compiled output-sensitivity chain rule available (issue #75)?
+    //
+    // Absent for three reasons, all of which the caller answers the same way (fall
+    // back to finite differences): the model has no compiled artifact at all; the
+    // artifact was built without `_want_output_sens` so the symbol was never
+    // emitted; or `_analyze_output_sens` declined the whole model (rateOf, an
+    // embedded table-function wrapper, no user-selectable functions).
+    bool has_analytical_output_sens() const { return output_sens_fn_ != nullptr; }
+
+    // d(func_m)/dθ_c into func_sens_out[c*n_func + m], from the per-column state
+    // sensitivities state_sens[c][i] = dx_i/dθ_c. `plist[c]` is the differentiated
+    // parameter's index in the model's Parameter vector — the same index space
+    // eval_dfdp uses, since both read the codegen's `p[]` mirror.
+    //
+    // The emitter leaves a function it did not differentiate (one outside the
+    // user-function closure) at whatever the caller pre-filled, and writes NaN for
+    // one it declined; the caller must therefore pre-fill with a non-finite
+    // sentinel and treat every non-finite row as "no compiled answer".
+    void eval_output_sens(double t, const double *y, const double *const *state_sens,
+                          const int *plist, int n_sens, double *obs_sens_out,
+                          double *func_sens_out) {
+        output_sens_fn_(t, y, so_data_.param_values, state_sens, plist, n_sens, obs_sens_out,
+                        func_sens_out, &so_data_);
+    }
+
   private:
     // Trampoline the codegen .so calls to evaluate a table function; ctx is the
     // owning NetworkModel (mirrors codegen_tfun_eval_thunk in cvode_simulator).
@@ -260,6 +289,7 @@ class SteadyStateRhs {
     CodegenJacFn jac_fn_ = nullptr;
     CodegenJacSparseFn jac_sparse_fn_ = nullptr;
     CodegenSensRhsFn sens_fn_ = nullptr;
+    CodegenOutputSensFn output_sens_fn_ = nullptr;
     CodegenUserDataForSO so_data_{};
     std::vector<double> param_buf_;
     std::string backend_ = "exprtk";
@@ -1443,15 +1473,35 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 // Jacobian:
 //
 //   d(obs_j)/dp  = Σ_i (∂obs_j/∂x_i)·dY_ss_i/dp                (exact; linear groups)
-//   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p  (finite differences)
+//   d(func_m)/dp = Σ_i (∂func_m/∂x_i)·dY_ss_i/dp + ∂func_m/∂p
 //
 // Observables are Σ factor·x, so ∂obs/∂x is exactly the group factor and the
-// observable projection is exact. The function projection reuses the same
-// finite-difference primitive as compute_ss_sensitivity: the state-chain Jacobian
-// ∂func/∂x from per-species perturbations, plus the function's explicit parameter
-// dependence ∂func/∂p (e.g. `k3/(K4+G)` w.r.t. k3) from per-parameter
-// perturbations at the fixed steady state. BOTH terms are needed for the total
-// derivative and match the CVODES codegen output-sensitivity chain rule.
+// observable projection is exact.
+//
+// The function total derivative prefers the compiled chain rule and falls back to
+// finite differences per function (issue #75), the same shape ∂f/∂p has in
+// compute_ss_sensitivity since #63:
+//
+//   preferred — `bngsim_codegen_output_sens` (GH #198), the evaluator the CVODES
+//               forward-sensitivity path already uses, handed the solved dY_ss/dp
+//               columns. Both terms are closed form, in the same artifact as the
+//               RHS, so value and derivative cannot diverge.
+//   fallback  — the finite-difference primitive compute_ss_sensitivity uses: the
+//               state-chain Jacobian ∂func/∂x from per-species perturbations, plus
+//               the function's explicit parameter dependence ∂func/∂p (e.g.
+//               `k3/(K4+G)` w.r.t. k3) from per-parameter perturbations at the
+//               fixed steady state. BOTH terms are needed for the total
+//               derivative; dropping either is a confidently wrong gradient.
+//
+// The fallback is not vestigial. It answers a whole-model decline (no compiled
+// artifact, an artifact built without `_want_output_sens`, or `_analyze_output_sens`
+// declining on rateOf / an embedded table-function wrapper) AND the per-function
+// cases inside a live artifact: a function the emitter marked unsupported (written
+// NaN) and one it left outside the user-function closure (left untouched). Both are
+// detected the same way — pre-fill the buffer with NaN, and any row that comes back
+// non-finite is one the compiled evaluator did not answer. Rows it did answer are
+// skipped by the FD sweep, so a model where every function is supported never pays
+// for the ns species perturbations at all.
 //
 // The ∂func/∂p probe goes through SteadyStateRhs::sync_params for the same reason
 // the ∂f/∂p probe does (issue #63, and #2 before it): neither update_observables
@@ -1462,21 +1512,19 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 // chain-rule term. sync_params(pi) re-derives everything except the probed
 // parameter itself, matching set_param's detach-then-refresh rule; the restore
 // needs the same call, or the derived parameters stay at their perturbed values
-// and corrupt every later column and the caller's model.
+// and corrupt every later column and the caller's model. The compiled evaluator
+// needs none of that — it carries the derived-parameter chain rule in closed form
+// (`plist[c]` selects the primary, and the emitter expands ∂p_derived/∂primary).
 //
-// Why not the compiled evaluator. `bngsim_codegen_output_sens` (GH #198) already
-// carries this chain rule analytically, and replacing the whole block with it is
-// the obvious next step — but it is an enhancement, not this fix. It is emitted
-// only when the model carries `_want_output_sens`, which Simulator.__init__ sets
-// from its CONSTRUCTOR sensitivity_params; steady_state() takes its own
-// sensitivity_params as a METHOD argument, so the artifact reaching here in the
-// ordinary `Simulator(m, method="ode").steady_state(sensitivity_params=[...])`
-// call has no such symbol. Wiring it up needs the GH #205 re-prep dance
-// compute_all_sensitivities does (set the flag, drop the plain artifact,
-// regenerate), the dY_ss/dp rows transposed into the per-column pointers the ABI
-// wants, and NaN-sentinel handling for the functions the codegen marks
-// unsupported — which this block would still have to answer for. So it becomes a
-// preferred path with this as its fallback, exactly as ∂f/∂p is structured above.
+// Getting the symbol here at all took a Python-side re-prep: it is emitted only
+// when the model carries `_want_output_sens`, which Simulator.__init__ set from its
+// CONSTRUCTOR sensitivity_params, while steady_state() takes its own
+// sensitivity_params as a METHOD argument. Simulator._prepare_output_sens_codegen()
+// now runs the GH #205 dance (set the flag, drop a plain-RHS artifact that would
+// shadow the sensitivity one, regenerate, restore on failure) for both entry
+// points; without it the ordinary
+// `Simulator(m, method="ode").steady_state(sensitivity_params=[...])` call lands
+// here with no symbol to call.
 //
 // Precondition: result.sensitivity is populated and the model species are set to
 // the steady state. The model is left evaluated at the steady state with the
@@ -1517,74 +1565,163 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
         }
     }
 
-    // ── Functions: finite-difference total derivative ─────────────────────────
+    // ── Functions: compiled chain rule, differenced where it declines ─────────
     if (n_func > 0) {
         result.function_sensitivity.assign(static_cast<size_t>(n_func) * np, 0.0);
         const double eps = 1.4901161193847656e-8; // sqrt(machine eps)
+        const double nan = std::numeric_limits<double>::quiet_NaN();
 
-        // Base function values at the steady state with the original parameters.
-        // function_value_cache() returns a reference reused by every subsequent
-        // evaluate_functions() call, so snapshot it into f0. sync_params() first,
-        // so the baseline is taken against freshly derived expression parameters
-        // — the same ordering compute_ss_sensitivity uses for its own f0.
-        rhs.sync_params();
-        model.update_observables(y_ss);
-        model.evaluate_functions(0.0);
-        const std::vector<double> f0(model.function_value_cache());
-        std::vector<double> f1;
-        std::vector<double> y_pert(ns);
-
-        // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one species,
-        // re-evaluate observables + functions), folded into
-        // Σ_i (∂func_m/∂x_i)·dY_ss_i/dp as each species column is produced.
-        for (int i = 0; i < ns; ++i) {
-            std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
-            const double h = eps * std::max(std::abs(y_ss[i]), 1.0);
-            y_pert[i] += h;
-            model.update_observables(y_pert.data());
-            model.evaluate_functions(0.0);
-            f1 = model.function_value_cache();
-            const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
-            for (int m = 0; m < n_func; ++m) {
-                const double dfm_dxi = (f1[m] - f0[m]) / h;
-                double *out = result.function_sensitivity.data() + static_cast<size_t>(m) * np;
-                for (int p = 0; p < np; ++p) {
-                    out[p] += dfm_dxi * dxi[p];
+        // param_names[p] was validated to exist by compute_ss_sensitivity, which
+        // throws on an unknown name — so a -1 here cannot happen on the live path.
+        // It is still checked below rather than asserted, since both branches have
+        // a correct answer for it (skip the parameter's explicit term).
+        const auto &params = model.parameters();
+        std::vector<int> pidx(np, -1);
+        for (int p = 0; p < np; ++p) {
+            for (size_t k = 0; k < params.size(); ++k) {
+                if (params[k].name == param_names[p]) {
+                    pidx[p] = static_cast<int>(k);
+                    break;
                 }
             }
         }
 
-        // Explicit-parameter term: ∂func_m/∂p at the fixed steady state (perturb
-        // one parameter, keep the state fixed). Observables are functions of
-        // species only, so update_observables(y_ss) restores the same totals; the
-        // function evaluator picks up the live parameter value.
-        const auto &params = model.parameters();
-        for (int p = 0; p < np; ++p) {
-            // param_names[p] was validated to exist by compute_ss_sensitivity.
-            int pi = -1;
-            for (size_t k = 0; k < params.size(); ++k) {
-                if (params[k].name == param_names[p]) {
-                    pi = static_cast<int>(k);
-                    break;
+        // Which function rows the compiled evaluator did not answer. Everything,
+        // until it says otherwise.
+        std::vector<uint8_t> need_fd(n_func, 1);
+        int n_need_fd = n_func;
+        bool any_codegen = false;
+
+        // ── Preferred: the compiled d(func)/dθ (issue #75) ────────────────────
+        if (rhs.has_analytical_output_sens() &&
+            std::all_of(pidx.begin(), pidx.end(), [](int i) { return i >= 0; })) {
+            rhs.sync_params();
+
+            // The ABI wants one contiguous n_species column per sensitivity
+            // direction; result.sensitivity is species-major (sensitivity[i*np+p]),
+            // so transpose it into np columns. plist carries the differentiated
+            // parameter index for each — every column here is a parameter column
+            // (the >= n_params sentinel marks an IC column, which the steady-state
+            // path has none of: ∂x*/∂x(0) = 0 at a stable root).
+            std::vector<double> sens_cols(static_cast<size_t>(np) * ns);
+            std::vector<const double *> col_ptrs(np);
+            for (int p = 0; p < np; ++p) {
+                double *col = sens_cols.data() + static_cast<size_t>(p) * ns;
+                for (int i = 0; i < ns; ++i) {
+                    col[i] = result.sensitivity[static_cast<size_t>(i) * np + p];
+                }
+                col_ptrs[p] = col;
+            }
+
+            // NaN pre-fill is the detector: the emitter writes NaN for a function
+            // it declined and leaves one outside the user closure untouched, so a
+            // finite value is exactly "the compiled evaluator answered this row".
+            std::vector<double> fs(static_cast<size_t>(np) * n_func, nan);
+            rhs.eval_output_sens(0.0, y_ss, col_ptrs.data(), pidx.data(), np,
+                                 /*obs_sens_out=*/nullptr, fs.data());
+
+            for (int m = 0; m < n_func; ++m) {
+                bool row_ok = true;
+                for (int p = 0; p < np && row_ok; ++p) {
+                    row_ok = std::isfinite(fs[static_cast<size_t>(p) * n_func + m]);
+                }
+                if (!row_ok) {
+                    continue; // leave need_fd[m] set
+                }
+                for (int p = 0; p < np; ++p) {
+                    result.function_sensitivity[static_cast<size_t>(m) * np + p] =
+                        fs[static_cast<size_t>(p) * n_func + m];
+                }
+                need_fd[m] = 0;
+                --n_need_fd;
+                any_codegen = true;
+            }
+        }
+
+        result.sens_output_source =
+            !any_codegen ? "finite-difference" : (n_need_fd == 0 ? "codegen" : "mixed");
+
+        // ── Fallback: finite-difference total derivative, per declined row ────
+        // Skipped entirely when the compiled evaluator answered every function —
+        // that is where the ns species perturbations (a full observable + function
+        // re-evaluation each) stop being paid.
+        if (n_need_fd > 0) {
+            // A declined row may hold the NaN the evaluator wrote; the FD sweep
+            // accumulates, so clear it back to zero first.
+            for (int m = 0; m < n_func; ++m) {
+                if (need_fd[m]) {
+                    for (int p = 0; p < np; ++p) {
+                        result.function_sensitivity[static_cast<size_t>(m) * np + p] = 0.0;
+                    }
                 }
             }
-            if (pi < 0) {
-                continue;
-            }
-            const double pval = params[pi].value;
-            const double h = eps * std::max(std::abs(pval), 1.0);
-            // Perturb, re-deriving every expression parameter but the probed one.
-            const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
-            rhs.sync_params(pi);
+
+            // Base function values at the steady state with the original
+            // parameters. function_value_cache() returns a reference reused by
+            // every subsequent evaluate_functions() call, so snapshot it into f0.
+            // sync_params() first, so the baseline is taken against freshly
+            // derived expression parameters — the same ordering
+            // compute_ss_sensitivity uses for its own f0.
+            rhs.sync_params();
             model.update_observables(y_ss);
             model.evaluate_functions(0.0);
-            f1 = model.function_value_cache();
-            // Restore, and re-derive again — otherwise the derived parameters
-            // keep the perturbed values this probe just gave them.
-            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
-            rhs.sync_params(pi);
-            for (int m = 0; m < n_func; ++m) {
-                result.function_sensitivity[static_cast<size_t>(m) * np + p] += (f1[m] - f0[m]) / h;
+            const std::vector<double> f0(model.function_value_cache());
+            std::vector<double> f1;
+            std::vector<double> y_pert(ns);
+
+            // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one
+            // species, re-evaluate observables + functions), folded into
+            // Σ_i (∂func_m/∂x_i)·dY_ss_i/dp as each species column is produced.
+            for (int i = 0; i < ns; ++i) {
+                std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
+                const double h = eps * std::max(std::abs(y_ss[i]), 1.0);
+                y_pert[i] += h;
+                model.update_observables(y_pert.data());
+                model.evaluate_functions(0.0);
+                f1 = model.function_value_cache();
+                const double *dxi = result.sensitivity.data() + static_cast<size_t>(i) * np;
+                for (int m = 0; m < n_func; ++m) {
+                    if (!need_fd[m]) {
+                        continue;
+                    }
+                    const double dfm_dxi = (f1[m] - f0[m]) / h;
+                    double *out = result.function_sensitivity.data() + static_cast<size_t>(m) * np;
+                    for (int p = 0; p < np; ++p) {
+                        out[p] += dfm_dxi * dxi[p];
+                    }
+                }
+            }
+
+            // Explicit-parameter term: ∂func_m/∂p at the fixed steady state
+            // (perturb one parameter, keep the state fixed). Observables are
+            // functions of species only, so update_observables(y_ss) restores the
+            // same totals; the function evaluator picks up the live parameter
+            // value.
+            for (int p = 0; p < np; ++p) {
+                const int pi = pidx[p];
+                if (pi < 0) {
+                    continue;
+                }
+                const double pval = params[pi].value;
+                const double h = eps * std::max(std::abs(pval), 1.0);
+                // Perturb, re-deriving every expression parameter but the probed
+                // one.
+                const_cast<std::vector<Parameter> &>(params)[pi].value = pval + h;
+                rhs.sync_params(pi);
+                model.update_observables(y_ss);
+                model.evaluate_functions(0.0);
+                f1 = model.function_value_cache();
+                // Restore, and re-derive again — otherwise the derived parameters
+                // keep the perturbed values this probe just gave them.
+                const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+                rhs.sync_params(pi);
+                for (int m = 0; m < n_func; ++m) {
+                    if (!need_fd[m]) {
+                        continue;
+                    }
+                    result.function_sensitivity[static_cast<size_t>(m) * np + p] +=
+                        (f1[m] - f0[m]) / h;
+                }
             }
         }
 

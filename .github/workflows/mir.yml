@@ -53,6 +53,11 @@ name: mir-jit
 # surface, because it is the only one that compiles generated C with anything but
 # `cc`. The bug was pre-existing on main for as long as #198 had been emitted,
 # and it took adding #67's files to this list to find it.
+#
+# test_steady_state_output_sensitivities.py is listed for the same reason: since
+# issue #75 the steady-state d(func)/dp block resolves bngsim_codegen_output_sens
+# — the very symbol #85 was about — off whichever backend built the artifact, so
+# the JIT leg is the only thing that covers the MirJit half of that resolve.
 
 on:
   workflow_dispatch:
@@ -66,6 +71,9 @@ on:
     paths: &mir_paths
       - "include/bngsim/mir_jit.hpp"
       - "src/cvode_simulator.cpp"
+      # Issue #75 — steady_state.cpp now resolves bngsim_codegen_output_sens off
+      # the JIT too, so it is a second place a #85-class prelude bug can surface.
+      - "src/steady_state.cpp"
       - "src/_bngsim_core.cpp"
       - "third_party/mir/**"
       - "python/bngsim/_codegen.py"
@@ -77,6 +85,7 @@ on:
       - "python/bngsim/__init__.py"
       - "python/tests/test_mir_equivalence.py"
       - "python/tests/test_codegen*.py"
+      - "python/tests/test_steady_state_output_sensitivities.py"
       - "python/tests/test_mir_vendoring.py"
       - "CMakeLists.txt"
       - ".github/workflows/mir.yml"
@@ -154,6 +163,7 @@ jobs:
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \
             python/tests/test_codegen_steady_state_mask.py \
+            python/tests/test_steady_state_output_sensitivities.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log
 
