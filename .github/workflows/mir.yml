@@ -163,6 +163,7 @@ jobs:
             python/tests/test_codegen_determinism.py \
             python/tests/test_codegen_jit_prelude.py \
             python/tests/test_codegen_steady_state_mask.py \
+            python/tests/test_codegen_steady_state_fd_step.py \
             python/tests/test_steady_state_output_sensitivities.py \
             -rA --tb=short ${{ github.event.inputs.pytest_args }} \
             2>&1 | tee mir-${{ matrix.os }}.log

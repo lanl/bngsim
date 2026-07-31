@@ -1,0 +1,48 @@
+# Regression test for the state half of issue #76: a model whose concentrations
+# are ~1e-9, where the finite-difference Jacobian's absolute step floor is a
+# larger perturbation than the state it perturbs.
+#
+# The species probe was ``eps*max(|y_j|, 1)`` = 1.49e-8 for every species below
+# 1 — fifteen times A* here. A homodimerization is quadratic in A, so that step
+# does not cancel out of the difference quotient the way a bilinear term's does:
+#
+#   dA/dt = -kdim*A^2 + 2*kdis*B            (exact ∂/∂A = -2*kdim*A = -4e9)
+#   FD    = (-kdim*(A+h)^2 + kdim*A^2)/h    = -2*kdim*A - kdim*h
+#
+# and the spurious ``-kdim*h`` is -2.98e10 at h = 1.49e-8, i.e. 7.5x the term it
+# corrupts. Scaled relative to the state (h = eps*max|y| = 1.49e-17) it is 29.8,
+# i.e. 7.5e-9 of it.
+#
+#   A + A <-> B     forward 0.5*kdim (the BNG homodimer convention: the reaction
+#                   fires at 0.5*kdim*A^2 and consumes two A, so the flux in A is
+#                   kdim*A^2), reverse kdis
+#
+# A + 2B = 1.5e-9 is conserved. Writing r = kdim/(2*kdis) = 2.5e8, the reduced
+# balance 0.5*kdim*A^2 = kdis*B is B = r*A^2, so A + 2*r*A^2 = T with
+# 8*r*T = 3 exactly — a perfect square, so with s = sqrt(1 + 8*r*T) = 2:
+#
+#   A* = (s - 1)/(4*r)      = 1e-9      (both rate terms are 1.0 there, so tol
+#   B* = r*A*^2             = 2.5e-10    keeps its usual meaning at this root)
+#
+# Differentiating A*(r) = (sqrt(1 + 8*r*T) - 1)/(4*r) at fixed T:
+#
+#   dA*/dr    = [16*r*T/s - 4*(s-1)] / (16*r^2) = -1/(16*r^2)  = -1e-18
+#   dA*/dkdim = dA*/dr / (2*kdis)                              = -1.25e-28
+#   dA*/dkdis = dA*/dr * (-kdim/(2*kdis^2))                    =  6.25e-20
+#   dB*/dp    = -dA*/dp / 2                     (A + 2B is conserved)
+begin parameters
+    1 kdim  2.0e18  # Constant
+    2 kdis  4.0e9   # Constant
+end parameters
+begin species
+    1 A() 1.5e-9
+    2 B() 0.0
+end species
+begin reactions
+    1 1,1 2   0.5*kdim  #_Rdim
+    2 2   1,1 kdis      #_Rdis
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups

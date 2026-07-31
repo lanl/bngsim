@@ -1,0 +1,59 @@
+# Regression test for issue #76: a small rate constant that the RHS depends on
+# NON-LINEARLY, so the finite-difference ``∂f/∂p`` step size is visible in the
+# answer rather than cancelling out.
+#
+# ``kf = kon/KD`` is the shape ``ode/before_bunching`` carries (the model the
+# issue was found on): a dissociation constant in a denominator, ~1e-9, with the
+# forward rate constant derived from it. The shipped step was
+# ``eps*max(|p|, 1)``, i.e. an absolute 1.49e-8 for every parameter below 1,
+# which for KD = 1e-9 is a 1500% probe — ``kf`` falls from 1.0 to 0.063 across
+# it, so the difference quotient is a secant, not a derivative.
+#
+#   A <-> B    forward _rateLaw1 = kon/KD,  reverse koff
+#
+# dA/dt = -(kon/KD)*A + koff*B,  dB/dt = -dA/dt,  A + B = 1 conserved.
+#
+# With kf = kon/KD = 1e-9/1e-9 = 1 and koff = 1:
+#
+#   A* = koff/(kf + koff)               = 0.5
+#   B* = kf  /(kf + koff)               = 0.5
+#
+# and, differentiating A* = koff/(kon/KD + koff) with B* = 1 - A*:
+#
+#   dA*/dKD   =  koff*kon / (KD^2 * (kf + koff)^2) =  1*1e-9/(1e-18*4) =  2.5e8
+#   dA*/dkon  = -koff     / (KD   * (kf + koff)^2) = -1/(1e-9*4)       = -2.5e8
+#   dA*/dkoff =  kf       / (kf + koff)^2          =  1/4              =  0.25
+#   dB*/dp    = -dA*/dp                            (A + B is conserved)
+#
+# dA*/dKD is the assertion that fails on the shipped step: the probe moves KD to
+# 1.59e-8, kf to 0.0629, and the quotient comes back ~16x low.
+#
+# ``perKD() = A_tot/KD`` carries the same defect into the *expression* output
+# sensitivity, whose fallback differences ∂func/∂p with the same step:
+#
+#   dperKD/dKD = -A*/KD^2 + (dA*/dKD)/KD = -5e17 + 2.5e17 = -2.5e17
+#
+# of which the explicit term is the one the step size reaches: -3.14e16 at the
+# shipped step against -5e17 exact, which with the (equally mis-stepped) chain
+# term leaves the whole row at -1.57e16, again 16x low.
+begin parameters
+    1 kon        1.0e-9   # Constant
+    2 KD         1.0e-9   # Constant
+    3 koff       1.0      # Constant
+    4 _rateLaw1  kon/KD   # ConstantExpression
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+end species
+begin reactions
+    1 1 2 _rateLaw1  #_Rfwd
+    2 2 1 koff       #_Rrev
+end reactions
+begin groups
+    1 A_tot 1
+    2 B_tot 2
+end groups
+begin functions
+    1 perKD() A_tot/KD
+end functions

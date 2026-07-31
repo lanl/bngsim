@@ -4152,7 +4152,8 @@ class Simulator:
                 "model (the codegen sensitivity RHS declined its rate laws — "
                 "Michaelis-Menten, or a Functional law with a condition or a "
                 "non-smooth builtin; see issues #55/#68), so ∂f/∂p was "
-                "computed by finite differences at a ~sqrt(eps) step. The "
+                "computed by finite differences at a ~sqrt(eps) step, relative "
+                "to each parameter (issue #76). The "
                 "Jacobian factor used the %s path.",
                 result.sens_jacobian_source,
             )
