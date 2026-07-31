@@ -16,10 +16,17 @@ are now relative — to the parameter itself, and to the species floored at the
 state's own magnitude (unlike parameters, every species is a concentration in
 one unit, so the state HAS a typical scale to floor a zero species against).
 
+Issue #123 is the other end of the same tradeoff, and ``TestCancelledTerm``
+covers it: a parameter whose own term is a small fraction of the derivative it
+sits in moves that derivative by less than its roundoff at a step relative to the
+parameter, so the quotient is noise where the wide step's was not. Each probe now
+takes two steps and each component keeps the one that carried a response above
+its own roundoff floor.
+
 Each model here has a closed-form steady state AND a closed-form gradient
-derived in its ``.net`` header, so the assertions owe the solver nothing. Both
-fail on the shipped step by ~79-94%, well outside anything a step-size choice
-should be able to move.
+derived in its ``.net`` header, so the assertions owe the solver nothing. Every
+one of them fails on the step rule it is about — by 79-94% for #76, and by 100%
+(a fabricated exact zero) for #123.
 """
 
 from __future__ import annotations
@@ -48,6 +55,11 @@ _DIMER = _DATA / "nanomolar_dimer.net"
 # interaction: a species with no steady value must not set the probe scale for
 # the species that have one.
 _DIMER_SINK = _DATA / "nanomolar_dimer_sink.net"
+
+# 0 -> A at flux 100 alongside 0 -> A at flux 1e-9: the trace parameter's own
+# term is 1e-11 of the derivative it sits in, so a probe relative to it moves
+# dA/dt by less than dA/dt's roundoff (issue #123).
+_CANCELLED = _DATA / "cancelled_parameter_term.net"
 
 # Closed forms, from the .net headers.
 _KON, _KD, _KOFF = 1.0e-9, 1.0e-9, 1.0
@@ -224,3 +236,46 @@ class TestStateProbe:
         )
         np.testing.assert_allclose(sens[ia], _DA_DIMER, rtol=1e-6)
         np.testing.assert_allclose(sens[ib], -_DA_DIMER / 2.0, rtol=1e-6)
+
+
+class TestCancelledTerm:
+    """Issue #123 — a parameter whose response the relative step cannot resolve.
+
+    ``dA/dt = ksyn + ktrace - kdeg*A`` with ``ksyn`` = 100 and ``ktrace`` = 1e-9.
+    The step relative to ``ktrace`` is 1.5e-17, which moves ``dA/dt`` by 1.5e-17
+    against a roundoff floor of ~2.2e-14 — the response is three orders below the
+    noise, so the quotient carries no information at all. The pre-#76 absolute
+    step moves it by 1.5e-8, 6.7e5 times the floor, and ``dA/dt`` is linear in
+    ``ktrace`` so that quotient is good to ~1.5e-6.
+    """
+
+    #: ``A* = (ksyn + ktrace)/kdeg``; J and every ``∂f/∂p`` are constants here, so
+    #: the gradient is exact and owes the root nothing.
+    _EXPECTED = np.array([1.0, 1.0, -100.000000001])  # d/d[ktrace, ksyn, kdeg]
+
+    def test_a_trace_parameter_keeps_its_gradient(self):
+        """#76's relative step alone returns **exactly 0.0** for ``dA*/dktrace``
+        — the shape a fitter reads as "this parameter does not matter" — while
+        the two columns whose responses are resolvable are unchanged."""
+        result, sens = _core_sensitivity(_CANCELLED, ["ktrace", "ksyn", "kdeg"])
+        assert result.sens_dfdp_source == "finite-difference"
+        assert result.converged
+        ia = list(result.species_names).index("A()")
+        np.testing.assert_allclose(result.concentrations[ia], 100.000000001, rtol=1e-9)
+        np.testing.assert_allclose(sens[ia], self._EXPECTED, rtol=1e-5)
+
+    @requires_cc
+    def test_the_trace_column_matches_the_compiled_dfdp(self):
+        """Same column from the compiled ``bngsim_codegen_sens_rhs``, which owes
+        the step size nothing."""
+        warm = bngsim.Model.from_net(str(_CANCELLED))
+        warm.prepare_analytical_jacobian()
+        so = str(cg.prepare_codegen(str(_CANCELLED), warm, emit_jac=True))
+        params = ["ktrace", "ksyn", "kdeg"]
+
+        fd_result, fd = _core_sensitivity(_CANCELLED, params)
+        an_result, an = _core_sensitivity(_CANCELLED, params, so_path=so)
+
+        assert fd_result.sens_dfdp_source == "finite-difference"
+        assert an_result.sens_dfdp_source == "codegen"
+        assert np.abs(fd - an).max() / max(np.abs(an).max(), 1e-30) < 1e-5

@@ -1153,13 +1153,68 @@ static constexpr double kFdEps = 1.4901161193847656e-8;
 // there is nothing better to be had.
 //
 // The price is the other end of the tradeoff: where the parameter's own term is
-// a tiny fraction of the RHS component it sits in, a step this small can lose
-// the response to cancellation where the old wide step did not. Scored against
-// the analytical ∂f/∂p over 850 corpus columns, the relative step is well ahead
-// on balance — columns wrong by >1e-3 fall 103 -> 57, and 51 cross that line the
-// right way against 5 the wrong way — but the 5 are real, and closing them needs
-// a step chosen from the measured response rather than from |p| alone.
+// a tiny fraction of the RHS component it sits in, a step this small loses the
+// response to cancellation where the old wide step did not. That is what
+// `param_fd_widen()` below repairs, per component (issue #123).
 static inline double param_fd_step(double p) { return kFdEps * (p != 0.0 ? std::abs(p) : 1.0); }
+
+// The absolute step `param_fd_step` replaced. Still the right probe for a
+// component whose response to the relative one is roundoff — see
+// `param_fd_widen()`. Equal to the relative step for |p| >= 1, which is how the
+// callers know there is no second probe to take.
+static inline double param_fd_wide_step(double p) { return kFdEps * std::max(std::abs(p), 1.0); }
+
+// Unit roundoff (DBL_EPSILON), the relative spacing of doubles.
+static constexpr double kUround = 2.220446049250313e-16;
+
+// How many times its own roundoff a probe's response has to be before the
+// difference quotient counts as signal (issue #123).
+//
+// The quotient's relative error is about noise/response, so this is "prefer the
+// wide probe once the narrow one is worse than 1%" — matched to the wide
+// probe's own typical accuracy on the models where the two disagree, and flat
+// in the corpus measurement across two decades either side (see the PR table:
+// columns wrong by >1e-3 read 165 / 117 / 91 at C = 16 / 100 / 1000 against 231
+// for the relative step alone, while the #76 fixes it preserves fall away above
+// this — 184 of 191 at 100, 151 at 1e5).
+static constexpr double kFdNoiseFactor = 100.0;
+
+// The absolute roundoff floor of each component of g, given the terms g was
+// assembled from (`term_scale`) and g itself.
+//
+// |g_i| alone is the wrong scale at a steady state: there f_i is a cancellation
+// of large rate terms, so its roundoff is set by the TERMS and not by the
+// near-zero sum, and a floor built from |f_i| would call every response signal.
+static inline double roundoff_floor(double g_i, double term_scale_i) {
+    return kUround * std::max(std::abs(g_i), std::abs(term_scale_i));
+}
+
+// Term scale of each f_i from the Jacobian row: Σ_j |J_ij|·|y_j|. A rate term of
+// degree d in the species contributes d times the term itself, so the row sum is
+// the size of what f_i was assembled from — which is what its roundoff scales
+// with. J is column-major (J[j*ns + i] = ∂f_i/∂x_j) and already assembled, so
+// this is O(n²) arithmetic over memory the caller is holding anyway.
+static void rhs_term_scale(const double *J, const double *y, int ns, std::vector<double> &out) {
+    out.assign(static_cast<size_t>(ns), 0.0);
+    for (int j = 0; j < ns; ++j) {
+        const double yj = std::abs(y[j]);
+        if (yj == 0.0) {
+            continue;
+        }
+        const double *col = J + static_cast<size_t>(j) * ns;
+        for (int i = 0; i < ns; ++i) {
+            out[static_cast<size_t>(i)] += std::abs(col[i]) * yj;
+        }
+    }
+}
+
+// Should component i take its ∂g/∂p from the wide probe instead of the narrow
+// one? True exactly when the narrow probe's response does not clear that
+// component's roundoff floor by `kFdNoiseFactor` — i.e. when the quotient it
+// would give is roundoff rather than a derivative.
+static inline bool param_fd_widen(double response, double g_i, double term_scale_i) {
+    return std::abs(response) <= kFdNoiseFactor * roundoff_floor(g_i, term_scale_i);
+}
 
 // One-sided step for probing SPECIES j of a state whose largest concentration
 // is `y_scale`.
@@ -1315,9 +1370,22 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
         // ∂f/∂p[:,p] = (f(y_ss; p+h) − f(y_ss; p)) / h. sync_params() re-derives
         // constant-expression parameters after each write, so a rate law stored
         // as a derived `_rateLaw{N}` picks up the chain rule (issue #2).
+        //
+        // Two probes, and each component takes the one that answered (issue
+        // #123). The relative step is the derivative-preserving one, but where
+        // p's own term is a small fraction of the f_i it sits in, it moves f_i by
+        // less than f_i's own roundoff and the quotient is noise; those
+        // components take the wide (pre-#76 absolute) probe instead, which
+        // carries a secant error but not a fabricated one. Every entry is
+        // therefore one of the two quotients this file already knew how to
+        // compute — the rule chooses between them, it does not invent a third.
         result.sens_dfdp_source = "finite-difference";
         rhs.sync_params();
         rhs.eval(0.0, y_ss, f0.data());
+
+        std::vector<double> term_scale;
+        rhs_term_scale(J.data(), y_ss, ns, term_scale);
+        std::vector<double> f_wide(ns);
 
         for (int p = 0; p < np; ++p) {
             int pi = pidx[p];
@@ -1335,8 +1403,30 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
             const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
             rhs.sync_params(pi);
 
+            double *col = dfdp.data() + static_cast<size_t>(p) * ns;
             for (int i = 0; i < ns; ++i) {
-                dfdp[static_cast<size_t>(p) * ns + i] = (f1[i] - f0[i]) / h;
+                col[i] = (f1[i] - f0[i]) / h;
+            }
+
+            // The wide probe, for the components the narrow one could not
+            // resolve. Skipped entirely when the two steps coincide (|p| >= 1),
+            // which is where it would cost an RHS evaluation for nothing.
+            const double h_wide_req = param_fd_wide_step(pval);
+            if (h_wide_req <= param_fd_step(pval)) {
+                continue;
+            }
+            double p_wide = 0.0;
+            const double h_wide = fd_probe(pval, h_wide_req, &p_wide);
+            const_cast<std::vector<Parameter> &>(params)[pi].value = p_wide;
+            rhs.sync_params(pi);
+            rhs.eval(0.0, y_ss, f_wide.data());
+            const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+            rhs.sync_params(pi);
+
+            for (int i = 0; i < ns; ++i) {
+                if (param_fd_widen(f1[i] - f0[i], f0[i], term_scale[i])) {
+                    col[i] = (f_wide[i] - f0[i]) / h_wide;
+                }
             }
         }
     }
@@ -1772,7 +1862,15 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             // State-chain term: ∂func_m/∂x_i via one-sided FD (perturb one
             // species, re-evaluate observables + functions), folded into
             // Σ_i (∂func_m/∂x_i)·dY_ss_i/dp as each species column is produced.
+            //
+            // The same sweep accumulates each function's TERM SCALE,
+            // Σ_i |∂func_m/∂x_i|·|x_i| — the size of the quantities func_m is
+            // assembled from, which the explicit-parameter probe below needs as
+            // its roundoff floor (issue #123). It is the function-side analogue
+            // of the Jacobian row sum compute_ss_sensitivity uses, and it comes
+            // free: the partials are already in hand.
             const double y_scale = state_probe_scale(y_ss, ns, result.excluded_species);
+            std::vector<double> func_term_scale(static_cast<size_t>(n_func), 0.0);
             for (int i = 0; i < ns; ++i) {
                 std::memcpy(y_pert.data(), y_ss, ns * sizeof(double));
                 const double h = fd_probe(y_ss[i], state_fd_step(y_ss[i], y_scale), &y_pert[i]);
@@ -1785,6 +1883,7 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
                         continue;
                     }
                     const double dfm_dxi = (f1[m] - f0[m]) / h;
+                    func_term_scale[static_cast<size_t>(m)] += std::abs(dfm_dxi * y_ss[i]);
                     double *out = result.function_sensitivity.data() + static_cast<size_t>(m) * np;
                     for (int p = 0; p < np; ++p) {
                         out[p] += dfm_dxi * dxi[p];
@@ -1797,31 +1896,49 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
             // functions of species only, so update_observables(y_ss) restores the
             // same totals; the function evaluator picks up the live parameter
             // value.
+            // Two probes here as well (issue #123): a function whose dependence
+            // on p is a small fraction of its own magnitude loses the narrow
+            // probe's response to roundoff, and takes the wide one instead.
+            std::vector<double> f_wide;
             for (int p = 0; p < np; ++p) {
                 const int pi = pidx[p];
                 if (pi < 0) {
                     continue;
                 }
                 const double pval = params[pi].value;
-                double p_plus = 0.0;
-                const double h = fd_probe(pval, param_fd_step(pval), &p_plus);
+
                 // Perturb, re-deriving every expression parameter but the probed
-                // one.
-                const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
-                rhs.sync_params(pi);
-                model.update_observables(y_ss);
-                model.evaluate_functions(0.0);
-                f1 = model.function_value_cache();
-                // Restore, and re-derive again — otherwise the derived parameters
-                // keep the perturbed values this probe just gave them.
-                const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
-                rhs.sync_params(pi);
+                // one; restore and re-derive again afterwards, or the derived
+                // parameters keep the perturbed values this probe gave them.
+                auto probe = [&](double h_request, std::vector<double> &into) {
+                    double p_plus = 0.0;
+                    const double h = fd_probe(pval, h_request, &p_plus);
+                    const_cast<std::vector<Parameter> &>(params)[pi].value = p_plus;
+                    rhs.sync_params(pi);
+                    model.update_observables(y_ss);
+                    model.evaluate_functions(0.0);
+                    into = model.function_value_cache();
+                    const_cast<std::vector<Parameter> &>(params)[pi].value = pval;
+                    rhs.sync_params(pi);
+                    return h;
+                };
+
+                const double h = probe(param_fd_step(pval), f1);
+                const double h_wide_req = param_fd_wide_step(pval);
+                const bool have_wide = h_wide_req > param_fd_step(pval);
+                const double h_wide = have_wide ? probe(h_wide_req, f_wide) : 0.0;
+
                 for (int m = 0; m < n_func; ++m) {
                     if (!need_fd[m]) {
                         continue;
                     }
-                    result.function_sensitivity[static_cast<size_t>(m) * np + p] +=
-                        (f1[m] - f0[m]) / h;
+                    const double narrow = f1[m] - f0[m];
+                    double dfm_dp = narrow / h;
+                    if (have_wide &&
+                        param_fd_widen(narrow, f0[m], func_term_scale[static_cast<size_t>(m)])) {
+                        dfm_dp = (f_wide[m] - f0[m]) / h_wide;
+                    }
+                    result.function_sensitivity[static_cast<size_t>(m) * np + p] += dfm_dp;
                 }
             }
         }

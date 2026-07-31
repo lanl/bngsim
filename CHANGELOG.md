@@ -733,6 +733,60 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **A steady-state `∂f/∂p` component whose response is roundoff takes the wide
+  probe instead of fabricating a gradient (issue #123).** #76 made the
+  finite-difference parameter probe relative to the parameter, which is right
+  where the old absolute floor was wrong and wrong where it was right: when a
+  parameter's own term is a small fraction of the derivative it sits in,
+  `eps·|p|` moves that derivative by **less than its own roundoff**, and the
+  difference quotient is noise — often an exact zero, which a fitter reads as
+  "this parameter does not matter". `tests/data/cancelled_parameter_term.net` is
+  the minimal case: `dA/dt = ksyn + ktrace − kdeg·A` with `ksyn` = 100 and
+  `ktrace` = 1e-9 has a closed-form `dA*/dktrace = 1/kdeg = 1`, and the relative
+  step alone returns **exactly 0.0**.
+
+  Each parameter probe now takes **two** steps — the relative one and the
+  pre-#76 absolute one — and every component keeps the quotient that carried a
+  response:
+
+  * a component's response counts as signal when it clears that component's own
+    roundoff floor by 100x. The floor is `uround · max(|f_i|, Σ_j |J_ij·y_j|)`:
+    `|f_i|` alone is the wrong scale at a steady state, where `f_i` is a
+    cancellation of large rate terms and its roundoff is set by the **terms**,
+    not by the near-zero sum. The Jacobian row sum recovers that term scale (a
+    rate term of degree *d* in the species contributes *d* times the term) and
+    `J` is already assembled one step earlier, so it costs an O(n²) pass over
+    memory already in hand. The function half of `compute_ss_output_sensitivity`
+    gets the same treatment from `Σ_i |∂func_m/∂x_i · x_i|`, which its
+    state-chain sweep already computes.
+  * everything else keeps the relative step, so #76's fixes stand: on the
+    585-model corpus **every** `|p| >= 1` column is bit-identical to #76 (there
+    is no second step to choose there) and so are 92% of the rest.
+
+  A first attempt used the response to a deliberately tiny (4-ulp) probe as the
+  noise floor, which is the obvious estimator and **fails in exactly the case
+  that matters**: when the probe moves `f_i` by less than one ulp the measured
+  "noise" is exactly zero, no response can fail to clear it, and nothing ever
+  widens. It recovered 18 of 159 mis-stepped corpus columns where the term-scale
+  floor recovers 121. A geometric ladder of intermediate steps recovered **0** —
+  clearing a noise floor is not the same as being accurate at that width.
+
+  Measured end-to-end over the 585-model corpus — every model solved twice at
+  the same root, once with the compiled `∂f/∂p` and once forced onto the
+  fallback — on the 850 columns where the step rule can change anything
+  (`|p| < 1`, and a sensitivity system that is not itself degenerate):
+
+  | | pre-#76 | #76 | now |
+  |---|---|---|---|
+  | columns wrong by > 1e-3 | 103 | 57 | **52** |
+  | columns wrong by > 1e-1 | 70 | 42 | **41** |
+
+  Five columns cross 1e-3 the right way against #76 and **none** the wrong way,
+  and against pre-#76 the score is 51 fixed / **0 broken** — the five regressions
+  #76 disclosed are gone. 759 of the 850 are bit-identical to #76, as are all 278
+  control columns at `|p| >= 1`. The choice of 100x is flat across two decades
+  either side; the PR has the sensitivity table.
+
 - **The steady-state finite-difference probes are relative to what they perturb
   (issue #76).** `dY_ss/dp = -J⁻¹·(∂f/∂p)` differences either factor when no
   closed form is available, and both probes sized their step as
