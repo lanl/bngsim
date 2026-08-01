@@ -822,6 +822,23 @@ struct SteadyStateOptions {
     // A model with no closed form differences whatever this says.
     std::string jacobian = "auto";
 
+    // ─── Which direct linear solver the march factors with (issue #128) ───────
+    // The same two overrides SolverOptions carries, read by the same shared rule
+    // (route_to_sparse_linear_solver in bngsim/sparse_jacobian.hpp), so
+    // steady_state() routes a model to KLU exactly where run() does. Before #128
+    // the steady-state paths had no sparse option at all: a caller who
+    // constructed a Simulator with force_sparse_linear_solver=True still got a
+    // dense factorization out of steady_state(), silently.
+    //
+    // These reach the CVODE MARCH only — the tier-1 integration that both
+    // methods run. The KINSOL polish and the dY_ss/dp solve factor a *reduced*
+    // matrix whose pattern is a different object (the conservation-law
+    // projection fills in entries the model's pattern does not have), and both
+    // factor once per solve rather than once per integration step, so they stay
+    // dense. Setting both flags is an error, as it is for a run().
+    bool force_dense_linear_solver = false;
+    bool force_sparse_linear_solver = false;
+
     // Code-generated RHS shared library path. Honored by every steady-state
     // path — the CVODE march, the KINSOL polish, the residual check, and the
     // sensitivity assembly — exactly as SolverOptions::codegen_so_path is by the
@@ -915,6 +932,15 @@ struct SteadyStateResult {
     // returned answer is the retry's, so solver_jacobian_source reads
     // "finite-difference" alongside this.
     bool solver_jacobian_retried = false;
+    // linear_solver: which direct linear solver the CVODE march factored its
+    // Newton matrix with (issue #128) — "klu" (sparse CSC), "dense" (the
+    // built-in dense LU) or "lapack-dense" (the GH #84 BLAS factor). The
+    // steady-state analogue of SolverStats::linear_solver on a run(), and the
+    // only way to tell the routing apart from the outside: every corner returns
+    // the same answer, at 1.9-3.1x the wall clock on a 1000+ species model. It
+    // describes the MARCH; the KINSOL polish and the sensitivity solve factor a
+    // reduced matrix and are always dense.
+    std::string linear_solver;
     // jacobian_source: how J in dY_ss/dp = -J⁻¹·(∂f/∂p) was built —
     // "codegen" (compiled analytical), "analytical" (interpreted analytical),
     // "finite-difference", or "" when no sensitivity was requested.

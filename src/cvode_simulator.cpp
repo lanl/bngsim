@@ -21,6 +21,7 @@
 #include "bngsim/platform_compat.hpp" // POSIX ssize_t shim for Windows (GH #150)
 #include "bngsim/result.hpp"
 #include "bngsim/simulator.hpp"
+#include "bngsim/sparse_jacobian.hpp"
 #include "bngsim/types.hpp"
 #include "bngsim/wallclock.hpp"
 
@@ -61,13 +62,10 @@ namespace bngsim {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-// Species count threshold for auto-selecting sparse solver.
-// Uses KLU when N >= SPARSE_THRESHOLD AND density < SPARSE_DENSITY_MAX.
-// Many rule-based models have relatively dense Jacobians
-// (chromatic number ≈ N, density often 10-30%), making KLU's sparse
-// factorization slower than dense LAPACK LU. Only models with truly sparse
-// Jacobians (metapopulation, compartmental transport) tend to benefit.
-// The density cutoff reflects internal benchmarking.
+// SPARSE_THRESHOLD / SPARSE_DENSITY_MAX and the dense-vs-sparse decision they
+// gate now live in bngsim/sparse_jacobian.hpp, shared with the steady-state
+// march (issue #128) — see route_to_sparse_linear_solver there.
+
 // Retry a CV_TOO_MUCH_WORK return, but only while the integrator is still
 // getting somewhere (issue #54).
 //
@@ -122,9 +120,6 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
         throw std::runtime_error(msg.str());
     }
 }
-
-static constexpr int SPARSE_THRESHOLD = 50;
-static constexpr double SPARSE_DENSITY_MAX = 0.10; // 10%
 
 // The choice of dense backend (built-in dense LU vs the GH #84 BLAS dgetrf
 // solver) is made inside setup_linsol_and_jac via should_use_lapack_dense()
@@ -629,17 +624,10 @@ static int cvode_analytical_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, SUNM
 
     const auto &sp = model->jacobian_sparsity();
     sunrealtype *jac_data = SUNSparseMatrix_Data(J);
-    sunindextype *jac_col_ptrs = SUNSparseMatrix_IndexPointers(J);
-    sunindextype *jac_row_indices = SUNSparseMatrix_IndexValues(J);
 
     // CVODE may call SUNMatZero() before this callback, and SUNMatZero_Sparse
     // clears BOTH values and structural indices. Reinstall CSC structure first.
-    for (int j = 0; j <= sp.n; ++j) {
-        jac_col_ptrs[j] = static_cast<sunindextype>(sp.col_ptrs[j]);
-    }
-    for (int k = 0; k < sp.nnz; ++k) {
-        jac_row_indices[k] = static_cast<sunindextype>(sp.row_indices[k]);
-    }
+    install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
 
     // Accumulate the analytical Jacobian numeric values (Elementary + MM +
     // Functional, fixed-species rows zeroed) into the CSC data array. Single
@@ -674,17 +662,10 @@ static int cvode_codegen_sparse_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, 
 
     const auto &sp = model->jacobian_sparsity();
     sunrealtype *jac_data = SUNSparseMatrix_Data(J);
-    sunindextype *jac_col_ptrs = SUNSparseMatrix_IndexPointers(J);
-    sunindextype *jac_row_indices = SUNSparseMatrix_IndexValues(J);
 
     // Reinstall the CSC structure (see cvode_analytical_jac): SUNMatZero_Sparse
     // may have cleared both values and structural indices before this callback.
-    for (int j = 0; j <= sp.n; ++j) {
-        jac_col_ptrs[j] = static_cast<sunindextype>(sp.col_ptrs[j]);
-    }
-    for (int k = 0; k < sp.nnz; ++k) {
-        jac_row_indices[k] = static_cast<sunindextype>(sp.row_indices[k]);
-    }
+    install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
 
     // The compiled function fills the nnz-length value array (it memsets it
     // first). (sunrealtype is double in this build, so jac_data aliases double*.)
@@ -721,6 +702,10 @@ static int cvode_codegen_sparse_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, 
 //
 // Reference: Curtis, Powell, Reid (1974) "On the estimation of sparse
 // Jacobian matrices", J. Inst. Math. Appl. 13, 117–119.
+//
+// The difference formula itself is colored_fd_jacobian in
+// bngsim/sparse_jacobian.hpp, shared with the steady-state march's sparse route
+// (issue #128); what stays here is the CVODE plumbing around it.
 
 static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
                              N_Vector /*tmp1*/, N_Vector /*tmp2*/, N_Vector /*tmp3*/) {
@@ -739,17 +724,10 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
 
     // Access the sparse matrix CSC arrays
     sunrealtype *jac_data = SUNSparseMatrix_Data(J);
-    sunindextype *jac_col_ptrs = SUNSparseMatrix_IndexPointers(J);
-    sunindextype *jac_row_indices = SUNSparseMatrix_IndexValues(J);
 
     // CVODE may call SUNMatZero() before this callback, and SUNMatZero_Sparse
     // clears BOTH values and structural indices. Reinstall CSC structure first.
-    for (int j = 0; j <= sp.n; ++j) {
-        jac_col_ptrs[j] = static_cast<sunindextype>(sp.col_ptrs[j]);
-    }
-    for (int k = 0; k < sp.nnz; ++k) {
-        jac_row_indices[k] = static_cast<sunindextype>(sp.row_indices[k]);
-    }
+    install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
 
     // Workspace for perturbed state and RHS — persisted across calls in
     // user_data (T4) and sized once when this callback was selected, so this hot
@@ -764,37 +742,10 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
     double *fy_pert = data->colored_jac_fy_pert.data();
     double *h_vals = data->colored_jac_h_vals.data();
 
-    // Finite difference perturbation scale
-    const double sqrt_uround = 1.4901161193847656e-8; // sqrt(machine epsilon)
-
-    // Iterate over colors (one RHS eval per color)
-    for (int c = 0; c < sp.n_colors; ++c) {
-        const auto &group = sp.color_groups[c];
-
-        // 1. Build perturbed state: y_pert = y + Σ_{j in group} h_j * e_j
-        std::memcpy(y_pert, y_data, ns * sizeof(double));
-
-        for (int j : group) {
-            double h = sqrt_uround * std::max(std::abs(y_data[j]), 1.0);
-            h_vals[j] = h;
-            y_pert[j] += h;
-        }
-
-        // 2. Single RHS evaluation for all columns in this color group
-        model->compute_derivs(static_cast<double>(t), y_pert, fy_pert);
-
-        // 3. Extract Jacobian entries for each column in the group
-        for (int j : group) {
-            double inv_h = 1.0 / h_vals[j];
-            int64_t col_start = sp.col_ptrs[j];
-            int64_t col_end = sp.col_ptrs[j + 1];
-
-            for (int64_t k = col_start; k < col_end; ++k) {
-                int i = static_cast<int>(sp.row_indices[k]);
-                jac_data[k] = (fy_pert[i] - fy_data[i]) * inv_h;
-            }
-        }
-    }
+    colored_fd_jacobian(sp, ns, static_cast<double>(t), y_data, fy_data, jac_data, y_pert, fy_pert,
+                        h_vals, [model](double tt, const double *yy, double *ydot) {
+                            model->compute_derivs(tt, yy, ydot);
+                        });
 
     return 0; // success
 }
@@ -1715,32 +1666,13 @@ Result CvodeSimulator::Impl::run_algebraic_only(const TimeSpec &times) {
     return result;
 }
 
-// Decide dense vs sparse.
-// Use sparse KLU when: (1) KLU is available, (2) model is large enough,
-// (3) sparsity pattern exists, and (4) density is low enough to benefit.
-// If density > 50%, the Jacobian is effectively dense and KLU's overhead
-// makes it slower than optimized LAPACK dense LU.
-// Also guards against models where Functional rate laws make the sparsity
-// pattern nearly dense.
-// JAX Jacobians always produce dense matrices, so force dense mode there.
-//
-// The two force flags (GH #102, GH #29) straddle the size/density test but
-// not the hard requirements below it: KLU needs a real sparsity pattern to
-// build its CSC matrix, and a JAX Jacobian only ever fills a dense one, so
-// sparse_ok gates both overrides. force_dense wins the (rejected upstream)
-// both-set case only as a belt-and-braces default.
+// Decide dense vs sparse — the shared rule in bngsim/sparse_jacobian.hpp, which
+// the steady-state march takes too (issue #128). Kept as a member so the call
+// sites below read as they did; the decision itself is not duplicated.
 bool CvodeSimulator::Impl::choose_use_sparse(const SolverOptions &opts, int ns) const {
-#ifdef BNGSIM_HAS_KLU
-    const auto &sp = model.jacobian_sparsity();
-    const bool sparse_ok = (opts.jacobian != "jax") && !sp.empty();
-    return sparse_ok && !opts.force_dense_linear_solver &&
-           (opts.force_sparse_linear_solver ||
-            ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX)));
-#else
-    (void)opts;
-    (void)ns;
-    return false;
-#endif
+    return route_to_sparse_linear_solver(model.jacobian_sparsity(), ns, opts.jacobian,
+                                         opts.force_dense_linear_solver,
+                                         opts.force_sparse_linear_solver);
 }
 
 // ─── SUNDIALS v7 setup ───────────────────────────────────────────────────────

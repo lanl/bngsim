@@ -42,8 +42,14 @@
 #include <sunlinsol/sunlinsol_dense.h>
 #include <sunmatrix/sunmatrix_dense.h>
 
+#ifdef BNGSIM_HAS_KLU
+#include <sunlinsol/sunlinsol_klu.h>
+#include <sunmatrix/sunmatrix_sparse.h>
+#endif
+
 #include "bngsim/lapack_dense_linsol.hpp"
 #include "bngsim/platform_compat.hpp"
+#include "bngsim/sparse_jacobian.hpp"
 #include "bngsim/sundials_guards.hpp"
 
 #include <algorithm>
@@ -93,11 +99,15 @@ class SteadyStateRhs {
 
         // The compiled Jacobian comes in two shapes and the codegen emits exactly
         // one of them per model: dense for a dense-routed model, CSC for a
-        // sparse/KLU-routed one (GH #162). The steady-state sensitivity solve
-        // always factors densely, so both are resolved and the sparse one is
-        // scattered into the dense buffer — otherwise every large sparse model,
-        // which is precisely the case worth compiling, would silently drop back
-        // to the interpreted Jacobian fill.
+        // sparse/KLU-routed one (GH #162). Both are resolved, and each of the
+        // two fills below converts from whichever shape this model has —
+        // otherwise a model would silently drop back to the interpreted Jacobian
+        // whenever the shape it needs is not the shape it was emitted in. That
+        // happens in both directions: the sensitivity solve and the KINSOL
+        // polish always factor densely (so a CSC artifact is scattered into a
+        // dense buffer), and since issue #128 the march may factor sparsely
+        // under force_sparse_linear_solver on a model the codegen emitted dense
+        // (so a dense artifact is gathered into the CSC values).
         if (use_jit) {
             jit_ = MirJit(opts.codegen_c_source);
             rhs_fn_ = jit_.symbol<CodegenRhsFn>("bngsim_codegen_rhs");
@@ -220,6 +230,35 @@ class SteadyStateRhs {
         model_.fill_dense_analytical_jacobian(t, y, jac);
     }
 
+    // CSC values, length jacobian_sparsity().nnz, indexed by the pattern's data
+    // index — what KLU factors on the march's sparse route (issue #128). The
+    // mirror of fill_dense_jacobian, and it has the same precondition
+    // (has_analytical_jacobian()) and the same self-zeroing contract: every
+    // branch clears the buffer it fills.
+    void fill_sparse_jacobian(double t, const double *y, double *vals) {
+        if (jac_sparse_fn_) {
+            jac_sparse_fn_(t, const_cast<double *>(y), vals, &so_data_);
+            return;
+        }
+        if (jac_fn_) {
+            // Dense column-major → CSC. The compiled dense fill is emitted for
+            // models the auto rule routes DENSE, so this runs only under
+            // force_sparse_linear_solver; it is still the compiled derivative,
+            // which beats dropping to the interpreted sparse fill.
+            const int ns = model_.n_species();
+            const auto &sp = model_.jacobian_sparsity();
+            dense_vals_.assign(static_cast<size_t>(ns) * ns, 0.0);
+            jac_fn_(t, const_cast<double *>(y), dense_vals_.data(), &so_data_);
+            for (int col = 0; col < ns; ++col) {
+                for (int k = sp.col_ptrs[col]; k < sp.col_ptrs[col + 1]; ++k) {
+                    vals[k] = dense_vals_[static_cast<size_t>(col) * ns + sp.row_indices[k]];
+                }
+            }
+            return;
+        }
+        model_.fill_sparse_analytical_jacobian(t, y, vals);
+    }
+
     // The analytical ∂f/∂p exists only in the compiled artifact — there is no
     // interpreted counterpart, so an absent symbol means the caller must
     // difference. Since GH #67 that is no longer "every Functional/MM model":
@@ -297,7 +336,8 @@ class SteadyStateRhs {
     // eval_dfdp scratch, kept on the object so a per-parameter loop does not
     // reallocate four n_species vectors per column.
     std::vector<double> zero_seed_, tmp1_, tmp2_, ydot_scratch_;
-    std::vector<double> csc_vals_; // CSC → dense Jacobian scatter buffer
+    std::vector<double> csc_vals_;   // CSC → dense Jacobian scatter buffer
+    std::vector<double> dense_vals_; // dense → CSC Jacobian gather buffer (#128)
     int plist_[1] = {0};
 };
 
@@ -308,6 +348,10 @@ class SteadyStateRhs {
 struct SteadyStateUserData {
     SteadyStateRhs *rhs;
     NetworkModel *model;
+    // Scratch for the colored finite-difference sparse Jacobian (issue #128),
+    // sized once when that callback is selected so a per-step Jacobian
+    // allocates nothing. Empty on every other path.
+    std::vector<double> fd_y_pert, fd_fy_pert, fd_h_vals;
 };
 
 // Does SteadyStateOptions::jacobian ask for the closed form?
@@ -516,17 +560,67 @@ static double lu_diag_rcond(const double *lu, int n) {
     return dmin / dmax;
 }
 
-// Build the dense direct linear solver for an n×n steady-state system,
-// applying the GH #84 gate (bngsim/lapack_dense_linsol.hpp). The steady-state
-// paths have no KLU option — they always factor densely — so the density floor
-// (not force_dense) is the right guard: a structurally-sparse SS Jacobian stays
-// on the built-in dense LU, whose zero-skipping beats a full BLAS dgetrf, while
-// large AND dense SS systems take the optimized factor. force_dense is false.
+// Build the dense direct linear solver for an n×n steady-state system, applying
+// the GH #84 gate (bngsim/lapack_dense_linsol.hpp). This is the whole story for
+// the KINSOL polish and the sensitivity solve, which factor the *reduced*
+// matrix and have no sparse route; the march reaches it only when
+// ss_use_sparse_linsol says dense (issue #128).
+//
+// `force_dense` is the caller's force_dense_linear_solver, passed on for parity
+// with CvodeSimulator::Impl::choose_linear_solver_kind. The gate is opt-in and
+// does not currently consult it (nor n, nor density) — it is threaded through so
+// the two solvers cannot answer this question from different inputs if it ever
+// does.
 static SUNLinearSolver ss_make_dense_linsol(N_Vector v, SUNMatrix A, SUNContext ctx,
-                                            NetworkModel &model, int n) {
-    const bool use_lapack =
-        should_use_lapack_dense(n, model.jacobian_sparsity().density, /*force_dense=*/false);
+                                            NetworkModel &model, int n, bool force_dense = false) {
+    const bool use_lapack = should_use_lapack_dense(n, model.jacobian_sparsity().density,
+                                                    /*force_dense=*/force_dense);
     return make_dense_linear_solver(v, A, ctx, use_lapack);
+}
+
+// Does the CVODE march factor with KLU rather than densely (issue #128)?
+//
+// The shared rule run() takes (bngsim/sparse_jacobian.hpp) — same threshold,
+// same density test, same force flags — and then one requirement of its own:
+// something to fill the CSC values with. KLU cannot fall back on CVODE's
+// built-in difference quotient, which covers dense and banded matrices only, so
+// a sparse route needs either the closed form or a graph coloring, and a
+// pattern with no structural nonzero has neither.
+//
+// run() refuses that case with a legible error instead, and rightly: there the
+// only way to ask for a sparse route was force_sparse_linear_solver, so the
+// refusal answers a request the caller made. Here the AUTO rule can ask for it
+// unprompted — a model with 50+ species and no reactions has density
+// 0 < SPARSE_DENSITY_MAX — and such a model solves immediately, f(y) ≡ 0 being
+// a steady state. Failing it would be a regression, so the march declines the
+// route and factors densely, exactly as it did before #128.
+//
+// One predicate, so the marcher and the reported name cannot disagree about
+// what ran.
+static bool ss_use_sparse_linsol(NetworkModel &model, const SteadyStateRhs &rhs,
+                                 const SteadyStateOptions &opts, int ns) {
+    const auto &sp = model.jacobian_sparsity();
+    if (!route_to_sparse_linear_solver(sp, ns, opts.jacobian, opts.force_dense_linear_solver,
+                                       opts.force_sparse_linear_solver)) {
+        return false;
+    }
+    // A closed form fills any pattern; otherwise it takes a coloring, which
+    // every pattern with a structural nonzero has (a fully dense one degenerates
+    // to one column per color, which is correct and merely not a speedup).
+    return ss_install_solver_jacobian(rhs, opts) ? sp.nnz > 0
+                                                 : model.ensure_jacobian_coloring().has_coloring();
+}
+
+// What the march factored with, for SteadyStateResult::linear_solver.
+static const char *ss_linear_solver_name(NetworkModel &model, const SteadyStateRhs &rhs,
+                                         const SteadyStateOptions &opts, int ns) {
+    if (ss_use_sparse_linsol(model, rhs, opts, ns)) {
+        return "klu";
+    }
+    return should_use_lapack_dense(ns, model.jacobian_sparsity().density,
+                                   opts.force_dense_linear_solver)
+               ? "lapack-dense"
+               : "dense";
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +655,60 @@ static int cvode_ss_dense_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, SUNMat
                                    SUNDenseMatrix_Data(J));
     return 0;
 }
+
+#ifdef BNGSIM_HAS_KLU
+// The same Jacobian, written into the CSC values KLU factors (issue #128), for a
+// march the routing rule sent to the sparse linear solver. The structure has to
+// be reinstalled first: CVODE may SUNMatZero() before the callback, and
+// SUNMatZero_Sparse clears the index arrays along with the values.
+//
+// Like cvode_ss_dense_jac, and unlike its two time-course mirrors, this carries
+// no GH #135 nonnegative-clamp retry — for the reason given there: that guard
+// exists because the time-course RHS is clamped and this one is not, so a state
+// where the closed form goes non-finite is one the march has already failed on
+// f(y) alone.
+static int cvode_ss_sparse_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, SUNMatrix J, void *ud,
+                               N_Vector /*tmp1*/, N_Vector /*tmp2*/, N_Vector /*tmp3*/) {
+    auto *data = static_cast<SteadyStateUserData *>(ud);
+    const auto &sp = data->model->jacobian_sparsity();
+    install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
+    data->rhs->fill_sparse_jacobian(static_cast<double>(t), N_VGetArrayPointer(y),
+                                    SUNSparseMatrix_Data(J));
+    return 0;
+}
+
+// A sparse-routed march with no closed form to install: the Curtis-Powell-Reid
+// colored difference quotient, at one RHS evaluation per COLOR rather than per
+// species. Not an optimization but a requirement — CVODE's built-in difference
+// quotient covers dense and banded matrices only, so a sparse matrix with no
+// Jacobian callback fails linear-solver initialization outright.
+//
+// It differences the march's OWN right-hand side (SteadyStateRhs::eval, compiled
+// when a codegen artifact is attached), not NetworkModel::compute_derivs — the
+// matrix therefore belongs to the system being integrated even when the two
+// backends differ. cvode_colored_jac on the time-course path predates the
+// codegen RHS and still differences the interpreted one.
+static int cvode_ss_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *ud,
+                                N_Vector /*tmp1*/, N_Vector /*tmp2*/, N_Vector /*tmp3*/) {
+    auto *data = static_cast<SteadyStateUserData *>(ud);
+    const int ns = data->model->n_species();
+    // Bare accessor: the marcher materialized the coloring before installing
+    // this callback, and the materialized value never changes afterward.
+    const auto &sp = data->model->jacobian_sparsity();
+
+    install_csc_structure(SUNSparseMatrix_IndexPointers(J), SUNSparseMatrix_IndexValues(J), sp);
+
+    // Sized once, when the callback was selected, so this hot path allocates
+    // nothing per Jacobian evaluation.
+    SteadyStateRhs *rhs = data->rhs;
+    colored_fd_jacobian(
+        sp, ns, static_cast<double>(t), N_VGetArrayPointer(y), N_VGetArrayPointer(fy),
+        SUNSparseMatrix_Data(J), data->fd_y_pert.data(), data->fd_fy_pert.data(),
+        data->fd_h_vals.data(),
+        [rhs](double tt, const double *yy, double *ydot) { rhs->eval(tt, yy, ydot); });
+    return 0;
+}
+#endif // BNGSIM_HAS_KLU
 
 // A CVODE session held across successive marches of the SAME trajectory.
 //
@@ -598,22 +746,7 @@ class SteadyStateMarcher {
         CVodeSetUserData(cvode_mem_, &ud_);
         CVodeSetMaxNumSteps(cvode_mem_, opts.max_steps);
 
-        A_ = SUNMatrixGuard(SUNDenseMatrix(ns_, ns_, ctx_));
-        LS_ = SUNLinSolGuard(ss_make_dense_linsol(y_, A_, ctx_, model, ns_));
-        CVodeSetLinearSolver(cvode_mem_, LS_, A_);
-
-        // The Newton matrix CVODE factors at each setup (issue #127). Until then
-        // this march ran CVODE's internal difference quotient whatever
-        // opts.jacobian said — one RHS evaluation per species per setup, on
-        // models whose closed form is assembled, compiled and loaded in this very
-        // object. The gate is the library's usual one (ss_install_solver_jacobian),
-        // and it is the same one tier 2 applies to KINSetJacFn, so a solve does
-        // not difference in one tier and not the other.
-        if (ss_install_solver_jacobian(rhs, opts)) {
-            if (CVodeSetJacFn(cvode_mem_, cvode_ss_dense_jac) != CV_SUCCESS) {
-                throw std::runtime_error("CVodeSetJacFn failed (steady_state)");
-            }
-        }
+        setup_linear_solver(model, rhs, opts);
     }
 
     // March forward one internal CVODE step at a time, checking the BNG2.pl
@@ -691,6 +824,73 @@ class SteadyStateMarcher {
     bool integrator_failed() const { return integrator_failed_; }
 
   private:
+    // The Newton matrix and the solver that factors it.
+    //
+    // Two decisions, taken the way CvodeSimulator::run takes them:
+    //
+    //   * dense vs sparse (issue #128) — ss_use_sparse_linsol, the shared
+    //     size/density/force-flag rule. Until then this was unconditionally a
+    //     SUNDenseMatrix, so the march factored densely on the very models
+    //     run() routes to KLU: BaruaBCR_2012 (1122 species) solves in 1.78 s
+    //     against the dense 5.59 s, fceri_fyn (1281) in 6.92 s against 13.25 s.
+    //   * which Jacobian fills it (issue #127) — ss_install_solver_jacobian,
+    //     the same gate tier 2 applies to KINSetJacFn, so a solve does not
+    //     difference in one tier and not the other. Until then the march ran
+    //     CVODE's internal difference quotient whatever opts.jacobian said, on
+    //     models whose closed form is assembled, compiled and loaded in this
+    //     very object.
+    //
+    // The two are independent — the issue #128 attribution ran all four corners
+    // and every one returned the same state — except on the sparse route, where
+    // "no callback" is not an option: CVODE's built-in difference quotient
+    // covers dense and banded matrices only.
+    void setup_linear_solver(NetworkModel &model, SteadyStateRhs &rhs,
+                             const SteadyStateOptions &opts) {
+#ifdef BNGSIM_HAS_KLU
+        // ss_use_sparse_linsol has already materialized the coloring when the
+        // colored difference quotient is the fill, so the bare accessor below
+        // (and in cvode_ss_colored_jac) reads a populated pattern.
+        if (ss_use_sparse_linsol(model, rhs, opts, ns_)) {
+            const bool analytical = ss_install_solver_jacobian(rhs, opts);
+            const auto &sp = model.jacobian_sparsity();
+
+            A_ = SUNMatrixGuard(SUNSparseMatrix(ns_, ns_, sp.nnz, CSC_MAT, ctx_));
+            if (!A_) {
+                throw std::runtime_error("SUNSparseMatrix failed (steady_state)");
+            }
+            install_csc_structure(SUNSparseMatrix_IndexPointers(A_),
+                                  SUNSparseMatrix_IndexValues(A_), sp);
+
+            LS_ = SUNLinSolGuard(SUNLinSol_KLU(y_, A_, ctx_));
+            if (!LS_) {
+                throw std::runtime_error("SUNLinSol_KLU failed (steady_state)");
+            }
+            CVodeSetLinearSolver(cvode_mem_, LS_, A_);
+
+            if (!analytical) {
+                ud_.fd_y_pert.resize(static_cast<size_t>(ns_));
+                ud_.fd_fy_pert.resize(static_cast<size_t>(ns_));
+                ud_.fd_h_vals.assign(static_cast<size_t>(ns_), 0.0);
+            }
+            if (CVodeSetJacFn(cvode_mem_, analytical ? cvode_ss_sparse_jac
+                                                     : cvode_ss_colored_jac) != CV_SUCCESS) {
+                throw std::runtime_error("CVodeSetJacFn failed (steady_state, sparse)");
+            }
+            return;
+        }
+#endif
+        A_ = SUNMatrixGuard(SUNDenseMatrix(ns_, ns_, ctx_));
+        LS_ = SUNLinSolGuard(
+            ss_make_dense_linsol(y_, A_, ctx_, model, ns_, opts.force_dense_linear_solver));
+        CVodeSetLinearSolver(cvode_mem_, LS_, A_);
+
+        if (ss_install_solver_jacobian(rhs, opts)) {
+            if (CVodeSetJacFn(cvode_mem_, cvode_ss_dense_jac) != CV_SUCCESS) {
+                throw std::runtime_error("CVodeSetJacFn failed (steady_state)");
+            }
+        }
+    }
+
     NetworkModel &model_;
     SteadyStateRhs &rhs_;
     const SteadyStateOptions &opts_;
@@ -2330,6 +2530,17 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         throw std::runtime_error("Cannot find steady state: model has no species");
     }
 
+    // Same refusal run() makes (issue #128): the pair is a contradiction, not a
+    // precedence question, and both flags exist to measure the auto rule — a
+    // solve that quietly honors one of them hands a benchmark auto-selected
+    // numbers under a "forced" label.
+    if (opts.force_dense_linear_solver && opts.force_sparse_linear_solver) {
+        throw std::invalid_argument(
+            "force_dense_linear_solver and force_sparse_linear_solver are mutually "
+            "exclusive; set at most one. Leave both false for the size/density "
+            "auto-selection.");
+    }
+
     // Normalize and validate method. "kinsol" is an input alias for "newton";
     // "auto" was removed (newton already means try-Newton-then-parity-fallback).
     std::string method = opts.method;
@@ -2415,6 +2626,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     // and read off the options the ANSWER came from, so a retried solve reports
     // the difference quotient that produced it.
     result.solver_jacobian_source = ss_solver_jacobian_source(rhs, *effective);
+    // And which linear solver factored it (issue #128). Read off the same
+    // predicate the marcher routes on, and off the effective options for the
+    // same reason as above — though a retry cannot change this one, since only
+    // jacobian="jax" moves the routing and the retry sets "fd".
+    result.linear_solver = ss_linear_solver_name(model, rhs, *effective, ns);
 
     // ── Why did it fail? (issue #74) ──────────────────────────────────────────
     // A failed solve used to say only converged=false, which reads as "needs more

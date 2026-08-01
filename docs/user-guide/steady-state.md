@@ -97,8 +97,56 @@ Where the RHS is interpreted the saving is real everywhere. Where it is
 not: a profile of the 149-species case puts ~80% of CVODE's time in
 `SUNDlsMat_denseGETRF` and none of it in the Jacobian fill, so removing the
 columns does not pay for itself below a few hundred species and the solve can
-come out slightly slower. That dense factorization — the steady-state march
-cannot route to KLU the way `run()` does — is issue #128.
+come out slightly slower. That dense factorization is what issue #128 addressed,
+below.
+
+### The linear solver the march factors with
+
+The march routes its Newton matrix to **sparse KLU or a dense LU by the same
+rule `run()` uses** (issue #128): KLU when the model has at least
+`SPARSE_THRESHOLD` = 50 species, a Jacobian sparsity density under
+`SPARSE_DENSITY_MAX` = 10%, and a structural nonzero to factor. `ss.linear_solver`
+reports which one ran — `"klu"`, `"dense"` or `"lapack-dense"`.
+
+`force_sparse_linear_solver` and `force_dense_linear_solver` on the Simulator
+override the size and density gates in either direction and now reach
+`steady_state()` and `steady_state_batch()` as well as `run()`. Before #128 the
+steady-state paths had no sparse option at all, so a Simulator built with
+`force_sparse_linear_solver=True` still got a dense factorization out of
+`steady_state()` without saying so.
+
+This changes the cost, not the answer. Measured before and after over the
+585-model `.net` corpus under both methods: the models the routing leaves dense
+are byte-identical, `converged` flips on none of the routed models, and over
+every converged model the state moves by at most 2.0e-8 of the model's own
+scale (median exactly 0). What KLU changes is the factorization and, with it,
+the step sequence taken to reach the same root — the `n_steps` ratio on routed
+models is a median of 1.000 (range 0.93–1.07):
+
+| model (species, density) | dense | KLU |
+|---|---|---|
+| `egfr_ground` (356, 6.7%) | 0.19 s | **0.18 s** |
+| `BaruaBCR_2012` (1122, 2.5%) | 5.59 s | **1.78 s** (3.1×) |
+| `fceri_fyn` (1281, 2.3%) | 13.25 s | **6.92 s** (1.9×) |
+
+(`method="integration"`, interpreted RHS, `tol=1e-9`. The cutoff earns its
+place: below a few hundred species KLU's setup and indexing cost roughly cancel
+its factorization win, which is why the rule does not simply always choose it.)
+
+`jacobian="fd"` stays on the sparse route rather than reverting to dense. On a
+KLU-routed march that is a requirement and not a preference — CVODE's built-in
+difference quotient supports dense and banded matrices only — so the march fills
+the CSC values with a Curtis-Powell-Reid *colored* difference quotient, at one
+RHS evaluation per color (typically 5–20) instead of one per species. Only
+`jacobian="jax"` forces the dense route, since a JAX Jacobian only ever fills a
+dense matrix.
+
+The **KINSOL polish and the `dY_ss/dp` solve are deliberately not routed**. Both
+factor the *reduced* system, whose matrix is the model's Jacobian projected
+through the conservation-law reconstruction — the projection fills in entries the
+model's sparsity pattern does not have, so the reduced pattern is a different
+object that would have to be derived. Both also factor once per solve rather than
+once per integration step, which is where it matters least.
 
 **When the closed form is called off.** An exact Jacobian omits the jump in a
 rate law that is genuinely discontinuous in a state variable, so CVODE's

@@ -874,6 +874,8 @@ class SsaSimulator:
 class SteadyStateOptions:
     codegen_c_source: str
     codegen_so_path: str
+    force_dense_linear_solver: bool
+    force_sparse_linear_solver: bool
     jacobian: str
     method: str
     def __init__(self) -> None:
@@ -949,6 +951,9 @@ class SteadyStateResultCore:
         ...
     @property
     def expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
+        ...
+    @property
+    def linear_solver(self) -> str:
         ...
     @property
     def method_used(self) -> str:
