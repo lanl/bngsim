@@ -1097,25 +1097,29 @@ def _evaluate_threshold(
 
     A bare parameter name (the common case: ``t>=sigma``) is a dict lookup. Any
     other arithmetic expression — including one over derived parameters — goes
-    through the *same* preparation as :func:`_derived_expr_partials_numeric`:
-    nested-derived inlining, the ExprTk surface rewrite, and the keyword/reserved
-    symbol aliasing. The two functions therefore agree on which expressions they
-    can handle, so the value and its derivative always come from the same round
-    trip — which is the whole point, since a caller that gets partials but no
-    value (or the reverse) drops the crossing entirely (issue #105).
+    through the *same* preparation as :func:`_derived_expr_partials_numeric`,
+    which since GH #108 means literally the same function
+    (:func:`bngsim._codegen._prepare_derived_expr`, reached here through
+    :func:`bngsim._codegen._derived_expr_value_numeric`): the ExprTk surface
+    rewrite, the keyword/reserved symbol aliasing, and one parse. The two
+    therefore cannot disagree about which expressions they can handle, so the
+    value and its derivative always come from the same round trip — which is the
+    whole point, since a caller that gets partials but no value (or the reverse)
+    drops the crossing entirely (issue #105).
 
     Without the aliasing, a threshold that is *arithmetic over* a parameter whose
     name is a Python keyword (``del+gap``) fails at tokenization, so the value
     came back ``None`` while the partials of the identical expression came back
     correct. A *bare* keyword name never reached sympy, which is why only the
     arithmetic form was affected.
+
+    Sharing the preparation also retired the last place this path flattened the
+    derived-parameter DAG (GH #99 moved the partials off it and this site was
+    missed): a derived name now substitutes its current value rather than the
+    expression it stands for. ``ode/synthesis_v3``'s ``F0+Fh`` inlined to 61 KB
+    and 1.2 s of sympy for a number the partials already had.
     """
-    from bngsim._codegen import (
-        _inline_derived_param_refs,
-        _preprocess_derived_expr,
-        _substitute_symbols_once,
-        _sympy_symbol_alias_map,
-    )
+    from bngsim._codegen import _derived_expr_value_numeric
 
     s = expr.strip()
     if s in param_idx:
@@ -1124,26 +1128,13 @@ def _evaluate_threshold(
         return float(s)
     except ValueError:
         pass
-    try:
-        import sympy as sp
-        from sympy.parsing.sympy_parser import parse_expr
-    except ImportError:  # pragma: no cover - sympy is a hard dep of codegen
-        return None
-    flat = _preprocess_derived_expr(_inline_derived_param_refs(s, derived_exprs))
-    referenced = sorted(p for p in param_idx if re.search(rf"\b{re.escape(p)}\b", flat))
-    sym_name_of = _sympy_symbol_alias_map(referenced)
-    if sym_name_of is None:
-        # Two parameters would collide on one symbol; the partials bail here too,
-        # and merging them would evaluate the wrong expression.
-        return None
-    # One left-to-right pass, never sequential `re.sub`: a rewrite must not be
-    # able to match inside text an earlier rewrite just wrote (issue #69).
-    flat = _substitute_symbols_once(flat, {p: sym_name_of[p] for p in referenced})
-    local: dict = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
-    local.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
-    try:
-        sym = parse_expr(flat, local_dict=local, evaluate=True)
-        subs = {local[sym_name_of[p]]: values[param_idx[p]] for p in referenced}
-        return float(sym.subs(subs).evalf())
-    except Exception:
-        return None
+    # Anything in `param_idx` that is not one of the expression-valued names is
+    # a primary here, exactly as the partials twin is called (`thresholds.exprs`
+    # also carries the rule-bound parameters, which are not constants either).
+    return _derived_expr_value_numeric(
+        s,
+        set(param_idx) - set(derived_exprs),
+        derived_exprs.keys(),
+        param_idx,
+        values,
+    )

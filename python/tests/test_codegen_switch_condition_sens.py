@@ -363,9 +363,10 @@ class TestPythonKeywordThresholdParameters:
 
     def test_a_derived_keyword_threshold_chain_rules_through(self, tmp_path):
         """The keyword name need not appear in the condition at all: ``base =
-        del+gap`` is a ConstantExpression, and inlining runs *before* the parse,
-        so ``t >= base+lead`` still hands ``del+gap+lead`` to sympy. This is the
-        ordering the fix depends on — alias after inlining, not before."""
+        del+gap`` is a ConstantExpression, so ``t >= base+lead`` reaches ``del``
+        only through the derived-parameter DAG. The value and the partials walk
+        that DAG the same way (GH #108) — ``base`` is one symbol carrying its own
+        current value on both sides — and the aliasing has to survive it."""
         text = SWITCHED.replace(
             "    5 sigma   3.0  # Constant\n",
             "    5 del     1.0  # Constant\n"
@@ -386,6 +387,92 @@ class TestPythonKeywordThresholdParameters:
         decline the crossing) is the only safe answer."""
         param_idx = {"del": 0, "_BNG_KW_del": 1}
         assert sw._evaluate_threshold("del+_BNG_KW_del", param_idx, [1.0, 2.0], {}) is None
+
+
+def _squaring_chain(depth: int) -> dict[str, str]:
+    """``d0 = base``, ``d{k+1} = dk*dk`` — a derived-parameter chain whose
+    flattened text doubles at every level while its DAG has ``depth`` nodes."""
+    return {"d0": "base"} | {f"d{k + 1}": f"d{k}*d{k}" for k in range(depth)}
+
+
+class TestIssue108ThresholdValueSharesOnePreparation:
+    """GH #108. ``_evaluate_threshold`` and ``_derived_expr_partials_numeric``
+    now run *literally* the same preparation
+    (``_codegen._prepare_derived_expr``) rather than two copies of one sequence.
+
+    #105 was the fourth time a fix landed on one of a pair of expression parsers
+    and not the other, and #99 promptly made it five: it moved the partials off
+    the exponential ``_inline_derived_param_refs`` flattening and onto a DAG walk,
+    and this site — which the issue's scope note did not name — kept flattening.
+    Nothing failed, because the two agree on the *number*; what diverged was the
+    cost and the set of expressions each could read.
+    """
+
+    def test_the_value_never_sees_the_flattened_expression(self, monkeypatch):
+        """The #99 invariant, applied to the value: assert on the size of what
+        reaches sympy, not on the clock.
+
+        ``d{k+1} = dk*dk`` doubles the flattened text at every level, so the
+        pre-#108 threshold value handed ``sp.parse_expr`` a 2^depth-character
+        string; substituting each derived name's own value hands it the
+        expression as written. Spying on sympy's parser rather than on a bngsim
+        helper keeps this true of *any* implementation that stops flattening.
+        """
+        import sympy.parsing.sympy_parser as spp
+
+        depth = 12
+        chain = _squaring_chain(depth)
+        param_idx = {"base": 0} | {f"d{k}": k + 1 for k in range(depth + 1)}
+        # base^(2^k), which is what the engine's own ConstantExpression pass
+        # would have left in each derived parameter's slot.
+        values = [1.0001]
+        for _ in range(depth + 1):
+            values.append(values[-1] ** 2)
+        values[1] = values[0]  # d0 = base
+
+        expr = f"2*d{depth}"
+        flattened = cg._inline_derived_param_refs(expr, chain)
+        assert len(flattened) > 2**depth, "the fixture no longer blows up when flattened"
+
+        seen: list[str] = []
+        real_parse = spp.parse_expr
+        monkeypatch.setattr(
+            spp, "parse_expr", lambda s, **kw: (seen.append(s), real_parse(s, **kw))[1]
+        )
+        value = sw._evaluate_threshold(expr, param_idx, values, chain)
+
+        assert seen, "nothing reached sympy at all — the spy is in the wrong place"
+        assert max(len(s) for s in seen) < 200, (
+            f"sympy was handed {max(len(s) for s in seen)} characters for a "
+            f"{len(expr)}-character threshold — that is the flattened DAG"
+        )
+        assert value == pytest.approx(2.0 * values[param_idx[f"d{depth}"]])
+
+    def test_the_value_and_its_partials_agree_through_the_dag(self):
+        """The property #105 restored, now over a *nested* threshold: both halves
+        must succeed or both must decline, or the caller drops the crossing."""
+        depth = 6
+        chain = _squaring_chain(depth)
+        param_idx = {"base": 0} | {f"d{k}": k + 1 for k in range(depth + 1)}
+        values = [2.0]
+        for _ in range(depth + 1):
+            values.append(values[-1] ** 2)
+        values[1] = values[0]
+
+        for expr in (f"2*d{depth}", f"d{depth}+d1", f"d{depth}/d0"):
+            value = sw._evaluate_threshold(expr, param_idx, values, chain)
+            partials = cg._derived_expr_partials_numeric(
+                expr, {"base"}, param_idx, values, chain, warn_on_failure=False
+            )
+            assert value is not None and partials, f"{expr!r}: value={value}, {partials=}"
+            assert set(partials) == {"base"}
+
+    def test_a_constant_threshold_still_evaluates(self):
+        """``_prepare_derived_expr`` declines an expression that names no
+        parameter — for the differentiating callers that is a genuine zero, but a
+        threshold of ``2*3600`` still has a crossing time. The value path opts
+        out of that early return rather than growing a second parse."""
+        assert sw._evaluate_threshold("2*3600", {"k": 0}, [1.0], {}) == pytest.approx(7200.0)
 
 
 # ─── one predicate, two callers ────────────────────────────────────────────

@@ -4311,6 +4311,12 @@ def _build_model_from_sbml_doc(doc):
         from bngsim._codegen import _PY_KEYWORD_PARAM_NAMES, _alias_keyword_param
         from bngsim._jacobian import _TIME_SYM, _exprtk_to_sympy, sympy_to_exprtk
 
+        # Python keywords only. This round trip prints back to *ExprTk* through
+        # `sympy_to_exprtk`, not to C through `sp.ccode`, so a C reserved word is
+        # not a hazard here at all — `_unalias` below reverses exactly this map,
+        # and widening one without the other would leave `_BNG_KW_const` in the
+        # emitted expression (GH #108; the rule lives in
+        # `bngsim._codegen._alias_keyword_param`).
         def _alias(n: str) -> str:
             return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 

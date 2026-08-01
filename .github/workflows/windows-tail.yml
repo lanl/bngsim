@@ -135,6 +135,7 @@ jobs:
             python/tests/test_codegen_output_sens_budget.py \
             python/tests/test_codegen_power_denominator.py \
             python/tests/test_codegen_jit_prelude.py \
+            python/tests/test_codegen_alias_rule.py \
             python/tests/test_ssa_propensity_export.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee tail-windows.log

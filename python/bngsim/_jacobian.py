@@ -192,7 +192,11 @@ def _build_local_dict(preprocessed: str, sp):
             # by the free-symbol check.
             continue
         # A variable identifier. Keyword-named params (e.g. ``lambda``) get a
-        # safe alias so parse_expr can tokenize them.
+        # safe alias so parse_expr can tokenize them. Keywords only: this module
+        # emits through :func:`sympy_to_c`, whose resolve callback never lets
+        # sympy print a symbol name, so a C reserved word needs no alias to
+        # survive the round trip (GH #108; the rule is in
+        # :func:`bngsim._codegen._alias_keyword_param`).
         alias = _alias_keyword_param(ident) if ident in _PY_KEYWORD_PARAM_NAMES else ident
         alias_of[ident] = alias
         local[alias] = sp.Symbol(alias)
@@ -320,7 +324,9 @@ def differentiate_rate_law(
     if sym_expr is None:
         return None
 
-    # Build aliased name sets to match what _exprtk_to_sympy produced.
+    # Build aliased name sets to match what _exprtk_to_sympy produced. Python
+    # keywords only, matching `_build_local_dict` above — nothing here reaches
+    # `sp.ccode`, so C reserved words are not a round-trip hazard (GH #108).
     def _alias(n: str) -> str:
         return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 
@@ -922,6 +928,9 @@ def differentiate_expression_output_partials(
 
     # Keyword-named params get a safe alias in _exprtk_to_sympy; round-trip it
     # here so the sympy symbol name resolves back to the right kind / C ref.
+    # Keywords only, deliberately: the resolve callback built below is what
+    # `sympy_to_c` prints through, so no symbol name reaches a C printer that
+    # would rename a reserved word (GH #108).
     def _alias(n: str) -> str:
         return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 
