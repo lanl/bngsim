@@ -781,6 +781,10 @@ in `CMakeLists.txt`) is derived from it.
   fields.
 
 ### Fixed
+- **Concurrent C expression emission now keeps symbol resolvers isolated per thread
+  (issue #117).** The cached SymPy C printer is now thread-local, preventing one
+  emission from replacing or clearing another emission's resolver and causing a
+  supported derivative to be reported as unavailable.
 - **`set_param` did not rebuild a species initial condition that references the
   parameter (issue #79).** `A() Stot` in a `.net` species block — or an SBML
   `initialAssignment` that is a bare `<ci>` — declares that species' initial
@@ -1108,10 +1112,6 @@ in `CMakeLists.txt`) is derived from it.
   and every `hasOnlySubstanceUnits="false"` species — the fix is a no-op wherever
   the projection was already right. The species block is storage-based and
   deliberately keeps its unscaled weight.
-- **Concurrent C expression emission now keeps symbol resolvers isolated per thread
-  (issue #117).** The cached SymPy C printer is now thread-local, preventing one
-  emission from replacing or clearing another emission's resolver and causing a
-  supported derivative to be reported as unavailable.
 - **A switch-time crossing now resumes on the branch it just crossed into, so
   forward sensitivities stop dying at fitted `if(t>=p, …)` onsets (issue #82).**
   The issue #48 stop time lands `t` exactly on the crossing `t*`, but the `if()`

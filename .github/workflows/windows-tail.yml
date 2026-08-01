@@ -53,6 +53,7 @@ on:
       - "src/ssa_simulator.cpp"
       - "include/bngsim/platform_compat.hpp"
       - "python/tests/test_codegen*.py"
+      - "python/tests/test_jacobian_c_emitter.py"
       - "python/tests/test_model_codegen_sensitivity.py"
       - "python/tests/test_ssa_propensity_export.py"
       - "python/tests/test_timeout.py"
@@ -130,6 +131,7 @@ jobs:
             python/tests/test_codegen_outputs.py \
             python/tests/test_codegen_chunking.py \
             python/tests/test_codegen_jacobian.py \
+            python/tests/test_jacobian_c_emitter.py \
             python/tests/test_model_codegen_sensitivity.py \
             python/tests/test_codegen_sens_budget.py \
             python/tests/test_codegen_output_sens_budget.py \
