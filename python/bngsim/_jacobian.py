@@ -867,6 +867,7 @@ def differentiate_expression_output_partials(
     observable_cref: dict[str, str],
     param_cref: dict[str, str],
     function_cref: dict[str, str],
+    deadline: float | None = None,
 ):
     """Differentiate a global-function body w.r.t. each *directly referenced*
     symbol (species / observable / parameter / earlier function), WITHOUT
@@ -893,6 +894,15 @@ def differentiate_expression_output_partials(
     (``_emit_function_lines``). On a name collision across kinds, precedence
     matches the value path's ``_build_ident_lookup_model``: function > observable
     > species > parameter.
+
+    ``deadline`` (GH #97) is a ``time.perf_counter()`` stamp bounding the caller's
+    whole build-time analysis. It is checked on entry — parsing the body is itself
+    unbounded work — and again before each ``sp.diff``, so one pathological
+    function overshoots by at most one partial. Expiry raises
+    :class:`_DerivationBudgetExceeded` rather than returning a reason: it is a
+    property of the *build*, not of this function, and the caller has to know the
+    difference (it marks every remaining function unsupported instead of
+    attributing the failure to this body). ``None`` (the default) is unbounded.
     """
     reason = unsupported_expr_construct(body)
     if reason is not None:
@@ -902,6 +912,9 @@ def differentiate_expression_output_partials(
         import sympy as sp
     except ImportError:  # pragma: no cover - sympy is a hard dep of codegen sens
         return None, "sympy is required for expression output sensitivities"
+
+    if deadline is not None and time.perf_counter() > deadline:
+        raise _DerivationBudgetExceeded
 
     sym_expr = _exprtk_to_sympy(body)
     if sym_expr is None:
@@ -962,6 +975,10 @@ def differentiate_expression_output_partials(
     for alias in sorted(free):
         if alias in ignored:
             continue
+        if deadline is not None and time.perf_counter() > deadline:
+            # GH #97: bail mid-function so one body referencing many symbols
+            # cannot run the whole analysis past its budget in a single call.
+            raise _DerivationBudgetExceeded
         deriv = sp.diff(sym_expr, sp.Symbol(alias))
         if deriv == 0:
             continue
@@ -1361,6 +1378,14 @@ _FD_COSTLY_SPECIES = 2000
 _JAC_BUDGET_ENV = "BNGSIM_JAC_DERIV_BUDGET_S"
 _SENS_BUDGET_ENV = "BNGSIM_SENS_DERIV_BUDGET_S"
 
+# GH #97: per-derivation-step allowance for the #198 output-sens analysis, the
+# third budgeted phase on a sensitivity build. A step is one expression parsed or
+# one ∂/∂symbol taken — see _codegen._output_sens_derivation_steps. 50 ms/step;
+# the base dominates below 400 steps (= base / slope), so small models are
+# unaffected. See _output_sens_derivation_budget_s for why this path is keyed on
+# the step count rather than on species count, and where the slope comes from.
+_BUDGET_PER_STEP_S = 0.05
+
 
 class _DerivationBudgetExceeded(Exception):
     """Internal signal: the build-time symbolic derivation passed its wall-clock
@@ -1433,6 +1458,63 @@ def _sens_derivation_budget_s(n_species: int = 0) -> float | None:
     because they buy different things and fall back to different paths.
     """
     default = max(_DEFAULT_DERIVATION_BUDGET_S, _BUDGET_PER_SPECIES_S * n_species)
+    return _budget_env_override(_SENS_BUDGET_ENV, default)
+
+
+def _output_sens_derivation_budget_s(n_steps: int = 0) -> float | None:
+    """Resolve the build-time budget for the #198 output-sensitivity
+    ``d func/dθ`` derivation in seconds, or ``None`` for unbounded (GH #97).
+
+    The third phase on a sensitivity build, after the analytical Jacobian and
+    ∂f/∂p: ``_codegen._analyze_output_sens`` parses every user function and every
+    derived-parameter expression and takes one derivative per symbol each
+    references. It reads the *same* env var as ∂f/∂p — one knob for one build —
+    but resolves its own deadline, so neither phase can starve the other (see
+    ``_codegen._output_sens_derivation_deadline``).
+
+    **Keyed on the derivation-step count, not on species**, which is where this
+    policy departs from the other two. Same shape as #187 —
+    ``max(base, slope × size)`` — over the size that actually drives the cost here.
+    A model can carry thousands of global functions on a few hundred species
+    (``MODEL1112100000``: 1265 species, 3633 functions, 14532 steps), so a
+    species-scaled curve is loose exactly where the work is, and
+    ``_codegen._output_sens_derivation_steps`` counts the steps from the reference
+    graph's own tokens before any sympy runs.
+
+    Measured over the BioModels SBML corpus on the current emitters, which is the
+    only population worth sizing against and a different one from #97's issue
+    text: that was written before #96's printer fix, which took
+    ``BIOMD0000000217`` from 900 s to 1.2 s. ``BIOMD0000000063`` — the model the
+    issue names as the worst that completes, at 10.2 s on nine species, and the
+    evidence for its "expression-driven, not size-driven" reading — now derives in
+    0.86 s. With those outliers gone what is left is size-driven:
+
+    | model            | species | steps | analysis | ms/step | headroom |
+    |------------------|--------:|------:|---------:|--------:|---------:|
+    | MODEL1603150001  |    6047 | 15568 |   85.7 s |     5.5 |     9.1x |
+    | MODEL1504130000  |    5063 | 14880 |   67.2 s |     4.5 |    11.1x |
+    | MODEL1112100000  |    1265 | 14532 |   13.3 s |     0.9 |    54.7x |
+    | BIOMD0000000497  |     295 |  3986 |   19.2 s |     4.8 |    10.4x |
+    | BIOMD0000000470  |     786 |  4756 |   16.9 s |     3.6 |    14.1x |
+    | BIOMD0000000247  |      31 |   249 |    1.4 s |     5.7 |    14.1x |
+
+    So the slope is ~9x the worst rate anything real derives at, and the base ~14x
+    the worst model below the knee: a model that derives at a *normal* rate is
+    never cut off however large it is, and what expires is an anomalous per-step
+    cost — which is what a hang looks like from here. A flat budget was the other
+    candidate and is measurably wrong: 20 s cuts the first two models, which today
+    complete and emit.
+
+    Expiry does not decline anything. Unlike ∂f/∂p — one callback for every
+    column, so one undifferentiable rate law takes the whole model — output
+    sensitivities are per function, and a function that ran out of clock is marked
+    ``unsupported`` exactly as an undifferentiable one is: the emitted C carries a
+    NaN sentinel and the ``Result`` raises the reason at selection time. Every
+    function derived before the deadline keeps working. That graceful degradation
+    is also why this budget does not need #187's ``_FD_NONVIABLE_SPECIES`` gate:
+    there is no model size at which an expiry here breaks the solve.
+    """
+    default = max(_DEFAULT_DERIVATION_BUDGET_S, _BUDGET_PER_STEP_S * n_steps)
     return _budget_env_override(_SENS_BUDGET_ENV, default)
 
 

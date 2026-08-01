@@ -104,6 +104,25 @@ raise the budget rather than accept the slower path:
 BNGSIM_SENS_DERIV_BUDGET_S=inf python fit.py
 ```
 
+**Expression output sensitivities (GH #97)**: a sensitivity run on a model with
+global functions derives a *third* set of terms at build time — the chain rule
+`d func/dθ` behind `Result.output_sensitivities("expression:…")` — and it reads
+the same `BNGSIM_SENS_DERIV_BUDGET_S`. Two differences from the phase above, both
+deliberate:
+
+- It resolves its **own** deadline rather than sharing that build's, so a slow
+  `∂f/∂p` cannot starve it (and vice versa). One knob, two clocks.
+- Its budget scales with the number of **derivation steps** the analysis is about
+  to run — one per expression parsed, one per derivative taken — rather than with
+  species count, because that is what drives the cost here: a model can carry
+  thousands of global functions on a few hundred species.
+
+An expiry does **not** decline anything. Output sensitivities are per function, so
+every function derived before the deadline keeps working, and the rest are marked
+unsupported: selecting one raises an error naming the budget and this variable,
+the same way selecting a function containing a non-differentiable construct does.
+Observable and species sensitivities are unaffected.
+
 ## Logging
 
 ```python
