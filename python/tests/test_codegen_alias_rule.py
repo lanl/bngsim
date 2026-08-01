@@ -76,7 +76,10 @@ def _call_sites(callee_names: set[str]) -> set[tuple[str, str]]:
 
     out: set[tuple[str, str]] = set()
     for path in sorted(pathlib.Path(bngsim.__file__).parent.glob("*.py")):
-        _CallSiteVisitor(path.stem, callee_names, out).visit(ast.parse(path.read_text()))
+        # Explicit utf-8: `read_text()` uses the locale codec, which on Windows
+        # is cp1252 and cannot decode the em dashes and ∂ these docstrings carry.
+        source = path.read_text(encoding="utf-8")
+        _CallSiteVisitor(path.stem, callee_names, out).visit(ast.parse(source))
     return out
 
 
