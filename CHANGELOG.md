@@ -15,6 +15,54 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Added
+- **A build-time budget for the expression output-sensitivity derivation, and one
+  analysis per model instead of two (issue #97).** #90 bounded every symbolic
+  derivation on the sensitivity-RHS build. One sympy site on the *same* build was
+  left unbounded: `_analyze_output_sens`, which parses every global function and
+  every derived-parameter expression and takes one derivative per symbol each
+  references, for the GH #198 chain rule `d func/dθ`. So the "build appears to
+  hang" failure mode #90 removed was still reachable one emitter over.
+
+  The budget reads the same `BNGSIM_SENS_DERIV_BUDGET_S` — one knob for one build
+  — but resolves its **own** deadline, so a slow `∂f/∂p` cannot starve this phase
+  (and it scales with **derivation steps**, not species count: `MODEL1112100000`
+  carries 3633 global functions on 1265 species, and a species-scaled curve is
+  loose exactly where this work is). An expiry does **not** decline anything:
+  output sensitivities are per function, so every function derived before the
+  deadline keeps working and the rest are marked `unsupported`, which the emitted
+  C already expresses as a NaN sentinel and the `Result` raises — now naming the
+  budget and the override — at selection time.
+
+  Measured over the BioModels SBML corpus on the current emitters, the slope is
+  ~9x the worst rate anything real derives at and the base ~14x the worst model
+  below the knee, so no corpus model changes behaviour:
+
+  | model | species | steps | analysis | ms/step | headroom |
+  |---|---:|---:|---:|---:|---:|
+  | `MODEL1603150001` | 6047 | 15568 | 85.7 s | 5.5 | 9.1x |
+  | `MODEL1504130000` | 5063 | 14880 | 67.2 s | 4.5 | 11.1x |
+  | `MODEL1112100000` | 1265 | 14532 | 13.3 s | 0.9 | 54.7x |
+  | `BIOMD0000000497` | 295 | 3986 | 19.2 s | 4.8 | 10.4x |
+
+  A flat budget was the other candidate the issue proposed, on the strength of a
+  measurement that is now stale: `BIOMD0000000063` at 10.2 s on nine species is
+  0.86 s on the current tree (#96's printer fix), and with the expression-driven
+  outliers gone the remaining cost is size-driven. A flat 20 s would cut the first
+  two models above, which today complete and emit.
+
+  The analysis is now **memoized on the model**, which is a correctness
+  requirement rather than a saving. It is genuinely evaluated twice per
+  sensitivity workflow — once by the C emitter, once by the `Result`'s support map
+  — and a wall-clock bound makes it no longer a pure function of the model, so two
+  evaluations can cut at different functions and the emitted C would carry a NaN
+  for a function the support map reports as supported. One evaluation, shared
+  (and clones inherit it, so parallel fitting does not re-derive per worker).
+
+  What the budget does not buy, stated because the issue is explicit about it: a
+  deadline can only be checked *between* sympy calls, so a single pathological
+  expression still overshoots by one uninterruptible `sp.diff`. This bounds the
+  accumulating case; the outliers are derivation defects and are fixed where they
+  live (#96, and #99 for `synthesis_v3`).
 - **`steady_state(mask=…)`: solve `f(y) = 0` on a subspace, and say when a
   write-only accumulator is why a solve failed (issue #74).** Counting cumulative
   flux with a "degraded" / "produced" / "secreted" pool — a species some reaction

@@ -70,6 +70,7 @@ class Model:
         "_varvol_event_resize_map",
         "_periodic_disc_max_step",
         "_want_output_sens",
+        "_output_sens_analysis",
         "_named_conc_states",
         "_named_sens_seeds",
         "_declared_ic_sens",
@@ -83,6 +84,12 @@ class Model:
         # evaluator. Set by the Simulator before codegen prep (only a sensitivity
         # run needs it, since its build-time differentiation is expensive).
         self._want_output_sens: bool = False
+        # GH #97: ``(key, analysis)`` memo for the #198 per-function output-sens
+        # analysis (``_codegen._analyze_output_sens``), which both the C emitter
+        # and the Result's support map run. Shared, so nothing may mutate it, and
+        # keyed (``_codegen._output_sens_analysis_key``) so a budget override does
+        # not read back an analysis made under a different one.
+        self._output_sens_analysis: tuple | None = None
         # In-process MIR micro-JIT codegen source (GH #78); set when the JIT
         # backend (BNGSIM_CODEGEN_JIT=mir) prepares codegen for this model.
         self._codegen_c_source: str = ""
@@ -507,6 +514,12 @@ class Model:
         # an un-warmed parent inherits _jac_attempted=False and derives on first
         # solve — hence warm-before-clone for parallel fitting, GH #145 §3).
         m._jac_attempted = self._jac_attempted
+        # GH #97: same warm-clone reasoning for the #198 output-sens analysis — a
+        # clone has the parent's structure, so re-running its sympy would be N×
+        # waste in parallel fitting. Shared by reference (the analysis is
+        # read-only) and re-keyed on the clone's own counters, so a clone that
+        # somehow did not match simply re-derives.
+        m._output_sens_analysis = self._output_sens_analysis
         m._ssa_issues = list(self._ssa_issues)
         m._ar_report_map = dict(self._ar_report_map)
         m._varvol_conc_map = dict(self._varvol_conc_map)

@@ -1493,6 +1493,90 @@ def _sens_budget_decline_reason(n_species: int, progress: str) -> str:
     )
 
 
+def _output_sens_derivation_steps(
+    relevant: set[int],
+    n_syms: list[int],
+    derived_exprs: dict[str, str],
+    param_names: set[str],
+) -> int:
+    """How much sympy the #198 analysis is about to run, in steps (GH #97).
+
+    One step per expression parsed, plus one per (expression, symbol it directly
+    references) pair — over both phases the analysis runs: the derived-parameter
+    chain rule (``∂p_d/∂primary``) and the per-function partials (``∂f/∂s``).
+    ``n_syms`` is the per-function referenced-symbol count the reference-graph pass
+    already tokenized for, so the function half costs nothing beyond a set
+    intersection there and — the point — needs no sympy to know how much sympy is
+    coming.
+
+    The parse term is what makes this a good predictor rather than a rough one.
+    Counting only the pairs charges nothing for ``_exprtk_to_sympy`` and
+    ``sympy_to_c``, which run per *expression*, so a corpus model whose functions
+    each read one symbol looked twice as expensive per unit as one whose functions
+    read ten. Over the BioModels models above the knee, adding it takes the
+    measured spread from 1.2-11.0 ms to 0.9-5.5 ms per unit — the difference
+    between ~4x and ~9x headroom under the same slope.
+
+    An upper bound, not an identity: sympy's ``free_symbols`` can be a subset (a
+    symbol that cancels out of the parsed expression takes no ``diff``), and the
+    derived phase is counted textually rather than through #41's inlining. A budget
+    wants the bound in that direction — over-counting buys time, and the quantity
+    is a *size* proxy, not an accounting.
+    """
+    n = len(relevant) + len(derived_exprs)
+    for i in relevant:
+        n += n_syms[i]
+    for expr in derived_exprs.values():
+        n += len(set(re.findall(r"[A-Za-z_]\w*", expr)) & param_names)
+    return n
+
+
+def _output_sens_derivation_deadline(n_steps: int = 0) -> float | None:
+    """Absolute ``time.perf_counter()`` deadline for one #198 output-sensitivity
+    analysis, or ``None`` when the budget is disabled (GH #97).
+
+    Resolved once per :func:`_analyze_output_sens` — which is memoized on the
+    model, so once per model — and threaded down, so every ``sp.diff`` on the
+    ``d func/dθ`` path shares a single wall-clock bound. ``n_steps`` is
+    :func:`_output_sens_derivation_steps`' count of the sympy to come.
+
+    Deliberately a **separate** deadline from :func:`_sens_derivation_deadline`'s,
+    even though both read ``BNGSIM_SENS_DERIV_BUDGET_S``. The two phases run on the
+    same build, so one deadline would let a slow ∂f/∂p starve this one — and that
+    is measured, not hypothetical: ``BIOMD0000000497`` spends 8.1 s in ∂f/∂p and
+    19.2 s here, so a shared 20 s deadline would leave this phase 11.9 s for 19.2 s
+    of work and cut a model that today derives in full. Sharing would have been a
+    behaviour change on real corpus models, which is exactly what #90 avoided.
+    """
+    from bngsim._jacobian import _output_sens_derivation_budget_s
+
+    budget = _output_sens_derivation_budget_s(n_steps=n_steps)
+    return None if budget is None else time.perf_counter() + budget
+
+
+def _output_sens_budget_reason(progress: str, n_steps: int = 0) -> str:
+    """The per-function ``unsupported`` reason for a #198 output-sensitivity
+    derivation that ran past its budget (GH #97).
+
+    Carried on the function's ``func_info`` exactly like an undifferentiable
+    construct's reason: the emitted C gets a NaN sentinel and the ``Result`` raises
+    this string when a selector asks for that function's sensitivity. It names how
+    far the analysis got and the override, because unlike a construct reason this
+    one is about the clock, and re-running with a bigger budget is the fix.
+    """
+    from bngsim._jacobian import _SENS_BUDGET_ENV, _output_sens_derivation_budget_s
+
+    budget = _output_sens_derivation_budget_s(n_steps=n_steps)
+    # Finite by construction (an unbounded budget never expires); phrased without
+    # the number rather than crashing if the env var moved mid-analysis.
+    limit = "its budget" if budget is None else f"its {budget:g}s budget"
+    return (
+        f"the build-time d(function)/dθ derivation exceeded {limit} ({progress}); "
+        f"set {_SENS_BUDGET_ENV} to raise or disable it (seconds, or inf/none/0 "
+        "for unbounded)"
+    )
+
+
 def _compute_derived_param_jacobian(
     expr: str,
     primary_param_names: set,
@@ -6849,8 +6933,33 @@ def _is_auto_rate_law(name: str) -> bool:
     return name.startswith("_rateLaw") and name[len("_rateLaw") :].isdigit()
 
 
+def _output_sens_analysis_key(core) -> tuple:
+    """Memo key for :func:`_analyze_output_sens` (GH #97).
+
+    Cheap by construction — four counters off the built model plus the budget
+    override — because avoiding ``codegen_data()`` and the sympy behind it is the
+    whole point. The counters are a structural guard, not a content hash: the
+    analysis is a pure function of the model's *shape* (function bodies, parameter
+    expressions, and the species/parameter/observable ordering its emitted
+    ``y[i]``/``p[k]`` references are indices into), and none of that changes after
+    load — ``set_param`` writes values, which never reach the emitted partials.
+
+    The budget tag is in the key for the same reason it is in the ``.net`` ``.so``
+    key (:func:`_sens_budget_cache_tag`): an expiry changes which functions come
+    back supported, so an analysis made under one budget must not be served to a
+    caller that set another.
+    """
+    return (
+        core.n_species,
+        core.n_parameters,
+        core.n_observables,
+        core.n_functions,
+        _sens_budget_cache_tag(),
+    )
+
+
 def _analyze_output_sens(model) -> dict:
-    """Per-function output-sensitivity analysis (GH #198).
+    """Per-function output-sensitivity analysis (GH #198), memoized on the model.
 
     The single source of truth shared by the C emitter
     (:func:`generate_output_sens_from_model`) and the Python support-map accessor
@@ -6863,18 +6972,44 @@ def _analyze_output_sens(model) -> dict:
     inlining, so the caller can assemble the chain rule
     ``df/dθ = Σ ∂f/∂s·ds/dθ`` over every dependency kind. Derived (expression)
     parameters get the #15 chain rule (``∂p_d/∂primary`` via
-    :func:`_compute_derived_param_jacobian`); a function referencing a derived
+    :func:`_derived_param_jacobian_checked`); a function referencing a derived
     param whose Jacobian could not be derived is marked unsupported (#198 fails
     loudly rather than silently dropping the term).
 
     Returns a dict with ``decline`` (non-None ⇒ the whole codegen is declined,
     mirroring :func:`generate_outputs_from_model`'s rateOf / embedded-tfun /
     no-function declines), ``func_infos`` (per-function ``{name, supported,
-    reason, partials}`` in declaration order), and the emitter context.
-    """
-    from bngsim._jacobian import differentiate_expression_output_partials
+    reason, partials}`` in declaration order), and the emitter context. **Treat
+    the returned dict as read-only** — every caller now shares one instance.
 
+    Memoized on the model (GH #97) for cost *and* for correctness. Both callers
+    above run it, so a sensitivity workflow paid it twice — 85.7 s twice on the
+    worst BioModels model. Once the analysis is wall-clock-budgeted that stops
+    being merely wasteful: a budget makes it no longer a pure function of the
+    model, so two independent evaluations can cut at different functions, and the
+    emitted C would carry a NaN sentinel for a function the support map reports as
+    supported. One evaluation, one cut, one answer.
+    """
     core = model._core if hasattr(model, "_core") else model
+    key = _output_sens_analysis_key(core)
+    memo = getattr(model, "_output_sens_analysis", None)
+    if memo is not None and memo[0] == key:
+        return memo[1]
+    analysis = _compute_output_sens_analysis(model, core)
+    # A bare ``NetworkModel`` core has no slot to hold it and simply re-analyzes;
+    # both callers that matter pass the Model.
+    if hasattr(model, "_output_sens_analysis"):
+        model._output_sens_analysis = (key, analysis)
+    return analysis
+
+
+def _compute_output_sens_analysis(model, core) -> dict:
+    """The uncached body of :func:`_analyze_output_sens` — call that instead."""
+    from bngsim._jacobian import (
+        _DerivationBudgetExceeded,
+        differentiate_expression_output_partials,
+    )
+
     data = core.codegen_data()
 
     params = data["parameters"]
@@ -6949,19 +7084,6 @@ def _analyze_output_sens(model) -> dict:
         for p in params
         if not p.get("is_const", True) and p.get("expression", "")
     }
-    derived_expansion: dict[str, dict[str, str]] = {}
-    for p in params:
-        if p.get("is_const", True):
-            continue
-        expr = p.get("expression", "")
-        if not expr:
-            continue
-        jac = _compute_derived_param_jacobian(
-            expr, primary_param_names, param_idx_by_name, derived_exprs=derived_exprs
-        )
-        if jac is not None:
-            derived_expansion[p["name"]] = jac
-
     # Only USER functions are selectable — the auto-generated _rateLawN rate-law
     # intermediates are filtered out of the result block and never addressed by a
     # selector. A genome-scale model can carry thousands of them and running sympy
@@ -6969,10 +7091,20 @@ def _analyze_output_sens(model) -> dict:
     # what they transitively reference, pruned here via a cheap regex reference
     # graph before any sympy. Functions outside that closure are recorded with a
     # zero placeholder (they are filtered out of the user-facing block anyway).
+    #
+    # This runs BEFORE the derived-parameter chain rule below, even though the
+    # function loop needs it later: it is pure regex, it can decline the whole
+    # model, and (GH #97) the step count it yields is what sizes the budget both
+    # phases run under. A model with no user-selectable function used to pay the
+    # derived-parameter sympy before finding that out.
+    known_symbols = set(param_map) | set(species_map) | set(obs_map) | set(func_map)
     name_to_idx = {f["name"]: i for i, f in enumerate(functions)}
     refs: list[set[int]] = [set() for _ in range(n_func)]
+    n_syms: list[int] = []
     for i, f in enumerate(functions):
-        for tok in re.findall(r"[A-Za-z_]\w*", f["expression"]):
+        toks = set(re.findall(r"[A-Za-z_]\w*", f["expression"]))
+        n_syms.append(len(toks & known_symbols))
+        for tok in toks:
             j = name_to_idx.get(tok)
             if j is not None and j != i:
                 refs[i].add(j)
@@ -6991,11 +7123,40 @@ def _analyze_output_sens(model) -> dict:
             **base,
         }
 
+    # GH #97: everything below here is sympy, so the clock starts here. One
+    # deadline for the whole analysis (its own, not the ∂f/∂p phase's), sized by
+    # the step count above and checked on entry to each expression and before each
+    # sp.diff. ``budget_reason`` is the per-function unsupported reason once it
+    # expires — set once, then every remaining function takes it without doing any
+    # further work.
+    n_steps = _output_sens_derivation_steps(relevant, n_syms, derived_exprs, set(param_names))
+    deadline = _output_sens_derivation_deadline(n_steps)
+    budget_reason: str | None = None
+
+    derived_expansion: dict[str, dict[str, str]] = {}
+    for n_expanded, (dname, dexpr) in enumerate(derived_exprs.items()):
+        try:
+            jac, _ = _derived_param_jacobian_checked(
+                dexpr,
+                primary_param_names,
+                param_idx_by_name,
+                derived_exprs=derived_exprs,
+                deadline=deadline,
+            )
+        except _DerivationBudgetExceeded:
+            budget_reason = _output_sens_budget_reason(
+                f"expanded {n_expanded} of {len(derived_exprs)} derived parameters", n_steps
+            )
+            break
+        if jac is not None:
+            derived_expansion[dname] = jac
+
     # Per-function differentiation. status ∈ {"ok", "unsupported", "skipped"}:
     # "ok" emits the chain rule; "unsupported" emits a NaN sentinel and a reason
     # the Result raises at selection time; "skipped" (outside the user-function
     # closure) is filtered out of the block and left at the caller's zero.
     func_infos: list[dict] = []
+    n_done = 0
     for i, f in enumerate(functions):
         name = f["name"]
         if i not in relevant:
@@ -7014,13 +7175,34 @@ def _analyze_output_sens(model) -> dict:
                 }
             )
             continue
-        partials, reason = differentiate_expression_output_partials(
-            f["expression"],
-            species_cref=species_map,
-            observable_cref=obs_map,
-            param_cref=param_map,
-            function_cref=func_map,
-        )
+        # GH #97: past the deadline nothing more is attempted — not even the cheap
+        # construct scan, since accumulating cost over many functions is the case
+        # this budget exists to bound. Every function derived BEFORE the deadline
+        # keeps working; the rest fail loudly and specifically, the same way an
+        # undifferentiable one does.
+        if budget_reason is not None:
+            func_infos.append(
+                {"name": name, "status": "unsupported", "reason": budget_reason, "partials": None}
+            )
+            continue
+        try:
+            partials, reason = differentiate_expression_output_partials(
+                f["expression"],
+                species_cref=species_map,
+                observable_cref=obs_map,
+                param_cref=param_map,
+                function_cref=func_map,
+                deadline=deadline,
+            )
+        except _DerivationBudgetExceeded:
+            budget_reason = _output_sens_budget_reason(
+                f"derived {n_done} of {len(relevant)} functions", n_steps
+            )
+            func_infos.append(
+                {"name": name, "status": "unsupported", "reason": budget_reason, "partials": None}
+            )
+            continue
+        n_done += 1
         if reason is not None:
             func_infos.append(
                 {"name": name, "status": "unsupported", "reason": reason, "partials": None}
@@ -7063,6 +7245,16 @@ def _analyze_output_sens(model) -> dict:
                 info["partials"] = None
                 info["reason"] = f"depends on unsupported function {dep!r}"
                 break
+
+    if budget_reason is not None:
+        # GH #97: a build that quietly turned every d(function)/dθ into a NaN is
+        # not something to discover at selection time. Said once here, with the
+        # override, in addition to the per-function reason the Result raises.
+        logger.warning(
+            "Expression output sensitivities: %s. The functions derived before the "
+            "deadline are unaffected; the rest raise this reason when selected.",
+            budget_reason,
+        )
 
     return {
         "decline": None,
