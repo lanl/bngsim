@@ -977,7 +977,30 @@ _PY_KEYWORD_PARAM_NAMES = frozenset(
 def _alias_keyword_param(name: str) -> str:
     """Stable alias used when a BNGL primary parameter is named with a Python
     keyword. The alias is whole-word-substituted into the expression before
-    ``parse_expr`` and round-tripped back to ``p[idx]`` after differentiation."""
+    ``parse_expr`` and round-tripped back to ``p[idx]`` after differentiation.
+
+    **Which set of names to alias** (GH #108). There are two conventions, and the
+    rule separating them is which printer the caller emits through:
+
+    * ``_alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n`` — Python
+      keywords only. Correct wherever the derivative is printed by
+      :func:`bngsim._jacobian.sympy_to_c`, whose ``resolve`` callback maps every
+      symbol to a C reference itself and so never lets sympy print a name at all.
+      Aliasing is then needed only to get *into* sympy, which is what
+      ``parse_expr``'s tokenizer refuses.
+    * :func:`_sympy_symbol_alias_map` — Python keywords **and** C reserved words.
+      Required only where ``sp.ccode`` does the printing, because it renames a
+      symbol whose name is a C reserved word (``const`` → ``const_``) and the
+      name-keyed round trip back to ``p[idx]`` then misses it.
+
+    ``sp.ccode`` is reached from exactly one place in the package —
+    :func:`_direct_derived_partials`, which prepares its expression through
+    :func:`_prepare_derived_expr` and therefore the wide map. So the narrow sites
+    are correct rather than lucky, and ``TestIssue108TheAliasingRule`` asserts
+    both halves: that every ``ccode`` call site prepares through the wide map,
+    and that a model whose parameter is named ``const``/``restrict``/``int``
+    emits byte-identical C to its ordinary-named twin on every emission path.
+    """
     return f"_BNG_KW_{name}"
 
 
@@ -1803,17 +1826,19 @@ def _prepare_derived_expr(
     expr: str,
     primary_names: set[str],
     derived_names,
+    allow_no_reference: bool = False,
 ) -> tuple[_PreparedDerivedExpr | None, str | None]:
     """Parse a derived-parameter expression into sympy, ready for ``sp.diff``
     w.r.t. every parameter it names directly.
 
     The single preparation sequence shared by the C-emitting chain rule
-    (:func:`_direct_derived_partials`) and its numeric twin
-    (:func:`_direct_derived_partials_numeric`), which differ only in what they do
-    with the partials. Sharing it is the point: this pipeline has picked up
-    fixes one site at a time before (#27's keyword aliasing, #56's logical
-    rewrite), and a fix that lands on one twin and not the other reads
-    downstream as a hard zero.
+    (:func:`_direct_derived_partials`), its numeric twin
+    (:func:`_direct_derived_partials_numeric`), and the threshold *evaluation*
+    that :func:`_derived_expr_value_numeric` backs — which differ only in what
+    they do with the parsed expression. Sharing it is the point: this pipeline
+    has picked up fixes one site at a time before (#27's keyword aliasing, #56's
+    logical rewrite, #105's alias map on the threshold value), and a fix that
+    lands on one twin and not the other reads downstream as a hard zero (GH #108).
 
     Two preprocessing passes (issues #27, #56) widen the set of expressions that
     yield an analytic Jacobian instead of the silent zero-contribution fallback:
@@ -1840,6 +1865,14 @@ def _prepare_derived_expr(
     Returns ``(prepared, None)``, ``(None, None)`` when the expression names no
     parameter at all (a genuine zero, nothing to differentiate), or
     ``(None, reason)`` when a real partial was lost.
+
+    ``allow_no_reference`` prepares that no-parameter expression instead of
+    declining it, for the caller that wants its *value* rather than its
+    derivative: ``time >= 2*3600`` has no partial worth reporting but does have a
+    crossing time. The differentiating callers keep the default, so an expression
+    with nothing to differentiate still returns before the parse — which is what
+    keeps an unparseable constant a genuine zero for them rather than a new
+    failure reason.
     """
     import sympy as sp
     from sympy.parsing.sympy_parser import parse_expr
@@ -1851,7 +1884,7 @@ def _prepare_derived_expr(
 
     diff_names = primary_names | set(derived_names)
     referenced = sorted(p for p in diff_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
-    if not referenced:
+    if not referenced and not allow_no_reference:
         return None, None  # names no parameter — a genuine zero, not a failure
 
     # A parameter named like one of the sympy classes we bind below would be
@@ -2147,6 +2180,68 @@ def _direct_derived_partials_numeric(
         if val != 0.0:
             out[p_name] = val
     return (out or None), None
+
+
+def _derived_expr_value_numeric(
+    expr: str,
+    primary_names: set[str],
+    derived_names,
+    param_idx: dict,
+    param_values,
+) -> float | None:
+    """The *value* of a derived-parameter expression at the current parameter
+    point, through the same preparation as its partials.
+
+    The third caller of :func:`_prepare_derived_expr`, and the reason #108 asked
+    for one: :func:`bngsim._switch_sensitivity._evaluate_threshold` wants
+    ``t*`` where :func:`_derived_expr_partials_numeric` wants ``∂t*/∂p``, and
+    when the two do not agree on which expressions they can read, the caller
+    gets partials with no value (or the reverse) and drops the crossing
+    entirely. That is exactly how issue #105 failed, one alias map apart.
+
+    A referenced *derived* parameter substitutes its own current value — the
+    same move :func:`_direct_derived_partials_numeric` makes, and for the same
+    reason (``core.get_param`` evaluates a ConstantExpression, and the engine has
+    copied an assignment rule's value into its parameter before the caller's
+    scope is built). Substituting it is what lets this share the DAG-walking
+    twin's view of the model instead of textually inlining the expression it
+    stands for: the flattening is exponential in the depth of the DAG (GH #99),
+    and on ``ode/synthesis_v3`` a two-name threshold reached 61 KB and 1.2 s of
+    sympy here while its partials, walking the same DAG, took 55 ms.
+
+    Returns ``None`` — the caller's "this threshold is not a constant over the
+    model's parameters" — when sympy is unavailable, when the preparation
+    declines the expression, or when what it parsed does not reduce to a float
+    at this parameter point.
+    """
+    try:
+        import sympy  # noqa: F401
+    except ImportError:  # pragma: no cover - sympy is a hard dep of codegen
+        return None
+
+    prep, _reason = _prepare_derived_expr(
+        expr, primary_names, derived_names, allow_no_reference=True
+    )
+    if prep is None:
+        return None
+    subs = {
+        prep.sym_map[prep.sym_name_of[p]]: param_values[param_idx[p]]
+        for p in prep.referenced
+        if p in param_idx
+    }
+    try:
+        # `sympify` of a sympy expression is the identity; it is here so the
+        # `.subs` below type-checks against `_PreparedDerivedExpr.sym_expr`,
+        # which the other two callers only ever hand to `sp.diff`.
+        return float(sympy.sympify(prep.sym_expr).subs(subs).evalf())
+    except Exception:
+        # A symbol with no value, a value sympy will not reduce to a float (a
+        # leftover species name, an unevaluated Piecewise), or anything else
+        # substitution raises on. Broad on purpose: this is the *only* caller
+        # that has no fallback — the switch-time detector reads `None` as "not a
+        # constant" and refuses the crossing, while an escaping exception would
+        # take down a whole sensitivity run over one unreadable threshold.
+        return None
 
 
 def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
@@ -5622,6 +5717,11 @@ def _functional_jacobian_groups(
     # identifiers were aliased by the symbolic core, so key the map by the aliased
     # name. Observables are registered last so they win on a name collision
     # (matching the interpreted ExprTk variable binding).
+    #
+    # Python keywords only, and that is correct rather than lucky (GH #108): this
+    # map IS `sympy_to_c`'s resolve callback, so no symbol name is ever printed
+    # and a C reserved word never has to survive the printer. Widening it to
+    # `_sympy_symbol_alias_map` here would be inert; see `_alias_keyword_param`.
     def _alias(n: str) -> str:
         return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 
@@ -6551,6 +6651,12 @@ def _functional_dfdp_terms(
         if not p.get("is_const", True) and p.get("expression", "")
     }
 
+    # Python keywords only: every derivative below prints through
+    # `sympy_to_c(expr, resolve)`, which resolves each symbol to a C reference and
+    # never prints a name, so C reserved words need no alias here (GH #108 — the
+    # rule is written out in `_alias_keyword_param`). The wide map is for
+    # `sp.ccode` output, which this function never produces; the derived-parameter
+    # chain rule it splices in below brings its own, already round-tripped.
     def _alias(n: str) -> str:
         return _alias_keyword_param(n) if n in _PY_KEYWORD_PARAM_NAMES else n
 

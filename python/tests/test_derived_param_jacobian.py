@@ -38,6 +38,14 @@ assert about a nested partial is therefore its **value**, not its spelling; the
 composed form and the flattened form are the same number, and only one of them
 finishes. See ``TestIssue99DagChainRuleDoesNotFlatten`` and
 ``TestIssue99SynthesisV3``.
+
+#108: everything above is one preparation sequence (``_prepare_derived_expr``)
+reached from three sites, and the package has *two* aliasing conventions — Python
+keywords only, or those plus C reserved words. The rule choosing between them is
+asserted in ``test_codegen_alias_rule.py``, which also pins that a model whose
+parameter is named ``const`` emits identical C to its ordinary-named twin on
+every emission path (``TestCcodeRoundTripNameHazards`` below covers the two
+round-trip defects that motivated it).
 """
 
 from __future__ import annotations
