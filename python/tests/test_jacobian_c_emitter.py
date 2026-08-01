@@ -14,6 +14,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -34,7 +36,7 @@ def _c_eval(expr, points):
     (or ``None`` if the emitter declined). Symbols map positionally to ``x0..``."""
     names = sorted({str(s) for s in expr.free_symbols})
     idx = {nm: i for i, nm in enumerate(names)}
-    c = sympy_to_c(expr, lambda nm: (f"x{idx[nm]}" if nm in idx else None))
+    c = sympy_to_c(expr, lambda nm: f"x{idx[nm]}" if nm in idx else None)
     if c is None:
         return None
     decl = "".join(f"  double x{i}=atof(argv[{i + 1}]);\n" for i in range(len(names)))
@@ -150,3 +152,35 @@ def test_resolver_drives_symbol_names():
     )
     assert c is not None
     assert "y[0]" in c and "data->param_values[1]" in c and "data->param_values[2]" in c
+
+
+def test_c_emitter_keeps_resolvers_thread_local():
+    first_resolve_started = threading.Event()
+    second_emission_done = threading.Event()
+
+    def first_resolver(name):
+        if not first_resolve_started.is_set():
+            first_resolve_started.set()
+            assert second_emission_done.wait(timeout=5)
+        return f"first_{name}"
+
+    def emit_first():
+        return sympy_to_c(S + Km, first_resolver)
+
+    def emit_second():
+        assert first_resolve_started.wait(timeout=5)
+        try:
+            return sympy_to_c(S + Km, lambda name: f"second_{name}")
+        finally:
+            second_emission_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(emit_first)
+        second = executor.submit(emit_second)
+        first_result = first.result(timeout=10)
+        second_result = second.result(timeout=10)
+
+    assert first_result is not None
+    assert "first_S" in first_result and "first_Km" in first_result
+    assert second_result is not None
+    assert "second_S" in second_result and "second_Km" in second_result
