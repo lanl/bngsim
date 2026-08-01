@@ -29,6 +29,15 @@ to ``p[idx]`` *by parameter name* — emitted C that does not compile for two
 of an earlier rewrite clobbered by a later one (``p[1][0]``), and a parameter
 named ``const`` came back out of ccode renamed to ``const_``, which no rewrite
 matched and nothing declares. See ``TestCcodeRoundTripNameHazards``.
+
+#99: #41 reached a *nested* derived parameter by flattening it — and its whole
+dependency graph — into one expression before differentiating, which is
+exponential in the depth of the DAG. The chain rule now walks the DAG, taking
+each partial on the expression as written and composing. What the tests below
+assert about a nested partial is therefore its **value**, not its spelling; the
+composed form and the flattened form are the same number, and only one of them
+finishes. See ``TestIssue99DagChainRuleDoesNotFlatten`` and
+``TestIssue99SynthesisV3``.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ from bngsim._codegen import (
     _compute_derived_param_jacobian,
     _derived_expr_partials_numeric,
     _derived_param_jacobian_checked,
+    _inline_derived_param_refs,
 )
 
 
@@ -321,11 +331,17 @@ class TestIssue27CorpusShapes:
 
 class TestNestedDerivedParams:
     """Issue #41: a derived (ConstantExpression) parameter whose expression
-    references ANOTHER derived parameter must be flattened to primaries before
-    differentiation, so the forward-sensitivity chain rule reaches the
-    underlying primary. Without ``derived_exprs`` the nested reference is a
-    non-primary free symbol and the whole partial is silently dropped (``None``)
-    — the pre-#41 behavior, preserved for callers that pass no map."""
+    references ANOTHER derived parameter must still reach the underlying
+    primary, so the forward-sensitivity chain rule is not silently zeroed.
+    Without ``derived_exprs`` the nested reference is a non-primary free symbol
+    and the whole partial is dropped (``None``) — the pre-#41 behavior,
+    preserved for callers that pass no map.
+
+    GH #99 changed *how* it is reached — a walk over the derived-parameter DAG
+    rather than a textual flattening into it — so what these assert is the
+    partial's **value**, not its spelling. The composed form ``(2)*((5)*(1))``
+    and the flattened form ``10`` are the same number, and only one of them is
+    obtainable in finite time on ``ode/synthesis_v3``."""
 
     def test_nested_ref_dropped_without_map(self):
         # a2prime = 3*a1prime, a1prime = kcr. With no derived_exprs, a1prime is
@@ -349,7 +365,7 @@ class TestNestedDerivedParams:
         assert result is not None
         assert set(result.keys()) == {"kcr"}
         # ∂/∂kcr = 3 (referencing the primary index for kcr, not a1prime).
-        assert result["kcr"].replace(" ", "").lstrip("+") in {"3", "3.0", "3.0*1", "1*3.0"}
+        assert _eval_c_partials(result, {0: 2.0, 1: 3.0, 2: 2.0, 3: 6.0}) == {"kcr": 3.0}
         assert "a1prime" not in result["kcr"]
 
     def test_nested_quotient_multiple_primaries(self):
@@ -380,7 +396,7 @@ class TestNestedDerivedParams:
         )
         assert result is not None
         assert set(result.keys()) == {"base"}  # ∂(2*(5*base))/∂base = 10
-        assert result["base"].replace(" ", "").lstrip("+") in {"10", "10.0", "2*5.0", "10.0*1"}
+        assert _eval_c_partials(result, {0: 3.0, 1: 3.0, 2: 15.0, 3: 30.0}) == {"base": 10.0}
 
 
 # ─── Issue #56 ────────────────────────────────────────────────────────────
@@ -697,20 +713,52 @@ def _eval_c_partials(result: dict[str, str], p_values: dict[int, float]) -> dict
     expression has the same semantics once ``a ? b : c`` and the C logical
     operators are rewritten, which is enough to check which branch a Piecewise
     derivative selects.
+
+    Rewrites the *innermost-rightmost* ternary each pass, so a nested chain — the
+    three-way form ``sp.ccode`` emits for the ``Heaviside`` derivative of a
+    ``min``/``max`` (GH #99) — converts as readily as a single one.
     """
     p = [p_values[i] for i in sorted(p_values)]
     out: dict[str, float] = {}
     for name, c_str in result.items():
         py = c_str.replace("\n", " ").replace("&&", " and ").replace("||", " or ")
-        # ``(cond ? (a) : (b))`` → ``((a) if cond else (b))``, innermost last.
         while "?" in py:
-            m = re.search(r"\(([^()]*(?:\([^()]*\)[^()]*)*)\?(.*)\)\Z", py, re.S)
-            assert m, f"unparsed C ternary: {c_str!r}"
-            cond, rest = m.group(1), m.group(2)
+            q = py.rfind("?")
+            open_i = _enclosing_open_paren(py, q)
+            close_i = _matching_close_paren(py, open_i)
+            cond = py[open_i + 1 : q]
+            rest = py[q + 1 : close_i]
             colon = _depth0_colon(rest)
-            py = f"(({rest[:colon]}) if ({cond}) else ({rest[colon + 1 :]}))"
+            body = f"(({rest[:colon]}) if ({cond}) else ({rest[colon + 1 :]}))"
+            py = py[:open_i] + body + py[close_i + 1 :]
         out[name] = float(eval(py, {"p": p}))  # noqa: S307
     return out
+
+
+def _enclosing_open_paren(s: str, i: int) -> int:
+    """Index of the ``(`` opening the innermost group containing ``s[i]``."""
+    depth = 0
+    for j in range(i - 1, -1, -1):
+        if s[j] == ")":
+            depth += 1
+        elif s[j] == "(":
+            if depth == 0:
+                return j
+            depth -= 1
+    raise AssertionError(f"no enclosing '(' before index {i} in {s!r}")
+
+
+def _matching_close_paren(s: str, i: int) -> int:
+    """Index of the ``)`` matching the ``(`` at ``s[i]``."""
+    depth = 0
+    for j in range(i, len(s)):
+        if s[j] == "(":
+            depth += 1
+        elif s[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+    raise AssertionError(f"unbalanced '(' at index {i} in {s!r}")
 
 
 def _depth0_colon(s: str) -> int:
@@ -758,6 +806,361 @@ class TestInlineDerivedParamRefs:
         # the caller's free-symbol check then rejects it.
         out = _inline_derived_param_refs("x", {"x": "y", "y": "x"}, max_passes=4)
         assert isinstance(out, str)
+
+
+# ─── Issue #99 ────────────────────────────────────────────────────────────
+
+
+def _squaring_chain(depth: int) -> dict[str, str]:
+    """``d0 = base``, ``d{k+1} = dk*dk`` — a derived-parameter chain whose
+    flattened text doubles at every level while its DAG has ``depth`` nodes."""
+    chain = {"d0": "base"}
+    for k in range(depth):
+        chain[f"d{k + 1}"] = f"d{k}*d{k}"
+    return chain
+
+
+class TestIssue99DagChainRuleDoesNotFlatten:
+    """GH #99: the chain rule walks the derived-parameter DAG instead of
+    inlining it away first.
+
+    Issue #41 reached a nested derived parameter by substituting it — and
+    everything it depends on — textually before differentiating. That is
+    exponential in the depth of the DAG, and on ``ode/synthesis_v3`` (5 species,
+    28 derived parameters) it turned a 43-character parameter into 20 KB, its
+    dependent into 40 KB, and the single ``sp.diff`` on the result never
+    returned. Being one uninterruptible sympy call, it was also immune to #97's
+    wall-clock budget: there is no *between* for a deadline to be checked at.
+    """
+
+    def test_partial_stays_linear_in_depth_while_the_flattening_is_exponential(self):
+        """The invariant that separates the two implementations, with no clock
+        in it: what changed is the *size* of what reaches sympy.
+
+        ``d{k+1} = dk*dk`` doubles the flattened text at every level, so the
+        expression #41 handed to ``sp.diff`` grows as 2^depth. The DAG walk
+        differentiates each level as written — ``2*d{k}`` — and multiplies the
+        results, so the emitted partial grows linearly. Asserting on length
+        rather than on wall-clock makes this deterministic; the timing is the
+        consequence, not the test."""
+        depth = 12
+        chain = _squaring_chain(depth)
+        param_idx = {"base": 0} | {f"d{k}": k + 1 for k in range(depth + 1)}
+
+        flattened = _inline_derived_param_refs(chain[f"d{depth}"], chain)
+        assert len(flattened) > 2**depth, "the fixture no longer blows up when flattened"
+
+        jac, reason = _derived_param_jacobian_checked(
+            chain[f"d{depth}"],
+            primary_param_names={"base"},
+            param_idx=param_idx,
+            derived_exprs=chain,
+        )
+        assert reason is None
+        assert set(jac) == {"base"}
+        assert len(jac["base"]) < 50 * depth, (
+            f"the partial is {len(jac['base'])} chars for depth {depth} — that is "
+            "the flattened expression, not a walk over the DAG"
+        )
+        # d{depth} = base^(2^depth), so ∂/∂base = 2^depth at base = 1.
+        p = [1.0] * (depth + 2)
+        assert _eval_c_partials(jac, dict(enumerate(p))) == {"base": float(2**depth)}
+
+    def test_diamond_is_differentiated_once(self):
+        """Two parameters reaching the same nested one must not derive it twice.
+
+        The memo is what keeps a DAG walk from re-deriving a shared subtree per
+        path, and a caller looping over every derived parameter (which is what
+        the #198 output-sensitivity analysis does) is exactly where that
+        matters."""
+        chain = _squaring_chain(6)
+        chain["left"] = "3*d6"
+        chain["right"] = "5*d6"
+        param_idx = {"base": 0} | {n: i + 1 for i, n in enumerate(chain)}
+        cache: dict = {}
+        for name in ("left", "right"):
+            jac, reason = _derived_param_jacobian_checked(
+                chain[name],
+                primary_param_names={"base"},
+                param_idx=param_idx,
+                derived_exprs=chain,
+                cache=cache,
+                name=name,
+            )
+            assert reason is None and set(jac) == {"base"}
+        # Every node on the shared path, plus the two tops, memoized once.
+        assert set(cache) == {f"d{k}" for k in range(7)} | {"left", "right"}
+
+    def test_reference_cycle_is_reported_not_recursed(self):
+        """``_inline_derived_param_refs``' ``max_passes`` bound guarded against a
+        cycle in an ill-formed .net; the DAG walk needs the equivalent, and must
+        report a reason rather than raise ``RecursionError`` (which would abort
+        the whole codegen build) or return a silent zero."""
+        cyclic = {"x": "y+1", "y": "x+1"}
+        idx = {"a": 0, "x": 1, "y": 2}
+        jac, reason = _derived_param_jacobian_checked(
+            "2*x", primary_param_names={"a"}, param_idx=idx, derived_exprs=cyclic
+        )
+        assert jac is None
+        assert reason is not None and "cycle" in reason
+        # The numeric twin walks the same DAG and must agree.
+        assert (
+            _derived_expr_partials_numeric(
+                "2*x", {"a"}, idx, [1.0, 1.0, 1.0], cyclic, warn_on_failure=False
+            )
+            == {}
+        )
+
+    def test_self_reference_is_a_cycle(self):
+        """``d = d+1`` is the one-node case, and it is only caught if the walk
+        seeds its stack with the parameter the expression defines."""
+        jac, reason = _derived_param_jacobian_checked(
+            "d+1",
+            primary_param_names={"a"},
+            param_idx={"a": 0, "d": 1},
+            derived_exprs={"d": "d+1"},
+            name="d",
+        )
+        assert jac is None
+        assert reason is not None and "cycle" in reason
+
+    @pytest.mark.parametrize(
+        "expr,derived,expect",
+        [
+            # Single level: no composition at all, so the emitted C is
+            # byte-identical to the pre-#99 flattening path.
+            ("2*a", {}, {"a"}),
+            # One nested level, and a primary reached both directly and through it.
+            ("d1*a", {"d1": "3*a"}, {"a"}),
+            # A derived parameter that reaches no primary is a genuine zero on
+            # both paths, not a failure.
+            ("d1*a", {"d1": "7"}, {"a"}),
+            # An unresolved symbol (a species name in a switch threshold, say)
+            # must fail on both paths rather than seed a partial that ignores it.
+            ("S1*a", {"d1": "3*a"}, set()),
+            # The same symbol one level down. ``d1`` reaches no primary through
+            # it, so its term is a real zero and ``a``'s partial survives — both
+            # paths, or the pair has drifted again.
+            ("d1*a", {"d1": "3*S1"}, {"a"}),
+        ],
+    )
+    def test_c_and_numeric_twins_agree_on_which_primaries_survive(self, expr, derived, expect):
+        """The agreement invariant, not an assertion about one input.
+
+        The C-emitting chain rule and its numeric (IC-seed) twin are the pair
+        that has drifted before — one picks up a fix, the other reads the
+        missing partial as a hard zero. Both now walk the same DAG, so the set
+        of primaries each reaches must be identical for every expression."""
+        idx = {"a": 0, "d1": 1}
+        jac, _ = _derived_param_jacobian_checked(expr, {"a"}, idx, derived_exprs=derived)
+        numeric = _derived_expr_partials_numeric(
+            expr, {"a"}, idx, [2.0, 6.0], derived, warn_on_failure=False
+        )
+        assert set(jac or {}) == set(numeric) == expect
+
+
+class TestIssue99MinMaxInADerivedParameter:
+    """GH #99 asked whether ``min()``/``max()`` in a derived parameter is a
+    second bug in the same function, since the chain rule runs
+    ``_preprocess_derived_expr`` rather than ``unsupported_expr_construct``.
+
+    It is not the silent-zero class. ``max`` and ``min`` are *continuous*, so
+    unlike an ``if()`` there is no jump at the kink and no delta term to lose:
+    sympy's ``Heaviside`` derivative is the correct one-sided partial at any
+    parameter point that is not exactly a tie, and it prints as C. What the
+    kink did break is the flattening — nested ``min``/``max`` inlined into one
+    expression produced a derivative ``sp.ccode`` refused with "Invalid NaN
+    comparison", losing the whole chain rule on three corpus models. The DAG
+    walk never builds that expression.
+    """
+
+    _IDX = {"lo": 0, "hi": 1, "R0": 2, "R0_prime": 3}
+    _PRIMARIES = {"lo", "hi"}
+    _MINMAX = {"R0": "min(lo,hi)", "R0_prime": "max(lo,hi)"}
+
+    def test_the_selected_branch_gets_the_partial_and_the_other_gets_zero(self):
+        """``lo < hi``, so ∂min(lo,hi)/∂lo is 1 and ∂/∂hi is 0 — not a dropped
+        kink, and not a silent zero on both."""
+        jac, reason = _derived_param_jacobian_checked(
+            "min(lo,hi)", self._PRIMARIES, self._IDX, derived_exprs=self._MINMAX
+        )
+        assert reason is None
+        assert _eval_c_partials(jac, {0: 1.0, 1: 4.0, 2: 1.0, 3: 4.0}) == {"lo": 1.0, "hi": 0.0}
+        # And the numeric twin agrees, including on which key is a real zero.
+        assert _derived_expr_partials_numeric(
+            "min(lo,hi)", self._PRIMARIES, self._IDX, [1.0, 4.0, 1.0, 4.0], self._MINMAX
+        ) == {"lo": 1.0}
+
+    def test_nested_min_max_derives_instead_of_failing_to_print(self):
+        """The ``model_step1_v1`` shape. Flattened, ``phi`` reaches a derivative
+        ``sp.ccode`` cannot print ("Invalid NaN comparison") and the whole chain
+        rule for ``phi``/``alpha``/``gamma`` was lost — on three corpus models,
+        which is a declined sensitivity RHS under #56's rule. Walked, each level
+        prints on its own."""
+        derived = dict(self._MINMAX)
+        derived["r"] = "R0+(fr*(R0_prime-R0))"
+        derived["theta"] = "(R0_prime-r)/(R0_prime-R0)"
+        derived["phi"] = "fa*min(1,((r-theta)/(1-theta)))"
+        idx = {n: i for i, n in enumerate(["lo", "hi", "fr", "fa", *derived])}
+        jac, reason = _derived_param_jacobian_checked(
+            derived["phi"], {"lo", "hi", "fr", "fa"}, idx, derived_exprs=derived, name="phi"
+        )
+        assert reason is None, f"the nested min/max chain rule was lost: {reason}"
+        assert "fa" in jac  # phi is linear in fa, so this one is not optional
+
+
+# The ``ode/synthesis_v3`` parameter block verbatim, with the twelve reporting
+# functions that no parameter depends on dropped. Inlined for the same reason as
+# the nets below: ``benchmarks/suites/ode_fullnet/nets`` is generated, not
+# checked in. Every one of the 28 derived parameters is kept — the DAG is the
+# fixture, and ``Fh``/``F0`` are the two that never derived.
+_SYNTHESIS_V3_PARAMS = [
+    ("px__FREE", "0.05", "Constant"),
+    ("py__FREE", "0.95", "Constant"),
+    ("tau__FREE", "180*5", "Constant"),
+    ("Fmin__FREE", "2", "Constant"),
+    ("Fdiff__FREE", "18", "Constant"),
+    ("kST__FREE", "10", "Constant"),
+    ("mult__FREE", "1", "Constant"),
+    ("c__FREE", "0.037", "Constant"),
+    ("px", "px__FREE", "ConstantExpression"),
+    ("py", "py__FREE", "ConstantExpression"),
+    ("p1", "min(px,py)", "ConstantExpression"),
+    ("p2", "max(px,py)", "ConstantExpression"),
+    ("tau", "tau__FREE", "ConstantExpression"),
+    ("gamma", "(1/tau)*(1-p2)", "ConstantExpression"),
+    ("a", "((1/tau)*(1-p2))*(p1/(1-p1))", "ConstantExpression"),
+    ("b", "((1/tau)*(1-p2))*((p2/(1-p2))-(p1/(1-p1)))", "ConstantExpression"),
+    ("alpha_min", "a", "ConstantExpression"),
+    ("alpha_max", "a+b", "ConstantExpression"),
+    ("Fmin", "Fmin__FREE", "ConstantExpression"),
+    ("Fdiff", "Fdiff__FREE", "ConstantExpression"),
+    ("Fmax", "Fmin+Fdiff", "ConstantExpression"),
+    ("ratio", "Fmax/Fmin", "ConstantExpression"),
+    ("kST", "kST__FREE", "ConstantExpression"),
+    ("ST", "1", "Constant"),
+    ("mult", "mult__FREE", "ConstantExpression"),
+    ("rmax", "(((1+mult)*kST)*(a+b))/((a+b)+gamma)", "ConstantExpression"),
+    ("c", "c__FREE", "ConstantExpression"),
+    ("Amax", "12", "Constant"),
+    ("A0", "100", "Constant"),
+    ("A100", "0", "Constant"),
+    ("A", "0", "Constant"),
+    (
+        "alpha_A0",
+        "alpha_min+((alpha_max-alpha_min)*max(0,((Amax-A0)/Amax)))",
+        "ConstantExpression",
+    ),
+    ("S0", "(alpha_A0/(alpha_A0+gamma))*ST", "ConstantExpression"),
+    (
+        "alpha_A100",
+        "alpha_min+((alpha_max-alpha_min)*max(0,((Amax-A100)/Amax)))",
+        "ConstantExpression",
+    ),
+    ("S100", "(alpha_A100/(alpha_A100+gamma))*ST", "ConstantExpression"),
+    (
+        "n",
+        "ln((((rmax*S100)-((kST*S0)*S100))/((rmax*S0)-((kST*S0)*S100))))/ln(ratio)",
+        "ConstantExpression",
+    ),
+    ("Fh", "(((Fmin^n)*(rmax-(kST*S0)))/(kST*S0))^(1/n)", "ConstantExpression"),
+    ("F0", "((Fh^n)*((kST*S0)/(rmax-(kST*S0))))^(1/n)", "ConstantExpression"),
+    ("V0", "(kST*S0)/c", "ConstantExpression"),
+    ("_InitialConc1", "ST-S0", "ConstantExpression"),
+    ("_rateLaw1", "1", "Constant"),
+]
+
+_SYNTHESIS_V3_NET = (
+    "# Created by BioNetGen 2.9.3\nbegin parameters\n"
+    + "".join(
+        f"    {i} {name}  {expr}  # {kind}\n"
+        for i, (name, expr, kind) in enumerate(_SYNTHESIS_V3_PARAMS, 1)
+    )
+    + """\
+end parameters
+begin functions
+    1 alpha_A() a+(b*max(0,((Amax-A)/Amax)))
+    2 SatRate_div_F() (rmax*(F^(n-1)))/((F^n)+(Fh^n))
+    3 _rateLaw2() kST*S
+end functions
+begin species
+    1 Sprime() _InitialConc1
+    2 S() S0
+    3 F() F0
+    4 V() V0
+    5 counter() 0
+end species
+begin reactions
+    1 0 5 _rateLaw1 #_R1
+    2 1 2 alpha_A #_R2
+    3 2 1 gamma #_reverse__R2
+    4 0 3 _rateLaw2 #_R3
+    5 3 4 SatRate_div_F #_R4
+    6 4 0 c #_R5
+end reactions
+begin groups
+    1 Stot                 1,2
+    2 Sprime               1
+    3 S                    2
+    4 F                    3
+    5 V                    4
+    6 t                    5
+end groups
+"""
+)
+
+
+class TestIssue99SynthesisV3:
+    """The model from GH #99, end to end. Five species, 28 derived parameters,
+    and a derived parameter that appears in an *exponent*:
+
+        n  = ln(...)/ln(ratio)
+        Fh = (((Fmin^n)*(rmax-(kST*S0)))/(kST*S0))^(1/n)
+
+    Flattened to primaries, ``Fh`` is 20 KB and ``F0`` is 40 KB, and the
+    ``sp.diff`` on them does not return — the one model in the 585-model
+    ``.net`` corpus whose ``_analyze_output_sens`` never completed. Both tests
+    below **hang** rather than fail against the pre-#99 flattening; that is what
+    the bug was, and there is nothing for a wall-clock budget to interrupt
+    inside a single sympy call.
+    """
+
+    @pytest.fixture
+    def model(self, tmp_path):
+        net = tmp_path / "synthesis_v3.net"
+        net.write_text(_SYNTHESIS_V3_NET)
+        import bngsim
+
+        return bngsim.Model.from_net(str(net))
+
+    def test_output_sens_analysis_completes(self, model):
+        from bngsim._codegen import _analyze_output_sens
+
+        analysis = _analyze_output_sens(model)
+        assert analysis["decline"] is None
+        status = {i["name"]: i["status"] for i in analysis["func_infos"]}
+        # SatRate_div_F is the function that reads ``n`` and ``Fh``; it is the
+        # one whose d(func)/dθ the flattening could never reach.
+        assert status["SatRate_div_F"] == "ok"
+        expansion = analysis["derived_expansion"]
+        assert set(expansion["Fh"]), "Fh's chain rule to the primaries is empty"
+        # ``n`` derived on the flattening path too — in 202 KB of C, against
+        # 12 KB walked. The size is the whole difference, so assert on it: an
+        # order of magnitude of headroom, not a fitted bound.
+        n_chars = sum(len(v) for v in expansion["n"].values())
+        assert n_chars < 50_000, f"∂n/∂primary emitted {n_chars} chars — flattened, not walked"
+
+    def test_ic_seed_reaches_a_derived_initial_condition(self, model):
+        """The numeric twin hangs on the same DAG, and *before* any codegen:
+        species ``F`` starts at ``F0``, so every parameter-sensitivity run on
+        this model went through the 40 KB flattening in
+        ``compute_ic_param_sens_seed``."""
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        seeds = compute_ic_param_sens_seed(model._core)
+        # Species 2 (0-based) is F, whose IC is the derived parameter F0.
+        assert any(s == 2 for s, _p, _v in seeds), "F's derived IC seeded no column"
+        assert all(v == v for _s, _p, v in seeds)  # no NaN
 
 
 # ─── ccode round-trip name hazards ────────────────────────────────────────
