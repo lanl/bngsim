@@ -424,6 +424,9 @@ class Simulator:
         # GH #176: once the auto analytical Jacobian fails to integrate and the FD
         # retry succeeds, skip the doomed analytical attempt on subsequent runs.
         "_ode_jacobian_fell_back",
+        # Issue #127: the same memo for the steady-state march, whose retry is
+        # decided in C++ (a failed march is a flag, not an exception).
+        "_ss_jacobian_fell_back",
         # Force dense linear solver over auto-selected sparse KLU (benchmarking)
         "_force_dense_linear_solver",
         # ...and the mirror flag, forcing KLU past the size/density gates (GH #29)
@@ -680,6 +683,7 @@ class Simulator:
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
+        self._ss_jacobian_fell_back = False
         # GH #29: the two pins contradict each other, and a benchmark that got
         # auto-selected numbers back under a "forced" label would be worse than
         # one that failed. Refuse at construction rather than letting either win.
@@ -3909,14 +3913,16 @@ class Simulator:
           converge to a spurious root of ``f(y)=0`` the trajectory never
           reaches, or walk a species negative into ``NaN`` (GH #27) — hence the
           burst.
-
-          KINSOL differences its own Jacobian here: no analytical one is
-          installed (``KINSetJacFn`` is never called), so each Jacobian setup
-          costs one RHS evaluation per unknown. ``jacobian=`` therefore does not
-          reach the polish — it selects how the *stability certificate* and
-          ``dY_ss/dp`` build their Jacobian, both of which do use the closed
-          form when the model has one.
         - ``"kinsol"``: accepted alias for ``"newton"``.
+
+        Both tiers factor the model's closed-form Jacobian when it has one and
+        ``jacobian=`` asks for it (issue #127): ``CVodeSetJacFn`` on the march,
+        ``KINSetJacFn`` on the polish, the latter projected onto the polish's own
+        unknown set. ``jacobian="fd"`` pins the difference quotient instead — one
+        RHS evaluation per unknown per Jacobian setup, which is what both tiers
+        paid unconditionally before #127. ``ss.solver_jacobian_source`` reports
+        which matrix was factored. The same option still selects how the
+        *stability certificate* and ``dY_ss/dp`` build theirs.
 
         Because ``"newton"`` integrates first and only then polishes, it is
         ``"integration"`` plus extra work: across six published dose-response
@@ -4059,7 +4065,11 @@ class Simulator:
         opts.rtol = rtol if rtol is not None else self._rtol
         opts.atol = atol if atol is not None else self._atol
         opts.max_steps = max_steps if max_steps is not None else self._max_steps
-        opts.jacobian = self._jacobian
+        # A previous solve on this Simulator already proved the closed-form
+        # Jacobian makes CVODE give up on this model, and paid a doomed march to
+        # find out (issue #127, the GH #176 memo for `run`). Go straight to the
+        # difference quotient rather than re-paying it at every point of a scan.
+        opts.jacobian = "fd" if self._ss_jacobian_fell_back else self._jacobian
         if self._codegen_so_path:
             opts.codegen_so_path = self._codegen_so_path
         if self._codegen_c_source:
@@ -4091,9 +4101,33 @@ class Simulator:
             result.n_steps,
             result.n_residual_species,
         )
+        self._note_ss_jacobian_retry(result)
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _note_ss_jacobian_retry(self, result) -> None:
+        """Say so when the solver had to call off the closed-form Jacobian.
+
+        The steady-state half of GH #176 (issue #127): the solver installed the
+        model's analytical Jacobian, CVODE gave up on the march, and it retried
+        on difference quotients. Worth a line — the usual cause is a rate law
+        that is discontinuous in a state variable, which is a fact about the
+        model — and worth remembering, so a scan does not re-pay the doomed
+        attempt at every point.
+        """
+        if not getattr(result, "solver_jacobian_retried", False):
+            return
+        if not self._ss_jacobian_fell_back:
+            logger.warning(
+                "GH#176 analytical Jacobian: the steady-state march failed with the "
+                "closed-form Jacobian installed; retried with the finite-difference "
+                "one. The rate law is likely discontinuous in a state variable (e.g. "
+                "an if() whose condition crosses a threshold), which the exact "
+                "Jacobian cannot represent. Pass jacobian='fd' to skip this attempt, "
+                "or jacobian='analytical' to surface the failure."
+            )
+        self._ss_jacobian_fell_back = True
 
     @staticmethod
     def _warn_about_pure_sinks(result: SteadyStateResult) -> None:
@@ -4328,7 +4362,10 @@ class Simulator:
             opts.rtol = eff_rtol
             opts.atol = eff_atol
             opts.max_steps = eff_max_steps
-            opts.jacobian = self._jacobian
+            # Read (and, below, set) the same memo `steady_state()` keeps, so a
+            # sweep over a model whose closed-form Jacobian CVODE cannot use pays
+            # the doomed march once rather than once per entry (issue #127).
+            opts.jacobian = "fd" if self._ss_jacobian_fell_back else self._jacobian
             if self._codegen_so_path:
                 opts.codegen_so_path = self._codegen_so_path
             if self._codegen_c_source:
@@ -4340,6 +4377,7 @@ class Simulator:
             except RuntimeError as e:
                 raise SimulationError(f"Batch {i} failed: {e}") from e
             result = SteadyStateResult(core_result)
+            self._note_ss_jacobian_retry(result)
             self._warn_about_pure_sinks(result)
             return result
 
@@ -5183,6 +5221,23 @@ class SteadyStateResult:
         (in-process MIR). Issue #63 — before it, a steady-state solve ignored
         the Simulator's codegen artifact, so this was always effectively
         ``"exprtk"`` no matter what :attr:`Simulator.codegen_backend` reported.
+    solver_jacobian_source : str
+        Which Newton matrix the *solver tiers* factored (issue #127):
+        ``"codegen"`` (the compiled analytical Jacobian), ``"analytical"`` (the
+        interpreted fill), or ``"finite-difference"`` (CVODE's and KINSOL's own
+        difference quotients, one RHS evaluation per unknown per Jacobian setup).
+        Reported on every solve, and it covers both tiers — the CVODE march and
+        the KINSOL polish take the same gate, so they cannot disagree. Before
+        #127 neither installed a callback and this was always the difference
+        quotient, on models whose closed form was already loaded.
+    solver_jacobian_retried : bool
+        Whether the closed-form Jacobian had to be *called off*: CVODE gave up on
+        the march with it installed, and the solve was retried on difference
+        quotients (issue #127, the steady-state half of GH #176). The usual cause
+        is a rate law that is discontinuous in a state variable, whose exact
+        derivative omits the jump. The returned answer is the retry's, so
+        ``solver_jacobian_source`` reads ``"finite-difference"`` alongside this.
+        Only ``jacobian="auto"`` retries; ``"analytical"`` surfaces the failure.
     sens_jacobian_source, sens_dfdp_source : str
         How each factor of ``dY_ss/dp = -J⁻¹·(∂f/∂p)`` was built.
         ``sens_jacobian_source`` is ``"codegen"`` (compiled analytical Jacobian),
@@ -5250,6 +5305,8 @@ class SteadyStateResult:
         "root_stability",
         "n_unstable_roots_rejected",
         "rhs_backend",
+        "solver_jacobian_source",
+        "solver_jacobian_retried",
         "sens_jacobian_source",
         "sens_dfdp_source",
         "sens_output_source",
@@ -5284,6 +5341,10 @@ class SteadyStateResult:
         # Issue #63 — which numerical path ran. getattr-guarded like the GH #12
         # blocks below so an older core stays loadable.
         self.rhs_backend = getattr(core, "rhs_backend", "exprtk")
+        # Issue #127 — which Jacobian the march and the polish factored. An
+        # older core installed neither callback, hence the default.
+        self.solver_jacobian_source = getattr(core, "solver_jacobian_source", "finite-difference")
+        self.solver_jacobian_retried = bool(getattr(core, "solver_jacobian_retried", False))
         self.sens_jacobian_source = getattr(core, "sens_jacobian_source", "")
         self.sens_dfdp_source = getattr(core, "sens_dfdp_source", "")
         # Issue #75 — how d(func)/dp was built: the compiled chain rule, the

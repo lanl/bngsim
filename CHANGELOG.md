@@ -174,6 +174,76 @@ in `CMakeLists.txt`) is derived from it.
   585-model `ode_fullnet` corpus.
 
 ### Changed
+- **Both steady-state tiers now install the Jacobian the model already has
+  (issue #127).** `SteadyStateMarcher`'s constructor calls `CVodeSetJacFn` and
+  `solve_by_newton` calls `KINSetJacFn` whenever the model carries a closed form
+  and `jacobian=` asks for it. Neither ever did: CVODE and KINSOL each built
+  their own difference-quotient Jacobian — **one RHS evaluation per unknown per
+  setup** — on models whose analytical Jacobian was assembled, compiled and
+  `dlopen`'d in the same object. `jacobian=` therefore now reaches the *solvers*,
+  not only the two consumers that need the matrix itself (`dY_ss/dp` and the #78
+  stability certificate); `"fd"` selects exactly the old behavior, and
+  `ss.solver_jacobian_source` reports which matrix was factored.
+
+  The polish's Jacobian is the interesting half. It solves on
+  `ss_unknown_species` — the conservation-law independents, narrowed by any
+  `mask=` — so its matrix is the *reduced* one. KINSOL's difference quotient
+  differentiates the reduced residual directly and gets that projection for free;
+  a closed-form fill is of the full `ns × ns` system and is projected by hand
+  through the same `ss_reduce_jacobian` chain rule `dY_ss/dp` and the certificate
+  already use.
+
+  **What it buys.** Seeded at its steady state, `SHP2_base_model`'s single polish
+  now makes **4** model-level RHS calls where it made 151 (147 unknowns). Over
+  the 585-model `.net` corpus — 560 of which have a closed form to install — a
+  solve makes a median 1.09× fewer RHS evaluations (`method="newton"` 1.10×, up
+  to 33×). Wall clock depends on what share of the solve the Jacobian setup was:
+  interpreted, 1.08–1.29× on 149–356 species; compiled, 1.06× at 356 species and
+  1.19× on `fceri_fyn` (1281), but **0.87–0.89× at 149 species** — a compiled RHS
+  makes a difference-quotient column cheap, and a profile there puts ~80% of
+  CVODE's time in `SUNDlsMat_denseGETRF` and none in the fill. That dense
+  factorization (the march cannot route to KLU) is issue #128, filed separately
+  so the two are not conflated.
+
+  **What it changes about convergence**, measured before/after on the corpus at
+  `max_time=1e4`, both methods. `method="newton"`: **one** model flips
+  `converged` and it flips *to* True (`Ras_WT_in_vitro`, residual 4.6e-1 →
+  3.7e-10); 16 flip `method_used`, 8 gaining the polish (residual 1.2e-10 →
+  5.1e-17) and 8 losing it (8.3e-12 → 5.6e-10, still under `tol`), all 16
+  converged either way. `method="integration"`: 5 flip `converged`, 3 to False
+  and 2 to True, and every one of the five returns the *same state* — they moved
+  by 1e-18 to 1.5e-9 of the model's own scale, with the residual straddling
+  `tol`. These are models whose parity residual is a cancellation of large fluxes
+  and therefore at its own roundoff floor; a different step sequence lands one
+  ulp either side of the criterion. The 20 corpus models with no closed form are
+  byte-identical before and after, as they must be.
+
+  **One model needed the analytical Jacobian called off**, and it is the model
+  GH #176's docstring already names: `l-type-calcium-channel-dynamics`, whose
+  `v_rec = if((-70+V)<-20, 0.5, 0.05)` is discontinuous in a state variable the
+  trajectory approaches asymptotically. The exact derivative omits the jump, so
+  the corrector meets an unanticipated step, the error test fails repeatedly and
+  the march collapses to `hmin` at t≈24 — the identical failure `run()` has on
+  the identical model. `steady_state()` had no equivalent of `run()`'s retry;
+  under `jacobian="auto"` a **hard integrator failure** (not mere
+  non-convergence, which retrying cannot help) now retries the solve once on
+  difference quotients, restoring that model's pre-#127 answer exactly.
+  `ss.solver_jacobian_retried` says so, the Simulator remembers it so a scan does
+  not re-pay the doomed march at every point, and an explicit
+  `jacobian="analytical"` still surfaces the failure rather than being
+  second-guessed. Three corpus models take that path, and the model itself was
+  already a tracked fixture — `test_jacobian_discontinuous_fallback.py` gains the
+  steady-state mirror of its four `run()` cases.
+
+  Pinned by a new native case (`test_steady_state_solver_jacobian`, which checks
+  the reduced projection against `pure_sink_conserved.net`'s closed-form root
+  under both strategies) and by
+  `python/tests/test_steady_state_polish_jacobian.py`, rewritten from the
+  behavior it pinned for #126. One knife-edge assertion elsewhere had to be
+  restated: `test_pre_fix_value_is_far_from_the_answer` compared
+  `max|got − dropped|` against `0.5·max|got|`, which is algebraically
+  `|got| > |exact|` and so turned on whether the march stopped one roundoff above
+  or below the answer; it now states the factor of two with a tolerance.
 - **`CvodeSimulator::run` puts its setup in named `Impl::` helpers (issue
   #109).** `run()` spanned 2,346 lines of one function body — 1,375 NLOC at
   cyclomatic complexity 368. The codebase is otherwise small (median function 12

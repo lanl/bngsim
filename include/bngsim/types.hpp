@@ -798,10 +798,12 @@ struct SensitivityOptions {
 // (GH #27): the same CVODE burst carries the state into the physical root's
 // basin, then a KINSOL Newton polish is accepted only once it is seed-stable
 // AND linearly stable (issue #78), else integration continues — so "newton" is
-// "integration" plus a polish (on KINSOL's own difference-quotient Jacobian) that
-// GH #28 measured at 1.4-3.9x the wall clock across six published models. What
-// it buys for that is a far tighter root (residual ~1e-13 vs ~1e-9). "kinsol"
-// is an accepted input alias for "newton".
+// "integration" plus a polish that GH #28 measured at 1.4-3.9x the wall clock
+// across six published models. What it buys for that is a far tighter root
+// (residual ~1e-13 vs ~1e-9). "kinsol" is an accepted input alias for "newton".
+// Both tiers factor the model's closed-form Jacobian when it has one and
+// `jacobian` asks for it (issue #127); before that each differenced its own, at
+// one RHS evaluation per unknown per setup.
 struct SteadyStateOptions {
     double tol = 1e-9;     // convergence tolerance: ||f(y)||_2 / n_species < tol
     double max_time = 1e6; // max integration time for the integration path
@@ -811,11 +813,13 @@ struct SteadyStateOptions {
     // "integration" (default; CVODE parity early-stop), "newton" (two-tier
     // integrate-then-polish), or "kinsol" (alias for newton).
     std::string method = "integration";
-    // Jacobian strategy (same values as SolverOptions). Read by the consumers
-    // that need the MATRIX — dY_ss/dp and the issue #78 stability certificate,
-    // both via ss_fill_state_jacobian. Neither solver tier installs a closed
-    // form (no CVodeSetJacFn on the march, no KINSetJacFn on the polish), so
-    // this does not change how either of them converges.
+    // Jacobian strategy (same values as SolverOptions). Read by everything that
+    // needs the matrix: dY_ss/dp and the issue #78 stability certificate, which
+    // need it as a MATRIX (via ss_fill_state_jacobian), and — since issue #127 —
+    // the CVODE march (CVodeSetJacFn) and the KINSOL polish (KINSetJacFn), which
+    // need it as a Newton step. "fd" pins the difference quotient for all four;
+    // so does "jax", whose Python callback is plumbed only into CvodeSimulator.
+    // A model with no closed form differences whatever this says.
     std::string jacobian = "auto";
 
     // Code-generated RHS shared library path. Honored by every steady-state
@@ -894,6 +898,23 @@ struct SteadyStateResult {
     // rhs_backend: "exprtk" (interpreted), "codegen-so" (dlopen'd .so), or
     // "codegen-jit" (in-process MIR). Mirrors Simulator.codegen_backend.
     std::string rhs_backend = "exprtk";
+    // solver_jacobian_source: which Newton matrix the SOLVER tiers factored —
+    // "codegen" (the compiled bngsim_codegen_jac), "analytical" (the interpreted
+    // fill), or "finite-difference" (CVODE's and KINSOL's own difference
+    // quotients, one RHS evaluation per unknown per setup). Issue #127: before
+    // it this was always "finite-difference", on models whose closed form was
+    // already loaded in the same object. Unlike the three sens_* fields below it
+    // is set on every solve, sensitivity or not, and it describes the march as
+    // well as the polish — both tiers take the same gate.
+    std::string solver_jacobian_source;
+    // Did the closed-form Jacobian have to be called off (issue #127)? True when
+    // the solve was retried on difference quotients because CVODE gave up on the
+    // march with the closed form installed — the GH #176 failure, whose usual
+    // cause is a rate law that is discontinuous in a state variable. Only
+    // jacobian="auto" retries; "analytical" surfaces the failure instead. The
+    // returned answer is the retry's, so solver_jacobian_source reads
+    // "finite-difference" alongside this.
+    bool solver_jacobian_retried = false;
     // jacobian_source: how J in dY_ss/dp = -J⁻¹·(∂f/∂p) was built —
     // "codegen" (compiled analytical), "analytical" (interpreted analytical),
     // "finite-difference", or "" when no sensitivity was requested.

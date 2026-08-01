@@ -16,10 +16,11 @@ namespace bngsim {
 // method="integration" (default): CVODE parity early-stop only.
 // method="newton": two-tier integrate-first solver (GH #27). A CVODE burst
 //                carries the state into the physical root's basin, then KINSOL
-//                polishes (differencing its own Jacobian — neither tier
-//                installs a closed form); the polish is accepted only once it
-//                is seed-stable (agrees across two successively tighter
-//                bursts) and carries no eigenvalue in the right half-plane
+//                polishes (on the model's closed-form Jacobian where it has one,
+//                projected onto the polish's unknown set — issue #127); the
+//                polish is accepted only once it is seed-stable (agrees across
+//                two successively tighter bursts) and carries no eigenvalue in
+//                the right half-plane
 //                (issue #78), otherwise integration continues. Correct on multi-root and NaN-prone
 //                models where seeding Newton at the raw IC returned spurious /
 //                non-finite roots — but since GH #27 made it integrate first,

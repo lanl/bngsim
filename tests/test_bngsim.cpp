@@ -8,6 +8,7 @@
 #include <bngsim/mm_jacobian.hpp> // test_mm_tqssa_stiff_root calls mm_tqssa directly
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -437,6 +438,97 @@ int test_steady_state_mask_pure_sink() {
             threw = true;
         }
         CHECK(threw, "an all-false mask is rejected");
+    }
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test: both steady-state tiers factor the model's Jacobian (issue #127)
+//
+// Before #127 neither did: the march never called CVodeSetJacFn and the polish
+// never called KINSetJacFn, so each Jacobian setup differenced the RHS at one
+// evaluation per unknown — on models whose closed form was already assembled.
+// `jacobian="fd"` still selects exactly that, which is what makes the two halves
+// of this test an A/B on one binary.
+//
+// The reduced polish is the part worth checking against algebra rather than
+// against itself: KINSOL's difference quotient differentiates the REDUCED
+// residual and so gets the conservation-law projection for free, while a
+// closed-form fill is of the full ns×ns system and has to be projected by hand
+// (ss_reduce_jacobian). A projection that did not match would be a Newton matrix
+// for a different system.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_steady_state_solver_jacobian() {
+    // What ran is reported, and "fd" still picks the difference quotient.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        CHECK(model.analytical_jacobian_complete(), "fixture has a closed-form Jacobian");
+
+        bngsim::SteadyStateOptions opts; // jacobian defaults to "auto"
+        auto ss_auto = bngsim::find_steady_state(model, opts);
+        CHECK(ss_auto.converged, "auto converges");
+        CHECK(ss_auto.solver_jacobian_source == "analytical",
+              "auto factors the interpreted closed form");
+        CHECK(!ss_auto.solver_jacobian_retried, "and did not have to call it off");
+
+        auto m_fd = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        bngsim::SteadyStateOptions fd_opts;
+        fd_opts.jacobian = "fd";
+        auto ss_fd = bngsim::find_steady_state(m_fd, fd_opts);
+        CHECK(ss_fd.converged, "fd converges");
+        CHECK(ss_fd.solver_jacobian_source == "finite-difference",
+              "fd still differences, in both tiers");
+        for (size_t i = 0; i < ss_auto.concentrations.size(); ++i) {
+            CHECK_CLOSE(ss_auto.concentrations[i], ss_fd.concentrations[i], 1e-6,
+                        "the Jacobian source does not move the root");
+        }
+    }
+
+    // The difference-quotient columns are gone: same march, fewer RHS calls.
+    // Counted at the MODEL, which sees CVODE's DQ columns as ordinary
+    // evaluations; the marches are the same trajectory to the same criterion, so
+    // what separates the counts is the Jacobian and nothing else.
+    {
+        std::uint64_t evals[2] = {0, 0};
+        const std::string strategies[2] = {"fd", "auto"};
+        for (int k = 0; k < 2; ++k) {
+            auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+            bngsim::SteadyStateOptions opts;
+            opts.jacobian = strategies[k];
+            opts.steady_state_mask = {1, 1, 1, 1, 0};
+            model.reset_rhs_counters();
+            auto ss = bngsim::find_steady_state(model, opts);
+            CHECK(ss.converged, "masked solve converges under both strategies");
+            evals[k] = model.rhs_eval_count();
+        }
+        CHECK(evals[1] < evals[0], "the closed form removes RHS evaluations from the march");
+    }
+
+    // The reduced (conservation-law) polish, against the closed-form root the
+    // issue #74 test derives from the .net header — the same algebra, now asked
+    // of the projected Jacobian.
+    {
+        const double ksyn = 2.0, kon = 3.0, koff = 1.0, kdeg = 0.5, btot = 10.0;
+        const double a_ss = ksyn / kdeg;
+        const double den = koff + kon * a_ss;
+        for (const std::string strategy : {std::string("fd"), std::string("auto")}) {
+            auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+            bngsim::SteadyStateOptions opts;
+            opts.method = "newton";
+            opts.jacobian = strategy;
+            opts.steady_state_mask = {1, 1, 1, 1, 0};
+            auto ss = bngsim::find_steady_state(model, opts);
+            CHECK(ss.converged, "reduced polish converges under both strategies");
+            CHECK_CLOSE(ss.concentrations[1], a_ss, 1e-6, "A* = ksyn/kdeg");
+            CHECK_CLOSE(ss.concentrations[2], btot * koff / den, 1e-6,
+                        "B* = Btot*koff/(koff+kon*A*)");
+            CHECK_CLOSE(ss.concentrations[3], btot * kon * a_ss / den, 1e-6,
+                        "AB* = Btot*kon*A*/(koff+kon*A*)");
+            CHECK_CLOSE(ss.concentrations[2] + ss.concentrations[3], btot, 1e-6,
+                        "the conserved moiety survives the projected Newton");
+        }
     }
 
     return 0;
@@ -2380,6 +2472,7 @@ int main() {
     RUN_TEST(test_ode_steady_state_early_stop);
     RUN_TEST(test_find_steady_state_methods);
     RUN_TEST(test_steady_state_mask_pure_sink);
+    RUN_TEST(test_steady_state_solver_jacobian);
     RUN_TEST(test_ssa_simple_decay);
     RUN_TEST(test_ssa_reproducibility);
     RUN_TEST(test_ssa_fractional_initial_population_rounds);

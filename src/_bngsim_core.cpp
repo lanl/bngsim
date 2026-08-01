@@ -2054,6 +2054,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // interpreted solve from a compiled one and a closed-form dY_ss/dp from
         // a finite-differenced one.
         .def_readonly("rhs_backend", &bngsim::SteadyStateResult::rhs_backend)
+        // Issue #127 — which Newton matrix the march and the polish factored,
+        // reported on every solve (not just a sensitivity one).
+        .def_readonly("solver_jacobian_source", &bngsim::SteadyStateResult::solver_jacobian_source)
+        .def_readonly("solver_jacobian_retried",
+                      &bngsim::SteadyStateResult::solver_jacobian_retried)
         .def_readonly("sens_jacobian_source", &bngsim::SteadyStateResult::sens_jacobian_source)
         .def_readonly("sens_dfdp_source", &bngsim::SteadyStateResult::sens_dfdp_source)
         // Issue #75 — "codegen" / "mixed" / "finite-difference" for the d(func)/dp
