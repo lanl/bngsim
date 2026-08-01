@@ -1390,12 +1390,19 @@ def _inline_derived_param_refs(
     ``derived_exprs`` maps each derived parameter name to its defining
     expression string. A derived parameter whose expression references another
     derived parameter — e.g. a detailed-balance constraint ``a2prime =
-    f(a1prime)`` where ``a1prime = kcr`` — is flattened here so the downstream
-    sympy Jacobian sees an expression in primary parameters only. This is what
-    lets the forward-sensitivity chain rule reach through nested derived
-    parameters (issue #41). Without it, ``_compute_derived_param_jacobian``
-    rejects the nested expression (a non-primary free symbol) and silently
-    drops the ``primary -> derived -> derived -> rate`` contribution.
+    f(a1prime)`` where ``a1prime = kcr`` — is flattened here so the caller sees
+    an expression in primary parameters only (issue #41).
+
+    **Do not flatten in order to differentiate** (GH #99). The substitution is
+    exponential in the depth of the DAG: in ``ode/synthesis_v3`` a 43-character
+    derived parameter flattens to 20 KB, its dependent to 40 KB, and a single
+    ``sp.diff`` on the result never returns. The forward-sensitivity chain rule
+    — which is what #41 added this for — now walks the DAG instead
+    (:func:`_derived_param_jacobian_dag` and its numeric twin), reaching the
+    same nested parameters from the expressions as written. What remains here is
+    the *textual* use: deciding whether a switch-time threshold ultimately
+    mentions a parameter at all, where nothing is differentiated and the
+    flattened string is only scanned.
 
     Each substitution is whole-word (``\\b``-anchored) and parenthesized to
     preserve operator precedence. The per-pass scan first checks which derived
@@ -1518,10 +1525,16 @@ def _output_sens_derivation_steps(
     between ~4x and ~9x headroom under the same slope.
 
     An upper bound, not an identity: sympy's ``free_symbols`` can be a subset (a
-    symbol that cancels out of the parsed expression takes no ``diff``), and the
-    derived phase is counted textually rather than through #41's inlining. A budget
+    symbol that cancels out of the parsed expression takes no ``diff``). A budget
     wants the bound in that direction — over-counting buys time, and the quantity
     is a *size* proxy, not an accounting.
+
+    The derived half became a tight bound with GH #99. It counts one parse per
+    derived expression and one ``diff`` per symbol that expression *names*, which
+    is what the DAG walk now does; before, the phase differentiated each derived
+    parameter's whole DAG flattened into one expression, so the count bore no
+    fixed relation to the work — and on ``ode/synthesis_v3`` the work was
+    unbounded.
     """
     n = len(relevant) + len(derived_exprs)
     for i in relevant:
@@ -1593,28 +1606,18 @@ def _compute_derived_param_jacobian(
     ``p_d`` as an independent rate constant (``∂p_d/∂primary = 0``).
 
     ``derived_exprs`` (optional) maps every derived parameter name to its
-    defining expression. When supplied, nested derived references in ``expr``
-    are inlined down to primaries first (issue #41), so ``p_d = f(p_e)`` with
-    ``p_e`` itself derived still yields the full chain rule. Omitting it (or
-    passing ``None``) preserves the pre-#41 behavior of rejecting any
-    non-primary free symbol.
+    defining expression. When supplied, a nested derived reference in ``expr``
+    is chain-ruled through rather than rejected (issue #41), so ``p_d = f(p_e)``
+    with ``p_e`` itself derived still yields the full chain rule — see
+    :func:`_derived_param_jacobian_dag` for how the DAG is walked (GH #99).
+    Omitting it (or passing ``None``) preserves the pre-#41 behavior of
+    rejecting any non-primary free symbol.
 
     Two preprocessing passes (issues #27, #56) widen the set of expressions that
-    yield an analytic Jacobian instead of the silent zero-contribution fallback:
-
-    1. The ExprTk surface syntax is rewritten for sympy by
-       :func:`_preprocess_derived_expr`: BNGL ``if(c, t, f)`` becomes
-       ``Piecewise((t, c), (f, True))`` so sympy differentiates the conditional
-       analytically (the boundary delta is sympy's standard Piecewise
-       convention), ``^`` becomes ``**``, and logical operators become sympy
-       ``And``/``Or``/``Not`` calls. Without the logical rewrite a *compound*
-       condition — ``if((sel>=1)&&(sel<10), kA, kB)``, in any of ExprTk's six
-       spellings — failed to parse and its whole chain rule was silently zeroed
-       (issue #56).
-    2. Primary parameter names that happen to be Python keywords (e.g.
-       ``lambda`` in ``ode/scaling_example.bngl``) are aliased to safe
-       placeholders before ``parse_expr`` and round-tripped back to
-       ``p[idx]`` on the way out.
+    yield an analytic Jacobian instead of the silent zero-contribution fallback
+    — the ExprTk-to-sympy surface rewrite and the parameter-name aliasing. Both
+    live in :func:`_prepare_derived_expr`, which is where they are described and
+    where the numeric twin picks them up from too.
 
     A ``None`` here is indistinguishable downstream from a genuine zero, so
     callers that cannot afford that ambiguity use
@@ -1637,6 +1640,8 @@ def _derived_param_jacobian_checked(
     param_idx: dict,
     derived_exprs: dict[str, str] | None = None,
     deadline: float | None = None,
+    cache: dict[str, tuple[dict[str, str] | None, str | None]] | None = None,
+    name: str | None = None,
 ) -> tuple[dict[str, str] | None, str | None]:
     """:func:`_compute_derived_param_jacobian`, plus the reason it gave up.
 
@@ -1651,56 +1656,219 @@ def _derived_param_jacobian_checked(
     ship a gradient component that is confidently, exactly wrong.
 
     ``deadline`` (GH #90) is a ``time.perf_counter()`` stamp bounding the caller's
-    whole build-time derivation. It is checked once on entry (parsing an
-    expression is itself unbounded work) and again before each ``sp.diff``, so a
-    single pathological expression overshoots by at most one partial. Expiry
-    raises :class:`bngsim._jacobian._DerivationBudgetExceeded` rather than
-    returning a reason: it is a property of the *build*, not of this expression,
-    and it must unwind past the per-expression caches to decline the whole model.
-    Callers that pass no deadline (the default) never see it.
+    whole build-time derivation. It is checked on entry to every expression the
+    DAG walk visits (parsing one is itself unbounded work) and again before each
+    ``sp.diff``, so a single pathological expression overshoots by at most one
+    partial. Expiry raises :class:`bngsim._jacobian._DerivationBudgetExceeded`
+    rather than returning a reason: it is a property of the *build*, not of this
+    expression, and it must unwind past the per-expression caches to decline the
+    whole model. Callers that pass no deadline (the default) never see it.
+
+    ``cache`` (GH #99) is an optional ``{derived_name: (jacobian, reason)}`` map
+    shared across a caller's loop over many derived parameters, so a DAG node is
+    differentiated once for the whole build rather than once per parameter that
+    reaches it. Pass one from any loop; omit it and the walk still memoizes
+    within this single call. ``name`` is the derived parameter ``expr`` defines,
+    when it is one: it puts the top-level result in that same cache, and starts
+    the cycle guard's stack, so a loop over every derived parameter costs one
+    derivation per DAG node rather than two.
     """
     s = expr.strip()
     if not s:
         return None, None
     _check_derivation_deadline(deadline)
     try:
-        import sympy as sp
-        from sympy.parsing.sympy_parser import parse_expr
+        import sympy  # noqa: F401
+        from sympy.parsing.sympy_parser import parse_expr  # noqa: F401
     except ImportError:
         # No sympy at all is an environment fact, not a property of this
         # expression — every derived parameter is affected equally and the
         # caller's own sympy import has already failed.
         return None, None
 
-    # Pass 0 (issue #41): flatten nested derived-parameter references so the
-    # expression is expressed purely in primaries before differentiation. A
-    # no-op for single-level derived params (whose expressions carry no derived
-    # name tokens), so single-level output stays byte-identical.
-    if derived_exprs:
-        s = _inline_derived_param_refs(s, derived_exprs)
+    memo = {} if cache is None else cache
+    if name is not None and name in memo:
+        return memo[name]
+    result = _derived_param_jacobian_dag(
+        s,
+        set(primary_param_names),
+        param_idx,
+        derived_exprs or {},
+        deadline,
+        memo,
+        () if name is None else (name,),
+    )
+    if name is not None:
+        memo[name] = result
+    return result
+
+
+def _derived_param_jacobian_dag(
+    expr: str,
+    primary_names: set[str],
+    param_idx: dict,
+    derived_exprs: dict[str, str],
+    deadline: float | None,
+    cache: dict[str, tuple[dict[str, str] | None, str | None]],
+    stack: tuple[str, ...],
+) -> tuple[dict[str, str] | None, str | None]:
+    """``∂expr/∂primary`` for every primary ``expr`` reaches, by walking the
+    derived-parameter DAG instead of flattening it (GH #99).
+
+    Issue #41 reached a *nested* derived parameter by textually inlining it —
+    and everything it depends on — before handing one expression to sympy. That
+    is exponential in the depth of the DAG: in
+    ``ode/synthesis_v3`` a 43-character derived parameter inlines to 20 KB, its
+    dependent to 40 KB, and because the nesting lands in an *exponent* the single
+    ``sp.diff`` on the result never returns (and, being one uninterruptible sympy
+    call, is immune to #97's wall-clock budget).
+
+    So take the derivative where it is small and compose:
+
+        ∂p_d/∂primary = (∂p_d/∂primary)_direct
+                        + Σ_k (∂p_d/∂s_k)·(∂s_k/∂primary)
+
+    over the derived parameters ``s_k`` that ``p_d`` names *directly*. Each
+    factor is a partial of an as-written expression, so the sympy stays on
+    43-character inputs (8.0 ms for the whole of ``Fh``, against a derivation
+    that does not finish); ``∂p_d/∂s_k`` prints ``s_k`` as ``p[idx]``, which the
+    runtime already holds because the emitted value code reads a derived
+    parameter from the same slot. This is the shape ``_functional_dfdp_terms``
+    has always used for a rate law that names a derived parameter — this
+    function was the one place that still flattened.
+
+    ``cache`` memoizes each derived parameter's completed table, so a diamond in
+    the DAG is differentiated once. ``stack`` is the chain of derived names
+    currently being expanded: re-entering one is a reference cycle in an
+    ill-formed ``.net`` (what ``_inline_derived_param_refs``' ``max_passes``
+    bound guarded against), reported as a reason rather than recursed into.
+
+    Keys are sorted, and a single-level expression takes no composition at all,
+    so a derived parameter already written in primaries emits byte-identical C
+    to the pre-#99 flattening path.
+    """
+    direct, reason = _direct_derived_partials(
+        expr, primary_names, derived_exprs.keys(), param_idx, deadline
+    )
+    if reason is not None or not direct:
+        return None, reason
+
+    terms: dict[str, list[str]] = {}
+    for name, d_c in direct.items():
+        if name not in derived_exprs:
+            terms.setdefault(name, []).append(d_c)
+            continue
+        if name in stack:
+            return None, f"reference cycle through the derived parameter {name!r}"
+        hit = cache.get(name)
+        if hit is None:
+            hit = _derived_param_jacobian_dag(
+                derived_exprs[name],
+                primary_names,
+                param_idx,
+                derived_exprs,
+                deadline,
+                cache,
+                stack + (name,),
+            )
+            cache[name] = hit
+        sub, why = hit
+        if why is not None:
+            # A lost sub-Jacobian is a lost chain rule for every primary that
+            # reaches it, and the caller reads a missing partial as a hard zero
+            # (issue #56) — so it fails the whole expression, not just this term.
+            return None, f"through the derived parameter {name!r}: {why}"
+        for prim, sub_c in (sub or {}).items():
+            terms.setdefault(prim, []).append(f"({d_c})*({sub_c})")
+
+    out = {prim: " + ".join(t) for prim, t in sorted(terms.items())}
+    return (out or None), None
+
+
+class _PreparedDerivedExpr(NamedTuple):
+    """A derived-parameter expression parsed and ready to differentiate."""
+
+    referenced: list[str]
+    """Parameter names the expression names directly, sorted — its
+    differentiation variables."""
+    sym_name_of: dict[str, str]
+    """Parameter name → the sympy symbol name standing in for it."""
+    sym_map: dict
+    """Sympy symbol name → the ``sp.Symbol`` bound for it."""
+    sym_expr: object
+    """The parsed sympy expression."""
+
+
+def _prepare_derived_expr(
+    expr: str,
+    primary_names: set[str],
+    derived_names,
+) -> tuple[_PreparedDerivedExpr | None, str | None]:
+    """Parse a derived-parameter expression into sympy, ready for ``sp.diff``
+    w.r.t. every parameter it names directly.
+
+    The single preparation sequence shared by the C-emitting chain rule
+    (:func:`_direct_derived_partials`) and its numeric twin
+    (:func:`_direct_derived_partials_numeric`), which differ only in what they do
+    with the partials. Sharing it is the point: this pipeline has picked up
+    fixes one site at a time before (#27's keyword aliasing, #56's logical
+    rewrite), and a fix that lands on one twin and not the other reads
+    downstream as a hard zero.
+
+    Two preprocessing passes (issues #27, #56) widen the set of expressions that
+    yield an analytic Jacobian instead of the silent zero-contribution fallback:
+
+    1. The ExprTk surface syntax is rewritten for sympy by
+       :func:`_preprocess_derived_expr`: BNGL ``if(c, t, f)`` becomes
+       ``Piecewise((t, c), (f, True))`` so sympy differentiates the conditional
+       analytically (the boundary delta is sympy's standard Piecewise
+       convention), ``^`` becomes ``**``, and logical operators become sympy
+       ``And``/``Or``/``Not`` calls. Without the logical rewrite a *compound*
+       condition — ``if((sel>=1)&&(sel<10), kA, kB)``, in any of ExprTk's six
+       spellings — failed to parse and its whole chain rule was silently zeroed
+       (issue #56).
+    2. Parameter names that would not survive the parse-differentiate-print
+       round trip are aliased to safe placeholders — Python keywords (e.g.
+       ``lambda`` in ``ode/scaling_example.bngl``, which ``parse_expr`` cannot
+       tokenize) and C reserved words (which ``sp.ccode`` renames on output).
+
+    ``derived_names`` are differentiation variables here just like the primaries
+    (GH #99): the caller chain-rules through them rather than inlining them, so
+    a nested derived parameter is an ordinary symbol rather than an unresolved
+    one.
+
+    Returns ``(prepared, None)``, ``(None, None)`` when the expression names no
+    parameter at all (a genuine zero, nothing to differentiate), or
+    ``(None, reason)`` when a real partial was lost.
+    """
+    import sympy as sp
+    from sympy.parsing.sympy_parser import parse_expr
 
     # Pass 1: ExprTk → sympy surface syntax (if→Piecewise, ^→**, logicals →
     # And/Or call form). Applied to the raw string so whole-word matching of
     # ``if`` sees the source as written.
-    s_pre = _preprocess_derived_expr(s)
+    s_pre = _preprocess_derived_expr(expr)
 
-    referenced = sorted(p for p in primary_param_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
+    diff_names = primary_names | set(derived_names)
+    referenced = sorted(p for p in diff_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
     if not referenced:
-        return None, None  # references no primary — a genuine zero, not a failure
+        return None, None  # names no parameter — a genuine zero, not a failure
 
-    # A primary named like one of the sympy classes we bind below would be
+    # A parameter named like one of the sympy classes we bind below would be
     # shadowed by the class and differentiate to a silent zero. Refuse instead.
     if not _DERIVED_RESERVED_NAMES.isdisjoint(referenced):
-        return None, "a primary parameter shadows a sympy name"
+        kind = (
+            "a derived"
+            if not _DERIVED_RESERVED_NAMES.isdisjoint(set(referenced) - primary_names)
+            else "a primary"
+        )
+        return None, f"{kind} parameter shadows a sympy name"
 
-    # Pass 2: alias primaries whose names would not survive the
-    # parse-differentiate-print round trip — Python keywords (``parse_expr``
-    # cannot tokenize them) and C reserved words (``sp.ccode`` renames them).
-    # Sort by length descending so e.g. an ``if_thresh`` param is not partially
-    # matched by the alias of ``if``.
+    # Pass 2. Sort by length descending so e.g. an ``if_thresh`` param is not
+    # partially matched by the alias of ``if``.
     sym_name_of = _sympy_symbol_alias_map(referenced)
     if sym_name_of is None:
-        return None, "two primary parameters collide on the same sympy alias"
+        return None, "two parameters collide on the same sympy alias"
     s_aliased = s_pre
     for p_name in sorted(referenced, key=len, reverse=True):
         if sym_name_of[p_name] != p_name:
@@ -1710,7 +1878,7 @@ def _derived_param_jacobian_checked(
                 s_aliased,
             )
 
-    # Bind every primary's sympy symbol so sympy never reaches for built-in
+    # Bind every parameter's sympy symbol so sympy never reaches for built-in
     # constants or functions of the same name (e.g., ``E``, ``S``). Also bind
     # ``Piecewise`` so the if-translation in pass 1 resolves to sympy's class.
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
@@ -1723,26 +1891,58 @@ def _derived_param_jacobian_checked(
         # Anything still unparseable (malformed BNGL, unsupported call, etc.).
         return None, f"{type(exc).__name__}: {exc}"
 
-    # Reject if the expression introduced any free symbol that isn't a
-    # known primary parameter (e.g., a derived param appearing inside another
-    # derived param's expression — out of scope for this chain rule).
+    # Reject if the expression introduced any free symbol that is neither a
+    # primary nor a derived parameter (a species name reached through a
+    # threshold expression, say — out of scope for this chain rule).
     allowed_sym_names = {sym_name_of[p] for p in referenced}
     free = {str(sym) for sym in sym_expr.free_symbols}
     if not free.issubset(allowed_sym_names):
         return None, f"unresolved symbol(s) {sorted(free - allowed_sym_names)}"
 
+    return _PreparedDerivedExpr(referenced, sym_name_of, sym_map, sym_expr), None
+
+
+def _direct_derived_partials(
+    expr: str,
+    primary_names: set[str],
+    derived_names,
+    param_idx: dict,
+    deadline: float | None,
+) -> tuple[dict[str, str] | None, str | None]:
+    """``∂expr/∂s`` as a C source string for every parameter ``expr`` names
+    **directly** — primary or derived alike, with no inlining.
+
+    The one sympy round trip in the DAG walk above: parse
+    (:func:`_prepare_derived_expr`), differentiate w.r.t. each referenced name,
+    print as C, and rewrite the (possibly aliased) symbols back to ``p[idx]``. A
+    derived name is an ordinary differentiation variable here, and prints as the
+    ``p[idx]`` slot the runtime already keeps its value in;
+    :func:`_derived_param_jacobian_dag` supplies its ``∂s_k/∂primary``.
+
+    Returns ``({name: c_expr}, None)`` over the names with a non-zero partial,
+    ``(None, None)`` when the expression names no parameter at all (a genuine
+    zero), or ``(None, reason)`` when a real partial was lost.
+    """
+    import sympy as sp
+
+    _check_derivation_deadline(deadline)
+
+    prep, reason = _prepare_derived_expr(expr, primary_names, derived_names)
+    if prep is None:
+        return None, reason
+
     # For round-tripping the ccode output: map each (possibly-aliased) sympy
-    # symbol name back to ``p[idx]`` using the ORIGINAL primary's index. Applied
-    # as one pass (see :func:`_substitute_symbols_once`) so the ``p[idx]`` text a
-    # rewrite injects is never itself rewritten by a parameter named ``p``.
+    # symbol name back to ``p[idx]`` using the ORIGINAL parameter's index.
+    # Applied as one pass (see :func:`_substitute_symbols_once`) so the ``p[idx]``
+    # text a rewrite injects is never itself rewritten by a parameter named ``p``.
     cref_of_sym: dict[str, str] = {
-        sym_name_of[p]: f"p[{param_idx[p]}]" for p in referenced if p in param_idx
+        prep.sym_name_of[p]: f"p[{param_idx[p]}]" for p in prep.referenced if p in param_idx
     }
 
     result: dict[str, str] = {}
-    for p_name in referenced:
+    for p_name in prep.referenced:
         _check_derivation_deadline(deadline)
-        deriv = sp.diff(sym_expr, sym_map[sym_name_of[p_name]])
+        deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
             continue
         try:
@@ -1766,17 +1966,22 @@ def _derived_expr_partials_numeric(
     warn_on_failure: bool = True,
 ) -> dict[str, float]:
     """Numeric ∂(expr)/∂primary at the nominal parameter values, for every
-    primary that appears in ``expr`` once nested derived references are inlined.
+    primary ``expr`` reaches through the derived-parameter DAG.
 
     The IC counterpart of :func:`_compute_derived_param_jacobian` (issue #43):
     a species initial condition set by a derived (ConstantExpression) parameter
     ``d = expr`` seeds ∂x_i(0)/∂primary with the *numeric* partial ∂expr/∂primary
     evaluated at the current parameter point — a constant (``Rtot = R0`` → 1,
-    ``Rtot = 2*R0`` → 2, ``Rtot = R0*scale`` → nominal ``scale``). Reuses the same
-    nesting-aware inlining (:func:`_inline_derived_param_refs`), ExprTk-to-sympy
-    rewrite (:func:`_preprocess_derived_expr`, which as of issue #56 also covers
-    compound ``&&`` / ``and`` conditions), and Python-keyword aliasing as the
-    rate-constant chain rule, but substitutes values instead of emitting C source.
+    ``Rtot = 2*R0`` → 2, ``Rtot = R0*scale`` → nominal ``scale``). Shares the
+    parse preparation (:func:`_prepare_derived_expr`) and the DAG walk
+    (:func:`_derived_param_jacobian_dag`'s numeric twin below) with the
+    rate-constant chain rule, but multiplies floats instead of concatenating C.
+
+    GH #99: like that twin, it chain-rules *through* a nested derived parameter
+    rather than inlining it. Inlining is what made this path hang, not just the
+    C-emitting one — ``ode/synthesis_v3`` reaches a 40 KB flattened expression
+    through a species initial condition, so **every** parameter-sensitivity run
+    on that model hung here, before any codegen.
 
     Returns ``{primary_name: float_partial}`` over the primaries with a non-zero
     partial, or ``{}`` when sympy is unavailable, nothing parses, or no primary
@@ -1792,86 +1997,156 @@ def _derived_expr_partials_numeric(
     if not s:
         return {}
     try:
-        import sympy as sp
-        from sympy.parsing.sympy_parser import parse_expr
+        import sympy  # noqa: F401
+        from sympy.parsing.sympy_parser import parse_expr  # noqa: F401
     except ImportError:
         return {}
 
-    # Flatten nested derived references down to primaries (issue #41), then
-    # rewrite the ExprTk surface syntax, mirroring the rate-constant path.
-    s = _inline_derived_param_refs(s, derived_exprs)
-    s_pre = _preprocess_derived_expr(s)
-
-    referenced = sorted(p for p in primary_param_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
-    if not referenced:
+    primaries = set(primary_param_names)
+    derived_exprs = derived_exprs or {}
+    out, reason = _derived_expr_partials_numeric_dag(
+        s, primaries, param_idx, param_values, derived_exprs, warn_on_failure, {}, ()
+    )
+    if reason is not None:
+        # Name the primaries whose chain rule was lost, which after #99 is the
+        # set the expression *reaches* rather than the set it spells out.
+        reachable = _reachable_primary_names(s, primaries, derived_exprs)
+        if warn_on_failure and reachable:
+            _warn_chain_rule_dropped(expr, reachable, reason)
         return {}
+    return out or {}
 
-    if not _DERIVED_RESERVED_NAMES.isdisjoint(referenced):
-        if warn_on_failure:
-            _warn_chain_rule_dropped(expr, referenced, "a primary parameter shadows a sympy name")
-        return {}
 
-    # Same aliasing as the C-emitting twin, so both agree on which symbol stands
-    # for which parameter. (This path substitutes *values*, never prints C, so
-    # the C-reserved-word half of the aliasing is inert here — it is applied
-    # anyway to keep the two functions' symbol namespaces identical.)
-    sym_name_of = _sympy_symbol_alias_map(referenced)
-    if sym_name_of is None:
-        if warn_on_failure:
-            _warn_chain_rule_dropped(
-                expr, referenced, "two primary parameters collide on the same sympy alias"
+def _reachable_primary_names(
+    expr: str, primary_names: set[str], derived_exprs: dict[str, str]
+) -> list[str]:
+    """Every primary parameter ``expr`` reaches through the derived-parameter
+    DAG, by a token closure — no parsing, no expression built (GH #99).
+
+    Used only to say *what was lost* when the chain rule fails. Walking the DAG
+    node by node keeps this linear in the graph; the flattened text it replaces
+    is exponential in the graph's depth, which is the bug this whole path exists
+    to avoid, and building a 40 KB string to phrase a warning would reintroduce
+    it in the one place nobody would look.
+    """
+    seen: set[str] = set()
+    out: set[str] = set()
+    stack = [expr]
+    while stack:
+        toks = set(re.findall(r"[A-Za-z_]\w*", stack.pop()))
+        out |= toks & primary_names
+        for name in sorted(toks & derived_exprs.keys()):
+            if name not in seen:
+                seen.add(name)
+                stack.append(derived_exprs[name])
+    return sorted(out)
+
+
+def _derived_expr_partials_numeric_dag(
+    expr: str,
+    primary_names: set[str],
+    param_idx: dict,
+    param_values: list,
+    derived_exprs: dict[str, str],
+    warn_on_failure: bool,
+    cache: dict[str, tuple[dict[str, float] | None, str | None]],
+    stack: tuple[str, ...],
+) -> tuple[dict[str, float] | None, str | None]:
+    """:func:`_derived_param_jacobian_dag` with floats: the same chain rule
+
+        ∂expr/∂primary = (∂expr/∂primary)_direct
+                         + Σ_k (∂expr/∂s_k)·(∂s_k/∂primary)
+
+    walked over the derived-parameter DAG rather than flattened into it, with
+    every factor evaluated at the current parameter point. Same memo, same cycle
+    guard, same all-or-nothing failure: a lost sub-partial is a lost chain rule
+    for every primary that reaches it, and the caller reads a missing partial as
+    a hard zero.
+    """
+    direct, reason = _direct_derived_partials_numeric(
+        expr, primary_names, derived_exprs.keys(), param_idx, param_values, warn_on_failure
+    )
+    if reason is not None or not direct:
+        return None, reason
+
+    out: dict[str, float] = {}
+    for name, d_val in direct.items():
+        if name not in derived_exprs:
+            out[name] = out.get(name, 0.0) + d_val
+            continue
+        if name in stack:
+            return None, f"reference cycle through the derived parameter {name!r}"
+        hit = cache.get(name)
+        if hit is None:
+            hit = _derived_expr_partials_numeric_dag(
+                derived_exprs[name],
+                primary_names,
+                param_idx,
+                param_values,
+                derived_exprs,
+                warn_on_failure,
+                cache,
+                stack + (name,),
             )
-        return {}
-    s_aliased = s_pre
-    for p_name in sorted(referenced, key=len, reverse=True):
-        if sym_name_of[p_name] != p_name:
-            s_aliased = re.sub(rf"\b{re.escape(p_name)}\b", sym_name_of[p_name], s_aliased)
+            cache[name] = hit
+        sub, why = hit
+        if why is not None:
+            return None, f"through the derived parameter {name!r}: {why}"
+        for prim, sub_val in (sub or {}).items():
+            out[prim] = out.get(prim, 0.0) + d_val * sub_val
 
-    sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
-    local_dict: dict = dict(sym_map)
-    local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
+    # Terms that cancel to exactly zero are dropped here rather than per-term:
+    # the caller's contract is the primaries with a non-zero partial, and after
+    # composition only the sum knows.
+    return ({k: v for k, v in sorted(out.items()) if v != 0.0} or None), None
 
-    try:
-        sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)
-    except Exception as exc:
-        if warn_on_failure:
-            _warn_chain_rule_dropped(expr, referenced, f"{type(exc).__name__}: {exc}")
-        return {}
 
-    # A free symbol that is not a known primary means the inline pass could not
-    # fully reduce to primaries (e.g. a reference cycle) — bail rather than seed
-    # a partial that silently ignores it.
-    allowed_sym_names = {sym_name_of[p] for p in referenced}
-    free = {str(sym) for sym in sym_expr.free_symbols}
-    if not free.issubset(allowed_sym_names):
-        if warn_on_failure:
-            _warn_chain_rule_dropped(
-                expr,
-                referenced,
-                f"unresolved symbol(s) {sorted(free - allowed_sym_names)}",
-            )
-        return {}
+def _direct_derived_partials_numeric(
+    expr: str,
+    primary_names: set[str],
+    derived_names,
+    param_idx: dict,
+    param_values: list,
+    warn_on_failure: bool,
+) -> tuple[dict[str, float] | None, str | None]:
+    """``∂expr/∂s`` as a float at the current parameter point, for every
+    parameter ``expr`` names **directly** — the numeric twin of
+    :func:`_direct_derived_partials`.
+
+    A derived name is an ordinary differentiation variable and substitutes its
+    own current value, which the caller's ``param_values`` already carries
+    (``core.get_param`` evaluates a ConstantExpression).
+
+    A partial that is not numeric at this parameter point is dropped with a
+    warning while the rest are kept: the other primaries' seeds are still valid,
+    and issue #56's point is only that a missing one must not pass silently for
+    a real zero.
+    """
+    import sympy as sp
+
+    prep, reason = _prepare_derived_expr(expr, primary_names, derived_names)
+    if prep is None:
+        return None, reason
 
     subs = {
-        sym_map[sym_name_of[p]]: param_values[param_idx[p]] for p in referenced if p in param_idx
+        prep.sym_map[prep.sym_name_of[p]]: param_values[param_idx[p]]
+        for p in prep.referenced
+        if p in param_idx
     }
     out: dict[str, float] = {}
-    for p_name in referenced:
-        deriv = sp.diff(sym_expr, sym_map[sym_name_of[p_name]])
+    for p_name in prep.referenced:
+        deriv = sp.diff(prep.sym_expr, prep.sym_map[prep.sym_name_of[p_name]])
         if deriv == 0:
             continue
         try:
             val = float(deriv.subs(subs).evalf())
         except (TypeError, ValueError) as exc:
-            # Not numeric at this parameter point — the other primaries' seeds
-            # are still valid, so keep them, but say that this one is missing
-            # rather than let it read as a real zero (issue #56).
             if warn_on_failure:
                 _warn_chain_rule_dropped(expr, [p_name], f"{type(exc).__name__}: {exc}")
             continue
         if val != 0.0:
             out[p_name] = val
-    return out
+    return (out or None), None
 
 
 def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
@@ -2531,6 +2806,9 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
     primary_param_names = {name for (_, name, expr, is_const) in params if is_const}
     derived_exprs = {name: expr for (_, name, expr, is_const) in params if not is_const and expr}
     derived_expansion: dict[str, dict[str, str]] = {}
+    # GH #99: one memo for the whole loop, so a DAG node shared by several rate
+    # constants is differentiated once.
+    derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     for _, name, expr, is_const in params:
         # Only a derived parameter that actually serves as a reaction's rate
         # constant reaches the sens RHS, so only those are differentiated — and
@@ -2546,6 +2824,8 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
                 param_idx,
                 derived_exprs=derived_exprs,
                 deadline=deadline,
+                cache=derived_jac_cache,
+                name=name,
             )
         except _DerivationBudgetExceeded:
             # GH #90: decline to CVODES' difference quotient rather than let the
@@ -5118,6 +5398,8 @@ def _mm_dfdp_terms(data, plan_mm, param_idx_by_name, primary_param_names, derive
 
     params = data["parameters"]
     out: dict[int, list[tuple[int, list[str]]]] = {}
+    # GH #99: one memo across every reaction's derived rate constants.
+    derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     for (rxn_idx, rxn), mt in zip(mm_rxns, plan_mm, strict=True):
         label = f"reaction {rxn_idx + 1} (Michaelis–Menten)"
         rate_params = list(rxn["rate_param_indices"])
@@ -5168,6 +5450,8 @@ def _mm_dfdp_terms(data, plan_mm, param_idx_by_name, primary_param_names, derive
                 primary_param_names,
                 param_idx_by_name,
                 derived_exprs=derived_exprs,
+                cache=derived_jac_cache,
+                name=pname,
             )
             if why is not None:
                 return {}, (
@@ -6048,6 +6332,11 @@ class _FunctionalDfdpScope(NamedTuple):
 
     ``deadline`` is GH #90's build-time derivation bound, shared by every rate law
     of the model (see :func:`_sens_derivation_deadline`); ``None`` is unbounded.
+
+    ``derived_jac_cache`` is GH #99's ``∂p_d/∂primary`` memo, likewise one per
+    model, so a derived parameter read by many rate laws is walked once. Pass a
+    fresh dict per model — a ``None`` default would be right for a scope built
+    per expression, and this one is not.
     """
 
     func_map: dict[str, str]
@@ -6058,6 +6347,7 @@ class _FunctionalDfdpScope(NamedTuple):
     derived_exprs: dict[str, str]
     switch_scope: SwitchConditionScope | None = None
     deadline: float | None = None
+    derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] | None = None
 
 
 def _functional_rate_law_partials(
@@ -6186,6 +6476,8 @@ def _functional_rate_law_partials(
             scope.param_idx_by_name,
             derived_exprs=scope.derived_exprs,
             deadline=scope.deadline,
+            cache=scope.derived_jac_cache,
+            name=pname,
         )
         if why is not None:
             return None, (
@@ -6317,6 +6609,7 @@ def _functional_dfdp_terms(
         derived_exprs=derived_exprs,
         switch_scope=switch_scope,
         deadline=deadline,
+        derived_jac_cache={},
     )
 
     # A rule-generated network reuses one rate-law expression across many
@@ -6556,6 +6849,10 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
             functional_jacv_groups = functional_jacv_groups + mm_jacv
 
     derived_expansion: dict[str, dict[str, str]] = {}
+    # GH #99: one memo for the whole loop (see generate_sens_rhs_c). Separate
+    # from the Functional pass's — that one is scoped to its own scope object,
+    # and both are pure functions of the same DAG, so neither can disagree.
+    derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     for p in params:
         # As in generate_sens_rhs_c: only a derived parameter that is some
         # reaction's rate constant reaches this RHS, so only those are
@@ -6572,6 +6869,8 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
                 param_idx_by_name,
                 derived_exprs=derived_exprs,
                 deadline=deadline,
+                cache=derived_jac_cache,
+                name=p["name"],
             )
         except _DerivationBudgetExceeded:
             # GH #90: same budget as the Functional pass above, and the same
@@ -7134,6 +7433,10 @@ def _compute_output_sens_analysis(model, core) -> dict:
     budget_reason: str | None = None
 
     derived_expansion: dict[str, dict[str, str]] = {}
+    # GH #99: this loop covers *every* derived parameter, so with one memo the
+    # whole DAG is differentiated exactly once — which is also what makes the
+    # step count above the real cost rather than an upper bound on it.
+    derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] = {}
     for n_expanded, (dname, dexpr) in enumerate(derived_exprs.items()):
         try:
             jac, _ = _derived_param_jacobian_checked(
@@ -7142,6 +7445,8 @@ def _compute_output_sens_analysis(model, core) -> dict:
                 param_idx_by_name,
                 derived_exprs=derived_exprs,
                 deadline=deadline,
+                cache=derived_jac_cache,
+                name=dname,
             )
         except _DerivationBudgetExceeded:
             budget_reason = _output_sens_budget_reason(

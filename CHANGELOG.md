@@ -14,6 +14,62 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+- **The derived-parameter chain rule walks the parameter DAG instead of
+  flattening it before differentiating (issue #99).** Issue #41 taught
+  `_compute_derived_param_jacobian` to reach a *nested* derived
+  (ConstantExpression) parameter by substituting it — and its whole dependency
+  graph — textually before handing one expression to sympy. That substitution is
+  exponential in the depth of the graph. On `ode/synthesis_v3` — **five
+  species**, 28 derived parameters — a 43-character parameter flattens to 20 KB
+  and its dependent to 40 KB, and because the nesting lands in an *exponent*
+  (`n = ln(...)/ln(ratio)`, `Fh = (…^n…)^(1/n)`) the `sp.diff` on the result
+  never returns. It was the one model in the 585-model `.net` corpus whose
+  `_analyze_output_sens` never completed, and #97's budget could not save it:
+  the cost is a **single uninterruptible sympy call**, and a wall-clock deadline
+  can only be checked *between* them.
+
+  The chain rule now composes over the graph —
+  `∂p_d/∂θ = (∂p_d/∂θ)_direct + Σ_k (∂p_d/∂s_k)·(∂s_k/∂θ)` — differentiating each
+  parameter as written and memoising per node, so a diamond is derived once and
+  a cycle in an ill-formed `.net` is reported rather than recursed into.
+  `∂p_d/∂s_k` prints the nested parameter as its `p[idx]` slot, which the runtime
+  already holds. This is the shape `_functional_dfdp_terms` has always used for a
+  rate law naming a derived parameter; this was the one place that still
+  flattened. `synthesis_v3` now derives in **1.2 s**, and `∂n/∂primary` emits
+  12 KB of C where the flattening emitted 202 KB.
+
+  **The same flattening was on the initial-condition path, so this was never
+  only a codegen-build problem.** Species `F` starts at `F0`, the 40 KB one, so
+  *every* parameter-sensitivity run on that model hung in
+  `compute_ic_param_sens_seed` before any C was generated. Both halves — the one
+  that emits C and the one that substitutes values — now walk the same DAG
+  through the same shared parse, which is what keeps them from drifting apart
+  again.
+
+  Two consequences beyond the model that motivated it. Nested `min()`/`max()`
+  flattened into one expression produced a derivative `sp.ccode` refused with
+  *"Invalid NaN comparison"*, losing the entire chain rule for `phi`, `alpha` and
+  `gamma` on three corpus models — which under #56's rule declines the analytic
+  sensitivity RHS. Walked, each level prints on its own: those three models now
+  emit, and nine functions across three more models gain output sensitivities
+  they were refused. (The `min`/`max` derivative itself was never the silent-zero
+  class the issue suspected: `Max` is *continuous*, so unlike an `if()` there is
+  no jump at the kink and no delta term to lose.) And #97's derivation-step count
+  — one per expression parsed, one per symbol it names — is now the work the
+  phase actually does rather than a number with no fixed relation to it.
+
+  Validated over the 585-model `.net` corpus: 226,408 `(derived parameter,
+  primary)` pairs finite-differenced against `set_param`-perturbed parameter
+  values, no disagreement outside the FD noise floor; 13,451 partials evaluated
+  against the pre-fix arm in the same process, agreeing to roundoff with **no
+  chain-rule term lost anywhere**; 378 of 584 models byte-identical, every
+  emitter change in the declines-to-emits direction, and total emitted C +2.6%.
+  End to end on `model_step1_v1`, whose `fa__FREE` and `fr__FREE` reach the
+  dynamics only through the chain that could not be derived, the newly analytic
+  sensitivities match a re-solved-trajectory finite difference to 1.4e-6 and
+  5.8e-7 relative.
+
 ### Added
 - **A build-time budget for the expression output-sensitivity derivation, and one
   analysis per model instead of two (issue #97).** #90 bounded every symbolic
