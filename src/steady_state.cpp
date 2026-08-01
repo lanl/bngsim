@@ -310,6 +310,36 @@ struct SteadyStateUserData {
     NetworkModel *model;
 };
 
+// Does SteadyStateOptions::jacobian ask for the closed form?
+//
+// One rule, five sites: the CVODE march and the KINSOL polish install their
+// Jacobian callback under it (issue #127), and dY_ss/dp, the #78 stability
+// certificate and the reported source read it through ss_fill_state_jacobian.
+// "fd" pins the difference quotient everywhere, as it does in the rest of the
+// library. "jax" also lands on differences here — the JAX Jacobian is a Python
+// callback plumbed only into CvodeSimulator, so claiming it in a steady-state
+// solve would be a lie about which matrix ran.
+static bool ss_want_analytical_jacobian(const std::string &strategy) {
+    return strategy == "auto" || strategy == "analytical";
+}
+
+// Do the two solver tiers hand their Newton matrix a closed form (issue #127)?
+//
+// Both tiers ask this one question, so neither can end up differencing while the
+// other does not, and SteadyStateResult::solver_jacobian_source is answered from
+// the same predicate rather than from a second reading of the options.
+static bool ss_install_solver_jacobian(const SteadyStateRhs &rhs, const SteadyStateOptions &opts) {
+    return ss_want_analytical_jacobian(opts.jacobian) && rhs.has_analytical_jacobian();
+}
+
+// What the march and the polish actually factored: "codegen" / "analytical" when
+// the callback is installed, "finite-difference" for CVODE's and KINSOL's own
+// difference quotients.
+static const char *ss_solver_jacobian_source(const SteadyStateRhs &rhs,
+                                             const SteadyStateOptions &opts) {
+    return ss_install_solver_jacobian(rhs, opts) ? rhs.jacobian_source() : "finite-difference";
+}
+
 // The subspace f(y) = 0 is solved on (issue #74).
 //
 // Resolved once per solve from SteadyStateOptions::steady_state_mask and then
@@ -511,6 +541,27 @@ static int cvode_ss_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *ud) {
     return 0;
 }
 
+// The march's Jacobian: the closed form the same object already carries (issue
+// #127), compiled or interpreted, straight into the dense matrix's column-major
+// data array — the layout SteadyStateRhs::fill_dense_jacobian writes and the one
+// SUNDenseMatrix stores. Installed by SteadyStateMarcher's constructor; without
+// it CVODE differences its own, at one RHS evaluation per species per setup.
+//
+// The mirror of CvodeSimulator's cvode_analytical_dense_jac / cvode_codegen_
+// dense_jac, minus their GH #135 nonnegative-clamp retry: that guard exists
+// because the time-course path's RHS is clamped too, so a state where the
+// analytical Jacobian goes non-finite (a fractional power of a transiently
+// negative concentration) is one the RHS still integrated through. This RHS is
+// not clamped — such a state already fails the march on its f(y) alone — so
+// there is no asymmetry here for the retry to repair.
+static int cvode_ss_dense_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, SUNMatrix J, void *ud,
+                              N_Vector /*tmp1*/, N_Vector /*tmp2*/, N_Vector /*tmp3*/) {
+    auto *data = static_cast<SteadyStateUserData *>(ud);
+    data->rhs->fill_dense_jacobian(static_cast<double>(t), N_VGetArrayPointer(y),
+                                   SUNDenseMatrix_Data(J));
+    return 0;
+}
+
 // A CVODE session held across successive marches of the SAME trajectory.
 //
 // The two-tier solver's burst ladder (solve_by_newton_two_tier) walks one
@@ -551,19 +602,18 @@ class SteadyStateMarcher {
         LS_ = SUNLinSolGuard(ss_make_dense_linsol(y_, A_, ctx_, model, ns_));
         CVodeSetLinearSolver(cvode_mem_, LS_, A_);
 
-        // No CVodeSetJacFn: this march runs CVODE's internal difference-quotient
-        // Jacobian whatever opts.jacobian says. Neither tier installs a closed
-        // form — tier 2 does not call KINSetJacFn either, so KINSOL differences
-        // its own as well (one RHS evaluation per unknown per setup). Only the
-        // consumers that need the matrix ITSELF rather than a Newton step read
-        // opts.jacobian: dY_ss/dp and the #78 stability certificate, both
-        // through ss_fill_state_jacobian.
-        //
-        // What this leaves on the table is a per-setup cost, not correctness:
-        // a codegen-backed solve has `bngsim_codegen_jac` loaded and hands the
-        // solvers difference quotients anyway. Wiring it in is a change to how
-        // both tiers converge, so it wants its own before/after measurement
-        // rather than a drive-by.
+        // The Newton matrix CVODE factors at each setup (issue #127). Until then
+        // this march ran CVODE's internal difference quotient whatever
+        // opts.jacobian said — one RHS evaluation per species per setup, on
+        // models whose closed form is assembled, compiled and loaded in this very
+        // object. The gate is the library's usual one (ss_install_solver_jacobian),
+        // and it is the same one tier 2 applies to KINSetJacFn, so a solve does
+        // not difference in one tier and not the other.
+        if (ss_install_solver_jacobian(rhs, opts)) {
+            if (CVodeSetJacFn(cvode_mem_, cvode_ss_dense_jac) != CV_SUCCESS) {
+                throw std::runtime_error("CVodeSetJacFn failed (steady_state)");
+            }
+        }
     }
 
     // March forward one internal CVODE step at a time, checking the BNG2.pl
@@ -585,7 +635,11 @@ class SteadyStateMarcher {
         while (t_ < t_stop) {
             int flag = CVode(cvode_mem_, t_stop, y_, &t_, CV_ONE_STEP);
             if (flag < 0) {
-                // Integration failed -- report unconverged.
+                // Integration failed -- report unconverged. Remembered, not just
+                // broken out of: under jacobian="auto" a hard integrator failure
+                // is what triggers the retry on difference quotients (issue #127,
+                // mirroring GH #176 on the time-course path).
+                integrator_failed_ = true;
                 break;
             }
 
@@ -632,6 +686,10 @@ class SteadyStateMarcher {
         return result;
     }
 
+    // Did CVODE give up on a march (any negative flag), as opposed to running
+    // out of this march's time budget? Sticky across the ladder's rungs.
+    bool integrator_failed() const { return integrator_failed_; }
+
   private:
     NetworkModel &model_;
     SteadyStateRhs &rhs_;
@@ -647,14 +705,19 @@ class SteadyStateMarcher {
     SUNMatrixGuard A_;
     SUNLinSolGuard LS_;
     sunrealtype t_ = 0.0;
+    bool integrator_failed_ = false;
 };
 
 static SteadyStateResult solve_by_integration(NetworkModel &model, SteadyStateRhs &rhs,
                                               const SteadyStateOptions &opts,
-                                              const ResidualSubspace &sub) {
+                                              const ResidualSubspace &sub,
+                                              bool *integrator_failed = nullptr) {
     SteadyStateMarcher marcher(model, rhs, opts, sub);
     double residual = 0.0;
     const bool converged = marcher.march(opts.tol, &residual);
+    if (integrator_failed) {
+        *integrator_failed = marcher.integrator_failed();
+    }
     return marcher.make_result(converged, residual);
 }
 
@@ -667,7 +730,18 @@ struct ReducedKinsolData {
     SteadyStateRhs *rhs;
     NetworkModel *model;
     const ConservationLaws *cl;
+    // Scratch for the reduced Jacobian callback (issue #127): the state it fills
+    // at, the full ns×ns fill, and its projection onto the unknowns. Held here so
+    // a Jacobian setup allocates nothing.
+    std::vector<double> jac_y_full, jac_full, jac_red;
 };
+
+// The reduced Jacobian's projection through the conservation-law reconstruction.
+// Defined with ss_fill_state_jacobian further down, next to the other consumer
+// of the same matrix (dY_ss/dp and the #78 certificate); declared here because
+// the KINSOL polish now needs it too (issue #127).
+static void ss_reduce_jacobian(const double *J, int ns, const ConservationLaws &cl,
+                               const std::vector<int> &idx, std::vector<double> &J_red);
 
 // Reconstruct full y from independent species y_ind using conservation laws
 static void reconstruct_full(const double *y_ind, double *y_full, int ns,
@@ -725,6 +799,44 @@ static int kinsol_reduced_rhs(N_Vector y_ind, N_Vector fval, void *ud) {
     return 0;
 }
 
+// Reduced-space KINSOL Jacobian: ∂f_ind/∂y_ind of the residual above (#127).
+//
+// Two things have to match kinsol_reduced_rhs exactly or the Newton step is a
+// step for a different system:
+//
+//   * the STATE — the model's live concentrations, with the unknowns overwritten
+//     from y_ind and the law-dependent species reconstructed from them. A
+//     species that is neither (a mask-excluded one, issue #74) is a constant
+//     here, which is why nothing below differentiates it.
+//   * the PROJECTION — d/dy_ind of that reconstruction, which is what
+//     ss_reduce_jacobian applies to the full fill. KINSOL's difference quotient
+//     gets it for free by differencing the reduced residual itself; a closed-form
+//     fill is of the FULL system and has to be projected by hand.
+static int kinsol_reduced_jac(N_Vector y_ind, N_Vector /*fval*/, SUNMatrix J, void *ud,
+                              N_Vector /*tmp1*/, N_Vector /*tmp2*/) {
+    auto *data = static_cast<ReducedKinsolData *>(ud);
+    NetworkModel &model = *data->model;
+    const auto &cl = *data->cl;
+    const int ns = model.n_species();
+    const int n_ind = static_cast<int>(cl.independent.size());
+
+    const auto &species = model.species();
+    data->jac_y_full.resize(static_cast<size_t>(ns));
+    for (int i = 0; i < ns; ++i) {
+        data->jac_y_full[static_cast<size_t>(i)] = species[i].concentration;
+    }
+    reconstruct_full(N_VGetArrayPointer(y_ind), data->jac_y_full.data(), ns, cl, species);
+
+    // Every fill_dense_jacobian branch memsets its buffer, so resize (not assign)
+    // is enough — the zeroing is not skipped, it is done once instead of twice.
+    data->jac_full.resize(static_cast<size_t>(ns) * ns);
+    data->rhs->fill_dense_jacobian(0.0, data->jac_y_full.data(), data->jac_full.data());
+    ss_reduce_jacobian(data->jac_full.data(), ns, cl, cl.independent, data->jac_red);
+    std::memcpy(SUNDenseMatrix_Data(J), data->jac_red.data(),
+                static_cast<size_t>(n_ind) * n_ind * sizeof(double));
+    return 0;
+}
+
 // Full-space KINSOL RHS (for models without conservation laws)
 static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
     auto *data = static_cast<SteadyStateUserData *>(ud);
@@ -742,6 +854,21 @@ static int kinsol_rhs(N_Vector y, N_Vector fval, void *ud) {
             fp[s.index - 1] = 0.0;
         }
     }
+    return 0;
+}
+
+// Full-space KINSOL Jacobian: the plain ns×ns fill (issue #127).
+//
+// It matches kinsol_rhs's fixed-species handling without doing anything about
+// it, because both sides of the closed form already do: a fixed species'
+// derivative is zero by definition, so fill_dense_analytical_jacobian zeroes its
+// ROW as its last step and the emitted C does the same. That row is structurally
+// zero in the difference quotient this replaces too — a full-space system with a
+// fixed species is singular either way, and falls back to integration.
+static int kinsol_jac(N_Vector y, N_Vector /*fval*/, SUNMatrix J, void *ud, N_Vector /*tmp1*/,
+                      N_Vector /*tmp2*/) {
+    auto *data = static_cast<SteadyStateUserData *>(ud);
+    data->rhs->fill_dense_jacobian(0.0, N_VGetArrayPointer(y), SUNDenseMatrix_Data(J));
     return 0;
 }
 
@@ -940,6 +1067,17 @@ static SteadyStateResult solve_by_newton(NetworkModel &model, SteadyStateRhs &rh
     SUNLinSolGuard LS_guard(ss_make_dense_linsol(y, A_guard, ctx, model, n_ind));
     KINSetLinearSolver(kin_mem, LS_guard, A_guard);
 
+    // The polish's Newton matrix (issue #127). Same gate as the march, so a
+    // single solve does not difference in one tier and use the closed form in
+    // the other; the reduced callback carries the projection onto the unknown
+    // set that the difference quotient it replaces got for free.
+    if (ss_install_solver_jacobian(rhs, opts)) {
+        flag = KINSetJacFn(kin_mem, use_reduced ? kinsol_reduced_jac : kinsol_jac);
+        if (flag != KIN_SUCCESS) {
+            throw std::runtime_error("KINSetJacFn failed");
+        }
+    }
+
     // Solve — use KIN_NONE (pure Newton) for reduced systems since the
     // reduced Jacobian is non-singular by construction. For full-space
     // systems, also use KIN_NONE (the auto fallback to integration
@@ -1079,7 +1217,8 @@ static const char *root_stability_name(RootStability s) {
 
 static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadyStateRhs &rhs,
                                                   const SteadyStateOptions &opts,
-                                                  const ResidualSubspace &sub) {
+                                                  const ResidualSubspace &sub,
+                                                  bool *integrator_failed = nullptr) {
     const int ns = model.n_species();
 
     // Snapshot the initial condition so the model is restored on return (the
@@ -1100,8 +1239,15 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
     // rejection is invisible from the outside and the fallback to integration
     // reads as an ordinary slow solve.
     int n_rejected = 0;
+    // Set once the ladder's integrator exists; every return below funnels through
+    // `finish`, so reading it there reports a failed march from any rung without
+    // a flag at each exit (issue #127's retry trigger).
+    const SteadyStateMarcher *ladder = nullptr;
     auto finish = [&](SteadyStateResult r) {
         r.n_unstable_roots_rejected = n_rejected;
+        if (integrator_failed) {
+            *integrator_failed = ladder != nullptr && ladder->integrator_failed();
+        }
         return r;
     };
 
@@ -1163,6 +1309,7 @@ static SteadyStateResult solve_by_newton_two_tier(NetworkModel &model, SteadySta
     // elsewhere, so re-seed it from the IC the marcher is about to read).
     restore();
     SteadyStateMarcher marcher(model, rhs, opts, sub);
+    ladder = &marcher;
 
     for (int rung = 0; rung < MAX_RUNGS; ++rung) {
         // Tier 1: continue integrating from the previous rung's end state to bt.
@@ -1550,8 +1697,8 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
     model.get_state_into(saved.data());
     model.set_state_from(y.data());
     std::vector<double> J(static_cast<size_t>(ns) * ns, 0.0);
-    const bool want_analytical = (opts.jacobian == "auto" || opts.jacobian == "analytical");
-    ss_fill_state_jacobian(rhs, y.data(), ns, sub, want_analytical, J.data());
+    ss_fill_state_jacobian(rhs, y.data(), ns, sub, ss_want_analytical_jacobian(opts.jacobian),
+                           J.data());
     model.set_state_from(saved.data());
 
     std::vector<double> M;
@@ -1589,9 +1736,8 @@ static RootStability certify_root_stability(NetworkModel &model, SteadyStateRhs 
 //            This is the same "analytical when complete, FD otherwise" rule
 //            jacobian="auto" applies everywhere else, and the same matrix the
 //            #78 stability certificate reads (both go through
-//            ss_fill_state_jacobian). NOT the matrix the KINSOL polish uses:
-//            that one is KINSOL's own difference quotient — see the note in
-//            SteadyStateMarcher's constructor.
+//            ss_fill_state_jacobian) — and, since issue #127, the same one the
+//            march and the polish factor, under the same gate.
 //   ∂f/∂p  — the analytical column the codegen sensitivity RHS emits (see
 //            SteadyStateRhs::eval_dfdp), else one-sided finite differences in
 //            the parameter (one RHS evaluation per parameter).
@@ -1646,12 +1792,11 @@ static void compute_ss_sensitivity(NetworkModel &model, SteadyStateRhs &rhs,
 
     // jacobian="fd" pins the finite-difference assembly, the same escape hatch it
     // is everywhere else in the library (and the A/B lever for checking the
-    // closed-form path against the one that predates #63). "jax" has no
-    // steady-state analogue — there is no Python callback plumbed through here —
-    // so it also takes the FD path rather than pretending otherwise.
-    const bool want_analytical_jac = (opts_jacobian == "auto" || opts_jacobian == "analytical");
-    result.sens_jacobian_source =
-        ss_fill_state_jacobian(rhs, y_ss, ns, sub, want_analytical_jac, J.data());
+    // closed-form path against the one that predates #63) — see
+    // ss_want_analytical_jacobian, which is also what the two solver tiers gate
+    // their own Jacobian callback on.
+    result.sens_jacobian_source = ss_fill_state_jacobian(
+        rhs, y_ss, ns, sub, ss_want_analytical_jacobian(opts_jacobian), J.data());
 
     // ── Step 2: ∂f/∂p for each sensitivity parameter ──────────────────────────
     std::vector<double> dfdp(static_cast<size_t>(ns) * np, 0.0); // column-major: dfdp[p*ns+i]
@@ -2209,11 +2354,15 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     SteadyStateRhs rhs(model, opts);
 
     SteadyStateResult result;
+    bool integrator_failed = false;
 
-    if (method == "integration") {
-        // Default: CVODE marched to the BNG2.pl parity criterion.
-        result = solve_by_integration(model, rhs, opts, sub);
-    } else {
+    // One dispatch, so the retry below re-runs exactly what the first attempt ran.
+    auto solve = [&](const SteadyStateOptions &o) {
+        integrator_failed = false;
+        if (method == "integration") {
+            // Default: CVODE marched to the BNG2.pl parity criterion.
+            return solve_by_integration(model, rhs, o, sub, &integrator_failed);
+        }
         // "newton": two-tier integrate-first solver (GH #27). A short CVODE
         // burst carries the state into the physical root's basin, then KINSOL
         // polishes; the polish is accepted only once it is seed-stable (agrees
@@ -2222,10 +2371,50 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         // the old Newton-first ordering returned spurious / non-finite roots.
         // Opt in for the tighter residual the polish delivers; it costs more
         // wall clock than plain integration (GH #28).
-        result = solve_by_newton_two_tier(model, rhs, opts, sub);
+        return solve_by_newton_two_tier(model, rhs, o, sub, &integrator_failed);
+    };
+
+    result = solve(opts);
+    const SteadyStateOptions *effective = &opts;
+
+    // ── The analytical Jacobian is a bet; this is how it is called off ────────
+    //
+    // Same policy as GH #176 on the time-course path, for the same failure and
+    // (measured) the same model: a rate law that is genuinely discontinuous in a
+    // state variable — l-type-calcium-channel-dynamics' `if((-70+V)<-20, …)`,
+    // whose threshold the state approaches asymptotically — has an exact
+    // derivative that omits the jump, so the closed-form Jacobian cannot warn
+    // CVODE's corrector about the step. The predictor overshoots, the local
+    // error test fails repeatedly and the step collapses to hmin. A difference
+    // quotient straddles the discontinuity and supplies a regularizing slope,
+    // which is why FD integrates the same model cleanly. On the 585-model corpus
+    // that is one model, and before issue #127 installed a Jacobian at all the
+    // march never met it.
+    //
+    // "auto" means "try the closed form" and therefore has to include calling it
+    // off; an explicit jacobian="analytical" is a deliberate choice and is not
+    // second-guessed — it surfaces the failure, exactly as GH #176 leaves it.
+    // The trigger is a HARD integrator failure, not mere non-convergence: a model
+    // that simply needs more max_time returns at its stop time with no CVODE
+    // error, and retrying it would only spend the same budget twice.
+    SteadyStateOptions fd_opts;
+    if (!result.converged && integrator_failed && opts.jacobian == "auto" &&
+        ss_install_solver_jacobian(rhs, opts)) {
+        fd_opts = opts;
+        fd_opts.jacobian = "fd";
+        SteadyStateResult retried = solve(fd_opts);
+        result = std::move(retried);
+        result.solver_jacobian_retried = true;
+        effective = &fd_opts;
     }
 
     result.rhs_backend = rhs.backend();
+    // Which Newton matrix the tiers themselves factored (issue #127). Answered
+    // from the predicate the install sites use, not from a second reading of
+    // opts.jacobian, so it cannot describe a callback that was never installed —
+    // and read off the options the ANSWER came from, so a retried solve reports
+    // the difference quotient that produced it.
+    result.solver_jacobian_source = ss_solver_jacobian_source(rhs, *effective);
 
     // ── Why did it fail? (issue #74) ──────────────────────────────────────────
     // A failed solve used to say only converged=false, which reads as "needs more

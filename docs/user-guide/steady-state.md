@@ -18,13 +18,8 @@ dynamics actually reach.
 
 **`method="newton"`**: the two-tier integrate-first solver. Tier 1 is the
 *same* CVODE burst as `"integration"`, carrying the state into the physical
-root's basin; tier 2 is a KINSOL Newton polish. KINSOL differences its own
-Jacobian there — no analytical one is installed (`KINSetJacFn` is never
-called), so each Jacobian setup costs one RHS evaluation per unknown, and
-`jacobian=` does not reach the polish. It selects how the *stability
-certificate* below and `dY_ss/dp` build their Jacobian, and both of those do
-use the closed form when the model has one. For models with conservation laws,
-BNGsim automatically uses a reduced-space Newton formulation (see
+root's basin; tier 2 is a KINSOL Newton polish. For models with conservation
+laws, BNGsim automatically uses a reduced-space Newton formulation (see
 [Conservation laws](#conservation-laws)).
 The polish is accepted only once it is *seed-stable* — two Newton solves from
 successively tighter bursts landing on the same state — **and** only once the
@@ -59,6 +54,60 @@ Every path evaluates whatever RHS the Simulator's
 JIT, or the ExprTk interpreter — and `ss.rhs_backend` echoes which one ran.
 (Before issue #63 the steady-state solver read no codegen option at all, so a
 Simulator built with `codegen=True` still solved interpreted.)
+
+### The Jacobian the solver uses
+
+Both tiers factor the model's **closed-form Jacobian** when it has one and
+`jacobian=` asks for it (issue #127): the march installs it with
+`CVodeSetJacFn`, the polish with `KINSetJacFn` — projected onto the polish's own
+unknown set, since the reduced Newton solves for the conservation-law
+independents rather than for every species. `ss.solver_jacobian_source` reports
+which matrix was factored: `"codegen"` (the compiled `bngsim_codegen_jac`),
+`"analytical"` (the interpreted fill), or `"finite-difference"`.
+
+`jacobian="fd"` pins the difference quotient, as it does everywhere else in the
+library, and a model with no complete closed form differences whatever the
+option says. That difference quotient costs **one RHS evaluation per unknown per
+Jacobian setup** — which is what both tiers paid unconditionally before #127,
+including on codegen-backed solves that had the compiled Jacobian loaded in the
+same object.
+
+This is a cost, not a correctness knob: the accepted root has to satisfy the
+same `||f||_2/n < tol` either way, so what the Jacobian changes is the step
+sequence taken to reach it. The same option still selects how the *stability
+certificate* below and `dY_ss/dp` build their matrix.
+
+**What it is worth.** On the 585-model `.net` corpus, 560 models have a closed
+form to install; over them a solve makes a median 1.09× fewer RHS evaluations
+(`method="newton"`: 1.10×, up to 33×). Wall clock follows the size of the
+Jacobian setup relative to the rest of the solve:
+
+| model (species) | `jacobian="fd"` | `"auto"` | interpreted | codegen |
+|---|---|---|---|---|
+| `SHP2_base_model` (149) | 9.9 ms | 8.9 ms | **1.11×** | 0.89× |
+| `Barua_2007` (149) | 11.1 ms | 10.3 ms | **1.08×** | 0.87× |
+| `egfr_ground` (356) | 337 ms | 261 ms | **1.29×** | 1.06× |
+| `fceri_fyn` (1281) | — | — | 1.04× | **1.19×** |
+
+(`method="integration"`; the interpreted column is the timing shown, the codegen
+column the same A/B with `codegen=True`.)
+
+Where the RHS is interpreted the saving is real everywhere. Where it is
+*compiled*, a difference-quotient column is cheap and the dense factorization is
+not: a profile of the 149-species case puts ~80% of CVODE's time in
+`SUNDlsMat_denseGETRF` and none of it in the Jacobian fill, so removing the
+columns does not pay for itself below a few hundred species and the solve can
+come out slightly slower. That dense factorization — the steady-state march
+cannot route to KLU the way `run()` does — is issue #128.
+
+**When the closed form is called off.** An exact Jacobian omits the jump in a
+rate law that is genuinely discontinuous in a state variable, so CVODE's
+corrector meets a step it was not warned about, the local error test fails
+repeatedly, and the march collapses to `hmin`. Under `jacobian="auto"` a march
+that fails that way is retried once on difference quotients, exactly as
+`run()` does (GH #176) and for the same models — one of the 585.
+`ss.solver_jacobian_retried` records it, and an explicit
+`jacobian="analytical"` surfaces the failure instead of retrying.
 
 ```python
 import bngsim
@@ -304,9 +353,8 @@ Both factors are taken in closed form where the model supports it:
   artifact carries one and interpreted otherwise. This is the same
   "analytical when complete, finite differences otherwise" rule
   `jacobian="auto"` applies everywhere else, and the same matrix the stability
-  certificate reads; `jacobian="fd"` pins the difference quotient. (The KINSOL
-  polish is *not* one of the consumers — it differences its own Jacobian
-  internally, whatever `jacobian=` says.)
+  certificate reads — and, since issue #127, the same one the march and the
+  polish factor; `jacobian="fd"` pins the difference quotient for all four.
 - **∂f/∂p** — the analytical parameter derivative the code-generated
   sensitivity RHS emits, the same one CVODES integrates against on the
   time-course path. Since issue #67 this covers Functional rate laws too, as long

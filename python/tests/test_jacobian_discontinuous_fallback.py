@@ -14,6 +14,12 @@ so it — and legacy run_network, which is always FD — integrate the model cle
 The fix is at the Simulator: ``jacobian="auto"`` (the default) is a bet, so on a
 solver failure it transparently retries once with the FD Jacobian. An explicit
 ``jacobian="analytical"`` is *not* second-guessed.
+
+Issue #127 gave the steady-state solver the same bet — its march installs the
+closed-form Jacobian too — and therefore needed the same way out. That half is
+decided in C++ (a failed march is a flag on the result, not an exception) and is
+covered by the second group of tests below, on this same fixture: it is the model
+the failure is about, whichever entry point meets it.
 """
 
 from __future__ import annotations
@@ -83,5 +89,70 @@ def test_repeated_runs_skip_the_doomed_attempt(
         second = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
     assert second.n_times == first.n_times == N_POINTS
     # The fallback warning is logged exactly once — the second run did not retry.
+    fallbacks = [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
+    assert len(fallbacks) == 1
+
+
+# ── The steady-state half of the same policy (issue #127) ────────────────────
+#
+# Since #127 the march installs the closed-form Jacobian, so it meets this
+# model's discontinuity exactly as run() does — CVODE gives up at t≈24 and the
+# march returns unconverged. The retry is decided in the solver rather than in
+# Python, because a failed march is a flag, not an exception.
+
+
+def test_steady_state_auto_falls_back_and_converges(data_dir: Path) -> None:
+    """The default config converges, on the difference quotient, and says so."""
+    m = bngsim.Model.from_net(_net(data_dir))
+    sim = bngsim.Simulator(m, method="ode")
+    ss = sim.steady_state(method="integration", rtol=TOL, atol=TOL)
+    assert ss.converged
+    assert ss.solver_jacobian_retried
+    assert ss.solver_jacobian_source == "finite-difference"
+
+
+def test_steady_state_fallback_matches_explicit_fd(data_dir: Path) -> None:
+    """The retry selects the FD Jacobian and nothing else, so the retried solve
+    is the explicit-FD solve — bit for bit, and to the same step count."""
+    m_auto = bngsim.Model.from_net(_net(data_dir))
+    auto = bngsim.Simulator(m_auto, method="ode").steady_state(
+        method="integration", rtol=TOL, atol=TOL
+    )
+    m_fd = bngsim.Model.from_net(_net(data_dir))
+    fd = bngsim.Simulator(m_fd, method="ode", jacobian="fd").steady_state(
+        method="integration", rtol=TOL, atol=TOL
+    )
+    assert not fd.solver_jacobian_retried, "explicit fd never installed one to call off"
+    assert auto.n_steps == fd.n_steps
+    assert np.array_equal(np.asarray(auto.concentrations), np.asarray(fd.concentrations))
+
+
+def test_steady_state_explicit_analytical_is_not_second_guessed(data_dir: Path) -> None:
+    """``jacobian="analytical"`` surfaces the failure: the march does not retry,
+    and reports the unconverged answer the closed form gave it."""
+    m = bngsim.Model.from_net(_net(data_dir))
+    sim = bngsim.Simulator(m, method="ode", jacobian="analytical")
+    ss = sim.steady_state(method="integration", rtol=TOL, atol=TOL)
+    assert not ss.converged
+    assert not ss.solver_jacobian_retried
+    assert ss.solver_jacobian_source == "analytical"
+
+
+def test_steady_state_repeated_solves_skip_the_doomed_attempt(
+    data_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The memo, which is what keeps a dose-response scan from re-paying the
+    failed march at every point: only the first solve retries, and only the
+    first one warns."""
+    m = bngsim.Model.from_net(_net(data_dir))
+    sim = bngsim.Simulator(m, method="ode")
+    with caplog.at_level("WARNING", logger="bngsim"):
+        first = sim.steady_state(method="integration", rtol=TOL, atol=TOL)
+        assert sim._ss_jacobian_fell_back is True
+        second = sim.steady_state(method="integration", rtol=TOL, atol=TOL)
+    assert first.converged and second.converged
+    assert first.solver_jacobian_retried
+    assert not second.solver_jacobian_retried, "the second solve went straight to fd"
+    assert np.array_equal(np.asarray(first.concentrations), np.asarray(second.concentrations))
     fallbacks = [r for r in caplog.records if "GH#176 analytical Jacobian" in r.getMessage()]
     assert len(fallbacks) == 1

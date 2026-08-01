@@ -713,7 +713,15 @@ class TestAmountValuedObservableVolumeFactor:
         m, ss = _hosu_steady_state(2.0)
         dropped_factor = _HOSU_AMOUNT_SENS / 2.0  # what entry.factor alone gave
         got = ss.sensitivities_observables[0]
-        assert np.max(np.abs(got - dropped_factor)) > 0.5 * np.max(np.abs(got))
+        # State the separation as the factor of two it is, with a tolerance.
+        # `max|got - dropped| > 0.5*max|got|` says the same thing exactly, and
+        # is a knife edge: both sides are half the answer, so it reduces to
+        # `|got| > |exact|` and turns on the last digit of the steady state.
+        # Issue #127 moved that digit — installing the solver's own Jacobian
+        # stops the march one roundoff below 4.0 instead of one above.
+        assert np.max(np.abs(got - dropped_factor)) == pytest.approx(
+            0.5 * np.max(np.abs(_HOSU_AMOUNT_SENS)), rel=1e-6
+        )
         np.testing.assert_allclose(got, _HOSU_AMOUNT_SENS, rtol=1e-6, atol=1e-9)
 
     def test_matches_the_cvode_run(self):
