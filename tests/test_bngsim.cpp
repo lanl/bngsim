@@ -535,6 +535,139 @@ int test_steady_state_solver_jacobian() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Test: the march routes to KLU the way run() does (issue #128)
+//
+// Before #128 the steady-state paths had no sparse option at all — the march
+// built a SUNDenseMatrix unconditionally, so a caller who set
+// force_sparse_linear_solver on the Simulator silently got a dense
+// factorization, and the models run() sends to KLU paid 2.0-3.9x on wall clock
+// for the same answer.
+//
+// The fixtures here are far below SPARSE_THRESHOLD, so the route is taken by the
+// force flag rather than by size: that makes the assertions deterministic and
+// keeps the property under test ("the routing does not move the answer, and the
+// two Jacobian fills are the same matrix in two layouts") separate from any
+// judgment about where the size/density cutoff belongs.
+//
+// The whole sparse half is BNGSIM_HAS_KLU-gated because it must be: the CI
+// native build configures with -DBNGSIM_ENABLE_KLU=OFF, where every one of these
+// solves must compile to — and produce — the pre-#128 dense behavior. That is
+// the third thing the issue asked to be measured, and here it is asserted.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_steady_state_linear_solver_routing() {
+    // Reference: the dense factorization, which is what every one of these
+    // A model this small is below SPARSE_THRESHOLD, so the auto rule leaves it
+    // dense with or without KLU — the flags are the only way in.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        bngsim::SteadyStateOptions opts;
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(ss.converged, "the default solve converges");
+        CHECK(ss.linear_solver == "dense" || ss.linear_solver == "lapack-dense",
+              "a 2-species model stays dense under the auto rule");
+    }
+
+    // The pair is a contradiction, not a precedence question — same refusal
+    // run() makes.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.force_dense_linear_solver = true;
+        opts.force_sparse_linear_solver = true;
+        bool threw = false;
+        try {
+            bngsim::find_steady_state(model, opts);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        CHECK(threw, "both force flags at once is rejected");
+    }
+
+#ifdef BNGSIM_HAS_KLU
+    // Reference: the dense factorization, which is what every one of these
+    // solves did before #128. Checked at each call site — CHECK returns from the
+    // enclosing test, which a lambda cannot do for it.
+    auto dense_root = [](const std::string &fixture, const std::string &jacobian) {
+        auto model = bngsim::NetworkModel::from_net(data_path(fixture));
+        bngsim::SteadyStateOptions opts;
+        opts.jacobian = jacobian;
+        opts.force_dense_linear_solver = true;
+        return bngsim::find_steady_state(model, opts);
+    };
+
+    // Both Jacobian strategies over the sparse route. "auto" exercises the CSC
+    // analytical fill; "fd" exercises the colored difference quotient, which on
+    // this route is not an optimization but a requirement — CVODE's built-in
+    // difference quotient covers dense and banded matrices only, so without a
+    // callback the linear solver would fail to initialize at all.
+    for (const std::string jacobian : {std::string("auto"), std::string("fd")}) {
+        auto ref = dense_root("two_species_reversible.net", jacobian);
+        CHECK(ref.converged, "the dense reference converges (" + jacobian + ")");
+        CHECK(ref.linear_solver == "dense" || ref.linear_solver == "lapack-dense",
+              "force_dense_linear_solver pins the dense solver");
+        double scale = 0.0;
+        for (double v : ref.concentrations)
+            scale = std::max(scale, std::abs(v));
+
+        auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.jacobian = jacobian;
+        opts.force_sparse_linear_solver = true;
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(ss.converged, "the KLU-routed march converges (" + jacobian + ")");
+        CHECK(ss.linear_solver == "klu", "force_sparse_linear_solver reaches the march");
+        CHECK(ss.solver_jacobian_source == ref.solver_jacobian_source,
+              "the linear solver does not change which Jacobian is factored");
+        // Absolute against the model's own scale, not relative per component: a
+        // species that settles to ~0 makes a relative diff read 100% for a
+        // difference of one ulp.
+        for (size_t i = 0; i < ref.concentrations.size(); ++i) {
+            CHECK_CLOSE(ss.concentrations[i], ref.concentrations[i], 1e-7 * std::max(scale, 1.0),
+                        "KLU and the dense LU find the same root (" + jacobian + ")");
+        }
+    }
+
+    // The polish is deliberately NOT routed: it factors the conservation-law
+    // reduction, whose sparsity pattern is a different object from the model's.
+    // Sending the march to KLU must therefore leave the closed-form root of the
+    // reduced system exactly where issue #74's algebra puts it.
+    {
+        const double ksyn = 2.0, kon = 3.0, koff = 1.0, kdeg = 0.5, btot = 10.0;
+        const double a_ss = ksyn / kdeg;
+        const double den = koff + kon * a_ss;
+        auto model = bngsim::NetworkModel::from_net(data_path("pure_sink_conserved.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.method = "newton";
+        opts.force_sparse_linear_solver = true;
+        opts.steady_state_mask = {1, 1, 1, 1, 0};
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(ss.converged, "the two-tier solve converges with a KLU-routed tier 1");
+        CHECK(ss.linear_solver == "klu", "and reports the march's solver");
+        CHECK_CLOSE(ss.concentrations[1], a_ss, 1e-6, "A* = ksyn/kdeg");
+        CHECK_CLOSE(ss.concentrations[2], btot * koff / den, 1e-6,
+                    "B* = Btot*koff/(koff+kon*A*)");
+        CHECK_CLOSE(ss.concentrations[3], btot * kon * a_ss / den, 1e-6,
+                    "AB* = Btot*kon*A*/(koff+kon*A*)");
+    }
+#else
+    // No KLU in this build: the flag is a no-op and everything factors densely,
+    // exactly as it did before #128.
+    {
+        auto model = bngsim::NetworkModel::from_net(data_path("two_species_reversible.net"));
+        bngsim::SteadyStateOptions opts;
+        opts.force_sparse_linear_solver = true;
+        auto ss = bngsim::find_steady_state(model, opts);
+        CHECK(ss.converged, "force_sparse still converges without KLU");
+        CHECK(ss.linear_solver == "dense" || ss.linear_solver == "lapack-dense",
+              "without KLU the sparse route does not exist and the march stays dense");
+    }
+#endif
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Test: SSA simulation produces reasonable results
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2473,6 +2606,7 @@ int main() {
     RUN_TEST(test_find_steady_state_methods);
     RUN_TEST(test_steady_state_mask_pure_sink);
     RUN_TEST(test_steady_state_solver_jacobian);
+    RUN_TEST(test_steady_state_linear_solver_routing);
     RUN_TEST(test_ssa_simple_decay);
     RUN_TEST(test_ssa_reproducibility);
     RUN_TEST(test_ssa_fractional_initial_population_rounds);

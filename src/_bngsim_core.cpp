@@ -2024,6 +2024,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("max_steps", &bngsim::SteadyStateOptions::max_steps)
         .def_readwrite("method", &bngsim::SteadyStateOptions::method)
         .def_readwrite("jacobian", &bngsim::SteadyStateOptions::jacobian)
+        // Issue #128 — the same dense/sparse overrides SolverOptions carries,
+        // read by the same rule, so steady_state() routes where run() routes.
+        .def_readwrite("force_dense_linear_solver",
+                       &bngsim::SteadyStateOptions::force_dense_linear_solver)
+        .def_readwrite("force_sparse_linear_solver",
+                       &bngsim::SteadyStateOptions::force_sparse_linear_solver)
         .def_readwrite("codegen_so_path", &bngsim::SteadyStateOptions::codegen_so_path)
         .def_readwrite("codegen_c_source", &bngsim::SteadyStateOptions::codegen_c_source)
         .def_readwrite("sensitivity_params", &bngsim::SteadyStateOptions::sensitivity_params)
@@ -2059,6 +2065,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readonly("solver_jacobian_source", &bngsim::SteadyStateResult::solver_jacobian_source)
         .def_readonly("solver_jacobian_retried",
                       &bngsim::SteadyStateResult::solver_jacobian_retried)
+        // Issue #128 — "klu" / "dense" / "lapack-dense" for the march's Newton
+        // matrix; the only outward sign of the routing, which changes the cost
+        // and not the answer.
+        .def_readonly("linear_solver", &bngsim::SteadyStateResult::linear_solver)
         .def_readonly("sens_jacobian_source", &bngsim::SteadyStateResult::sens_jacobian_source)
         .def_readonly("sens_dfdp_source", &bngsim::SteadyStateResult::sens_dfdp_source)
         // Issue #75 — "codegen" / "mixed" / "finite-difference" for the d(func)/dp

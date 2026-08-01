@@ -202,6 +202,92 @@ class TestHardRequirementsStillHold:
         assert r.solver_stats["linear_solver"] in (LS_DENSE, LS_LAPACK)
 
 
+class TestSteadyStateTakesTheSameRoute:
+    """Issue #128 — ``steady_state()``'s march routes by this same rule.
+
+    It did not, until #128. ``SteadyStateMarcher`` built a ``SUNDenseMatrix``
+    unconditionally, and ``SteadyStateOptions`` did not even carry the two force
+    flags — so a Simulator built with ``force_sparse_linear_solver=True`` got a
+    dense factorization out of ``steady_state()`` without saying so, and the
+    large sparse models paid 2.0-3.9x of wall clock for the same answer that
+    ``run()`` reached through KLU.
+
+    The chain fixtures above are shared deliberately: the routing decision must
+    be the *same* decision, so it is tested on the same models that straddle the
+    same gates. ``ss.linear_solver`` is the march's answer in words rather than
+    the ``LinearSolverKind`` code ``run()`` reports.
+    """
+
+    @staticmethod
+    def _ss(core, **kwargs):
+        sim = bngsim.Simulator(bngsim.Model(_core=core), method="ode", **kwargs)
+        return sim.steady_state(tol=1e-9, max_time=1e6, rtol=1e-10, atol=1e-12)
+
+    def test_below_the_size_threshold_the_march_is_dense(self):
+        assert self._ss(_chain(10)).linear_solver != "klu"
+
+    @requires_klu
+    def test_over_both_gates_the_march_routes_to_klu(self):
+        """The auto rule reaches steady_state(), not just run()."""
+        ss = self._ss(_chain(60))
+        assert ss.converged
+        assert ss.linear_solver == "klu"
+
+    @requires_klu
+    def test_force_sparse_reaches_the_march(self):
+        """The issue's reproducer: this used to factor densely, silently."""
+        ss = self._ss(_chain(10), force_sparse_linear_solver=True)
+        assert ss.converged
+        assert ss.linear_solver == "klu"
+
+    @requires_klu
+    def test_force_dense_pins_a_klu_routed_march(self):
+        ss = self._ss(_chain(60), force_dense_linear_solver=True)
+        assert ss.converged
+        assert ss.linear_solver != "klu"
+
+    @requires_klu
+    @pytest.mark.parametrize("jacobian", ["auto", "fd"])
+    def test_the_route_does_not_move_the_root(self, jacobian):
+        """Both Jacobian strategies, both routes, one steady state.
+
+        ``jacobian="fd"`` is the case that needs saying: on a KLU-routed march
+        it takes the Curtis-Powell-Reid *colored* difference quotient, because
+        CVODE's built-in one supports dense and banded matrices only. A wrong
+        colored fill would still converge — it only steers Newton — so what
+        pins it is landing on the same root as the dense solve.
+        """
+        sparse = self._ss(_chain(60), jacobian=jacobian, force_sparse_linear_solver=True)
+        dense = self._ss(_chain(60), jacobian=jacobian, force_dense_linear_solver=True)
+        assert sparse.converged and dense.converged
+        assert sparse.linear_solver == "klu"
+        assert dense.linear_solver != "klu"
+        # The linear solver is orthogonal to the Jacobian source: routing to KLU
+        # must not quietly demote a closed form to a difference quotient.
+        assert sparse.solver_jacobian_source == dense.solver_jacobian_source
+        scale = max(float(np.max(np.abs(dense.concentrations))), 1e-300)
+        np.testing.assert_allclose(
+            sparse.concentrations, dense.concentrations, rtol=1e-6, atol=1e-7 * scale
+        )
+
+    def test_both_force_flags_raise_at_the_steady_state_core(self):
+        """The C++ gate refuses the pair here too, as it does for run()."""
+        from bngsim._bngsim_core import SteadyStateOptions, find_steady_state
+
+        opts = SteadyStateOptions()
+        opts.force_dense_linear_solver = True
+        opts.force_sparse_linear_solver = True
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            find_steady_state(_chain(10), opts)
+
+    @pytest.mark.skipif(HAS_KLU, reason="requires a build without SuiteSparse/KLU")
+    def test_no_op_without_klu(self):
+        """A KLU-less build must compile to — and produce — the pre-#128 dense
+        behavior, flag or no flag."""
+        assert self._ss(_chain(60)).linear_solver != "klu"
+        assert self._ss(_chain(10), force_sparse_linear_solver=True).linear_solver != "klu"
+
+
 @requires_klu
 class TestWarmCacheHonorsTheFlip:
     """The warm path reuses CVODE memory across ``run()`` calls; a solver-kind

@@ -174,6 +174,81 @@ in `CMakeLists.txt`) is derived from it.
   585-model `ode_fullnet` corpus.
 
 ### Changed
+- **`steady_state()`'s march routes to sparse KLU by the same rule `run()` uses,
+  and the two force flags reach it (issue #128).** `SteadyStateMarcher` built a
+  `SUNDenseMatrix` unconditionally — `ss_make_dense_linsol`'s own comment said
+  the steady-state paths had no KLU option — while `run()` on the same model
+  routed to KLU whenever the Jacobian was large and sparse. `SteadyStateOptions`
+  did not carry `force_sparse_linear_solver` / `force_dense_linear_solver` at
+  all, so a Simulator built with either got a dense factorization out of
+  `steady_state()` and `steady_state_batch()` without saying so.
+
+  The decision itself now has one implementation
+  (`route_to_sparse_linear_solver` in the new `bngsim/sparse_jacobian.hpp`),
+  which `CvodeSimulator::Impl::choose_use_sparse` and the march both call: same
+  `SPARSE_THRESHOLD` (50), same `SPARSE_DENSITY_MAX` (10%), same force flags,
+  same JAX exclusion. `ss.linear_solver` reports the outcome — `"klu"`,
+  `"dense"` or `"lapack-dense"` — which is the only outward sign of a change
+  that moves the cost and not the answer.
+
+  **What it buys**, `method="integration"` with the interpreted RHS at
+  `tol=1e-9`: `BaruaBCR_2012` (1122 species, 2.5%) **5.59 s → 1.78 s** (3.1×),
+  `fceri_fyn` (1281, 2.3%) **13.25 s → 6.92 s** (1.9×), `egfr_ground` (356,
+  6.7%) 0.19 s → 0.18 s. The density ceiling earns its place at the bottom of
+  that range, which is why the rule is not simply "always KLU".
+
+  **What it changes about the answer: nothing measurable.** Over the 585-model
+  `.net` corpus at `max_time=1e4`, both methods, before and after: the 536
+  models the routing leaves dense are **byte-identical** (max state difference
+  exactly 0.0), as they must be. Of the 44 it routes, `converged` flips on none
+  under either method, and over every converged model the state moves by at most
+  **2.0e-8** of the model's own scale (median exactly 0). The `n_steps` ratio on
+  routed models is a median of 1.000 (0.93–1.07): KLU changes the factorization,
+  and with it the step sequence, not the equations. The two models that move by
+  more than 1e-7 are both *unconverged* — they return where the trajectory got
+  to at `max_time`, at the same residual to four digits on both sides.
+
+  `method="newton"` flips `method_used` on **three** corpus entries, which are
+  one 354-species network under three names (`fceri_ji`, `fceri_ji_4`,
+  `test_network_gen`): the KLU-routed march crosses the parity criterion
+  *during* rung 0, so the ladder returns the burst — which it documents as
+  "integration itself reached the parity tolerance — done" — instead of handing
+  the seed to KINSOL. Converged either way, same root to 1.5e-8 of scale, at
+  residual 9.5e-10 rather than the polish's 2.8e-14. Which side of `tol` a march
+  stops on is set by the step sequence, so any change to it can move this.
+
+  `jacobian="fd"` stays on the sparse route rather than reverting to dense,
+  because on a sparse matrix a Jacobian callback is not optional: CVODE's
+  built-in difference quotient supports dense and banded matrices only. The
+  march fills the CSC values with the Curtis-Powell-Reid *colored* difference
+  quotient — the same `colored_fd_jacobian` `run()` uses, now shared rather than
+  copied, and differencing the march's own (compiled, when there is one) RHS.
+  Only `jacobian="jax"` forces the dense route. One case is deliberately not
+  routed where `run()` refuses instead: a Jacobian with no structural nonzero
+  stays dense, because the steady-state auto rule can reach it unprompted
+  (density 0 < 10%) and `f(y) ≡ 0` makes such a model a steady state that used
+  to solve immediately.
+
+  **The KINSOL polish and the `dY_ss/dp` solve are left dense on purpose.** Both
+  factor the *reduced* system — the model's Jacobian projected through the
+  conservation-law reconstruction — and that projection fills in entries the
+  model's sparsity pattern does not have, so the reduced pattern is a different
+  object that would have to be derived. Both also factor once per solve rather
+  than once per integration step.
+
+  `CvodeSimulator` gives up its private copies of the routing rule, the CSC
+  structure reinstall (three sites) and the difference formula to the shared
+  header; that half is behaviour-neutral, checked as byte-identical trajectories
+  and solver stats over 882 (model, jacobian, route) cases on 147 corpus models,
+  0 divergences. Pinned by a new native case
+  (`test_steady_state_linear_solver_routing`, whose KLU-less half asserts the
+  pre-#128 dense behavior on the CI build that has no KLU), a steady-state class
+  in `test_force_sparse_linear_solver.py`, and
+  `test_steady_state_linear_solver.py` for the published networks and for the
+  compiled Jacobian in either layout — the codegen emits exactly one of the two
+  shapes per model (GH #162), so a forced route now converts rather than
+  silently dropping to the interpreted fill.
+
 - **Both steady-state tiers now install the Jacobian the model already has
   (issue #127).** `SteadyStateMarcher`'s constructor calls `CVodeSetJacFn` and
   `solve_by_newton` calls `KINSetJacFn` whenever the model carries a closed form

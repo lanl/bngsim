@@ -348,6 +348,13 @@ class Simulator:
         the dense path against KLU on the same model; it has no effect in a
         build compiled without KLU (already always dense).
 
+        Since issue #128 this reaches :meth:`steady_state` and
+        :meth:`steady_state_batch` too — specifically their CVODE march, which
+        routes by this same rule and reports the outcome as
+        :attr:`SteadyStateResult.linear_solver`. The KINSOL polish and the
+        ``dY_ss/dp`` solve factor a *reduced* matrix, whose sparsity pattern is
+        a different object from the model's, and stay dense either way.
+
     force_sparse_linear_solver : bool, optional
         Only used for ``method="ode"``. Default ``False``. The mirror image of
         ``force_dense_linear_solver``: force sparse KLU even on a model the auto
@@ -363,6 +370,12 @@ class Simulator:
         ones. A model that is *both* too dense to have been graph-colored and
         without a usable analytical Jacobian has no way to fill a sparse matrix
         at all; ``run()`` raises there rather than quietly reverting to dense.
+
+        Applies to :meth:`steady_state` as well (issue #128) — with one
+        difference: a model whose Jacobian has *no structural nonzero* is left on
+        the dense solver there instead of raising, because the steady-state auto
+        rule can route such a model to KLU on its own (density 0 < 10%) and
+        f(y) ≡ 0 makes it a steady state that used to solve immediately.
 
     Examples
     --------
@@ -4070,6 +4083,11 @@ class Simulator:
         # find out (issue #127, the GH #176 memo for `run`). Go straight to the
         # difference quotient rather than re-paying it at every point of a scan.
         opts.jacobian = "fd" if self._ss_jacobian_fell_back else self._jacobian
+        # Issue #128 — the Simulator's dense/sparse override reaches the march,
+        # which routes by the same rule run() does. Before this, a Simulator
+        # built with force_sparse_linear_solver=True still factored densely here.
+        opts.force_dense_linear_solver = self._force_dense_linear_solver
+        opts.force_sparse_linear_solver = self._force_sparse_linear_solver
         if self._codegen_so_path:
             opts.codegen_so_path = self._codegen_so_path
         if self._codegen_c_source:
@@ -4366,6 +4384,9 @@ class Simulator:
             # sweep over a model whose closed-form Jacobian CVODE cannot use pays
             # the doomed march once rather than once per entry (issue #127).
             opts.jacobian = "fd" if self._ss_jacobian_fell_back else self._jacobian
+            # Issue #128 — same dense/sparse routing as steady_state().
+            opts.force_dense_linear_solver = self._force_dense_linear_solver
+            opts.force_sparse_linear_solver = self._force_sparse_linear_solver
             if self._codegen_so_path:
                 opts.codegen_so_path = self._codegen_so_path
             if self._codegen_c_source:
@@ -5238,6 +5259,16 @@ class SteadyStateResult:
         derivative omits the jump. The returned answer is the retry's, so
         ``solver_jacobian_source`` reads ``"finite-difference"`` alongside this.
         Only ``jacobian="auto"`` retries; ``"analytical"`` surfaces the failure.
+    linear_solver : str
+        Which direct linear solver the CVODE **march** factored its Newton matrix
+        with (issue #128): ``"klu"`` (sparse CSC), ``"dense"`` (the built-in dense
+        LU) or ``"lapack-dense"`` (the GH #84 BLAS factor). Chosen by the same
+        size/density/force-flag rule :meth:`Simulator.run` uses, so the two agree
+        on a model. Before #128 the steady-state paths had no sparse route and
+        this was always dense — 1.9x to 3.1x of wall clock on the 1000+ species
+        corpus models, for the same answer. The KINSOL polish and the
+        ``dY_ss/dp`` solve factor a *reduced* matrix and are always dense; this
+        field does not describe them.
     sens_jacobian_source, sens_dfdp_source : str
         How each factor of ``dY_ss/dp = -J⁻¹·(∂f/∂p)`` was built.
         ``sens_jacobian_source`` is ``"codegen"`` (compiled analytical Jacobian),
@@ -5307,6 +5338,7 @@ class SteadyStateResult:
         "rhs_backend",
         "solver_jacobian_source",
         "solver_jacobian_retried",
+        "linear_solver",
         "sens_jacobian_source",
         "sens_dfdp_source",
         "sens_output_source",
@@ -5345,6 +5377,9 @@ class SteadyStateResult:
         # older core installed neither callback, hence the default.
         self.solver_jacobian_source = getattr(core, "solver_jacobian_source", "finite-difference")
         self.solver_jacobian_retried = bool(getattr(core, "solver_jacobian_retried", False))
+        # Issue #128 — which direct linear solver the march factored with. An
+        # older core had no sparse route at all, hence the default.
+        self.linear_solver = getattr(core, "linear_solver", "dense")
         self.sens_jacobian_source = getattr(core, "sens_jacobian_source", "")
         self.sens_dfdp_source = getattr(core, "sens_dfdp_source", "")
         # Issue #75 — how d(func)/dp was built: the compiled chain rule, the
