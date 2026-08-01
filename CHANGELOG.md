@@ -174,6 +174,52 @@ in `CMakeLists.txt`) is derived from it.
   585-model `ode_fullnet` corpus.
 
 ### Changed
+- **`CvodeSimulator::run` puts its setup in named `Impl::` helpers (issue
+  #109).** `run()` spanned 2,346 lines of one function body — 1,375 NLOC at
+  cyclomatic complexity 368. The codebase is otherwise small (median function 12
+  lines at CCN 3), and `run()` was the one place where high complexity, high
+  churn (11 commits to
+  `src/cvode_simulator.cpp` in 12 months, nearly all sensitivity work: #48, #49,
+  #54, #63, #82) and a monolithic single-function body all coincided. Every one
+  of those changes had to re-read the whole function to find where its case
+  belonged.
+
+  Eleven blocks of *sequential configuration* now live in named helpers, in the
+  style of the existing `setup_codegen_rhs` / `setup_linsol_and_jac`: the
+  `ns == 0` algebraic-only path (GH #229), the dense/sparse decision and its two
+  force flags (#29/#102), the SUNContext / state vector / CVODE-memory creation
+  and codegen-RHS wiring, the `opts.jacobian` validation, the whole CVODES
+  forward-sensitivity initialization (`Impl::setup_forward_sensitivities`, the
+  single largest block), the `Result` allocation, the event/discontinuity root
+  function and its registration, the GH #197 observable-sensitivity coefficient
+  table, the solver statistics, and the write-back of the final state plus the
+  GH #210 carry-over seed. `run()` now reads as that sequence of calls followed
+  by the integration loop, and drops from **1,375 NLOC / CCN 368 to 957 / 253**
+  (`lizard`, same file). `run_warm` shrinks too: its solver-statistics block was
+  a byte-identical copy of `run()`'s and now calls the same helper, so the two
+  cannot drift.
+
+  **Extraction only — no behavior change, no API change, no performance change.**
+  The stepping loop and the event / switch-crossing handlers are untouched (they
+  carry the #82 threshold-landing fix and the #49 event-time jump), the
+  warm/cold eligibility rule is unchanged, and every explanatory comment moved
+  with the block it explains — the length of this function is largely accreted
+  correctness, and losing that reasoning would cost more than the length saves.
+
+  Verified as **byte identity**, not agreement to tolerance. A before/after A/B
+  digests the full float64 bytes of every array a run produces — times, species,
+  observables, expressions and all four sensitivity blocks — plus the
+  solver-statistics dict, so a single changed bit in any column, or one extra
+  CVODE step, moves the hash. Across four sweeps — the 585 `ode_fullnet` `.net`
+  models on the forced-cold path, the same 585 on the default (warm-eligible)
+  dispatch, the same 585 again under three-parameter forward sensitivities, and
+  the 1,323-model `rr_parity` SBML corpus (events, assignment rules, `piecewise`
+  discontinuity triggers, no-species algebraic models) — **3,025 runs hash
+  identically and 50 refuse with identical messages; 0 divergences.** The three
+  remaining models hit the harness's wall-clock cap in both arms. Byte-identical
+  sensitivity columns make the FD-oracle agreement identical by construction,
+  and the parity-suite verdicts likewise.
+
 - **Steady-state `d(func)/dp` runs through the compiled output-sensitivity
   evaluator instead of finite differences (issue #75).**
   `steady_state(sensitivity_params=[…])` projects the species `dY_ss/dp` onto the

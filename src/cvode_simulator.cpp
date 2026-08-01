@@ -800,6 +800,81 @@ static int cvode_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatrix J
 }
 #endif // BNGSIM_HAS_KLU
 
+// ─── Event / discontinuity root function ─────────────────────────────────────
+//
+// Root function callback: evaluate each event trigger then each
+// discontinuity-trigger condition, subtracting 0.5 so a false→true (or
+// true→false) flip is a sign change. Event roots occupy gout[0,n_events)
+// and discontinuity roots gout[n_events, n_roots).
+static int cvode_event_root_fn(sunrealtype t, N_Vector y, sunrealtype *gout, void *user_data) {
+    auto *data = static_cast<CvodeUserData *>(user_data);
+    auto *mdl = data->model;
+    const double *y_ptr = N_VGetArrayPointer(y);
+    const int nsp = mdl->n_species();
+
+    // Sync species concentrations so ExprTk trigger expressions see current y
+    auto &sp_vec = const_cast<std::vector<Species> &>(mdl->species());
+    for (int i = 0; i < nsp; ++i) {
+        sp_vec[i].concentration = y_ptr[i];
+    }
+    mdl->update_observables(y_ptr);
+    mdl->evaluate_functions(static_cast<double>(t));
+
+    // GH #106: refresh the live rateOf buffer (and re-evaluate functions
+    // with live dx/dt) so triggers reading rateOf(species) — directly or
+    // via a rateOf-bearing function — see the derivative at this (t, y).
+    // No-op for non-rateOf models. compute_derivs publishes current_derivs
+    // as a side effect; rateof_root_scratch absorbs the returned RHS.
+    if (mdl->uses_rateof()) {
+        mdl->compute_derivs(static_cast<double>(t), y_ptr, data->rateof_root_scratch.data());
+    }
+
+    auto &eval = mdl->evaluator();
+    const auto &events = mdl->events();
+    const int ne = static_cast<int>(events.size());
+    for (int i = 0; i < ne; ++i) {
+        if (data->event_dormant != nullptr && data->event_dormant[i]) {
+            // Chatter guard (GH #95): a dormant event's root is held at a
+            // constant so it never changes sign — CVODE integrates over
+            // the noise floor instead of halting at every sub-atol
+            // crossing of the trigger.
+            gout[i] = 1.0;
+            continue;
+        }
+        double trigger_val = eval.evaluate(events[i].trigger_expr_idx);
+        gout[i] = trigger_val - 0.5;
+    }
+    const auto &disc = mdl->discontinuity_triggers();
+    for (int j = 0; j < static_cast<int>(disc.size()); ++j) {
+        gout[ne + j] = eval.evaluate(disc[j]) - 0.5;
+    }
+    return 0;
+}
+
+// ─── Forward-sensitivity run state ───────────────────────────────────────────
+//
+// Everything Impl::setup_forward_sensitivities() resolves for one run(): the
+// column counts, the CVODES sensitivity vectors, and the contiguous arrays
+// CVODES and the codegen sensitivity RHS read through raw pointers stored in
+// CvodeUserData. Held by value in run() so those pointers stay valid for the
+// whole integration (the sizes are fixed once setup returns).
+struct SensitivityState {
+    int n_p = 0;                         // requested parameter columns
+    int n_ic = 0;                        // requested initial-condition columns
+    int n_total = 0;                     // n_p + n_ic
+    NVectorArrayGuard yS;                // CVODES sensitivity vectors (param cols first)
+    std::vector<int> param_indices;      // 0-based parameter indices
+    std::vector<int> ic_species_indices; // 0-based species indices for IC sens
+    std::vector<double> pbar;            // parameter scaling factors for CVODES
+    std::vector<double> p;               // contiguous parameter values (CVODES reads this)
+    std::vector<int> plist;              // which indices in p to perturb
+    std::vector<char> pin_mask;          // switch-time params held nominal (issue #48)
+    std::vector<double> pin_nominal;     // their nominal values
+    // Hoisted so the event-fire sensitivity jump (GH #212) can re-init the
+    // sensitivity vectors with the same method CVodeSensInit1 was given.
+    int method = CV_STAGGERED;
+};
+
 // ─── CvodeSimulator::Impl ───────────────────────────────────────────────────
 
 struct CvodeSimulator::Impl {
@@ -907,6 +982,58 @@ struct CvodeSimulator::Impl {
     // Warm fast path: persistent CVODE memory reused via CVodeReInit. Handles
     // only the no-events / no-sensitivity / non-JAX case (see WarmCache).
     Result run_warm(const TimeSpec &times, const SolverOptions &opts, bool use_sparse);
+
+    // ─── Cold-path run() setup steps ────────────────────────────────────────
+    // Named boxes for the sequential configuration run() performs before it
+    // starts stepping (GH #109). Each owns one block of the former inline
+    // body, with the reasoning that block carried; run() reads as the sequence
+    // of these calls followed by the integration loop. None of them changes
+    // behavior — they are the same statements in the same order.
+
+    // ns == 0: no ODE state to integrate, so there is no CVODE setup at all.
+    Result run_algebraic_only(const TimeSpec &times);
+
+    // Dense vs sparse (KLU) matrix decision, including the two force flags.
+    bool choose_use_sparse(const SolverOptions &opts, int ns) const;
+
+    // Create the SUNContext / state vector / CVODE memory, seed y from the
+    // model, wire the (cached) codegen RHS into user_data, and apply the
+    // tolerances and step limits. The RAII guards stay owned by run() (their
+    // declaration order there is the teardown order), so they are filled in
+    // place here rather than returned.
+    void create_cvode_core(const TimeSpec &times, const SolverOptions &opts, int ns, double rtol,
+                           double atol, int max_steps, SunContextGuard &ctx, NVectorGuard &y,
+                           CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
+                           std::vector<double> &codegen_param_buf);
+
+    // Reject an unknown opts.jacobian, and reject the two strategies that ask
+    // for something this model/request cannot supply. Also copies the JAX
+    // callback into user_data.
+    void validate_jacobian_option(const SolverOptions &opts, CvodeUserData &user_data);
+
+    // Resolve the requested sensitivity columns, seed s(0), and hand CVODES its
+    // sensitivity problem. Fills `sens`, whose arrays back raw pointers in
+    // user_data and in CVODES for the rest of the run.
+    void setup_forward_sensitivities(const SolverOptions &opts, int ns, double rtol, double atol,
+                                     N_Vector y, void *cvode_mem, CvodeUserData &user_data,
+                                     SensitivityState &sens);
+
+    // Attach cvode_event_root_fn as CVODE's root function, and silence the
+    // benign tiny-step warning a discontinuity root provokes.
+    void register_roots(void *cvode_mem, SUNContext ctx, int n_roots, int n_disc);
+
+    // Size the Result and its (optional) sensitivity blocks, and name every axis.
+    void allocate_run_result(Result &result, const SolverOptions &opts, int n_out, int n_sens_p,
+                             int n_sens_ic);
+
+    // Copy CVODE's counters into the Result's solver_stats block. Used by the
+    // warm path too — the two recorded the same counters in the same order.
+    void record_solver_stats(void *cvode_mem, SUNLinearSolver ls, Result &result);
+
+    // Publish the final state (and the forward-sensitivity carry-over seed)
+    // back onto the model for the next action in a multi-action sequence.
+    void write_final_state_back(const SolverOptions &opts, int ns, const double *y_data,
+                                double final_t, const SensitivityState &sens);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -1178,6 +1305,46 @@ static std::vector<std::pair<int, int>> build_assignment_rule_copyback(const Net
         }
     }
     return map;
+}
+
+// ─── Observable output sensitivities (GH #197) ───────────────────────────────
+//
+// BNGL observables are linear in species: obs_j = Σ_i c_ji·x_i, where c_ji
+// folds the GroupEntry factor and — for an amount-valued species — the
+// volume scaling that update_observables() applies (model.cpp:1142). So
+// d obs_j/dθ = Σ_i c_ji·dx_i/dθ: a runtime chain rule over the CVODES
+// species sensitivities extracted in run(), no codegen required. The same
+// coefficients drive both the parameter axis and the IC axis; only the
+// source dx/dθ vector differs (yS parameter cols vs IC cols). Expression
+// (global-function) sensitivities are nonlinear and are left to the codegen
+// stage (#198) — those blocks stay empty here.
+struct ObsSensTerm {
+    int obs;       // observable row (0-based, recording order)
+    int species0;  // 0-based species index it reads
+    double weight; // c_ji = factor · (amount_valued ? volume_factor : 1)
+};
+
+static std::vector<ObsSensTerm> build_observable_sens_terms(const NetworkModel &model) {
+    std::vector<ObsSensTerm> terms;
+    const int ns = model.n_species();
+    const int n_obs = model.n_observables();
+    const auto &obs_list = model.observables();
+    const auto &spec_list = model.species();
+    for (int j = 0; j < n_obs; ++j) {
+        for (const auto &e : obs_list[j].entries) {
+            const int idx0 = e.species_index - 1; // entries are 1-based
+            if (idx0 < 0 || idx0 >= ns) {
+                continue;
+            }
+            double weight = e.factor;
+            const auto &sp = spec_list[idx0];
+            if (sp.amount_valued) {
+                weight *= sp.volume_factor;
+            }
+            terms.push_back({j, idx0, weight});
+        }
+    }
+    return terms;
 }
 
 // ─── Warm fast path ──────────────────────────────────────────────────────────
@@ -1456,26 +1623,10 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     }
 
     // ─── Solver statistics ───────────────────────────────────────────────────
-    long int nst, nfe, nsetups, nni, ncfn, netf;
-    CVodeGetNumSteps(cvode_mem, &nst);
-    CVodeGetNumRhsEvals(cvode_mem, &nfe);
-    CVodeGetNumLinSolvSetups(cvode_mem, &nsetups);
-    CVodeGetNumNonlinSolvIters(cvode_mem, &nni);
-    CVodeGetNumNonlinSolvConvFails(cvode_mem, &ncfn);
-    CVodeGetNumErrTestFails(cvode_mem, &netf);
-    result.solver_stats().n_steps = static_cast<int>(nst);
-    result.solver_stats().n_rhs_evals = static_cast<int>(nfe);
-    result.solver_stats().n_jac_evals = static_cast<int>(nsetups);
-    result.solver_stats().n_nonlin_iters = static_cast<int>(nni);
-    result.solver_stats().n_nonlin_conv_fails = static_cast<int>(ncfn);
-    result.solver_stats().n_err_test_fails = static_cast<int>(netf);
-    result.solver_stats().linear_solver = linear_solver_used;
-    // GH #132: how many factorizations took the BLAS dgetrf path (0 unless this
-    // is the LAPACK-dense solver and the run crossed the adaptive K gate).
-    {
-        const long bc = lapack_dense_blas_factor_count(w.LS);
-        result.solver_stats().n_dense_blas_factorizations = bc > 0 ? static_cast<int>(bc) : 0;
-    }
+    // Same counters, in the same order, as the cold path — shared so the two
+    // cannot drift (Impl::record_solver_stats). The BLAS factorization count
+    // (GH #132) comes off the warm cache's persistent linear solver.
+    record_solver_stats(cvode_mem, w.LS, result);
     if (check_ss) {
         result.solver_stats().steady_state_reached = ss_reached;
         result.solver_stats().steady_state_residual = ss_residual_last;
@@ -1504,6 +1655,670 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // CVODE memory survived a full successful run — keep it warm for next call.
     w.valid = true;
     return result;
+}
+
+// ─── Cold-path run() setup steps (GH #109) ───────────────────────────────────
+//
+// One named box per block of the sequential configuration run() used to do
+// inline. Declaration order below matches the call order in run().
+
+// Algebraic-only model (GH #229): no ODE state, but assignment rules and
+// functions of the SBML `time` csymbol — plus any constant outputs —
+// still define a trajectory over the requested grid. RoadRunner
+// integrates these; with no state to integrate, bngsim evaluates the
+// observables + functions once per output row (no CVODE needed). The
+// SBML semantic suite exercises this with pure parameter+assignmentRule
+// models such as `p2 := 1 + time`.
+//
+// Events mutate state discretely at their trigger time; reproducing them
+// needs the cold path's rootfinding + reinit machinery, which assumes ≥1
+// integrator state to anchor the crossing — refuse those loud rather than
+// silently dropping the assignment. Discontinuity triggers (piecewise /
+// comparison expressions, GH #72) need NO special handling here: with no
+// ODE to integrate, crossing-step accuracy is moot — evaluating the rule
+// fresh at each output grid point already yields the correct piecewise
+// value (exactly what RoadRunner reports).
+Result CvodeSimulator::Impl::run_algebraic_only(const TimeSpec &times) {
+    if (model.n_events() > 0) {
+        throw std::runtime_error("Cannot simulate: model has no species but defines events "
+                                 "(no integrator state to anchor the trigger crossing).");
+    }
+    const int n_obs = model.n_observables();
+    const int n_func = model.n_functions();
+    std::vector<double> t_out = times.output_times();
+    const int n_out = static_cast<int>(t_out.size());
+
+    Result result;
+    result.allocate(n_out, /*n_species=*/0, n_obs);
+    result.set_species_names(model.species_names());
+    result.set_observable_names(model.observable_names());
+    if (n_func > 0) {
+        result.set_expression_names(model.function_names());
+    }
+
+    std::vector<double> obs_buf(n_obs);
+    for (int i = 0; i < n_out; ++i) {
+        const double t_row = t_out[i];
+        // No species ⇒ update_observables never dereferences the conc pointer
+        // (every observable entry's species index is out of range and is
+        // skipped). evaluate_functions binds time() and the constant params.
+        model.update_observables(nullptr);
+        model.evaluate_functions(t_row);
+        for (int j = 0; j < n_obs; ++j) {
+            obs_buf[j] = model.observables()[j].total;
+        }
+        result.record(i, t_row, /*species_conc=*/nullptr, obs_buf.data());
+        if (n_func > 0) {
+            result.record_expressions(i, model.function_value_cache().data());
+        }
+    }
+    return result;
+}
+
+// Decide dense vs sparse.
+// Use sparse KLU when: (1) KLU is available, (2) model is large enough,
+// (3) sparsity pattern exists, and (4) density is low enough to benefit.
+// If density > 50%, the Jacobian is effectively dense and KLU's overhead
+// makes it slower than optimized LAPACK dense LU.
+// Also guards against models where Functional rate laws make the sparsity
+// pattern nearly dense.
+// JAX Jacobians always produce dense matrices, so force dense mode there.
+//
+// The two force flags (GH #102, GH #29) straddle the size/density test but
+// not the hard requirements below it: KLU needs a real sparsity pattern to
+// build its CSC matrix, and a JAX Jacobian only ever fills a dense one, so
+// sparse_ok gates both overrides. force_dense wins the (rejected upstream)
+// both-set case only as a belt-and-braces default.
+bool CvodeSimulator::Impl::choose_use_sparse(const SolverOptions &opts, int ns) const {
+#ifdef BNGSIM_HAS_KLU
+    const auto &sp = model.jacobian_sparsity();
+    const bool sparse_ok = (opts.jacobian != "jax") && !sp.empty();
+    return sparse_ok && !opts.force_dense_linear_solver &&
+           (opts.force_sparse_linear_solver ||
+            ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX)));
+#else
+    (void)opts;
+    (void)ns;
+    return false;
+#endif
+}
+
+// ─── SUNDIALS v7 setup ───────────────────────────────────────────────────────
+//
+// RAII guards handle all SUNDIALS cleanup automatically; run() owns them (its
+// declaration order there is the teardown order), so they are filled in place.
+void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const SolverOptions &opts,
+                                             int ns, double rtol, double atol, int max_steps,
+                                             SunContextGuard &ctx, NVectorGuard &y,
+                                             CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
+                                             std::vector<double> &codegen_param_buf) {
+    if (!ctx) {
+        throw std::runtime_error("SUNContext_Create failed");
+    }
+
+    y = NVectorGuard(N_VNew_Serial(ns, ctx));
+    if (!y) {
+        throw std::runtime_error("N_VNew_Serial failed");
+    }
+
+    double *y_data = y.data();
+    for (int i = 0; i < ns; ++i) {
+        y_data[i] = model.species()[i].concentration;
+    }
+
+    cvode_mem = CvodeMemGuard(CVodeCreate(CV_BDF, ctx));
+    if (!cvode_mem) {
+        throw std::runtime_error("CVodeCreate failed");
+    }
+
+    // GH #106: size the rateOf probe scratch the event root function writes into
+    // (only models that reference rateOf run that probe). Sized here, on the
+    // cold/events path that owns the root function; the warm path has no roots.
+    if (model.uses_rateof()) {
+        user_data.rateof_root_scratch.assign(model.n_species(), 0.0);
+    }
+
+    // ─── Codegen RHS loading ────────────────────────────────────────────────
+    // Resolve the (cached) codegen .so RHS / sens / Jacobian symbols and build
+    // the per-run parameter mirror the codegen function reads from. Shared with
+    // the warm path so the codegen ABI lives in one place (Impl::setup_codegen_
+    // rhs). codegen_param_buf must outlive the integration loop in run() — the
+    // user_data points into it.
+    CVRhsFn rhs_fn = setup_codegen_rhs(opts, user_data, codegen_param_buf);
+
+    int flag = CVodeInit(cvode_mem, rhs_fn, times.t_start, y);
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
+    }
+
+    flag = CVodeSStolerances(cvode_mem, rtol, atol);
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeSStolerances failed");
+    }
+
+    flag = CVodeSetUserData(cvode_mem, &user_data);
+    flag = CVodeSetMaxNumSteps(cvode_mem, max_steps);
+
+    if (opts.max_step_size > 0) {
+        CVodeSetMaxStep(cvode_mem, opts.max_step_size);
+    }
+}
+
+// ─── Validate Jacobian strategy ──────────────────────────────────────────────
+void CvodeSimulator::Impl::validate_jacobian_option(const SolverOptions &opts,
+                                                    CvodeUserData &user_data) {
+    const std::string &jac_strategy = opts.jacobian;
+    if (jac_strategy != "auto" && jac_strategy != "analytical" && jac_strategy != "fd" &&
+        jac_strategy != "jax") {
+        throw std::runtime_error("Invalid jacobian option '" + jac_strategy +
+                                 "'. "
+                                 "Must be \"auto\", \"analytical\", \"fd\", or \"jax\".");
+    }
+
+    // Copy the JAX callback from opts into user_data.
+    if (jac_strategy == "jax") {
+        if (!opts.jax_jac_fn) {
+            throw std::runtime_error("jacobian=\"jax\" requested but no JAX callback was provided. "
+                                     "Set opts.jax_jac_fn before calling run().");
+        }
+        user_data.jax_jac_fn = opts.jax_jac_fn;
+    }
+
+    // If user explicitly requests analytical but it's not available, fail fast.
+    if (jac_strategy == "analytical") {
+        if (!model.analytical_jacobian_complete()) {
+            throw std::runtime_error(
+                "jacobian=\"analytical\" requested but the analytical Jacobian is not "
+                "available for this model. It covers Elementary mass-action rate laws and "
+                "Functional rate laws whose derivatives could be symbolically derived; "
+                "Michaelis-Menten and rate laws that fail symbolic differentiation fall "
+                "back to finite differences.");
+        }
+    }
+}
+
+// ─── CVODES forward sensitivity setup ────────────────────────────────────────
+//
+// When opts.sensitivity.param_names is non-empty, initialize CVODES
+// sensitivity analysis. CVODES computes dY/dp alongside the ODE integration
+// using its internal finite-difference approximation of the sensitivity RHS.
+// This works for ALL rate law types (Elementary, Functional, MichaelisMenten).
+void CvodeSimulator::Impl::setup_forward_sensitivities(const SolverOptions &opts, int ns,
+                                                       double rtol, double atol, N_Vector y,
+                                                       void *cvode_mem, CvodeUserData &user_data,
+                                                       SensitivityState &sens) {
+    sens.n_p = static_cast<int>(opts.sensitivity.param_names.size());
+    sens.n_ic = static_cast<int>(opts.sensitivity.ic_species_names.size());
+    sens.n_total = sens.n_p + sens.n_ic;
+
+    const int n_sens_p = sens.n_p;
+    const int n_sens_ic = sens.n_ic;
+    const int n_sens = sens.n_total;
+    if (n_sens == 0) {
+        return;
+    }
+
+    // Aliases onto `sens`: every array below backs a raw pointer handed to
+    // CVODES or to the codegen sensitivity RHS, so the storage has to outlive
+    // this function. run() owns `sens` for the whole integration.
+    NVectorArrayGuard &yS_guard = sens.yS;
+    std::vector<int> &sens_param_indices = sens.param_indices;
+    std::vector<int> &sens_ic_species_indices = sens.ic_species_indices;
+    std::vector<double> &pbar = sens.pbar;
+    std::vector<double> &sens_p = sens.p;
+    std::vector<int> &sens_plist = sens.plist;
+    std::vector<char> &sens_pin_mask = sens.pin_mask;
+    std::vector<double> &sens_pin_nominal = sens.pin_nominal;
+    int &sens_method = sens.method;
+
+    double *y_data = N_VGetArrayPointer(y);
+    int flag;
+
+    const auto &params = model.parameters();
+
+    // Resolve param sens names → indices.
+    for (const auto &pname : opts.sensitivity.param_names) {
+        bool found = false;
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (params[i].name == pname) {
+                sens_param_indices.push_back(static_cast<int>(i));
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw std::runtime_error("Sensitivity parameter '" + pname +
+                                     "' not found in model. "
+                                     "Available: " +
+                                     [&]() {
+                                         std::string s;
+                                         for (const auto &p : params) {
+                                             if (!s.empty())
+                                                 s += ", ";
+                                             s += p.name;
+                                         }
+                                         return s;
+                                     }());
+        }
+    }
+
+    // Resolve IC species names → indices. IC sens uses the codegen sens
+    // RHS path exclusively (CVODES internal FD has no parameter to
+    // perturb, so the variational ODE source term ∂f/∂p ≡ 0 must be
+    // produced analytically by bngsim_dfdp via a sentinel iP that hits
+    // its `default: → zero` arm).
+    if (n_sens_ic > 0 && !user_data.codegen_sens_fn) {
+        throw std::runtime_error("sensitivity_ic requires codegen sensitivity RHS, but no "
+                                 "codegen .so is loaded. Build the model with codegen enabled "
+                                 "(or pass codegen=True / a net_path with mass-action kinetics).");
+    }
+    const auto &species = model.species();
+    for (const auto &sname : opts.sensitivity.ic_species_names) {
+        bool found = false;
+        for (size_t i = 0; i < species.size(); ++i) {
+            if (species[i].name == sname) {
+                sens_ic_species_indices.push_back(static_cast<int>(i));
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            throw std::runtime_error("Sensitivity IC species '" + sname + "' not found in model.");
+        }
+    }
+
+    // Build contiguous parameter array for CVODES. CVODES internal FD
+    // perturbs p[plist[i]]; for codegen sens RHS, this array is just
+    // mirrored into model params at each call so the RHS sees the
+    // current state.
+    sens_p.resize(params.size());
+    for (size_t i = 0; i < params.size(); ++i) {
+        sens_p[i] = params[i].value;
+    }
+
+    // plist[iS] = parameter index for column iS. For IC-sens columns we
+    // use a sentinel ``params.size()`` (one past the end). The codegen
+    // bngsim_dfdp(iP, ...) switch hits its ``default:`` arm and returns
+    // dfdp=0, collapsing the variational ODE to ds/dt = J·s. CVODES does
+    // not deref p[plist[iS]] when a user-supplied sens RHS is set, so
+    // the sentinel is never read out of bounds.
+    sens_plist.resize(n_sens);
+    for (int i = 0; i < n_sens_p; ++i) {
+        sens_plist[i] = sens_param_indices[i];
+    }
+    const int ic_plist_sentinel = static_cast<int>(params.size());
+    for (int i = 0; i < n_sens_ic; ++i) {
+        sens_plist[n_sens_p + i] = ic_plist_sentinel;
+    }
+
+    // pbar: |p| (or 1.0 if zero) for param cols; 1.0 for IC cols.
+    pbar.resize(n_sens);
+    for (int i = 0; i < n_sens_p; ++i) {
+        double val = params[sens_param_indices[i]].value;
+        pbar[i] = (val != 0.0) ? std::abs(val) : 1.0;
+    }
+    for (int i = 0; i < n_sens_ic; ++i) {
+        pbar[n_sens_p + i] = 1.0;
+    }
+
+    // ── Pre-equilibration / carry-over seeding decision (GH #210) ────────
+    // In a two-phase pre-equilibration (ADR-0052) the species state is
+    // carried over from the equilibration phase with no reset, so the
+    // measurement phase's IC is x_ss(θ) and ∂y(0)/∂θ = dx_ss/dθ — NOT the
+    // fresh-start seed. We seed yS(0) from the prior phase's captured
+    // dx/dθ when carry_sensitivities is set, and otherwise refuse loudly
+    // rather than return silently-wrong derivatives on a dirty state.
+    const bool state_dirty = model.ic_state_dirty();
+    bool use_carry_seed = false;
+    if (n_sens_p > 0) {
+        if (opts.carry_sensitivities) {
+            // Opt-in carry-over: require a pending seed whose columns match
+            // the requested parameters (same names, same order).
+            const auto &seed = model.pending_sens_seed();
+            const auto &seed_names = model.pending_sens_seed_param_names();
+            bool names_match = seed_names.size() == opts.sensitivity.param_names.size();
+            for (size_t i = 0; names_match && i < seed_names.size(); ++i) {
+                names_match = (seed_names[i] == opts.sensitivity.param_names[i]);
+            }
+            if (seed.empty() || !names_match || seed.size() != static_cast<size_t>(ns) * n_sens_p) {
+                throw std::runtime_error(
+                    "carry_sensitivities=True, but no matching forward-sensitivity "
+                    "seed from a prior phase is available. Run the equilibration "
+                    "phase on the same Simulator with the same sensitivity_params "
+                    "(and no reset between phases) before the measurement phase. "
+                    "(pre-equilibration output sensitivities, GH #210)");
+            }
+            use_carry_seed = true;
+        } else if (state_dirty) {
+            // Sensitivities on a carried-over / manually-advanced state
+            // without opt-in would seed yS(0) as if starting from the ICs —
+            // silently wrong (∂y(0)/∂θ is dx/dθ of the carried state, not 0).
+            throw std::runtime_error(
+                "Output sensitivities were requested on a carried-over species "
+                "state (the model was advanced by a previous run() or set "
+                "manually, with no reset since). Seeding the measurement phase "
+                "as a fresh start would give silently wrong derivatives across "
+                "the pre-equilibration boundary. Pass carry_sensitivities=True "
+                "to seed from the prior phase's steady-state sensitivity, or "
+                "reset() the model for a fresh start. (GH #210)");
+        }
+    }
+    // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
+    // scope: the carried reference state is no longer the model ICs, so e_k
+    // is not a meaningful seed. Refuse rather than return a wrong matrix.
+    if (n_sens_ic > 0 && state_dirty) {
+        throw std::runtime_error("sensitivity_ic (initial-condition sensitivities) across a "
+                                 "carried-over / pre-equilibration boundary is not supported: the "
+                                 "carried state is no longer the model's initial condition. "
+                                 "reset() for a fresh start. (GH #210)");
+    }
+
+    // Allocate sensitivity vectors and seed s(0) = ∂y(0)/∂θ.
+    //   • Carry-over (use_carry_seed): param cols are seeded from the prior
+    //     phase's dx/dθ; the IC-parameter identity is NOT applied (the
+    //     carried state is not at the ICs, and the seed already integrated
+    //     any IC-parameter dependence through the equilibration phase).
+    //   • Fresh start: for param-sens cols whose param sets a species's IC
+    //     directly (recorded in species_ic_param_refs by the .net loader),
+    //     seed yS[iS][species_idx] = 1. Other param cols seed to zero.
+    //   • For IC-sens cols, seed yS[iS][species_idx] = 1 unconditionally.
+    yS_guard = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
+    if (!yS_guard) {
+        throw std::runtime_error("N_VCloneVectorArray failed for sensitivities");
+    }
+    for (int i = 0; i < n_sens; ++i) {
+        N_VConst(0.0, yS_guard[i]);
+    }
+    if (use_carry_seed) {
+        const auto &seed = model.pending_sens_seed(); // row-major [species*np + param]
+        for (int iS = 0; iS < n_sens_p; ++iS) {
+            double *col = N_VGetArrayPointer(yS_guard[iS]);
+            for (int i = 0; i < ns; ++i) {
+                col[i] = seed[static_cast<size_t>(i) * n_sens_p + iS];
+            }
+        }
+    } else if (n_sens_p > 0) {
+        std::unordered_map<int, int> param_to_sens_idx;
+        param_to_sens_idx.reserve(static_cast<size_t>(n_sens_p));
+        for (int iS = 0; iS < n_sens_p; ++iS) {
+            param_to_sens_idx.emplace(sens_param_indices[iS], iS);
+        }
+        const auto &ic_param_sens = opts.sensitivity.ic_param_sens;
+        if (!ic_param_sens.empty()) {
+            // Issue #43: Python-computed ∂x_i(0)/∂p seeds. These cover BOTH
+            // direct-parameter ICs (coefficient 1) and derived-parameter ICs
+            // (Rtot = R0, Rtot = 2*R0, …) whose chain-rule partial the C++
+            // seeding cannot compute, so when supplied they replace the
+            // legacy identity-only loop entirely. `+=` accumulates in case a
+            // species IC depends on the same requested primary through more
+            // than one path.
+            for (const auto &seed : ic_param_sens) {
+                auto it = param_to_sens_idx.find(seed.primary_param_idx0);
+                if (it == param_to_sens_idx.end()) {
+                    continue; // primary not requested for sensitivity
+                }
+                const int iS = it->second;
+                if (seed.species_idx0 < 0 || seed.species_idx0 >= ns) {
+                    continue;
+                }
+                N_VGetArrayPointer(yS_guard[iS])[seed.species_idx0] += seed.d_ic_d_primary;
+            }
+        } else {
+            // Legacy fallback (no Python injection, e.g. sympy unavailable):
+            // a species IC that names a requested primary directly seeds
+            // yS_species(0) = 1. Derived-parameter ICs stay unseeded here —
+            // the pre-#43 behavior — but direct ICs remain correct.
+            const auto &species_vec = model.species();
+            for (const auto &ref : model.species_ic_param_refs()) {
+                const int species_idx0 = ref.first;
+                const int param_idx0 = ref.second;
+                auto it = param_to_sens_idx.find(param_idx0);
+                if (it == param_to_sens_idx.end()) {
+                    continue; // parameter not requested for sensitivity
+                }
+                const int iS = it->second;
+                if (species_idx0 < 0 || species_idx0 >= ns) {
+                    continue;
+                }
+                // GH #113: the IC expression describes `initial_conc`. Once an
+                // assignment has moved this species off that baseline, the
+                // parameter no longer reaches its initial condition and the
+                // identity seed would report a gradient through an IC the model
+                // no longer has. (The Python injection path above applies the
+                // same rule, plus issue #111's explicit declarations.)
+                const auto &sp = species_vec[static_cast<std::size_t>(species_idx0)];
+                if (sp.concentration != sp.initial_conc) {
+                    continue;
+                }
+                N_VGetArrayPointer(yS_guard[iS])[species_idx0] = 1.0;
+            }
+        }
+    }
+    for (int k = 0; k < n_sens_ic; ++k) {
+        const int species_idx0 = sens_ic_species_indices[k];
+        if (species_idx0 < 0 || species_idx0 >= ns) {
+            continue;
+        }
+        N_VGetArrayPointer(yS_guard[n_sens_p + k])[species_idx0] = 1.0;
+    }
+
+    // Initialize sensitivity analysis.
+    if (opts.sensitivity.method == "simultaneous") {
+        sens_method = CV_SIMULTANEOUS;
+    }
+
+    CVSensRhs1Fn sens_rhs_fn = nullptr;
+    if (user_data.codegen_sens_fn) {
+        user_data.codegen_plist = sens_plist.data();
+        user_data.codegen_n_sens = n_sens;
+        sens_rhs_fn = cvode_codegen_sens_rhs;
+    }
+
+    flag = CVodeSensInit1(cvode_mem, n_sens, sens_method, sens_rhs_fn, yS_guard.arr);
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeSensInit1 failed: " + std::to_string(flag));
+    }
+
+    // ── Scale-aware sensitivity error control (GH #214) ──────────────────
+    // bngsim integrates concentrations (= amount / V_compartment). For the
+    // sub-picoliter compartments of real cell-biology models, 1/V reaches
+    // ~1e11–1e14, inflating both the state and its sensitivities by that
+    // factor (Smith2013: |s|~1e18 vs AMICI's amount-based ~1e10). The default
+    // CVodeSensEEtolerances derives a single scalar absolute floor per column
+    // (atolS[iS] = atol / pbar[iS]); against a 1e18-magnitude sensitivity that
+    // floor is ~30 orders below the variable, so the CVODES error test demands
+    // sub-machine-eps relative accuracy and the step collapses across a large
+    // discontinuity (Smith's t=2880 insulin restimulation → flag -3).
+    //
+    // Instead set a per-(state × parameter) absolute floor proportional to each
+    // sensitivity's own natural magnitude scale[i]/pbar[iS], where scale[i] is a
+    // characteristic size of state i (its initial magnitude, floored at 1). This
+    // is the non-dimensionalizing move: error control becomes relative-per-
+    // component regardless of the unit system. For a well-scaled model (every
+    // state ≤ 1 ⇒ scale[i]=1) it reduces EXACTLY to the EE floor atol/pbar[iS],
+    // so well-scaled models stay byte-identical; only large-magnitude states get
+    // a proportionally relaxed (reachable) floor. rtol still governs the
+    // relative accuracy uniformly. (CVODES clones these vectors internally, so
+    // the guard's lifetime is not load-bearing.)
+    std::vector<double> sens_state_scale(static_cast<size_t>(ns));
+    for (int i = 0; i < ns; ++i) {
+        sens_state_scale[i] = std::max(std::abs(y_data[i]), 1.0);
+    }
+    NVectorArrayGuard abstolS_guard(N_VCloneVectorArray(n_sens, y), n_sens);
+    if (!abstolS_guard) {
+        throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
+    }
+    for (int iS = 0; iS < n_sens; ++iS) {
+        double *atolS_col = N_VGetArrayPointer(abstolS_guard[iS]);
+        const double pb = (pbar[iS] != 0.0) ? pbar[iS] : 1.0;
+        for (int i = 0; i < ns; ++i) {
+            atolS_col[i] = atol * sens_state_scale[i] / pb;
+        }
+    }
+    flag = CVodeSensSVtolerances(cvode_mem, rtol, abstolS_guard.arr);
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeSensSVtolerances failed: " + std::to_string(flag));
+    }
+
+    flag = CVodeSetSensErrCon(cvode_mem, opts.sensitivity.error_control);
+
+    flag = CVodeSetSensParams(cvode_mem, sens_p.data(), pbar.data(), sens_plist.data());
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeSetSensParams failed: " + std::to_string(flag));
+    }
+
+    user_data.sens_p = sens_p.data();
+    user_data.n_params = static_cast<int>(params.size());
+
+    // Pin switch-time parameters against the internal-FD probe (issue #48).
+    // Only populated when a fitted switch time was detected, so every other
+    // model keeps CVODES' probe exactly as it was.
+    if (!opts.sensitivity.switch_pinned_params.empty()) {
+        sens_pin_mask.assign(params.size(), 0);
+        sens_pin_nominal.resize(params.size());
+        for (size_t i = 0; i < params.size(); ++i) {
+            sens_pin_nominal[i] = params[i].value;
+        }
+        for (int pidx : opts.sensitivity.switch_pinned_params) {
+            if (pidx >= 0 && pidx < static_cast<int>(params.size())) {
+                sens_pin_mask[static_cast<size_t>(pidx)] = 1;
+            }
+        }
+        user_data.sens_param_pinned = sens_pin_mask.data();
+        user_data.sens_param_nominal = sens_pin_nominal.data();
+    }
+}
+
+// ─── Event rootfinding registration ──────────────────────────────────────────
+void CvodeSimulator::Impl::register_roots(void *cvode_mem, SUNContext ctx, int n_roots,
+                                          int n_disc) {
+    // Root function callback: see cvode_event_root_fn.
+    int flag = CVodeRootInit(cvode_mem, n_roots, cvode_event_root_fn);
+    if (flag != CV_SUCCESS) {
+        throw std::runtime_error("CVodeRootInit failed: " + std::to_string(flag));
+    }
+
+    if (n_disc > 0) {
+        // A discontinuity root makes CVODE restart at each pulse edge,
+        // where its first post-reinit step can be so small that t+h==t in
+        // floating point — a benign SUNDIALS warning ("solver will continue
+        // anyway") that RoadRunner emits on the same models. Route THIS
+        // context's warning log to the null sink so a dosing-schedule model
+        // doesn't spam stdout. Scoped to n_disc>0: models without time
+        // piecewise keep their exact prior logging. Hard errors still throw
+        // via the flag<0 checks. The context (and this logger) is freed when
+        // the run's SunContextGuard goes out of scope.
+        SUNLogger logger = nullptr;
+        if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
+            SUNLogger_SetWarningFilename(logger, bngsim::null_device);
+        }
+    }
+}
+
+// ─── Allocate result ─────────────────────────────────────────────────────────
+void CvodeSimulator::Impl::allocate_run_result(Result &result, const SolverOptions &opts, int n_out,
+                                               int n_sens_p, int n_sens_ic) {
+    const int ns = model.n_species();
+    const int n_obs = model.n_observables();
+    const int n_func = model.n_functions();
+
+    result.allocate(n_out, ns, n_obs);
+    result.set_species_names(model.species_names());
+    // GH #71: project trajectory columns to reported species only when the
+    // model has unreported state (an event-mutated parameter/compartment
+    // promoted to a species). All-reported models leave the projection empty,
+    // so the output column set stays byte-identical.
+    {
+        auto reported = model.reported_species_indices();
+        if (reported.size() != static_cast<std::size_t>(model.n_species())) {
+            result.set_reported_species_indices(std::move(reported));
+        }
+    }
+    result.set_observable_names(model.observable_names());
+    if (n_func > 0) {
+        result.set_expression_names(model.function_names());
+    }
+
+    // Allocate sensitivity storage in the result. Param sens and IC sens
+    // are stored on separate axes (Result.sensitivity_data vs
+    // Result.sensitivity_ic_data) so callers can address each
+    // independently without slot-collision risk.
+    if (n_sens_p > 0) {
+        result.allocate_sensitivities(n_out, ns, n_sens_p);
+        result.set_sens_param_names(opts.sensitivity.param_names);
+    }
+    if (n_sens_ic > 0) {
+        result.allocate_sensitivities_ic(n_out, ns, n_sens_ic);
+        result.set_sens_ic_species_names(opts.sensitivity.ic_species_names);
+    }
+}
+
+// ─── Solver statistics ───────────────────────────────────────────────────────
+void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver ls,
+                                               Result &result) {
+    long int nst, nfe, nsetups, nni, ncfn, netf;
+    CVodeGetNumSteps(cvode_mem, &nst);
+    CVodeGetNumRhsEvals(cvode_mem, &nfe);
+    CVodeGetNumLinSolvSetups(cvode_mem, &nsetups);
+    CVodeGetNumNonlinSolvIters(cvode_mem, &nni);
+    CVodeGetNumNonlinSolvConvFails(cvode_mem, &ncfn);
+    CVodeGetNumErrTestFails(cvode_mem, &netf);
+
+    result.solver_stats().n_steps = static_cast<int>(nst);
+    result.solver_stats().n_rhs_evals = static_cast<int>(nfe);
+    result.solver_stats().n_jac_evals = static_cast<int>(nsetups);
+    result.solver_stats().n_nonlin_iters = static_cast<int>(nni);
+    result.solver_stats().n_nonlin_conv_fails = static_cast<int>(ncfn);
+    result.solver_stats().n_err_test_fails = static_cast<int>(netf);
+    result.solver_stats().linear_solver = linear_solver_used;
+    // GH #132: BLAS dgetrf factorization count for this run (0 unless LAPACK-dense
+    // and the adaptive K gate was crossed). `ls` is the caller's linear solver —
+    // run()'s LS_guard, or the warm cache's persistent w.LS.
+    {
+        const long bc = lapack_dense_blas_factor_count(ls);
+        result.solver_stats().n_dense_blas_factorizations = bc > 0 ? static_cast<int>(bc) : 0;
+    }
+}
+
+// ─── Write final state back to model ─────────────────────────────────────────
+// After simulation, update the model's species concentrations to the
+// final state. This is essential for multi-action sequences where
+// saveConcentrations() or subsequent simulate() actions depend on
+// the post-simulation state (matching BNG's propagate_cvode_network
+// behavior which writes back to the global species array). When the
+// steady-state early-stop fired, the "final time" the caller passes is the
+// last sample we actually integrated to, not the originally requested
+// ``t_end``.
+void CvodeSimulator::Impl::write_final_state_back(const SolverOptions &opts, int ns,
+                                                  const double *y_data, double final_t,
+                                                  const SensitivityState &sens) {
+    auto &species = const_cast<std::vector<Species> &>(model.species());
+    for (int i = 0; i < ns; ++i) {
+        species[i].concentration = y_data[i];
+    }
+    model.set_current_time(final_t);
+
+    // GH #210 — the state is now advanced past the ICs (carry-over). Thread
+    // the forward-sensitivity matrix dx/dθ at this point into the model so a
+    // subsequent carry_sensitivities=True run (the measurement phase of a
+    // pre-equilibration) can seed yS(0) from it. sens.yS holds the final
+    // integrated point (the loop's last CVodeGetSens). Capture the
+    // parameter columns only, row-major [species*np + param]. A
+    // non-sensitivity run still marks the state dirty but drops any stale
+    // seed (it advanced the state without tracking dx/dθ).
+    model.set_ic_state_dirty(true);
+    if (sens.n_p > 0) {
+        std::vector<double> seed(static_cast<size_t>(ns) * sens.n_p);
+        for (int iS = 0; iS < sens.n_p; ++iS) {
+            const double *col = N_VGetArrayPointer(sens.yS[iS]);
+            for (int i = 0; i < ns; ++i) {
+                seed[static_cast<size_t>(i) * sens.n_p + iS] = col[i];
+            }
+        }
+        model.set_pending_sens_seed(std::move(seed), opts.sensitivity.param_names);
+    } else {
+        model.clear_pending_sens_seed();
+    }
 }
 
 // ─── Public interface ────────────────────────────────────────────────────────
@@ -1536,56 +2351,10 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             "auto-selection.");
     }
 
+    // Algebraic-only model (GH #229): with no ODE state there is no CVODE setup
+    // at all, so the whole path lives in its own helper.
     if (ns == 0) {
-        // Algebraic-only model (GH #229): no ODE state, but assignment rules and
-        // functions of the SBML `time` csymbol — plus any constant outputs —
-        // still define a trajectory over the requested grid. RoadRunner
-        // integrates these; with no state to integrate, bngsim evaluates the
-        // observables + functions once per output row (no CVODE needed). The
-        // SBML semantic suite exercises this with pure parameter+assignmentRule
-        // models such as `p2 := 1 + time`.
-        //
-        // Events mutate state discretely at their trigger time; reproducing them
-        // needs the cold path's rootfinding + reinit machinery, which assumes ≥1
-        // integrator state to anchor the crossing — refuse those loud rather than
-        // silently dropping the assignment. Discontinuity triggers (piecewise /
-        // comparison expressions, GH #72) need NO special handling here: with no
-        // ODE to integrate, crossing-step accuracy is moot — evaluating the rule
-        // fresh at each output grid point already yields the correct piecewise
-        // value (exactly what RoadRunner reports).
-        if (model.n_events() > 0) {
-            throw std::runtime_error("Cannot simulate: model has no species but defines events "
-                                     "(no integrator state to anchor the trigger crossing).");
-        }
-        const int n_func = model.n_functions();
-        std::vector<double> t_out = times.output_times();
-        const int n_out = static_cast<int>(t_out.size());
-
-        Result result;
-        result.allocate(n_out, /*n_species=*/0, n_obs);
-        result.set_species_names(model.species_names());
-        result.set_observable_names(model.observable_names());
-        if (n_func > 0) {
-            result.set_expression_names(model.function_names());
-        }
-
-        std::vector<double> obs_buf(n_obs);
-        for (int i = 0; i < n_out; ++i) {
-            const double t_row = t_out[i];
-            // No species ⇒ update_observables never dereferences the conc pointer
-            // (every observable entry's species index is out of range and is
-            // skipped). evaluate_functions binds time() and the constant params.
-            model.update_observables(nullptr);
-            model.evaluate_functions(t_row);
-            for (int j = 0; j < n_obs; ++j) {
-                obs_buf[j] = model.observables()[j].total;
-            }
-            result.record(i, t_row, /*species_conc=*/nullptr, obs_buf.data());
-            if (n_func > 0) {
-                result.record_expressions(i, model.function_value_cache().data());
-            }
-        }
-        return result;
+        return impl_->run_algebraic_only(times);
     }
 
     // Wall-clock budget. Checked at each outer integration step and at each
@@ -1596,29 +2365,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     double atol = (opts.atol > 0) ? opts.atol : impl_->atol;
     int max_steps = (opts.max_steps > 0) ? opts.max_steps : impl_->max_steps;
 
-    // Decide dense vs sparse.
-    // Use sparse KLU when: (1) KLU is available, (2) model is large enough,
-    // (3) sparsity pattern exists, and (4) density is low enough to benefit.
-    // If density > 50%, the Jacobian is effectively dense and KLU's overhead
-    // makes it slower than optimized LAPACK dense LU.
-    // Also guards against models where Functional rate laws make the sparsity
-    // pattern nearly dense.
-    // JAX Jacobians always produce dense matrices, so force dense mode there.
-    //
-    // The two force flags (GH #102, GH #29) straddle the size/density test but
-    // not the hard requirements below it: KLU needs a real sparsity pattern to
-    // build its CSC matrix, and a JAX Jacobian only ever fills a dense one, so
-    // sparse_ok gates both overrides. force_dense wins the (rejected upstream)
-    // both-set case only as a belt-and-braces default.
-#ifdef BNGSIM_HAS_KLU
-    const auto &sp = model.jacobian_sparsity();
-    const bool sparse_ok = (opts.jacobian != "jax") && !sp.empty();
-    const bool use_sparse = sparse_ok && !opts.force_dense_linear_solver &&
-                            (opts.force_sparse_linear_solver ||
-                             ((ns >= SPARSE_THRESHOLD) && (sp.density < SPARSE_DENSITY_MAX)));
-#else
-    const bool use_sparse = false;
-#endif
+    // Dense vs sparse (KLU) matrix, including the two force flags (GH #102,
+    // GH #29) — see Impl::choose_use_sparse.
+    const bool use_sparse = impl_->choose_use_sparse(opts, ns);
 
     // ─── Warm fast path dispatch (GH #102 reaction kernel) ───────────────────
     // The simple case — no events, no forward sensitivities, no JAX Jacobian —
@@ -1645,93 +2394,27 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     const int n_out = static_cast<int>(t_out.size());
 
     // ─── SUNDIALS v7 setup ───────────────────────────────────────────────────
-
-    // RAII guards handle all SUNDIALS cleanup automatically.
+    //
+    // RAII guards handle all SUNDIALS cleanup automatically. They are declared
+    // here — the declaration order IS the teardown order, reversed — and filled
+    // in place by Impl::create_cvode_core, which also seeds y from the model,
+    // wires the (cached) codegen RHS into user_data, and applies the tolerances
+    // and step limits. codegen_param_buf must outlive the integration loop
+    // below: the user_data points into it.
     SunContextGuard ctx;
-    if (!ctx) {
-        throw std::runtime_error("SUNContext_Create failed");
-    }
-
-    NVectorGuard y(N_VNew_Serial(ns, ctx));
-    if (!y) {
-        throw std::runtime_error("N_VNew_Serial failed");
-    }
-
-    double *y_data = y.data();
-    for (int i = 0; i < ns; ++i) {
-        y_data[i] = model.species()[i].concentration;
-    }
-
-    CvodeMemGuard cvode_mem(CVodeCreate(CV_BDF, ctx));
-    if (!cvode_mem) {
-        throw std::runtime_error("CVodeCreate failed");
-    }
-
-    // User data for RHS callback
-    CvodeUserData user_data{&model};
-
-    // GH #106: size the rateOf probe scratch the event root function writes into
-    // (only models that reference rateOf run that probe). Sized here, on the
-    // cold/events path that owns the root function; the warm path has no roots.
-    if (model.uses_rateof()) {
-        user_data.rateof_root_scratch.assign(model.n_species(), 0.0);
-    }
-
-    // ─── Codegen RHS loading ────────────────────────────────────────────────
-    // Resolve the (cached) codegen .so RHS / sens / Jacobian symbols and build
-    // the per-run parameter mirror the codegen function reads from. Shared with
-    // the warm path so the codegen ABI lives in one place (Impl::setup_codegen_
-    // rhs). codegen_param_buf must outlive the integration loop below — the
-    // user_data points into it.
+    NVectorGuard y;
+    CvodeMemGuard cvode_mem;
+    CvodeUserData user_data{&model};       // user data for RHS callback
     std::vector<double> codegen_param_buf; // RAII: replaces new[]/delete[]
-    CVRhsFn rhs_fn = impl_->setup_codegen_rhs(opts, user_data, codegen_param_buf);
+    impl_->create_cvode_core(times, opts, ns, rtol, atol, max_steps, ctx, y, cvode_mem, user_data,
+                             codegen_param_buf);
+    double *y_data = y.data();
 
-    int flag = CVodeInit(cvode_mem, rhs_fn, times.t_start, y);
-    if (flag != CV_SUCCESS) {
-        throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
-    }
-
-    flag = CVodeSStolerances(cvode_mem, rtol, atol);
-    if (flag != CV_SUCCESS) {
-        throw std::runtime_error("CVodeSStolerances failed");
-    }
-
-    flag = CVodeSetUserData(cvode_mem, &user_data);
-    flag = CVodeSetMaxNumSteps(cvode_mem, max_steps);
-
-    if (opts.max_step_size > 0) {
-        CVodeSetMaxStep(cvode_mem, opts.max_step_size);
-    }
+    // CVODE status flag, shared by the setup calls below and the stepping loop.
+    int flag = CV_SUCCESS;
 
     // ─── Validate Jacobian strategy ──────────────────────────────────────────
-    const std::string &jac_strategy = opts.jacobian;
-    if (jac_strategy != "auto" && jac_strategy != "analytical" && jac_strategy != "fd" &&
-        jac_strategy != "jax") {
-        throw std::runtime_error("Invalid jacobian option '" + jac_strategy +
-                                 "'. "
-                                 "Must be \"auto\", \"analytical\", \"fd\", or \"jax\".");
-    }
-
-    // Copy the JAX callback from opts into user_data.
-    if (jac_strategy == "jax") {
-        if (!opts.jax_jac_fn) {
-            throw std::runtime_error("jacobian=\"jax\" requested but no JAX callback was provided. "
-                                     "Set opts.jax_jac_fn before calling run().");
-        }
-        user_data.jax_jac_fn = opts.jax_jac_fn;
-    }
-
-    // If user explicitly requests analytical but it's not available, fail fast.
-    if (jac_strategy == "analytical") {
-        if (!model.analytical_jacobian_complete()) {
-            throw std::runtime_error(
-                "jacobian=\"analytical\" requested but the analytical Jacobian is not "
-                "available for this model. It covers Elementary mass-action rate laws and "
-                "Functional rate laws whose derivatives could be symbolically derived; "
-                "Michaelis-Menten and rate laws that fail symbolic differentiation fall "
-                "back to finite differences.");
-        }
-    }
+    impl_->validate_jacobian_option(opts, user_data);
 
     // ─── Linear solver + Jacobian setup ──────────────────────────────────────
     // Build the dense/sparse linear solver, attach it to cvode_mem, and select
@@ -1745,401 +2428,46 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                 ns, desired_linear_solver);
 
     // ─── CVODES forward sensitivity setup ────────────────────────────────────
-    //
-    // When opts.sensitivity.param_names is non-empty, initialize CVODES
-    // sensitivity analysis. CVODES computes dY/dp alongside the ODE integration
-    // using its internal finite-difference approximation of the sensitivity RHS.
-    // This works for ALL rate law types (Elementary, Functional, MichaelisMenten).
+    // Resolve the requested parameter / initial-condition columns, seed
+    // s(0) = ∂y(0)/∂θ, and hand CVODES the sensitivity problem — see
+    // Impl::setup_forward_sensitivities. `sens` owns every array CVODES and the
+    // codegen sensitivity RHS hold raw pointers into, so it is declared here,
+    // alongside the other guards, and lives for the whole integration.
+    SensitivityState sens;
+    impl_->setup_forward_sensitivities(opts, ns, rtol, atol, y, cvode_mem, user_data, sens);
 
-    const int n_sens_p = static_cast<int>(opts.sensitivity.param_names.size());
-    const int n_sens_ic = static_cast<int>(opts.sensitivity.ic_species_names.size());
-    const int n_sens = n_sens_p + n_sens_ic;
-    NVectorArrayGuard yS_guard;               // RAII: frees sensitivity vectors
-    std::vector<int> sens_param_indices;      // 0-based parameter indices
-    std::vector<int> sens_ic_species_indices; // 0-based species indices for IC sens
-    std::vector<double> pbar;                 // parameter scaling factors for CVODES
-    std::vector<double> sens_p;               // contiguous parameter values (CVODES reads this)
-    std::vector<int> sens_plist;              // which indices in sens_p to perturb
-    std::vector<char> sens_pin_mask;          // switch-time params held nominal (issue #48)
-    std::vector<double> sens_pin_nominal;     // their nominal values
-    // Hoisted so the event-fire sensitivity jump (GH #212) can re-init the
-    // sensitivity vectors with the same method CVodeSensInit1 was given.
-    int sens_method = CV_STAGGERED;
-
-    if (n_sens > 0) {
-        const auto &params = model.parameters();
-
-        // Resolve param sens names → indices.
-        for (const auto &pname : opts.sensitivity.param_names) {
-            bool found = false;
-            for (size_t i = 0; i < params.size(); ++i) {
-                if (params[i].name == pname) {
-                    sens_param_indices.push_back(static_cast<int>(i));
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                throw std::runtime_error("Sensitivity parameter '" + pname +
-                                         "' not found in model. "
-                                         "Available: " +
-                                         [&]() {
-                                             std::string s;
-                                             for (const auto &p : params) {
-                                                 if (!s.empty())
-                                                     s += ", ";
-                                                 s += p.name;
-                                             }
-                                             return s;
-                                         }());
-            }
-        }
-
-        // Resolve IC species names → indices. IC sens uses the codegen sens
-        // RHS path exclusively (CVODES internal FD has no parameter to
-        // perturb, so the variational ODE source term ∂f/∂p ≡ 0 must be
-        // produced analytically by bngsim_dfdp via a sentinel iP that hits
-        // its `default: → zero` arm).
-        if (n_sens_ic > 0 && !user_data.codegen_sens_fn) {
-            throw std::runtime_error(
-                "sensitivity_ic requires codegen sensitivity RHS, but no "
-                "codegen .so is loaded. Build the model with codegen enabled "
-                "(or pass codegen=True / a net_path with mass-action kinetics).");
-        }
-        const auto &species = model.species();
-        for (const auto &sname : opts.sensitivity.ic_species_names) {
-            bool found = false;
-            for (size_t i = 0; i < species.size(); ++i) {
-                if (species[i].name == sname) {
-                    sens_ic_species_indices.push_back(static_cast<int>(i));
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                throw std::runtime_error("Sensitivity IC species '" + sname +
-                                         "' not found in model.");
-            }
-        }
-
-        // Build contiguous parameter array for CVODES. CVODES internal FD
-        // perturbs p[plist[i]]; for codegen sens RHS, this array is just
-        // mirrored into model params at each call so the RHS sees the
-        // current state.
-        sens_p.resize(params.size());
-        for (size_t i = 0; i < params.size(); ++i) {
-            sens_p[i] = params[i].value;
-        }
-
-        // plist[iS] = parameter index for column iS. For IC-sens columns we
-        // use a sentinel ``params.size()`` (one past the end). The codegen
-        // bngsim_dfdp(iP, ...) switch hits its ``default:`` arm and returns
-        // dfdp=0, collapsing the variational ODE to ds/dt = J·s. CVODES does
-        // not deref p[plist[iS]] when a user-supplied sens RHS is set, so
-        // the sentinel is never read out of bounds.
-        sens_plist.resize(n_sens);
-        for (int i = 0; i < n_sens_p; ++i) {
-            sens_plist[i] = sens_param_indices[i];
-        }
-        const int ic_plist_sentinel = static_cast<int>(params.size());
-        for (int i = 0; i < n_sens_ic; ++i) {
-            sens_plist[n_sens_p + i] = ic_plist_sentinel;
-        }
-
-        // pbar: |p| (or 1.0 if zero) for param cols; 1.0 for IC cols.
-        pbar.resize(n_sens);
-        for (int i = 0; i < n_sens_p; ++i) {
-            double val = params[sens_param_indices[i]].value;
-            pbar[i] = (val != 0.0) ? std::abs(val) : 1.0;
-        }
-        for (int i = 0; i < n_sens_ic; ++i) {
-            pbar[n_sens_p + i] = 1.0;
-        }
-
-        // ── Pre-equilibration / carry-over seeding decision (GH #210) ────────
-        // In a two-phase pre-equilibration (ADR-0052) the species state is
-        // carried over from the equilibration phase with no reset, so the
-        // measurement phase's IC is x_ss(θ) and ∂y(0)/∂θ = dx_ss/dθ — NOT the
-        // fresh-start seed. We seed yS(0) from the prior phase's captured
-        // dx/dθ when carry_sensitivities is set, and otherwise refuse loudly
-        // rather than return silently-wrong derivatives on a dirty state.
-        const bool state_dirty = model.ic_state_dirty();
-        bool use_carry_seed = false;
-        if (n_sens_p > 0) {
-            if (opts.carry_sensitivities) {
-                // Opt-in carry-over: require a pending seed whose columns match
-                // the requested parameters (same names, same order).
-                const auto &seed = model.pending_sens_seed();
-                const auto &seed_names = model.pending_sens_seed_param_names();
-                bool names_match = seed_names.size() == opts.sensitivity.param_names.size();
-                for (size_t i = 0; names_match && i < seed_names.size(); ++i) {
-                    names_match = (seed_names[i] == opts.sensitivity.param_names[i]);
-                }
-                if (seed.empty() || !names_match ||
-                    seed.size() != static_cast<size_t>(ns) * n_sens_p) {
-                    throw std::runtime_error(
-                        "carry_sensitivities=True, but no matching forward-sensitivity "
-                        "seed from a prior phase is available. Run the equilibration "
-                        "phase on the same Simulator with the same sensitivity_params "
-                        "(and no reset between phases) before the measurement phase. "
-                        "(pre-equilibration output sensitivities, GH #210)");
-                }
-                use_carry_seed = true;
-            } else if (state_dirty) {
-                // Sensitivities on a carried-over / manually-advanced state
-                // without opt-in would seed yS(0) as if starting from the ICs —
-                // silently wrong (∂y(0)/∂θ is dx/dθ of the carried state, not 0).
-                throw std::runtime_error(
-                    "Output sensitivities were requested on a carried-over species "
-                    "state (the model was advanced by a previous run() or set "
-                    "manually, with no reset since). Seeding the measurement phase "
-                    "as a fresh start would give silently wrong derivatives across "
-                    "the pre-equilibration boundary. Pass carry_sensitivities=True "
-                    "to seed from the prior phase's steady-state sensitivity, or "
-                    "reset() the model for a fresh start. (GH #210)");
-            }
-        }
-        // IC (∂y/∂y_k(0)) sensitivities across a carry-over boundary are out of
-        // scope: the carried reference state is no longer the model ICs, so e_k
-        // is not a meaningful seed. Refuse rather than return a wrong matrix.
-        if (n_sens_ic > 0 && state_dirty) {
-            throw std::runtime_error(
-                "sensitivity_ic (initial-condition sensitivities) across a "
-                "carried-over / pre-equilibration boundary is not supported: the "
-                "carried state is no longer the model's initial condition. "
-                "reset() for a fresh start. (GH #210)");
-        }
-
-        // Allocate sensitivity vectors and seed s(0) = ∂y(0)/∂θ.
-        //   • Carry-over (use_carry_seed): param cols are seeded from the prior
-        //     phase's dx/dθ; the IC-parameter identity is NOT applied (the
-        //     carried state is not at the ICs, and the seed already integrated
-        //     any IC-parameter dependence through the equilibration phase).
-        //   • Fresh start: for param-sens cols whose param sets a species's IC
-        //     directly (recorded in species_ic_param_refs by the .net loader),
-        //     seed yS[iS][species_idx] = 1. Other param cols seed to zero.
-        //   • For IC-sens cols, seed yS[iS][species_idx] = 1 unconditionally.
-        yS_guard = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
-        if (!yS_guard) {
-            throw std::runtime_error("N_VCloneVectorArray failed for sensitivities");
-        }
-        for (int i = 0; i < n_sens; ++i) {
-            N_VConst(0.0, yS_guard[i]);
-        }
-        if (use_carry_seed) {
-            const auto &seed = model.pending_sens_seed(); // row-major [species*np + param]
-            for (int iS = 0; iS < n_sens_p; ++iS) {
-                double *col = N_VGetArrayPointer(yS_guard[iS]);
-                for (int i = 0; i < ns; ++i) {
-                    col[i] = seed[static_cast<size_t>(i) * n_sens_p + iS];
-                }
-            }
-        } else if (n_sens_p > 0) {
-            std::unordered_map<int, int> param_to_sens_idx;
-            param_to_sens_idx.reserve(static_cast<size_t>(n_sens_p));
-            for (int iS = 0; iS < n_sens_p; ++iS) {
-                param_to_sens_idx.emplace(sens_param_indices[iS], iS);
-            }
-            const auto &ic_param_sens = opts.sensitivity.ic_param_sens;
-            if (!ic_param_sens.empty()) {
-                // Issue #43: Python-computed ∂x_i(0)/∂p seeds. These cover BOTH
-                // direct-parameter ICs (coefficient 1) and derived-parameter ICs
-                // (Rtot = R0, Rtot = 2*R0, …) whose chain-rule partial the C++
-                // seeding cannot compute, so when supplied they replace the
-                // legacy identity-only loop entirely. `+=` accumulates in case a
-                // species IC depends on the same requested primary through more
-                // than one path.
-                for (const auto &seed : ic_param_sens) {
-                    auto it = param_to_sens_idx.find(seed.primary_param_idx0);
-                    if (it == param_to_sens_idx.end()) {
-                        continue; // primary not requested for sensitivity
-                    }
-                    const int iS = it->second;
-                    if (seed.species_idx0 < 0 || seed.species_idx0 >= ns) {
-                        continue;
-                    }
-                    N_VGetArrayPointer(yS_guard[iS])[seed.species_idx0] += seed.d_ic_d_primary;
-                }
-            } else {
-                // Legacy fallback (no Python injection, e.g. sympy unavailable):
-                // a species IC that names a requested primary directly seeds
-                // yS_species(0) = 1. Derived-parameter ICs stay unseeded here —
-                // the pre-#43 behavior — but direct ICs remain correct.
-                const auto &species_vec = model.species();
-                for (const auto &ref : model.species_ic_param_refs()) {
-                    const int species_idx0 = ref.first;
-                    const int param_idx0 = ref.second;
-                    auto it = param_to_sens_idx.find(param_idx0);
-                    if (it == param_to_sens_idx.end()) {
-                        continue; // parameter not requested for sensitivity
-                    }
-                    const int iS = it->second;
-                    if (species_idx0 < 0 || species_idx0 >= ns) {
-                        continue;
-                    }
-                    // GH #113: the IC expression describes `initial_conc`. Once an
-                    // assignment has moved this species off that baseline, the
-                    // parameter no longer reaches its initial condition and the
-                    // identity seed would report a gradient through an IC the model
-                    // no longer has. (The Python injection path above applies the
-                    // same rule, plus issue #111's explicit declarations.)
-                    const auto &sp = species_vec[static_cast<std::size_t>(species_idx0)];
-                    if (sp.concentration != sp.initial_conc) {
-                        continue;
-                    }
-                    N_VGetArrayPointer(yS_guard[iS])[species_idx0] = 1.0;
-                }
-            }
-        }
-        for (int k = 0; k < n_sens_ic; ++k) {
-            const int species_idx0 = sens_ic_species_indices[k];
-            if (species_idx0 < 0 || species_idx0 >= ns) {
-                continue;
-            }
-            N_VGetArrayPointer(yS_guard[n_sens_p + k])[species_idx0] = 1.0;
-        }
-
-        // Initialize sensitivity analysis.
-        if (opts.sensitivity.method == "simultaneous") {
-            sens_method = CV_SIMULTANEOUS;
-        }
-
-        CVSensRhs1Fn sens_rhs_fn = nullptr;
-        if (user_data.codegen_sens_fn) {
-            user_data.codegen_plist = sens_plist.data();
-            user_data.codegen_n_sens = n_sens;
-            sens_rhs_fn = cvode_codegen_sens_rhs;
-        }
-
-        flag = CVodeSensInit1(cvode_mem, n_sens, sens_method, sens_rhs_fn, yS_guard.arr);
-        if (flag != CV_SUCCESS) {
-            throw std::runtime_error("CVodeSensInit1 failed: " + std::to_string(flag));
-        }
-
-        // ── Scale-aware sensitivity error control (GH #214) ──────────────────
-        // bngsim integrates concentrations (= amount / V_compartment). For the
-        // sub-picoliter compartments of real cell-biology models, 1/V reaches
-        // ~1e11–1e14, inflating both the state and its sensitivities by that
-        // factor (Smith2013: |s|~1e18 vs AMICI's amount-based ~1e10). The default
-        // CVodeSensEEtolerances derives a single scalar absolute floor per column
-        // (atolS[iS] = atol / pbar[iS]); against a 1e18-magnitude sensitivity that
-        // floor is ~30 orders below the variable, so the CVODES error test demands
-        // sub-machine-eps relative accuracy and the step collapses across a large
-        // discontinuity (Smith's t=2880 insulin restimulation → flag -3).
-        //
-        // Instead set a per-(state × parameter) absolute floor proportional to each
-        // sensitivity's own natural magnitude scale[i]/pbar[iS], where scale[i] is a
-        // characteristic size of state i (its initial magnitude, floored at 1). This
-        // is the non-dimensionalizing move: error control becomes relative-per-
-        // component regardless of the unit system. For a well-scaled model (every
-        // state ≤ 1 ⇒ scale[i]=1) it reduces EXACTLY to the EE floor atol/pbar[iS],
-        // so well-scaled models stay byte-identical; only large-magnitude states get
-        // a proportionally relaxed (reachable) floor. rtol still governs the
-        // relative accuracy uniformly. (CVODES clones these vectors internally, so
-        // the guard's lifetime is not load-bearing.)
-        std::vector<double> sens_state_scale(static_cast<size_t>(ns));
-        for (int i = 0; i < ns; ++i) {
-            sens_state_scale[i] = std::max(std::abs(y_data[i]), 1.0);
-        }
-        NVectorArrayGuard abstolS_guard(N_VCloneVectorArray(n_sens, y), n_sens);
-        if (!abstolS_guard) {
-            throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
-        }
-        for (int iS = 0; iS < n_sens; ++iS) {
-            double *atolS_col = N_VGetArrayPointer(abstolS_guard[iS]);
-            const double pb = (pbar[iS] != 0.0) ? pbar[iS] : 1.0;
-            for (int i = 0; i < ns; ++i) {
-                atolS_col[i] = atol * sens_state_scale[i] / pb;
-            }
-        }
-        flag = CVodeSensSVtolerances(cvode_mem, rtol, abstolS_guard.arr);
-        if (flag != CV_SUCCESS) {
-            throw std::runtime_error("CVodeSensSVtolerances failed: " + std::to_string(flag));
-        }
-
-        flag = CVodeSetSensErrCon(cvode_mem, opts.sensitivity.error_control);
-
-        flag = CVodeSetSensParams(cvode_mem, sens_p.data(), pbar.data(), sens_plist.data());
-        if (flag != CV_SUCCESS) {
-            throw std::runtime_error("CVodeSetSensParams failed: " + std::to_string(flag));
-        }
-
-        user_data.sens_p = sens_p.data();
-        user_data.n_params = static_cast<int>(params.size());
-
-        // Pin switch-time parameters against the internal-FD probe (issue #48).
-        // Only populated when a fitted switch time was detected, so every other
-        // model keeps CVODES' probe exactly as it was.
-        if (!opts.sensitivity.switch_pinned_params.empty()) {
-            sens_pin_mask.assign(params.size(), 0);
-            sens_pin_nominal.resize(params.size());
-            for (size_t i = 0; i < params.size(); ++i) {
-                sens_pin_nominal[i] = params[i].value;
-            }
-            for (int pidx : opts.sensitivity.switch_pinned_params) {
-                if (pidx >= 0 && pidx < static_cast<int>(params.size())) {
-                    sens_pin_mask[static_cast<size_t>(pidx)] = 1;
-                }
-            }
-            user_data.sens_param_pinned = sens_pin_mask.data();
-            user_data.sens_param_nominal = sens_pin_nominal.data();
-        }
-    }
+    // Aliases for the names the recording blocks, the event / switch-crossing
+    // sensitivity jumps and the integration loop below already use.
+    const int n_sens_p = sens.n_p;
+    const int n_sens_ic = sens.n_ic;
+    const int n_sens = sens.n_total;
+    const int sens_method = sens.method;
+    NVectorArrayGuard &yS_guard = sens.yS;
+    const std::vector<int> &sens_param_indices = sens.param_indices;
+    const std::vector<double> &sens_p = sens.p;
+    const std::vector<int> &sens_plist = sens.plist;
 
     // ─── Allocate result ─────────────────────────────────────────────────────
+    // Sizes the trajectory + (optional) sensitivity blocks and names every
+    // axis — see Impl::allocate_run_result.
 
     const int n_func = model.n_functions();
 
     Result result;
-    result.allocate(n_out, ns, n_obs);
-    result.set_species_names(model.species_names());
-    // GH #71: project trajectory columns to reported species only when the
-    // model has unreported state (an event-mutated parameter/compartment
-    // promoted to a species). All-reported models leave the projection empty,
-    // so the output column set stays byte-identical.
-    {
-        auto reported = model.reported_species_indices();
-        if (reported.size() != static_cast<std::size_t>(model.n_species())) {
-            result.set_reported_species_indices(std::move(reported));
-        }
-    }
-    result.set_observable_names(model.observable_names());
-    if (n_func > 0) {
-        result.set_expression_names(model.function_names());
-    }
+    impl_->allocate_run_result(result, opts, n_out, n_sens_p, n_sens_ic);
 
     // Temporary observable buffer
     std::vector<double> obs_buf(n_obs);
     const auto ar_copyback = build_assignment_rule_copyback(model);
 
-    // Allocate sensitivity storage in the result. Param sens and IC sens
-    // are stored on separate axes (Result.sensitivity_data vs
-    // Result.sensitivity_ic_data) so callers can address each
-    // independently without slot-collision risk.
-    if (n_sens_p > 0) {
-        result.allocate_sensitivities(n_out, ns, n_sens_p);
-        result.set_sens_param_names(opts.sensitivity.param_names);
-    }
-    if (n_sens_ic > 0) {
-        result.allocate_sensitivities_ic(n_out, ns, n_sens_ic);
-        result.set_sens_ic_species_names(opts.sensitivity.ic_species_names);
-    }
-
     // ─── Observable output sensitivities (GH #197) ───────────────────────────
-    // BNGL observables are linear in species: obs_j = Σ_i c_ji·x_i, where c_ji
-    // folds the GroupEntry factor and — for an amount-valued species — the
-    // volume scaling that update_observables() applies (model.cpp:1142). So
     // d obs_j/dθ = Σ_i c_ji·dx_i/dθ: a runtime chain rule over the CVODES
-    // species sensitivities extracted below, no codegen required. The same
-    // coefficients drive both the parameter axis and the IC axis; only the
-    // source dx/dθ vector differs (yS parameter cols vs IC cols). Expression
+    // species sensitivities extracted below, no codegen required. The c_ji
+    // coefficient table is built once by build_observable_sens_terms (which
+    // carries the derivation); the same table drives both the parameter axis
+    // and the IC axis, only the source dx/dθ vector differs. Expression
     // (global-function) sensitivities are nonlinear and are left to the codegen
     // stage (#198) — those blocks stay empty here.
-    struct ObsSensTerm {
-        int obs;       // observable row (0-based, recording order)
-        int species0;  // 0-based species index it reads
-        double weight; // c_ji = factor · (amount_valued ? volume_factor : 1)
-    };
     std::vector<ObsSensTerm> obs_sens_terms;
     const bool compute_obs_sens_p = (n_sens_p > 0 && n_obs > 0);
     const bool compute_obs_sens_ic = (n_sens_ic > 0 && n_obs > 0);
@@ -2148,22 +2476,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     std::vector<double> obs_sens_p_buf, obs_sens_ic_buf;
     std::vector<const double *> obs_sens_p_ptrs, obs_sens_ic_ptrs;
     if (compute_obs_sens_p || compute_obs_sens_ic) {
-        const auto &obs_list = model.observables();
-        const auto &spec_list = model.species();
-        for (int j = 0; j < n_obs; ++j) {
-            for (const auto &e : obs_list[j].entries) {
-                const int idx0 = e.species_index - 1; // entries are 1-based
-                if (idx0 < 0 || idx0 >= ns) {
-                    continue;
-                }
-                double weight = e.factor;
-                const auto &sp = spec_list[idx0];
-                if (sp.amount_valued) {
-                    weight *= sp.volume_factor;
-                }
-                obs_sens_terms.push_back({j, idx0, weight});
-            }
-        }
+        obs_sens_terms = build_observable_sens_terms(model);
     }
     if (compute_obs_sens_p) {
         result.allocate_observable_sensitivities(n_out, n_obs, n_sens_p);
@@ -3078,76 +3391,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     };
 
     if (n_roots > 0) {
-        // Root function callback: evaluate each event trigger then each
-        // discontinuity-trigger condition, subtracting 0.5 so a false→true (or
-        // true→false) flip is a sign change. Event roots occupy gout[0,n_events)
-        // and discontinuity roots gout[n_events, n_roots).
-        auto root_fn = [](sunrealtype t, N_Vector y, sunrealtype *gout, void *user_data) -> int {
-            auto *data = static_cast<CvodeUserData *>(user_data);
-            auto *mdl = data->model;
-            const double *y_ptr = N_VGetArrayPointer(y);
-            const int nsp = mdl->n_species();
-
-            // Sync species concentrations so ExprTk trigger expressions see current y
-            auto &sp_vec = const_cast<std::vector<Species> &>(mdl->species());
-            for (int i = 0; i < nsp; ++i) {
-                sp_vec[i].concentration = y_ptr[i];
-            }
-            mdl->update_observables(y_ptr);
-            mdl->evaluate_functions(static_cast<double>(t));
-
-            // GH #106: refresh the live rateOf buffer (and re-evaluate functions
-            // with live dx/dt) so triggers reading rateOf(species) — directly or
-            // via a rateOf-bearing function — see the derivative at this (t, y).
-            // No-op for non-rateOf models. compute_derivs publishes current_derivs
-            // as a side effect; rateof_root_scratch absorbs the returned RHS.
-            if (mdl->uses_rateof()) {
-                mdl->compute_derivs(static_cast<double>(t), y_ptr,
-                                    data->rateof_root_scratch.data());
-            }
-
-            auto &eval = mdl->evaluator();
-            const auto &events = mdl->events();
-            const int ne = static_cast<int>(events.size());
-            for (int i = 0; i < ne; ++i) {
-                if (data->event_dormant != nullptr && data->event_dormant[i]) {
-                    // Chatter guard (GH #95): a dormant event's root is held at a
-                    // constant so it never changes sign — CVODE integrates over
-                    // the noise floor instead of halting at every sub-atol
-                    // crossing of the trigger.
-                    gout[i] = 1.0;
-                    continue;
-                }
-                double trigger_val = eval.evaluate(events[i].trigger_expr_idx);
-                gout[i] = trigger_val - 0.5;
-            }
-            const auto &disc = mdl->discontinuity_triggers();
-            for (int j = 0; j < static_cast<int>(disc.size()); ++j) {
-                gout[ne + j] = eval.evaluate(disc[j]) - 0.5;
-            }
-            return 0;
-        };
-
-        flag = CVodeRootInit(cvode_mem, n_roots, root_fn);
-        if (flag != CV_SUCCESS) {
-            throw std::runtime_error("CVodeRootInit failed: " + std::to_string(flag));
-        }
-
-        if (n_disc > 0) {
-            // A discontinuity root makes CVODE restart at each pulse edge,
-            // where its first post-reinit step can be so small that t+h==t in
-            // floating point — a benign SUNDIALS warning ("solver will continue
-            // anyway") that RoadRunner emits on the same models. Route THIS
-            // context's warning log to the null sink so a dosing-schedule model
-            // doesn't spam stdout. Scoped to n_disc>0: models without time
-            // piecewise keep their exact prior logging. Hard errors still throw
-            // via the flag<0 checks. The context (and this logger) is freed when
-            // the run's SunContextGuard goes out of scope.
-            SUNLogger logger = nullptr;
-            if (SUNContext_GetLogger(ctx, &logger) == SUN_SUCCESS && logger != nullptr) {
-                SUNLogger_SetWarningFilename(logger, bngsim::null_device);
-            }
-        }
+        // Register the event + discontinuity roots (Impl::register_roots).
+        impl_->register_roots(cvode_mem, ctx, n_roots, n_disc);
 
         // Two-phase t=0 trigger initialization (SBML L3 §3.4.5):
         //
@@ -3781,27 +4026,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
     // ─── Solver statistics ───────────────────────────────────────────────────
 
-    long int nst, nfe, nsetups, nni, ncfn, netf;
-    CVodeGetNumSteps(cvode_mem, &nst);
-    CVodeGetNumRhsEvals(cvode_mem, &nfe);
-    CVodeGetNumLinSolvSetups(cvode_mem, &nsetups);
-    CVodeGetNumNonlinSolvIters(cvode_mem, &nni);
-    CVodeGetNumNonlinSolvConvFails(cvode_mem, &ncfn);
-    CVodeGetNumErrTestFails(cvode_mem, &netf);
-
-    result.solver_stats().n_steps = static_cast<int>(nst);
-    result.solver_stats().n_rhs_evals = static_cast<int>(nfe);
-    result.solver_stats().n_jac_evals = static_cast<int>(nsetups);
-    result.solver_stats().n_nonlin_iters = static_cast<int>(nni);
-    result.solver_stats().n_nonlin_conv_fails = static_cast<int>(ncfn);
-    result.solver_stats().n_err_test_fails = static_cast<int>(netf);
-    result.solver_stats().linear_solver = impl_->linear_solver_used;
-    // GH #132: BLAS dgetrf factorization count for this run (0 unless LAPACK-dense
-    // and the adaptive K gate was crossed). LS_guard is the solver built above.
-    {
-        const long bc = lapack_dense_blas_factor_count(LS_guard);
-        result.solver_stats().n_dense_blas_factorizations = bc > 0 ? static_cast<int>(bc) : 0;
-    }
+    impl_->record_solver_stats(cvode_mem, LS_guard, result);
 
     if (check_ss) {
         result.solver_stats().steady_state_reached = ss_reached;
@@ -3818,48 +4043,21 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     }
 
     // ─── Write final state back to model ─────────────────────────────────────
-    // After simulation, update the model's species concentrations to the
-    // final state. This is essential for multi-action sequences where
-    // saveConcentrations() or subsequent simulate() actions depend on
-    // the post-simulation state (matching BNG's propagate_cvode_network
-    // behavior which writes back to the global species array). When the
-    // steady-state early-stop fired, the "final time" is the last sample we
-    // actually integrated to, not the originally requested ``t_end``.
+    // Publishes the final concentrations, the final time and the GH #210
+    // forward-sensitivity carry-over seed onto the model — see
+    // Impl::write_final_state_back. When the steady-state early-stop fired, the
+    // "final time" is the last sample we actually integrated to, not the
+    // originally requested ``t_end``.
     {
-        auto &species = const_cast<std::vector<Species> &>(model.species());
-        for (int i = 0; i < ns; ++i) {
-            species[i].concentration = y_data[i];
-        }
         const double final_t = (check_ss && ss_reached) ? t_out[last_recorded_index] : times.t_end;
-        model.set_current_time(final_t);
-
-        // GH #210 — the state is now advanced past the ICs (carry-over). Thread
-        // the forward-sensitivity matrix dx/dθ at this point into the model so a
-        // subsequent carry_sensitivities=True run (the measurement phase of a
-        // pre-equilibration) can seed yS(0) from it. yS_guard holds the final
-        // integrated point (the loop's last CVodeGetSens). Capture the
-        // parameter columns only, row-major [species*np + param]. A
-        // non-sensitivity run still marks the state dirty but drops any stale
-        // seed (it advanced the state without tracking dx/dθ).
-        model.set_ic_state_dirty(true);
-        if (n_sens_p > 0) {
-            std::vector<double> seed(static_cast<size_t>(ns) * n_sens_p);
-            for (int iS = 0; iS < n_sens_p; ++iS) {
-                const double *col = N_VGetArrayPointer(yS_guard[iS]);
-                for (int i = 0; i < ns; ++i) {
-                    seed[static_cast<size_t>(i) * n_sens_p + iS] = col[i];
-                }
-            }
-            model.set_pending_sens_seed(std::move(seed), opts.sensitivity.param_names);
-        } else {
-            model.clear_pending_sens_seed();
-        }
+        impl_->write_final_state_back(opts, ns, y_data, final_t, sens);
     }
 
     // ─── Cleanup ─────────────────────────────────────────────────────────────
 
     // All SUNDIALS resources are freed automatically by the RAII guards:
-    //   yS_guard, LS_guard, A_guard, cvode_mem, y, ctx, codegen_param_buf
+    //   sens.yS (== yS_guard), LS_guard, A_guard, cvode_mem, y, ctx,
+    //   codegen_param_buf
     // The cached codegen library (impl_->codegen_lib) intentionally stays open
     // for the simulator's lifetime and is unloaded by ~Impl (GH #77).
 
