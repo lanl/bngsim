@@ -14,129 +14,7 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
-### Fixed
-- **A pre-init `set_param` on the RuleMonkey backend is a parameter update
-  again, not a model rebuild (issue #115).** `RuleMonkeySimulator` answered every
-  pending override by re-evaluating the XML's whole `<Parameter expr=>` graph,
-  writing two temp XMLs, and reconstructing the upstream engine from the second
-  one — on *every* `run()` and every session `initialize()`. That existed to work
-  around an upstream defect (GH #44): RuleMonkey parsed only the collapsed
-  `<Parameter value=>`, so its own override cascade re-resolved a number to
-  itself and could not reach a derived seed amount such as
-  `LT = ((dose_nM*1e-9)*NA)*V_sim`. RuleMonkey **v3.7.0**
-  ([`0ec6148`](https://github.com/richardposner/RuleMonkey/commit/0ec6148)) fixed
-  that — the cascade re-derives from `expr=`, gated on the value actually moving
-  — so the adapter now forwards `set_param` and lets the engine propagate. The
-  vendored pin moves `fbdde54` → `8f87968` (v3.7.0 plus its docs follow-up).
-
-  Two behavior bugs go with it, both consequences of maintaining a parameter
-  evaluator in parallel with the engine's:
-
-  * **An override no longer perturbs anything outside its dependency cone.**
-    The re-bake re-rounded *every* derived parameter to `expr=` precision
-    whenever any override was pending. Where BNG2 writes `NA` as
-    `value="6.0221408e+23"` against `expr="6.02214076e23"`, that moved every
-    bimolecular rate constant dividing by Avogadro's number by ~4e-9 relative —
-    at every scan point, for parameters the scan never touched. A no-op
-    `set_param(p, p)` was enough to trigger it.
-  * **`clear_param_overrides()` after a run takes effect.** The rebuild ran only
-    while an override was *pending*, so once a run had baked a dose into the
-    model, clearing it left the baked seed amount and rate constants in place and
-    the next run silently kept using the cleared dose. (Upstream's companion fix
-    closes the same hole on its side.)
-
-  The GH #51 half-up seed-count policy is unchanged in effect and re-expressed in
-  mechanism: instead of rewriting `<Species concentration=>` in a temp XML, the
-  adapter reads the amount the engine has already resolved
-  (`initial_species()`) and pins the rounded integer (`set_initial_amount()`),
-  re-derived after every `set_param` / `clear_param_overrides`. That also removes
-  the overlay's blind spot — it could only resolve a bare parameter or a literal,
-  where the engine resolves whatever the model wrote.
-
-  Per-scan-point cost, median of 12 points, zero-horizon `run()` so the setup is
-  not hidden behind SSA work (RuleMonkey's own model corpus):
-
-  | model | XML lines | before | after | no-override control |
-  |---|---|---|---|---|
-  | `r21` (ribosome) | 51,919 | 29.8 ms | **0.41 ms** | 0.37 ms |
-  | `tcr` | 10,457 | 121.7 ms | **113.5 ms** | 112.9 ms |
-  | `ensemble` | 15,133 | 249.8 ms | **242.7 ms** | 243.0 ms |
-  | `egfr_net` | 2,996 | 24.6 ms | **20.7 ms** | 20.7 ms |
-  | `blbr_posner2004` | 2,085 | 10.1 ms | **7.0 ms** | 6.9 ms |
-
-  An overridden point now costs what an un-overridden one costs, which is the
-  actual claim; the spread across models is just how much of a point is XML
-  parsing versus instantiating the pool. Construction gets cheaper too (`r21`
-  23.9 → 19.4 ms) since the cold path no longer writes a seed-rounded temp XML.
-
-  Found on the way and fixed with it: **no workflow was triggered by a change to
-  the RuleMonkey adapter or its vendored tree.** `native-tests.yml` builds
-  `-DBNGSIM_BUILD_RULEMONKEY=OFF`, so `src/rulemonkey_simulator.cpp` is not in
-  that build; the jobs that do compile it only did so because
-  `BNGSIM_BUILD_RULEMONKEY` defaults ON, and none listed it in `paths:`. A
-  vendor bump could have failed to compile with nothing red.
-  `windows-tail.yml` — which already builds RuleMonkey and already runs
-  `test_seed_count_rounding.py`'s RuleMonkey class — now triggers on
-  `src/rulemonkey_simulator.cpp` and `third_party/rulemonkey/**` and runs
-  `test_rulemonkey.py`, at no extra build cost. `scripts/vendor_rulemonkey.py`'s
-  clean-destination guard is fixed alongside: it ran `git status` from the
-  *parent* of the checkout, which exits 128 in a standalone clone, so the guard
-  aborted the refresh instead of checking anything.
-
-- **The derived-parameter chain rule walks the parameter DAG instead of
-  flattening it before differentiating (issue #99).** Issue #41 taught
-  `_compute_derived_param_jacobian` to reach a *nested* derived
-  (ConstantExpression) parameter by substituting it — and its whole dependency
-  graph — textually before handing one expression to sympy. That substitution is
-  exponential in the depth of the graph. On `ode/synthesis_v3` — **five
-  species**, 28 derived parameters — a 43-character parameter flattens to 20 KB
-  and its dependent to 40 KB, and because the nesting lands in an *exponent*
-  (`n = ln(...)/ln(ratio)`, `Fh = (…^n…)^(1/n)`) the `sp.diff` on the result
-  never returns. It was the one model in the 585-model `.net` corpus whose
-  `_analyze_output_sens` never completed, and #97's budget could not save it:
-  the cost is a **single uninterruptible sympy call**, and a wall-clock deadline
-  can only be checked *between* them.
-
-  The chain rule now composes over the graph —
-  `∂p_d/∂θ = (∂p_d/∂θ)_direct + Σ_k (∂p_d/∂s_k)·(∂s_k/∂θ)` — differentiating each
-  parameter as written and memoising per node, so a diamond is derived once and
-  a cycle in an ill-formed `.net` is reported rather than recursed into.
-  `∂p_d/∂s_k` prints the nested parameter as its `p[idx]` slot, which the runtime
-  already holds. This is the shape `_functional_dfdp_terms` has always used for a
-  rate law naming a derived parameter; this was the one place that still
-  flattened. `synthesis_v3` now derives in **1.2 s**, and `∂n/∂primary` emits
-  12 KB of C where the flattening emitted 202 KB.
-
-  **The same flattening was on the initial-condition path, so this was never
-  only a codegen-build problem.** Species `F` starts at `F0`, the 40 KB one, so
-  *every* parameter-sensitivity run on that model hung in
-  `compute_ic_param_sens_seed` before any C was generated. Both halves — the one
-  that emits C and the one that substitutes values — now walk the same DAG
-  through the same shared parse, which is what keeps them from drifting apart
-  again.
-
-  Two consequences beyond the model that motivated it. Nested `min()`/`max()`
-  flattened into one expression produced a derivative `sp.ccode` refused with
-  *"Invalid NaN comparison"*, losing the entire chain rule for `phi`, `alpha` and
-  `gamma` on three corpus models — which under #56's rule declines the analytic
-  sensitivity RHS. Walked, each level prints on its own: those three models now
-  emit, and nine functions across three more models gain output sensitivities
-  they were refused. (The `min`/`max` derivative itself was never the silent-zero
-  class the issue suspected: `Max` is *continuous*, so unlike an `if()` there is
-  no jump at the kink and no delta term to lose.) And #97's derivation-step count
-  — one per expression parsed, one per symbol it names — is now the work the
-  phase actually does rather than a number with no fixed relation to it.
-
-  Validated over the 585-model `.net` corpus: 226,408 `(derived parameter,
-  primary)` pairs finite-differenced against `set_param`-perturbed parameter
-  values, no disagreement outside the FD noise floor; 13,451 partials evaluated
-  against the pre-fix arm in the same process, agreeing to roundoff with **no
-  chain-rule term lost anywhere**; 378 of 584 models byte-identical, every
-  emitter change in the declines-to-emits direction, and total emitted C +2.6%.
-  End to end on `model_step1_v1`, whose `fa__FREE` and `fr__FREE` reach the
-  dynamics only through the chain that could not be derived, the newly analytic
-  sensitivities match a re-solved-trajectory finite difference to 1.4e-6 and
-  5.8e-7 relative.
+## [0.12.0] - 2026-08-02
 
 ### Added
 - **A build-time budget for the expression output-sensitivity derivation, and one
@@ -187,6 +65,7 @@ in `CMakeLists.txt`) is derived from it.
   expression still overshoots by one uninterruptible `sp.diff`. This bounds the
   accumulating case; the outliers are derivation defects and are fixed where they
   live (#96, and #99 for `synthesis_v3`).
+
 - **`steady_state(mask=…)`: solve `f(y) = 0` on a subspace, and say when a
   write-only accumulator is why a solve failed (issue #74).** Counting cumulative
   flux with a "degraded" / "produced" / "secreted" pool — a species some reaction
@@ -240,6 +119,371 @@ in `CMakeLists.txt`) is derived from it.
   unmasked path rather than through the restricted one, so `mask=ones(n)` cannot
   quietly mean something different from `mask=None`. Verified as a no-op across the
   585-model `ode_fullnet` corpus.
+
+- **The initial condition an `on_point` hook assigns gets its own `∂x(0)/∂θ`
+  (issue #111).** #81 carried the pre-equilibration's `dx/dθ` into a scan and
+  treated a hook's `setConcentration` dose as a literal — `∂x_k(0)/∂θ = 0` for
+  that species. That is right for the ordinary dose and wrong, silently, for a
+  dose *computed from* a fitted parameter (nM converted to molecules through a
+  fitted volume) or for an *increment* of the carried pool (`x_k + dose`, which
+  should keep the carried row). The hook assigns the state its point integrates
+  from, so that state's derivative is the hook's own — and bngsim now obtains it
+  instead of assuming it.
+
+  Row by row, the most specific thing available wins: a row the hook installed
+  wholesale, then one **declared** with the new
+  `Model.declare_ic_sensitivity({species: {param: value}})`, then one **measured
+  through the hook**, and otherwise the carried row bit-exact (a known-exact
+  number is never routed through a measurement). The measurement is the chain rule
+  by difference quotient — the hook is a map `H: (x, θ) → x'`, so
+  `dx'/dθ_i = ∂H/∂θ_i + (∂H/∂x)·s_i` with `s_i` the carried column, and each term
+  is a central difference of the hook (in θ_i, and along `s_i`). That second term
+  is what makes an increment come out right rather than being mistaken for a
+  literal.
+
+  Measured against a closed form on `preequil_prod_deg.net` (four hook shapes,
+  three doses off one equilibration, `sensitivity_params=[k_prod, k_deg]`):
+
+  | `on_point` assigns | exact `∂A(0)/∂θ` | max rel err vs closed form |
+  | --- | --- | --- |
+  | `A(0) = 3.0` (literal) | `(0, 0)` | 1.3e-10 |
+  | `A(0) = dose·k_prod` | `(dose, 0)` | 1.8e-10 |
+  | `A(0) = dose·√(k_prod·k_deg)` | `(dose√(k_deg/k_prod)/2, dose√(k_prod/k_deg)/2)` | 3.1e-08 |
+  | `A(0) = A_ss + dose` (increment) | `(1/k_deg, −k_prod/k_deg²)` | 2.6e-10 |
+
+  Rows 2 and 4 were 100% wrong before this change (reported `0`); row 1 is
+  unchanged and row 3 carries the difference quotient's truncation, the only place
+  the answer is not exact.
+
+  On `IGF1R_model_v1` (589 species / 4198 reactions) with the *real* conversion —
+  ligand amount `= dose_nM·1e-9·NA·Vecf`, `Vecf = 2.1e-9·f`, `f` fitted — the
+  measured `d(pY980)/df` matches central FD over the **full** protocol at
+  **9.4e-11 … 5.5e-10** across two step sizes, and equals the declared route to
+  1.6e-11. The pre-#111 literal rule was off by **79% / 94% / 93%** at
+  dose = 0.1 / 1 / 10 nM. Probing cost 26 hook calls per point at three
+  parameters and no measurable wall clock (0.66 s either way) — the ODE solve
+  dominates; declaring every written row reduces it to the one nominal call.
+
+  Refusals rather than a plausible number: a hook whose assigned IC is not
+  differentiable in a parameter (a dose rounded to whole molecules — the two step
+  sizes disagree by the O(1/h) blow-up of a jump), a hook that raises at a
+  perturbed input, and a hook that is not a deterministic function of
+  `(model, value)` (checked by re-running it). Each names the species, the
+  parameter and the fix, which is to declare that row.
+
+  `declare_ic_sensitivity` is honoured on a plain `run()` too. That closes the same
+  hole in the *hand-assigned* case: `set_concentration` replaces the `.net` IC
+  expression that the parameter-graph seeding (issue #43) differentiates, so a
+  hand-assigned θ-dependent IC previously seeded `0` with no way to say otherwise
+  (measured on the toy model: reported `0` against a true `∂A(0)/∂k_prod = 3`;
+  with the declaration, 1.2e-10 against the closed form).
+
+- **Forward sensitivities carry from a pre-equilibration into a parameter scan
+  (issue #81).** A dose-response experiment that pre-equilibrates and then scans
+  could not be fit by a gradient method: `parameter_scan` / `bifurcate` refused
+  every sensitivity-configured `Simulator` outright. The refusal was right —
+  each point starts from the equilibrated snapshot, so re-seeding it as if it
+  were the model's seed ICs discards the `dx/dθ` accumulated during the
+  equilibration — but there was no *correct* option to offer instead. Now there
+  is: the state and its θ-derivative travel together.
+
+  `carry_sensitivities=True` (#210) already had the right semantics for a
+  sequential two-phase run; what was missing was that every primitive which
+  *restores* a state dropped the derivative. Three did, and each is fixed at the
+  level where the state lives:
+
+  * `Model.save_concentrations()` redefines the IC baseline to the current state.
+    That state's `dx/dθ` did not change, so the new baseline now **inherits** it
+    (stashed alongside `initial_conc`), and `reset()` restores both. A baseline
+    saved with nothing carried is θ-independent literal ICs, i.e. the pre-#81
+    fresh start — so `reset()` on an ordinary model still means "fresh start",
+    and the every-action-reset backends are unaffected.
+  * `Model.save_concentrations(label=…)` / `restore_concentrations(label)` capture
+    and restore a named snapshot's `dx/dθ` the same way.
+  * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
+    **and** its `dx/dθ` per point, integrate each point with
+    `carry_sensitivities=True`, and leave the model — state, scanned parameter,
+    carried derivative, dirty flag — exactly as they found it. A continuation
+    scan (`reset_conc=False`) instead chains each point's `dx/dθ` from the
+    previous point, making the whole sweep one differentiable protocol.
+
+  The `NetworkModel` seed accessor gained its write half
+  (`set_pending_sensitivity_seed(seed, param_names)`), which is what lets a
+  protocol restore a state together with its derivative;
+  `has_baseline_sensitivity_seed` introspects the baseline's own.
+
+  Measured against a closed form (`preequil_prod_deg.net`: `dA/dt = k_prod −
+  (k_deg + dose)·A` equilibrated at `dose=0`, so both `dA/dθ` columns are exact
+  for every dose), scanning four doses off one equilibration:
+
+  | dose | carried (this change) | re-seeded per point, `t=0` | re-seeded, `t=3` (`k_prod` / `k_deg`) |
+  | --- | --- | --- | --- |
+  | 0.5 | 1.2e-10 | **100%** | 9.5% / 15.3% |
+  | 1.0 | 1.7e-10 | **100%** | 3.3% / 8.4% |
+  | 2.0 | 2.3e-10 | **100%** | 0.3% / 1.3% |
+  | 4.0 | 1.2e-09 | **100%** | 0.0% / 0.0% |
+
+  The trajectories are identical to 1e-7 in every row — the seed is the only
+  difference — and the same scan scored at each point's own steady state
+  (`steady_state=True`) matches `dA_ss/dθ = (1/λ, −k_prod/λ²)` to 1e-12. Note the
+  shape of the wrong column: re-seeding is 100% wrong at `t=0` and its error
+  *decays* with dose, so it is worst at the low-dose end of a dose-response —
+  the informative part of the fit — and looks fine at saturating dose. That is
+  the failure mode a fit cannot detect on its own.
+
+  On the issue's own model family (`IGF1R_model_v1`, 589 species / 4198
+  reactions, equilibrated at a basal ligand dose so 1107 of 1178 carried seed
+  entries are live, then scanned over three doses applying each with `on_point` +
+  `set_concentration`): `d(pY980)/d{kp, kdp}` matches central FD of the measured
+  observable over the **full** protocol at **1e-8 to 1e-9**, stable across
+  `h/p = 1e-3, 1e-4, 1e-5` (so it is signal, not FD noise), and the whole scan
+  runs off ONE equilibration in 2.0 s. The scan is also bit-identical to the
+  hand-rolled equivalent — restore the snapshot, install the seed, `run(
+  carry_sensitivities=True)` — on every point.
+
+  This also closes a silent version of the same defect that needed no scan at
+  all: `equilibrate → save_concentrations() → run(sensitivities)` used to drop the
+  carry *and* clear the "state is carried-over" flag, so it re-seeded a
+  θ-dependent initial condition as a fresh start and returned wrong derivatives
+  with no warning (100% off at `t=0` on the model above). The BNG action ordering
+  `simulate(steady_state) → saveConcentrations() → parameter_scan` is exactly
+  that path, and now carries correctly.
+
+  Refusals (never a silently re-seeded gradient) when the reset target carries no
+  matching `dx/dθ`, when the scanned parameter is itself a `sensitivity_params`
+  entry (each point overwrites it, so the derivative carried into the point was
+  taken at a different value of the same symbol), when `sensitivity_ic` is
+  requested across the boundary, or when an `on_point` hook moves a differentiated
+  parameter. An `on_point` hook *may* apply the usual coupled `setConcentration`
+  dose override; how that override's own `∂x_k(0)/∂θ` is obtained is described in
+  the issue #111 entry above (it was a literal-⇒-zero rule as this shipped).
+  `run_batch` remains the right primitive for a sweep whose points start from the
+  model's own seed ICs.
+
+  Side effect of the same restore work: a plain (non-sensitivity) scan no longer
+  leaves the model marked as carried-over dynamics — it rewinds the state it
+  advanced, so the flag it rewinds to is the one it found.
+
+- **Forward sensitivity w.r.t. an onset time encoded as an SBML *event* (issue
+  #49).** A switch time written as `piecewise(kin, time >= T0, 0)` has been
+  differentiable since #48; the *same* switch, same dynamics, same gradient,
+  written as an event (`time >= T0` → `on := 1`, rate `kin*on`) was refused.
+  Which encoding a model uses is usually decided by whichever tool exported it,
+  so the asymmetry was arbitrary from the modeller's side. A survey of
+  `parity_checks/rr_parity` found 24 models / 88 events whose trigger thresholds
+  a fitted constant, with names like `treatment_start`, `ton`/`toff`, `tstim`
+  and `Lockdown_start` — exactly the things one fits.
+
+  The general jump across an event at a parameter-dependent time is
+
+      s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
+
+  — shift `s⁻` along the pre-event flow by how far the event time moves, apply
+  the event Jacobian, shift back along the post-event flow. Both corners were
+  already implemented: `∂t*/∂p = 0` is the GH #212 state jump, `h = identity` is
+  the #48 switch jump. This adds the cross terms and the `∂t*/∂p` that feeds
+  them (`bngsim._switch_sensitivity.compute_event_time_sens`, which reduces the
+  trigger through the *same* `_clock_threshold_split` recognizer the rate-law
+  path uses, so the two cannot drift about what a locatable crossing is).
+
+  Unlike #48 this needs neither `CVodeSetStopTime` nor parameter pinning: an
+  event trigger is not part of `f`, so `f` is smooth right up to the root
+  (CVODE's root finder already stops exactly at `t*`) and `∂f/∂T0` is a genuine
+  zero without help. It does need #48's nominal-parameter restore — `f⁻`/`f⁺`
+  multiply `∂t*/∂p`, so reading them wherever CVODES' last finite-difference
+  probe left the parameters would scale the whole jump by `1 ∓ √rtol`, i.e. an
+  answer that moves when `rtol` does.
+
+  Two refusals were also retired as *vacuous* (the issue's sub-finding). A delay
+  of literal `0` is not a delay — `process_firing_batch` already takes the
+  immediate path for it, so there is no trigger-time-to-execution-time window;
+  and `persistent=false` can only cancel a fire inside that window (SBML L3v2
+  §4.11.3), so without a delay the flag has nothing to act on. Ghanbari2020 and
+  Zongo2020 were blocked by exactly this.
+
+  Corpus result on the 225 event-bearing `rr_parity` models, requesting **every**
+  parameter: **13 models newly allowed** (BIOMD1, 117, 152, 153, 244, 301, 327,
+  340, 422, 494, 650, 820, MODEL2310250001), 114 unchanged, 0 lost. Validated
+  against a central difference of the trajectory itself, normalized to the
+  observable's own scale and filtered to samples where the difference quotient
+  is self-consistent across two step sizes: the onset column's worst error sits
+  at or below the same model's *control* (non-trigger) parameters — 3.5e-4 vs
+  3.2e-4 on Owen1998 (BIOMD650), 2.1e-7 vs 2.7e-4 on BIOMD301, 8.3e-6 vs 3.3e-4
+  on BIOMD820. The two models where the onset column starts worse (BIOMD301
+  `pulse1_length` 1.0e-1, BIOMD327 `ton` 1.3e-2 at the default `rtol=1e-8`)
+  converge with the integration (1.0e-5 and 1.2e-3 at `rtol=1e-10`), which is
+  the CVODES difference-quotient sensitivity RHS's own accuracy on those models
+  rather than the jump.
+
+  One correctness trap worth recording, because it is the failure mode this
+  module exists to avoid rather than an omission. A threshold that is an SBML
+  `<assignmentRule>` parameter is *not* a constant, even though
+  `param_is_expression` is false for it and reading its current value looks like
+  reading a literal — the loader turns such a rule into a model function bound
+  to the same-named parameter. BIOMD0000000301 writes its pulse schedule as
+  `pulse2_start = pulse1_start + pulse1_length + pulse_interval`; attributing
+  the whole `∂t*/∂p` to `pulse2_start` put the gradient on a column no fitter
+  moves and left `pulse1_start`'s at zero. Rule-bound parameters now join the
+  inlining map when their body reduces to arithmetic over parameters, and every
+  identifier that survives the flattening must be a primary — anything else
+  (`floor()`-based dose schedules, a rule that reads state) is refused with a
+  reason instead of evaluated at its current value.
+
+- **A build-time derivation budget for the sensitivity `∂f/∂p` path (issue #90),
+  the last unaddressed "still has to bail" item of #55.** #95/#187 bound the
+  symbolic derivation of the analytical *Jacobian*, so a model that does not
+  derive in time falls back to the finite-difference Jacobian instead of hanging
+  the load. The `∂f/∂p` path added by #55 (#65/#66/#67/#68) does the same kind of
+  sympy work and had no budget at all: `python/bngsim/_codegen.py` contained zero
+  references to `deadline`, and its three `sp.diff` sites were unguarded. The one
+  that scales badly runs **one `sp.diff` per (distinct rate law, parameter it
+  reads) pair** — the product of rate-law size and parameter count, exactly the
+  axis #95 found super-linear — so a genome-scale Functional model with a long
+  `sensitivity_params` list would present as a build that *hangs* rather than one
+  that declines and says why (and to a `rr_parity`-style harness, which times
+  build and solve together, as an ODE timeout).
+
+  The derivation is now bounded by `BNGSIM_SENS_DERIV_BUDGET_S`. It shares the
+  Jacobian budget's base, per-species slope and override grammar — one
+  implementation, so the two policies cannot drift — but is resolved
+  independently, so `BNGSIM_JAC_DERIV_BUDGET_S=inf` (the documented genome-scale
+  workaround for keeping an analytical Jacobian) does not silently uncap it.
+  The deadline is threaded down to every `sp.diff` on the path — the Functional
+  rate laws and both flavours of derived-parameter chain rule, on the model path
+  and the `.net` text path alike — and checked on entry to each rate law as well
+  as before each partial, so overshoot is bounded to one (law, parameter) pair
+  rather than one whole model. Expiry declines through the existing
+  `_warn_functional_sens_rhs_refused`, landing beside every other decline reason
+  with a warning naming how far the derivation got and the override to raise.
+
+  It also covers the *other* derivation on the same build, which the issue's
+  three-site table does not list: `ySdot = J·yS + ∂f/∂p`, and the `J·yS` half
+  re-derives ∂f/∂x through `_functional_jacobian_groups`. That is the same math
+  `attach_functional_jacobian` already ran at load under the #95 budget, but a
+  re-derivation with no clock of its own — and on a model whose load-time attach
+  was itself cut off there is no earlier bound to inherit, so bounding only ∂f/∂p
+  would have left the identical hang reachable one call later. The #151 native
+  saturable emitters run no sympy and are unaffected; only their fallback takes
+  the deadline.
+
+  **One difference from the Jacobian budget is deliberate: this one never becomes
+  unbounded by size.** `_FD_NONVIABLE_SPECIES` exists because past that scale an
+  FD Jacobian does not converge — there is nothing to fall back *to*, so the
+  analytical Jacobian is mandatory. Declining a sensitivity RHS only hands the
+  columns to CVODES' internal difference quotient, which is what every Functional
+  model used before #55 and which is correct at every scale. Correct is not cheap
+  (measured 9–37x per column, and on a stiff model at a tight `rtol` the DQ's
+  `~sqrt(rtol)` accuracy collapses the step size outright), which is why the
+  decline is a warning that names the knob rather than a silent downgrade.
+
+  Corpus A/B over all 585 `.net` models, default budget vs unbounded: **544 models
+  emit an analytic sensitivity RHS in both arms, 0 source hashes differ**, total
+  derivation 7.6 s with the slowest single model at 0.44 s — 46x headroom under
+  the 20 s base, so nothing real is near the cut-off. An explicit override also
+  joins the `.net` path's in-process memo key and its on-disk `model_hash`
+  (that path keys on the model's *content*, not on the generated C, so without it
+  a build made under a tight budget would be served back to one made without it —
+  the same trap #67's A/B hatch had to sidestep).
+
+- **Per-model composition counts in the ODE Jacobian characterization report
+  (issue #42).** `jacobian_characterization.py` recorded rich Jacobian-side
+  structure (`N`, `rank`, `n_reactions`, `density`, `stiffness_ratio_*`) but
+  nothing about model composition, so the paper's representative-BNGL-models
+  table had to carry its IC-not-zero and parameter-count columns as hand-curated
+  constants — the one column pair in that table not derived from data. Each
+  result row now also carries `n_seed_nonzero`, `n_parameters`,
+  `n_independent_parameters`, `excluded_parameters` and
+  `excluded_parameter_reasons`.
+
+  `n_seed_nonzero` is read off the loaded network rather than by counting `seed
+  species` lines, so parameter-valued initial conditions are already evaluated:
+  `Lang_2024`'s 73 seed lines resolve to 65 nonzero species, and a line whose
+  parameter is `0` is correctly not counted. `n_independent_parameters` applies
+  the table caption's rule — numeric-valued independent parameters, with
+  unit-conversion constants and parameters derived from others excluded — which no
+  single parse rule reproduces on its own, so every excluded name is emitted with
+  its reason (`derived` or `unit_conversion`) and
+  `n_independent_parameters == n_parameters - len(excluded_parameters)` holds by
+  construction. BNG's synthetic `_rateLaw{N}` symbols are dropped before the
+  census and appear in neither, and the unit-conversion name sets are recorded in
+  the report's `_meta.params`. Avogadro's number is matched case-sensitively and
+  guarded by magnitude, so `race.bngl`'s `nA 5` — an Erlang step count — stays a
+  model parameter while `Na 6.022e23` and the RuleHub tutorials' `NaV 6.02e8`
+  (Avogadro rescaled to /um^3) are excluded. Across the 278-model `bngl_models`
+  slice the only names the policy excludes are `NA`, `Na` and `Vref`. The six
+  exemplars reproduce the curated values exactly: `Lang2024` 65/205,
+  `Kocieniewski2012` 4/10, `Barua2007` 2/22, `Blinov2006` 6/43, `Barua2013` 6/25,
+  `fceri_fyn` 5/31.
+
+- **`Simulator(..., force_sparse_linear_solver=True)` for `method="ode"`, the
+  missing counterpart to `force_dense_linear_solver` (issue #29).** The ODE
+  linear-solver kind is auto-selected — sparse KLU when a model is both large
+  (`n_species >= 50`) and sparse (Jacobian density `< 0.10`), dense otherwise —
+  and until now the only override pushed toward dense. That made the rule
+  unfalsifiable on the half of a corpus it sends to dense: forced-dense shows
+  what KLU buys on large sparse networks, but nothing showed KLU's setup and
+  indexing overhead on the small dense ones, which is the evidence that the rule
+  does real work rather than being replaceable by "always KLU". Under the auto
+  rule the 585-model BNGL ODE corpus splits 541 dense / 44 KLU; the forced-sparse
+  arm now covers the other 541.
+
+  The flag bypasses the size and density gates and nothing else — KLU still
+  needs a real sparsity pattern and a non-JAX Jacobian, so it stays a no-op in a
+  build without KLU, exactly as `force_dense_linear_solver` documents itself.
+  Passing both force flags raises `ValueError` (and the C++ `SolverOptions` path
+  rejects the pair too) rather than letting one quietly win, which would hand a
+  benchmark auto-selected numbers under a "forced" label. Flipping the flag
+  between `run()` calls on one `Simulator` invalidates the warm CVODE cache, so
+  the solver is rebuilt rather than reused.
+
+  Forced-sparse reaches KLU on all 585 models. Getting the last 7 there took
+  making the Curtis-Powell-Reid coloring lazy (below); a run that still cannot
+  supply a sparse Jacobian is refused with a message naming the flag, rather
+  than failing inside CVODE with "no Jacobian constructor available".
+
+  `benchmarks/suites/ode_fullnet/run_forced.py --mode sparse` is unblocked.
+
+- **One BNG2.pl resolver for the whole suite (`parity_checks/_core/bngpath.py`),
+  plus a `parity` dependency group that provisions it.** BNG2.pl was located by
+  six near-duplicate helpers across eleven files that disagreed about precedence
+  (see Fixed). They are replaced by `resolve_bng()` / `require_bng()` /
+  `skip_reason()`, which try `$BNG2_PL` → `$BNGPATH` → PyBioNetGen's bundled copy
+  and record every attempt, so a failure names each location searched and what it
+  yielded instead of reporting a bare absence. Two consequences beyond the fix:
+  the sweep entrypoints (`parity_golden.py`, `bng_ode_run.py`, `bng_stoch_run.py`)
+  now find the bundled BNG2.pl on their own — no `export BNGPATH` needed to
+  regenerate a golden — and a stale env var falls through to a working install
+  rather than poisoning the lookup. `uv sync --extra dev --group parity` installs
+  the pinned PyBioNetGen (which bundles BNG2.pl, `bin/run_network` and
+  `bin/NFsim`), taking `parity_checks/tests/` from 264 passed / 14 skipped to
+  **288 passed / 0 skipped** with no environment variables set. The group lives
+  in PEP 735 `[dependency-groups]`, not `[project.optional-dependencies]`, because
+  its `git+https://` direct reference would otherwise land in published metadata
+  and make the distribution unpublishable to PyPI; `test_pin_agreement.py` fails
+  if its commit drifts from `requirements-pybionetgen.txt`, the source of truth.
+
+- **ODE Jacobian characterization harness**
+  (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each
+  ODE model in the `bng_parity` corpus by structural Jacobian density
+  (`nnz/N^2`) and stiffness ratio — `max|Re lambda| / min_{!=0}|Re lambda|` on the
+  conservation-reduced Jacobian, computed from BNGsim's own native analytical
+  Jacobian (no autodiff) — and, in `--analyze` mode, partitions the corpus into
+  sparse-stiff / dense-stiff / non-stiff regimes. For models with `N > 300` the
+  stiffness ratio is sampled at up to `DENSE_TIME_SAMPLES` log-spaced trajectory
+  points (default 64; `--dense-time-samples` to override) rather than the former
+  3, and each result now reports both `stiffness_ratio_max` (trajectory peak) and
+  `stiffness_ratio_median` (sustained). The old 3-point sampling under-resolved
+  the peak for large networks — e.g. the `N=1281` `fceri_fyn` peak rose from
+  `1.4e7` to `1.0e8` under dense resampling.
+
+- **SBML BioModels counterpart** of the characterization harness
+  (`parity_checks/rr_parity/jacobian_characterization_sbml.py`): applies the same
+  density and stiffness metrics and regime classification to the `rr_parity`
+  SBML corpus, loading each model via `Model.from_sbml` (no network-generation
+  step) and reusing the `bng_parity` metric helpers — including the dense
+  trajectory time sampling above — so both corpora are characterized by identical
+  code and report the same `stiffness_ratio_max` / `stiffness_ratio_median`
+  fields.
 
 ### Changed
 - **The two forward-sensitivity jump handlers move out of `CvodeSimulator::run`
@@ -306,6 +550,7 @@ in `CMakeLists.txt`) is derived from it.
   72-run parameter sweep over the exemplars #48/#49/#82 were validated on —
   including the three issue #82 knife-edge crossings, a t=0 event fire, and the
   onset model whose fitted parameter appears only in the trigger.
+
 - **`steady_state()`'s march routes to sparse KLU by the same rule `run()` uses,
   and the two force flags reach it (issue #128).** `SteadyStateMarcher` built a
   `SUNDenseMatrix` unconditionally — `ss_make_dense_linsol`'s own comment said
@@ -451,6 +696,7 @@ in `CMakeLists.txt`) is derived from it.
   `max|got − dropped|` against `0.5·max|got|`, which is algebraically
   `|got| > |exact|` and so turned on whether the march stopped one roundoff above
   or below the answer; it now states the factor of two with a tolerance.
+
 - **`CvodeSimulator::run` puts its setup in named `Impl::` helpers (issue
   #109).** `run()` spanned 2,346 lines of one function body — 1,375 NLOC at
   cyclomatic complexity 368. The codebase is otherwise small (median function 12
@@ -569,6 +815,7 @@ in `CMakeLists.txt`) is derived from it.
   `sensitivity_params`-built `Simulator` already pay, including its known
   unbounded cases (issues #97 and #99); the `.so` cache makes repeats — a fitting
   loop — free.
+
 - **An assignment retires the parameter-graph IC sensitivity row it superseded
   (issue #113).** `∂(IC)/∂p` (issue #43) differentiates the initial condition the
   model *declares* — `species[].initial_conc`, what `reset()` returns to. A
@@ -600,6 +847,7 @@ in `CMakeLists.txt`) is derived from it.
 
   `NetworkModel.get_initial_state()` exposes the baseline (bulk, ordered like
   `species_names()`), the counterpart of `get_state()` this comparison needs.
+
 - **Forward sensitivities now use the analytic RHS for Functional rate laws whose
   expressions are smooth algebra (issue #67, closing stage 3 of #55).** A single
   Functional reaction used to put a whole model on CVODES' internal difference
@@ -649,6 +897,7 @@ in `CMakeLists.txt`) is derived from it.
   #76 describes for those models — and the `.net`-loaded path reaches the
   model-based emitter through `generate_combined_c`, which is how a corpus model
   gets here at all.
+
 - **The Curtis-Powell-Reid Jacobian coloring is computed on first use instead of
   at model load, and no longer skipped on dense patterns (issue #29).** `build()`
   used to color only when Jacobian density was `< 0.5`, on the reasoning that
@@ -677,6 +926,7 @@ in `CMakeLists.txt`) is derived from it.
   that never take that path — including every dense-solver run — no longer pay
   for a coloring at all. Auto-selection is unchanged: the same corpus still
   splits 541 dense / 44 KLU.
+
 - **`Simulator.steady_state()` and `steady_state_batch()` now default to
   `method="integration"` instead of `method="newton"` (issue #28).** Once #27
   reordered the two-tier solver to integrate *first*, its KINSOL polish stopped
@@ -757,6 +1007,7 @@ in `CMakeLists.txt`) is derived from it.
   loss. `integration` remains the default and remains faster on every model —
   this narrows the gap for callers who opt into `newton` for its ~`1e-13`
   residual, it does not close it.
+
 - **Re-pinned PyBioNetGen for the parity/benchmark suite, `5109a46` →
   `43b09a5` (issue #4).** The old pin carried RuleWorld/PyBioNetGen#109: under
   `simulator='bngsim'`, a model whose actions PyBioNetGen's Python parser could
@@ -775,6 +1026,7 @@ in `CMakeLists.txt`) is derived from it.
   GH #175 the sweep drives bngsim in-process via `run_bngsim_job` rather than
   through `bionetgen.run(simulator='bngsim')`, so the bridge's routing pass is
   provenance, not the execution path.
+
 - **Regenerated the `bng_parity` golden references on the new pin** (all 895
   manifest jobs `ok`; `_meta.bionetgen_commit` `5109a46e58ec` →
   `43b09a534640`). 885 of 895 records reproduce the previous golden's checksum
@@ -790,6 +1042,7 @@ in `CMakeLists.txt`) is derived from it.
   single fixed-`seed=1` trajectories, which are chaotic and not stable across a
   bngsim version change by construction (per the golden contract's D2, the byte
   checksum — not the fingerprint — is their meaningful check).
+
 - **`bootstrap_parity_env.py` now builds its venv on the interpreter that
   matches the bngsim wheel.** bngsim ships as an ABI-tagged wheel, so a venv on
   whatever `uv venv` picked by default failed at the *last* step — after the
@@ -800,370 +1053,135 @@ in `CMakeLists.txt`) is derived from it.
   current uv aborts on an existing venv rather than reusing it, which made a
   re-bootstrap after a pin bump fail on step one.
 
-### Added
-- **The initial condition an `on_point` hook assigns gets its own `∂x(0)/∂θ`
-  (issue #111).** #81 carried the pre-equilibration's `dx/dθ` into a scan and
-  treated a hook's `setConcentration` dose as a literal — `∂x_k(0)/∂θ = 0` for
-  that species. That is right for the ordinary dose and wrong, silently, for a
-  dose *computed from* a fitted parameter (nM converted to molecules through a
-  fitted volume) or for an *increment* of the carried pool (`x_k + dose`, which
-  should keep the carried row). The hook assigns the state its point integrates
-  from, so that state's derivative is the hook's own — and bngsim now obtains it
-  instead of assuming it.
-
-  Row by row, the most specific thing available wins: a row the hook installed
-  wholesale, then one **declared** with the new
-  `Model.declare_ic_sensitivity({species: {param: value}})`, then one **measured
-  through the hook**, and otherwise the carried row bit-exact (a known-exact
-  number is never routed through a measurement). The measurement is the chain rule
-  by difference quotient — the hook is a map `H: (x, θ) → x'`, so
-  `dx'/dθ_i = ∂H/∂θ_i + (∂H/∂x)·s_i` with `s_i` the carried column, and each term
-  is a central difference of the hook (in θ_i, and along `s_i`). That second term
-  is what makes an increment come out right rather than being mistaken for a
-  literal.
-
-  Measured against a closed form on `preequil_prod_deg.net` (four hook shapes,
-  three doses off one equilibration, `sensitivity_params=[k_prod, k_deg]`):
-
-  | `on_point` assigns | exact `∂A(0)/∂θ` | max rel err vs closed form |
-  | --- | --- | --- |
-  | `A(0) = 3.0` (literal) | `(0, 0)` | 1.3e-10 |
-  | `A(0) = dose·k_prod` | `(dose, 0)` | 1.8e-10 |
-  | `A(0) = dose·√(k_prod·k_deg)` | `(dose√(k_deg/k_prod)/2, dose√(k_prod/k_deg)/2)` | 3.1e-08 |
-  | `A(0) = A_ss + dose` (increment) | `(1/k_deg, −k_prod/k_deg²)` | 2.6e-10 |
-
-  Rows 2 and 4 were 100% wrong before this change (reported `0`); row 1 is
-  unchanged and row 3 carries the difference quotient's truncation, the only place
-  the answer is not exact.
-
-  On `IGF1R_model_v1` (589 species / 4198 reactions) with the *real* conversion —
-  ligand amount `= dose_nM·1e-9·NA·Vecf`, `Vecf = 2.1e-9·f`, `f` fitted — the
-  measured `d(pY980)/df` matches central FD over the **full** protocol at
-  **9.4e-11 … 5.5e-10** across two step sizes, and equals the declared route to
-  1.6e-11. The pre-#111 literal rule was off by **79% / 94% / 93%** at
-  dose = 0.1 / 1 / 10 nM. Probing cost 26 hook calls per point at three
-  parameters and no measurable wall clock (0.66 s either way) — the ODE solve
-  dominates; declaring every written row reduces it to the one nominal call.
-
-  Refusals rather than a plausible number: a hook whose assigned IC is not
-  differentiable in a parameter (a dose rounded to whole molecules — the two step
-  sizes disagree by the O(1/h) blow-up of a jump), a hook that raises at a
-  perturbed input, and a hook that is not a deterministic function of
-  `(model, value)` (checked by re-running it). Each names the species, the
-  parameter and the fix, which is to declare that row.
-
-  `declare_ic_sensitivity` is honoured on a plain `run()` too. That closes the same
-  hole in the *hand-assigned* case: `set_concentration` replaces the `.net` IC
-  expression that the parameter-graph seeding (issue #43) differentiates, so a
-  hand-assigned θ-dependent IC previously seeded `0` with no way to say otherwise
-  (measured on the toy model: reported `0` against a true `∂A(0)/∂k_prod = 3`;
-  with the declaration, 1.2e-10 against the closed form).
-- **Forward sensitivities carry from a pre-equilibration into a parameter scan
-  (issue #81).** A dose-response experiment that pre-equilibrates and then scans
-  could not be fit by a gradient method: `parameter_scan` / `bifurcate` refused
-  every sensitivity-configured `Simulator` outright. The refusal was right —
-  each point starts from the equilibrated snapshot, so re-seeding it as if it
-  were the model's seed ICs discards the `dx/dθ` accumulated during the
-  equilibration — but there was no *correct* option to offer instead. Now there
-  is: the state and its θ-derivative travel together.
-
-  `carry_sensitivities=True` (#210) already had the right semantics for a
-  sequential two-phase run; what was missing was that every primitive which
-  *restores* a state dropped the derivative. Three did, and each is fixed at the
-  level where the state lives:
-
-  * `Model.save_concentrations()` redefines the IC baseline to the current state.
-    That state's `dx/dθ` did not change, so the new baseline now **inherits** it
-    (stashed alongside `initial_conc`), and `reset()` restores both. A baseline
-    saved with nothing carried is θ-independent literal ICs, i.e. the pre-#81
-    fresh start — so `reset()` on an ordinary model still means "fresh start",
-    and the every-action-reset backends are unaffected.
-  * `Model.save_concentrations(label=…)` / `restore_concentrations(label)` capture
-    and restore a named snapshot's `dx/dθ` the same way.
-  * `Simulator.parameter_scan` / `bifurcate` restore the reset target's state
-    **and** its `dx/dθ` per point, integrate each point with
-    `carry_sensitivities=True`, and leave the model — state, scanned parameter,
-    carried derivative, dirty flag — exactly as they found it. A continuation
-    scan (`reset_conc=False`) instead chains each point's `dx/dθ` from the
-    previous point, making the whole sweep one differentiable protocol.
-
-  The `NetworkModel` seed accessor gained its write half
-  (`set_pending_sensitivity_seed(seed, param_names)`), which is what lets a
-  protocol restore a state together with its derivative;
-  `has_baseline_sensitivity_seed` introspects the baseline's own.
-
-  Measured against a closed form (`preequil_prod_deg.net`: `dA/dt = k_prod −
-  (k_deg + dose)·A` equilibrated at `dose=0`, so both `dA/dθ` columns are exact
-  for every dose), scanning four doses off one equilibration:
-
-  | dose | carried (this change) | re-seeded per point, `t=0` | re-seeded, `t=3` (`k_prod` / `k_deg`) |
-  | --- | --- | --- | --- |
-  | 0.5 | 1.2e-10 | **100%** | 9.5% / 15.3% |
-  | 1.0 | 1.7e-10 | **100%** | 3.3% / 8.4% |
-  | 2.0 | 2.3e-10 | **100%** | 0.3% / 1.3% |
-  | 4.0 | 1.2e-09 | **100%** | 0.0% / 0.0% |
-
-  The trajectories are identical to 1e-7 in every row — the seed is the only
-  difference — and the same scan scored at each point's own steady state
-  (`steady_state=True`) matches `dA_ss/dθ = (1/λ, −k_prod/λ²)` to 1e-12. Note the
-  shape of the wrong column: re-seeding is 100% wrong at `t=0` and its error
-  *decays* with dose, so it is worst at the low-dose end of a dose-response —
-  the informative part of the fit — and looks fine at saturating dose. That is
-  the failure mode a fit cannot detect on its own.
-
-  On the issue's own model family (`IGF1R_model_v1`, 589 species / 4198
-  reactions, equilibrated at a basal ligand dose so 1107 of 1178 carried seed
-  entries are live, then scanned over three doses applying each with `on_point` +
-  `set_concentration`): `d(pY980)/d{kp, kdp}` matches central FD of the measured
-  observable over the **full** protocol at **1e-8 to 1e-9**, stable across
-  `h/p = 1e-3, 1e-4, 1e-5` (so it is signal, not FD noise), and the whole scan
-  runs off ONE equilibration in 2.0 s. The scan is also bit-identical to the
-  hand-rolled equivalent — restore the snapshot, install the seed, `run(
-  carry_sensitivities=True)` — on every point.
-
-  This also closes a silent version of the same defect that needed no scan at
-  all: `equilibrate → save_concentrations() → run(sensitivities)` used to drop the
-  carry *and* clear the "state is carried-over" flag, so it re-seeded a
-  θ-dependent initial condition as a fresh start and returned wrong derivatives
-  with no warning (100% off at `t=0` on the model above). The BNG action ordering
-  `simulate(steady_state) → saveConcentrations() → parameter_scan` is exactly
-  that path, and now carries correctly.
-
-  Refusals (never a silently re-seeded gradient) when the reset target carries no
-  matching `dx/dθ`, when the scanned parameter is itself a `sensitivity_params`
-  entry (each point overwrites it, so the derivative carried into the point was
-  taken at a different value of the same symbol), when `sensitivity_ic` is
-  requested across the boundary, or when an `on_point` hook moves a differentiated
-  parameter. An `on_point` hook *may* apply the usual coupled `setConcentration`
-  dose override; how that override's own `∂x_k(0)/∂θ` is obtained is described in
-  the issue #111 entry above (it was a literal-⇒-zero rule as this shipped).
-  `run_batch` remains the right primitive for a sweep whose points start from the
-  model's own seed ICs.
-
-  Side effect of the same restore work: a plain (non-sensitivity) scan no longer
-  leaves the model marked as carried-over dynamics — it rewinds the state it
-  advanced, so the flag it rewinds to is the one it found.
-- **Forward sensitivity w.r.t. an onset time encoded as an SBML *event* (issue
-  #49).** A switch time written as `piecewise(kin, time >= T0, 0)` has been
-  differentiable since #48; the *same* switch, same dynamics, same gradient,
-  written as an event (`time >= T0` → `on := 1`, rate `kin*on`) was refused.
-  Which encoding a model uses is usually decided by whichever tool exported it,
-  so the asymmetry was arbitrary from the modeller's side. A survey of
-  `parity_checks/rr_parity` found 24 models / 88 events whose trigger thresholds
-  a fitted constant, with names like `treatment_start`, `ton`/`toff`, `tstim`
-  and `Lockdown_start` — exactly the things one fits.
-
-  The general jump across an event at a parameter-dependent time is
-
-      s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
-
-  — shift `s⁻` along the pre-event flow by how far the event time moves, apply
-  the event Jacobian, shift back along the post-event flow. Both corners were
-  already implemented: `∂t*/∂p = 0` is the GH #212 state jump, `h = identity` is
-  the #48 switch jump. This adds the cross terms and the `∂t*/∂p` that feeds
-  them (`bngsim._switch_sensitivity.compute_event_time_sens`, which reduces the
-  trigger through the *same* `_clock_threshold_split` recognizer the rate-law
-  path uses, so the two cannot drift about what a locatable crossing is).
-
-  Unlike #48 this needs neither `CVodeSetStopTime` nor parameter pinning: an
-  event trigger is not part of `f`, so `f` is smooth right up to the root
-  (CVODE's root finder already stops exactly at `t*`) and `∂f/∂T0` is a genuine
-  zero without help. It does need #48's nominal-parameter restore — `f⁻`/`f⁺`
-  multiply `∂t*/∂p`, so reading them wherever CVODES' last finite-difference
-  probe left the parameters would scale the whole jump by `1 ∓ √rtol`, i.e. an
-  answer that moves when `rtol` does.
-
-  Two refusals were also retired as *vacuous* (the issue's sub-finding). A delay
-  of literal `0` is not a delay — `process_firing_batch` already takes the
-  immediate path for it, so there is no trigger-time-to-execution-time window;
-  and `persistent=false` can only cancel a fire inside that window (SBML L3v2
-  §4.11.3), so without a delay the flag has nothing to act on. Ghanbari2020 and
-  Zongo2020 were blocked by exactly this.
-
-  Corpus result on the 225 event-bearing `rr_parity` models, requesting **every**
-  parameter: **13 models newly allowed** (BIOMD1, 117, 152, 153, 244, 301, 327,
-  340, 422, 494, 650, 820, MODEL2310250001), 114 unchanged, 0 lost. Validated
-  against a central difference of the trajectory itself, normalized to the
-  observable's own scale and filtered to samples where the difference quotient
-  is self-consistent across two step sizes: the onset column's worst error sits
-  at or below the same model's *control* (non-trigger) parameters — 3.5e-4 vs
-  3.2e-4 on Owen1998 (BIOMD650), 2.1e-7 vs 2.7e-4 on BIOMD301, 8.3e-6 vs 3.3e-4
-  on BIOMD820. The two models where the onset column starts worse (BIOMD301
-  `pulse1_length` 1.0e-1, BIOMD327 `ton` 1.3e-2 at the default `rtol=1e-8`)
-  converge with the integration (1.0e-5 and 1.2e-3 at `rtol=1e-10`), which is
-  the CVODES difference-quotient sensitivity RHS's own accuracy on those models
-  rather than the jump.
-
-  One correctness trap worth recording, because it is the failure mode this
-  module exists to avoid rather than an omission. A threshold that is an SBML
-  `<assignmentRule>` parameter is *not* a constant, even though
-  `param_is_expression` is false for it and reading its current value looks like
-  reading a literal — the loader turns such a rule into a model function bound
-  to the same-named parameter. BIOMD0000000301 writes its pulse schedule as
-  `pulse2_start = pulse1_start + pulse1_length + pulse_interval`; attributing
-  the whole `∂t*/∂p` to `pulse2_start` put the gradient on a column no fitter
-  moves and left `pulse1_start`'s at zero. Rule-bound parameters now join the
-  inlining map when their body reduces to arithmetic over parameters, and every
-  identifier that survives the flattening must be a primary — anything else
-  (`floor()`-based dose schedules, a rule that reads state) is refused with a
-  reason instead of evaluated at its current value.
-- **A build-time derivation budget for the sensitivity `∂f/∂p` path (issue #90),
-  the last unaddressed "still has to bail" item of #55.** #95/#187 bound the
-  symbolic derivation of the analytical *Jacobian*, so a model that does not
-  derive in time falls back to the finite-difference Jacobian instead of hanging
-  the load. The `∂f/∂p` path added by #55 (#65/#66/#67/#68) does the same kind of
-  sympy work and had no budget at all: `python/bngsim/_codegen.py` contained zero
-  references to `deadline`, and its three `sp.diff` sites were unguarded. The one
-  that scales badly runs **one `sp.diff` per (distinct rate law, parameter it
-  reads) pair** — the product of rate-law size and parameter count, exactly the
-  axis #95 found super-linear — so a genome-scale Functional model with a long
-  `sensitivity_params` list would present as a build that *hangs* rather than one
-  that declines and says why (and to a `rr_parity`-style harness, which times
-  build and solve together, as an ODE timeout).
-
-  The derivation is now bounded by `BNGSIM_SENS_DERIV_BUDGET_S`. It shares the
-  Jacobian budget's base, per-species slope and override grammar — one
-  implementation, so the two policies cannot drift — but is resolved
-  independently, so `BNGSIM_JAC_DERIV_BUDGET_S=inf` (the documented genome-scale
-  workaround for keeping an analytical Jacobian) does not silently uncap it.
-  The deadline is threaded down to every `sp.diff` on the path — the Functional
-  rate laws and both flavours of derived-parameter chain rule, on the model path
-  and the `.net` text path alike — and checked on entry to each rate law as well
-  as before each partial, so overshoot is bounded to one (law, parameter) pair
-  rather than one whole model. Expiry declines through the existing
-  `_warn_functional_sens_rhs_refused`, landing beside every other decline reason
-  with a warning naming how far the derivation got and the override to raise.
-
-  It also covers the *other* derivation on the same build, which the issue's
-  three-site table does not list: `ySdot = J·yS + ∂f/∂p`, and the `J·yS` half
-  re-derives ∂f/∂x through `_functional_jacobian_groups`. That is the same math
-  `attach_functional_jacobian` already ran at load under the #95 budget, but a
-  re-derivation with no clock of its own — and on a model whose load-time attach
-  was itself cut off there is no earlier bound to inherit, so bounding only ∂f/∂p
-  would have left the identical hang reachable one call later. The #151 native
-  saturable emitters run no sympy and are unaffected; only their fallback takes
-  the deadline.
-
-  **One difference from the Jacobian budget is deliberate: this one never becomes
-  unbounded by size.** `_FD_NONVIABLE_SPECIES` exists because past that scale an
-  FD Jacobian does not converge — there is nothing to fall back *to*, so the
-  analytical Jacobian is mandatory. Declining a sensitivity RHS only hands the
-  columns to CVODES' internal difference quotient, which is what every Functional
-  model used before #55 and which is correct at every scale. Correct is not cheap
-  (measured 9–37x per column, and on a stiff model at a tight `rtol` the DQ's
-  `~sqrt(rtol)` accuracy collapses the step size outright), which is why the
-  decline is a warning that names the knob rather than a silent downgrade.
-
-  Corpus A/B over all 585 `.net` models, default budget vs unbounded: **544 models
-  emit an analytic sensitivity RHS in both arms, 0 source hashes differ**, total
-  derivation 7.6 s with the slowest single model at 0.44 s — 46x headroom under
-  the 20 s base, so nothing real is near the cut-off. An explicit override also
-  joins the `.net` path's in-process memo key and its on-disk `model_hash`
-  (that path keys on the model's *content*, not on the generated C, so without it
-  a build made under a tight budget would be served back to one made without it —
-  the same trap #67's A/B hatch had to sidestep).
-
-- **Per-model composition counts in the ODE Jacobian characterization report
-  (issue #42).** `jacobian_characterization.py` recorded rich Jacobian-side
-  structure (`N`, `rank`, `n_reactions`, `density`, `stiffness_ratio_*`) but
-  nothing about model composition, so the paper's representative-BNGL-models
-  table had to carry its IC-not-zero and parameter-count columns as hand-curated
-  constants — the one column pair in that table not derived from data. Each
-  result row now also carries `n_seed_nonzero`, `n_parameters`,
-  `n_independent_parameters`, `excluded_parameters` and
-  `excluded_parameter_reasons`.
-
-  `n_seed_nonzero` is read off the loaded network rather than by counting `seed
-  species` lines, so parameter-valued initial conditions are already evaluated:
-  `Lang_2024`'s 73 seed lines resolve to 65 nonzero species, and a line whose
-  parameter is `0` is correctly not counted. `n_independent_parameters` applies
-  the table caption's rule — numeric-valued independent parameters, with
-  unit-conversion constants and parameters derived from others excluded — which no
-  single parse rule reproduces on its own, so every excluded name is emitted with
-  its reason (`derived` or `unit_conversion`) and
-  `n_independent_parameters == n_parameters - len(excluded_parameters)` holds by
-  construction. BNG's synthetic `_rateLaw{N}` symbols are dropped before the
-  census and appear in neither, and the unit-conversion name sets are recorded in
-  the report's `_meta.params`. Avogadro's number is matched case-sensitively and
-  guarded by magnitude, so `race.bngl`'s `nA 5` — an Erlang step count — stays a
-  model parameter while `Na 6.022e23` and the RuleHub tutorials' `NaV 6.02e8`
-  (Avogadro rescaled to /um^3) are excluded. Across the 278-model `bngl_models`
-  slice the only names the policy excludes are `NA`, `Na` and `Vref`. The six
-  exemplars reproduce the curated values exactly: `Lang2024` 65/205,
-  `Kocieniewski2012` 4/10, `Barua2007` 2/22, `Blinov2006` 6/43, `Barua2013` 6/25,
-  `fceri_fyn` 5/31.
-- **`Simulator(..., force_sparse_linear_solver=True)` for `method="ode"`, the
-  missing counterpart to `force_dense_linear_solver` (issue #29).** The ODE
-  linear-solver kind is auto-selected — sparse KLU when a model is both large
-  (`n_species >= 50`) and sparse (Jacobian density `< 0.10`), dense otherwise —
-  and until now the only override pushed toward dense. That made the rule
-  unfalsifiable on the half of a corpus it sends to dense: forced-dense shows
-  what KLU buys on large sparse networks, but nothing showed KLU's setup and
-  indexing overhead on the small dense ones, which is the evidence that the rule
-  does real work rather than being replaceable by "always KLU". Under the auto
-  rule the 585-model BNGL ODE corpus splits 541 dense / 44 KLU; the forced-sparse
-  arm now covers the other 541.
-
-  The flag bypasses the size and density gates and nothing else — KLU still
-  needs a real sparsity pattern and a non-JAX Jacobian, so it stays a no-op in a
-  build without KLU, exactly as `force_dense_linear_solver` documents itself.
-  Passing both force flags raises `ValueError` (and the C++ `SolverOptions` path
-  rejects the pair too) rather than letting one quietly win, which would hand a
-  benchmark auto-selected numbers under a "forced" label. Flipping the flag
-  between `run()` calls on one `Simulator` invalidates the warm CVODE cache, so
-  the solver is rebuilt rather than reused.
-
-  Forced-sparse reaches KLU on all 585 models. Getting the last 7 there took
-  making the Curtis-Powell-Reid coloring lazy (below); a run that still cannot
-  supply a sparse Jacobian is refused with a message naming the flag, rather
-  than failing inside CVODE with "no Jacobian constructor available".
-
-  `benchmarks/suites/ode_fullnet/run_forced.py --mode sparse` is unblocked.
-- **One BNG2.pl resolver for the whole suite (`parity_checks/_core/bngpath.py`),
-  plus a `parity` dependency group that provisions it.** BNG2.pl was located by
-  six near-duplicate helpers across eleven files that disagreed about precedence
-  (see Fixed). They are replaced by `resolve_bng()` / `require_bng()` /
-  `skip_reason()`, which try `$BNG2_PL` → `$BNGPATH` → PyBioNetGen's bundled copy
-  and record every attempt, so a failure names each location searched and what it
-  yielded instead of reporting a bare absence. Two consequences beyond the fix:
-  the sweep entrypoints (`parity_golden.py`, `bng_ode_run.py`, `bng_stoch_run.py`)
-  now find the bundled BNG2.pl on their own — no `export BNGPATH` needed to
-  regenerate a golden — and a stale env var falls through to a working install
-  rather than poisoning the lookup. `uv sync --extra dev --group parity` installs
-  the pinned PyBioNetGen (which bundles BNG2.pl, `bin/run_network` and
-  `bin/NFsim`), taking `parity_checks/tests/` from 264 passed / 14 skipped to
-  **288 passed / 0 skipped** with no environment variables set. The group lives
-  in PEP 735 `[dependency-groups]`, not `[project.optional-dependencies]`, because
-  its `git+https://` direct reference would otherwise land in published metadata
-  and make the distribution unpublishable to PyPI; `test_pin_agreement.py` fails
-  if its commit drifts from `requirements-pybionetgen.txt`, the source of truth.
-- **ODE Jacobian characterization harness**
-  (`parity_checks/bng_parity/jacobian_characterization.py`): characterizes each
-  ODE model in the `bng_parity` corpus by structural Jacobian density
-  (`nnz/N^2`) and stiffness ratio — `max|Re lambda| / min_{!=0}|Re lambda|` on the
-  conservation-reduced Jacobian, computed from BNGsim's own native analytical
-  Jacobian (no autodiff) — and, in `--analyze` mode, partitions the corpus into
-  sparse-stiff / dense-stiff / non-stiff regimes. For models with `N > 300` the
-  stiffness ratio is sampled at up to `DENSE_TIME_SAMPLES` log-spaced trajectory
-  points (default 64; `--dense-time-samples` to override) rather than the former
-  3, and each result now reports both `stiffness_ratio_max` (trajectory peak) and
-  `stiffness_ratio_median` (sustained). The old 3-point sampling under-resolved
-  the peak for large networks — e.g. the `N=1281` `fceri_fyn` peak rose from
-  `1.4e7` to `1.0e8` under dense resampling.
-- **SBML BioModels counterpart** of the characterization harness
-  (`parity_checks/rr_parity/jacobian_characterization_sbml.py`): applies the same
-  density and stiffness metrics and regime classification to the `rr_parity`
-  SBML corpus, loading each model via `Model.from_sbml` (no network-generation
-  step) and reusing the `bng_parity` metric helpers — including the dense
-  trajectory time sampling above — so both corpora are characterized by identical
-  code and report the same `stiffness_ratio_max` / `stiffness_ratio_median`
-  fields.
-
 ### Fixed
+- **A pre-init `set_param` on the RuleMonkey backend is a parameter update
+  again, not a model rebuild (issue #115).** `RuleMonkeySimulator` answered every
+  pending override by re-evaluating the XML's whole `<Parameter expr=>` graph,
+  writing two temp XMLs, and reconstructing the upstream engine from the second
+  one — on *every* `run()` and every session `initialize()`. That existed to work
+  around an upstream defect (GH #44): RuleMonkey parsed only the collapsed
+  `<Parameter value=>`, so its own override cascade re-resolved a number to
+  itself and could not reach a derived seed amount such as
+  `LT = ((dose_nM*1e-9)*NA)*V_sim`. RuleMonkey **v3.7.0**
+  ([`0ec6148`](https://github.com/richardposner/RuleMonkey/commit/0ec6148)) fixed
+  that — the cascade re-derives from `expr=`, gated on the value actually moving
+  — so the adapter now forwards `set_param` and lets the engine propagate. The
+  vendored pin moves `fbdde54` → `8f87968` (v3.7.0 plus its docs follow-up).
+
+  Two behavior bugs go with it, both consequences of maintaining a parameter
+  evaluator in parallel with the engine's:
+
+  * **An override no longer perturbs anything outside its dependency cone.**
+    The re-bake re-rounded *every* derived parameter to `expr=` precision
+    whenever any override was pending. Where BNG2 writes `NA` as
+    `value="6.0221408e+23"` against `expr="6.02214076e23"`, that moved every
+    bimolecular rate constant dividing by Avogadro's number by ~4e-9 relative —
+    at every scan point, for parameters the scan never touched. A no-op
+    `set_param(p, p)` was enough to trigger it.
+  * **`clear_param_overrides()` after a run takes effect.** The rebuild ran only
+    while an override was *pending*, so once a run had baked a dose into the
+    model, clearing it left the baked seed amount and rate constants in place and
+    the next run silently kept using the cleared dose. (Upstream's companion fix
+    closes the same hole on its side.)
+
+  The GH #51 half-up seed-count policy is unchanged in effect and re-expressed in
+  mechanism: instead of rewriting `<Species concentration=>` in a temp XML, the
+  adapter reads the amount the engine has already resolved
+  (`initial_species()`) and pins the rounded integer (`set_initial_amount()`),
+  re-derived after every `set_param` / `clear_param_overrides`. That also removes
+  the overlay's blind spot — it could only resolve a bare parameter or a literal,
+  where the engine resolves whatever the model wrote.
+
+  Per-scan-point cost, median of 12 points, zero-horizon `run()` so the setup is
+  not hidden behind SSA work (RuleMonkey's own model corpus):
+
+  | model | XML lines | before | after | no-override control |
+  |---|---|---|---|---|
+  | `r21` (ribosome) | 51,919 | 29.8 ms | **0.41 ms** | 0.37 ms |
+  | `tcr` | 10,457 | 121.7 ms | **113.5 ms** | 112.9 ms |
+  | `ensemble` | 15,133 | 249.8 ms | **242.7 ms** | 243.0 ms |
+  | `egfr_net` | 2,996 | 24.6 ms | **20.7 ms** | 20.7 ms |
+  | `blbr_posner2004` | 2,085 | 10.1 ms | **7.0 ms** | 6.9 ms |
+
+  An overridden point now costs what an un-overridden one costs, which is the
+  actual claim; the spread across models is just how much of a point is XML
+  parsing versus instantiating the pool. Construction gets cheaper too (`r21`
+  23.9 → 19.4 ms) since the cold path no longer writes a seed-rounded temp XML.
+
+  Found on the way and fixed with it: **no workflow was triggered by a change to
+  the RuleMonkey adapter or its vendored tree.** `native-tests.yml` builds
+  `-DBNGSIM_BUILD_RULEMONKEY=OFF`, so `src/rulemonkey_simulator.cpp` is not in
+  that build; the jobs that do compile it only did so because
+  `BNGSIM_BUILD_RULEMONKEY` defaults ON, and none listed it in `paths:`. A
+  vendor bump could have failed to compile with nothing red.
+  `windows-tail.yml` — which already builds RuleMonkey and already runs
+  `test_seed_count_rounding.py`'s RuleMonkey class — now triggers on
+  `src/rulemonkey_simulator.cpp` and `third_party/rulemonkey/**` and runs
+  `test_rulemonkey.py`, at no extra build cost. `scripts/vendor_rulemonkey.py`'s
+  clean-destination guard is fixed alongside: it ran `git status` from the
+  *parent* of the checkout, which exits 128 in a standalone clone, so the guard
+  aborted the refresh instead of checking anything.
+
+- **The derived-parameter chain rule walks the parameter DAG instead of
+  flattening it before differentiating (issue #99).** Issue #41 taught
+  `_compute_derived_param_jacobian` to reach a *nested* derived
+  (ConstantExpression) parameter by substituting it — and its whole dependency
+  graph — textually before handing one expression to sympy. That substitution is
+  exponential in the depth of the graph. On `ode/synthesis_v3` — **five
+  species**, 28 derived parameters — a 43-character parameter flattens to 20 KB
+  and its dependent to 40 KB, and because the nesting lands in an *exponent*
+  (`n = ln(...)/ln(ratio)`, `Fh = (…^n…)^(1/n)`) the `sp.diff` on the result
+  never returns. It was the one model in the 585-model `.net` corpus whose
+  `_analyze_output_sens` never completed, and #97's budget could not save it:
+  the cost is a **single uninterruptible sympy call**, and a wall-clock deadline
+  can only be checked *between* them.
+
+  The chain rule now composes over the graph —
+  `∂p_d/∂θ = (∂p_d/∂θ)_direct + Σ_k (∂p_d/∂s_k)·(∂s_k/∂θ)` — differentiating each
+  parameter as written and memoising per node, so a diamond is derived once and
+  a cycle in an ill-formed `.net` is reported rather than recursed into.
+  `∂p_d/∂s_k` prints the nested parameter as its `p[idx]` slot, which the runtime
+  already holds. This is the shape `_functional_dfdp_terms` has always used for a
+  rate law naming a derived parameter; this was the one place that still
+  flattened. `synthesis_v3` now derives in **1.2 s**, and `∂n/∂primary` emits
+  12 KB of C where the flattening emitted 202 KB.
+
+  **The same flattening was on the initial-condition path, so this was never
+  only a codegen-build problem.** Species `F` starts at `F0`, the 40 KB one, so
+  *every* parameter-sensitivity run on that model hung in
+  `compute_ic_param_sens_seed` before any C was generated. Both halves — the one
+  that emits C and the one that substitutes values — now walk the same DAG
+  through the same shared parse, which is what keeps them from drifting apart
+  again.
+
+  Two consequences beyond the model that motivated it. Nested `min()`/`max()`
+  flattened into one expression produced a derivative `sp.ccode` refused with
+  *"Invalid NaN comparison"*, losing the entire chain rule for `phi`, `alpha` and
+  `gamma` on three corpus models — which under #56's rule declines the analytic
+  sensitivity RHS. Walked, each level prints on its own: those three models now
+  emit, and nine functions across three more models gain output sensitivities
+  they were refused. (The `min`/`max` derivative itself was never the silent-zero
+  class the issue suspected: `Max` is *continuous*, so unlike an `if()` there is
+  no jump at the kink and no delta term to lose.) And #97's derivation-step count
+  — one per expression parsed, one per symbol it names — is now the work the
+  phase actually does rather than a number with no fixed relation to it.
+
+  Validated over the 585-model `.net` corpus: 226,408 `(derived parameter,
+  primary)` pairs finite-differenced against `set_param`-perturbed parameter
+  values, no disagreement outside the FD noise floor; 13,451 partials evaluated
+  against the pre-fix arm in the same process, agreeing to roundoff with **no
+  chain-rule term lost anywhere**; 378 of 584 models byte-identical, every
+  emitter change in the declines-to-emits direction, and total emitted C +2.6%.
+  End to end on `model_step1_v1`, whose `fa__FREE` and `fr__FREE` reach the
+  dynamics only through the chain that could not be derived, the newly analytic
+  sensitivities match a re-solved-trajectory finite difference to 1.4e-6 and
+  5.8e-7 relative.
+
 - **Concurrent C expression emission now keeps symbol resolvers isolated per thread
   (issue #117).** The cached SymPy C printer is now thread-local, preventing one
   emission from replacing or clearing another emission's resolver and causing a
   supported derivative to be reported as unavailable.
+
 - **`set_param` did not rebuild a species initial condition that references the
   parameter (issue #79).** `A() Stot` in a `.net` species block — or an SBML
   `initialAssignment` that is a bare `<ci>` — declares that species' initial
@@ -1225,6 +1243,7 @@ in `CMakeLists.txt`) is derived from it.
   Regression coverage in `python/tests/test_set_param_ic_rebuild.py` (25 cases,
   20 of which fail without the fix) and one clone-contract case in
   `test_model_clone.py`. The 585-model `.net` corpus loads unchanged.
+
 - **The docs said the KINSOL polish uses an analytical Jacobian. It never has.**
   `solve_by_newton` does not call `KINSetJacFn`, so KINSOL installs its own
   difference-quotient Jacobian and each setup costs **one RHS evaluation per
@@ -1243,6 +1262,7 @@ in `CMakeLists.txt`) is derived from it.
   one is a real per-setup saving on codegen-backed models (the artifact already
   carries `bngsim_codegen_jac`) but changes how both tiers converge, so it wants
   its own before/after rather than a drive-by.
+
 - **`steady_state(method="newton")` no longer returns the saddle on a bistable
   model (issue #78).** On the Gardner 2000 toggle at `alpha_2 = 53.526315789`,
   one dose of the model's own 20-point scan, it returned `[28.245, 1.830]` with
@@ -1328,6 +1348,7 @@ in `CMakeLists.txt`) is derived from it.
   `max Re(λ)/max|λ|` is `1e-16` or smaller, because `|det|` there is ~`1e-21` and
   the sign is roundoff. An LU cannot tell that case apart, which is the same thing
   `sens_jacobian_rcond` was measured to be unable to do in #63.
+
 - **A steady-state `∂f/∂p` component whose response is roundoff takes the wide
   probe instead of fabricating a gradient (issue #123).** #76 made the
   finite-difference parameter probe relative to the parameter, which is right
@@ -1491,6 +1512,7 @@ in `CMakeLists.txt`) is derived from it.
   and every `hasOnlySubstanceUnits="false"` species — the fix is a no-op wherever
   the projection was already right. The species block is storage-based and
   deliberately keeps its unscaled weight.
+
 - **A switch-time crossing now resumes on the branch it just crossed into, so
   forward sensitivities stop dying at fitted `if(t>=p, …)` onsets (issue #82).**
   The issue #48 stop time lands `t` exactly on the crossing `t*`, but the `if()`
@@ -1582,6 +1604,7 @@ in `CMakeLists.txt`) is derived from it.
   `_CODEGEN_VERSION` is bumped to 27 so a cached v26 `.so` cannot keep serving the
   contradictory pair. The two corpus MM models (`test_MM`, `mCaMKII_Ca_Spike`) do
   not move at all — trajectories byte-identical, same step counts.
+
 - **A Functional model built with `sensitivity_params` could not run on the MIR
   JIT backend at all — c2mir refused the generated source on every platform
   (issue #85).** `MirJit` does not hand c2mir the codegen's C unchanged: c2mir
@@ -1840,6 +1863,7 @@ in `CMakeLists.txt`) is derived from it.
   across machines and working-tree states. A test asserts the committed stub
   carries no build stamp, so a dropped normalization fails loudly instead of
   landing in the next merge.
+
 - **A zero-arg observable call inside a function made the codegen emitters emit C
   that does not compile, so forward sensitivity refused the model (issue #28, the
   codegen half).** BNGL accepts an Observable written as a zero-arg call —
@@ -1880,6 +1904,7 @@ in `CMakeLists.txt`) is derived from it.
   the call form against the model's closed forms on both the constant-coefficient
   shape (which used to come back as exactly 0.0) and the parameter-coefficient
   shape (which used to decline).
+
 - **Steady-state expression output sensitivities dropped the derived-parameter
   chain rule.** `compute_ss_output_sensitivity`'s explicit-parameter term
   `∂func/∂p` is a finite difference taken by writing the perturbed value straight
@@ -1916,6 +1941,7 @@ in `CMakeLists.txt`) is derived from it.
   primaries feeding a derived parameter were wrong. The CVODES codegen
   output-sensitivity chain rule (GH #198) agrees with the closed form to 1e-4,
   and is used as an independent oracle in the regression test.
+
 - **`steady_state()` never received the compiled RHS, and finite-differenced all
   of `dY_ss/dp` — including the Jacobian the model already had analytically
   (issue #63).** Two defects, both invisible from Python.
@@ -2001,6 +2027,7 @@ in `CMakeLists.txt`) is derived from it.
     the five well-posed models, 1e-12 to 1e-9 for the three singular ones) and
     warns below `1e-8`. It warns rather than refusing because eight models is not
     enough to set a refusal threshold.
+
 - **A parameter named `p` or named after a C keyword made the sensitivity RHS
   emit C that does not compile, so forward sensitivity refused the model.**
   `_derived_param_jacobian_checked` differentiates a derived rate constant with
@@ -2041,6 +2068,7 @@ in `CMakeLists.txt`) is derived from it.
   issue #62 entry below records as refusing the single-shot path over "a separate
   defect, not a differentiability limit". That defect is this one, so both entry
   points now answer them.
+
 - **`compute_all_sensitivities` skipped sensitivity codegen on models with no
   functions and ran the interpreted RHS, up to 49x slower than the identical
   coupled solve (issue #62).** The chunked entry point attached the analytical
@@ -2099,6 +2127,7 @@ in `CMakeLists.txt`) is derived from it.
   the single-shot path today (their codegen emits invalid C — a separate defect,
   not a differentiability limit), so no model that gets a sensitivity tensor from
   one entry point now fails at the other.
+
 - **A collapsed step size at a rate-law discontinuity made `Simulator.run` never
   return, and no step bound stopped it (issue #54).** At an `if(t >= sigma)` rate
   jump CVODE drives the step size to ~1e-15 until `t + h == t` and returns
@@ -2122,6 +2151,7 @@ in `CMakeLists.txt`) is derived from it.
   batch, however slowly, so it is untouched; the same reproducer at
   `rtol = atol = 1e-7` still integrates normally, as the issue's own table
   records, where a cumulative step ceiling would have refused it.
+
 - **The event-time sensitivity guard missed state-dependent triggers reached
   through SBML, answering those models instead of refusing them (issue #52).**
   The guard refuses forward sensitivities when an event's crossing time depends
@@ -2144,6 +2174,7 @@ in `CMakeLists.txt`) is derived from it.
   Refusing is unchanged as a policy — this is only the coverage of what counts as
   state — and the message now says which of the three it saw and why that implies
   a moving crossing time.
+
 - **The codegen cache did not invalidate on a codegen change, so a fix could be
   silently inert on a warm cache (issue #51).** The `.net` path keys its compiled
   `.so` on the model content plus the hand-maintained `_CODEGEN_VERSION` constant
@@ -2173,6 +2204,7 @@ in `CMakeLists.txt`) is derived from it.
   caches. On a `.pyc`-only or zipped install the sources cannot be read and the
   key degrades to the constant alone, the pre-fix behavior. `CONTRIBUTING.md`
   now documents when a manual bump is still required.
+
 - **A derived parameter with a compound condition silently zeroed its
   forward-sensitivity chain rule (issue #56).** A `ConstantExpression` parameter
   defined by `if((sel>=1)&&(sel<10), kA, kB)` produced the same trajectory as the
@@ -2235,6 +2267,7 @@ in `CMakeLists.txt`) is derived from it.
   rather than the generated source, so without the bump a warm
   `~/.cache/bngsim/codegen` would keep serving the pre-fix `.so` and the fix
   would be silently inert — the failure mode issue #51 documents for #41 and #43.
+
 - **`set_param` was not propagated on two network-free session paths, both
   silently (issue #44).** Two independent gaps let a network-free session run
   with plausible-but-wrong state. (1) `NfsimSession.set_param` after
@@ -2257,6 +2290,7 @@ in `CMakeLists.txt`) is derived from it.
   (and re-rounds fractional seed amounts), mirroring the NFsim path, so both
   engines start identically. The `<Parameter>`-table + override-baking machinery
   is now shared between the two backends in `src/param_override_xml.hpp`.
+
 - **An explicit `$BNGPATH` was silently ignored whenever PyBioNetGen was
   installed.** The test-side BNG2.pl helpers asked `bionetgen.main.get_conf()`
   for its bundled copy first and read `$BNGPATH` / `$BNG2_PL` only from an
@@ -2267,6 +2301,7 @@ in `CMakeLists.txt`) is derived from it.
   (`_core.bngpath`, see Added), and `test_bngpath_resolver.py` pins it so the
   inversion cannot return. The symptom was a machine holding three separate
   BioNetGen installs reporting "needs BNG2.pl".
+
 - **`parity_checks/tests/test_corpus_manifest_schema.py` had never run, in any
   environment.** It guards on `pytest.importorskip("jsonschema")`, but
   `jsonschema` was declared nowhere — not in `pyproject.toml`, zero occurrences
@@ -2278,6 +2313,7 @@ in `CMakeLists.txt`) is derived from it.
   agreement, each across the `biomodels` / `bng_parity` / `dsmts` /
   `rr_parity_sedml` corpora) run and pass. Same class as the GH #27 guard fix
   above: a test that skips everywhere is not a test.
+
 - **`scripts/ship_wheel.py` could not build from the project venv at all.** Its
   canonical `python -m pip wheel . --no-build-isolation` assumes pip is present,
   but `uv venv` — the venv CONTRIBUTING tells you to create (`uv sync --extra
@@ -2286,6 +2322,7 @@ in `CMakeLists.txt`) is derived from it.
   pip, keeping build isolation (an env without pip generally has no
   scikit-build-core either) and passing `--python` so the wheel carries this
   interpreter's ABI tag. Errors clearly when neither pip nor uv is available.
+
 - **`scripts/ship_wheel.py` produced an uninstallable wheel when run on Apple
   Silicon.** It forced `MACOSX_DEPLOYMENT_TARGET=10.15` unconditionally to match
   the `wheelhouse-local` convention — correct on the x86_64 build box, but on
@@ -2299,6 +2336,7 @@ in `CMakeLists.txt`) is derived from it.
   `platform.machine()` also reports `x86_64` under Rosetta, which is the right
   answer there. Surfaced by `bootstrap_parity_env.py`, whose contract is to
   install bngsim from this repo's own wheel.
+
 - **The GH #27 steady-state regression guards were silently skipping in any
   fresh clone or git worktree.** `python/tests/test_steady_state_gh27.py` read
   its four published models from `benchmarks/suites/ode_fullnet/nets/`, which is
@@ -2310,6 +2348,7 @@ in `CMakeLists.txt`) is derived from it.
   and a net missing from that tracked corpus is an assertion failure rather than
   a skip; only the absence of the whole benchmark tree (testing an installed
   wheel) still skips.
+
 - **Steady-state solver (`method="newton"` / `Simulator.steady_state`) returned
   wrong or NaN roots for several published dose-response models (issue #27).**
   The default seeded KINSOL at the raw initial condition and only fell back to
@@ -2337,6 +2376,7 @@ in `CMakeLists.txt`) is derived from it.
     integration (a correct answer), stops probing KINSOL after a bounded number of
     failed attempts, and routes the KINSOL context's error log to the null sink so
     the expected failure no longer spams stderr.
+
 - **PSA now scales zeroth-order synthesis reactions and bounds every reaction's
   leap by its products as well as its reactants (issue #14).** The partial-scaling
   leap factor `iScaling = max(1, ⌊N_min/N_c⌋)` previously took `N_min` over
@@ -2357,6 +2397,7 @@ in `CMakeLists.txt`) is derived from it.
   factor; the exact-SSA path is unchanged. The scaling of nonlinear rate laws
   (MichaelisMenten / Sat / Hill) still differs from `run_network` and is tracked
   separately in issue #16.
+
 - **`Model.from_net` no longer fails with `stoi: no conversion` on a `.net`
   containing a `reactions_text` block (issue #13).** BNG2.pl emits an optional
   `begin reactions_text ... end reactions_text` block (when the corresponding
