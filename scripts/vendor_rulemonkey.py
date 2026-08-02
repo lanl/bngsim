@@ -417,11 +417,16 @@ def export_rulemonkey_tree(rulemonkey_repo: Path, commit: str, destination: Path
 def ensure_clean_destination(force: bool) -> None:
     if force:
         return
-    rel_vendor = VENDOR_DIR.relative_to(REPO_ROOT)
-    status = run(["git", "status", "--porcelain", "--", str(rel_vendor)], cwd=REPO_ROOT).stdout
+    # Query git from BNGSIM_ROOT, not REPO_ROOT: REPO_ROOT is the *parent* of
+    # the bngsim checkout, which is not itself a work tree in a standalone
+    # clone — `git -C <parent> status` then exits 128 and this guard aborts the
+    # whole refresh instead of checking anything.
+    rel_vendor = VENDOR_DIR.relative_to(BNGSIM_ROOT)
+    status = run(["git", "status", "--porcelain", "--", str(rel_vendor)], cwd=BNGSIM_ROOT).stdout
     if status.strip():
         raise RuntimeError(
-            f"{rel_vendor} has uncommitted changes. Commit/stash them or rerun with --force."
+            f"{VENDOR_DIR.relative_to(REPO_ROOT)} has uncommitted changes. "
+            "Commit/stash them or rerun with --force."
         )
 
 

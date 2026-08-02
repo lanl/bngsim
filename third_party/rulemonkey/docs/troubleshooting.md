@@ -9,10 +9,11 @@ header comments, and the model-semantics doc.
 ### "ERROR: Unsupported BNGL feature: …"
 
 `rm_driver` refuses by default if the model uses a BNGL construct RM
-cannot honor (compartments, Arrhenius rate laws, Sat / Hill rate laws,
-`population` molecule types, multi-molecule Fixed species, …).  Each
-refusal names the offending element and gives per-feature guidance.
-(`FunctionProduct` rate laws are now implemented — see
+cannot honor (compartments, Sat / Hill rate laws, non-binding Arrhenius
+energy rules, `population` molecule types, multi-molecule Fixed species,
+…).  Each refusal names the offending element and gives per-feature
+guidance.  (`FunctionProduct` rate laws and 2-reactant binding
+`Arrhenius` energy rules are now implemented — see
 [`model_semantics.md`](model_semantics.md).)
 
 Two ways forward:
@@ -131,20 +132,36 @@ Three things to verify:
 2. **Is the parameter name spelled exactly as it appears in the
    BNGL?**  `set_param` rejects names not declared in the loaded
    XML; if it didn't throw, the name matched.
-3. **Is the parameter referenced through the rate-law / observable
-   AST, or baked into a `RateConstant` value?**  RM re-resolves the
-   four parameter-derived numeric fields (`Ele rate_value`,
-   `MM kcat / Km`, `SpeciesInit concentration`) inside
-   `apply_overrides()` at the start of every `run()`.  A parameter
-   that BNG2.pl emits as a literal (post-evaluation numeric in the
-   XML, not a symbolic expression) cannot be overridden — that's a
-   BNG2.pl emit choice, not an RM limitation.  Inspect the XML to
-   confirm the field still carries the symbolic source.
+3. **Are you on a build older than 3.7.0?**  Before 3.7.0 the override
+   cascade re-resolved `<Parameter value=>`, which BNG2 emits as an
+   already-evaluated number — so an override on a base parameter could
+   not reach anything derived from it, and a seed species reading
+   `concentration="<derived>"` silently kept its XML-time amount.  A
+   dose scan looped over `set_param` ran the same dose at every point
+   with no error.  Fixed in 3.7.0 (issue #23): the cascade now follows
+   the `expr=` derivations.  Upgrade rather than working around it.
 
-`set_param` cascades through derived parameter expressions in
-declaration order (see `model_semantics.md` § "Parameter
-overrides"), so `set_param("A_base", x)` propagates to
-`A_tot = A_base * A_factor` automatically.
+`set_param` cascades through derived parameter expressions, iterated to
+fixed point (see `model_semantics.md` § "Parameter overrides"), so
+`set_param("A_base", x)` propagates to `A_tot = A_base * A_factor`
+automatically — and on through any `<Species concentration="A_tot">` to
+the seeded population.
+
+### My seed-species count won't change
+
+If the amount is parameter-driven, `set_param` on the driving parameter
+is the right lever — it re-runs the model's own derivation. Check
+`get_initial_amount("<pattern>")` between runs to see what the next run
+will actually seed.
+
+If the XML declares a bare literal (`<Species concentration="1000">`)
+there is no parameter to override, so use `set_initial_amount(key,
+amount)` instead. Note amounts truncate toward zero: pinning 12.9 seeds
+12 molecules.
+
+`initial_species()` dumps every seed species with its `concentration`
+attribute, its resolved amount, and whether a pin is in force — start
+there when a scan point isn't landing where you expect.
 
 ### `get_parameter` returned the parsed default after I called `set_param`
 

@@ -109,8 +109,9 @@ cpp/rulemonkey/      Core engine sources
 cpp/cli/             rm_driver / rm_scan command-line tools
 include/rulemonkey/  Public C++ API headers
 tests/
-  cpp/               C++ unit tests (smoke, set_param, save/load, homodimer rate,
-                     public API, expr_eval, table_function, error paths,
+  cpp/               C++ unit tests (smoke, set_param, param_expr_gate,
+                     initial_amount, save/load, homodimer rate, public API,
+                     expr_eval, table_function, error paths,
                      parameter_scan/bifurcate)
   models/            BNGL test corpora (feature_coverage, real-world, basicModels)
   reference/         Gold-standard reference trajectories from NFsim and earlier RM
@@ -150,6 +151,21 @@ for (size_t t = 0; t < result.n_times(); ++t) {
   // result.time[t], result.observable_data[obs_idx][t]
   // result.function_data[fn_idx][t] — BNGL global-function values
 }
+```
+
+`set_param` follows the model's own derivations, so a dose scan reuses
+one loaded simulator: overriding a base parameter re-derives everything
+downstream of it, including the seed-species amounts a
+`<Species concentration="...">` expression names.  For amounts no
+parameter drives, `initial_species()` / `set_initial_amount()` set the
+starting population directly.
+
+```cpp
+for (double dose : {1.0, 7.0, 68.0}) {
+  sim.set_param("AT_nM", dose);              // seed counts follow the derivation
+  auto r = sim.run(ts, /*seed=*/42);
+}
+sim.set_initial_amount("L(r1,r2)", 5000);    // or state the count outright
 ```
 
 Stateful session for multi-segment workflows (initialize → simulate →
@@ -199,8 +215,8 @@ CMake snippets for both consumption modes).
   BNGL model to RuleMonkey trajectories.
 - [`docs/model_semantics.md`](docs/model_semantics.md) — reference for
   "will my BNGL model run on RM?".  Lists every supported BNGL
-  construct, every Tier-0 refusal (compartments, Arrhenius / Sat /
-  Hill / FunctionProduct rate laws, population types, multi-molecule
+  construct, every Tier-0 refusal (compartments, Sat / Hill rate laws,
+  non-binding Arrhenius energy rules, population types, multi-molecule
   fixed species), and the best-effort warnings the engine emits at
   load time.
 - [`docs/gdat_format.md`](docs/gdat_format.md) — the `.gdat` output

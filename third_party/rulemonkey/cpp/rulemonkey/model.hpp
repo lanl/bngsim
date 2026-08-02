@@ -336,15 +336,31 @@ struct Model {
   std::unordered_map<std::string, double> parameters;
   std::vector<std::string> parameter_names_ordered;
 
-  // Symbolic source for each declared parameter, captured at XML parse
-  // time before any numeric resolution.  Used by
-  // RuleMonkeySimulator::Impl::sync_parameters to recompute derived
-  // parameters when set_param overrides a base parameter that other
-  // parameter expressions reference (e.g., `B = 2*A` cascades when A
-  // is overridden).  Keyed by parameter id; missing entries (none in
-  // the current parser, but a future emitter may omit) skip the
-  // cascade for that parameter and keep the parsed numeric value.
-  std::unordered_map<std::string, std::string> parameter_exprs;
+  // The `<Parameter value=>` attribute verbatim, keyed by parameter id.
+  // This is the LOAD-TIME source of truth: it is what NFsim reads, so
+  // resolving it (rather than `expr=`) keeps RM's cold-start numbers in
+  // NFsim parity even where BNG2's writer rounds `value` to fewer digits
+  // than `expr` carries (e.g. `value="6.0221408e+23" expr="6.02214076e23"`).
+  //
+  // For BNG2-emitted XML this is a plain numeric literal.  Hand-authored
+  // XML may put a symbolic expression here instead, which is why it is
+  // resolved through the evaluator rather than parsed as a double.
+  std::unordered_map<std::string, std::string> parameter_value_attrs;
+
+  // The `<Parameter expr=>` attribute verbatim, keyed by parameter id —
+  // the SYMBOLIC source (`LT = ((AT_nM*1e-9)*NA)*V_sim`) that BNG2 emits
+  // alongside the resolved `value`.  This is what makes a `set_param`
+  // override reach a *derived* parameter: `value` is already collapsed to
+  // a number, so re-resolving it can never propagate an override, while
+  // re-resolving `expr` can (issue #23).
+  //
+  // Used only by RuleMonkeySimulator::Impl::sync_parameters, and only for
+  // parameters whose expr-resolved value actually moves under the active
+  // overrides — see the symbolic-baseline gate there, which is what keeps
+  // the no-override path bit-identical to `value`.  Entries are absent for
+  // parameters that declare no `expr` (hand-authored XML), and those keep
+  // the `parameter_value_attrs` behaviour.
+  std::unordered_map<std::string, std::string> parameter_expr_attrs;
 
   std::vector<std::string> observable_names_ordered;
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(RuleMonkey VERSION 3.5.0 LANGUAGES CXX)
+project(RuleMonkey VERSION 3.7.0 LANGUAGES CXX)
 
 if(CMAKE_VERSION VERSION_LESS 3.21)
     if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -40,6 +40,7 @@ add_library(rulemonkey STATIC
     cpp/rulemonkey/table_function.cpp
     cpp/rulemonkey/canonical.cpp
     cpp/rulemonkey/pattern_parser.cpp
+    cpp/rulemonkey/energy_expand.cpp
 )
 
 target_include_directories(rulemonkey

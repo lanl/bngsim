@@ -167,6 +167,27 @@ struct SpeciesRow {
   long count;          // number of complex instances of this species
 };
 
+// One `<Species>` entry from the loaded XML's seed-species block — the
+// starting population, before any simulation has run.  Distinct from
+// `SpeciesRow`, which reports live pool contents mid-session.
+struct InitialSpeciesRow {
+  std::string id;   // XML `<Species id=>` ("S1")
+  std::string name; // BNGL pattern from `<Species name=>` ("L(r1,r2)")
+  // The `concentration` attribute verbatim — a parameter name or
+  // expression ("LT") for a parameter-driven amount, a numeric literal
+  // for a hard-coded one.  Empty if the XML declared neither
+  // `concentration` nor `count`.
+  std::string concentration_expr;
+  // The amount the next run/initialize would seed, with the simulator's
+  // current parameter and initial-amount overrides in force.  Still the
+  // real-valued amount: the engine truncates toward zero when it
+  // instantiates molecules (NFsim parity).
+  double amount = 0.0;
+  // True if this species' amount is currently pinned by
+  // set_initial_amount rather than derived from `concentration_expr`.
+  bool overridden = false;
+};
+
 enum class Severity { Warn, Error };
 
 struct UnsupportedFeature {
