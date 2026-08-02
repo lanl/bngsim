@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-02
+
 ### Fixed
 - **`set_param` no longer overwrites a state a run advanced, when the species
   happened not to move (issue #141).** #79 made `set_param` re-resolve a species
