@@ -20,6 +20,36 @@
 // Only the RHS is mandatory; every other symbol is resolved with try_symbol and
 // may be absent (a Functional/MM model has no analytical sens RHS, a model
 // without a complete analytical Jacobian has no compiled Jacobian, etc.).
+//
+// ─── The int return value, and why two consumers ignore it ───────────────────
+//
+// Every function here returns int, and the intended meaning is CVODES': 0 on
+// success, > 0 recoverable (retry the step), < 0 unrecoverable. Nothing has ever
+// returned anything else. `return 0;` is the ONLY return statement the emitter
+// produces, in every exported function and on every branch it has — dense and
+// CSC Jacobian, flat and GH #165 chunked, Elementary / Michaelis-Menten /
+// Functional. There is no early exit to carry an error out of: a domain problem
+// shows up as a non-finite value in the output buffer, which is what the
+// callers' jac_has_nonfinite / rhs_has_nonfinite clamp retries exist to catch.
+//
+// So the consumers split, deliberately, and neither side is an oversight:
+//
+//   * cvode_simulator.cpp propagates it (cvode_codegen_rhs,
+//     cvode_codegen_dense_jac, cvode_codegen_sparse_jac all `return rc`). They
+//     are CVODE callbacks whose signature already has the channel, so honoring
+//     it costs one line.
+//   * steady_state.cpp does NOT (SteadyStateRhs::eval, ::fill_dense_jacobian,
+//     ::fill_sparse_jacobian are void). Those are library methods with five
+//     callers between them, one of which — ss_fill_state_jacobian, shared by
+//     dY_ss/dp and the issue #78 certificate — has no error channel to forward
+//     to. Threading one through for a code that cannot be produced would add a
+//     failure path nothing can reach and nothing can test.
+//
+// **If you ever emit a nonzero return, that split stops being safe** and
+// steady_state.cpp's three methods have to grow the channel. The invariant is
+// pinned rather than merely written down here:
+// python/tests/test_codegen_jacobian.py::test_emitted_c_has_no_nonzero_return
+// fails on the first `return 1;` anyone adds, and says what to fix.
 
 #pragma once
 

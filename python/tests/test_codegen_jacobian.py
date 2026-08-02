@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+import pathlib
+import re
 import shutil
 
 import bngsim
@@ -410,3 +412,117 @@ def test_varvol_codegen_trajectory_matches_interpreted(name):
         return arr[:, list(r.species_names).index("P")]
 
     assert float(np.max(np.abs(run_P(True) - run_P(False)))) < 1e-6
+
+
+# ─── The emitted C's return-code contract ────────────────────────────────────
+#
+# Every codegen entry point is declared `int` (bngsim/codegen_abi.hpp), and the
+# emitter has never returned anything but 0 — there is no early exit on any
+# branch, because a domain problem surfaces as a non-finite value in the output
+# buffer rather than as a status code. Two consumers rely on that, differently:
+#
+#   * cvode_simulator.cpp propagates the code (cvode_codegen_rhs,
+#     cvode_codegen_dense_jac, cvode_codegen_sparse_jac each `return rc`);
+#   * steady_state.cpp does not — SteadyStateRhs::eval, ::fill_dense_jacobian and
+#     ::fill_sparse_jacobian are `void`, and one of their five callers
+#     (ss_fill_state_jacobian, shared by dY_ss/dp and the issue #78 certificate)
+#     has no error channel to forward to at all.
+#
+# The second half is only safe while the invariant below holds. So it is checked
+# rather than asserted in a comment: the day someone emits `return 1;` this fails
+# and names what has to grow a channel first. That is the same lesson the
+# repeated "N sites compute this, one was not updated" defects keep teaching —
+# pin the invariant, not the prose.
+
+# Matched anywhere, not just at the start of a line: the natural way to add an
+# error path is a guard clause (`if (!isfinite(x)) return 1;`), which a
+# line-anchored pattern walks straight past. Comments are stripped first so a
+# `/* ... return ... */` note cannot trip it.
+_RETURN_STMT = re.compile(r"\breturn\s+([^;]*);")
+_C_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+# The emitter branches that can differ, one case each. The three tracked
+# fixtures are small and take the DENSE Jacobian emit; the CSC emit
+# (bngsim_codegen_jac_sparse, GH #162) only fires above SPARSE_THRESHOLD and
+# under SPARSE_DENSITY_MAX, so it needs a real network — hence the corpus case,
+# which skips where the benchmark nets are not vendored.
+_RETURN_CONTRACT_NETS = ("simple_decay.net", "mm_tqssa.net", "pure_sink_conserved.net")
+_SPARSE_EMIT_NET = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "benchmarks"
+    / "models"
+    / "net"
+    / "ode"
+    / "SHP2_base_model.net"  # 149 species at 7.2% density -> CSC emit
+)
+
+
+def _assert_only_returns_zero(path: str, label: str) -> str:
+    from bngsim._codegen import generate_combined_c
+
+    m = bngsim.Model.from_net(path)
+    m.prepare_analytical_jacobian()
+    src, _ = generate_combined_c(path, model=m, emit_jac=True, emit_outputs=True)
+    assert src, f"emitter declined {label}; this test needs a real artifact"
+    # Guard the premise twice: a source with no exported entry point, or with no
+    # compiled Jacobian in it, would pass vacuously.
+    assert "BNGSIM_EXPORT int " in src
+    assert "bngsim_codegen_jac" in src, f"{label} emitted no compiled Jacobian"
+    code = _C_COMMENT.sub(" ", src)
+    returned = sorted({mo.group(1).strip() for mo in _RETURN_STMT.finditer(code)})
+    assert returned == ["0"], (
+        f"{label}: emitted C returns {returned}, not just 0 — read "
+        f"test_emitted_c_has_no_nonzero_return's docstring before changing it"
+    )
+    return src
+
+
+@pytest.mark.parametrize("net", _RETURN_CONTRACT_NETS)
+def test_emitted_c_has_no_nonzero_return(data_dir, net):
+    """`return 0;` is the ONLY return statement the codegen emits.
+
+    If this fails you have added an error path to the emitted C. Before landing
+    it, give `SteadyStateRhs::eval` / `::fill_dense_jacobian` /
+    `::fill_sparse_jacobian` in src/steady_state.cpp an `int` return and
+    propagate it from `cvode_ss_rhs`, `cvode_ss_dense_jac`, `cvode_ss_sparse_jac`,
+    `kinsol_jac` and `kinsol_reduced_jac` — otherwise the steady-state solver
+    reports a failed fill to CVODE/KINSOL as a good matrix. See the return-value
+    section of include/bngsim/codegen_abi.hpp.
+    """
+    src = _assert_only_returns_zero(str(data_dir / net), net)
+    assert "bngsim_codegen_jac_sparse(" not in src, (
+        f"{net} was expected to take the dense Jacobian emit; the CSC branch is "
+        f"covered by test_emitted_c_has_no_nonzero_return_sparse_branch"
+    )
+
+
+def test_emitted_c_has_no_nonzero_return_sparse_branch():
+    """Same contract, over the CSC Jacobian emit (GH #162).
+
+    Separate because the branch is unreachable from a hand-sized fixture: it
+    needs 50+ species under 10% density, which is exactly the shape the
+    steady-state march routes to KLU and therefore the one whose dropped return
+    code would matter most.
+
+    The emit is gated on the BUILD carrying KLU as well as on the model's shape
+    (``is_sparse`` in ``generate_jacobian_*``), so the skip below reads
+    ``plan["has_klu"]`` — the emitter's own input — rather than a second opinion
+    about the build. A KLU-off build (the CI native, MIR and Windows legs are all
+    configured that way) emits the dense Jacobian for every model and has no CSC
+    branch to check.
+    """
+    if not _SPARSE_EMIT_NET.is_file():
+        pytest.skip(f"benchmark net corpus not available: {_SPARSE_EMIT_NET.parent}")
+    m = bngsim.Model.from_net(str(_SPARSE_EMIT_NET))
+    plan = m._core.codegen_jacobian_plan()
+    if not plan["available"] or not plan["has_klu"]:
+        pytest.skip("KLU not compiled: the emitter has no CSC Jacobian branch")
+    # Guard the premise on the emitter's own gate, so a model that drifts out of
+    # the sparse band is a failure and not a silent loss of coverage.
+    assert plan["n_species"] >= 50 and plan["nnz"] > 0 and plan["density"] < 0.10, (
+        f"premise broken: {_SPARSE_EMIT_NET.name} no longer clears the CSC emit "
+        f"gates (n={plan['n_species']}, density={plan['density']:.4f}) — pick "
+        f"another model over SPARSE_THRESHOLD and under SPARSE_DENSITY_MAX"
+    )
+    src = _assert_only_returns_zero(str(_SPARSE_EMIT_NET), _SPARSE_EMIT_NET.name)
+    assert "bngsim_codegen_jac_sparse(" in src
