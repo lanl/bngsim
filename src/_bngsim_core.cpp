@@ -412,7 +412,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "#212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. "
             "Detection and the chain rule to fitted primaries are done by "
             "bngsim._switch_sensitivity; empty (the default) collapses the jump "
-            "to the GH #212 form.")
+            "to the GH #212 form — except for a state-dependent trigger, whose "
+            "∂t*/∂p the solver differentiates at the fire instead (issue #144).")
         .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {
@@ -1264,10 +1265,19 @@ PYBIND11_MODULE(_bngsim_core, m) {
              pybind11::arg("event_time_compensated") = std::vector<int>{},
              "Return a reason string if any event blocks forward sensitivity "
              "for the given sensitivity-parameter names, else None (GH #212, "
-             "issue #49). event_time_compensated lists the 0-based indices of "
-             "events whose ∂t*/∂p the caller supplies via "
+             "issue #49, issue #144). event_time_compensated lists the 0-based "
+             "indices of events whose ∂t*/∂p the caller supplies via "
              "SolverOptions.set_event_time_sens, which lifts the "
              "parameter-dependent-trigger refusal for exactly those.")
+        .def("events_with_runtime_event_time_sens",
+             &bngsim::NetworkModel::events_with_runtime_event_time_sens,
+             "0-based indices of the events whose ∂t*/∂p the solver "
+             "differentiates at each fire, by the implicit function theorem on "
+             "the trigger's residual (issue #144). These are the "
+             "state-dependent triggers — `v > 30` and friends — that reduce to "
+             "a single relational comparison. The Python guard subtracts them "
+             "from its own blocked set, so the core stays the one authority on "
+             "which crossings are differentiable.")
         .def(
             "event_trigger_sources",
             [](const bngsim::NetworkModel &self) {

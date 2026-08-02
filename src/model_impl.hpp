@@ -291,6 +291,38 @@ struct NetworkModel::Impl {
     // Discrete state assignments triggered by boolean conditions.
     std::vector<Event> events;
 
+    // ── Event-trigger residuals for forward sensitivity (issue #144) ─────
+    // Per event, parallel to `events`: the ExprTk expression id of the
+    // trigger's residual `lhs − rhs`, the species that can move it, and the
+    // reason there is none. Sentinels are deliberately distinct so "not looked
+    // at yet" can never be read as "looked at, and there is none":
+    //     -2 → not resolved yet (the lazy state; also the state a clone starts in)
+    //     -1 → resolved, and the trigger is not a single relational comparison
+    //    >=0 → the compiled residual
+    // A pure recomputable cache: every entry is a function of the trigger's own
+    // preprocessed text, so clone() re-derives rather than copying an
+    // expression id that means nothing in the clone's evaluator. Sized lazily
+    // by NetworkModel::event_trigger_residual_expr().
+    std::vector<int> event_trigger_residual_idx;
+    std::vector<std::vector<int>> event_trigger_residual_species;
+    std::vector<std::string> event_trigger_residual_reason;
+
+    // Memo for NetworkModel::expression_support(), keyed by expression id:
+    // (species support, parameter support). The event-jump differences ask for
+    // the same handful of expressions at every fire, and the walk builds
+    // address→index maps over the whole model each time — on a spiking model
+    // that is the difference between O(1) and O(n_species) per fire.
+    //
+    // Safe to memo because the answer is a property of the expression graph,
+    // which build() fixes. The one post-build mutation that can touch it,
+    // set_param()'s detach of an expression-backed parameter, can only ever
+    // make a support SMALLER (the parameter stops expanding to the primaries
+    // behind it) — so a stale entry over-differences, costing time and writing
+    // the zero it would have written anyway, and never under-differences.
+    // Recomputable, so clone() leaves it empty (same exemption as
+    // function_value_cache).
+    std::unordered_map<int, std::pair<std::vector<int>, std::vector<int>>> expression_support_cache;
+
     // Discontinuity triggers (GH #72)
     // ExprTk expression-table indices for time-dependent inequality
     // conditions found in piecewise expressions that feed the ODE RHS

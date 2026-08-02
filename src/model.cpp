@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -233,6 +234,11 @@ NetworkModel NetworkModel::clone() const {
     // would be silent no-ops (DSMTS event cases 00028/29/32/33 hit this
     // pre-Phase-5b but the SSA simulator did not consult events at all,
     // so the bug was latent).
+    // The issue #144 trigger-residual cache is deliberately NOT copied: its
+    // expression ids index the *source* evaluator's table and mean something
+    // else in the clone's. Leaving it at the unresolved sentinel makes the
+    // clone re-derive each residual from its own recompiled trigger, which is
+    // the same text and therefore the same answer.
     copy.impl_->events = impl_->events;
     for (auto &ev : copy.impl_->events) {
         if (ev.trigger_expr_idx >= 0) {
@@ -533,6 +539,403 @@ const std::vector<Parameter> &NetworkModel::parameters() const { return impl_->p
 const std::vector<Function> &NetworkModel::functions() const { return impl_->functions; }
 const std::vector<Event> &NetworkModel::events() const { return impl_->events; }
 
+// ─── Event-trigger residuals (issue #144) ────────────────────────────────────
+//
+// Reduce an event trigger to the residual whose sign change IS the crossing, so
+// the solver can differentiate the crossing time. The trigger the evaluator
+// holds is a *boolean*: `v > 30` evaluates to 1 or 0 and its derivative is a
+// delta, which is why the CVODE root function (trigger − 0.5) can locate the
+// crossing but not differentiate it. `lhs − rhs` is the same surface with a
+// gradient on it.
+//
+// Only a single relational comparison qualifies. A conjunction, disjunction or
+// negation does not: its true-set boundary is assembled from several surfaces
+// and which one carries the rising edge can change as a parameter moves (the
+// same reasoning that restricts issue #49's clock-threshold recognizer to
+// conjunctions of half-lines, one step stricter because here there is no
+// `time` ordering to pick the active atom by). An equality is measure-zero on a
+// continuous trajectory. All are refused by name.
+namespace {
+
+// Logical connectives ExprTk accepts as words. `&&`/`||` are rewritten to
+// ` and `/` or ` by the evaluator's preprocessing before an expression is
+// compiled, so the word forms are what a preprocessed trigger actually
+// carries — but the single-character forms are legal ExprTk too and a `.net`
+// or SBML source can spell them either way, so both are scanned for.
+bool is_logical_word(const std::string &w) {
+    static const std::unordered_set<std::string> kWords = {"and", "or",   "not",  "nand", "nor",
+                                                           "xor", "xnor", "mand", "mor"};
+    return kWords.count(w) != 0;
+}
+
+bool is_ident_char(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; }
+
+// Strip parentheses that enclose the whole expression: SBML triggers routinely
+// arrive as `(v>30)`, whose relational operator would otherwise never be seen
+// at depth 0. Only strips a pair that really does span the string — `(a)>(b)`
+// opens and closes before the end and is left alone.
+std::string strip_enclosing_parens(std::string s) {
+    auto trim = [](std::string &v) {
+        const auto b = v.find_first_not_of(" \t\n\r");
+        if (b == std::string::npos) {
+            v.clear();
+            return;
+        }
+        v = v.substr(b, v.find_last_not_of(" \t\n\r") - b + 1);
+    };
+    trim(s);
+    while (s.size() >= 2 && s.front() == '(' && s.back() == ')') {
+        int depth = 0;
+        bool spans = true;
+        for (std::size_t i = 0; i + 1 < s.size(); ++i) {
+            if (s[i] == '(')
+                ++depth;
+            else if (s[i] == ')')
+                --depth;
+            if (depth == 0) {
+                spans = false; // the opening paren closed before the end
+                break;
+            }
+        }
+        if (!spans) {
+            break;
+        }
+        s = s.substr(1, s.size() - 2);
+        trim(s);
+    }
+    return s;
+}
+
+// Build `(<lhs>)-(<rhs>)` from a preprocessed trigger, or return nullopt with
+// `why` describing what defeated the split.
+std::optional<std::string> trigger_residual_source(const std::string &trigger, std::string &why) {
+    const std::string s = strip_enclosing_parens(trigger);
+    if (s.empty()) {
+        why = "it is empty";
+        return std::nullopt;
+    }
+
+    std::size_t op_pos = std::string::npos;
+    std::size_t op_len = 0;
+    int depth = 0;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '(') {
+            ++depth;
+            continue;
+        }
+        if (c == ')') {
+            --depth;
+            continue;
+        }
+        if (depth != 0) {
+            continue;
+        }
+        if (is_ident_char(c)) {
+            // Consume the whole identifier so a logical word is recognized as a
+            // word (and so `nor` inside `normalize` is not).
+            std::size_t j = i;
+            while (j < s.size() && is_ident_char(s[j])) {
+                ++j;
+            }
+            const std::string word = s.substr(i, j - i);
+            if (is_logical_word(word)) {
+                why = "it combines conditions with '" + word +
+                      "', and which of the combined surfaces carries the rising edge can "
+                      "change as a parameter moves";
+                return std::nullopt;
+            }
+            i = j - 1;
+            continue;
+        }
+        if (c == '&' || c == '|') {
+            why = std::string("it combines conditions with '") + c +
+                  "', and which of the combined surfaces carries the rising edge can change "
+                  "as a parameter moves";
+            return std::nullopt;
+        }
+        if (c == '=' || c == '!') {
+            // `==`, `!=` and ExprTk's single `=` equality. An equality on a
+            // continuous trajectory is satisfied on a measure-zero set, so
+            // there is no transversal crossing to differentiate.
+            why = "it is an equality test, which a continuous trajectory satisfies only on a "
+                  "measure-zero set rather than crossing transversally";
+            return std::nullopt;
+        }
+        if (c == '<' || c == '>') {
+            if (op_pos != std::string::npos) {
+                why = "it chains more than one comparison, so its true-set boundary is "
+                      "assembled from several surfaces";
+                return std::nullopt;
+            }
+            op_pos = i;
+            op_len = (i + 1 < s.size() && s[i + 1] == '=') ? 2 : 1;
+            i += op_len - 1;
+        }
+    }
+
+    if (op_pos == std::string::npos) {
+        why = "it is not a relational comparison, so it has no crossing surface to "
+              "differentiate";
+        return std::nullopt;
+    }
+    const std::string lhs = s.substr(0, op_pos);
+    const std::string rhs = s.substr(op_pos + op_len);
+    if (lhs.find_first_not_of(" \t\n\r") == std::string::npos ||
+        rhs.find_first_not_of(" \t\n\r") == std::string::npos) {
+        why = "one side of its comparison is empty";
+        return std::nullopt;
+    }
+    // Orientation is not imposed: dt*/dp is a ratio of two derivatives of g, so
+    // negating g leaves it unchanged.
+    return "(" + lhs + ")-(" + rhs + ")";
+}
+
+} // namespace
+
+int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) const {
+    const auto &events = impl_->events;
+    if (event_idx0 < 0 || event_idx0 >= static_cast<int>(events.size())) {
+        if (why != nullptr) {
+            *why = "no such event";
+        }
+        return -1;
+    }
+    auto &cache = impl_->event_trigger_residual_idx;
+    if (cache.size() != events.size()) {
+        cache.assign(events.size(), -2);
+        impl_->event_trigger_residual_species.assign(events.size(), {});
+        impl_->event_trigger_residual_reason.assign(events.size(), std::string());
+    }
+    if (cache[event_idx0] == -2) {
+        cache[event_idx0] = -1;
+        const Event &ev = events[event_idx0];
+        std::string reason;
+        if (ev.trigger_expr_idx < 0) {
+            reason = "it has no trigger expression";
+        } else {
+            const std::string &pre = impl_->evaluator->preprocessed_expr(ev.trigger_expr_idx);
+            const std::optional<std::string> src = trigger_residual_source(pre, reason);
+            if (src) {
+                try {
+                    // Compiling the *preprocessed* halves keeps every identifier
+                    // in the spelling the evaluator's symbol table already
+                    // binds; running them back through compile() would remap
+                    // names that are already remapped.
+                    cache[event_idx0] = impl_->evaluator->compile_preprocessed(*src);
+                } catch (const std::exception &e) {
+                    reason = std::string("its residual '") + *src + "' did not compile (" +
+                             e.what() + ")";
+                }
+            }
+        }
+        if (cache[event_idx0] >= 0) {
+            expression_support(cache[event_idx0],
+                               &impl_->event_trigger_residual_species[event_idx0], nullptr);
+        } else {
+            impl_->event_trigger_residual_reason[event_idx0] = reason;
+        }
+    }
+    if (why != nullptr && cache[event_idx0] < 0) {
+        *why = impl_->event_trigger_residual_reason[event_idx0];
+    }
+    return cache[event_idx0];
+}
+
+const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_idx0) const {
+    static const std::vector<int> kEmpty;
+    if (event_trigger_residual_expr(event_idx0) < 0) {
+        return kEmpty;
+    }
+    return impl_->event_trigger_residual_species[event_idx0];
+}
+
+// ─── What a compiled expression can be differentiated with respect to ────────
+//
+// The support of a central finite difference over an expression: which species
+// and which parameters can move it. Every finite difference the event-jump
+// machinery takes — ∂g/∂x and ∂g/∂p of a trigger residual (issue #144), ∂h/∂x
+// and ∂h/∂p of an event assignment (GH #212) — prunes its perturbations with
+// this, so all four agree about what "reads" means.
+//
+// Naming the addresses an expression references is NOT enough, and the two ways
+// it falls short are both silent-zero bugs rather than slow ones:
+//
+//   * ModelBuilder registers a species as an ExprTk variable only when its name
+//     is free, and SBML models routinely give each species an observable of the
+//     same name — so in `u + d` the token `u` binds to the *observable total*,
+//     never to &sp.concentration. A difference restricted to concentration
+//     addresses therefore perturbs nothing and reports ∂h/∂u = 0 on every SBML
+//     model. (This is issue #52's shadowing, on the assignment side.)
+//   * A derived parameter hides its primaries. `2*Ktot` with `Ktot = k1 + k2`
+//     references Ktot's address and neither k1's nor k2's, so a requested k1
+//     looks absent and its column comes back flat.
+//
+// So the walk follows both: an observable expands to the species behind it, and
+// a parameter that is an expression — or that a model function writes, which is
+// how an SBML assignment rule arrives — expands to whatever ITS body reads.
+// Only a rateOf accessor is opaque (dx_i/dt can read the whole state), and it
+// widens the species support to everything.
+void NetworkModel::expression_support(int expr_idx, std::vector<int> *species_out,
+                                      std::vector<int> *params_out) const {
+    {
+        auto memo = impl_->expression_support_cache.find(expr_idx);
+        if (memo != impl_->expression_support_cache.end()) {
+            if (species_out != nullptr) {
+                *species_out = memo->second.first;
+            }
+            if (params_out != nullptr) {
+                *params_out = memo->second.second;
+            }
+            return;
+        }
+    }
+    const auto &species = impl_->species;
+    const int ns = static_cast<int>(species.size());
+
+    std::unordered_map<const double *, int> species_of;
+    species_of.reserve(species.size());
+    for (int i = 0; i < ns; ++i) {
+        species_of.emplace(&species[i].concentration, i);
+    }
+    std::unordered_map<const double *, const Observable *> obs_of;
+    obs_of.reserve(impl_->observables.size());
+    for (const Observable &obs : impl_->observables) {
+        obs_of.emplace(&obs.total, &obs);
+    }
+    std::unordered_map<const double *, int> param_of;
+    param_of.reserve(impl_->parameters.size());
+    for (int i = 0; i < static_cast<int>(impl_->parameters.size()); ++i) {
+        param_of.emplace(&impl_->parameters[i].value, i);
+    }
+    // param index → the model function that writes it, if any.
+    std::unordered_map<int, int> written_by_function;
+    for (const auto &[func_idx, param_idx] : impl_->shared->var_param_bindings) {
+        written_by_function.emplace(param_idx, func_idx);
+    }
+
+    std::unordered_set<int> species_support;
+    std::unordered_set<int> param_support;
+    bool all_species = false;
+    std::unordered_set<int> visited; // expression ids, so a cycle terminates
+
+    std::function<void(int)> visit = [&](int eid) {
+        if (eid < 0 || !visited.insert(eid).second) {
+            return;
+        }
+        for (const double *addr : impl_->evaluator->referenced_variable_addresses(eid)) {
+            auto sp = species_of.find(addr);
+            if (sp != species_of.end()) {
+                species_support.insert(sp->second);
+                continue;
+            }
+            auto ob = obs_of.find(addr);
+            if (ob != obs_of.end()) {
+                for (const auto &entry : ob->second->entries) {
+                    const int idx0 = entry.species_index - 1;
+                    if (idx0 >= 0 && idx0 < ns) {
+                        species_support.insert(idx0);
+                    }
+                }
+                continue;
+            }
+            auto pa = param_of.find(addr);
+            if (pa == param_of.end()) {
+                all_species = true; // a rateOf accessor, or something unmodelled
+                continue;
+            }
+            const int pidx = pa->second;
+            param_support.insert(pidx);
+            auto fn = written_by_function.find(pidx);
+            if (fn != written_by_function.end()) {
+                visit(impl_->functions[fn->second].evaluator_id);
+            } else if (impl_->parameters[pidx].is_expression) {
+                visit(impl_->parameters[pidx].evaluator_id);
+            }
+        }
+    };
+    visit(expr_idx);
+
+    std::vector<int> sp_out;
+    if (all_species) {
+        sp_out.resize(static_cast<std::size_t>(ns));
+        std::iota(sp_out.begin(), sp_out.end(), 0);
+    } else {
+        sp_out.assign(species_support.begin(), species_support.end());
+        std::sort(sp_out.begin(), sp_out.end());
+    }
+    std::vector<int> pa_out(param_support.begin(), param_support.end());
+    std::sort(pa_out.begin(), pa_out.end());
+
+    if (species_out != nullptr) {
+        *species_out = sp_out;
+    }
+    if (params_out != nullptr) {
+        *params_out = pa_out;
+    }
+    impl_->expression_support_cache.emplace(expr_idx,
+                                            std::make_pair(std::move(sp_out), std::move(pa_out)));
+}
+
+bool NetworkModel::event_trigger_is_state_dependent(int event_idx0) const {
+    const auto &events = impl_->events;
+    if (event_idx0 < 0 || event_idx0 >= static_cast<int>(events.size())) {
+        return false;
+    }
+    const Event &ev = events[event_idx0];
+    if (ev.trigger_expr_idx < 0) {
+        return false;
+    }
+    for (const double *addr :
+         impl_->evaluator->referenced_variable_addresses(ev.trigger_expr_idx)) {
+        if (is_state_address(addr)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<int> NetworkModel::events_with_runtime_event_time_sens() const {
+    std::vector<int> out;
+    for (int ei = 0; ei < static_cast<int>(impl_->events.size()); ++ei) {
+        if (event_trigger_is_state_dependent(ei) && event_trigger_residual_expr(ei) >= 0) {
+            out.push_back(ei);
+        }
+    }
+    return out;
+}
+
+// Every address that carries live state, i.e. anything whose value moves with
+// the trajectory. Issue #52: this deliberately covers more than species
+// concentrations. ModelBuilder registers a species as an ExprTk variable only
+// when its name is not already taken (model_builder.cpp), and SBML models
+// routinely give each species an observable of the same name — so in `v > 30`
+// the token `v` binds to the *observable total*, not to &sp.concentration.
+// Checking concentrations alone therefore missed every SBML state-dependent
+// trigger and answered those models instead of refusing them: on AMICI's
+// `neuron` (Izhikevich, trigger `v > 30`) the returned sensitivities were
+// 6x-135x off, in one direction, across every parameter. An observable total is
+// a linear functional of the state and a rateOf accessor is dx/dt, so both move
+// with the trajectory just as a concentration does.
+bool NetworkModel::is_state_address(const double *addr) const {
+    for (const Species &sp : impl_->species) {
+        if (&sp.concentration == addr) {
+            return true;
+        }
+    }
+    for (const Observable &obs : impl_->observables) {
+        if (&obs.total == addr) {
+            return true;
+        }
+    }
+    for (const double &deriv : impl_->current_derivs) {
+        if (&deriv == addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
     const std::vector<std::string> &sens_param_names,
     const std::vector<int> &event_time_compensated) const {
@@ -540,7 +943,6 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
     if (events.empty()) {
         return std::nullopt;
     }
-    const auto &species = impl_->species;
     const auto &params = impl_->parameters;
     const ExpressionEvaluator &eval = *impl_->evaluator;
 
@@ -564,36 +966,12 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         sens_param_addrs.insert(&match->value);
     }
 
-    // Addresses that carry live state, i.e. anything whose value moves with the
-    // trajectory. A trigger reading one of these has a crossing time that
-    // depends on the sensitivity parameters *through the state*, even when the
-    // trigger names no parameter at all, so dt*/dp is non-zero exactly as for an
-    // explicitly parameter-dependent trigger.
-    //
-    // Issue #52: this deliberately covers more than species concentrations.
-    // ModelBuilder registers a species as an ExprTk variable only when its name
-    // is not already taken (model_builder.cpp), and SBML models routinely give
-    // each species an observable of the same name — so in `v > 30` the token `v`
-    // binds to the *observable total*, not to &sp.concentration. Checking
-    // concentrations alone therefore missed every SBML state-dependent trigger
-    // and answered those models instead of refusing them: on AMICI's `neuron`
-    // (Izhikevich, trigger `v > 30`) the returned sensitivities were 6x-135x off,
-    // in one direction, across every parameter.
-    //
-    // An observable total is a linear functional of the state and a rateOf
-    // accessor is dx/dt, so both move with the trajectory just as a
-    // concentration does.
-    std::unordered_set<const double *> state_addrs;
-    state_addrs.reserve(species.size() + impl_->observables.size() + impl_->current_derivs.size());
-    for (const Species &sp : species) {
-        state_addrs.insert(&sp.concentration);
-    }
-    for (const Observable &obs : impl_->observables) {
-        state_addrs.insert(&obs.total);
-    }
-    for (const double &deriv : impl_->current_derivs) {
-        state_addrs.insert(&deriv);
-    }
+    // A trigger reading live state (see is_state_address, issue #52) has a
+    // crossing time that depends on the sensitivity parameters *through the
+    // state*, even when the trigger names no parameter at all, so dt*/dp is
+    // non-zero exactly as for an explicitly parameter-dependent trigger. Issue
+    // #144 differentiates that crossing at each fire instead of refusing it,
+    // for the triggers that reduce to one relational comparison.
 
     // Issue #49 sub-finding: 25 of the 88 corpus events refused for a moving
     // crossing time ALSO tripped the delay / persistence checks — and in every
@@ -628,7 +1006,7 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         if (delayed) {
             return "event '" + id +
                    "' has an execution delay; forward sensitivity through delayed events "
-                   "is not yet supported (GH #212 Phase 3).";
+                   "is not yet supported (issue #144 tracks what is).";
         }
         // No persistence check follows: `persistent` governs whether a fire
         // queued at trigger time is cancelled when the trigger reverts before
@@ -638,16 +1016,29 @@ std::optional<std::string> NetworkModel::event_sensitivity_unsupported_reason(
         // Ghanbari2020 and Zongo2020 were blocked by exactly this.
         const std::vector<const double *> refs =
             eval.referenced_variable_addresses(ev.trigger_expr_idx);
+        bool state_dependent = false;
         for (const double *addr : refs) {
-            if (state_addrs.count(addr) != 0) {
+            if (is_state_address(addr)) {
+                state_dependent = true;
+                break;
+            }
+        }
+        if (state_dependent && compensated.count(static_cast<int>(ei)) == 0) {
+            // Issue #144: the crossing time moves with the trajectory, so
+            // ∂t*/∂p is non-zero and cannot be resolved before the run — it is
+            // differentiated at the fire, by the implicit function theorem on
+            // the trigger's residual g. That needs a residual to differentiate.
+            std::string why;
+            if (event_trigger_residual_expr(static_cast<int>(ei), &why) < 0) {
                 return "event '" + id +
                        "' has a state-dependent trigger (it reads a species concentration, an "
-                       "observable, or a rate); its crossing time therefore depends on the "
-                       "sensitivity parameters through the trajectory even though the trigger "
-                       "names none of them, so the event-time sensitivity dt*/dp is non-zero. "
-                       "Only fixed-time triggers are supported for forward sensitivity so far "
-                       "(GH #212 Phase 2).";
+                       "observable, or a rate), so its crossing time depends on the "
+                       "sensitivity parameters through the trajectory and the event-time "
+                       "sensitivity dt*/dp is non-zero — but bngsim cannot differentiate this "
+                       "trigger's crossing because " +
+                       why + " (trigger: '" + ev.trigger_source + "'; issue #144).";
             }
+            continue;
         }
         if (compensated.count(static_cast<int>(ei)) != 0) {
             // Issue #49: the Python detector resolved this trigger's threshold

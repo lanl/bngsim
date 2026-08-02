@@ -14,6 +14,95 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **Forward sensitivity through a state-dependent event trigger (issue #144).**
+  A trigger that reads the state — AMICI's `neuron` fixture fires on `v > 30` —
+  has a crossing time that moves with every parameter *through the trajectory*
+  while naming none of them, so `∂t*/∂p` is non-zero and neither existing path
+  can supply it: fixed-time events have `∂t*/∂p = 0`, and issue #49's detector
+  resolves a *threshold* to primary parameters, which cannot serve `v > 30`
+  (the threshold is the constant 30; the whole dependence is in the trajectory).
+  Since #52 these models were refused. They are now answered.
+
+  The crossing is differentiated where it happens, by the implicit function
+  theorem on the trigger's residual `g`:
+
+      dt*/dθ = − (∂g/∂x·S(t*⁻) + ∂g/∂p) / (∂g/∂t + ∂g/∂x·f(x⁻))
+
+  feeding the four-term jump the solver already applies. Two consequences worth
+  naming: the **initial-condition** columns get a crossing shift too (issue
+  #49's `∂t*/∂p` covers parameter columns only, because an IC cannot move a
+  clock — it plainly can move a threshold crossing), and the denominator is the
+  transversality condition, so a crossing rate that is a near-total
+  cancellation of its own terms, or is at the right-hand side's own noise
+  floor, is refused *as a tangential crossing* rather than divided by. That
+  replaces the blanket "state-dependent trigger" refusal with a statement about
+  the actual obstruction.
+
+  The residual is the trigger's `lhs − rhs`: the compiled trigger is a boolean,
+  which is what lets CVODE *locate* the crossing but not differentiate it. Only
+  a single relational comparison qualifies, and what does not now says so by
+  name — a conjunction, disjunction or negation (its true-set boundary is
+  assembled from several surfaces, and which one carries the rising edge can
+  move with a parameter) or an equality (measure-zero on a continuous
+  trajectory). Execution delays are still unsupported.
+
+  Two more refusals are newly *reachable*, both because a state-dependent
+  trigger is what it takes to reach them. A same-instant cascade (SBML "events
+  triggering events") executes after the located batch, reading a state that
+  already jumped, while the jump differentiates at the pre-batch `x⁻` — so the
+  rows it assigns would keep the sensitivity of the value they held before it,
+  and it refuses rather than go stale (GH #205). And an SBML L3 §3.4.5 t=0
+  fire, which is *not* refused, is deliberately not differentiated either: its
+  trigger was already satisfied when the run began, so it fires at `t_start`
+  for every θ in a neighbourhood and `∂t*/∂θ` is 0 there.
+
+  Validated against central finite differences of whole trajectories: on the
+  Izhikevich `neuron` (all four parameters, 13 spikes over the window) the
+  disagreement falls as `h²` to 1.4e-6, and against closed forms where one
+  exists. On the event-carrying `rr_parity` subset (194 models, 3 sensitivity
+  parameters each): **32 models newly answered**, 0 lost, 131 byte-identical;
+  every remaining state-dependent refusal names its obstruction (17
+  conjunctions/disjunctions, 3 equalities, 2 unresolvable crossing rates). The
+  585-model `.net` control arm under sensitivities is byte-identical.
+
+### Fixed
+- **The event-assignment jump dropped `∂h/∂x` on every SBML model, and the
+  derived-parameter chain in `∂h/∂p` on all of them (found while validating
+  issue #144).** The GH #212 jump differenced an event assignment only with
+  respect to the variables whose *bound addresses* it referenced. Both halves of
+  that test have a hole, and both fail silent-zero rather than loud:
+
+  * ModelBuilder registers a species as an ExprTk variable only when its name is
+    free, and an SBML model gives each species a same-named observable — so the
+    `S` in `S := 0.5·S` binds to the observable total, never to
+    `&sp.concentration`. The difference perturbed nothing and reported
+    `∂h/∂x = 0`, which restarts the sensitivity column from zero at the event.
+    On `dS/dt = −kS` zero is a fixed point, so the column stayed there for the
+    rest of the run. (This is issue #52's shadowing, on the assignment side.)
+  * A derived parameter hides its primaries: `S := 2·Ktot` with
+    `Ktot = k1 + k2` references neither `k1` nor `k2`, so a requested `k1`
+    looked absent and its column came back flat. This was a documented
+    "Phase-1 limitation"; it is now differenced through the chain.
+
+  Both are closed by one shared support computation
+  (`NetworkModel::expression_support`), which follows an observable to the
+  species behind it and a derived or assignment-rule-bound parameter to the
+  primaries behind it. The same function prunes issue #144's `∂g/∂x` and
+  `∂g/∂p`, so all four differences agree about what "reads" means.
+
+  Three corpus models move numerically as a result, all three with a fixed-time
+  event whose assignment adds to the species it writes (`V := V + dose`). On
+  BIOMD0000000816/817 the affected column was being reset to zero at each of
+  three doses and now tracks a central finite difference to 1.5e-7; on
+  BIOMD0000000480 the assigned rows are numerically zero either way and only
+  their last bits move.
+- **Two user-facing refusals cited "GH #212", which is not an issue in this
+  repository** (lanl/bngsim's highest is #143; lanl/PyBNF#212 is an unrelated
+  closed ticket). A user who hit either had nowhere to look. Both now point at
+  issue #144, and the internal uses of the label — an unpublished phase plan —
+  carry one anchor comment saying what the phases are and where each is tracked.
+
 ## [0.12.1] - 2026-08-02
 
 ### Fixed

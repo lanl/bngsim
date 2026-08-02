@@ -1,16 +1,16 @@
-"""GH #212 / issue #49: forward sensitivity through events.
+"""GH #212 / issue #49 / issue #144: forward sensitivity through events.
 
 GH #205 originally refused output sensitivities on *any* model with events: the
 integrator reinitialises state at an event (``CVodeReInit``) but the CVODES
 forward-sensitivity vectors were never reinitialised, so the columns went
 silently stale at and after the first fire.
 
-GH #212 lifted that refusal for the **Phase-1 subclass** — fixed-time events
-(``g = time − T``, the dosing/stimulation pattern). For that class the
-event-time sensitivity ``∂t*/∂p = 0`` and the core applies the jump
-``s⁺ = J_h·s⁻ + ∂h/∂p`` plus ``CVodeSensReInit`` at each fire.
+GH #212 lifted that refusal for **fixed-time** events (``g = time − T``, the
+dosing/stimulation pattern). For that class the event-time sensitivity
+``∂t*/∂p = 0`` and the core applies the jump ``s⁺ = J_h·s⁻ + ∂h/∂p`` plus
+``CVodeSensReInit`` at each fire.
 
-Issue #49 lifts it for the case where the crossing time ITSELF moves — an
+Issue #49 lifted it for the case where the crossing time ITSELF moves — an
 onset written as ``time >= T0`` with ``T0`` fitted, which is the same modelling
 intent as the ``piecewise(kin, time >= T0, 0)`` issue #48 already supported and
 has the same gradient. The jump then carries all four terms::
@@ -21,13 +21,30 @@ with ∂t*/∂p supplied by ``bngsim._switch_sensitivity.compute_event_time_sens
 Same issue: a delay of literal ``0`` is not a delay, and ``persistent=false``
 without a delay has no window to act in, so neither is refused any more.
 
-Four groups are asserted:
+Issue #144 lifted it for a **state-dependent** trigger — ``v > 30``, whose
+crossing time moves with every parameter through the trajectory while naming
+none of them. There is nothing to resolve ahead of the run, so the solver
+differentiates the crossing where it happens, by the implicit function theorem
+on the trigger's residual ``g``::
 
-  * **Phase-1 allowed + correct** — fixed-time event models run and the
+    dt*/dθ = − (∂g/∂x·S(t*⁻) + ∂g/∂p) / (∂g/∂t + ∂g/∂x·f(x⁻))
+
+feeding the same four-term jump. That covers the initial-condition columns too,
+which issue #49's parameter-only ``∂t*/∂p`` does not.
+
+Five groups are asserted:
+
+  * **Fixed-time allowed + correct** — fixed-time event models run and the
     ``output_sensitivities`` match an independent central finite-difference
-    across the event (constant reset, additive bolus, parameter-valued reset).
-  * **Still unsupported** — state-dependent triggers and real delays raise with
-    a clear reason.
+    across the event (constant reset, additive bolus, parameter-valued reset,
+    and an assignment that reads the species it writes).
+  * **Still unsupported** — real delays, and triggers with no single crossing
+    surface (conjunction, disjunction, negation, equality), raise with a clear
+    reason.
+  * **State-dependent triggers (issue #144)** — closed forms where they exist,
+    finite differences on AMICI's ``neuron`` fixture where they do not, the IC
+    column's own crossing shift, a derived-parameter threshold's chain rule,
+    and a crossing rate too cancelled to resolve, which refuses.
   * **No false positives** — plain (non-sensitivity) runs and discontinuity-
     trigger models (forcing pulses; ``n_events == 0``) are unaffected.
   * **Event-time sensitivity (issue #49)** — the onset column matches the
@@ -99,6 +116,80 @@ def _sbml_event_with_state_trigger() -> str:
               <cn>1</cn></apply>"""
     assert fixed_time in SBML_EVENT, "SBML_EVENT trigger changed; update this helper"
     return SBML_EVENT.replace(fixed_time, "<apply><lt/><ci>S</ci><cn>5</cn></apply>")
+
+
+# ── AMICI's `neuron` fixture: the Izhikevich spiking model, which is the
+# reproduction issue #144 was filed on. Two rate rules
+#
+#     dv/dt = 0.04v² + 5v + 140 − u + I0        du/dt = a·(b·v − u)
+#
+# and one event `v > 30` → `v := c; u := u + d`. Every ingredient of the jump is
+# live at once: a state-dependent crossing whose time moves with all four
+# parameters, an assignment that RESETS a row to a parameter (∂h/∂p), and an
+# assignment that READS the row it writes (∂h/∂x). ────────────────────────────
+SBML_NEURON = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="neuron">
+    <listOfCompartments>
+      <compartment id="cell" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="v" compartment="cell" initialConcentration="-60"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="u" compartment="cell" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="a" value="0.02" constant="true"/>
+      <parameter id="b" value="0.3" constant="true"/>
+      <parameter id="c" value="-65" constant="true"/>
+      <parameter id="d" value="2" constant="true"/>
+      <parameter id="I0" value="10" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="v">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><plus/>
+            <apply><times/><cn>0.04</cn><apply><power/><ci>v</ci><cn>2</cn></apply></apply>
+            <apply><times/><cn>5</cn><ci>v</ci></apply>
+            <cn>140</cn>
+            <apply><minus/><ci>u</ci></apply>
+            <ci>I0</ci>
+          </apply>
+        </math>
+      </rateRule>
+      <rateRule variable="u">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/>
+            <ci>a</ci>
+            <apply><minus/><apply><times/><ci>b</ci><ci>v</ci></apply><ci>u</ci></apply>
+          </apply>
+        </math>
+      </rateRule>
+    </listOfRules>
+    <listOfEvents>
+      <event id="spike" useValuesFromTriggerTime="false">
+        <trigger initialValue="false" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><gt/><ci>v</ci><cn>30</cn></apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="v">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>c</ci></math>
+          </eventAssignment>
+          <eventAssignment variable="u">
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <apply><plus/><ci>u</ci><ci>d</ci></apply>
+            </math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>"""
+
+NEURON_NOMINAL = {"a": 0.02, "b": 0.3, "c": -65.0, "d": 2.0}
 
 
 # ── Discontinuity-trigger model: a piecewise-time forcing pulse on parameter
@@ -250,51 +341,45 @@ class TestPhase1Allowed:
         assert r.sensitivities.shape == (31, m._core.n_species, 1)
         assert np.all(np.isfinite(r.sensitivities))
 
+    def test_sbml_assignment_reading_its_own_species_carries_dh_dx(self):
+        """``S := 0.5·S`` at a fixed time: ∂h/∂x = 0.5, so s⁺ = s⁻/2.
+
+        This is a fixed-time event — no ∂t*/∂p anywhere — but it was answered
+        wrongly until issue #144, and the mechanism is issue #52's shadowing on
+        the *assignment* side. ModelBuilder registers a species as an ExprTk
+        variable only when its name is free, and an SBML model gives each
+        species a same-named observable, so the ``S`` in the assignment binds to
+        the observable total. The jump's ∂h/∂x difference was restricted to
+        concentration addresses, matched nothing, and reported ∂h/∂x = 0 — which
+        restarts the column from zero. dS/dt = −kS is linear, so zero is a fixed
+        point and the whole post-event column stayed there.
+
+        Closed form: S = 10·e^{−kt} before, 5·e^{−kt} after (the halving at t=1
+        is undone by e^{+k} in the restart), so dS/dk = −10t·e^{−kt} then
+        −5t·e^{−kt}. The broken answer was 0 at t=1 and only regrew from there.
+        """
+        m = bngsim.Model.from_sbml_string(
+            SBML_EVENT.replace(
+                '<math xmlns="http://www.w3.org/1998/Math/MathML"><cn>100</cn></math>',
+                '<math xmlns="http://www.w3.org/1998/Math/MathML">'
+                "<apply><times/><cn>0.5</cn><ci>S</ci></apply></math>",
+            )
+        )
+        r = bngsim.Simulator(m, method="ode", sensitivity_params=["k"]).run(
+            t_span=(0, 4), n_points=9, rtol=1e-11, atol=1e-13
+        )
+        t = np.asarray(r.time)
+        ana = np.asarray(r.sensitivities)[:, 0, 0]
+        expected = np.where(t < 1.0, -10.0 * t * np.exp(-0.5 * t), -5.0 * t * np.exp(-0.5 * t))
+        np.testing.assert_allclose(ana, expected, rtol=1e-6, atol=1e-8)
+        # The defect's signature: the column reset to 0 exactly at the event.
+        assert abs(ana[t == 1.0][0]) > 3.0
+
 
 # ── Still unsupported subclasses (raise loudly) ─────────────────────────────
 
 
 class TestStillUnsupported:
-    def test_state_dependent_trigger_raises(self):
-        m, _ = _decay_with_event("2.0", trigger="S < 50")
-        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
-        with pytest.raises(ValueError, match="state-dependent"):
-            sim.run(t_span=(0, 10), n_points=11)
-
-    def test_sbml_state_dependent_trigger_raises(self):
-        """Issue #52: the same refusal, reached through SBML.
-
-        The guard tests the trigger's *bound addresses*, and ModelBuilder
-        registers a species as an ExprTk variable only when the name is free.
-        SBML models routinely give each species an observable of the same name,
-        so the species registration is skipped and the trigger's token binds to
-        the observable total instead of ``&sp.concentration``. Checking
-        concentrations alone therefore saw no state dependence here and answered
-        the model — on AMICI's ``neuron`` fixture (Izhikevich, trigger
-        ``v > 30``) the sensitivities came back 6x-135x off, uniformly in one
-        direction, rather than being refused.
-        """
-        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
-        assert m._core.n_events == 1
-        # Precondition for the bug: species and observable share the name, which
-        # is what pushed the trigger's binding onto the observable total.
-        assert "S" in list(m._core.species_names)
-        assert "S" in list(m._core.observable_names)
-
-        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
-        with pytest.raises(ValueError, match="state-dependent"):
-            sim.run(t_span=(0, 10), n_points=11)
-
-    def test_sbml_state_dependent_trigger_refused_for_every_entry_point(self):
-        """``compute_all_sensitivities`` takes the same guard, so it must refuse
-        the same model rather than quietly returning a tensor missing the event
-        contributions."""
-        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
-        with pytest.raises(ValueError, match="state-dependent"):
-            bngsim.Simulator(m, method="ode").compute_all_sensitivities(
-                t_span=(0, 10), n_points=11
-            )
-
     def test_delayed_event_raises(self):
         m, _ = _decay_with_event("2.0", delay=1.0)
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
@@ -308,14 +393,296 @@ class TestStillUnsupported:
         r = sim.run(t_span=(0, 10), n_points=11)
         assert np.all(np.isfinite(r.sensitivities))
 
-    def test_state_dependent_trigger_detail_names_the_atom(self):
-        """Issue #49 routes the trigger through the same clock-threshold
-        recognizer the rate-law path uses, and reports what it could not
-        reduce — so a refusal says which comparison defeated it."""
+    @pytest.mark.parametrize(
+        "trigger, wanted",
+        [
+            ("S < 50 && time() >= 1", "combines conditions"),
+            ("S < 50 || time() >= 1", "combines conditions"),
+            ("not(S < 50)", "combines conditions"),
+            ("S == 50", "equality test"),
+            ("if(S < 50, 1, 0)", "not a relational comparison"),
+        ],
+    )
+    def test_trigger_without_one_crossing_surface_raises(self, trigger, wanted):
+        """Issue #144 differentiates ONE relational comparison.
+
+        A conjunction, disjunction or negation has a true-set boundary
+        assembled from several surfaces, and which one carries the rising edge
+        can change as a parameter moves; an equality is satisfied on a
+        measure-zero set rather than crossed. Each refusal says which of those
+        it is and quotes the trigger, so a user can tell a limitation from a
+        bug.
+        """
+        m, _ = _decay_with_event("2.0", trigger=trigger)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        with pytest.raises(ValueError, match=wanted):
+            sim.run(t_span=(0, 10), n_points=11)
+
+    def test_refusal_quotes_the_trigger_as_written(self):
+        m, _ = _decay_with_event("2.0", trigger="S < 50 && time() >= 1")
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        with pytest.raises(ValueError, match=r"S < 50 && time\(\) >= 1"):
+            sim.run(t_span=(0, 10), n_points=11)
+
+
+# ── State-dependent triggers: dt*/dθ at the crossing (issue #144) ────────────
+#
+# The crossing time of `v > 30` moves with every parameter through the
+# trajectory, so ∂t*/∂θ is non-zero and cannot be resolved before the run the
+# way issue #49 resolves a clock threshold. The solver differentiates it at the
+# fire instead, by the implicit function theorem on the trigger residual g:
+#
+#     dt*/dθ = − (∂g/∂x·S(t*⁻) + ∂g/∂p) / (∂g/∂t + ∂g/∂x·f(x⁻))
+#
+# Every test here checks a *number*, not just that the refusal is gone: the
+# pre-#52 behaviour on these models was to answer with a tensor missing the
+# event contribution, which is what makes "it runs" worthless as an assertion.
+
+
+def _state_trigger_closed_form(t, k=0.1):
+    """``dS/dk`` for dS/dt = −kS, S(0)=100, event ``S < 50`` → ``S := 2``.
+
+    The crossing is at t* = ln2/k, after which S = 2·e^{−k(t−t*)} = 4·e^{−kt}.
+    Both branches are exponentials in k, so the whole column is closed-form —
+    and it is the ONLY thing that pins ∂t*/∂k: with the constant reset,
+    ∂h/∂x = ∂h/∂p = 0 and the post-event column is exactly −f⁺·∂t*/∂k.
+    """
+    t_star = np.log(2.0) / k
+    return np.where(t < t_star, -100.0 * t * np.exp(-k * t), -4.0 * t * np.exp(-k * t))
+
+
+class TestStateDependentTrigger:
+    def test_matches_the_closed_form(self):
         m, _ = _decay_with_event("2.0", trigger="S < 50")
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
-        with pytest.raises(ValueError, match="'S < 50'"):
-            sim.run(t_span=(0, 10), n_points=11)
+        r = sim.run(t_span=(0, 20), n_points=41, rtol=1e-10, atol=1e-12)
+        ana = np.asarray(r.sensitivities)[:, 0, 0]
+        np.testing.assert_allclose(
+            ana, _state_trigger_closed_form(np.asarray(r.time)), rtol=1e-6, atol=1e-6
+        )
+
+    def test_dropping_dtstar_would_be_visibly_wrong(self):
+        """Guard against a regression that silently zeroes the crossing term.
+
+        Without ∂t*/∂k the constant reset leaves the post-event column at 0 and
+        it stays there (dS/dt = −kS is linear, so s ≡ 0 is a fixed point). The
+        closed form says −4·t·e^{−kt} ≈ −13.9 just after the crossing, so the
+        two answers are not near neighbours.
+        """
+        m, _ = _decay_with_event("2.0", trigger="S < 50")
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        r = sim.run(t_span=(0, 20), n_points=41, rtol=1e-10, atol=1e-12)
+        t = np.asarray(r.time)
+        after = np.asarray(r.sensitivities)[t > np.log(2.0) / 0.1, 0, 0]
+        assert np.abs(after).min() > 1.0
+
+    def test_sbml_state_dependent_trigger_is_answered(self):
+        """Issue #52's shadowing, now on the supported side.
+
+        ModelBuilder registers a species as an ExprTk variable only when the
+        name is free, and SBML models routinely give each species an observable
+        of the same name — so the trigger's token binds to the observable
+        total, not to ``&sp.concentration``. Before issue #52 that hid the
+        state dependence and the model was answered with a tensor missing the
+        event contribution (on AMICI's ``neuron``, 6x-135x off). Issue #52
+        refused it; issue #144 answers it correctly, and the finite difference
+        is what says which of those two this is.
+        """
+        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
+        assert "S" in list(m._core.species_names)
+        assert "S" in list(m._core.observable_names)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        r = sim.run(t_span=(0, 10), n_points=21, rtol=1e-10, atol=1e-12)
+        ana = np.asarray(r.sensitivities)[:, 0, 0]
+
+        def traj(kv):
+            mm = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
+            mm.set_param("k", kv)
+            rr = bngsim.Simulator(mm, method="ode").run(
+                t_span=(0, 10), n_points=21, rtol=1e-11, atol=1e-13
+            )
+            return np.asarray(rr.species)[:, 0]
+
+        h = 0.5 * 1e-5
+        fd = (traj(0.5 + h) - traj(0.5 - h)) / (2 * h)
+        np.testing.assert_allclose(ana, fd, rtol=1e-5, atol=1e-6)
+
+    def test_every_entry_point_answers(self):
+        """``compute_all_sensitivities`` takes the same guard."""
+        m = bngsim.Model.from_sbml_string(_sbml_event_with_state_trigger())
+        out = bngsim.Simulator(m, method="ode").compute_all_sensitivities(
+            t_span=(0, 10), n_points=11
+        )
+        assert np.all(np.isfinite(np.asarray(out.sensitivities)))
+
+    def test_initial_condition_column_carries_the_crossing_shift(self):
+        """An IC column's ∂t*/∂x(0) is non-zero, unlike issue #49's.
+
+        Issue #49 covers parameter columns only — an initial condition cannot
+        move a clock. Here it plainly can: start higher and the trajectory
+        reaches the threshold later. With the constant reset the post-event
+        column is exactly ``−f⁺·∂t*/∂S(0)``, and ∂t*/∂S(0) = 1/(k·S(0)) from
+        t* = ln(S(0)/50)/k — so the whole column is closed-form.
+        """
+        m, _ = _decay_with_event("2.0", trigger="S < 50")
+        sim = bngsim.Simulator(m, method="ode", sensitivity_ic=["S"])
+        r = sim.run(t_span=(0, 20), n_points=41, rtol=1e-10, atol=1e-12)
+        t = np.asarray(r.time)
+        ana = np.asarray(r.sensitivities_ic)[:, 0, 0]
+        k, s0 = 0.1, 100.0
+        t_star = np.log(s0 / 50.0) / k
+        # Before: S = S0·e^{−kt} ⇒ ∂S/∂S0 = e^{−kt}.
+        # After:  S = 2·e^{−k(t−t*)} with ∂t*/∂S0 = 1/(k·S0) ⇒
+        #         ∂S/∂S0 = 2k·e^{−k(t−t*)}/(k·S0) = 2·e^{−k(t−t*)}/S0.
+        expected = np.where(t < t_star, np.exp(-k * t), 2.0 * np.exp(-k * (t - t_star)) / s0)
+        np.testing.assert_allclose(ana, expected, rtol=1e-6, atol=1e-8)
+
+    def test_unresolvable_crossing_rate_refuses_rather_than_dividing(self):
+        """The transversality condition is the denominator of dt*/dθ.
+
+        Deliberately conditioned: two zero-order productions whose rates differ
+        by ``drift`` out of ``bulk``, with the trigger on ``A − B``. The
+        trajectory crosses the surface perfectly cleanly — ``A − B = 1 −
+        drift·t`` — but the *rate* at which it crosses is the difference of two
+        rates 1e8 times larger, and dg/dt is assembled from exactly those two
+        terms. Below 1e-8 of the term scale the quotient reports the finite
+        differences' own noise, so it is refused with that as the stated reason
+        rather than answered.
+
+        (The other half of the guard — a denominator at the absolute noise
+        floor of ``f``, i.e. a trajectory that has stopped moving through the
+        surface — is a knife-edge condition on the trajectory and is not
+        constructible as a fixture; it shares this code path and this message.)
+        """
+        b = ModelBuilder()
+        b.add_parameter("bulk", 5.0e7)
+        b.add_parameter("bulk_plus", 5.0e7 + 0.5)
+        a = b.add_species("A", 1.0)
+        bb = b.add_species("B", 0.0)
+        b.add_observable("Aobs", [(a, 1.0)])
+        b.add_observable("Bobs", [(bb, 1.0)])
+        b.add_reaction([], [a], "elementary", "bulk")
+        b.add_reaction([], [bb], "elementary", "bulk_plus")
+        b.add_event("evt", "Aobs - Bobs < 0.5", [(a, "2.0")])
+        m = bngsim.Model(_core=b.build())
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["bulk"])
+        with pytest.raises(Exception, match="tangentially"):
+            sim.run(t_span=(0, 3), n_points=13, rtol=1e-10, atol=1e-12)
+
+    @pytest.mark.parametrize("param", ["a", "b", "c", "d"])
+    def test_neuron_matches_finite_differences(self, param):
+        """The issue #144 reproduction: AMICI's ``neuron``, all four parameters.
+
+        The tolerance is loose on purpose — this is a spiking trajectory whose
+        sensitivities run to 1e5 because every spike time moves with every
+        parameter, so a fixed-``t`` comparison is inherently ill-conditioned.
+        What makes it a real check is not the number but that the disagreement
+        falls like h²: dropping ∂t*/∂θ, or dropping the ∂h/∂x term the ``u``
+        assignment needs, leaves a residue that does not move with h at all.
+        """
+
+        def traj(overrides):
+            m = bngsim.Model.from_sbml_string(SBML_NEURON)
+            for k, v in overrides.items():
+                m.set_param(k, v)
+            r = bngsim.Simulator(m, method="ode").run(
+                t_span=(0, 40), n_points=41, rtol=1e-11, atol=1e-12, max_steps=200000
+            )
+            return np.asarray(r.species)
+
+        m = bngsim.Model.from_sbml_string(SBML_NEURON)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=[param])
+        r = sim.run(t_span=(0, 40), n_points=41, rtol=1e-11, atol=1e-12, max_steps=200000)
+        ana = np.asarray(r.sensitivities)[:, :, 0]
+        assert np.all(np.isfinite(ana))
+
+        p0 = NEURON_NOMINAL[param]
+        errs = []
+        for h_rel in (1e-4, 1e-5):
+            h = abs(p0) * h_rel
+            fd = (traj({param: p0 + h}) - traj({param: p0 - h})) / (2 * h)
+            scale = max(np.max(np.abs(fd)), np.max(np.abs(ana)), 1e-12)
+            errs.append(np.max(np.abs(fd - ana)) / scale)
+        assert errs[-1] < 1e-5, f"relative error {errs[-1]:.2e} at the smallest step"
+        # Truncation, not a missing term: a factor-10 smaller step must help.
+        assert errs[-1] < errs[0]
+
+    def test_initial_value_fire_does_not_move_with_theta(self):
+        """SBML L3 §3.4.5: a t=0 fire is pinned, not located.
+
+        The trigger is already satisfied when the run begins, so the fire
+        happens at ``t_start`` for every θ in a neighbourhood and ∂t*/∂θ = 0 —
+        differentiating the trigger there answers with the rate at which a
+        crossing that is not happening would move. The IC column is what
+        catches it: ``s⁻`` for a parameter column is 0 at t=0 so a spurious
+        ∂t*/∂p multiplies out, but ∂S/∂S(0) starts at 1 and a spurious shift
+        lands on it. After ``S := 2`` the true answer is exactly 0 — the reset
+        forgets the initial condition — for the whole run.
+        """
+        m, _ = _decay_with_event("2.0", trigger="S < 200", initial_value=False)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_ic=["S"])
+        r = sim.run(t_span=(0, 10), n_points=21, rtol=1e-10, atol=1e-12)
+        ana = np.asarray(r.sensitivities_ic)[:, 0, 0]
+        np.testing.assert_allclose(ana, np.zeros_like(ana), atol=1e-9)
+
+    def test_event_triggered_by_another_event_refuses(self):
+        """SBML "events triggering events" is a second jump at the same instant.
+
+        The cascade riser's assignments run after the root batch's, so they read
+        a state that already jumped, while the sensitivity jump is keyed on the
+        root batch and takes every derivative at the pre-batch x⁻. Composing the
+        two is real work; until then the rows the cascade writes would keep the
+        sensitivity of the value they held before it, which is the GH #205
+        stale-column hazard. Unreachable before issue #144 — a cascade riser
+        needs a state-dependent trigger, and those were refused outright.
+        """
+
+        def build():
+            b = ModelBuilder()
+            b.add_parameter("k", 0.1)
+            s = b.add_species("S", 100.0)
+            u = b.add_species("U", 0.0)
+            b.add_reaction([s], [], "elementary", "k")
+            b.add_event("dose", "time() >= 2", [(s, "1000.0")])  # fixed-time
+            b.add_event("sense", "S > 500", [(u, "1.0")])  # armed by the dose
+            return bngsim.Model(_core=b.build())
+
+        sim = bngsim.Simulator(build(), method="ode", sensitivity_params=["k"])
+        with pytest.raises(Exception, match="another event's assignment"):
+            sim.run(t_span=(0, 5), n_points=11)
+
+        # Without sensitivities the same model still simulates normally — the
+        # cascade is legal SBML, it is only its *derivative* that is missing.
+        plain = bngsim.Simulator(build(), method="ode").run(t_span=(0, 5), n_points=11)
+        assert np.asarray(plain.species)[-1, 1] == pytest.approx(1.0)
+
+    def test_derived_parameter_threshold_carries_the_chain_rule(self):
+        """``S < half`` with ``half = 0.5*S_ref``: perturbing ``S_ref`` moves the
+        threshold, hence the crossing, hence the whole post-event column.
+
+        The trigger references ``half``'s address and never ``S_ref``'s, so a
+        difference over the *referenced* addresses alone reports ∂g/∂S_ref = 0
+        and the column comes back as if the threshold were fixed.
+        """
+        b = ModelBuilder()
+        b.add_parameter("k", 0.1)
+        b.add_parameter("S_ref", 100.0)
+        b.add_parameter("half", 0.0, expression="0.5 * S_ref", is_expression=True)
+        s = b.add_species("S", 100.0)
+        b.add_reaction([s], [], "elementary", "k")
+        b.add_event("evt", "S < half", [(s, "2.0")])
+        m = bngsim.Model(_core=b.build())
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["S_ref"])
+        r = sim.run(t_span=(0, 20), n_points=41, rtol=1e-10, atol=1e-12)
+        t = np.asarray(r.time)
+        ana = np.asarray(r.sensitivities)[:, 0, 0]
+        # S(0) is a literal 100, so only the threshold moves: t* = ln(100/half)/k
+        # ⇒ ∂t*/∂S_ref = −1/(k·S_ref), and after the reset S = 2·e^{−k(t−t*)}
+        # ⇒ ∂S/∂S_ref = 2k·e^{−k(t−t*)}·∂t*/∂S_ref = −2·e^{−k(t−t*)}/S_ref.
+        k, s_ref = 0.1, 100.0
+        t_star = np.log(2.0) / k
+        expected = np.where(t < t_star, 0.0, -2.0 * np.exp(-k * (t - t_star)) / s_ref)
+        np.testing.assert_allclose(ana, expected, rtol=1e-5, atol=1e-7)
 
 
 # ── No false positives ──────────────────────────────────────────────────────

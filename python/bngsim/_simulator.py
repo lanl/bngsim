@@ -998,26 +998,31 @@ class Simulator:
         CVODES forward-sensitivity vectors were never reinitialised, so the
         columns went silently stale at and after the first fire.
 
-        GH #212 lifts the refusal for the **Phase-1 subclass** — fixed-time,
-        persistent, no-delay events (``g = time − T``, the dosing/stimulation
-        pattern). For that class the event-time sensitivity ``∂t*/∂p = 0`` and
-        the core now applies the sensitivity jump ``s⁺ = J_h·s⁻ + ∂h/∂p`` and
-        ``CVodeSensReInit`` at each fire. Everything still unsupported keeps
-        raising: state-dependent triggers and parameter-valued trigger times
-        (Phase 2), delays and non-persistent triggers (Phase 3).
+        GH #212 lifted the refusal for the **fixed-time subclass** (``g = time −
+        T``, the dosing/stimulation pattern), where the event-time sensitivity
+        ``∂t*/∂p = 0`` and the core applies the sensitivity jump
+        ``s⁺ = J_h·s⁻ + ∂h/∂p`` plus ``CVodeSensReInit`` at each fire. Issue #49
+        added the events whose *threshold* is a fitted constant, resolving
+        ``∂t*/∂p`` before the run. Issue #144 added the **state-dependent**
+        triggers — ``v > 30``, whose crossing time moves with every parameter
+        through the trajectory — by differentiating the crossing at each fire.
+        What still raises: execution delays, and any trigger that does not
+        reduce to a single relational comparison (a conjunction, a negation, an
+        equality), whose crossing has no single differentiable surface.
 
         The classification is delegated to the core
         (:func:`NetworkModel.event_sensitivity_unsupported_reason`), which knows
         each event's persistence/delay and — via the trigger's referenced
-        variables — whether it is fixed-time and whether its crossing time
-        depends on a requested sensitivity parameter. "Fixed-time" is judged
-        against every address that carries live state, not just species
-        concentrations: an observable total or a rateOf accessor moves with the
-        trajectory too, so a trigger reading one has a parameter-dependent
-        crossing time even though it names no parameter (issue #52). ``param_names`` is the set
-        of parameters whose sensitivities this call requests (defaults to
+        variables — whether its crossing time moves, and whether it can be
+        differentiated. "Moves" is judged against every address that carries
+        live state, not just species concentrations: an observable total or a
+        rateOf accessor moves with the trajectory too, so a trigger reading one
+        has a parameter-dependent crossing time even though it names no
+        parameter (issue #52). ``param_names`` is the set of parameters whose
+        sensitivities this call requests (defaults to
         ``self._sensitivity_params``); an IC-only request passes an empty list,
-        which still exercises the persistence/delay/state-dependence checks.
+        which still exercises the persistence/delay checks — and, since issue
+        #144, still gets a crossing shift on its IC columns.
 
         Discontinuity triggers (GH #72 forcing pulses) do not jump state and are
         not events, so they are unaffected.
@@ -1027,6 +1032,15 @@ class Simulator:
         names = list(param_names) if param_names is not None else list(self._sensitivity_params)
         compensated, detail, blocked = self._event_time_compensation(names)
         reason = self._model._core.event_sensitivity_unsupported_reason(names, compensated)
+        # An event the solver differentiates at the fire (issue #144) is not
+        # blocked, whatever the ahead-of-run detector made of its trigger: the
+        # detector only recognizes clock thresholds, so it reports `S < S_max`
+        # as unresolvable even when `S_max` is requested. Filtering here rather
+        # than teaching the detector keeps the core the single authority on
+        # which crossings are differentiable.
+        if blocked:
+            runtime = set(self._model._core.events_with_runtime_event_time_sens())
+            blocked = {ei: msg for ei, msg in blocked.items() if ei not in runtime}
         if reason is None and blocked:
             # The core tests the trigger's *bound addresses*, which cannot see
             # through an assignment-rule parameter: in `time >= t_rule` with
@@ -1041,9 +1055,11 @@ class Simulator:
                 + reason
                 + detail
                 + " bngsim refuses rather than return silently-stale derivatives "
-                "(GH #205). Forward sensitivity through fixed-time events is supported "
-                "(GH #212 Phase 1) and through events whose trigger thresholds a fitted "
-                "constant (issue #49); the remaining subclasses are tracked there."
+                "(GH #205). Forward sensitivity is supported through fixed-time events, "
+                "through events whose trigger thresholds a fitted constant (issue #49), "
+                "and through state-dependent triggers that reduce to a single relational "
+                "comparison (issue #144); the remaining subclasses are tracked in issue "
+                "#144."
             )
 
     def _event_time_compensation(self, names: list[str]) -> tuple[list[int], str, dict]:
@@ -3637,9 +3653,9 @@ class Simulator:
         if n_params == 0:
             raise ValueError("No parameters to compute sensitivities for.")
 
-        # GH #205/#212 — events: allowed only for the fixed-time Phase-1
-        # subclass, and only when no requested parameter is a trigger time.
-        # Classified against this call's actual target parameters.
+        # GH #205 — events: allowed only for the subclasses whose ∂t*/∂p is
+        # known (fixed-time; issue #49 thresholds; issue #144 state-dependent
+        # triggers). Classified against this call's actual target parameters.
         self._raise_if_event_sensitivities(target_params)
 
         # Split into chunks
@@ -4056,8 +4072,8 @@ class Simulator:
         # that quietly tested the wrong species.
         mask_selector = _resolve_ss_mask(mask, self._model)
 
-        # GH #205/#212 — dY_ss/dp on event models: allowed only for the
-        # fixed-time Phase-1 subclass with no parameter-valued trigger time,
+        # GH #205 — dY_ss/dp on event models: allowed only for the subclasses
+        # whose ∂t*/∂p is known (see _raise_if_event_sensitivities),
         # classified against this call's requested sensitivity_params.
         if sensitivity_params:
             self._raise_if_event_sensitivities(sensitivity_params)
