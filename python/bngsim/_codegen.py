@@ -6350,6 +6350,13 @@ def generate_jacobian_from_model(model) -> str | None:
                 )
         _emit("")
 
+    # The only return statement this emitter produces, on any branch — and two
+    # consumers depend on that. `steady_state.cpp`'s SteadyStateRhs fills are
+    # `void` and drop the code, where the `cvode_simulator.cpp` mirrors propagate
+    # it; see the return-value section of `include/bngsim/codegen_abi.hpp` for why
+    # the split is safe and what has to change first if you add an early
+    # `return <nonzero>;` here. `test_emitted_c_has_no_nonzero_return` fails if
+    # you do, which is the intended way to find this note.
     _emit("    return 0;")
     _emit("}")
     return "\n".join(lines) + "\n"

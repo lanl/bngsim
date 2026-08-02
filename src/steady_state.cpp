@@ -206,6 +206,15 @@ class SteadyStateRhs {
     }
     // Dense COLUMN-MAJOR n×n: jac[j*n + i] = ∂f_i/∂x_j. Precondition:
     // has_analytical_jacobian(). Every fill memsets the buffer itself.
+    //
+    // void, not int, so the compiled Jacobian's return code is dropped here —
+    // as it is in fill_sparse_jacobian and eval(), and unlike the three
+    // cvode_simulator.cpp mirrors, which propagate it. That is a decision and
+    // not an oversight: the emitter's ONLY return statement is `return 0;`, so
+    // there is no code to carry. The reasoning, and what has to change if that
+    // ever stops being true, is in bngsim/codegen_abi.hpp; the invariant it
+    // rests on is enforced by test_emitted_c_has_no_nonzero_return rather than
+    // left to this comment.
     void fill_dense_jacobian(double t, const double *y, double *jac) {
         if (jac_fn_) {
             jac_fn_(t, const_cast<double *>(y), jac, &so_data_);
@@ -233,8 +242,9 @@ class SteadyStateRhs {
     // CSC values, length jacobian_sparsity().nnz, indexed by the pattern's data
     // index — what KLU factors on the march's sparse route (issue #128). The
     // mirror of fill_dense_jacobian, and it has the same precondition
-    // (has_analytical_jacobian()) and the same self-zeroing contract: every
-    // branch clears the buffer it fills.
+    // (has_analytical_jacobian()), the same self-zeroing contract (every branch
+    // clears the buffer it fills) and the same dropped return code, for the
+    // reason given there and in bngsim/codegen_abi.hpp.
     void fill_sparse_jacobian(double t, const double *y, double *vals) {
         if (jac_sparse_fn_) {
             jac_sparse_fn_(t, const_cast<double *>(y), vals, &so_data_);
