@@ -425,6 +425,34 @@ def nfsim_switchable_rate_xml(data_dir: Path) -> Path:
 
 
 @pytest.fixture
+def dose_seed_precision_xml(data_dir: Path) -> Path:
+    """L(b)+R(b)<->L.R in real BNG2 writeXML shape, for GH #115.
+
+    Every ``<Parameter>`` carries both the collapsed ``value=`` and the symbolic
+    ``expr=``, and the two disagree in the last digits for ``NA`` — the shape
+    BNG2.pl emits for Avogadro's number, and the reason "re-evaluate the whole
+    ``expr=`` graph" is not the same thing as "propagate an override".
+
+    * ``LT = ((dose_nM*1e-9)*NA)*V_sim`` — a derived, *fractional* seed amount
+      (1806.6422 at the default dose), so a pre-init ``set_param('dose_nM',
+      ...)`` must re-derive it and the result must be rounded half-up (GH #44,
+      GH #51).
+    * ``RT = 300*rscale`` — a second derived seed amount that can be driven to
+      an exactly-integral count, so a scan can cross fractional/integral in
+      both directions.
+    * ``kf = ((K*1e9)*kr)/(NA*V_sim)`` — a bimolecular rate constant *outside*
+      the dose's dependency cone, which must keep its loaded ``value=``
+      bit-for-bit under an override.
+
+    RuleMonkey-only. The NFsim adapter still bakes overrides by re-evaluating
+    the whole parameter graph into the XML, so it re-rounds ``kf`` to ``expr=``
+    precision whenever any override is pending; only the seed *counts* agree
+    across the two engines here.
+    """
+    return data_dir / "nfsim" / "dose_seed_precision.xml"
+
+
+@pytest.fixture
 def fractional_init_xml(data_dir: Path) -> Path:
     """Path to XML fixture with non-integer initial species count."""
     return data_dir / "nfsim" / "fractional_init.xml"

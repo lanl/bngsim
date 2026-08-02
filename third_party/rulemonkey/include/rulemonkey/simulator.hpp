@@ -317,6 +317,17 @@ public:
   // applied to subsequent `run()` calls and future `initialize()` calls, and
   // is reflected immediately in `get_parameter()` (including any derived
   // parameters that reference `name`).
+  //
+  // The override propagates through the model's own derivations, so it
+  // reaches every quantity the parameter feeds: rate constants, and — via
+  // any `<Species concentration=>` expression naming an affected parameter
+  // — the seed-species populations the next run starts from.  A dose
+  // scan can therefore reuse one loaded model, one `set_param` per point,
+  // instead of re-emitting XML (issue #23).  Propagation follows the
+  // `<Parameter expr=>` derivations BNG2 emits; a parameter the override
+  // does not reach keeps its loaded `value` exactly, so runs stay
+  // numerically identical outside the override's dependency cone.
+  //
   // Throws std::runtime_error if `name` is not a parameter declared in the
   // loaded XML, or if a session is currently active; call `destroy_session()`
   // first to mutate overrides, then re-`initialize()`.
@@ -325,6 +336,58 @@ public:
   // Clears all instance-local parameter overrides.
   // Throws std::runtime_error if a session is currently active.
   void clear_param_overrides();
+
+  // --- Seed-species amounts (issue #23) ----------------------------------
+  //
+  // Post-load control over the *initial* population — the `<Species>`
+  // block the next `run()` / `initialize()` seeds the pool from.  These
+  // let a driver walk a dose-response curve on one loaded model instead
+  // of re-emitting and re-parsing an XML per scan point.
+  //
+  // Two ways in.  When the amount is parameter-driven — BNG2 emits
+  // `<Species concentration="LT">` alongside `<Parameter id="LT"
+  // expr="((AT_nM*1e-9)*NA)*V_sim">` — prefer `set_param("AT_nM", dose)`:
+  // the derivation re-runs, so the seed amount tracks the dose exactly as
+  // the modeller wrote it.  `set_initial_amount` is the escape hatch for
+  // amounts no parameter drives (a literal `concentration="1000"`) or for
+  // a caller that wants to state the molecule count outright.
+
+  // Returns one row per seed species in XML declaration order, each
+  // reporting the amount the next run/initialize would use under the
+  // current overrides.  Callable with or without a live session; the
+  // rows describe the *initial* state either way, not the live pool
+  // (for that, see `enumerate_species()`).
+  std::vector<InitialSpeciesRow> initial_species() const;
+
+  // Returns the amount the next run/initialize would seed for one
+  // species.  `key` is the BNGL pattern from `<Species name=>`
+  // ("L(r1,r2)"), or the XML `<Species id=>` ("S1") as a fallback.
+  // Throws std::runtime_error if `key` matches no seed species, or if it
+  // matches more than one by name.
+  double get_initial_amount(const std::string& key) const;
+
+  // Pins a seed species' initial amount, overriding whatever its
+  // `concentration` expression resolves to.  Takes effect on the next
+  // `run()` / `initialize()`; the pin survives `set_param` and
+  // `clear_param_overrides` and is released only by
+  // `clear_initial_amount_overrides()`.
+  //
+  // `amount` is a real-valued molecule count, matching the XML
+  // attribute's own units; the engine truncates toward zero when it
+  // instantiates (NFsim parity), so 999.9 seeds 999 molecules.  A
+  // `Fixed="1"` species' clamp target follows the override too.
+  //
+  // Throws std::runtime_error if a session is currently active (call
+  // `destroy_session()` first, then re-`initialize()`), if `key` matches
+  // no seed species or is ambiguous, or if `amount` is negative or
+  // non-finite.
+  void set_initial_amount(const std::string& key, double amount);
+
+  // Releases every `set_initial_amount` pin, so seed amounts go back to
+  // their `concentration` expressions under the active parameter
+  // overrides.
+  // Throws std::runtime_error if a session is currently active.
+  void clear_initial_amount_overrides();
 
   // Sets an instance-local global molecule limit for subsequent runs and
   // future `initialize()` calls.

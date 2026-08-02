@@ -2,14 +2,13 @@
 
 #include "bngsim/rulemonkey_simulator.hpp"
 #include "bngsim/wallclock.hpp"
-#include "param_override_xml.hpp" // shared <Parameter> table + override baking
-#include "seed_count_rounding.hpp"
+#include "seed_count_rounding.hpp" // round_half_up_count — the GH #51 policy
 
 #include <rulemonkey/simulator.hpp>
 #include <rulemonkey/types.hpp>
 
+#include <cmath>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -150,73 +149,45 @@ rulemonkey::TimeSpec to_rulemonkey_times(const TimeSpec &times) {
 } // namespace
 
 struct RuleMonkeySimulator::Impl {
-    explicit Impl(std::string path) : xml_path(std::move(path)) { build_sim(/*resolved=*/{}); }
-
-    // (Re)build the upstream sim from `xml_path`. When `resolved` is non-empty,
-    // its fully-propagated parameter values are baked into the XML's <Parameter
-    // value=> attributes first, so the loader resolves seed-species
-    // concentrations and rate constants against the overridden namespace. This
-    // is how a pre-init set_param reaches a *derived* seed amount such as
-    // `Ntot = 100*scale`: upstream RuleMonkey records only <Parameter value=>
-    // and never re-derives dependent parameters under an override, so without
-    // the re-bake the derived seed count silently stays at its XML-time value
-    // (GH #44). Mirrors NfsimSimulator::create_system.
-    //
-    // Then fractional seed-species concentrations are rounded half-up
-    // (override-aware overlay) so RuleMonkey's truncating loader matches the
-    // cold-start seed policy (GH #51). Reapplies the instance configuration
-    // (molecule limit, same-complex-binding) the caller set before initialize.
-    //
-    // Temp files are declared before `sim` (destroyed after it) and reassigned
-    // here before the new sim is built, so each parsed sim sees a live file.
-    void build_sim(const std::unordered_map<std::string, double> &resolved) {
-        std::string src = xml_path;
-        if (!resolved.empty()) {
-            param_baked = bngsim::seedround::TempXmlFile{
-                bngsim::paramxml::write_param_overridden_xml(xml_path, resolved)};
-            src = param_baked.path_or(xml_path);
-        } else {
-            param_baked = bngsim::seedround::TempXmlFile{};
-        }
-        seed_rounded = bngsim::seedround::TempXmlFile{
-            bngsim::seedround::write_seed_rounded_xml(src, resolved)};
-        const std::string load_path = seed_rounded.path_or(src);
-
-        sim = std::make_unique<rulemonkey::RuleMonkeySimulator>(load_path,
+    explicit Impl(std::string path) : xml_path(std::move(path)) {
+        sim = std::make_unique<rulemonkey::RuleMonkeySimulator>(xml_path,
                                                                 rulemonkey::Method::NfExact);
         reject_unsupported_errors(*sim);
-        if (molecule_limit) {
-            sim->set_molecule_limit(*molecule_limit);
-        }
-        sim->set_block_same_complex_binding(bscb);
+        apply_seed_rounding();
     }
 
-    // Resolve the pending pre-init overrides through the XML <Parameter expr=>
-    // graph and rebuild the sim with them baked in. No-op (leaves the existing
-    // sim in place) when nothing is pending.
-    void rebuild_with_overrides() {
-        if (param_overrides.empty()) {
-            return;
+    // Round every fractional seed-species amount half-up, so RuleMonkey's
+    // truncating instantiation matches bngsim's cold-start seed policy — 5.7
+    // seeds 6 molecules, not 5 (GH #51).
+    //
+    // The engine already resolves each `<Species concentration=>` expression
+    // against the current parameter overrides and reports the *real-valued*
+    // result, so the policy is a pin on top of that number rather than a
+    // rewrite of the XML the engine parses. Pins outrank the concentration
+    // expression and deliberately survive `set_param`, so a stale pin would
+    // shadow the very re-derivation an override is asking for: clear the
+    // previous round first and re-derive from whatever the expressions now
+    // resolve to. Call after anything that can move a seed amount.
+    //
+    // Keyed by `<Species id=>` because ids are unique where BNGL patterns need
+    // not be (upstream resolves a key by pattern first, then by id; no `id` in
+    // 223 corpus XMLs is also some other species' pattern).
+    void apply_seed_rounding() {
+        sim->clear_initial_amount_overrides();
+        for (const auto &row : sim->initial_species()) {
+            // Fail-safe, matching the overlay this replaced: an amount that is
+            // not a finite non-negative number is left for the engine to
+            // reject or truncate as it sees fit.
+            if (!std::isfinite(row.amount) || row.amount < 0.0 ||
+                std::floor(row.amount) == row.amount) {
+                continue;
+            }
+            sim->set_initial_amount(
+                row.id, static_cast<double>(bngsim::seedround::round_half_up_count(row.amount)));
         }
-        std::unordered_map<std::string, double> resolved;
-        param_table.load(xml_path);
-        if (!param_table.params.empty()) {
-            resolved =
-                bngsim::paramxml::evaluate_param_table_with_overrides(param_table, param_overrides);
-        }
-        build_sim(resolved);
     }
 
     std::string xml_path;
-    std::optional<int> molecule_limit;
-    bool bscb = true;
-    // Pending pre-init parameter overrides, propagated into the XML at the next
-    // initialize(). Also forwarded to the live sim so get_parameter() reflects a
-    // direct override before initialize().
-    std::unordered_map<std::string, double> param_overrides;
-    bngsim::paramxml::XmlParamTable param_table;
-    bngsim::seedround::TempXmlFile param_baked;
-    bngsim::seedround::TempXmlFile seed_rounded;
     std::unique_ptr<rulemonkey::RuleMonkeySimulator> sim;
 };
 
@@ -226,10 +197,6 @@ RuleMonkeySimulator::RuleMonkeySimulator(const std::string &xml_path)
 RuleMonkeySimulator::~RuleMonkeySimulator() = default;
 
 Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double timeout_seconds) {
-    // Bake any pending parameter overrides into the XML before the stateless
-    // run, so derived seed-species amounts follow a set_param the same way the
-    // session path does (GH #44). No-op when no overrides are pending.
-    impl_->rebuild_with_overrides();
     WallClockBudget budget(timeout_seconds);
     try {
         // Both the uniform grid and explicit sample_times (GH #169) go through
@@ -250,14 +217,7 @@ Result RuleMonkeySimulator::run(const TimeSpec &times, uint64_t seed, double tim
     }
 }
 
-void RuleMonkeySimulator::initialize(uint64_t seed) {
-    // Bake any pending pre-init parameter overrides into the XML and rebuild the
-    // sim before the session is created, so derived seed-species amounts are
-    // re-derived against the overridden namespace (GH #44). No-op when no
-    // overrides are pending.
-    impl_->rebuild_with_overrides();
-    impl_->sim->initialize(seed);
-}
+void RuleMonkeySimulator::initialize(uint64_t seed) { impl_->sim->initialize(seed); }
 
 void RuleMonkeySimulator::step_to(double time, double timeout_seconds) {
     WallClockBudget budget(timeout_seconds);
@@ -369,27 +329,26 @@ void RuleMonkeySimulator::save_state(const std::string &path) const {
 void RuleMonkeySimulator::load_state(const std::string &path) { impl_->sim->load_state(path); }
 
 void RuleMonkeySimulator::set_param(const std::string &name, double value) {
-    // Forward to the live sim first: it validates the name and enforces
-    // "no override while a session is active", and keeps get_parameter()
-    // reflecting a direct override before initialize(). Only on success do we
-    // record the override for the initialize()-time XML re-bake that also
-    // re-derives dependent parameters and seed-species amounts (GH #44).
+    // Upstream owns the whole cascade since RuleMonkey v3.7.0: the override
+    // re-derives from `<Parameter expr=>`, so it reaches derived parameters,
+    // the rate constants they feed, and — through any `<Species
+    // concentration=>` expression naming them — the seed-species amounts a
+    // scan point starts from (GH #44, richardposner/RuleMonkey#23). It also
+    // validates the name and enforces "no override while a session is active",
+    // so a throw here leaves the seed pins untouched.
     impl_->sim->set_param(name, value);
-    impl_->param_overrides[name] = value;
+    // Seed amounts may have just moved; re-derive the half-up pins over them.
+    impl_->apply_seed_rounding();
 }
 
 void RuleMonkeySimulator::clear_param_overrides() {
     impl_->sim->clear_param_overrides();
-    impl_->param_overrides.clear();
+    impl_->apply_seed_rounding();
 }
 
-void RuleMonkeySimulator::set_molecule_limit(int limit) {
-    impl_->molecule_limit = limit;
-    impl_->sim->set_molecule_limit(limit);
-}
+void RuleMonkeySimulator::set_molecule_limit(int limit) { impl_->sim->set_molecule_limit(limit); }
 
 void RuleMonkeySimulator::set_block_same_complex_binding(bool enabled) {
-    impl_->bscb = enabled;
     impl_->sim->set_block_same_complex_binding(enabled);
 }
 

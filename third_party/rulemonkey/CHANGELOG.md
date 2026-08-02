@@ -5,6 +5,154 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] — 2026-07-29
+
+### Fixed
+
+- **`set_param` now reaches derived parameters, and through them the
+  seed-species populations (issue #23).** BNG2's `writeXML` records every
+  parameter twice — `<Parameter value="1806.6422">`, already collapsed to a
+  number, and `<Parameter expr="((AT_nM*1e-9)*NA)*V_sim">`, the symbolic
+  derivation. RuleMonkey read only `value`, deliberately, because that is
+  what NFsim reads and BNG2 sometimes writes fewer digits there than `expr`
+  carries. The trap was that the `set_param` override cascade *also*
+  re-resolved `value`: a collapsed number re-resolves to itself, so an
+  override on a base parameter could never move a parameter derived from
+  it, and any `<Species concentration="LT">` seeded from that derivation
+  stayed at its XML-time amount.
+
+  The failure was silent and only visible against another engine. A
+  dose-response scan written as one loaded model plus a `set_param` per
+  point ran the XML's default dose at *every* point without error or
+  warning — the reporter hit it through BNGsim's `RuleMonkeySession`, whose
+  NFsim twin re-bakes the XML per point and therefore tracked the dose.
+
+  The cascade now re-derives from `expr`, gated on the value actually
+  moving under the active overrides: a parameter the override does not
+  reach keeps its loaded `value` bit-for-bit. Without that gate, merely
+  calling `set_param` on an unrelated parameter would re-round every
+  derived quantity in the model to `expr` precision (`NA` alone differs in
+  its 9th digit between the two attributes, and every bimolecular rate
+  constant divides by it). Hand-authored XML with no `expr` attribute is
+  unaffected. The no-override path is untouched, confirmed by the full
+  three-corpus parity ladder.
+
+- **Clearing an override now un-bakes the previous run.** `apply_overrides`
+  mutates the parsed model in place, so once a run had baked overridden
+  numbers into `RateLaw::rate_value` / `SpeciesInit::concentration`, a
+  later `clear_param_overrides()` restored the parameter map but left those
+  fields stale — `get_parameter()` reported the default while the engine
+  kept simulating the cleared override. The existing regression test missed
+  it because it never ran between the set and the clear. Seed amounts are
+  now kept coherent with the parameter map between runs (the same contract
+  `get_parameter()` already offered), and a latch drives one restoring pass
+  over the baked rate constants when the last override is dropped.
+
+### Added
+
+- **Post-load control over seed-species amounts (issue #23).**
+  `initial_species()` reports one row per `<Species>` — XML id, BNGL
+  pattern, the `concentration` attribute verbatim, the amount the next run
+  would seed under current overrides, and whether it is pinned.
+  `get_initial_amount(key)` / `set_initial_amount(key, amount)` /
+  `clear_initial_amount_overrides()` read and pin that amount, keyed by the
+  BNGL pattern (`"L(r1,r2)"`) or the XML id (`"S1"`).
+
+  `set_param` remains the right entry point when a parameter drives the
+  amount — the derivation is the modeller's own. These cover what it
+  cannot reach: a bare `<Species concentration="1000">` with no parameter
+  behind it, and callers that would rather state the molecule count
+  outright. A pin outranks the `concentration` expression (including a
+  later `set_param`), a `Fixed="1"` species' clamp target follows it, and
+  amounts truncate toward zero at instantiation like any seed amount.
+
+  Together these close the upstream ask behind issue #23: a driver can
+  refresh initial populations in place and walk a scan on one loaded
+  model, instead of re-emitting and re-parsing an XML per point.
+
+## [3.6.1] — 2026-07-10
+
+### Changed
+
+- **Re-pinned the vendored BNGsim expression layer to public `lanl/bngsim`
+  (issue #11).** The ExprTk swap (issue #6) vendored four files under
+  `third_party/` (`exprtk.hpp` + `bngsim_expr/{include,src}`), pinned by
+  `third_party/bngsim_expr/VENDOR{,.json}`. That pin referenced a commit on
+  the now-retired private `wshlavacek/PyBNF-Private` monorepo, where BNGsim
+  lived under a `bngsim/` subdir. BNGsim is now published standalone at the
+  public `lanl/bngsim`, whose history does not carry the old private commit,
+  so the pin has been moved to `lanl/bngsim@5ce19a4`. Provenance in
+  `VENDOR`/`VENDOR.json` now records the public remote and drops the stale
+  `bngsim` subdir.
+
+  Two of the four files advanced in the public tree and were refreshed to
+  match the new pin: `expression.hpp`/`expression.cpp` gain a `tgamma`
+  built-in (SBML factorial support) and a `referenced_variable_addresses`
+  accessor (BNGsim forward-sensitivity work, GH #212). Neither is used by
+  RuleMonkey, and the remainder is clang-format only — the change is a
+  behavioral no-op for RM, confirmed by the full 80-model feature-coverage
+  suite (80 PASS / 0 FAIL at `--reps 5`) and the 26-test unit suite.
+
+### Added
+
+- **CI drift-guard for the vendored BNGsim expression layer (issue #11).** A
+  new `vendor_check` job in `.github/workflows/ci.yml` clones `lanl/bngsim`
+  (public, no credential) with full history and runs
+  `scripts/vendor_exprtk.py --check --bngsim-repo bngsim`, byte-comparing the
+  vendored files against their pinned commit. Version skew between
+  RuleMonkey's standalone copy and BNGsim's expression layer is an ODR
+  violation, so drift now fails the build. This was blocked until BNGsim went
+  public: the previous private source repo would have required a stored
+  deploy key to clone.
+
+## [3.6.0] — 2026-07-03
+
+### Added
+
+- **Energy-based BNGL (eBNGL) `Arrhenius` rate laws via load-time rule
+  expansion (issue #20).** RM now natively runs 2-reactant binding energy
+  rules — the `A(s1) + B(s2) <-> A(s1!1).B(s2!1)  Arrhenius(phi, Ea0)` form
+  paired with a `begin energy patterns` block — matching NFsim's own eBNGL
+  coverage (RuleWorld/nfsim commit `c4f1bb2`, Kutuva & Faeder). Previously
+  any `RateLaw type="Arrhenius"` was a Tier-0 refusal.
+
+  The implementation is a faithful port of NFsim's Sekar (2015, Ch. 3)
+  expansion algorithm (`cpp/rulemonkey/energy_expand.{hpp,cpp}`): at model
+  load each energy rule is expanded into a finite set of conventional rules
+  with pre-computed rate constants, so the hot SSA loop is untouched. Only
+  energy patterns overlapping the reaction-center bond contribute to ΔG
+  (Sekar Corollary 3.3-43); patterns adding extra context gate `2^n` rule
+  variants whose reactant templates carry the context as bound/free
+  component constraints, with rates
+  `k_fwd = exp(-(Ea0 + phi·ΔG)/RT)`, `k_rev = exp(-(Ea0 + (phi-1)·ΔG)/RT)`.
+  Each direction is expanded independently from its own BNG2-emitted
+  `ReactionRule`. Rates are stored symbolically, so `set_param` on an energy
+  parameter (`Ea0`, `phi`, `RT`, or an energy-pattern `Gf`) re-resolves the
+  baked rates on the next run — verified by `set_param_test`.
+
+  Validated four ways: `energy_expand_test` pins the ported expansion to
+  NFsim's own printed `k_fwd`/`k_rev` for the reference `v40` model and the
+  cooperative scaffold; and two new feature-coverage models
+  (`ft_energy_arrhenius`, `ft_energy_arrhenius_coop`) match BNG2's
+  independent network expansion under both ODE (verdict) and SSA, and NFsim
+  at steady state to within ~0.03 particles. BNG2, NFsim, and RM produce
+  identical expanded rate constants.
+
+  Scope (Phase 1, matching NFsim): 2-reactant heterodimer binding only.
+  Shapes RM does not expand are refused as Tier-0 errors (recorded during
+  expansion, where the fully-parsed rule is available) with a specific
+  message: state-change energy rules, intramolecular ring-closure binding,
+  >2-reactant rules, same-type homodimer binding, rules coupling binding to
+  another operation, and rules carrying exclude/include constraints. Two
+  NFsim-parity quirks (multi-context-bond OR-union, state-gated patterns) are
+  reproduced faithfully and documented. See `docs/model_semantics.md` →
+  "Energy-based BNGL (eBNGL)".
+
+  The two eBNGL models are added to the harness `NFSIM_UNRELIABLE` set:
+  NFsim's eBNGL path is seed-invariant (every `-seed` yields a byte-identical
+  trajectory), so its multi-rep "ensemble" collapses to a single realization
+  and is useless as a z-score reference; the verdict uses BNG2 ODE instead.
+
 ## [3.5.0] — 2026-06-22
 
 ### Added
@@ -847,8 +995,15 @@ The legacy implementation, RuleMonkey 2.0.25, was introduced in:
 > RG. *RuleMonkey: software for stochastic simulation of rule-based
 > models.* BMC Bioinformatics 11:404 (2010). PMID: 20673321.
 
-[3.2.0]: https://github.com/wshlavacek/RuleMonkey/releases/tag/v3.2.0
-[3.1.2]: https://github.com/wshlavacek/RuleMonkey/releases/tag/v3.1.2
-[3.1.1]: https://github.com/wshlavacek/RuleMonkey/releases/tag/v3.1.1
-[3.1.0]: https://github.com/wshlavacek/RuleMonkey/releases/tag/v3.1.0
-[3.0.0]: https://github.com/wshlavacek/RuleMonkey/releases/tag/v3.0.0
+[3.7.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.7.0
+[3.6.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.6.1
+[3.6.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.6.0
+[3.5.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.5.0
+[3.4.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.4.0
+[3.3.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.3.0
+[3.2.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.2.1
+[3.2.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.2.0
+[3.1.2]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.1.2
+[3.1.1]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.1.1
+[3.1.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.1.0
+[3.0.0]: https://github.com/richardposner/RuleMonkey/releases/tag/v3.0.0

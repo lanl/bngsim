@@ -111,6 +111,53 @@ derived quantities models commonly use as their measured outputs (e.g.
 accessors are `function_names()` and `get_function_values()`, parallel
 to `observable_names()` / `get_observable_values()`.
 
+### Parameter scans on one loaded model
+
+`set_param` overrides propagate through the model's own derivations, so
+a dose scan reuses a single loaded simulator instead of re-emitting XML
+per point.  BNG2 records both the collapsed number and the symbolic
+derivation for every parameter —
+
+```xml
+<Parameter id="AT_nM" value="1"         expr="1"/>
+<Parameter id="LT"    value="1806.6422" expr="((AT_nM*1e-9)*NA)*V_sim"/>
+<Species    id="S1"   concentration="LT" name="L(r1,r2)"/>
+```
+
+— and RuleMonkey follows the `expr` chain when you override a parameter
+the chain depends on.  Overriding `AT_nM` therefore re-derives `LT` and
+reseeds `L(r1,r2)` at the new dose:
+
+```cpp
+rulemonkey::RuleMonkeySimulator sim("blbr.xml");
+for (double dose : {1.0, 7.0, 68.0}) {
+  sim.set_param("AT_nM", dose);              // LT and the L seed count follow
+  auto r = sim.run({0.0, 5000.0, 100}, /*seed=*/7);
+}
+```
+
+A parameter the override does not reach keeps its loaded `value`
+bit-for-bit, so runs stay numerically identical outside the override's
+dependency cone.  `get_parameter()` reflects the cascade immediately,
+without an intervening run.
+
+When the amount you want to change has no parameter behind it — a bare
+`<Species concentration="1000">` — set it directly:
+
+```cpp
+for (const auto& s : sim.initial_species())
+  std::printf("%-16s %-10s %g\n", s.name.c_str(), s.concentration_expr.c_str(), s.amount);
+
+sim.set_initial_amount("L(r1,r2)", 5000);    // molecules, truncated toward zero
+sim.clear_initial_amount_overrides();        // back to the concentration= expression
+```
+
+A direct pin outranks whatever the `concentration` expression derives,
+including a later `set_param`, and a `Fixed="1"` species' clamp target
+follows it.  Both kinds of override apply at the next `run()` /
+`initialize()` and are rejected mid-session — call `destroy_session()`
+first, then re-`initialize()`.
+
 If you need to stop a long-running call from outside (wall-clock
 timeout, GUI cancel button, signal handler), pass an optional
 `rulemonkey::CancelCallback` to `run` / `simulate` / `step_to`.  The

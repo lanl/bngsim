@@ -20,6 +20,16 @@ name: windows-tail
 # build with KLU. The rest of that file's KLU-dependent cases skip here in turn,
 # which is the point: the two halves are covered by disjoint jobs.
 #
+# It is also the only job that compiles AND exercises the RuleMonkey adapter
+# (issue #115). native-tests.yml builds with -DBNGSIM_BUILD_RULEMONKEY=OFF, so
+# src/rulemonkey_simulator.cpp is not in that build at all; every job that does
+# build it (this one, windows-nfsim, the wheels) got it only as a side effect of
+# BNGSIM_BUILD_RULEMONKEY defaulting ON, and none was triggered by a change to
+# it. A vendored-RuleMonkey bump or an adapter edit could therefore fail to
+# compile with nothing red. This job already builds RuleMonkey and already runs
+# test_seed_count_rounding.py's RuleMonkey class, so the fix is the trigger
+# paths plus test_rulemonkey.py in the file list — no extra build cost.
+#
 # An MSVC developer environment is set up first so the runtime codegen path
 # (bngsim compiles the generated C RHS with cl.exe + LoadLibrary at simulate
 # time) has a C compiler on PATH — otherwise every codegen test would fail with
@@ -51,8 +61,12 @@ on:
       - "src/cvode_simulator.cpp"
       - "src/model.cpp"
       - "src/ssa_simulator.cpp"
+      # No other workflow both compiles and exercises these — see the note above.
+      - "src/rulemonkey_simulator.cpp"
+      - "third_party/rulemonkey/**"
       - "include/bngsim/platform_compat.hpp"
       - "python/tests/test_codegen*.py"
+      - "python/tests/test_rulemonkey.py"
       - "python/tests/test_jacobian_c_emitter.py"
       - "python/tests/test_model_codegen_sensitivity.py"
       - "python/tests/test_ssa_propensity_export.py"
@@ -123,6 +137,7 @@ jobs:
             python/tests/test_method_normalization.py \
             python/tests/test_seed_semantics.py \
             python/tests/test_seed_count_rounding.py \
+            python/tests/test_rulemonkey.py \
             python/tests/test_lazy_jacobian.py \
             python/tests/test_force_sparse_linear_solver.py \
             python/tests/test_exprtk_vendoring.py \

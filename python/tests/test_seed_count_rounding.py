@@ -155,3 +155,24 @@ class TestRuleMonkeyColdStartRounding:
             rm.initialize(seed=42)
             assert rm.get_molecule_count("X") == 5000
             assert rm.get_molecule_count("Y") == 500
+
+    def test_rounding_is_re_derived_after_every_override(self, dose_seed_precision_xml: Path):
+        """The half-up policy tracks a moving seed amount (GH #51 under GH #115).
+
+        The RuleMonkey arm of this policy is no longer an XML rewrite: the
+        engine resolves ``<Species concentration=>`` under the current
+        overrides and bngsim pins the half-up integer on top of the result.
+        A pin outlives ``set_param`` by design, so the pins must be re-derived
+        whenever an override moves — otherwise the first fractional amount a
+        model ever sees is the amount it keeps.
+        """
+        from bngsim._bngsim_core import RuleMonkeySimulator
+
+        sim = RuleMonkeySimulator(str(dose_seed_precision_xml))
+        # RT = 300*rscale; 151.5 rounds half-up (ties away from zero) to 152,
+        # and the exactly-integral 150 that follows must not inherit it.
+        for rscale, expected in ((0.505, 152), (0.5, 150), (0.335, 101)):
+            sim.destroy_session()
+            sim.set_param("rscale", rscale)
+            sim.initialize(1)
+            assert sim.get_species_count("R(b)") == expected, f"rscale={rscale}"

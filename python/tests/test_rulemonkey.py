@@ -88,10 +88,14 @@ class TestRuleMonkeySessionDerivedSeedAmounts:
     A seed species whose amount is a *derived* expression (``Ntot = 100*scale``)
     must respond to a pre-init ``set_param('scale', ...)`` the same way the NFsim
     session does — otherwise the two engines silently run different initial
-    conditions. Upstream RuleMonkey records only each parameter's precomputed
-    ``value=`` and never re-derives dependents under an override; bngsim closes
-    the gap by baking the propagated parameter namespace into the XML before the
-    engine parses (mirroring the NFsim path).
+    conditions.
+
+    bngsim used to close this gap itself, by re-evaluating the XML's
+    ``<Parameter expr=>`` graph and rebuilding the engine from a re-baked copy
+    of the XML on every pre-init ``set_param``. Since RuleMonkey v3.7.0 the
+    override cascade re-derives from ``expr=`` upstream, so the adapter just
+    forwards and lets the engine propagate (GH #115); these assertions are
+    unchanged across that swap, which is the point of keeping them.
     """
 
     def test_pre_init_rederives_derived_seed_amount(self, nfsim_switchable_rate_xml):
@@ -134,6 +138,153 @@ class TestRuleMonkeySessionDerivedSeedAmounts:
             rm.clear_param_overrides()
             rm.initialize(seed=1)
             assert rm.get_species_count("A(b)") == 100  # back to Ntot = 100
+
+
+def _core_simulator(xml_path):
+    """A bare ``RuleMonkeySimulator`` for multi-point scan tests.
+
+    ``RuleMonkeySession.destroy()`` is terminal and ``set_param`` refuses while
+    a session is live, so the session wrapper cannot walk a dose curve on one
+    loaded model. The scan pattern GH #115 is about — one parse, one
+    ``set_param`` per point — only exists at the core level, so these tests
+    drive it directly.
+    """
+    from bngsim._bngsim_core import RuleMonkeySimulator
+
+    return RuleMonkeySimulator(str(xml_path))
+
+
+class TestRuleMonkeyScanOnOneSimulator:
+    """GH #115: a pre-init set_param is a parameter update, not a model rebuild.
+
+    The adapter used to answer every pending override by re-baking the XML and
+    reconstructing the engine from scratch. Upstream RuleMonkey v3.7.0
+    propagates an override through its own ``<Parameter expr=>`` derivations, so
+    the re-bake is gone. These pin the three things that swap could have moved:
+    the override still reaches a derived seed amount, it no longer perturbs
+    anything outside its dependency cone, and clearing it takes effect.
+    """
+
+    def test_dose_reaches_the_derived_fractional_seed(self, dose_seed_precision_xml):
+        sim = _core_simulator(dose_seed_precision_xml)
+        sim.initialize(1)
+        assert sim.get_species_count("L(b)") == 1807  # LT = 1806.6422, half-up
+
+        # LT = ((dose_nM*1e-9)*NA)*V_sim, so the seed tracks the dose linearly
+        # and each point is rounded half-up on its own.
+        for dose, expected in ((0.5, 903), (1.0, 1807), (2.5, 4517), (4.0, 7227)):
+            sim.destroy_session()
+            sim.set_param("dose_nM", dose)
+            sim.initialize(1)
+            assert sim.get_species_count("L(b)") == expected, f"dose={dose}"
+
+    def test_override_does_not_perturb_outside_its_cone(self, dose_seed_precision_xml):
+        """A dose must not move a rate constant it does not feed.
+
+        ``kf = ((K*1e9)*kr)/(NA*V_sim)`` divides by Avogadro's number, which
+        BNG2 writes with fewer digits in ``value=`` than in ``expr=``. Anything
+        that re-evaluates the whole graph under an override — as the dropped
+        re-bake did — silently re-rounds ``kf`` by ~1e-8 relative at every scan
+        point, in a model where nothing about ``kf`` changed.
+        """
+        sim = _core_simulator(dose_seed_precision_xml)
+        kf_cold = sim.get_parameter("kf")
+
+        sim.set_param("dose_nM", 2.5)
+        sim.initialize(1)
+        assert sim.get_parameter("LT") != 1806.6422  # the cone did move
+        assert sim.get_parameter("kf") == kf_cold  # ... and nothing else did
+
+    def test_no_op_override_changes_nothing_at_all(self, nfsim_empty_model_xml):
+        """Re-assigning a parameter its own value must be a no-op, bit-for-bit.
+
+        Swept over a real BNG2 parameter block (24 parameters, most of them
+        derived through ``pi`` / ``NA`` / ``Vecf``) rather than a hand-authored
+        one — the same gate upstream asserts across its own corpus. The
+        ``initialize()`` matters: it is the point the dropped re-bake ran, so
+        without it this sweep would pass on either side of GH #115.
+        """
+        sim = _core_simulator(nfsim_empty_model_xml)
+        names = [
+            "f", "NA", "pi", "Vecf", "Dcell", "Hepm", "Vepm", "eta_ecf", "eta_mem",
+            "mwt_BSA", "mwt_DNP", "mwt_DCT", "n", "mwt_DNPnBSA", "D_BSA", "Lconc_nM",
+            "Lconc", "Lcpc", "Rcpc", "KA_DCT", "kon_DCT", "koff_DCT", "kon", "koff",
+        ]  # fmt: skip
+        before = {p: sim.get_parameter(p) for p in names}
+
+        sim.set_param("Lconc_nM", before["Lconc_nM"])
+        sim.initialize(1)
+
+        after = {p: sim.get_parameter(p) for p in names}
+        assert after == before
+
+    def test_a_real_override_moves_exactly_its_cone(self, nfsim_empty_model_xml):
+        """The complement of the no-op sweep: everything downstream, nothing else."""
+        sim = _core_simulator(nfsim_empty_model_xml)
+        names = ["f", "NA", "pi", "Vecf", "Vepm", "Lconc_nM", "Lconc", "Lcpc", "Rcpc", "kon"]
+        before = {p: sim.get_parameter(p) for p in names}
+
+        sim.set_param("Lconc_nM", 2.0)
+        sim.initialize(1)
+
+        after = {p: sim.get_parameter(p) for p in names}
+        moved = {p for p in names if after[p] != before[p]}
+        # Lconc = 1e-9*Lconc_nM and Lcpc = Lconc*(NA*Vecf) are the whole cone.
+        assert moved == {"Lconc_nM", "Lconc", "Lcpc"}
+        assert after["Lcpc"] == pytest.approx(2 * before["Lcpc"])
+
+    def test_seed_rounding_follows_a_scan_across_integral_points(self, dose_seed_precision_xml):
+        """The half-up seed policy is re-derived per point, not pinned once.
+
+        The rounding is applied as an engine-level pin on top of the resolved
+        ``concentration`` expression, and a pin deliberately outlives a
+        ``set_param``. ``rscale = 0.5`` lands ``RT`` on an exact 150 right after
+        a point that pinned 152, so a pin left over from the previous point
+        shows up here as an off-by-two.
+        """
+        sim = _core_simulator(dose_seed_precision_xml)
+        for rscale, expected in ((1.0, 300), (0.505, 152), (0.5, 150), (0.337, 101), (2.0, 600)):
+            sim.destroy_session()
+            sim.set_param("rscale", rscale)
+            sim.initialize(1)
+            assert sim.get_species_count("R(b)") == expected, f"rscale={rscale}"
+
+    def test_clear_after_a_run_reverts_the_seed_amount(self, dose_seed_precision_xml):
+        """Clearing an override must reach the seed the run already consumed.
+
+        The re-bake could not do this: it rebuilt the engine only when an
+        override was *pending*, so after a run had baked a dose into the model,
+        clearing left the baked seed in place and the next run silently kept
+        using the cleared dose.
+        """
+        sim = _core_simulator(dose_seed_precision_xml)
+        sim.set_param("dose_nM", 2.5)
+        sim.initialize(1)
+        assert sim.get_species_count("L(b)") == 4517
+
+        sim.destroy_session()
+        sim.clear_param_overrides()
+        sim.initialize(1)
+        assert sim.get_species_count("L(b)") == 1807
+        assert sim.get_parameter("LT") == 1806.6422
+
+    def test_repeated_run_under_a_live_override_is_stable(self, dose_seed_precision_xml):
+        """Re-running with the same override must not drift.
+
+        Each ``run()`` used to re-bake and reconstruct; each ``set_param`` now
+        re-derives the seed pins in place. Either way the model must be
+        idempotent under repetition — this is the assertion that catches a pin
+        or a bake accumulating across points.
+        """
+        sim = _core_simulator(dose_seed_precision_xml)
+        sim.set_param("dose_nM", 2.5)
+        seen = []
+        for _ in range(4):
+            sim.destroy_session()
+            sim.initialize(1)
+            seen.append((sim.get_species_count("L(b)"), sim.get_parameter("LT")))
+        assert seen == [seen[0]] * 4
+        assert seen[0][0] == 4517
 
 
 # RuleMonkey canonicalizes X's components as `X(y,p~0)` — note this is the

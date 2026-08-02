@@ -1,24 +1,24 @@
 # Test corpora
 
 RuleMonkey's correctness story rests on three independent test suites
-totalling 177 BNGL models. Every parity check compares the RM
+totalling 180 BNGL models. Every parity check compares the RM
 trajectory against a gold-standard reference (NFsim ensemble, BNG2
 ODE, or hand-rolled Gillespie SSA) using a per-model time-integrated
 z-score threshold.
 
 | Suite | Models | Reference | Driver | Wall time |
 |---|---:|---|---|---|
-| `feature_coverage` | 77 | NFsim 20-rep + BNG2 ODE | `harness/benchmark_feature_coverage.py` | ~3 min |
+| `feature_coverage` | 80 | NFsim 20-rep + BNG2 ODE | `harness/benchmark_feature_coverage.py` | ~3 min |
 | `corpus` | 71 | NFsim 100-rep ensemble (with 2 SSA exceptions) | `harness/benchmark_full.py` | smoke 2 min / guard 15 min / full 3 h |
 | `nfsim_basicmodels` | 29 | NFsim 100-rep ensemble | `harness/basicmodels.py` | ~5 min |
 
-Current health (2026-05-02): **177 / 177 PASS** at the canonical
+Current health (2026-07-29): **180 / 180 PASS** at the canonical
 verdict thresholds. The CI job runs `feature_coverage` on every push
 to `main`.
 
 ## `feature_coverage` — the BNGL feature matrix
 
-77 small, fast models (`tests/models/feature_coverage/*.bngl`),
+80 small, fast models (`tests/models/feature_coverage/*.bngl`),
 designed to exercise every BNGL feature and every feature
 interaction RM has historically been wrong about.  Each model is
 ≤ 600 molecules and runs in seconds.  Reference data is vendored
@@ -28,11 +28,11 @@ Models break down by family:
 
 | Prefix | Count | Purpose |
 |---|---:|---|
-| `ft_*` | 42 | One feature per model — the breadth coverage |
+| `ft_*` | 44 | One feature per model — the breadth coverage |
 | `edg_*` | 20 | "Edge cases designed to break RM" — stress probes added in 3.1.0 |
 | `combo_*` | 8 | Feature combinations that have caused past regressions |
 | `ss_*` | 4 | Steady-state / longer-time-scale variants |
-| `nf_*` | 3 | Network-free-only constructs (NFsim ref only) |
+| `nf_*` | 4 | Network-free-only constructs (NFsim ref only) |
 
 Each model carries its own NFsim reference (or BNG2 ODE reference
 where NFsim refuses the model — the `--full` mode of the harness
@@ -40,8 +40,8 @@ cross-checks both).  Per-model rationale lives in `EDG_RATIONALE.md`
 inside the model directory.
 
 ```bash
-python3 harness/benchmark_feature_coverage.py            # all 77, ~3 min
-python3 harness/benchmark_feature_coverage.py --tier base   # 42 base ft_* models only
+python3 harness/benchmark_feature_coverage.py            # all 80, ~3 min
+python3 harness/benchmark_feature_coverage.py --tier base   # 44 base ft_* models only
 python3 harness/benchmark_feature_coverage.py ft_bond_wildcards combo_strict_product_plus
 ```
 
@@ -126,16 +126,19 @@ directory.
 
 ## C++ smoke tests
 
-Three ctest tests run as part of every build:
+A ctest suite runs as part of every build.  The ones covering the
+model-configuration surface:
 
 | Test | What it checks |
 |---|---|
 | `smoke_test` | Engine loads `A_plus_A.xml` and steps a short simulation without crashing |
-| `set_param_test` | Parameter overrides reach the engine for Ele / MM / initial-conc paths; derived-parameter cascades work; unknown names throw; mid-session add_molecules conserves mass |
+| `set_param_test` | Parameter overrides reach the engine for Ele / MM / initial-conc / eBNGL-energy paths; derived-parameter cascades work in declaration and reverse-dependency order; BNG2 `expr=` derivations re-derive seed amounts; clearing an override un-bakes a prior run; unknown names throw; mid-session add_molecules conserves mass |
+| `param_expr_gate_test` | Corpus-wide: a no-op `set_param` switches the cascade onto `<Parameter expr=>`, and no model's parameters may drift off their loaded `<Parameter value=>` when it does (issue #23) |
+| `initial_amount_test` | Seed-species introspection and pin/release; pins outrank parameter derivations, reach the engine, cover literal `concentration=` and `Fixed="1"` clamp targets, and un-bake on clear |
 | `save_load_test` | save/load round-trip preserves trajectory; XML mismatch is refused via the schema fingerprint; pre-V2 state files are refused |
 
 ```bash
-ctest --preset release       # all three, ~2s
+ctest --preset release       # whole suite, ~20s
 ctest --preset asan          # same tests under AddressSanitizer + UBSan
 ```
 
@@ -150,7 +153,7 @@ Both presets are wired into CI (`.github/workflows/ci.yml`).
   pre-commit gate.
 - **Before declaring a release**: `--tier full` (3 h) plus
   `feature_coverage` plus `nfsim_basicmodels`.  This is the
-  177/177 verification that backs the release notes.
+  180/180 verification that backs the release notes.
 - **Adding a new feature**: write a `feature_coverage/ft_*` model
   for it and a `combo_*` or `edg_*` if it interacts with an
   existing feature in a non-obvious way.
@@ -160,7 +163,7 @@ Both presets are wired into CI (`.github/workflows/ci.yml`).
 ```
 tests/
   models/
-    feature_coverage/{ft,edg,combo,ss,nf}_*.bngl    # 77 BNGL sources
+    feature_coverage/{ft,edg,combo,ss,nf}_*.bngl    # 80 BNGL sources
     corpus/*.bngl                                    # 71 BNGL sources
     nfsim_basicmodels/v*.bngl                        # 29 BNGL sources
   reference/

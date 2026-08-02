@@ -134,40 +134,83 @@ The runtime severity model is two-level:
 - `set_param(name, value)` rejects names not declared in the loaded XML
   (typos throw rather than silently no-op).
 - Overrides cascade through derived parameter expressions. If the BNGL
-  declares `B = 2*A` (i.e. the XML emits
-  `<Parameter id="B" value="2*A"/>`), `set_param("A", x)` recomputes
-  `B` to `2*x` for the next run AND for `get_parameter("B")` queries
-  in between runs. Overriding `B` directly wins over the cascade — the
-  expression for `B` is skipped, and parameters that derive from `B`
-  see the override.
-- Cascade order is the parameter declaration order in the XML.  At
-  load time the parser iterates parameter resolution to fixed point
-  (capped at `parameter_count + 4` passes), so an arbitrarily-deep
-  chain of forward references in the XML resolves correctly even if
-  the emitter does not deliver them in dependency order — cycles are
-  the only thing that won't resolve.  At `set_param` time the override
-  cascade is a single pass in declaration order: BNG2 emits parameters
-  in dependency order, so any chain a real model could produce
-  cascades on the first pass.
+  declares `B = 2*A`, `set_param("A", x)` recomputes `B` to `2*x` for
+  the next run AND for `get_parameter("B")` queries in between runs.
+  Overriding `B` directly wins over the cascade — the expression for
+  `B` is skipped, and parameters that derive from `B` see the override.
+- **Which XML attribute the cascade reads.** BNG2's `writeXML` records
+  every parameter twice: `value=` is the derivation already collapsed to
+  a number, `expr=` is the derivation itself.
+
+  ```xml
+  <Parameter id="LT" type="Constant" value="1806.6422" expr="((AT_nM*1e-9)*NA)*V_sim"/>
+  ```
+
+  Load-time resolution reads `value`, because that is what NFsim reads
+  and BNG2 does not always write the two to the same precision (`NA`
+  comes out as `value="6.0221408e+23"` against `expr="6.02214076e23"`).
+  The override cascade reads `expr`, because a collapsed number
+  re-resolves to itself and so could never propagate an override.
+
+  To keep those two sources from fighting, the cascade takes an
+  expr-derived value only where it actually *moves* the parameter off
+  its no-override baseline. A parameter the override does not reach
+  keeps its loaded `value` bit-for-bit, so a run with an override on
+  `X` is numerically identical to the un-overridden run everywhere `X`
+  does not reach. Hand-authored XML that puts the expression directly
+  in `value=` and omits `expr=` cascades off `value` as before.
+
+  Consequence worth stating plainly: a derived parameter *is*
+  overridable even though BNG2 emitted its `value` as a literal. That
+  was not true before 3.7.0 — see the issue #23 entry in the changelog.
+- Cascade order is the parameter declaration order in the XML, iterated
+  to fixed point (capped at `parameter_count + 4` passes) both at load
+  time and at `set_param` time.  An arbitrarily-deep chain of forward
+  references resolves correctly even if the emitter does not deliver
+  them in dependency order — `C = 2*B; B = 2*A; A = 1` declared in that
+  order settles after a `set_param("A", x)`. Cycles are the only thing
+  that won't resolve; they warn on stderr and leave stale values.
 - `get_parameter(name)` reflects the current overrides + cascade
   immediately, without requiring a `run()` or `initialize()` call.
+- `clear_param_overrides()` restores the parsed values, including in the
+  rate constants and seed concentrations a prior `run()` baked into the
+  parsed model — so it un-does an override that has already been
+  simulated, not just the override map. (Before 3.7.0 the baked fields
+  were left stale, so `get_parameter()` and the engine disagreed.)
 
 ### Initial state and live mutation
 
 - Seed species declared via `ListOfSpecies` with `concentration="N"` or
-  `concentration="param_name"` — parameter-backed concentrations
-  re-resolve through `set_param` overrides.
+  `concentration="<expression>"` — expression-backed concentrations
+  re-resolve through `set_param` overrides, including through a chain of
+  derived parameters (`concentration="LT"`, `LT = f(AT_nM, …)`).
+- Amounts are real-valued in the XML and **truncated toward zero** when
+  the engine instantiates molecules — NFsim parity, and several corpus
+  models depend on it (`NL = 421.5498` seeds 421, not 422).
+- `set_initial_amount(key, amount)` pins a seed amount directly, for the
+  case no parameter drives it (a bare `concentration="1000"`) or where
+  the caller would rather state the molecule count outright. Keyed by
+  the BNGL `<Species name=>` pattern or the XML `<Species id=>`. A pin
+  outranks the `concentration` expression — including a `set_param`
+  applied afterwards — until `clear_initial_amount_overrides()`.
+  `initial_species()` reports every seed species with the amount the
+  next run would use under the current overrides.
 - Single-molecule `Fixed` species (BNGL `$` prefix) — the engine
   replenishes them after each event so their count is held at the
-  initial value (matching BNG2's ODE semantics).
+  initial value (matching BNG2's ODE semantics). The clamp target
+  follows parameter overrides and direct pins.
 - `add_molecules(type_name, count)` for live perturbation between
   segments of a stateful session.
 
 ### Functional surface
 
-- `set_param`, `clear_param_overrides`, `set_molecule_limit`,
+- `set_param`, `clear_param_overrides`, `set_initial_amount`,
+  `clear_initial_amount_overrides`, `set_molecule_limit`,
   `set_block_same_complex_binding` — applied at the next `run()` /
   `initialize()` (throw if a session is currently active).
+- `get_parameter`, `get_initial_amount`, `initial_species` — read the
+  configuration the next run would use; callable with or without a live
+  session, since they describe the initial state rather than the pool.
 - `save_state(path)` / `load_state(path)` — full pool, RNG, and
   bookkeeping snapshot. The XML used at `load_state` time must match
   the one used at `save_state` time.
@@ -181,7 +224,7 @@ treat at least one of these as a signal to refuse the model.
 | Trigger | Why refused |
 |---|---|
 | `<ListOfCompartments>` non-empty | RM does not implement compartment volume scaling — bimolecular rate constants would be silently incorrect. |
-| Any rule with `RateLaw type="Arrhenius"` | eBNGL energy-pattern rate derivation is not implemented; rate constants would be silently wrong. (A bare `<ListOfEnergyPatterns>` with `Function`-type rate laws that inline the Boltzmann factors is fine — only `Arrhenius` is the trigger.) |
+| An `RateLaw type="Arrhenius"` rule that is **not** a 2-reactant binding rule | eBNGL energy rules are expanded at load time (see "Energy-based BNGL" below), but only for the 2-reactant binding case — matching NFsim's own coverage. State-change energy rules, intramolecular ring-closure binding, and >2-reactant rules would be silently dropped, so they are refused. (2-reactant binding Arrhenius rules, and a bare `<ListOfEnergyPatterns>` with `Function`-type rate laws, are both fully supported and are **not** triggers.) |
 | Any rule with `RateLaw type="Sat"` | Deprecated; rewrite as `MM(kcat, Km)`. |
 | Any rule with `RateLaw type="Hill"` | Network-only; use `generate_network()` + ODE/SSA instead of network-free. |
 | Any `<MoleculeType population="1">` | Hybrid particle-population SSA not implemented; would be silently treated as ordinary particles with diverging trajectories. |
@@ -201,6 +244,64 @@ These are emitted as `Severity::Warn` and the run proceeds.
 |---|---|
 | Any rule with `MoveConnected` operation | Requires compartments; emitted as a warning because RM ignores the operation entirely. |
 | Any rule with a `priority` attribute | Honored as ordinary rule firing; the priority modifier is ignored. |
+
+## Energy-based BNGL (eBNGL)
+
+RM supports energy rules written with the `Arrhenius(phi, Ea0)` rate law
+for the **2-reactant binding** case, matching NFsim's own coverage
+(RuleWorld/nfsim commit `c4f1bb2`). No runtime free-energy computation
+happens; instead the model loader expands each energy rule at load time
+into a finite set of conventional rules with pre-computed rate constants
+(Sekar 2015, *Rule-based Modeling of Cell Signaling*, Ch. 3), which then
+run through the ordinary SSA loop unchanged. The port lives in
+`cpp/rulemonkey/energy_expand.{hpp,cpp}`.
+
+For a binding rule `mt1(s1) + mt2(s2) <-> mt1(s1!1).mt2(s2!1)`:
+
+- The energy patterns that overlap the reaction-center bond are the only
+  ones whose match count changes when the bond forms, so only they
+  contribute to ΔG (Sekar Corollary 3.3-43).
+- Patterns that pin only the reaction center are "always" contributors;
+  patterns that additionally require context (another bound site, or a
+  third molecule) are "conditional" and gate on that context.
+- The rule expands into `2^n` context variants (n = number of distinct
+  context conditions), each a conventional binding or unbinding rule whose
+  reactant templates carry the context as extra bound/free component
+  constraints, and whose rate is
+  `k_fwd = exp(-(Ea0 + phi·ΔG)/RT)` (binding) or
+  `k_rev = exp(-(Ea0 + (phi-1)·ΔG)/RT)` (unbinding). Each direction is
+  taken from its own BNG2-emitted `ReactionRule` (forward = AddBond,
+  reverse = DeleteBond), so the forward and reverse halves are expanded
+  independently.
+- `RT` is read from the `RT` parameter (default 2.478); `phi`/`Ea0` are
+  the two `Arrhenius` rate constants. Energy-pattern values come from
+  the `<EnergyPattern expression="...">` attribute.
+
+Each expanded rate is stored as a symbolic expression of the energy
+parameters, so `set_param` on `Ea0`, `phi`, `RT`, or an energy-pattern
+`Gf` **does** re-resolve the baked rates on the next run (same path as
+ordinary `Ele` rate constants).
+
+**Deferred** (refused at Tier 0, matching NFsim's binding-only coverage):
+state-change energy rules, intramolecular ring-closure binding, rules with
+more than two reactants, **same-type homodimer binding** (`A + A <-> A.A`;
+the context reactant attribution and the molecularity-1 symmetry factor are
+not handled for automorphic reactants), rules that **couple binding to
+another operation** (state change, molecule add/delete), and rules carrying
+**exclude/include constraints**. Energy patterns paired with `Function`-type
+rate laws that inline the Boltzmann factors by hand (e.g.
+`isingspin_localfcn`, `ft_energy_patterns`) are a separate, long-supported
+path and need no expansion.
+
+**NFsim-parity quirks** (faithfully reproduced, so RM matches NFsim even
+where NFsim's expansion is incomplete relative to BNG2's network
+generation): an energy pattern that requires *two or more* context bonds is
+included in a variant's ΔG when *any* one of those bonds is present
+(OR-union, not AND); and an energy pattern gated purely by a non-center
+*internal-state* constraint (rather than a bond) contributes no ΔG term.
+Both mirror NFsim exactly. RM's supported test models avoid these shapes;
+if you need BNG2-network-exact behavior on such patterns, use
+`generate_network()` + ODE/SSA.
 
 ## Embedder integration pattern
 
@@ -253,9 +354,15 @@ emitted, recorded at the final/initial state. An out-of-order list throws
 
 ## Open work tracked elsewhere
 
-- Compartment volume scaling — open work, no scheduled implementation.
-- Arrhenius / energy-pattern rate derivation — same.
-- Hybrid particle-population SSA — same.
+- Compartment volume scaling (cBNGL) — tracked in
+  [#21](https://github.com/richardposner/RuleMonkey/issues/21);
+  foundational, no scheduled implementation.
+- Energy-based BNGL (eBNGL) beyond 2-reactant binding — the binding case
+  is implemented (see below); state-change energy rules and >2-reactant
+  energy rules remain deferred (they are also unsupported by NFsim's
+  current eBNGL). Tracked in
+  [#20](https://github.com/richardposner/RuleMonkey/issues/20).
+- Hybrid particle-population SSA — open work, no scheduled implementation.
 - Multi-molecule Fixed species — would require pattern-based
   re-instantiation; not currently implemented (refused at Tier 0).
 - Pattern canonical labeling (nauty integration) — flagged in

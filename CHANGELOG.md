@@ -15,6 +15,74 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **A pre-init `set_param` on the RuleMonkey backend is a parameter update
+  again, not a model rebuild (issue #115).** `RuleMonkeySimulator` answered every
+  pending override by re-evaluating the XML's whole `<Parameter expr=>` graph,
+  writing two temp XMLs, and reconstructing the upstream engine from the second
+  one — on *every* `run()` and every session `initialize()`. That existed to work
+  around an upstream defect (GH #44): RuleMonkey parsed only the collapsed
+  `<Parameter value=>`, so its own override cascade re-resolved a number to
+  itself and could not reach a derived seed amount such as
+  `LT = ((dose_nM*1e-9)*NA)*V_sim`. RuleMonkey **v3.7.0**
+  ([`0ec6148`](https://github.com/richardposner/RuleMonkey/commit/0ec6148)) fixed
+  that — the cascade re-derives from `expr=`, gated on the value actually moving
+  — so the adapter now forwards `set_param` and lets the engine propagate. The
+  vendored pin moves `fbdde54` → `8f87968` (v3.7.0 plus its docs follow-up).
+
+  Two behavior bugs go with it, both consequences of maintaining a parameter
+  evaluator in parallel with the engine's:
+
+  * **An override no longer perturbs anything outside its dependency cone.**
+    The re-bake re-rounded *every* derived parameter to `expr=` precision
+    whenever any override was pending. Where BNG2 writes `NA` as
+    `value="6.0221408e+23"` against `expr="6.02214076e23"`, that moved every
+    bimolecular rate constant dividing by Avogadro's number by ~4e-9 relative —
+    at every scan point, for parameters the scan never touched. A no-op
+    `set_param(p, p)` was enough to trigger it.
+  * **`clear_param_overrides()` after a run takes effect.** The rebuild ran only
+    while an override was *pending*, so once a run had baked a dose into the
+    model, clearing it left the baked seed amount and rate constants in place and
+    the next run silently kept using the cleared dose. (Upstream's companion fix
+    closes the same hole on its side.)
+
+  The GH #51 half-up seed-count policy is unchanged in effect and re-expressed in
+  mechanism: instead of rewriting `<Species concentration=>` in a temp XML, the
+  adapter reads the amount the engine has already resolved
+  (`initial_species()`) and pins the rounded integer (`set_initial_amount()`),
+  re-derived after every `set_param` / `clear_param_overrides`. That also removes
+  the overlay's blind spot — it could only resolve a bare parameter or a literal,
+  where the engine resolves whatever the model wrote.
+
+  Per-scan-point cost, median of 12 points, zero-horizon `run()` so the setup is
+  not hidden behind SSA work (RuleMonkey's own model corpus):
+
+  | model | XML lines | before | after | no-override control |
+  |---|---|---|---|---|
+  | `r21` (ribosome) | 51,919 | 29.8 ms | **0.41 ms** | 0.37 ms |
+  | `tcr` | 10,457 | 121.7 ms | **113.5 ms** | 112.9 ms |
+  | `ensemble` | 15,133 | 249.8 ms | **242.7 ms** | 243.0 ms |
+  | `egfr_net` | 2,996 | 24.6 ms | **20.7 ms** | 20.7 ms |
+  | `blbr_posner2004` | 2,085 | 10.1 ms | **7.0 ms** | 6.9 ms |
+
+  An overridden point now costs what an un-overridden one costs, which is the
+  actual claim; the spread across models is just how much of a point is XML
+  parsing versus instantiating the pool. Construction gets cheaper too (`r21`
+  23.9 → 19.4 ms) since the cold path no longer writes a seed-rounded temp XML.
+
+  Found on the way and fixed with it: **no workflow was triggered by a change to
+  the RuleMonkey adapter or its vendored tree.** `native-tests.yml` builds
+  `-DBNGSIM_BUILD_RULEMONKEY=OFF`, so `src/rulemonkey_simulator.cpp` is not in
+  that build; the jobs that do compile it only did so because
+  `BNGSIM_BUILD_RULEMONKEY` defaults ON, and none listed it in `paths:`. A
+  vendor bump could have failed to compile with nothing red.
+  `windows-tail.yml` — which already builds RuleMonkey and already runs
+  `test_seed_count_rounding.py`'s RuleMonkey class — now triggers on
+  `src/rulemonkey_simulator.cpp` and `third_party/rulemonkey/**` and runs
+  `test_rulemonkey.py`, at no extra build cost. `scripts/vendor_rulemonkey.py`'s
+  clean-destination guard is fixed alongside: it ran `git status` from the
+  *parent* of the checkout, which exits 128 in a standalone clone, so the guard
+  aborted the refresh instead of checking anything.
+
 - **The derived-parameter chain rule walks the parameter DAG instead of
   flattening it before differentiating (issue #99).** Issue #41 taught
   `_compute_derived_param_jacobian` to reach a *nested* derived
