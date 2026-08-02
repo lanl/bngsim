@@ -174,6 +174,62 @@ class TestLiveStateIsNotClobbered:
         assert m.get_state()[i] == 7.0
         assert m._core.get_initial_state()[i] == 1e6
 
+    def test_an_advanced_state_equal_to_the_baseline_still_keeps_its_value(self):
+        """Issue #141: it is the RUN that retires the rebuild, not the arithmetic.
+
+        ``test_an_advanced_state_keeps_its_value`` above asserts ``advanced < R0``
+        — so it only ever exercises the branch where ``concentration ==
+        initial_conc`` happens to give the right answer. Drive ``kf`` to 0 and the
+        run leaves R exactly on its declared IC: same code path, and the value test
+        alone reads "still at baseline" and overwrites integrated state.
+
+        This is ``kinetics_mb1n.bngl`` in miniature — free antigen is not consumed
+        while its switch is 0, so a mid-protocol ``setParameter`` zeroed a pool the
+        integrator had carried. Assert the PROVENANCE invariant (a run advanced it,
+        therefore it is not the IC) rather than adding one more value case.
+        """
+        m = _model()
+        i = _iR(m)
+        m.set_param("kf", 0.0)  # R is inert: the run cannot move it
+        bngsim.Simulator(m).run(t_span=(0, 2.0), n_points=3)
+        advanced = m.get_state()[i]
+        assert advanced == R0  # the coincidence the value test cannot see through
+        m.set_param("R0", 1e6)
+        assert m.get_state()[i] == advanced  # the dynamics state survives
+        assert m._core.get_initial_state()[i] == 1e6  # ...but the baseline moved
+        m.reset()
+        assert m.get_state()[i] == 1e6
+
+    def test_the_same_holds_for_a_derived_ic(self):
+        """The rule is about provenance, not about how the IC was written."""
+        m = _model(IC_DERIVED_NET)
+        i = _iR(m)
+        m.set_param("kf", 0.0)
+        bngsim.Simulator(m).run(t_span=(0, 2.0), n_points=3)
+        m.set_param("R0", 1e6)
+        assert m.get_state()[i] == R0
+        assert m._core.get_initial_state()[i] == 1e6
+
+    def test_re_asserting_the_declared_ic_value_is_left_ambiguous(self):
+        """A caller who writes back the number the IC already produces is NOT a run.
+
+        ``_superseded_ic_rows`` (issue #113) documents this exact case as one where
+        "which of the two was meant is genuinely ambiguous" and keeps the row, with
+        ``declare_ic_sensitivity`` (#111) as the way to say either. #79's rebuild
+        reads it the same way, so the two sites agree. #141 carves out only the
+        unambiguous case — a run advanced the state — so this must NOT move with it.
+        """
+        for writer in (
+            lambda m, i: m.set_concentration("R()", R0),
+            lambda m, i: m.set_state([R0 if j == i else v for j, v in enumerate(m.get_state())]),
+        ):
+            m = _model()
+            i = _iR(m)
+            writer(m, i)
+            m.set_param("R0", 1e6)
+            assert m.get_state()[i] == 1e6  # the parameter still wins
+            assert m._core.get_initial_state()[i] == 1e6
+
 
 class TestSavedBaselineRetiresTheRebuild:
     """``save_concentrations()`` redefines the baseline; the declared IC retires."""

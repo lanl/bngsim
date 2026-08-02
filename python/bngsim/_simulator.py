@@ -3269,6 +3269,16 @@ class Simulator:
                 self._model.restore_concentrations(reset_to)
             else:
                 self._model.set_state(invocation_state)
+            # Issue #141: the restore above declares this point a fresh start from
+            # the invocation baseline, but neither set_state nor
+            # restore_concentrations clears GH #210's carry-over marker — and the
+            # IC rebuild now reads that marker to refuse to overwrite a state some
+            # run advanced. Left set by the PREVIOUS point's run, it would freeze
+            # an IC-naming parameter at the invocation dose from point 1 on: the
+            # #79 trap again, one level down. Only the reset_conc=True path lands
+            # here; the pre-equilibration carry (#81) is reset_conc=False and must
+            # keep its marker.
+            self._model._core.ic_state_dirty = False
 
         base_seed = _resolve_seed(seed) if self._method != "ode" else 0
 

@@ -328,6 +328,29 @@ void NetworkModel::set_param(const std::string &name, double value) {
 //     `concentration == initial_conc` test decides whether a parameter still
 //     reaches a species IC in the #113 sensitivity seeding, so the two agree.
 //
+// `concentration == initial_conc` alone is a VALUE test standing in for a
+// PROVENANCE question, and the two part company when a run leaves a species
+// exactly where it started (issue #141). `kinetics_mb1n.bngl` does that: free
+// antigen is not consumed while its `m()` switch is 0, so its carried value is
+// bit-identical to the declared IC, the value test reads "still at baseline",
+// and the next setParameter() zeroes an integrated pool mid-protocol. So the
+// live state additionally requires that no run has advanced it —
+// `ic_state_dirty`, GH #210's carry-over marker, which write_final_state_back
+// sets and reset() clears.
+//
+// Read, never written, here: setting it from set_param is what issue #79
+// proposed and it is wrong — it makes the next forward-sensitivity run raise
+// instead of rebuilding anything.
+//
+// This deliberately does NOT extend to a caller who assigns a species the same
+// number its own declared IC produces (set_concentration/set_state on a model
+// that has not run — neither marks the state dirty). There the assignment and
+// the expression agree numerically and which was meant is genuinely ambiguous;
+// #113's `_superseded_ic_rows` documents that same case as ambiguous and keeps
+// the row, with declare_ic_sensitivity (#111) as the way to say either. Those
+// two sites still agree. An advanced run is not ambiguous, which is why only it
+// is carved out.
+//
 // Every ref is re-resolved, not just the refs naming the written parameter:
 // after the derived-parameter re-evaluation above, ANY ref may have moved, and
 // re-resolving one that did not is a no-op. Empty for all but a handful of
@@ -341,7 +364,7 @@ void NetworkModel::refresh_param_ref_ics() {
         auto &sp = impl_->species[static_cast<std::size_t>(ref.first)];
         const double val = resolve_ic_from_param(
             sp, impl_->parameters[static_cast<std::size_t>(ref.second)].value);
-        const bool at_baseline = (sp.concentration == sp.initial_conc);
+        const bool at_baseline = (sp.concentration == sp.initial_conc) && !impl_->ic_state_dirty;
         sp.initial_conc = val;
         if (at_baseline)
             sp.concentration = val;

@@ -14,6 +14,37 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+- **`set_param` no longer overwrites a state a run advanced, when the species
+  happened not to move (issue #141).** #79 made `set_param` re-resolve a species
+  initial condition that names the written parameter, and decided whether the
+  *live* value still belonged to that IC with `concentration == initial_conc`.
+  That is a value test standing in for a provenance question, and the two part
+  company whenever the dynamics leave a species exactly where it started: the
+  test reads "still at baseline" and the rebuild discards integrated state.
+
+  `kinetics_mb1n.bngl` is the case in the wild — free antigen is not consumed
+  while its `m()` switch is 0, so its carried value is bit-identical to
+  `min(Agtot,Agmax)`, and the next `setParameter("const",0)` in a 10-segment dose
+  protocol zeroed the pool mid-run. It went PASS → DIFF (`max_rel_err` 1.0, the
+  whole final segment) in `bng_parity` on the 0.12.0 release sweep. Any
+  `run()` → `set_state()` → `set_param()` script is exposed; nothing warned.
+
+  The live state now also requires that no run has advanced it — GH #210's
+  `ic_state_dirty`, *read* here, never set (setting it from `set_param` is what
+  the issue originally proposed, and it makes the next forward-sensitivity run
+  raise instead). `parameter_scan`'s per-point reset clears the marker with the
+  rest of its restore, since `reset_conc=True` is a declared fresh start; the
+  pre-equilibration carry (#81) is `reset_conc=False` and keeps it.
+
+  Deliberately unchanged: a caller who assigns a species *the same number its own
+  declared IC produces*, on a model that has not run. There the assignment and the
+  expression agree numerically and which was meant is genuinely ambiguous —
+  issue #113's `_superseded_ic_rows` documents that same case and keeps the row,
+  with `declare_ic_sensitivity` (#111) as the way to say either. Only the
+  unambiguous case — a run advanced the state — is carved out, so the #79 rebuild
+  and the #113 sensitivity seeding still agree.
+
 ## [0.12.0] - 2026-08-02
 
 ### Added
