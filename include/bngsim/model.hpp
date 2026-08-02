@@ -123,18 +123,22 @@ class NetworkModel {
     const std::vector<Event> &events() const;
 
     // Forward-sensitivity support classification for this model's events
-    // (GH #212, widened by issue #49). Returns a human-readable reason string
-    // when the model has at least one event that forward sensitivity cannot
-    // propagate through for the requested sensitivity parameters, or
-    // std::nullopt when every event is covered by the jump
+    // (GH #212, widened by issue #49 and issue #144). Returns a human-readable
+    // reason string when the model has at least one event that forward
+    // sensitivity cannot propagate through for the requested sensitivity
+    // parameters, or std::nullopt when every event is covered by the jump
     //     s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p
     // the integrator applies at each fire. An event is covered iff it has no
-    // *effective* delay, its trigger references no species/observable/rate
-    // (i.e. the crossing time does not move with the trajectory), and either
-    //   * its trigger references none of the requested sensitivity parameters,
-    //     so ∂t*/∂p = 0 (GH #212 Phase 1), or
+    // *effective* delay and its ∂t*/∂p is known, which holds when
+    //   * its trigger reads no species/observable/rate and none of the
+    //     requested sensitivity parameters, so ∂t*/∂p = 0 (GH #212 Phase 1), or
     //   * its index is in `event_time_compensated`, meaning the Python detector
-    //     resolved the trigger's threshold and will supply ∂t*/∂p (issue #49).
+    //     resolved the trigger's threshold and will supply ∂t*/∂p (issue #49), or
+    //   * its trigger reduces to a single relational comparison, so the solver
+    //     can differentiate the crossing itself at each fire — the implicit
+    //     function theorem on g(x(t*), p, t*) = 0 (issue #144). This is the
+    //     case that covers a *state-dependent* trigger like `v > 30`, whose
+    //     crossing time moves with every parameter through the trajectory.
     // Persistence only matters when there IS a delay: per SBML L3v2 §4.11.3 a
     // non-persistent trigger can only cancel a fire during the window between
     // trigger time and execution time, which a zero-delay event has none of.
@@ -143,6 +147,54 @@ class NetworkModel {
     std::optional<std::string>
     event_sensitivity_unsupported_reason(const std::vector<std::string> &sens_param_names,
                                          const std::vector<int> &event_time_compensated = {}) const;
+
+    // ─── Event-trigger residuals for a moving crossing (issue #144) ──────────
+    //
+    // The CVODE root function is the *boolean* trigger offset by 0.5, which is
+    // a step and carries no derivative. Differentiating the crossing time needs
+    // the trigger's residual instead: for `lhs ⋈ rhs` (⋈ one of < <= > >=) that
+    // is `lhs − rhs`, whose zero set is the crossing surface. Only the ratio
+    //     dt*/dp = −(∂g/∂x·S + ∂g/∂p) / (∂g/∂t + ∂g/∂x·f)
+    // is ever formed, so the residual's overall sign is irrelevant and no
+    // orientation is imposed.
+    //
+    // event_trigger_residual_expr() returns the ExprTk expression id of that
+    // residual for event `event_idx0`, compiling it into this model's evaluator
+    // on first use, or -1 when the trigger is not a single relational
+    // comparison (a conjunction, a negation, an equality, or a bare boolean).
+    // `why`, when non-null, receives the reason for a -1. Results are cached
+    // per event; the cache is derived from the trigger's own text, so a clone
+    // re-derives it rather than copying an evaluator id across evaluators.
+    int event_trigger_residual_expr(int event_idx0, std::string *why = nullptr) const;
+
+    // Species whose perturbation can move that residual — the finite-difference
+    // support of ∂g/∂x. Tight (the species the residual names, plus the species
+    // behind any observable it names) when every other symbol it reads is
+    // state-free; every species otherwise, because a rateOf accessor or a
+    // parameter carrying an SBML assignment rule can read the whole state.
+    // Empty when event_trigger_residual_expr() is -1.
+    const std::vector<int> &event_trigger_residual_species(int event_idx0) const;
+
+    // Does this event's trigger read live state (a species concentration, an
+    // observable total, or a rateOf accessor)? Such a trigger's crossing time
+    // moves with the parameters *through the trajectory* even when it names
+    // none of them, so its ∂t*/∂p is non-zero and must be differentiated at the
+    // crossing rather than resolved ahead of the run (issue #52 / issue #144).
+    bool event_trigger_is_state_dependent(int event_idx0) const;
+
+    // Indices of the events whose ∂t*/∂p the solver differentiates at each fire
+    // (state-dependent trigger + a usable residual). The Python guard subtracts
+    // these from its own "blocked" set so the two classifications cannot drift.
+    std::vector<int> events_with_runtime_event_time_sens() const;
+
+    // Which species and which parameters a central finite difference over
+    // `expr_idx` has to perturb — following observables to the species behind
+    // them and derived/rule-bound parameters to the primaries behind them, so a
+    // pruned difference cannot report a zero where there is a derivative. Pass
+    // nullptr for either output to skip it. See model.cpp for the two
+    // silent-zero shapes this exists to close.
+    void expression_support(int expr_idx, std::vector<int> *species_out,
+                            std::vector<int> *params_out) const;
 
     // ExprTk expression-table indices of the discontinuity triggers (GH #72).
     const std::vector<int> &discontinuity_triggers() const;
@@ -445,6 +497,13 @@ class NetworkModel {
     /// parameter values (issue #79). Called at the end of set_param(), after
     /// the derived-parameter re-evaluation. See model.cpp for the rules.
     void refresh_param_ref_ics();
+
+    /// Does this bound address carry live state — a species concentration, an
+    /// observable total, or a rateOf accessor (issue #52)? The single
+    /// definition of "moves with the trajectory"; the event-sensitivity guard
+    /// and the state-dependent-trigger classification both read it, so the two
+    /// cannot disagree about what makes a trigger state-dependent.
+    bool is_state_address(const double *addr) const;
 };
 
 } // namespace bngsim

@@ -125,7 +125,11 @@ class NetworkModel:
         """
     def event_sensitivity_unsupported_reason(self, sens_param_names: collections.abc.Sequence[str], event_time_compensated: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex] = []) -> str | None:
         """
-        Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
+        Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49, issue #144). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
+        """
+    def events_with_runtime_event_time_sens(self) -> list[int]:
+        """
+        0-based indices of the events whose ∂t*/∂p the solver differentiates at each fire, by the implicit function theorem on the trigger's residual (issue #144). These are the state-dependent triggers — `v > 30` and friends — that reduce to a single relational comparison. The Python guard subtracts them from its own blocked set, so the core stays the one authority on which crossings are differentiable.
         """
     def event_trigger_sources(self) -> list[str]:
         """

@@ -852,8 +852,9 @@ class TestDeclaredIcSensitivityOnAFreshRun:
 
 
 class TestEventSensitivity:
-    """GH #212: fixed-time events propagate sensitivities; state-dependent
-    triggers still raise (the GH #205 correctness posture for the long tail)."""
+    """GH #212: fixed-time events propagate sensitivities; issue #144 added the
+    state-dependent triggers. A trigger that reduces to no single crossing
+    surface still raises (the GH #205 correctness posture for the long tail)."""
 
     def _event_sim(self, trigger="time() >= 1000", assign="A"):
         from bngsim._bngsim_core import ModelBuilder
@@ -874,7 +875,13 @@ class TestEventSensitivity:
         r = sim.run(t_span=(0, 5), n_points=6)
         assert np.all(np.isfinite(r.sensitivities))
 
-    def test_state_dependent_event_raises(self):
+    def test_state_dependent_event_runs(self):
+        # Issue #144: differentiated at the crossing rather than refused.
         sim = self._event_sim(trigger="A > 1000", assign="0")
-        with pytest.raises(ValueError, match=r"state-dependent|205"):
+        r = sim.run(t_span=(0, 5), n_points=6)
+        assert np.all(np.isfinite(r.sensitivities))
+
+    def test_trigger_without_a_single_crossing_surface_raises(self):
+        sim = self._event_sim(trigger="A > 1000 && time() >= 1", assign="0")
+        with pytest.raises(ValueError, match=r"combines conditions|205"):
             sim.run(t_span=(0, 5), n_points=6)

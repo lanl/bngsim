@@ -1030,17 +1030,43 @@ struct CvodeSimulator::Impl {
     // reads is taken there, so both call this first.
     void restore_nominal_params(const SensitivityState &sens);
 
+    // Re-evaluate every expression-valued parameter from the current parameter
+    // values, so a finite difference over a *primary* carries into the derived
+    // parameters that read it (`k := 2*kbase` must move when kbase is
+    // perturbed, or its column comes back a flat zero). `skip_param_idx` is the
+    // parameter being perturbed: re-deriving that one would silently undo the
+    // perturbation, which is the failure this exists to prevent, so it is left
+    // alone. Pass -1 to re-derive all. Function-bound parameters (an SBML
+    // assignment rule) are refreshed by evaluate_functions instead, so a caller
+    // sandwiches this between two of its own state syncs.
+    void rederive_expression_params(int skip_param_idx);
+
     // Read s⁻ out of CVODES at t_evt. MUST run before the caller's
     // CVodeReInit — see the ordering note on apply_event_sensitivity_jump.
     std::vector<std::vector<double>> capture_event_sens(void *cvode_mem, int ns, double t_evt,
                                                         SensitivityState &sens);
 
     // Jump dx/dθ across an event's assignments and resume CVODES from it.
+    // `at_run_start` marks the SBML L3 §3.4.5 t=0 fire, where the trigger was
+    // already satisfied when the run began: the fire is pinned to t_start
+    // rather than located, so ∂t*/∂θ is 0 there and must not be differentiated
+    // (the same reason issue #49's detector drops a crossing at or before
+    // t_start).
     void apply_event_sensitivity_jump(const SolverOptions &opts, void *cvode_mem, int ns,
                                       double t_evt, const std::vector<int> &fired,
                                       const std::vector<double> &x_minus,
                                       const std::vector<std::vector<double>> &s_minus,
-                                      SensitivityState &sens);
+                                      SensitivityState &sens, bool at_run_start = false);
+
+    // ∂t*/∂θ for a state-dependent trigger, differentiated AT the crossing
+    // (issue #144). Returns false when this event has no usable residual, in
+    // which case the caller leaves ∂t*/∂θ at whatever the issue #49 detector
+    // supplied (zero for a fixed-time event). Throws on a tangential crossing.
+    bool state_trigger_dtstar(int event_idx0, double t_evt, int ns,
+                              const std::vector<double> &x_minus,
+                              const std::vector<double> &f_minus,
+                              const std::vector<std::vector<double>> &s_minus,
+                              const SensitivityState &sens, std::vector<double> &tau_out);
 
     // Jump dx/dθ across a switch-time crossing and restart both steppers at
     // the kink.
@@ -1921,6 +1947,16 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(const SolverOptions &opts
         }
     }
 
+    // Resolve every event trigger's residual now rather than at the first fire
+    // (issue #144). It is the same answer either way — the residual is derived
+    // from the trigger's own text — but this keeps every mutation of the
+    // evaluator's expression table on the setup side of the integration, and it
+    // is where a *clone* (whose residual cache starts empty, since expression
+    // ids do not survive the move to another evaluator) resolves its own.
+    for (int ei = 0; ei < model.n_events(); ++ei) {
+        (void)model.event_trigger_residual_expr(ei);
+    }
+
     // Build contiguous parameter array for CVODES. CVODES internal FD
     // perturbs p[plist[i]]; for codegen sens RHS, this array is just
     // mirrored into model params at each call so the RHS sees the
@@ -2323,6 +2359,17 @@ void CvodeSimulator::Impl::write_final_state_back(const SolverOptions &opts, int
 // scratch — so the maths below is the text that was reviewed with #48/#49/#82.
 
 // ─── Forward-sensitivity jump across a fixed-time event (GH #212) ────────────
+//
+// A note on "GH #212", which appears throughout this file and in
+// _bngsim_core.cpp: it is an internal phase-plan label, not an issue in this
+// repository (lanl/bngsim has no #212, and lanl/PyBNF#212 is unrelated). The
+// phases it names are Phase 1, fixed-time events — the jump below, shipped;
+// Phase 2, state-dependent triggers — **issue #144**, which is where the
+// crossing-time term now comes from; and Phase 3, execution delays, still
+// unimplemented and tracked in issue #144. The two user-facing refusals that
+// used to cite the label were repointed at issue #144; these internal
+// references are left as the historical name of the code they describe.
+//
 // At a fixed-time event the state jumps x⁺ = h(x⁻, p); the forward
 // sensitivity vectors must jump too, or the columns go silently stale (the
 // GH #205 hazard this path lifts). For the Phase-1 subclass — fixed-time,
@@ -2377,6 +2424,19 @@ void CvodeSimulator::Impl::restore_nominal_params(const SensitivityState &sens) 
     }
 }
 
+void CvodeSimulator::Impl::rederive_expression_params(int skip_param_idx) {
+    auto &eval_ref = model.evaluator();
+    auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
+    for (int i = 0; i < static_cast<int>(params_live.size()); ++i) {
+        if (i == skip_param_idx) {
+            continue;
+        }
+        if (params_live[i].is_expression && params_live[i].evaluator_id >= 0) {
+            params_live[i].value = eval_ref.evaluate(params_live[i].evaluator_id);
+        }
+    }
+}
+
 std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *cvode_mem, int ns,
                                                                           double t_evt,
                                                                           SensitivityState &sens) {
@@ -2401,10 +2461,218 @@ std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *
     return s_minus;
 }
 
+// ─── ∂t*/∂θ for a state-dependent trigger (issue #144) ───────────────────────
+//
+// A trigger that reads the state — AMICI's `neuron` fires on `v > 30` — has a
+// crossing time that moves with every parameter through the trajectory, even
+// though it names none of them. Neither of the two ways bngsim already knows a
+// ∂t*/∂p can supply it: GH #212's fixed-time events have ∂t*/∂p = 0, and issue
+// #49's detector resolves a *threshold* to primary parameters, which cannot
+// serve `v > 30` (the threshold is a constant; the whole dependence is in the
+// trajectory). It has to be differentiated where the crossing happens.
+//
+// The implicit function theorem on g(x(t*), p, t*) = 0 gives it directly:
+//
+//     dt*/dθ = − ( ∂g/∂x·S(t*⁻) + ∂g/∂p ) / ( ∂g/∂t + ∂g/∂x·f(x⁻) )
+//
+// with S = ∂x/∂θ (the pre-event sensitivities the caller captured) and f the
+// RHS. Every term is read at the nominal parameter point and at x⁻, by central
+// finite difference of the trigger's residual (NetworkModel::
+// event_trigger_residual_expr — the boolean trigger itself is a step and
+// carries no derivative). ∂g/∂t is kept even though it is zero for a purely
+// state-dependent trigger: a trigger may read both `time` and the state, and
+// then the denominator is the *total* dg/dt along the flow, not the state part
+// alone.
+//
+// Two properties are worth stating because they are what makes this a drop-in
+// for the existing jump:
+//
+//   * The IC-sensitivity columns get a non-zero ∂t*/∂θ too. For a fixed-time or
+//     issue #49 event the crossing cannot move with an initial condition, which
+//     is why EventTimeSens covers parameter columns only; here it plainly can —
+//     perturb x(0) and the trajectory reaches the threshold at a different
+//     time. The numerator's ∂g/∂p term is absent for those columns (an IC is
+//     not in g), the ∂g/∂x·S term is not.
+//   * The denominator is the transversality condition. When it vanishes the
+//     trajectory grazes the trigger surface, t*(θ) is genuinely not
+//     differentiable (a small perturbation destroys the crossing outright or
+//     splits it in two), and dt*/dθ is unbounded — so a denominator that is not
+//     resolvable is refused rather than divided by. That is the principled
+//     failure this path replaces the blanket "state-dependent trigger" refusal
+//     with.
+//
+// Two ways the denominator stops being resolvable, and both are refused:
+//
+//   1. It is a near-total *cancellation* of its own terms. dg/dt is assembled
+//      as ∂g/∂t + Σ ∂g/∂x_j·f_j and each factor is a central difference
+//      carrying ~1e-10 relative error, so once the sum falls to 1e-8 of the
+//      scale of the terms it is made of, the quotient is reporting the
+//      differences' noise rather than the trajectory.
+//   2. It is at the *absolute* noise floor of f itself. A component of the RHS
+//      is accumulated from rate terms as large as the largest in the vector, so
+//      it carries roughly ε·‖f‖∞ regardless of its own size (the same scaling
+//      the codegen FD oracle uses). A denominator at that level is a trajectory
+//      that has stopped moving through the trigger surface — the tangential
+//      crossing — and 8× the floor is where it stops being distinguishable.
+//
+// A denominator that is small but neither cancelled nor at the floor is left
+// alone: dt*/dθ really is large there, and a large derivative is an answer.
+static constexpr double kTransversalityRelFloor = 1e-8;
+static constexpr double kTransversalityNoiseFactor = 8.0;
+
+bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, int ns,
+                                                const std::vector<double> &x_minus,
+                                                const std::vector<double> &f_minus,
+                                                const std::vector<std::vector<double>> &s_minus,
+                                                const SensitivityState &sens,
+                                                std::vector<double> &tau_out) {
+    const int n_sens = sens.n_total;
+    const int n_sens_p = sens.n_p;
+    if (n_sens == 0 || !model.event_trigger_is_state_dependent(event_idx0)) {
+        return false;
+    }
+    const int gidx = model.event_trigger_residual_expr(event_idx0);
+    if (gidx < 0) {
+        // Upstream guard (NetworkModel::event_sensitivity_unsupported_reason)
+        // refuses this model before the run, so reaching here means the trigger
+        // became unresolvable after the guard ran. Leave ∂t*/∂θ alone rather
+        // than inventing one.
+        return false;
+    }
+    const std::vector<int> &support = model.event_trigger_residual_species(event_idx0);
+
+    auto &eval = model.evaluator();
+    auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
+    auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
+
+    std::vector<double> xwork(x_minus.begin(), x_minus.end());
+    auto sync = [&](double t) {
+        for (int i = 0; i < ns; ++i) {
+            sp_vec[i].concentration = xwork[i];
+        }
+        model.update_observables(xwork.data());
+        model.evaluate_functions(t);
+        // A trigger may read rateOf(species) (GH #106), whose bound value is
+        // only refreshed by a derivative probe — without this the difference
+        // would report 0 through that path instead of dx/dt's own dependence.
+        if (model.uses_rateof()) {
+            model.refresh_rateof_derivs(t, xwork.data());
+        }
+    };
+    // Sync after perturbing parameter `skip_idx`: the first sync refreshes the
+    // rule-bound parameters a model function writes, rederive_expression_params
+    // then carries the perturbation into the derived parameters, and the second
+    // sync lets a function read those. A threshold written over a derived
+    // parameter (`v > 2*vth`) would otherwise report a flat ∂g/∂p of zero.
+    auto perturbed_sync = [&](int skip_idx, double t) {
+        sync(t);
+        rederive_expression_params(skip_idx);
+        sync(t);
+    };
+
+    sync(t_evt);
+
+    // ∂g/∂x, over the species that can move g.
+    std::vector<double> gx(static_cast<std::size_t>(ns), 0.0);
+    for (int j : support) {
+        const double xj = x_minus[j];
+        double h = 1e-6 * std::fabs(xj);
+        if (h == 0.0) {
+            h = 1e-9;
+        }
+        xwork[j] = xj + h;
+        sync(t_evt);
+        const double g_hi = eval.evaluate(gidx);
+        xwork[j] = xj - h;
+        sync(t_evt);
+        const double g_lo = eval.evaluate(gidx);
+        xwork[j] = xj; // restore this component
+        gx[j] = (g_hi - g_lo) / (2.0 * h);
+    }
+    sync(t_evt);
+
+    // ∂g/∂p, per requested parameter column. A trigger that names no parameter
+    // (`v > 30`) leaves this zero and pays only the differences.
+    std::vector<double> gp(static_cast<std::size_t>(n_sens_p), 0.0);
+    for (int c = 0; c < n_sens_p; ++c) {
+        const int pidx = sens.param_indices[c];
+        const double p0 = params[pidx].value;
+        double h = 1e-6 * std::fabs(p0);
+        if (h == 0.0) {
+            h = 1e-9;
+        }
+        params[pidx].value = p0 + h;
+        perturbed_sync(pidx, t_evt);
+        const double g_hi = eval.evaluate(gidx);
+        params[pidx].value = p0 - h;
+        perturbed_sync(pidx, t_evt);
+        const double g_lo = eval.evaluate(gidx);
+        params[pidx].value = p0;
+        perturbed_sync(pidx, t_evt);
+        gp[c] = (g_hi - g_lo) / (2.0 * h);
+    }
+
+    // ∂g/∂t — the trigger's own explicit time dependence, held at x⁻.
+    const double h_t = 1e-6 * std::max(std::fabs(t_evt), 1.0);
+    sync(t_evt + h_t);
+    const double g_t_hi = eval.evaluate(gidx);
+    sync(t_evt - h_t);
+    const double g_t_lo = eval.evaluate(gidx);
+    const double gt = (g_t_hi - g_t_lo) / (2.0 * h_t);
+
+    // Back to the nominal parameter point and to (x⁻, t*), which is the state
+    // the caller's own differences expect to find.
+    restore_nominal_params(sens);
+    sync(t_evt);
+
+    // Transversality: the denominator is dg/dt along the flow.
+    double flow = gt;
+    double scale = std::fabs(gt);
+    double gx_l1 = 0.0;
+    double f_norm = 0.0;
+    for (int i = 0; i < ns; ++i) {
+        f_norm = std::max(f_norm, std::fabs(f_minus[i]));
+    }
+    for (int j : support) {
+        const double term = gx[j] * f_minus[j];
+        flow += term;
+        scale += std::fabs(term);
+        gx_l1 += std::fabs(gx[j]);
+    }
+    const double noise_floor =
+        kTransversalityNoiseFactor * std::numeric_limits<double>::epsilon() * gx_l1 * f_norm;
+    if (!std::isfinite(flow) || scale == 0.0 ||
+        std::fabs(flow) <= std::max(kTransversalityRelFloor * scale, noise_floor)) {
+        std::ostringstream msg;
+        msg << "Forward sensitivity: event '" << model.events()[event_idx0].id
+            << "' crosses its trigger tangentially at t=" << t_evt
+            << " — the trigger residual's rate of change along the trajectory is " << flow
+            << ", not resolvable against the " << scale << " scale of its own terms (nor the "
+            << noise_floor
+            << " noise floor of the right-hand side). The crossing time is not differentiable "
+               "there (an arbitrarily small parameter change destroys the crossing or splits it "
+               "in two), so dt*/dp is unbounded and bngsim refuses rather than divide by it "
+               "(issue #144). Move the trigger threshold off the trajectory's turning point, or "
+               "drop sensitivities for this run.";
+        throw std::runtime_error(msg.str());
+    }
+
+    tau_out.assign(static_cast<std::size_t>(n_sens), 0.0);
+    for (int c = 0; c < n_sens; ++c) {
+        double num = (c < n_sens_p) ? gp[static_cast<std::size_t>(c)] : 0.0;
+        const std::vector<double> &sm = s_minus[c];
+        for (int j : support) {
+            num += gx[j] * sm[j];
+        }
+        tau_out[static_cast<std::size_t>(c)] = -num / flow;
+    }
+    return true;
+}
+
 void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     const SolverOptions &opts, void *cvode_mem, int ns, double t_evt, const std::vector<int> &fired,
     const std::vector<double> &x_minus, const std::vector<std::vector<double>> &s_minus,
-    SensitivityState &sens) {
+    SensitivityState &sens, bool at_run_start) {
     auto &eval_ref_outer = model.evaluator();
     auto &sp_vec_outer = const_cast<std::vector<Species> &>(model.species());
     const auto &events_outer = model.events();
@@ -2426,14 +2694,70 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // probe-point read would make the answer drift with rtol.
     restore_nominal_params(sens);
 
-    // ─── ∂t*/∂p for this batch (issue #49) ───────────────────────────────
-    // Zero (the GH #212 Phase-1 case) unless the Python detector resolved a
-    // fired event's trigger to a threshold that moves with a requested
-    // parameter.
-    std::vector<double> tau(static_cast<size_t>(n_sens_p), 0.0);
+    // ─── ∂t*/∂θ for this batch (issue #49, issue #144) ───────────────────
+    // Zero (the GH #212 Phase-1 case) unless the crossing time actually moves.
+    // Sized over ALL sensitivity columns, not just the parameter ones: issue
+    // #49's detector covers parameter columns only (an initial condition cannot
+    // move a clock), but a state-dependent trigger's crossing moves with an
+    // initial condition too, and the IC columns' shift is filled in by
+    // state_trigger_dtstar below. The issue #49 path leaves them at 0, which is
+    // what it meant before this vector grew.
+    std::vector<double> tau(static_cast<size_t>(n_sens), 0.0);
     bool tau_nonzero = false;
-    const EventTimeSens *tau_source = nullptr;
+    int tau_event = -1; // which fired event `tau` belongs to (-1: none yet)
+    // Two events firing at the SAME instant whose crossing times move
+    // differently. The assignments are applied as one simultaneous batch, so
+    // there is no single t*(θ) to shift the flow along and the composition is
+    // genuinely ambiguous. Refuse rather than pick one and return a plausible
+    // number.
+    auto adopt_tau = [&](int ei, const std::vector<double> &candidate) {
+        if (tau_event >= 0 && candidate != tau) {
+            throw std::runtime_error(
+                "Forward sensitivity: events '" + events_outer[tau_event].id + "' and '" +
+                events_outer[ei].id + "' fire at the same instant t=" + std::to_string(t_evt) +
+                " but their crossing times move differently with the requested "
+                "parameters, so the event-time sensitivity jump is ambiguous "
+                "(issue #49). Separate the trigger times, or drop the parameters "
+                "that move them from sensitivity_params.");
+        }
+        tau_event = ei;
+        tau = candidate;
+        tau_nonzero = true;
+    };
+    // Which of the fired events get their crossing differentiated here (issue
+    // #144). Resolved first, because it decides which of them the issue #49
+    // detector's records still apply to — and consulted before f⁻/f⁺ are
+    // computed, because the denominator of dt*/dθ needs f⁻.
+    //
+    // A state-dependent trigger takes this path even when the detector DID
+    // resolve it (a threshold on a unit-rate counter is both), because the
+    // detector's ∂t*/∂p covers parameter columns only and a counter's crossing
+    // moves with that counter's initial condition too. Nothing issue #49
+    // validated changes: an event both paths could claim reads live state, and
+    // those were refused outright before this issue.
+    //
+    // Never at t_start: a t=0 fire is an SBML L3 §3.4.5 initial-value fire, not
+    // a located crossing. Its trigger was already satisfied when the run began,
+    // so the fire happens at t_start for every θ in a neighbourhood and
+    // ∂t*/∂θ is 0 — differentiating the trigger there would answer with the
+    // rate at which a crossing that is not happening would move.
+    std::vector<int> state_dep_fired;
     for (int ei : fired) {
+        if (!at_run_start && model.event_trigger_is_state_dependent(ei) &&
+            model.event_trigger_residual_expr(ei) >= 0) {
+            state_dep_fired.push_back(ei);
+        }
+    }
+    const std::unordered_set<int> differentiated_here(state_dep_fired.begin(),
+                                                      state_dep_fired.end());
+
+    // Pass 1 — the crossing times issue #49's Python detector resolved ahead of
+    // the run. Its records carry the parameter columns only, so they are
+    // widened with zero IC columns here.
+    for (int ei : fired) {
+        if (differentiated_here.count(ei) != 0) {
+            continue;
+        }
         for (const auto &et : opts.sensitivity.event_times) {
             if (et.event_idx0 != ei || et.dtstar_dp.size() != static_cast<size_t>(n_sens_p)) {
                 continue;
@@ -2442,26 +2766,12 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                             [](double v) { return v == 0.0; })) {
                 continue;
             }
-            if (tau_source != nullptr && et.dtstar_dp != tau_source->dtstar_dp) {
-                // Two events firing at the SAME instant whose crossing times
-                // move differently. The assignments are applied as one
-                // simultaneous batch, so there is no single t*(p) to shift
-                // the flow along and the composition is genuinely ambiguous.
-                // Refuse rather than pick one and return a plausible number.
-                throw std::runtime_error(
-                    "Forward sensitivity: events '" + events_outer[tau_source->event_idx0].id +
-                    "' and '" + events_outer[ei].id +
-                    "' fire at the same instant t=" + std::to_string(t_evt) +
-                    " but their crossing times move differently with the requested "
-                    "parameters, so the event-time sensitivity jump is ambiguous "
-                    "(issue #49). Separate the trigger times, or drop the parameters "
-                    "that move them from sensitivity_params.");
-            }
-            tau_source = &et;
-            tau = et.dtstar_dp;
-            tau_nonzero = true;
+            std::vector<double> widened(static_cast<size_t>(n_sens), 0.0);
+            std::copy(et.dtstar_dp.begin(), et.dtstar_dp.end(), widened.begin());
+            adopt_tau(ei, widened);
         }
     }
+    const bool needs_flow = tau_nonzero || !state_dep_fired.empty();
 
     // Save the post-event state, then drive the evaluator to x⁻ so the
     // derivative evaluations below see pre-event values. Restored at the end.
@@ -2478,7 +2788,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
     // trigger is not part of f, so f is the same smooth function on both
     // sides and it is the state that jumps.
     std::vector<double> f_minus, f_plus;
-    if (tau_nonzero) {
+    if (needs_flow) {
         f_plus.assign(static_cast<size_t>(ns), 0.0);
         f_minus.assign(static_cast<size_t>(ns), 0.0);
         model.compute_derivs(t_evt, x_post.data(), f_plus.data());
@@ -2492,10 +2802,27 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
         model.update_observables(xwork.data());
         model.evaluate_functions(t_evt);
     };
+    // Sync after perturbing parameter `skip_idx` — see the identically-shaped
+    // helper in state_trigger_dtstar: functions, then the derived-parameter
+    // chain, then functions again for anything that reads a derived parameter.
+    auto perturbed_sync = [&](int skip_idx, double) {
+        sync_state();
+        rederive_expression_params(skip_idx);
+        sync_state();
+    };
     sync_state();
-    if (tau_nonzero) {
+    if (needs_flow) {
         model.compute_derivs(t_evt, xwork.data(), f_minus.data());
         sync_state(); // compute_derivs may leave functions at its own state
+    }
+
+    // Pass 2 — differentiate the crossing of each state-dependent trigger that
+    // fired, now that f⁻ is available. Leaves the evaluator back at (x⁻, p₀).
+    for (int ei : state_dep_fired) {
+        std::vector<double> candidate;
+        if (state_trigger_dtstar(ei, t_evt, ns, x_minus, f_minus, s_minus, sens, candidate)) {
+            adopt_tau(ei, candidate);
+        }
     }
 
     // Rows the batch assigns take the ∂h/∂x·(…) + ∂h/∂p form below; every
@@ -2510,7 +2837,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                 assigned_rows.insert(asg.first);
             }
         }
-        for (int c = 0; c < n_sens_p; ++c) {
+        for (int c = 0; c < n_sens; ++c) {
             if (tau[static_cast<size_t>(c)] == 0.0) {
                 continue;
             }
@@ -2531,16 +2858,21 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             if (k < 0 || k >= ns) {
                 continue;
             }
-            // Restrict the FD to the variables the assignment value reads.
-            const auto refs = eval_ref_outer.referenced_variable_addresses(vexpr);
-            std::unordered_set<const double *> refset(refs.begin(), refs.end());
+            // Restrict the FD to what the assignment value can actually be
+            // moved by — species and parameters, each followed through the
+            // observables and derived/rule-bound parameters that hide them.
+            // Matching on the referenced addresses alone silently zeroed both
+            // halves: an SBML species token binds to its same-named observable
+            // rather than to &sp.concentration, and a derived parameter names
+            // neither of the primaries behind it. See
+            // NetworkModel::expression_support.
+            std::vector<int> x_support, p_support;
+            model.expression_support(vexpr, &x_support, &p_support);
+            const std::unordered_set<int> p_support_set(p_support.begin(), p_support.end());
 
-            // ∂c/∂x_j via central FD (only for referenced species).
+            // ∂c/∂x_j via central FD.
             std::vector<double> dcdx(static_cast<size_t>(ns), 0.0);
-            for (int j = 0; j < ns; ++j) {
-                if (refset.find(&sp_vec_outer[j].concentration) == refset.end()) {
-                    continue;
-                }
+            for (int j : x_support) {
                 const double xj = x_minus[j];
                 double h = 1e-6 * std::fabs(xj);
                 if (h == 0.0) {
@@ -2561,7 +2893,7 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             std::vector<double> dcdp(static_cast<size_t>(n_sens_p), 0.0);
             for (int col = 0; col < n_sens_p; ++col) {
                 const int pidx = sens_param_indices[col];
-                if (refset.find(&params[pidx].value) == refset.end()) {
+                if (p_support_set.count(pidx) == 0) {
                     continue;
                 }
                 const double p0 = params[pidx].value;
@@ -2570,15 +2902,16 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     h = 1e-9;
                 }
                 params[pidx].value = p0 + h;
-                model.evaluate_functions(t_evt);
+                perturbed_sync(pidx, t_evt);
                 const double f_hi = eval_ref_outer.evaluate(vexpr);
                 params[pidx].value = p0 - h;
-                model.evaluate_functions(t_evt);
+                perturbed_sync(pidx, t_evt);
                 const double f_lo = eval_ref_outer.evaluate(vexpr);
                 params[pidx].value = p0; // restore
+                perturbed_sync(pidx, t_evt);
                 dcdp[col] = (f_hi - f_lo) / (2.0 * h);
             }
-            model.evaluate_functions(t_evt); // restore function state at (x⁻, p₀)
+            sync_state(); // restore evaluator state at (x⁻, p₀)
 
             // Assemble s⁺_k for every sensitivity column:
             //     s⁺_k = Σ_j (∂h_k/∂x_j)·(s⁻_j + f⁻_j·∂t*/∂p)
@@ -2589,8 +2922,9 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
             // post-event flow. With ∂t*/∂p = 0 both shifts vanish and this
             // is the GH #212 jump unchanged.
             for (int c = 0; c < n_sens; ++c) {
-                const double tau_c =
-                    (c < n_sens_p) ? tau[static_cast<size_t>(c)] : 0.0; // IC cols: no shift
+                // IC columns carry a shift only for a state-dependent trigger
+                // (issue #144); issue #49's detector leaves them at 0.
+                const double tau_c = tau[static_cast<size_t>(c)];
                 double acc = 0.0;
                 const std::vector<double> &sm = s_minus[c];
                 for (int j = 0; j < ns; ++j) {
@@ -3301,6 +3635,31 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // re-arm an event the chatter guard is stepping over, or a
                 // multi-event model can re-fire it here and defeat suppression.
                 if (now_true && !was && !event_dormant[ei]) {
+                    // Forward sensitivity has no jump for this fire (issue
+                    // #144). A cascade instance executes LATER in the same
+                    // instant, reading a state that already jumped, while
+                    // apply_event_sensitivity_jump is keyed on the caller's
+                    // seed list and takes every derivative at the pre-batch x⁻.
+                    // The rows this instance assigns would keep the sensitivity
+                    // of the value they held before it — silently stale, which
+                    // is the GH #205 hazard this whole area exists to remove.
+                    // Composing two jumps at one instant is real work and
+                    // nothing in the corpus needs it yet, so refuse.
+                    //
+                    // Unreachable before issue #144: a cascade instance is a
+                    // trigger that an assignment made true, which needs a
+                    // state-dependent trigger, and those were refused outright.
+                    if (sens.n_total > 0) {
+                        throw std::runtime_error(
+                            "Forward sensitivity: event '" + events_outer[ei].id +
+                            "' was triggered at t=" + std::to_string(t_now) +
+                            " by another event's assignment, not by a crossing the integrator "
+                            "located (SBML \"events triggering events\"). That is a second "
+                            "state jump at the same instant, and bngsim has no sensitivity "
+                            "jump to compose with the first, so the columns for the species it "
+                            "assigns would be silently stale (GH #205). Separate the fires in "
+                            "time, or drop sensitivities for this run (issue #144).");
+                    }
                     queue.push_back(make_instance(ei));
                 } else if (!now_true && was) {
                     if (!events_outer[ei].persistent) {
@@ -3391,6 +3750,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             trigger_was_true[ei] = now_true;
         }
         if (!risers.empty()) {
+            // No sensitivity guard here: process_firing_batch's own drain
+            // subsumes every *immediate* same-instant rise and refuses it when
+            // sensitivities are active, so a riser reaching this point is one
+            // the drain left — a delayed event, which the upstream delay guard
+            // already refuses for sensitivities.
             process_firing_batch(t_now, risers);
         }
     };
@@ -3513,7 +3877,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // vectors (GH #212). No-op unless sensitivities are active.
                 impl_->apply_event_sensitivity_jump(opts, cvode_mem, ns,
                                                     static_cast<double>(times.t_start), t0_firing,
-                                                    t0_x_minus, t0_s_minus, sens);
+                                                    t0_x_minus, t0_s_minus, sens,
+                                                    /*at_run_start=*/true);
             }
         }
     }

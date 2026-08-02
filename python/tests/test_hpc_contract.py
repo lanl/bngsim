@@ -240,10 +240,23 @@ class TestEventBatchSensitivity:
         rows = sim.run_batch(t_span=(0, 5), n_points=6, params=[{"k_prod": 5.0}, {"k_prod": 6.0}])
         assert len(rows) == 2
 
-    def test_sensitivity_batch_state_dependent_event_raises(self):
-        # A state-dependent trigger is still unsupported for sensitivities.
+    def test_sensitivity_batch_state_dependent_event_runs(self):
+        # Issue #144: a state-dependent trigger is differentiated at the
+        # crossing, so the batch runs instead of raising. Every worker clones
+        # the model, and a clone re-derives the trigger residual in its own
+        # evaluator — this is the path that catches a residual cache copied
+        # across evaluators.
         sim = self._event_sim(trigger="A > 1000", assign="0")
-        with pytest.raises(ValueError, match=r"state-dependent|205"):
+        rows = sim.run_batch(t_span=(0, 5), n_points=6, params=[{"k_prod": 5.0}, {"k_prod": 6.0}])
+        assert len(rows) == 2
+        assert all(np.all(np.isfinite(r.sensitivities)) for r in rows)
+
+    def test_sensitivity_batch_conjunction_trigger_raises(self):
+        # What issue #144 does NOT cover: a trigger whose true-set boundary is
+        # assembled from several surfaces has no single crossing to
+        # differentiate, and is still refused.
+        sim = self._event_sim(trigger="A > 1000 && time() >= 1", assign="0")
+        with pytest.raises(ValueError, match=r"combines conditions|205"):
             sim.run_batch(t_span=(0, 5), n_points=6, params=[{"k_prod": 5.0}, {"k_prod": 6.0}])
 
     def test_non_sensitivity_batch_on_event_model_is_fine(self):
