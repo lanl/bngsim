@@ -174,6 +174,70 @@ in `CMakeLists.txt`) is derived from it.
   585-model `ode_fullnet` corpus.
 
 ### Changed
+- **The two forward-sensitivity jump handlers move out of `CvodeSimulator::run`
+  into named `Impl::` methods (issue #135, follow-up to #109).** #109 stopped at
+  the sequential setup and left six function-scope lambdas behind, fenced as
+  "the event / switch-crossing logic". They split cleanly in two, on one
+  question: does the lambda touch the mutable event bookkeeping the stepping
+  loop also writes (`trigger_was_true`, `pending_events`, `event_dormant`,
+  `event_rng`)? `process_firing_batch` and `cascade_triggered_events` do —
+  moving those needs a shared run-state struct, where a parameter accidentally
+  taken *by value* would compile, run, and silently break event edge detection.
+  The two *sensitivity jumps* touch none of it, which is why they can move and
+  those two stay.
+
+  `restore_nominal_params`, `capture_event_sens`, `apply_event_sensitivity_jump`
+  (the GH #212 event jump plus issue #49's four-term event-time composition) and
+  `apply_switch_sensitivity_jump` (issue #48's crossing jump, carrying issue
+  #82's threshold-landing correction) are now `Impl::` methods, each with the
+  reasoning that block carried. `run()` drops from **957 NLOC / CCN 253 to
+  709 / 189** (`lizard`).
+
+  The case is **navigability at the point of highest churn**, not size: #48, #49
+  and #82 all landed inside these two bodies, and until now they were anonymous
+  lambdas ~1,100 lines into `run()`. It does *not* reduce coupling — the event
+  jump needed 13 pieces of run state before and needs the same 13 now; what
+  changes is that the dependency is a parameter list instead of an implicit
+  `[&]`. `SensitivityState` (added by #109) already carried six of them, so each
+  signature gains three or four arguments rather than the eleven to thirteen a
+  free-function extraction would have taken. The switch jump's scratch buffers
+  become a `SwitchJumpScratch` that `run()` still pre-sizes before the loop, so
+  a crossing allocates nothing — and it is **non-copyable on purpose**, because
+  passing it by value would compile and the only symptom would be the
+  per-crossing allocation the pre-sizing exists to prevent. (`SensitivityState`
+  gets that guarantee for free: its `N_Vector` guard is non-copyable.)
+
+  Two things fall out. `run()` loses three aliases it kept only for these
+  lambdas (`sens_method`, `sens_param_indices`, `sens_p`). And the guard
+  `if (!wants_sensitivity || n_sens == 0)` was testing one condition twice —
+  `wants_sensitivity` is `!param_names.empty() || !ic_species_names.empty()`,
+  and `SensitivityState::n_total` is set once to the sum of those two sizes and
+  never changed — so it is now written once.
+
+  **Extraction only — no behavior change, no API change, no performance
+  change.** The bodies moved verbatim, comments included; the stepping loop, the
+  two firing lambdas and the jump maths are untouched.
+
+  Verified as **byte identity**, the standard #109 established: each arm digests
+  the full float64 bytes of times, species, observables, expressions and all
+  four sensitivity blocks plus the solver-statistics dict, so one changed bit or
+  one extra CVODE step moves the hash. **3,224 runs hash identically and 121
+  refuse with identical messages; 0 divergences**, over six sweeps — the 585
+  `ode_fullnet` `.net` models forced cold, the same 585 on the default
+  (warm-eligible) dispatch, the same 585 under three-parameter forward
+  sensitivities, and the 1,324-model `rr_parity` SBML corpus. Five models hit
+  the harness's wall-clock cap in one arm or the other and are counted apart, as
+  inconclusive rather than as divergences.
+
+  Two of those six arms are new, because a `.net`-only sweep proves nothing here:
+  `.net` models carry no events and no fitted switch time, and #109's SBML arm
+  ran without sensitivities, so **neither** of #109's corpus arms executed a
+  single line of these two bodies. The additions are the 194 event-declaring
+  rr_parity models run *with* sensitivities (127 produce a trajectory; the rest
+  are refused identically by the Python event-sensitivity guard), and a
+  72-run parameter sweep over the exemplars #48/#49/#82 were validated on —
+  including the three issue #82 knife-edge crossings, a t=0 event fire, and the
+  onset model whose fitted parameter appears only in the trigger.
 - **`steady_state()`'s march routes to sparse KLU by the same rule `run()` uses,
   and the two force flags reach it (issue #128).** `SteadyStateMarcher` built a
   `SUNDenseMatrix` unconditionally — `ss_make_dense_linsol`'s own comment said
