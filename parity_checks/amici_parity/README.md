@@ -128,6 +128,17 @@ duplication); model paths resolve under `../rr_parity/`.
 
 All commands run from `bngsim/` (the dir with `.venv`, AMICI built into it).
 
+**Prereq (once):** install AMICI. It is a PEP 735 dependency group, so it is not
+in the venv by default and `uv sync` without it will *remove* it:
+
+```bash
+uv sync --extra dev --group amici    # builds the AMICI_PIN.json commit, ~1-4 min
+```
+
+Needs swig, a C++ toolchain and a BLAS (macOS: Accelerate, nothing to install).
+See CONTRIBUTING.md for the `git-lfs: command not found` case, which is a stale
+`~/.gitconfig` rather than anything to do with AMICI.
+
 **Prereq (once):** the SBML corpus is gitignored — materialize it if
 `parity_checks/rr_parity/models/` is empty:
 
