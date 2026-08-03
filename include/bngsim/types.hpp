@@ -782,6 +782,18 @@ struct SensitivityOptions {
     // condition.
     std::vector<int> switch_pinned_params;
 
+    // Rate-law conditions that read model state (issue #150), as source text —
+    // one relational atom per entry, `Virus<1`. run() resolves each through
+    // NetworkModel::state_switch into a residual, registers that residual as a
+    // CVODE root so the crossing is located, and applies the saltation jump
+    //     s⁺ = s⁻ + (f⁻ − f⁺)·dt*/dθ
+    // there with dt*/dθ differentiated exactly as issue #144 does for a
+    // state-dependent event trigger. Registered ONLY for a run that asks for
+    // sensitivities: they are the runs the missing term is wrong for, and
+    // leaving the root set alone otherwise keeps every plain trajectory
+    // bit-for-bit unchanged. Empty for every model without such a condition.
+    std::vector<std::string> state_switch_conditions;
+
     // Events whose crossing time moves with a requested parameter (issue #49).
     // Empty for every model whose events fire at fixed instants — the event
     // jump then collapses to the GH #212 form and the run is byte-identical to

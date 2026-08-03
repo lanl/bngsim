@@ -323,6 +323,15 @@ struct NetworkModel::Impl {
     // function_value_cache).
     std::unordered_map<int, std::pair<std::vector<int>, std::vector<int>>> expression_support_cache;
 
+    // ── Rate-law state-switch residuals (issue #150) ─────────────────────
+    // Memo for NetworkModel::state_switch(), keyed by the condition's SOURCE
+    // text. `first` is the resolved switch (residual_expr_idx -1 when the
+    // condition is not one), `second` the reason there is none. Holds an
+    // evaluator expression id, so clone() leaves it empty and re-derives from
+    // the same text — the identical contract to event_trigger_residual_idx.
+    std::unordered_map<std::string, std::pair<NetworkModel::StateSwitch, std::string>>
+        state_switch_cache;
+
     // Discontinuity triggers (GH #72)
     // ExprTk expression-table indices for time-dependent inequality
     // conditions found in piecewise expressions that feed the ODE RHS

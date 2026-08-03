@@ -415,6 +415,23 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "to the GH #212 form — except for a state-dependent trigger, whose "
             "∂t*/∂p the solver differentiates at the fire instead (issue #144).")
         .def(
+            "set_state_switch_conditions",
+            [](bngsim::SolverOptions &self, const std::vector<std::string> &conditions) {
+                self.sensitivity.state_switch_conditions = conditions;
+            },
+            py::arg("conditions"),
+            "Set the rate-law conditions that read model state, as source text — "
+            "one relational atom per entry, `Virus<1` (issue #150). Such a "
+            "condition flips a branch of f at a crossing whose time moves with "
+            "every parameter through the trajectory, so dx/dθ is DISCONTINUOUS "
+            "there by the saltation term (f⁻−f⁺)·dt*/dθ — a term neither the "
+            "analytic sensitivity RHS nor CVODES' difference quotient carries. "
+            "run() resolves each through NetworkModel.state_switch_residual, "
+            "registers that residual as a CVODE root so the crossing is located, "
+            "and applies the jump there. Honoured only when the run requests "
+            "sensitivities; empty (the default) leaves the root set — and every "
+            "plain trajectory — untouched.")
+        .def(
             "set_switch_pinned_params",
             [](bngsim::SolverOptions &self, const std::vector<int> &param_idx0) {
                 self.sensitivity.switch_pinned_params = param_idx0;
@@ -1295,6 +1312,25 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "form.")
         .def_property_readonly("n_discontinuity_triggers",
                                &bngsim::NetworkModel::n_discontinuity_triggers)
+        .def(
+            "state_switch_residual",
+            [](const bngsim::NetworkModel &self, const std::string &condition_src) {
+                std::string why;
+                const auto *sw = self.state_switch(condition_src, &why);
+                return py::make_tuple(sw != nullptr ? sw->residual_source : std::string(), why);
+            },
+            py::arg("condition_src"),
+            "Resolve one rate-law condition atom as a state switch (issue #150), "
+            "returning (residual_source, why_not). A non-empty residual means the "
+            "solver can locate this crossing as a root and differentiate dt*/dθ "
+            "there, so the saltation jump (f⁻−f⁺)·dt*/dθ WILL be applied and the "
+            "condition needs no refusal; an empty one comes with the reason it is "
+            "not one — a conjunction, a negation, an equality, or a comparison "
+            "that reads no live model state. The residual identifies the CROSSING "
+            "rather than its spelling, so `X<1` and `X<=1` return the same string "
+            "and callers dedupe on it. This is the one authority: the codegen gate "
+            "and the run-time detector both ask it, so neither can classify a "
+            "condition the other would not.")
         .def_property_readonly("load_warnings", &bngsim::NetworkModel::load_warnings)
 
         // Named lists

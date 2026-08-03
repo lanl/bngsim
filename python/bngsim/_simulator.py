@@ -1275,6 +1275,50 @@ class Simulator:
             opts.set_switch_time_sens(records)
             opts.set_switch_pinned_params(pinned)
 
+    def _apply_state_switch_sens(self, opts, core) -> None:
+        """Register the state-dependent rate-law switches to jump at (issue #150).
+
+        The rate-law twin of :meth:`_apply_event_time_sens`. A condition that
+        reads the state — ``piecewise(0, Virus < 1, Virus*rho_V)`` — flips a
+        branch of ``f`` at a crossing whose time moves with every parameter
+        through the trajectory, so ``∂x/∂θ`` jumps there by the saltation term
+        ``(f⁻−f⁺)·dt*/dθ``. Neither the analytic sensitivity RHS nor CVODES'
+        internal difference quotient carries it; handing the conditions to the
+        core is what registers each crossing as a root and applies the jump.
+
+        Unlike the switch-time and event-time detectors this takes no parameter
+        list: a *state* crossing moves with every column, initial conditions
+        included, so there is no subset it can be skipped for.
+
+        A no-op for any model with no conditional rate law, which leaves the
+        root set — and the whole integration — untouched.
+        """
+        from bngsim._switch_sensitivity import state_switch_conditions
+
+        try:
+            conditions = state_switch_conditions(core)
+        except Exception as e:  # pragma: no cover - defensive
+            # Detection is best-effort: failing it leaves the pre-#150 behavior
+            # (columns short by the crossing jump), which the codegen gate still
+            # warns about. Degrading beats breaking a run that may have no state
+            # switch at all — but say so, because for a model that DOES cross one
+            # this is the difference between a gradient and a wrong gradient.
+            logger.warning(
+                "State-switch sensitivity detection failed (%s); a rate-law condition "
+                "that reads model state will not have its crossing jump applied "
+                "(issue #150).",
+                e,
+            )
+            return
+        if conditions:
+            logger.info(
+                "State-switch forward sensitivity: %d condition(s) rooted and jumped "
+                "(issue #150): %s",
+                len(conditions),
+                ", ".join(repr(c) for c in conditions),
+            )
+            opts.set_state_switch_conditions(conditions)
+
     def _auto_codegen_for_sensitivity(
         self, *, jit_backend: str, n_sens_dirs: int | None = None
     ) -> None:
@@ -2209,6 +2253,10 @@ class Simulator:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
                     opts.set_sensitivity_method(self._sensitivity_method)
+                    # Outside the parameter guard on purpose: a *state* crossing
+                    # moves every column, initial conditions included (issue
+                    # #150 / #144), so an IC-only request needs the jump too.
+                    self._apply_state_switch_sens(opts, self._model._core)
 
                 # Install the Python callback used for the JAX Jacobian path.
                 if self._jacobian == "jax" and self._jax_jac_evaluator is not None:
@@ -3485,6 +3533,9 @@ class Simulator:
                     opts.set_sensitivity_ic(self._sensitivity_ic)
                 if self._sensitivity_params or self._sensitivity_ic:
                     opts.set_sensitivity_method(self._sensitivity_method)
+                    # See the note at the single-shot site: keyed on "any
+                    # sensitivity at all", not on a parameter request.
+                    self._apply_state_switch_sens(opts, clone._core)
                 core_result = sim.run(times, opts)
 
             elif self._method in ("ssa", "psa"):
@@ -3805,6 +3856,7 @@ class Simulator:
         # must be built against that subset rather than the full request.
         self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
         self._apply_event_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
+        self._apply_state_switch_sens(opts, clone._core)
         opts.set_sensitivity_method(self._sensitivity_method)
 
         try:

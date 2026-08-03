@@ -196,6 +196,45 @@ class NetworkModel {
     void expression_support(int expr_idx, std::vector<int> *species_out,
                             std::vector<int> *params_out) const;
 
+    // ─── Rate-law switch conditions that read model state (issue #150) ───────
+    //
+    // The rate-law twin of the state-dependent event trigger issue #144 covers.
+    // A condition such as `Virus < 1` inside a `piecewise`/`if()` rate law flips
+    // a branch of f at a crossing whose time moves with every parameter through
+    // the trajectory, so dx/dθ is DISCONTINUOUS there by the saltation term
+    // (f⁻ − f⁺)·dt*/dθ. Nothing carries that term on its own: the analytic
+    // sensitivity RHS differentiates the `Piecewise` to a clean in-branch value
+    // with no boundary delta, and CVODES' internal difference quotient
+    // integrates the variational equation straight across the crossing.
+    //
+    // What the solver needs is the same object issue #144 builds for a trigger —
+    // a residual `lhs − rhs` whose zero set is the crossing surface — reached
+    // from a condition's source text instead of an event index. That residual is
+    // registered as a CVODE root (so the crossing is LOCATED rather than stepped
+    // over, which is also what keeps the integrator out of issue #82's pit) and
+    // differentiated there.
+    //
+    // Resolving one compiles the residual into this model's evaluator; results
+    // are cached by source text and, like the trigger-residual cache, are NOT
+    // copied by clone() — an expression id means something else in another
+    // evaluator. Returns nullptr and sets `why` when the condition is not one
+    // this machinery can locate and differentiate: a conjunction, a negation, an
+    // equality, or a comparison that reads no live state at all.
+    struct StateSwitch {
+        // Compiled `(lhs)-(rhs)`. Rooted on directly — a smooth residual, not
+        // the boolean-minus-0.5 step the event and GH #72 roots use, so CVODE
+        // brackets the crossing on the same function that is differentiated.
+        int residual_expr_idx = -1;
+        // Species a central difference of the residual has to perturb
+        // (NetworkModel::expression_support).
+        std::vector<int> species;
+        // The residual's preprocessed text. Identifies the *crossing* rather
+        // than its spelling, so `X<1` and `X<=1` resolve to one root.
+        std::string residual_source;
+    };
+    const StateSwitch *state_switch(const std::string &condition_src,
+                                    std::string *why = nullptr) const;
+
     // ExprTk expression-table indices of the discontinuity triggers (GH #72).
     const std::vector<int> &discontinuity_triggers() const;
     const std::vector<StoichEntry> &stoichiometry() const;

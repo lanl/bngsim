@@ -409,6 +409,12 @@ class SwitchConditionScope(NamedTuple):
     about which symbols are clocks or which parameters a threshold reduces to.
     """
 
+    # The C++ ``NetworkModel`` the rest of this was read from. Carried because
+    # deciding whether a *state* condition's crossing is compensated is not a
+    # text question — the solver has to be able to split the atom into a
+    # residual it can root on and differentiate, which only
+    # ``state_switch_residual`` knows (issue #150).
+    core: object
     # Unit-rate clock symbol → the species index it reads. Literal simulation
     # `time` is not in here (it is no species); ``clock_symbols`` is the union.
     clocks: dict[str, int]
@@ -433,6 +439,7 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
     exprs = list(core.param_expressions)
     clocks = _unit_rate_clock_species(core, ctx)
     return SwitchConditionScope(
+        core=core,
         clocks=clocks,
         clock_symbols=frozenset(clocks) | _TIME_SYMBOLS,
         param_names=tuple(param_names),
@@ -468,10 +475,20 @@ class UncompensatedCrossingReason(str):
     Every other reason the analytic sensitivity RHS is declined for — an
     underivable rate law (#56/#66), a derivation budget (#90) — leaves CVODES'
     internal difference quotient a correct, slower answer to the same smooth
-    problem. A reason from :func:`uncompensated_condition_reason` does not: what
-    it reports is a *crossing* nobody compensates, and the difference quotient
-    integrates the variational equation straight through it, missing exactly the
-    jump the analytic path was declined for (issue #146, tracked as issue #150).
+    problem. A reason from :func:`uncompensated_condition_reason` may not: what
+    it reports is a *crossing*, and the difference quotient integrates the
+    variational equation straight through one, missing exactly the jump the
+    analytic path was declined for (issue #146).
+
+    Issue #150 took the common case out of this class entirely, by removing the
+    decline rather than re-labelling it: a condition that reduces to a single
+    relational comparison over live state — ``Virus < 1`` — now has its crossing
+    located as a CVODE root and its saltation jump applied there
+    (:func:`state_switch_conditions`), so the in-branch derivative is again the
+    whole in-branch story and the analytic RHS is admitted. What is left in this
+    class is the crossing nothing compensates — a conjunction inside one atom, a
+    ``not()`` call, an equality, a comparison outside an ``if()`` head, or a
+    clock threshold that does not reduce to a constant.
 
     A ``str`` subclass rather than a second return value because the reason is
     cached, stored in dicts and formatted at half a dozen sites between here and
@@ -482,12 +499,159 @@ class UncompensatedCrossingReason(str):
     __slots__ = ()
 
 
+def state_switch_residual(core, atom: str) -> str:
+    """The residual text the solver would root on for condition *atom*, or ``""``.
+
+    Thin, exception-swallowing wrapper over
+    ``NetworkModel.state_switch_residual``. A non-empty answer means the solver
+    can locate this crossing and differentiate ``dt*/dθ`` there, so the
+    saltation jump ``(f⁻−f⁺)·dt*/dθ`` will be applied and the condition needs no
+    warning; the string itself identifies the *crossing* rather than its
+    spelling, so ``X<1`` and ``X<=1`` come back equal.
+
+    Both callers in this module route through here — the run-time detector that
+    registers the roots and the codegen gate that decides whether to warn — so
+    the two cannot classify a condition differently. That is the same
+    single-recognizer requirement issue #68 imposed on the clock path, for the
+    same reason: a gate that disagrees with the machinery it stands in for is
+    worse than no gate.
+    """
+    try:
+        residual, _why = core.state_switch_residual(atom)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("state switch: %r could not be resolved: %s", atom, exc)
+        return ""
+    return residual
+
+
+def _iter_condition_atoms(expr: str):
+    """Every relational atom of every ``if()`` condition in *expr*."""
+    for cond in _iter_if_conditions(expr):
+        yield from _split_logical_atoms(cond)
+
+
+def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
+    """Will :func:`compute_switch_time_sens` account for *atom*'s crossing?
+
+    True on two grounds, both of which mean the issue #48 machinery leaves
+    nothing for anyone else to do:
+
+    * the atom is a clock threshold whose value and partials both resolve, so
+      the detector emits a record, the solver stops at ``t*`` and applies
+      ``(f⁻−f⁺)·∂t*/∂p`` there;
+    * the atom is a clock threshold against a *literal* (``t<14``), so ``∂t*/∂p``
+      is exactly 0 for every parameter and there is no jump to make.
+
+    False for a clock threshold whose threshold does not reduce to a constant
+    over the primaries — the detector would silently skip that crossing — and
+    for anything that is not a clock threshold at all.
+
+    This is the predicate that keeps the clock path and the state path from
+    fighting over the same crossing. A BNGL counter clock is a *species*, so
+    ``t >= sigma`` reads live state and :func:`state_switch_residual` would
+    happily claim it; letting both claim it would apply the jump twice. Asked
+    first, in both the gate and the run-time detector, so the two cannot split
+    the difference.
+    """
+    split = _clock_threshold_split(atom, scope.clock_symbols)
+    if split is None:
+        return False
+    threshold_expr = split[1]
+    thr_flat = _inline_derived_param_refs(threshold_expr, scope.derived_exprs) or threshold_expr
+    if not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names):
+        return True  # a literal threshold: fixed, so nothing moves the crossing
+    # ``warn_on_failure=False`` for the same reason the detector passes it: an
+    # empty result is the supported "not a switch time" answer, which the caller
+    # reports (or hands to the state path) rather than warns about.
+    partials = _derived_expr_partials_numeric(
+        threshold_expr,
+        set(scope.primary_names),
+        scope.param_idx,
+        list(scope.values),
+        scope.derived_exprs,
+        warn_on_failure=False,
+    )
+    value = _evaluate_threshold(threshold_expr, scope.param_idx, scope.values, scope.derived_exprs)
+    return bool(partials) and value is not None
+
+
+def state_switch_conditions(core, ctx=None) -> list[str]:
+    """Rate-law conditions whose crossing the solver locates and jumps (#150).
+
+    A condition that reads model state — ``piecewise(0, Virus < 1, Virus*rho)``
+    — flips a branch of ``f`` at a crossing whose time moves with *every*
+    parameter through the trajectory. ``∂f/∂θ`` is right inside each branch (the
+    ``Piecewise`` derivative carries no boundary delta and does not need one),
+    but ``∂x/∂θ`` is discontinuous at the crossing by the saltation term
+
+        s(t*⁺) = s(t*⁻) + (f⁻ − f⁺)·dt*/dθ
+
+    which neither the analytic sensitivity RHS nor CVODES' internal difference
+    quotient supplies: both integrate the variational equation smoothly across.
+    Handing the conditions to ``SolverOptions.set_state_switch_conditions`` is
+    what gets each one registered as a CVODE root — so the crossing is *located*
+    rather than chased, which is also what keeps the run out of issue #82's
+    collapsed step — and jumped there with ``dt*/dθ`` differentiated by the
+    implicit function theorem, exactly as issue #144 does for a state-dependent
+    event trigger.
+
+    Clock thresholds are deliberately excluded: issue #48 already compensates
+    those, at a crossing time it knows a priori, and a second jump at the same
+    instant would double-count it.
+
+    Returns ``[]`` for the overwhelming majority of models — anything with no
+    conditional rate law at all short-circuits before the model is probed.
+    Deduplicated by *residual*, so one crossing written two ways is one entry.
+    """
+    from bngsim._jacobian import _inline_functions
+
+    if core.n_functions == 0:
+        return []
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    bodies = list(func_map.values())
+    # Same cheap first gate as compute_switch_time_sens: no `if()` anywhere
+    # means no branch to cross, and no RHS probe is paid.
+    if not any(_IF_CALL.search(body) for body in bodies):
+        return []
+
+    scope = switch_condition_scope(core, ctx)
+    conditions: list[str] = []
+    seen_residual: set[str] = set()
+    for body in bodies:
+        # Inlined, because that is the text the GATE judges — and a condition
+        # can only become a state condition under inlining. BIOMD0000000837
+        # writes `Lymphocyte_Term` as `piecewise(…, 1 - Total_Lymphocytes/K > 0,
+        # 0)` where `Total_Lymphocytes` is an assignment-rule parameter, i.e. a
+        # *parameter* address that reads no live state; the gate sees it after
+        # substitution as `1 - (B+C_e+C_m+H_e+H_m+L)/K > 0` and admits. Scanning
+        # the raw body registered nothing for it, so the gate lifted the decline
+        # with no crossing behind it — the silent zero the #68 gate exists to
+        # stop, reintroduced from the other side. Measured on the corpus: 3 of
+        # 182 condition-carrying rr_parity models, invisible to every test.
+        flat = _inline_functions(body, func_map) or body
+        for atom in _iter_condition_atoms(flat):
+            if clock_crossing_compensated(atom, scope):
+                continue  # issue #48's crossing; jumping it here would double it
+            residual = state_switch_residual(core, atom)
+            if residual and residual not in seen_residual:
+                seen_residual.add(residual)
+                conditions.append(atom)
+    return conditions
+
+
 def uncompensated_condition_reason(
     expr: str, scope: SwitchConditionScope
 ) -> UncompensatedCrossingReason | None:
     """Why *expr*'s conditions block the analytic sensitivity RHS, or ``None``
-    when every one of them is a discontinuity issue #48 already compensates
-    (issue #68).
+    when every one of them is a discontinuity something already compensates —
+    issue #48 by stopping at it, or issue #150 by rooting on it (issue #68).
+
+    Every reason this returns is an :class:`UncompensatedCrossingReason`: what
+    is left after #150 is the crossing nothing brackets, and for those the
+    difference-quotient fallback is wrong too. A condition that IS compensated
+    is admitted outright rather than declined with a milder label.
 
     ``sympy.diff`` of the ``Piecewise`` an ``if(c, a, b)`` becomes returns a
     clean ``0`` w.r.t. a parameter appearing only in ``c`` — no Dirac delta — so
@@ -497,20 +661,33 @@ def uncompensated_condition_reason(
     * **correct** for a clock threshold (``if(t>=sigma, ...)``): it is the whole
       in-branch story, and :func:`compute_switch_time_sens` supplies the rest as
       the crossing jump ``s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂sigma``;
-    * **wrong** for anything else. A state threshold (``if(X>=thresh, ...)``)
-      has a crossing time that moves with *every* parameter through the
-      trajectory — the rate-law twin of the state-dependent event trigger
-      :func:`NetworkModel::event_sensitivity_unsupported_reason` refuses for
-      issue #52 — and nothing supplies that term.
+    * **correct** for a state threshold (``if(X>=thresh, ...)``) too, since issue
+      #150: its crossing time moves with every parameter through the trajectory,
+      but that crossing is now located as a root and its saltation jump applied
+      there, so the in-branch zero is again the whole in-branch story;
+    * **wrong** for anything nobody locates the crossing of.
 
-    So an atom is admissible on exactly two grounds:
+    So an atom is admissible on exactly three grounds:
 
     1. :func:`_clock_threshold_split` recognizes it *and* the threshold reduces
        to primaries and evaluates to a constant — the two conditions under which
        the detector actually emits the compensating record. A threshold it would
-       silently skip is no better than a state threshold here.
-    2. it names no symbol at all (``0>0``), so it is a constant and never
+       silently skip is no better than an uncompensated state threshold here.
+    2. :func:`state_switch_residual` splits it into a residual over live state,
+       which is what :func:`state_switch_conditions` hands the solver to root on
+       and jump at.
+    3. it names no symbol at all (``0>0``), so it is a constant and never
        crosses.
+
+    Admitting (2) is not a nicety: with the crossing resolved to a root, CVODES'
+    difference-quotient fallback becomes *worse* than it was, not better. Its
+    probe evaluates f at ``y + σ·s`` with ``σ ≈ √rtol``, and just past a
+    crossing ``σ·s`` is easily wide enough to put the probe back on the other
+    branch — on the issue #150 reproduction that injects ``rho·X/σ ≈ 2.7e4``
+    into ``ds/dt`` for the sliver of time the state stays within ``σ·|s|`` of the
+    surface, and the column comes out 28% high. The analytic RHS differentiates
+    each branch where it is live and never probes across, so a condition whose
+    crossing IS compensated has to reach it.
 
     Derived-parameter references are inlined before the scan, so a threshold
     spelled ``sigma = t0 + t_delta`` clears ``t0`` and ``t_delta`` too, and a
@@ -532,54 +709,51 @@ def uncompensated_condition_reason(
 
     for cond in _iter_if_conditions(expr):
         for atom in _split_logical_atoms(cond):
+            # Ground 1 — issue #48 stops at this crossing (or there is none to
+            # stop at). Asked FIRST, and through the same predicate the run-time
+            # state-switch detector skips on, so a counter-clock threshold —
+            # which reads a species and would otherwise qualify on ground 2 as
+            # well — is claimed by exactly one of the two.
+            if clock_crossing_compensated(atom, scope):
+                continue
+            # Ground 2 — issue #150 roots on this crossing and jumps it.
+            if state_switch_residual(scope.core, atom):
+                continue
             atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+            # Ground 3 — a comparison between literals is a compile-time
+            # constant with no crossing at all.
+            if not _IDENTIFIER.search(atom_flat):
+                continue
             split = _clock_threshold_split(atom, scope.clock_symbols)
             if split is None:
-                if not _IDENTIFIER.search(atom_flat):
-                    continue  # a literal comparison: constant, never crosses
                 return _not_a_clock_threshold(atom, atom_flat, scope)
-            threshold_expr = split[1]
-            thr_flat = _inline_derived_param_refs(threshold_expr, scope.derived_exprs) or (
-                threshold_expr
+            # A clock threshold that neither reduces to a constant over the
+            # primaries (so the issue #48 detector would silently skip its
+            # crossing) nor reads live state (so issue #150 cannot root on it).
+            # Its ∂t*/∂p reaches nobody, and the Piecewise derivative's zero
+            # would be the whole gradient.
+            return UncompensatedCrossingReason(
+                f"the clock threshold {split[1]!r} in the condition {atom!r} does not reduce "
+                "to a constant expression over the model's primary parameters and does not "
+                "read model state either, so neither the issue #48 detector nor the issue "
+                "#150 crossing root can compensate it and the Piecewise derivative's zero "
+                "would be the whole gradient"
             )
-            if not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names):
-                continue  # a literal threshold (`t<14`) — fixed, nothing to move
-            # ``warn_on_failure=False`` for the same reason the detector passes
-            # it: an empty result here is the supported "not a switch time"
-            # answer, which this function *reports* rather than warns about.
-            partials = _derived_expr_partials_numeric(
-                threshold_expr,
-                set(scope.primary_names),
-                scope.param_idx,
-                list(scope.values),
-                scope.derived_exprs,
-                warn_on_failure=False,
-            )
-            value = _evaluate_threshold(
-                threshold_expr, scope.param_idx, scope.values, scope.derived_exprs
-            )
-            if not partials or value is None:
-                # The detector would skip this crossing (no primary moves it, or
-                # the threshold is not a constant at this parameter point), so
-                # its ∂t*/∂p never reaches the solver and the Piecewise zero
-                # would be the whole answer.
-                return UncompensatedCrossingReason(
-                    f"the clock threshold {threshold_expr!r} in the condition {atom!r} does "
-                    "not reduce to a constant expression over the model's primary "
-                    "parameters, so the issue #48 detector would skip its crossing and the "
-                    "Piecewise derivative's zero would be the whole gradient"
-                )
     return None
 
 
 def _not_a_clock_threshold(
     atom: str, atom_flat: str, scope: SwitchConditionScope
 ) -> UncompensatedCrossingReason:
-    """The decline message for a condition atom that is not a clock threshold.
+    """The decline message for a condition atom nobody compensates the crossing of.
 
-    Names the parameters it carries when it has any — a *fitted* threshold is
-    the case issue #68 is most concerned with — and otherwise says that the
-    crossing moves through the trajectory instead.
+    Reached only after :func:`state_switch_residual` has already declined it, so
+    the crossing is neither a clock threshold issue #48 stops at nor a state
+    threshold issue #150 roots on: a conjunction inside one atom, a ``not()``
+    call, an equality, a comparison whose residual will not compile. Names the
+    parameters the atom carries when it has any — a *fitted* threshold is the
+    case issue #68 was most concerned with — and otherwise says that the crossing
+    moves through the trajectory instead.
     """
     named = sorted(n for n in scope.param_names if scope.param_pats[n].search(atom_flat))
     if named:
@@ -587,16 +761,17 @@ def _not_a_clock_threshold(
         return UncompensatedCrossingReason(
             f"the parameter{'s' if many else ''} "
             + ", ".join(repr(n) for n in named)
-            + f" appear{'' if many else 's'} in the condition {atom!r}, which is not a "
-            f"recognized clock threshold, so moving {'them' if many else 'it'} moves the "
-            "branch crossing and the issue #48 switch-time jump — which only covers a "
-            "threshold on simulation time or a unit-rate counter — cannot compensate it"
+            + f" appear{'' if many else 's'} in the condition {atom!r}, which is neither a "
+            f"recognized clock threshold nor a single comparison over model state, so moving "
+            f"{'them' if many else 'it'} moves a branch crossing that neither the issue #48 "
+            "switch-time jump nor the issue #150 saltation jump can be run on"
         )
     return UncompensatedCrossingReason(
         f"the condition {atom!r} is not a recognized clock threshold (it reads model state), "
-        "so its crossing time moves with the trajectory and therefore with every parameter, "
-        "and the issue #48 switch-time jump cannot compensate it — the rate-law twin of the "
-        "state-dependent event trigger refused for issue #52"
+        "and it is not a single comparison whose residual bngsim can root on either, so its "
+        "crossing time moves with the trajectory and therefore with every parameter and "
+        "nothing compensates the jump — the rate-law twin of the state-dependent event "
+        "trigger refused for issue #52"
     )
 
 
@@ -680,6 +855,14 @@ def compute_switch_time_sens(
                 # The recognizer #68's codegen gate shares (see
                 # _clock_threshold_split): the gate may only admit a condition
                 # this loop turns into a compensating jump.
+                #
+                # :func:`clock_crossing_compensated` is this loop's acceptance
+                # test stated as a predicate, for the gate and for the issue
+                # #150 detector — which must skip exactly what this loop claims,
+                # or a counter-clock threshold (a *species*, hence live state)
+                # would be jumped twice. The two are held together
+                # behaviourally, by TestTheGateAndTheDetectorsAgree, rather than
+                # structurally; a change here needs a change there.
                 split = _clock_threshold_split(atom, clock_symbols)
                 if split is None:
                     continue

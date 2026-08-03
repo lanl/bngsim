@@ -238,7 +238,9 @@ NetworkModel NetworkModel::clone() const {
     // expression ids index the *source* evaluator's table and mean something
     // else in the clone's. Leaving it at the unresolved sentinel makes the
     // clone re-derive each residual from its own recompiled trigger, which is
-    // the same text and therefore the same answer.
+    // the same text and therefore the same answer. The issue #150 state-switch
+    // cache is left empty for the identical reason — it is keyed by condition
+    // text, so the clone re-resolves the same conditions into its own evaluator.
     copy.impl_->events = impl_->events;
     for (auto &ev : copy.impl_->events) {
         if (ev.trigger_expr_idx >= 0) {
@@ -740,6 +742,70 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
         *why = impl_->event_trigger_residual_reason[event_idx0];
     }
     return cache[event_idx0];
+}
+
+const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &condition_src,
+                                                            std::string *why) const {
+    auto it = impl_->state_switch_cache.find(condition_src);
+    if (it == impl_->state_switch_cache.end()) {
+        StateSwitch sw;
+        std::string reason;
+        // Compile the condition itself first, only to obtain its *preprocessed*
+        // text: the residual halves have to be spelled the way the evaluator's
+        // symbol table already binds them, exactly as the trigger path does.
+        // It doubles as the check that the condition compiles at all.
+        int cond_idx = -1;
+        try {
+            cond_idx = impl_->evaluator->compile(condition_src);
+        } catch (const std::exception &e) {
+            reason = std::string("it did not compile (") + e.what() + ")";
+        }
+        if (cond_idx >= 0) {
+            const std::string &pre = impl_->evaluator->preprocessed_expr(cond_idx);
+            const std::optional<std::string> src = trigger_residual_source(pre, reason);
+            if (src) {
+                try {
+                    sw.residual_expr_idx = impl_->evaluator->compile_preprocessed(*src);
+                    sw.residual_source = *src;
+                } catch (const std::exception &e) {
+                    reason = std::string("its residual '") + *src + "' did not compile (" +
+                             e.what() + ")";
+                }
+            }
+        }
+        if (sw.residual_expr_idx >= 0) {
+            // A condition over parameters and literals alone has a crossing at a
+            // time the trajectory does not move — that is the issue #48 clock
+            // switch (or no crossing at all), and running the saltation jump on
+            // it would double-count what the clock path already applies.
+            bool reads_state = false;
+            for (const double *addr :
+                 impl_->evaluator->referenced_variable_addresses(sw.residual_expr_idx)) {
+                if (is_state_address(addr)) {
+                    reads_state = true;
+                    break;
+                }
+            }
+            if (reads_state) {
+                expression_support(sw.residual_expr_idx, &sw.species, nullptr);
+            } else {
+                sw.residual_expr_idx = -1;
+                sw.residual_source.clear();
+                reason = "it reads no live model state, so its crossing time does not move with "
+                         "the trajectory";
+            }
+        }
+        it = impl_->state_switch_cache
+                 .emplace(condition_src, std::make_pair(std::move(sw), std::move(reason)))
+                 .first;
+    }
+    if (it->second.first.residual_expr_idx < 0) {
+        if (why != nullptr) {
+            *why = it->second.second;
+        }
+        return nullptr;
+    }
+    return &it->second.first;
 }
 
 const std::vector<int> &NetworkModel::event_trigger_residual_species(int event_idx0) const {
