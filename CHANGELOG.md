@@ -15,6 +15,118 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **A CVODE root that fired nothing left the forward sensitivities behind
+  (issue #146).** Every `CV_ROOT_RETURN` reinitialises the state stepper —
+  `CVodeReInit` at the root time — so the integrator restarts *at* the
+  discontinuity instead of stepping over it. `CVodeReInit` rewinds only the
+  state: CVODES' sensitivity history stays at the end of the internal step the
+  root interrupted. Both existing jump paths (the GH #212 event jump and the
+  issue #48 switch jump) already read `s⁻` before the re-init and resumed with
+  `CVodeSensReInit`; a root that fires **no** event did neither, so the run
+  resumed with `s(t_n)` attached to `x(t_ret)` and every column picked up a
+  spurious `s'·(t_n − t_ret)` step, at every such root.
+
+  Two ways to reach one, and neither is exotic: a GH #72 discontinuity root
+  (registered for a `piecewise` threshold, and for every event trigger's
+  relational subconditions — including those of an event this loader then skips
+  for having no assignments), and an event root whose trigger crossed without
+  rising.
+
+  Found on AMICI's `events` fixture, whose two triggers carry no
+  `eventAssignment` at all, so `n_events == 0` while their roots still fire.
+  Against the model's own central finite difference bngsim read **5.2e-2 on
+  every one of the four parameter columns**, where AMICI read 3.4e-5 against
+  its own; the impulses land exactly where `x2` crosses `x3` (t ≈ 0.15), where
+  `x1` crosses `x3` (t ≈ 1.33), and where `x1` falls back through `x3`
+  (t ≈ 4.6). After the fix the same four columns read 1.7e-6, 4.5e-6, 9.7e-6
+  and 1.0e-3 — the last being finite-difference smearing at the `time > p4`
+  kink, where bngsim's analytic column matches AMICI's to seven digits — and
+  cross-engine agreement on the whole tensor goes from 7.2e-2 to 5.7e-4.
+
+  The trajectory was never affected, which is why no parity suite could have
+  caught it: only the sensitivity vectors were left behind.
+
+  Corpus A/B, event-carrying `rr_parity` subset under forward sensitivities (194
+  models): **151 byte-identical, 32 refused identically, 3 wall-clock-capped, 8
+  moved.** Every one of the 8 carries at least one event — so a `CV_ROOT_RETURN`
+  is reachable — and 5 of them also carry GH #72 discontinuity roots. The
+  `.net` corpus is not an arm here because it cannot be one: all 585 models load
+  with `n_events == 0` **and** `n_discontinuity_triggers == 0`, so `n_roots == 0`
+  and the changed code is unreachable on every one of them. What the corpus arm
+  establishes is *which* rows move and that nothing else does; that the movement
+  is a correction is established by the fixtures above and by the closed forms in
+  the tests, not by it.
+
+- **The GH #68 decline told you the difference-quotient fallback was correct
+  when it is not (issue #146).** Declining the analytic sensitivity RHS is a
+  fallback, not an error, and the warning has always ended "CVODES' internal
+  difference quotient is used instead (correct, but slower)". That is true for
+  an underivable rate law (#56/#66) or an exhausted derivation budget (#90) —
+  the problem is smooth and CVODES answers the same question more slowly. It is
+  **false** for the one class the GH #68 gate exists to catch: an *uncompensated
+  crossing*. What the gate reports is a branch whose crossing time nobody
+  compensates, and the difference quotient integrates the variational equation
+  straight through that crossing, dropping the very jump the analytic path was
+  declined for.
+
+  On AMICI's `nested_events` — `piecewise(0, Virus < 1, Virus*rho_V)`, crossing
+  at t = 10.6347 — the true `∂x/∂θ` jumps by the saltation factor
+  `f⁺/f⁻ = −1.6/−0.8 = 2`, and every parameter column comes back **a factor of
+  exactly two low** after the crossing, against both AMICI and bngsim's own
+  central finite difference. Running the gate over the 1324-model `rr_parity`
+  corpus: 107 models decline (42 on a state threshold, 70 on a fitted non-clock
+  threshold, 1 on an unreduced clock threshold), and of the 67 that could be
+  scored against their own difference quotient, **28 disagree by more than 5%**.
+  The other 39 agree — a crossing that never happens inside the run window, or
+  one whose branches meet with equal slope, leaves the tensor right, which is
+  why this is a corrected warning rather than a refusal.
+
+  The reason now carries its own class (`UncompensatedCrossingReason`) so the
+  warning cannot promise correctness for it, and every site that adds context to
+  a reason re-tags through one function — an f-string over a `str` subclass is a
+  plain `str`, and that wrap is exactly where the distinction would have gone
+  missing. **Issue #150** tracks the fix: the saltation jump, which is the
+  rate-law twin of the state-dependent event trigger #144 already differentiates.
+
+- **An `<initialAssignment>` on a rate-rule or event-assigned *parameter*
+  carried no sensitivity seed, and `set_param` could not move that initial
+  condition (issue #146).** An SBML `<species>` is not the only thing this
+  loader turns into an integrator state: a parameter or compartment carrying a
+  rate rule, or written by an event assignment, is promoted to a species by §8
+  and §10. That is how Antimony's pure-ODE spelling arrives — `Virus' = …`
+  emits `<parameter id="Virus" constant="false"/>` plus a `<rateRule>` — and it
+  is what AMICI's `nested_events` fixture is written in. The initialAssignment
+  scan keyed on the SBML species list alone, so `Virus = V_0` registered
+  nothing.
+
+  The sensitivity consequence is a silent zero of the same shape as the bare-
+  `<ci>` gap above: on `nested_events` the entire `V_0` column read **exactly
+  0.0** where AMICI read 1.0 and AMICI's own difference quotient confirmed
+  0.9999999. The *trajectory* consequence is worse and was invisible for the
+  same reason it was on the species path — the IC link is also what
+  `NetworkModel::set_param` re-resolves (issue #79), so `set_param("V_0", …)`
+  ran the identical trajectory at every point of a scan, and a trajectory
+  finite difference measured zero in exactly the way the missing seed did.
+
+  Fixed by widening the scan to the symbols this loader promotes and
+  registering the link at both promotion sites through one shared function, so
+  the three sites cannot drift about which states get a seed.
+
+  Corpus A/B, load-only over the whole 1324-model `rr_parity` SBML corpus (the
+  registration is the entire reach of this change, and load-only measures it
+  without paying a codegen compile per model): **6 models gain an IC parameter
+  ref, 0 lose one, and the resolved initial state is byte-identical on all six.**
+  That last clause is the one that matters — the failure this predicate is
+  deliberately strict about is a lowering that writes a wrong value *over* a real
+  initial condition (BIOMD0000000856 in the entry below), so the initial state
+  rides along in the A/B record and is checked separately from the ref set. No
+  model moved its `x0` with an unchanged ref set either. The six span every shape
+  the fix reaches: four bare `<ci>` on rate-rule-promoted parameters
+  (BIOMD0000000234, BIOMD0000000327, BIOMD0000000349, MODEL1108260014), one on a
+  promoted **compartment** (BIOMD0000000429, `compartment_1 ← parameter_46`), and
+  one **compound** expression lowered to a synthetic derived parameter
+  (BIOMD0000000695, `doseBL = 90*skinType`).
+
 - **An SBML `<initialAssignment>` over parameters carried no sensitivity seed
   unless it was a bare `<ci>`.** A species whose initial condition is an
   expression over model parameters has a `∂x_i(0)/∂θ` the forward-sensitivity

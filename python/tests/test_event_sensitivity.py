@@ -740,6 +740,95 @@ class TestNoFalsePositives:
         assert np.all(np.isfinite(r.sensitivities))
 
 
+# ── Issue #146: a root that fires nothing must not move the columns ─────────
+#
+# Every CV_ROOT_RETURN reinitialises the state stepper, whether or not an event
+# fires. CVodeReInit rewinds the state to the root time but leaves the CVODES
+# sensitivity history at the end of the interrupted step, so without a matching
+# CVodeSensReInit the run resumes with s(t_n) attached to x(t_ret) — a spurious
+# s'·(t_n − t_ret) step injected into every column, at every such root.
+#
+# Two ways to reach a root that changes nothing, both from AMICI's `events`
+# fixture, whose two triggers carry no eventAssignment at all:
+#
+#   * the loader registers each event trigger's relational subconditions as
+#     GH #72 no-op roots even when it then skips the assignment-free event
+#     itself, so ``n_events == 0`` and the roots still fire;
+#   * an event root whose trigger crossed without *rising* fires no event either.
+#
+# The dynamics below are untouched by the root, so the answer is a closed form:
+# on the `events` fixture the missing re-init cost 5% against the model's own
+# finite difference, on all four parameter columns.
+SBML_INERT_ROOT = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="inert_root">
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="S" compartment="C" initialConcentration="10"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="S">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><minus/><apply><times/><ci>k</ci><ci>S</ci></apply></apply>
+        </math>
+      </rateRule>
+    </listOfRules>
+    <listOfEvents>
+      <event id="observe" useValuesFromTriggerTime="false">
+        <trigger initialValue="false" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><lt/><ci>S</ci><cn>5</cn></apply>
+          </math>
+        </trigger>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>"""
+
+
+class TestInertRootDoesNotMoveSensitivities:
+    def test_the_assignment_free_event_still_registers_a_root(self):
+        """The premise. Without a root there is no CVodeReInit and nothing to
+        get wrong — so if this ever stops holding, the test below goes vacuous."""
+        m = bngsim.Model.from_sbml_string(SBML_INERT_ROOT)
+        assert m._core.n_events == 0  # skipped: no valid assignments
+        assert m._core.n_discontinuity_triggers > 0  # but its trigger is a root
+
+    def test_column_matches_the_closed_form_across_the_root(self):
+        """S = 10·e^{−kt} throughout — the trigger assigns nothing — so
+        ∂S/∂k = −t·S, on both sides of the crossing at t* = ln(2)/k ≈ 1.386."""
+        m = bngsim.Model.from_sbml_string(SBML_INERT_ROOT)
+        r = bngsim.Simulator(m, method="ode", sensitivity_params=["k"]).run(
+            t_span=(0, 6), n_points=61, rtol=1e-10, atol=1e-12
+        )
+        t = np.asarray(r.time)
+        np.testing.assert_allclose(
+            np.asarray(r.sensitivities)[:, 0, 0],
+            -t * 10.0 * np.exp(-0.5 * t),
+            rtol=1e-6,
+            atol=1e-9,
+        )
+
+    def test_trajectory_is_untouched_by_the_root(self):
+        """The control: the state itself was always right. Only the sensitivity
+        vectors were left behind by the re-init, which is why nothing in the
+        trajectory suites could have caught this."""
+        m = bngsim.Model.from_sbml_string(SBML_INERT_ROOT)
+        r = bngsim.Simulator(m, method="ode", sensitivity_params=["k"]).run(
+            t_span=(0, 6), n_points=61, rtol=1e-10, atol=1e-12
+        )
+        t = np.asarray(r.time)
+        np.testing.assert_allclose(
+            np.asarray(r.species)[:, 0], 10.0 * np.exp(-0.5 * t), rtol=1e-8, atol=1e-10
+        )
+
+
 # ── Issue #49: the crossing time itself moves (∂t*/∂p ≠ 0) ──────────────────
 #
 # An onset written as an event — `time >= T0` firing `on := 1`, with the rate
