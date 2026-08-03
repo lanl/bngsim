@@ -46,6 +46,17 @@ in `CMakeLists.txt`) is derived from it.
   The trajectory was never affected, which is why no parity suite could have
   caught it: only the sensitivity vectors were left behind.
 
+  Corpus A/B, event-carrying `rr_parity` subset under forward sensitivities (194
+  models): **151 byte-identical, 32 refused identically, 3 wall-clock-capped, 8
+  moved.** Every one of the 8 carries at least one event — so a `CV_ROOT_RETURN`
+  is reachable — and 5 of them also carry GH #72 discontinuity roots. The
+  `.net` corpus is not an arm here because it cannot be one: all 585 models load
+  with `n_events == 0` **and** `n_discontinuity_triggers == 0`, so `n_roots == 0`
+  and the changed code is unreachable on every one of them. What the corpus arm
+  establishes is *which* rows move and that nothing else does; that the movement
+  is a correction is established by the fixtures above and by the closed forms in
+  the tests, not by it.
+
 - **The GH #68 decline told you the difference-quotient fallback was correct
   when it is not (issue #146).** Declining the analytic sensitivity RHS is a
   fallback, not an error, and the warning has always ended "CVODES' internal
@@ -100,6 +111,21 @@ in `CMakeLists.txt`) is derived from it.
   Fixed by widening the scan to the symbols this loader promotes and
   registering the link at both promotion sites through one shared function, so
   the three sites cannot drift about which states get a seed.
+
+  Corpus A/B, load-only over the whole 1324-model `rr_parity` SBML corpus (the
+  registration is the entire reach of this change, and load-only measures it
+  without paying a codegen compile per model): **6 models gain an IC parameter
+  ref, 0 lose one, and the resolved initial state is byte-identical on all six.**
+  That last clause is the one that matters — the failure this predicate is
+  deliberately strict about is a lowering that writes a wrong value *over* a real
+  initial condition (BIOMD0000000856 in the entry below), so the initial state
+  rides along in the A/B record and is checked separately from the ref set. No
+  model moved its `x0` with an unchanged ref set either. The six span every shape
+  the fix reaches: four bare `<ci>` on rate-rule-promoted parameters
+  (BIOMD0000000234, BIOMD0000000327, BIOMD0000000349, MODEL1108260014), one on a
+  promoted **compartment** (BIOMD0000000429, `compartment_1 ← parameter_46`), and
+  one **compound** expression lowered to a synthetic derived parameter
+  (BIOMD0000000695, `doseBL = 90*skinType`).
 
 - **An SBML `<initialAssignment>` over parameters carried no sensitivity seed
   unless it was a bare `<ci>`.** A species whose initial condition is an
