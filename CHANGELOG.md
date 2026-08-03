@@ -14,6 +14,8 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-08-03
+
 ### Added
 - **`Model.effective_ic_sensitivity()` — the `∂x(0)/∂θ` the `parameter` axis
   already carries (issue #155).** `output_sensitivities(axis="parameter")` is a

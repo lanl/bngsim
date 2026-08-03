@@ -15,7 +15,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "bngsim"
-version = "0.12.1"
+version = "0.12.2"
 description = "Embeddable simulation engine for BioNetGen reaction networks"
 readme = "README.md"
 license = {text = "MIT"}
