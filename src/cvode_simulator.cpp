@@ -286,6 +286,15 @@ struct CvodeUserData {
     // micro-step). Left null — and thus completely inert — for models without
     // events. Owned by run().
     const char *event_dormant = nullptr;
+
+    // Residual expression ids of this run's state-dependent rate-law switches
+    // (issue #150), in root order AFTER the event and GH #72 discontinuity
+    // roots. Unlike those two — booleans, rooted as `value − 0.5` — these are
+    // rooted on the residual itself, so CVODE brackets the crossing on the very
+    // function the saltation jump differentiates there. Null (and the root set
+    // unchanged) for every run that is not asking for sensitivities and every
+    // model with no such condition. Owned by run().
+    const std::vector<int> *state_switch_roots = nullptr;
 };
 
 // Tfun dispatch thunk: invoked by codegen .so to evaluate a table function at
@@ -799,6 +808,16 @@ static int cvode_event_root_fn(sunrealtype t, N_Vector y, sunrealtype *gout, voi
     for (int j = 0; j < static_cast<int>(disc.size()); ++j) {
         gout[ne + j] = eval.evaluate(disc[j]) - 0.5;
     }
+    // State-dependent rate-law switches (issue #150), rooted on the residual
+    // itself rather than on a boolean: `Virus < 1` becomes `Virus − 1`, whose
+    // sign change IS the crossing and whose gradient is what dt*/dθ needs.
+    if (data->state_switch_roots != nullptr) {
+        const auto &ss = *data->state_switch_roots;
+        const int base = ne + static_cast<int>(disc.size());
+        for (int j = 0; j < static_cast<int>(ss.size()); ++j) {
+            gout[base + j] = eval.evaluate(ss[j]);
+        }
+    }
     return 0;
 }
 
@@ -1067,10 +1086,20 @@ struct CvodeSimulator::Impl {
                                       const std::vector<std::vector<double>> &s_minus,
                                       SensitivityState &sens, bool at_run_start = false);
 
-    // ∂t*/∂θ for a state-dependent trigger, differentiated AT the crossing
-    // (issue #144). Returns false when this event has no usable residual, in
-    // which case the caller leaves ∂t*/∂θ at whatever the issue #49 detector
-    // supplied (zero for a fixed-time event). Throws on a tangential crossing.
+    // ∂t*/∂θ at a located crossing of the surface g = 0, by the implicit
+    // function theorem (issue #144, reused for the rate-law switches of issue
+    // #150). `gidx`/`support` are the residual and the species a difference of
+    // it has to perturb; `subject` names the crossing in the tangency refusal
+    // ("event 'E1' crosses its trigger"). Throws on a tangential crossing.
+    void residual_dtstar(int gidx, const std::vector<int> &support, const std::string &subject,
+                         double t_evt, int ns, const std::vector<double> &x_minus,
+                         const std::vector<double> &f_minus,
+                         const std::vector<std::vector<double>> &s_minus,
+                         const SensitivityState &sens, std::vector<double> &tau_out);
+
+    // The event-trigger entry point to residual_dtstar. Returns false when this
+    // event has no usable residual, in which case the caller leaves ∂t*/∂θ at
+    // whatever the issue #49 detector supplied (zero for a fixed-time event).
     bool state_trigger_dtstar(int event_idx0, double t_evt, int ns,
                               const std::vector<double> &x_minus,
                               const std::vector<double> &f_minus,
@@ -1082,6 +1111,15 @@ struct CvodeSimulator::Impl {
     void apply_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
                                        const SwitchTimeSens &sw, SwitchJumpScratch &scratch,
                                        SensitivityState &sens);
+
+    // Add the saltation jump of a state-dependent rate-law switch to `s` in
+    // place (issue #150). `x_star` is the located crossing state; the caller
+    // re-seeds CVODES from `s` afterwards. Throws on a tangential crossing or
+    // when the two branches cannot be told apart at x(t*).
+    void apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
+                                             const NetworkModel::StateSwitch &sw,
+                                             std::vector<std::vector<double>> &s,
+                                             SensitivityState &sens);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -2555,9 +2593,7 @@ bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, in
                                                 const std::vector<std::vector<double>> &s_minus,
                                                 const SensitivityState &sens,
                                                 std::vector<double> &tau_out) {
-    const int n_sens = sens.n_total;
-    const int n_sens_p = sens.n_p;
-    if (n_sens == 0 || !model.event_trigger_is_state_dependent(event_idx0)) {
+    if (sens.n_total == 0 || !model.event_trigger_is_state_dependent(event_idx0)) {
         return false;
     }
     const int gidx = model.event_trigger_residual_expr(event_idx0);
@@ -2568,7 +2604,21 @@ bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, in
         // than inventing one.
         return false;
     }
-    const std::vector<int> &support = model.event_trigger_residual_species(event_idx0);
+    residual_dtstar(gidx, model.event_trigger_residual_species(event_idx0),
+                    "event '" + model.events()[event_idx0].id + "' crosses its trigger", t_evt, ns,
+                    x_minus, f_minus, s_minus, sens, tau_out);
+    return true;
+}
+
+void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
+                                           const std::string &subject, double t_evt, int ns,
+                                           const std::vector<double> &x_minus,
+                                           const std::vector<double> &f_minus,
+                                           const std::vector<std::vector<double>> &s_minus,
+                                           const SensitivityState &sens,
+                                           std::vector<double> &tau_out) {
+    const int n_sens = sens.n_total;
+    const int n_sens_p = sens.n_p;
 
     auto &eval = model.evaluator();
     auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
@@ -2673,15 +2723,14 @@ bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, in
     if (!std::isfinite(flow) || scale == 0.0 ||
         std::fabs(flow) <= std::max(kTransversalityRelFloor * scale, noise_floor)) {
         std::ostringstream msg;
-        msg << "Forward sensitivity: event '" << model.events()[event_idx0].id
-            << "' crosses its trigger tangentially at t=" << t_evt
-            << " — the trigger residual's rate of change along the trajectory is " << flow
+        msg << "Forward sensitivity: " << subject << " tangentially at t=" << t_evt
+            << " — the residual's rate of change along the trajectory is " << flow
             << ", not resolvable against the " << scale << " scale of its own terms (nor the "
             << noise_floor
             << " noise floor of the right-hand side). The crossing time is not differentiable "
                "there (an arbitrarily small parameter change destroys the crossing or splits it "
                "in two), so dt*/dp is unbounded and bngsim refuses rather than divide by it "
-               "(issue #144). Move the trigger threshold off the trajectory's turning point, or "
+               "(issue #144). Move the threshold off the trajectory's turning point, or "
                "drop sensitivities for this run.";
         throw std::runtime_error(msg.str());
     }
@@ -2695,7 +2744,6 @@ bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, in
         }
         tau_out[static_cast<std::size_t>(c)] = -num / flow;
     }
-    return true;
 }
 
 void CvodeSimulator::Impl::apply_event_sensitivity_jump(
@@ -3139,6 +3187,332 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     }
 }
 
+// ─── Saltation jump at a state-dependent rate-law switch (issue #150) ────────
+//
+// The rate-law twin of the issue #144 event trigger, and the mirror image of the
+// issue #48 clock switch. A condition like `Virus < 1` inside a piecewise rate
+// law flips a branch of f at a crossing whose time t*(θ) moves with EVERY
+// parameter through the trajectory. The state is continuous there, so this is
+// the issue #48 jump
+//
+//     s(t*⁺) = s(t*⁻) + (f⁻ − f⁺)·dt*/dθ
+//
+// with dt*/dθ differentiated at the crossing rather than resolved ahead of the
+// run — the implicit function theorem on g(x(t*), θ, t*) = 0, which is exactly
+// what residual_dtstar computes. Both halves already existed; what was missing
+// was a crossing to run them on, which the residual root now supplies.
+//
+// The columns are jumped in the caller's captured s⁻, in place; the caller
+// re-seeds CVODES from it (resume_sens_after_reinit) once this returns.
+//
+// **Reading off f⁻ and f⁺.** Both must be the RHS at the SAME crossing state
+// x(t*), differing only in which branch is live. A clock switch selects the
+// branch by nudging the clock across its threshold; a state switch has no such
+// variable, so nudge the whole state ALONG THE FLOW by ±δt:
+//
+//     x^± = x(t*) ± δt·f(x(t*))
+//
+// which is the same operation — for a unit-rate counter f_clock = 1 and it
+// reduces to the clock nudge exactly — and moves the residual by δt·dg/dt, the
+// very quantity the transversality check certifies as non-degenerate. The
+// smooth part of f moves by O(δt·J·f) and cancels in the difference.
+//
+// δt cannot simply be a few ulp: CVODE locates a root only to
+// ~100·ε·(|t| + |h|), so a nudge that small can land on the wrong side of a
+// crossing the root finder already resolved to its own tolerance. So the size is
+// MEASURED rather than assumed — start just past the root-location error and
+// grow geometrically until the residual actually changes sign across the pair,
+// then stop. Failing to flip inside the ladder means the residual is not
+// behaving like a transversal crossing at all; what happens then is the next
+// paragraph, and it is never a silent jump of zero (which is what "we could not
+// tell the branches apart" would otherwise be indistinguishable from).
+//
+// **A crossing with no jump at it.** The saltation term is (f⁻ − f⁺)·dt*/dθ, so
+// everything above is moot when the two branches of f agree at x(t*) — and the
+// most common `piecewise` in the corpus is exactly that. A clamp is CONTINUOUS
+// at its own switch: BIOMD0000000161's basal PIP synthesis is
+// `piecewise(0.581·k·(exp((basal − PIP)/basal) − 1), PIP < basal, 0)`, whose
+// live branch is exactly 0 where PIP = basal. There is nothing to add to s⁻
+// there, however unbounded dt*/dθ may be, so the branch gap is measured FIRST
+// and a continuous switch returns before any of it is formed.
+//
+// That also decides what a flow probe that never flips means. It means the
+// trajectory does not pass through the surface — it rides it — which is a
+// tangency, and a tangency is only fatal when there IS a jump. So instead of
+// refusing outright, straddle the surface along a COORDINATE of the residual's
+// own support, where the gradient survives a tangential flow, and ask the same
+// question. Orientation does not matter for it: only |f_a − f_b| is being read.
+// That probe is a Newton step onto the surface along the best-conditioned
+// coordinate, then ±eta past it, so it is scale-free — a fixed relative nudge
+// fails whenever the residual carries the model's units rather than a species'.
+static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
+static constexpr double kStateSwitchNudgeGrowth = 8.0;
+static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
+static constexpr double kStateSwitchContinuousRelTol = 1e-6;
+// A gap that grows linearly with the probe (ratio → 0.5) is f varying smoothly
+// over the displacement; a gap that does not move (ratio → 1) is a jump.
+static constexpr double kStateSwitchGapRatio = 0.7;
+
+void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns,
+                                                               double t_evt,
+                                                               const NetworkModel::StateSwitch &sw,
+                                                               std::vector<std::vector<double>> &s,
+                                                               SensitivityState &sens) {
+    const int n_sens = sens.n_total;
+    if (n_sens == 0 || s.empty()) {
+        return;
+    }
+    double *y_data = N_VGetArrayPointer(y);
+
+    // Every derivative below is read at the nominal parameter point, not at
+    // whatever CVODES' last finite-difference probe left behind — dt*/dθ
+    // multiplies f⁻/f⁺ into the jump, so a probe-point read would make the
+    // answer drift with rtol (see restore_nominal_params).
+    restore_nominal_params(sens);
+
+    auto &eval = model.evaluator();
+    auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
+
+    // x(t*) as the root finder located it — the state every difference below is
+    // taken at, and the one the caller's captured s⁻ belongs to.
+    const std::vector<double> x(y_data, y_data + ns);
+    std::vector<double> xw(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f0(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f_minus(static_cast<std::size_t>(ns), 0.0);
+    std::vector<double> f_plus(static_cast<std::size_t>(ns), 0.0);
+
+    auto sync = [&](const std::vector<double> &state, double t) {
+        for (int i = 0; i < ns; ++i) {
+            sp_vec[i].concentration = state[i];
+        }
+        model.update_observables(state.data());
+        model.evaluate_functions(t);
+        if (model.uses_rateof()) {
+            model.refresh_rateof_derivs(t, state.data());
+        }
+    };
+
+    // f at the crossing, on whichever branch the located state happens to sit.
+    // Only its direction is used, to step off the surface either way.
+    sync(x, t_evt);
+    model.compute_derivs(t_evt, x.data(), f0.data());
+
+    // The probe point at ±δt along the flow, and the residual there. `t ± δt`
+    // rather than `t` on both: `x ± δt·f` IS the trajectory at that instant to
+    // first order, so a condition reading both the state and `time` selects its
+    // branch consistently. Either way the smooth part of f moves by O(δt) and
+    // cancels in f⁻ − f⁺.
+    auto probe = [&](double signed_dt) {
+        for (int i = 0; i < ns; ++i) {
+            xw[static_cast<std::size_t>(i)] =
+                x[static_cast<std::size_t>(i)] + signed_dt * f0[static_cast<std::size_t>(i)];
+        }
+        sync(xw, t_evt + signed_dt);
+        return eval.evaluate(sw.residual_expr_idx);
+    };
+
+    const double t_scale = std::max(std::fabs(t_evt), 1.0);
+    const double dt0 = kStateSwitchNudgeStart * std::numeric_limits<double>::epsilon() * t_scale;
+    double dt = dt0;
+    double dt_used = 0.0;
+    for (int attempt = 0; attempt < kStateSwitchNudgeTries;
+         ++attempt, dt *= kStateSwitchNudgeGrowth) {
+        const double g_before = probe(-dt);
+        const double g_after = probe(+dt);
+        if (std::isfinite(g_before) && std::isfinite(g_after) &&
+            ((g_before < 0.0 && g_after > 0.0) || (g_before > 0.0 && g_after < 0.0))) {
+            dt_used = dt;
+            break;
+        }
+    }
+    // |f⁻ − f⁺| against the scale of f itself: below this, the two branches are
+    // the same function here and the saltation term is zero.
+    auto branch_gap = [&](double &scale_out) {
+        double gap = 0.0;
+        scale_out = 0.0;
+        for (int i = 0; i < ns; ++i) {
+            gap = std::max(gap, std::fabs(f_minus[i] - f_plus[i]));
+            scale_out = std::max(scale_out, std::max(std::fabs(f_minus[i]), std::fabs(f_plus[i])));
+        }
+        return gap;
+    };
+
+    if (dt_used == 0.0) {
+        // The trajectory rides this surface rather than passing through it. Only
+        // one question is left: do the branches differ at all? Straddle along a
+        // coordinate of the residual's support, where the gradient survives a
+        // tangential flow (see the note above).
+        sync(x, t_evt);
+        const double g_star = eval.evaluate(sw.residual_expr_idx);
+        // Pick the best-conditioned coordinate — the one whose own scale moves
+        // the residual most — and take a NEWTON step onto the surface, then
+        // ±eta past it. A fixed relative step cannot do this job: the residual
+        // carries the model's units, and on `ph_lorenz_attractor` (whose
+        // condition is `X·Y − beta·Z > 0`, the sign of dZ/dt) a 1e-12-relative
+        // nudge moves it by far less than its own distance from zero, so the
+        // straddle silently fails and a continuous switch reads as an
+        // undecidable one. Scaling by 1/(∂g/∂x_j) removes the units.
+        int best = -1;
+        double best_gj = 0.0;
+        double best_weight = 0.0;
+        for (int j : sw.species) {
+            const double xj = x[static_cast<std::size_t>(j)];
+            const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+            xw.assign(x.begin(), x.end());
+            xw[static_cast<std::size_t>(j)] = xj + h;
+            sync(xw, t_evt);
+            const double g_hi = eval.evaluate(sw.residual_expr_idx);
+            xw[static_cast<std::size_t>(j)] = xj - h;
+            sync(xw, t_evt);
+            const double g_lo = eval.evaluate(sw.residual_expr_idx);
+            const double gj = (g_hi - g_lo) / (2.0 * h);
+            if (!std::isfinite(gj) || gj == 0.0) {
+                continue;
+            }
+            const double weight = std::fabs(gj) * std::max(std::fabs(xj), 1.0);
+            if (weight > best_weight) {
+                best_weight = weight;
+                best_gj = gj;
+                best = j;
+            }
+        }
+        // Straddle at ±eta about the surface, where eta clears the located
+        // root's own distance from zero. The displacement is |g*|/|∂g/∂x_j|,
+        // which is not always small — a tangency is located in TIME, so g* need
+        // not be near zero — and the smooth part of f moves with it. So the gap
+        // is measured at eta AND at 2·eta and read by how it SCALES: a gap that
+        // doubles with the probe is f varying smoothly over the displacement,
+        // i.e. one function on both sides; a gap that does not move is a jump.
+        // That discriminator is what `ph_lorenz_attractor` needs — its condition
+        // is `X·Y − beta·Z > 0`, the sign of dZ/dt, so both branches are 0 at
+        // the surface and its 1.5e-6 relative "gap" is entirely the probe's.
+        double f_scale = 0.0;
+        double gap1 = 0.0;
+        double gap2 = 0.0;
+        bool straddled = false;
+        if (best >= 0 && std::isfinite(g_star)) {
+            const double xj = x[static_cast<std::size_t>(best)];
+            const double eta0 =
+                std::fabs(g_star) + 1e-9 * std::fabs(best_gj) * std::max(std::fabs(xj), 1.0);
+            auto gap_at = [&](double eta, double &scale_out) {
+                xw.assign(x.begin(), x.end());
+                xw[static_cast<std::size_t>(best)] = xj + (-g_star - eta) / best_gj;
+                sync(xw, t_evt);
+                const double g_lo = eval.evaluate(sw.residual_expr_idx);
+                model.compute_derivs(t_evt, xw.data(), f_minus.data());
+                xw[static_cast<std::size_t>(best)] = xj + (-g_star + eta) / best_gj;
+                sync(xw, t_evt);
+                const double g_hi = eval.evaluate(sw.residual_expr_idx);
+                model.compute_derivs(t_evt, xw.data(), f_plus.data());
+                straddled = std::isfinite(g_lo) && std::isfinite(g_hi) && g_lo != 0.0 &&
+                            g_hi != 0.0 && ((g_lo < 0.0) != (g_hi < 0.0));
+                return branch_gap(scale_out);
+            };
+            double scale2 = 0.0;
+            gap2 = gap_at(2.0 * eta0, scale2);
+            const bool straddled2 = straddled;
+            gap1 = gap_at(eta0, f_scale);
+            straddled = straddled && straddled2;
+            f_scale = std::max(f_scale, scale2);
+        }
+        sync(x, t_evt);
+        if (straddled && (gap2 <= kStateSwitchContinuousRelTol * f_scale ||
+                          gap1 < kStateSwitchGapRatio * gap2)) {
+            return; // continuous at its own switch: no jump, and none to refuse
+        }
+        const double dt_max = dt / kStateSwitchNudgeGrowth;
+        std::ostringstream msg;
+        msg << "Forward sensitivity: the state-dependent rate-law condition with residual '"
+            << sw.residual_source << "' was located as a crossing at t=" << t_evt
+            << ", but stepping the state along the flow by up to " << dt_max
+            << " time units either way does not change the residual's sign — the trajectory "
+               "rides that surface rather than crossing it. ";
+        if (straddled) {
+            msg << "The two branches of the right-hand side there differ by " << gap1
+                << " against a scale of " << f_scale
+                << ", and doubling the probe leaves that gap at " << gap2
+                << " rather than doubling it, so the jump is real";
+        } else {
+            msg << "Perturbing the residual's own support does not move it across zero either, "
+                << "so the two branches cannot be told apart at all";
+        }
+        msg << ", while dt*/dθ is unbounded at a tangency — bngsim refuses rather than invent "
+               "a saltation term (issue #150). A `piecewise` that is CONTINUOUS at its own "
+               "switch (the usual clamp idiom) needs no jump and never reaches this. Move the "
+               "threshold off the trajectory's turning point, or drop sensitivities for this "
+               "run.";
+        throw std::runtime_error(msg.str());
+    }
+    dt = dt_used;
+
+    probe(-dt);
+    model.compute_derivs(t_evt - dt, xw.data(), f_minus.data());
+    probe(+dt);
+    model.compute_derivs(t_evt + dt, xw.data(), f_plus.data());
+
+    {
+        // Same question on the transversal path, where it is free: f⁻ and f⁺ are
+        // already in hand. A continuous switch gets no jump, no dt*/dθ solve, and
+        // no transversality refusal — MODEL1006230090 reaches the last of those
+        // with a denominator of 1e-15.
+        double f_scale = 0.0;
+        if (branch_gap(f_scale) <= kStateSwitchContinuousRelTol * f_scale) {
+            sync(x, t_evt);
+            return;
+        }
+    }
+
+    // Back to the true crossing state: residual_dtstar differentiates there,
+    // and the resumed integration must not see the nudge.
+    sync(x, t_evt);
+
+    std::vector<double> tau;
+    residual_dtstar(sw.residual_expr_idx, sw.species,
+                    "the state-dependent rate-law condition with residual '" + sw.residual_source +
+                        "' crosses",
+                    t_evt, ns, x, f_minus, s, sens, tau);
+
+    for (int c = 0; c < n_sens; ++c) {
+        const double tau_c = tau[static_cast<std::size_t>(c)];
+        if (tau_c == 0.0) {
+            continue;
+        }
+        std::vector<double> &col = s[static_cast<std::size_t>(c)];
+        for (int i = 0; i < ns; ++i) {
+            col[static_cast<std::size_t>(i)] += (f_minus[i] - f_plus[i]) * tau_c;
+        }
+    }
+
+    // ── Restart just PAST the surface, not on it (issue #82, rate-law side) ──
+    // CVODE locates a root only to ~100·ε·(|t| + |h|), so x(t*) lands on either
+    // side of g = 0 by a hair, deterministically but arbitrarily. Restarting on
+    // the BEFORE side puts the discontinuity inside the first step after the
+    // restart — the one thing stopping at the crossing exists to prevent. CVODES
+    // then sizes h from the before-branch RHS while every corrector answers with
+    // the after-branch one, the error test fails at every h down to ~1e-17, and
+    // the root fires a second time: this jump would be applied twice, which is
+    // the same wrong answer with a different sign of the error. `x + δt·f` is
+    // the probe point the ladder above VERIFIED is on the after side, and taking
+    // it as the restart state is one explicit Euler step along the flow — an
+    // error of O(δt²) in the state, δt itself being at most ~2e-9 of the run's
+    // own time scale. The state's own tolerance never sees it; the branch
+    // selection does.
+    for (int i = 0; i < ns; ++i) {
+        y_data[i] = x[static_cast<std::size_t>(i)] + dt * f0[static_cast<std::size_t>(i)];
+    }
+    // The evaluator (and everything reading concentrations downstream) must see
+    // the state the integration resumes from.
+    for (int i = 0; i < ns; ++i) {
+        xw[i] = y_data[i];
+    }
+    sync(xw, t_evt);
+    const int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
+    if (rf != CV_SUCCESS) {
+        throw std::runtime_error("CVodeReInit past a state-switch crossing failed: " +
+                                 std::to_string(rf));
+    }
+}
+
 // ─── Public interface ────────────────────────────────────────────────────────
 
 CvodeSimulator::CvodeSimulator(NetworkModel &model) : impl_(std::make_unique<Impl>(model)) {}
@@ -3447,7 +3821,41 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // narrow forcing pulse. n_disc == 0 for any model without time-dependent
     // piecewise, in which case the root machinery is bit-for-bit unchanged.
     const int n_disc = model.n_discontinuity_triggers();
-    const int n_roots = n_events + n_disc;
+
+    // State-dependent rate-law switches (issue #150): the residual of each
+    // `piecewise(..., X < c, ...)` condition, registered as a further root AFTER
+    // the discontinuity ones, in gout indices [n_events + n_disc, n_roots). Two
+    // things come out of the stop it forces: the crossing is LOCATED rather than
+    // chased (which is what keeps a sensitivity run out of issue #82's collapsed
+    // step), and there is a place to apply the saltation jump dx/dθ takes there.
+    //
+    // Registered only when the run asks for sensitivities. Those are the runs the
+    // missing jump is wrong for, and leaving the root set alone otherwise keeps
+    // every plain trajectory in the corpus bit-for-bit unchanged; adding these
+    // roots unconditionally is a trajectory-accuracy change of its own and wants
+    // its own measurement.
+    //
+    // Deduplicated by the residual's text rather than the condition's, so
+    // `X<1` and `X<=1` — the same crossing, two spellings — are one root and one
+    // jump instead of two coincident ones the composition would double-count.
+    std::vector<const NetworkModel::StateSwitch *> state_switches;
+    std::vector<int> state_switch_roots;
+    if (wants_sensitivity && !opts.sensitivity.state_switch_conditions.empty()) {
+        std::unordered_set<std::string> seen_residual;
+        for (const std::string &cond : opts.sensitivity.state_switch_conditions) {
+            const NetworkModel::StateSwitch *sw = model.state_switch(cond);
+            if (sw == nullptr || !seen_residual.insert(sw->residual_source).second) {
+                continue;
+            }
+            state_switches.push_back(sw);
+            state_switch_roots.push_back(sw->residual_expr_idx);
+        }
+    }
+    const int n_state_switch = static_cast<int>(state_switch_roots.size());
+    if (n_state_switch > 0) {
+        user_data.state_switch_roots = &state_switch_roots;
+    }
+    const int n_roots = n_events + n_disc + n_state_switch;
 
     // Delay queue for events with delay > 0.
     // When a delayed event fires, we store it here and apply when
@@ -4206,15 +4614,55 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // pre-fire state x⁻ (snapshotted above whenever firing is
                 // non-empty, which any_event_fired implies). No-op unless
                 // sensitivities are active.
+                //
+                // A state-dependent rate-law switch crossed here too, if any of
+                // its residual roots is in this batch (issue #150).
+                std::vector<int> switched;
+                for (int j = 0; j < n_state_switch; ++j) {
+                    if (root_info[n_events + n_disc + j] != 0) {
+                        switched.push_back(j);
+                    }
+                }
                 if (any_event_fired) {
+                    if (!switched.empty() && !evt_s_minus.empty()) {
+                        throw std::runtime_error(
+                            "Forward sensitivity: a state-dependent rate-law switch (residual '" +
+                            state_switches[switched.front()]->residual_source +
+                            "') crosses at exactly the instant t=" + std::to_string(t_ret) +
+                            " an event fires. The event jump differentiates at the pre-event "
+                            "state and the switch jump differentiates the branch of f at the "
+                            "same instant, so composing them is ambiguous and bngsim refuses "
+                            "rather than pick an order (issue #150). Separate the two times, or "
+                            "drop sensitivities for this run.");
+                    }
                     impl_->apply_event_sensitivity_jump(opts, cvode_mem, ns,
                                                         static_cast<double>(t_ret), firing,
                                                         chatter_y_before, evt_s_minus, sens);
                 } else if (!evt_s_minus.empty()) {
-                    // Nothing fired, so no column jumps — but the CVodeReInit
-                    // above still rewound the state stepper to t_ret while
-                    // leaving CVODES' sensitivity history at the end of the
-                    // interrupted step, so resuming would restart dx/dθ from
+                    if (switched.size() > 1) {
+                        throw std::runtime_error(
+                            "Forward sensitivity: two state-dependent rate-law switches "
+                            "(residuals '" +
+                            state_switches[switched[0]]->residual_source + "' and '" +
+                            state_switches[switched[1]]->residual_source +
+                            "') cross at the same instant t=" + std::to_string(t_ret) +
+                            ". Each jump reads f on the two branches of its OWN condition at "
+                            "x(t*), which stepping across a shared crossing cannot separate, so "
+                            "the composition is ambiguous and bngsim refuses rather than sum two "
+                            "jumps that both carry the other's branch change (issue #150).");
+                    }
+                    // No event fired. The state is continuous across this root
+                    // either way, but a state-switch crossing makes dx/dθ
+                    // discontinuous there by the saltation term, so add it to
+                    // the captured s⁻ in place before re-seeding (issue #150).
+                    for (int j : switched) {
+                        impl_->apply_state_switch_sensitivity_jump(
+                            cvode_mem, y, ns, static_cast<double>(t_ret), *state_switches[j],
+                            evt_s_minus, sens);
+                    }
+                    // The CVodeReInit above rewound the state stepper to t_ret
+                    // while leaving CVODES' sensitivity history at the end of
+                    // the interrupted step, so resuming would restart dx/dθ from
                     // s(t_n) against x(t_ret). Re-seed with s(t_ret), captured
                     // before the ReInit (issue #146). Without this every GH #72
                     // discontinuity root injects an s'·(t_n − t_ret) step into

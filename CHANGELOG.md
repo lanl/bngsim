@@ -15,6 +15,136 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **Forward sensitivity through a state-dependent switch in a rate law missed
+  the saltation jump at its crossing (issue #150).** A condition that reads the
+  state — `piecewise(0, Virus < 1, Virus*rho_V)` — flips a branch of `f` at a
+  crossing whose time `t*(θ)` moves with **every** parameter through the
+  trajectory. The in-branch derivative was never the problem: `sympy.diff` of
+  the `Piecewise` is right on both sides and carries no boundary delta. What is
+  discontinuous is `∂x/∂θ` itself, by the saltation term
+
+      s(t*⁺) = s(t*⁻) + (f⁻ − f⁺)·dt*/dθ
+
+  and *neither* way bngsim could produce a sensitivity RHS carried it — the
+  analytic one differentiates each branch where it is live, CVODES' internal
+  difference quotient integrates the variational equation straight across. GH
+  #68 declined the analytic path here and issue #146 corrected the warning to
+  say the fallback was wrong too; this is the fix.
+
+  Three pieces, all of them the rate-law twin of something issue #144 already
+  built for a state-dependent event *trigger*: split the condition into a
+  residual `lhs − rhs` (`NetworkModel::state_switch`, cached per condition and
+  re-derived by `clone()` — an expression id means something else in another
+  evaluator); register that residual as a CVODE root, so the crossing is
+  **located** rather than chased; and at the root, read `f` on both branches at
+  `x(t*)`, form `dt*/dθ` by the implicit function theorem, and jump. The
+  ∂t*/∂θ solve is now one function (`Impl::residual_dtstar`) reached from both
+  the event trigger and the rate law, transversality floor included.
+
+  The branch selection is the one genuinely new mechanic. A clock switch picks
+  its branch by nudging the clock across its threshold; a state switch has no
+  such variable, so the whole state is nudged **along the flow**, `x^± = x(t*) ±
+  δt·f`, which for a unit-rate counter reduces to the clock nudge exactly. `δt`
+  is measured, not assumed: CVODE locates a root only to ~`100·ε·(|t|+|h|)`, so
+  the size starts just past that and grows until the residual actually changes
+  sign across the pair. Failing to flip inside the ladder is refused rather than
+  answered with a jump of zero — "we could not tell the branches apart" and "the
+  branches agree" are otherwise indistinguishable. The verified `x + δt·f` is
+  also what the run restarts from, so the discontinuity cannot land inside the
+  first step after the restart: leaving it on the *before* side collapsed `h` to
+  ~1e-17 and re-fired the root, applying the jump twice (issue #82's pit,
+  reached from the rate-law side).
+
+  On the issue's own reproduction — `dX/dt = if(X<1,0,rho)·X − delta·X`,
+  crossing at `t* = ln(1000)/0.8`, saltation factor `f⁺/f⁻ = 2` — the `rho`
+  column read a factor of exactly **2** low after the crossing and `delta`
+  between 1.72 and 1.96 (it mixes the missing jump with a correct in-branch
+  part, which is why "multiply the tail by `f⁺/f⁻`" was never a fix). Both now
+  match a central finite difference of the model's own trajectory to 5 digits.
+  On AMICI's `nested_events` fixture all four columns agree with their own
+  finite difference across the whole run.
+
+  **The GH #68 decline is lifted for exactly the conditions this compensates**,
+  and that is required, not opportunistic: once the crossing is resolved to a
+  root, the difference-quotient fallback becomes *worse*. Its probe evaluates
+  `f` at `y + σ·s` with `σ ≈ √rtol`, and just past a crossing `σ·|s|` is easily
+  wide enough to put the probe back on the other branch — on the reproduction
+  that injected `rho·X/σ ≈ 2.7e4` into `ds/dt` for the sliver of time the state
+  stayed within `σ·|s|` of the surface, and the column came out 28% high with
+  the jump correctly applied. So a condition whose crossing is compensated now
+  reaches the analytic RHS. What still declines — and still carries
+  `UncompensatedCrossingReason`, because the difference quotient is still wrong
+  for it — is the crossing no machinery can bracket: an equality (measure-zero
+  on a continuous trajectory), a `not()` call, a comparison with no `if()` head,
+  and a clock threshold that neither reduces to a constant nor reads state.
+
+  Three recognizers now have to agree without overlapping, since a crossing
+  claimed by *both* the issue #48 clock path and this one would have its jump
+  applied twice — a BNGL counter clock is a species, so `t >= sigma` reads live
+  state and the residual splitter would happily take it.
+  `clock_crossing_compensated` is asked first everywhere, and the partition is
+  asserted behaviourally over nine rate laws rather than by shared plumbing
+  (`TestTheGateAndTheDetectorsAgree`), which is the property #56 lost.
+
+  **A `piecewise` that is CONTINUOUS at its own switch gets no jump and no
+  refusal**, which the corpus insisted on. The saltation term is
+  `(f⁻ − f⁺)·dt*/dθ`, so it is identically zero when the branches meet — and
+  that is the most common `piecewise` there is, because it is how a clamp is
+  written. BIOMD0000000161's basal PIP synthesis is
+  `piecewise(0.581·k·(exp((basal − PIP)/basal) − 1), PIP < basal, 0)`, whose live
+  branch is exactly 0 where `PIP = basal`; the trajectory then *rides* that
+  surface, so the flow probe never leaves one branch and the first cut of this
+  feature refused a model that had always run. The branch gap is now measured
+  before `dt*/dθ` is ever formed, on both paths — from the flow probe where it
+  flips, and from a coordinate probe of the residual's own support where it does
+  not (the gradient survives a tangential flow; orientation does not matter when
+  only `|f_a − f_b|` is being read). What is left refused is the genuine case: a
+  tangential crossing with a real discontinuity at it.
+
+  **The detector reads the same text the gate does.** A condition can only
+  *become* a state condition under inlining, and the gate judges the inlined rate
+  law. BIOMD0000000837 writes `Lymphocyte_Term` as
+  `piecewise(…, 1 − Total_Lymphocytes/K > 0, 0)` where `Total_Lymphocytes` is an
+  assignment-rule parameter — a *parameter* address that reads no live state on
+  its own. The gate sees it after substitution as
+  `1 − (B+C_e+C_m+H_e+H_m+L)/K > 0` and admits; a detector scanning raw function
+  bodies registered nothing, so the decline was lifted with no crossing behind
+  it. That is the #68 silent zero reintroduced from the other side, it hit 3 of
+  the 182 condition-carrying corpus models, and no test saw it — the corpus A/B
+  found it as three rows in a "numbers moved, nothing registered" bucket.
+
+  State-switch roots are registered **only for a run that asks for
+  sensitivities**. That is the whole blast radius: every plain trajectory keeps
+  exactly the stepping and exactly the numbers it had. Registering them
+  unconditionally would help the integrator on its own — the issue makes that
+  case — but it is a trajectory-accuracy change with its own corpus risk and
+  wants its own measurement.
+
+  Corpus A/B, three arms. **`sbmlcond`** — the 182 condition-carrying
+  `rr_parity` models under forward sensitivities, the only arm that can execute
+  the diff: 64 register at least one state switch, and of the 182, **144 are
+  byte-identical, 28 moved, 8 refuse identically, 2 are wall-clock capped and 0
+  newly refuse**. Every one of the 28 movers carries a registered switch —
+  nothing moved that the change cannot reach. **`sbmlplain`** — the same 182 with
+  sensitivities OFF, the empirical half of the blast-radius claim: **179
+  identical, 2 identical refusals, 1 moved**, and that one (BIOMD0000000497,
+  295 species) differs by 2.8e-16 of its peak with an identical `n_steps` and
+  `n_rhs_evals`, i.e. a recompilation artifact rather than a behavioural change.
+  **`netcond`** — the 80 of 585 `.net` models whose text carries an `if()`:
+  **51 identical, 25 moved, 1 wall-clock capped, 3 newly refused**; the other
+  505 `.net` models are not an arm because they cannot be one, the detector
+  short-circuiting on "no `if()` in any function body" before it probes the
+  model.
+
+  The 3 new refusals are all in the rulehub "BNGL as a general-purpose
+  computation" examples (a Hopfield net, a Q-learning agent, a Fourier
+  synthesiser), whose trajectories ride their switching surfaces continuously:
+  two hit the refusal for **two switches crossing at the same instant** (each
+  jump reads f on the branches of its own condition, which one shared crossing
+  cannot separate) and one a genuine tangency with a real discontinuity at it.
+  All three previously returned numbers that issue #146's warning already
+  described as wrong.
+
 - **A CVODE root that fired nothing left the forward sensitivities behind
   (issue #146).** Every `CV_ROOT_RETURN` reinitialises the state stepper —
   `CVodeReInit` at the root time — so the integrator restarts *at* the

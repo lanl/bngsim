@@ -9,27 +9,38 @@ of this stage:
                                     there — issue #48 supplies the rest as the
                                     crossing jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂sigma.
 
-    if(I >= thresh, beta, 0)    ->  refused.   The same clean 0 comes back, but
-                                    the crossing moves with the trajectory and
-                                    nothing supplies that term. This is the
-                                    rate-law twin of the state-dependent event
-                                    trigger issue #52 refuses.
+    if(I >= thresh, beta, 0)    ->  refused, until issue #150. The same clean 0
+                                    comes back and is equally right in-branch,
+                                    but the crossing moves with the trajectory
+                                    and nothing supplied that term. #150 roots
+                                    on the condition's residual and applies
+                                    s⁺ = s⁻ + (f⁻−f⁺)·dt*/dθ there, so this is
+                                    now admitted too — the rate-law twin of the
+                                    state-dependent event trigger issue #144
+                                    differentiates.
 
-The danger is that the two are *indistinguishable downstream*. ``sympy.diff`` of
-a ``Piecewise`` w.r.t. a condition-only parameter returns ``0`` with no Dirac
+    if(I == thresh, beta, 0)    ->  still refused. An equality on a continuous
+                                    trajectory holds on a measure-zero set, so
+                                    there is no transversal crossing for either
+                                    machinery to bracket.
+
+The danger is that these are *indistinguishable downstream*. ``sympy.diff`` of a
+``Piecewise`` w.r.t. a condition-only parameter returns ``0`` with no Dirac
 delta, so ``_is_emittable`` never rejects it, the C compiles, the solver
 converges, and the gradient is silently zero. There is no oracle that separates
 them either: the emitted derivative and a naive finite difference agree with each
 other and both miss the crossing. So what is tested here is the **gate**, and —
-because a gate that disagrees with the detector it is a proxy for is no gate at
-all — that the gate and :func:`compute_switch_time_sens` classify the same
-conditions the same way.
+because a gate that disagrees with the machinery it is a proxy for is no gate at
+all — that the gate, :func:`compute_switch_time_sens` and
+:func:`state_switch_conditions` classify the same conditions the same way.
 
-Both callers go through one recognizer (``_clock_threshold_split``) reached from
-one scope (``switch_condition_scope``), which is issue #68's "do not add a third
-spelling" requirement. ``TestTheGateAndTheDetectorAgree`` is what actually holds
-them together: it asserts *behavioural* agreement, which is the property #56
-lost when #53 fixed one copy of a predicate and not the other.
+All three go through recognizers reached from one scope
+(``switch_condition_scope``), which is issue #68's "do not add a third spelling"
+requirement — and since #150 there are two machineries to keep apart as well as
+aligned, because a crossing claimed by both would have its jump applied twice.
+``TestTheGateAndTheDetectorsAgree`` is what actually holds them together: it
+asserts *behavioural* agreement, which is the property #56 lost when #53 fixed
+one copy of a predicate and not the other.
 """
 
 from __future__ import annotations
@@ -123,30 +134,42 @@ def _decline(tmp_path, text, name="m.net"):
     return cg._functional_dfdp_terms(core, core.codegen_data())
 
 
+def _only_atom(body: str) -> str:
+    """The single relational atom of a one-condition rate law, as written."""
+    atoms = [a for cond in sw._iter_if_conditions(body) for a in sw._split_logical_atoms(cond)]
+    assert len(atoms) == 1, f"{body!r} has {len(atoms)} atoms, not 1"
+    return atoms[0]
+
+
 # ─── the rule ──────────────────────────────────────────────────────────────
 
 
 class TestTheRule:
-    """A condition is admissible on exactly two grounds: it is a recognized
-    clock threshold, or it names no symbol at all."""
+    """A condition is admissible on exactly three grounds: it is a recognized
+    clock threshold, it is a single comparison over live state whose residual
+    the solver can root on (issue #150), or it names no symbol at all."""
 
     def test_a_clock_threshold_is_admitted(self, tmp_path):
         terms, reason = _decline(tmp_path, SWITCHED)
         assert reason is None
         assert terms  # the rate law does contribute ∂f/∂p columns
 
-    def test_a_fitted_state_dependent_threshold_is_refused(self, tmp_path):
-        """Issue #68's definition of done. ``thresh`` is a model parameter a
-        caller could plausibly fit, and ``I`` is an observable — so the crossing
-        moves with ``thresh`` and the Piecewise derivative's 0 is simply wrong.
-        Answering it would be worse than declining: the answer looks converged.
-        """
-        terms, reason = _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
-        assert terms == {}
-        assert reason is not None
-        assert "'thresh'" in reason
-        assert "I>=thresh" in reason
-        assert "not a recognized clock threshold" in reason
+    def test_a_fitted_state_dependent_threshold_is_admitted_and_rooted(self, tmp_path):
+        """Issue #68 refused this; issue #150 supplies what was missing.
+
+        ``thresh`` is a model parameter a caller could plausibly fit and ``I`` is
+        an observable, so the crossing moves with ``thresh`` AND, through the
+        trajectory, with every other parameter. The Piecewise derivative's 0 is
+        still the whole *in-branch* story; what it is missing is the jump at the
+        crossing, and that crossing is now located as a CVODE root and jumped
+        there. So the gate admits — but only because the detector registers it,
+        which is asserted in the same breath: an admission with nothing behind it
+        is the silent zero this gate exists to prevent."""
+        core = _model(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        assert terms
+        assert sw.state_switch_conditions(core) == ["I>=thresh"]
 
     def test_the_piecewise_zero_is_what_would_have_been_shipped(self, tmp_path):
         """Why the gate has to be a *pre-scan*: nothing further down the pipeline
@@ -161,15 +184,17 @@ class TestTheRule:
         assert d == 0
         assert _is_emittable(expr)
 
-    def test_a_state_threshold_with_no_parameter_in_it_is_refused_too(self, tmp_path):
+    def test_a_state_threshold_with_no_parameter_in_it_is_rooted_too(self, tmp_path):
         """The rule is not "does a *fitted* parameter sit in the condition". A
         state condition's crossing moves with **every** parameter through the
         trajectory — that is precisely the ``neuron`` hazard issue #52 widened
-        the event guard to catch — so a literal threshold over state is no
-        safer."""
-        terms, reason = _decline(tmp_path, _with_law("if(I>=40,beta,0)*I"))
-        assert terms == {}
-        assert reason is not None and "reads model state" in reason
+        the event guard to catch — so a literal threshold over state needs the
+        same root and the same jump, and gets them. ``∂g/∂p`` is simply 0 here
+        and the whole of ``dt*/dθ`` comes from ``∂g/∂x·s⁻``."""
+        core = _model(tmp_path, _with_law("if(I>=40,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None and terms
+        assert sw.state_switch_conditions(core) == ["I>=40"]
 
     def test_a_literal_comparison_does_not_block(self, tmp_path):
         """``0>0`` is a compile-time constant with no crossing at all. Corpus
@@ -187,23 +212,43 @@ class TestTheRule:
         assert terms == {}
         assert reason is not None and "not inside an if() condition" in reason
 
-    def test_a_threshold_that_reads_the_clock_back_is_refused(self, tmp_path):
-        """``t < 2*t`` has no fixed crossing time, so the detector skips it and
-        the gate must not admit what the detector skips."""
-        terms, reason = _decline(tmp_path, _with_law("if(t<2*t,beta,0)*I"))
-        assert terms == {}
-        assert reason is not None
+    def test_a_threshold_that_reads_the_clock_back_goes_to_the_state_path(self, tmp_path):
+        """``t < 2*t`` has no fixed crossing time, so the issue #48 detector
+        skips it — and the gate must not admit what a detector skips. What
+        changed is which detector picks it up: a BNGL counter clock is a
+        *species*, so the comparison is a comparison over live state, and issue
+        #150 roots on its residual and jumps at the crossing wherever the
+        trajectory puts it. Asserted through both halves so "admitted" can never
+        mean "admitted by nobody"."""
+        core = _model(tmp_path, _with_law("if(t<2*t,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None and terms
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma", "thresh"], 0.0, 100.0)
+        assert records == []  # the clock detector does NOT claim it
+        assert sw.state_switch_conditions(core) == ["t<2*t"]
 
     def test_a_compound_condition_is_admitted_only_if_every_atom_is(self, tmp_path):
         """``&&`` splits into atoms and each is judged on its own — one bad atom
         is enough. The Lin2021 idiom ``(t>=sigma)&&(t<tau1)`` is the good case;
-        pairing it with a state atom must still refuse."""
+        pairing it with an atom NOBODY compensates must still refuse — and an
+        equality is that atom: a continuous trajectory satisfies ``I==thresh``
+        on a measure-zero set, so there is no transversal crossing to root on
+        either. The mixed clock/state pairing is admitted, and each half goes to
+        its own machinery: ``t>=sigma`` to the issue #48 stop time, ``I>=thresh``
+        to the issue #150 crossing root."""
         ok, reason = _decline(
             tmp_path,
             _with_params("    8 tau1 8.0  # Constant\n", "if((t>=sigma)&&(t<tau1),beta,0)*I"),
         )
         assert reason is None and ok
-        _terms, reason = _decline(tmp_path, _with_law("if((t>=sigma)&&(I>=thresh),beta,0)*I"))
+
+        core = _model(tmp_path, _with_law("if((t>=sigma)&&(I>=thresh),beta,0)*I"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        records, _pinned = sw.compute_switch_time_sens(core, ["sigma"], 0.0, 100.0)
+        assert records and sw.state_switch_conditions(core) == ["I>=thresh"]
+
+        _terms, reason = _decline(tmp_path, _with_law("if((t>=sigma)&&(I==thresh),beta,0)*I"))
         assert reason is not None and "'thresh'" in reason
 
     @pytest.mark.parametrize(
@@ -242,14 +287,21 @@ class TestDerivedThresholds:
         terms, reason = _decline(tmp_path, text)
         assert reason is None and terms
 
-    def test_a_threshold_that_does_not_reduce_to_primaries_is_refused(self, tmp_path):
-        """A clock threshold the detector would *skip* is no better than a state
-        threshold: its ∂t*/∂p never reaches the solver, so the Piecewise zero
-        would be the whole gradient. Here the threshold reads an observable, so
-        it is not a constant expression over the parameters."""
-        terms, reason = _decline(tmp_path, _with_law("if(t>=sigma*I,beta,0)*I"))
-        assert terms == {}
-        assert reason is not None
+    def test_a_threshold_that_does_not_reduce_to_primaries_falls_to_the_state_path(self, tmp_path):
+        """A clock threshold the issue #48 detector would *skip* leaves its
+        ∂t*/∂p reaching nobody — so the gate may not admit it on the clock
+        ground. Here the threshold reads an observable, which is exactly why it
+        is not a constant expression over the parameters; and it is also exactly
+        what makes the comparison a comparison over live state, which issue #150
+        roots on and differentiates by the implicit function theorem. So the
+        crossing IS compensated, just not by the machinery whose recognizer
+        declined it."""
+        core = _model(tmp_path, _with_law("if(t>=sigma*I,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None and terms
+        scope = sw.switch_condition_scope(core)
+        assert not sw.clock_crossing_compensated("t>=sigma*I", scope)
+        assert sw.state_switch_conditions(core) == ["t>=sigma*I"]
 
     def test_the_switch_parameter_gets_no_dfdp_column(self, tmp_path):
         """``sigma`` enters f only through the condition, so its analytic ∂f/∂p
@@ -478,63 +530,91 @@ class TestIssue108ThresholdValueSharesOnePreparation:
 # ─── one predicate, two callers ────────────────────────────────────────────
 
 
-class TestTheGateAndTheDetectorAgree:
+class TestTheGateAndTheDetectorsAgree:
     """The anti-drift check, and the reason this stage did not write its own
     predicate. #56 happened because #53 fixed the logical-operator rewrite in
     one module and the identical hole survived in another — so what is asserted
     here is not "they share a function" (a refactor could undo that silently)
-    but "they reach the same verdict on the same condition"."""
+    but "they reach the same verdict on the same condition".
+
+    Issue #150 added a *second* detector, and with it a second way to drift: a
+    crossing claimed by both would have its jump applied twice, and one claimed
+    by neither is the silent zero all of this exists to stop. So the invariant
+    is now a partition — the gate admits iff EXACTLY ONE machinery compensates
+    the crossing (or the crossing does not move at all)."""
 
     @pytest.mark.parametrize(
-        ("body", "admitted"),
+        ("body", "admitted", "by"),
         [
-            ("if(t>=sigma,beta,0)*I", True),
-            ("if(t<sigma,beta,0)*I", True),
-            ("if(sigma<=t,beta,0)*I", True),
-            ("if(I>=thresh,beta,0)*I", False),
-            ("if(t>=sigma*I,beta,0)*I", False),
-            ("if(t<2*t,beta,0)*I", False),
+            ("if(t>=sigma,beta,0)*I", True, "clock"),
+            ("if(t<sigma,beta,0)*I", True, "clock"),
+            ("if(sigma<=t,beta,0)*I", True, "clock"),
+            ("if(I>=thresh,beta,0)*I", True, "state"),
+            ("if(t>=sigma*I,beta,0)*I", True, "state"),
+            ("if(t<2*t,beta,0)*I", True, "state"),
+            ("if(I==thresh,beta,0)*I", False, None),
+            ("if(not(I>1),beta,0)*I", False, None),
+            ("beta*(I>1)", False, None),
         ],
     )
-    def test_admitted_iff_the_detector_compensates_it(self, tmp_path, body, admitted):
+    def test_admitted_iff_exactly_one_detector_compensates_it(self, tmp_path, body, admitted, by):
         core = _model(tmp_path, _with_law(body))._core
         _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         gate_admits = reason is None
 
-        # The detector, asked over a window that contains the crossing, with the
-        # threshold parameter requested. A record means it will stop there and
-        # apply the jump; nothing means the Piecewise zero stands alone.
+        # Detector 1 (issue #48), asked over a window that contains the crossing
+        # with the threshold parameter requested. A record means it will stop
+        # there and apply the jump.
         records, pinned = sw.compute_switch_time_sens(core, ["sigma", "thresh"], 0.0, 100.0)
-        detector_compensates = bool(records)
+        # Detector 2 (issue #150): a registered condition means the solver roots
+        # on the crossing and applies the saltation jump there.
+        states = sw.state_switch_conditions(core)
 
         assert gate_admits is admitted
-        assert gate_admits == detector_compensates, (
-            f"gate {'admits' if gate_admits else 'refuses'} {body!r} but the detector "
-            f"{'does' if detector_compensates else 'does not'} compensate it"
+        assert gate_admits == (bool(records) or bool(states)), (
+            f"gate {'admits' if gate_admits else 'refuses'} {body!r} but "
+            f"{len(records)} clock crossing(s) and {len(states)} state crossing(s) are "
+            "compensated"
         )
-        if detector_compensates:
-            assert pinned, "a compensated crossing must also pin its parameter"
+        assert not (records and states), (
+            f"{body!r} is claimed by BOTH detectors — its jump would be applied twice"
+        )
+        if by == "clock":
+            assert records and pinned, "a compensated clock crossing must also pin its parameter"
+        elif by == "state":
+            assert states == [_only_atom(body)]
 
     def test_both_callers_reach_the_same_recognizer(self, tmp_path):
         """Structural companion to the behavioural check above: the scope the
-        gate is built from is the one the detector uses, clocks included."""
+        gate is built from is the one the detectors use, clocks and core
+        included."""
         core = _model(tmp_path, SWITCHED)._core
         scope = sw.switch_condition_scope(core)
         assert "t" in scope.clocks, "the counter observable must be detected as a clock"
         assert "t" in scope.clock_symbols and "time" in scope.clock_symbols
+        assert scope.core is core, "the gate must be able to ask the model about a residual"
         assert sw.uncompensated_condition_reason("if(t>=sigma,beta,0)*I", scope) is None
-        assert sw.uncompensated_condition_reason("if(I>=thresh,beta,0)*I", scope) is not None
+        assert sw.uncompensated_condition_reason("if(I>=thresh,beta,0)*I", scope) is None
+        assert sw.uncompensated_condition_reason("if(I==thresh,beta,0)*I", scope) is not None
 
-    def test_a_model_with_no_clock_refuses_a_time_looking_condition(self, tmp_path):
+    def test_a_model_with_no_clock_does_not_read_a_time_looking_condition_as_a_clock(
+        self, tmp_path
+    ):
         """``t`` with no unit-rate counter behind it is just a name. The corpus
-        has exactly this (an observable with an empty group), and the detector
-        finds no crossing for it — so the gate must refuse rather than trust the
-        spelling."""
+        has exactly this (an observable with an empty group), and the issue #48
+        detector finds no crossing for it — so the gate must not admit it on the
+        clock ground merely because of how it is spelled.
+
+        It is still an observable, i.e. live state, so issue #150 does root on
+        it: the admission is real, and it comes from the machinery that will
+        actually run. What this pins is that the *clock* path stays out of it."""
         text = SWITCHED.replace("    3 0 4 kclock #_R3\n", "")
         core = _model(tmp_path, text)._core
         scope = sw.switch_condition_scope(core)
         assert "t" not in scope.clocks
-        assert sw.uncompensated_condition_reason("if(t>=sigma,beta,0)*I", scope) is not None
+        assert not sw.clock_crossing_compensated("t>=sigma", scope)
+        assert sw.compute_switch_time_sens(core, ["sigma"], 0.0, 100.0) == ([], [])
+        assert sw.state_switch_conditions(core) == ["t>=sigma"]
 
 
 # ─── end to end ────────────────────────────────────────────────────────────
@@ -585,11 +665,20 @@ class TestEndToEnd:
         assert float(np.max(np.abs(np.asarray(run.sensitivities)))) > 1.0
 
     def test_a_refused_model_still_runs_on_the_difference_quotient(self, tmp_path):
-        """Declining is a fallback, not an error: the state-threshold model must
-        still produce sensitivities, just via CVODES' internal DQ."""
-        model = _model(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        """Declining is a fallback, not an error: a model whose crossing nothing
+        compensates must still produce sensitivities, just via CVODES'
+        internal DQ — with the issue #146 warning attached."""
+        model = _model(tmp_path, _with_law(UNCOMPENSATED))
         run = _run_sens(model, ["beta", "gamma"], t_end=12.0)
         assert np.asarray(run.sensitivities).shape[2] == 2
+
+
+# A crossing NOTHING compensates, post-#150. An equality on a continuous
+# trajectory is satisfied on a measure-zero set, so there is no transversal
+# crossing for the issue #150 root to bracket and no rising edge for issue #48
+# to stop at — which is exactly what makes it the right fixture for "the
+# difference quotient is not a correct fallback either".
+UNCOMPENSATED = "if(I==thresh,beta,0)*I"
 
 
 class TestTheDeclineDoesNotPromiseACorrectFallback:
@@ -598,28 +687,42 @@ class TestTheDeclineDoesNotPromiseACorrectFallback:
     slowly. It is not correct for an uncompensated crossing: the difference
     quotient integrates the variational equation straight through the crossing
     and drops the same jump the analytic path was declined for. On AMICI's
-    ``nested_events`` every column comes back a factor of ``f⁺/f⁻ = 2`` low after
-    the ``Virus < 1`` crossing. The message used to promise correctness in both
-    cases; issue #150 is the fix, and until then this is the only warning."""
+    ``nested_events`` every column came back a factor of ``f⁺/f⁻ = 2`` low after
+    the ``Virus < 1`` crossing.
+
+    Issue #150 emptied most of this class by fixing the underlying gap rather
+    than labelling it: a single comparison over live state is now rooted and
+    jumped, so it is admitted outright. What survives is the crossing no
+    machinery can bracket, and the warning has to keep telling the truth about
+    exactly those."""
 
     def test_an_uncompensated_crossing_is_tagged_as_such(self, tmp_path):
         from bngsim._switch_sensitivity import UncompensatedCrossingReason
 
-        _terms, reason = _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        _terms, reason = _decline(tmp_path, _with_law(UNCOMPENSATED))
         assert isinstance(reason, UncompensatedCrossingReason)
+
+    def test_a_compensated_state_crossing_is_not_tagged_at_all(self, tmp_path):
+        """The companion that makes the tag mean something. Before #150 this
+        very condition carried the tag; now nothing is declined for it, so there
+        is no reason to carry and no warning to emit."""
+        core = _model(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))._core
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        assert sw.state_switch_conditions(core) == ["I>=thresh"]
 
     def test_the_tag_survives_the_reaction_context_wrapper(self, tmp_path):
         """The reason is re-wrapped with the reaction's name before it reaches
         the warning. An f-string over a ``str`` subclass is a plain ``str``, so
         that wrap is exactly where the distinction goes missing."""
-        _terms, reason = _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        _terms, reason = _decline(tmp_path, _with_law(UNCOMPENSATED))
         assert "the Functional rate law for reaction" in reason
 
     def test_the_warning_says_the_fallback_does_not_recover_it(self, tmp_path, caplog):
         import logging
 
         with caplog.at_level(logging.WARNING, logger="bngsim"):
-            _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+            _decline(tmp_path, _with_law(UNCOMPENSATED))
         msgs = [r.getMessage() for r in caplog.records]
         assert any("does NOT recover the missing term" in m for m in msgs)
         assert any("issue #150" in m for m in msgs)
