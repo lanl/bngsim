@@ -15,6 +15,62 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **Forward sensitivity refused two state-switch crossings at one instant, but
+  on the corpus they are always one crossing written twice (issue #153).** Issue
+  #150 registers one CVODE root per switch condition and deduplicates them by
+  the residual's *text*, which merges `X<1` with `X<=1` and nothing else. Two
+  spellings of ONE crossing therefore arrive as two roots that fire together,
+  and the batch was refused outright — each jump reads `f` on the two branches
+  of its own condition, and one step across a shared crossing cannot separate
+  them. The reasoning is right for genuinely independent switches; it is just
+  not what reaches it. Both models that hit the refusal write one crossing
+  twice: `sp_fourier_synthesizer` roots on `ds1` and on `3·ds1 − 12·s1²·ds1`
+  (five residuals in all, every one a multiple of `Cos1 − amp_offset`, all
+  crossing at `t = π/2`), and `ml_hopfield` on `dS1/dt` and `dS3/dt`, which are
+  identically equal along the trajectory because its own weight matrix leaves
+  `S1 ≡ S3` invariant. One is visible in the text and one is not, which is why
+  the decision belongs at the crossing rather than in the dedup.
+
+  The batch is now carried into the jump together and the two halves of the
+  saltation term are checked separately, at the crossing:
+
+  * `f⁻ − f⁺` has to carry **every** branch change, which the one flow probe
+    does exactly when it crosses every residual in the batch — so the `δt`
+    ladder now grows until they all flip *together*, and a batch that never
+    does is several conditions meeting by coincidence rather than one crossing.
+  * `dt*/dθ` has to be **one** vector, and flipping together does *not*
+    establish that. A common factor does: `h` cancels out of the
+    implicit-function ratio, scaling numerator and denominator alike where the
+    residual vanishes. An equality that holds only along the *trajectory* does
+    not — `ml_hopfield`'s two residuals have non-parallel gradients (cosine
+    −0.30 at the crossing) and their `dt*/dθ` are permutations of each other
+    under the model's `W12 ↔ W23` symmetry, so a perturbation that breaks it
+    splits the crossing in two. The vector is therefore formed from each
+    residual in turn and compared, and a batch that disagrees is refused with
+    the numbers.
+
+  The second is the criterion, and it is deliberately weaker than "one
+  surface": what the jump needs is a single `t*(θ)` to shift the flow along,
+  which two *independent* crossings also have when the requested columns move
+  them together. A fixture of two unrelated species decaying through a shared
+  threshold merges exactly (its `∂W/∂c` is the closed-form −8 to eight digits)
+  for the threshold column and is refused for the column that splits the pair.
+
+  Order matters and is the cheap way round: the branch gap is measured before
+  any `dt*/dθ`, and both corpus models are the BNGL signed-rate idiom
+  (`if(r>0, r, 0)` against `if(r<0, −r, 0)`, continuous where `r = 0`), so they
+  return with no jump at all — and never reach the second check. Their columns
+  come from the in-branch sensitivity RHS and match a finite difference of the
+  model's own trajectory.
+
+  Corpus A/B on the `netcond` arm — the 80 of 585 `.net` models whose text
+  carries an `if()`, under forward sensitivities, against the issue #150 binary:
+  **76 identical, 2 newly answered, 1 wall-clock capped, 1 identical refusal**.
+  Nothing moved: a single-switch crossing takes the same path it did, and the
+  two newly answered rows are exactly `ml_hopfield` and `sp_fourier_synthesizer`.
+  The remaining refusal is `ml_q_learning`, whose residual is not
+  differentiable across its own surface (issue #154).
+
 - **Forward sensitivity through a state-dependent switch in a rate law missed
   the saltation jump at its crossing (issue #150).** A condition that reads the
   state — `piecewise(0, Virus < 1, Virus*rho_V)` — flips a branch of `f` at a
@@ -143,7 +199,10 @@ in `CMakeLists.txt`) is derived from it.
   jump reads f on the branches of its own condition, which one shared crossing
   cannot separate) and one a genuine tangency with a real discontinuity at it.
   All three previously returned numbers that issue #146's warning already
-  described as wrong.
+  described as wrong. Two of the three — the Hopfield net and the Fourier
+  synthesiser — are lifted again by issue #153 above, which merges a batch that
+  resolves to one crossing time instead of refusing it; only the Q-learning
+  agent still refuses in this release.
 
 - **A CVODE root that fired nothing left the forward sensitivities behind
   (issue #146).** Every `CV_ROOT_RETURN` reinitialises the state stepper —
