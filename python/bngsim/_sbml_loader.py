@@ -3354,19 +3354,58 @@ def _build_model_from_sbml_doc(doc):
         if rule.isAssignment() and rule.getMath() is not None:
             assignment_targets.add(rule.getVariable())
 
-    # Detect species whose initialAssignment is a single <ci> referencing a
-    # model parameter: these get registered as species_ic_param_refs so
-    # CVODES forward-sensitivity can seed dY_i(0)/dp_k = 1 when p_k is
-    # requested via sensitivity_params. Mirrors what the .net loader does
-    # for "begin species" entries with a parameter-name IC. We only
-    # recognize the trivial single-symbol case; compound expressions like
-    # ``2*init_X + offset`` would need a chain rule that the codegen sens
-    # path doesn't currently support for IC params.
+    # Detect species whose initialAssignment makes the IC a function of model
+    # PARAMETERS: these get registered as species_ic_param_refs so CVODES
+    # forward-sensitivity can seed ∂x_i(0)/∂p_k when p_k is requested via
+    # sensitivity_params. Mirrors what the .net loader does for "begin species"
+    # entries with a parameter-name IC.
+    #
+    # Two shapes qualify:
+    #
+    #   * a bare <ci> naming a parameter (``u = b``) — registered directly, and
+    #     seeded with coefficient 1 by the legacy identity path;
+    #   * any other expression over constant parameters (``u = b*v0``,
+    #     ``2*init_X + offset``) — lowered to a synthetic *derived* parameter
+    #     here, because `compute_ic_param_sens_seed` (issue #43) already
+    #     differentiates a derived IC to its primaries with the sympy chain
+    #     rule. Nothing new has to know how to differentiate; the expression
+    #     just has to reach that code, and a bare-<ci> test is what stopped it.
+    #
+    # This was a silent zero, not a refusal: AMICI's `neuron` fixture sets
+    # ``u(0) = b*v0`` with `b` a fitted parameter, and bngsim returned a `b`
+    # column missing the whole ∂u(0)/∂b term — 1602 where AMICI says 7898, with
+    # nothing on stderr. A trajectory finite difference does not catch it
+    # either, because `set_param` does not re-resolve an initialAssignment, so
+    # the oracle holds x(0) fixed in exactly the same way the seed does.
+    #
+    # The referenced symbols must be genuinely CONSTANT parameters. Anything
+    # the model can move — an assignment-rule or rate-rule target, an event
+    # assignment target, or a bare `constant="false"` declaration — is
+    # *promoted to a species* by this loader, so an expression reading one is
+    # not a parameter expression at all. BIOMD0000000856 is the case that
+    # proves it: `WHISBF = 0.66*NSt` with `NSt` declared non-constant, whose
+    # synthetic derived parameter evaluated to 0 against a symbol that is a
+    # species in the built model — and the build-time IC resolution then wrote
+    # that 0 back over the species' real initial condition, moving a plain
+    # trajectory. A wrong IC is far worse than a missing sensitivity seed, so
+    # this predicate is deliberately strict; a rejected model keeps the
+    # pre-existing behaviour of no seed.
     _param_ids = {sbml_model.getParameter(j).getId() for j in range(sbml_model.getNumParameters())}
+    _const_param_ids = (
+        {
+            sbml_model.getParameter(j).getId()
+            for j in range(sbml_model.getNumParameters())
+            if sbml_model.getParameter(j).getConstant()
+        }
+        - assignment_targets
+        - rate_rule_targets
+        - event_promoted_params
+    )
     _species_ids_set = {
         sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())
     }
     ia_single_param_ref: dict[str, str] = {}
+    ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
     for j in range(sbml_model.getNumInitialAssignments()):
         ia = sbml_model.getInitialAssignment(j)
         sym = ia.getSymbol()
@@ -3381,6 +3420,26 @@ def _build_model_from_sbml_doc(doc):
             ref = math.getName()
             if ref in _param_ids:
                 ia_single_param_ref[sym] = ref
+            continue
+        names = _ast_name_set(math)
+        if not names or _ast_references_time(math) or not names <= _const_param_ids:
+            continue
+        try:
+            ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(math, func_defs)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("initialAssignment for %s not lowered for IC sensitivity: %s", sym, e)
+
+    # Lower each compound parameter-only IC to a derived parameter. Declared
+    # here, after §2's plain parameters, so the one-pass derived-parameter
+    # re-evaluation (which assumes declaration order is dependency order) sees
+    # its operands already defined.
+    ia_expr_param: dict[str, str] = {}  # species id → synthetic parameter name
+    for sym, expr in ia_param_expr.items():
+        pname = _safe_name(f"_ic_{sym}")
+        builder.add_parameter(
+            pname, float(ia_values.get(sym, 0.0)), expression=expr, is_expression=True
+        )
+        ia_expr_param[sym] = pname
 
     species_ids = []
     species_idx = {}  # id → 0-based index
@@ -3504,11 +3563,14 @@ def _build_model_from_sbml_doc(doc):
         if hosu and (comp not in vstatic_divide_comps or comp in variable_comps):
             builder.set_species_rateof_amount(idx)
 
-        # If the species's IC was set by an initialAssignment that's a
-        # single <ci> referencing a parameter, register the link so CVODES
-        # forward sensitivity will seed yS for that parameter.
+        # If the species's IC was set by an initialAssignment over parameters,
+        # register the link so CVODES forward sensitivity seeds yS for them —
+        # directly for a bare <ci>, or through the synthetic derived parameter
+        # that carries a compound expression to issue #43's chain rule.
         if sid in ia_single_param_ref:
             builder.add_species_param_ref(idx, _safe_name(ia_single_param_ref[sid]))
+        elif sid in ia_expr_param:
+            builder.add_species_param_ref(idx, ia_expr_param[sid])
 
     # ── 3b. Model / species conversionFactor (GH #232) ────────────────
     # SBML's conversionFactor scales how a species' AMOUNT changes per unit

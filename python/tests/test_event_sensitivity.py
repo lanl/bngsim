@@ -134,18 +134,29 @@ SBML_NEURON = """<?xml version="1.0" encoding="UTF-8"?>
       <compartment id="cell" size="1" constant="true"/>
     </listOfCompartments>
     <listOfSpecies>
-      <species id="v" compartment="cell" initialConcentration="-60"
+      <species id="v" compartment="cell" initialConcentration="1"
                hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
-      <species id="u" compartment="cell" initialConcentration="0"
+      <species id="u" compartment="cell" initialConcentration="1"
                hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
     </listOfSpecies>
     <listOfParameters>
       <parameter id="a" value="0.02" constant="true"/>
       <parameter id="b" value="0.3" constant="true"/>
-      <parameter id="c" value="-65" constant="true"/>
-      <parameter id="d" value="2" constant="true"/>
+      <parameter id="c" value="65" constant="true"/>
+      <parameter id="d" value="0.9" constant="true"/>
       <parameter id="I0" value="10" constant="true"/>
+      <parameter id="v0" value="-60" constant="true"/>
     </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="v">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>v0</ci></math>
+      </initialAssignment>
+      <initialAssignment symbol="u">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>b</ci><ci>v0</ci></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>
     <listOfRules>
       <rateRule variable="v">
         <math xmlns="http://www.w3.org/1998/Math/MathML">
@@ -176,11 +187,13 @@ SBML_NEURON = """<?xml version="1.0" encoding="UTF-8"?>
         </trigger>
         <listOfEventAssignments>
           <eventAssignment variable="v">
-            <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>c</ci></math>
+            <math xmlns="http://www.w3.org/1998/Math/MathML">
+              <apply><minus/><ci>c</ci></apply>
+            </math>
           </eventAssignment>
           <eventAssignment variable="u">
             <math xmlns="http://www.w3.org/1998/Math/MathML">
-              <apply><plus/><ci>u</ci><ci>d</ci></apply>
+              <apply><plus/><ci>d</ci><ci>u</ci></apply>
             </math>
           </eventAssignment>
         </listOfEventAssignments>
@@ -189,7 +202,7 @@ SBML_NEURON = """<?xml version="1.0" encoding="UTF-8"?>
   </model>
 </sbml>"""
 
-NEURON_NOMINAL = {"a": 0.02, "b": 0.3, "c": -65.0, "d": 2.0}
+NEURON_NOMINAL = {"a": 0.02, "b": 0.3, "c": 65.0, "d": 0.9}
 
 
 # ── Discontinuity-trigger model: a piecewise-time forcing pulse on parameter
@@ -573,12 +586,29 @@ class TestStateDependentTrigger:
     def test_neuron_matches_finite_differences(self, param):
         """The issue #144 reproduction: AMICI's ``neuron``, all four parameters.
 
-        The tolerance is loose on purpose — this is a spiking trajectory whose
-        sensitivities run to 1e5 because every spike time moves with every
-        parameter, so a fixed-``t`` comparison is inherently ill-conditioned.
-        What makes it a real check is not the number but that the disagreement
-        falls like h²: dropping ∂t*/∂θ, or dropping the ∂h/∂x term the ``u``
-        assignment needs, leaves a residue that does not move with h at all.
+        ``SBML_NEURON`` is AMICI's own fixture definition — including
+        ``u(0) = b*v0``, so the ``b`` column carries an initial-condition seed
+        underneath the crossing term. Cross-checked against the document
+        ``amici.testing.models`` builds: identical trajectory and identical
+        sensitivity tensor, and agreeing with AMICI itself to 3.7e-8.
+
+        Three well-separated steps, accept the best. The tolerance is loose on
+        purpose — a spiking trajectory whose sensitivities run to 1e5 because
+        every spike time moves with every parameter is ill-conditioned at fixed
+        ``t``, and below ~1e-6 the difference is reporting its own cancellation
+        noise rather than the derivative. Requiring a strictly monotone h²
+        decrease is therefore the wrong assertion: at the smallest step the
+        error has already turned back up. What a *missing* term looks like is a
+        residue that is large at every step — the dropped ∂h/∂x this fixture
+        caught sat at 1.3e-3 across all three.
+
+        What this test canNOT catch, and the reason
+        ``test_sbml_initial_assignment_ic_sens.py`` exists: a defect shared by
+        the engine and the oracle. ``set_param`` and the sensitivity seed read
+        the same initialAssignment machinery, so when that machinery was
+        missing, the finite difference held ``x(0)`` fixed in exactly the way
+        the seed did and this test passed on a ``b`` column that was 5x off.
+        Only a closed form or a second engine separates those.
         """
 
         def traj(overrides):
@@ -598,14 +628,12 @@ class TestStateDependentTrigger:
 
         p0 = NEURON_NOMINAL[param]
         errs = []
-        for h_rel in (1e-4, 1e-5):
+        for h_rel in (1e-3, 1e-4, 1e-5):
             h = abs(p0) * h_rel
             fd = (traj({param: p0 + h}) - traj({param: p0 - h})) / (2 * h)
             scale = max(np.max(np.abs(fd)), np.max(np.abs(ana)), 1e-12)
             errs.append(np.max(np.abs(fd - ana)) / scale)
-        assert errs[-1] < 1e-5, f"relative error {errs[-1]:.2e} at the smallest step"
-        # Truncation, not a missing term: a factor-10 smaller step must help.
-        assert errs[-1] < errs[0]
+        assert min(errs) < 1e-5, f"relative error {min(errs):.2e} at the best of {errs}"
 
     def test_initial_value_fire_does_not_move_with_theta(self):
         """SBML L3 §3.4.5: a t=0 fire is pinned, not located.
