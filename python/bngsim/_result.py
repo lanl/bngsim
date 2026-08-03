@@ -222,6 +222,7 @@ class Result:
         "_ar_sens_map",
         "_ar_sens_blocked",
         "_seed",
+        "_ic_sensitivity_seed",
         "_core",
         "custom_attrs",
     )
@@ -242,6 +243,7 @@ class Result:
         _solver_stats: dict[str, int] | None = None,
         _species_volume_factors: list[float] | None = None,
         _seed: int | None = None,
+        _ic_sensitivity_seed: dict[str, dict[str, float]] | None = None,
         # Sensitivity blocks (load / batch / stitch). All optional; absent ⇒
         # the empty (0, 0, 0) block. The observable/expression blocks reuse the
         # species parameter / IC-species name lists (GH #196).
@@ -454,6 +456,15 @@ class Result:
         # files that pre-date seed exposure.
         self._seed: int | None = _seed
 
+        # GH #155: the ∂x(0)/∂θ rows CVODES was seeded with for this run, as
+        # {species_name: {param_name: coeff}}. Set by Simulator._stamp (and by
+        # the batch/stitch paths); None means "not recorded for this result",
+        # which is NOT the same statement as {} ("recorded, and nothing seeds").
+        # The `parameter` axis is a TOTAL derivative that already contains
+        # (this matrix) · (the `ic` axis), so a consumer composing its own
+        # initial-condition chain rule reads this to know what not to add again.
+        self._ic_sensitivity_seed: dict[str, dict[str, float]] | None = _ic_sensitivity_seed
+
         self.custom_attrs: dict[str, Any] = custom_attrs or {}
 
     # ─── Core data ──────────────────────────────────────────────────
@@ -475,6 +486,72 @@ class Result:
         objects from ``Simulator.run_batch(..., squeeze=False)``.
         """
         return self._seed
+
+    @property
+    def ic_sensitivity_seed(self) -> dict[str, dict[str, float]] | None:
+        """``∂x(0)/∂θ`` — the initial-condition seeding this run's gradients carry.
+
+        The **per-run record** of the matrix
+        :meth:`Model.effective_ic_sensitivity` reports. Prefer that one to build
+        gradient routing: it answers at setup, from model structure alone, with
+        no simulation. Reach for this to see what a *particular* run used —
+        the only correct answer for a batch or scan over a nonlinear derived
+        initial condition (``Rtot = R0*scale``), whose coefficients move from
+        point to point, and the one that reports ``None`` for a carried-seed
+        phase (below).
+
+        ``{species_name: {param_name: ∂x_k(0)/∂θ}}``, the forward-sensitivity
+        seed CVODES was actually initialized with for this simulation: the
+        parameter-graph derivative of each species' initial condition (issues
+        #43/#147), *after* the issue #113 retirement of a species moved off its
+        declared initial condition and the issue #111
+        :meth:`Model.declare_ic_sensitivity` overlay.
+
+        Read this to compose your own initial-condition chain rule without
+        double-counting. :meth:`output_sensitivities` with ``axis="parameter"``
+        is a **total** derivative:
+
+        .. code-block:: text
+
+            d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
+
+        so for any ``θ`` appearing here, the seeding term is *already inside*
+        ``d_param[θ]`` and adding an ``ic``-axis term for it counts it twice. A
+        ``θ`` absent from this mapping has an RHS-only ``d_param`` column, and
+        an initial-condition term your own code supplies is the missing piece
+        (or hand it to :meth:`Model.declare_ic_sensitivity` and let the
+        ``parameter`` axis carry it instead).
+
+        Only parameters in :attr:`sensitivity_params` appear — a row the engine
+        computed for a parameter you did not request has no column to describe.
+        Coefficients are evaluated at *this* run's parameter values, so a batch
+        or scan over a nonlinear derived initial condition
+        (``Rtot = R0*scale``) reports a different matrix per point.
+
+        Returns
+        -------
+        dict or None
+            ``{}`` means recorded, and **nothing** seeds — every ``d_param``
+            column is right-hand-side only. ``None`` means *not recorded*: no
+            parameter sensitivities were requested; the result came from a
+            non-ODE method or an HDF5 file predating this field; a squeezed
+            batch whose rows disagreed (the per-row ``Result`` objects from
+            ``run_batch(..., squeeze=False)`` still carry theirs); or the run
+            used ``carry_sensitivities=True``, where the seed is the *prior*
+            phase's ``dx/dθ`` and these rows are discarded by the engine
+            (GH #210/#81 — and no double-count can arise there, because an
+            ``ic`` axis across a carry boundary is refused outright). The two
+            are deliberately distinct — an empty mapping is a positive
+            statement.
+
+        Examples
+        --------
+        >>> sim = Simulator(model, method="ode", sensitivity_params=["R0", "kf"])
+        >>> r = sim.run(t_span=(0, 10), n_points=11)
+        >>> r.ic_sensitivity_seed                       # doctest: +SKIP
+        {'R(r)': {'R0': 1.0}}
+        """
+        return self._ic_sensitivity_seed
 
     @property
     def time(self) -> NDArray[np.float64]:
@@ -745,15 +822,41 @@ class Result:
         sensitivity for such a species stays available as the low-level
         :attr:`sensitivities_species` tensor.
 
+        .. rubric:: The two axes are not independent (GH #155)
+
+        ``axis="parameter"`` is the **total** derivative ``dy(t)/dθ``: it carries
+        every path by which ``θ`` reaches the trajectory, the right-hand side
+        **and** the initial-condition seeding ``∂x(0)/∂θ`` (issues #43/#147).
+        ``axis="ic"`` is ``∂y(t)/∂x_k(0)`` with the initial value held as an
+        *independent* variable. So for a parameter that seeds an initial
+        condition the two overlap:
+
+        .. code-block:: text
+
+            d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
+
+        **Do not sum the axes.** A consumer that routes a fitted parameter to
+        several columns and adds them must add an ``ic`` term only for the part
+        of ``∂x(0)/∂θ`` this engine does not already carry — which
+        :attr:`ic_sensitivity_seed` reports exactly, per run. The common case
+        that makes the overlap easy to miss: a parameter appearing *only* in the
+        initial condition, with coefficient 1, gives a ``parameter`` column
+        bit-identical to the seeded species' ``ic`` column (same seed vector,
+        same variational equation), so summing reports it at exactly 2×.
+
+        On :class:`SteadyStateResult` the question does not arise: that
+        ``parameter`` axis is the implicit-function derivative of the algebraic
+        system, there is no seeding term in it, and ``axis="ic"`` raises.
+
         Parameters
         ----------
         selectors : str or iterable of str
             Selectors accepted by :meth:`resolve_outputs`.
         axis : {"parameter", "ic"}, optional
             Which sensitivity axis to return. ``"parameter"`` (default)
-            gives ``d output/dp`` over :attr:`sensitivity_params`;
-            ``"ic"`` gives ``d output/dY(0)`` over
-            :attr:`sensitivity_ic_species`.
+            gives ``d output/dp`` over :attr:`sensitivity_params` — the total
+            derivative, seeding included, see above; ``"ic"`` gives
+            ``d output/dY(0)`` over :attr:`sensitivity_ic_species`.
 
         Returns
         -------
@@ -2536,6 +2639,13 @@ class Result:
         seeds = {r._seed for r in results}
         squeeze_seed = next(iter(seeds)) if len(seeds) == 1 else None
 
+        # GH #155: same rule for ∂x(0)/∂θ. A nonlinear derived IC makes the
+        # coefficients point-dependent, so the rows can legitimately disagree
+        # across a batch; None then says "ask the unsqueezed rows" rather than
+        # picking one arbitrarily and reporting it as the batch's.
+        ic_seeds = [r._ic_sensitivity_seed for r in results]
+        squeeze_ic_seed = ic_seeds[0] if all(s == ic_seeds[0] for s in ic_seeds) else None
+
         # GH #196 — carry every populated sensitivity block through, stacking on
         # a new leading sim axis. Empty-on-input blocks stay empty (0, 0, 0).
         def stack_sens(attr: str) -> NDArray[np.float64]:
@@ -2555,6 +2665,7 @@ class Result:
             _solver_stats=agg_stats,
             _species_volume_factors=results[0]._species_volume_factors,
             _seed=squeeze_seed,
+            _ic_sensitivity_seed=squeeze_ic_seed,
             _sensitivities=stack_sens("_sensitivities"),
             _sensitivity_params=results[0]._sensitivity_params,
             _sensitivities_ic=stack_sens("_sensitivities_ic"),

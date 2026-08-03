@@ -2290,8 +2290,24 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
             # An unparseable derived expression yields no partials, so this
             # species is simply left unseeded (pre-#43 behavior) rather than
             # mis-seeded on the derived index.
-            for prim_name, coeff in partials.items():
-                seeds.append((species_idx0, param_idx[prim_name], float(coeff)))
+            #
+            # Issue #155: a primary the expression *reaches* keeps a row even
+            # when its partial is zero at this parameter point — ∂(a*R0)/∂R0 is
+            # `a`, which vanishes at a = 0 without the seeding path ceasing to
+            # exist. The DAG walk drops numeric zeros (it is shared with the
+            # switch-time scan, where an empty result means "not a parameter
+            # threshold"), so structural presence is recovered here from the
+            # token closure. A zero row seeds nothing either way; it exists so
+            # `Model.effective_ic_sensitivity` can tell "seeded, zero here" from
+            # "no seeding path at all", which a consumer composing its own chain
+            # rule must not confuse.
+            if partials:
+                for prim_name in _reachable_primary_names(
+                    derived_exprs[pname], primary_names, derived_exprs
+                ):
+                    seeds.append(
+                        (species_idx0, param_idx[prim_name], float(partials.get(prim_name, 0.0)))
+                    )
         else:
             # Direct primary IC: seed coefficient 1 on the exact named
             # parameter, matching the legacy C++ identity seeding.

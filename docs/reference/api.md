@@ -29,6 +29,8 @@ Methods:
 - **`get_concentration(name)`** — Get a single species concentration
 - **`pure_sink_species()`** → `list[str]` — write-only accumulator species: a product of ≥1 reaction, a reactant of none, read by no other species' derivative, and not `$`-fixed. These put a structural floor under `||f(y)||_2/n` (issue #74)
 - **`is_pure_sink()`** → `ndarray (n_species,) of bool` — the array form, so `mask=~model.is_pure_sink()`
+- **`declare_ic_sensitivity({species: {param: d_ic_d_param}})`** — Declare `∂x_k(0)/∂θ` for an initial condition your own code assigns (issue #111). A declared species' row is taken as **fully specified**: parameters not named get `0.0`, so it *replaces* the model's parameter-graph row rather than adding to it
+- **`effective_ic_sensitivity(params=None)`** → `dict[str, dict[str, float]]` — the reader paired with the writer above: `{species: {param: ∂x(0)/∂θ}}`, the initial-condition seeding a run from this state would use, after the #113 retirement and the #111 overlay. Answers from model structure alone — **no integration, no simulation** — so a fitting frontend can build its gradient routing once at setup. Keys are the ids `sensitivity_params=` accepts (a #147-lowered compound `<initialAssignment>` reports the original symbols, never the synthetic `_ic_<species>` carrier). A **present** entry valued `0.0` means *seeded, coefficient zero at this state*; an **absent** entry means *no seeding path* — the two are different answers. Needed because `output_sensitivities(axis="parameter")` is a total derivative that already contains this matrix times the `ic` axis (GH #155)
 - **`add_table_function(name, *, file, times, values, index)`** — Add a piecewise-linear table function
 - `n_table_functions`, `table_function_names` — TFUN introspection
 
@@ -180,6 +182,7 @@ Properties:
 - **`sensitivities`** — `ndarray (n_times, n_species, n_params)` forward sensitivity tensor
 - **`has_sensitivities`** — `bool`
 - **`sensitivity_params`** — `list[str]` parameter names for sensitivity
+- **`ic_sensitivity_seed`** — `dict[str, dict[str, float]] | None` — the per-run record of the same matrix `Model.effective_ic_sensitivity()` reports: what CVODES was actually seeded with *for this run*. Use the `Model` accessor to build routing at setup; use this to see what a particular run used, which is the only correct answer for a batch/scan over a nonlinear derived IC (`Rtot = R0*scale`), where the coefficients move per point. `{}` = nothing seeds; `None` = not recorded (no parameter sensitivities, non-ODE, an older HDF5 file, a squeezed batch whose rows disagreed, or a `carry_sensitivities=True` phase, where the engine seeds from the prior phase's `dx/dθ` and discards these rows — GH #210/#81)
 - **`dataframe`** — `pandas.DataFrame` (requires pandas)
 - **`xr`** — AMICI-style xarray accessor; `result.xr.species`, `.observables`, `.expressions`, `.sensitivities`, `.sensitivities_ic` return labeled `xarray.DataArray`s with `time`/`state`/`observable`/`expression`/`parameter`/`ic_state` coords (requires xarray)
 - **`solver_stats`** — `dict` with solver diagnostics

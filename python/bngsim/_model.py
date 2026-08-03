@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -994,6 +995,179 @@ class Model:
                     )
                 staged[sp][p] = float(d)
         self._declared_ic_sens.update(staged)
+
+    def effective_ic_sensitivity(
+        self, params: Iterable[str] | None = None
+    ) -> dict[str, dict[str, float]]:
+        """``∂x(0)/∂θ`` — the initial-condition seeding a run from this state would use.
+
+        The reader paired with :meth:`declare_ic_sensitivity`, and the single
+        defining site for the seeding the forward-sensitivity solver is
+        initialized with. Answers from **model structure alone** — the parameter
+        graph, the live initial conditions and any declarations — with no
+        integration and no simulation, so a frontend can build its gradient
+        routing once at setup (issue #155).
+
+        Why a consumer needs it: :meth:`Result.output_sensitivities` with
+        ``axis="parameter"`` is a **total** derivative,
+
+        .. code-block:: text
+
+            d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
+
+        so the seeding is *already inside* the ``parameter`` axis. A caller that
+        routes a fitted parameter to several columns and sums them must add an
+        ``ic``-axis term only for the part of ``∂x(0)/∂θ`` reported here as
+        **absent** — anything present is carried already, and adding it again
+        counts it twice.
+
+        This is the *effective* matrix, not the model file's: a species retired
+        because an assignment moved it off the initial condition its expression
+        describes (issue #113) is gone, and a species the caller declared
+        (issue #111) carries the declared row in place of the parameter-graph
+        one. It is therefore **state-dependent by design** — call it on the
+        configured model, before the run whose gradients it describes.
+
+        Parameters
+        ----------
+        params : iterable of str, optional
+            Restrict to these parameter names. Default: every parameter. Pass
+            the same list as ``sensitivity_params=`` to see exactly the rows
+            that run's ``parameter`` columns will carry.
+
+        Returns
+        -------
+        dict
+            ``{species_name: {param_name: ∂x_k(0)/∂θ}}``, keyed by the names
+            :attr:`species_names` / :attr:`param_names` report — the same ids
+            ``sensitivity_params=`` accepts. A compound ``<initialAssignment>``
+            lowered by issue #147 reports the **original** symbols it was
+            written over, never the synthetic ``_ic_<species>`` carrier.
+
+            A **present** entry whose value is ``0.0`` means *seeded, and the
+            coefficient is zero at this state* — a chain-rule factor that
+            vanishes here but need not at another point. An **absent** entry
+            means *no seeding path at all*, and is the one that says "this
+            parameter's initial-condition term is yours to supply". The two are
+            different answers; do not collapse them.
+
+        Examples
+        --------
+        >>> model.effective_ic_sensitivity(["R0", "kf"])       # doctest: +SKIP
+        {'R(r)': {'R0': 1.0}}
+        """
+        wanted = set(self.param_names if params is None else params)
+        triples, injected = self._ic_sensitivity_triples()
+        species, pnames = self.species_names, self.param_names
+        out: dict[str, dict[str, float]] = {}
+        if injected:
+            for sp_i, p_i, coeff in triples:
+                if sp_i < 0:
+                    continue  # the sentinel row, which seeds nothing
+                pname = pnames[p_i]
+                if pname not in wanted:
+                    continue
+                row = out.setdefault(species[sp_i], {})
+                # The C++ seeding accumulates (`yS[iS][i] += coeff`): one initial
+                # condition can reach the same primary by more than one path.
+                row[pname] = row.get(pname, 0.0) + float(coeff)
+            return out
+        # Nothing injected ⇒ the C++ fallback identity loop seeds this run, so
+        # report *its* rows. Reporting {} here would be a silent under-count.
+        live = np.asarray(self.get_state(), dtype=np.float64)
+        baseline = np.asarray(self._core.get_initial_state(), dtype=np.float64)
+        for sp_i, p_i in self._core.species_ic_param_refs:
+            pname = pnames[p_i]
+            if pname not in wanted or live[sp_i] != baseline[sp_i]:
+                continue
+            out.setdefault(species[sp_i], {})[pname] = 1.0
+        return out
+
+    def _ic_sensitivity_triples(self) -> tuple[list[tuple[int, int, float]], bool]:
+        """``([(species_idx0, param_idx0, ∂IC/∂param), ...], injected?)``.
+
+        The seeding pipeline itself, shared by :meth:`effective_ic_sensitivity`
+        and the solver-option path so the reported matrix cannot drift from the
+        seeded one. Explicit zeros are **kept** here — the caller that builds the
+        C++ list drops them (a zero seeds nothing), the caller that reports keeps
+        them (absent and zero are different answers, issue #155).
+
+        ``injected`` is False only when nothing is handed to the core at all, in
+        which case its legacy ``species_ic_param_refs`` identity loop applies.
+        """
+        from bngsim._codegen import compute_ic_param_sens_seed
+
+        seeds = compute_ic_param_sens_seed(self._core)
+        declared = self._declared_ic_sens
+        retired = self._superseded_ic_rows(seeds, declared) if seeds else set()
+        if retired:
+            seeds = [entry for entry in seeds if entry[0] not in retired]
+        if declared:
+            seeds = self._overlay_declared_ic_sens(seeds, declared)
+        if (retired or declared) and not seeds:
+            # An empty list means "no Python injection" to the C++ seeding, which
+            # then falls back to its legacy species_ic_param_refs identity loop —
+            # the very rows just retired. A sentinel row keeps the list non-empty
+            # and seeds nothing: the consumer skips any entry with
+            # species_idx0 < 0. (That loop applies the #113 rule too, but a
+            # declaration is invisible to it, so do not rely on it here.)
+            return [(-1, 0, 0.0)], True
+        return seeds, bool(seeds)
+
+    def _superseded_ic_rows(
+        self,
+        seeds: list[tuple[int, int, float]],
+        declared: dict[str, dict[str, float]],
+    ) -> set[int]:
+        """Species whose ``.net`` IC expression no longer describes their state.
+
+        ``reset()`` returns the live concentrations to ``initial_conc``, so the two
+        differ exactly when an assignment (``set_concentration`` / ``set_state`` /
+        an external injection) has superseded the declared initial condition. Those
+        species' parameter-graph seeds are dropped (issue #113); a species the
+        caller declared is left to :meth:`_overlay_declared_ic_sens`, which is the
+        more specific statement.
+
+        A caller that re-asserts a species' *own* IC value keeps its row: the
+        assignment and the expression then agree numerically, and which of the two
+        was meant is genuinely ambiguous — ``declare_ic_sensitivity`` says so
+        either way.
+        """
+        rows = {entry[0] for entry in seeds}
+        if not rows:
+            return set()
+        live = np.asarray(self.get_state(), dtype=np.float64)
+        baseline = np.asarray(self._core.get_initial_state(), dtype=np.float64)
+        moved = {int(i) for i in np.nonzero(live != baseline)[0]}
+        if not moved:
+            return set()
+        spoken_for = {i for i, name in enumerate(self.species_names) if name in declared}
+        return (rows & moved) - spoken_for
+
+    def _overlay_declared_ic_sens(
+        self,
+        seeds: list[tuple[int, int, float]],
+        declared: dict[str, dict[str, float]],
+    ) -> list[tuple[int, int, float]]:
+        """Replace the ∂x_k(0)/∂p rows of species the caller declared (issue #111).
+
+        A declared zero is kept as an explicit ``0.0`` row rather than dropped:
+        it seeds nothing either way, but it is the difference between "pinned to
+        zero here" and "no seeding path", which issue #155 requires a reader to
+        be able to tell apart.
+        """
+        param_idx = {name: i for i, name in enumerate(self.param_names)}
+        species_idx = {name: i for i, name in enumerate(self.species_names)}
+        replaced = {species_idx[sp] for sp in declared if sp in species_idx}
+        out = [entry for entry in seeds if entry[0] not in replaced]
+        for sp, row in declared.items():
+            i = species_idx.get(sp)
+            if i is None:
+                continue
+            for p, d in row.items():
+                if p in param_idx:
+                    out.append((i, param_idx[p], float(d)))
+        return out
 
     # ─── Properties ───────────────────────────────────────────────────────
 

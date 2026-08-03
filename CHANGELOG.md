@@ -14,6 +14,69 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **`Model.effective_ic_sensitivity()` — the `∂x(0)/∂θ` the `parameter` axis
+  already carries (issue #155).** `output_sensitivities(axis="parameter")` is a
+  *total* derivative: it carries the right-hand-side path **and** the
+  initial-condition seeding. `axis="ic"` is the companion basis `∂y(t)/∂x_k(0)`
+  with the initial value held independent. The two are therefore **not**
+  orthogonal —
+
+      d_param[θ] = (right-hand-side path) + Σ_k (∂x_k(0)/∂θ)·d_ic[x_k]
+
+  — so a consumer that routes a fitted parameter to every native column it
+  reaches and sums them double-counts any seeded initial condition. That was
+  always the contract; nothing about the numbers changes here. What changes is
+  that it is now *stated*, and answerable in code rather than by measurement.
+
+  The reader is paired with the existing writer `declare_ic_sensitivity`, and
+  answers from **model structure alone** — parameter graph, live initial
+  conditions, declarations — with no integration, so a fitting frontend builds
+  its gradient routing once at setup instead of burning a throwaway run or
+  re-deriving per evaluation. It reports the *effective* matrix: after the issue
+  #113 retirement of a species moved off its declared initial condition, and
+  after the issue #111 declaration overlay. Keys are the ids
+  `sensitivity_params=` accepts — a compound `<initialAssignment>` lowered by
+  issue #147 reports the **original** symbols, never the synthetic
+  `_ic_<species>` carrier.
+
+  **Present-and-zero is not absent.** A present entry valued `0.0` means
+  "seeded, coefficient zero at this state" — `∂(a*R0)/∂R0` is `a`, which
+  vanishes at `a = 0` without the seeding path ceasing to exist — while an
+  absent entry means there is no seeding path at all and the caller's own
+  initial-condition term is the missing piece. Only the second is a signal to
+  add an `ic`-axis term. Making that distinction visible required separating
+  *structural reachability* from *numeric value* in the seed derivation: the
+  shared derived-parameter DAG walk drops numeric zeros (it is also the
+  switch-time scan's "not a parameter threshold" signal), so
+  `compute_ic_param_sens_seed` now recovers presence from the token closure and
+  emits a zero-valued row. The solver still receives no zero rows — they seed
+  nothing — so no gradient changes.
+
+  `Result.ic_sensitivity_seed` carries the same matrix as the per-run record,
+  for the cases the model-level reader structurally cannot answer: a batch or
+  scan over a nonlinear derived initial condition (`Rtot = R0*scale`) has
+  point-dependent coefficients, so each row stamps its own, `squeeze` keeps the
+  matrix only if every row agreed, and `compute_all_sensitivities` takes the
+  union over parameter chunks. It reports `None` — *not recorded*, distinct from
+  `{}` — for a `carry_sensitivities=True` phase, where the engine seeds from the
+  prior phase's `dx/dθ` and discards these rows entirely (#210/#81); reporting
+  the computed-but-unused rows there would have been the same silent-wrong-answer
+  class this whole property exists to end.
+
+  Both readers and the solver seeding share one derivation
+  (`Model._ic_sensitivity_triples`), so a reported matrix cannot drift from the
+  seed it describes.
+
+  Also: a `capabilities()["features"]["effective_ic_sensitivity"]` flag to gate
+  on instead of a version string (a build without the reader cannot say what the
+  seed carries, and every answer a consumer could guess is silently wrong, so
+  refusing a gradient fit is the honest behaviour); the contract written into the
+  `output_sensitivities` docstring, `docs/reference/api.md` and the PyBNF
+  integration guide; and a note that `SteadyStateResult` raises no such question
+  (its `parameter` axis is the implicit-function derivative `J·∂x*/∂p = −∂f/∂p`,
+  with no seeding term, and `axis="ic"` raises).
+
 ### Fixed
 - **Forward sensitivity refused two state-switch crossings at one instant, but
   on the corpus they are always one crossing written twice (issue #153).** Issue
