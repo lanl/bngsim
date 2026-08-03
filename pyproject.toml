@@ -149,8 +149,13 @@ parity = [
 # on Linux the build pulls scipy-openblas64 itself. The clone also touches
 # git-lfs, so a machine with `filter.lfs.*` configured must actually have the
 # git-lfs binary present or the checkout aborts.
+# The marker is load-bearing, not decoration. bngsim supports Python >=3.10 and
+# AMICI requires >=3.11, so an unmarked entry makes the *whole project* lock
+# unsatisfiable — `uv lock` fails outright, not just `--group amici`. The
+# alternative, raising bngsim's own requires-python, would drop 3.10 for every
+# user to buy a developer convenience. On 3.10 the group simply resolves empty.
 amici = [
-    "amici @ git+https://github.com/AMICI-dev/AMICI.git@667b17b6bfc16a28f95fc5ef9564c3e2c4db2126#subdirectory=python/sdist",
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@667b17b6bfc16a28f95fc5ef9564c3e2c4db2126#subdirectory=python/sdist ; python_version >= '3.11'",
 ]
 
 [tool.uv]
