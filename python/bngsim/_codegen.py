@@ -6405,6 +6405,22 @@ def _exprtk_call_heads() -> frozenset[str]:
 _MATH_CONSTANT_C = {"_pi": "M_PI", "_e": "M_E"}
 
 
+def _carry_reason_class(inner: str | None, wrapped: str) -> str:
+    """Re-tag ``wrapped`` with ``inner``'s reason class, if it has one.
+
+    A decline reason is a plain ``str`` almost everywhere; the one exception,
+    :class:`~bngsim._switch_sensitivity.UncompensatedCrossingReason`, is what
+    tells :func:`_warn_functional_sens_rhs_refused` that CVODES' difference
+    quotient is not a correct fallback either. Every site that adds context to a
+    reason has to route through here or it silently downgrades the warning.
+    """
+    from bngsim._switch_sensitivity import UncompensatedCrossingReason
+
+    if isinstance(inner, UncompensatedCrossingReason):
+        return UncompensatedCrossingReason(wrapped)
+    return wrapped
+
+
 def _warn_functional_sens_rhs_refused(reason: str) -> None:
     """Report that the analytic sensitivity RHS was declined over a Functional
     reaction (GH #66, following the #56 precedent).
@@ -6415,7 +6431,34 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     alternative this avoids is emitting ``∂func/∂p = 0`` for that reaction, which
     reads downstream as a converged gradient of exactly zero. Every decline routes
     through here, so none of them can be the quiet one.
+
+    **The fallback is not always correct, and the message must not say it is.**
+    For an underivable rate law or an exhausted derivation budget it is: the
+    problem is smooth and the difference quotient answers the same question more
+    slowly. For an
+    :class:`~bngsim._switch_sensitivity.UncompensatedCrossingReason` it is not —
+    the thing being reported is a branch crossing nobody compensates, and the
+    difference quotient integrates the variational equation straight through it,
+    dropping the very jump the analytic path was declined for. On AMICI's
+    ``nested_events`` that is the saltation factor ``f⁺/f⁻``, and every parameter
+    column comes back a factor of two low after the crossing (issue #146). Until
+    issue #150 supplies the jump, this warning is the only thing standing between
+    that and a number a caller would take at face value.
     """
+    from bngsim._switch_sensitivity import UncompensatedCrossingReason
+
+    if isinstance(reason, UncompensatedCrossingReason):
+        logger.warning(
+            "Forward sensitivity: %s. The analytic sensitivity RHS is declined for this "
+            "model, and CVODES' internal difference quotient — which is used instead — "
+            "does NOT recover the missing term: it integrates the variational equation "
+            "smoothly through a crossing whose time moves, so wherever that condition "
+            "actually crosses during the run, EVERY sensitivity column is wrong there "
+            "and after it by the crossing's jump. Validate against a finite difference "
+            "of the trajectory before relying on these columns. Tracked in issue #150.",
+            reason,
+        )
+        return
     logger.warning(
         "Forward sensitivity: %s, so the analytic sensitivity RHS is declined for "
         "this model and CVODES' internal difference quotient is used instead "
@@ -6519,9 +6562,12 @@ def _functional_rate_law_partials(
     if scope.switch_scope is not None:
         from bngsim._switch_sensitivity import uncompensated_condition_reason
 
-        why = uncompensated_condition_reason(inlined, scope.switch_scope)
-        if why is not None:
-            return None, why
+        # Its own name, not the `why` the derived-parameter loop below reuses:
+        # this one is an UncompensatedCrossingReason, which is what carries "the
+        # difference-quotient fallback is wrong too" to the warning (#146).
+        crossing_why = uncompensated_condition_reason(inlined, scope.switch_scope)
+        if crossing_why is not None:
+            return None, crossing_why
 
     # Strip the two zero-argument forms ``_preprocess_exprtk`` accepts
     # (``time()``/``t()`` and an observable written as a call, #28) before looking
@@ -6779,10 +6825,15 @@ def _functional_dfdp_terms(
             cache[rate_expr] = hit
         terms, why = hit
         if terms is None:
-            return _decline(
+            wrapped = (
                 f"the Functional rate law for {label} ({rate_expr!r}) could not be "
                 f"differentiated — {why or 'unknown reason'}"
             )
+            # Adding the reaction's name must not lose *which kind* of reason this
+            # is: an f-string over an UncompensatedCrossingReason is a plain str,
+            # and the warning would then promise a correct difference-quotient
+            # fallback for the one class where the fallback is wrong too (#146).
+            return _decline(_carry_reason_class(why, wrapped))
         out[rxn_idx] = terms
     return out, None
 

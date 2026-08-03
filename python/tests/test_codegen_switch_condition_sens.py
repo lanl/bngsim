@@ -590,3 +590,53 @@ class TestEndToEnd:
         model = _model(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
         run = _run_sens(model, ["beta", "gamma"], t_end=12.0)
         assert np.asarray(run.sensitivities).shape[2] == 2
+
+
+class TestTheDeclineDoesNotPromiseACorrectFallback:
+    """Issue #146. Running on the difference quotient is a *correct* fallback for
+    an underivable rate law — the problem is smooth, CVODES just answers it more
+    slowly. It is not correct for an uncompensated crossing: the difference
+    quotient integrates the variational equation straight through the crossing
+    and drops the same jump the analytic path was declined for. On AMICI's
+    ``nested_events`` every column comes back a factor of ``f⁺/f⁻ = 2`` low after
+    the ``Virus < 1`` crossing. The message used to promise correctness in both
+    cases; issue #150 is the fix, and until then this is the only warning."""
+
+    def test_an_uncompensated_crossing_is_tagged_as_such(self, tmp_path):
+        from bngsim._switch_sensitivity import UncompensatedCrossingReason
+
+        _terms, reason = _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        assert isinstance(reason, UncompensatedCrossingReason)
+
+    def test_the_tag_survives_the_reaction_context_wrapper(self, tmp_path):
+        """The reason is re-wrapped with the reaction's name before it reaches
+        the warning. An f-string over a ``str`` subclass is a plain ``str``, so
+        that wrap is exactly where the distinction goes missing."""
+        _terms, reason = _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        assert "the Functional rate law for reaction" in reason
+
+    def test_the_warning_says_the_fallback_does_not_recover_it(self, tmp_path, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _decline(tmp_path, _with_law("if(I>=thresh,beta,0)*I"))
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("does NOT recover the missing term" in m for m in msgs)
+        assert any("issue #150" in m for m in msgs)
+        assert not any("correct, but slower" in m for m in msgs)
+
+    def test_an_underivable_law_keeps_the_correct_fallback_wording(self, tmp_path, caplog):
+        """The control. A rate law that simply cannot be differentiated (#56/#66)
+        really does fall back to a correct difference quotient, and must keep
+        saying so — otherwise this change just moves the dishonesty."""
+        import logging
+
+        from bngsim._switch_sensitivity import UncompensatedCrossingReason
+
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _terms, reason = _decline(tmp_path, _with_law("erf(I)*beta*I"))
+        assert reason is not None
+        assert not isinstance(reason, UncompensatedCrossingReason)
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("correct, but slower" in m for m in msgs)
+        assert not any("does NOT recover" in m for m in msgs)

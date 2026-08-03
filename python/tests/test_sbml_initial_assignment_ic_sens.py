@@ -110,6 +110,97 @@ class TestCompoundInitialAssignment:
         )
 
 
+# Issue #146: the same initialAssignment, on a symbol that is an SBML
+# ``<parameter constant="false">`` rather than a ``<species>``. Antimony's
+# pure-ODE spelling (``Virus' = ...``) emits exactly this, and it is what AMICI's
+# ``nested_events`` fixture is written in. §8 of the loader promotes such a
+# parameter to a species, so it IS an integrator state with an IC — but the
+# initialAssignment scan keyed on the SBML species list, so the link was never
+# registered and the whole ``X0`` column read zero against AMICI's 1.
+SBML_IA_PROMOTED_PARAM = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ia_promoted">
+    <listOfParameters>
+      <parameter id="X0" value="0.1" constant="true"/>
+      <parameter id="k" value="0.5" constant="true"/>
+      <parameter id="X" constant="false"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="X">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><ci>X0</ci></math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfRules>
+      <rateRule variable="X">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><minus/><apply><times/><ci>k</ci><ci>X</ci></apply></apply>
+        </math>
+      </rateRule>
+    </listOfRules>
+  </model>
+</sbml>"""
+
+
+class TestRateRulePromotedParameter:
+    """``X`` is a parameter with a rate rule, so this loader makes it a species.
+    Its ``<initialAssignment>`` defines an initial condition exactly as a
+    species' does and earns the same seed (issue #146)."""
+
+    def test_the_ic_link_is_registered(self):
+        m = bngsim.Model.from_sbml_string(SBML_IA_PROMOTED_PARAM)
+        core = m._core
+        names, params = list(core.species_names), list(core.param_names)
+        assert [(names[s], params[p]) for s, p in core.species_ic_param_refs] == [("X", "X0")]
+
+    def test_x0_column_is_the_closed_form(self):
+        """X(t) = X0·e^{-kt}, so ∂X/∂X0 = e^{-kt} — the seed is the whole story."""
+        _m, t, s = _run(SBML_IA_PROMOTED_PARAM, ["X0"])
+        np.testing.assert_allclose(s[:, 0, 0], np.exp(-0.5 * t), rtol=1e-7, atol=1e-9)
+
+    def test_the_defect_was_a_silent_zero(self):
+        """Pin the failure mode: with no seed the column is identically zero,
+        because ``X0`` reaches the trajectory only through the IC. AMICI returns
+        1.0 for its peak on ``nested_events``; bngsim returned exactly 0.0."""
+        _m, _t, s = _run(SBML_IA_PROMOTED_PARAM, ["X0"])
+        assert np.max(np.abs(s[:, 0, 0])) == pytest.approx(1.0, rel=1e-6)
+
+    def test_k_column_is_unaffected(self):
+        _m, t, s = _run(SBML_IA_PROMOTED_PARAM, ["k"])
+        np.testing.assert_allclose(s[:, 0, 0], -t * 0.1 * np.exp(-0.5 * t), rtol=1e-6, atol=1e-9)
+
+    def test_set_param_re_resolves_the_initial_condition(self):
+        """Worse than the missing seed, and fixed by the same registration:
+        without the link ``set_param`` could not move ``X(0)`` either, so a plain
+        parameter scan over ``X0`` ran the identical trajectory every point."""
+        moved = bngsim.Model.from_sbml_string(SBML_IA_PROMOTED_PARAM)
+        moved.set_param("X0", 0.4)
+        fresh = bngsim.Model.from_sbml_string(
+            SBML_IA_PROMOTED_PARAM.replace('id="X0" value="0.1"', 'id="X0" value="0.4"')
+        )
+        assert moved._core.get_concentration("X") == pytest.approx(0.4)
+        assert moved._core.get_concentration("X") == pytest.approx(
+            fresh._core.get_concentration("X")
+        )
+
+    def test_compound_ic_lowers_on_the_promoted_symbol_too(self):
+        """The synthetic-derived-parameter branch reaches the promotion site as
+        well, so ``X(0) = a*X0`` seeds both factors."""
+        sbml = SBML_IA_PROMOTED_PARAM.replace(
+            '<parameter id="X0" value="0.1" constant="true"/>',
+            '<parameter id="X0" value="0.1" constant="true"/>\n'
+            '      <parameter id="a" value="3" constant="true"/>',
+        ).replace(
+            '<math xmlns="http://www.w3.org/1998/Math/MathML"><ci>X0</ci></math>',
+            '<math xmlns="http://www.w3.org/1998/Math/MathML">'
+            "<apply><times/><ci>a</ci><ci>X0</ci></apply></math>",
+        )
+        m = bngsim.Model.from_sbml_string(sbml)
+        assert m._core.get_concentration("X") == pytest.approx(0.3)
+        _m, t, s = _run(sbml, ["a", "X0"])
+        np.testing.assert_allclose(s[:, 0, 0], 0.1 * np.exp(-0.5 * t), rtol=1e-7, atol=1e-9)
+        np.testing.assert_allclose(s[:, 0, 1], 3.0 * np.exp(-0.5 * t), rtol=1e-7, atol=1e-9)
+
+
 class TestNotLowered:
     """What must NOT be lowered. A wrong initial condition is far worse than a
     missing sensitivity seed, so the predicate is deliberately strict."""

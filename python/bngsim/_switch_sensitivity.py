@@ -462,7 +462,29 @@ _NOT_OP = re.compile(r"(?<![=!<>])!(?!=)")
 _NOT_CALL = re.compile(r"(?<![A-Za-z0-9_])not\s*\(")
 
 
-def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> str | None:
+class UncompensatedCrossingReason(str):
+    """A decline reason for which the difference-quotient fallback is ALSO wrong.
+
+    Every other reason the analytic sensitivity RHS is declined for — an
+    underivable rate law (#56/#66), a derivation budget (#90) — leaves CVODES'
+    internal difference quotient a correct, slower answer to the same smooth
+    problem. A reason from :func:`uncompensated_condition_reason` does not: what
+    it reports is a *crossing* nobody compensates, and the difference quotient
+    integrates the variational equation straight through it, missing exactly the
+    jump the analytic path was declined for (issue #146, tracked as issue #150).
+
+    A ``str`` subclass rather than a second return value because the reason is
+    cached, stored in dicts and formatted at half a dozen sites between here and
+    the warning; carrying the distinction on the value itself means none of them
+    has to be taught to thread it, and none of them can drop it.
+    """
+
+    __slots__ = ()
+
+
+def uncompensated_condition_reason(
+    expr: str, scope: SwitchConditionScope
+) -> UncompensatedCrossingReason | None:
     """Why *expr*'s conditions block the analytic sensitivity RHS, or ``None``
     when every one of them is a discontinuity issue #48 already compensates
     (issue #68).
@@ -502,7 +524,7 @@ def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> st
     for pat in (_RELATIONAL, _LOGICAL, _NOT_OP):
         for m in pat.finditer(expr):
             if not any(lo <= m.start() and m.end() <= hi for lo, hi in spans):
-                return (
+                return UncompensatedCrossingReason(
                     f"the comparison {m.group(0)!r} in {expr!r} is not inside an if() "
                     "condition, so there is no threshold to locate its crossing at and "
                     "nothing can compensate the jump"
@@ -541,7 +563,7 @@ def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> st
                 # the threshold is not a constant at this parameter point), so
                 # its ∂t*/∂p never reaches the solver and the Piecewise zero
                 # would be the whole answer.
-                return (
+                return UncompensatedCrossingReason(
                     f"the clock threshold {threshold_expr!r} in the condition {atom!r} does "
                     "not reduce to a constant expression over the model's primary "
                     "parameters, so the issue #48 detector would skip its crossing and the "
@@ -550,7 +572,9 @@ def uncompensated_condition_reason(expr: str, scope: SwitchConditionScope) -> st
     return None
 
 
-def _not_a_clock_threshold(atom: str, atom_flat: str, scope: SwitchConditionScope) -> str:
+def _not_a_clock_threshold(
+    atom: str, atom_flat: str, scope: SwitchConditionScope
+) -> UncompensatedCrossingReason:
     """The decline message for a condition atom that is not a clock threshold.
 
     Names the parameters it carries when it has any — a *fitted* threshold is
@@ -560,7 +584,7 @@ def _not_a_clock_threshold(atom: str, atom_flat: str, scope: SwitchConditionScop
     named = sorted(n for n in scope.param_names if scope.param_pats[n].search(atom_flat))
     if named:
         many = len(named) > 1
-        return (
+        return UncompensatedCrossingReason(
             f"the parameter{'s' if many else ''} "
             + ", ".join(repr(n) for n in named)
             + f" appear{'' if many else 's'} in the condition {atom!r}, which is not a "
@@ -568,7 +592,7 @@ def _not_a_clock_threshold(atom: str, atom_flat: str, scope: SwitchConditionScop
             "branch crossing and the issue #48 switch-time jump — which only covers a "
             "threshold on simulation time or a unit-rate counter — cannot compensate it"
         )
-    return (
+    return UncompensatedCrossingReason(
         f"the condition {atom!r} is not a recognized clock threshold (it reads model state), "
         "so its crossing time moves with the trajectory and therefore with every parameter, "
         "and the issue #48 switch-time jump cannot compensate it — the rate-law twin of the "

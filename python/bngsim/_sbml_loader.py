@@ -100,6 +100,36 @@ def _safe_name(name: str) -> str:
     return name
 
 
+def _register_ic_param_ref(
+    builder,
+    species_idx0: int,
+    sym: str,
+    ia_single_param_ref: dict[str, str],
+    ia_expr_param: dict[str, str],
+) -> None:
+    """Link a state's initial condition to the parameter(s) that define it.
+
+    Called wherever this loader adds an integrator state whose IC came from an
+    ``<initialAssignment>`` over parameters: §3 for an SBML ``<species>``, and
+    §8/§10 for a parameter or compartment promoted to a species by a rate rule
+    or an event assignment. One function for all three because they must not
+    drift — a state that gets the IC seed at one site and not another is a
+    silently-zero sensitivity column at the other (issue #146).
+
+    A bare ``<ci>`` links straight to the named parameter and is seeded with
+    coefficient 1 by the legacy identity path; a compound expression links to
+    the synthetic derived parameter §3 lowered it to, which reaches issue #43's
+    sympy chain rule to primaries. ``add_species_param_ref`` resolves by
+    parameter *name* at build time and silently drops a name that is not a
+    builder parameter, so a reference to a symbol this loader turned into a
+    species registers nothing rather than mis-seeding.
+    """
+    if sym in ia_single_param_ref:
+        builder.add_species_param_ref(species_idx0, _safe_name(ia_single_param_ref[sym]))
+    elif sym in ia_expr_param:
+        builder.add_species_param_ref(species_idx0, ia_expr_param[sym])
+
+
 # ── MathML AST → ExprTk string ───────────────────────────────────────────
 
 
@@ -3404,12 +3434,26 @@ def _build_model_from_sbml_doc(doc):
     _species_ids_set = {
         sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())
     }
+    # An SBML *species* is not the only thing that becomes an integrator state
+    # here (issue #146). A parameter or compartment carrying a rate rule, or
+    # written by an event assignment, is promoted to a species by §8/§10 — which
+    # is how Antimony's pure-ODE spelling (``Virus' = ...`` emitted as
+    # ``<parameter constant="false">``) arrives. Its initialAssignment defines an
+    # initial condition exactly as a species' does, so it earns the same seed;
+    # keying this scan on the SBML species list alone dropped ∂x(0)/∂p for every
+    # one of them. AMICI's `nested_events` is the case that proves it: the whole
+    # ``V_0`` column read 0 against AMICI's 1, and — worse than a missing seed —
+    # ``set_param("V_0", …)`` did not move ``Virus(0)`` on a plain trajectory
+    # either, because the IC link that re-resolves it (model.cpp set_param, #79)
+    # is the same registration.
+    _promoted_state_ids = (rate_rule_targets | event_promoted_params) - _species_ids_set
+    _ic_seed_symbols = _species_ids_set | _promoted_state_ids
     ia_single_param_ref: dict[str, str] = {}
     ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
     for j in range(sbml_model.getNumInitialAssignments()):
         ia = sbml_model.getInitialAssignment(j)
         sym = ia.getSymbol()
-        if sym not in _species_ids_set:
+        if sym not in _ic_seed_symbols:
             continue
         math = ia.getMath()
         if math is None:
@@ -3567,10 +3611,7 @@ def _build_model_from_sbml_doc(doc):
         # register the link so CVODES forward sensitivity seeds yS for them —
         # directly for a bare <ci>, or through the synthetic derived parameter
         # that carries a compound expression to issue #43's chain rule.
-        if sid in ia_single_param_ref:
-            builder.add_species_param_ref(idx, _safe_name(ia_single_param_ref[sid]))
-        elif sid in ia_expr_param:
-            builder.add_species_param_ref(idx, ia_expr_param[sid])
+        _register_ic_param_ref(builder, idx, sid, ia_single_param_ref, ia_expr_param)
 
     # ── 3b. Model / species conversionFactor (GH #232) ────────────────
     # SBML's conversionFactor scales how a species' AMOUNT changes per unit
@@ -4233,6 +4274,7 @@ def _build_model_from_sbml_doc(doc):
                 species_idx[var] = sp_i
                 species_ids.append(var)
                 builder.add_observable(_safe_name(var), [(sp_i, 1.0)])
+                _register_ic_param_ref(builder, sp_i, var, ia_single_param_ref, ia_expr_param)
 
             expr = "0" if math is None else _ast_to_exprtk_with_funcdefs(math, func_defs)
             fname = f"_rhs_{_safe_name(var)}"
@@ -5386,6 +5428,7 @@ def _build_model_from_sbml_doc(doc):
                     species_idx[var] = sp_i
                     species_ids.append(var)
                     builder.add_observable(_safe_name(var), [(sp_i, 1.0)])
+                    _register_ic_param_ref(builder, sp_i, var, ia_single_param_ref, ia_expr_param)
                     assignments.append((sp_i, value_expr))
 
             if assignment_value_expr_by_var and ar_comp_targets:

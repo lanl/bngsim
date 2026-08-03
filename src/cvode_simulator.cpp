@@ -1046,6 +1046,15 @@ struct CvodeSimulator::Impl {
     std::vector<std::vector<double>> capture_event_sens(void *cvode_mem, int ns, double t_evt,
                                                         SensitivityState &sens);
 
+    // Put an unjumped s back into CVODES after a bare CVodeReInit (issue #146).
+    // The counterpart of capture_event_sens for a root that changes nothing:
+    // the columns are continuous across it, but CVodeReInit rewinds only the
+    // state stepper, so the sensitivity solver must still be restarted at the
+    // same instant or it resumes from the interrupted step's end.
+    void resume_sens_after_reinit(void *cvode_mem, int ns,
+                                  const std::vector<std::vector<double>> &s_at_reinit,
+                                  SensitivityState &sens);
+
     // Jump dx/dθ across an event's assignments and resume CVODES from it.
     // `at_run_start` marks the SBML L3 §3.4.5 t=0 fire, where the trigger was
     // already satisfied when the run began: the fire is pinned to t_start
@@ -2459,6 +2468,26 @@ std::vector<std::vector<double>> CvodeSimulator::Impl::capture_event_sens(void *
         s_minus[c].assign(col, col + ns);
     }
     return s_minus;
+}
+
+void CvodeSimulator::Impl::resume_sens_after_reinit(
+    void *cvode_mem, int ns, const std::vector<std::vector<double>> &s_at_reinit,
+    SensitivityState &sens) {
+    const int n_sens = sens.n_total;
+    if (n_sens == 0 || s_at_reinit.empty()) {
+        return;
+    }
+    NVectorArrayGuard &yS_guard = sens.yS;
+    for (int c = 0; c < n_sens; ++c) {
+        double *col = N_VGetArrayPointer(yS_guard[c]);
+        std::copy(s_at_reinit[static_cast<size_t>(c)].begin(),
+                  s_at_reinit[static_cast<size_t>(c)].begin() + ns, col);
+    }
+    int rf = CVodeSensReInit(cvode_mem, sens.method, yS_guard.arr);
+    if (rf != CV_SUCCESS) {
+        throw std::runtime_error("CVodeSensReInit after a no-op root reinit failed: " +
+                                 std::to_string(rf));
+    }
 }
 
 // ─── ∂t*/∂θ for a state-dependent trigger (issue #144) ───────────────────────
@@ -4082,6 +4111,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 std::vector<std::vector<double>> evt_s_minus;
                 if (!firing.empty()) {
                     chatter_y_before.assign(y_data, y_data + ns);
+                }
+                // s(t_ret) must be read BEFORE the CVodeReInit below whether or
+                // not anything fires: ReInit rewinds the state stepper to t_ret
+                // but leaves the CVODES sensitivity history at the end of the
+                // internal step the root interrupted, and nothing downstream can
+                // recover it (issue #146). A root that fires an event feeds this
+                // into the GH #212 jump; a root that fires nothing — a GH #72
+                // discontinuity root, or an event trigger that crossed without
+                // rising — still needs it, to re-seed CVODES with the
+                // sensitivities that belong to t_ret.
+                if (sens.n_total > 0) {
                     evt_s_minus =
                         impl_->capture_event_sens(cvode_mem, ns, static_cast<double>(t_ret), sens);
                 }
@@ -4170,6 +4210,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     impl_->apply_event_sensitivity_jump(opts, cvode_mem, ns,
                                                         static_cast<double>(t_ret), firing,
                                                         chatter_y_before, evt_s_minus, sens);
+                } else if (!evt_s_minus.empty()) {
+                    // Nothing fired, so no column jumps — but the CVodeReInit
+                    // above still rewound the state stepper to t_ret while
+                    // leaving CVODES' sensitivity history at the end of the
+                    // interrupted step, so resuming would restart dx/dθ from
+                    // s(t_n) against x(t_ret). Re-seed with s(t_ret), captured
+                    // before the ReInit (issue #146). Without this every GH #72
+                    // discontinuity root injects an s'·(t_n − t_ret) step into
+                    // every column: on AMICI's `events` fixture, whose two
+                    // assignment-free triggers are roots and nothing else, that
+                    // is a 5% error against the model's own finite difference.
+                    impl_->resume_sens_after_reinit(cvode_mem, ns, evt_s_minus, sens);
                 }
                 // Inner-while-loop will continue to t_out[i] (or to the next
                 // pending apply_time if one is closer) on its next pass.
@@ -4296,6 +4348,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
                 if (delayed_applied) {
                     // Reinit CVODE after delayed event(s) modified state.
+                    // The only re-init on this path with no sensitivity
+                    // counterpart, and deliberately so (issue #146): a model
+                    // with an effective execution delay is refused upstream by
+                    // NetworkModel::event_sensitivity_unsupported_reason, so
+                    // sensitivities are never live here. Whoever lifts that
+                    // refusal owns the jump AND the CVodeSensReInit — the state
+                    // has jumped by then, so re-seeding s unchanged (what
+                    // resume_sens_after_reinit does) would be wrong here.
                     int reinit_flag = CVodeReInit(cvode_mem, t_ret, y);
                     if (reinit_flag != CV_SUCCESS) {
                         throw std::runtime_error("CVodeReInit after delayed event failed: " +
@@ -4340,11 +4400,19 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
             }
             if (rearmed) {
+                // Same ordering as every other re-init on this path (issue
+                // #146): read s(t_now) first, because CVodeReInit rewinds the
+                // state stepper and leaves the sensitivity history where the
+                // last internal step left it. Nothing jumps here — re-arming an
+                // event changes no state — so the columns go back unchanged.
+                std::vector<std::vector<double>> rearm_s =
+                    impl_->capture_event_sens(cvode_mem, ns, static_cast<double>(t_now), sens);
                 int rf = CVodeReInit(cvode_mem, t_now, y);
                 if (rf != CV_SUCCESS) {
                     throw std::runtime_error("CVodeReInit after chatter re-arm failed: " +
                                              std::to_string(rf));
                 }
+                impl_->resume_sens_after_reinit(cvode_mem, ns, rearm_s, sens);
             }
         }
 
