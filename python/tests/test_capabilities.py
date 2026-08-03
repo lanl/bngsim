@@ -30,6 +30,7 @@ EXPECTED_FEATURE_KEYS = frozenset(
         "antimony_import",
         "codegen",
         "output_sensitivities",
+        "effective_ic_sensitivity",
     }
 )
 

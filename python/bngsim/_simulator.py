@@ -1122,7 +1122,9 @@ class Simulator:
             )
             opts.set_event_time_sens(res.records)
 
-    def _apply_ic_param_sens_seed(self, opts, model: Model) -> None:
+    def _apply_ic_param_sens_seed(
+        self, opts, model: Model, param_names: Sequence[str] | None = None
+    ) -> dict[str, dict[str, float]]:
         """Inject ∂x_i(0)/∂p initial-condition sensitivity seeds (issue #43).
 
         When a species initial condition is a parameter reference — directly
@@ -1134,94 +1136,31 @@ class Simulator:
         common model with no parameter-referenced species ICs, and for IC-only
         sensitivity (no ``sensitivity_params``), where param columns don't exist.
 
-        Two things retire a row the parameter graph would otherwise supply:
+        This is the plumbing only. The derivation — including the issue #113
+        retirement of a species moved off its declared initial condition and the
+        issue #111 :meth:`Model.declare_ic_sensitivity` overlay — lives in
+        :meth:`Model._ic_sensitivity_triples`, which is also what
+        :meth:`Model.effective_ic_sensitivity` reports from, so the matrix a
+        caller reads cannot drift from the one the solver was seeded with.
 
-        * the caller declared it with :meth:`Model.declare_ic_sensitivity`
-          (issue #111) — an initial condition assigned by hand is no longer
-          described by the ``.net`` expression, so only the caller knows what it
-          depends on;
-        * the species is no longer *at* the initial condition that expression
-          describes (issue #113). ``∂(IC)/∂p`` is the derivative of
-          ``species[].initial_conc``; once an assignment has moved the live
-          concentration off that baseline, the parameter cannot reach this
-          species' initial condition at all, and seeding the row would report a
-          gradient through an initial condition the model no longer has.
+        ``param_names`` is the sensitivity-parameter column order this run will
+        use — the chunked path differentiates a subset per chunk, so it cannot be
+        assumed to be ``self._sensitivity_params``. It selects which rows are
+        *reported*; the C++ seeding applies the same filter itself.
+
+        Returns that effective matrix for :attr:`Result.ic_sensitivity_seed` to
+        carry alongside the run (issue #155).
         """
-        if not self._sensitivity_params:
-            return
-        from bngsim._codegen import compute_ic_param_sens_seed
-
-        seeds = compute_ic_param_sens_seed(model._core)
-        declared = model._declared_ic_sens
-        retired = self._superseded_ic_rows(model, seeds, declared) if seeds else set()
-        if retired:
-            seeds = [entry for entry in seeds if entry[0] not in retired]
-        if declared:
-            seeds = self._overlay_declared_ic_sens(seeds, model, declared)
-        if (retired or declared) and not seeds:
-            # An empty list means "no Python injection" to the C++ seeding, which
-            # then falls back to its legacy species_ic_param_refs identity loop —
-            # the very rows just retired. A sentinel row keeps the list non-empty
-            # and seeds nothing: the consumer skips any entry with
-            # species_idx0 < 0. (That loop applies the #113 rule too, but a
-            # declaration is invisible to it, so do not rely on it here.)
-            seeds = [(-1, 0, 0.0)]
-        if seeds:
-            opts.set_ic_param_sens(seeds)
-
-    @staticmethod
-    def _superseded_ic_rows(
-        model: Model,
-        seeds: list[tuple[int, int, float]],
-        declared: dict[str, dict[str, float]],
-    ) -> set[int]:
-        """Species whose ``.net`` IC expression no longer describes their state.
-
-        ``reset()`` returns the live concentrations to ``initial_conc``, so the two
-        differ exactly when an assignment (``set_concentration`` / ``set_state`` /
-        an external injection) has superseded the declared initial condition. Those
-        species' parameter-graph seeds are dropped (issue #113); a species the
-        caller declared is left to :meth:`_overlay_declared_ic_sens`, which is the
-        more specific statement.
-
-        A caller that re-asserts a species' *own* IC value keeps its row: the
-        assignment and the expression then agree numerically, and which of the two
-        was meant is genuinely ambiguous — ``declare_ic_sensitivity`` says so
-        either way.
-        """
-        rows = {entry[0] for entry in seeds}
-        if not rows:
-            return set()
-        live = np.asarray(model.get_state(), dtype=np.float64)
-        baseline = np.asarray(model._core.get_initial_state(), dtype=np.float64)
-        moved = set(int(i) for i in np.nonzero(live != baseline)[0])
-        if not moved:
-            return set()
-        species = model.species_names
-        spoken_for = {i for i, name in enumerate(species) if name in declared}
-        return (rows & moved) - spoken_for
-
-    @staticmethod
-    def _overlay_declared_ic_sens(
-        seeds: list[tuple[int, int, float]],
-        model: Model,
-        declared: dict[str, dict[str, float]],
-    ) -> list[tuple[int, int, float]]:
-        """Replace the ∂x_k(0)/∂p rows of species the caller declared (issue #111)."""
-        param_idx = {name: i for i, name in enumerate(model.param_names)}
-        species_idx = {name: i for i, name in enumerate(model.species_names)}
-        replaced = {species_idx[sp] for sp in declared if sp in species_idx}
-        out = [entry for entry in seeds if entry[0] not in replaced]
-        for sp, row in declared.items():
-            i = species_idx.get(sp)
-            if i is None:
-                continue
-            for p, d in row.items():
-                # A zero contributes nothing to the seed; dropping it keeps the
-                # list the same length as the entries that actually seed.
-                if d != 0.0 and p in param_idx:
-                    out.append((i, param_idx[p], float(d)))
-        return out
+        names = list(param_names) if param_names is not None else list(self._sensitivity_params)
+        if not names:
+            return {}
+        triples, injected = model._ic_sensitivity_triples()
+        if injected:
+            # A zero coefficient seeds nothing, so it is dropped from the list the
+            # core receives; the *report* keeps it, because "seeded, zero here" and
+            # "no seeding path" are different answers to a consumer (issue #155).
+            opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
+        return model.effective_ic_sensitivity(names)
 
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
@@ -1550,13 +1489,21 @@ class Simulator:
             self._expr_sens_support_memo = memo
         return memo
 
-    def _stamp(self, result: Result, *, seed: int | None = None) -> Result:
-        """Attach per-species V_c and stochastic seed to *result*."""
+    def _stamp(
+        self,
+        result: Result,
+        *,
+        seed: int | None = None,
+        ic_seed: dict[str, dict[str, float]] | None = None,
+    ) -> Result:
+        """Attach per-species V_c, stochastic seed and ∂x(0)/∂θ to *result*."""
         vf = self._get_volume_factors()
         if vf:
             result._species_volume_factors = vf
         if seed is not None:
             result._seed = seed
+        if ic_seed is not None:
+            result._ic_sensitivity_seed = ic_seed
         self._apply_ar_report_map(result)
         self._apply_varvol_conc_map(result)
         self._apply_varvol_ar_conc_map(result)
@@ -2213,6 +2160,10 @@ class Simulator:
             )
 
         core_result = None
+        # The ∂x(0)/∂θ rows this run seeds, captured where they are built and
+        # stamped onto the Result (issue #155). None ⇒ no parameter-sensitivity
+        # request, so there is no `parameter` axis to describe.
+        ic_seed: dict[str, dict[str, float]] | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import SolverOptions
@@ -2246,7 +2197,16 @@ class Simulator:
                 # Pass the requested sensitivity parameter / IC species lists to CVODES.
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
-                    self._apply_ic_param_sens_seed(opts, self._model)
+                    ic_seed = self._apply_ic_param_sens_seed(opts, self._model)
+                    if carry_sensitivities:
+                        # GH #210/#81: this run seeds from the PRIOR phase's
+                        # dx/dθ and the engine discards the IC-parameter rows
+                        # entirely — the carried state is not at the model's
+                        # initial conditions. Reporting the rows just computed
+                        # would describe a seed that was never used. There is no
+                        # double-count to guard against here either: an `ic`
+                        # axis across a carry boundary is refused outright.
+                        ic_seed = None
                     self._apply_switch_time_sens(opts, self._model._core, t_start, t_end)
                     self._apply_event_time_sens(opts, self._model._core, t_start, t_end)
                 if self._sensitivity_ic:
@@ -2304,7 +2264,11 @@ class Simulator:
         # stochastic method) or drives ODE equal-priority event tie-breaking
         # (GH #242). An event-free ODE run stays seed-less (Result.seed is None),
         # preserving the "ODE is deterministic" contract (test_ode_seed_is_none).
-        result = self._stamp(Result(core_result), seed=used_seed if seed_is_meaningful else None)
+        result = self._stamp(
+            Result(core_result),
+            seed=used_seed if seed_is_meaningful else None,
+            ic_seed=ic_seed,
+        )
 
         # GH #198 — attach the expression output-sensitivity support map so a
         # selector for an unsupported global function raises the specific reason
@@ -3490,6 +3454,9 @@ class Simulator:
         times.t_end = t_span[1]
         times.n_points = n_points
 
+        # This row's ∂x(0)/∂θ rows (issue #155); None for an IC-only request,
+        # which has no `parameter` axis to describe.
+        row_ic_seed: dict[str, dict[str, float]] | None = None
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import (
@@ -3524,7 +3491,8 @@ class Simulator:
                     # Seed ∂x_i(0)/∂p from the CLONE's params (this row's point):
                     # a nonlinear derived IC (e.g. Rtot = R0*scale) has a
                     # param-dependent coefficient, so it must track set_params.
-                    self._apply_ic_param_sens_seed(opts, clone)
+                    # That is also why each row's Result carries its OWN matrix.
+                    row_ic_seed = self._apply_ic_param_sens_seed(opts, clone)
                     # Likewise the switch times: this row's t0/sigma set where the
                     # crossings are, so they must be detected on the clone.
                     self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1])
@@ -3563,6 +3531,7 @@ class Simulator:
         # raises its specific reason on each row's Result, exactly as run() does.
         if self._method == "ode" and (self._sensitivity_params or self._sensitivity_ic):
             result._expression_sens_support = self._expression_sens_support()
+            result._ic_sensitivity_seed = row_ic_seed
         return result
 
     # ─── Parallel sensitivity ───────────────────────────────────────
@@ -3851,7 +3820,9 @@ class Simulator:
         if self._codegen_c_source:
             opts.codegen_c_source = self._codegen_c_source
         opts.set_sensitivity_params(sens_params)
-        self._apply_ic_param_sens_seed(opts, clone)
+        # Report this chunk's OWN subset of ∂x(0)/∂θ; the stitch takes the union
+        # over chunks, which is the full requested set (issue #155).
+        chunk_ic_seed = self._apply_ic_param_sens_seed(opts, clone, sens_params)
         # This chunk differentiates only `sens_params`, so the ∂t*/∂p columns
         # must be built against that subset rather than the full request.
         self._apply_switch_time_sens(opts, clone._core, t_span[0], t_span[1], sens_params)
@@ -3864,7 +3835,7 @@ class Simulator:
         except RuntimeError as e:
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
 
-        return self._stamp(Result(core_result))
+        return self._stamp(Result(core_result), ic_seed=chunk_ic_seed)
 
     @staticmethod
     def _stitch_sensitivity_results(
@@ -3922,6 +3893,15 @@ class Simulator:
         # Inject full sensitivity tensor + param names
         result._sensitivities = full_sens
         result._sensitivity_params = list(all_param_names)
+
+        # Issue #155: each chunk reported only its own parameter subset, so the
+        # stitched matrix is their union — disjoint by construction, since the
+        # chunks partition the parameter list.
+        merged_ic_seed: dict[str, dict[str, float]] = {}
+        for r in chunk_results:
+            for sp, row in (r._ic_sensitivity_seed or {}).items():
+                merged_ic_seed.setdefault(sp, {}).update(row)
+        result._ic_sensitivity_seed = merged_ic_seed
 
         # GH #196/#197/#198 — carry the observable/expression *parameter* output
         # sensitivities through the same param-axis stitch. They are chunked on

@@ -288,7 +288,8 @@ def capabilities() -> dict[str, Any]:
         ``"features"`` always contains the same keys regardless of build:
         ``nfsim``, ``rulemonkey``, ``klu``, ``libsbml``, ``antimony``,
         ``vivarium``, ``sbml_import``, ``sbml_ssa``, ``sbml_psa``,
-        ``antimony_import``, ``codegen``, ``output_sensitivities``.
+        ``antimony_import``, ``codegen``, ``output_sensitivities``,
+        ``effective_ic_sensitivity``.
         ``"missing"`` is empty when every feature is available.
 
         ``output_sensitivities`` reports whether this install can emit the
@@ -297,6 +298,14 @@ def capabilities() -> dict[str, Any]:
         derivatives w.r.t. parameters and ICs). Like ``codegen`` it is always
         ``True`` — it is the capability handshake fitting frontends (e.g.
         PyBNF) gate their gradient path on (GH #207).
+
+        ``effective_ic_sensitivity`` reports whether
+        ``Model.effective_ic_sensitivity()`` exists — the ``∂x(0)/∂θ`` matrix a
+        frontend reads at setup to compose its own initial-condition chain rule
+        without double-counting the seeding the ``parameter`` axis already
+        carries (GH #155). A build without it cannot say what the seed matrix
+        holds, and every answer a consumer could guess is silently wrong, so
+        gate the gradient path on this rather than on a version string.
 
         ``klu`` reports whether the SuiteSparse/KLU sparse linear solver was
         compiled in. When ``False`` the ODE backend has only the dense solver,
@@ -334,6 +343,7 @@ def capabilities() -> dict[str, Any]:
         "antimony_import": HAS_ANTIMONY and HAS_LIBSBML,
         "codegen": True,
         "output_sensitivities": True,
+        "effective_ic_sensitivity": True,
     }
 
     missing: dict[str, str] = {}
