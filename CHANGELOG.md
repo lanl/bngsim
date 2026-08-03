@@ -14,6 +14,60 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+- **An SBML `<initialAssignment>` over parameters carried no sensitivity seed
+  unless it was a bare `<ci>`.** A species whose initial condition is an
+  expression over model parameters has a `∂x_i(0)/∂θ` the forward-sensitivity
+  seed must carry, exactly as for the `R() R0` parameter-named IC of issue #43.
+  The SBML loader only ever registered the trivial single-symbol case, so
+  `u(0) = b*v0` produced **no seed and no warning**: the `b` column came back
+  short by the whole initial-condition term.
+
+  Found by running AMICI's `neuron` fixture — the model issue #144 was filed on
+  — against AMICI itself on the identical document. bngsim's `b` column peaked
+  at 1602.8 against AMICI's 7898.4, a 5x error, while the other three columns
+  already agreed to 7e-8.
+
+  **Two things had hidden it, and the second is the one worth remembering.**
+  Nothing refused: the column was finite, smooth and wrong. And a trajectory
+  finite difference *agreed with it* — `set_param` did not re-resolve an
+  initialAssignment either, so the oracle held `x(0)` fixed in exactly the way
+  the seed did. Engine and oracle shared one defect, which is why the existing
+  `neuron` regression test passes with or without this fix, and why the new
+  tests are closed forms.
+
+  The fix lowers a compound parameter-only initialAssignment to a synthetic
+  derived parameter, because `compute_ic_param_sens_seed` (issue #43) already
+  differentiates a derived IC to its primaries with the sympy chain rule —
+  nothing new has to know how to differentiate, the expression just has to
+  reach that code. Registering the link also makes `set_param` re-resolve the
+  IC, so a scan over a parameter the IC reads now lands where a fresh load with
+  that value lands (verified on BIOMD0000000999: `kdeg_R1 x1.5` moved
+  `TGFb_R1_surface(0)` 17.474 → 18.349, where it had been pinned at 17.474).
+
+  The predicate is deliberately strict: every referenced symbol must be a
+  genuinely *constant* parameter — not an assignment- or rate-rule target, not
+  an event-assignment target, not a bare `constant="false"` declaration, since
+  this loader promotes all of those to species. BIOMD0000000856
+  (`WHISBF = 0.66*NSt`, `NSt` non-constant) is why: lowering it produced a
+  derived parameter evaluating to 0 against a symbol that is a species in the
+  built model, and the build-time IC resolution wrote that 0 over the species'
+  real initial condition. A wrong IC is far worse than a missing seed.
+
+  Corpus (198 `rr_parity` models declaring `<listOfInitialAssignments>`): 34
+  gain a seed. A plain fresh-load run is unchanged on 191 of 196; the 5 that
+  move do so by **1 ulp** (1e-16 to 1e-14 relative on the IC), because the
+  initial condition is now re-derived from the same expression the sensitivity
+  differentiates, through the engine's own evaluator, instead of the loader's
+  separate Python fold — one defining site instead of two. A `set_param` scan
+  moves on 15, which is the correction itself.
+
+- **bngsim vs AMICI on the `neuron` fixture, after both fixes:** identical SBML
+  document, `t_end = 98.92`, `N_p = 4`, AMICI's default tolerances — the full
+  sensitivity tensor agrees to **2.2e-6**, the trajectory to 9.9e-7, at 11.2 ms
+  against AMICI's 14.3 ms. (At `rtol = 1e-10` AMICI fails to integrate past
+  t ≈ 92.5 on its own fixture; bngsim completes the window.)
+
 ### Added
 - **Forward sensitivity through a state-dependent event trigger (issue #144).**
   A trigger that reads the state — AMICI's `neuron` fixture fires on `v > 30` —
