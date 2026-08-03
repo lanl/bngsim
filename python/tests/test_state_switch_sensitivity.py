@@ -838,3 +838,158 @@ def test_an_sbml_piecewise_over_state_with_an_event(tmp_path):
             an[:, 0, j], fd[:, 0], rtol=5e-3, atol=1e-3 * scale, err_msg=f"column {p!r}"
         )
         assert scale > 0.0
+
+
+# ─── issue #154: a residual that is identically zero is not a crossing ─────
+#
+# CVODE reports a root the instant a root function reaches exactly 0.0 from a
+# nonzero value (``cvRootfind``'s ``ghi == 0 && glo != 0``). That IS a crossing
+# when g then leaves zero, and is not one when g stays there — and nothing
+# upstream catches the second case: ``cvRcheck1`` deactivates a root that is
+# zero at (re)init, so it covers a residual that *starts* on the surface but not
+# one that reaches exactly zero mid-run and never leaves.
+#
+# The model below reaches it the way ``ml_q_learning`` does. ``1 + exp(-u)``
+# rounds to exactly 1.0 for every ``u > 53·ln2 = 36.7368…``, so a softmax
+# complement ``1 - 1/(1+exp(-u))`` is EXACTLY 0.0 on an open half-line rather
+# than merely tiny — and a rate law conditioned on it has a residual that is
+# identically zero over an interval of its own trajectory. Underneath the
+# arithmetic the condition is true everywhere and crosses nothing; the zero
+# belongs to the floating-point evaluation, not to the model.
+#
+# What the machinery made of that before this fix was a *tangency*: no nudge
+# along the flow moves the residual off zero, no coordinate of its support moves
+# it either, so the two branches "cannot be told apart" and it refused. A
+# tangency is a surface the trajectory touches. This is not a surface.
+PLATEAU = """\
+begin parameters
+    1 A0    1.0  # Constant
+    2 k     1.0  # Constant
+    3 gain  1.0  # Constant
+end parameters
+begin functions
+    1 tail() 1-(1/(1+exp(((-gain)*A))))
+    2 _rateLaw1() if((tail()>0),tail(),0)
+end functions
+begin species
+    1 Aa() A0
+    2 Bb() 0
+end species
+begin reactions
+    1 0 1 k #_R1
+    2 0 2 _rateLaw1 #_R2
+end reactions
+begin groups
+    1 A                    1
+    2 B                    2
+end groups
+"""
+
+# The same plateau reached by two residuals at once: ``2·tail()`` is zero
+# exactly where ``tail()`` is, so both roots fire on one step and the pair
+# arrives as an issue #153 batch.
+PLATEAU_PAIR = """\
+begin parameters
+    1 A0    1.0  # Constant
+    2 k     1.0  # Constant
+    3 gain  1.0  # Constant
+end parameters
+begin functions
+    1 tail() 1-(1/(1+exp(((-gain)*A))))
+    2 twice() 2*(1-(1/(1+exp(((-gain)*A)))))
+    3 _rateLaw1() if((tail()>0),tail(),0)
+    4 _rateLaw2() if((twice()>0),twice(),0)
+end functions
+begin species
+    1 Aa() A0
+    2 Bb() 0
+    3 Cc() 0
+end species
+begin reactions
+    1 0 1 k #_R1
+    2 0 2 _rateLaw1 #_R2
+    3 0 3 _rateLaw2 #_R3
+end reactions
+begin groups
+    1 A                    1
+    2 B                    2
+    3 C                    3
+end groups
+"""
+
+PLATEAU_T_END = 60.0
+
+
+def _plateau_sens(tmp_path, params, name, text=PLATEAU):
+    model = _model(tmp_path, text, name)
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=list(params))
+    return sim.run(t_span=(0.0, PLATEAU_T_END), n_points=13, rtol=RTOL, atol=ATOL)
+
+
+@requires_cc
+class TestAResidualThatIsIdenticallyZeroIsNotACrossing:
+    def test_the_residual_reaches_exactly_zero_and_stays(self, tmp_path):
+        """The premise, measured rather than argued — and the distinction the
+        whole fix turns on is *exactly* zero, not small.
+
+        A residual that merely got very small would still have a sign, a
+        gradient, and a locatable crossing; this one has none of the three,
+        because the underflow is a plateau with positive width rather than a
+        point. The samples before it are the same expression's ordinary decay,
+        which is what says the zero is reached from a nonzero value — i.e. that
+        CVODE registers it as a root at all."""
+        run = bngsim.Simulator(_model(tmp_path, PLATEAU, "pre.net"), method="ode").run(
+            t_span=(0.0, PLATEAU_T_END), n_points=13, rtol=RTOL, atol=ATOL
+        )
+        tail = np.asarray(run.expressions)[:, list(run.expression_names).index("tail")]
+        assert (tail[:5] > 0.0).all(), "the residual is supposed to decay into the plateau"
+        assert (tail[-5:] == 0.0).all(), "the residual is supposed to be EXACTLY zero, not small"
+
+    def test_the_crossing_is_still_registered(self, tmp_path):
+        """Nothing here is knowable before the run: the condition reads live
+        state and splits into a residual like any other, and whether that
+        residual has a plateau on the trajectory is a property of where the
+        trajectory goes. So this stays a run-time measurement at the crossing
+        and not a rule about the condition's text."""
+        core = _model(tmp_path, PLATEAU, "reg.net")._core
+        assert sw.state_switch_conditions(core) == ["(1-(1/(1+exp(((-gain)*A)))))>0"]
+
+    def test_it_runs_and_matches_a_closed_form(self, tmp_path):
+        """Before this fix it raised at t = 36.58 with the tangency refusal.
+
+        The oracle is closed form rather than a finite difference, because this
+        model has one: with ``A(t) = A0 + k·t`` and ``B' = sigma(-gain·A)``,
+
+            B(∞) = ln(1 + e^(-gain·A0)) / (gain·k)
+
+        (the plateau contributes nothing — that is what makes it a plateau), so
+
+            dB/dk    = -ln(1 + e^(-gain·A0)) / (gain·k²)
+            dB/dgain = [-A0·e^(-gain·A0)/(1 + e^(-gain·A0))·gain
+                        - ln(1 + e^(-gain·A0))] / (gain²·k)
+
+        A difference quotient would be the weaker check here for the usual
+        reason and one more: perturbing ``gain`` MOVES the plateau's edge, so
+        the two FD runs enter it at different times and the quotient carries
+        that artefact where the closed form knows there is nothing there."""
+        run = _plateau_sens(tmp_path, ["k", "gain"], "plat.net")
+        a0, k, gain = 1.0, 1.0, 1.0
+        e = np.exp(-gain * a0)
+        db_dk = -np.log1p(e) / (gain * k * k)
+        db_dgain = (-a0 * e / (1.0 + e) * gain - np.log1p(e)) / (gain * gain * k)
+        got = np.asarray(run.sensitivities)[-1, 1, :]
+        assert got[0] == pytest.approx(db_dk, rel=1e-6)
+        assert got[1] == pytest.approx(db_dgain, rel=1e-6)
+
+    def test_a_pair_of_plateaus_is_not_refused_as_coincident(self, tmp_path):
+        """Two residuals reaching the same plateau on the same step arrive as an
+        issue #153 batch, and its "one step straddles all of them or these are
+        not one crossing" test cannot be met by a residual that cannot be
+        straddled at all — so before this fix the pair refused with the
+        coincident-switch message rather than the tangency one. Both are dropped
+        for the same reason, and ``C = 2·B`` is what says neither jumped."""
+        run = _plateau_sens(tmp_path, ["k", "gain"], "pair.net", text=PLATEAU_PAIR)
+        s = np.asarray(run.sensitivities)
+        scale = float(np.max(np.abs(s[:, 1, :])))
+        assert scale > 0.0
+        np.testing.assert_allclose(s[:, 2, :], 2.0 * s[:, 1, :], rtol=1e-9, atol=1e-12 * scale)

@@ -3412,6 +3412,83 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         return names.str();
     };
 
+    // ── A residual that is identically ZERO here is not a crossing ───────────
+    //
+    // CVODE reports a root the instant g reaches exactly 0.0 from a nonzero
+    // value — cvRootfind's `ghi == 0 && glo != 0` — and that IS a crossing when
+    // g then leaves zero. It is not one when g stays there, and nothing upstream
+    // notices: `cvRcheck1` deactivates a root that is zero at (re)init, so it
+    // covers a residual that starts on the surface, but not one that reaches
+    // exactly zero mid-run and never leaves.
+    //
+    // `ml_q_learning` (issue #154) is the second kind. It writes a softmax as
+    // `1 − 1/(1+exp(−u))`, and `1 + exp(−u)` rounds to exactly 1.0 for every
+    // u > 53·ln2 ≈ 36.74, so that factor — and with it the whole residual
+    // `alpha·(1−sigma(u))·td` — is EXACTLY 0.0 on an open region of state space
+    // that its trajectory enters and never leaves. Underneath the arithmetic
+    // the condition `dql > 0` is true everywhere and crosses nothing; the zero
+    // is the floating-point evaluation's, not the model's.
+    //
+    // On such a region ∂g/∂x is zero in every direction, so the implicit
+    // function theorem has no denominator and the condition's own boolean is
+    // constant over the whole neighbourhood — the rate law sits on one branch
+    // and stays there, which is exactly the case that needs no jump. What the
+    // ladder above reports for it, though, is a failure to straddle, i.e. the
+    // tangency refusal below. That reads a plateau as a surface the trajectory
+    // touches, and refuses a run that has nothing wrong with it.
+    //
+    // Measured rather than assumed, and in the directions the jump would
+    // actually differentiate along: zero at x(t*), zero at ±δt along the flow at
+    // every nudge the ladder tried, and zero at ±h along every coordinate of the
+    // residual's own support (the same h the coordinate probe below uses, so the
+    // two agree about what "here" means). Costs nothing on a real crossing —
+    // `dt_used != 0` skips it, and the first non-zero evaluation short-circuits.
+    auto rides_a_zero_plateau = [&](const NetworkModel::StateSwitch &one, double g_flow_lo,
+                                    double g_flow_hi) {
+        if (g_flow_lo != 0.0 || g_flow_hi != 0.0 || one.species.empty()) {
+            return false;
+        }
+        sync(x, t_evt);
+        if (eval.evaluate(one.residual_expr_idx) != 0.0) {
+            return false;
+        }
+        for (int j : one.species) {
+            const double xj = x[static_cast<std::size_t>(j)];
+            const double h = 1e-7 * std::max(std::fabs(xj), 1.0);
+            xw.assign(x.begin(), x.end());
+            for (const double step : {h, -h}) {
+                xw[static_cast<std::size_t>(j)] = xj + step;
+                sync(xw, t_evt);
+                if (eval.evaluate(one.residual_expr_idx) != 0.0) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    if (dt_used == 0.0) {
+        std::vector<const NetworkModel::StateSwitch *> crossing;
+        crossing.reserve(nb);
+        for (std::size_t k = 0; k < nb; ++k) {
+            if (!rides_a_zero_plateau(*batch[k], g_before[k], g_after[k])) {
+                crossing.push_back(batch[k]);
+            }
+        }
+        if (crossing.size() != nb) {
+            sync(x, t_evt); // the probes above left the evaluator off the state
+            if (!crossing.empty()) {
+                // Whatever is left is re-run on its own rather than carried
+                // along: issue #153's "one step straddles all of them or these
+                // are not one crossing" test counts the batch it is handed, and
+                // a plateau can never be straddled, so leaving one in the batch
+                // refuses a set of real crossings for the company it keeps.
+                apply_state_switch_sensitivity_jump(cvode_mem, y, ns, t_evt, crossing, s, sens);
+            }
+            return;
+        }
+    }
+
     if (dt_used == 0.0 && nb > 1) {
         // Several residuals, and no one step across the crossing straddles them
         // all — so f⁻ − f⁺ cannot be made to carry every branch change at once,
