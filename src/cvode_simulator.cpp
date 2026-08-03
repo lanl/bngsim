@@ -1113,13 +1113,16 @@ struct CvodeSimulator::Impl {
                                        SensitivityState &sens);
 
     // Add the saltation jump of a state-dependent rate-law switch to `s` in
-    // place (issue #150). `x_star` is the located crossing state; the caller
-    // re-seeds CVODES from `s` afterwards. Throws on a tangential crossing or
-    // when the two branches cannot be told apart at x(t*).
-    void apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
-                                             const NetworkModel::StateSwitch &sw,
-                                             std::vector<std::vector<double>> &s,
-                                             SensitivityState &sens);
+    // place (issue #150). `batch` is every switch whose residual root fired at
+    // this instant — usually one, and several when one crossing is written more
+    // than one way (issue #153); the caller re-seeds CVODES from `s` afterwards.
+    // Throws on a tangential crossing, when the two branches cannot be told
+    // apart at x(t*), or when a batch does not resolve to a single crossing.
+    void
+    apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns, double t_evt,
+                                        const std::vector<const NetworkModel::StateSwitch *> &batch,
+                                        std::vector<std::vector<double>> &s,
+                                        SensitivityState &sens);
 };
 
 // ─── Shared integrator setup (used by run() and run_warm()) ──────────────────
@@ -3245,6 +3248,36 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
 // That probe is a Newton step onto the surface along the best-conditioned
 // coordinate, then ±eta past it, so it is scale-free — a fixed relative nudge
 // fails whenever the residual carries the model's units rather than a species'.
+//
+// **Several residuals at one instant** (issue #153). The roots are deduplicated
+// by residual TEXT, which merges `X<1` with `X<=1` and nothing else, so two
+// spellings of one crossing arrive as a batch: `sp_fourier_synthesizer` roots on
+// `ds1` and on `3·ds1 − 12·s1²·ds1`, and `ml_hopfield` on `dS1/dt` and `dS3/dt`,
+// which are equal along its trajectory because its own weight matrix leaves
+// `S1 ≡ S3` invariant. Both want ONE jump, not a composition of several. The
+// batch is therefore carried in together and the two halves of the saltation
+// term are checked separately, because they need different things:
+//
+//   * (f⁻ − f⁺) has to carry EVERY branch change, which it does exactly when the
+//     one flow probe crosses every residual in the batch — the ladder therefore
+//     grows δt until they all flip together, and a batch that never does is not
+//     one crossing but several meeting by coincidence.
+//   * dt*/dθ has to be ONE vector, and flipping together does NOT establish
+//     that. A common factor does: g_k = h·g_1 scales the implicit-function
+//     numerator and denominator alike where g_1 vanishes, so it cancels and the
+//     ratio is the same. An equality that holds only ALONG THE TRAJECTORY does
+//     not — ml_hopfield's two residuals have non-parallel gradients (cosine
+//     −0.30 at its crossing) and their dt*/dθ are permutations of each other
+//     under the W12 ↔ W23 symmetry, i.e. the crossing SPLITS under a
+//     perturbation that breaks it, and then each branch change moves with its
+//     own t*. So the vector is formed from each residual in turn and compared,
+//     and a batch that does not agree is refused with the numbers.
+//
+// The order matters and is the cheap way round: the branch gap is measured
+// before any dt*/dθ, and both corpus models are the BNGL signed-rate idiom
+// (`if(r>0, r, 0)` against `if(r<0, −r, 0)`, continuous where r = 0), so they
+// return with no jump — and no merge decision — before the second check is
+// reached at all.
 static constexpr double kStateSwitchNudgeStart = 256.0; // × ε · max(|t*|, 1)
 static constexpr double kStateSwitchNudgeGrowth = 8.0;
 static constexpr int kStateSwitchNudgeTries = 6; // ⇒ up to ~2e-9 · max(|t*|, 1)
@@ -3252,16 +3285,27 @@ static constexpr double kStateSwitchContinuousRelTol = 1e-6;
 // A gap that grows linearly with the probe (ratio → 0.5) is f varying smoothly
 // over the displacement; a gap that does not move (ratio → 1) is a jump.
 static constexpr double kStateSwitchGapRatio = 0.7;
+// Two residuals name one crossing when their dt*/dθ agree to this, read against
+// the largest column of the vector. The merged jump's own relative error is
+// bounded by the same number (it is (Δ₁+Δ₂)·τ₁ against Δ₁·τ₁ + Δ₂·τ₂), so this
+// is the accuracy the merge is worth, not a guess at the differencing noise —
+// which for a genuine common factor is orders of magnitude below it.
+static constexpr double kStateSwitchTauAgreeTol = 1e-4;
 
-void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, N_Vector y, int ns,
-                                                               double t_evt,
-                                                               const NetworkModel::StateSwitch &sw,
-                                                               std::vector<std::vector<double>> &s,
-                                                               SensitivityState &sens) {
+void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
+    void *cvode_mem, N_Vector y, int ns, double t_evt,
+    const std::vector<const NetworkModel::StateSwitch *> &batch,
+    std::vector<std::vector<double>> &s, SensitivityState &sens) {
     const int n_sens = sens.n_total;
-    if (n_sens == 0 || s.empty()) {
+    if (n_sens == 0 || s.empty() || batch.empty()) {
         return;
     }
+    const std::size_t nb = batch.size();
+    // The residual the crossing surface is DEFINED by. Everything below that
+    // needs a single g reads it from here; the rest of the batch is checked
+    // against it, and for the batches that get past those checks the choice
+    // does not matter (they all describe the same crossing).
+    const NetworkModel::StateSwitch &sw = *batch.front();
     double *y_data = N_VGetArrayPointer(y);
 
     // Every derivative below is read at the nominal parameter point, not at
@@ -3297,30 +3341,50 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, 
     sync(x, t_evt);
     model.compute_derivs(t_evt, x.data(), f0.data());
 
-    // The probe point at ±δt along the flow, and the residual there. `t ± δt`
-    // rather than `t` on both: `x ± δt·f` IS the trajectory at that instant to
-    // first order, so a condition reading both the state and `time` selects its
-    // branch consistently. Either way the smooth part of f moves by O(δt) and
-    // cancels in f⁻ − f⁺.
-    auto probe = [&](double signed_dt) {
+    // The probe point at ±δt along the flow, and EVERY residual in the batch
+    // there. `t ± δt` rather than `t` on both: `x ± δt·f` IS the trajectory at
+    // that instant to first order, so a condition reading both the state and
+    // `time` selects its branch consistently. Either way the smooth part of f
+    // moves by O(δt) and cancels in f⁻ − f⁺.
+    std::vector<double> g_before(nb, 0.0);
+    std::vector<double> g_after(nb, 0.0);
+    auto probe = [&](double signed_dt, std::vector<double> &g_out) {
         for (int i = 0; i < ns; ++i) {
             xw[static_cast<std::size_t>(i)] =
                 x[static_cast<std::size_t>(i)] + signed_dt * f0[static_cast<std::size_t>(i)];
         }
         sync(xw, t_evt + signed_dt);
-        return eval.evaluate(sw.residual_expr_idx);
+        for (std::size_t k = 0; k < nb; ++k) {
+            g_out[k] = eval.evaluate(batch[k]->residual_expr_idx);
+        }
+    };
+    // How many of the batch's residuals this probe pair actually straddles. All
+    // of them is what says f⁻ − f⁺ carries every branch change (issue #153);
+    // for a single switch it is the sign-flip test this ladder always ran.
+    auto n_straddled = [&]() {
+        std::size_t n = 0;
+        for (std::size_t k = 0; k < nb; ++k) {
+            if (std::isfinite(g_before[k]) && std::isfinite(g_after[k]) &&
+                ((g_before[k] < 0.0 && g_after[k] > 0.0) ||
+                 (g_before[k] > 0.0 && g_after[k] < 0.0))) {
+                ++n;
+            }
+        }
+        return n;
     };
 
     const double t_scale = std::max(std::fabs(t_evt), 1.0);
     const double dt0 = kStateSwitchNudgeStart * std::numeric_limits<double>::epsilon() * t_scale;
     double dt = dt0;
     double dt_used = 0.0;
+    std::size_t best_straddled = 0;
     for (int attempt = 0; attempt < kStateSwitchNudgeTries;
          ++attempt, dt *= kStateSwitchNudgeGrowth) {
-        const double g_before = probe(-dt);
-        const double g_after = probe(+dt);
-        if (std::isfinite(g_before) && std::isfinite(g_after) &&
-            ((g_before < 0.0 && g_after > 0.0) || (g_before > 0.0 && g_after < 0.0))) {
+        probe(-dt, g_before);
+        probe(+dt, g_after);
+        const std::size_t n = n_straddled();
+        best_straddled = std::max(best_straddled, n);
+        if (n == nb) {
             dt_used = dt;
             break;
         }
@@ -3336,6 +3400,44 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, 
         }
         return gap;
     };
+
+    // "'a', 'b' and 'c'", for the refusals a batch can reach.
+    auto name_the_batch = [&]() {
+        std::ostringstream names;
+        for (std::size_t k = 0; k < nb; ++k) {
+            names << (k == 0 ? "'" : (k + 1 == nb ? "' and '" : "', '"))
+                  << batch[k]->residual_source;
+        }
+        names << "'";
+        return names.str();
+    };
+
+    if (dt_used == 0.0 && nb > 1) {
+        // Several residuals, and no one step across the crossing straddles them
+        // all — so f⁻ − f⁺ cannot be made to carry every branch change at once,
+        // and these are not one surface written several ways (issue #153). Each
+        // jump would read f on the two branches of its OWN condition at x(t*),
+        // which one shared step cannot separate.
+        std::ostringstream msg;
+        msg << "Forward sensitivity: " << nb
+            << " state-dependent rate-law switches cross at the same instant t=" << t_evt
+            << " (residuals " << name_the_batch()
+            << "). Stepping the state along the flow by up to " << (dt / kStateSwitchNudgeGrowth)
+            << " time units either way ";
+        if (best_straddled == 0) {
+            msg << "does not carry any of them across zero — the trajectory rides those surfaces "
+                   "rather than crossing them";
+        } else {
+            msg << "carries " << best_straddled
+                << " of them across zero but never all together — "
+                   "so they are independent conditions meeting at one instant rather than one "
+                   "crossing written several ways";
+        }
+        msg << ", and each jump reads f on the two branches of its OWN condition at x(t*). bngsim "
+               "refuses rather than sum jumps that each carry the others' branch change (issue "
+               "#150, issue #153). Separate the crossings, or drop sensitivities for this run.";
+        throw std::runtime_error(msg.str());
+    }
 
     if (dt_used == 0.0) {
         // The trajectory rides this surface rather than passing through it. Only
@@ -3445,16 +3547,21 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, 
     }
     dt = dt_used;
 
-    probe(-dt);
+    // One probe pair for the whole batch: the ladder verified it crosses every
+    // residual, so the branch change it reads is already the combined one and
+    // there is nothing left to compose (issue #153).
+    probe(-dt, g_before);
     model.compute_derivs(t_evt - dt, xw.data(), f_minus.data());
-    probe(+dt);
+    probe(+dt, g_after);
     model.compute_derivs(t_evt + dt, xw.data(), f_plus.data());
 
     {
         // Same question on the transversal path, where it is free: f⁻ and f⁺ are
         // already in hand. A continuous switch gets no jump, no dt*/dθ solve, and
         // no transversality refusal — MODEL1006230090 reaches the last of those
-        // with a denominator of 1e-15.
+        // with a denominator of 1e-15. Both models the batch path was written for
+        // are the BNGL signed-rate idiom and leave HERE, before their several
+        // residuals ever have to agree on a dt*/dθ.
         double f_scale = 0.0;
         if (branch_gap(f_scale) <= kStateSwitchContinuousRelTol * f_scale) {
             sync(x, t_evt);
@@ -3466,11 +3573,57 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, 
     // and the resumed integration must not see the nudge.
     sync(x, t_evt);
 
+    auto subject_of = [](const NetworkModel::StateSwitch &one) {
+        return "the state-dependent rate-law condition with residual '" + one.residual_source +
+               "' crosses";
+    };
     std::vector<double> tau;
-    residual_dtstar(sw.residual_expr_idx, sw.species,
-                    "the state-dependent rate-law condition with residual '" + sw.residual_source +
-                        "' crosses",
-                    t_evt, ns, x, f_minus, s, sens, tau);
+    residual_dtstar(sw.residual_expr_idx, sw.species, subject_of(sw), t_evt, ns, x, f_minus, s,
+                    sens, tau);
+
+    // ── One crossing time, or several? (issue #153) ──────────────────────────
+    // There IS a jump here, so the batch has to resolve to a single t*(θ) for it
+    // to be attributed to. A common factor gives that by construction — h scales
+    // the implicit-function numerator and denominator alike where the residual
+    // vanishes, so it cancels — while conditions whose crossings move apart do
+    // not, and the sum of their jumps is not any one jump. Asking each residual
+    // for the vector and comparing is that question put directly, of the
+    // quantity that is actually used; it is not implied by their having flipped
+    // together (see the note above the constants), and it is also weaker than
+    // "one surface" on purpose: two INDEPENDENT crossings that the requested
+    // columns move together merge correctly, because (Δ₁ + Δ₂)·τ is then exactly
+    // Δ₁·τ₁ + Δ₂·τ₂.
+    double tau_scale = 0.0;
+    for (int c = 0; c < n_sens; ++c) {
+        tau_scale = std::max(tau_scale, std::fabs(tau[static_cast<std::size_t>(c)]));
+    }
+    std::vector<double> tau_k;
+    for (std::size_t k = 1; k < nb; ++k) {
+        residual_dtstar(batch[k]->residual_expr_idx, batch[k]->species, subject_of(*batch[k]),
+                        t_evt, ns, x, f_minus, s, sens, tau_k);
+        double worst = 0.0;
+        for (int c = 0; c < n_sens; ++c) {
+            worst = std::max(worst, std::fabs(tau_k[static_cast<std::size_t>(c)] -
+                                              tau[static_cast<std::size_t>(c)]));
+            tau_scale = std::max(tau_scale, std::fabs(tau_k[static_cast<std::size_t>(c)]));
+        }
+        if (worst > kStateSwitchTauAgreeTol * tau_scale) {
+            std::ostringstream msg;
+            msg << "Forward sensitivity: " << nb
+                << " state-dependent rate-law switches cross at the same instant t=" << t_evt
+                << " (residuals " << name_the_batch()
+                << "), the right-hand side jumps there, and their crossing times move differently "
+                   "with the requested columns: dt*/dθ from '"
+                << sw.residual_source << "' and from '" << batch[k]->residual_source
+                << "' differ by " << worst << " against a scale of " << tau_scale
+                << ". So they are separate crossings that happen to coincide rather than one "
+                   "surface written twice, there is no single t*(θ) to shift the flow along, and "
+                   "each saltation jump would carry the other's branch change. bngsim refuses "
+                   "rather than compose them (issue #150, issue #153). Separate the crossings, or "
+                   "drop the parameters that move them apart from sensitivity_params.";
+            throw std::runtime_error(msg.str());
+        }
+    }
 
     for (int c = 0; c < n_sens; ++c) {
         const double tau_c = tau[static_cast<std::size_t>(c)];
@@ -3492,8 +3645,9 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(void *cvode_mem, 
     // the after-branch one, the error test fails at every h down to ~1e-17, and
     // the root fires a second time: this jump would be applied twice, which is
     // the same wrong answer with a different sign of the error. `x + δt·f` is
-    // the probe point the ladder above VERIFIED is on the after side, and taking
-    // it as the restart state is one explicit Euler step along the flow — an
+    // the probe point the ladder above VERIFIED is on the after side of every
+    // residual that fired at this instant, and taking it as the restart state
+    // is one explicit Euler step along the flow — an
     // error of O(δt²) in the state, δt itself being at most ~2e-9 of the run's
     // own time scale. The state's own tolerance never sees it; the branch
     // selection does.
@@ -4639,26 +4793,26 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                                                         static_cast<double>(t_ret), firing,
                                                         chatter_y_before, evt_s_minus, sens);
                 } else if (!evt_s_minus.empty()) {
-                    if (switched.size() > 1) {
-                        throw std::runtime_error(
-                            "Forward sensitivity: two state-dependent rate-law switches "
-                            "(residuals '" +
-                            state_switches[switched[0]]->residual_source + "' and '" +
-                            state_switches[switched[1]]->residual_source +
-                            "') cross at the same instant t=" + std::to_string(t_ret) +
-                            ". Each jump reads f on the two branches of its OWN condition at "
-                            "x(t*), which stepping across a shared crossing cannot separate, so "
-                            "the composition is ambiguous and bngsim refuses rather than sum two "
-                            "jumps that both carry the other's branch change (issue #150).");
-                    }
                     // No event fired. The state is continuous across this root
                     // either way, but a state-switch crossing makes dx/dθ
                     // discontinuous there by the saltation term, so add it to
                     // the captured s⁻ in place before re-seeding (issue #150).
-                    for (int j : switched) {
+                    //
+                    // Several residuals rooting at ONE instant go in together
+                    // rather than one at a time (issue #153): on the corpus they
+                    // are always one crossing surface the text dedup could not
+                    // merge — `ds1` against `3·ds1 − 12·s1²·ds1` — which wants a
+                    // single jump off a single probe, and telling the two cases
+                    // apart is a run-time measurement at the crossing, not a
+                    // property of the text.
+                    if (!switched.empty()) {
+                        std::vector<const NetworkModel::StateSwitch *> batch;
+                        batch.reserve(switched.size());
+                        for (int j : switched) {
+                            batch.push_back(state_switches[j]);
+                        }
                         impl_->apply_state_switch_sensitivity_jump(
-                            cvode_mem, y, ns, static_cast<double>(t_ret), *state_switches[j],
-                            evt_s_minus, sens);
+                            cvode_mem, y, ns, static_cast<double>(t_ret), batch, evt_s_minus, sens);
                     }
                     // The CVodeReInit above rewound the state stepper to t_ret
                     // while leaving CVODES' sensitivity history at the end of
