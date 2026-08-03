@@ -62,6 +62,39 @@ they drift. For a fully isolated parity/benchmark environment (rather than
 adding PyBioNetGen to your dev venv), use
 `parity_checks/bng_parity/bootstrap_parity_env.py` instead.
 
+### AMICI for `parity_checks/amici_parity/`
+
+AMICI is the second reference engine — the SBML/CVODES oracle `amici_parity`
+compares against, and the only independent check on forward *sensitivities*.
+
+```bash
+uv sync --extra dev --group amici    # builds the pinned AMICI (~1-4 min)
+```
+
+It is a group rather than an extra because the pin is a commit, and a direct
+reference in published metadata would make bngsim unpublishable — the same
+trade `parity` makes. The commit must match
+`parity_checks/amici_parity/AMICI_PIN.json`, which is the source of truth;
+`test_amici_pin_agreement.py` fails if they drift. Do not relax it to
+`amici==1.0.1` off PyPI: the pin is 12 commits past that tag and they touch the
+engine, not just its tests.
+
+Building it needs **swig, a C++ toolchain, and a BLAS** (macOS: Accelerate,
+nothing to install; Linux: the build fetches `scipy-openblas64` itself).
+
+> **If the clone fails with `git-lfs: command not found`**, that is your
+> machine, not AMICI. A `git-lfs` install that has since been removed leaves
+> `filter.lfs.*` in `~/.gitconfig` with `required = true`, and every clone of an
+> LFS-using repo then aborts. Either reinstall `git-lfs` or drop those four
+> keys (`git config --global --remove-section filter.lfs`).
+
+Leaving AMICI undeclared is what used to break this: `uv sync` prunes anything
+not in the lock, so a hand-installed AMICI disappeared at the next sync and the
+whole suite went quiet. Worse for correctness than for coverage — with no second
+engine in the environment, a finite-difference oracle that happens to share a
+defect with the engine is the only oracle left, which is exactly how a 5x-wrong
+sensitivity column survived review (see CHANGELOG, issue #144 follow-up).
+
 ## Running tests
 
 `uv run` uses the project venv without needing `source .venv/bin/activate`:

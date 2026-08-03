@@ -123,6 +123,35 @@ dev = [
 parity = [
     "bionetgen @ git+https://github.com/RuleWorld/PyBioNetGen.git@43b09a5",
 ]
+# AMICI — the reference engine for parity_checks/amici_parity, and the second
+# oracle for forward sensitivity. A group and not an extra for the same reason
+# `parity` is one: the pin is a commit, so the requirement is a direct
+# reference, and PyPI rejects those in published metadata.
+#
+# The commit MUST match parity_checks/amici_parity/AMICI_PIN.json — that file is
+# the source of truth (it carries the rationale, and every AMICI result recorded
+# in AMICI_KNOWN_ISSUES.md is tied to it). test_pin_agreement.py fails if the
+# two drift.
+#
+# It has to be the commit, not `amici==1.0.1` off PyPI: the pin is 12 commits
+# past the release tag and those commits touch `_symbolic/de_model.py`, the
+# exporters and the SWIG template — i.e. the engine, not just its tests.
+#
+# Undeclared until now, which meant `uv sync` silently uninstalled it and the
+# whole amici_parity suite went quiet — the failure mode CONTRIBUTING.md warns
+# about for hand-installed packages. It is also what let a 5x-wrong sensitivity
+# column survive (issue #144 follow-up): with no second engine in the
+# environment, a finite difference that shares a defect with the engine is the
+# only oracle left.
+#
+# Building it needs more than a wheel fetch: swig, a C++ toolchain, and a BLAS.
+# On macOS that BLAS is Accelerate (there is no openblas dependency to install);
+# on Linux the build pulls scipy-openblas64 itself. The clone also touches
+# git-lfs, so a machine with `filter.lfs.*` configured must actually have the
+# git-lfs binary present or the checkout aborts.
+amici = [
+    "amici @ git+https://github.com/AMICI-dev/AMICI.git@667b17b6bfc16a28f95fc5ef9564c3e2c4db2126#subdirectory=python/sdist",
+]
 
 [tool.uv]
 # PyBioNetGen's setup.py shells out to `pip install numpy` and downloads BNG2.pl

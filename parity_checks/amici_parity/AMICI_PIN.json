@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical pin for the AMICI reference build used by the amici_parity ODE sweep. Previously AMICI was an unpinned local editable build (a checkout under a developer home dir), recorded nowhere committed — so every AMICI PASS/DIFF/REFERENCE_FAILED/timing claim in AMICI_KNOWN_ISSUES.md was tied to an unreconstructable environment. This file pins the exact upstream commit our results were generated against. `describe` is authoritative; the bare `amici.__version__` (stamped into reports via _core.versions.amici_version) reports only the release string '1.0.1' and omits the commit-level detail below. Every AMICI-build reference (README, AMICI_KNOWN_ISSUES.md) points here.",
+  "_comment": "Canonical pin for the AMICI reference build used by the amici_parity ODE sweep. Previously AMICI was an unpinned local editable build (a checkout under a developer home dir), recorded nowhere committed \u2014 so every AMICI PASS/DIFF/REFERENCE_FAILED/timing claim in AMICI_KNOWN_ISSUES.md was tied to an unreconstructable environment. This file pins the exact upstream commit our results were generated against. `describe` is authoritative; the bare `amici.__version__` (stamped into reports via _core.versions.amici_version) reports only the release string '1.0.1' and omits the commit-level detail below. Every AMICI-build reference (README, AMICI_KNOWN_ISSUES.md) points here.",
   "source": "AMICI-dev/AMICI",
   "url": "https://github.com/AMICI-dev/AMICI",
   "commit": "667b17b6bfc16a28f95fc5ef9564c3e2c4db2126",
@@ -12,9 +12,10 @@
   "license": "BSD-3-Clause",
   "build": {
     "committed": false,
-    "install": "source build from the pinned commit, installed editable into bngsim/.venv",
-    "requires": "swig + a C++ toolchain and BLAS (AMICI codegens and compiles a C++ model per SBML)",
+    "install": "uv sync --extra dev --group amici (PEP 735 group in pyproject.toml; a group and not an extra because the pin is a direct reference, which PyPI rejects in published metadata). Was previously a hand-installed editable build into bngsim/.venv, which `uv sync` pruned at the next run \u2014 the amici_parity suite then went silently unrunnable.",
+    "requires": "swig + a C++ toolchain and BLAS (AMICI codegens and compiles a C++ model per SBML). macOS uses Accelerate, nothing to install; Linux pulls scipy-openblas64 via the build backend. The clone runs git's LFS filter, so a machine with filter.lfs.* configured must actually have the git-lfs binary present.",
     "reproduce": "git clone https://github.com/AMICI-dev/AMICI && git -C AMICI checkout 667b17b6bfc16a28f95fc5ef9564c3e2c4db2126 && pip install -e AMICI/python/sdist (per AMICI's install docs). The commit is an ancestor of AMICI-dev/AMICI main (12 commits past the v1.0.1 release tag), so it is fetchable by SHA.",
-    "runtime_stamp": "amici_run reports also stamp the live package version via _core.versions.amici_version() (= '1.0.1'); this pin supplies the commit that the bare version string does not."
+    "runtime_stamp": "amici_run reports also stamp the live package version via _core.versions.amici_version() (= '1.0.1'); this pin supplies the commit that the bare version string does not.",
+    "pin_guard": "parity_checks/tests/test_amici_pin_agreement.py fails if this commit and pyproject.toml's [dependency-groups] amici drift. Do not relax the pin to amici==1.0.1 off PyPI: it is 12 commits behind this one, and the difference touches _symbolic/de_model.py, the exporters and the SWIG template."
   }
 }
