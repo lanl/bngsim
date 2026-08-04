@@ -177,6 +177,13 @@ stack. To make this identical and provable on every machine, three pieces:
   python bng_parity/bootstrap_parity_env.py --venv .venv-parity --build-bngsim
   python bng_parity/bootstrap_parity_env.py --check-only --python .venv-parity/bin/python3
   ```
+  The interpreter you run this **with** is load-bearing, and it is not the venv's:
+  `--build-bngsim` builds the wheel for the *running* interpreter, so its ABI tag
+  (`cp312`, …) is what the new venv must be able to install — which is why
+  `--python` defaults to the running version rather than whatever `uv venv` would
+  pick. Run it with the Python the sweep env should have. It does **not** need a
+  build toolchain: an interpreter carrying no `scikit-build-core` builds isolated
+  through `uv build` instead (`scripts/ship_wheel.py::_build_command`).
 - **Audit (`bngsim_backend.py`).** Two layers: (1) `backend_status()` — the
   pre-flight gate (bngsim importable + version-compatible) plus provenance
   (`bionetgen_commit`, recorded in `_summary.json` and golden `_meta`); (2)
