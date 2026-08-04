@@ -3034,6 +3034,11 @@ def _emit_sens_rhs_body(
         derived_terms : list[(primary_param_idx, dpd_dprimary_c_expr)]
                         — chain-rule contributions for derived rate constants;
                         empty for the model-based path (see issue #15).
+        row_divisor   : dict[int, (live_volume_idx0, static_divisor)] — optional,
+                        the GH #160 cross-compartment volume divide for the rows
+                        that have one (see :func:`_psvs_row_divisor`). Absent or
+                        empty ⇒ every row accumulates undivided, the shape every
+                        single-compartment model has.
 
     Both ``generate_sens_rhs_c`` (.net path) and ``generate_sens_from_model``
     (model path) feed this helper, so the emitted C is byte-identical for the
@@ -3241,6 +3246,41 @@ def _emit_sens_rhs_body(
                 terms.append(f"y[{sp_idx}]")
         return terms
 
+    def _scatter_v(rxn, *, skip_zero: bool) -> None:
+        """Accumulate the ∂rate/∂p held in ``v`` into every affected row.
+
+        The one place ``dfdp_out`` is written, so the GH #160 cross-compartment
+        divide cannot reach one caller and miss the other. A row listed in
+        ``row_divisor`` carries the same divide the RHS applies to its ``rate``:
+        folded into the coefficient when the compartment volume is static (so the
+        emitted arithmetic is one multiply, as it is for every other row), or a
+        runtime divide by the live volume when the compartment is itself an ODE
+        state. Rows without an entry — every row of every single-compartment
+        model — emit exactly the pre-#160 text.
+        """
+        rowdiv = rxn.get("row_divisor") or {}
+        for sp_idx, coeff in sorted(rxn["stoich"].items()):
+            if skip_zero and coeff == 0:
+                continue
+            div = rowdiv.get(sp_idx)
+            if div is not None:
+                live_idx, sdiv = div
+                if live_idx >= 0:
+                    _emit(
+                        f"        dfdp_out[{sp_idx}] += {_jac_c_float(coeff)} * v / "
+                        f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r});"
+                    )
+                else:
+                    _emit(f"        dfdp_out[{sp_idx}] += {_jac_c_float(coeff / sdiv)} * v;")
+            elif coeff == 1:
+                _emit(f"        dfdp_out[{sp_idx}] += v;")
+            elif coeff == -1:
+                _emit(f"        dfdp_out[{sp_idx}] -= v;")
+            elif coeff > 0:
+                _emit(f"        dfdp_out[{sp_idx}] += {coeff} * v;")
+            else:
+                _emit(f"        dfdp_out[{sp_idx}] += ({coeff}) * v;")
+
     for pidx in sorted(rxns_by_param.keys()):
         if pidx < 0:
             continue
@@ -3251,22 +3291,12 @@ def _emit_sens_rhs_body(
             if kind == "mm":
                 for _ln in entry[2]:
                     _emit(_ln)
-                for sp_idx, coeff in sorted(rxn["stoich"].items()):
-                    # A Michaelis–Menten enzyme sits on both sides, so its net
-                    # stoichiometry is always 0. The Elementary branch below emits
-                    # `+= (0) * v` for such a spectator; skipping it here keeps
-                    # every MM reaction from carrying one dead line per column,
-                    # and Elementary emission is left exactly as it was.
-                    if coeff == 0:
-                        continue
-                    if coeff == 1:
-                        _emit(f"        dfdp_out[{sp_idx}] += v;")
-                    elif coeff == -1:
-                        _emit(f"        dfdp_out[{sp_idx}] -= v;")
-                    elif coeff > 0:
-                        _emit(f"        dfdp_out[{sp_idx}] += {coeff} * v;")
-                    else:
-                        _emit(f"        dfdp_out[{sp_idx}] += ({coeff}) * v;")
+                # A Michaelis–Menten enzyme sits on both sides, so its net
+                # stoichiometry is always 0. The Elementary branch below emits
+                # `+= (0) * v` for such a spectator; skipping it here keeps
+                # every MM reaction from carrying one dead line per column,
+                # and Elementary emission is left exactly as it was.
+                _scatter_v(rxn, skip_zero=True)
                 continue
             geom = _build_geom_terms(rxn)
             if kind == "direct":
@@ -3285,15 +3315,7 @@ def _emit_sens_rhs_body(
                 parts = [f"({dpd_dprimary_c})", *geom]
 
             _emit(f"        v = {' * '.join(parts)};")
-            for sp_idx, coeff in sorted(rxn["stoich"].items()):
-                if coeff == 1:
-                    _emit(f"        dfdp_out[{sp_idx}] += v;")
-                elif coeff == -1:
-                    _emit(f"        dfdp_out[{sp_idx}] -= v;")
-                elif coeff > 0:
-                    _emit(f"        dfdp_out[{sp_idx}] += {coeff} * v;")
-                else:
-                    _emit(f"        dfdp_out[{sp_idx}] += ({coeff}) * v;")
+            _scatter_v(rxn, skip_zero=False)
         _emit("        break;")
 
     _emit("    default:")
@@ -4827,6 +4849,31 @@ def _extract_exp_right(expr: str, start: int) -> tuple[str, int]:
     return expr[start_tok:i], i
 
 
+def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float]:
+    """The compartment-volume divisor of one cross-compartment accumulation row,
+    as ``(live_volume_idx0, static_divisor)``.
+
+    A ``per_species_volume_scaling`` reaction's kinetic law evaluates to
+    amount/time while every species it touches stores amount/V_c with a V_c of
+    its own, so each accumulation row divides by *that* species's compartment
+    volume. ``live_volume_idx0 >= 0`` means the compartment was promoted to an
+    ODE state (a variable volume, GH #171): the divisor is the live ``y[live]``,
+    falling back to the static value when it is not positive. Otherwise the
+    divisor is the static ``volume_factor``. A row divides by 1.0 — an ordinary
+    same-volume row — when it has no live index and ``volume_factor`` is 1.0.
+
+    One lookup for every emitter that scatters such a row: the RHS
+    (:func:`generate_rhs_from_model`, which *defines* the divide), the Jacobian /
+    ``J·v`` reconstruction (:func:`_functional_jacobian_groups`) and the
+    sensitivity ``∂f/∂p`` (:func:`generate_sens_from_model`). Deriving it twice is
+    how a row the RHS divides ends up with a derivative that does not — the defect
+    family GH #119 is about, one scale factor wide and invisible at V = 1. Mirrors
+    ``compute_derivs_core``'s ``species_divisor`` in ``src/model.cpp``.
+    """
+    sp = species[si]
+    return int(sp.get("ode_live_volume_idx0", -1)), float(sp.get("volume_factor", 1.0) or 1.0)
+
+
 def generate_rhs_from_model(model) -> str:
     """Generate a C source file implementing the CVODE RHS from a built model.
 
@@ -4859,15 +4906,6 @@ def generate_rhs_from_model(model) -> str:
 
     n_sp = len(species)
     n_params = len(params)
-
-    # GH #171: per-species LIVE compartment-volume index (ode_live_volume_idx0).
-    # A cross-compartment variable-volume reaction divides each affected species's
-    # ydot accumulation by the live volume conc[ode_live_volume_idx0] (a real ODE
-    # state — the promoted compartment species) rather than the static
-    # 1.0/volume_factor. -1 (the default, every static-volume / .net species) ⇒
-    # use inv_vf, byte-identical to pre-#171. Case-4 models were declined here
-    # before #171 (Part 2); the interpreted RHS handled them.
-    species_live = {i: int(s.get("ode_live_volume_idx0", -1)) for i, s in enumerate(species)}
 
     # GH #75: per-species amount factor (volume_factor for amount_valued
     # species, else 1.0). An amount_valued species participates by its amount
@@ -5059,10 +5097,11 @@ def generate_rhs_from_model(model) -> str:
             # the LIVE volume conc[L] (falling back to the static volume_factor when
             # conc[L] <= 0), mirroring compute_derivs_core's species_divisor. A
             # static-volume row keeps rate * inv_vf (byte-identical to pre-#171).
+            # This is the divide _psvs_row_divisor names for the derivative
+            # emitters; the reciprocal-table form here is what defines it.
             def _psvs_divide(si: int) -> str:
-                L = species_live.get(si, -1)
+                L, vf = _psvs_row_divisor(species, si)
                 if L >= 0:
-                    vf = float(species[si].get("volume_factor", 1.0) or 1.0)
                     return f"rate / (y[{L}] > 0.0 ? y[{L}] : {vf!r})"
                 return f"rate * inv_vf[{si}]"
 
@@ -5723,9 +5762,6 @@ def _functional_jacobian_groups(
         for i, s in enumerate(species)
         if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
     }
-    species_vol = {i: (float(s.get("volume_factor", 1.0)) or 1.0) for i, s in enumerate(species)}
-    # GH #171: per-species live compartment-volume index (mirrors generate_rhs).
-    species_live = {i: int(s.get("ode_live_volume_idx0", -1)) for i, s in enumerate(species)}
 
     # ── Symbol resolver for sympy_to_c ──────────────────────────────────────
     # Map each free-symbol name in a derivative (observable / constant param /
@@ -5782,8 +5818,7 @@ def _functional_jacobian_groups(
         for i, c_i in net.items():
             if c_i == 0.0:
                 continue
-            live_idx = species_live.get(i, -1) if psvs else -1
-            static_divisor = species_vol.get(i, 1.0) if psvs else 1.0
+            live_idx, static_divisor = _psvs_row_divisor(species, i) if psvs else (-1, 1.0)
             out.append((i, stat * c_i, live_idx, static_divisor))
         return out
 
@@ -6816,12 +6851,11 @@ def _functional_dfdp_terms(
             # functional_jacobian_context() skips a reaction whose function name
             # resolves to no expression — there is nothing to differentiate.
             return _decline(f"{label} has no resolvable rate-law expression")
-        if bool(frxn["per_species_volume_scaling"]):
-            # The ∂f/∂p scatter would have to divide each affected row by that
-            # species's (possibly live, GH #171) compartment volume, which the
-            # emitted switch has no form for. Decline rather than emit the
-            # undivided term.
-            return _decline(f"{label} is cross-compartment (per-species volume scaling)")
+        # GH #160: a cross-compartment reaction used to decline the whole model
+        # here, because the ∂f/∂p scatter had no form for the per-row compartment
+        # divide. It has one now — the same ``row_divisor`` the RHS and the J·v
+        # reconstruction already apply — so ∂func/∂p is derived like any other
+        # rate law and the divide happens where the row lands, not here.
         rate_expr = frxn["rate_expr"]
         hit = cache.get(rate_expr)
         if hit is None:
@@ -6932,7 +6966,22 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
     # collect the same key here (not the parameter index) when deciding which
     # derived parameters can reach this RHS.
     rate_const_names: set[str] = set()
-    for rxn in reactions:
+    for rxn_idx, rxn in enumerate(reactions):
+        # GH #160: the cross-compartment per-row volume divide is covered on the
+        # Functional path only. ∂f/∂p gets it from ``row_divisor`` below, and
+        # J·yS from _functional_jacobian_groups (which also supplies the ∂/∂V_live
+        # column a variable volume needs). An Elementary or Michaelis–Menten
+        # reaction carrying the flag would reach neither — its J·v comes from the
+        # undivided loop in _emit_sens_rhs_body — so decline rather than emit half
+        # a divide. No loader produces one today; the check is what keeps that
+        # true rather than assumed.
+        if rxn.get("per_species_volume_scaling", False) and rxn["type"] != "functional":
+            _warn_functional_sens_rhs_refused(
+                f"reaction {rxn_idx + 1} ({rxn['function_name']}) is cross-compartment "
+                f"(per-species volume scaling) with rate-law type {rxn['type']!r}, whose "
+                "J*yS has no form for the per-species compartment divide"
+            )
+            return None
         if rxn["type"] != "elementary":
             if not functional:
                 return None
@@ -7152,6 +7201,20 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
             "derived_terms": derived_terms,
             "amount_factor": amount_factor,
         }
+        # GH #160: a cross-compartment reaction's law evaluates to amount/time
+        # while each affected species stores amount/V_c, so every accumulation
+        # row divides by its own compartment volume — the same divide the RHS
+        # emits and the J·v reconstruction folds into its scatter. Only rows that
+        # actually divide are recorded, so a per_species_volume_scaling reaction
+        # whose volumes all happen to be 1 emits the unchanged text.
+        if rxn.get("per_species_volume_scaling", False):
+            row_divisor = {}
+            for si in stoich:
+                live_idx, sdiv = _psvs_row_divisor(species, si)
+                if live_idx >= 0 or sdiv != 1.0:
+                    row_divisor[si] = (live_idx, sdiv)
+            if row_divisor:
+                entry["row_divisor"] = row_divisor
         mm_terms = mm_terms_by_rxn.get(rxn_idx)
         if mm_terms:
             entry["mm_terms"] = mm_terms
