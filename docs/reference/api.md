@@ -5,6 +5,8 @@
 ## `bngsim.Model`
 
 Factory methods:
+- **`Model.load(path)`** — Load any supported file, dispatching on its suffix
+  (`.ant`, `.xml`/`.sbml`, `.net`); raises `ModelError` for anything else
 - **`Model.from_net(path)`** — Load from BNG `.net` file
 - **`Model.from_antimony(path)`** — Load from Antimony `.ant` file (requires `antimony`, `python-libsbml`)
 - **`Model.from_antimony_string(text)`** — Load from Antimony string

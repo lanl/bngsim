@@ -23,6 +23,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("bngsim")
 
+# Suffix → factory-method name, for Model.load() dispatch. ``.sbml`` is accepted
+# alongside ``.xml`` because SBML is served under both (BioModels uses .xml).
+_LOAD_DISPATCH: dict[str, str] = {
+    ".ant": "from_antimony",
+    ".xml": "from_sbml",
+    ".sbml": "from_sbml",
+    ".net": "from_net",
+}
+
 
 class Model:
     """A BioNetGen reaction network model.
@@ -223,6 +232,78 @@ class Model:
         self._ic_write_log: set[str] | None = None
 
     # ─── Factory methods ──────────────────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: str | Path, *, defer_jacobian: bool | None = None) -> Model:
+        """Load a model from a file, dispatching on its suffix.
+
+        A single entry point over the format-specific factories, so callers who
+        already know the path do not have to know the format:
+
+        =============  =====================
+        Suffix         Factory
+        =============  =====================
+        ``.ant``       :meth:`from_antimony`
+        ``.xml``       :meth:`from_sbml`
+        ``.sbml``      :meth:`from_sbml`
+        ``.net``       :meth:`from_net`
+        =============  =====================
+
+        Matching is case-insensitive. ``.bngl`` is *not* loadable: bngsim has no
+        BNGL parser, so a BNGL model must be expanded to a ``.net`` network by
+        BNG2.pl first (``pip install bionetgen`` ships it). Note this is not the
+        parity_checks/ ``parity`` group, which pins an exact PyBioNetGen commit
+        for engine-routing provenance rather than for BNG2.pl.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to the model file.
+        defer_jacobian : bool, optional
+            GH #145 escape hatch, forwarded to the selected factory (see
+            :meth:`from_sbml`). Default lazy; ``defer_jacobian=False`` derives
+            the analytical Functional Jacobian eagerly at load.
+
+        Returns
+        -------
+        Model
+            The loaded model.
+
+        Raises
+        ------
+        ImportError
+            If the format's optional dependency is not installed (``antimony``
+            for ``.ant`` — ``pip install 'bngsim[antimony]'``).
+        FileNotFoundError
+            If the file does not exist.
+        ModelError
+            If the suffix is not a loadable format, or the file cannot be parsed.
+        """
+        path = Path(path)
+        suffix = path.suffix.lower()
+        factory = _LOAD_DISPATCH.get(suffix)
+        if factory is None:
+            known = ", ".join(sorted(_LOAD_DISPATCH))
+            hint = ""
+            if suffix == ".bngl":
+                hint = (
+                    " BNGL is not loadable directly — bngsim has no BNGL parser;"
+                    " expand the model to a .net network with BNG2.pl first."
+                )
+            raise ModelError(
+                f"Cannot infer a model format from {path.name!r} "
+                f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
+                f"Use the format-specific factory to load it explicitly.{hint}"
+            )
+        if factory == "from_antimony":
+            # from_antimony takes no defer_jacobian (it routes through the SBML
+            # string loader, which is lazy); apply the eager hatch exactly as
+            # from_sbml does so load() behaves uniformly across formats.
+            model = cls.from_antimony(path)
+            if defer_jacobian is False:
+                model.prepare_analytical_jacobian()
+            return model
+        return getattr(cls, factory)(path, defer_jacobian=defer_jacobian)
 
     @classmethod
     def from_antimony(cls, path: str | Path) -> Model:

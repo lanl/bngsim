@@ -37,13 +37,13 @@ dependencies = [
 
 [[package]]
 name = "antimony"
-version = "3.1.1"
+version = "3.1.3"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f1/d9/b0cadf6bcf7308641aa772d65c127d570b1320f09eb4fe7c6b29afd1d964/antimony-3.1.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:1b3fe3fac364ba003e0249e5a373e30e0588381fa7d6a84d85f659a2e4b0f6ce", size = 3575074, upload-time = "2025-11-21T23:21:08.739Z" },
-    { url = "https://files.pythonhosted.org/packages/b2/e8/fa0528edc3b77dcdf9262eb1bb140aee88283ad98d2eaf6da7a44f3a74f6/antimony-3.1.1-py3-none-macosx_15_0_x86_64.whl", hash = "sha256:5ef2a1a18a403177774b1a165a0b61f126eb901e26ac3451287ea9363f24283d", size = 3606236, upload-time = "2025-11-21T23:21:10.411Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/6d/59ff2b66cef26c9bb454843dd3aec8e94311f7bb2fb730ab112575ebfc9c/antimony-3.1.1-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:8747a9984d4afb0769f05f0c8a60eb2dd1531e0350706c844800d70046c0b7b2", size = 5500958, upload-time = "2025-11-21T23:21:11.91Z" },
-    { url = "https://files.pythonhosted.org/packages/b7/17/01c8f088c13ec1f95197f0f84f8daad89b3a77f01c2309384bd3698b18b6/antimony-3.1.1-py3-none-win_amd64.whl", hash = "sha256:fa5a96e32752264cf2fd8c49e629be221deea747b9880f04d734cf989f34c154", size = 2595977, upload-time = "2025-11-21T23:21:13.39Z" },
+    { url = "https://files.pythonhosted.org/packages/23/3f/2cbf26902c9e80fdbaefd18ad61abe7aa4b5fe8d4f5541f3ffb7bb08c4d2/antimony-3.1.3-py3-none-macosx_14_0_arm64.whl", hash = "sha256:f36030d342d8d990e9f9f71986ae6ea593c592258a883c79933baf7d6b25778f", size = 3546777, upload-time = "2026-04-02T21:11:35.91Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/a9/60216b6579b35ec631632f91e4370f31cabe8e836a5748c874ebd77ad226/antimony-3.1.3-py3-none-macosx_15_0_x86_64.whl", hash = "sha256:39f240ddd67550b8e1dde42e7fa4c1f20b2ddb8c5d6b4c3494872b80e2713b6f", size = 3566390, upload-time = "2026-04-02T21:11:37.292Z" },
+    { url = "https://files.pythonhosted.org/packages/16/1c/52b06ca4c31e1d222bac1b047cf31acb04689b528393396252c987af431a/antimony-3.1.3-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:268fbe8d39abc9b4c59ea5458e2bac47c303ba897b1b2502f851f24a1cadd109", size = 5451084, upload-time = "2026-04-02T21:11:38.706Z" },
+    { url = "https://files.pythonhosted.org/packages/87/6d/1537f407cc967651a101646cb60fb1eda70328a0826d4557af83ec734a9d/antimony-3.1.3-py3-none-win_amd64.whl", hash = "sha256:e7fcbc3d9d21b096514ecdc8b783295fc2516def0a8fc7ac66d13b95ace0e62a", size = 2568768, upload-time = "2026-04-02T21:11:40.299Z" },
 ]
 
 [[package]]
@@ -341,8 +341,8 @@ parity = [
 
 [package.metadata]
 requires-dist = [
-    { name = "antimony", marker = "extra == 'antimony'", specifier = ">=3.1.1" },
-    { name = "antimony", marker = "extra == 'test'", specifier = ">=3.1.1" },
+    { name = "antimony", marker = "extra == 'antimony'", specifier = ">=3.1.3" },
+    { name = "antimony", marker = "extra == 'test'", specifier = ">=3.1.3" },
     { name = "bioservices", marker = "extra == 'benchmarks'", specifier = ">=1.11" },
     { name = "bngsim", extras = ["antimony", "pandas", "hdf5", "test", "jax", "vivarium", "benchmarks", "roadrunner"], marker = "extra == 'dev'" },
     { name = "diffrax", marker = "extra == 'jax'", specifier = ">=0.6" },
