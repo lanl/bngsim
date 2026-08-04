@@ -7,7 +7,8 @@ This is the supported one-command path for the "rebuild → ship" loop. It
      (``pip wheel . --no-build-isolation --no-deps``; note that ``python -m
      build`` is unreliable here because the importable ``build`` package in
      the dev venv is not pypa/build), falling back to ``uv build`` when the
-     interpreter has no pip — as a `uv venv` does not — and pinning
+     interpreter cannot build unisolated — it has no pip, as a `uv venv` does
+     not, or no build backend, as a bare `uv python` does not — and pinning
      ``MACOSX_DEPLOYMENT_TARGET`` per
      build architecture (10.15 on x86_64, the ``wheelhouse-local`` convention;
      11.0 on arm64, which has no valid 10.x tag), then
@@ -189,9 +190,31 @@ def _macos_deployment_target() -> str:
     return "10.15" if platform.machine() == "x86_64" else "11.0"
 
 
+# Import names for pyproject's ``[build-system] requires``. Keep in step with it —
+# `test_ship_wheel_build_deps.py` fails if the two drift apart.
+BUILD_DEP_MODULES = ("scikit_build_core", "pybind11")
+BUILD_DEP_DISTS = "scikit-build-core, pybind11"
+
+
+def _can_import(python_exe: str, *modules: str) -> bool:
+    """Whether every one of ``modules`` imports in ``python_exe``."""
+    code = "".join(f"import {m}\n" for m in modules)
+    return subprocess.run([python_exe, "-c", code], capture_output=True).returncode == 0
+
+
 def _has_pip(python_exe: str) -> bool:
     """Whether ``python_exe -m pip`` is usable."""
-    return subprocess.run([python_exe, "-c", "import pip"], capture_output=True).returncode == 0
+    return _can_import(python_exe, "pip")
+
+
+def _has_build_deps(python_exe: str) -> bool:
+    """Whether ``python_exe`` carries the PEP 517 backend deps itself.
+
+    This is the precondition ``--no-build-isolation`` actually has. Having pip is
+    not it: a bare ``uv``-managed interpreter ships pip but no build backend, and
+    that combination has to build isolated like any other.
+    """
+    return _can_import(python_exe, *BUILD_DEP_MODULES)
 
 
 def _build_command(wheelhouse: Path) -> list[str]:
@@ -199,14 +222,23 @@ def _build_command(wheelhouse: Path) -> list[str]:
 
     ``pip wheel . --no-build-isolation`` is the canonical form (the dev venv
     already carries the build deps, so skipping isolation is both faster and
-    what the wheel matrix validates). But a `uv venv` — which is how
-    CONTRIBUTING says to create the project venv — ships **no pip at all**, so
-    that command dies with "No module named pip" before it builds anything.
-    Fall back to `uv build` there, which reaches the same backend; it keeps
-    build isolation (an env without pip generally has no scikit-build-core
-    either) and `--python` pins the wheel to this interpreter's ABI tag.
+    what the wheel matrix validates). It needs BOTH pip and the build backend in
+    this interpreter, and the two come apart in both directions:
+
+    * A `uv venv` — which is how CONTRIBUTING says to create the project venv —
+      ships **no pip at all**, so the command dies with "No module named pip".
+    * A bare ``uv``-managed interpreter (``uv python install``) ships pip but
+      **no scikit-build-core**, so the command reaches pip and dies in the build
+      with a traceback naming neither the missing module nor the fix.
+
+    Test the precondition that is actually load-bearing, then fall back to
+    `uv build`, which reaches the same backend; it keeps build isolation (so it
+    supplies the backend itself) and `--python` pins the wheel to this
+    interpreter's ABI tag.
     """
-    if _has_pip(sys.executable):
+    has_pip = _has_pip(sys.executable)
+    has_build_deps = _has_build_deps(sys.executable)
+    if has_pip and has_build_deps:
         return [
             sys.executable,
             "-m",
@@ -229,9 +261,11 @@ def _build_command(wheelhouse: Path) -> list[str]:
             str(wheelhouse),
             str(SOURCE_DIR),
         ]
+    lacks = "has no pip" if not has_pip else f"has pip but not the build deps ({BUILD_DEP_DISTS})"
+    fix = "Install pip" if not has_pip else f"Install {BUILD_DEP_DISTS}"
     raise RuntimeError(
-        f"{sys.executable} has no pip and uv is not on PATH; cannot build a wheel. "
-        "Install pip into this interpreter, or put uv on PATH."
+        f"{sys.executable} {lacks}, and uv is not on PATH; cannot build a wheel. "
+        f"{fix} into this interpreter, or put uv on PATH."
     )
 
 
