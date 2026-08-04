@@ -14,6 +14,38 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **Analytic forward sensitivities for cross-compartment reactions (issue
+  #160).** A reaction whose affected species live in compartments of different
+  size (`per_species_volume_scaling`) used to decline the analytic sensitivity
+  RHS for the **whole model** — `CVodeSensInit1` installs one callback for every
+  column, so a single such reaction put every column on CVODES' internal
+  difference quotient. The fallback was correct, so this is a cost fix, not a
+  correctness one.
+
+  The missing piece was never a derivative: a cross-compartment kinetic law
+  evaluates to amount/time while each affected species stores amount/V_c with a
+  V_c of its own, so every accumulation row divides by its own compartment
+  volume — and the `∂f/∂p` scatter had no form for that divide. It has one now,
+  taken from the same `_psvs_row_divisor` lookup the RHS scatter (which defines
+  the divide) and the `J·yS` half already share, folded into the scatter
+  coefficient for a static compartment and emitted as a runtime divide by the
+  live volume for a variable one (issue #171). Both halves of
+  `ySdot = J·yS + ∂f/∂p` are therefore analytic for these models.
+
+  Measured over the two SBML corpora plus the `.net` corpus (1,380 models):
+  **21 models gain an analytic sensitivity RHS** (`benchmarks/sbml_events`
+  177 → 198), none lose one, and every other model's emitted RHS, analytical
+  Jacobian and sensitivity RHS is byte-identical. Where the difference quotient
+  used to converge the two agree to 8.3e-06 relative over 65 sensitivity columns
+  on 14 real models; where it did not, the step counts are the story —
+  `BIOMD0000000706` integrates 460 steps against the difference quotient's 23.0
+  million.
+
+  Elementary and Michaelis–Menten reactions carrying the flag still decline (and
+  now say so): their `J·v` comes from a scatter that has no per-row divide, so
+  half a divide would be worse than the fallback. No loader emits one.
+
 ## [0.12.2] - 2026-08-03
 
 ### Added
