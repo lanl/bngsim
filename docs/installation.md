@@ -159,11 +159,17 @@ pip install bngsim[dev]      # all of the above + pytest + ruff
 
 ## Antimony version note
 
-- Antimony-backed model loading requires `bngsim[antimony]`.
-- For repeated SBML conversion workloads (`loadSBMLFile` + `getSBMLString` loops), use
-  Antimony `3.1.2` due an upstream memory-fix patch.
-- Until `3.1.2` is published on PyPI, download the wheel from:
-  `https://github.com/sys-bio/antimony/actions/runs/22922160697/`
+- Antimony-backed model loading requires `bngsim[antimony]`, which pins
+  `antimony>=3.1.3`. The `3.1.2` release carrying the upstream memory fix for
+  repeated SBML conversion workloads (`loadSBMLFile` + `getSBMLString` loops)
+  was never published to PyPI; `3.1.3` is the first published version that
+  includes it, so no CI-artifact wheel is needed any more.
+- Antimony is deliberately an **extra**, not a base dependency. It publishes no
+  sdist, and its wheels cover fewer platforms than BNGsim's own — `macosx_14_0`
+  arm64 (BNGsim targets 11.0), `macosx_15_0` x86_64 (BNGsim targets 10.15),
+  `manylinux_2_28_x86_64` and `win_amd64`. Making it a base dependency would
+  turn `pip install bngsim` into a hard "no matching distribution" failure on
+  pre-14 Apple Silicon, pre-15 Intel macOS, linux aarch64 and musllinux.
 
 ## Capability introspection
 

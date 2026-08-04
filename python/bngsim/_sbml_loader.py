@@ -1863,9 +1863,28 @@ def load_sbml_string(text: str):
     return model
 
 
+def _import_antimony():
+    """Import libantimony, or raise an ImportError that says how to install it.
+
+    ``antimony`` is an optional dependency (it ships no sdist and its PyPI
+    wheels cover fewer platforms than bngsim's own), so a bare ``import`` here
+    surfaces as ``ModuleNotFoundError: No module named 'antimony'`` — which does
+    not tell the caller that ``.ant`` support is an extra. Mirrors
+    ``bngsim.missing_features()["antimony"]``.
+    """
+    try:
+        import antimony as ant
+    except ImportError:
+        raise ImportError(
+            "The 'antimony' package is required to load Antimony models. "
+            "Install with: pip install 'bngsim[antimony]'"
+        ) from None
+    return ant
+
+
 def load_antimony_via_sbml(path: str | Path):
     """Load an Antimony .ant file by converting to SBML first."""
-    import antimony as ant
+    ant = _import_antimony()
 
     path = Path(path)
     if not path.exists():
@@ -1887,7 +1906,7 @@ def load_antimony_via_sbml(path: str | Path):
 
 def load_antimony_string_via_sbml(text: str):
     """Load an Antimony model string by converting to SBML first."""
-    import antimony as ant
+    ant = _import_antimony()
 
     ant.clearPreviousLoads()
     ret = ant.loadString(text)

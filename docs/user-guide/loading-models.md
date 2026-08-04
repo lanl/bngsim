@@ -1,5 +1,23 @@
 # Loading models
 
+## `Model.load` — dispatch on the file suffix
+
+When you already have a path, `Model.load` picks the right factory for you:
+
+```python
+model = bngsim.Model.load("model.ant")   # -> Model.from_antimony
+model = bngsim.Model.load("model.xml")   # -> Model.from_sbml  (.sbml too)
+model = bngsim.Model.load("model.net")   # -> Model.from_net
+```
+
+Matching is case-insensitive, and `defer_jacobian` is forwarded to the selected
+factory. An unrecognized suffix raises `ModelError` listing the loadable ones.
+
+`.bngl` is **not** loadable: BNGsim has no BNGL parser, so a rule-based model
+must be expanded to a `.net` network by BNG2.pl first. The format-specific
+factories below remain the explicit route when the suffix does not match the
+contents (for example an SBML document saved as `.txt`).
+
 ## Antimony and SBML model loading
 
 BNGsim can load models from Antimony (`.ant`) and SBML (`.xml`) files in addition
