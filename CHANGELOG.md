@@ -15,6 +15,75 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **A sensitivity absolute tolerance set below the roundoff of the arithmetic
+  that produces it, so CVODES micro-stepped forever (issue #177).** For column
+  `iS` the variational equation is `ṡ = J·s + ∂f/∂p`, so row `i`'s derivative is
+  *assembled* by summing terms — and on a model whose species span many orders
+  those terms cancel. `∂f/∂p = 1e18 − 1e18` reads as ~0 while carrying ~ε·2e18
+  of roundoff, and the reported value says nothing about the size of what
+  cancelled. A row whose own `|s_i|` has decayed to zero contributes nothing to
+  `rtol·|s_i|` either, leaving `atolS_i` as the only thing holding the error
+  weight finite. Set below that roundoff, the error test cannot pass at any step
+  size: `h` collapses and the run never returns. The state solve has no
+  equivalent — a species at zero has a zero RHS, not a difference of huge
+  fluxes — which is why this was a sensitivity-only defect.
+
+  `atolS` is now floored, per (row × column), at the roundoff two independent
+  measurements say the arithmetic actually carries, refreshed from the live state
+  while the run holds control:
+
+  * **The assembly floor**, `ε·τ·Σ|term|`. The emitter gained a companion to
+    `bngsim_dfdp` — `bngsim_dfdp_term_scale`, reported through the exported
+    `bngsim_codegen_sens_term_scale` — that accumulates the *magnitudes* of the
+    very contributions the signed switch sums into each row, from the same
+    traversal, so the two cannot come to describe different reaction sets. The
+    `J·s` half is `Σ_j|J_ij||s_j|` from the analytical Jacobian. `τ` is a
+    thousandth of the integration horizon: `Σ|term|` has the units of `ṡ` and a
+    tolerance has the units of `s`, and `τ` is exactly the smallest step that RHS
+    noise alone may force. A genuine accuracy requirement still shrinks `h` as
+    far as it likes.
+  * **The column's representation floor**, `ε‖s‖∞`. Each BDF step solves for the
+    whole column at once, so every entry is assembled from quantities of size
+    `‖s‖∞` and inherits ~`ε‖s‖∞` of absolute error whatever its own size.
+
+  The two are complementary, not redundant, and the measurements say so: on the
+  minimal reproduction (`tests/data/sens_scale_cancellation.net`, whose `∂f/∂p`
+  is a difference of two 2e18-scale terms) the assembly floor alone takes the run
+  from **183,219 steps to 546**, and the representation floor alone changes
+  nothing; on `Smith_BMCSystBiol2013` at the reported dose it is the other way
+  round, and 14 of the 16 sensitivity columns go from *not finishing* to 0.135 s.
+
+  **This does not close #177.** Run all 16 columns together and the model still
+  does not finish: `k7`/`kminus7a` fail with `CV_ERR_FAILURE` at `t=23.2961`
+  (`h=8.4e-13`) and `k8`/`kminus8` still stall between `t=2.4` and `t=24`.
+  Raising this floor by 1000x changes neither, so whatever remains is not the
+  roundoff this addresses. It is also not a missing saltation jump: the model's
+  one state-dependent rate-law switch (`PI345P3 > pip3_basal`) is detected and
+  rooted, but `PI345P3` sits at ~1e13 against a threshold of 200 and never
+  crosses it.
+
+  Everything about this is a `max()` against the tolerances that shipped, and
+  `Σ|term|` is ~`ε·(a few)` for a well-scaled model, so a model whose arithmetic
+  is clean keeps exactly the tolerances — and the step sequence — it had. Over a
+  244-model sweep of the rr_parity corpus, 232 came back bit-identical and none
+  moved; over the 61 models whose initial state is large enough for the floor to
+  bind, 13 moved, and each was refereed against a finite-difference oracle rather
+  than a digest: no accuracy regression on any of them, one improvement, and the
+  state trajectory inside `rtol` everywhere (max 5.2e-8). `x(t)` moving at all is
+  inherent — `atolS` enters the error test, the error test picks `h` — but the
+  floor never reaches the state tolerances.
+
+  `BNGSIM_SENS_ERROR_FLOOR=0` restores the pre-#177 tolerances from the same
+  binary and the same `.so`, which is what makes that sweep a one-variable
+  experiment; `BNGSIM_SENS_FLOOR_PARTS` selects the two floors independently.
+
+  The term-scale switch is `O(parameters × reactions)`, so it is emitted only for
+  a sensitivity run — the same `_want_output_sens` signal the GH #198
+  output-sensitivity block uses, carried into the `.net` cache key as
+  `:sens_term_scale` so a `.so` built for a plain run is never reused for one that
+  needs the symbol. Without that gate `BIOMD0000000496`'s `.so` went from 18 MB to
+  29 MB and its cold build from 33.9 s to 39.6 s, for a symbol it can never call.
+
 - **A LAPACK-dense skip that no `_DECLARED_SKIPS` entry matched (found while
   wiring issue #169).** Two files skip for the same build-variant condition and
   phrase it differently: `test_engine_choice_accessors.py` says `"LAPACK-dense

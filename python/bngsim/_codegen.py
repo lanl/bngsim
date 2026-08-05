@@ -216,7 +216,16 @@ _compile_counter = itertools.count()
 # A cached v26 .so would keep serving an RHS whose emitted Jacobian contradicts
 # it wherever a species goes negative, and a zero ∂rate/∂S at S = 0.
 # Invalidate v26.
-_CODEGEN_VERSION = "27"
+# v28: lanl/bngsim #177 — the sensitivity source gains bngsim_dfdp_term_scale and
+# the exported bngsim_codegen_sens_term_scale, reporting Σ|term| per row of ∂f/∂p
+# alongside the signed sum. Purely additive: bngsim_dfdp, bngsim_jac_vec and
+# bngsim_codegen_sens_rhs are byte-identical to v27 (pinned by
+# test_sens_term_scale.py::test_the_signed_half_is_byte_identical). But a .net
+# model's cache key is content+version, not source, so without the bump a v27 .so
+# would be reused and the new symbol would simply be absent — the solver would
+# silently keep the unfloored tolerance, which is exactly the silent-inertness
+# shape issue #51 documents.
+_CODEGEN_VERSION = "28"
 
 
 # Modules whose *source* determines the emitted C. ``_codegen`` holds the
@@ -2877,7 +2886,7 @@ def _mm_rate_lines(
 # ─── Sensitivity RHS code generation ────────────────────────────────────
 
 
-def generate_sens_rhs_c(net_path: str) -> str | None:
+def generate_sens_rhs_c(net_path: str, *, emit_term_scale: bool = False) -> str | None:
     """Generate C code for the CVODES sensitivity RHS callback.
 
     The sensitivity equation for parameter p_iS is:
@@ -3037,7 +3046,7 @@ def generate_sens_rhs_c(net_path: str) -> str | None:
     # sources its Jacobian from the *model*, not from the .net. Should a caller
     # ever produce an obs-referencing term here, _emit_sens_rhs_body declines
     # rather than emitting C that names an undeclared array.
-    return _emit_sens_rhs_body(rxn_data, n_sp, n_params, fixed_sp)
+    return _emit_sens_rhs_body(rxn_data, n_sp, n_params, fixed_sp, emit_term_scale=emit_term_scale)
 
 
 def _emit_sens_rhs_body(
@@ -3049,6 +3058,7 @@ def _emit_sens_rhs_body(
     value_lines_fn: Callable[[], tuple[list[str], list[str]] | None] | None = None,
     functional_dfdp: bool = False,
     functional_jacv_groups: list[list[str]] | None = None,
+    emit_term_scale: bool = False,
 ) -> str | None:
     """Emit the C source for `bngsim_dfdp`, `bngsim_jac_vec`, and
     `bngsim_codegen_sens_rhs` from a normalized reaction-data structure.
@@ -3212,30 +3222,6 @@ def _emit_sens_rhs_body(
     _emit("")
 
     # ── df/dp function: computes partial derivatives w.r.t. one parameter ──
-    _emit("/* Compute df/dp_{iP} - partial derivative of RHS w.r.t. parameter iP.")
-    _emit("   dfdp_out[i] = sum over reactions r where p_{iP} is the rate constant:")
-    _emit("     S[i][r] * sf * product_of_reactant_concs (rate without k_r)")
-    _emit("   For derived rate constants (e.g., _rateLaw{N} = chi_X*kon_Y or 5/MEK),")
-    _emit("   the chain-rule contributions to each primary parameter are also emitted */")
-    _emit("static void bngsim_dfdp(int iP, double t, const double* y,")
-    # GH #65: obs and func are appended independently — the way the analytical
-    # Jacobian picks its shard-block signature — so a derivative that reads only
-    # one does not carry the other, and an Elementary body carries neither
-    # (byte-identical to the pre-#65 two-line signature). Continuation lines pack
-    # two parameters each, mirroring bngsim_output_sens_dfdp one level up.
-    _dfdp_params = ["const double* p"]
-    if dfdp_need_obs:
-        _dfdp_params.append("const double* obs")
-    if dfdp_need_func:
-        _dfdp_params.append("const double* func")
-    _dfdp_params.append("double* dfdp_out")
-    for _i in range(0, len(_dfdp_params), 2):
-        _pair = ", ".join(_dfdp_params[_i : _i + 2])
-        _tail = ") {" if _i + 2 >= len(_dfdp_params) else ","
-        _emit(f"                        {_pair}{_tail}")
-    _emit("    memset(dfdp_out, 0, N_SPECIES * sizeof(double));")
-    _emit("")
-
     # Group reactions by every parameter index that contributes to dfdp[*][iP]:
     # - direct contributions from reactions whose rate constant is p_iP itself
     # - chain-rule contributions for reactions whose rate constant is a derived
@@ -3257,9 +3243,6 @@ def _emit_sens_rhs_body(
         for primary_pidx, v_lines in rxn.get("mm_terms", []):
             rxns_by_param.setdefault(primary_pidx, []).append(("mm", rxn, v_lines))
 
-    _emit("    double v;")
-    _emit("    switch (iP) {")
-
     def _build_geom_terms(rxn) -> list[str]:
         sf = rxn["stat_factor"]
         terms: list[str] = []
@@ -3276,7 +3259,7 @@ def _emit_sens_rhs_body(
                 terms.append(f"y[{sp_idx}]")
         return terms
 
-    def _scatter_v(rxn, *, skip_zero: bool) -> None:
+    def _scatter_v(rxn, *, skip_zero: bool, out: str, abs_terms: bool) -> None:
         """Accumulate the ∂rate/∂p held in ``v`` into every affected row.
 
         The one place ``dfdp_out`` is written, so the GH #160 cross-compartment
@@ -3287,71 +3270,142 @@ def _emit_sens_rhs_body(
         runtime divide by the live volume when the compartment is itself an ODE
         state. Rows without an entry — every row of every single-compartment
         model — emit exactly the pre-#160 text.
+
+        ``abs_terms`` (issue #177) emits the same scatter with every contribution
+        taken in magnitude, which is what makes ``bngsim_dfdp_term_scale`` a
+        mirror rather than a second derivation: the coefficient, the volume
+        divide and the reaction set are read from the same ``rxn`` here, so a
+        row's term scale cannot describe a different sum than the row's value.
+        ``+=`` and ``-=`` collapse to one ``+= fabs(v)`` form, because the whole
+        point is the sum that does *not* cancel.
         """
         rowdiv = rxn.get("row_divisor") or {}
         for sp_idx, coeff in sorted(rxn["stoich"].items()):
             if skip_zero and coeff == 0:
                 continue
             div = rowdiv.get(sp_idx)
+            if abs_terms:
+                # A zero row coefficient contributes no term to the value, so it
+                # contributes no roundoff either — skip it rather than emit a
+                # `0.0 * fabs(v)`.
+                if coeff == 0:
+                    continue
+                if div is not None:
+                    live_idx, sdiv = div
+                    if live_idx >= 0:
+                        _emit(
+                            f"        {out}[{sp_idx}] += {_jac_c_float(abs(coeff))} * fabs(v) / "
+                            f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r});"
+                        )
+                    else:
+                        _emit(
+                            f"        {out}[{sp_idx}] += "
+                            f"{_jac_c_float(abs(coeff / sdiv))} * fabs(v);"
+                        )
+                elif coeff in (1, -1):
+                    _emit(f"        {out}[{sp_idx}] += fabs(v);")
+                else:
+                    _emit(f"        {out}[{sp_idx}] += {abs(coeff)} * fabs(v);")
+                continue
             if div is not None:
                 live_idx, sdiv = div
                 if live_idx >= 0:
                     _emit(
-                        f"        dfdp_out[{sp_idx}] += {_jac_c_float(coeff)} * v / "
+                        f"        {out}[{sp_idx}] += {_jac_c_float(coeff)} * v / "
                         f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r});"
                     )
                 else:
-                    _emit(f"        dfdp_out[{sp_idx}] += {_jac_c_float(coeff / sdiv)} * v;")
+                    _emit(f"        {out}[{sp_idx}] += {_jac_c_float(coeff / sdiv)} * v;")
             elif coeff == 1:
-                _emit(f"        dfdp_out[{sp_idx}] += v;")
+                _emit(f"        {out}[{sp_idx}] += v;")
             elif coeff == -1:
-                _emit(f"        dfdp_out[{sp_idx}] -= v;")
+                _emit(f"        {out}[{sp_idx}] -= v;")
             elif coeff > 0:
-                _emit(f"        dfdp_out[{sp_idx}] += {coeff} * v;")
+                _emit(f"        {out}[{sp_idx}] += {coeff} * v;")
             else:
-                _emit(f"        dfdp_out[{sp_idx}] += ({coeff}) * v;")
+                _emit(f"        {out}[{sp_idx}] += ({coeff}) * v;")
 
-    for pidx in sorted(rxns_by_param.keys()):
-        if pidx < 0:
-            continue
-        _emit(f"    case {pidx}:")
-        for entry in rxns_by_param[pidx]:
-            kind = entry[0]
-            rxn = entry[1]
-            if kind == "mm":
-                for _ln in entry[2]:
-                    _emit(_ln)
-                # A Michaelis–Menten enzyme sits on both sides, so its net
-                # stoichiometry is always 0. The Elementary branch below emits
-                # `+= (0) * v` for such a spectator; skipping it here keeps
-                # every MM reaction from carrying one dead line per column,
-                # and Elementary emission is left exactly as it was.
-                _scatter_v(rxn, skip_zero=True)
+    def _emit_dfdp_switch(out: str, abs_terms: bool) -> None:
+        """The ``switch (iP)`` shared by ``bngsim_dfdp`` and its term scale.
+
+        One traversal of ``rxns_by_param`` drives both emissions, so the two
+        functions cannot come to describe different reaction sets — the failure
+        shape that has bitten every paired computation site in this emitter.
+        """
+        _emit("    double v;")
+        _emit("    switch (iP) {")
+        for pidx in sorted(rxns_by_param.keys()):
+            if pidx < 0:
                 continue
-            geom = _build_geom_terms(rxn)
-            if kind == "direct":
-                parts = list(geom) if geom else ["1.0"]
-            else:
-                # chain rule: rate uses derived param p_d = f(primaries).
-                # ∂rate/∂p_iP = (∂p_d/∂p_iP) * sf * ∏y^m
-                #
-                # GH #65: this is also the shape a Functional ∂f/∂p takes —
-                # ∂f_i/∂p = Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r is the same
-                # "(derivative expression) × geometry" product with ∂func_r/∂p in
-                # place of ∂p_d/∂primary. That expression is the one that may be
-                # written in obs[]/func[] symbols, which is why the signature
-                # above is decided from these terms.
-                _, _, dpd_dprimary_c = entry
-                parts = [f"({dpd_dprimary_c})", *geom]
+            _emit(f"    case {pidx}:")
+            for entry in rxns_by_param[pidx]:
+                kind = entry[0]
+                rxn = entry[1]
+                if kind == "mm":
+                    for _ln in entry[2]:
+                        _emit(_ln)
+                    # A Michaelis–Menten enzyme sits on both sides, so its net
+                    # stoichiometry is always 0. The Elementary branch below emits
+                    # `+= (0) * v` for such a spectator; skipping it here keeps
+                    # every MM reaction from carrying one dead line per column,
+                    # and Elementary emission is left exactly as it was.
+                    _scatter_v(rxn, skip_zero=True, out=out, abs_terms=abs_terms)
+                    continue
+                geom = _build_geom_terms(rxn)
+                if kind == "direct":
+                    parts = list(geom) if geom else ["1.0"]
+                else:
+                    # chain rule: rate uses derived param p_d = f(primaries).
+                    # ∂rate/∂p_iP = (∂p_d/∂p_iP) * sf * ∏y^m
+                    #
+                    # GH #65: this is also the shape a Functional ∂f/∂p takes —
+                    # ∂f_i/∂p = Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r is the same
+                    # "(derivative expression) × geometry" product with ∂func_r/∂p in
+                    # place of ∂p_d/∂primary. That expression is the one that may be
+                    # written in obs[]/func[] symbols, which is why the signature
+                    # above is decided from these terms.
+                    _, _, dpd_dprimary_c = entry
+                    parts = [f"({dpd_dprimary_c})", *geom]
 
-            _emit(f"        v = {' * '.join(parts)};")
-            _scatter_v(rxn, skip_zero=False)
-        _emit("        break;")
+                _emit(f"        v = {' * '.join(parts)};")
+                _scatter_v(rxn, skip_zero=False, out=out, abs_terms=abs_terms)
+            _emit("        break;")
 
-    _emit("    default:")
-    _emit("        break;  /* parameter not a rate constant - dfdp = 0 */")
-    _emit("    }")
-    _emit("")
+        _emit("    default:")
+        _emit("        break;  /* parameter not a rate constant - dfdp = 0 */")
+        _emit("    }")
+        _emit("")
+
+    def _emit_dfdp_signature(fn_name: str, out: str) -> None:
+        # GH #65: obs and func are appended independently — the way the analytical
+        # Jacobian picks its shard-block signature — so a derivative that reads only
+        # one does not carry the other, and an Elementary body carries neither
+        # (byte-identical to the pre-#65 two-line signature). Continuation lines pack
+        # two parameters each, mirroring bngsim_output_sens_dfdp one level up.
+        _emit(f"static void {fn_name}(int iP, double t, const double* y,")
+        _params = ["const double* p"]
+        if dfdp_need_obs:
+            _params.append("const double* obs")
+        if dfdp_need_func:
+            _params.append("const double* func")
+        _params.append(f"double* {out}")
+        # Align continuation lines under the open paren: len("static void ") +
+        # the name + "(". Keeps bngsim_dfdp's emitted text byte-identical.
+        pad = " " * (len(fn_name) + 13)
+        for _i in range(0, len(_params), 2):
+            _pair = ", ".join(_params[_i : _i + 2])
+            _tail = ") {" if _i + 2 >= len(_params) else ","
+            _emit(f"{pad}{_pair}{_tail}")
+        _emit(f"    memset({out}, 0, N_SPECIES * sizeof(double));")
+        _emit("")
+
+    _emit("/* Compute df/dp_{iP} - partial derivative of RHS w.r.t. parameter iP.")
+    _emit("   dfdp_out[i] = sum over reactions r where p_{iP} is the rate constant:")
+    _emit("     S[i][r] * sf * product_of_reactant_concs (rate without k_r)")
+    _emit("   For derived rate constants (e.g., _rateLaw{N} = chi_X*kon_Y or 5/MEK),")
+    _emit("   the chain-rule contributions to each primary parameter are also emitted */")
+    _emit_dfdp_signature("bngsim_dfdp", "dfdp_out")
+    _emit_dfdp_switch("dfdp_out", abs_terms=False)
 
     # Zero fixed species
     if fixed_sp:
@@ -3360,6 +3414,42 @@ def _emit_sens_rhs_body(
             _emit(f"    dfdp_out[{si}] = 0.0;")
     _emit("}")
     _emit("")
+
+    # ── Term scale of df/dp_{iP}: the same sum, taken in magnitude (issue #177) ──
+    #
+    # Emitted only for a sensitivity run. The switch is O(parameters × reactions)
+    # and on a large Functional model it is a real fraction of the compile —
+    # BIOMD0000000496 goes from an 18 MB .so to 29 MB, +5.6 s of one-time clang —
+    # while a run that never asks for a sensitivity can never call it. Same
+    # reasoning, and the same `_want_output_sens` signal, as the GH #198
+    # output-sensitivity block one level up.
+    if emit_term_scale:
+        _emit("/* Term scale of df/dp_{iP} (issue #177): scale_out[i] is the sum of the")
+        _emit("   MAGNITUDES of the very terms bngsim_dfdp sums into dfdp_out[i].")
+        _emit("")
+        _emit("   dfdp_out[i] is an accumulation of signed contributions, one per")
+        _emit("   (reaction, row), and on a model whose species differ by many orders")
+        _emit("   those contributions cancel: `dfdp_out[i] = 1e18 - 1e18` is reported as")
+        _emit("   0 but carries ~eps*2e18 of roundoff. The VALUE says nothing about the")
+        _emit("   size of what cancelled, so the sensitivity error test cannot tell a")
+        _emit("   genuinely-zero row from a catastrophically-cancelled one and shrinks h")
+        _emit("   chasing accuracy the arithmetic does not have. eps*scale_out[i] is that")
+        _emit("   roundoff, per row and per column, and it is what the caller floors the")
+        _emit("   sensitivity absolute tolerance with.")
+        _emit("")
+        _emit("   The decomposition is per (reaction, row) — it does not reach inside a")
+        _emit("   single reaction's own dv expression. That is where the cancellation")
+        _emit("   this addresses lives: between reactions writing the same row. */")
+        _emit_dfdp_signature("bngsim_dfdp_term_scale", "scale_out")
+        _emit_dfdp_switch("scale_out", abs_terms=True)
+
+        # A fixed species has no ODE row at all, so no terms and no roundoff.
+        if fixed_sp:
+            _emit("    /* Zero fixed species */")
+            for si in sorted(fixed_sp):
+                _emit(f"    scale_out[{si}] = 0.0;")
+        _emit("}")
+        _emit("")
 
     # ── Jacobian-vector product: J * v ──────────────────────────────
     # Build one line-group per contributing reaction (those with a scalar rate
@@ -3572,14 +3662,61 @@ def _emit_sens_rhs_body(
     _emit("")
     _emit("    return 0;")
     _emit("}")
+    _emit("")
+
+    # ── Term scale of the sensitivity RHS (issue #177) ──────────────────────
+    if not emit_term_scale:
+        return "\n".join(lines) + "\n"
+
+    # A separate entry point rather than an extra output on the RHS above: the
+    # RHS is called once per column per step and this is called a handful of
+    # times per run, so folding the magnitude sum into it would put a fabs and an
+    # add on the hot path for every row of every step. The emitted arithmetic of
+    # bngsim_codegen_sens_rhs is byte-identical to the pre-#177 text.
+    #
+    # This reports the ∂f/∂p half only. The J·yS half's terms are Σ_j|J_ij||s_j|,
+    # which the caller already has an analytical Jacobian to form, and on the
+    # models this defect appears in it is the ∂f/∂p sum that cancels: the states
+    # differ by many orders and ∂f/∂p is a difference of large fluxes, while the
+    # rows whose |s_j| are large are not the rows whose |s_i| has decayed to zero.
+    _emit("/* Term scale of the sensitivity RHS's ∂f/∂p column (issue #177).")
+    _emit("   scale_out[i] = Σ|terms| accumulated into row i of ∂f/∂p_{plist[iS]}.")
+    _emit("   eps * scale_out[i] is the roundoff floor of that row: below it, the")
+    _emit("   sensitivity error test is asking for accuracy float64 cannot deliver")
+    _emit("   and CVODES shrinks h without bound. Same user_data as the RHS. */")
+    _emit("BNGSIM_EXPORT int bngsim_codegen_sens_term_scale(int Ns, double t,")
+    _emit("                            double* y, int iS, double* scale_out,")
+    _emit("                            void* user_data) {")
+    _emit("    CodegenSensUserData* data = (CodegenSensUserData*)user_data;")
+    _emit("    double* p = data->param_values;")
+    _emit("    int iP = data->plist[iS];  /* actual parameter index */")
+    _emit("    (void)Ns;")
+    _emit("")
+    if obs_in or func_in:
+        # The same recomputation the RHS does, for the same reason: a Functional
+        # ∂f/∂p is written in obs[]/func[] symbols.
+        _emit("    /* Observables / functions (needed by Functional df/dp) */")
+        for ln in (*obs_in, *func_in):
+            _emit(ln)
+        _emit("")
+    _emit(f"    bngsim_dfdp_term_scale(iP, t, y, p{_dfdp_ctx}, scale_out);")
+    _emit("    return 0;")
+    _emit("}")
 
     return "\n".join(lines) + "\n"
 
 
-def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool]:
+def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool]:
     """``(want_jac, want_outputs, want_output_sens)`` for the .net codegen append,
     from cheap O(1) model flags — never generates source, so a .net cache hit stays
     a few stat()s.
+
+    ``want_term_scale`` (issue #177): append the ∂f/∂p term scale only for a
+    sensitivity run — the same ``_want_output_sens`` signal ``want_output_sens``
+    reads, but WITHOUT its has-functions condition, because a model with no
+    functions at all is exactly the shape the #177 reproduction has. It must reach
+    the cache key below or a .so compiled for a plain run would be reused for a
+    sensitivity run and silently lack the symbol (the issue #51 inertness trap).
 
     ``want_jac`` (GH #162): append the compiled analytical Jacobian only when an
     analytical Jacobian is wanted (``emit_jac`` — i.e. ``jacobian`` in
@@ -3600,7 +3737,7 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool]:
     """
     core = model._core if (model is not None and hasattr(model, "_core")) else model
     if core is None:
-        return False, False, False
+        return False, False, False, False
     want_jac = bool(
         emit_jac
         and core.analytical_jacobian_complete
@@ -3616,7 +3753,8 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool]:
     want_output_sens = bool(
         want_outputs and core.n_functions > 0 and getattr(model, "_want_output_sens", False)
     )
-    return want_jac, want_outputs, want_output_sens
+    want_term_scale = bool(getattr(model, "_want_output_sens", False))
+    return want_jac, want_outputs, want_output_sens, want_term_scale
 
 
 def functional_sens_rhs_enabled() -> bool:
@@ -3643,6 +3781,7 @@ def generate_combined_c(
     emit_jac: bool = True,
     emit_outputs: bool = True,
     emit_output_sens: bool = False,
+    emit_term_scale: bool = False,
 ) -> tuple[str, bool]:
     """Generate C source with RHS, sensitivity RHS (if possible), and — when the
     built model is supplied — the analytical Jacobian (GH #162), the output
@@ -3681,7 +3820,7 @@ def generate_combined_c(
     simulator falls back to the interpreted Jacobian / interpreted recorder.
     """
     rhs_code = generate_rhs_c(net_path)
-    sens_code = generate_sens_rhs_c(net_path)
+    sens_code = generate_sens_rhs_c(net_path, emit_term_scale=emit_term_scale)
     if sens_code is None and model is not None and functional_sens_rhs_enabled():
         # GH #67: the .net emitter reads rate laws as text and has no rate-law
         # expression to differentiate, so it declines every Functional model. The
@@ -3692,7 +3831,9 @@ def generate_combined_c(
         # built from this .net, so the two agree on species/parameter ordering.
         # Only ever tried once the .net path has already declined, so an
         # all-Elementary model's source stays byte-for-byte what it was.
-        sens_code = generate_sens_from_model(model, functional=True)
+        sens_code = generate_sens_from_model(
+            model, functional=True, emit_term_scale=emit_term_scale
+        )
     parts = [rhs_code]
     if sens_code is not None:
         parts.append(sens_code)
@@ -6932,7 +7073,9 @@ def _jacv_add(col: int, row: int, value_c: str, prefix: str) -> str:
     return f"{prefix}Jv_out[{row}] += ({value_c}) * v[{col}];"
 
 
-def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
+def generate_sens_from_model(
+    model, *, functional: bool = False, emit_term_scale: bool = False
+) -> str | None:
     """Generate C source for the CVODES analytical sensitivity RHS from a
     built model, parallel to ``generate_sens_rhs_c`` (.net path).
 
@@ -7257,6 +7400,7 @@ def generate_sens_from_model(model, *, functional: bool = False) -> str | None:
         fixed_sp,
         value_lines_fn=lambda: _sens_value_lines(data),
         functional_dfdp=bool(functional_terms) or bool(mm_terms_by_rxn),
+        emit_term_scale=emit_term_scale,
         functional_jacv_groups=functional_jacv_groups,
     )
     if src is None and functional_terms:
@@ -8089,7 +8233,11 @@ def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple
     Functional model back on the difference quotient — for an A/B.
     """
     rhs_code = generate_rhs_from_model(model)
-    sens_code = generate_sens_from_model(model, functional=functional_sens_rhs_enabled())
+    sens_code = generate_sens_from_model(
+        model,
+        functional=functional_sens_rhs_enabled(),
+        emit_term_scale=bool(getattr(model, "_want_output_sens", False)),
+    )
     jac_code = generate_jacobian_from_model(model)
     outputs_code = generate_outputs_from_model(model)
     parts = [rhs_code]
@@ -8235,13 +8383,16 @@ def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> 
     try:
         parsed = _parse_net_file(net_path)
         _validate_net_model_for_codegen(parsed, net_path)
-        want_jac, want_outputs, want_output_sens = _codegen_emit_flags(model, emit_jac)
+        want_jac, want_outputs, want_output_sens, want_term_scale = _codegen_emit_flags(
+            model, emit_jac
+        )
         c_source, _ = generate_combined_c(
             net_path,
             model,
             emit_jac=want_jac,
             emit_outputs=want_outputs,
             emit_output_sens=want_output_sens,
+            emit_term_scale=want_term_scale,
         )
         return c_source
     finally:
@@ -8347,7 +8498,7 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # in place — so every flag is part of the key, and an entry for one combination
 # must never satisfy another.
 _PREPARE_CODEGEN_MEMO: dict[
-    tuple[str, bool, bool, bool, bool, str], tuple[Path, tuple[tuple[str, int], ...], str]
+    tuple[str, bool, bool, bool, bool, bool, str], tuple[Path, tuple[tuple[str, int], ...], str]
 ] = {}
 _PREPARE_CODEGEN_MEMO_LOCK = threading.Lock()
 
@@ -8452,7 +8603,9 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # flags (no RHS source-gen): the analytical Jacobian (GH #162, gated by
         # emit_jac + completeness + A/B hatch) and the output evaluator (GH #163,
         # whenever the model has obs/func and no rateOf — independent of emit_jac).
-        want_jac, want_outputs, want_output_sens = _codegen_emit_flags(model, emit_jac)
+        want_jac, want_outputs, want_output_sens, want_term_scale = _codegen_emit_flags(
+            model, emit_jac
+        )
         # The GH #67 hatch is process-scoped, not file-scoped, so it belongs in the
         # in-process memo key as well as the on-disk one below — a test that flips
         # it mid-process must not be handed the other variant's .so. GH #90's
@@ -8464,6 +8617,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             want_jac,
             want_outputs,
             want_output_sens,
+            want_term_scale,
             functional_sens_rhs_enabled(),
             _sens_budget_cache_tag(),
         )
@@ -8499,6 +8653,8 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             suffix += ":codegen_outputs"
         if want_output_sens:
             suffix += ":codegen_output_sens"
+        if want_term_scale:
+            suffix += ":sens_term_scale"
         # GH #67: the A/B hatch changes the emitted source but nothing else in the
         # key, so it needs its own namespace. Appended only when the hatch is SET,
         # so the default key — and every .so already in the cache — is unchanged.
@@ -8520,10 +8676,13 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             # historical RHS(+sens)-only source byte-for-byte.
             c_source, has_sens = generate_combined_c(
                 net_path,
-                model if (want_jac or want_outputs or want_output_sens) else None,
+                model
+                if (want_jac or want_outputs or want_output_sens or want_term_scale)
+                else None,
                 emit_jac=want_jac,
                 emit_outputs=want_outputs,
                 emit_output_sens=want_output_sens,
+                emit_term_scale=want_term_scale,
             )
             extra = ", ".join(
                 n

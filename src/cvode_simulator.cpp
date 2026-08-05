@@ -165,6 +165,12 @@ struct CvodeUserData {
     // which we build on the stack in the callback wrapper.
     using CodegenSensRhsFn = bngsim::CodegenSensRhsFn;
     CodegenSensRhsFn codegen_sens_fn = nullptr;
+    // Companion to the above: Σ|term| per row of the ∂f/∂p column, for the
+    // issue #177 sensitivity roundoff floor. Emitted by the same generator, so
+    // non-null exactly when codegen_sens_fn is — except against a .so built
+    // before emitter v28, where it is null and the floor stays as it was.
+    using CodegenSensTermScaleFn = bngsim::CodegenSensTermScaleFn;
+    CodegenSensTermScaleFn codegen_sens_term_scale_fn = nullptr;
     // plist for sensitivity codegen (maps iS → param index)
     int *codegen_plist = nullptr;
     int codegen_n_sens = 0;
@@ -843,6 +849,32 @@ struct SensitivityState {
     // Hoisted so the event-fire sensitivity jump (GH #212) can re-init the
     // sensitivity vectors with the same method CVodeSensInit1 was given.
     int method = CV_STAGGERED;
+
+    // ── Sensitivity error floor (issue #177) ─────────────────────────────
+    // The per-(state × column) absolute tolerance handed to
+    // CVodeSensSVtolerances, kept alive past setup so it can be refreshed
+    // mid-run, plus the GH #214 static floor it is a max() against.
+    NVectorArrayGuard abstolS;
+    std::vector<double> atolS_base;  // n_sens*ns, column-major by column
+    std::vector<double> floor_terms; // ns scratch: Σ|term| of one column's row
+    std::vector<double> floor_jac;   // nnz scratch: the analytical Jacobian
+    double floor_tau = 0.0;          // time scale ε·Σ|term| is multiplied by
+    double floor_rtol = 0.0;         // reltolS, needed to re-tell CVODES
+    bool floor_active = false;
+    // Which noise sources this run floors. Requested through
+    // BNGSIM_SENS_FLOOR_PARTS, then narrowed by what the model can actually
+    // supply — an emitted term scale, an analytical Jacobian, or neither.
+    bool floor_do_dfdp_terms = true; // Σ|term| of ∂f/∂p, from the emitter
+    bool floor_do_jac_terms = true;  // Σ_j|J_ij||s_j|, from the analytical Jacobian
+    bool floor_do_col_norm = true;   // ε‖s‖∞, the column's representation floor
+    int floor_refreshes = 0;
+    // Whether the very first refresh (at t=0, before any stepping) found a row
+    // whose roundoff sits above its static floor. This is the gate on the early
+    // refresh ladder: an extra CV_NORMAL target is NOT free, because CVODES
+    // sizes its first step from the distance to tout, so a model the floor does
+    // nothing for must not get one.
+    bool floor_binds_at_t0 = false;
+    double floor_max_relax = 1.0; // largest floor/base ratio applied, for diagnostics
 };
 
 // Scratch for the issue #48 switch-time sensitivity jump: the RHS on either
@@ -895,6 +927,7 @@ struct CvodeSimulator::Impl {
     DynamicLibrary codegen_lib;
     CvodeUserData::CodegenRhsFn codegen_fn = nullptr;
     CvodeUserData::CodegenSensRhsFn codegen_sens_fn = nullptr;
+    CvodeUserData::CodegenSensTermScaleFn codegen_sens_term_scale_fn = nullptr;
     CvodeUserData::CodegenJacFn codegen_jac_fn = nullptr;
     CvodeUserData::CodegenJacSparseFn codegen_jac_sparse_fn = nullptr;
     CvodeUserData::CodegenOutputsFn codegen_outputs_fn = nullptr;
@@ -1008,9 +1041,21 @@ struct CvodeSimulator::Impl {
     // Resolve the requested sensitivity columns, seed s(0), and hand CVODES its
     // sensitivity problem. Fills `sens`, whose arrays back raw pointers in
     // user_data and in CVODES for the rest of the run.
-    void setup_forward_sensitivities(const SolverOptions &opts, int ns, double rtol, double atol,
-                                     N_Vector y, void *cvode_mem, CvodeUserData &user_data,
-                                     SensitivityState &sens);
+    // ``times`` is read only for the integration horizon, which sets the time
+    // scale of the issue #177 sensitivity error floor.
+    void setup_forward_sensitivities(const TimeSpec &times, const SolverOptions &opts, int ns,
+                                     double rtol, double atol, N_Vector y, void *cvode_mem,
+                                     CvodeUserData &user_data, SensitivityState &sens);
+
+    // ── Sensitivity error floor (issue #177) ─────────────────────────────
+    // Decide whether the floor is armed for this run and size its scratch.
+    void setup_sens_error_floor(const SolverOptions &opts, int ns, double rtol, double horizon,
+                                CvodeUserData &user_data, SensitivityState &sens);
+
+    // Re-derive atolS from the magnitudes actually being summed at (t, y, s)
+    // and hand the result back to CVODES. No-op unless the floor is armed.
+    void refresh_sens_error_floor(void *cvode_mem, double t, N_Vector y, CvodeUserData &user_data,
+                                  SensitivityState &sens, int ns);
 
     // Attach cvode_event_root_fn as CVODE's root function, and silence the
     // benign tiny-step warning a discontinuity root provokes.
@@ -1152,6 +1197,9 @@ CVRhsFn CvodeSimulator::Impl::setup_codegen_rhs(const SolverOptions &opts, Cvode
             codegen_fn = codegen_jit.symbol<CvodeUserData::CodegenRhsFn>("bngsim_codegen_rhs");
             codegen_sens_fn =
                 codegen_jit.try_symbol<CvodeUserData::CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            codegen_sens_term_scale_fn =
+                codegen_jit.try_symbol<CvodeUserData::CodegenSensTermScaleFn>(
+                    "bngsim_codegen_sens_term_scale");
             codegen_jac_fn =
                 codegen_jit.try_symbol<CvodeUserData::CodegenJacFn>("bngsim_codegen_jac");
             codegen_jac_sparse_fn = codegen_jit.try_symbol<CvodeUserData::CodegenJacSparseFn>(
@@ -1173,6 +1221,9 @@ CVRhsFn CvodeSimulator::Impl::setup_codegen_rhs(const SolverOptions &opts, Cvode
             codegen_fn = codegen_lib.symbol<CvodeUserData::CodegenRhsFn>("bngsim_codegen_rhs");
             codegen_sens_fn =
                 codegen_lib.try_symbol<CvodeUserData::CodegenSensRhsFn>("bngsim_codegen_sens_rhs");
+            codegen_sens_term_scale_fn =
+                codegen_lib.try_symbol<CvodeUserData::CodegenSensTermScaleFn>(
+                    "bngsim_codegen_sens_term_scale");
             codegen_jac_fn =
                 codegen_lib.try_symbol<CvodeUserData::CodegenJacFn>("bngsim_codegen_jac");
             codegen_jac_sparse_fn = codegen_lib.try_symbol<CvodeUserData::CodegenJacSparseFn>(
@@ -1190,6 +1241,7 @@ CVRhsFn CvodeSimulator::Impl::setup_codegen_rhs(const SolverOptions &opts, Cvode
 
     user_data.codegen_fn = codegen_fn;
     user_data.codegen_sens_fn = codegen_sens_fn;
+    user_data.codegen_sens_term_scale_fn = codegen_sens_term_scale_fn;
     user_data.codegen_jac_fn = codegen_jac_fn;
     user_data.codegen_jac_sparse_fn = codegen_jac_sparse_fn;
     user_data.codegen_outputs_fn = codegen_outputs_fn;
@@ -1913,7 +1965,8 @@ void CvodeSimulator::Impl::validate_jacobian_option(const SolverOptions &opts,
 // sensitivity analysis. CVODES computes dY/dp alongside the ODE integration
 // using its internal finite-difference approximation of the sensitivity RHS.
 // This works for ALL rate law types (Elementary, Functional, MichaelisMenten).
-void CvodeSimulator::Impl::setup_forward_sensitivities(const SolverOptions &opts, int ns,
+void CvodeSimulator::Impl::setup_forward_sensitivities(const TimeSpec &times,
+                                                       const SolverOptions &opts, int ns,
                                                        double rtol, double atol, N_Vector y,
                                                        void *cvode_mem, CvodeUserData &user_data,
                                                        SensitivityState &sens) {
@@ -2224,21 +2277,36 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(const SolverOptions &opts
     for (int i = 0; i < ns; ++i) {
         sens_state_scale[i] = std::max(std::abs(y_data[i]), 1.0);
     }
-    NVectorArrayGuard abstolS_guard(N_VCloneVectorArray(n_sens, y), n_sens);
-    if (!abstolS_guard) {
+    sens.abstolS = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
+    if (!sens.abstolS) {
         throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
     }
+    sens.atolS_base.resize(static_cast<size_t>(n_sens) * static_cast<size_t>(ns));
     for (int iS = 0; iS < n_sens; ++iS) {
-        double *atolS_col = N_VGetArrayPointer(abstolS_guard[iS]);
+        double *atolS_col = N_VGetArrayPointer(sens.abstolS[iS]);
         const double pb = (pbar[iS] != 0.0) ? pbar[iS] : 1.0;
         for (int i = 0; i < ns; ++i) {
-            atolS_col[i] = atol * sens_state_scale[i] / pb;
+            const double a = atol * sens_state_scale[i] / pb;
+            sens.atolS_base[static_cast<size_t>(iS) * ns + i] = a;
+            atolS_col[i] = a;
         }
     }
-    flag = CVodeSensSVtolerances(cvode_mem, rtol, abstolS_guard.arr);
+    flag = CVodeSensSVtolerances(cvode_mem, rtol, sens.abstolS.arr);
     if (flag != CV_SUCCESS) {
         throw std::runtime_error("CVodeSensSVtolerances failed: " + std::to_string(flag));
     }
+
+    // ── The floor under that floor (issue #177) ──────────────────────────
+    // Everything above is a statement about the *magnitude* a sensitivity is
+    // expected to have. It says nothing about the accuracy the arithmetic can
+    // deliver, and on a model whose ∂f/∂p is a difference of large fluxes those
+    // are wildly different numbers: the tolerance asks for 1e-8 of a quantity
+    // computed to ±4e2, and CVODES shrinks h forever chasing it. Arm the
+    // refresh that lifts atolS to that roundoff wherever it sits above the
+    // static floor. Never below: this is a max(), so a model whose arithmetic
+    // is clean keeps exactly the tolerances it had.
+    setup_sens_error_floor(opts, ns, rtol, times.t_end - times.t_start, user_data, sens);
+    refresh_sens_error_floor(cvode_mem, times.t_start, y, user_data, sens, ns);
 
     flag = CVodeSetSensErrCon(cvode_mem, opts.sensitivity.error_control);
 
@@ -2266,6 +2334,256 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(const SolverOptions &opts
         }
         user_data.sens_param_pinned = sens_pin_mask.data();
         user_data.sens_param_nominal = sens_pin_nominal.data();
+    }
+}
+
+// ─── Sensitivity error floor (issue #177) ────────────────────────────────────
+//
+// An absolute tolerance is a statement about what counts as negligible. The GH
+// #214 floor above states it in units of the *variable*: atolS[iS][i] =
+// atol·scale[i]/pbar[iS], where scale[i] is a characteristic size of state i.
+// That is the right question for a quantity you can compute to full precision.
+//
+// A sensitivity is not always such a quantity. For column iS the variational
+// equation is ṡ = J·s + ∂f/∂p_iS, so row i's derivative is *assembled* by
+// summing terms, and in a model whose species span many orders those terms
+// cancel: ∂f/∂p can be 1e18 − 1e18, reported as ~0 while carrying ~ε·2e18 of
+// roundoff. Nothing in the reported value records that. A row whose own |s_i|
+// has decayed to zero contributes nothing to rtol·|s_i| either, so atolS is the
+// only thing holding the error weight finite — and set below that roundoff, the
+// error test can never pass at any step size. CVODES shrinks h without bound,
+// chasing accuracy float64 does not have. (Issue #177: 183,219 steps for a
+// two-reaction model whose scalar solve takes 210, and a 0.013 s run that does
+// not finish in 300 s once 16 sensitivity columns are on.)
+//
+// So floor atolS at that roundoff — ε · τ · Σ|term|, per row and per column:
+//
+//   Σ|term|_i  the magnitudes summed into row i. The emitted
+//              bngsim_codegen_sens_term_scale reports the ∂f/∂p half (a value
+//              says nothing about what cancelled to produce it, so this has to
+//              come from the emitter, not from re-reading ∂f/∂p); Σ_j|J_ij||s_j|
+//              is the J·s half, formed here from the analytical Jacobian.
+//   τ          a time scale, because Σ|term| has the units of ṡ and a tolerance
+//              has the units of s. It is exactly the smallest step that RHS
+//              noise alone may force: a step of size h admits ~h·(noise in ṡ) of
+//              error in s, so demanding ε·τ·Σ|term| ≥ that is the statement
+//              "noise may not push h below τ". A genuine accuracy requirement
+//              still shrinks h as far as it likes. Set to a small fraction of
+//              the integration horizon (see kSensFloorTauFraction), which is the
+//              only problem time scale available before the first step.
+//
+// Three things this shape gets right that a global static floor did not, each
+// having killed an earlier attempt on the corpus:
+//
+//   * It is PER ROW. A norm over the whole column overstates a small row's
+//     noise by however far the column spans — seven orders on BIOMD0000000072,
+//     which is what turned a 3.0e-7 median FD error into 2.4e-3 there.
+//   * It carries NO 1/pbar. ∂f/∂p is already in the units of s, so the division
+//     that inflated a 3.32e-18-valued parameter's floor to 40% of its own
+//     column's peak has nothing to divide.
+//   * It is a max() against the existing floor, and Σ|term| is ~ε·(a few) for a
+//     well-scaled model. Every model whose arithmetic is clean keeps exactly the
+//     tolerances — and the step sequence — it had.
+// The unit roundoff of the accumulation. One ε, not a safety multiple of it:
+// the floor is deliberately the smallest defensible one, so that anywhere it
+// binds it binds because the arithmetic genuinely cannot do better.
+static constexpr double kSensFloorEps = std::numeric_limits<double>::epsilon();
+
+// τ = this × the integration horizon. Read as: RHS noise alone may not push the
+// step below a thousandth of the horizon. Picked by measurement, not by taste —
+// see dev/issue177 and the issue thread for the table it came from. Larger fixes
+// more and resolves less; smaller is inert.
+static constexpr double kSensFloorTauFraction = 1e-3;
+
+void CvodeSimulator::Impl::setup_sens_error_floor(const SolverOptions &opts, int ns, double rtol,
+                                                  double horizon, CvodeUserData &user_data,
+                                                  SensitivityState &sens) {
+    sens.floor_active = false;
+    if (!opts.sensitivity.error_control) {
+        return; // nothing to floor: the error test is off
+    }
+    // BNGSIM_SENS_ERROR_FLOOR=0 restores the pre-#177 tolerances from the same
+    // binary and the same .so — which is what makes the corpus A/B for this
+    // change a one-variable experiment rather than a two-build comparison.
+    const char *hatch = std::getenv("BNGSIM_SENS_ERROR_FLOOR");
+    if (hatch && std::string(hatch) == "0") {
+        return;
+    }
+    double frac = kSensFloorTauFraction;
+    if (const char *fenv = std::getenv("BNGSIM_SENS_ERROR_FLOOR_TAU")) {
+        const double v = std::atof(fenv);
+        if (v > 0.0) {
+            frac = v;
+        }
+    }
+    sens.floor_tau = frac * std::abs(horizon);
+    sens.floor_rtol = rtol;
+    if (!(sens.floor_tau > 0.0)) {
+        return; // a zero-length span has no time scale to state a floor in
+    }
+
+    // Which noise sources are in play. One knob per source, because they are
+    // independent statements about the arithmetic and choosing between them is a
+    // measurement rather than a preference: "terms" is the assembly floor (the
+    // emitted Σ|term| for ∂f/∂p plus Σ_j|J_ij||s_j| for J·s), "colnorm" is the
+    // column's representation floor.
+    bool want_terms = true;
+    sens.floor_do_col_norm = true;
+    if (const char *parts = std::getenv("BNGSIM_SENS_FLOOR_PARTS")) {
+        const std::string p(parts);
+        want_terms = p.find("terms") != std::string::npos;
+        sens.floor_do_col_norm = p.find("colnorm") != std::string::npos;
+    }
+
+    // The ∂f/∂p half of the assembly floor needs the emitted companion; the J·s
+    // half needs an analytical Jacobian. Either alone is a usable
+    // (under-)estimate — every term this cannot see only makes the floor
+    // smaller, i.e. closer to the behaviour that shipped.
+    const auto &spat = model.jacobian_sparsity();
+    sens.floor_do_dfdp_terms = want_terms && user_data.codegen_sens_term_scale_fn != nullptr;
+    sens.floor_do_jac_terms =
+        want_terms && model.analytical_jacobian_complete() && !spat.empty() && spat.nnz > 0;
+    if (!sens.floor_do_dfdp_terms && !sens.floor_do_jac_terms && !sens.floor_do_col_norm) {
+        return;
+    }
+    sens.floor_terms.assign(static_cast<size_t>(ns), 0.0);
+    sens.floor_jac.assign(sens.floor_do_jac_terms ? static_cast<size_t>(spat.nnz) : 0, 0.0);
+    sens.floor_active = true;
+}
+
+void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N_Vector y,
+                                                    CvodeUserData &user_data,
+                                                    SensitivityState &sens, int ns) {
+    if (!sens.floor_active) {
+        return;
+    }
+    const int n_sens = sens.n_total;
+    double *y_data = N_VGetArrayPointer(y);
+
+    // |J| once per refresh, shared by every column. The compiled mirror when
+    // there is one, so the Jacobian read here is the Jacobian the step is using.
+    const bool want_jac = sens.floor_do_jac_terms;
+    const auto &spat = model.jacobian_sparsity();
+    if (want_jac) {
+        if (user_data.codegen_jac_sparse_fn) {
+            user_data.codegen_jac_sparse_fn(t, y_data, sens.floor_jac.data(),
+                                            &user_data.codegen_so_data);
+        } else {
+            model.fill_sparse_analytical_jacobian(t, y_data, sens.floor_jac.data());
+        }
+    }
+
+    CodegenSensUserDataForSO so_data;
+    so_data.param_values = user_data.codegen_param_values;
+    so_data.plist = user_data.codegen_plist;
+    so_data.n_sens = user_data.codegen_n_sens;
+    const bool want_terms = sens.floor_do_dfdp_terms && so_data.plist != nullptr;
+
+    bool moved = false;
+    for (int iS = 0; iS < n_sens; ++iS) {
+        double *atolS_col = N_VGetArrayPointer(sens.abstolS[iS]);
+        const double *base = sens.atolS_base.data() + static_cast<size_t>(iS) * ns;
+
+        std::fill(sens.floor_terms.begin(), sens.floor_terms.end(), 0.0);
+        if (want_terms) {
+            // An IC column's plist entry is the one-past-the-end sentinel, so
+            // this hits the emitted switch's default arm and returns zeros —
+            // correct, an IC column has no ∂f/∂p term at all.
+            user_data.codegen_sens_term_scale_fn(n_sens, t, y_data, iS, sens.floor_terms.data(),
+                                                 &so_data);
+        }
+        const double *s = N_VGetArrayPointer(sens.yS[iS]);
+        if (want_jac) {
+            // Σ_j |J_ij|·|s_j| over the CSC pattern: one O(nnz) pass, no
+            // cancellation, which is the whole point — the signed J·s is
+            // already what CVODES computes.
+            for (int j = 0; j < ns; ++j) {
+                const double sj = std::abs(s[j]);
+                if (!(sj > 0.0)) {
+                    continue;
+                }
+                for (int64_t k = spat.col_ptrs[static_cast<size_t>(j)];
+                     k < spat.col_ptrs[static_cast<size_t>(j) + 1]; ++k) {
+                    sens.floor_terms[static_cast<size_t>(
+                        spat.row_indices[static_cast<size_t>(k)])] +=
+                        std::abs(sens.floor_jac[static_cast<size_t>(k)]) * sj;
+                }
+            }
+        }
+
+        // The column's own representation floor. Everything above is about the
+        // arithmetic that *forms* ṡ; this is about the arithmetic that carries
+        // s. Each BDF step solves (I − γJ)Δ = r for the whole column at once, so
+        // every entry of the result is assembled from quantities of size
+        // ‖s‖∞ and inherits ~ε‖s‖∞ of absolute error whatever its own size. A
+        // row asked for accuracy below that is being asked for digits the column
+        // does not carry. Unlike the term scale this is in the units of s
+        // already, so it takes no τ — and it is zero at t=0, where the term
+        // scale is what covers the run.
+        double col_norm = 0.0;
+        if (sens.floor_do_col_norm) {
+            for (int i = 0; i < ns; ++i) {
+                col_norm = std::max(col_norm, std::abs(s[i]));
+            }
+        }
+        const double col_floor = kSensFloorEps * col_norm;
+
+        for (int i = 0; i < ns; ++i) {
+            const double noise =
+                std::max(kSensFloorEps * sens.floor_tau * sens.floor_terms[i], col_floor);
+            // A non-finite state makes a non-finite term scale; keep the static
+            // floor there rather than handing CVODES a NaN tolerance, which it
+            // would silently propagate into every error weight.
+            const double want = (std::isfinite(noise) && noise > base[i]) ? noise : base[i];
+            moved = moved || (want != atolS_col[i]);
+            if (base[i] > 0.0) {
+                sens.floor_max_relax = std::max(sens.floor_max_relax, want / base[i]);
+            }
+            atolS_col[i] = want;
+        }
+    }
+
+    if (sens.floor_refreshes == 0) {
+        sens.floor_binds_at_t0 = moved;
+    }
+    ++sens.floor_refreshes;
+    // BNGSIM_SENS_FLOOR_DEBUG traces the floor against the step size, which is
+    // the pair that says whether a refresh arrived in time: raising a tolerance
+    // after CVODES has crawled to h~1e-13 does not recover the step controller.
+    // ``lo`` is over rows with a nonzero s — a row whose sensitivity is exactly
+    // zero contributes exactly zero to the WRMS norm however small its tolerance
+    // is, so the unrestricted minimum is a decoy (it cost real time to learn).
+    if (std::getenv("BNGSIM_SENS_FLOOR_DEBUG")) {
+        long nst = 0;
+        double h = 0.0;
+        CVodeGetNumSteps(cvode_mem, &nst);
+        CVodeGetLastStep(cvode_mem, &h);
+        double lo = std::numeric_limits<double>::infinity(), hi = 0.0;
+        for (int iS = 0; iS < n_sens; ++iS) {
+            const double *c = N_VGetArrayPointer(sens.abstolS[iS]);
+            const double *sv = N_VGetArrayPointer(sens.yS[iS]);
+            for (int i = 0; i < ns; ++i) {
+                if (sv[i] != 0.0) {
+                    lo = std::min(lo, c[i]);
+                }
+                hi = std::max(hi, c[i]);
+            }
+        }
+        std::fprintf(stderr,
+                     "[sens-floor] #%d t=%g nst=%ld h=%.3e tau=%.3e live atolS in [%.3e, %.3e] "
+                     "max relax=%.3e moved=%d\n",
+                     sens.floor_refreshes, t, nst, h, sens.floor_tau, lo, hi, sens.floor_max_relax,
+                     static_cast<int>(moved));
+    }
+    if (!moved) {
+        return; // the tolerances CVODES already holds are these tolerances
+    }
+    const int flag = CVodeSensSVtolerances(cvode_mem, sens.floor_rtol, sens.abstolS.arr);
+    if (flag != CV_SUCCESS) {
+        // A refresh is an optimization, not a correctness requirement: the
+        // tolerances already installed remain in force. Disarm rather than
+        // abort a run that is otherwise proceeding.
+        sens.floor_active = false;
     }
 }
 
@@ -3857,7 +4175,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // codegen sensitivity RHS hold raw pointers into, so it is declared here,
     // alongside the other guards, and lives for the whole integration.
     SensitivityState sens;
-    impl_->setup_forward_sensitivities(opts, ns, rtol, atol, y, cvode_mem, user_data, sens);
+    impl_->setup_forward_sensitivities(times, opts, ns, rtol, atol, y, cvode_mem, user_data, sens);
 
     // Aliases for the names the recording blocks and the integration loop
     // below already use. The jump handlers take `sens` itself, so the method /
@@ -4609,6 +4927,34 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     bool ss_reached = false;
     double ss_residual_last = 0.0;
 
+    // ─── Early refresh points for the sensitivity error floor (issue #177) ───
+    //
+    // The floor set at t=0 is right for every row whose ∂f/∂p already has terms
+    // there, but a row whose species starts empty has none yet — its terms
+    // appear as the trajectory fills it in, and by the first *output* point
+    // CVODES may already have crawled to h~1e-13, where raising a tolerance no
+    // longer recovers the step controller (that is exactly how the "relax on a
+    // demonstrated stall" attempt on this issue died). So refresh on a geometric
+    // ladder of early times as well, decades below the horizon, while h is still
+    // near where the solver started.
+    //
+    // These cost nothing when they change nothing: an extra CV_NORMAL target
+    // does not perturb CVODES' internal step sequence — it integrates past tout
+    // and interpolates back — and a refresh that finds no row above its static
+    // floor never calls CVodeSensSVtolerances at all. So a model this does not
+    // apply to is bit-for-bit the run it was.
+    std::vector<double> floor_times;
+    if (sens.floor_active && sens.floor_binds_at_t0) {
+        const double span = t_out.empty() ? 0.0 : (t_out.back() - times.t_start);
+        for (double f = 1e-6; f < 1.0; f *= 10.0) {
+            const double tf = times.t_start + f * span;
+            if (tf > times.t_start) {
+                floor_times.push_back(tf);
+            }
+        }
+    }
+    size_t next_floor_time = 0;
+
     for (int i = 1; i < n_out; ++i) {
         // Loop until we've reached t_out[i] (within numerical tolerance).
         while (true) {
@@ -4628,6 +4974,17 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         t_target = pe.apply_time;
                     }
                 }
+            }
+            // …and the next issue #177 floor-refresh time, on the same footing
+            // as a pending event: an earlier stop to come back at.
+            while (next_floor_time < floor_times.size() &&
+                   floor_times[next_floor_time] <= static_cast<double>(t_now) + 1e-15) {
+                ++next_floor_time;
+            }
+            bool stop_for_floor = false;
+            if (next_floor_time < floor_times.size() && floor_times[next_floor_time] < t_target) {
+                t_target = floor_times[next_floor_time];
+                stop_for_floor = true;
             }
 
             // ─── Stop cleanly at the next switch time (issue #48) ────────────
@@ -4692,6 +5049,26 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     " with flag=" + std::to_string(flag));
             }
             t_now = t_ret;
+
+            // Issue #177: an early stop taken only to re-derive the sensitivity
+            // error floor from the live state. Refresh and keep going — this is
+            // not an output point and nothing is recorded here.
+            //
+            // Only on a plain CV_SUCCESS at (or past) the requested time. A root
+            // or a switch stop time can land first, and those returns belong to
+            // the handlers below — taking this branch would skip the event fire
+            // or the issue #48 switch jump entirely. next_floor_time is left
+            // alone in that case, so the stop is simply retried on the next pass.
+            if (stop_for_floor && flag == CV_SUCCESS &&
+                static_cast<double>(t_ret) >= floor_times[next_floor_time] - 1e-15) {
+                sunrealtype t_tmp;
+                if (CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr) == CV_SUCCESS) {
+                    impl_->refresh_sens_error_floor(cvode_mem, static_cast<double>(t_ret), y,
+                                                    user_data, sens, ns);
+                }
+                ++next_floor_time;
+                continue;
+            }
 
             // ─── Event handling: CV_ROOT_RETURN ───────────────────────────────
             // CVODE stopped at a root (event trigger zero-crossing).
@@ -5149,6 +5526,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 record_observable_output_sensitivities(i, sens_ptrs.data());
                 record_expression_output_sensitivities(i, static_cast<double>(t_ret),
                                                        sens_ptrs.data());
+                // Issue #177: the magnitudes being summed move with the state,
+                // so re-derive the roundoff floor here — where the run holds
+                // control and yS_guard already carries s(t_ret) from the
+                // CVodeGetSens above. The floor set at t=0 covers the models
+                // whose ∂f/∂p is large from the start (it depends on y, not on
+                // s, so unlike the J·s half it is not zero there); this covers a
+                // model that starts small and grows into the same problem.
+                impl_->refresh_sens_error_floor(cvode_mem, static_cast<double>(t_ret), y, user_data,
+                                                sens, ns);
             }
         }
 

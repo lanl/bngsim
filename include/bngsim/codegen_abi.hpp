@@ -12,6 +12,7 @@
 //
 //   bngsim_codegen_rhs        (generate_rhs_c)        — dx/dt
 //   bngsim_codegen_sens_rhs   (generate_sens_rhs_c)   — ySdot = J·yS + ∂f/∂p_iS
+//   bngsim_codegen_sens_term_scale (same emitter)     — Σ|term| per row of ∂f/∂p_iS
 //   bngsim_codegen_jac        (generate_jacobian_*)   — dense column-major J
 //   bngsim_codegen_jac_sparse (generate_jacobian_*)   — CSC value array
 //   bngsim_codegen_outputs    (generate_outputs_*)    — observable/function values
@@ -90,6 +91,20 @@ using CodegenRhsFn = int (*)(double t, double *y, double *ydot, void *user_data)
 // steady-state solver gets ∂f/∂p without differencing anything.
 using CodegenSensRhsFn = int (*)(int Ns, double t, double *y, double *ydot, int iS, double *yS,
                                  double *ySdot, void *user_data, double *tmp1, double *tmp2);
+
+// Issue #177: scale_out[i] = Σ|term| over the very contributions the function
+// above sums into row i of ∂f/∂p_{plist[iS]} — the magnitude of the arithmetic
+// behind a value, which the value itself does not carry. ε·scale_out[i] is the
+// roundoff of that row, and a sensitivity absolute tolerance set below it asks
+// for accuracy float64 does not have, so CVODES shrinks h without bound.
+//
+// Emitted alongside bngsim_codegen_sens_rhs and takes the same
+// CodegenSensUserDataForSO, so wherever the analytic sensitivity RHS is
+// resolved this is too. Resolved with try_symbol like everything else here: a
+// .so built before v28 of the emitter simply does not have it, and the caller
+// then keeps the unfloored tolerance rather than failing to load.
+using CodegenSensTermScaleFn = int (*)(int Ns, double t, double *y, int iS, double *scale_out,
+                                       void *user_data);
 
 // Dense analytical Jacobian into an n×n COLUMN-MAJOR buffer
 // (jac[j*n + i] = ∂f_i/∂x_j). The emitted C memsets the buffer itself.

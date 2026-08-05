@@ -99,18 +99,19 @@ def scalar_run():
     return _run(sensitivity=False)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="issue #177: the sensitivity error floor is below the roundoff of "
-    "ṡ = J·s + ∂f/∂p, so CVODES micro-steps. Remove this marker with the fix.",
-)
 def test_sensitivity_solve_does_not_micro_step(sens_run):
     """The reported symptom, in miniature.
 
     On ``Smith_BMCSystBiol2013`` the same mechanism turns a 0.013 s scalar run
     into one that does not finish in 300 s with 16 sensitivity columns. Here the
-    model is small enough that the run still returns — it just spends ~900x the
+    model is small enough that the run still returns — it just spent ~900x the
     steps of its own scalar solve to do it.
+
+    Fixed by flooring ``atolS`` at the roundoff of the sum that produces ``ṡ``:
+    515 steps, from 183,219. The magnitude that decides it comes from the
+    emitter — ``bngsim_dfdp_term_scale`` reports Σ|term| per row alongside the
+    signed sum — because ``∂f/∂p`` here is ``c1·S − c2·X``, two 2e18-scale terms
+    whose difference says nothing about what cancelled to produce it.
     """
     n_steps = sens_run.solver_stats["n_steps"]
     assert n_steps < STEP_BUDGET, (
