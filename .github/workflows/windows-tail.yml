@@ -85,6 +85,11 @@ on:
       - "python/tests/test_exprtk_vendoring.py"
       - "python/tests/test_ic_sensitivity_seed.py"
       - "python/tests/test_model_load_dispatch.py"
+      # Issue #164 — the compartment-size write refusal spans the loader
+      # (which marks the parameter), model.cpp (which refuses the write),
+      # _model.py (compartment_sizes=) and _simulator.py (the sensitivity
+      # column). All four are already triggers above; this adds the test.
+      - "python/tests/test_compartment_size_write.py"
       - ".github/workflows/windows-tail.yml"
   pull_request:
     paths: *tail_paths
@@ -167,6 +172,7 @@ jobs:
             python/tests/test_ssa_propensity_export.py \
             python/tests/test_ic_sensitivity_seed.py \
             python/tests/test_model_load_dispatch.py \
+            python/tests/test_compartment_size_write.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee tail-windows.log
 

@@ -234,7 +234,13 @@ class Model:
     # ─── Factory methods ──────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, path: str | Path, *, defer_jacobian: bool | None = None) -> Model:
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        defer_jacobian: bool | None = None,
+        compartment_sizes: dict[str, float] | None = None,
+    ) -> Model:
         """Load a model from a file, dispatching on its suffix.
 
         A single entry point over the format-specific factories, so callers who
@@ -263,6 +269,10 @@ class Model:
             GH #145 escape hatch, forwarded to the selected factory (see
             :meth:`from_sbml`). Default lazy; ``defer_jacobian=False`` derives
             the analytical Functional Jacobian eagerly at load.
+        compartment_sizes : dict[str, float], optional
+            Compartment id → volume, forwarded to the SBML-family factories
+            (issue #164 — see :meth:`from_sbml`). Rejected for ``.net``, whose
+            volumes BNG2.pl already folded into the network's rate constants.
 
         Returns
         -------
@@ -277,7 +287,8 @@ class Model:
         FileNotFoundError
             If the file does not exist.
         ModelError
-            If the suffix is not a loadable format, or the file cannot be parsed.
+            If the suffix is not a loadable format, the file cannot be parsed,
+            or ``compartment_sizes`` is given for a ``.net`` model.
         """
         path = Path(path)
         suffix = path.suffix.lower()
@@ -295,18 +306,36 @@ class Model:
                 f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
                 f"Use the format-specific factory to load it explicitly.{hint}"
             )
+        if compartment_sizes and factory == "from_net":
+            # A .net network is post-BNG2.pl: the compartment volumes are already
+            # folded into its rate constants and there is no compartment left to
+            # override. Say so rather than accept a dict that would do nothing
+            # (issue #164 exists because a silently-dropped volume write is the
+            # expensive failure).
+            raise ModelError(
+                f"compartment_sizes= is not supported for .net models ({path.name}): "
+                f"BNG2.pl folds compartment volumes into the generated network's rate "
+                f"constants, so the loaded model has no compartment size to set. "
+                f"Regenerate the network from BNGL at the volume you want."
+            )
         if factory == "from_antimony":
             # from_antimony takes no defer_jacobian (it routes through the SBML
             # string loader, which is lazy); apply the eager hatch exactly as
             # from_sbml does so load() behaves uniformly across formats.
-            model = cls.from_antimony(path)
+            model = cls.from_antimony(path, compartment_sizes=compartment_sizes)
             if defer_jacobian is False:
                 model.prepare_analytical_jacobian()
             return model
-        return getattr(cls, factory)(path, defer_jacobian=defer_jacobian)
+        if factory == "from_net":
+            return cls.from_net(path, defer_jacobian=defer_jacobian)
+        return getattr(cls, factory)(
+            path, defer_jacobian=defer_jacobian, compartment_sizes=compartment_sizes
+        )
 
     @classmethod
-    def from_antimony(cls, path: str | Path) -> Model:
+    def from_antimony(
+        cls, path: str | Path, *, compartment_sizes: dict[str, float] | None = None
+    ) -> Model:
         """Load a model from an Antimony ``.ant`` file.
 
         Antimony is a human-readable model description language.
@@ -319,6 +348,9 @@ class Model:
         ----------
         path : str or Path
             Path to the ``.ant`` file.
+        compartment_sizes : dict[str, float], optional
+            Compartment id → volume, applied to the converted SBML before
+            interpretation (issue #164). See :meth:`from_sbml`.
 
         Returns
         -------
@@ -337,20 +369,25 @@ class Model:
         from bngsim._sbml_loader import load_antimony_via_sbml
 
         try:
-            return load_antimony_via_sbml(path)
+            return load_antimony_via_sbml(path, compartment_sizes)
         except (ImportError, FileNotFoundError):
             raise
         except Exception as e:
             raise ModelError(f"Failed to load Antimony file {path}: {e}") from e
 
     @classmethod
-    def from_antimony_string(cls, text: str) -> Model:
+    def from_antimony_string(
+        cls, text: str, *, compartment_sizes: dict[str, float] | None = None
+    ) -> Model:
         """Load a model from an Antimony string.
 
         Parameters
         ----------
         text : str
             Antimony model text.
+        compartment_sizes : dict[str, float], optional
+            Compartment id → volume, applied to the converted SBML before
+            interpretation (issue #164). See :meth:`from_sbml`.
 
         Returns
         -------
@@ -360,14 +397,20 @@ class Model:
         from bngsim._sbml_loader import load_antimony_string_via_sbml
 
         try:
-            return load_antimony_string_via_sbml(text)
+            return load_antimony_string_via_sbml(text, compartment_sizes)
         except ImportError:
             raise
         except Exception as e:
             raise ModelError(f"Failed to load Antimony string: {e}") from e
 
     @classmethod
-    def from_sbml(cls, path: str | Path, *, defer_jacobian: bool | None = None) -> Model:
+    def from_sbml(
+        cls,
+        path: str | Path,
+        *,
+        defer_jacobian: bool | None = None,
+        compartment_sizes: dict[str, float] | None = None,
+    ) -> Model:
         """Load a model from an SBML ``.xml`` file.
 
         Parameters
@@ -380,6 +423,27 @@ class Model:
             pass ``defer_jacobian=False`` to derive it eagerly at load instead
             (the pre-#145 behavior, for A/B and safety). ``BNGSIM_EAGER_JACOBIAN=1``
             forces eager for every load path.
+        compartment_sizes : dict[str, float], optional
+            Compartment id → volume, applied to the parsed document before
+            bngsim interprets it (issue #164). This is how a compartment volume
+            is changed: :meth:`set_param` **refuses** a compartment-size write,
+            because the size is folded at load into constants the write cannot
+            reach — per-species volume factors, amount-declared initial
+            conditions, mass-action rate constants, SSA propensity volumes, and
+            the emitted RHS/sensitivity sources. Overriding here moves the size
+            *before* any of those are derived, so the result is the model you
+            would get by editing the ``size=`` attribute in the file. Scan or
+            fit a volume by looping over loads:
+
+            >>> for v in [1.0, 2.0, 4.0]:  # doctest: +SKIP
+            ...     m = Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
+
+            Ids are SBML ids as the document carries them (before bngsim's
+            identifier mangling, after any ``comp`` flattening). An
+            ``initialAssignment`` on an overridden compartment is dropped, since
+            it would otherwise take precedence. A compartment whose size an
+            *assignment rule* computes is refused — the rule, not the attribute,
+            is its volume.
 
         Returns
         -------
@@ -393,12 +457,14 @@ class Model:
         FileNotFoundError
             If the file does not exist.
         ModelError
-            If the file cannot be parsed.
+            If the file cannot be parsed, or ``compartment_sizes`` names an
+            unknown compartment, a non-positive size, or an assignment-rule
+            compartment.
         """
         from bngsim._sbml_loader import load_sbml
 
         try:
-            model = load_sbml(path)
+            model = load_sbml(path, compartment_sizes)
         except (ImportError, FileNotFoundError):
             raise
         except Exception as e:
@@ -411,7 +477,13 @@ class Model:
         return model
 
     @classmethod
-    def from_sbml_string(cls, text: str, *, defer_jacobian: bool | None = None) -> Model:
+    def from_sbml_string(
+        cls,
+        text: str,
+        *,
+        defer_jacobian: bool | None = None,
+        compartment_sizes: dict[str, float] | None = None,
+    ) -> Model:
         """Load a model from an SBML XML string.
 
         Parameters
@@ -422,6 +494,10 @@ class Model:
             GH #145 escape hatch (see :meth:`from_sbml`). Default lazy; pass
             ``defer_jacobian=False`` (or set ``BNGSIM_EAGER_JACOBIAN=1``) to
             derive the analytical Functional Jacobian eagerly at load.
+        compartment_sizes : dict[str, float], optional
+            Compartment id → volume, applied before interpretation — the
+            supported way to change a volume, since :meth:`set_param` refuses a
+            compartment-size write (issue #164). See :meth:`from_sbml`.
 
         Returns
         -------
@@ -431,7 +507,7 @@ class Model:
         from bngsim._sbml_loader import load_sbml_string
 
         try:
-            model = load_sbml_string(text)
+            model = load_sbml_string(text, compartment_sizes)
         except ImportError:
             raise
         except Exception as e:
@@ -662,6 +738,17 @@ class Model:
         ------
         ParameterError
             If the parameter name is not found.
+        ValueError
+            If ``name`` is an SBML compartment size and ``value`` differs from
+            the size the model was loaded at (issue #164). A compartment's value
+            is folded at load into constants a write cannot reach — per-species
+            volume factors, amount-declared initial conditions, mass-action rate
+            constants, SSA propensity volumes, the emitted RHS — so honoring
+            only the kinetic-law half would leave the model internally
+            inconsistent rather than move the volume. Load at the size you want
+            instead: :meth:`from_sbml` accepts ``compartment_sizes={...}``.
+            Writing the value it already holds is allowed, so round-tripping a
+            full parameter vector still works.
 
         Notes
         -----
@@ -694,6 +781,44 @@ class Model:
             self._core.set_param(name, float(value))
         except (KeyError, RuntimeError) as e:
             raise ParameterError(f"Parameter '{name}' not found in model") from e
+
+    @property
+    def compartment_size_params(self) -> list[str]:
+        """Names of the parameters that are SBML compartment sizes (issue #164).
+
+        These are the parameters :meth:`set_param` refuses to *change* and
+        forward sensitivity refuses a column for, because their value is folded
+        at load into constants neither a write nor the sensitivity RHS can
+        reach. Change one by reloading the model —
+        ``Model.from_sbml(..., compartment_sizes={...})``.
+
+        Empty for ``.net`` models, and for any compartment the SBML loader
+        promoted to a species (rate-rule or event-resized): that one is live
+        state, written with :meth:`set_concentration`, not a folded constant.
+
+        Returns
+        -------
+        list[str]
+            Parameter names, in model parameter order.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_sbml("pbpk.xml")   # doctest: +SKIP
+        >>> fittable = [p for p in model.param_names     # doctest: +SKIP
+        ...             if p not in set(model.compartment_size_params)]
+        """
+        try:
+            flags = self._core.param_is_compartment_size
+        except AttributeError:  # pragma: no cover - defensive
+            return []
+        # strict=: both lists come from the same `parameters()` vector, so a
+        # length mismatch is a core/wrapper desync worth failing on, not
+        # something to truncate past.
+        return [n for n, f in zip(self.param_names, flags, strict=True) if f]
+
+    def _is_compartment_size(self, name: str) -> bool:
+        """Whether ``name`` is an SBML compartment size (issue #164)."""
+        return name in set(self.compartment_size_params)
 
     def get_param(self, name: str) -> float:
         """Get a parameter value by name.
@@ -731,6 +856,11 @@ class Model:
         ParameterError
             If any parameter name is not found, or any value cannot be
             converted to float. Atomic: either all succeed or none do.
+        ValueError
+            If any entry is an SBML compartment size being *changed* (issue
+            #164 — see :meth:`set_param`). Checked in the validation phase with
+            the names and the values, so the atomicity above holds: a dict with
+            one compartment write in it applies none of its entries.
 
         Examples
         --------
@@ -757,6 +887,13 @@ class Model:
                 converted[name] = float(value)
             except (TypeError, ValueError) as e:
                 raise ParameterError(f"Invalid value for parameter '{name}': {value!r}") from e
+        # Phase 2b: refuse a compartment-size *change* here rather than let it
+        # throw from the apply loop, which would leave the earlier entries
+        # written and break the atomicity this method documents (issue #164).
+        # Same rule as set_param: an unchanged value is not a change.
+        for name, value in converted.items():
+            if self._is_compartment_size(name) and value != self._core.get_param(name):
+                self.set_param(name, value)  # raises with the full explanation
         # Phase 3: Apply atomically (all validation passed)
         for name, value in converted.items():
             self._core.set_param(name, value)

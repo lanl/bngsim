@@ -143,6 +143,32 @@ matrix multiply per time point. Combined with parallel
 `compute_all_sensitivities()`, the total cost of loss + gradient is
 dominated by the CVODES solve, not the gradient algebra.
 
+**SBML compartment sizes are not fittable this way** (issue #164). On an SBML
+model `model.param_names` includes the compartments, and a compartment size is
+not a writable parameter: its value is folded at load into constants a write
+cannot reach — per-species volume factors, amount-declared initial conditions,
+mass-action rate constants, SSA propensity volumes, the emitted RHS. So
+`set_params` refuses to *change* one (writing back the value it already holds is
+fine, which is what keeps the round-trip above working),
+`compute_all_sensitivities()` skips its column with a warning, and
+`sensitivity_params=["Liver"]` raises. Build the fitted vector from the
+parameters that are writable:
+
+```python
+param_names = [p for p in model.param_names
+               if p not in set(model.compartment_size_params)]
+```
+
+To fit or scan a volume, reload the model at each trial value — the size then
+reaches every constant it is folded into, and its gradient is a finite
+difference over two such loads:
+
+```python
+m = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
+```
+
+Issue #170 tracks making a compartment size a live, differentiable parameter.
+
 ## Differentiable ODE solving with JAX
 
 BNGsim provides a JAX-traceable ODE solver via `bngsim.jax.differentiable_solve`.

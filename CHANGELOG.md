@@ -14,7 +14,68 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+- **An SBML compartment size is no longer writable, and says so (issue #164).**
+  A compartment volume had two representations in a loaded model and a write
+  moved only one. The kinetic law reads `p[]`; the *storage convention* is
+  folded at load into constants nothing re-derives — `Species::volume_factor`,
+  an amount-declared `initial_conc` (= amount/V), the Elementary scalar rate's
+  `Π V^n / V_storage`, `Reaction::ssa_volume_factor`, and the `inv_vf` table in
+  the emitted C. `set_param` reached the first and none of the second.
+
+  The result was not a stale value but an internally inconsistent model. On the
+  issue's two-compartment model `set_param("C1", 3.0)` moved `A(5)` from 22.3 to
+  1.11 — a factor of 20 — on a trajectory that is *exactly* `C1`-invariant; the
+  other direction was a silent no-op (`set_param("C2", 7.0)` changed nothing),
+  `parameter_scan` over a compartment returned one trajectory N times, and a
+  forward-sensitivity column was wrong in **both** directions at once: `dA/dC1`
+  reported 36.6 against a true 0, `dB/dC2` reported 0 against a true 2.30.
+
+  **Wider than the issue scoped it.** #164 measured single-compartment models as
+  safe. Against RoadRunner as an independent oracle, only the exact
+  `compartment·k·A` convention with concentration ICs is V-invariant: a bare
+  `k*A` law (the common BioModels form), any `initialAmount` species, and every
+  `hasOnlySubstanceUnits="true"` species move with V under a rebuild and did not
+  under a write. Which half of a write landed was not even uniform inside one
+  model — a mass-action law folded the volume away entirely, a Functional law
+  loaded at V ≠ 1 divided by the live compartment symbol, and the same law
+  loaded at V = 1 had that divide normalized out — with nothing visible to the
+  caller to tell them apart. Hence a refusal rather than a patched subset.
+
+  So: `set_param` / `set_params` raise `ValueError` on a compartment-size
+  *change*, `Simulator(sensitivity_params=[...])` and
+  `steady_state(sensitivity_params=[...])` refuse the column, and
+  `compute_all_sensitivities()` skips compartments from its "all parameters"
+  default with a warning (an explicit `params=[...]` raises). Writing the value
+  a compartment already holds stays legal, so round-tripping a full parameter
+  vector through `set_params` still works, and the check runs in that method's
+  validation phase so its all-or-nothing contract holds. `.net` models are
+  unaffected — BNG2.pl folded their volumes into rate constants long before
+  bngsim sees them — and a compartment the loader promotes to a species
+  (rate-rule or event-resized) is genuine live state, not flagged.
+
+  Inert for every model that does not write a compartment: no emitted source,
+  cache key, or trajectory changes.
+
+  Issue #170 tracks making the volume live everywhere, which retires the
+  refusal and turns the sensitivity column into a real one.
+
 ### Added
+- **`compartment_sizes=` at load, the supported way to change a volume (issue
+  #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
+  `from_antimony_string`, and `Model.load` take
+  `compartment_sizes={"Liver": 2.5}`, applied to the parsed document before
+  bngsim interprets it — so the size reaches every constant it is folded into,
+  and the result is bit-identical to loading a source that carries that `size=`
+  outright. A volume scan or a fit over a volume is a loop over such loads, and
+  its gradient is a finite difference over two of them. An `initialAssignment`
+  on an overridden compartment is dropped (it would otherwise take precedence);
+  a compartment whose size an *assignment rule* computes is refused, since the
+  rule and not the attribute is its volume; `.net` is refused for having no
+  compartment left to set.
+- **`Model.compartment_size_params`** — the parameter names the two rules above
+  apply to, so a fitting harness can build its vector from what is writable.
+
 - **Analytic forward sensitivities for cross-compartment reactions (issue
   #160).** A reaction whose affected species live in compartments of different
   size (`per_species_volume_scaling`) used to decline the analytic sensitivity

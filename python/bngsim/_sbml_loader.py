@@ -1820,7 +1820,81 @@ def _flatten_comp(doc, base_path: str | None = None):
     return doc
 
 
-def load_sbml(path: str | Path):
+def _apply_compartment_size_overrides(doc, compartment_sizes: dict, source: str) -> None:
+    """Rewrite compartment sizes on the parsed document, before interpretation.
+
+    Issue #164 — a compartment size is folded at load into constants no later
+    write can reach (``Species.volume_factor``, an amount-declared
+    ``initial_conc``, the Elementary scalar rate's ``Π V^n / V_storage``,
+    ``Reaction.ssa_volume_factor``, the emitted ``inv_vf`` table), so
+    ``set_param`` refuses it. This is the supported way to get the same model at
+    a different volume: the size moves *before* any of those folds happen, so
+    every one of them reads the new value — identical to editing the ``size=``
+    attribute in the file, which is the oracle the tests use. A volume scan or a
+    fit over a volume is a loop over loads through here.
+
+    Applied after ``comp`` flattening, so the ids are the ones the flattened
+    document actually carries.
+    """
+    model = doc.getModel()
+    if model is None:  # pragma: no cover - _check_sbml_errors fires first
+        raise ValueError(f"compartment_sizes= given but {source} has no model to apply it to")
+
+    known = {model.getCompartment(i).getId() for i in range(model.getNumCompartments())}
+    unknown = sorted(set(compartment_sizes) - known)
+    if unknown:
+        raise ValueError(
+            f"compartment_sizes: unknown compartment(s) {unknown} in {source}. "
+            f"Known compartments: {sorted(known)}. (These are SBML compartment ids as they "
+            f"appear in the document — before bngsim's identifier mangling, and after any "
+            f"``comp`` flattening.)"
+        )
+
+    # An ASSIGNMENT RULE defines its compartment's size at every point in time
+    # (``tV := mV + dV``), so the ``size=`` attribute is not the model's volume
+    # and overwriting it changes nothing. Refuse rather than accept a write that
+    # the rule silently discards — the same reason set_param refuses. A RATE
+    # RULE or an event assignment target is different: the size is that state's
+    # *initial value*, which the override legitimately sets.
+    ar_targets = {
+        model.getRule(j).getVariable()
+        for j in range(model.getNumRules())
+        if model.getRule(j).isAssignment()
+    }
+    blocked = sorted(set(compartment_sizes) & ar_targets & known)
+    if blocked:
+        raise ValueError(
+            f"compartment_sizes: {blocked} is set by an SBML assignment rule, so its size "
+            f"attribute does not determine its volume — the rule recomputes it at every "
+            f"time point and the override would have no effect. Change the rule's inputs "
+            f"instead."
+        )
+
+    for cid, value in compartment_sizes.items():
+        try:
+            size = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"compartment_sizes['{cid}']: expected a number, got {value!r}"
+            ) from None
+        if not _math.isfinite(size) or size <= 0.0:
+            raise ValueError(
+                f"compartment_sizes['{cid}']: a compartment size must be finite and "
+                f"positive, got {size!r}. (Zero would make the storage divide singular; "
+                f"the loader's amount→concentration conversion divides by it.)"
+            )
+        # An initialAssignment for the compartment overrides the size attribute
+        # at load (§1 reads ``ia_values`` in preference to ``getSize()``), so an
+        # override that left it in place would be silently discarded. Dropping it
+        # is what the caller asked for: they are naming the volume outright.
+        if model.getInitialAssignment(cid) is not None:
+            model.removeInitialAssignment(cid)
+        comp = model.getCompartment(cid)
+        if comp.setSize(size) != libsbml.LIBSBML_OPERATION_SUCCESS:  # pragma: no cover
+            raise ValueError(f"compartment_sizes['{cid}']: libsbml rejected size {size!r}")
+
+
+def load_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """Load an SBML .xml file into a BNGsim NetworkModel.
 
     Uses libsbml directly to parse the SBML document.  Previous versions
@@ -1839,13 +1913,15 @@ def load_sbml(path: str | Path):
     _check_sbml_errors(doc, str(path))
     if _doc_uses_comp(doc):
         _flatten_comp(doc, base_path=str(path.parent))
+    if compartment_sizes:
+        _apply_compartment_size_overrides(doc, compartment_sizes, str(path))
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
     return model
 
 
-def load_sbml_string(text: str):
+def load_sbml_string(text: str, compartment_sizes: dict | None = None):
     """Load an SBML model from an XML string."""
     # libSBML parse phase (shared C++ core) — readSBML* + doc-level error check.
     # Timed here and stamped on the model; the doc → _core interpretation and the
@@ -1857,6 +1933,8 @@ def load_sbml_string(text: str):
         # No file context for a string load, so ExternalModelDefinitions cannot
         # be resolved; in-document ModelDefinitions/Submodels flatten fine.
         _flatten_comp(doc, base_path=None)
+    if compartment_sizes:
+        _apply_compartment_size_overrides(doc, compartment_sizes, "<string>")
     parse_sec = time.perf_counter() - t0
     model = _build_model_from_sbml_doc(doc)
     model._libsbml_parse_sec = parse_sec
@@ -1882,7 +1960,7 @@ def _import_antimony():
     return ant
 
 
-def load_antimony_via_sbml(path: str | Path):
+def load_antimony_via_sbml(path: str | Path, compartment_sizes: dict | None = None):
     """Load an Antimony .ant file by converting to SBML first."""
     ant = _import_antimony()
 
@@ -1901,10 +1979,10 @@ def load_antimony_via_sbml(path: str | Path):
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError(f"Antimony produced empty SBML for {path}")
 
-    return load_sbml_string(sbml_str)
+    return load_sbml_string(sbml_str, compartment_sizes)
 
 
-def load_antimony_string_via_sbml(text: str):
+def load_antimony_string_via_sbml(text: str, compartment_sizes: dict | None = None):
     """Load an Antimony model string by converting to SBML first."""
     ant = _import_antimony()
 
@@ -1919,7 +1997,7 @@ def load_antimony_string_via_sbml(text: str):
     if not sbml_str or len(sbml_str) < 10:
         raise RuntimeError("Antimony produced empty SBML")
 
-    return load_sbml_string(sbml_str)
+    return load_sbml_string(sbml_str, compartment_sizes)
 
 
 def _flatten_product_for_mass_action(node, out):
@@ -3368,7 +3446,22 @@ def _build_model_from_sbml_doc(doc):
         # same ExprTk symbol name.
         if cid in rate_rule_targets or cid in event_promoted_params:
             continue
-        builder.add_parameter(_safe_name(cid), vol)
+        # (#164) Mark it a compartment size, so a later ``set_param`` refuses a
+        # value-changing write instead of moving this ``p[]`` entry while every
+        # constant ``vol`` is about to be folded into stays at its load-time
+        # value — ``volume_factor`` (§3), an amount-declared ``initial_conc``
+        # (§3), the Elementary scalar rate's ``Π V^n / V_storage`` (§6), and
+        # ``ssa_volume_factor`` (§9). Marked for EVERY static compartment, not
+        # only the ones some fold actually reaches: which halves of a write land
+        # varies per reaction inside one model (a mass-action law folds the
+        # volume away entirely; a Functional law loaded at V≠1 divides by the
+        # live symbol; the same law loaded at V=1 had that divide normalized
+        # out), so "this particular write happens to be honored" is not a
+        # property a caller can see or a loader can cheaply prove. Compartments
+        # promoted to species above are not parameters and need no flag; their
+        # live volume is genuinely a state variable. Issue #170 makes the volume
+        # live and retires the flag.
+        builder.add_parameter(_safe_name(cid), vol, is_compartment_size=True)
 
     # ── 2. Parameters ─────────────────────────────────────────────────
     for i in range(sbml_model.getNumParameters()):

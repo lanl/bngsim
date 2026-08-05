@@ -905,6 +905,7 @@ class Simulator:
             raise ValueError("sensitivity_params is only supported for method='ode'.")
         if self._sensitivity_ic and dispatch != "ode":
             raise ValueError("sensitivity_ic is only supported for method='ode'.")
+        self._raise_if_compartment_size_params(self._sensitivity_params)
 
         # Forward sensitivity REQUIRES an analytical codegen sensitivity RHS
         # (GH #214 follow-up): the interpreted path finite-differences the whole
@@ -989,6 +990,61 @@ class Simulator:
                 logger.debug("volume_factors unavailable: %s", e)
                 self._volume_factors_cache = []
         return self._volume_factors_cache
+
+    def _compartment_size_params(self) -> set[str]:
+        """Names of the model's SBML compartment-size parameters (issue #164).
+
+        Empty for ``.net`` models, for every model built through
+        :class:`ModelBuilder` directly, and for a compartment the SBML loader
+        promoted to a species (rate-rule / event-resized) — that one is genuine
+        live state, not a baked constant. Degrades to "none" against a core
+        built before the flag existed, which loses the refusal rather than
+        breaking the run.
+        """
+        try:
+            flags = self._model._core.param_is_compartment_size
+        except AttributeError:  # pragma: no cover - defensive
+            return set()
+        # strict=: see Model.compartment_size_params — same invariant.
+        return {n for n, f in zip(self._model.param_names, flags, strict=True) if f}
+
+    def _raise_if_compartment_size_params(self, param_names: list[str]) -> None:
+        """Refuse a forward-sensitivity column for a compartment size.
+
+        Issue #164 — the reported column is wrong in **both** directions, and
+        every oracle reachable from inside the process agrees with it. A
+        compartment's value is folded at load into constants no derivative here
+        differentiates: per-species volume factors, amount-declared initial
+        conditions, the mass-action scalar's ``Π V^n / V_storage``, the SSA
+        propensity volume, and the emitted RHS. What CVODES differentiates is
+        the leftover ``p[]`` reference in whichever rate laws still carry one —
+        so on issue #164's model ``dA/dC1`` is reported as 36.6 where the truth
+        is 0 (``A`` is exactly ``C1``-invariant), and ``dB/dC2`` as 0 where the
+        truth is 2.30. Both errors survive a finite-difference check, because a
+        re-solve at ``p ± h`` moves the parameter through ``set_param`` and
+        inherits the same staleness; only rebuilding from source disagrees.
+
+        So refuse the column. The gradient is available by rebuilding at
+        ``V ± h`` (``Model.from_sbml(..., compartment_sizes=...)``), which is
+        what the tests use as the oracle. Issue #170 tracks the analytic column.
+        """
+        if not param_names:
+            return
+        bad = sorted(set(param_names) & self._compartment_size_params())
+        if bad:
+            raise ValueError(
+                f"Forward sensitivity is not supported for compartment size(s) "
+                f"{bad}: an SBML compartment's value is folded at load into constants "
+                f"the sensitivity RHS does not differentiate (per-species volume "
+                f"factors, amount-declared initial conditions, mass-action rate "
+                f"constants, SSA propensity volumes), so the column would be wrong in "
+                f"both directions — an invented gradient where the true one is zero, "
+                f"and a silent zero where it is not. bngsim refuses rather than return "
+                f"a confidently wrong derivative (issue #164). A finite difference "
+                f"through a rebuild is the available gradient: reload with "
+                f"Model.from_sbml(..., compartment_sizes={{...}}) at V ± h. Issue #170 "
+                f"tracks making a compartment size differentiable."
+            )
 
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:
         """Refuse output sensitivities only for unsupported event subclasses.
@@ -3666,8 +3722,28 @@ class Simulator:
                     f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}"
                 )
             target_params = list(params)
+            # Issue #164 — an explicit ask gets a hard answer.
+            self._raise_if_compartment_size_params(target_params)
         else:
-            target_params = list(all_param_names)
+            # ...but "every parameter" is a request for everything computable,
+            # and on an SBML model that list leads with the compartments. Raising
+            # would make this method unusable on any SBML model for the sake of
+            # columns nobody asked for by name; silently including them would put
+            # a wrong column in the tensor. So drop them and say so (issue #164).
+            skipped = sorted(set(all_param_names) & self._compartment_size_params())
+            target_params = [p for p in all_param_names if p not in set(skipped)]
+            if skipped:
+                warnings.warn(
+                    f"compute_all_sensitivities: skipping compartment size(s) {skipped} "
+                    f"— an SBML compartment's value is folded into load-time constants "
+                    f"the sensitivity RHS does not differentiate, so its column would be "
+                    f"wrong in both directions (issue #164). The returned tensor has "
+                    f"{len(target_params)} parameter columns; result.sensitivity_params "
+                    f"lists them. Pass params=[...] to make the refusal explicit, or "
+                    f"finite-difference through a rebuild "
+                    f"(Model.from_sbml(..., compartment_sizes={{...}}) at V ± h).",
+                    stacklevel=2,
+                )
 
         n_params = len(target_params)
         if n_params == 0:
@@ -4109,6 +4185,10 @@ class Simulator:
         # classified against this call's requested sensitivity_params.
         if sensitivity_params:
             self._raise_if_event_sensitivities(sensitivity_params)
+            # Issue #164 — and the same refusal the constructor applies: a
+            # compartment size is not differentiable here either, and dY_ss/dp
+            # would inherit the wrong column through the linear solve.
+            self._raise_if_compartment_size_params(list(sensitivity_params))
             # Issue #63 — the same hard codegen requirement run() and
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
             # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request

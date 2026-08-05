@@ -47,8 +47,15 @@ class ModelBuilder {
     /// Add a parameter. Returns the 0-based parameter index.
     /// Parameters must be added before species/reactions/functions that
     /// reference them.
+    /// is_compartment_size: this parameter is an SBML compartment size, whose
+    /// value the loader folds into constants a later write cannot reach
+    /// (`Species::volume_factor`, amount-declared ICs, the Elementary scalar
+    /// rate, `Reaction::ssa_volume_factor`, the emitted `inv_vf` table). Marks
+    /// it so `set_param` refuses a value-changing write rather than desync the
+    /// two representations (issue #164). Default false leaves `.net` and every
+    /// non-compartment parameter unchanged.
     int add_parameter(const std::string &name, double value, const std::string &expression = "",
-                      bool is_expression = false);
+                      bool is_expression = false, bool is_compartment_size = false);
 
     /// Add a species. Returns the 0-based species index.
     /// volume_factor: storage→amount conversion factor used by the SSA fire
