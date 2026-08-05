@@ -166,17 +166,24 @@ stack. To make this identical and provable on every machine, three pieces:
 
 - **Pin (`../requirements-pybionetgen.txt`).** PyBioNetGen pinned to the exact
   RuleWorld commit (`git+…RuleWorld/PyBioNetGen@43b09a5`) — no local checkout, no
-  PR-branch, no `PYTHONPATH`. bngsim is not on PyPI, so it ships from this repo's
-  wheel (`scripts/ship_wheel.py`).
+  PR-branch, no `PYTHONPATH`. bngsim is *not* pinned alongside it: it ships as an
+  ABI-tagged wheel, so the right artifact depends on the target interpreter. The
+  bootstrap installs it separately and explicitly — from this tree
+  (`scripts/ship_wheel.py`), from a wheel you hand it, or from PyPI.
 - **Bootstrap (`bootstrap_parity_env.py`).** Turnkey: `uv venv` → install the
   pinned PyBioNetGen (handling its build-time `pip install numpy` + BNG download
-  via `--no-build-isolation`) → install the bngsim wheel → **verify the backend is
+  via `--no-build-isolation`) → install bngsim → **verify the backend is
   live** in the new env. `--check-only` verifies an existing env. A machine that
   can't run bngsim fails *here*, loudly, not silently mid-sweep.
   ```
   python bng_parity/bootstrap_parity_env.py --venv .venv-parity --build-bngsim
+  python bng_parity/bootstrap_parity_env.py --venv .venv-parity --bngsim-pypi 0.12.2
   python bng_parity/bootstrap_parity_env.py --check-only --python .venv-parity/bin/python3
   ```
+  The three bngsim sources are mutually exclusive and none is a default:
+  `--build-bngsim` (this working tree — validating a change), `--bngsim-wheel`
+  (one you already have), `--bngsim-pypi <version>` (the published release — the
+  faithful route when *reproducing* a golden, whose engine was that release).
   The interpreter you run this **with** is load-bearing, and it is not the venv's:
   `--build-bngsim` builds the wheel for the *running* interpreter, so its ABI tag
   (`cp312`, …) is what the new venv must be able to install — which is why
@@ -185,8 +192,13 @@ stack. To make this identical and provable on every machine, three pieces:
   build toolchain: an interpreter carrying no `scikit-build-core` builds isolated
   through `uv build` instead (`scripts/ship_wheel.py::_build_command`).
 - **Audit (`bngsim_backend.py`).** Two layers: (1) `backend_status()` — the
-  pre-flight gate (bngsim importable + version-compatible) plus provenance
-  (`bionetgen_commit`, recorded in `_summary.json` and golden `_meta`); (2)
+  pre-flight gate (bngsim importable + version-compatible) plus provenance,
+  recorded in `_summary.json` and golden `_meta`. Each engine is identified by an
+  **artifact**, not a version: `bionetgen_commit` for the bridge, and for bngsim
+  `bngsim_build_commit` (the commit its compiled extension was built from, baked
+  in by CMake) + `bngsim_install` (`index` / `wheel:<file>` / `editable`). The
+  version string cannot stand in — it bumps only at release, so every commit
+  between two releases, from any install source, reports the same one (GH #163); (2)
   `predict_engine()` / `audit_unit_engines()` — classify **every** job the way the
   driver runs it (`_bng_common.classify_bngsim_track`) and report which bngsim
   engine each uses. `parity_sweep` runs this on every bngsim sweep, prints the

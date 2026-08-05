@@ -555,14 +555,22 @@ def main() -> int:
         "git_rev": git_rev(str(HERE)),
         "versions": versions.stamp(),  # bngsim + python + platform (no ref engine)
         # BNGsim-backend provenance + per-job engine audit, carried up from the
-        # sweep's _summary.json. ``bionetgen_commit`` pins the bionetgen+bngsim that
-        # produced this golden (reproduce with requirements-pybionetgen.txt). The
-        # sweep now drives GENUINE bngsim directly (run_bngsim_job), so
+        # sweep's _summary.json. Each engine is pinned by an ARTIFACT identifier,
+        # hoisted here beside the rest of the reproduction record:
+        # ``bionetgen_commit`` for the bridge (reproduce with
+        # requirements-pybionetgen.txt) and ``bngsim_build_commit`` for the engine
+        # itself — the commit its compiled extension was built from. The bare
+        # ``versions.bngsim`` below cannot do that job now that bngsim publishes to
+        # PyPI: it bumps only at release, so every commit between two releases
+        # reports the same string (GH #163; ``bngsim_backend.bngsim_install`` in the
+        # block above says which artifact — index / wheel / editable — supplied it).
+        # The sweep drives GENUINE bngsim directly (run_bngsim_job), so
         # ``engine_audit.by_track`` records the bngsim engine each job used and
         # ``engine_audit.unsupported`` lists any job bngsim could not run (skipped,
         # NOT silently run on the legacy stack) — see GH #175.
         "bngsim_backend": backend,
         "bionetgen_commit": (backend or {}).get("bionetgen_commit"),
+        "bngsim_build_commit": (backend or {}).get("bngsim_build_commit"),
         "engine_audit": sweep_summary.get("engine_audit"),
         # GH #179: per-model multi-phase replay verdict — for each dirty_carryover job,
         # whether bngsim ran a faithful full-protocol replay (``replayed=True`` + the

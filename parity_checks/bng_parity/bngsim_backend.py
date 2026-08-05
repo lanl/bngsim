@@ -69,10 +69,27 @@ def backend_status() -> dict:
     to the legacy stack. The provenance fields pin down *which* PyBioNetGen +
     bngsim produced a run, so a golden/report records what a consumer must install
     to reproduce it.
+
+    Each engine is recorded by an ARTIFACT identifier, not a version string
+    (GH #163). For bionetgen that is ``bionetgen_commit``; for bngsim it is
+    ``bngsim_build_commit`` (the commit the loaded extension was compiled from)
+    plus ``bngsim_install`` (index vs local wheel vs editable). ``bngsim_version``
+    alone cannot do that job now that bngsim publishes to PyPI: it bumps only at
+    release, so every commit between two releases — and every PyPI, wheel, or
+    editable install of them — reports the same string.
+
+    The bngsim half is read from bngsim DIRECTLY rather than through the bridge's
+    ``BNGSIM_VERSION`` view, and is collected before bionetgen is touched, so an
+    env with a broken/absent bionetgen still records which bngsim it has. The
+    bridge's own view is kept alongside as ``bngsim_bridge_version``: the two
+    disagreeing means the bridge is not looking at the bngsim we just measured.
     """
     out = {
         "available": False,
-        "bngsim_version": None,
+        "bngsim_version": bngsim_version(),
+        "bngsim_build_commit": bngsim_build_commit(),
+        "bngsim_install": bngsim_install(),
+        "bngsim_bridge_version": None,
         "min_bngsim_version": None,
         "reason": None,
         "bionetgen_path": None,
@@ -84,7 +101,11 @@ def backend_status() -> dict:
 
         out["bionetgen_path"] = bionetgen.__file__
         out["available"] = bool(getattr(bionetgen, "BNGSIM_AVAILABLE", False))
-        out["bngsim_version"] = getattr(bionetgen, "BNGSIM_VERSION", None)
+        out["bngsim_bridge_version"] = getattr(bionetgen, "BNGSIM_VERSION", None)
+        # Fall back to the bridge's view only if bngsim itself would not answer
+        # (not importable here) — never let a live bngsim be reported as None.
+        if out["bngsim_version"] is None:
+            out["bngsim_version"] = out["bngsim_bridge_version"]
     except Exception as exc:
         out["reason"] = f"bionetgen import failed: {exc}"
         return out
@@ -201,6 +222,91 @@ def bionetgen_commit():
     return None
 
 
+def bngsim_version():
+    """``bngsim.__version__`` as the installed package reports it, or None.
+
+    Read from bngsim itself, not from the bridge's ``bionetgen.BNGSIM_VERSION``
+    re-export: a bridge that fails to populate that attribute would otherwise
+    blank the field on an env where bngsim is perfectly importable.
+    """
+    try:
+        import bngsim
+
+        return getattr(bngsim, "__version__", None)
+    except Exception:
+        return None
+
+
+def bngsim_build_commit():
+    """Git commit the loaded ``_bngsim_core`` extension was BUILT from, or None.
+
+    The discriminator a version string cannot supply. CMake bakes the short sha
+    into the compiled extension at build time (``__build_commit__`` — it is what
+    prints ``built=8826039c91c8`` on import), so it identifies the SOURCE that
+    produced the engine: a PyPI wheel carries the commit CI built it at, a locally
+    built wheel carries local HEAD, and a tree with uncommitted changes carries a
+    ``+dirty`` suffix. None for a build with no reachable git (CMake writes
+    ``"unknown"``, which bngsim normalizes to None).
+
+    Read through ``_build_provenance.gather()`` — bngsim's own public accessor —
+    so the harness never re-derives where that string lives.
+    """
+    try:
+        from bngsim._build_provenance import gather
+
+        return gather(include_head=False).build_commit
+    except Exception:
+        return None
+
+
+def bngsim_install():
+    """How the installed bngsim got there, per PEP 610 ``direct_url.json``.
+
+    Completes what the build commit alone cannot. The release protocol builds the
+    published wheel FROM the release commit, so a locally built wheel of that same
+    commit reports an *identical* ``bngsim_build_commit`` (verified: PyPI 0.12.2
+    and a ``ship_wheel.py`` wheel both report ``1737003f0c81``). Same source, so
+    same numerics — but a golden should still record which artifact ran.
+
+    See :func:`_classify_direct_url` for the labels.
+    """
+    try:
+        from importlib.metadata import distribution
+
+        raw = distribution("bngsim").read_text("direct_url.json")
+    except Exception:
+        return None  # bngsim not installed (or its metadata is unreadable)
+    return _classify_direct_url(raw)
+
+
+def _classify_direct_url(raw):
+    """Label a PEP 610 ``direct_url.json`` payload (``None`` when there is none).
+
+    ``"index"`` for no payload: pip writes direct_url.json only for a *direct
+    reference*, so an index install (PyPI, TestPyPI, a mirror) leaves none.
+    Otherwise ``"vcs:<sha>"``, ``"editable"`` / ``"local-dir"`` for a directory,
+    ``"wheel:<filename>"`` for a wheel, ``"archive:<filename>"`` for anything else
+    (an sdist tarball). Only the BASENAME is kept, never the containing directory:
+    this field is copied verbatim into the committed golden ``_meta``, and a home
+    directory has no business there.
+    """
+    if not raw:
+        return "index"
+    try:
+        info = json.loads(raw)
+    except Exception:
+        return None
+    commit = (info.get("vcs_info") or {}).get("commit_id")
+    if commit:
+        return f"vcs:{commit[:12]}"
+    if "dir_info" in info:
+        return "editable" if (info["dir_info"] or {}).get("editable") else "local-dir"
+    name = (info.get("url") or "").rsplit("/", 1)[-1]
+    if not name:
+        return "archive"
+    return f"wheel:{name}" if name.endswith(".whl") else f"archive:{name}"
+
+
 def _dist_version(name):
     try:
         from importlib.metadata import version
@@ -217,11 +323,14 @@ if __name__ == "__main__":
     for k in (
         "available",
         "bngsim_version",
+        "bngsim_build_commit",
+        "bngsim_install",
+        "bngsim_bridge_version",
         "min_bngsim_version",
         "reason",
         "bionetgen_version",
         "bionetgen_commit",
         "bionetgen_path",
     ):
-        print(f"  {k:20s}: {s[k]}")
+        print(f"  {k:22s}: {s[k]}")
     raise SystemExit(0 if s["available"] else 1)
