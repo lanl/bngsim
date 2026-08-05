@@ -1,0 +1,170 @@
+name: python-tests
+
+# The cross-platform Python gate (issue #169).
+#
+# Before this job, GitHub CI ran 533 of the suite's ~3490 Python tests on Linux
+# or macOS — and every one of them under BNGSIM_CODEGEN_JIT=mir on a
+# -DBNGSIM_ENABLE_MIR=ON build. The number exercised in the DEFAULT configuration
+# on any non-Windows host was zero. lint.yml runs no pytest by design;
+# native-tests.yml is the C++ suite; wheels.yml runs only the cibuildwheel import
+# smoke test; windows-tail.yml and windows-nfsim.yml are Windows-only. So a
+# regression in SBML loading, .net parsing, events, steady state, SSA, conversion
+# or coupling could only be caught on Windows, and only if the file happened to
+# be named in one of two hand-maintained lists.
+#
+# The gap was structural, not a bug. Every job that runs pytest names a curated
+# file list, so a NEW test file defaults to running nowhere, and the backstop was
+# assumed to be the local pre-push hook — which covers one platform (whichever
+# the developer is on, here macOS arm64) and which `git push --no-verify`
+# removes. native-tests.yml stated that assumption outright.
+#
+# Three properties of this job are therefore deliberate, and each one is the
+# thing that closes a specific half of the gap:
+#
+#   * NO paths filter. A gate that fires selectively reintroduces the per-file
+#     opt-in through the trigger instead of through the run list. lint.yml takes
+#     the same position for the same reason.
+#   * NO file list. It runs `python/tests` as a directory, so a file added
+#     tomorrow runs here with no workflow edit — the property native-tests.yml
+#     gets from driving ctest rather than one named target.
+#   * NO -D overrides. Every other workflow disables something (KLU off in
+#     mir/windows-tail/windows-nfsim/native-tests, MIR on in mir.yml), which is
+#     exactly how the shipped configuration ended up untested. Here the build
+#     takes the pyproject defaults: KLU on (REQUIRE_KLU=ON), NFsim on, RuleMonkey
+#     on, MIR off.
+#
+# It is the pre-push hook, on two more platforms. `uv sync --extra dev` provisions
+# from uv.lock and the pytest call is the hook's own (.pre-commit-config.yaml),
+# so green here means what a clean `git push` means locally — on a host the
+# developer does not have.
+#
+# Free side effect worth naming: this is the ONLY job that exercises the
+# BNGSIM_KLU_AUTOBUILD path (GH #209). The wheel legs all resolve a prebuilt
+# SuiteSparse through SUITESPARSE_ROOT, and every other job sets ENABLE_KLU=OFF,
+# so the from-source KLU subset an sdist install falls back to had no CI anywhere.
+# The HAS_KLU assertion below is what keeps that honest — without it a build that
+# quietly lost KLU would skip the sparse tests and still report green.
+#
+# Two coverage axes are deliberately NOT taken here, so they are not mistaken for
+# oversights:
+#
+#   * macOS x86_64. mir.yml already runs a macos-15-intel leg, and a
+#     macOS-x86_64-specific *Python-level* regression is the least likely of the
+#     three. Adding it is one line in the matrix.
+#   * The Python floor. requires-python is >=3.10 and every job here runs 3.12,
+#     so nothing tests the floor at runtime (ruff's target-version=py310 catches
+#     syntax, not stdlib API). Adding it is one more matrix entry.
+#
+# One known skip is environmental rather than structural: $BNGPATH is unset, so
+# the 14 BNG2.pl round-trip tests in test_sbml_to_bngl.py skip. Closing that needs
+# the perl toolchain plus the `parity` dependency group (a git+https reference to
+# PyBioNetGen), which is a heavier provisioning step than this gate warrants; the
+# skip is declared in conftest's _DECLARED_SKIPS and shows up in the audit table.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, -k some_pattern, or a single file path)"
+        required: false
+        default: ""
+
+concurrency:
+  group: python-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: Python suite · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest # x86_64 Linux — no Python coverage at all before #169
+          - os: macos-14 # macOS arm64 — covered only by one developer's pre-push hook
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # --extra dev rather than an enumerated extras list: `dev` is the set a
+      # developer's `uv sync` installs, so this job and the pre-push hook see the
+      # same environment, and an extra added to `dev` later reaches CI without a
+      # workflow edit. It is what un-skips the antimony / roadrunner / xarray /
+      # h5py / pandas / jax / vivarium guarded tests — ~50 items that skip on a
+      # bare install. Building bngsim itself is the slow part (SUNDIALS is
+      # FetchContent'd and the KLU subset is built from source).
+      - name: Provision from uv.lock (default build config)
+        run: uv sync --extra dev --python 3.12
+
+      - name: Show build / capability info
+        run: |
+          set -euxo pipefail
+          uv run --no-sync python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          uv run --no-sync python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_KLU', bngsim.HAS_KLU); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_MIR', bngsim.HAS_MIR)"
+          # The point of this job is the DEFAULT configuration, and KLU is the
+          # part of it nothing else in CI builds. A build that silently lost KLU
+          # would skip the sparse-solver tests and still be green, so fail here
+          # instead — the same false-green guard mir.yml puts on HAS_MIR.
+          uv run --no-sync python -c "import bngsim, sys; sys.exit(0 if bngsim.HAS_KLU else 'HAS_KLU is False — the default build did not link SuiteSparse/KLU')"
+          # The runtime codegen path shells out to this compiler at simulate time.
+          uv run --no-sync python -c "from bngsim import _codegen; print('C compiler:', _codegen._find_c_compiler())"
+
+      # BNGSIM_SKIP_AUDIT=strict turns any skip whose reason is not in conftest's
+      # _DECLARED_SKIPS into a failure. That is the second half of the false-green
+      # guard below: the count floor catches tests that vanish from collection,
+      # strict catches tests that quietly turn into skips for a reason nobody
+      # signed off on.
+      - name: Run the full Python suite
+        env:
+          BNGSIM_SKIP_AUDIT: strict
+          BNGSIM_TEST_DATA: ${{ github.workspace }}/tests/data
+        run: |
+          set -o pipefail
+          uv run --no-sync python -m pytest -p no:cacheprovider python/tests \
+            -q --tb=short --durations=15 ${{ github.event.inputs.pytest_args }} \
+            2>&1 | tee python-tests-${{ matrix.os }}.log
+
+      - name: Guard against a false green
+        if: ${{ !github.event.inputs.pytest_args }}
+        run: |
+          set -euo pipefail
+          # A directory-scoped pytest cannot drift out of sync with a file list,
+          # but it can still shrink: a module that stops importing skips at
+          # collection, a rename can orphan a file, a bad conftest can deselect.
+          # None of those is a failure — the run stays green with a smaller
+          # denominator, which is the #28/#36 shape native-tests.yml guards
+          # against with its own floors. So assert one here too.
+          #
+          # The floor only ever rises as tests are added; additions never break
+          # it, only silent removals do. Measured on this leg at the commit that
+          # introduced this job — see the PR for #169 for the numbers.
+          PASS_FLOOR=3400
+
+          passed="$(grep -oE '[0-9]+ passed' python-tests-${{ matrix.os }}.log | tail -1 | grep -oE '^[0-9]+' || true)"
+          if [ -z "$passed" ]; then
+            echo "::error::No pytest summary line — the suite did not run to completion."
+            exit 1
+          fi
+          echo "pytest reported $passed passed (floor $PASS_FLOOR)."
+          if [ "$passed" -lt "$PASS_FLOOR" ]; then
+            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — tests stopped being collected rather than failing."
+            exit 1
+          fi
+
+      - name: Upload pytest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-tests-log-${{ matrix.os }}
+          path: python-tests-${{ matrix.os }}.log
+          if-no-files-found: error
