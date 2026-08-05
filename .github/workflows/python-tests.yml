@@ -51,9 +51,10 @@ name: python-tests
 #     autobuild does NOT work: SuiteSparse's own CMake calls find_package(BLAS)
 #     and the runner image ships no BLAS, so the build dies in SuiteSparse_config
 #     before KLU is reached. Measured here, not assumed — the first run of this
-#     job failed exactly that way. Tracked separately; installing the system
-#     package is what cibuildwheel's Linux leg already does (`dnf install
-#     suitesparse-devel`), so this leg matches the shipped wheel.
+#     job failed exactly that way, which means GH #209's self-sufficiency claim
+#     holds on macOS but not on a bare Linux host. Installing the system package
+#     is what cibuildwheel's Linux leg already does (`dnf install
+#     suitesparse-devel`), so this leg matches the shipped wheel either way.
 #
 # The HAS_KLU assertion below is what keeps both honest — without it a build that
 # quietly lost KLU would skip the sparse tests and still report green.

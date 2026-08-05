@@ -210,9 +210,9 @@ in `CMakeLists.txt`) is derived from it.
   matters: the same autobuild **cannot** complete on a bare `ubuntu-latest`,
   because SuiteSparse's own CMake calls `find_package(BLAS)` and the runner image
   ships none, so the configure dies in `SuiteSparse_config` before KLU is
-  reached. The Linux leg therefore installs `libsuitesparse-dev` — the same
-  system-package route cibuildwheel's Linux leg takes — and the autobuild gap is
-  tracked on its own.
+  reached. So GH #209's self-sufficiency claim holds on macOS but not on a bare
+  Linux host. The Linux leg therefore installs `libsuitesparse-dev`, the same
+  system-package route cibuildwheel's Linux leg takes.
 
 - **`compartment_sizes=` at load, the supported way to change a volume (issue
   #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
