@@ -1,0 +1,41 @@
+# Minimal reproduction of issue #177: an unreachable sensitivity error floor.
+#
+#   $S -> X   at rate a*S,  a = p*c1
+#    X -> 0   at rate b*X,  b = p*c2
+#
+# S is fixed at 1e18, so X starts EMPTY and climbs to a*S/b = (c1/c2)*S = 2e18.
+# Two properties matter, and both are properties Smith_BMCSystBiol2013 has:
+#
+#   * X(0) = 0, so the scale-aware floor's per-component fallback (GH #214)
+#     hands column p an absolute floor of atol*1/|p| — a floor stated as though
+#     "1" were a meaningful amount of X, in a model where the states are ~1e18.
+#
+#   * dX/dp -> 0. The steady state (c1/c2)*S does not depend on p at all, so
+#     after the ~1/b transient the true sensitivity decays to zero while its
+#     source term df/dp = c1*S - c2*X stays a DIFFERENCE of two 2e18-scale
+#     terms. That difference carries ~eps*2e18 ~ 4e2 of absolute roundoff, so
+#     the sensitivity error test is being asked for 1e-8 of a quantity that
+#     cannot be computed to better than ~4e2, and CVODES shrinks h without
+#     limit trying to get it.
+#
+# The state solve is unaffected — X itself is ~2e18, so rtol*|X| ~ 1e10 covers
+# the same roundoff many times over. That asymmetry is the whole bug.
+begin parameters
+    1 p   1.0    # Constant
+    2 c1  2.0    # Constant
+    3 c2  1.0    # Constant
+    4 a   p*c1   # ConstantExpression
+    5 b   p*c2   # ConstantExpression
+end parameters
+begin species
+    1 $S() 1e18
+    2 X()  0
+end species
+begin reactions
+    1 1 2 a  #_R1
+    2 2 0 b  #_R2
+end reactions
+begin groups
+    1 S_tot  1
+    2 X_tot  2
+end groups
