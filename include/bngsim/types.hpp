@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -115,6 +116,29 @@ struct Parameter {
     std::string expression; // original expression string (empty if constant)
     bool is_expression;     // true if value was defined by expression
     int evaluator_id = -1;  // compiled expression ID (for re-evaluation after set_param)
+
+    // Issue #164 — this parameter IS an SBML compartment size, so its value is
+    // folded into load-time constants a write cannot reach: `Species::
+    // volume_factor`, an amount-declared `Species::initial_conc` (= amount/V),
+    // the Elementary scalar rate (Π V^n / V_storage), `Reaction::
+    // ssa_volume_factor`, and the emitted C `inv_vf` table. `set_param` refuses
+    // a value-CHANGING write rather than move the kinetic-law `p[]` reference
+    // and leave the storage divide at its build-time value — which is not a
+    // missing update but an internally inconsistent model (on issue #164's own
+    // two-compartment model a write to a compartment the trajectory is exactly
+    // invariant to moved A(5) by 20x). Reload at the new size instead
+    // (`Model.from_sbml*(..., compartment_sizes={...})`). Issue #170 tracks
+    // making the volume live, which retires this flag.
+    bool is_compartment_size = false;
+};
+
+// Issue #164 — thrown by `NetworkModel::set_param` for a value-changing write to
+// a compartment-size parameter. A distinct type so the Python binding can
+// surface the explanation instead of folding it into its generic "parameter not
+// found" translation.
+class CompartmentSizeWriteError : public std::runtime_error {
+  public:
+    explicit CompartmentSizeWriteError(const std::string &what) : std::runtime_error(what) {}
 };
 
 // ─── Observable Group ────────────────────────────────────────────────────────

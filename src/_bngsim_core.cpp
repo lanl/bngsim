@@ -806,6 +806,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
             [](bngsim::NetworkModel &self, const std::string &name, double value) {
                 try {
                     self.set_param(name, value);
+                } catch (const bngsim::CompartmentSizeWriteError &e) {
+                    // Issue #164 — a refusal, not a lookup failure. The generic
+                    // catch below reports every throw as "Parameter not found",
+                    // which would bury the one message that says what to do.
+                    throw py::value_error(e.what());
                 } catch (const std::exception &e) {
                     throw py::key_error(std::string("Parameter not found: ") + name);
                 }
@@ -831,6 +836,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     double value = item.second.cast<double>();
                     try {
                         self.set_param(name, value);
+                    } catch (const bngsim::CompartmentSizeWriteError &e) {
+                        throw py::value_error(e.what()); // issue #164, as in set_param
                     } catch (const std::exception &e) {
                         throw py::key_error(std::string("Parameter not found: ") + name);
                     }
@@ -853,6 +860,23 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             "Per-parameter ``is_expression`` flag (True for derived ConstantExpression "
             "parameters such as BNG2.pl-emitted ``_rateLaw{N}``).")
+
+        .def_property_readonly(
+            "param_is_compartment_size",
+            [](const bngsim::NetworkModel &self) {
+                const auto &params = self.parameters();
+                std::vector<bool> out;
+                out.reserve(params.size());
+                for (const auto &p : params)
+                    out.push_back(p.is_compartment_size);
+                return out;
+            },
+            "Per-parameter flag, parallel to ``param_names``: True for an SBML compartment "
+            "size. Such a parameter's value is folded at load into constants a write cannot "
+            "reach, so ``set_param`` refuses a value-changing write and forward sensitivity "
+            "refuses the column (issue #164). All False for .net models and for every "
+            "compartment promoted to a species (rate-rule / event-resized), which is not a "
+            "parameter at all.")
 
         .def_property_readonly(
             "param_expressions",
@@ -1907,7 +1931,14 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(py::init<>())
         .def("add_parameter", &bngsim::ModelBuilder::add_parameter, py::arg("name"),
              py::arg("value"), py::arg("expression") = "", py::arg("is_expression") = false,
-             "Add a parameter. Returns 0-based index.")
+             py::arg("is_compartment_size") = false,
+             "Add a parameter. Returns 0-based index. is_compartment_size=True marks the "
+             "parameter as an SBML compartment size, whose value the loader folds into "
+             "load-time constants a write cannot reach (per-species volume factors, "
+             "amount-declared ICs, mass-action rate constants, SSA propensity volumes, the "
+             "emitted inv_vf table), so set_param refuses a value-changing write instead of "
+             "desyncing the two representations (issue #164). Default False leaves .net and "
+             "every non-compartment parameter unchanged.")
         .def("add_species", &bngsim::ModelBuilder::add_species, py::arg("name"),
              py::arg("init_conc"), py::arg("fixed") = false, py::arg("volume_factor") = 1.0,
              py::arg("amount_valued") = false, py::arg("reported") = true,

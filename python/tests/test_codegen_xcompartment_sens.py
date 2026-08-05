@@ -411,13 +411,29 @@ class _Compiled:
 
 def _perturbed(core, data, k, rel):
     """``(p_plus, p_minus)`` for parameter ``k``, moved through ``set_param`` so
-    every ConstantExpression parameter is re-derived as a real caller's would be."""
+    every ConstantExpression parameter is re-derived as a real caller's would be.
+
+    Issue #164 — a compartment size no longer goes through ``set_param``: that
+    write is refused, because the size is folded at load into constants the
+    write cannot reach. What is wanted here is narrower than a model mutation,
+    though. This differences the *emitted* ``f`` with respect to its own ``p[]``
+    argument, so the vector is built directly for those columns; ``set_param``
+    is only needed for the chain rule it applies on the way, and that has
+    nothing to re-derive unless some parameter is expression-valued. Asserted
+    below rather than assumed, so a future fixture with a compartment-dependent
+    derived parameter fails here instead of silently losing the chain term."""
     params = data["parameters"]
     names = [p["name"] for p in params]
     base = [float(p["value"]) for p in params]
     v = base[k]
     h = rel * abs(v) if v != 0.0 else rel
-    if not bool(params[k].get("is_const", True)):
+    is_compartment = list(core.param_is_compartment_size)[k]
+    if is_compartment:
+        assert not any(p.get("is_expression") for p in params), (
+            "a compartment-dependent derived parameter needs the set_param chain "
+            "rule this branch skips (issue #164 refuses the write; see issue #170)"
+        )
+    if is_compartment or not bool(params[k].get("is_const", True)):
         plus, minus = list(base), list(base)
         plus[k], minus[k] = v + h, v - h
         return plus, minus

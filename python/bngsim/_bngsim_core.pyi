@@ -39,9 +39,9 @@ class ModelBuilder:
         """
         Add an observable. entries = [(sp_idx_0based, factor), ...]. Returns 0-based index.
         """
-    def add_parameter(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, expression: str = '', is_expression: bool = False) -> int:
+    def add_parameter(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, expression: str = '', is_expression: bool = False, is_compartment_size: bool = False) -> int:
         """
-        Add a parameter. Returns 0-based index.
+        Add a parameter. Returns 0-based index. is_compartment_size=True marks the parameter as an SBML compartment size, whose value the loader folds into load-time constants a write cannot reach (per-species volume factors, amount-declared ICs, mass-action rate constants, SSA propensity volumes, the emitted inv_vf table), so set_param refuses a value-changing write instead of desyncing the two representations (issue #164). Default False leaves .net and every non-compartment parameter unchanged.
         """
     def add_reaction(self, reactants: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], products: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], type: str, rate_law: str, stat_factor: typing.SupportsFloat | typing.SupportsIndex = 1.0, apply_species_factor: bool = True, ssa_volume_factor: typing.SupportsFloat | typing.SupportsIndex = 1.0, per_species_volume_scaling: bool = False, is_rate_rule_ode: bool = False, ssa_live_volume_idx0: typing.SupportsInt | typing.SupportsIndex = -1, ssa_live_volume_exp: typing.SupportsFloat | typing.SupportsIndex = 0.0, ode_only: bool = False) -> int:
         """
@@ -127,13 +127,13 @@ class NetworkModel:
         """
         Return a reason string if any event blocks forward sensitivity for the given sensitivity-parameter names, else None (GH #212, issue #49, issue #144). event_time_compensated lists the 0-based indices of events whose ∂t*/∂p the caller supplies via SolverOptions.set_event_time_sens, which lifts the parameter-dependent-trigger refusal for exactly those.
         """
-    def events_with_runtime_event_time_sens(self) -> list[int]:
-        """
-        0-based indices of the events whose ∂t*/∂p the solver differentiates at each fire, by the implicit function theorem on the trigger's residual (issue #144). These are the state-dependent triggers — `v > 30` and friends — that reduce to a single relational comparison. The Python guard subtracts them from its own blocked set, so the core stays the one authority on which crossings are differentiable.
-        """
     def event_trigger_sources(self) -> list[str]:
         """
         Each event's trigger expression as the loader wrote it, in events() order (issue #49). The event-time sensitivity detector differentiates the trigger's threshold symbolically, so it needs the model's own spelling rather than the evaluator's preprocessed form.
+        """
+    def events_with_runtime_event_time_sens(self) -> list[int]:
+        """
+        0-based indices of the events whose ∂t*/∂p the solver differentiates at each fire, by the implicit function theorem on the trigger's residual (issue #144). These are the state-dependent triggers — `v > 30` and friends — that reduce to a single relational comparison. The Python guard subtracts them from its own blocked set, so the core stays the one authority on which crossings are differentiable.
         """
     def functional_jacobian_context(self) -> dict:
         """
@@ -143,13 +143,13 @@ class NetworkModel:
         """
         Get a single species concentration by name
         """
-    def get_param(self, name: str) -> float:
-        """
-        Get a parameter value by name
-        """
     def get_initial_state(self) -> numpy.typing.NDArray[numpy.float64]:
         """
         Bulk-copy the IC baseline (species[].initial_conc) into a new float64 ndarray, ordered like species_names(). This is what reset() restores the live state to, so get_state() != get_initial_state() marks the species whose initial condition an assignment has superseded — the rows whose parameter-graph ∂x_i(0)/∂p seed no longer applies (GH #113).
+        """
+    def get_param(self, name: str) -> float:
+        """
+        Get a parameter value by name
         """
     def get_state(self) -> numpy.typing.NDArray[numpy.float64]:
         """
@@ -203,6 +203,10 @@ class NetworkModel:
         """
         Bulk-assign all species concentrations from a 1-D float64 ndarray, ordered like species_names(). O(n_species), one Python call (GH #102).
         """
+    def state_switch_residual(self, condition_src: str) -> tuple[str, str]:
+        """
+        Resolve one rate-law condition atom as a state switch (issue #150), returning (residual_source, why_not). A non-empty residual means the solver can locate this crossing as a root and differentiate dt*/dθ there, so the saltation jump (f⁻−f⁺)·dt*/dθ WILL be applied and the condition needs no refusal; an empty one comes with the reason it is not one — a conjunction, a negation, an equality, or a comparison that reads no live model state. The residual identifies the CROSSING rather than its spelling, so `X<1` and `X<=1` return the same string and callers dedupe on it. This is the one authority: the codegen gate and the run-time detector both ask it, so neither can classify a condition the other would not.
+        """
     @property
     def analytical_jacobian_complete(self) -> bool:
         """
@@ -234,7 +238,7 @@ class NetworkModel:
         True iff the current species state is carried-over dynamics from a previous run() (not a fresh initial condition). Forward sensitivities requested on a dirty state require carry_sensitivities=True (else they raise). Cleared by reset() — unless the IC baseline carries its own dx/dθ (GH #81) — and by save_concentrations() when there is no carried derivative to hand the new baseline (GH #210). Writable so a protocol primitive that restores a snapshot together with its dx/dθ (Simulator.parameter_scan) can put the flag back as it found it; setting it by hand otherwise just re-arms (or defeats) the raise.
         """
     @ic_state_dirty.setter
-    def ic_state_dirty(self, arg0: bool) -> None:
+    def ic_state_dirty(self, arg1: bool) -> None:
         ...
     @property
     def load_warnings(self) -> list[str]:
@@ -270,6 +274,11 @@ class NetworkModel:
     def param_expressions(self) -> list[str]:
         """
         Per-parameter defining expression string, parallel to ``param_names`` (empty for primary/constant parameters). Used by the codegen sensitivity layer to chain-rule ∂(derived IC)/∂primary for derived-parameter species initial conditions (issue #43).
+        """
+    @property
+    def param_is_compartment_size(self) -> list[bool]:
+        """
+        Per-parameter flag, parallel to ``param_names``: True for an SBML compartment size. Such a parameter's value is folded at load into constants a write cannot reach, so ``set_param`` refuses a value-changing write and forward sensitivity refuses the column (issue #164). All False for .net models and for every compartment promoted to a species (rate-rule / event-resized), which is not a parameter at all.
         """
     @property
     def param_is_expression(self) -> list[bool]:
@@ -647,6 +656,10 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
+    def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
+        """
+        Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form — except for a state-dependent trigger, whose ∂t*/∂p the solver differentiates at the fire instead (issue #144).
+        """
     def set_ic_param_sens(self, triples: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsFloat | typing.SupportsIndex]]) -> None:
         """
         Set the initial-condition sensitivity seeds ∂x_i(0)/∂p as (species_idx0, primary_param_idx0, ∂IC/∂primary) triples (issue #43). Computed by the Python codegen layer via the sympy derived-parameter chain rule so a species IC named by a derived (ConstantExpression) parameter — e.g. Rtot = R0 — seeds the forward sensitivity w.r.t. the underlying primary. When set, these replace the model's species_ic_param_refs() identity seeding entirely (they already cover direct-parameter ICs with coefficient 1).
@@ -674,9 +687,9 @@ class SolverOptions:
         """
         Set parameter names for forward sensitivity analysis
         """
-    def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
+    def set_state_switch_conditions(self, conditions: collections.abc.Sequence[str]) -> None:
         """
-        Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form.
+        Set the rate-law conditions that read model state, as source text — one relational atom per entry, `Virus<1` (issue #150). Such a condition flips a branch of f at a crossing whose time moves with every parameter through the trajectory, so dx/dθ is DISCONTINUOUS there by the saltation term (f⁻−f⁺)·dt*/dθ — a term neither the analytic sensitivity RHS nor CVODES' difference quotient carries. run() resolves each through NetworkModel.state_switch_residual, registers that residual as a CVODE root so the crossing is located, and applies the jump there. Honoured only when the run requests sensitivities; empty (the default) leaves the root set — and every plain trajectory — untouched.
         """
     def set_switch_pinned_params(self, param_idx0: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> None:
         """
@@ -930,25 +943,13 @@ class SteadyStateResultCore:
     def __init__(self) -> None:
         ...
     @property
-    def excluded_species(self) -> list[int]:
-        ...
-    @property
-    def n_residual_species(self) -> int:
-        ...
-    @property
-    def unconverged_pure_sinks(self) -> list[str]:
-        ...
-    @property
-    def root_stability(self) -> str:
-        ...
-    @property
-    def n_unstable_roots_rejected(self) -> int:
-        ...
-    @property
     def concentrations(self) -> list[float]:
         ...
     @property
     def converged(self) -> bool:
+        ...
+    @property
+    def excluded_species(self) -> list[int]:
         ...
     @property
     def expression_names(self) -> list[str]:
@@ -963,6 +964,9 @@ class SteadyStateResultCore:
     def method_used(self) -> str:
         ...
     @property
+    def n_residual_species(self) -> int:
+        ...
+    @property
     def n_rhs_evals(self) -> int:
         ...
     @property
@@ -970,6 +974,9 @@ class SteadyStateResultCore:
         ...
     @property
     def n_steps(self) -> int:
+        ...
+    @property
+    def n_unstable_roots_rejected(self) -> int:
         ...
     @property
     def observable_names(self) -> list[str]:
@@ -988,6 +995,9 @@ class SteadyStateResultCore:
         ...
     @property
     def rhs_backend(self) -> str:
+        ...
+    @property
+    def root_stability(self) -> str:
         ...
     @property
     def sens_dfdp_source(self) -> str:
@@ -1015,6 +1025,9 @@ class SteadyStateResultCore:
         ...
     @property
     def species_names(self) -> list[str]:
+        ...
+    @property
+    def unconverged_pure_sinks(self) -> list[str]:
         ...
 class TimeSpec:
     def __init__(self) -> None:
@@ -1065,4 +1078,4 @@ HAS_MIR: bool = False
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
 __build_commit__: str = 'unknown'
-__version__: str = '0.11.35'
+__version__: str = '0.12.2'

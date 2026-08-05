@@ -286,6 +286,48 @@ void NetworkModel::set_param(const std::string &name, double value) {
         throw std::runtime_error("Parameter not found: " + name);
     }
     auto &param = impl_->parameters[it->second];
+
+    // Issue #164 — an SBML compartment size is TWO representations, and a write
+    // moves only one. The `p[]` entry a kinetic law reads moves here; the
+    // load-time constants the storage convention is folded into do not
+    // (`Species::volume_factor`, an amount-declared `initial_conc` = amount/V,
+    // the Elementary scalar rate's Π V^n / V_storage, `Reaction::
+    // ssa_volume_factor`, the emitted C `inv_vf` table). Which halves move is
+    // not even uniform across a model — a mass-action reaction folded the volume
+    // away entirely, a Functional reaction loaded at V≠1 divides by the live
+    // symbol, and one loaded at V=1 had its divide normalized out — so a write
+    // is honored on some reactions and dropped on others, in the same model,
+    // with nothing to tell the caller which. The result is not a stale value but
+    // an internally inconsistent one: on issue #164's two-compartment model,
+    // set_param("C1", 3) moves A(5) from 22.3 to 1.11 on a trajectory that is
+    // *exactly* C1-invariant, and RoadRunner confirms the rebuild.
+    //
+    // So refuse, rather than return a confidently wrong number (the failure mode
+    // GH #205 / issue #79 / issue #99 all close the same way). Writing the value
+    // it already holds stays legal: `set_params(dict(zip(param_names, vec)))`
+    // round-trips a full parameter vector through here, and a write that changes
+    // nothing has nothing to desync.
+    //
+    // Issue #170 tracks making the volume live everywhere, which retires this.
+    if (param.is_compartment_size && value != param.value) {
+        std::ostringstream cur;
+        cur << param.value;
+        throw CompartmentSizeWriteError(
+            "Cannot set '" + param.name + "': it is an SBML compartment size (currently " +
+            cur.str() +
+            "), and its value is folded at load into "
+            "constants a parameter write cannot reach — per-species volume factors, "
+            "amount-declared initial conditions, mass-action rate constants, SSA "
+            "propensity volumes, and the emitted sensitivity/RHS sources. Writing it "
+            "would leave the model internally inconsistent rather than move the volume "
+            "(issue #164). Load the model at the size you want instead: "
+            "Model.from_sbml(path, compartment_sizes={'" +
+            param.name +
+            "': <value>}) — "
+            "a volume scan or fit is a loop over those loads. Issue #170 tracks making "
+            "a compartment size writable.");
+    }
+
     param.value = value;
 
     // If this parameter was expression-backed (e.g., "d = d__FREE"),
