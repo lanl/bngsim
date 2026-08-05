@@ -38,11 +38,24 @@ name: python-tests
 # so green here means what a clean `git push` means locally — on a host the
 # developer does not have.
 #
-# Free side effect worth naming: this is the ONLY job that exercises the
-# BNGSIM_KLU_AUTOBUILD path (GH #209). The wheel legs all resolve a prebuilt
-# SuiteSparse through SUITESPARSE_ROOT, and every other job sets ENABLE_KLU=OFF,
-# so the from-source KLU subset an sdist install falls back to had no CI anywhere.
-# The HAS_KLU assertion below is what keeps that honest — without it a build that
+# SuiteSparse/KLU is provisioned differently per leg, and the asymmetry is
+# deliberate rather than an inconsistency:
+#
+#   * macOS installs nothing. Accelerate supplies the BLAS, so
+#     BNGSIM_KLU_AUTOBUILD (GH #209) builds the pinned KLU subset from source —
+#     which makes this the ONLY job anywhere that exercises that path. Every
+#     wheel leg resolves a prebuilt SuiteSparse through SUITESPARSE_ROOT and
+#     every other job sets ENABLE_KLU=OFF, so the fallback an sdist install on a
+#     bare box depends on had no CI at all.
+#   * Linux installs libsuitesparse-dev, because on a bare ubuntu-latest the
+#     autobuild does NOT work: SuiteSparse's own CMake calls find_package(BLAS)
+#     and the runner image ships no BLAS, so the build dies in SuiteSparse_config
+#     before KLU is reached. Measured here, not assumed — the first run of this
+#     job failed exactly that way. Tracked separately; installing the system
+#     package is what cibuildwheel's Linux leg already does (`dnf install
+#     suitesparse-devel`), so this leg matches the shipped wheel.
+#
+# The HAS_KLU assertion below is what keeps both honest — without it a build that
 # quietly lost KLU would skip the sparse tests and still report green.
 #
 # Two coverage axes are deliberately NOT taken here, so they are not mistaken for
@@ -96,6 +109,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      # See the SuiteSparse note in the header: Linux only, because the runner
+      # image has no BLAS for the from-source autobuild to link against. macOS
+      # deliberately gets nothing so its leg exercises BNGSIM_KLU_AUTOBUILD.
+      - name: Install SuiteSparse (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libsuitesparse-dev
+
       # --extra dev rather than an enumerated extras list: `dev` is the set a
       # developer's `uv sync` installs, so this job and the pre-push hook see the
       # same environment, and an extra added to `dev` later reaches CI without a
@@ -125,6 +148,7 @@ jobs:
       # strict catches tests that quietly turn into skips for a reason nobody
       # signed off on.
       - name: Run the full Python suite
+        id: pytest
         env:
           BNGSIM_SKIP_AUDIT: strict
           BNGSIM_TEST_DATA: ${{ github.workspace }}/tests/data
@@ -161,8 +185,13 @@ jobs:
             exit 1
           fi
 
+      # Conditioned on the pytest step having been reached, not just on always():
+      # if the build fails there is no log to upload, and if-no-files-found=error
+      # would then report a second, misleading failure on top of the real one.
+      # Keeping `error` (rather than downgrading to `warn`) means a pytest step
+      # that ran but produced no log is still caught.
       - name: Upload pytest log
-        if: always()
+        if: always() && steps.pytest.conclusion != 'skipped'
         uses: actions/upload-artifact@v4
         with:
           name: python-tests-log-${{ matrix.os }}
