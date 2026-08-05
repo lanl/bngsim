@@ -1888,7 +1888,7 @@ class Result:
         except ImportError:
             raise ImportError(
                 "xarray is required for Result.to_xarray() and Result.xr. "
-                "Install with: pip install xarray"
+                "Install with: pip install 'bngsim[xarray]'"
             ) from None
 
         if self._species.ndim != 2:
@@ -2783,7 +2783,7 @@ class _XarrayAccessor:
             import xarray as xr
         except ImportError:
             raise ImportError(
-                "xarray is required for Result.xr. Install with: pip install xarray"
+                "xarray is required for Result.xr. Install with: pip install 'bngsim[xarray]'"
             ) from None
 
         result = self._result
