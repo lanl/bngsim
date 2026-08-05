@@ -214,6 +214,21 @@ in `CMakeLists.txt`) is derived from it.
   Linux host. The Linux leg therefore installs `libsuitesparse-dev`, the same
   system-package route cibuildwheel's Linux leg takes.
 
+  And the gate earned itself on its first real run: **four tests fail on Linux
+  that pass on macOS**, in two unrelated subsystems, both pre-existing on `main`
+  and both exactly the class #169 said nothing could see. GH #176's
+  finite-difference retry fires correctly on
+  `ltype_calcium_discontinuous_jacobian.net` and then dies at a *second*
+  threshold crossing (t≈34.6) the fixture's own header does not mention; and
+  `nested_derived_rate_const.net`'s reduced Jacobian is exactly singular under
+  Linux's reference LAPACK where Accelerate leaves it merely ill-conditioned, so
+  it takes the refusal branch its sibling test exists to assert rather than the
+  warning branch its own test asserts. Both are quarantined under
+  `xfail(sys.platform.startswith("linux"), strict=True, raises=SimulationError)`
+  and reported in lanl/bngsim#176 — `strict` so they retire themselves, and
+  quarantined at all so the new gate lands green rather than permanently red,
+  which is the distinction `native-tests.yml`'s header spells out.
+
 - **`compartment_sizes=` at load, the supported way to change a volume (issue
   #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
   `from_antimony_string`, and `Model.load` take

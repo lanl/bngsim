@@ -165,24 +165,51 @@ jobs:
           set -euo pipefail
           # A directory-scoped pytest cannot drift out of sync with a file list,
           # but it can still shrink: a module that stops importing skips at
-          # collection, a rename can orphan a file, a bad conftest can deselect.
-          # None of those is a failure — the run stays green with a smaller
-          # denominator, which is the #28/#36 shape native-tests.yml guards
-          # against with its own floors. So assert one here too.
+          # collection, a rename orphans a file, a bad conftest deselects. None of
+          # those is a failure — the run stays green with a smaller denominator,
+          # which is the #28/#36 shape native-tests.yml guards with its own
+          # floors. Two denominators here, for the same reason it needs two:
           #
-          # The floor only ever rises as tests are added; additions never break
-          # it, only silent removals do. Measured on this leg at the commit that
-          # introduced this job — see the PR for #169 for the numbers.
-          PASS_FLOOR=3400
+          #   1. COLLECTED (passed + skipped + xfailed + xpassed). This is the
+          #      structural one, and it is nearly environment-INDEPENDENT: 3490 on
+          #      ubuntu-latest, on macos-14, and on a developer's macOS box, all at
+          #      the commit that added this job. Every skip in this suite is
+          #      function- or class-level, so a corpus being absent moves tests
+          #      between the columns without changing the total. A drop here means
+          #      tests stopped being collected. Floor sits ~10 below.
+          #   2. PASSED. This one IS environment-sensitive (3415 on macOS, 3411 on
+          #      Linux — the difference is lanl/bngsim#176's four xfails), so its
+          #      floor is looser. It exists to catch the case COLLECTED cannot: a
+          #      whole group converting to skips for a *declared* reason, e.g. an
+          #      extra silently failing to install and taking the 13 roadrunner
+          #      tests with it. Floor sits ~30 below, so it trips on a group and
+          #      not on one test.
+          #
+          # Both floors only rise as tests are added; additions never break them,
+          # only silent removals do.
+          COLLECTED_FLOOR=3480
+          PASS_FLOOR=3380
 
-          passed="$(grep -oE '[0-9]+ passed' python-tests-${{ matrix.os }}.log | tail -1 | grep -oE '^[0-9]+' || true)"
-          if [ -z "$passed" ]; then
+          LOG="python-tests-${{ matrix.os }}.log"
+          summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
+          if [ -z "$summary" ]; then
             echo "::error::No pytest summary line — the suite did not run to completion."
             exit 1
           fi
-          echo "pytest reported $passed passed (floor $PASS_FLOOR)."
+          echo "summary: $summary"
+
+          # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
+          count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
+          passed="$(count passed)"
+          collected=$(( passed + $(count skipped) + $(count xfailed) + $(count xpassed) ))
+
+          echo "collected $collected (floor $COLLECTED_FLOOR); passed $passed (floor $PASS_FLOOR)."
+          if [ "$collected" -lt "$COLLECTED_FLOOR" ]; then
+            echo "::error::Only $collected tests collected, expected >= $COLLECTED_FLOOR — tests stopped being collected rather than failing."
+            exit 1
+          fi
           if [ "$passed" -lt "$PASS_FLOOR" ]; then
-            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — tests stopped being collected rather than failing."
+            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a group of tests turned into skips."
             exit 1
           fi
 

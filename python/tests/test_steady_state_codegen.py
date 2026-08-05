@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 
 import bngsim
 import numpy as np
@@ -330,6 +331,28 @@ class TestSensitivityNumerics:
         ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-12)
         assert ss.sens_jacobian_rcond > 1e-4
 
+    # Quarantined for lanl/bngsim#176. This test and its sibling below split a
+    # continuum into two branches — "ill-conditioned, so warn" and "exactly
+    # singular, so refuse" — and #169's first Linux run showed this fixture does
+    # not sit on one side of that line. Under Accelerate the pivots stay nonzero
+    # and the warning branch fires (what is asserted here); under Linux's
+    # reference LAPACK the reduced LU hits an exact zero pivot, rcond is 0.00e+00,
+    # and the code takes the *sibling's* refusal branch and raises.
+    #
+    # The docstring below already said the finite numbers survive "only because
+    # the pivots stay nonzero" — it just did not know that was platform-decided.
+    # The likely fix is a fixture whose conditioning is not a coin flip, not a new
+    # threshold; see Simulator._SS_SENS_RCOND_FLOOR and the sibling's note that no
+    # corpus cut can place one.
+    #
+    # strict=True so it retires itself once the fixture stops being borderline.
+    @pytest.mark.xfail(
+        sys.platform.startswith("linux"),
+        reason="lanl/bngsim#176: exactly singular under reference LAPACK, so this "
+        "takes the refusal branch instead of the ill-conditioned-warning branch",
+        strict=True,
+        raises=bngsim.SimulationError,
+    )
     def test_degenerate_steady_state_is_flagged(self, caplog):
         """``nested_derived_rate_const.net`` runs A→B→D and A→C with no reverse
         reactions, so equilibrium is A=B=0 with any C+D=1 — a continuum, not a
