@@ -73,6 +73,15 @@ antimony = [
 ]
 pandas = ["pandas>=2.0"]
 hdf5 = ["h5py>=3.0"]
+# Labeled-array access: Result.xr (per-field DataArray, AMICI-style) and
+# Result.to_xarray() (one Dataset with every field). Both are shipped public
+# API in _result.py, but xarray was undeclared by ANY extra -- so the 12 tests
+# guarding them skipped in every environment and the feature had never actually
+# run. Same failure as the jsonschema note below.
+# The floor is ecosystem alignment, not a feature we need: the accessors use
+# only long-stable DataArray/Dataset API, and 2024.7 is the era whose
+# `pandas>=2.0` requirement matches this project's own `pandas` extra.
+xarray = ["xarray>=2024.7"]
 test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -85,6 +94,9 @@ test = [
     # prunes anything not in the lock, hand-installing it never survived the next
     # sync. Declaring it is what makes the check actually run.
     "jsonschema>=4.0",
+    # test_new_features.py's TestXarrayAccessor / to_xarray cases sit behind a
+    # pytest.importorskip("xarray"); same reasoning as jsonschema above.
+    "xarray>=2024.7",
 ]
 jax = [
     "jax>=0.4",
@@ -108,7 +120,7 @@ roadrunner = [
     "libroadrunner>=2.7",
 ]
 dev = [
-    "bngsim[antimony,pandas,hdf5,test,jax,vivarium,benchmarks,roadrunner]",
+    "bngsim[antimony,pandas,hdf5,xarray,test,jax,vivarium,benchmarks,roadrunner]",
     "ruff>=0.8",
     # Regenerates python/bngsim/_bngsim_core.pyi from the built extension in
     # scripts/rebuild_editable.py, keeping the type stub in sync with the C++
