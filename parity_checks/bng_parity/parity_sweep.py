@@ -651,7 +651,8 @@ def _assert_bngsim_engine_live(timeout):
 
       1. ``bngsim_backend.backend_status()`` — bngsim is importable AND version-
          compatible (what ``run_bngsim_job``'s direct route needs), plus the
-         bionetgen commit/version provenance.
+         provenance that identifies each engine as an artifact: the bionetgen
+         commit, and bngsim's build commit + install origin (GH #163).
       2. a trivial ODE probe driven through ``run_bngsim_job`` completes, writes
          real numeric output (.gdat/.cdat), AND emits the per-job
          ``BNGSIM_ENGINE_OK`` marker — proving bngsim's in-process direct route ran
@@ -706,11 +707,13 @@ def _assert_bngsim_engine_live(timeout):
                 "simulate did not complete — refusing to sweep rather than emit an "
                 "empty/wrong/mislabelled golden.\n"
                 f"  active bionetgen: {where}\n"
-                f"  bngsim:           {version}\n"
+                f"  bngsim:           {version} (built={status['bngsim_build_commit']}, "
+                f"from {status['bngsim_install']})\n"
                 f"  probe _run.log:   {log_file}"
             )
         print(
-            f"bngsim engine pre-flight: OK (genuine in-process bngsim {version}, "
+            f"bngsim engine pre-flight: OK (genuine in-process bngsim {version} "
+            f"built={status['bngsim_build_commit']} from {status['bngsim_install']}, "
             f"bionetgen {status['bionetgen_commit']}; probe wrote {', '.join(numeric)})"
         )
     finally:

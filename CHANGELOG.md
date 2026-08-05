@@ -15,6 +15,35 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Changed
+- **A parity run now records WHICH bngsim produced it, not just which version
+  (issue #163).** The `bng_parity` harness records the engines behind a run so a
+  golden can be reproduced. PyBioNetGen was recorded as a resolved git commit;
+  bngsim was recorded as a bare `__version__` — which identified an artifact only
+  while bngsim could not be installed from PyPI. It can now, and `__version__`
+  bumps only at release, so a PyPI install, a `ship_wheel.py` wheel, and every
+  commit between two releases all report the same string.
+
+  `bngsim_backend.backend_status()` — and through it each sweep's `_summary.json`
+  and `golden.json`'s `_meta` — gains **`bngsim_build_commit`** (the commit the
+  loaded `_bngsim_core` was compiled from, baked in by CMake) and
+  **`bngsim_install`** (PEP 610 origin: `index` / `wheel:<file>` / `editable` /
+  `vcs:<sha>`). Both are needed: the release protocol builds the published wheel
+  *from* the release commit, so a locally built wheel of that commit reports the
+  identical build commit (measured — PyPI 0.12.2 and a `ship_wheel.py` wheel both
+  report `1737003f0c81`); the install origin is what separates them.
+  `bngsim_version` is now read from `bngsim.__version__` directly rather than
+  through the bridge's `bionetgen.BNGSIM_VERSION` re-export, and the whole bngsim
+  half is collected before bionetgen is imported, so an env with a broken or
+  absent bridge still records which bngsim is installed in it. The bridge's own
+  view is kept alongside as `bngsim_bridge_version`, where the two disagreeing is
+  now visible instead of silently authoritative.
+
+  `bootstrap_parity_env.py` gains **`--bngsim-pypi <version>`**, mutually
+  exclusive with `--bngsim-wheel` / `--build-bngsim`: for a consumer *reproducing*
+  a published golden, installing the released wheel is the faithful route, and it
+  is the case the harness was written to assume impossible. Its no-source ABORT
+  used to say "bngsim is not on PyPI" and foreclose exactly that option; it now
+  names all three sources. No harness prose claims bngsim is absent from PyPI.
 - **An SBML compartment size is no longer writable, and says so (issue #164).**
   A compartment volume had two representations in a loaded model and a write
   moved only one. The kinetic law reads `p[]`; the *storage convention* is

@@ -20,15 +20,24 @@
 # downloads BNG2.pl at build time, so the build needs pip+setuptools+numpy in the
 # target env and `--no-build-isolation`). The turnkey path that handles this is
 #   python bng_parity/bootstrap_parity_env.py --venv <env>
-# which installs this pin and the bngsim wheel, then verifies the BNGsim backend
-# is actually live before any sweep.
+# which installs this pin and a bngsim, then verifies the BNGsim backend is
+# actually live before any sweep.
 #
-# bngsim is intentionally NOT pinned here: it is not on PyPI and ships from this
-# repo's own wheel (scripts/ship_wheel.py). The bootstrap installs it separately.
+# bngsim is intentionally NOT pinned here, even though it IS on PyPI: it ships as
+# an ABI-tagged wheel (cp312-...), so the right artifact depends on the target
+# interpreter and a pin in a shared requirements file would be wrong for most of
+# them. The bootstrap installs it separately and explicitly — from this working
+# tree (--build-bngsim), a wheel you hand it (--bngsim-wheel), or the published
+# release (--bngsim-pypi <version>, the faithful route when reproducing a golden).
 #
-# Provenance is recorded so a consumer can confirm a run used this exact pin:
-#   * each sweep's _summary.json -> bngsim_backend.bionetgen_commit
-#   * golden.json -> _meta.bionetgen_commit
+# Provenance is recorded so a consumer can confirm a run used this exact pin, and
+# WHICH bngsim ran it. Note that each engine is identified by an artifact, not a
+# version string: bngsim's bumps only at release, so every commit between two
+# releases reports the same one (GH #163).
+#   * each sweep's _summary.json -> bngsim_backend.{bionetgen_commit,
+#     bngsim_build_commit, bngsim_install}
+#   * golden.json -> _meta.{bionetgen_commit, bngsim_build_commit} (+ the same
+#     bngsim_backend block under _meta)
 # A machine whose installed commit differs from 43b09a5 is using a different
 # bridge; the engine pre-flight + per-job audit (bngsim_backend.py) will still
 # refuse/flag a run that does not actually exercise bngsim.
