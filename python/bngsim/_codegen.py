@@ -1822,6 +1822,36 @@ class _PreparedDerivedExpr(NamedTuple):
     """The parsed sympy expression."""
 
 
+_WORD_RUN_RE = re.compile(r"\w+")
+_HAS_NON_WORD_RE = re.compile(r"\W")
+
+
+def _names_referenced_in(text: str, names) -> list[str]:
+    """Sorted members of ``names`` that occur in ``text`` as whole words.
+
+    Equivalent to ``sorted(n for n in names if re.search(rf"\\b{re.escape(n)}\\b",
+    text))``, but linear in ``len(text)`` rather than a fresh regex per candidate
+    name — which is what it costs at scale, because a model's parameter count
+    outruns ``re``'s internal 512-pattern cache and every search then *recompiles*
+    its pattern. Smith_BMCSystBiol2013 (922 parameters, 89 derived expressions)
+    compiled ~82,000 throwaway patterns here per pass, ~0.9 s of a 1.9 s
+    ``Simulator(...)`` construction (GH #165).
+
+    The equivalence: a name made only of word characters matches ``\\bname\\b``
+    exactly when it is one of ``text``'s maximal ``\\w+`` runs — the ``\\b``
+    anchors say precisely that the characters either side are not word characters
+    — so one tokenizing pass answers the question for every such name at once. A
+    name carrying a non-word character (no SBML or BNGL identifier does, but
+    nothing here guarantees it) is not a maximal run and cannot be found that
+    way, so those names keep the per-name search.
+    """
+    tokens = set(_WORD_RUN_RE.findall(text))
+    referenced = {n for n in names if n in tokens}
+    exotic = [n for n in names if n not in referenced and _HAS_NON_WORD_RE.search(n)]
+    referenced.update(n for n in exotic if re.search(rf"\b{re.escape(n)}\b", text))
+    return sorted(referenced)
+
+
 def _prepare_derived_expr(
     expr: str,
     primary_names: set[str],
@@ -1883,7 +1913,7 @@ def _prepare_derived_expr(
     s_pre = _preprocess_derived_expr(expr)
 
     diff_names = primary_names | set(derived_names)
-    referenced = sorted(p for p in diff_names if re.search(rf"\b{re.escape(p)}\b", s_pre))
+    referenced = _names_referenced_in(s_pre, diff_names)
     if not referenced and not allow_no_reference:
         return None, None  # names no parameter — a genuine zero, not a failure
 
