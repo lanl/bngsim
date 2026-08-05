@@ -159,6 +159,7 @@ jobs:
             python/tests/test_codegen_xcompartment_sens.py \
             python/tests/test_codegen_switch_condition_sens.py \
             python/tests/test_codegen_alias_rule.py \
+            python/tests/test_codegen_name_scan.py \
             python/tests/test_codegen_mm_sens.py \
             python/tests/test_codegen_sens_budget.py \
             python/tests/test_codegen_output_sens_budget.py \

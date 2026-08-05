@@ -169,6 +169,7 @@ jobs:
             python/tests/test_codegen_power_denominator.py \
             python/tests/test_codegen_jit_prelude.py \
             python/tests/test_codegen_alias_rule.py \
+            python/tests/test_codegen_name_scan.py \
             python/tests/test_ssa_propensity_export.py \
             python/tests/test_ic_sensitivity_seed.py \
             python/tests/test_model_load_dispatch.py \

@@ -14,6 +14,69 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+- **The #161 analytic sensitivity RHS was a net regression on the model it
+  targeted, and the cost was in the build, not in the emitted code (issue
+  #165).** `Smith_BMCSystBiol2013` (133 species, 16 sensitivity columns,
+  `t_span=(0, 200)`) went 1.23 s → 2.02 s across #161, +64% — the +56% the issue
+  reports. Splitting it by phase says the integration is not where it went: the
+  run itself got **faster** (0.246 s → 0.180 s, 705 steps → 562, 146 Jacobian
+  evaluations → 49). The whole regression, and more, is `Simulator(...)`
+  construction: 0.99 s → 1.84 s.
+
+  Construction pays for derivation because the compiled-`.so` cache key is a hash
+  of the generated source, so **every** construction generates that source —
+  every symbolic derivative in it included — even on a cache hit. #161 removed an
+  early decline, so a cross-compartment model now reaches the derived-parameter
+  chain rule the decline used to skip.
+
+  That chain rule asked "which parameters does this expression name?" one
+  parameter at a time, with a freshly interpolated
+  `re.search(rf"\b{name}\b", expr)` per candidate. A real model's parameter count
+  outruns `re`'s internal 512-entry pattern cache, so each of those searches
+  *recompiled* its pattern — 82,058 compilations per pass on Smith's 922
+  parameters × 89 derived expressions, ~0.9 s of the 1.84 s. It is one tokenizing
+  pass over the expression now: a name made only of word characters matches
+  `\bname\b` exactly when it is one of the expression's maximal `\w+` runs, so
+  one pass answers the question for every such name at once. Names carrying a
+  non-word character (no SBML or BNGL identifier does, but nothing guarantees it)
+  keep the per-name search.
+
+  Smith, same measurement: construction 1.84 s → 0.67 s and total 2.02 s →
+  0.84 s, which is **32% below the pre-#161 baseline** instead of 64% above it.
+  Its difference-quotient path gets the same saving (1.23 s → 0.65 s), because
+  the scan is also reached from the #198 output-sensitivity analysis — so this is
+  not specific to #161's decline, only to the models that reach either one.
+
+  Which models those are is worth stating rather than implying, because 512 is a
+  cliff and not a slope. Below it the per-name searches all hit `re`'s cache and
+  cost ~12x the token pass but little in absolute terms; above it every search
+  recompiles. Measured over 89 expressions: 500 names 0.052 s, 512 names 0.052 s,
+  **520 names 0.318 s**, 922 names 0.563 s — against 0.004–0.007 s for the token
+  pass throughout. So the win needs *both* >512 differentiation names and enough
+  derived-parameter expressions to multiply them, which is Smith's shape (89
+  loader-synthesized `_rateLaw_*` × 922) and no corpus model's: only 24 of 213
+  `benchmarks/sbml_events` models carry a derived parameter at all, the largest
+  product among them is 7,880 against Smith's 82,058, and the twelve
+  highest-parameter models in that corpus measure 1.0x. Inert there, in other
+  words — and provably so: the emitted C is byte-identical over 1,381 models
+  (`benchmarks/sbml_events` 214, `suites/rr_bngl/sbml` 581,
+  `suites/ode_fullnet/nets` 585, plus Smith), with no model gaining or losing an
+  analytic sensitivity RHS.
+
+  The issue's own hypothesis, that the per-species volume divide lands inside the
+  inner scatter, was measured rather than assumed and is not the case. For a
+  static compartment the divide is already folded into the coefficient at emit
+  (Smith's whole sensitivity RHS contains zero runtime divides); only a
+  *variable*-volume compartment emits one, which it must. Dropping the 191
+  `+= (0) * contrib` dead lines from `bngsim_jac_vec` — 14% of its scatter — was
+  measured at 0.1685 s → 0.1694 s, i.e. nothing, so they stay. And the issue's
+  "same-volume analytic 0.026 s vs cross-compartment analytic 0.775 s on an
+  otherwise identical model" is not two analytic paths: changing `size(C2)`
+  changes the loader's *classification*, so the uniform model's reactions are
+  Elementary (closed-form ∂f/∂p, no sympy at all) while the cross-compartment
+  model's are Functional.
+
 ### Changed
 - **A parity run now records WHICH bngsim produced it, not just which version
   (issue #163).** The `bng_parity` harness records the engines behind a run so a
