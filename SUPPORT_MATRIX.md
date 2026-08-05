@@ -77,6 +77,14 @@ environment. `lint.yml`, `native-tests.yml`, `mir.yml`, `windows-nfsim.yml` and
 `windows-tail.yml` cover the pre-commit hooks, the C++ unit suite, the MIR JIT
 backend, and the Windows NFsim/RuleMonkey paths respectively.
 
+`python-tests.yml` is the Python suite's own gate: the whole of `python/tests`,
+on `ubuntu-latest` and `macos-14`, in the **default** build configuration — no
+`-D` overrides, so KLU, NFsim and RuleMonkey are all on and the MIR backend is
+off, which is what a wheel ships. It has no `paths:` filter and names no test
+files, so it fires on every change and picks up new tests without a workflow
+edit. Every other job above disables something or runs a curated list, which is
+how the shipped configuration went untested on Linux and macOS until issue #169.
+
 Check the latest results before trusting this table:
 
 ```bash

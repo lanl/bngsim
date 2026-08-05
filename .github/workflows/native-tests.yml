@@ -5,8 +5,15 @@ name: native-tests
 # Until #38 NOTHING in CI built these tests. Every workflow that compiles the
 # project passes BNGSIM_BUILD_TESTS=OFF (mir.yml, windows-nfsim.yml,
 # windows-tail.yml), and no job ever invoked the binaries — so the suite's only
-# gate was a developer remembering to build it by hand. The pre-push hook
-# covers python/tests; the C++ side had no equivalent at any stage.
+# gate was a developer remembering to build it by hand. The C++ side had no
+# equivalent at any stage of CI.
+#
+# The original wording here was "the pre-push hook covers python/tests", offered
+# as the contrast that made the C++ gap worse. Issue #169 showed that assumption
+# was itself the other half of the problem: a local hook covers one platform and
+# `--no-verify` removes it, so python/tests had no cross-platform CI gate either.
+# python-tests.yml (ubuntu + macos-14, whole suite, default build) is that gate
+# now; this job remains the C++ half.
 #
 # That is not hypothetical. #28 flipped SteadyStateOptions::method from "newton"
 # to "integration" and updated the Python side, leaving the C++ assertion in

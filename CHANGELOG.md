@@ -15,6 +15,20 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Fixed
+- **A LAPACK-dense skip that no `_DECLARED_SKIPS` entry matched (found while
+  wiring issue #169).** Two files skip for the same build-variant condition and
+  phrase it differently: `test_engine_choice_accessors.py` says `"LAPACK-dense
+  not built in this configuration"`, `test_lapack_dense_solver.py` says `"build
+  links no BLAS dense backend (Accelerate / LAPACK)"`. Only the first was
+  declared, so the second read as an *undeclared* skip — the audit's signal for
+  "a test stopped running and nobody decided it should".
+
+  It could not be seen on macOS: `find_package` always resolves Accelerate there,
+  so neither test skips at all. It shows up only where CMake finds no BLAS, and
+  until #169 no CI job ran the full suite anywhere but a developer's macOS box.
+  The second phrasing is declared now, so `BNGSIM_SKIP_AUDIT=strict` does not
+  fail a Linux leg for a legitimate build-variant skip.
+
 - **The #161 analytic sensitivity RHS was a net regression on the model it
   targeted, and the cost was in the build, not in the emitted code (issue
   #165).** `Smith_BMCSystBiol2013` (133 species, 16 sensitivity columns,
@@ -153,6 +167,68 @@ in `CMakeLists.txt`) is derived from it.
   refusal and turns the sensitivity column into a real one.
 
 ### Added
+- **A cross-platform Python test gate (issue #169).**
+  `.github/workflows/python-tests.yml` runs the whole of `python/tests` on
+  `ubuntu-latest` and `macos-14` in the **default** build configuration. Before
+  it, GitHub CI ran 533 of the suite's ~3490 Python tests on any non-Windows
+  host — and every one of them under `BNGSIM_CODEGEN_JIT=mir` on a
+  `-DBNGSIM_ENABLE_MIR=ON` build, so the count exercised in the configuration a
+  wheel actually ships was **zero** on Linux and macOS. A regression in SBML
+  loading, `.net` parsing, events, steady state, SSA, conversion or coupling
+  could be caught only on Windows, and only if the file happened to be named in
+  one of two hand-maintained lists.
+
+  The gap was structural, not a bug. Every job that runs pytest names a curated
+  file list, so a *new* test file defaults to running nowhere, and the assumed
+  backstop was the local pre-push hook — which covers whichever platform the
+  developer happens to be on (here macOS arm64) and which `git push --no-verify`
+  removes. `native-tests.yml` stated that assumption in its header as fact.
+
+  The new job therefore carries no `paths:` filter (a selectively-firing gate
+  reintroduces the per-file opt-in through the trigger instead of the run list),
+  no file list (it runs the directory, the way `native-tests.yml` drives `ctest`
+  rather than one named target), and no `-D` overrides (every other workflow
+  disables something — KLU off in four of them, MIR *on* in `mir.yml` — which is
+  how the shipped configuration ended up untested). Provisioning is `uv sync
+  --extra dev` off `uv.lock` and the pytest call is the pre-push hook's own, so a
+  green run means what a clean `git push` means locally, on a host the developer
+  does not have.
+
+  Two false-green guards, mirroring the ones `native-tests.yml` added for the C++
+  suite: a floor on the passed count, because a module that stops importing skips
+  at collection and shrinks the denominator without failing anything; and
+  `BNGSIM_SKIP_AUDIT=strict`, because a test that quietly turns into a skip for
+  an undeclared reason is the same invisibility in a different form. `HAS_KLU` is
+  asserted after the build for the reason `mir.yml` asserts `HAS_MIR` — a build
+  that silently lost KLU would skip the sparse-solver tests and still be green.
+
+  Side effect worth naming: the macOS leg is the only place anywhere that
+  exercises `BNGSIM_KLU_AUTOBUILD` (GH #209). The wheel legs all resolve a
+  prebuilt SuiteSparse through `SUITESPARSE_ROOT` and every other job sets
+  `ENABLE_KLU=OFF`, so the from-source KLU subset that an sdist install on a bare
+  box falls back to had no CI at all. Wiring it up immediately showed why that
+  matters: the same autobuild **cannot** complete on a bare `ubuntu-latest`,
+  because SuiteSparse's own CMake calls `find_package(BLAS)` and the runner image
+  ships none, so the configure dies in `SuiteSparse_config` before KLU is
+  reached. So GH #209's self-sufficiency claim holds on macOS but not on a bare
+  Linux host. The Linux leg therefore installs `libsuitesparse-dev`, the same
+  system-package route cibuildwheel's Linux leg takes.
+
+  And the gate earned itself on its first real run: **four tests fail on Linux
+  that pass on macOS**, in two unrelated subsystems, both pre-existing on `main`
+  and both exactly the class #169 said nothing could see. GH #176's
+  finite-difference retry fires correctly on
+  `ltype_calcium_discontinuous_jacobian.net` and then dies at a *second*
+  threshold crossing (t≈34.6) the fixture's own header does not mention; and
+  `nested_derived_rate_const.net`'s reduced Jacobian is exactly singular under
+  Linux's reference LAPACK where Accelerate leaves it merely ill-conditioned, so
+  it takes the refusal branch its sibling test exists to assert rather than the
+  warning branch its own test asserts. Both are quarantined under
+  `xfail(sys.platform.startswith("linux"), strict=True, raises=SimulationError)`
+  and reported in lanl/bngsim#176 — `strict` so they retire themselves, and
+  quarantined at all so the new gate lands green rather than permanently red,
+  which is the distinction `native-tests.yml`'s header spells out.
+
 - **`compartment_sizes=` at load, the supported way to change a volume (issue
   #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
   `from_antimony_string`, and `Model.load` take

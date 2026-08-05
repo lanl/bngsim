@@ -49,16 +49,22 @@ def pytest_configure(config: pytest.Config) -> None:
 # because they imported PyBNF (lanl/bngsim#45); one had been red for months on the
 # only boxes that could run it.
 #
-# Nothing in CI runs the full Python suite (every workflow pytest call is a
-# curated file list), so the audience for this is the pre-push hook — the one
-# gate that runs everything. Printing the table there means a dev sees, on every
-# push, exactly what did not run.
+# The audience used to be the pre-push hook alone: every workflow pytest call was
+# a curated file list, so nothing in CI ran the full suite and only a local push
+# saw the whole table. Since issue #169 that is no longer true — python-tests.yml
+# runs `python/tests` as a directory on ubuntu + macos-14 and sets
+# BNGSIM_SKIP_AUDIT=strict, so an undeclared skip fails CI rather than printing a
+# `??` a developer may not read. The hook still prints the table on every push;
+# the difference is that the audit now has teeth on two platforms nobody is
+# standing at.
 #
 # Undeclared reasons warn by default. Set BNGSIM_SKIP_AUDIT=strict to make them
-# fail instead; BNGSIM_SKIP_AUDIT=off silences the block entirely. Strict is
-# opt-in because the per-environment reason set is still settling — a curated CI
-# leg skips a different subset than a full local run, and a guard that cries wolf
-# gets disabled, which would leave us worse off than a quiet one.
+# fail instead; BNGSIM_SKIP_AUDIT=off silences the block entirely. Strict stays
+# opt-in rather than becoming the default because a CURATED leg skips a different
+# subset than a whole-suite run, and a guard that cries wolf gets disabled — which
+# would leave us worse off than a quiet one. The distinction that makes it safe to
+# turn on in python-tests.yml is that that job runs everything in the default
+# build, so every reason it can produce is one somebody can actually reason about.
 
 # Declared skip reasons: (substring to match, why this skip is legitimate).
 # A skip whose reason matches none of these is reported as undeclared. Adding an
@@ -70,6 +76,14 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     ("KLU not compiled", "KLU-off builds are a supported configuration"),
     ("requires a build without SuiteSparse/KLU", "inverse of the above; KLU-off builds only"),
     ("LAPACK-dense not built", "LAPACK is optional; CMake degrades to the reference solver"),
+    # Same build-variant condition as the line above, phrased differently by a
+    # different file: test_engine_choice_accessors.py says "LAPACK-dense not built
+    # in this configuration", test_lapack_dense_solver.py says "build links no
+    # BLAS dense backend". Only the first was ever declared, and the gap is
+    # invisible on macOS (Accelerate is always found, so neither test skips) —
+    # it surfaces only where find_package(LAPACK) comes up empty, which nothing
+    # ran the full suite on until #169 added a Linux leg.
+    ("no BLAS dense backend", "as above; the other half of the same gate"),
     ("RuleMonkey compiled in", "inverse-condition test; runs only on RuleMonkey-off builds"),
     ("RuleMonkey not compiled in", "RuleMonkey is a build-time opt-in"),
     # Optional / developer-only Python dependencies.

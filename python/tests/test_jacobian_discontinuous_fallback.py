@@ -24,6 +24,7 @@ the failure is about, whichever entry point meets it.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import bngsim
@@ -36,11 +37,37 @@ T_SPAN = (0.0, 150.0)
 N_POINTS = 301
 TOL = 1e-8
 
+# Quarantine for lanl/bngsim#176 — NOT the "GH #176" this file's header is about.
+# The digits collide and the trackers do not: "GH #176" is the upstream issue that
+# ADDED the finite-difference retry, lanl/bngsim#176 is the report that the retry
+# does not save this fixture on Linux.
+#
+# What the first whole-suite Linux run (#169) showed: the retry machinery works.
+# The analytical attempt dies at the t≈25 crossing the header documents, the
+# warning fires, FD engages — and FD then dies at t≈34.6, a *second* crossing the
+# header does not mention. So the header's premise ("the finite-difference
+# Jacobian straddles the step ... so it integrates the model cleanly") holds under
+# Accelerate and not under Linux's reference LAPACK.
+#
+# The four steady-state tests below are deliberately NOT marked: they pass on
+# Linux, because #127's march never reaches t≈34.6. That contrast is the sharpest
+# evidence in the report, so keep the marker per-test rather than module-wide.
+#
+# strict=True so this retires itself — the day FD carries the full 150 s horizon
+# on Linux, these xpass and the run goes red until the marker is deleted.
+fd_fallback_dies_on_linux = pytest.mark.xfail(
+    sys.platform.startswith("linux"),
+    reason="lanl/bngsim#176: the FD fallback dies at a second crossing (t≈34.6) on Linux",
+    strict=True,
+    raises=SimulationError,
+)
+
 
 def _net(data_dir: Path) -> str:
     return str(data_dir / FIXTURE)
 
 
+@fd_fallback_dies_on_linux
 def test_auto_falls_back_to_fd_and_integrates(data_dir: Path) -> None:
     """The default config integrates the full horizon (the analytical attempt
     fails internally and is retried with FD)."""
@@ -52,6 +79,7 @@ def test_auto_falls_back_to_fd_and_integrates(data_dir: Path) -> None:
     assert sim.jacobian_strategy == "fd"
 
 
+@fd_fallback_dies_on_linux
 def test_auto_fallback_matches_explicit_fd(data_dir: Path) -> None:
     """The auto (fallen-back) trajectory is identical to the explicit-FD one —
     the retry simply selects the FD Jacobian, which is deterministic."""
@@ -75,6 +103,7 @@ def test_explicit_analytical_is_not_second_guessed(data_dir: Path) -> None:
         sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=TOL, atol=TOL)
 
 
+@fd_fallback_dies_on_linux
 def test_repeated_runs_skip_the_doomed_attempt(
     data_dir: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
