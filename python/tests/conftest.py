@@ -76,6 +76,14 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     ("KLU not compiled", "KLU-off builds are a supported configuration"),
     ("requires a build without SuiteSparse/KLU", "inverse of the above; KLU-off builds only"),
     ("LAPACK-dense not built", "LAPACK is optional; CMake degrades to the reference solver"),
+    # Same build-variant condition as the line above, phrased differently by a
+    # different file: test_engine_choice_accessors.py says "LAPACK-dense not built
+    # in this configuration", test_lapack_dense_solver.py says "build links no
+    # BLAS dense backend". Only the first was ever declared, and the gap is
+    # invisible on macOS (Accelerate is always found, so neither test skips) —
+    # it surfaces only where find_package(LAPACK) comes up empty, which nothing
+    # ran the full suite on until #169 added a Linux leg.
+    ("no BLAS dense backend", "as above; the other half of the same gate"),
     ("RuleMonkey compiled in", "inverse-condition test; runs only on RuleMonkey-off builds"),
     ("RuleMonkey not compiled in", "RuleMonkey is a build-time opt-in"),
     # Optional / developer-only Python dependencies.
