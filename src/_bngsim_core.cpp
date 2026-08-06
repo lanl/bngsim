@@ -1141,6 +1141,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 out["function_map"] = std::move(fmap);
                 out["observables"] = std::move(obs);
                 out["species_meta"] = std::move(smeta);
+                out["species_volume_param"] = py::cast(ctx.species_volume_param);
                 out["constant_names"] = py::cast(ctx.constant_names);
                 return out;
             },
@@ -1236,6 +1237,16 @@ PYBIND11_MODULE(_bngsim_core, m) {
                         rd["rate_param_idx0"] = rt.rate_param_idx0;
                         rd["stat_factor"] = rt.stat_factor;
                         rd["amount_factor"] = rt.amount_factor;
+                        // (#170 stage 2) The same amount factors, in the same fold
+                        // order, tagged with the compartment-size parameter each
+                        // came from — so the emitted C can read a written volume
+                        // instead of baking this load's. Empty (the pre-#170 shape)
+                        // unless at least one is live, in which case the emitter
+                        // keeps using the folded `amount_factor` above.
+                        py::list avt;
+                        for (const auto &[k, v] : rt.amount_volume_terms)
+                            avt.append(py::make_tuple(k, v));
+                        rd["amount_volume_terms"] = std::move(avt);
                         py::list reactants;
                         for (const auto &pr : rt.reactants) {
                             py::dict prd;

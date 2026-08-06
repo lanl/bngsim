@@ -34,23 +34,52 @@ in `CMakeLists.txt`) is derived from it.
   rescale the rates in that compartment without moving the volume. `set_param("cell", v)` now reproduces *loading the model at
   `v`* bit for bit, and matches RoadRunner, on every shape issue #170 tabulated —
   including the pair that made its case, where the same law loaded at V=1 and at
-  V=4 gave opposite answers. 135 of the corpus's 207 compartment-carrying models
-  become fully writable.
+  V=4 gave opposite answers.
 
-  Not yet writable, and refused by name rather than in a blanket
-  (`Model.unwritable_compartment_size_params`): an assignment-rule compartment
-  (the rule recomputes its size every step), one whose storage divide a single
-  mass-action scalar shares across two equal-sized compartments, and one holding
-  an amount-valued (`hasOnlySubstanceUnits`) species or a cross-compartment
-  reaction — whose volume the *generated C* still carries as a literal, so
-  honoring the write would honor it with codegen off and half-apply it with
-  codegen on. Not yet *differentiable* either: forward sensitivity still refuses
-  a `d/dV` column (issue #170 stages 2 and 3).
+  The **generated C** reads the volume from `p[]` too, so the write lands on the
+  compiled backend as well as the interpreted one. Previously the emitted source
+  baked it — the amount factor of an amount-valued (`hasOnlySubstanceUnits`)
+  species's rate, its observable weights, its `∂/∂x` chain factor and `rateOf`
+  scaling, plus a cross-compartment reaction's `inv_vf` reciprocal table and
+  per-row Jacobian / `∂f/∂p` divisors — and those two shapes were refused rather
+  than honored on one backend and half-applied on the other. The invariant that
+  makes it safe: **the emitted source no longer depends on the load-time volume at
+  all**, so one compiled `.so` is valid at every size and a write that arrives
+  after the source was generated (a `parameter_scan`, any post-construction
+  `set_param`) still lands. The per-species `∂func/∂x` chain coefficient went
+  symbolic for the same reason, on both backends: it is the `J·yS` half of the
+  forward-sensitivity RHS, so freezing V there was a wrong *sensitivity* (measured
+  at 100% on a 400x volume write), not merely a slower solve.
+
+  Lifting that refusal made 38 more corpus models writable, and a sweep of "does
+  `set_param` reproduce `compartment_sizes=` at the same value?" over all 173 found
+  three more places where a load at V=1 emitted something a load at V≠1 did not,
+  so the write had nothing to move — the `_vd_<rid>_unified` Functional storage
+  divide for a *multi-compartment* reaction, an event assignment writing an amount
+  into an `hasOnlySubstanceUnits` species's slot, and the report-time
+  amount→concentration divide for an assignment-rule target (the one conversion
+  that lives entirely on the Python side, so no engine refresh could reach it).
+  All three are fixed and all three are numerically free at the nominal point,
+  since `x/1.0 == x` exactly.
+
+  **177 of the corpus's 207 compartment-carrying models are now fully writable**
+  (135 before the codegen half), 9 partly; the models with any refused size drop
+  from 72 to 30 and the refused sizes from 230 to 132. Refused by name rather than
+  in a blanket (`Model.unwritable_compartment_size_params`), and now for two
+  reasons rather than three: an assignment-rule compartment (the rule recomputes
+  its size every step), and one whose storage divide a single mass-action scalar
+  shares across two equal-sized compartments (that scalar stops being exact the
+  moment they differ). Not yet *differentiable*: forward sensitivity still refuses
+  a `d/dV` column (issue #170 stage 3).
 
   Behaviour at the nominal point is unchanged: over the 214-model SBML corpus the
   RHS is bit-identical on all 214 and the trajectory on 206. Five of the eight
   that move do so because they *gained* an analytical Jacobian (202 → 207
   complete, none lost) — see below; the other three differ by ≤ 8.3e-16 relative.
+  The codegen half moves nothing further: against the interpreted-and-writable
+  build, the RHS fingerprint and the trajectory are bit-identical on every model,
+  interpreted and `codegen=True` alike, even though the emitted C text changes for
+  the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
 - **An ExprTk derivative over a Python-keyword-named parameter silently dropped

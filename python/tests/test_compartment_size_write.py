@@ -171,6 +171,19 @@ def _xcomp(v1="1", v2="5", **kw):
     return bngsim.Model.from_sbml_string(XCOMP % {"v1": v1, "v2": v2}, **kw)
 
 
+def _xcomp_equal(v="5", **kw):
+    """The same model with the two compartments the SAME size at load.
+
+    That is not a cosmetic difference: the mass-action classifier's set of volumes
+    (not of compartment *ids*) then has one element, so ``transport`` folds into a
+    single Elementary scalar — exact only while the two sizes agree, and therefore
+    still unwritable after #170 stage 2. With differing sizes the same reaction
+    takes the per-species path, which stage 2 made live, so ``_xcomp()`` itself is
+    no longer a refusal fixture.
+    """
+    return bngsim.Model.from_sbml_string(XCOMP % {"v1": v, "v2": v}, **kw)
+
+
 # ── The marking ─────────────────────────────────────────────────────────────
 
 
@@ -210,30 +223,33 @@ def test_a_promoted_compartment_is_not_flagged():
 
 
 def test_set_param_refuses_a_compartment_write():
-    m = _xcomp()
+    m = _xcomp_equal()
     with pytest.raises(ValueError) as exc:
         m.set_param("C2", 7.0)
     msg = str(exc.value)
     assert "C2" in msg and "compartment size" in msg
     assert "compartment_sizes=" in msg or "compartment_sizes" in msg
-    # (#170) The message now has to say WHICH of the three unresolvable cases
-    # this is — here, a cross-compartment reaction whose per-species volume
-    # divide the emitted C still carries as a literal.
-    assert "cross-compartment" in msg
+    # (#170) The message has to say WHICH unresolvable case this is. Stage 2
+    # retired the third (the folds only the emitted C baked), so two are left and
+    # this one is the mass-action scalar spanning two equally-sized compartments.
+    assert "equal size" in msg
     assert "unwritable_compartment_size_params" in msg
     # And the refusal is total: nothing moved.
     assert m.get_param("C2") == 5.0
     assert m._core.codegen_data()["species"][1]["volume_factor"] == 5.0
 
 
-def test_the_invented_dependence_is_refused_not_merely_dropped():
+def test_the_invented_dependence_is_gone_not_merely_refused():
     """#164's worst symptom: a write to a compartment the trajectory is exactly
-    invariant to used to *move* it by 20x. The refusal must cover this half too
-    — it is the one a caller has no way to notice."""
+    invariant to used to *move* it by 20x — the half a caller has no way to
+    notice. #170 stage 1 put the interpreted folds back on the parameter and
+    stage 2 the emitted-C ones, so this write is now honored and lands on the
+    rebuild exactly. ``A`` is C1-invariant, so "exactly" here means the trajectory
+    does not budge at all."""
     m = _xcomp()
-    with pytest.raises(ValueError, match="C1"):
-        m.set_param("C1", 3.0)
-    assert np.allclose(_traj(m)[:, 0], _traj(_xcomp(v1="3"))[:, 0], rtol=1e-9)
+    m.set_param("C1", 3.0)
+    assert m.get_param("C1") == 3.0
+    assert np.array_equal(_traj(m), _traj(_xcomp(v1="3")))
 
 
 def test_the_single_compartment_bare_law_is_honored_now():
@@ -257,27 +273,28 @@ def test_writing_the_value_it_already_holds_is_allowed():
     """A fitting harness that writes back a full parameter vector round-trips
     unchanged entries through here. A write that changes nothing has nothing to
     desync, so refusing it would be a gratuitous break."""
-    m = _xcomp()
+    m = _xcomp_equal()
     m.set_param("C2", 5.0)  # exactly the load-time size
     assert m.get_param("C2") == 5.0
     m.set_params({n: m.get_param(n) for n in m.param_names})
-    assert m.get_param("C1") == 1.0 and m.get_param("C2") == 5.0
+    assert m.get_param("C1") == 5.0 and m.get_param("C2") == 5.0
 
 
 def test_set_params_stays_atomic_across_the_refusal():
     """``set_params`` documents all-or-nothing. The compartment check therefore
     runs in the validation phase, not from the apply loop — otherwise ``k``
     would be written and then the dict would raise."""
-    m = _xcomp()
+    m = _xcomp_equal()
     with pytest.raises(ValueError, match="C2"):
         m.set_params({"k": 0.9, "C2": 7.0})
     assert m.get_param("k") == 0.3
     assert m.get_param("C2") == 5.0
 
 
-def test_parameter_scan_over_a_compartment_refuses():
-    """It used to return one trajectory N times."""
-    sim = bngsim.Simulator(_xcomp(), method="ode")
+def test_parameter_scan_over_an_unwritable_compartment_refuses():
+    """It used to return one trajectory N times. A scan over a *writable* size is
+    a real scan now — :mod:`test_compartment_size_live` owns that row."""
+    sim = bngsim.Simulator(_xcomp_equal(), method="ode")
     with pytest.raises(ValueError, match="compartment size"):
         sim.parameter_scan("C2", [5.0, 7.0, 9.0], t_span=T_SPAN, n_points=3)
 

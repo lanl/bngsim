@@ -3800,16 +3800,6 @@ def _build_model_from_sbml_doc(doc):
         # already reads it live through `ode_live_volume_idx0`.
         if comp in live_volume_param_comps:
             builder.set_species_volume_param(idx, comp_param_idx[comp], declared_amount)
-            # (#170 stage 2) The INTERPRETED path re-derives every use of this
-            # species's V_c from the parameter above, but the emitted C does not:
-            # an amount-valued species carries `× V_c` as a literal in the rate's
-            # amount factor, in every observable weight, and in the ∂/∂x chain
-            # factor, all baked when the .so was generated. A write would then be
-            # honoured with codegen off and half-applied with it on — the
-            # invisible path-dependence issue #164 refused over. So refuse this
-            # compartment outright until stage 2 makes those reads `p[]`.
-            if hosu:
-                compartment_write_refused.add(comp)
 
         # (GH #231 sub-cluster 3 / 01463) A hasOnlySubstanceUnits=true species's
         # symbol denotes its amount, so its rateOf csymbol is the amount-rate. The
@@ -3923,10 +3913,18 @@ def _build_model_from_sbml_doc(doc):
     #     (Simulator._apply_ar_report_map), not in the emitted math.
     # Returns the node unchanged for V=1 / hOSU=false targets (byte-identical).
     def _divide_by_target_vc(math, target_var):
+        # (#170) The `V_c != 1` shortcut is the V=1 normalisation again: at V=1 the
+        # divide was dropped as a ÷1 no-op, so an event that assigns an amount wrote
+        # it straight into the stored slot — and a later `set_param` on the volume
+        # could not move it, leaving the species exactly V_new/V_load too large
+        # (BIOMD0000000241's dose events, 2.5x on a 2.5x write). Emit it whenever the
+        # target's compartment size is a writable PARAMETER, whatever this load's
+        # value: `x/1.0 == x` exactly, so the nominal point is byte-identical.
+        _tcomp = species_comp.get(target_var, "")
         if (
             target_var in species_idx
             and species_hosu.get(target_var, False)
-            and comp_volumes.get(species_comp.get(target_var, ""), 1.0) != 1.0
+            and (comp_volumes.get(_tcomp, 1.0) != 1.0 or _tcomp in live_volume_param_comps)
         ):
             target_comp = species_comp[target_var]
             div = libsbml.ASTNode(libsbml.AST_DIVIDE)
@@ -5348,9 +5346,25 @@ def _build_model_from_sbml_doc(doc):
                     # model behave the same. Numerically free at the nominal point:
                     # `x/1.0 == x` exactly for every finite x, so the trajectory is
                     # bit-identical until C is written.
-                    _static_comps = {c for c in rxn_comps if c in live_volume_param_comps}
-                    if len(rxn_comps) == 1 and len(_static_comps) == 1:
-                        rep_comp = next(iter(_static_comps))
+                    #
+                    # The representative compartment is chosen by the SAME rule the
+                    # `else` branch below uses, and deliberately without restricting
+                    # this to single-compartment reactions: a reaction whose species
+                    # span several compartments of equal load-time size takes this
+                    # unified path too, and at V≠1 it gets a representative divide.
+                    # Requiring len(rxn_comps) == 1 here (stage 1 did) left those
+                    # reactions undivided at V=1 only — 7 corpus models, 68
+                    # reactions, where a write then moved the trajectory to
+                    # something no rebuild produces (BIOMD0000000570: 1.8 relative
+                    # in the RHS). Whether a single representative divide is the
+                    # right reading of such a reaction is a separate question that
+                    # the rebuild answers the same way; what matters here is that
+                    # the two builds of one model agree.
+                    rep_comp = species_comp[next(iter(net))]
+                    _rep_is_vstatic = rep_comp in vstatic_divide_comps and all(
+                        species_hosu.get(s, False) for s in net
+                    )
+                    if not _rep_is_vstatic and rep_comp in live_volume_param_comps:
                         vf_name = f"_vd_{rid}_unified"
                         with contextlib.suppress(RuntimeError):
                             builder.add_function(vf_name, f"{base_func}/{_safe_name(rep_comp)}")
@@ -5481,16 +5495,6 @@ def _build_model_from_sbml_doc(doc):
                 apply_species_factor=False,
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
-            )
-            # (#170 stage 2) Same boundary as the amount-valued species above:
-            # the per-species accumulation divide is live in the interpreted RHS
-            # (it reads `Species::volume_factor`, which a write re-derives) but
-            # baked in the emitted C, whose `inv_vf` table and per-row Jacobian /
-            # ∂f/∂p divisors are literals. Refuse a write to every compartment
-            # this reaction divides by, rather than honour it on one backend and
-            # not the other.
-            compartment_write_refused.update(
-                species_comp[_s] for _s in net if species_comp[_s] in live_volume_param_comps
             )
             # (#144 case 4) Cross-compartment variable-volume monomial certified by
             # the classifier (§7). The per-species emission above divides each
@@ -6028,7 +6032,7 @@ def _build_model_from_sbml_doc(doc):
     # e.g. ``S = floor(time/tau)``). Record the source so Simulator.run can
     # overwrite the species column with the live value. Names are mangled
     # to match the runtime arrays.
-    ar_report_map: dict[str, tuple[str, str, float]] = {}
+    ar_report_map: dict[str, tuple] = {}
     for sid in assignment_targets:
         if sid not in species_idx:
             continue
@@ -6047,7 +6051,27 @@ def _build_model_from_sbml_doc(doc):
             if species_hosu.get(sid, False)
             else 1.0
         )
-        ar_report_map[safe] = (kind, safe, vdiv)
+        # (#170) …and WHICH compartment that divisor is, when the size is a
+        # writable parameter, so the reported column follows a `set_param` instead
+        # of staying at the volume this load saw. This is the one place the
+        # amount→concentration conversion lives entirely on the Python side (a
+        # report-time rescale, not emitted math), so it is the one place
+        # `refresh_compartment_volume_state` cannot reach — and it was the last
+        # site where a write did not reproduce a rebuild: the reported column came
+        # out scaled by exactly V_new/V_load (0.4 on a 2.5x write, on 15 corpus
+        # models). Empty for a vstatic compartment, whose divide must stay at the
+        # load-time value and whose size is refused anyway.
+        _vdiv_comp = species_comp.get(sid, "")
+        vdiv_param = (
+            _safe_name(_vdiv_comp)
+            if species_hosu.get(sid, False) and _vdiv_comp in live_volume_param_comps
+            else ""
+        )
+        # The 4th element is APPENDED only when there is a live size to name, so a
+        # model with no writable compartment keeps the 3-tuple its consumers (and
+        # their tests) already pin — the same widen-by-appending the 2-tuple → 3-tuple
+        # step used, and why the reader below is length-guarded rather than unpacking.
+        ar_report_map[safe] = (kind, safe, vdiv, vdiv_param) if vdiv_param else (kind, safe, vdiv)
     model._ar_report_map = ar_report_map
 
     # Variable-volume concentration report map (GH #85). bngsim stores every

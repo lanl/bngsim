@@ -3074,11 +3074,16 @@ def _emit_sens_rhs_body(
         derived_terms : list[(primary_param_idx, dpd_dprimary_c_expr)]
                         — chain-rule contributions for derived rate constants;
                         empty for the model-based path (see issue #15).
-        row_divisor   : dict[int, (live_volume_idx0, static_divisor)] — optional,
-                        the GH #160 cross-compartment volume divide for the rows
-                        that have one (see :func:`_psvs_row_divisor`). Absent or
-                        empty ⇒ every row accumulates undivided, the shape every
-                        single-compartment model has.
+        row_divisor   : dict[int, (live_volume_idx0, static_divisor,
+                        static_divisor_param_idx0)] — optional, the GH #160
+                        cross-compartment volume divide for the rows that have one
+                        (see :func:`_psvs_row_divisor`). Absent or empty ⇒ every row
+                        accumulates undivided, the shape every single-compartment
+                        model has.
+        amount_factor_c : str | None — optional, the GH #75 ``∏ V_c^mult`` amount
+                        factor as one C factor (see :func:`_amount_factor_c`), or
+                        ``None``/absent for a reaction that carries none. The
+                        ``.net`` path never sets it.
 
     Both ``generate_sens_rhs_c`` (.net path) and ``generate_sens_from_model``
     (model path) feed this helper, so the emitted C is byte-identical for the
@@ -3177,12 +3182,13 @@ def _emit_sens_rhs_body(
         if want_obs:
             if not obs_value_lines:
                 return None
+            _sens_obs_sig, _sens_obs_args = _obs_blk_sig(obs_value_lines)
             obs_in, obs_fs = _shard_value_lines(
                 obs_value_lines,
                 chunk=chunk,
                 fn_prefix="sens_obs_blk",
-                signature_params=_OBS_BLK_SIG,
-                call_args=_OBS_BLK_ARGS,
+                signature_params=_sens_obs_sig,
+                call_args=_sens_obs_args,
             )
         if need_func:
             if not func_value_lines:
@@ -3249,11 +3255,11 @@ def _emit_sens_rhs_body(
         if sf != 1.0:
             terms.append(str(int(sf)) if sf == int(sf) else str(sf))
         # GH #75: amount_valued reactants enter by their amount (stored × V_c),
-        # so the rate carries the constant ∏ V_c^mult. 1.0 ⇒ no term emitted
+        # so the rate carries the constant ∏ V_c^mult. None ⇒ no term emitted
         # (byte-identical for .net / V=1 / hOSU=false).
-        amount_factor = rxn.get("amount_factor", 1.0)
-        if amount_factor != 1.0:
-            terms.append(repr(amount_factor))
+        amount_factor_c = rxn.get("amount_factor_c")
+        if amount_factor_c is not None:
+            terms.append(amount_factor_c)
         for sp_idx, mult in sorted(rxn["reactant_mult"].items()):
             for _ in range(mult):
                 terms.append(f"y[{sp_idx}]")
@@ -3291,11 +3297,18 @@ def _emit_sens_rhs_body(
                 if coeff == 0:
                     continue
                 if div is not None:
-                    live_idx, sdiv = div
+                    live_idx, sdiv, sdiv_param = div
                     if live_idx >= 0:
                         _emit(
                             f"        {out}[{sp_idx}] += {_jac_c_float(abs(coeff))} * fabs(v) / "
                             f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r});"
+                        )
+                    elif sdiv_param >= 0:
+                        # A volume is positive, so |coeff|/V == |coeff/V| and this
+                        # stays the magnitude mirror of the value branch below.
+                        _emit(
+                            f"        {out}[{sp_idx}] += {_jac_c_float(abs(coeff))} "
+                            f"/ p[{sdiv_param}] * fabs(v);"
                         )
                     else:
                         _emit(
@@ -3308,11 +3321,17 @@ def _emit_sens_rhs_body(
                     _emit(f"        {out}[{sp_idx}] += {abs(coeff)} * fabs(v);")
                 continue
             if div is not None:
-                live_idx, sdiv = div
+                live_idx, sdiv, sdiv_param = div
                 if live_idx >= 0:
                     _emit(
                         f"        {out}[{sp_idx}] += {_jac_c_float(coeff)} * v / "
                         f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r});"
+                    )
+                elif sdiv_param >= 0:
+                    # (#170 stage 2) One correctly-rounded divide of the same two
+                    # doubles the Python fold performed, then the same multiply.
+                    _emit(
+                        f"        {out}[{sp_idx}] += {_jac_c_float(coeff)} / p[{sdiv_param}] * v;"
                     )
                 else:
                     _emit(f"        {out}[{sp_idx}] += {_jac_c_float(coeff / sdiv)} * v;")
@@ -3472,16 +3491,16 @@ def _emit_sens_rhs_body(
 
         # GH #75: amount_valued reactants enter the rate by their amount, so
         # ∂rate/∂x_j carries the same constant ∏ V_c^mult (the y-derivative is
-        # w.r.t. the stored value, and rate = k·sf·(∏V_c^m)·∏x^m). 1.0 ⇒ no
+        # w.r.t. the stored value, and rate = k·sf·(∏V_c^m)·∏x^m). None ⇒ no
         # factor (byte-identical for .net / V=1 / hOSU=false).
-        amount_factor = rxn.get("amount_factor", 1.0)
+        amount_factor_c = rxn.get("amount_factor_c")
 
         # For each unique reactant species j:
         for sp_j, m_j in sorted(rmult.items()):
             # dv_r/dx_j = k * af * sf * m_j * x_j^{m_j-1} * ∏_{l≠j} x_l^{m_l}
             parts = [f"p[{pidx}]"]
-            if amount_factor != 1.0:
-                parts.append(repr(amount_factor))
+            if amount_factor_c is not None:
+                parts.append(amount_factor_c)
             if sf != 1.0:
                 if sf == int(sf):
                     parts.append(str(int(sf)))
@@ -5020,9 +5039,85 @@ def _extract_exp_right(expr: str, start: int) -> tuple[str, int]:
     return expr[start_tok:i], i
 
 
-def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float]:
+def _amount_volume_factors(species: list[dict]) -> tuple[dict[int, float], dict[int, int]]:
+    """The GH #75 per-species amount factor, as ``(av_factor, av_param)``.
+
+    An ``amount_valued`` (SBML ``hasOnlySubstanceUnits``) species participates by
+    its *amount* (stored × V_c), so every emitter scales it by its compartment
+    volume: the Elementary rate's ``∏ V_c^mult`` amount factor, each observable
+    weight, and the ``∂/∂x`` chain factor. ``av_factor[i]`` is that V_c.
+
+    ``av_param[i]`` (issue #170 stage 2) is the 0-based index of the
+    compartment-size *parameter* V_c IS, when the loader bound one. The emitters
+    read ``p[k]`` there instead of baking the load-time number, which is what lets
+    a ``set_param`` on the volume reach an already-generated source — otherwise the
+    write is honoured by the interpreted engine (which re-derives
+    ``Species::volume_factor``) and dropped by the compiled one, the invisible
+    path-dependence #164 refused over. A species with no live parameter (``.net``,
+    a promoted or assignment-rule compartment) is absent here and keeps the literal.
+
+    A species is listed at all only when it carries a factor that can matter:
+    ``V_c != 1`` — the literal case, exactly the pre-#170 membership rule, so a
+    model with no live volume emits byte-identical text — *or* a live parameter,
+    where a V_c of 1.0 must still be emitted as ``p[k]`` because the write that
+    moves it off 1.0 comes later. ``× p[k]`` at the load-time value *is* ``× V_c``,
+    so the arithmetic at the nominal point is unchanged either way.
+
+    One builder for all seven emitters (the RHS, the two Jacobian paths, the
+    sensitivity RHS and its value lines, the output evaluator and the output
+    sensitivities) — the same reason :func:`_psvs_row_divisor` is one lookup.
+    """
+    av_factor: dict[int, float] = {}
+    av_param: dict[int, int] = {}
+    for i, s in enumerate(species):
+        if not s.get("amount_valued", False):
+            continue
+        vf = float(s.get("volume_factor", 1.0))
+        k = int(s.get("volume_param_idx0", -1))
+        if vf == 1.0 and k < 0:
+            continue
+        av_factor[i] = vf
+        if k >= 0:
+            av_param[i] = k
+    return av_factor, av_param
+
+
+def _av_c(i: int, av_factor: dict, av_param: dict, fmt=repr) -> str:
+    """Species ``i``'s amount factor as C — the live ``p[k]`` (issue #170 stage 2)
+    or the load-time literal, formatted by ``fmt`` to match its call site's style."""
+    k = av_param.get(i, -1)
+    return f"p[{k}]" if k >= 0 else fmt(av_factor[i])
+
+
+def _amount_factor_c(terms: list[tuple[int, float]], fmt=repr) -> str | None:
+    """A reaction's ``∏ V_c^mult`` over its amount-valued reactants, as one C
+    factor — or ``None`` when there is nothing to emit.
+
+    ``terms`` is ordered, one entry per amount-valued reactant *occurrence*
+    (multiplicity included), as ``(volume_param_idx0, volume_factor)``; a negative
+    index means the load-time literal.
+
+    The pre-#170 emission folded the whole product in Python and emitted the single
+    resulting literal. A live compartment size cannot be folded, so the factors go
+    out as **one parenthesised product in the same order** — C's left-associative
+    ``*`` then evaluates exactly the sequence the Python fold did, which is what
+    keeps the rate bit-identical at the load-time volume. (Emitting them as loose
+    factors of the surrounding rate product would re-associate the multiply and
+    move the last digit.) With no live factor the folded literal is emitted, so
+    every model without a writable compartment size keeps its text.
+    """
+    if any(k >= 0 for k, _v in terms):
+        parts = [f"p[{k}]" if k >= 0 else fmt(v) for k, v in terms]
+        return parts[0] if len(parts) == 1 else "(" + " * ".join(parts) + ")"
+    fold = 1.0
+    for _k, v in terms:
+        fold *= v
+    return fmt(fold) if fold != 1.0 else None
+
+
+def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float, int]:
     """The compartment-volume divisor of one cross-compartment accumulation row,
-    as ``(live_volume_idx0, static_divisor)``.
+    as ``(live_volume_idx0, static_divisor, static_divisor_param_idx0)``.
 
     A ``per_species_volume_scaling`` reaction's kinetic law evaluates to
     amount/time while every species it touches stores amount/V_c with a V_c of
@@ -5030,8 +5125,12 @@ def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float]:
     volume. ``live_volume_idx0 >= 0`` means the compartment was promoted to an
     ODE state (a variable volume, GH #171): the divisor is the live ``y[live]``,
     falling back to the static value when it is not positive. Otherwise the
-    divisor is the static ``volume_factor``. A row divides by 1.0 — an ordinary
-    same-volume row — when it has no live index and ``volume_factor`` is 1.0.
+    divisor is the static ``volume_factor`` — read from ``p[static_divisor_param_idx0]``
+    when the loader bound the compartment size to a writable parameter (issue #170
+    stage 2), else the load-time literal. The two are mutually exclusive: a
+    promoted compartment is integrator state, not a parameter. A row divides by
+    1.0 — an ordinary same-volume row — when it has neither and ``volume_factor``
+    is 1.0.
 
     One lookup for every emitter that scatters such a row: the RHS
     (:func:`generate_rhs_from_model`, which *defines* the divide), the Jacobian /
@@ -5039,10 +5138,15 @@ def _psvs_row_divisor(species: list[dict], si: int) -> tuple[int, float]:
     sensitivity ``∂f/∂p`` (:func:`generate_sens_from_model`). Deriving it twice is
     how a row the RHS divides ends up with a derivative that does not — the defect
     family GH #119 is about, one scale factor wide and invisible at V = 1. Mirrors
-    ``compute_derivs_core``'s ``species_divisor`` in ``src/model.cpp``.
+    ``compute_derivs_core``'s ``species_divisor`` and
+    ``AffectedRow::static_divisor_param_idx0`` in ``src/model.cpp``.
     """
     sp = species[si]
-    return int(sp.get("ode_live_volume_idx0", -1)), float(sp.get("volume_factor", 1.0) or 1.0)
+    return (
+        int(sp.get("ode_live_volume_idx0", -1)),
+        float(sp.get("volume_factor", 1.0) or 1.0),
+        int(sp.get("volume_param_idx0", -1)),
+    )
 
 
 def generate_rhs_from_model(model) -> str:
@@ -5084,12 +5188,10 @@ def generate_rhs_from_model(model) -> str:
     # NetworkModel::update_observables) and an Elementary rate carries the
     # constant ∏_{amount_valued reactants} V_c^mult (mirrors
     # compute_species_factor / AnalyticalJacobianData::amount_factor). Empty for
-    # .net / V=1 / hOSU=false ⇒ byte-identical codegen output.
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    # .net / V=1 / hOSU=false ⇒ byte-identical codegen output. ``av_param`` (issue
+    # #170 stage 2) names the compartment-size parameter each factor IS, so the
+    # emitted C reads it live instead of baking this load's volume.
+    av_factor, av_param = _amount_volume_factors(species)
     n_obs = len(observables)
     n_func = len(functions)
 
@@ -5126,7 +5228,16 @@ def generate_rhs_from_model(model) -> str:
         for i, name in enumerate(species_names):
             ref = f"current_derivs[{i}]"
             if species[i].get("report_rateof_amount", False):
-                ref = f"({_jac_c_float(species[i].get('volume_factor', 1.0))} * {ref})"
+                # (#170 stage 2) …read from p[k] when the compartment size is a
+                # writable parameter, so a volume write moves the reported
+                # amount-rate on the compiled path too.
+                _kvol = int(species[i].get("volume_param_idx0", -1))
+                _vscale = (
+                    f"p[{_kvol}]"
+                    if _kvol >= 0
+                    else _jac_c_float(species[i].get("volume_factor", 1.0))
+                )
+                ref = f"({_vscale} * {ref})"
             _rateof_map[f"{_RATEOF_PREFIX}{name}"] = ref
 
     # Fixed species (0-based)
@@ -5164,11 +5275,9 @@ def generate_rhs_from_model(model) -> str:
     # the static-volume rows can reference it; whether the table is actually
     # EMITTED is decided after the reaction loop from real usage (GH #171: an
     # all-live reaction never reads it). Empty for V=1/.net ⇒ byte-identical.
+    # The table is built AFTER the reaction loop, from the slots the emitted lines
+    # actually read — see below.
     inv_vf_terms: list[str] = []
-    if any(rxn.get("per_species_volume_scaling", False) for rxn in reactions):
-        for s in species:
-            vf = s.get("volume_factor", 1.0) or 1.0
-            inv_vf_terms.append(repr(1.0 / vf))
 
     rxn_groups: list[list[str]] = []
     for _rxn_i, rxn in enumerate(reactions):
@@ -5196,13 +5305,15 @@ def generate_rhs_from_model(model) -> str:
 
         # GH #75: amount_valued reactants enter the species factor by their
         # amount (stored × V_c), so the rate carries the constant ∏ V_c^mult.
-        # Mirrors compute_species_factor_ode. 1.0 ⇒ no term emitted
+        # Mirrors compute_species_factor_ode. None ⇒ no term emitted
         # (byte-identical for .net / V=1 / hOSU=false). Applies to the
         # species-factor product in both the elementary and the
-        # apply_species_factor functional branches below.
-        amount_factor = 1.0
-        for ri in reactants:
-            amount_factor *= av_factor.get(ri, 1.0)
+        # apply_species_factor functional branches below. Issue #170 stage 2: a
+        # live compartment size goes out as p[k] instead of folded — see
+        # _amount_factor_c for why the product has to be parenthesised.
+        amount_factor_c = _amount_factor_c(
+            [(av_param.get(ri, -1), av_factor[ri]) for ri in reactants if ri in av_factor]
+        )
 
         if rtype == "functional":
             # Rate = func[func_idx] * stat_factor [* ∏ y[reactants]].
@@ -5215,8 +5326,8 @@ def generate_rhs_from_model(model) -> str:
                     parts.append(str(int(sf)) if sf == int(sf) else str(sf))
                 parts.append(f"func[{fidx}]")
                 if asf:
-                    if amount_factor != 1.0:
-                        parts.append(repr(amount_factor))
+                    if amount_factor_c is not None:
+                        parts.append(amount_factor_c)
                     for ri in reactants:
                         parts.append(f"y[{ri}]")
                 g(f"    rate = {' * '.join(parts)};  /* {fname} */")
@@ -5235,8 +5346,8 @@ def generate_rhs_from_model(model) -> str:
                     parts.insert(0, str(int(sf)))
                 else:
                     parts.insert(0, str(sf))
-            if amount_factor != 1.0:
-                parts.append(repr(amount_factor))
+            if amount_factor_c is not None:
+                parts.append(amount_factor_c)
             for ri in reactants:
                 parts.append(f"y[{ri}]")
             g(f"    rate = {' * '.join(parts)};")
@@ -5270,10 +5381,21 @@ def generate_rhs_from_model(model) -> str:
             # static-volume row keeps rate * inv_vf (byte-identical to pre-#171).
             # This is the divide _psvs_row_divisor names for the derivative
             # emitters; the reciprocal-table form here is what defines it.
+            #
+            # Issue #170 stage 2: when the static volume is a writable parameter the
+            # row reads it live — as ``rate * (1.0 / p[k])``, NOT ``rate / p[k]``.
+            # The table this replaces holds 1/V_c, so the row was one multiply by a
+            # reciprocal; x*(1/V) and x/V differ in the last digit, and only the
+            # first reproduces the pre-#170 value at the load-time volume. The
+            # reciprocal is recomputed per row rather than hoisted into a mutable
+            # table, so the chunked blocks' signatures (which already carry p) and
+            # the `static const` table for every non-live row are untouched.
             def _psvs_divide(si: int) -> str:
-                L, vf = _psvs_row_divisor(species, si)
+                L, vf, kvol = _psvs_row_divisor(species, si)
                 if L >= 0:
                     return f"rate / (y[{L}] > 0.0 ? y[{L}] : {vf!r})"
+                if kvol >= 0:
+                    return f"rate * (1.0 / p[{kvol}])"
                 return f"rate * inv_vf[{si}]"
 
             for ri in reactants:
@@ -5297,7 +5419,30 @@ def generate_rhs_from_model(model) -> str:
     # a variable-volume compartment) divides by conc[L] and never touches inv_vf,
     # so an unconditionally-emitted table would be an unused static (a -Werror
     # build failure). Detected from the emitted lines like rxn_needs_func below.
-    needs_inv_vf = any("inv_vf[" in ln for grp in rxn_groups for ln in grp)
+    #
+    # The table is N_SPECIES long and indexed by species, so it has a slot for rows
+    # that do NOT read it — and those slots are built from the SAME emitted text that
+    # decides whether the table exists, rather than from a second rule about which
+    # rows are live. That matters for issue #170 stage 2: a row whose compartment size
+    # is a writable parameter reads ``1.0 / p[k]``, and leaving its load-time
+    # reciprocal in the dead slot left the last volume literal in this source — so a
+    # `set_param` on the volume moved the emitted TEXT, changing the `.so` cache key
+    # and silently recompiling instead of being honoured by the binary the model was
+    # loaded with (5 corpus models). A dead slot is 1.0, which no arithmetic reads;
+    # deriving "dead" from the text is what keeps that claim true by construction
+    # instead of by a rule two sites have to agree on.
+    _inv_vf_read = {
+        int(m.group(1))
+        for grp in rxn_groups
+        for ln in grp
+        for m in re.finditer(r"inv_vf\[(\d+)\]", ln)
+    }
+    needs_inv_vf = bool(_inv_vf_read)
+    if needs_inv_vf:
+        inv_vf_terms = [
+            repr(1.0 / (s.get("volume_factor", 1.0) or 1.0)) if i in _inv_vf_read else "1.0"
+            for i, s in enumerate(species)
+        ]
 
     # func[] is needed by a block only if some reaction in it reads func[idx]
     # (a Functional rate). Detected from the emitted lines so the block signature
@@ -5327,12 +5472,16 @@ def generate_rhs_from_model(model) -> str:
     # current_derivs[] buffer from the two-pass probe, which a file-scope block
     # cannot see (rateOf models are small, so the flat inline emit is fine).
     chunk_obsfunc = chunk and not uses_rateof
+    _rhs_obs_lines = (
+        _emit_observable_lines(observables, av_factor, av_param) if observables else []
+    )
+    _obs_sig, _obs_args = _obs_blk_sig(_rhs_obs_lines)
     rhs_obs_in, rhs_obs_fs = _shard_value_lines(
-        _emit_observable_lines(observables, av_factor) if observables else [],
+        _rhs_obs_lines,
         chunk=chunk_obsfunc,
         fn_prefix="rhs_obs_blk",
-        signature_params=_OBS_BLK_SIG,
-        call_args=_OBS_BLK_ARGS,
+        signature_params=_obs_sig,
+        call_args=_obs_args,
     )
     rhs_func_in, rhs_func_fs = _shard_value_lines(
         _emit_function_lines(
@@ -5499,7 +5648,34 @@ def generate_rhs_from_model(model) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _emit_observable_lines(observables: list, av_factor: dict) -> list[str]:
+def _c_scalar(x) -> str:
+    """An observable coefficient as C, in the style the two observable emitters
+    have always used: an integral value without a decimal point, anything else via
+    ``str`` (which round-trips a double). Factored out so the folded coefficient and
+    issue #170's ``factor*p[k]`` form are formatted identically."""
+    xf = float(x)
+    if xf == int(xf):
+        return str(int(xf))
+    return str(xf)
+
+
+# Signature of the sharded observable-fill block (GH #165). Issue #170 stage 2: an
+# amount-valued species whose compartment size is writable reads p[k] in its
+# weight, so the block has to be handed the parameter vector; a model with no such
+# species keeps the two-parameter form and its emitted text is unchanged.
+_OBS_BLK_SIG_P = "const double* y, const double* p, double* obs"
+_OBS_BLK_ARGS_P = "y, p, obs"
+
+
+def _obs_blk_sig(obs_lines: list[str]) -> tuple[str, str]:
+    """``(signature, call_args)`` for :func:`_shard_value_lines` over ``obs_lines``,
+    read off the emitted text the way the RHS decides ``rxn_needs_func``."""
+    if any("p[" in ln for ln in obs_lines):
+        return _OBS_BLK_SIG_P, _OBS_BLK_ARGS_P
+    return _OBS_BLK_SIG, _OBS_BLK_ARGS
+
+
+def _emit_observable_lines(observables: list, av_factor: dict, av_param: dict) -> list[str]:
     """C lines computing ``double obs[N]; obs[i] = …`` from species (0-based).
 
     Shared by the RHS (``generate_rhs_from_model``) and the analytical-Jacobian
@@ -5507,6 +5683,14 @@ def _emit_observable_lines(observables: list, av_factor: dict) -> list[str]:
     observable intermediates — the Functional derivatives the Jacobian emits are
     written in these ``obs[i]`` symbols. GH #75 amount factor is folded into each
     coefficient (1.0 outside the hOSU-V≠1 set ⇒ byte-identical there).
+
+    Issue #170 stage 2: a species whose compartment size is a writable parameter
+    keeps the factor and the volume as separate factors, ``factor*p[k]*y[i]``. C's
+    left-associative ``*`` evaluates that as ``(factor*p[k])*y[i]`` — the same two
+    operations, in the same order, as the folded ``coef*y[i]`` — so the value is
+    unchanged at the load-time volume and follows a later write. A line that reads
+    ``p[]`` makes the sharded fill block take the parameter vector (see
+    :func:`_obs_blk_sig`).
     """
     lines = [f"    double obs[{len(observables)}];"]
     for i, o in enumerate(observables):
@@ -5516,13 +5700,15 @@ def _emit_observable_lines(observables: list, av_factor: dict) -> list[str]:
             continue
         terms = []
         for sp_idx, factor in entries:
+            if sp_idx in av_param:
+                pref = "" if factor == 1.0 else _c_scalar(factor) + "*"
+                terms.append(f"{pref}p[{av_param[sp_idx]}]*y[{sp_idx}]")
+                continue
             coef = factor * av_factor.get(sp_idx, 1.0)
             if coef == 1.0:
                 terms.append(f"y[{sp_idx}]")
-            elif coef == int(coef):
-                terms.append(f"{int(coef)}*y[{sp_idx}]")
             else:
-                terms.append(f"{coef}*y[{sp_idx}]")
+                terms.append(f"{_c_scalar(coef)}*y[{sp_idx}]")
         lines.append(f"    obs[{i}] = {' + '.join(terms)};  /* {o['name']} */")
     return lines
 
@@ -5629,10 +5815,13 @@ def _jac_c_float(x) -> str:
     return repr(xf)
 
 
-def _jac_vpow(s: int, av_factor: dict) -> str:
+def _jac_vpow(s: int, av_factor: dict, av_param: dict) -> str:
     """C expression for a reactant's amount value ``y[s]`` (× V_s when the
-    species is amount_valued with V≠1)."""
-    return f"({_jac_c_float(av_factor[s])}*y[{s}])" if s in av_factor else f"y[{s}]"
+    species is amount_valued with V≠1, as the live ``p[k]`` when that volume is a
+    writable compartment size — issue #170 stage 2)."""
+    if s not in av_factor:
+        return f"y[{s}]"
+    return f"({_av_c(s, av_factor, av_param, _jac_c_float)}*y[{s}])"
 
 
 def _mm_v_lines(
@@ -5928,11 +6117,7 @@ def _functional_jacobian_groups(
     func_idx_by_name = {f["name"]: i for i, f in enumerate(functions)}
 
     # GH #75 amount factor (mirrors generate_rhs_from_model).
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
 
     # ── Symbol resolver for sympy_to_c ──────────────────────────────────────
     # Map each free-symbol name in a derivative (observable / constant param /
@@ -5965,17 +6150,22 @@ def _functional_jacobian_groups(
     func_map = dict(ctx["function_map"])
     obs_groups = {name: [(int(si), float(f)) for si, f in grp] for name, grp in ctx["observables"]}
     species_meta = {i: (bool(av), float(vf)) for i, (av, vf) in enumerate(ctx["species_meta"])}
+    # (#170 stage 2) Same map attach_functional_jacobian builds, for the same reason:
+    # a writable compartment size stays a symbol in the per-species derivative rather
+    # than being folded into its coefficient at emit time. Empty ⇒ unchanged text.
+    species_volume_sym = {i: n for i, n in enumerate(ctx.get("species_volume_param") or ()) if n}
     constants = set(ctx["constant_names"])
     ctx_obs_names = set(obs_groups)
 
-    def _net_affected(rxn) -> list[tuple[int, float, int, float]]:
-        """Affected rows as (i, coeff, live_idx, static_divisor) — mirrors
-        set_functional_jacobian (GH #171). coeff = stat_factor·net_stoich is
+    def _net_affected(rxn) -> list[tuple[int, float, int, float, int]]:
+        """Affected rows as (i, coeff, live_idx, static_divisor, sdiv_param) —
+        mirrors set_functional_jacobian (GH #171). coeff = stat_factor·net_stoich is
         UNFOLDED: the volume divide is deferred to the scatter so a variable-volume
         row uses the live volume conc[live_idx]. A static-volume / non-varvol row
         has live_idx = -1 and divides by static_divisor (volume_factor for a
         per_species_volume_scaling row, else 1.0 — folded at emit, byte-identical
-        to the pre-#171 output)."""
+        to the pre-#171 output), or by p[sdiv_param] when that volume is a writable
+        compartment size (issue #170 stage 2)."""
         stat = float(rxn["stat_factor"])
         psvs = bool(rxn["per_species_volume_scaling"])
         net: dict[int, float] = {}
@@ -5989,8 +6179,9 @@ def _functional_jacobian_groups(
         for i, c_i in net.items():
             if c_i == 0.0:
                 continue
-            live_idx, static_divisor = _psvs_row_divisor(species, i) if psvs else (-1, 1.0)
-            out.append((i, stat * c_i, live_idx, static_divisor))
+            row = _psvs_row_divisor(species, i) if psvs else (-1, 1.0, -1)
+            live_idx, static_divisor, sdiv_param = row
+            out.append((i, stat * c_i, live_idx, static_divisor, sdiv_param))
         return out
 
     per_species_groups: list[list[str]] = []
@@ -6004,11 +6195,19 @@ def _functional_jacobian_groups(
     # unchanged coeff, byte-identical to pre-#171). A live-volume row defers to a
     # runtime divide by conc[live_idx] (fallback static_divisor when ≤0),
     # mirroring fill_*_analytical_jacobian's `a.coeff * dv / divisor`.
-    def _scatter_existing(sp_j, i, coeff, live_idx, sdiv, rhs):
+    #
+    # Issue #170 stage 2: a writable compartment size cannot be folded, so the
+    # divide moves to run time as `coeff / p[k] * dj`. That is the same single
+    # correctly-rounded division of the same two doubles the Python fold did,
+    # followed by the same multiply — so the emitted value is unchanged at the
+    # load-time volume, unlike hoisting a reciprocal would be.
+    def _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, rhs):
         nonlocal missed
         if live_idx >= 0:
             div = f"(y[{live_idx}] > 0.0 ? y[{live_idx}] : {sdiv!r})"
             line = add(sp_j, i, f"{_jac_c_float(coeff)} * {rhs} / {div}", "        ")
+        elif sdiv_param >= 0:
+            line = add(sp_j, i, f"{_jac_c_float(coeff)} / p[{sdiv_param}] * {rhs}", "        ")
         else:
             line = add(sp_j, i, f"{_jac_c_float(coeff / sdiv)} * {rhs}", "        ")
         if line is None:
@@ -6031,6 +6230,7 @@ def _functional_jacobian_groups(
             constants,
             resolve_symbol,
             deadline,
+            species_volume_sym,
         )
         if terms is None:
             return None
@@ -6041,8 +6241,8 @@ def _functional_jacobian_groups(
                 f"    {{ /* per-species rxn {int(rxn['rxn_idx'])} col {sp_j} */",
                 f"        double dj = {c_deriv};",
             ]
-            for i, coeff, live_idx, sdiv in affected:
-                line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, "dj")
+            for i, coeff, live_idx, sdiv, sdiv_param in affected:
+                line = _scatter_existing(sp_j, i, coeff, live_idx, sdiv, sdiv_param, "dj")
                 if line is not None:
                     grp.append(line)
             grp.append("    }")
@@ -6060,7 +6260,9 @@ def _functional_jacobian_groups(
         if not bool(rxn["per_species_volume_scaling"]):
             continue
         live_rows = [
-            (i, coeff, live_idx) for i, coeff, live_idx, _sd in _net_affected(rxn) if live_idx >= 0
+            (i, coeff, live_idx)
+            for i, coeff, live_idx, _sd, _sdp in _net_affected(rxn)
+            if live_idx >= 0
         ]
         if not live_rows:
             continue
@@ -6111,15 +6313,27 @@ def _functional_jacobian_groups(
 
         # Columns keyed by species j: term A from observable groups, term B from
         # reactant membership — mirrors set_functional_jacobian's ensure_col.
+        # a_terms carries the coefficient as C *text* rather than a number: with a
+        # writable compartment size (issue #170 stage 2) the amount factor cannot be
+        # folded into it and goes out as `factor*p[k]`, whose left-associative
+        # evaluation is the same multiply-then-multiply the fold was. The
+        # zero-coefficient skip then keys off the GroupEntry factor, since a live
+        # p[k] is not a compile-time zero.
         cols: dict[int, dict] = {}
         for k, (obs_name, _se) in enumerate(observable_k):
             for sp_j, factor in obs_groups[obs_name]:
-                gcoef = factor * av_factor.get(sp_j, 1.0)
-                if gcoef == 0.0:
-                    continue
+                if sp_j in av_param:
+                    if factor == 0.0:
+                        continue
+                    g_c = f"{_jac_c_float(factor)}*p[{av_param[sp_j]}]"
+                else:
+                    gcoef = factor * av_factor.get(sp_j, 1.0)
+                    if gcoef == 0.0:
+                        continue
+                    g_c = _jac_c_float(gcoef)
                 cols.setdefault(sp_j, {"a_terms": [], "is_reactant": False, "mult_j": 0})[
                     "a_terms"
-                ].append((k, gcoef))
+                ].append((k, g_c))
         for s, m in rmult.items():
             col = cols.setdefault(s, {"a_terms": [], "is_reactant": False, "mult_j": 0})
             col["is_reactant"] = True
@@ -6129,26 +6343,26 @@ def _functional_jacobian_groups(
             f"    {{ /* per-observable rxn {rxn_idx} func {fname} */",
             f"        double f = func[{fidx}];",
         ]
-        p_parts = [_jac_vpow(s, av_factor) for s, m in rmult.items() for _ in range(m)]
+        p_parts = [_jac_vpow(s, av_factor, av_param) for s, m in rmult.items() for _ in range(m)]
         grp.append(f"        double P = {' * '.join(p_parts) if p_parts else '1.0'};")
         for k, c in enumerate(d_c):
             grp.append(f"        double d{k} = {c};")
         for sp_j, col in cols.items():
-            aj = " + ".join(f"{_jac_c_float(g)}*d{k}" for (k, g) in col["a_terms"])
+            aj = " + ".join(f"{g}*d{k}" for (k, g) in col["a_terms"])
             grp.append("        {")
             grp.append(f"            double val = ({aj if aj else '0.0'}) * P;")
             if col["is_reactant"]:
                 dp_parts = [_jac_c_float(col["mult_j"])]
                 for s, m in rmult.items():
                     for _ in range(m - 1 if s == sp_j else m):
-                        dp_parts.append(_jac_vpow(s, av_factor))
+                        dp_parts.append(_jac_vpow(s, av_factor, av_param))
                 if sp_j in av_factor:
-                    dp_parts.append(_jac_c_float(av_factor[sp_j]))
+                    dp_parts.append(_av_c(sp_j, av_factor, av_param, _jac_c_float))
                 grp.append(f"            val += f * ({' * '.join(dp_parts)});")
             # Per-observable (.net) reactions are never per_species_volume_scaling,
             # so live_idx is always -1 and static_divisor 1.0 — coeff is the
             # unfolded stat·net_stoich (byte-identical to the pre-#171 folded value).
-            for i, coeff, _live_idx, _sdiv in affected:
+            for i, coeff, _live_idx, _sdiv, _sdp in affected:
                 line = add(sp_j, i, f"{_jac_c_float(coeff)} * val", "            ")
                 if line is None:
                     missed = True
@@ -6300,11 +6514,7 @@ def generate_jacobian_from_model(model) -> str | None:
     func_names = [f["name"] for f in functions]
 
     # GH #75 amount factor (mirrors generate_rhs_from_model).
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
 
     # Maps + tfun dispatch for the obs[]/func[] recomputation (same as the RHS).
     _param_map = {name: f"p[{i}]" for i, name in enumerate(param_names)}
@@ -6354,7 +6564,17 @@ def generate_jacobian_from_model(model) -> str | None:
         af = float(erxn["amount_factor"])
         if sf != 1.0:
             ksf_parts.append(_jac_c_float(sf))
-        if af != 1.0:
+        # (#170 stage 2) amount_volume_terms is the same product `amount_factor`
+        # folded, in the same order, but per-factor — non-empty only when one of the
+        # compartment sizes is writable, so every other model still emits the folded
+        # literal and its text is unchanged.
+        af_c = _amount_factor_c(
+            [(int(k), float(v)) for k, v in erxn.get("amount_volume_terms") or []],
+            _jac_c_float,
+        )
+        if af_c is not None:
+            ksf_parts.append(af_c)
+        elif af != 1.0:
             ksf_parts.append(_jac_c_float(af))
         g(f"    {{ double k_sf = {' * '.join(ksf_parts)};")
         for pr in erxn["reactants"]:
@@ -6436,15 +6656,21 @@ def generate_jacobian_from_model(model) -> str | None:
     # The obs[]/func[] recomputation the Functional derivatives read is itself a
     # large basic block; shard it too (GH #165) so it does not become the driver
     # wall. Flat below the chunk threshold (byte-identical).
+    _jac_obs_lines = (
+        _emit_observable_lines(observables, av_factor, av_param)
+        if (has_functional and observables)
+        else []
+    )
+    _jac_obs_sig, _jac_obs_args = _obs_blk_sig(_jac_obs_lines)
     jac_obs_in, jac_obs_fs = (
         _shard_value_lines(
-            _emit_observable_lines(observables, av_factor),
+            _jac_obs_lines,
             chunk=chunk,
             fn_prefix="jac_obs_blk",
-            signature_params=_OBS_BLK_SIG,
-            call_args=_OBS_BLK_ARGS,
+            signature_params=_jac_obs_sig,
+            call_args=_jac_obs_args,
         )
-        if (has_functional and observables)
+        if _jac_obs_lines
         else ([], [])
     )
     jac_func_in, jac_func_fs = (
@@ -7304,11 +7530,7 @@ def generate_sens_from_model(
     # ∏_{amount_valued reactants} V_c^mult — exactly mirroring the C++
     # AnalyticalJacobianData::ReactionTerms::amount_factor. 1.0 for .net / V=1 /
     # hOSU=false ⇒ byte-identical codegen.
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
 
     rxn_data: list[dict] = []
     for rxn_idx, rxn in enumerate(reactions):
@@ -7344,10 +7566,13 @@ def generate_sens_from_model(
         )
         rmult = Counter(reactants) if with_species_factor else Counter()
 
-        amount_factor = 1.0
-        if with_species_factor:
-            for ri in reactants:
-                amount_factor *= av_factor.get(ri, 1.0)
+        amount_factor_c = (
+            _amount_factor_c(
+                [(av_param.get(ri, -1), av_factor[ri]) for ri in reactants if ri in av_factor]
+            )
+            if with_species_factor
+            else None
+        )
 
         # Resolve the rate-constant param's name so we can look up any
         # chain-rule expansion. ``rxn["function_name"]`` is the name passed
@@ -7372,7 +7597,7 @@ def generate_sens_from_model(
             "stoich": stoich,
             "reactant_mult": dict(rmult),
             "derived_terms": derived_terms,
-            "amount_factor": amount_factor,
+            "amount_factor_c": amount_factor_c,
         }
         # GH #160: a cross-compartment reaction's law evaluates to amount/time
         # while each affected species stores amount/V_c, so every accumulation
@@ -7383,9 +7608,9 @@ def generate_sens_from_model(
         if rxn.get("per_species_volume_scaling", False):
             row_divisor = {}
             for si in stoich:
-                live_idx, sdiv = _psvs_row_divisor(species, si)
-                if live_idx >= 0 or sdiv != 1.0:
-                    row_divisor[si] = (live_idx, sdiv)
+                live_idx, sdiv, sdiv_param = _psvs_row_divisor(species, si)
+                if live_idx >= 0 or sdiv_param >= 0 or sdiv != 1.0:
+                    row_divisor[si] = (live_idx, sdiv, sdiv_param)
             if row_divisor:
                 entry["row_divisor"] = row_divisor
         mm_terms = mm_terms_by_rxn.get(rxn_idx)
@@ -7455,17 +7680,13 @@ def _sens_value_lines(data: dict) -> tuple[list[str], list[str]] | None:
             return None  # embedded wrapper → the value codegen declines too
 
     # GH #75 amount factor, exactly as generate_rhs_from_model folds it in.
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
     param_map = {p["name"]: f"p[{i}]" for i, p in enumerate(data["parameters"])}
     species_map = {s["name"]: f"y[{i}]" for i, s in enumerate(species)}
     obs_map = {o["name"]: f"obs[{j}]" for j, o in enumerate(observables)}
     func_map = {f["name"]: f"func[{m}]" for m, f in enumerate(functions)}
 
-    obs_lines = _emit_observable_lines(observables, av_factor) if observables else []
+    obs_lines = _emit_observable_lines(observables, av_factor, av_param) if observables else []
     # tfun_call_by_name is empty by construction — every tfun-backed function was
     # declined above, so no emitted line can reference ``data``.
     func_lines = (
@@ -7524,11 +7745,7 @@ def generate_outputs_from_model(model) -> str | None:
 
     # GH #75 amount factor (see generate_rhs_from_model) — folded into the
     # observable coefficients so an amount-valued species contributes its amount.
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
 
     param_names = [p["name"] for p in params]
     species_names = [s["name"] for s in species]
@@ -7576,13 +7793,17 @@ def generate_outputs_from_model(model) -> str | None:
     # reaction count the RHS chunks at (so the BNGSIM_NOINLINE macro + N_* macros
     # this is appended after are present). Flat below the threshold (byte-identical).
     chunk = _should_chunk(len(data["reactions"]))
+    _out_obs_lines = (
+        _emit_observable_lines(observables, av_factor, av_param) if observables else []
+    )
+    _out_obs_sig, _out_obs_args = _obs_blk_sig(_out_obs_lines)
     out_obs_in, out_obs_fs = (
         _shard_value_lines(
-            _emit_observable_lines(observables, av_factor),
+            _out_obs_lines,
             chunk=chunk,
             fn_prefix="out_obs_blk",
-            signature_params=_OBS_BLK_SIG,
-            call_args=_OBS_BLK_ARGS,
+            signature_params=_out_obs_sig,
+            call_args=_out_obs_args,
         )
         if observables
         else ([], [])
@@ -8009,13 +8230,15 @@ def output_sens_support(model) -> dict[str, str | None]:
     return {info["name"]: info["reason"] for info in analysis["func_infos"]}
 
 
-def _emit_obs_sens_lines(observables: list, av_factor: dict, ss: str, out: str) -> list[str]:
+def _emit_obs_sens_lines(
+    observables: list, av_factor: dict, av_param: dict, ss: str, out: str
+) -> list[str]:
     """C lines computing ``out[j] = Σ_i c_ji·ss[i]`` — the linear observable
     output sensitivity for one sensitivity column whose species derivatives are
     in ``ss`` (``dx_i/dθ``). The coefficient ``c_ji`` folds the GroupEntry factor
     and the GH #75 amount-volume scaling identically to ``_emit_observable_lines``
     and the #197 C++ runtime path, so observable and expression sensitivities
-    stay consistent."""
+    stay consistent — including issue #170 stage 2's live ``factor*p[k]`` form."""
     lines = []
     for j, o in enumerate(observables):
         entries = o["entries"]
@@ -8024,13 +8247,15 @@ def _emit_obs_sens_lines(observables: list, av_factor: dict, ss: str, out: str) 
             continue
         terms = []
         for sp_idx, factor in entries:
+            if sp_idx in av_param:
+                pref = "" if factor == 1.0 else _c_scalar(factor) + "*"
+                terms.append(f"{pref}p[{av_param[sp_idx]}]*{ss}[{sp_idx}]")
+                continue
             coef = factor * av_factor.get(sp_idx, 1.0)
             if coef == 1.0:
                 terms.append(f"{ss}[{sp_idx}]")
-            elif coef == int(coef):
-                terms.append(f"{int(coef)}*{ss}[{sp_idx}]")
             else:
-                terms.append(f"{coef}*{ss}[{sp_idx}]")
+                terms.append(f"{_c_scalar(coef)}*{ss}[{sp_idx}]")
         lines.append(f"        {out}[{j}] = {' + '.join(terms)};")
     return lines
 
@@ -8084,14 +8309,12 @@ def generate_output_sens_from_model(model) -> str | None:
     obs_idx = {o["name"]: j for j, o in enumerate(observables)}
     func_idx = {f["name"]: i for i, f in enumerate(functions)}
 
-    av_factor = {
-        i: float(s.get("volume_factor", 1.0))
-        for i, s in enumerate(species)
-        if s.get("amount_valued", False) and float(s.get("volume_factor", 1.0)) != 1.0
-    }
+    av_factor, av_param = _amount_volume_factors(species)
 
     # Value recomputation (same emitters as the RHS / value codegen).
-    obs_value_lines = _emit_observable_lines(observables, av_factor) if observables else []
+    obs_value_lines = (
+        _emit_observable_lines(observables, av_factor, av_param) if observables else []
+    )
     func_value_lines = _emit_function_lines(
         functions, tfun_call_by_name, param_map, species_map, obs_map, func_map, None
     )
@@ -8158,7 +8381,9 @@ def generate_output_sens_from_model(model) -> str | None:
     _emit("        const double* ss = state_sens[_c];")
     _emit("        double* fs = func_sens_out + (size_t)_c * N_FUNC;")
     if n_obs > 0:
-        for ln in _emit_obs_sens_lines(observables, av_factor, ss="ss", out="obs_sens_c"):
+        for ln in _emit_obs_sens_lines(
+            observables, av_factor, av_param, ss="ss", out="obs_sens_c"
+        ):
             _emit(ln)
         _emit("        if (obs_sens_out) {")
         _emit("            for (int _j = 0; _j < N_OBS; ++_j)")

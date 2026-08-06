@@ -1633,6 +1633,13 @@ class Simulator:
             # legacy 2-tuples ⇒ no-op (byte-identical reporting).
             kind, src = entry[0], entry[1]
             vdiv = entry[2] if len(entry) > 2 else 1.0
+            # (#170) A writable compartment size is read live rather than taken
+            # from the load-time value baked into the map, so this rescale follows
+            # a `set_param` on the volume. Empty name ⇒ the static value above.
+            if len(entry) > 3 and entry[3]:
+                # Fall back to the load-time value if the name does not resolve.
+                with contextlib.suppress(Exception):
+                    vdiv = float(self._model.get_param(entry[3]))
             j = sp_idx.get(name)
             if j is None:
                 continue
