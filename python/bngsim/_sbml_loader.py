@@ -5464,14 +5464,21 @@ def _build_model_from_sbml_doc(doc):
         # and takes the per-species branch. Route it there up front so the two
         # builds agree at every size. Free at the nominal point: the per-species
         # divisors all equal the representative's there.
-        _xc_comps = {species_comp[s] for s in net}
-        _xc_live = _xc_comps & live_volume_param_comps
-        if len(_xc_comps) > 1 and _xc_live and (reactant_mult or product_mult):
+        # Guarded on `unified_ok` so this only speaks where it is the deciding
+        # vote: the two branches below that a not-yet-unified reaction already
+        # takes are both per-species (the Phase 2.5 emission and the non-integer
+        # fallback), so there would be nothing to re-route and nothing to refuse.
+        _xc_live = _rxn_comps & live_volume_param_comps
+        if unified_ok and len(_rxn_comps) > 1 and _xc_live and (reactant_mult or product_mult):
             if _cf_mixed_i:
-                # The per-species branch refuses a reaction whose changed species
-                # carry DIFFERENT conversionFactors (GH #232), so there is nowhere
-                # to re-route this one to. Refuse the write rather than ship a
-                # representative divide no rebuild would make.
+                # The Phase 2.5 per-species emission refuses a reaction whose
+                # changed species carry DIFFERENT conversionFactors (GH #232), so
+                # there is nowhere to re-route this one to — its rebuild at an
+                # unequal size is not a model bngsim can build. Refuse the write
+                # rather than ship a representative divide no rebuild would make.
+                # (The non-integer fallback further down needs no such refusal: it
+                # emits one reaction per species with that species' own volume
+                # divide and its own factor, so it is already per-species.)
                 compartment_write_refused.update(_xc_live)
             else:
                 unified_ok = False
