@@ -3542,7 +3542,112 @@ def _build_model_from_sbml_doc(doc):
     # the rule's next evaluation.
     live_volume_param_comps = {c for c in comp_param_idx if c not in vstatic_divide_comps}
 
+    # (#170) An ``<initialAssignment>`` is a load-time FOLD of the compartment
+    # size. Section 0 evaluates it numerically against `eval_ctx` — which is
+    # seeded from the sizes — and hands the number to the builder as a plain
+    # constant, so a later `set_param` on the size cannot reach it. That is a
+    # sixth fold of the family the #164 refusal named, and the one stage 2's
+    # enumeration missed. The PBPK cluster BIOMD0000001027/1028/1029/1039 is
+    # what it costs: each copies every compartment size into its own parameter
+    # (``Compartment_18 = StomachLumen``) and weights observables by the copy, so
+    # a write moved the size, left the copy at its load-time value, and returned
+    # a trajectory 77% away from the rebuild it is contracted to reproduce —
+    # silently, because nothing else in the model disagreed.
+    #
+    # `volume_dependent_ia` maps each folded symbol to the live sizes its value
+    # depends on. Everything in it has to be either put back on the size (below
+    # and in §3) or refused by name.
+    #
+    # The dependency is NOT just "this initialAssignment names a compartment".
+    # `eval_ctx` is seeded from the sizes twice over: directly for a compartment,
+    # and through the amount↔concentration conversion for every species, since
+    # §0 binds a species symbol to the quantity its MathML means (the AMOUNT for
+    # hasOnlySubstanceUnits, the CONCENTRATION otherwise) and computes whichever
+    # one the declaration did not give. An initialAssignment over such a species
+    # folds the size exactly as directly as one that names it, and an assignment
+    # rule, a reaction id (§0 binds it to its kinetic law's initial value, GH
+    # #239) or a stoichiometryMath in between carries it the rest of the way.
+    _ia_math = {}
+    for _j in range(sbml_model.getNumInitialAssignments()):
+        _ia = sbml_model.getInitialAssignment(_j)
+        if _ia.getMath() is not None:
+            _ia_math[_ia.getSymbol()] = _ia.getMath()
+
+    volume_taint: dict[str, set[str]] = {c: {c} for c in live_volume_param_comps}
+    for _j in range(sbml_model.getNumSpecies()):
+        _sp = sbml_model.getSpecies(_j)
+        _cid = _sp.getCompartment()
+        # A species with an initialAssignment takes its value from that IA, which
+        # §0 evaluates *over* this seed — the taint then flows through the IA math.
+        if _cid not in live_volume_param_comps or _sp.getId() in _ia_math:
+            continue
+        if (
+            _sp.isSetInitialConcentration()
+            if _sp.getHasOnlySubstanceUnits()
+            else (_sp.isSetInitialAmount() and not _sp.isSetInitialConcentration())
+        ):
+            volume_taint[_sp.getId()] = {_cid}
+
+    _taint_edges = list(_ia_math.items())
+    for _j in range(sbml_model.getNumRules()):
+        _r = sbml_model.getRule(_j)
+        if _r.isAssignment() and _r.getMath() is not None:
+            _taint_edges.append((_r.getVariable(), _r.getMath()))
+    for _j in range(sbml_model.getNumReactions()):
+        _rx = sbml_model.getReaction(_j)
+        _kl = _rx.getKineticLaw()
+        if _rx.getId() and _kl is not None and _kl.isSetMath():
+            _taint_edges.append((_rx.getId(), _kl.getMath()))
+        for _get, _n in (
+            (_rx.getReactant, _rx.getNumReactants()),
+            (_rx.getProduct, _rx.getNumProducts()),
+        ):
+            for _k in range(_n):
+                _sr = _get(_k)
+                _srid = _sr.getId() if hasattr(_sr, "getId") else ""
+                _sm = _sr.getStoichiometryMath() if hasattr(_sr, "getStoichiometryMath") else None
+                if _srid and _sm is not None and _sm.getMath() is not None:
+                    _taint_edges.append((_srid, _sm.getMath()))
+    for _ in range(len(_taint_edges) + 1):
+        _grew = False
+        for _sym, _m in _taint_edges:
+            _deps: set[str] = set()
+            for _n in _ast_name_set(_m):
+                _deps |= volume_taint.get(_n, set())
+            if _deps and not _deps <= volume_taint.get(_sym, set()):
+                volume_taint[_sym] = volume_taint.get(_sym, set()) | _deps
+                _grew = True
+        if not _grew:
+            break
+    # A size is not a fold of ITSELF (that is just §1 reading `ia_values`), but a
+    # size defined from ANOTHER size — ``<initialAssignment symbol="c1">c2``,
+    # legal SBML and how a nested compartment gets written — is: §1 folds `c1` to
+    # a number, so a write to `c2` moves `c2` and leaves `c1` behind where a
+    # rebuild moves both. Nothing holds `c1`'s expression, so `c2` is refused.
+    volume_dependent_ia: dict[str, set[str]] = {}
+    for _s in _ia_math:
+        _d = volume_taint.get(_s, set()) - {_s}
+        if _d:
+            volume_dependent_ia[_s] = _d
+    for _s in live_volume_param_comps & set(volume_dependent_ia):
+        compartment_write_refused.update(volume_dependent_ia.pop(_s))
+
     # ── 2. Parameters ─────────────────────────────────────────────────
+    # (#170) A volume-dependent initialAssignment onto a PARAMETER is lifted back
+    # onto the size: the target becomes a *derived* parameter, so issue #43's
+    # chain rule re-evaluates it on the write exactly as it already does for
+    # `_rateLaw_<rid>`. Nominal values do not move — the builder is still seeded
+    # with §0's folded number and nothing re-evaluates a derived parameter until
+    # something is written.
+    #
+    # Liftable means every symbol the expression reads is already declared when
+    # this loop reaches the target, which is what the one-pass derived-parameter
+    # re-evaluation needs (declaration order must be dependency order): the
+    # compartment sizes from §1, and the parameters earlier in this loop. An
+    # expression reading a species amount, a reaction rate, a stoichiometry id or
+    # `time` is therefore not liftable — those are not parameters at all.
+    _declared_param_ids = set(comp_param_idx)
+    lifted_ia_param_expr: dict[str, str] = {}
     for i in range(sbml_model.getNumParameters()):
         p = sbml_model.getParameter(i)
         pid = p.getId()
@@ -3554,7 +3659,33 @@ def _build_model_from_sbml_doc(doc):
         # Override with initialAssignment value if available
         if pid in ia_values:
             val = ia_values[pid]
-        builder.add_parameter(_safe_name(pid), val)
+        _vdeps = volume_dependent_ia.get(pid)
+        _expr = None
+        if _vdeps:
+            _m = _ia_math[pid]
+            _names = _ast_name_set(_m)
+            # An assignment rule recomputes the target every step, so the IA fold
+            # is only its t=0 value and the rule — not this expression — is what
+            # a write has to survive. Leave those to §4 and do not refuse over
+            # them: `ia_values` for an AR target is overwritten by the rule.
+            _liftable = (
+                pid not in _ar_targets
+                and _names <= _declared_param_ids
+                and not _ast_references_time(_m)
+            )
+            if _liftable:
+                try:
+                    _expr = _ast_to_exprtk_with_funcdefs(_m, func_defs)
+                except Exception as e:  # noqa: BLE001 - fall through to the refusal
+                    logger.debug("initialAssignment for %s not lifted: %s", pid, e)
+            if _expr is None and pid not in _ar_targets:
+                compartment_write_refused.update(_vdeps)
+        if _expr is None:
+            builder.add_parameter(_safe_name(pid), val)
+        else:
+            builder.add_parameter(_safe_name(pid), val, expression=_expr, is_expression=True)
+            lifted_ia_param_expr[pid] = _expr
+        _declared_param_ids.add(pid)
 
     # ── 3. Species ────────────────────────────────────────────────────
     # Collect assignment rule targets for step 4. linear_assignment_rules
@@ -3639,6 +3770,17 @@ def _build_model_from_sbml_doc(doc):
     # is the same registration.
     _promoted_state_ids = (rate_rule_targets | event_promoted_params) - _species_ids_set
     _ic_seed_symbols = _species_ids_set | _promoted_state_ids
+    # (#170) A live compartment size is a constant parameter of the built model
+    # (§1) that only a `set_param` moves, so an IC expression may read one on the
+    # same terms as any other constant: `S21 = 393.927*0.055*cell`
+    # (MODEL1710030000) is a parameter expression once the size is a parameter.
+    # It has to be, too — an IC this loader leaves folded is an IC the write
+    # cannot move, and §2's comment says what that costs. The set is disjoint
+    # from `_const_param_ids` (a compartment is not an SBML <parameter>) and
+    # carries the same guarantee the strict predicate exists to enforce: a
+    # compartment the model can move is an AR/rate-rule/event target, which
+    # `vstatic_divide_comps` already excluded from `live_volume_param_comps`.
+    _ic_expr_symbols = _const_param_ids | live_volume_param_comps
     ia_single_param_ref: dict[str, str] = {}
     ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
     for j in range(sbml_model.getNumInitialAssignments()):
@@ -3655,14 +3797,36 @@ def _build_model_from_sbml_doc(doc):
             ref = math.getName()
             if ref in _param_ids:
                 ia_single_param_ref[sym] = ref
+            elif ref in live_volume_param_comps:
+                ia_param_expr[sym] = _safe_name(ref)
             continue
         names = _ast_name_set(math)
-        if not names or _ast_references_time(math) or not names <= _const_param_ids:
+        if not names or _ast_references_time(math) or not names <= _ic_expr_symbols:
             continue
         try:
             ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(math, func_defs)
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("initialAssignment for %s not lowered for IC sensitivity: %s", sym, e)
+
+    # (#170) The residue: a section-0 fold of a live size that neither §2 nor the
+    # loop above put back on the size. An initial condition still folded, a named
+    # speciesReference stoichiometry — each is a constant a write cannot reach,
+    # so the size it reads is refused BY NAME rather than half-honoured.
+    # MODEL1710030000 is the case that needs it: `S21 = 393.927*0.055*cell`
+    # lowers, but its three siblings also read `numConcFactor`, an SBML
+    # `constant="false"` parameter the strict IC predicate rejects, so `cell`
+    # stays refused until all four do.
+    for _sym, _deps in volume_dependent_ia.items():
+        if _sym in _declared_param_ids or _sym in _ar_targets:
+            continue  # §2 already lifted it, refused over it, or left it to §4's rule
+        if _sym in ia_param_expr:
+            continue  # lowered to a derived `_ic_<sym>` above
+        if _sym in ia_single_param_ref:
+            # A bare <ci> onto a parameter, relinked to it by #79's IC path. The
+            # parameter is volume-dependent too, so §2 already decided: it was
+            # lifted (and this IC follows it) or its sizes are already refused.
+            continue
+        compartment_write_refused.update(_deps)
 
     # Lower each compound parameter-only IC to a derived parameter. Declared
     # here, after §2's plain parameters, so the one-pass derived-parameter

@@ -739,16 +739,20 @@ class Model:
         ParameterError
             If the parameter name is not found.
         ValueError
-            If ``name`` is an SBML compartment size and ``value`` differs from
-            the size the model was loaded at (issue #164). A compartment's value
-            is folded at load into constants a write cannot reach — per-species
-            volume factors, amount-declared initial conditions, mass-action rate
-            constants, SSA propensity volumes, the emitted RHS — so honoring
-            only the kinetic-law half would leave the model internally
-            inconsistent rather than move the volume. Load at the size you want
-            instead: :meth:`from_sbml` accepts ``compartment_sizes={...}``.
-            Writing the value it already holds is allowed, so round-tripping a
-            full parameter vector still works.
+            If ``name`` is one of the few SBML compartment sizes this model
+            cannot resolve to a live volume, and ``value`` differs from the size
+            it was loaded at. A compartment's value is folded at load into
+            constants — per-species volume factors, amount-declared initial
+            conditions, mass-action rate constants, SSA propensity volumes, the
+            emitted RHS, and every ``<initialAssignment>`` that reads it. Issue
+            #170 put the volume back into each fold it can reach, so most sizes
+            are now ordinary writable parameters; the residue is refused by name
+            rather than half-honoured, because honoring only some folds leaves
+            the model internally inconsistent rather than moving the volume.
+            :attr:`unwritable_compartment_size_params` lists them; load at the
+            size you want instead (:meth:`from_sbml` accepts
+            ``compartment_sizes={...}``). Writing the value it already holds is
+            allowed, so round-tripping a full parameter vector still works.
 
         Notes
         -----
@@ -827,10 +831,13 @@ class Model:
 
         The residue of issue #164's blanket refusal: a compartment whose size an
         **assignment rule** recomputes every step (a write would not survive the
-        next evaluation), and one whose storage divide a single mass-action
-        scalar shares across **two compartments** that merely happen to have the
-        same load-time size (that scalar stops being exact the moment they
-        differ). Both are decided at load and named in the error.
+        next evaluation); one whose storage divide a single mass-action scalar
+        shares across **two compartments** that merely happen to have the same
+        load-time size (that scalar stops being exact the moment they differ);
+        and one an **initialAssignment** folds into a quantity no parameter
+        holds — a species amount, a reaction rate — since SBML evaluates every
+        such expression once, at load, against the sizes. All three are decided
+        at load and named in the error.
 
         A subset of :attr:`compartment_size_params`, and usually empty — reload
         with ``Model.from_sbml(..., compartment_sizes={...})`` to move one.
@@ -1369,6 +1376,25 @@ class Model:
         from bngsim._codegen import compute_ic_param_sens_seed
 
         seeds = compute_ic_param_sens_seed(self._core)
+        # (#170) A ∂x(0)/∂V column is not reported and not seeded. An
+        # ``<initialAssignment>`` may now read a compartment size — that is what
+        # makes ``set_param`` on the size reproduce a rebuild — and the chain
+        # rule differentiates it happily, but what it produces is ∂(amount)/∂V
+        # where the state is ``amount/V``. The missing ``-amount/V²`` term is
+        # issue #170 stage 3, which is also why ``Simulator(...,
+        # sensitivity_params=[<a size>])`` refuses the axis outright; reporting
+        # here what the solver refuses there would be the same number arriving
+        # by a quieter door. MODEL1710030000 is the case: ``S21 =
+        # 393.927*0.055*cell`` is exactly V-invariant once stored, and the
+        # un-corrected column says 21.67 where a rebuild-to-rebuild difference
+        # says 0. Absent rather than 0.0, because issue #155 makes an absent
+        # entry mean "no seeding path" — which is what a refused axis is.
+        if seeds:
+            _sizes = {
+                i for i, n in enumerate(self.param_names) if n in set(self.compartment_size_params)
+            }
+            if _sizes:
+                seeds = [e for e in seeds if e[1] not in _sizes] or [(-1, 0, 0.0)]
         declared = self._declared_ic_sens
         retired = self._superseded_ic_rows(seeds, declared) if seeds else set()
         if retired:
