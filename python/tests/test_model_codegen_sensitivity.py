@@ -480,17 +480,31 @@ class TestModelCodegenHosuAmountFactor:
 
     def test_elementary_amount_factor_in_emitted_c(self):
         # The Elementary rate carries amount_factor = V·V, and the per-species
-        # shadow observables fold in V_c. Pin the emitted constants so a
-        # silent drop of the amount_factor term is caught at the source level.
+        # shadow observables carry V_c. Pin the emitted form so a silent drop of
+        # the amount_factor term is caught at the source level.
+        #
+        # Issue #170 stage 2: both are read from p[] rather than folded, because
+        # the compartment size is a writable parameter and a folded V would freeze
+        # at the volume the source was generated at. The two factors of the rate's
+        # amount product go out as ONE parenthesised group — emitted loose, C's
+        # left-associative * would re-associate them against the rate constant and
+        # move the last digit away from the value the Python fold produced.
         m = Model.from_sbml_string(_HOSU_BIMOL_SBML)
+        kvol = [
+            i
+            for i, q in enumerate(m._core.codegen_data()["parameters"])
+            if q["name"] in set(m.compartment_size_params)
+        ]
+        assert len(kvol) == 1, kvol
+        k = kvol[0]
+        assert m._core.codegen_data()["parameters"][k]["value"] == _HOSU_V
         c = generate_rhs_from_model(m)
         rate_lines = [ln for ln in c.splitlines() if ln.strip().startswith("rate =")]
         assert len(rate_lines) == 1
-        # amount_factor = (1e-3)^2 = 1e-06 appears as a standalone factor.
-        assert repr(_HOSU_V * _HOSU_V) in rate_lines[0], rate_lines[0]
-        # Observable coefficients fold in V_c = 1e-3 (= 0.001).
+        assert f"(p[{k}] * p[{k}])" in rate_lines[0], rate_lines[0]
+        # Observable coefficients carry V_c the same way.
         obs_lines = [ln for ln in c.splitlines() if ln.strip().startswith("obs[")]
-        assert any(repr(_HOSU_V) in ln for ln in obs_lines), obs_lines
+        assert any(f"p[{k}]*y[" in ln for ln in obs_lines), obs_lines
 
     def test_elementary_codegen_rhs_matches_amount_law(self):
         # Codegen ODE trajectory must match the analytical amount-law oracle

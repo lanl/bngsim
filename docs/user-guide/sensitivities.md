@@ -149,7 +149,11 @@ compartment size is now an ordinary writable parameter — `set_param("Liver", v
 re-derives everything the volume decides (the amount↔concentration conversion,
 an amount-declared initial condition, the mass-action scalar, the SSA propensity
 volume) and reproduces *reloading the model at that size*, bit for bit. A volume
-scan or a gradient-free fit needs nothing special.
+scan or a gradient-free fit needs nothing special. The generated C reads the
+volume from `p[]` rather than baking it, so the emitted source does not depend on
+the load-time size and the write lands on `codegen=True` and on an
+already-compiled `.so` too — including a write that arrives mid-scan, after the
+source was generated.
 
 What is still refused is the **gradient**: `compute_all_sensitivities()` skips a
 compartment column with a warning and `sensitivity_params=["Liver"]` raises,

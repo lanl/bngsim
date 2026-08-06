@@ -18,13 +18,16 @@ initial-condition declaration issue #170 tabulated,
 for the rows where the volume nearly cancels, which is exactly how #164's
 scoping went wrong. Where the two must be identical, say identical.
 
-Two rows of that table are still refused rather than honored, and
-:mod:`test_compartment_size_write` owns those: the emitted C keeps a literal
-volume for an amount-valued (``hasOnlySubstanceUnits``) species and for the
-per-species divide of a cross-compartment reaction, so honoring the write would
-mean honoring it with codegen off and half-applying it with codegen on. That is
-the stage-2 boundary, and it is a refusal with a reason rather than a wrong
-number.
+Two rows of that table were left refused by stage 1, because the emitted C kept a
+literal volume for an amount-valued (``hasOnlySubstanceUnits``) species and for
+the per-species divide of a cross-compartment reaction — honoring the write there
+would have honored it with codegen off and half-applied it with codegen on.
+Stage 2 made those reads ``p[]``; :mod:`test_compartment_size_codegen_live` owns
+them, and the invariant it turns on (the emitted source no longer depends on the
+load-time volume) is what this module's interpreted oracle cannot see.
+:mod:`test_compartment_size_write` owns the two sizes that are still refused —
+an assignment-rule compartment, and one a single mass-action scalar shares across
+two equally-sized compartments.
 """
 
 from __future__ import annotations

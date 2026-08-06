@@ -11,10 +11,11 @@ scatter had no form for that divide.
 
 It has one now, and it is not a new derivation: ``_psvs_row_divisor`` is the
 lookup the RHS scatter (which *defines* the divide) and the ``J·yS`` half already
-share, and the ∂f/∂p scatter folds the same divisor into its coefficient — a
-static compartment at emit time, a variable one (GH #171) as a runtime divide by
-the live volume. So ``ySdot = J·yS + ∂f/∂p`` is analytic on both halves for these
-models.
+share, and the ∂f/∂p scatter applies the same divisor to its coefficient — folded
+at emit time for a compartment that is neither writable nor an ODE state, read
+from ``p[k]`` when the size is a writable parameter (issue #170 stage 2), and a
+runtime divide by the live volume for a variable one (GH #171). So
+``ySdot = J·yS + ∂f/∂p`` is analytic on both halves for these models.
 
 The oracle is the one #66 introduced: a central finite difference of the
 **emitted** ``bngsim_codegen_rhs`` with respect to each parameter, against the
@@ -232,14 +233,25 @@ class TestTheGate:
 class TestTheEmittedScatter:
     @pytest.mark.parametrize("v2", ("2", "5", "0.37"))
     def test_the_row_in_the_other_compartment_carries_one_over_its_volume(self, v2):
-        """The divide, read off the emitted C. ``A`` lives in C1 (V = 1) so its
-        row is unscaled; ``B`` lives in C2 so its row carries 1/V₂ — derived from
-        the parametrized volume rather than hard-coded, which is the only way
-        this asserts a divide instead of a constant."""
-        src = cg.generate_sens_from_model(_xcomp(v2), functional=True)
+        """The divide, read off the emitted C. ``B`` lives in C2, so its row is
+        divided by C2's volume; ``A`` lives in C1, so its row is divided by C1's.
+
+        Issue #170 stage 2 moved that divisor from a folded literal to ``p[k]`` —
+        both compartments here are writable sizes, and a folded ``1/V₂`` would
+        freeze at the volume the source was generated at. The emitted form is
+        ``coeff / p[k] * v``, not ``coeff * (1.0/p[k]) * v``: the pre-#170 text
+        folded ``coeff / sdiv`` in Python, and one correctly-rounded divide of the
+        same two doubles followed by the same multiply is what reproduces it."""
+        m = _xcomp(v2)
+        pn = [q["name"] for q in m._core.codegen_data()["parameters"]]
+        c1, c2 = pn.index("C1"), pn.index("C2")
+        src = cg.generate_sens_from_model(m, functional=True)
         body = src.split("static void bngsim_dfdp")[1].split("static void bngsim_jac_vec")[0]
-        assert f"dfdp_out[1] += {1.0 / float(v2)!r} * v;" in body
-        assert "dfdp_out[0] -= v;" in body
+        assert f"dfdp_out[1] += 1.0 / p[{c2}] * v;" in body
+        assert f"dfdp_out[0] += -1.0 / p[{c1}] * v;" in body
+        # ...and the divisor really is each row's OWN compartment, not one shared
+        # index — the whole point of a per-species divide.
+        assert c1 != c2
 
     @pytest.mark.parametrize("name", list(_VARVOL))
     def test_a_live_volume_row_divides_at_runtime(self, name):
@@ -250,14 +262,23 @@ class TestTheEmittedScatter:
         body = src.split("static void bngsim_dfdp")[1].split("static void bngsim_jac_vec")[0]
         assert " * v / (y[" in body and "> 0.0 ? y[" in body
 
-    def test_a_same_volume_row_is_not_gratuitously_rewritten(self):
-        """``row_divisor`` records only the rows that actually divide, so a
-        cross-compartment reaction's V = 1 rows emit the same ``+= v`` every
-        single-compartment model emits. Without this the diff would touch models
-        it has nothing to say about."""
-        src = cg.generate_sens_from_model(_xcomp("5"), functional=True)
+    def test_a_same_volume_row_still_divides_by_its_live_size(self):
+        """A V = 1 row used to emit the plain ``-= v`` — ``row_divisor`` recorded
+        only rows whose folded divisor differed from 1.0. Issue #170 stage 2 has to
+        record it anyway when the size is a *writable parameter*: the write that
+        moves it off 1.0 comes after the source is generated, so a row that skipped
+        the divide would silently keep dividing by 1.
+
+        That is a text change with no value change — ``-1.0 / p[k] * v`` at
+        ``p[k] == 1.0`` is ``-v`` exactly — and it is not asserted numerically here
+        because the corpus A/B already covers it: over the 214-model SBML corpus the
+        RHS fingerprint and the trajectory are bit-identical to the pre-stage-2
+        build on every model, interpreted and codegen alike."""
+        m = _xcomp("5")
+        pn = [q["name"] for q in m._core.codegen_data()["parameters"]]
+        src = cg.generate_sens_from_model(m, functional=True)
         body = src.split("static void bngsim_dfdp")[1].split("static void bngsim_jac_vec")[0]
-        assert "dfdp_out[0] -= v;" in body
+        assert f"dfdp_out[0] += -1.0 / p[{pn.index('C1')}] * v;" in body
         assert "1.0 * v" not in body
 
     def test_the_divisor_lookup_is_the_one_the_rhs_uses(self):
@@ -269,11 +290,15 @@ class TestTheEmittedScatter:
             {"volume_factor": 5.0},
             {"volume_factor": 2.0, "ode_live_volume_idx0": 3},
             {},
+            # (#170 stage 2) a writable compartment size: the divisor is p[7], and
+            # the promoted-compartment index stays -1 — the two are exclusive.
+            {"volume_factor": 4.0, "volume_param_idx0": 7},
         ]
-        assert cg._psvs_row_divisor(species, 0) == (-1, 1.0)
-        assert cg._psvs_row_divisor(species, 1) == (-1, 5.0)
-        assert cg._psvs_row_divisor(species, 2) == (3, 2.0)
-        assert cg._psvs_row_divisor(species, 3) == (-1, 1.0)
+        assert cg._psvs_row_divisor(species, 0) == (-1, 1.0, -1)
+        assert cg._psvs_row_divisor(species, 1) == (-1, 5.0, -1)
+        assert cg._psvs_row_divisor(species, 2) == (3, 2.0, -1)
+        assert cg._psvs_row_divisor(species, 3) == (-1, 1.0, -1)
+        assert cg._psvs_row_divisor(species, 4) == (-1, 4.0, 7)
 
 
 class TestTheClassesStillDeclined:
@@ -467,8 +492,26 @@ def _assert_dfdp_matches_fd(model, tmp_path, monkeypatch, states, rtol=1e-6):
     core = model._core
     params = comp.data["parameters"]
     base = [float(p["value"]) for p in params]
+    # (#170 stage 2) The compartment-size columns are OUT OF SCOPE for this
+    # oracle, and now visibly so. The emitted f divides a cross-compartment row by
+    # p[V] rather than by a literal, so differencing f with respect to that column
+    # sees the storage half of d/dV — which the emitted ∂f/∂p does not carry (it has
+    # only the kinetic-law half, through the derived rate parameter's chain). That
+    # is exactly why every entry point refuses a compartment sensitivity column:
+    # `sensitivity_params=["C1"]` raises, `compute_all_sensitivities` skips it with
+    # a warning, and `steady_state(sensitivity_params=...)` raises. A partial column
+    # is a confidently wrong gradient. Issue #170 stage 3 owns it — including the
+    # `-amount/V²` initial-condition seed, which no term here could supply. Asserted
+    # rather than assumed: if a compartment column ever stops being refused, the
+    # check below fails and this skip has to be revisited.
+    _is_comp = list(core.param_is_compartment_size)
+    assert any(_is_comp) == any(
+        p["name"] in set(getattr(model, "compartment_size_params", []) or []) for p in params
+    ), "compartment-size marking disagrees between the core flags and the model"
     worst, where = 0.0, None
     for k in range(len(params)):
+        if _is_comp[k]:
+            continue
         for t, y in states:
             an = comp.dfdp(t, y, base, k)
             best = None
