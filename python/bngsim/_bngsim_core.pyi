@@ -79,9 +79,21 @@ class ModelBuilder:
         """
         GH #144 (case 4): set the cross-compartment ODE live-volume divide on a species. compute_derivs divides this species's per-species accumulation by conc[live_idx0] (the promoted compartment species = V_live) instead of its static volume_factor. No-op if species_idx0 is out of range.
         """
+    def set_param_volume_write_refused(self, name: str) -> None:
+        """
+        Issue #170: mark a compartment size this loader could not resolve to a live volume, so set_param keeps refusing a value-changing write to it. No-op if the name is not a known parameter.
+        """
+    def set_reaction_ssa_volume_param(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        Issue #170: bind a reaction's SSA propensity volume to a compartment-size parameter, so compute_rxn_rate reads the live value rather than the number baked at load. No-op if rxn_idx0 is out of range.
+        """
     def set_species_rateof_amount(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         GH #231 (rateOf): mark a hasOnlySubstanceUnits=true species so its rateOf csymbol reports the amount-rate (volume_factor * stored-rate) instead of the stored d(conc)/dt. Correct for constant- and variable-volume compartments alike (the integrator stores amount/V_static). No-op if species_idx0 is out of range.
+        """
+    def set_species_volume_param(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex, initial_amount: typing.SupportsFloat | typing.SupportsIndex = ...) -> None:
+        """
+        Issue #170: bind a species' storage convention to the compartment-size PARAMETER it came from, so set_param re-derives volume_factor (and, when initial_amount is given, the stored IC = amount/V) instead of leaving them at their load-time values. No-op if species_idx0 is out of range.
         """
 class NetworkModel:
     @staticmethod
@@ -278,7 +290,12 @@ class NetworkModel:
     @property
     def param_is_compartment_size(self) -> list[bool]:
         """
-        Per-parameter flag, parallel to ``param_names``: True for an SBML compartment size. Such a parameter's value is folded at load into constants a write cannot reach, so ``set_param`` refuses a value-changing write and forward sensitivity refuses the column (issue #164). All False for .net models and for every compartment promoted to a species (rate-rule / event-resized), which is not a parameter at all.
+        Per-parameter flag, parallel to ``param_names``: True for an SBML compartment size. Issue #170 made such a parameter writable (the storage convention is re-derived from it), but it is not yet DIFFERENTIABLE, so forward sensitivity still refuses the column. All False for .net models and for every compartment promoted to a species (rate-rule / event-resized), which is not a parameter at all.
+        """
+    @property
+    def param_volume_write_refused(self) -> list[bool]:
+        """
+        Per-parameter flag, parallel to ``param_names``: True for the residue of compartment sizes issue #170 could NOT make live, whose value-changing write ``set_param`` still refuses — an assignment-rule compartment, or one whose storage divide a mass-action reaction shares across two compartments. A subset of ``param_is_compartment_size``; all False for .net models.
         """
     @property
     def param_is_expression(self) -> list[bool]:

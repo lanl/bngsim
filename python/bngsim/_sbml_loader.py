@@ -3800,6 +3800,16 @@ def _build_model_from_sbml_doc(doc):
         # already reads it live through `ode_live_volume_idx0`.
         if comp in live_volume_param_comps:
             builder.set_species_volume_param(idx, comp_param_idx[comp], declared_amount)
+            # (#170 stage 2) The INTERPRETED path re-derives every use of this
+            # species's V_c from the parameter above, but the emitted C does not:
+            # an amount-valued species carries `× V_c` as a literal in the rate's
+            # amount factor, in every observable weight, and in the ∂/∂x chain
+            # factor, all baked when the .so was generated. A write would then be
+            # honoured with codegen off and half-applied with it on — the
+            # invisible path-dependence issue #164 refused over. So refuse this
+            # compartment outright until stage 2 makes those reads `p[]`.
+            if hosu:
+                compartment_write_refused.add(comp)
 
         # (GH #231 sub-cluster 3 / 01463) A hasOnlySubstanceUnits=true species's
         # symbol denotes its amount, so its rateOf csymbol is the amount-rate. The
@@ -4185,6 +4195,30 @@ def _build_model_from_sbml_doc(doc):
     # 2-element for splits).
     mass_action_rxns: dict[int, list[tuple]] = {}
 
+    _v0_param_names: dict[str, str] = {}
+
+    def _load_time_volume_param(cid: str) -> str:
+        """Name of a constant parameter holding compartment ``cid``'s load-time
+        size, added on first use (#170).
+
+        The volume ratio below has to evaluate to *exactly* 1.0 at the nominal
+        point or every mass-action rate constant in the model shifts by an ulp,
+        so the denominator must be the same binary double the compartment
+        parameter holds. Writing it as a decimal literal is not enough: ExprTk's
+        own literal parser is not correctly rounded, and BIOMD0000000706 is the
+        case that proves it — ``cytoplasm / 1.65e-11`` (a repr round-trip that is
+        exact in Python) comes back as 0.9999999999999998, turning a 5e-05 rate
+        constant into 4.999999999999999e-05 and moving the model's RHS. Passing
+        the value through ``add_parameter`` hands the engine the double itself,
+        with no decimal round trip in between.
+        """
+        name = _v0_param_names.get(cid)
+        if name is None:
+            name = _safe_name(f"_V0_{cid}")
+            builder.add_parameter(name, float(comp_volumes.get(cid, 1.0)))
+            _v0_param_names[cid] = name
+        return name
+
     def _classification_to_cache_tuple(classification, rid_safe, derived_suffix=""):
         """Turn ``_classify_mass_action`` output into the
         ``(rate_param_name, sf, reactants, products)`` cache tuple.
@@ -4226,7 +4260,7 @@ def _build_model_from_sbml_doc(doc):
         compartment_write_refused.update(volume_unresolvable)
         vol_terms = ""
         for cid, power in sorted(volume_powers.items()):
-            ratio = f"({_safe_name(cid)} / {float(comp_volumes.get(cid, 1.0))!r})"
+            ratio = f"({_safe_name(cid)} / {_load_time_volume_param(cid)})"
             op = " * " if power > 0 else " / "
             vol_terms += (op + ratio) * abs(power)
         if len(rate_param_components) == 1 and not vol_terms:
@@ -5423,6 +5457,16 @@ def _build_model_from_sbml_doc(doc):
                 apply_species_factor=False,
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
+            )
+            # (#170 stage 2) Same boundary as the amount-valued species above:
+            # the per-species accumulation divide is live in the interpreted RHS
+            # (it reads `Species::volume_factor`, which a write re-derives) but
+            # baked in the emitted C, whose `inv_vf` table and per-row Jacobian /
+            # ∂f/∂p divisors are literals. Refuse a write to every compartment
+            # this reaction divides by, rather than honour it on one backend and
+            # not the other.
+            compartment_write_refused.update(
+                species_comp[_s] for _s in net if species_comp[_s] in live_volume_param_comps
             )
             # (#144 case 4) Cross-compartment variable-volume monomial certified by
             # the classifier (§7). The per-species emission above divides each
