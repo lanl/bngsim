@@ -5452,6 +5452,29 @@ def _build_model_from_sbml_doc(doc):
         # branch's single representative-compartment divide is the bug source.
         if i in ssa_varvol_xcompartment:
             unified_ok = False
+        # (#192) The same by-value hazard for a WRITABLE STATIC volume, which is
+        # #170's territory rather than #144's and was never done. `involved_vs`
+        # holds volume VALUES, so a reaction whose species span several
+        # compartments that merely share a load-time size passes the gate and
+        # takes the single representative-compartment divide below. Write one of
+        # those sizes and the representative stops being the right divisor for
+        # the other compartments' species — but the shortcut was baked in at
+        # load, so `set_param(C, v)` builds a structurally DIFFERENT model than
+        # `from_sbml(..., compartment_sizes={C: v})`, which sees unequal volumes
+        # and takes the per-species branch. Route it there up front so the two
+        # builds agree at every size. Free at the nominal point: the per-species
+        # divisors all equal the representative's there.
+        _xc_comps = {species_comp[s] for s in net}
+        _xc_live = _xc_comps & live_volume_param_comps
+        if len(_xc_comps) > 1 and _xc_live and (reactant_mult or product_mult):
+            if _cf_mixed_i:
+                # The per-species branch refuses a reaction whose changed species
+                # carry DIFFERENT conversionFactors (GH #232), so there is nowhere
+                # to re-route this one to. Refuse the write rather than ship a
+                # representative divide no rebuild would make.
+                compartment_write_refused.update(_xc_live)
+            else:
+                unified_ok = False
 
         if unified_ok:
             if not reactant_mult and not product_mult:
