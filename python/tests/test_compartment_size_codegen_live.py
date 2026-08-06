@@ -446,27 +446,37 @@ _V1_AR_TARGET = """<?xml version="1.0" encoding="UTF-8"?>
 </sbml>"""
 
 V1_SHAPES = [
-    # (id, template, compartment written, why the V=1 load used to differ)
-    ("multi_compartment_functional", _V1_MULTI_COMPARTMENT, "C1"),
-    ("event_assigned_amount", _V1_EVENT_DOSE, "C"),
-    ("assignment_rule_target", _V1_AR_TARGET, "C"),
+    # (id, template, compartments written, why the V=1 load used to differ)
+    #
+    # EVERY compartment the template sizes, not just one: the fixtures put a
+    # single ``{v}`` in every ``<compartment>``, so the rebuild moves all of them
+    # and a write of one is a different model. Only writing ``C1`` here used to
+    # agree with a both-at-3 rebuild — because the unified divide sent B's row
+    # through C1 as well, which is the #192 defect and not something to assert.
+    # (Measured: B came out 1.98 against the 5.94 a real C1=3, C2=1 model gives.)
+    # The one-compartment write of this shape is
+    # :mod:`test_compartment_size_xcompartment`'s subject.
+    ("multi_compartment_functional", _V1_MULTI_COMPARTMENT, ("C1", "C2")),
+    ("event_assigned_amount", _V1_EVENT_DOSE, ("C",)),
+    ("assignment_rule_target", _V1_AR_TARGET, ("C",)),
 ]
 
 
-@pytest.mark.parametrize(("tmpl", "comp"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
-def test_a_write_from_a_v1_load_reproduces_a_rebuild(tmpl, comp):
+@pytest.mark.parametrize(("tmpl", "comps"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
+def test_a_write_from_a_v1_load_reproduces_a_rebuild(tmpl, comps):
     """Loaded at V=1 — the value at which each of these three used to drop the
     volume out of the model entirely — then written. Exact, because a rebuild is
     what the write is defined to reproduce."""
     rebuilt = _traj(_sim(bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_NEW))), None))
     m = bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_LOAD)))
     assert m.unwritable_compartment_size_params == []
-    m.set_param(comp, V_NEW)
+    for comp in comps:
+        m.set_param(comp, V_NEW)
     assert np.array_equal(rebuilt, _traj(_sim(m, None)))
 
 
-@pytest.mark.parametrize(("tmpl", "comp"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
-def test_these_v1_shapes_really_do_move_with_the_volume(tmpl, comp):
+@pytest.mark.parametrize(("tmpl", "comps"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
+def test_these_v1_shapes_really_do_move_with_the_volume(tmpl, comps):
     """Without this the test above would pass on a model the volume never reaches
     — which is exactly how the V=1 normalisation stayed invisible."""
     lo = _traj(_sim(bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_LOAD))), None))

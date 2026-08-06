@@ -5452,6 +5452,36 @@ def _build_model_from_sbml_doc(doc):
         # branch's single representative-compartment divide is the bug source.
         if i in ssa_varvol_xcompartment:
             unified_ok = False
+        # (#192) The same by-value hazard for a WRITABLE STATIC volume, which is
+        # #170's territory rather than #144's and was never done. `involved_vs`
+        # holds volume VALUES, so a reaction whose species span several
+        # compartments that merely share a load-time size passes the gate and
+        # takes the single representative-compartment divide below. Write one of
+        # those sizes and the representative stops being the right divisor for
+        # the other compartments' species — but the shortcut was baked in at
+        # load, so `set_param(C, v)` builds a structurally DIFFERENT model than
+        # `from_sbml(..., compartment_sizes={C: v})`, which sees unequal volumes
+        # and takes the per-species branch. Route it there up front so the two
+        # builds agree at every size. Free at the nominal point: the per-species
+        # divisors all equal the representative's there.
+        # Guarded on `unified_ok` so this only speaks where it is the deciding
+        # vote: the two branches below that a not-yet-unified reaction already
+        # takes are both per-species (the Phase 2.5 emission and the non-integer
+        # fallback), so there would be nothing to re-route and nothing to refuse.
+        _xc_live = _rxn_comps & live_volume_param_comps
+        if unified_ok and len(_rxn_comps) > 1 and _xc_live and (reactant_mult or product_mult):
+            if _cf_mixed_i:
+                # The Phase 2.5 per-species emission refuses a reaction whose
+                # changed species carry DIFFERENT conversionFactors (GH #232), so
+                # there is nowhere to re-route this one to — its rebuild at an
+                # unequal size is not a model bngsim can build. Refuse the write
+                # rather than ship a representative divide no rebuild would make.
+                # (The non-integer fallback further down needs no such refusal: it
+                # emits one reaction per species with that species' own volume
+                # divide and its own factor, so it is already per-species.)
+                compartment_write_refused.update(_xc_live)
+            else:
+                unified_ok = False
 
         if unified_ok:
             if not reactant_mult and not product_mult:
@@ -5520,10 +5550,17 @@ def _build_model_from_sbml_doc(doc):
                     # reactions undivided at V=1 only — 7 corpus models, 68
                     # reactions, where a write then moved the trajectory to
                     # something no rebuild produces (BIOMD0000000570: 1.8 relative
-                    # in the RHS). Whether a single representative divide is the
-                    # right reading of such a reaction is a separate question that
-                    # the rebuild answers the same way; what matters here is that
-                    # the two builds of one model agree.
+                    # in the RHS).
+                    #
+                    # (#192) Stage 2 added here that "whether a single representative
+                    # divide is the right reading of such a reaction is a separate
+                    # question that the rebuild answers the same way". It does not:
+                    # the rebuild at a DIFFERENT size sees unequal volumes and takes
+                    # the per-species branch, which is why a multi-compartment
+                    # reaction now only reaches this line when none of its
+                    # compartments is writable (the gate above re-routes the rest).
+                    # For those, the two builds of one model do agree — nothing can
+                    # move the sizes apart.
                     rep_comp = species_comp[next(iter(net))]
                     _rep_is_vstatic = rep_comp in vstatic_divide_comps and all(
                         species_hosu.get(s, False) for s in net
