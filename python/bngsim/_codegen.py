@@ -5275,26 +5275,9 @@ def generate_rhs_from_model(model) -> str:
     # the static-volume rows can reference it; whether the table is actually
     # EMITTED is decided after the reaction loop from real usage (GH #171: an
     # all-live reaction never reads it). Empty for V=1/.net ⇒ byte-identical.
-    #
-    # Issue #170 stage 2: a species whose compartment size is a writable parameter
-    # gets NAN here rather than its reciprocal. Its rows read ``1.0 / p[k]``, so the
-    # slot is dead — and a live reciprocal in a dead slot is not harmless: it is the
-    # last volume literal left in this source, so a ``set_param`` on the volume would
-    # move the emitted TEXT, changing the ``.so`` cache key and silently recompiling
-    # instead of being honoured by the binary the model was loaded with. NAN keeps the
-    # table volume-independent and makes a row that ever reads a dead slot fail loudly
-    # rather than quietly divide by the wrong scale. (A live-ODE volume, GH #171, keeps
-    # its static value: no `set_param` can move a species, so that entry cannot go
-    # stale.) ``needs_inv_vf`` below is read off the emitted lines, so a table whose
-    # every slot is dead is not emitted at all.
+    # The table is built AFTER the reaction loop, from the slots the emitted lines
+    # actually read — see below.
     inv_vf_terms: list[str] = []
-    if any(rxn.get("per_species_volume_scaling", False) for rxn in reactions):
-        for s in species:
-            if int(s.get("volume_param_idx0", -1)) >= 0:
-                inv_vf_terms.append("NAN")
-                continue
-            vf = s.get("volume_factor", 1.0) or 1.0
-            inv_vf_terms.append(repr(1.0 / vf))
 
     rxn_groups: list[list[str]] = []
     for _rxn_i, rxn in enumerate(reactions):
@@ -5436,7 +5419,30 @@ def generate_rhs_from_model(model) -> str:
     # a variable-volume compartment) divides by conc[L] and never touches inv_vf,
     # so an unconditionally-emitted table would be an unused static (a -Werror
     # build failure). Detected from the emitted lines like rxn_needs_func below.
-    needs_inv_vf = any("inv_vf[" in ln for grp in rxn_groups for ln in grp)
+    #
+    # The table is N_SPECIES long and indexed by species, so it has a slot for rows
+    # that do NOT read it — and those slots are built from the SAME emitted text that
+    # decides whether the table exists, rather than from a second rule about which
+    # rows are live. That matters for issue #170 stage 2: a row whose compartment size
+    # is a writable parameter reads ``1.0 / p[k]``, and leaving its load-time
+    # reciprocal in the dead slot left the last volume literal in this source — so a
+    # `set_param` on the volume moved the emitted TEXT, changing the `.so` cache key
+    # and silently recompiling instead of being honoured by the binary the model was
+    # loaded with (5 corpus models). A dead slot is 1.0, which no arithmetic reads;
+    # deriving "dead" from the text is what keeps that claim true by construction
+    # instead of by a rule two sites have to agree on.
+    _inv_vf_read = {
+        int(m.group(1))
+        for grp in rxn_groups
+        for ln in grp
+        for m in re.finditer(r"inv_vf\[(\d+)\]", ln)
+    }
+    needs_inv_vf = bool(_inv_vf_read)
+    if needs_inv_vf:
+        inv_vf_terms = [
+            repr(1.0 / (s.get("volume_factor", 1.0) or 1.0)) if i in _inv_vf_read else "1.0"
+            for i, s in enumerate(species)
+        ]
 
     # func[] is needed by a block only if some reaction in it reads func[idx]
     # (a Functional rate). Detected from the emitted lines so the block signature
