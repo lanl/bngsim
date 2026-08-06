@@ -329,7 +329,7 @@ void NetworkModel::set_param(const std::string &name, double value) {
             cur.str() +
             ") this model cannot resolve to a live volume. One of three reasons, all "
             "decided at load: an assignment rule recomputes its size every step, so a "
-            "write would not survive the next evaluation; a mass-action reaction "
+            "write would not survive the next evaluation; a reaction "
             "divides two compartments' species by it as a single scalar, which is exact "
             "only while those compartments have equal size; or an <initialAssignment> "
             "folds it into a quantity no parameter holds — a species amount, a reaction "

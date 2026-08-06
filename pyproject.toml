@@ -303,6 +303,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "python/tests/test_compartment_size_live.py" = ["E501"]
 "python/tests/test_compartment_size_codegen_live.py" = ["E501"]
 "python/tests/test_compartment_size_initial_assignment.py" = ["E501"]
+"python/tests/test_compartment_size_xcompartment.py" = ["E501"]
 
 # ── cibuildwheel: binary wheels for Linux / macOS / Windows (GH #140) ─────────
 # Wheels bundle SuiteSparse/KLU: BNGSIM_REQUIRE_KLU=ON makes a build that cannot
