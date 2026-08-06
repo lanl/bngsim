@@ -2613,10 +2613,26 @@ std::pair<std::string, int> NetworkModel::emit_ssa_propensity_source_structure()
                              rxn.ssa_live_volume_idx0 < 0 && rxn.ssa_live_volume_terms.empty();
         if (elem_ok) {
             // Runtime rate constant × baked structural factor (omitted when 1.0).
-            const double C = rxn.stat_factor * rxn.ssa_volume_factor;
+            //
+            // (#170) …except that the propensity volume is not structural: it is
+            // the compartment size, which `set_param` moves. This source is
+            // generated once, when the SSA propensity library is prepared, so a
+            // volume folded into the literal here would go stale on the first
+            // write — the interpreted propensity reads it from `params` and the
+            // JIT'd one would not, which is exactly the two-backends-disagree
+            // failure issue #164 refused over. Emit it as its own `p[]` read,
+            // parenthesised with the stat factor so the product is formed from
+            // the same two doubles in the same order the fold used and the
+            // emitted propensity is unchanged at the nominal point.
+            const bool live_vol = rxn.ssa_volume_param_idx0 >= 0 &&
+                                  rxn.ssa_volume_param_idx0 < static_cast<int>(params.size());
+            const double C = live_vol ? rxn.stat_factor : rxn.stat_factor * rxn.ssa_volume_factor;
             body +=
                 "  a[" + std::to_string(r) + "] = p[" + std::to_string(rxn.rate_param_idx0) + "]";
-            if (C != 1.0)
+            if (live_vol)
+                body +=
+                    " * (" + lit(C) + " * p[" + std::to_string(rxn.ssa_volume_param_idx0) + "])";
+            else if (C != 1.0)
                 body += " * " + lit(C);
             for (const auto &mult : rxn.reactant_multiplicities) {
                 const int si = mult.first;

@@ -283,6 +283,40 @@ def test_the_rate_constant_partials_survive_the_new_chain_rule():
         assert np.isclose(fd[0], exact, rtol=1e-6), (name, fd[0], exact)
 
 
+def test_the_ssa_propensity_reads_the_volume_at_runtime():
+    """The SSA propensity carries its own copy of the volume — an ODE-units rate
+    is `amount/(V·time)`, so the propensity multiplies it back by V. The JIT'd
+    propensity source is generated once, when the library is prepared, so a
+    volume folded into a literal there would go stale on the first write while
+    the interpreted propensity moved: two backends disagreeing about one model,
+    which is the failure issue #164 refused over. Assert the read is a ``p[]``,
+    structurally, because a regression here is silent under a stochastic test.
+    """
+    from bngsim._bngsim_core import emit_ssa_propensity_source_structure as emit
+
+    m = bngsim.Model.from_sbml_string(_src(2.5, L_kA))
+    src, n_unsupported = emit(m._core)
+    assert n_unsupported == 0
+    comp_idx = list(m.param_names).index("C")
+    assert f"p[{comp_idx}]" in src, src
+
+    # …and the propensity that source computes tracks a write. The emitted
+    # expression is `k · (stat_factor · V)`, with `stat_factor` still holding the
+    # load-time fold and the rate parameter carrying the compensating ratio, so
+    # the product is the invariant to check — against a rebuild, the same oracle
+    # the rest of this file uses.
+    def propensity_scalar(model):
+        rxn = model._core.codegen_data()["reactions"][0]
+        return model.get_param(rxn["function_name"]) * rxn["stat_factor"] * model.get_param("C")
+
+    m.set_param("C", 7.0)
+    written = propensity_scalar(m)
+    rebuilt = propensity_scalar(bngsim.Model.from_sbml_string(_src(7.0, L_kA)))
+    # Within the double-rounding bound of the ratio (see the ulp test above) —
+    # 2.5 → 7.0 goes through k/(7/2.5)/2.5·7 rather than k/7·7.
+    assert abs(written - rebuilt) <= 4 * np.spacing(abs(rebuilt))
+
+
 def test_net_models_are_untouched(simple_decay_net):
     """A ``.net`` network is post-BNG2.pl: the volumes are already folded into
     its rate constants, so nothing here may fire on one."""
