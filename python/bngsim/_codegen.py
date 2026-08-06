@@ -6129,6 +6129,10 @@ def _functional_jacobian_groups(
     func_map = dict(ctx["function_map"])
     obs_groups = {name: [(int(si), float(f)) for si, f in grp] for name, grp in ctx["observables"]}
     species_meta = {i: (bool(av), float(vf)) for i, (av, vf) in enumerate(ctx["species_meta"])}
+    # (#170 stage 2) Same map attach_functional_jacobian builds, for the same reason:
+    # a writable compartment size stays a symbol in the per-species derivative rather
+    # than being folded into its coefficient at emit time. Empty ⇒ unchanged text.
+    species_volume_sym = {i: n for i, n in enumerate(ctx.get("species_volume_param") or ()) if n}
     constants = set(ctx["constant_names"])
     ctx_obs_names = set(obs_groups)
 
@@ -6205,6 +6209,7 @@ def _functional_jacobian_groups(
             constants,
             resolve_symbol,
             deadline,
+            species_volume_sym,
         )
         if terms is None:
             return None

@@ -601,6 +601,7 @@ def build_per_species_native(
     obs_groups: dict[str, list],
     species_amount: dict[int, tuple],
     constant_names: set[str],
+    species_volume_sym: dict[int, str] | None = None,
 ):
     """Native counterpart of ``bngsim._jacobian.build_per_species_sympy``.
 
@@ -610,7 +611,13 @@ def build_per_species_native(
         ∂rate/∂x_j = Σ_k (∂rate/∂obs_k) · factor_{k→j} · (V_j if amount-valued)
 
     Returns ``[(species_idx0, ast_node)]`` or ``None``. ``[]`` is a *success*
-    (constant-rate ⇒ zero column), distinct from ``None`` (not in the family)."""
+    (constant-rate ⇒ zero column), distinct from ``None`` (not in the family).
+
+    ``species_volume_sym`` (issue #170 stage 2) carries V_j as a ``('var', name)``
+    node instead of folding it into the coefficient, for the species whose
+    compartment size is writable — see the twin's docstring for why a fold there is
+    a wrong sensitivity rather than a slow one. The node is built as
+    ``(factor · V_j) · dexpr``, keeping the association the fold had."""
     import math
 
     # ``obs_groups.keys()`` is set-like (supports ``in`` and ``&``); passing it
@@ -619,10 +626,18 @@ def build_per_species_native(
     if dd is None:
         return None
 
+    vol_sym = species_volume_sym or {}
     per_species: dict = {}
     for obs_name, dexpr in dd.items():
         for sp_idx, factor in obs_groups[obs_name]:
             amount_valued, vol = species_amount.get(sp_idx, (False, 1.0))
+            vname = vol_sym.get(sp_idx) if amount_valued else None
+            if vname:
+                if float(factor) == 0.0:
+                    continue
+                term = _mk_mul(_mk_mul(_num(float(factor)), ("var", vname)), dexpr)
+                per_species[sp_idx] = _mk_add(per_species.get(sp_idx, _ZERO), term)
+                continue
             coeff = float(factor) * (float(vol) if amount_valued else 1.0)
             if not math.isfinite(coeff):
                 return None  # degenerate chain-rule factor → defer whole model to FD

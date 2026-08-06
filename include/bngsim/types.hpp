@@ -675,6 +675,15 @@ struct FunctionalJacobianContext {
     std::vector<std::pair<std::string, std::vector<std::pair<int, double>>>> observables;
     // (amount_valued, volume_factor) per species_idx0.
     std::vector<std::pair<bool, double>> species_meta;
+    // (#170 stage 2) The NAME of the compartment-size parameter `volume_factor`
+    // IS, per species_idx0, or "" when there is none. The per-species chain rule
+    // multiplies an amount_valued species's ∂rate/∂x by its V_c; folding that into
+    // the coefficient (which is what species_meta above supports) freezes it at the
+    // volume the derivative was built at, and J·yS is part of the *sensitivity RHS*
+    // — a wrong answer, not a slower one — so a live volume is carried as this
+    // symbol instead. A name rather than an index because the symbolic core works
+    // in names and both emitters (ExprTk, C) already resolve them.
+    std::vector<std::string> species_volume_param;
     // parameter names safe to treat as constants (not function-bound).
     std::vector<std::string> constant_names;
 };

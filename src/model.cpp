@@ -1306,8 +1306,14 @@ FunctionalJacobianContext NetworkModel::functional_jacobian_context() const {
     }
 
     ctx.species_meta.reserve(impl_->species.size());
-    for (const auto &s : impl_->species)
+    ctx.species_volume_param.reserve(impl_->species.size());
+    for (const auto &s : impl_->species) {
         ctx.species_meta.emplace_back(s.amount_valued, s.volume_factor);
+        ctx.species_volume_param.emplace_back(
+            s.volume_param_idx0 >= 0
+                ? impl_->parameters[static_cast<std::size_t>(s.volume_param_idx0)].name
+                : std::string());
+    }
 
     // Constant parameters: every parameter whose name is NOT a function
     // (function-bound synthetic params are time/state-varying and are inlined

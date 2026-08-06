@@ -1141,6 +1141,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 out["function_map"] = std::move(fmap);
                 out["observables"] = std::move(obs);
                 out["species_meta"] = std::move(smeta);
+                out["species_volume_param"] = py::cast(ctx.species_volume_param);
                 out["constant_names"] = py::cast(ctx.constant_names);
                 return out;
             },

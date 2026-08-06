@@ -1040,6 +1040,7 @@ def build_per_species_sympy(
     species_amount: dict[int, tuple],
     constant_names: set[str],
     deadline: float | None = None,
+    species_volume_sym: dict[int, str] | None = None,
 ):
     """Chain-rule ``∂rate/∂obs_k`` through each observable's species group into
     one per-species *sympy* derivative:
@@ -1055,6 +1056,15 @@ def build_per_species_sympy(
 
     ``obs_groups``: ``observable_name → [(species_idx0, factor), …]``.
     ``species_amount``: ``species_idx0 → (amount_valued: bool, volume_factor: float)``.
+    ``species_volume_sym`` (issue #170 stage 2): ``species_idx0 → the name of the
+    parameter V_j IS``, for species whose compartment size is writable. Those keep
+    V_j as a **symbol** rather than folding it into the coefficient: the fold happens
+    once at Simulator-construction time, and this derivative is not only a
+    preconditioner — it is the ``J·yS`` half of the forward-sensitivity RHS, so a
+    volume written afterwards leaves a *wrong sensitivity* (measured at 100% on a
+    400x write), not merely a slower solve. Absent/empty ⇒ every coefficient is
+    folded exactly as before, so a model with no writable compartment size emits
+    byte-identical derivatives.
     """
     try:
         import sympy as sp
@@ -1067,10 +1077,22 @@ def build_per_species_sympy(
 
     import math
 
+    vol_sym = species_volume_sym or {}
     per_species: dict = {}
     for obs_name, dexpr in dd.items():
         for sp_idx, factor in obs_groups[obs_name]:
             amount_valued, vol = species_amount.get(sp_idx, (False, 1.0))
+            vname = vol_sym.get(sp_idx) if amount_valued else None
+            if vname:
+                if float(factor) == 0.0:
+                    continue
+                # `differentiate_rate_law` aliased any Python-keyword identifier on
+                # the way in, so this symbol has to carry the alias too: `sympy_to_c`
+                # resolves by aliased name and `sympy_to_exprtk` undoes it on print.
+                alias = _alias_keyword_param(vname) if vname in _PY_KEYWORD_PARAM_NAMES else vname
+                term = sp.Float(float(factor)) * sp.Symbol(alias) * dexpr
+                per_species[sp_idx] = per_species.get(sp_idx, sp.Integer(0)) + term
+                continue
             coeff = float(factor) * (float(vol) if amount_valued else 1.0)
             if not math.isfinite(coeff):
                 # Degenerate chain-rule factor (e.g. an unset compartment volume
@@ -1098,6 +1120,7 @@ def build_per_species_terms(
     species_amount: dict[int, tuple],
     constant_names: set[str],
     deadline: float | None = None,
+    species_volume_sym: dict[int, str] | None = None,
 ) -> list[tuple[int, str]] | None:
     """SBML / ``apply_species_factor=false`` path.
 
@@ -1112,13 +1135,19 @@ def build_per_species_terms(
     outside the family, so the SymPy path below remains the fallback.
     """
     native = _native_per_species_terms(
-        rate_expr, func_map, obs_groups, species_amount, constant_names
+        rate_expr, func_map, obs_groups, species_amount, constant_names, species_volume_sym
     )
     if native is not None:
         return native
 
     terms = build_per_species_sympy(
-        rate_expr, func_map, obs_groups, species_amount, constant_names, deadline
+        rate_expr,
+        func_map,
+        obs_groups,
+        species_amount,
+        constant_names,
+        deadline,
+        species_volume_sym,
     )
     if terms is None:
         return None
@@ -1200,13 +1229,15 @@ def _native_per_observable_terms(rate_expr, func_map, observable_names, constant
     return out
 
 
-def _native_per_species_terms(rate_expr, func_map, obs_groups, species_amount, constant_names):
+def _native_per_species_terms(
+    rate_expr, func_map, obs_groups, species_amount, constant_names, species_volume_sym=None
+):
     """Native per-species derivatives as ExprTk strings (SBML path), or
     ``None``."""
     from bngsim import _saturable_jacobian as _sat
 
     terms = _sat.build_per_species_native(
-        rate_expr, func_map, obs_groups, species_amount, constant_names
+        rate_expr, func_map, obs_groups, species_amount, constant_names, species_volume_sym
     )
     if terms is None:
         return None
@@ -1220,7 +1251,14 @@ def _native_per_species_terms(rate_expr, func_map, obs_groups, species_amount, c
 
 
 def build_per_species_c(
-    rate_expr, func_map, obs_groups, species_amount, constant_names, resolve_symbol, deadline=None
+    rate_expr,
+    func_map,
+    obs_groups,
+    species_amount,
+    constant_names,
+    resolve_symbol,
+    deadline=None,
+    species_volume_sym=None,
 ) -> list[tuple[int, str]] | None:
     """Codegen per-species path: ``[(species_idx0, c_str)]`` or ``None``.
 
@@ -1236,7 +1274,7 @@ def build_per_species_c(
     from bngsim import _saturable_jacobian as _sat
 
     native = _sat.build_per_species_native(
-        rate_expr, func_map, obs_groups, species_amount, constant_names
+        rate_expr, func_map, obs_groups, species_amount, constant_names, species_volume_sym
     )
     if native is not None:
         out: list[tuple[int, str]] = []
@@ -1251,7 +1289,13 @@ def build_per_species_c(
             return out
 
     terms = build_per_species_sympy(
-        rate_expr, func_map, obs_groups, species_amount, constant_names, deadline
+        rate_expr,
+        func_map,
+        obs_groups,
+        species_amount,
+        constant_names,
+        deadline,
+        species_volume_sym,
     )
     if terms is None:
         return None
@@ -1623,6 +1667,12 @@ def attach_functional_jacobian(core) -> bool:
     obs_groups = {name: [(int(si), float(f)) for si, f in grp] for name, grp in ctx["observables"]}
     obs_idx = {name: i for i, (name, _grp) in enumerate(ctx["observables"])}
     species_meta = {i: (bool(av), float(vf)) for i, (av, vf) in enumerate(ctx["species_meta"])}
+    # (#170 stage 2) The compartment-size parameter each amount factor IS, for the
+    # species whose volume is writable — carried as a symbol instead of folded, so a
+    # volume written after this derivation still moves J (and with it the J*yS half
+    # of the sensitivity RHS). Empty for every model with no writable compartment
+    # size, which keeps their ExprTk derivative text unchanged.
+    species_volume_sym = {i: n for i, n in enumerate(ctx.get("species_volume_param") or ()) if n}
     constants = set(ctx["constant_names"])
     obs_names = set(obs_groups)
 
@@ -1670,7 +1720,13 @@ def attach_functional_jacobian(core) -> bool:
             else:
                 # SBML per-species path.
                 sp_terms = build_per_species_terms(
-                    rate_expr, func_map, obs_groups, species_meta, constants, deadline
+                    rate_expr,
+                    func_map,
+                    obs_groups,
+                    species_meta,
+                    constants,
+                    deadline,
+                    species_volume_sym,
                 )
                 if sp_terms is None:
                     return False
