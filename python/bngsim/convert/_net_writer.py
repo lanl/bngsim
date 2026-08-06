@@ -72,6 +72,53 @@ def _rateof_refs(data: dict[str, Any]) -> list[str]:
     return sorted(refs)
 
 
+def _psvs_needs_per_species_divide(rxn: dict[str, Any], species: list[dict[str, Any]]) -> bool:
+    """True iff a ``per_species_volume_scaling`` reaction really needs one divisor
+    PER SPECIES — which is what plain ``.net`` cannot store.
+
+    The flag alone stopped being that question at #192. It used to be set only when
+    a reaction's species spanned compartments of *differing* size; the equal-size
+    case took a single representative divide baked into the rate
+    (``_vd_<rid>_unified``), which this writer carried without noticing. #192 routes
+    the equal-size case here too — correctly, because a live model can have one of
+    those sizes written and pull the volumes apart. **A ``.net`` cannot**: its
+    volumes are frozen at export, so one shared divisor stays shared, and
+    :func:`_expand_functional_reactions` folds it into the per-species rate exactly.
+    Refusing those was a regression against the pre-#192 writer on 77 rr_parity
+    models, and this note's own wording — "with differing volumes" — already
+    described the narrower thing.
+
+    So this relaxes for exactly the shape #192 creates and nothing else. Kept
+    lossy, as before:
+
+    * a **rate-rule ODE** emission (``is_rate_rule_ode``, ``asf=True``, no
+      reactants). It wears the same flag for an unrelated reason, and measuring
+      rather than assuming is what caught it: relaxing for these admitted five
+      corpus models, of which ``BIOMD0000000006`` reloads to a trajectory **31%**
+      off while ``rhs_faithful`` still reports True — the pointwise probe is blind
+      to it, exactly as in GH #18. They were refused before #192 and stay refused.
+    * **differing** divisors — the case this note was always about.
+    * a **live** (time-varying) volume, since equal at export does not stay equal.
+      That earns its own note above; this is the belt to its braces.
+    * a shared non-unit divisor on a reaction the expansion will not touch, where
+      the ordinary path would drop the divide. (A shared divisor of exactly 1.0
+      needs no divide at all and is safe either way.)
+    """
+    if not rxn.get("per_species_volume_scaling", False):
+        return False
+    if rxn.get("is_rate_rule_ode", False) or bool(rxn.get("apply_species_factor", False)):
+        return True
+    touched = set(rxn.get("reactants", ())) | set(rxn.get("products", ()))
+    if not touched:
+        return False
+    if any(int(species[i].get("ode_live_volume_idx0", -1)) >= 0 for i in touched):
+        return True
+    divisors = {float(species[i].get("volume_factor", 1.0)) for i in touched}
+    if len(divisors) > 1:
+        return True
+    return next(iter(divisors)) != 1.0 and not _flux_expandable(rxn)
+
+
 def capability_report(model: Model) -> dict[str, list[str]]:
     """Inspect a model for constructs the plain ``.net`` text format cannot carry.
 
@@ -125,7 +172,7 @@ def capability_report(model: Model) -> dict[str, list[str]]:
             "text format does not carry"
         )
 
-    n_xcomp = sum(1 for r in reactions if r.get("per_species_volume_scaling", False))
+    n_xcomp = sum(1 for r in reactions if _psvs_needs_per_species_divide(r, species))
     if n_xcomp:
         lossy.append(
             f"{n_xcomp} cross-compartment reaction(s) with differing volumes need "
@@ -318,9 +365,16 @@ def _expand_functional_reactions(
 
     for n, r in enumerate(reactions):
         psvs = bool(r.get("per_species_volume_scaling", False))
+        # (#192) `expand_psvs=False` (the flat .net writer) declines only the
+        # reactions the capability gate actually refuses — those needing a divisor
+        # PER SPECIES. A cross-compartment reaction whose species share ONE static
+        # volume reaches this flag now too, and its single divisor is folded into
+        # the per-species rate below exactly as `_vd_<rid>_unified` used to fold it
+        # at load. Declining those would drop the divide on the ordinary path.
+        _psvs_declined = psvs and not expand_psvs and _psvs_needs_per_species_divide(r, species)
         if (
             not _flux_expandable(r)
-            or (psvs and not expand_psvs)
+            or _psvs_declined
             or (only_indices is not None and not psvs and n not in only_indices)
         ):
             out.append((str(n), r))

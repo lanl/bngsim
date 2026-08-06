@@ -20,7 +20,11 @@ from bngsim.convert import (
     validate_structural_l1,
     write_net,
 )
-from bngsim.convert._net_writer import _rateof_refs, capability_report
+from bngsim.convert._net_writer import (
+    _psvs_needs_per_species_divide,
+    _rateof_refs,
+    capability_report,
+)
 
 pytestmark = pytest.mark.skipif(not bngsim.HAS_LIBSBML, reason="SBML conversion requires libsbml")
 
@@ -179,6 +183,148 @@ def test_lossy_model_allow_lossy(tmp_path: Path) -> None:
     assert report.lossy, "expected lossy notes for an amount-valued multi-compartment model"
     # Structure is still preserved even though the conversion is numerically lossy.
     assert report.structural is not None and report.structural.passed
+
+
+# ─── Cross-compartment reactions at ONE shared volume (#192 follow-up) ─────
+#
+# The capability gate keyed "needs a per-species divisor" off the
+# `per_species_volume_scaling` FLAG. That was the same question until #192, which
+# routes a cross-compartment reaction whose compartments merely share a load-time
+# size to that flag as well — correct for a live model, where one of those sizes
+# can be written and pull the volumes apart, but a `.net` freezes its volumes at
+# export, so one shared divisor stays shared. Refusing them cost 77 rr_parity
+# models their faithful conversion, and the gate's own wording ("with differing
+# volumes") already described the narrower thing.
+#
+# These fixtures are SBML strings on purpose. The two tests that caught the
+# regression are gated on the gitignored rr_parity corpus, so they SKIP in any
+# worktree and in CI — the whole defect reached main that way.
+
+_XCOMP_SHARED_V = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="xcomp">
+    <listOfCompartments>
+      <compartment id="C1" size="{v}" constant="true"/>
+      <compartment id="C2" size="{v}" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C1" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="C2" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+      <parameter id="Km" value="20" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="transport" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><divide/>
+            <apply><times/><ci>k</ci><ci>A</ci></apply>
+            <apply><plus/><ci>Km</ci><ci>A</ci></apply>
+          </apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+def _xcomp_shared(v: float) -> bngsim.Model:
+    return bngsim.Model.from_sbml_string(_XCOMP_SHARED_V.format(v=repr(float(v))))
+
+
+@pytest.mark.parametrize("v", [1.0, 5.0])
+def test_one_shared_volume_converts_and_round_trips(v: float, tmp_path: Path) -> None:
+    """The #192 shape converts under STRICT and reproduces the source RHS.
+
+    ``v=5.0`` is the load-bearing row: the shared divisor is not 1, so the
+    conversion is only faithful because the flux expansion folds ``1/V`` into each
+    per-species rate — the same fold ``_vd_<rid>_unified`` used to carry at load.
+    At ``v=1.0`` the divide is a no-op, which is why every one of the 77 corpus
+    models (all of them ``V=1``) would pass even a writer that dropped it."""
+    src = _xcomp_shared(v)
+    rxns = src._core.codegen_data()["reactions"]
+    assert any(r["per_species_volume_scaling"] for r in rxns), (
+        "fixture must exercise the flag; #192 routes this shape to the per-species branch"
+    )
+    assert not capability_report(src)["lossy"]
+
+    out = tmp_path / "xcomp.net"
+    write_net(src, out, strict=True)  # must not raise
+    net = bngsim.Model.from_net(out)
+    y = np.asarray(src._core.get_state(), dtype=float)
+    a = np.asarray(src._core._eval_rhs(0.0, y), dtype=float)
+    b = np.asarray(net._core._eval_rhs(0.0, y), dtype=float)
+    assert np.allclose(a, b, rtol=1e-12, atol=0.0), f"V={v}: {a} vs {b}"
+
+
+def test_differing_volumes_are_still_refused(tmp_path: Path) -> None:
+    """The case the note was always about stays refused — the relaxation is keyed
+    on the divisors actually coinciding, not on waving the flag through."""
+    src = bngsim.Model.from_sbml_string(
+        _XCOMP_SHARED_V.format(v="1.0").replace('id="C2" size="1.0"', 'id="C2" size="4.0"')
+    )
+    notes = capability_report(src)["lossy"]
+    assert any("per-species volume scaling" in n for n in notes), notes
+    with pytest.raises(bngsim.ConversionError, match="per-species volume scaling"):
+        write_net(src, tmp_path / "x.net", strict=True)
+
+
+# The two reaction shapes that decide the gate, as `codegen_data()` reports them.
+# Table-driven against the predicate rather than through an SBML fixture: the
+# rate-rule shape below is what BIOMD0000000006 / 207 / 241 / 527 / MODEL2002070001
+# actually emit, and a fixture that merely *tried* to reproduce it would silently
+# skip — which is indistinguishable from coverage.
+_RXN_TRANSPORT = {  # a #192 cross-compartment transport reaction
+    "type": "functional",
+    "function_name": "transport",
+    "stat_factor": 1.0,
+    "apply_species_factor": False,
+    "is_rate_rule_ode": False,
+    "per_species_volume_scaling": True,
+    "reactants": [0],
+    "products": [1],
+}
+_RXN_RATE_RULE = {  # a rate-rule ODE emission, same flag, unrelated meaning
+    "type": "functional",
+    "function_name": "_rhs_u",
+    "stat_factor": 1.0,
+    "apply_species_factor": True,
+    "is_rate_rule_ode": True,
+    "per_species_volume_scaling": True,
+    "reactants": [],
+    "products": [1],
+}
+
+
+def _sp(*vols, live=()):
+    return [
+        {"volume_factor": v, "ode_live_volume_idx0": (3 if i in live else -1)}
+        for i, v in enumerate(vols)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rxn", "species", "lossy", "why"),
+    [
+        (_RXN_TRANSPORT, _sp(1.0, 1.0), False, "one shared unit volume — no divide needed"),
+        (_RXN_TRANSPORT, _sp(5.0, 5.0), False, "one shared volume — the expansion folds 1/V"),
+        (_RXN_TRANSPORT, _sp(1.0, 4.0), True, "differing volumes — the original case"),
+        (_RXN_TRANSPORT, _sp(2.0, 2.0, live=(1,)), True, "live volume — equal now, not later"),
+        (_RXN_RATE_RULE, _sp(1.0, 1.0), True, "rate-rule ODE — same flag, other meaning"),
+        (_RXN_RATE_RULE, _sp(3.0, 3.0), True, "rate-rule ODE stays refused at any volume"),
+    ],
+)
+def test_which_psvs_reactions_really_need_a_per_species_divide(rxn, species, lossy, why) -> None:
+    """The rule, stated where a corpus sweep cannot reach it.
+
+    Relaxing for the rate-rule rows admitted five corpus models, of which
+    ``BIOMD0000000006`` reloads to a trajectory **31%** off while
+    ``rhs_faithful`` still reports True — the pointwise probe is blind to it, the
+    same way GH #18's reactant-guard divergence was. Measured, not assumed."""
+    assert _psvs_needs_per_species_divide(rxn, species) is lossy, why
 
 
 # ─── L2 RHS-identity self-check (GH #223 silent-loss guard) ────────────────
