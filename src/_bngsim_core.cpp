@@ -872,11 +872,27 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 return out;
             },
             "Per-parameter flag, parallel to ``param_names``: True for an SBML compartment "
-            "size. Such a parameter's value is folded at load into constants a write cannot "
-            "reach, so ``set_param`` refuses a value-changing write and forward sensitivity "
-            "refuses the column (issue #164). All False for .net models and for every "
-            "compartment promoted to a species (rate-rule / event-resized), which is not a "
-            "parameter at all.")
+            "size. Issue #170 made such a parameter writable (the storage convention is "
+            "re-derived from it), but it is not yet DIFFERENTIABLE, so forward sensitivity "
+            "still refuses the column. All False for .net models and for every compartment "
+            "promoted to a species (rate-rule / event-resized), which is not a parameter at "
+            "all.")
+
+        .def_property_readonly(
+            "param_volume_write_refused",
+            [](const bngsim::NetworkModel &self) {
+                const auto &params = self.parameters();
+                std::vector<bool> out;
+                out.reserve(params.size());
+                for (const auto &p : params)
+                    out.push_back(p.volume_write_refused);
+                return out;
+            },
+            "Per-parameter flag, parallel to ``param_names``: True for the residue of "
+            "compartment sizes issue #170 could NOT make live, whose value-changing write "
+            "``set_param`` still refuses — an assignment-rule compartment, or one whose "
+            "storage divide a mass-action reaction shares across two compartments. A subset "
+            "of ``param_is_compartment_size``; all False for .net models.")
 
         .def_property_readonly(
             "param_expressions",
@@ -1455,6 +1471,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sd["reported"] = s.reported;                         // GH #71
                     sd["ode_live_volume_idx0"] = s.ode_live_volume_idx0; // GH #144 case 4
                     sd["report_rateof_amount"] = s.report_rateof_amount; // GH #231 sub-cluster 3
+                    // (#170) Which parameter `volume_factor` IS, so the emitter can
+                    // write `p[k]` where it used to write the number. -1 ⇒ no
+                    // parameter (a `.net` species, or a promoted compartment).
+                    sd["volume_param_idx0"] = s.volume_param_idx0;
                     sp_list.append(sd);
                 }
                 d["species"] = sp_list;
@@ -2037,6 +2057,23 @@ PYBIND11_MODULE(_bngsim_core, m) {
              "reaction. compute_rxn_rate multiplies the SSA propensity by "
              "(v_static / conc[live_idx0])^exp. One term per variable-volume compartment "
              "the reaction touches. No-op if rxn_idx0 is out of range.")
+        .def("set_species_volume_param", &bngsim::ModelBuilder::set_species_volume_param,
+             py::arg("species_idx0"), py::arg("param_idx0"),
+             py::arg("initial_amount") = std::numeric_limits<double>::quiet_NaN(),
+             "Issue #170: bind a species' storage convention to the compartment-size "
+             "PARAMETER it came from, so set_param re-derives volume_factor (and, when "
+             "initial_amount is given, the stored IC = amount/V) instead of leaving them at "
+             "their load-time values. No-op if species_idx0 is out of range.")
+        .def("set_reaction_ssa_volume_param", &bngsim::ModelBuilder::set_reaction_ssa_volume_param,
+             py::arg("rxn_idx0"), py::arg("param_idx0"),
+             "Issue #170: bind a reaction's SSA propensity volume to a compartment-size "
+             "parameter, so compute_rxn_rate reads the live value rather than the number "
+             "baked at load. No-op if rxn_idx0 is out of range.")
+        .def("set_param_volume_write_refused",
+             &bngsim::ModelBuilder::set_param_volume_write_refused, py::arg("name"),
+             "Issue #170: mark a compartment size this loader could not resolve to a live "
+             "volume, so set_param keeps refusing a value-changing write to it. No-op if "
+             "the name is not a known parameter.")
         .def(
             "add_event",
             [](bngsim::ModelBuilder &self, const std::string &id, const std::string &trigger_expr,

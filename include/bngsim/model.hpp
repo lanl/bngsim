@@ -537,6 +537,13 @@ class NetworkModel {
     /// the derived-parameter re-evaluation. See model.cpp for the rules.
     void refresh_param_ref_ics();
 
+    /// Re-derive the storage convention (`Species::volume_factor`, and an
+    /// amount-declared `initial_conc = amount/V`) from the current compartment
+    /// sizes (issue #170). Called from set_param() when the written parameter is
+    /// a compartment size, after the derived-parameter re-evaluation. See
+    /// model.cpp for why only the species-side halves live here.
+    void refresh_compartment_volume_state();
+
     /// Does this bound address carry live state — a species concentration, an
     /// observable total, or a rateOf accessor (issue #52)? The single
     /// definition of "moves with the trajectory"; the event-sensitivity guard

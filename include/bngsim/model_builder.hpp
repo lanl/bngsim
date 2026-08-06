@@ -156,6 +156,29 @@ class ModelBuilder {
     /// No-op if rxn_idx0 is out of range.
     void add_reaction_live_volume_term(int rxn_idx0, int live_idx0, double v_static, double exp);
 
+    /// Issue #170: bind a species' storage convention to the compartment-size
+    /// PARAMETER it came from. `volume_factor` and — when `initial_amount` is not
+    /// NaN — the stored initial condition (`amount / V`) are then re-derived by
+    /// `NetworkModel::refresh_compartment_volume_state` on a write, instead of
+    /// staying at their load-time values (issue #164's defect). Pass
+    /// `param_idx0 = -1` / `initial_amount = NaN` to leave a species on the
+    /// static convention, which is every `.net` species and every species in a
+    /// compartment promoted to state. No-op if species_idx0 is out of range.
+    void set_species_volume_param(int species_idx0, int param_idx0, double initial_amount);
+
+    /// Issue #170: bind a reaction's SSA propensity volume to the
+    /// compartment-size parameter it holds, so `compute_rxn_rate` reads the live
+    /// value. Reactions are shared across model clones, which is why this is a
+    /// parameter index rather than a number the write rescales in place.
+    /// No-op if rxn_idx0 is out of range.
+    void set_reaction_ssa_volume_param(int rxn_idx0, int param_idx0);
+
+    /// Issue #170: mark a compartment-size parameter that this model could NOT
+    /// resolve to a live volume, so `set_param` keeps refusing a value-changing
+    /// write to it (see Parameter::volume_write_refused for the two cases).
+    /// No-op if the name is not a known parameter.
+    void set_param_volume_write_refused(const std::string &name);
+
     /// Enable/disable conservation-law detection in build() (GH #102).
     /// The detector runs dense O(n_species^3) Gaussian elimination on the
     /// stoichiometry matrix and is consumed only by the steady-state solver —

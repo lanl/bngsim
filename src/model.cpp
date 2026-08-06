@@ -287,45 +287,38 @@ void NetworkModel::set_param(const std::string &name, double value) {
     }
     auto &param = impl_->parameters[it->second];
 
-    // Issue #164 — an SBML compartment size is TWO representations, and a write
-    // moves only one. The `p[]` entry a kinetic law reads moves here; the
-    // load-time constants the storage convention is folded into do not
-    // (`Species::volume_factor`, an amount-declared `initial_conc` = amount/V,
-    // the Elementary scalar rate's Π V^n / V_storage, `Reaction::
-    // ssa_volume_factor`, the emitted C `inv_vf` table). Which halves move is
-    // not even uniform across a model — a mass-action reaction folded the volume
-    // away entirely, a Functional reaction loaded at V≠1 divides by the live
-    // symbol, and one loaded at V=1 had its divide normalized out — so a write
-    // is honored on some reactions and dropped on others, in the same model,
-    // with nothing to tell the caller which. The result is not a stale value but
-    // an internally inconsistent one: on issue #164's two-compartment model,
-    // set_param("C1", 3) moves A(5) from 22.3 to 1.11 on a trajectory that is
-    // *exactly* C1-invariant, and RoadRunner confirms the rebuild.
+    // Issue #164 / #170 — an SBML compartment size is TWO representations: the
+    // `p[]` a kinetic law reads, which a write has always moved, and the *storage
+    // convention* (bngsim stores `amount/V_c`), which used to be folded at load
+    // into constants nothing re-derived. #164 refused the write outright because
+    // which halves landed was not even uniform inside one model. #170 put the
+    // volume back into every one of those folds — the mass-action scalar carries
+    // it as a live ratio on the rate parameter, the SSA propensity and the
+    // per-species Jacobian divide read it from `params`, the Functional storage
+    // divide is emitted against the compartment symbol, and
+    // `refresh_compartment_volume_state` below re-derives `volume_factor` and an
+    // amount-declared IC — so the write is honored here.
     //
-    // So refuse, rather than return a confidently wrong number (the failure mode
-    // GH #205 / issue #79 / issue #99 all close the same way). Writing the value
-    // it already holds stays legal: `set_params(dict(zip(param_names, vec)))`
-    // round-trips a full parameter vector through here, and a write that changes
-    // nothing has nothing to desync.
-    //
-    // Issue #170 tracks making the volume live everywhere, which retires this.
-    if (param.is_compartment_size && value != param.value) {
+    // What survives is a per-compartment residue the loader could not resolve,
+    // flagged at load and named in its own message rather than covered by a
+    // blanket refusal. Writing the value it already holds stays legal even then:
+    // `set_params(dict(zip(param_names, vec)))` round-trips a full parameter
+    // vector through here, and a write that changes nothing has nothing to desync.
+    if (param.volume_write_refused && value != param.value) {
         std::ostringstream cur;
         cur << param.value;
         throw CompartmentSizeWriteError(
             "Cannot set '" + param.name + "': it is an SBML compartment size (currently " +
             cur.str() +
-            "), and its value is folded at load into "
-            "constants a parameter write cannot reach — per-species volume factors, "
-            "amount-declared initial conditions, mass-action rate constants, SSA "
-            "propensity volumes, and the emitted sensitivity/RHS sources. Writing it "
-            "would leave the model internally inconsistent rather than move the volume "
-            "(issue #164). Load the model at the size you want instead: "
-            "Model.from_sbml(path, compartment_sizes={'" +
+            ") that this model cannot resolve to a live parameter. Either an assignment "
+            "rule recomputes it every step — so a write would not survive the next "
+            "evaluation — or a mass-action reaction divides two compartments' species by "
+            "it as a single scalar, which is exact only while those compartments have "
+            "equal size and stops being exact the moment one is written. Load the model "
+            "at the size you want instead: Model.from_sbml(path, compartment_sizes={'" +
             param.name +
-            "': <value>}) — "
-            "a volume scan or fit is a loop over those loads. Issue #170 tracks making "
-            "a compartment size writable.");
+            "': <value>}). Every other compartment size in this model is writable "
+            "(issue #170); Model.compartment_size_params reports which are not.");
     }
 
     param.value = value;
@@ -347,6 +340,13 @@ void NetworkModel::set_param(const std::string &name, double value) {
             p.value = impl_->evaluator->evaluate(p.evaluator_id);
         }
     }
+
+    // ...the storage convention that a compartment size decides (issue #170),
+    // which must also come after the re-evaluation above: an amount-declared IC
+    // reads the volume, and the volume itself can be the target of an
+    // initialAssignment carried by a derived parameter.
+    if (param.is_compartment_size)
+        refresh_compartment_volume_state();
 
     // ...and the species initial conditions those parameters name (issue #79).
     // Must come AFTER the loop above: a species IC may name a *derived*
@@ -418,6 +418,47 @@ void NetworkModel::refresh_param_ref_ics() {
         sp.initial_conc = val;
         if (at_baseline)
             sp.concentration = val;
+    }
+}
+
+// Re-derive the storage convention from the compartment sizes (issue #170).
+//
+// A compartment volume plays two roles in a loaded model: a *symbol* in kinetic
+// laws, which is an ordinary `p[]` a write already moves, and the *storage
+// convention* — bngsim stores `amount/V_c`, so V_c decides the amount↔storage
+// conversion (`volume_factor`) and, for an amount-declared species, the stored
+// initial condition itself. Issue #164 shipped a refusal because that second role
+// was folded at load and nothing re-derived it; this is what re-derives it.
+//
+// Both fields live on `Species`, which is per-instance state — a model clone gets
+// its own copy — so writing them here cannot leak into a sibling model the way
+// rescaling a shared `Reaction` would. That is why the reaction-side halves of
+// the same fold (the mass-action scalar, the SSA propensity volume) are handled
+// by reading a parameter instead of by rewriting a cached number.
+//
+// `initial_conc` follows the #79 discipline exactly, for the same reason: the
+// declared IC always follows the volume (so `reset()` rebuilds from it), but the
+// live `concentration` follows only while the species is still sitting ON that
+// baseline and no run has advanced it — otherwise a mid-protocol volume change
+// would discard an integrated state. The invariant here is the declared *amount*
+// rather than a parameter value, which is why it is a separate loop and not a
+// `species_ic_param_refs` entry: `amount/V` is not "this IC IS that parameter".
+void NetworkModel::refresh_compartment_volume_state() {
+    for (auto &sp : impl_->species) {
+        if (sp.volume_param_idx0 < 0)
+            continue;
+        const double v = impl_->parameters[static_cast<std::size_t>(sp.volume_param_idx0)].value;
+        sp.volume_factor = v;
+        // The amount→storage divide is not an initial condition and is not
+        // subject to the baseline rules — it is how every stored value in this
+        // compartment is *read*, so it moves unconditionally.
+        if (std::isnan(sp.initial_amount) || impl_->ic_baseline_saved)
+            continue;
+        const double ic = (v != 0.0) ? sp.initial_amount / v : sp.initial_amount;
+        const bool at_baseline = (sp.concentration == sp.initial_conc) && !impl_->ic_state_dirty;
+        sp.initial_conc = ic;
+        if (at_baseline)
+            sp.concentration = ic;
     }
 }
 
@@ -1309,6 +1350,22 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
             return coeff;
         };
 
+        // (#170) `row_coeff` above bakes the psvs `1/V_i` divide, and only the
+        // per-observable branch below uses it — the per-species branch defers the
+        // divide to the scatter (GH #171) and is the one that can be made live.
+        // The two never co-occur in practice: a cross-compartment reaction is
+        // emitted with apply_species_factor=false, which is exactly what routes it
+        // to the per-species branch. Fail the whole model's analytical Jacobian to
+        // the FD path rather than bake a volume a write can move, if that ever
+        // changes.
+        if (in.per_observable && rxn.per_species_volume_scaling) {
+            for (const auto &[i, c_i] : net) {
+                if (c_i != 0.0 && i >= 0 && i < static_cast<int>(impl_->species.size()) &&
+                    impl_->species[i].volume_param_idx0 >= 0)
+                    return false;
+            }
+        }
+
         if (in.per_observable) {
             // .net per-observable path (GH #76 task 2): rate = func(obs) · ∏R.
             // deriv_terms carry ∂func/∂obs_k keyed by observable index; func
@@ -1363,9 +1420,14 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                         int j = entry.species_index - 1;
                         if (j < 0 || j >= static_cast<int>(impl_->species.size()))
                             continue;
-                        double g = entry.factor;
-                        if (impl_->species[j].amount_valued)
-                            g *= impl_->species[j].volume_factor;
+                        // (#170) The `× V_j` an amount-valued column carries is
+                        // applied by the scatter instead of baked here — it
+                        // already reads `species[j].volume_factor` live for the
+                        // product-rule term, and in the same `(g·V_j)·∂func/∂obs`
+                        // order, so the value is unchanged and a written volume
+                        // reaches it. A zero group factor is still skipped; a zero
+                        // volume is not a case (the loader rejects V=0 outright).
+                        const double g = entry.factor;
                         if (g == 0.0)
                             continue;
                         ensure_col(j).a_terms.emplace_back(k_idx, g);
@@ -1406,6 +1468,14 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                 return impl_->species[i].volume_factor;
             return 1.0;
         };
+        // (#170) …and which parameter that divisor IS, so a written compartment
+        // size moves the psvs divide. -1 for a non-psvs row and for a promoted
+        // compartment (whose live volume already comes through `live_idx`).
+        auto divisor_param_of = [&](int i) -> int {
+            if (rxn.per_species_volume_scaling && i >= 0 && i < nsp)
+                return impl_->species[i].volume_param_idx0;
+            return -1;
+        };
 
         for (const auto &[species_j, deriv_str] : in.deriv_terms) {
             int eval_id;
@@ -1431,7 +1501,8 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
                                      in.rxn_idx, i, species_j);
                     return false; // derivative entry outside the sparsity pattern
                 }
-                st.affected.push_back({csc, coeff, live_idx_of(i), static_divisor_of(i)});
+                st.affected.push_back(
+                    {csc, coeff, live_idx_of(i), static_divisor_of(i), divisor_param_of(i)});
             }
             if (!st.affected.empty())
                 fjac.species_terms.push_back(std::move(st));
@@ -1761,6 +1832,23 @@ bool NetworkModel::set_functional_jacobian(const std::vector<FunctionalJacobianI
     return true;
 }
 
+// Issue #170 — the amount_valued reactant volume product for one Elementary
+// reaction. `amount_factor` is baked into the SHARED analytical-Jacobian data at
+// build time, so a compartment size written afterwards cannot move it; when any
+// factor came from a compartment-size *parameter* the loader records the same
+// factors in the same order in `amount_volume_terms` and this reproduces the
+// product from the live parameter values. Empty (the `.net` / V=1 / hOSU=false
+// case, and any model with no writable compartment) ⇒ the baked value, unchanged.
+static inline double live_amount_factor(const AnalyticalJacobianData::ReactionTerms &terms,
+                                        const std::vector<Parameter> &params) {
+    if (terms.amount_volume_terms.empty())
+        return terms.amount_factor;
+    double af = 1.0;
+    for (const auto &[pidx, static_v] : terms.amount_volume_terms)
+        af *= (pidx >= 0 && pidx < static_cast<int>(params.size())) ? params[pidx].value : static_v;
+    return af;
+}
+
 void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, double *jac) {
     // Single source of truth for the dense analytical Jacobian: the CVODE dense
     // callback delegates here, and the test hook calls it directly so the
@@ -1778,7 +1866,7 @@ void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, 
         if (rxn_terms.rate_param_idx0 < 0 || rxn_terms.reactants.empty())
             continue;
         double k = params[rxn_terms.rate_param_idx0].value;
-        double k_sf = k * rxn_terms.stat_factor * rxn_terms.amount_factor;
+        double k_sf = k * rxn_terms.stat_factor * live_amount_factor(rxn_terms, params);
         if (k_sf == 0.0)
             continue;
         for (const auto &pr : rxn_terms.reactants) {
@@ -1827,7 +1915,9 @@ void NetworkModel::fill_dense_analytical_jacobian(double t, const double *conc, 
                 // GH #171: divide by the LIVE compartment volume for a
                 // variable-volume row, else the static divisor (1.0 for a
                 // non-varvol row ⇒ byte-identical to the pre-#171 folded coeff).
-                double divisor = a.static_divisor;
+                double divisor = a.static_divisor_param_idx0 >= 0
+                                     ? params[a.static_divisor_param_idx0].value
+                                     : a.static_divisor;
                 if (a.live_idx >= 0 && conc[a.live_idx] > 0.0)
                     divisor = conc[a.live_idx];
                 int row = static_cast<int>(sp.row_indices[a.csc]);
@@ -1892,7 +1982,7 @@ void NetworkModel::fill_sparse_analytical_jacobian(double t, const double *conc,
         if (rxn_terms.rate_param_idx0 < 0 || rxn_terms.reactants.empty())
             continue;
         double k = params[rxn_terms.rate_param_idx0].value;
-        double k_sf = k * rxn_terms.stat_factor * rxn_terms.amount_factor;
+        double k_sf = k * rxn_terms.stat_factor * live_amount_factor(rxn_terms, params);
         if (k_sf == 0.0)
             continue;
         for (const auto &pr : rxn_terms.reactants) {
@@ -1934,7 +2024,9 @@ void NetworkModel::fill_sparse_analytical_jacobian(double t, const double *conc,
                 continue;
             for (const auto &a : st.affected) {
                 // GH #171: live-volume divide (mirror of the dense path).
-                double divisor = a.static_divisor;
+                double divisor = a.static_divisor_param_idx0 >= 0
+                                     ? params[a.static_divisor_param_idx0].value
+                                     : a.static_divisor;
                 if (a.live_idx >= 0 && conc[a.live_idx] > 0.0)
                     divisor = conc[a.live_idx];
                 vals[a.csc] += a.coeff * dv_dxj / divisor;
@@ -2240,7 +2332,13 @@ compute_rxn_rate(const Reaction &rxn, const std::vector<Parameter> &params, cons
         // SSA-only: convert ODE-units rate (storage/time) to amount/time
         // propensity. Default 1.0 → no-op for .net and V=1 SBML.
         if (discrete) {
-            rate *= rxn.ssa_volume_factor;
+            // (#170) Read the compartment size from `params` when the loader could
+            // name it: reactions are shared across model clones, so this factor
+            // cannot be rescaled in place on a write. Same number at load ⇒ no-op.
+            rate *= (rxn.ssa_volume_param_idx0 >= 0 &&
+                     rxn.ssa_volume_param_idx0 < static_cast<int>(params.size()))
+                        ? params[rxn.ssa_volume_param_idx0].value
+                        : rxn.ssa_volume_factor;
             // GH #81: live compartment-volume correction. For a mass-action
             // reaction in a variable-volume compartment the baked
             // ssa_volume_factor (= V_static) no longer matches the live volume;

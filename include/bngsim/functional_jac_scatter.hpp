@@ -72,10 +72,14 @@ inline void scatter_functional_observable_terms(NetworkModel &model, const doubl
 
         for (const auto &col : ot.columns) {
             const int j = col.species_j;
-            // Term A: (∂func/∂x_j)·∏R.
+            // Term A: (∂func/∂x_j)·∏R. (#170) ∂obs_k/∂x_j carries a V_j chain
+            // factor for an amount-valued column — read live here rather than
+            // baked into g_kj, in the same order the fold used, so a written
+            // compartment size moves it and the arithmetic is untouched.
+            const double gv_j = species[j].amount_valued ? species[j].volume_factor : 1.0;
             double A_j = 0.0;
             for (const auto &[k_idx, g_kj] : col.a_terms)
-                A_j += g_kj * dbuf[k_idx];
+                A_j += (g_kj * gv_j) * dbuf[k_idx];
             double val = A_j * P;
             // Term B: func·∂(∏R)/∂x_j (mass-action product rule).
             if (col.is_reactant) {
