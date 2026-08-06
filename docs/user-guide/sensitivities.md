@@ -143,31 +143,46 @@ matrix multiply per time point. Combined with parallel
 `compute_all_sensitivities()`, the total cost of loss + gradient is
 dominated by the CVODES solve, not the gradient algebra.
 
-**SBML compartment sizes are not fittable this way** (issue #164). On an SBML
-model `model.param_names` includes the compartments, and a compartment size is
-not a writable parameter: its value is folded at load into constants a write
-cannot reach — per-species volume factors, amount-declared initial conditions,
-mass-action rate constants, SSA propensity volumes, the emitted RHS. So
-`set_params` refuses to *change* one (writing back the value it already holds is
-fine, which is what keeps the round-trip above working),
-`compute_all_sensitivities()` skips its column with a warning, and
-`sensitivity_params=["Liver"]` raises. Build the fitted vector from the
-parameters that are writable:
+**SBML compartment sizes are writable but not differentiable** (issues #164,
+#170). On an SBML model `model.param_names` includes the compartments. A
+compartment size is now an ordinary writable parameter — `set_param("Liver", v)`
+re-derives everything the volume decides (the amount↔concentration conversion,
+an amount-declared initial condition, the mass-action scalar, the SSA propensity
+volume) and reproduces *reloading the model at that size*, bit for bit. A volume
+scan or a gradient-free fit needs nothing special.
+
+What is still refused is the **gradient**: `compute_all_sensitivities()` skips a
+compartment column with a warning and `sensitivity_params=["Liver"]` raises,
+because the sensitivity RHS carries the kinetic-law half of `d/dV` and not the
+storage half — including the initial-condition seed, which is `-amount/V²` for an
+amount-declared species rather than zero. A partial column is a confidently wrong
+gradient, so it is refused rather than reported. Build the fitted vector from the
+parameters that have one:
 
 ```python
 param_names = [p for p in model.param_names
                if p not in set(model.compartment_size_params)]
 ```
 
-To fit or scan a volume, reload the model at each trial value — the size then
-reaches every constant it is folded into, and its gradient is a finite
-difference over two such loads:
+A volume's gradient is a finite difference over the write, which is exact:
+
+```python
+def dloss_dV(v, h):
+    up, dn = bngsim.Model.from_sbml("pbpk.xml"), bngsim.Model.from_sbml("pbpk.xml")
+    up.set_param("Liver", v + h)
+    dn.set_param("Liver", v - h)
+    return (loss(up) - loss(dn)) / (2 * h)
+```
+
+A handful of compartments cannot be written even so —
+`model.unwritable_compartment_size_params` lists them, and the error names the
+reason. Reload at the size instead:
 
 ```python
 m = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
 ```
 
-Issue #170 tracks making a compartment size a live, differentiable parameter.
+Issue #170 stage 3 tracks the analytic `d/dV` column.
 
 ## Differentiable ODE solving with JAX
 

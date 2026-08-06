@@ -1034,16 +1034,18 @@ class Simulator:
         if bad:
             raise ValueError(
                 f"Forward sensitivity is not supported for compartment size(s) "
-                f"{bad}: an SBML compartment's value is folded at load into constants "
-                f"the sensitivity RHS does not differentiate (per-species volume "
-                f"factors, amount-declared initial conditions, mass-action rate "
-                f"constants, SSA propensity volumes), so the column would be wrong in "
-                f"both directions — an invented gradient where the true one is zero, "
-                f"and a silent zero where it is not. bngsim refuses rather than return "
-                f"a confidently wrong derivative (issue #164). A finite difference "
-                f"through a rebuild is the available gradient: reload with "
-                f"Model.from_sbml(..., compartment_sizes={{...}}) at V ± h. Issue #170 "
-                f"tracks making a compartment size differentiable."
+                f"{bad}: issue #170 made a compartment size *writable* — the storage "
+                f"convention is re-derived from the parameter rather than folded at "
+                f"load — but not yet differentiable. The sensitivity RHS carries the "
+                f"kinetic-law half of d/dV and none of the storage half: the "
+                f"per-species amount conversion, an amount-declared initial condition "
+                f"(whose seed is -amount/V**2, not zero), the cross-compartment "
+                f"per-species divide, and the SSA propensity volume. A partial column "
+                f"is a confidently wrong derivative, not a conservative one, so bngsim "
+                f"refuses it. The gradient is available as a finite difference over "
+                f"the write itself now that the write is exact: set_param(V +/- h) on "
+                f"a fresh Model, which reproduces a rebuild bit for bit. Issue #170 "
+                f"stage 3 tracks the analytic column."
             )
 
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:

@@ -290,7 +290,10 @@ def test_sensitivity_params_refuses_a_compartment():
         bngsim.Simulator(_xcomp(), method="ode", sensitivity_params=["C1", "k"])
     msg = str(exc.value)
     assert "C1" in msg and "'k'" not in msg  # only the offending column is named
-    assert "#164" in msg
+    # (#170) The write is honored now; the *column* is what is still refused, and
+    # the message has to say which half of d/dV is missing rather than repeat
+    # #164's "the value is folded at load".
+    assert "#170" in msg and "storage half" in msg
 
 
 def test_ordinary_sensitivity_still_works():
