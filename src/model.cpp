@@ -327,14 +327,11 @@ void NetworkModel::set_param(const std::string &name, double value) {
         throw CompartmentSizeWriteError(
             "Cannot set '" + param.name + "': it is an SBML compartment size (currently " +
             cur.str() +
-            ") this model cannot resolve to a live volume. One of three reasons, all "
+            ") this model cannot resolve to a live volume. One of two reasons, both "
             "decided at load: an assignment rule recomputes its size every step, so a "
-            "write would not survive the next evaluation; a mass-action reaction divides "
-            "two compartments' species by it as a single scalar, which is exact only "
-            "while those compartments have equal size; or it holds an amount-valued "
-            "(hasOnlySubstanceUnits) species or a cross-compartment reaction, whose "
-            "volume the generated C still carries as a literal — so a write would be "
-            "honored with codegen off and half-applied with it on (issue #170 stage 2). "
+            "write would not survive the next evaluation; or a mass-action reaction "
+            "divides two compartments' species by it as a single scalar, which is exact "
+            "only while those compartments have equal size. "
             "Load the model at the size you want instead: Model.from_sbml(path, "
             "compartment_sizes={'" +
             param.name +

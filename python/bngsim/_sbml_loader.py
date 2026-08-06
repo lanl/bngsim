@@ -3800,16 +3800,6 @@ def _build_model_from_sbml_doc(doc):
         # already reads it live through `ode_live_volume_idx0`.
         if comp in live_volume_param_comps:
             builder.set_species_volume_param(idx, comp_param_idx[comp], declared_amount)
-            # (#170 stage 2) The INTERPRETED path re-derives every use of this
-            # species's V_c from the parameter above, but the emitted C does not:
-            # an amount-valued species carries `× V_c` as a literal in the rate's
-            # amount factor, in every observable weight, and in the ∂/∂x chain
-            # factor, all baked when the .so was generated. A write would then be
-            # honoured with codegen off and half-applied with it on — the
-            # invisible path-dependence issue #164 refused over. So refuse this
-            # compartment outright until stage 2 makes those reads `p[]`.
-            if hosu:
-                compartment_write_refused.add(comp)
 
         # (GH #231 sub-cluster 3 / 01463) A hasOnlySubstanceUnits=true species's
         # symbol denotes its amount, so its rateOf csymbol is the amount-rate. The
@@ -5481,16 +5471,6 @@ def _build_model_from_sbml_doc(doc):
                 apply_species_factor=False,
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
-            )
-            # (#170 stage 2) Same boundary as the amount-valued species above:
-            # the per-species accumulation divide is live in the interpreted RHS
-            # (it reads `Species::volume_factor`, which a write re-derives) but
-            # baked in the emitted C, whose `inv_vf` table and per-row Jacobian /
-            # ∂f/∂p divisors are literals. Refuse a write to every compartment
-            # this reaction divides by, rather than honour it on one backend and
-            # not the other.
-            compartment_write_refused.update(
-                species_comp[_s] for _s in net if species_comp[_s] in live_volume_param_comps
             )
             # (#144 case 4) Cross-compartment variable-volume monomial certified by
             # the classifier (§7). The per-species emission above divides each
