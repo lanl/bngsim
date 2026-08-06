@@ -107,7 +107,7 @@ ModelBuilder &ModelBuilder::operator=(ModelBuilder &&) noexcept = default;
 
 int ModelBuilder::add_parameter(const std::string &name, double value,
                                 const std::string &expression, bool is_expression,
-                                bool is_compartment_size) {
+                                bool is_compartment_size, bool is_internal) {
     int idx = static_cast<int>(bimpl_->parameters.size());
     Parameter p;
     p.index = idx + 1; // 1-based for .net compatibility
@@ -117,6 +117,7 @@ int ModelBuilder::add_parameter(const std::string &name, double value,
     p.is_expression = is_expression;
     p.evaluator_id = -1;
     p.is_compartment_size = is_compartment_size;
+    p.is_internal = is_internal;
 
     bimpl_->param_name_to_idx[name] = idx;
     bimpl_->parameters.push_back(std::move(p));
@@ -258,6 +259,29 @@ void ModelBuilder::add_reaction_live_volume_term(int rxn_idx0, int live_idx0, do
     if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))
         return;
     bimpl_->reactions[rxn_idx0].ssa_live_volume_terms.push_back({live_idx0, v_static, exp});
+}
+
+void ModelBuilder::set_species_volume_param(int species_idx0, int param_idx0,
+                                            double initial_amount) {
+    if (species_idx0 < 0 || species_idx0 >= static_cast<int>(bimpl_->species.size()))
+        return;
+    bimpl_->species[species_idx0].volume_param_idx0 = param_idx0;
+    bimpl_->species[species_idx0].initial_amount = initial_amount;
+}
+
+void ModelBuilder::set_reaction_ssa_volume_param(int rxn_idx0, int param_idx0) {
+    if (rxn_idx0 < 0 || rxn_idx0 >= static_cast<int>(bimpl_->reactions.size()))
+        return;
+    bimpl_->reactions[rxn_idx0].ssa_volume_param_idx0 = param_idx0;
+}
+
+void ModelBuilder::set_param_volume_write_refused(const std::string &name) {
+    for (auto &p : bimpl_->parameters) {
+        if (p.name == name) {
+            p.volume_write_refused = true;
+            return;
+        }
+    }
 }
 
 // ─── .net-specific support ───────────────────────────────────────────────────
@@ -681,11 +705,21 @@ AnalyticalJacobianData build_anal_jac(const std::vector<Reaction> &reactions, in
         // RHS species factor performs for amount_valued reactants, as a single
         // constant multiplier on the rate (and thus on every ∂v_r/∂x_j).
         terms.amount_factor = 1.0;
+        bool any_live_volume = false;
         for (int si : rxn.reactant_indices) {
             int si_0 = si - 1;
-            if (si_0 >= 0 && si_0 < n_species && species[si_0].amount_valued)
+            if (si_0 >= 0 && si_0 < n_species && species[si_0].amount_valued) {
                 terms.amount_factor *= species[si_0].volume_factor;
+                // (#170) Same factors, same order, but tagged with the
+                // compartment-size parameter each came from so the scatter can
+                // re-read a written volume. Kept only if at least one is live.
+                terms.amount_volume_terms.emplace_back(species[si_0].volume_param_idx0,
+                                                       species[si_0].volume_factor);
+                any_live_volume |= species[si_0].volume_param_idx0 >= 0;
+            }
         }
+        if (!any_live_volume)
+            terms.amount_volume_terms.clear();
         terms.rate_param_idx0 = -1;
         if (!rxn.rate_law_param_indices.empty()) {
             int k_idx = rxn.rate_law_param_indices[0] - 1;

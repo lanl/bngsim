@@ -37,6 +37,27 @@ def _rxn(m: Model, idx: int) -> dict:
     return m._core.codegen_data()["reactions"][idx]
 
 
+def _assert_rate_constant(m: Model, idx: int, expected: str) -> None:
+    """The reaction's rate constant is ``expected`` — directly, or through the
+    volume-carrying derived parameter issue #170 introduced.
+
+    A law whose net compartment power does not cancel (``k*A`` is power −1, the
+    common BioModels form) used to fold the volume into the Elementary scalar,
+    where nothing could re-derive it. It now reads a derived parameter
+    ``_rateLaw_<rid> = k * (cell/V_load)`` instead, so the compartment stays a
+    live symbol. What these tests are about is unchanged and asserted here: the
+    scalar's VALUE (the ratio is exactly 1.0 at the nominal point) and the fact
+    that ``expected`` is still the constant that moves it.
+    """
+    name = _rxn(m, idx)["function_name"]
+    if name == expected:
+        return
+    params = {p["name"]: p for p in m._core.codegen_data()["parameters"]}
+    assert name.startswith("_rateLaw_"), name
+    assert expected in params[name]["expression"].split()
+    assert params[name]["value"] == params[expected]["value"]
+
+
 # ─── Positive cases: must land Elementary ─────────────────────────────────────
 
 
@@ -48,7 +69,7 @@ def test_decay_lands_elementary():
     assert r["reactants"] == [0]
     assert r["products"] == [1]
     assert r["stat_factor"] == 1.0
-    assert r["function_name"] == "k1"
+    _assert_rate_constant(m, 0, "k1")
     # The kinetic-law function is no longer registered for mass-action laws.
     fnames = [f["name"] for f in m._core.codegen_data()["functions"]]
     assert "J0" not in fnames
@@ -67,11 +88,11 @@ def test_reversible_binding_lands_elementary():
     r0, r1 = _rxn(m, 0), _rxn(m, 1)
     assert sorted(r0["reactants"]) == [0, 1]
     assert r0["products"] == [2]
-    assert r0["function_name"] == "kf"
+    _assert_rate_constant(m, 0, "kf")
     assert r0["stat_factor"] == 1.0
     assert r1["reactants"] == [2]
     assert sorted(r1["products"]) == [0, 1]
-    assert r1["function_name"] == "kr"
+    _assert_rate_constant(m, 1, "kr")
     assert r1["stat_factor"] == 1.0
 
 
@@ -83,7 +104,7 @@ def test_dimerization_multiplicity_two():
     r = _rxn(m, 0)
     assert r["reactants"] == [0, 0]
     assert r["products"] == [1]
-    assert r["function_name"] == "k"
+    _assert_rate_constant(m, 0, "k")
 
 
 def test_dimerization_pow_form():
@@ -102,7 +123,7 @@ def test_numeric_constant_folds_into_stat_factor():
     assert _rxn_types(m) == ["elementary"]
     r = _rxn(m, 0)
     assert r["stat_factor"] == 2.0
-    assert r["function_name"] == "k"
+    _assert_rate_constant(m, 0, "k")
 
 
 def test_sir_infection_reaction_lands_elementary():
@@ -124,7 +145,7 @@ def test_sir_infection_reaction_lands_elementary():
     # reactants = [S, I] in some order; products = [I, I].
     assert sorted(r0["reactants"]) == [0, 1]
     assert r0["products"] == [1, 1]
-    assert r0["function_name"] == "b"
+    _assert_rate_constant(m, 0, "b")
 
 
 def test_constant_rate_reaction_stays_functional():
@@ -153,7 +174,7 @@ def test_enzyme_catalysis_keeps_e_in_both_lists():
     r = _rxn(m, 0)
     assert sorted(r["reactants"]) == [0, 1]  # [E, S]
     assert sorted(r["products"]) == [0, 2]  # [E, P]
-    assert r["function_name"] == "k"
+    _assert_rate_constant(m, 0, "k")
 
 
 # ─── V handling and multi-compartment ────────────────────────────────────────
@@ -181,7 +202,7 @@ def test_multi_compartment_v_eq_1_lifts_to_elementary():
     r = _rxn(m, 0)
     # ``cellsurface`` factor folds to 1.0; sf stays at 1.
     assert r["stat_factor"] == 1.0
-    assert r["function_name"] == "kon"
+    _assert_rate_constant(m, 0, "kon")
 
 
 def test_compartment_factor_with_v_neq_1_cancels():
@@ -201,7 +222,7 @@ def test_compartment_factor_with_v_neq_1_cancels():
     r = _rxn(m, 0)
     # sf = numeric_const * V_cell / V_common = 1 * 2.5 / 2.5 = 1.0
     assert abs(r["stat_factor"] - 1.0) < 1e-12
-    assert r["function_name"] == "k"
+    _assert_rate_constant(m, 0, "k")
 
 
 def test_v_neq_1_without_compartment_factor_lifts_with_v_in_stat_factor():
@@ -222,7 +243,7 @@ def test_v_neq_1_without_compartment_factor_lifts_with_v_in_stat_factor():
     assert _rxn_types(m) == ["elementary"]
     r = _rxn(m, 0)
     assert abs(r["stat_factor"] - 1.0 / 2.5) < 1e-12
-    assert r["function_name"] == "k"
+    _assert_rate_constant(m, 0, "k")
 
 
 # ─── Derived rate-constant synthesis (loader) ────────────────────────────────

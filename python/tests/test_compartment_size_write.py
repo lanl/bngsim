@@ -1,4 +1,4 @@
-"""Issue #164 — an SBML compartment size is not writable, and says so.
+"""Issues #164 and #170 — an SBML compartment size as a model parameter.
 
 A compartment volume has two representations in a loaded model, and only one of
 them is a parameter. The kinetic law reads ``p[]``; the *storage convention* is
@@ -216,7 +216,11 @@ def test_set_param_refuses_a_compartment_write():
     msg = str(exc.value)
     assert "C2" in msg and "compartment size" in msg
     assert "compartment_sizes=" in msg or "compartment_sizes" in msg
-    assert "#164" in msg
+    # (#170) The message now has to say WHICH of the three unresolvable cases
+    # this is — here, a cross-compartment reaction whose per-species volume
+    # divide the emitted C still carries as a literal.
+    assert "cross-compartment" in msg
+    assert "unwritable_compartment_size_params" in msg
     # And the refusal is total: nothing moved.
     assert m.get_param("C2") == 5.0
     assert m._core.codegen_data()["species"][1]["volume_factor"] == 5.0
@@ -232,19 +236,21 @@ def test_the_invented_dependence_is_refused_not_merely_dropped():
     assert np.allclose(_traj(m)[:, 0], _traj(_xcomp(v1="3"))[:, 0], rtol=1e-9)
 
 
-def test_the_single_compartment_bare_law_is_refused_too():
+def test_the_single_compartment_bare_law_is_honored_now():
     """#164 scoped the defect to cross-compartment models. It is wider: a bare
-    ``k*A`` law (no compartment factor — the common BioModels convention) folds
+    ``k*A`` law (no compartment factor — the common BioModels convention) folded
     V into the mass-action scalar, so the trajectory moves with V and the write
-    is silently dropped. One compartment, one reaction, still wrong."""
+    was silently dropped. #170 puts the volume back as a live ratio on the rate
+    parameter, so the write now *reproduces the rebuild exactly*."""
     m = bngsim.Model.from_sbml_string(ONECOMP % {"v": "1"})
-    with pytest.raises(ValueError, match="compartment size"):
-        m.set_param("C", 4.0)
     # The rebuild really does move — this is not a V-invariant model.
     assert not np.allclose(
         _traj(bngsim.Model.from_sbml_string(ONECOMP % {"v": "1"}))[:, 0],
         _traj(bngsim.Model.from_sbml_string(ONECOMP % {"v": "4"}))[:, 0],
     )
+    m.set_param("C", 4.0)
+    assert m.get_param("C") == 4.0
+    assert np.array_equal(_traj(m), _traj(bngsim.Model.from_sbml_string(ONECOMP % {"v": "4"})))
 
 
 def test_writing_the_value_it_already_holds_is_allowed():
@@ -284,7 +290,10 @@ def test_sensitivity_params_refuses_a_compartment():
         bngsim.Simulator(_xcomp(), method="ode", sensitivity_params=["C1", "k"])
     msg = str(exc.value)
     assert "C1" in msg and "'k'" not in msg  # only the offending column is named
-    assert "#164" in msg
+    # (#170) The write is honored now; the *column* is what is still refused, and
+    # the message has to say which half of d/dV is missing rather than repeat
+    # #164's "the value is folded at load".
+    assert "#170" in msg and "storage half" in msg
 
 
 def test_ordinary_sensitivity_still_works():

@@ -60,6 +60,11 @@ logger = logging.getLogger("bngsim")
 # emitter maps it back to ``time()``.
 _TIME_SYM = "_bngsim_time_csymbol"
 
+# The prefix ``_alias_keyword_param`` prepends, taken FROM that function so the
+# alias and its inverse cannot drift apart. ``sympy_to_exprtk`` is the only
+# emitter that has to undo the alias itself (see ``_print_Symbol``).
+_KW_ALIAS_PREFIX = _alias_keyword_param("")
+
 # Python-keyword names that are *literals*, not identifiers — they must never be
 # aliased to a parameter symbol (e.g. the ``True`` default in a Piecewise
 # condition). Subset of ``_PY_KEYWORD_PARAM_NAMES`` left for sympy to interpret.
@@ -561,7 +566,24 @@ def _make_printer():
         def _print_Symbol(self, expr):
             if expr.name == _TIME_SYM:
                 return "time()"
-            return expr.name
+            # Undo the Python-keyword alias `_exprtk_to_sympy` applied on the way
+            # in. The C twin of this emitter (`sympy_to_c`) resolves every symbol
+            # through a callback keyed by alias and so never had to; this one
+            # prints names straight through, so without the reverse step an
+            # ExprTk derivative over a parameter named `def` / `lambda` / `is`
+            # comes out reading `_BNG_KW_def`, ExprTk rejects it as an undefined
+            # symbol, and the WHOLE model silently drops to the FD Jacobian —
+            # visible only under BNGSIM_JAC_DEBUG. (Found via #170: putting the
+            # storage divide back into a Functional law is what first made a
+            # keyword-named *compartment* appear inside a differentiated rate.)
+            # Guarded on the suffix actually being a keyword, so an ordinary
+            # parameter that merely starts with the prefix is left alone.
+            name = expr.name
+            if name.startswith(_KW_ALIAS_PREFIX):
+                stem = name[len(_KW_ALIAS_PREFIX) :]
+                if stem in _PY_KEYWORD_PARAM_NAMES:
+                    return stem
+            return name
 
         def _print_Exp1(self, expr):
             return "exp(1)"

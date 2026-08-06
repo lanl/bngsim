@@ -279,6 +279,13 @@ def test_output_sens_hash_is_pythonhashseed_independent():
 # A → B+C+D+E+F+G with rate constant p[1], so ∂f/∂k is `v = y[0]` scattered by
 # the net stoichiometry. Written out rather than hashed so a diff on this test
 # shows *what* moved.
+# (#170) The switch gained three cases. The reaction's rate constant used to be
+# the bare parameter with the compartment volume folded numerically into the
+# Elementary scalar; it is now the derived ``_rateLaw_<rid> = kf * kr / (C/V_0)``,
+# so ``∂f/∂C`` exists (case 0) and the two constants reach the rate through
+# issue #43's chain rule (cases 1 and 2) instead of directly. Same RHS, same
+# numbers at the nominal point — the ratio is exactly 1.0 there — and one more
+# column that used to be structurally absent.
 _EXPECTED_ELEMENTARY_DFDP = """\
 static void bngsim_dfdp(int iP, double t, const double* y,
                         const double* p, double* dfdp_out) {
@@ -286,7 +293,37 @@ static void bngsim_dfdp(int iP, double t, const double* y,
 
     double v;
     switch (iP) {
+    case 0:
+        v = (-p[2]*p[1]/pow(p[0], 2)) * y[0];
+        dfdp_out[0] -= v;
+        dfdp_out[1] += v;
+        dfdp_out[2] += v;
+        dfdp_out[3] += v;
+        dfdp_out[4] += v;
+        dfdp_out[5] += v;
+        dfdp_out[6] += v;
+        break;
     case 1:
+        v = (p[2]/p[0]) * y[0];
+        dfdp_out[0] -= v;
+        dfdp_out[1] += v;
+        dfdp_out[2] += v;
+        dfdp_out[3] += v;
+        dfdp_out[4] += v;
+        dfdp_out[5] += v;
+        dfdp_out[6] += v;
+        break;
+    case 2:
+        v = (p[1]/p[0]) * y[0];
+        dfdp_out[0] -= v;
+        dfdp_out[1] += v;
+        dfdp_out[2] += v;
+        dfdp_out[3] += v;
+        dfdp_out[4] += v;
+        dfdp_out[5] += v;
+        dfdp_out[6] += v;
+        break;
+    case 3:
         v = y[0];
         dfdp_out[0] -= v;
         dfdp_out[1] += v;

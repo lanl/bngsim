@@ -14,7 +14,57 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Changed
+- **An SBML compartment size is a writable parameter (issue #170).** A volume
+  plays two roles in a loaded model: a *symbol* in kinetic laws, which is an
+  ordinary `p[]` a write has always moved, and the *storage convention* — bngsim
+  stores `amount/V_c`, so V decides the amount↔concentration conversion, an
+  amount-declared initial condition, the mass-action scalar's `Π V^n / V_storage`
+  and the SSA propensity volume. The second was folded at load and never
+  re-derived, so issue #164 refused the write outright. Each fold is now put back
+  on the parameter: the mass-action scalar carries the volume as a ratio on the
+  reaction's rate parameter (`k · (C/V_load)`, exactly 1.0 at the nominal point),
+  the Functional storage divide is emitted against the compartment symbol even
+  when the load-time size is 1, and `set_param` re-derives `volume_factor` and an
+  amount-declared IC. The load-time size the ratio normalises against is carried
+  by a synthesized `_V0_<comp>` parameter rather than a printed literal — ExprTk's
+  decimal literal parser is not correctly rounded, and a 1-ulp denominator moves
+  the rate constant. `_V0_<comp>` is marked internal: `primary_param_names` omits
+  it and `set_param` refuses a value-changing write, since moving it would
+  rescale the rates in that compartment without moving the volume. `set_param("cell", v)` now reproduces *loading the model at
+  `v`* bit for bit, and matches RoadRunner, on every shape issue #170 tabulated —
+  including the pair that made its case, where the same law loaded at V=1 and at
+  V=4 gave opposite answers. 135 of the corpus's 207 compartment-carrying models
+  become fully writable.
+
+  Not yet writable, and refused by name rather than in a blanket
+  (`Model.unwritable_compartment_size_params`): an assignment-rule compartment
+  (the rule recomputes its size every step), one whose storage divide a single
+  mass-action scalar shares across two equal-sized compartments, and one holding
+  an amount-valued (`hasOnlySubstanceUnits`) species or a cross-compartment
+  reaction — whose volume the *generated C* still carries as a literal, so
+  honoring the write would honor it with codegen off and half-apply it with
+  codegen on. Not yet *differentiable* either: forward sensitivity still refuses
+  a `d/dV` column (issue #170 stages 2 and 3).
+
+  Behaviour at the nominal point is unchanged: over the 214-model SBML corpus the
+  RHS is bit-identical on all 214 and the trajectory on 206. Five of the eight
+  that move do so because they *gained* an analytical Jacobian (202 → 207
+  complete, none lost) — see below; the other three differ by ≤ 8.3e-16 relative.
+
 ### Fixed
+- **An ExprTk derivative over a Python-keyword-named parameter silently dropped
+  the whole model to the FD Jacobian.** `_exprtk_to_sympy` aliases a parameter
+  named `def` / `lambda` / `is` to `_BNG_KW_def` so `parse_expr` accepts it, and
+  the C emitter (`sympy_to_c`) resolves every symbol through a callback keyed by
+  alias — but the ExprTk emitter prints names straight through, so the derivative
+  came back reading `_BNG_KW_def`, ExprTk rejected it as an undefined symbol, and
+  `set_functional_jacobian` failed for the entire model. Visible only under
+  `BNGSIM_JAC_DEBUG`. Five corpus models regain their analytical Jacobian.
+- **A synthesized `_rateLaw_<rid>` could collide with an SBML parameter of the
+  same name**, which `ModelBuilder::validate` rejected outright — reached by
+  re-importing bngsim's own `.net` → SBML export, which writes `_rateLaw_<rid>`
+  out as a real parameter. Synthesized names are now uniquified.
 - **A sensitivity absolute tolerance set below the roundoff of the arithmetic
   that produces it, so CVODES micro-stepped forever (issue #177).** For column
   `iS` the variational equation is `ṡ = J·s + ∂f/∂p`, so row `i`'s derivative is

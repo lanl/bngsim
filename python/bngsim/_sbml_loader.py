@@ -2705,6 +2705,49 @@ def _classify_mass_action_ast(
     # physically correct population falling factorial for higher order.
     sf = numeric_const * kl_volume_product / v_common
 
+    # (#170) ``sf`` is the ONE place a compartment volume stops being a symbol.
+    # Record the net power each compartment carries into it so the caller can put
+    # the symbol back — as a ratio factor on the reaction's rate parameter, which
+    # is a live ``p[]`` read every consumer already honors. The power is the
+    # explicit law-factor multiplicity minus one for the storage compartment
+    # (whose ``/v_common`` divide is the storage convention, not a law factor);
+    # the BNG ``compartment·k·A·B`` convention nets to zero and records nothing,
+    # which is why that row of #170's table was the one already correct.
+    #
+    # ``v_common`` is chosen by VALUE — ``v_factors`` above is a set of volumes,
+    # not of compartment ids — so a reaction whose species span two compartments
+    # that merely happen to share a load-time size is admitted here with no way to
+    # say WHICH parameter the divide belongs to. Under a live volume the two
+    # diverge and no single scalar rate can serve both, so report those
+    # compartments as unresolvable instead of guessing; the caller keeps the #164
+    # refusal for exactly them. 978 of the corpus's 8,796 reactions are shaped
+    # this way, which is why they are refused rather than re-routed to the
+    # per-species path (that would move the answer on a fifth of the corpus at the
+    # nominal point).
+    #
+    # Only STATIC compartment parameters are recorded. A rate-rule or
+    # event-resized compartment is promoted to a species (not a parameter, so
+    # unwritable by definition) and an assignment-rule compartment is recomputed
+    # from its rule every step, so a write to it would not survive the next
+    # evaluation.
+    _promoted = set(rate_rule_targets) | set(event_promoted_params)
+
+    def _writable(c: str) -> bool:
+        return c not in _promoted and c not in assignment_targets
+
+    v_storage_comps: set[str] = {species_comp[s] for s in rxn_species}
+    v_law_comps: set[str] = {str(c) for c in compartment_factors}
+    volume_powers: dict[str, int] = {}
+    volume_unresolvable: set[str] = set()
+    if len(v_storage_comps) == 1:
+        v_storage_comp = next(iter(v_storage_comps))
+        for cid in v_law_comps | {v_storage_comp}:
+            n = int(compartment_factors.get(cid, 0)) - (1 if cid == v_storage_comp else 0)
+            if n and _writable(cid):
+                volume_powers[cid] = n
+    else:
+        volume_unresolvable = {c for c in v_storage_comps | v_law_comps if _writable(c)}
+
     # 7. Build reactant/product index lists with multiplicity.
     reactant_indices: list[int] = []
     for sid, mult in species_multiset.items():
@@ -2732,12 +2775,15 @@ def _classify_mass_action_ast(
     # the propensity is `p - n_h`; bngsim's variable-volume ODE is correct only
     # when the compartment cancels (`p == 1`, the BNG ``compartment*k*A*B``
     # convention), and the SSA live-volume correction exponent is then `n_h - 1`.
+    # (#170) The 6th/7th elements carry the volume bookkeeping above.
     return (
         rate_param_components,
         float(sf),
         reactant_indices,
         product_indices,
         dict(compartment_factors),
+        volume_powers,
+        volume_unresolvable,
     )
 
 
@@ -3431,6 +3477,16 @@ def _build_model_from_sbml_doc(doc):
     # SSA: (rxn_idx0, comp_id, V_static, exp) → add_reaction_live_volume_term.
     ode_xcomp_species_fixups: list[tuple[int, str]] = []
     ssa_xcomp_term_fixups: list[tuple[int, str, float, float]] = []
+    # (#170) Compartments whose size is still NOT writable after this loader has
+    # put the volume back into every fold it can reach — the residue of the #164
+    # refusal, kept per-compartment instead of blanket. §7 adds a compartment
+    # whose storage divide it cannot attribute to one parameter (a mass-action
+    # reaction whose species span two compartments that merely share a load-time
+    # size); §3 adds one whose species carry an IC this loader cannot re-resolve.
+    compartment_write_refused: set[str] = set()
+    # (#170) compartment id → its 0-based parameter index (absent for a
+    # compartment promoted to a species, which is state rather than a parameter).
+    comp_param_idx: dict[str, int] = {}
 
     for i in range(sbml_model.getNumCompartments()):
         c = sbml_model.getCompartment(i)
@@ -3461,7 +3517,30 @@ def _build_model_from_sbml_doc(doc):
         # promoted to species above are not parameters and need no flag; their
         # live volume is genuinely a state variable. Issue #170 makes the volume
         # live and retires the flag.
-        builder.add_parameter(_safe_name(cid), vol, is_compartment_size=True)
+        # (#170) Keep the parameter index: it is what binds each species' storage
+        # convention and each reaction's SSA propensity volume back to the size,
+        # so a write re-derives them instead of leaving them at ``vol``.
+        comp_param_idx[cid] = builder.add_parameter(_safe_name(cid), vol, is_compartment_size=True)
+        # An assignment rule recomputes the size every step, so a write to it does
+        # not survive the next evaluation — refuse rather than appear to take.
+        if cid in ar_comp_targets:
+            compartment_write_refused.add(cid)
+
+    # (#170) The compartments whose size is a parameter that ONLY a `set_param`
+    # can move. Everything downstream — the storage convention bound to each
+    # species, the SSA propensity volume, the Functional storage divide emitted
+    # against the symbol — keys off THIS set, not off `comp_param_idx`.
+    #
+    # The exclusion is the #87/#114 trap, and BIOMD0000000856 is the case that
+    # proves it: `tV` is an *assignment-rule* compartment, so it is a parameter
+    # (not promoted to a species) whose value the rule recomputes every step.
+    # Storage there is `amount/V_static` by construction — that is what
+    # `vstatic_divide_comps` exists to say — so binding `volume_factor` to the
+    # parameter makes the amount restoration read V(t) where V_static is required,
+    # and the model's analytical Jacobian starts failing its own FD self-check.
+    # Its size is refused above for the matching reason: a write would not survive
+    # the rule's next evaluation.
+    live_volume_param_comps = {c for c in comp_param_idx if c not in vstatic_divide_comps}
 
     # ── 2. Parameters ─────────────────────────────────────────────────
     for i in range(sbml_model.getNumParameters()):
@@ -3622,6 +3701,11 @@ def _build_model_from_sbml_doc(doc):
         is_boundary = sp.getBoundaryCondition()
         is_const = sp.getConstant()
 
+        # (#170) The declared *amount*, when the IC is one — the invariant a
+        # compartment-size write has to hold fixed while the stored value
+        # (`amount/V_c`) moves under it. NaN ⇒ declared as a concentration, which
+        # is volume-independent and stays put.
+        declared_amount = float("nan")
         # Determine initial value as concentration
         if sid in ia_values:
             # initialAssignment overrides everything. For a
@@ -3634,6 +3718,7 @@ def _build_model_from_sbml_doc(doc):
             if hosu:
                 vol = comp_volumes.get(comp, 1.0)
                 ic = ia_values[sid] / vol if vol != 0 else ia_values[sid]
+                declared_amount = float(ia_values[sid])
             else:
                 ic = ia_values[sid]
         elif sp.isSetInitialConcentration():
@@ -3642,6 +3727,7 @@ def _build_model_from_sbml_doc(doc):
             amt = sp.getInitialAmount()
             vol = comp_volumes.get(comp, 1.0)
             ic = amt / vol if vol != 0 else amt
+            declared_amount = float(amt)
         else:
             ic = 0.0
 
@@ -3705,6 +3791,25 @@ def _build_model_from_sbml_doc(doc):
         species_idx[sid] = idx
         species_comp[sid] = comp
         species_hosu[sid] = hosu
+
+        # (#170) Bind the storage convention to the compartment SIZE PARAMETER, so
+        # a later write re-derives `volume_factor` (and an amount-declared IC)
+        # rather than leaving both at the size this load happened to see — issue
+        # #164's defect. Skipped for a compartment promoted to a species: its
+        # volume is genuine integrator state, not a parameter, and the engine
+        # already reads it live through `ode_live_volume_idx0`.
+        if comp in live_volume_param_comps:
+            builder.set_species_volume_param(idx, comp_param_idx[comp], declared_amount)
+            # (#170 stage 2) The INTERPRETED path re-derives every use of this
+            # species's V_c from the parameter above, but the emitted C does not:
+            # an amount-valued species carries `× V_c` as a literal in the rate's
+            # amount factor, in every observable weight, and in the ∂/∂x chain
+            # factor, all baked when the .so was generated. A write would then be
+            # honoured with codegen off and half-applied with it on — the
+            # invisible path-dependence issue #164 refused over. So refuse this
+            # compartment outright until stage 2 makes those reads `p[]`.
+            if hosu:
+                compartment_write_refused.add(comp)
 
         # (GH #231 sub-cluster 3 / 01463) A hasOnlySubstanceUnits=true species's
         # symbol denotes its amount, so its rateOf csymbol is the amount-rate. The
@@ -4090,6 +4195,54 @@ def _build_model_from_sbml_doc(doc):
     # 2-element for splits).
     mass_action_rxns: dict[int, list[tuple]] = {}
 
+    _v0_param_names: dict[str, str] = {}
+    # (#170) Names already spoken for, so a synthesized parameter cannot collide
+    # with one the SBML declares. `_rateLaw_<rid>` used to be synthesized only for
+    # a MULTI-component rate, which is rare enough that nobody had hit the clash;
+    # a volume power now synthesizes one for ordinary single-constant laws too,
+    # and bngsim's own `.net` → SBML export writes `_rateLaw_<rid>` out as a real
+    # parameter — so re-importing that file collided on the first reaction and
+    # `ModelBuilder::validate` rejected the model outright. Uniquifying covers the
+    # pre-existing hazard as well.
+    _taken_param_names: set[str] = {
+        _safe_name(sbml_model.getParameter(j).getId())
+        for j in range(sbml_model.getNumParameters())
+    } | {
+        _safe_name(sbml_model.getCompartment(j).getId())
+        for j in range(sbml_model.getNumCompartments())
+    }
+
+    def _unique_param_name(base: str) -> str:
+        name = base
+        n = 0
+        while name in _taken_param_names:
+            n += 1
+            name = f"{base}_{n}"
+        _taken_param_names.add(name)
+        return name
+
+    def _load_time_volume_param(cid: str) -> str:
+        """Name of a constant parameter holding compartment ``cid``'s load-time
+        size, added on first use (#170).
+
+        The volume ratio below has to evaluate to *exactly* 1.0 at the nominal
+        point or every mass-action rate constant in the model shifts by an ulp,
+        so the denominator must be the same binary double the compartment
+        parameter holds. Writing it as a decimal literal is not enough: ExprTk's
+        own literal parser is not correctly rounded, and BIOMD0000000706 is the
+        case that proves it — ``cytoplasm / 1.65e-11`` (a repr round-trip that is
+        exact in Python) comes back as 0.9999999999999998, turning a 5e-05 rate
+        constant into 4.999999999999999e-05 and moving the model's RHS. Passing
+        the value through ``add_parameter`` hands the engine the double itself,
+        with no decimal round trip in between.
+        """
+        name = _v0_param_names.get(cid)
+        if name is None:
+            name = _unique_param_name(_safe_name(f"_V0_{cid}"))
+            builder.add_parameter(name, float(comp_volumes.get(cid, 1.0)), is_internal=True)
+            _v0_param_names[cid] = name
+        return name
+
     def _classification_to_cache_tuple(classification, rid_safe, derived_suffix=""):
         """Turn ``_classify_mass_action`` output into the
         ``(rate_param_name, sf, reactants, products)`` cache tuple.
@@ -4101,13 +4254,44 @@ def _build_model_from_sbml_doc(doc):
         reuses each parameter's mangled name so ``set_param`` updates
         propagate correctly. Empty ``derived_suffix`` preserves the
         pre-Phase-7 derived-name convention for non-split callers.
+
+        (#170) When ``sf`` folded a non-zero net compartment power, the same
+        derived parameter carries the volume back as a live symbol:
+        ``k * (C/V_base)^n``. Two properties make that safe to do corpus-wide:
+
+        * ``(C/V_base)`` is *exactly* 1.0 while ``C`` holds its load-time value
+          (``x/x == 1.0`` for every finite non-zero x, and ``k*1.0 == k``), so the
+          rate constant is bit-identical until something is actually written —
+          ``sf`` itself is left alone, still carrying the whole numeric fold; and
+        * an expression-valued parameter is re-evaluated by ``set_param`` already
+          (issue #43's chain rule), so every consumer that reads the rate through
+          ``params[rate_param_idx0]`` — the interpreted RHS, the analytical
+          Jacobian, the emitted C, ``∂f/∂p`` — becomes live with no change of its
+          own. That is why the volume rides the rate parameter rather than
+          ``Reaction::stat_factor``: reactions are SHARED across model clones, so
+          rescaling the scalar in place would write through every sibling of the
+          model being scanned, while the parameter vector is per-instance.
         """
-        rate_param_components, sf, reactants, products, comp_factors = classification
-        if len(rate_param_components) == 1:
+        (
+            rate_param_components,
+            sf,
+            reactants,
+            products,
+            comp_factors,
+            volume_powers,
+            volume_unresolvable,
+        ) = classification
+        compartment_write_refused.update(volume_unresolvable)
+        vol_terms = ""
+        for cid, power in sorted(volume_powers.items()):
+            ratio = f"({_safe_name(cid)} / {_load_time_volume_param(cid)})"
+            op = " * " if power > 0 else " / "
+            vol_terms += (op + ratio) * abs(power)
+        if len(rate_param_components) == 1 and not vol_terms:
             rate_param_name = rate_param_components[0][0]
         else:
-            derived_name = f"_rateLaw_{rid_safe}{derived_suffix}"
-            expr = " * ".join(name for name, _ in rate_param_components)
+            derived_name = _unique_param_name(f"_rateLaw_{rid_safe}{derived_suffix}")
+            expr = " * ".join(name for name, _ in rate_param_components) + vol_terms
             init_value = 1.0
             for _, val in rate_param_components:
                 init_value *= val
@@ -4741,6 +4925,10 @@ def _build_model_from_sbml_doc(doc):
                     stat_factor=sf * _cf_i,  # GH #232 conversionFactor scale
                     ssa_volume_factor=_v_c,
                 )
+                # (#170) …and where that V_c came from, so the SSA propensity
+                # reads the size live instead of the number this load baked.
+                if _ref_comp in live_volume_param_comps:
+                    builder.set_reaction_ssa_volume_param(_rxn_idx, comp_param_idx[_ref_comp])
                 # (#81) SSA live-volume tag for a mass-action reaction in a
                 # variable-volume (rate-rule / event-resize) compartment. The
                 # propensity reads the live volume via the exact monomial
@@ -5050,12 +5238,18 @@ def _build_model_from_sbml_doc(doc):
                 _vcomp = species_comp[_vsid]
                 _vvol = comp_volumes.get(_vcomp, 1.0)
                 _vfunc_expr = f"({base_func})*({_vexpr})"
-                if _vvol != 1.0 or _vcomp in live_symbol_divide_comps:
+                if (
+                    _vvol != 1.0
+                    or _vcomp in live_symbol_divide_comps
+                    or _vcomp in live_volume_param_comps
+                ):
                     # Storage is amount/V_c; divide the law by V_c (V_static for an
                     # amount-valued species in a variable-volume compartment), as
-                    # the non-integer per-species fallback does. A static V_c=1
-                    # skips this; a live-symbol compartment with V_static=1 still
-                    # needs the divide after its volume changes.
+                    # the non-integer per-species fallback does. A live-symbol
+                    # compartment with V_static=1 still needs the divide after its
+                    # volume changes — and (#170) so does a static V_c=1 whose size
+                    # is a writable parameter, for the same reason. ÷1.0 is exact,
+                    # so emitting it changes no number at the nominal point.
                     if _vcomp in vstatic_divide_comps and species_hosu.get(_vsid, False):
                         _vdivisor = repr(float(_vvol))
                     else:
@@ -5144,7 +5338,25 @@ def _build_model_from_sbml_doc(doc):
                             rid,
                             ", ".join(sorted(rxn_comps & live_symbol_divide_comps)),
                         )
-                    use_func = base_func
+                    # (#170) The V=1 normalisation is what made issue #170's rows 6
+                    # and 7 — the same law, the same model — disagree: loaded at
+                    # V≠1 the `else` branch below emits `law/C` against the live
+                    # symbol and a write to C reproduces a rebuild exactly, while
+                    # loaded at V=1 the divide was dropped as a ÷1 no-op and the
+                    # same write did nothing. Emit it here too when the storage
+                    # compartment is a static PARAMETER, so the two builds of one
+                    # model behave the same. Numerically free at the nominal point:
+                    # `x/1.0 == x` exactly for every finite x, so the trajectory is
+                    # bit-identical until C is written.
+                    _static_comps = {c for c in rxn_comps if c in live_volume_param_comps}
+                    if len(rxn_comps) == 1 and len(_static_comps) == 1:
+                        rep_comp = next(iter(_static_comps))
+                        vf_name = f"_vd_{rid}_unified"
+                        with contextlib.suppress(RuntimeError):
+                            builder.add_function(vf_name, f"{base_func}/{_safe_name(rep_comp)}")
+                        use_func = vf_name
+                    else:
+                        use_func = base_func
             else:
                 # Single shared compartment; divide rate by its volume once.
                 rep_comp = species_comp[next(iter(net))]
@@ -5204,6 +5416,16 @@ def _build_model_from_sbml_doc(doc):
                     apply_species_factor=False,
                     ssa_volume_factor=common_vs,
                 )
+                # (#170) `common_vs` is the storage compartment's size; bind it to
+                # that parameter so a write moves the propensity too. Only for a
+                # single-compartment reaction — a mixed-V unified emission has no
+                # one parameter this scalar belongs to (and those take the
+                # per-species branch below, where the factor is 1.0 anyway).
+                _uni_comps = {species_comp[s] for s in net}
+                if len(_uni_comps) == 1 and next(iter(_uni_comps)) in live_volume_param_comps:
+                    builder.set_reaction_ssa_volume_param(
+                        _func_rxn_idx, comp_param_idx[next(iter(_uni_comps))]
+                    )
             # (#144) Tag the SSA live-volume correction for a single-compartment
             # monomial routed here for a variable-volume reason (case 1 / case 2).
             # The propensity = (base_func / divisor) · ssa_volume_factor(=V_static).
@@ -5260,6 +5482,16 @@ def _build_model_from_sbml_doc(doc):
                 ssa_volume_factor=1.0,
                 per_species_volume_scaling=True,
             )
+            # (#170 stage 2) Same boundary as the amount-valued species above:
+            # the per-species accumulation divide is live in the interpreted RHS
+            # (it reads `Species::volume_factor`, which a write re-derives) but
+            # baked in the emitted C, whose `inv_vf` table and per-row Jacobian /
+            # ∂f/∂p divisors are literals. Refuse a write to every compartment
+            # this reaction divides by, rather than honour it on one backend and
+            # not the other.
+            compartment_write_refused.update(
+                species_comp[_s] for _s in net if species_comp[_s] in live_volume_param_comps
+            )
             # (#144 case 4) Cross-compartment variable-volume monomial certified by
             # the classifier (§7). The per-species emission above divides each
             # species's storage derivative by its *static* volume_factor, which is
@@ -5309,11 +5541,14 @@ def _build_model_from_sbml_doc(doc):
             # (hOSU-independent — the amount reading of the law is already in
             # base_func). hOSU=false keeps base_func == rid, so static V=1
             # remains byte-identical.
-            if vol != 1.0 or comp in live_symbol_divide_comps:
+            if vol != 1.0 or comp in live_symbol_divide_comps or comp in live_volume_param_comps:
                 # (#87, #114) For an amount-valued species in a variable-volume
                 # (assignment-rule or rate-rule) compartment, the storage divide
                 # is V_static (the load-time numeric), NOT the live symbol — see
                 # section 9's ``else`` branch. Byte-identical for static comps.
+                # (#170) A static V=1 compartment that is a writable PARAMETER
+                # also gets the divide, so the write reaches this path; ÷1.0 is
+                # exact, so no number moves at the nominal point.
                 if comp in vstatic_divide_comps and species_hosu.get(sid, False):
                     divisor = repr(float(vol))
                 else:
@@ -5764,6 +5999,18 @@ def _build_model_from_sbml_doc(doc):
     }
     if _model_uses_rateof(sbml_model, func_defs, rateof_funcdef_names):
         builder.enable_rateof()
+
+    # ── 10.7. Unresolvable compartment sizes (#170) ───────────────────
+    # Every other compartment size is now a live parameter: §7 put the volume
+    # back into the mass-action scalar as a ratio on the rate parameter, §9 emits
+    # the storage divide against the compartment symbol, §3 bound each species'
+    # storage convention to the size, and the SSA propensity reads it from
+    # ``params``. What is left is the residue this loader could not resolve — an
+    # assignment-rule compartment, and a compartment a single mass-action scalar
+    # divides two compartments' species by — which keeps issue #164's refusal so
+    # a write is never silently half-applied.
+    for _cid in sorted(compartment_write_refused):
+        builder.set_param_volume_write_refused(_safe_name(_cid))
 
     # ── 11. Build ─────────────────────────────────────────────────────
     core = builder.build()

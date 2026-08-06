@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -106,6 +107,26 @@ struct Species {
     // ordinary SBML species, and rate-rule-promoted parameters byte-identical
     // (rate-rule targets ARE reported — RoadRunner reports them too).
     bool reported = true;
+
+    // Issue #170 — 0-based index of the compartment-size PARAMETER that
+    // `volume_factor` IS. The two are the same number at load; recording which
+    // parameter it came from is what lets `set_param` re-derive the storage
+    // convention instead of leaving it at the build-time volume. Consulted only
+    // by `refresh_compartment_volume_state`, so a `.net` model / a species in a
+    // promoted (rate-rule or event-resized) compartment keeps -1 and nothing
+    // about it moves. Species are per-instance state (unlike reactions, which
+    // clones share), which is why the volume can live here at all.
+    int volume_param_idx0 = -1;
+
+    // Issue #170 — the species's declared initial AMOUNT, when that is how the
+    // SBML declared it (`initialAmount`, or an amount-unit initialAssignment).
+    // Storage is `amount/V_c`, so the *stored* initial condition is a function of
+    // the compartment size and has to be re-resolved when the size moves — the
+    // same "two fields, two rules" problem issue #79 solved for a parameter-named
+    // IC, with the amount as the invariant instead of the parameter value. NaN
+    // (the default) means the IC was declared as a concentration and is
+    // volume-independent, which is every `.net` species and most SBML ones.
+    double initial_amount = std::numeric_limits<double>::quiet_NaN();
 };
 
 // ─── Parameter ───────────────────────────────────────────────────────────────
@@ -127,9 +148,37 @@ struct Parameter {
     // missing update but an internally inconsistent model (on issue #164's own
     // two-compartment model a write to a compartment the trajectory is exactly
     // invariant to moved A(5) by 20x). Reload at the new size instead
-    // (`Model.from_sbml*(..., compartment_sizes={...})`). Issue #170 tracks
-    // making the volume live, which retires this flag.
+    // (`Model.from_sbml*(..., compartment_sizes={...})`). Issue #170 made the
+    // volume live and retired the blanket refusal; the flag stays because a
+    // compartment size is still not *differentiable* (issue #170 stage 3), so
+    // `compute_all_sensitivities` drops these columns rather than report a
+    // partial one, and because callers introspect it.
     bool is_compartment_size = false;
+
+    // Issue #170 — this compartment size is one of the residue the loader could
+    // NOT make live, so a value-changing write is still refused. Two cases, both
+    // decided at load and both named in the message: an ASSIGNMENT-RULE
+    // compartment (the rule recomputes its size every step, so a write does not
+    // survive the next evaluation), and a compartment whose storage divide the
+    // mass-action classifier cannot attribute to one parameter — a reaction whose
+    // species span two compartments that merely happen to share a load-time size
+    // is admitted as a single scalar rate, which stops being valid the moment the
+    // two sizes differ. Default false ⇒ writable, which is every `.net` parameter
+    // and the great majority of SBML compartments.
+    bool volume_write_refused = false;
+
+    // Issue #170 — a parameter this loader synthesized to hold a load-time
+    // CONSTANT that other expressions are normalised against, not a knob of the
+    // model. Today that is `_V0_<comp>`: the compartment size as it was at load,
+    // which the reaction's rate parameter divides the live size by so the ratio
+    // is exactly 1.0 there. Writing it would rescale every rate in that
+    // compartment while the volume itself stayed put, and would leave the next
+    // `set_param` on the compartment computing its ratio against the wrong
+    // baseline — so `set_param` refuses a value-changing write and
+    // `primary_param_names` leaves it out of the knobs an optimizer is handed.
+    // Distinct from `is_expression`: a derived parameter is recomputed from
+    // primaries, this one is a stored constant that simply is not a primary.
+    bool is_internal = false;
 };
 
 // Issue #164 — thrown by `NetworkModel::set_param` for a value-changing write to
@@ -196,6 +245,16 @@ struct Reaction {
     // reaction's compartment volume) so SSA propensity = ODE_rate · V_c.
     // Default 1.0 leaves `.net` and V=1 SBML behavior unchanged.
     double ssa_volume_factor = 1.0;
+
+    // Issue #170 — 0-based index of the compartment-size parameter that
+    // `ssa_volume_factor` IS (they hold the same number at load). Reactions are
+    // SHARED across model clones, so this factor cannot be rescaled in place on a
+    // write the way per-instance species state can; reading the parameter at
+    // propensity time makes it live with no per-instance storage at all. -1 (the
+    // default) ⇒ use the static `ssa_volume_factor`, which is `.net`, V=1 SBML,
+    // and every cross-compartment emission (whose factor is 1.0 by construction —
+    // the per-species divide carries the volume there instead).
+    int ssa_volume_param_idx0 = -1;
 
     // Cross-compartment ODE accumulator: when true, compute_derivs divides
     // the rate by `species[si].volume_factor` per affected species instead
@@ -414,6 +473,16 @@ struct AnalyticalJacobianData {
         // consistent with `compute_species_factor_ode`. Default 1.0 leaves
         // `.net` and V=1 SBML Jacobians byte-identical.
         double amount_factor = 1.0;
+        // Issue #170 — the same product, one factor per amount_valued reactant in
+        // the SAME order, as (compartment-size parameter index, static V_c). A
+        // parameter index ≥ 0 is read live from `params` at scatter time; -1 keeps
+        // the static value (a promoted, i.e. non-parameter, compartment).
+        // `analytical_jac` is shared build-time state, so a volume written after
+        // the build cannot rescale `amount_factor` in place. Populated ONLY when
+        // at least one factor is live, and multiplied in the recorded order so the
+        // scatter reproduces `amount_factor`'s exact rounding; empty ⇒ the scatter
+        // reads `amount_factor` and `.net` / V=1 / hOSU=false stay byte-identical.
+        std::vector<std::pair<int, double>> amount_volume_terms;
         std::vector<PerReactant> reactants; // one per unique reactant species
     };
 
@@ -495,6 +564,11 @@ struct FunctionalJacobianData {
             double coeff;          // stat_factor · net_stoich (volume UNFOLDED)
             int live_idx;          // ode_live_volume_idx0 of row i, or -1
             double static_divisor; // volume_factor(i) [psvs] or 1.0
+            // Issue #170 — compartment-size parameter index behind
+            // `static_divisor`, or -1. When ≥ 0 the scatter reads it from `params`
+            // so a written volume moves the psvs divide; the two hold the same
+            // number at load, so this is a no-op until something is written.
+            int static_divisor_param_idx0 = -1;
         };
         // Mirrors the Elementary PerReactant::affected layout so both callbacks
         // share the CSC→row scatter.
@@ -545,8 +619,12 @@ struct FunctionalJacobianData {
         struct Column {
             int species_j; // j (0-based) — the differentiation variable / column
             // Term A: ∂func/∂x_j = Σ over (k, g_kj) of g_kj · eval(dfunc_dobs[k]),
-            // where g_kj = ∂obs_k/∂x_j folds the observable group factor and a V_j
-            // multiplier for an amount-valued species.
+            // where g_kj = ∂obs_k/∂x_j is the observable group factor. (#170) The
+            // V_j multiplier an amount-valued column carries is NOT folded in
+            // here: the scatter applies `species[j].volume_factor` — which it
+            // already reads live for terms B — in the same `(g·V)·d` order the
+            // fold used, so the arithmetic is unchanged and a written volume
+            // moves it.
             std::vector<std::pair<int, double>> a_terms; // (k index, g_kj)
             // Term B: present iff j is a reactant. ∂(∏R)/∂x_j is assembled from
             // mult_j + the reaction's reactant multiset (below).

@@ -784,17 +784,22 @@ class Model:
 
     @property
     def compartment_size_params(self) -> list[str]:
-        """Names of the parameters that are SBML compartment sizes (issue #164).
+        """Names of the parameters that are SBML compartment sizes.
 
-        These are the parameters :meth:`set_param` refuses to *change* and
-        forward sensitivity refuses a column for, because their value is folded
-        at load into constants neither a write nor the sensitivity RHS can
-        reach. Change one by reloading the model —
-        ``Model.from_sbml(..., compartment_sizes={...})``.
+        :meth:`set_param` **writes** these (issue #170): the storage convention
+        a volume decides — the amount↔concentration conversion, an
+        amount-declared initial condition, the mass-action scalar's ``Π V^n``,
+        the SSA propensity volume — is re-derived from the parameter rather than
+        left at the size the model happened to load at. What they are still not
+        is *differentiable*: forward sensitivity refuses a ``d/dV`` column
+        (issue #170 stage 3), which is why this list is worth having.
+
+        A handful cannot be written even so; see
+        :attr:`unwritable_compartment_size_params`.
 
         Empty for ``.net`` models, and for any compartment the SBML loader
         promoted to a species (rate-rule or event-resized): that one is live
-        state, written with :meth:`set_concentration`, not a folded constant.
+        state, written with :meth:`set_concentration`, not a parameter.
 
         Returns
         -------
@@ -804,8 +809,8 @@ class Model:
         Examples
         --------
         >>> model = bngsim.Model.from_sbml("pbpk.xml")   # doctest: +SKIP
-        >>> fittable = [p for p in model.param_names     # doctest: +SKIP
-        ...             if p not in set(model.compartment_size_params)]
+        >>> gradient_free = [p for p in model.param_names   # doctest: +SKIP
+        ...                  if p not in set(model.compartment_size_params)]
         """
         try:
             flags = self._core.param_is_compartment_size
@@ -816,9 +821,52 @@ class Model:
         # something to truncate past.
         return [n for n, f in zip(self.param_names, flags, strict=True) if f]
 
+    @property
+    def unwritable_compartment_size_params(self) -> list[str]:
+        """Compartment sizes :meth:`set_param` still refuses to change (#170).
+
+        The residue of issue #164's blanket refusal: a compartment whose size an
+        **assignment rule** recomputes every step (a write would not survive the
+        next evaluation), and one whose storage divide a single mass-action
+        scalar shares across **two compartments** that merely happen to have the
+        same load-time size (that scalar stops being exact the moment they
+        differ). Both are decided at load and named in the error.
+
+        A subset of :attr:`compartment_size_params`, and usually empty — reload
+        with ``Model.from_sbml(..., compartment_sizes={...})`` to move one.
+
+        Returns
+        -------
+        list[str]
+            Parameter names, in model parameter order.
+        """
+        try:
+            flags = self._core.param_volume_write_refused
+        except AttributeError:  # pragma: no cover - defensive
+            return []
+        return [n for n, f in zip(self.param_names, flags, strict=True) if f]
+
     def _is_compartment_size(self, name: str) -> bool:
-        """Whether ``name`` is an SBML compartment size (issue #164)."""
+        """Whether ``name`` is an SBML compartment size."""
         return name in set(self.compartment_size_params)
+
+    def _is_volume_write_refused(self, name: str) -> bool:
+        """Whether a value-changing write to ``name`` is refused (issue #170)."""
+        return name in set(self.unwritable_compartment_size_params)
+
+    def _internal_param_names(self) -> set[str]:
+        """Synthesized parameters that are not knobs of the model (issue #170).
+
+        Today just ``_V0_<comp>``, an SBML compartment's size as it was at load.
+        ``set_param`` refuses a value-changing write to one; this is how
+        ``set_params`` learns that in its *validation* phase, so the refusal
+        cannot fire halfway through the apply loop.
+        """
+        try:
+            flags = self._core.param_is_internal
+        except AttributeError:  # pragma: no cover - defensive
+            return set()
+        return {n for n, f in zip(self.param_names, flags, strict=True) if f}
 
     def get_param(self, name: str) -> float:
         """Get a parameter value by name.
@@ -887,12 +935,17 @@ class Model:
                 converted[name] = float(value)
             except (TypeError, ValueError) as e:
                 raise ParameterError(f"Invalid value for parameter '{name}': {value!r}") from e
-        # Phase 2b: refuse a compartment-size *change* here rather than let it
-        # throw from the apply loop, which would leave the earlier entries
+        # Phase 2b: refuse every write set_param would refuse HERE rather than let
+        # it throw from the apply loop, which would leave the earlier entries
         # written and break the atomicity this method documents (issue #164).
-        # Same rule as set_param: an unchanged value is not a change.
+        # Two kinds: an unwritable compartment size, and issue #170's internal
+        # `_V0_<comp>` record. Same rule as set_param in both cases — an unchanged
+        # value is not a change, which is what keeps a full-vector round trip
+        # working. Every other compartment size is an ordinary writable parameter
+        # now (issue #170) and falls straight through to Phase 3.
+        refused = set(self.unwritable_compartment_size_params) | self._internal_param_names()
         for name, value in converted.items():
-            if self._is_compartment_size(name) and value != self._core.get_param(name):
+            if name in refused and value != self._core.get_param(name):
                 self.set_param(name, value)  # raises with the full explanation
         # Phase 3: Apply atomically (all validation passed)
         for name, value in converted.items():
@@ -1465,10 +1518,23 @@ class Model:
         the model to an external optimizer or sampler that should treat
         each parameter as an independent variable; varying a primary via
         :meth:`set_param` automatically propagates to derived parameters.
+
+        Two kinds are left out. A derived ``ConstantExpression`` (``_rateLaw{N}``)
+        is recomputed from its primaries. And (issue #170) a synthesized
+        *internal* constant — ``_V0_<comp>``, an SBML compartment's size as it was
+        at load, which the rate constants in that compartment are normalised
+        against — is not a knob at all: moving it would rescale those rates
+        without moving the volume, so an optimizer handed it would fit a quantity
+        with no meaning. Set the compartment size itself instead; that is now a
+        writable parameter.
         """
         names = self.param_names
         flags = self.param_is_expression
-        return [n for n, f in zip(names, flags, strict=False) if not f]
+        try:
+            internal = list(self._core.param_is_internal)
+        except AttributeError:  # pragma: no cover - defensive
+            internal = [False] * len(names)
+        return [n for n, f, i in zip(names, flags, internal, strict=False) if not f and not i]
 
     @property
     def species_names(self) -> list[str]:
