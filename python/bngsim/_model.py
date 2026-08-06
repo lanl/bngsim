@@ -1502,10 +1502,23 @@ class Model:
         the model to an external optimizer or sampler that should treat
         each parameter as an independent variable; varying a primary via
         :meth:`set_param` automatically propagates to derived parameters.
+
+        Two kinds are left out. A derived ``ConstantExpression`` (``_rateLaw{N}``)
+        is recomputed from its primaries. And (issue #170) a synthesized
+        *internal* constant — ``_V0_<comp>``, an SBML compartment's size as it was
+        at load, which the rate constants in that compartment are normalised
+        against — is not a knob at all: moving it would rescale those rates
+        without moving the volume, so an optimizer handed it would fit a quantity
+        with no meaning. Set the compartment size itself instead; that is now a
+        writable parameter.
         """
         names = self.param_names
         flags = self.param_is_expression
-        return [n for n, f in zip(names, flags, strict=False) if not f]
+        try:
+            internal = list(self._core.param_is_internal)
+        except AttributeError:  # pragma: no cover - defensive
+            internal = [False] * len(names)
+        return [n for n, f, i in zip(names, flags, internal, strict=False) if not f and not i]
 
     @property
     def species_names(self) -> list[str]:

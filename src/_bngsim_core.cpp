@@ -879,6 +879,22 @@ PYBIND11_MODULE(_bngsim_core, m) {
             "all.")
 
         .def_property_readonly(
+            "param_is_internal",
+            [](const bngsim::NetworkModel &self) {
+                const auto &params = self.parameters();
+                std::vector<bool> out;
+                out.reserve(params.size());
+                for (const auto &p : params)
+                    out.push_back(p.is_internal);
+                return out;
+            },
+            "Per-parameter flag, parallel to ``param_names``: True for a synthesized "
+            "parameter holding a load-time constant that other expressions are normalised "
+            "against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from "
+            "``primary_param_names``; ``set_param`` refuses a value-changing write. All "
+            "False for .net models.")
+
+        .def_property_readonly(
             "param_volume_write_refused",
             [](const bngsim::NetworkModel &self) {
                 const auto &params = self.parameters();
@@ -1951,7 +1967,7 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(py::init<>())
         .def("add_parameter", &bngsim::ModelBuilder::add_parameter, py::arg("name"),
              py::arg("value"), py::arg("expression") = "", py::arg("is_expression") = false,
-             py::arg("is_compartment_size") = false,
+             py::arg("is_compartment_size") = false, py::arg("is_internal") = false,
              "Add a parameter. Returns 0-based index. is_compartment_size=True marks the "
              "parameter as an SBML compartment size, whose value the loader folds into "
              "load-time constants a write cannot reach (per-species volume factors, "

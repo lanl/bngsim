@@ -39,7 +39,7 @@ class ModelBuilder:
         """
         Add an observable. entries = [(sp_idx_0based, factor), ...]. Returns 0-based index.
         """
-    def add_parameter(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, expression: str = '', is_expression: bool = False, is_compartment_size: bool = False) -> int:
+    def add_parameter(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, expression: str = '', is_expression: bool = False, is_compartment_size: bool = False, is_internal: bool = False) -> int:
         """
         Add a parameter. Returns 0-based index. is_compartment_size=True marks the parameter as an SBML compartment size, whose value the loader folds into load-time constants a write cannot reach (per-species volume factors, amount-declared ICs, mass-action rate constants, SSA propensity volumes, the emitted inv_vf table), so set_param refuses a value-changing write instead of desyncing the two representations (issue #164). Default False leaves .net and every non-compartment parameter unchanged.
         """
@@ -291,6 +291,11 @@ class NetworkModel:
     def param_is_compartment_size(self) -> list[bool]:
         """
         Per-parameter flag, parallel to ``param_names``: True for an SBML compartment size. Issue #170 made such a parameter writable (the storage convention is re-derived from it), but it is not yet DIFFERENTIABLE, so forward sensitivity still refuses the column. All False for .net models and for every compartment promoted to a species (rate-rule / event-resized), which is not a parameter at all.
+        """
+    @property
+    def param_is_internal(self) -> list[bool]:
+        """
+        Per-parameter flag, parallel to ``param_names``: True for a synthesized parameter holding a load-time constant that other expressions are normalised against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from ``primary_param_names``; ``set_param`` refuses a value-changing write. All False for .net models.
         """
     @property
     def param_volume_write_refused(self) -> list[bool]:

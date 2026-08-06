@@ -166,6 +166,19 @@ struct Parameter {
     // two sizes differ. Default false ⇒ writable, which is every `.net` parameter
     // and the great majority of SBML compartments.
     bool volume_write_refused = false;
+
+    // Issue #170 — a parameter this loader synthesized to hold a load-time
+    // CONSTANT that other expressions are normalised against, not a knob of the
+    // model. Today that is `_V0_<comp>`: the compartment size as it was at load,
+    // which the reaction's rate parameter divides the live size by so the ratio
+    // is exactly 1.0 there. Writing it would rescale every rate in that
+    // compartment while the volume itself stayed put, and would leave the next
+    // `set_param` on the compartment computing its ratio against the wrong
+    // baseline — so `set_param` refuses a value-changing write and
+    // `primary_param_names` leaves it out of the knobs an optimizer is handed.
+    // Distinct from `is_expression`: a derived parameter is recomputed from
+    // primaries, this one is a stored constant that simply is not a primary.
+    bool is_internal = false;
 };
 
 // Issue #164 — thrown by `NetworkModel::set_param` for a value-changing write to

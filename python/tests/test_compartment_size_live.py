@@ -317,6 +317,24 @@ def test_the_ssa_propensity_reads_the_volume_at_runtime():
     assert abs(written - rebuilt) <= 4 * np.spacing(abs(rebuilt))
 
 
+def test_the_load_time_volume_record_is_not_a_knob():
+    """``_V0_<comp>`` exists so the rate parameter's ``(C/_V0_C)`` ratio is
+    exactly 1.0 at the nominal point. It is bngsim's record of where the volume
+    started, not a parameter of the model — an optimizer handed it would fit a
+    quantity with no meaning, and moving it would rescale every rate in the
+    compartment while the volume stayed put *and* leave the next write to ``C``
+    computing its ratio against the wrong baseline. So it is out of the knobs and
+    a value-changing write to it is refused."""
+    m = bngsim.Model.from_sbml_string(_src(2.5, L_kA))
+    (v0,) = [n for n in m.param_names if n.startswith("_V0_")]
+    assert v0 not in m.primary_param_names
+    assert "k" in m.primary_param_names and "C" in m.primary_param_names
+
+    m.set_param(v0, m.get_param(v0))  # unchanged writes still round-trip
+    with pytest.raises(ValueError, match="normalised against"):
+        m.set_param(v0, 5.0)
+
+
 def test_net_models_are_untouched(simple_decay_net):
     """A ``.net`` network is post-BNG2.pl: the volumes are already folded into
     its rate constants, so nothing here may fire on one."""

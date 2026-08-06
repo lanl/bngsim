@@ -304,6 +304,23 @@ void NetworkModel::set_param(const std::string &name, double value) {
     // blanket refusal. Writing the value it already holds stays legal even then:
     // `set_params(dict(zip(param_names, vec)))` round-trips a full parameter
     // vector through here, and a write that changes nothing has nothing to desync.
+    // Issue #170 — `_V0_<comp>` records the compartment size *as it was at load*
+    // so the rate parameter's `(C / _V0_C)` ratio is exactly 1.0 there. Moving it
+    // would rescale every rate in that compartment while the volume itself stayed
+    // put, and would leave the next write to `C` computing its ratio against the
+    // wrong baseline. It is not a knob (`primary_param_names` excludes it), so
+    // reaching it at all is a mistake worth naming. An unchanged write stays
+    // legal, for the same round-trip reason as below.
+    if (param.is_internal && value != param.value) {
+        throw CompartmentSizeWriteError(
+            "Cannot set '" + param.name +
+            "': it is not a parameter of the model but bngsim's record of a compartment's "
+            "size at load time, which the reaction rate constants in that compartment are "
+            "normalised against (issue #170). Writing it would rescale those rates without "
+            "moving the volume. Set the compartment size itself instead; "
+            "Model.primary_param_names omits this one for that reason.");
+    }
+
     if (param.volume_write_refused && value != param.value) {
         std::ostringstream cur;
         cur << param.value;

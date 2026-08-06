@@ -26,7 +26,12 @@ in `CMakeLists.txt`) is derived from it.
   reaction's rate parameter (`k · (C/V_load)`, exactly 1.0 at the nominal point),
   the Functional storage divide is emitted against the compartment symbol even
   when the load-time size is 1, and `set_param` re-derives `volume_factor` and an
-  amount-declared IC. `set_param("cell", v)` now reproduces *loading the model at
+  amount-declared IC. The load-time size the ratio normalises against is carried
+  by a synthesized `_V0_<comp>` parameter rather than a printed literal — ExprTk's
+  decimal literal parser is not correctly rounded, and a 1-ulp denominator moves
+  the rate constant. `_V0_<comp>` is marked internal: `primary_param_names` omits
+  it and `set_param` refuses a value-changing write, since moving it would
+  rescale the rates in that compartment without moving the volume. `set_param("cell", v)` now reproduces *loading the model at
   `v`* bit for bit, and matches RoadRunner, on every shape issue #170 tabulated —
   including the pair that made its case, where the same law loaded at V=1 and at
   V=4 gave opposite answers. 135 of the corpus's 207 compartment-carrying models

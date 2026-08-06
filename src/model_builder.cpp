@@ -107,7 +107,7 @@ ModelBuilder &ModelBuilder::operator=(ModelBuilder &&) noexcept = default;
 
 int ModelBuilder::add_parameter(const std::string &name, double value,
                                 const std::string &expression, bool is_expression,
-                                bool is_compartment_size) {
+                                bool is_compartment_size, bool is_internal) {
     int idx = static_cast<int>(bimpl_->parameters.size());
     Parameter p;
     p.index = idx + 1; // 1-based for .net compatibility
@@ -117,6 +117,7 @@ int ModelBuilder::add_parameter(const std::string &name, double value,
     p.is_expression = is_expression;
     p.evaluator_id = -1;
     p.is_compartment_size = is_compartment_size;
+    p.is_internal = is_internal;
 
     bimpl_->param_name_to_idx[name] = idx;
     bimpl_->parameters.push_back(std::move(p));

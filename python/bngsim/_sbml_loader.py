@@ -4239,7 +4239,7 @@ def _build_model_from_sbml_doc(doc):
         name = _v0_param_names.get(cid)
         if name is None:
             name = _unique_param_name(_safe_name(f"_V0_{cid}"))
-            builder.add_parameter(name, float(comp_volumes.get(cid, 1.0)))
+            builder.add_parameter(name, float(comp_volumes.get(cid, 1.0)), is_internal=True)
             _v0_param_names[cid] = name
         return name
 
