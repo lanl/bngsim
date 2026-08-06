@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Issue #183: an event whose trigger becomes true exactly at a sample time.
+
+  BIOMD0000000104's shape, reduced to two species and one event. `time > 1` is
+  STRICTLY false at t = 1, so the sample recorded at t = 1 must hold the
+  pre-event state; the assignment belongs to every later sample.
+
+  That ordering is what single-stepping the #183 refresh ladder can disturb.
+  CV_ONE_STEP does not stop short for tout, so a step permitted to run past t = 1
+  finds the root sitting there and fires the event before the t = 1 sample is
+  recorded — the sample then carries a state the trigger is false for. On
+  BIOMD0000000104 it read as a 60% difference at an identical step count.
+
+  A is p-dependent so the model has a sensitivity column at all; B is what the
+  event writes, and nothing about B depends on p, so any difference in B is
+  ordering and never tolerance.
+-->
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="sens_ladder_event_ordering">
+    <listOfCompartments>
+      <compartment id="c" spatialDimensions="3" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false"
+               boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="c" initialConcentration="1" hasOnlySubstanceUnits="false"
+               boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="p" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="R1" reversible="false">
+        <listOfReactants>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>p</ci><ci>A</ci><ci>c</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="at_one" useValuesFromTriggerTime="true">
+        <trigger initialValue="false" persistent="true">
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><gt/><csymbol encoding="text"
+              definitionURL="http://www.sbml.org/sbml/symbols/time"> time </csymbol>
+              <cn> 1 </cn></apply>
+          </math>
+        </trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="B">
+            <math xmlns="http://www.w3.org/1998/Math/MathML"><cn> 0.25 </cn></math>
+          </eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>

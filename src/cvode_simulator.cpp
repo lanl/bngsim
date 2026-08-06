@@ -855,25 +855,25 @@ struct SensitivityState {
     // CVodeSensSVtolerances, kept alive past setup so it can be refreshed
     // mid-run, plus the GH #214 static floor it is a max() against.
     NVectorArrayGuard abstolS;
-    std::vector<double> atolS_base;  // n_sens*ns, column-major by column
-    std::vector<double> floor_terms; // ns scratch: Σ|term| of one column's row
-    std::vector<double> floor_jac;   // nnz scratch: the analytical Jacobian
-    double floor_tau = 0.0;          // time scale ε·Σ|term| is multiplied by
-    double floor_rtol = 0.0;         // reltolS, needed to re-tell CVODES
+    std::vector<double> atolS_base; // n_sens*ns, column-major by column
+    // Per (row, column): the largest |s_i| at which row i was found unresolvable
+    // against its column's own noise (issue #183). A high-water mark, so the
+    // relaxation is never withdrawn — see refresh_sens_error_floor.
+    std::vector<double> floor_unresolvable; // n_sens*ns
+    std::vector<double> floor_terms;        // ns scratch: Σ|term| of one column's row
+    std::vector<double> floor_jac;          // nnz scratch: the analytical Jacobian
+    double floor_tau = 0.0;                 // time scale ε·Σ|term| is multiplied by
+    double floor_rtol = 0.0;                // reltolS, needed to re-tell CVODES
     bool floor_active = false;
     // Which noise sources this run floors. Requested through
     // BNGSIM_SENS_FLOOR_PARTS, then narrowed by what the model can actually
     // supply — an emitted term scale, an analytical Jacobian, or neither.
-    bool floor_do_dfdp_terms = true; // Σ|term| of ∂f/∂p, from the emitter
-    bool floor_do_jac_terms = true;  // Σ_j|J_ij||s_j|, from the analytical Jacobian
-    bool floor_do_col_norm = true;   // ε‖s‖∞, the column's representation floor
+    bool floor_do_dfdp_terms = true;     // Σ|term| of ∂f/∂p, from the emitter
+    bool floor_do_jac_terms = true;      // Σ_j|J_ij||s_j|, from the analytical Jacobian
+    bool floor_do_col_norm = true;       // ε‖s‖∞, the column's representation floor
+    bool floor_do_unresolvable = true;   // relax rows whose rtol band is under ε‖s‖∞ (#183)
+    double floor_unresolvable_cap = 1e3; // ulps of ‖s‖∞ the relaxation may reach
     int floor_refreshes = 0;
-    // Whether the very first refresh (at t=0, before any stepping) found a row
-    // whose roundoff sits above its static floor. This is the gate on the early
-    // refresh ladder: an extra CV_NORMAL target is NOT free, because CVODES
-    // sizes its first step from the distance to tout, so a model the floor does
-    // nothing for must not get one.
-    bool floor_binds_at_t0 = false;
     double floor_max_relax = 1.0; // largest floor/base ratio applied, for diagnostics
 };
 
@@ -2395,6 +2395,25 @@ static constexpr double kSensFloorEps = std::numeric_limits<double>::epsilon();
 // more and resolves less; smaller is inert.
 static constexpr double kSensFloorTauFraction = 1e-3;
 
+// Hysteresis on the issue #183 relaxation: a row is declared unresolvable at
+// rtol·|s_i| < ε‖s‖∞ and released only once rtol·|s_i| climbs this far ABOVE
+// ε‖s‖∞. Two failures, one on each side, fix the shape:
+//
+//   * Released as soon as the strict test flips, the floor drops eight orders in
+//     one refresh — CVODES then has to re-pass, at a step size chosen under the
+//     looser rule, an error test it already passed. Smith's columns then worked
+//     at one ladder spacing and failed at both a coarser and a finer one, which
+//     is a lucky refresh time rather than a rule.
+//   * Never released at all, the relaxation outlives the condition. On the #55
+//     SIR model that cost the analytic run 1436 steps against the <1000 its
+//     step-count test pins: a row relaxed early stays relaxed while it grows
+//     back into significance, and the error it is then allowed to carry
+//     propagates through J·s into rows that ARE controlled.
+//
+// A wide band, because the two regimes are ten orders apart and the gap is where
+// the hysteresis is free.
+static constexpr double kSensUnresolvableRelease = 1e6;
+
 void CvodeSimulator::Impl::setup_sens_error_floor(const SolverOptions &opts, int ns, double rtol,
                                                   double horizon, CvodeUserData &user_data,
                                                   SensitivityState &sens) {
@@ -2447,7 +2466,22 @@ void CvodeSimulator::Impl::setup_sens_error_floor(const SolverOptions &opts, int
         return;
     }
     sens.floor_terms.assign(static_cast<size_t>(ns), 0.0);
+    sens.floor_unresolvable.assign(static_cast<size_t>(sens.n_total) * static_cast<size_t>(ns),
+                                   0.0);
     sens.floor_jac.assign(sens.floor_do_jac_terms ? static_cast<size_t>(spat.nnz) : 0, 0.0);
+    // BNGSIM_SENS_FLOOR_UNRESOLVABLE=0 restores the pre-#183 tolerances from the
+    // same binary, which is what makes this change's corpus A/B a one-variable
+    // experiment rather than a two-build comparison (as BNGSIM_SENS_ERROR_FLOOR=0
+    // is for #177 and BNGSIM_SENS_FLOOR_LADDER=off for the refresh ladder).
+    if (const char *ur = std::getenv("BNGSIM_SENS_FLOOR_UNRESOLVABLE")) {
+        sens.floor_do_unresolvable = std::string(ur) != "0";
+    }
+    if (const char *uc = std::getenv("BNGSIM_SENS_FLOOR_UNRESOLVABLE_CAP")) {
+        const double v = std::atof(uc);
+        if (v > 0.0) {
+            sens.floor_unresolvable_cap = v;
+        }
+    }
     sens.floor_active = true;
 }
 
@@ -2529,8 +2563,63 @@ void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N
         const double col_floor = kSensFloorEps * col_norm;
 
         for (int i = 0; i < ns; ++i) {
-            const double noise =
+            double noise =
                 std::max(kSensFloorEps * sens.floor_tau * sens.floor_terms[i], col_floor);
+            // ── Rows the column cannot resolve to rtol (issue #183) ──────────
+            //
+            // col_floor = ε‖s‖∞ is the absolute noise every entry of the column
+            // carries. A row asked for rtol·|s_i| tighter than that is being
+            // asked for digits the column does not have, and no step size
+            // supplies them: rtol·|s_i| < ε‖s‖∞ says exactly "row i's relative
+            // band is finer than the column's own noise". #177 floored atolS at
+            // the roundoff of the sum that FORMS ṡ; this is the roundoff of the
+            // column that CARRIES s, and neither implies the other.
+            //
+            // The floor to state there is |s_i| itself — the row is not error-
+            // controlled beyond its own size, which is the honest reading of a
+            // value that is noise. Measured, not chosen: Smith's k7 needed
+            // atolS ≈ 1.6·|s_i| on the binding row and k8 ≈ 0.73·|s_i|, from
+            // columns whose norms differ by seven orders.
+            //
+            // The test separates the two cases by ten orders of magnitude, so it
+            // is nothing like a knife edge: at Smith's t≈19.3 the binding row
+            // sits 36 ulps of ‖s‖∞ above zero, while sens_scale_cancellation's
+            // one live row sits 4.5e15 of them — the whole of float64. A row
+            // that carries its column is never touched, which is what keeps
+            // #177's accuracy test green.
+            //
+            // Self-correcting, too: Akt_P2's sensitivity climbs 13 orders out of
+            // this regime between t=19 and t=24, and the next refresh finds it
+            // resolvable again and stops relaxing it.
+            //
+            // Held as a high-water mark, per (row, column). A floor that TIGHTENS
+            // mid-run is a step-controller hazard in its own right — CVODES has
+            // to re-pass an error test it already passed, at a step size chosen
+            // under the looser rule — and this rule is not naturally monotone:
+            // Akt_P2 leaves the unresolvable regime by growing 13 orders, which
+            // without the mark drops its floor eight orders in one refresh. That
+            // showed up as the fix working at one ladder spacing and failing at
+            // both a coarser and a finer one, which is the signature of a lucky
+            // refresh time rather than a rule.
+            const double s_i = std::abs(s[i]);
+            if (sens.floor_do_unresolvable) {
+                double &mark = sens.floor_unresolvable[static_cast<size_t>(iS) * ns + i];
+                const double band = sens.floor_rtol * s_i;
+                if (band < col_floor) {
+                    // Capped at kSensUnresolvableCap ulps of the column. Without
+                    // the cap the rule reads "fewer than 1/rtol digits" and hands
+                    // every such row a 100% relative tolerance — an eight-order
+                    // window, so a row still carrying six good digits is released
+                    // from error control entirely. The rows this is for are far
+                    // deeper than that: Smith's binding row sits 36 ulps of ‖s‖∞
+                    // above zero, so the cap does not bind where it matters and
+                    // does bind everywhere it should.
+                    mark = std::max(mark, std::min(s_i, sens.floor_unresolvable_cap * col_floor));
+                } else if (band > kSensUnresolvableRelease * col_floor) {
+                    mark = 0.0; // resolvable again, by a margin
+                }
+                noise = std::max(noise, mark);
+            }
             // A non-finite state makes a non-finite term scale; keep the static
             // floor there rather than handing CVODES a NaN tolerance, which it
             // would silently propagate into every error weight.
@@ -2543,9 +2632,6 @@ void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N
         }
     }
 
-    if (sens.floor_refreshes == 0) {
-        sens.floor_binds_at_t0 = moved;
-    }
     ++sens.floor_refreshes;
     // BNGSIM_SENS_FLOOR_DEBUG traces the floor against the step size, which is
     // the pair that says whether a refresh arrived in time: raising a tolerance
@@ -2554,10 +2640,14 @@ void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N
     // zero contributes exactly zero to the WRMS norm however small its tolerance
     // is, so the unrestricted minimum is a decoy (it cost real time to learn).
     if (std::getenv("BNGSIM_SENS_FLOOR_DEBUG")) {
-        long nst = 0;
+        long nst = 0, netf = 0, ncfn = 0, snetf = 0, sncfn = 0;
         double h = 0.0;
         CVodeGetNumSteps(cvode_mem, &nst);
         CVodeGetLastStep(cvode_mem, &h);
+        CVodeGetNumErrTestFails(cvode_mem, &netf);
+        CVodeGetNumNonlinSolvConvFails(cvode_mem, &ncfn);
+        CVodeGetSensNumErrTestFails(cvode_mem, &snetf);
+        CVodeGetSensNumNonlinSolvConvFails(cvode_mem, &sncfn);
         double lo = std::numeric_limits<double>::infinity(), hi = 0.0;
         for (int iS = 0; iS < n_sens; ++iS) {
             const double *c = N_VGetArrayPointer(sens.abstolS[iS]);
@@ -2571,9 +2661,9 @@ void CvodeSimulator::Impl::refresh_sens_error_floor(void *cvode_mem, double t, N
         }
         std::fprintf(stderr,
                      "[sens-floor] #%d t=%g nst=%ld h=%.3e tau=%.3e live atolS in [%.3e, %.3e] "
-                     "max relax=%.3e moved=%d\n",
+                     "max relax=%.3e moved=%d etf=%ld/%ld cf=%ld/%ld\n",
                      sens.floor_refreshes, t, nst, h, sens.floor_tau, lo, hi, sens.floor_max_relax,
-                     static_cast<int>(moved));
+                     static_cast<int>(moved), snetf, netf, sncfn, ncfn);
     }
     if (!moved) {
         return; // the tolerances CVODES already holds are these tolerances
@@ -4938,15 +5028,47 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // ladder of early times as well, decades below the horizon, while h is still
     // near where the solver started.
     //
-    // These cost nothing when they change nothing: an extra CV_NORMAL target
-    // does not perturb CVODES' internal step sequence — it integrates past tout
-    // and interpolates back — and a refresh that finds no row above its static
-    // floor never calls CVodeSensSVtolerances at all. So a model this does not
-    // apply to is bit-for-bit the run it was.
+    // These rungs are NOT extra CVode() output targets. They were, and that was
+    // not free: CVODES sizes its first step from the distance to the first tout
+    // (cvHin's hub = 0.1·tdist), so an early target rewrites h0 and with it the
+    // whole step sequence — measured on 309 corpus models as moving nearly every
+    // one of them, which is why the ladder shipped gated on the floor binding at
+    // t=0 and so never ran for the models issue #183 is about. Single-stepping to
+    // the SAME tout is free by construction: CV_ONE_STEP takes exactly the steps
+    // CV_NORMAL would and simply hands each one back. Re-measured that way, the
+    // only models that move are the ones whose floor genuinely binds (9 of 309),
+    // because a refresh that finds no row above its static floor never calls
+    // CVodeSensSVtolerances at all.
     std::vector<double> floor_times;
-    if (sens.floor_active && sens.floor_binds_at_t0) {
+    const char *ladder_env = std::getenv("BNGSIM_SENS_FLOOR_LADDER");
+    const std::string ladder_mode(ladder_env ? ladder_env : "");
+    const bool ladder_off = ladder_mode == "off";
+    double ladder_first = 1e-6;
+    if (const char *lf = std::getenv("BNGSIM_SENS_FLOOR_LADDER_FIRST")) {
+        const double v = std::atof(lf);
+        if (v > 0.0 && v < 1.0) {
+            ladder_first = v;
+        }
+    }
+    // Rungs per decade, not one per decade. A decade-spaced ladder leaves
+    // Smith's k8 a gap from t=2.4 to t=24 with the transition at t≈20 inside it,
+    // and the run dies in the gap. Halving is where the ladder stops being the
+    // variable: 14/16 columns at ratio 10, 16/16 at 3.16, 2 and 1.5 alike. That
+    // monotonicity is the point — a rule that needs a particular spacing is
+    // fitted to it, and this one only needed the mark below to become one.
+    // Free in wall clock (measured at ±0.5 ms across the corpus): the rungs are
+    // single steps CVODES was taking anyway, and a refresh that changes nothing
+    // never calls CVodeSensSVtolerances.
+    double ladder_ratio = 2.0;
+    if (const char *lr = std::getenv("BNGSIM_SENS_FLOOR_LADDER_RATIO")) {
+        const double v = std::atof(lr);
+        if (v > 1.0) {
+            ladder_ratio = v;
+        }
+    }
+    if (sens.floor_active && !ladder_off) {
         const double span = t_out.empty() ? 0.0 : (t_out.back() - times.t_start);
-        for (double f = 1e-6; f < 1.0; f *= 10.0) {
+        for (double f = ladder_first; f < 1.0; f *= ladder_ratio) {
             const double tf = times.t_start + f * span;
             if (tf > times.t_start) {
                 floor_times.push_back(tf);
@@ -4954,6 +5076,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         }
     }
     size_t next_floor_time = 0;
+    int floor_single_steps = 0;
 
     for (int i = 1; i < n_out; ++i) {
         // Loop until we've reached t_out[i] (within numerical tolerance).
@@ -4967,25 +5090,60 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // Pick the next stop: the earliest pending apply_time strictly
             // inside (t_now, t_out[i]], else t_out[i] itself.
             double t_target = t_out[i];
+            bool target_is_event = false;
             if (n_events > 0) {
                 for (const auto &pe : pending_events) {
                     if (pe.apply_time > static_cast<double>(t_now) + 1e-15 &&
                         pe.apply_time < t_target) {
                         t_target = pe.apply_time;
+                        target_is_event = true;
                     }
                 }
             }
-            // …and the next issue #177 floor-refresh time, on the same footing
-            // as a pending event: an earlier stop to come back at.
+            // …and the next issue #177 floor-refresh time. NOT as an extra
+            // output target: CVODES sizes its first step from the distance to
+            // the first tout (cvHin's hub = 0.1·tdist), so an early stop
+            // rewrites h0 and with it the entire step sequence — measured on the
+            // corpus, an extra early target moves nearly every model, which is
+            // why this ladder shipped disarmed for everything that did not
+            // already need it at t=0 (and therefore for 15 of Smith's 16
+            // columns, issue #183). Single-stepping instead is free by
+            // construction: CV_ONE_STEP takes exactly the steps CV_NORMAL would,
+            // to exactly the same tout, and simply hands each one back.
             while (next_floor_time < floor_times.size() &&
                    floor_times[next_floor_time] <= static_cast<double>(t_now) + 1e-15) {
                 ++next_floor_time;
             }
-            bool stop_for_floor = false;
-            if (next_floor_time < floor_times.size() && floor_times[next_floor_time] < t_target) {
-                t_target = floor_times[next_floor_time];
-                stop_for_floor = true;
-            }
+            // CV_ONE_STEP does not stop short for tout — it takes the step it
+            // was going to take and hands it back — so single-stepping may never
+            // be allowed to cross t_target. Crossing it reorders the run against
+            // anything that lives exactly there: on BIOMD0000000104, whose event
+            // triggers on `time > 1`, a step that ran past t=1 found that root
+            // and applied the assignment BEFORE the t=1 sample was recorded, so
+            // the output carried the post-event state that `time > 1` is
+            // strictly false for. It reads as a 60% state difference at an
+            // identical step count — the signature of a discrete jump landing on
+            // the wrong side of a sample, which no tolerance change produces.
+            //
+            // Against CVODES' INTERNAL time, not t_now. The two are not the same
+            // number: CV_NORMAL integrates past its tout and interpolates back,
+            // so after an output point t_now is the interpolated t_out[i] while
+            // tn already sits beyond it. Ask with t_now and this single-steps in
+            // exactly the case where CV_NORMAL would have returned t_out[i+1] by
+            // interpolation without stepping at all — one extra step, on a model
+            // whose floor never binds. cv_next_h is the step about to be
+            // attempted and a step only ever shrinks from there (error-test
+            // failures), so tn + next_h bounds where it can end. Before the first
+            // step next_h is 0, which is safe for its own reason: cvHin caps h0
+            // at 0.1·|tout − t0|, so the opening step cannot reach t_target.
+            sunrealtype tn_now = 0.0;
+            double next_h = 0.0;
+            CVodeGetCurrentTime(cvode_mem, &tn_now);
+            CVodeGetCurrentStep(cvode_mem, &next_h);
+            const bool step_for_floor =
+                next_floor_time < floor_times.size() && !target_is_event &&
+                static_cast<double>(tn_now) + std::abs(next_h) < t_target - 1e-15;
+            const double t_before_step = static_cast<double>(t_now);
 
             // ─── Stop cleanly at the next switch time (issue #48) ────────────
             // CVodeSetStopTime clamps the final step to land exactly on t*, so
@@ -5027,8 +5185,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
             }
 
+            // …and never while the issue #48 switch stop time is armed. That
+            // machinery wants an undisturbed approach to t*: CVodeSetStopTime
+            // clamps the final step to land exactly on the crossing so the whole
+            // approach stays on the before-branch and the kink never enters an
+            // error test, and a refresh landing inside that approach moves the
+            // tolerances the approach is being taken under. Measured as
+            // test_switch_time_sensitivity's wide-spread cases failing outright
+            // (CV_ERR_FAILURE at t=29) — the switch tests are delicate about the
+            // last step before t* for exactly the reasons issue #82 documents.
+            const bool one_step = step_for_floor && !stop_at_switch;
             sunrealtype t_ret;
-            flag = CVode(cvode_mem, t_target, y, &t_ret, CV_NORMAL);
+            flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
 
             // CV_TOO_MUCH_WORK is normally recoverable — max_steps is a batch
             // size per output point, not a ceiling on the run — so retry, but
@@ -5050,23 +5218,48 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             }
             t_now = t_ret;
 
-            // Issue #177: an early stop taken only to re-derive the sensitivity
-            // error floor from the live state. Refresh and keep going — this is
-            // not an output point and nothing is recorded here.
+            // Issue #177: a single step taken only so the sensitivity error
+            // floor can be re-derived from the live state. Nothing is recorded
+            // here — this is not an output point — and the loop simply goes
+            // round again, in CV_NORMAL once the ladder is spent.
             //
-            // Only on a plain CV_SUCCESS at (or past) the requested time. A root
-            // or a switch stop time can land first, and those returns belong to
-            // the handlers below — taking this branch would skip the event fire
-            // or the issue #48 switch jump entirely. next_floor_time is left
-            // alone in that case, so the stop is simply retried on the next pass.
-            if (stop_for_floor && flag == CV_SUCCESS &&
-                static_cast<double>(t_ret) >= floor_times[next_floor_time] - 1e-15) {
+            // Only on a plain CV_SUCCESS. A root or a switch stop time can end
+            // the step instead, and those returns belong to the handlers below;
+            // taking this branch would skip the event fire or the issue #48
+            // switch jump entirely. next_floor_time is left alone in that case,
+            // so the refresh simply happens on a later step.
+            //
+            // The step may also overshoot t_target, since CV_ONE_STEP does not
+            // stop short for it. That is why nothing is recorded from this
+            // branch: the next pass sees t_now ≥ t_target, drops back to
+            // CV_NORMAL, and CVODES interpolates y(t_target) out of the step
+            // just taken — the same value, from the same step.
+            if (one_step && flag == CV_SUCCESS) {
+                // A step that advanced t not at all is the collapsed step size
+                // of issue #54, and single-stepping hides it: CV_ONE_STEP never
+                // returns CV_TOO_MUCH_WORK, so retry_while_advancing — the thing
+                // that turns that stall into a diagnosable error naming t and h
+                // — is never consulted, and the run burns its whole wall-clock
+                // budget instead. Abandon the rest of the ladder the moment a
+                // step buys nothing, and likewise once single-stepping has cost
+                // a full max_steps batch, so the fallback is always CV_NORMAL's
+                // existing handling rather than an unbounded crawl.
+                if (static_cast<double>(t_ret) <= t_before_step ||
+                    ++floor_single_steps >= impl_->max_steps) {
+                    next_floor_time = floor_times.size();
+                    continue;
+                }
+                bool crossed = false;
+                while (next_floor_time < floor_times.size() &&
+                       floor_times[next_floor_time] <= static_cast<double>(t_ret) + 1e-15) {
+                    ++next_floor_time;
+                    crossed = true;
+                }
                 sunrealtype t_tmp;
-                if (CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr) == CV_SUCCESS) {
+                if (crossed && CVodeGetSens(cvode_mem, &t_tmp, yS_guard.arr) == CV_SUCCESS) {
                     impl_->refresh_sens_error_floor(cvode_mem, static_cast<double>(t_ret), y,
                                                     user_data, sens, ns);
                 }
-                ++next_floor_time;
                 continue;
             }
 
