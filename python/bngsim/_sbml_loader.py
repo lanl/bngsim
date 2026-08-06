@@ -6032,7 +6032,7 @@ def _build_model_from_sbml_doc(doc):
     # e.g. ``S = floor(time/tau)``). Record the source so Simulator.run can
     # overwrite the species column with the live value. Names are mangled
     # to match the runtime arrays.
-    ar_report_map: dict[str, tuple[str, str, float, str]] = {}
+    ar_report_map: dict[str, tuple] = {}
     for sid in assignment_targets:
         if sid not in species_idx:
             continue
@@ -6067,7 +6067,11 @@ def _build_model_from_sbml_doc(doc):
             if species_hosu.get(sid, False) and _vdiv_comp in live_volume_param_comps
             else ""
         )
-        ar_report_map[safe] = (kind, safe, vdiv, vdiv_param)
+        # The 4th element is APPENDED only when there is a live size to name, so a
+        # model with no writable compartment keeps the 3-tuple its consumers (and
+        # their tests) already pin — the same widen-by-appending the 2-tuple → 3-tuple
+        # step used, and why the reader below is length-guarded rather than unpacking.
+        ar_report_map[safe] = (kind, safe, vdiv, vdiv_param) if vdiv_param else (kind, safe, vdiv)
     model._ar_report_map = ar_report_map
 
     # Variable-volume concentration report map (GH #85). bngsim stores every

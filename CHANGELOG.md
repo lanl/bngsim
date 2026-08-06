@@ -51,6 +51,17 @@ in `CMakeLists.txt`) is derived from it.
   forward-sensitivity RHS, so freezing V there was a wrong *sensitivity* (measured
   at 100% on a 400x volume write), not merely a slower solve.
 
+  Lifting that refusal made 38 more corpus models writable, and a sweep of "does
+  `set_param` reproduce `compartment_sizes=` at the same value?" over all 173 found
+  three more places where a load at V=1 emitted something a load at V≠1 did not,
+  so the write had nothing to move — the `_vd_<rid>_unified` Functional storage
+  divide for a *multi-compartment* reaction, an event assignment writing an amount
+  into an `hasOnlySubstanceUnits` species's slot, and the report-time
+  amount→concentration divide for an assignment-rule target (the one conversion
+  that lives entirely on the Python side, so no engine refresh could reach it).
+  All three are fixed and all three are numerically free at the nominal point,
+  since `x/1.0 == x` exactly.
+
   **177 of the corpus's 207 compartment-carrying models are now fully writable**
   (135 before the codegen half), 9 partly; the models with any refused size drop
   from 72 to 30 and the refused sizes from 230 to 132. Refused by name rather than

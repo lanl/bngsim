@@ -354,3 +354,139 @@ def test_the_analytical_jacobian_is_still_complete_with_a_symbolic_volume():
         m = bngsim.Model.from_sbml_string(build(V_NEW))
         bngsim.Simulator(m, method="ode")
         assert m._core.analytical_jacobian_complete, build
+
+
+# ── The V=1 normalisations lifting the gate made reachable ──────────────────
+#
+# Stage 1 removed the V=1 normalisation for a *single-compartment Functional*
+# storage divide, because that is the shape issue #170's rows 6 and 7 tabulated.
+# Making 38 more models writable reached three more instances of the same thing:
+# a load at V=1 emitted something a load at V≠1 did not, so `set_param` had
+# nothing to move and did not reproduce a rebuild. Each is asserted the only way
+# that distinguishes a fix from a coincidence — the write must equal a rebuild at
+# the same size EXACTLY, and the shape must actually move with the volume.
+
+_V1_MULTI_COMPARTMENT = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="mc">
+    <listOfCompartments>
+      <compartment id="C1" size="{v}" constant="true"/>
+      <compartment id="C2" size="{v}" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C1" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="C2" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k" value="0.3" constant="true"/></listOfParameters>
+    <listOfReactions>
+      <reaction id="tr" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><divide/><apply><times/><ci>k</ci><ci>A</ci></apply>
+            <apply><plus/><cn>1</cn><ci>A</ci></apply></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+_V1_EVENT_DOSE = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="dose">
+    <listOfCompartments><compartment id="C" size="{v}" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialAmount="0" hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k" value="0.3" constant="true"/></listOfParameters>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k</ci><ci>A</ci></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+    <listOfEvents>
+      <event id="dose1" useValuesFromTriggerTime="true">
+        <trigger><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><geq/><csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol><cn>2</cn></apply>
+        </math></trigger>
+        <listOfEventAssignments>
+          <eventAssignment variable="A"><math xmlns="http://www.w3.org/1998/Math/MathML"><cn>500</cn></math></eventAssignment>
+        </listOfEventAssignments>
+      </event>
+    </listOfEvents>
+  </model>
+</sbml>"""
+
+_V1_AR_TARGET = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ar">
+    <listOfCompartments><compartment id="C" size="{v}" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="100" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="T" compartment="C" initialAmount="0" hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k" value="0.3" constant="true"/></listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="T"><math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply><times/><cn>3</cn><ci>A</ci></apply>
+      </math></assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>C</ci><apply><times/><ci>k</ci><ci>A</ci></apply></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+V1_SHAPES = [
+    # (id, template, compartment written, why the V=1 load used to differ)
+    ("multi_compartment_functional", _V1_MULTI_COMPARTMENT, "C1"),
+    ("event_assigned_amount", _V1_EVENT_DOSE, "C"),
+    ("assignment_rule_target", _V1_AR_TARGET, "C"),
+]
+
+
+@pytest.mark.parametrize(("tmpl", "comp"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
+def test_a_write_from_a_v1_load_reproduces_a_rebuild(tmpl, comp):
+    """Loaded at V=1 — the value at which each of these three used to drop the
+    volume out of the model entirely — then written. Exact, because a rebuild is
+    what the write is defined to reproduce."""
+    rebuilt = _traj(_sim(bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_NEW))), None))
+    m = bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_LOAD)))
+    assert m.unwritable_compartment_size_params == []
+    m.set_param(comp, V_NEW)
+    assert np.array_equal(rebuilt, _traj(_sim(m, None)))
+
+
+@pytest.mark.parametrize(("tmpl", "comp"), [pytest.param(t, c, id=i) for i, t, c in V1_SHAPES])
+def test_these_v1_shapes_really_do_move_with_the_volume(tmpl, comp):
+    """Without this the test above would pass on a model the volume never reaches
+    — which is exactly how the V=1 normalisation stayed invisible."""
+    lo = _traj(_sim(bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_LOAD))), None))
+    hi = _traj(_sim(bngsim.Model.from_sbml_string(tmpl.format(v=repr(V_NEW))), None))
+    assert not np.allclose(lo, hi)
+
+
+def test_the_assignment_rule_report_divide_is_read_live():
+    """The AR target's amount→concentration divide is the one conversion that lives
+    entirely on the Python side — a report-time rescale in ``_ar_report_map``, not
+    emitted math — so no engine refresh reaches it and it has to name its
+    compartment. The 4th element is appended only when there IS a live size, so a
+    model without one keeps the 3-tuple its other consumers pin."""
+    live = bngsim.Model.from_sbml_string(_V1_AR_TARGET.format(v=repr(V_LOAD)))
+    entry = live._ar_report_map["T"]
+    assert len(entry) == 4 and entry[3] == "C", entry
+    # …and a target whose compartment is not a writable size keeps the short form.
+    plain = bngsim.Model.from_sbml_string(
+        _V1_AR_TARGET.format(v=repr(V_LOAD)).replace(
+            'hasOnlySubstanceUnits="true"', 'hasOnlySubstanceUnits="false"'
+        )
+    )
+    assert len(plain._ar_report_map["T"]) == 3, plain._ar_report_map["T"]
