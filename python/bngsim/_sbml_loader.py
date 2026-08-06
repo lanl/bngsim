@@ -5543,10 +5543,17 @@ def _build_model_from_sbml_doc(doc):
                     # reactions undivided at V=1 only — 7 corpus models, 68
                     # reactions, where a write then moved the trajectory to
                     # something no rebuild produces (BIOMD0000000570: 1.8 relative
-                    # in the RHS). Whether a single representative divide is the
-                    # right reading of such a reaction is a separate question that
-                    # the rebuild answers the same way; what matters here is that
-                    # the two builds of one model agree.
+                    # in the RHS).
+                    #
+                    # (#192) Stage 2 added here that "whether a single representative
+                    # divide is the right reading of such a reaction is a separate
+                    # question that the rebuild answers the same way". It does not:
+                    # the rebuild at a DIFFERENT size sees unequal volumes and takes
+                    # the per-species branch, which is why a multi-compartment
+                    # reaction now only reaches this line when none of its
+                    # compartments is writable (the gate above re-routes the rest).
+                    # For those, the two builds of one model do agree — nothing can
+                    # move the sizes apart.
                     rep_comp = species_comp[next(iter(net))]
                     _rep_is_vstatic = rep_comp in vstatic_divide_comps and all(
                         species_hosu.get(s, False) for s in net
