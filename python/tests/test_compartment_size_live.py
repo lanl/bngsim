@@ -334,6 +334,17 @@ def test_the_load_time_volume_record_is_not_a_knob():
     with pytest.raises(ValueError, match="normalised against"):
         m.set_param(v0, 5.0)
 
+    # …and the refusal runs in set_params' VALIDATION phase, not from its apply
+    # loop — otherwise `k` is written and *then* the dict raises, which silently
+    # breaks the all-or-nothing set_params documents (the same trap #164 named).
+    with pytest.raises(ValueError, match="normalised against"):
+        m.set_params({"k": 0.9, v0: 5.0})
+    assert m.get_param("k") == 0.3
+
+    # A full-vector round trip still works: every entry is unchanged.
+    m.set_params(dict(zip(m.param_names, [m.get_param(n) for n in m.param_names], strict=True)))
+    assert m.get_param(v0) == 2.5
+
 
 def test_net_models_are_untouched(simple_decay_net):
     """A ``.net`` network is post-BNG2.pl: the volumes are already folded into

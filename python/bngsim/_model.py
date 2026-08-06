@@ -854,6 +854,20 @@ class Model:
         """Whether a value-changing write to ``name`` is refused (issue #170)."""
         return name in set(self.unwritable_compartment_size_params)
 
+    def _internal_param_names(self) -> set[str]:
+        """Synthesized parameters that are not knobs of the model (issue #170).
+
+        Today just ``_V0_<comp>``, an SBML compartment's size as it was at load.
+        ``set_param`` refuses a value-changing write to one; this is how
+        ``set_params`` learns that in its *validation* phase, so the refusal
+        cannot fire halfway through the apply loop.
+        """
+        try:
+            flags = self._core.param_is_internal
+        except AttributeError:  # pragma: no cover - defensive
+            return set()
+        return {n for n, f in zip(self.param_names, flags, strict=True) if f}
+
     def get_param(self, name: str) -> float:
         """Get a parameter value by name.
 
@@ -921,13 +935,15 @@ class Model:
                 converted[name] = float(value)
             except (TypeError, ValueError) as e:
                 raise ParameterError(f"Invalid value for parameter '{name}': {value!r}") from e
-        # Phase 2b: refuse an *unwritable* compartment-size change here rather
-        # than let it throw from the apply loop, which would leave the earlier
-        # entries written and break the atomicity this method documents (issue
-        # #164). Same rule as set_param: an unchanged value is not a change.
-        # Every other compartment size is an ordinary writable parameter now
-        # (issue #170) and falls straight through to Phase 3.
-        refused = set(self.unwritable_compartment_size_params)
+        # Phase 2b: refuse every write set_param would refuse HERE rather than let
+        # it throw from the apply loop, which would leave the earlier entries
+        # written and break the atomicity this method documents (issue #164).
+        # Two kinds: an unwritable compartment size, and issue #170's internal
+        # `_V0_<comp>` record. Same rule as set_param in both cases — an unchanged
+        # value is not a change, which is what keeps a full-vector round trip
+        # working. Every other compartment size is an ordinary writable parameter
+        # now (issue #170) and falls straight through to Phase 3.
+        refused = set(self.unwritable_compartment_size_params) | self._internal_param_names()
         for name, value in converted.items():
             if name in refused and value != self._core.get_param(name):
                 self.set_param(name, value)  # raises with the full explanation
