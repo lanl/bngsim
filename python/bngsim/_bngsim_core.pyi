@@ -71,21 +71,21 @@ class ModelBuilder:
         """
         Enable/disable conservation-law detection in build() (GH #102). The detector is dense O(n_species^3) Gaussian elimination consumed only by the steady-state solver; disable it to keep setup O(reactions) for very large ODE-only networks (~100K species). Default True preserves existing behavior.
         """
-    def set_reaction_live_volume(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, ssa_live_volume_idx0: typing.SupportsInt | typing.SupportsIndex, ssa_live_volume_exp: typing.SupportsFloat | typing.SupportsIndex) -> None:
-        """
-        GH #81: set the SSA live-volume correction on an already-added reaction (rxn_idx0 = 0-based index from add_reaction). Used by the SBML loader to tag a variable-volume reaction once its event-resized compartment has been promoted to a species (which happens after reaction emission). No-op if rxn_idx0 is out of range.
-        """
-    def set_species_ode_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
-        """
-        GH #144 (case 4): set the cross-compartment ODE live-volume divide on a species. compute_derivs divides this species's per-species accumulation by conc[live_idx0] (the promoted compartment species = V_live) instead of its static volume_factor. No-op if species_idx0 is out of range.
-        """
     def set_param_volume_write_refused(self, name: str) -> None:
         """
         Issue #170: mark a compartment size this loader could not resolve to a live volume, so set_param keeps refusing a value-changing write to it. No-op if the name is not a known parameter.
         """
+    def set_reaction_live_volume(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, ssa_live_volume_idx0: typing.SupportsInt | typing.SupportsIndex, ssa_live_volume_exp: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        """
+        GH #81: set the SSA live-volume correction on an already-added reaction (rxn_idx0 = 0-based index from add_reaction). Used by the SBML loader to tag a variable-volume reaction once its event-resized compartment has been promoted to a species (which happens after reaction emission). No-op if rxn_idx0 is out of range.
+        """
     def set_reaction_ssa_volume_param(self, rxn_idx0: typing.SupportsInt | typing.SupportsIndex, param_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
         Issue #170: bind a reaction's SSA propensity volume to a compartment-size parameter, so compute_rxn_rate reads the live value rather than the number baked at load. No-op if rxn_idx0 is out of range.
+        """
+    def set_species_ode_live_volume(self, species_idx0: typing.SupportsInt | typing.SupportsIndex, live_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
+        """
+        GH #144 (case 4): set the cross-compartment ODE live-volume divide on a species. compute_derivs divides this species's per-species accumulation by conc[live_idx0] (the promoted compartment species = V_live) instead of its static volume_factor. No-op if species_idx0 is out of range.
         """
     def set_species_rateof_amount(self, species_idx0: typing.SupportsInt | typing.SupportsIndex) -> None:
         """
@@ -293,24 +293,24 @@ class NetworkModel:
         Per-parameter flag, parallel to ``param_names``: True for an SBML compartment size. Issue #170 made such a parameter writable (the storage convention is re-derived from it), but it is not yet DIFFERENTIABLE, so forward sensitivity still refuses the column. All False for .net models and for every compartment promoted to a species (rate-rule / event-resized), which is not a parameter at all.
         """
     @property
-    def param_is_internal(self) -> list[bool]:
-        """
-        Per-parameter flag, parallel to ``param_names``: True for a synthesized parameter holding a load-time constant that other expressions are normalised against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from ``primary_param_names``; ``set_param`` refuses a value-changing write. All False for .net models.
-        """
-    @property
-    def param_volume_write_refused(self) -> list[bool]:
-        """
-        Per-parameter flag, parallel to ``param_names``: True for the residue of compartment sizes issue #170 could NOT make live, whose value-changing write ``set_param`` still refuses — an assignment-rule compartment, or one whose storage divide a mass-action reaction shares across two compartments. A subset of ``param_is_compartment_size``; all False for .net models.
-        """
-    @property
     def param_is_expression(self) -> list[bool]:
         """
         Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``).
         """
     @property
+    def param_is_internal(self) -> list[bool]:
+        """
+        Per-parameter flag, parallel to ``param_names``: True for a synthesized parameter holding a load-time constant that other expressions are normalised against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from ``primary_param_names``; ``set_param`` refuses a value-changing write. All False for .net models.
+        """
+    @property
     def param_names(self) -> list[str]:
         """
         List of all parameter names
+        """
+    @property
+    def param_volume_write_refused(self) -> list[bool]:
+        """
+        Per-parameter flag, parallel to ``param_names``: True for the residue of compartment sizes issue #170 could NOT make live, whose value-changing write ``set_param`` still refuses — an assignment-rule compartment, or one whose storage divide a mass-action reaction shares across two compartments. A subset of ``param_is_compartment_size``; all False for .net models.
         """
     @property
     def pending_sensitivity_seed_param_names(self) -> list[str]:
