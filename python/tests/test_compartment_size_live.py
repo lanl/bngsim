@@ -346,6 +346,29 @@ def test_the_load_time_volume_record_is_not_a_knob():
     assert m.get_param(v0) == 2.5
 
 
+def test_a_clone_does_not_see_a_sibling_volume_write():
+    """The property the whole design rests on. `impl_->shared->reactions` is
+    SHARED across model clones, so #170's own plan — rescale
+    `Reaction::stat_factor` on a write — would have written through every sibling
+    of the model being scanned. The volume rides the *rate parameter* and the
+    species' storage convention instead, both per-instance. Check both
+    directions: a clone taken before the write must not move, and one taken after
+    must carry it.
+    """
+    fresh = lambda v: bngsim.Model.from_sbml_string(_src(v, L_kA))  # noqa: E731
+
+    base = fresh(1.0)
+    before = base.clone()
+    base.set_param("C", 3.0)
+    after = base.clone()
+
+    # A fresh reference per comparison: `_traj` leaves the model at its final
+    # state, so a reused one would run the second comparison from there.
+    assert np.array_equal(_traj(before), _traj(fresh(1.0)))
+    assert np.array_equal(_traj(after), _traj(fresh(3.0)))
+    assert np.array_equal(_traj(base), _traj(fresh(3.0)))
+
+
 def test_net_models_are_untouched(simple_decay_net):
     """A ``.net`` network is post-BNG2.pl: the volumes are already folded into
     its rate constants, so nothing here may fire on one."""
