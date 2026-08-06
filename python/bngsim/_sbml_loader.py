@@ -4196,6 +4196,30 @@ def _build_model_from_sbml_doc(doc):
     mass_action_rxns: dict[int, list[tuple]] = {}
 
     _v0_param_names: dict[str, str] = {}
+    # (#170) Names already spoken for, so a synthesized parameter cannot collide
+    # with one the SBML declares. `_rateLaw_<rid>` used to be synthesized only for
+    # a MULTI-component rate, which is rare enough that nobody had hit the clash;
+    # a volume power now synthesizes one for ordinary single-constant laws too,
+    # and bngsim's own `.net` → SBML export writes `_rateLaw_<rid>` out as a real
+    # parameter — so re-importing that file collided on the first reaction and
+    # `ModelBuilder::validate` rejected the model outright. Uniquifying covers the
+    # pre-existing hazard as well.
+    _taken_param_names: set[str] = {
+        _safe_name(sbml_model.getParameter(j).getId())
+        for j in range(sbml_model.getNumParameters())
+    } | {
+        _safe_name(sbml_model.getCompartment(j).getId())
+        for j in range(sbml_model.getNumCompartments())
+    }
+
+    def _unique_param_name(base: str) -> str:
+        name = base
+        n = 0
+        while name in _taken_param_names:
+            n += 1
+            name = f"{base}_{n}"
+        _taken_param_names.add(name)
+        return name
 
     def _load_time_volume_param(cid: str) -> str:
         """Name of a constant parameter holding compartment ``cid``'s load-time
@@ -4214,7 +4238,7 @@ def _build_model_from_sbml_doc(doc):
         """
         name = _v0_param_names.get(cid)
         if name is None:
-            name = _safe_name(f"_V0_{cid}")
+            name = _unique_param_name(_safe_name(f"_V0_{cid}"))
             builder.add_parameter(name, float(comp_volumes.get(cid, 1.0)))
             _v0_param_names[cid] = name
         return name
@@ -4266,7 +4290,7 @@ def _build_model_from_sbml_doc(doc):
         if len(rate_param_components) == 1 and not vol_terms:
             rate_param_name = rate_param_components[0][0]
         else:
-            derived_name = f"_rateLaw_{rid_safe}{derived_suffix}"
+            derived_name = _unique_param_name(f"_rateLaw_{rid_safe}{derived_suffix}")
             expr = " * ".join(name for name, _ in rate_param_components) + vol_terms
             init_value = 1.0
             for _, val in rate_param_components:

@@ -252,6 +252,37 @@ def test_the_write_survives_the_compiled_rhs():
     assert np.allclose(y_i, y_c, rtol=1e-9, atol=1e-12)
 
 
+def test_the_rate_constant_partials_survive_the_new_chain_rule():
+    """``∂f/∂k`` used to be a direct read of the Elementary rate parameter; the
+    volume ratio makes it a chain rule through ``_rateLaw_r``, which is where
+    this family of bugs lives (#2/#41/#43/#99 are all "who re-derives what").
+    Check it against a finite difference of the RHS itself, which is independent
+    of every derivation in the package.
+
+    The perturbation goes through ``set_param`` deliberately: that is the one
+    thing that re-evaluates a derived parameter, so an FD that wrote the vector
+    directly would silently agree with a broken chain rule.
+    """
+    m = bngsim.Model.from_sbml_string(_src(2.5, L_kA))
+    y = np.asarray(m.get_state(), dtype=float)
+
+    def rhs_at(name, value):
+        m.set_param(name, value)
+        try:
+            return np.asarray(m._core._eval_rhs(0.0, y), dtype=float)
+        finally:
+            m.set_param(name, base[name])
+
+    base = {n: m.get_param(n) for n in ("k", "C")}
+    for name in ("k", "C"):
+        theta = base[name]
+        h = 1e-6 * abs(theta)
+        fd = (rhs_at(name, theta + h) - rhs_at(name, theta - h)) / (2.0 * h)
+        # The analytic partial of dA/dt = -(k/V)*A w.r.t. each of k and V.
+        exact = -y[0] / 2.5 if name == "k" else base["k"] * y[0] / 2.5**2
+        assert np.isclose(fd[0], exact, rtol=1e-6), (name, fd[0], exact)
+
+
 def test_net_models_are_untouched(simple_decay_net):
     """A ``.net`` network is post-BNG2.pl: the volumes are already folded into
     its rate constants, so nothing here may fire on one."""
