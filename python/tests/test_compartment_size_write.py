@@ -30,7 +30,11 @@ thing that ever disagreed with the buggy answer, since a finite difference
 through ``set_param`` inherits the same staleness — plus RoadRunner where it is
 installed.
 
-Issue #170 tracks making the volume live everywhere, which retires the refusal.
+Issue #170 made the volume live: stage 1 the interpreted RHS and ICs, stage 2 the
+emitted C, stage 3 the derivative. What survives here is the residue no stage could
+resolve — the sizes named by :attr:`Model.unwritable_compartment_size_params` — and
+the sensitivity refusal is now exactly as wide as the write refusal, no wider.
+:mod:`test_compartment_size_sensitivity` owns the column that is no longer refused.
 """
 
 from __future__ import annotations
@@ -302,15 +306,35 @@ def test_parameter_scan_over_an_unwritable_compartment_refuses():
 # ── The sensitivity column ──────────────────────────────────────────────────
 
 
-def test_sensitivity_params_refuses_a_compartment():
+def test_sensitivity_params_refuses_an_unwritable_compartment():
+    """(#170 stage 3) The refusal is now exactly as wide as the write refusal.
+
+    It used to cover every compartment size, because the storage half of ``d/dV``
+    was folded at load and nothing differentiated it. Stage 3 emits that half, and
+    with the emitted text held fixed (stage 2's invariant) moving ``p[V]`` *is*
+    reloading at the new volume — so a column is trustworthy exactly where the
+    write is. What survives is this fixture, whose two equal-sized compartments
+    share one mass-action scalar: ``set_param`` refuses it, and so must the
+    derivative of that write.
+    """
     with pytest.raises(ValueError) as exc:
-        bngsim.Simulator(_xcomp(), method="ode", sensitivity_params=["C1", "k"])
+        bngsim.Simulator(_xcomp_equal(), method="ode", sensitivity_params=["C2", "k"])
     msg = str(exc.value)
-    assert "C1" in msg and "'k'" not in msg  # only the offending column is named
-    # (#170) The write is honored now; the *column* is what is still refused, and
-    # the message has to say which half of d/dV is missing rather than repeat
-    # #164's "the value is folded at load".
-    assert "#170" in msg and "storage half" in msg
+    assert "C2" in msg and "'k'" not in msg  # only the offending column is named
+    assert "#170" in msg
+    # The message must send the reader to the per-size reason and to the path that
+    # does work, not restate #164's "the value is folded at load".
+    assert "unwritable_compartment_size_params" in msg and "compartment_sizes" in msg
+
+
+def test_sensitivity_params_accepts_a_writable_compartment():
+    """The other side of the same line: ``_xcomp()``'s differing sizes send
+    ``transport`` down the per-species path, which stage 2 made live and stage 3
+    differentiates. ``test_compartment_size_sensitivity.py`` owns the numbers;
+    this pins that the door is open at all."""
+    sim = bngsim.Simulator(_xcomp(), method="ode", sensitivity_params=["C1", "k"])
+    res = sim.run(t_span=T_SPAN, n_points=N_POINTS, rtol=1e-10, atol=1e-12)
+    assert np.asarray(res.sensitivities).shape == (N_POINTS, 2, 2)
 
 
 def test_ordinary_sensitivity_still_works():
@@ -324,11 +348,15 @@ def test_ordinary_sensitivity_still_works():
     assert np.abs(sens).max() > 0.0
 
 
-def test_compute_all_sensitivities_skips_compartments_with_a_warning():
-    """``params=None`` means "everything computable". On an SBML model that list
-    leads with the compartments, so raising would make the method unusable for
-    the sake of columns nobody named — drop them, loudly."""
-    sim = bngsim.Simulator(_xcomp(), method="ode")
+def test_compute_all_sensitivities_skips_an_unwritable_compartment_with_a_warning():
+    """``params=None`` means "everything computable". Raising would make the
+    method unusable for the sake of a column nobody named, so drop it — loudly.
+
+    (#170 stage 3) The skip list is the *unwritable* residue now. On ``_xcomp()``,
+    where both sizes are writable, this warning does not fire at all and both
+    columns are in the tensor — see test_compartment_size_sensitivity.py.
+    """
+    sim = bngsim.Simulator(_xcomp_equal(), method="ode")
     with pytest.warns(UserWarning, match="compartment size"):
         res = sim.compute_all_sensitivities(t_span=T_SPAN, n_points=N_POINTS)
     assert "C1" not in res.sensitivity_params and "C2" not in res.sensitivity_params
@@ -337,13 +365,16 @@ def test_compute_all_sensitivities_skips_compartments_with_a_warning():
 
 def test_compute_all_sensitivities_raises_when_asked_by_name():
     """An explicit ask gets a hard answer, not a silently smaller tensor."""
-    sim = bngsim.Simulator(_xcomp(), method="ode")
+    sim = bngsim.Simulator(_xcomp_equal(), method="ode")
     with pytest.raises(ValueError, match="compartment size"):
-        sim.compute_all_sensitivities(t_span=T_SPAN, n_points=N_POINTS, params=["C1", "k"])
+        sim.compute_all_sensitivities(t_span=T_SPAN, n_points=N_POINTS, params=["C2", "k"])
 
 
-def test_steady_state_sensitivity_refuses_a_compartment():
-    sim = bngsim.Simulator(_xcomp(), method="ode")
+def test_steady_state_sensitivity_refuses_an_unwritable_compartment():
+    """``dY_ss/dp`` reads ∂f/∂p out of the same emitted sensitivity RHS, so it
+    inherits that column — right for a writable size since stage 3, and refusable
+    for exactly the sizes whose write is refused."""
+    sim = bngsim.Simulator(_xcomp_equal(), method="ode")
     with pytest.raises(ValueError, match="compartment size"):
         sim.steady_state(sensitivity_params=["C2"])
 
