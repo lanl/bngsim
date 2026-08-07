@@ -6976,6 +6976,10 @@ class _FunctionalDfdpScope(NamedTuple):
     switch_scope: SwitchConditionScope | None = None
     deadline: float | None = None
     derived_jac_cache: dict[str, tuple[dict[str, str] | None, str | None]] | None = None
+    # (#170 stage 3) ``aliased observable name → {volume_param_idx0: ∂obs/∂V as C}``.
+    # Empty unless the model has an amount-valued species whose compartment size
+    # is writable — see :func:`_observable_volume_weights`.
+    obs_volume_weights: dict[str, dict[int, str]] = {}
 
 
 def _functional_rate_law_partials(
@@ -7119,7 +7123,74 @@ def _functional_rate_law_partials(
             k = scope.param_idx_by_name.get(primary_name, -1)
             if k >= 0:
                 terms.append((k, f"({c_expr}) * ({dpd_c})"))
+
+    # ── (#170 stage 3) the amount-conversion channel of ∂(rate law)/∂V ──────
+    #
+    # A compartment size reaches this rate law by a road no symbol of it names.
+    # An amount-valued species enters an observable by its AMOUNT, so the emitted
+    # weight is the compartment size itself (``obs[k] = Σ factor·p[V]·y[j]``) —
+    # the volume is the units the law's inputs are quoted in, not a term of the
+    # law. ``sp.diff`` w.r.t. the size sees only the explicit occurrences, so
+    # without this the column is short by ``Σ_k (∂rate/∂obs_k)·(∂obs_k/∂V)``,
+    # which is the same "per-species amount conversion" the Elementary path picks
+    # up as its ``∏ V_c^m`` geometry factor. Measured at 14% on a Michaelis–Menten
+    # law over an hOSU species at V = 3, and it does not vanish as V → 1.
+    #
+    # ``obs_volume_weights`` is empty for every model without a writable
+    # compartment size holding an amount-valued species — including all of .net —
+    # so this loop does not run and the emitted text is unchanged.
+    for a in sorted(free & set(scope.obs_volume_weights)):
+        _check_derivation_deadline(scope.deadline)
+        deriv = sp.diff(sym_expr, sp.Symbol(a))
+        if deriv == 0:
+            continue
+        c_expr = sympy_to_c(deriv, resolve_symbol)
+        if c_expr is None:
+            return None, (
+                f"the derivative w.r.t. the observable {a} — needed for the "
+                "compartment-size column, because that observable reads an "
+                "amount-valued species whose size is writable (issue #170) — is "
+                "not representable in C"
+            )
+        for k, w_c in sorted(scope.obs_volume_weights[a].items()):
+            terms.append((k, f"({c_expr}) * ({w_c})"))
     return terms, None
+
+
+def _observable_volume_weights(species, observables, alias) -> dict[str, dict[int, str]]:
+    """``∂obs_k/∂V_c`` as C, per (aliased observable name, compartment-size param).
+
+    An amount-valued species contributes ``factor · V_c · y[j]`` to an observable
+    (mirrors ``_emit_observable_lines``' ``coef = factor * av_factor[...]``), so
+    differentiating w.r.t. that size leaves ``factor · y[j]`` — summed over the
+    species of that compartment, in species-index order so the emitted sum
+    associates the way the value's does.
+
+    Returns ``{}`` — and therefore costs nothing and changes no emitted text —
+    unless the model has an amount-valued species whose compartment size is a
+    writable parameter (issue #170 stage 2's ``volume_param_idx0``). That is every
+    ``.net`` model, every hOSU=false SBML model, and every model loaded before
+    #170.
+    """
+    _, av_param = _amount_volume_factors(species)
+    if not av_param:
+        return {}
+    out: dict[str, dict[int, str]] = {}
+    for o in observables:
+        per_vol: dict[int, list[str]] = {}
+        for si, factor in o.get("entries", ()):
+            k = av_param.get(int(si), -1)
+            f = float(factor)
+            if k < 0 or f == 0.0:
+                continue
+            per_vol.setdefault(k, []).append(
+                f"y[{int(si)}]" if f == 1.0 else f"{f!r} * y[{int(si)}]"
+            )
+        if per_vol:
+            out[alias(o["name"])] = {
+                k: (v[0] if len(v) == 1 else "(" + " + ".join(v) + ")") for k, v in per_vol.items()
+            }
+    return out
 
 
 def _functional_dfdp_terms(
@@ -7247,6 +7318,9 @@ def _functional_dfdp_terms(
         switch_scope=switch_scope,
         deadline=deadline,
         derived_jac_cache={},
+        # (#170 stage 3) The compartment size an observable's amount conversion
+        # hides. Empty ⇒ the derivative loop that reads it never runs.
+        obs_volume_weights=_observable_volume_weights(data["species"], observables, _alias),
     )
 
     # A rule-generated network reuses one rate-law expression across many
@@ -8346,14 +8420,29 @@ def output_sens_support(model) -> dict[str, str | None]:
 
 
 def _emit_obs_sens_lines(
-    observables: list, av_factor: dict, av_param: dict, ss: str, out: str
+    observables: list,
+    av_factor: dict,
+    av_param: dict,
+    ss: str,
+    out: str,
+    *,
+    column_param: str | None = None,
 ) -> list[str]:
     """C lines computing ``out[j] = Σ_i c_ji·ss[i]`` — the linear observable
     output sensitivity for one sensitivity column whose species derivatives are
     in ``ss`` (``dx_i/dθ``). The coefficient ``c_ji`` folds the GroupEntry factor
     and the GH #75 amount-volume scaling identically to ``_emit_observable_lines``
     and the #197 C++ runtime path, so observable and expression sensitivities
-    stay consistent — including issue #170 stage 2's live ``factor*p[k]`` form."""
+    stay consistent — including issue #170 stage 2's live ``factor*p[k]`` form.
+
+    ``column_param`` (issue #170 stage 3) is a C expression naming *which*
+    parameter this column differentiates. When the coefficient ``c_ji`` is itself
+    a writable compartment size — an amount-valued species, whose observable is
+    quoted in amounts — that column carries the direct ``∂c_ji/∂V·x_i`` on top of
+    the chain rule, and this is what selects it at run time. Omitted (or a model
+    with no live amount factor) ⇒ not one extra emitted line, so every model
+    without an hOSU species on a writable size keeps its text.
+    """
     lines = []
     for j, o in enumerate(observables):
         entries = o["entries"]
@@ -8361,10 +8450,13 @@ def _emit_obs_sens_lines(
             lines.append(f"        {out}[{j}] = 0.0;")
             continue
         terms = []
+        direct: dict[int, list[str]] = {}
         for sp_idx, factor in entries:
             if sp_idx in av_param:
                 pref = "" if factor == 1.0 else _c_scalar(factor) + "*"
                 terms.append(f"{pref}p[{av_param[sp_idx]}]*{ss}[{sp_idx}]")
+                if column_param is not None and factor != 0.0:
+                    direct.setdefault(av_param[sp_idx], []).append(f"{pref}y[{sp_idx}]")
                 continue
             coef = factor * av_factor.get(sp_idx, 1.0)
             if coef == 1.0:
@@ -8372,6 +8464,9 @@ def _emit_obs_sens_lines(
             else:
                 terms.append(f"{_c_scalar(coef)}*{ss}[{sp_idx}]")
         lines.append(f"        {out}[{j}] = {' + '.join(terms)};")
+        for k, parts in sorted(direct.items()):
+            lines.append(f"        if ({column_param} == {k})")
+            lines.append(f"            {out}[{j}] += {' + '.join(parts)};")
     return lines
 
 
@@ -8497,7 +8592,15 @@ def generate_output_sens_from_model(model) -> str | None:
     _emit("        double* fs = func_sens_out + (size_t)_c * N_FUNC;")
     if n_obs > 0:
         for ln in _emit_obs_sens_lines(
-            observables, av_factor, av_param, ss="ss", out="obs_sens_c"
+            observables,
+            av_factor,
+            av_param,
+            ss="ss",
+            out="obs_sens_c",
+            # (#170 stage 3) An IC column carries the params.size() sentinel here,
+            # so it matches no compartment index and takes no direct term —
+            # correct: ∂obs/∂x_k(0) holds the volume fixed.
+            column_param="plist[_c]",
         ):
             _emit(ln)
         _emit("        if (obs_sens_out) {")
