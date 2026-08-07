@@ -24,7 +24,11 @@ from pathlib import Path
 import bngsim
 import numpy as np
 import pytest
-from bngsim._atol import derive_atol, normalize_atol_vector
+
+# The package namespace, not ``bngsim._atol`` — issue #212 made these public
+# precisely so no consumer has to reach into a private module, and the tests
+# should exercise the surface a consumer actually gets.
+from bngsim import derive_atol, normalize_atol_vector
 
 # Fast/small vs slow/large — see the module docstring and the .net header.
 _T_END = 0.5
@@ -564,3 +568,89 @@ def test_normalize_atol_vector_allows_zero():
 def test_normalize_atol_vector_names_the_species_it_can():
     with pytest.raises(ValueError, match=r"\[a, b, c, \.\.\.\]"):
         normalize_atol_vector([1e-8], 4, ["a", "b", "c", "d"])
+
+
+# ─── The public surface (issue #212) ──────────────────────────────────────────
+#
+# #196 shipped the capability but exported only ``Simulator.auto_atol``, which
+# derives from the model's LIVE state. The half a fitting frontend needs — the
+# stateless derivation from a state it chooses, so the tolerance is a constant
+# of the model rather than of the fit point — was private, along with the token
+# a consumer would feature-detect on. These tests pin the names, because the
+# cost of losing one is a downstream ``from bngsim._atol import ...``.
+
+_PUBLIC_NAMES = ["AUTO", "derive_atol", "normalize_atol_vector"]
+
+
+@pytest.mark.parametrize("name", _PUBLIC_NAMES)
+def test_atol_surface_is_importable_from_the_package(name):
+    assert hasattr(bngsim, name)
+
+
+@pytest.mark.parametrize("name", _PUBLIC_NAMES)
+def test_atol_surface_is_in_dunder_all(name):
+    assert name in bngsim.__all__
+
+
+@pytest.mark.parametrize("name", _PUBLIC_NAMES)
+def test_atol_surface_is_the_same_object_as_the_private_one(name):
+    """Re-export, not a copy — a divergent second implementation is worse."""
+    from bngsim import _atol
+
+    assert getattr(bngsim, name) is getattr(_atol, name)
+
+
+def test_auto_token_is_the_string_atol_accepts():
+    """``bngsim.AUTO`` must BE the token, not merely name the capability."""
+    assert bngsim.AUTO == "auto"
+
+
+def test_auto_token_round_trips_through_run(wide_sim):
+    """Passing the exported constant is the same run as passing the literal."""
+    sim, model = wide_sim
+    model.reset()
+    via_const = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=bngsim.AUTO)
+    model.reset()
+    via_literal = sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol="auto")
+    assert via_const.species == pytest.approx(via_literal.species)
+
+
+def test_derive_atol_from_a_supplied_state_matches_auto_atol_on_the_live_one(wide_sim):
+    """The two entry points are one rule; only the state they read differs."""
+    sim, model = wide_sim
+    assert derive_atol(model.get_state(), 1e-8) == pytest.approx(sim.auto_atol(rtol=1e-8))
+
+
+def test_derive_atol_is_a_constant_of_the_model_where_auto_atol_is_not(wide_sim):
+    """The #212 reason for exporting it: hold the tolerance across a fit.
+
+    ``auto_atol`` reads the live state, so moving an initial condition moves
+    the tolerance — which is what would put a step in a fitted objective.
+    ``derive_atol`` reads the state it was given, so a vector derived once from
+    the nominal state survives the move.
+    """
+    sim, model = wide_sim
+    nominal = model.get_state()
+    frozen = derive_atol(nominal, 1e-8)
+    i = model.species_names.index("S()")
+
+    model.set_concentration("S()", _S0 * 1000.0)
+
+    # The live derivation followed the state by the full three decades...
+    assert sim.auto_atol(rtol=1e-8)[i] == pytest.approx(frozen[i] * 1000.0, rel=1e-12)
+    # ...while the one derived from the state we chose did not move at all.
+    assert derive_atol(nominal, 1e-8) == pytest.approx(frozen, rel=1e-12, abs=0.0)
+
+
+def test_normalize_atol_vector_accepts_what_run_accepts(wide_sim):
+    """Validating up front must not disagree with validating inside ``run``."""
+    sim, model = wide_sim
+    vec = derive_atol(model.get_state(), 1e-8)
+    checked = normalize_atol_vector(vec, model.n_species, model.species_names)
+    assert checked == pytest.approx(list(vec))
+
+    with pytest.raises(ValueError, match=r"entries but the model has"):
+        normalize_atol_vector(vec[:-1], model.n_species, model.species_names)
+    model.reset()
+    with pytest.raises(ValueError, match=r"entries but the model has"):
+        sim.run(t_span=(0.0, _T_END), n_points=_N_POINTS, atol=vec[:-1])

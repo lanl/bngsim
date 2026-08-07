@@ -21,6 +21,12 @@ The vector is **positional**: entry ``i`` is the absolute tolerance for species
 error rather than a broadcast, because the failure mode of the alternative is
 silent — species ``i`` held to the number written for species ``j``, with a
 plausible trajectory to show for it.
+
+``AUTO``, :func:`derive_atol` and :func:`normalize_atol_vector` are re-exported
+from the package namespace (``bngsim.AUTO``, ``bngsim.derive_atol``,
+``bngsim.normalize_atol_vector``) and *that* is the spelling to import — issue
+#212. Do not import from ``bngsim._atol`` across a repository boundary.
+:func:`is_scalar_atol` and ``AtolLike`` stay internal.
 """
 
 from __future__ import annotations
@@ -32,7 +38,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 # Token accepted wherever ``atol`` is: derive the vector from the model's own
-# initial state instead of making the caller supply one.
+# initial state instead of making the caller supply one. Exported as
+# ``bngsim.AUTO`` (#212) so `hasattr(bngsim, "AUTO")` feature-detects the whole
+# per-species capability — the version string cannot, since the checkout that
+# first carried #196 still declared 0.12.2.
 AUTO = "auto"
 
 # What every ``atol=`` argument in the public API accepts. A float is the
@@ -59,6 +68,18 @@ def derive_atol(
     The rule is ``atol[i] = rtol * max(|y[i]|, floor)``: every species is
     resolved to ``rtol`` of *its own* magnitude, which is what a scalar cannot
     say and what every model spanning decades needs said.
+
+    This derives from **the state you hand it**, which is the difference that
+    matters between this function and :meth:`bngsim.Simulator.auto_atol` (and
+    ``atol="auto"``, which is the same thing): those read the model's *live*
+    state, the one the next ``run()`` would start from. Reach for this one when
+    the tolerance has to be a constant of the *model* rather than of the point
+    being integrated — a parameter fit that moves initial conditions is the
+    case. There, derive once from the nominal state, hold the vector for the
+    whole fit, and pass it as ``atol=``; ``"auto"`` would re-derive at every
+    evaluation and put a step in the objective wherever the derivation crossed
+    a rounding boundary, which is invisible in the usual way (the objective
+    still looks right and only the search behaves oddly).
 
     ``floor`` exists for exactly one case — a species whose value here is zero
     has no magnitude to scale, and ``atol[i] = 0`` would put it under pure
@@ -88,6 +109,11 @@ def derive_atol(
     numpy.ndarray
         ``float64`` array of ``len(state)`` absolute tolerances.
 
+    See Also
+    --------
+    bngsim.Simulator.auto_atol : the same rule against the model's live state.
+    bngsim.normalize_atol_vector : validate a vector you built yourself.
+
     Notes
     -----
     A tolerance derived from *initial* values still cannot see a species that
@@ -95,6 +121,18 @@ def derive_atol(
     over-time mismatch, and the CVODE construct for it is ``CVodeWFtolerances``
     (a user-supplied error-weight function), which #196 explicitly leaves out
     of scope. What this removes is the cross-species compromise.
+
+    Examples
+    --------
+    Derive once from the nominal state, then hold it across a fit that moves
+    initial conditions::
+
+        nominal = model.get_state()                     # before any fitting
+        atol = bngsim.derive_atol(nominal, rtol=1e-8)   # a constant of the model
+
+        for theta in search:
+            model.set_params(theta)
+            result = sim.run(t_span=(0, 100), rtol=1e-8, atol=atol)
     """
     y = np.abs(np.asarray(state, dtype=np.float64).ravel())
     if not np.all(np.isfinite(y)):
@@ -126,23 +164,41 @@ def normalize_atol_vector(
 ) -> list[float]:
     """Validate a caller-supplied per-species ``atol`` and return it as a list.
 
+    Every ``atol=`` entry point runs a vector through this before handing it to
+    the solver, so calling it yourself buys nothing except *when* the error
+    arrives. That is the point of it being public (issue #212): a caller that
+    assembles its own vector — from a nominal state, from a per-species clamp,
+    from a table — can take the contract check once at setup rather than at the
+    first ``run()``, which on a fit is a long way from where the vector was
+    built.
+
     Parameters
     ----------
     atol : array_like
         The candidate vector.
     n_species : int
-        Length the model requires.
+        Length the model requires (:attr:`bngsim.Model.n_species`).
     species_names : sequence of str, optional
         Used only to make the length error concrete about which ordering the
-        vector was supposed to be in.
+        vector was supposed to be in (:attr:`bngsim.Model.species_names`).
     where : str
-        Names the caller in the error message.
+        Names the caller in the error message. Defaults to ``"atol"``; pass
+        your own label to point the message at your call site.
+
+    Returns
+    -------
+    list of float
+        The same values as plain Python floats.
 
     Raises
     ------
     ValueError
         If the vector is not 1-D, is the wrong length, or holds an entry that
         is not finite and >= 0.
+
+    See Also
+    --------
+    bngsim.derive_atol : build the vector this validates.
     """
     arr = np.asarray(atol, dtype=np.float64)
     if arr.ndim != 1:

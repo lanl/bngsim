@@ -1974,6 +1974,15 @@ class Simulator:
         value is an ordinary array, and passing a modified copy back as
         ``atol=`` is the supported way to override any single species.
 
+        **If you need the tolerance to be a constant of the model rather than
+        of the point**, do not use this — call :func:`bngsim.derive_atol` with
+        the state you chose. Reading the live state is right for a one-off run
+        and wrong for a parameter fit that moves initial conditions: there the
+        vector would be re-derived at every evaluation, and the objective would
+        step wherever the derivation crossed a rounding boundary. Derive once
+        from the nominal state, then pass that same array as ``atol=`` for the
+        whole fit.
+
         Parameters
         ----------
         rtol : float, optional
@@ -1990,6 +1999,10 @@ class Simulator:
         numpy.ndarray
             ``n_species`` absolute tolerances, ordered like
             :attr:`Model.species_names`.
+
+        See Also
+        --------
+        bngsim.derive_atol : the same rule against a state you supply.
 
         Notes
         -----
@@ -2184,7 +2197,12 @@ class Simulator:
 
             ``"auto"`` derives the vector from the model's own current state as
             ``rtol * max(|y_i|, floor)`` — see :meth:`auto_atol`, which returns
-            the same array so it can be inspected or adjusted first.
+            the same array so it can be inspected or adjusted first. Note the
+            *current* in that sentence: if you need a tolerance that is a
+            constant of the model rather than of the point being integrated —
+            a fit that moves initial conditions is the case — derive it once
+            with :func:`bngsim.derive_atol` from the state you chose and pass
+            that array here instead of ``"auto"``.
 
             A per-species tolerance is what a model spanning decades of species
             magnitude needs: one scalar cannot be a tolerance for a species at
