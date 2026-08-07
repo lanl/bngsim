@@ -225,6 +225,11 @@ class NetworkModel:
         True iff the analytical Jacobian covers every reaction (Elementary + attached Functional terms). GH #76.
         """
     @property
+    def compartment_ic_sens_seeds(self) -> list:
+        """
+        List of (species_idx0, volume_param_idx0, d_ic_d_volume) triples for the species whose stored initial condition is an amount over a writable compartment size, so that x(0) = A/V and ∂x(0)/∂V = −x(0)/V (issue #170 stage 3). Empty for .net, for a model with no writable size, and after save_concentrations().
+        """
+    @property
     def conservation_laws(self) -> dict:
         """
         Conservation laws detected from stoichiometry matrix
@@ -331,6 +336,11 @@ class NetworkModel:
     def rhs_observable_eval_count(self) -> int:
         """
         Number of RHS evaluations that ran update_observables + evaluate_functions.
+        """
+    @property
+    def species_ic_param_ref_divisors(self) -> list[float]:
+        """
+        The divisor resolve_ic_from_param applies to each ``species_ic_param_refs`` entry, in the same order: the compartment volume for an amount_valued species (whose IC parameter names an amount over a stored amount/V), else 1.0. The IC-seed chain rule scales each ∂(IC parameter)/∂primary by its reciprocal (issue #170 stage 3).
         """
     @property
     def species_ic_param_refs(self) -> list:
