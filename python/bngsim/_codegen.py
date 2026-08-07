@@ -8063,13 +8063,25 @@ def _is_auto_rate_law(name: str) -> bool:
 def _output_sens_analysis_key(core) -> tuple:
     """Memo key for :func:`_analyze_output_sens` (GH #97).
 
-    Cheap by construction — four counters off the built model plus the budget
-    override — because avoiding ``codegen_data()`` and the sympy behind it is the
-    whole point. The counters are a structural guard, not a content hash: the
-    analysis is a pure function of the model's *shape* (function bodies, parameter
-    expressions, and the species/parameter/observable ordering its emitted
-    ``y[i]``/``p[k]`` references are indices into), and none of that changes after
-    load — ``set_param`` writes values, which never reach the emitted partials.
+    Cheap by construction — four counters off the built model, the attachment
+    vector, and the budget override — because avoiding ``codegen_data()`` and the
+    sympy behind it is the whole point. The counters are a structural guard, not a
+    content hash: the analysis is a pure function of the model's *shape* (function
+    bodies, parameter expressions, and the species/parameter/observable ordering
+    its emitted ``y[i]``/``p[k]`` references are indices into), and none of that
+    changes after load.
+
+    ``param_is_expression`` is the exception, and it has to be here (issue #174).
+    This key used to read "``set_param`` writes values, which never reach the
+    emitted partials", which issue #188 falsified for a *derived* parameter:
+    overriding one detaches it, the #15 chain rule through it disappears from
+    ``∂func/∂θ``, and the emitted C changes — with every counter unmoved. So a
+    model whose analysis was memoized before the write kept emitting the
+    pre-write partials. Content addressing used to hide that (the ``.so`` was
+    keyed on the stale source it was compiled from, so at least it matched
+    itself); a structural key would have cached the stale source under the
+    *post*-write key and served it to every later process. One C++ vector read
+    per emit closes it.
 
     The budget tag is in the key for the same reason it is in the ``.net`` ``.so``
     key (:func:`_sens_budget_cache_tag`): an expiry changes which functions come
@@ -8081,6 +8093,7 @@ def _output_sens_analysis_key(core) -> tuple:
         core.n_parameters,
         core.n_observables,
         core.n_functions,
+        tuple(bool(x) for x in core.param_is_expression),
         _sens_budget_cache_tag(),
     )
 
@@ -8905,6 +8918,14 @@ def prepare_model_codegen(model) -> Path | None:
     Emits combined RHS + analytical sensitivity RHS when every reaction is
     Elementary; otherwise falls back to RHS-only and CVODES uses internal FD.
 
+    The cache key is **structural** (:func:`compute_model_codegen_hash`, issue
+    #174), so a warm cache resolves the ``.so`` from a handful of C++ reads and
+    generates no source at all. It used to hash the generated source, which meant
+    a hit skipped only the ``cc`` compile — on ``Smith_BMCSystBiol2013`` that left
+    97% of ``Simulator`` construction being re-derived per construction, none of
+    it dependent on the parameter values a fit is moving. This mirrors what
+    ``prepare_codegen`` already does for the ``.net`` path.
+
     Parameters
     ----------
     model : Model
@@ -8918,18 +8939,19 @@ def prepare_model_codegen(model) -> Path | None:
     t0 = time.perf_counter()
     cache_hit: bool | None = None
     try:
-        c_source, has_sens = generate_combined_from_model(
-            model, emit_output_sens=bool(getattr(model, "_want_output_sens", False))
-        )
-        model_hash = hashlib.sha256(c_source.encode()).hexdigest()[:16]
+        emit_output_sens = bool(getattr(model, "_want_output_sens", False))
+        model_hash = compute_model_codegen_hash(model, emit_output_sens=emit_output_sens)
 
-        # Check cache
+        # Check cache — before generating anything, which is the whole point.
         cached = get_cached_so(model_hash)
         if cached is not None:
             logger.debug("Model codegen cache hit: %s", cached)
             cache_hit = True
             return cached
 
+        c_source, has_sens = generate_combined_from_model(
+            model, emit_output_sens=emit_output_sens
+        )
         if has_sens:
             logger.info(
                 "Model codegen: combined RHS + sensitivity RHS (%d chars)",
@@ -9197,6 +9219,16 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # derivation-budget override is process-scoped in exactly the same way and
         # decides exactly the same thing (whether the analytic sens RHS is emitted),
         # so it rides along in both keys.
+        # The chunking hatch rides along for exactly the same reason (issue #174):
+        # BNGSIM_CODEGEN_CHUNK changes generate_rhs_c's emitted text — 4,974 chars
+        # to 5,385 on akt-signaling — and nothing else in this key saw it, so a
+        # chunked run was handed the unchunked .so and an A/B of the feature
+        # measured one binary twice. Resolved through the two policy functions
+        # rather than read raw, so `on` and `true` do not make two keys for one
+        # source. Same shape as the GH #67 hatch below: this is the fourth
+        # process-scoped knob that changes the emitted source, and the .net key is
+        # built from the file's bytes, so every one of them has to be here.
+        chunk_policy = (_chunk_threshold(), _chunk_block_size())
         memo_key = (
             net_key,
             want_jac,
@@ -9205,6 +9237,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             want_term_scale,
             functional_sens_rhs_enabled(),
             _sens_budget_cache_tag(),
+            chunk_policy,
         )
 
         # Fast path (T2): an unchanged .net (and its .tfun deps) resolves to the
@@ -9246,6 +9279,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         if not functional_sens_rhs_enabled():
             suffix += ":no_functional_sens"
         suffix += _sens_budget_cache_tag()
+        # Issue #174: appended only when the chunking policy is OVERRIDDEN, so the
+        # default key — and every .so already in this cache — stays byte-identical,
+        # exactly as the GH #162 form above is preserved.
+        if chunk_policy != (_DEFAULT_CHUNK_THRESHOLD, _DEFAULT_CHUNK_SIZE):
+            suffix += f":chunk={chunk_policy[0]}x{chunk_policy[1]}"
         if suffix:
             model_hash = hashlib.sha256((model_hash + suffix).encode()).hexdigest()[:16]
 
