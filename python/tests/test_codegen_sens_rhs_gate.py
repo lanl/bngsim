@@ -202,8 +202,15 @@ class TestTheGate:
 
 class TestTheCacheKeyCarriesTheFlag:
     def test_the_structural_key_moves_with_the_flag(self, tmp_path):
-        """A key that ignored it would hand the plain-run ``.so`` — which has no
-        ``bngsim_codegen_sens_rhs`` in it at all — to a sensitivity run."""
+        """The key follows the flag the caller will actually pass the generator.
+
+        ``compute_model_codegen_hash`` folds in the *resolved* decision rather than
+        the raw GH #67 hatch, the rule its own ``chunk_policy`` comment states. It
+        is redundancy today — ``emit_output_sens`` determines the flag, so the two
+        keys already differ — and it is the cheap kind: the thing it guards is a
+        plain-run ``.so`` with no ``bngsim_codegen_sens_rhs`` in it being served to
+        a sensitivity run, which is silent.
+        """
         m = _model(tmp_path, FUNCTIONAL)
         assert cg.compute_model_codegen_hash(
             m, emit_functional_sens=True
