@@ -199,9 +199,9 @@ class NetworkModel:
         """
         Compile and attach symbolically-derived Functional Jacobian terms (GH #76). Returns True if the analytical Jacobian was populated.
         """
-    def set_param(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex) -> None:
+    def set_param(self, name: str, value: typing.SupportsFloat | typing.SupportsIndex, force_override: bool = False) -> None:
         """
-        Set a parameter value by name
+        Set a parameter value by name. `force_override=True` pins a derived (expression-backed) parameter to the literal regardless of its value, permanently for this model object (issue #188); an ordinary write overrides only while the value differs from the expression's, so it round-trips.
         """
     def set_params(self, params: dict) -> None:
         """

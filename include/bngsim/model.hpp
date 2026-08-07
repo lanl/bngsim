@@ -66,7 +66,18 @@ class NetworkModel {
     // of those parameters (issue #79) — `A() Stot` declares A's IC to BE Stot,
     // so a dose scan over Stot has to move it. See refresh_param_ref_ics() for
     // which of `initial_conc` / `concentration` follows and when.
-    void set_param(const std::string &name, double value);
+    //
+    // Issue #188 — writing a *derived* (expression-backed) parameter overrides
+    // its expression, BNG `setParameter` style, and the override is keyed on the
+    // value: it lasts exactly while the parameter does not hold what its
+    // expression produces, so writing that value back lifts it. `force_override`
+    // pins the parameter independently of its value, for the one caller that
+    // needs "treat this as an independent input" to survive an identity write —
+    // `bngsim.jax.differentiable_solve(flat=True)`, whose documented legacy
+    // semantics are that every parameter, derived included, is its own axis.
+    // That mode used to get it for free from an unconditional detach; asking for
+    // it by name is what lets an ordinary write round-trip.
+    void set_param(const std::string &name, double value, bool force_override = false);
     double get_param(const std::string &name) const;
     std::vector<std::string> param_names() const;
 

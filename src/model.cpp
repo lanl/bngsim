@@ -176,12 +176,21 @@ NetworkModel NetworkModel::clone() const {
                                   copy.impl_->current_derivs);
     }
 
-    // Re-compile expression-valued parameters using cached preprocessed strings
+    // Re-compile expression-valued parameters using cached preprocessed strings.
+    //
+    // Issue #188 — the gate is "has an expression", not "is currently attached to
+    // it". A parameter whose expression `set_param` has overridden keeps its
+    // evaluator precisely so the override stays reversible, and a clone that
+    // dropped it would be the one copy of the model that could never be put back.
+    // Only an attached parameter takes its value from the expression; an
+    // overridden one carries the literal it was written with.
     for (auto &p : copy.impl_->parameters) {
-        if (p.is_expression && !p.expression.empty() && p.evaluator_id >= 0) {
+        if (!p.expression.empty() && p.evaluator_id >= 0) {
             const auto &cached = impl_->evaluator->preprocessed_expr(p.evaluator_id);
             p.evaluator_id = copy.impl_->evaluator->compile_preprocessed(cached);
-            p.value = copy.impl_->evaluator->evaluate(p.evaluator_id);
+            if (p.is_expression) {
+                p.value = copy.impl_->evaluator->evaluate(p.evaluator_id);
+            }
         }
     }
 
@@ -280,7 +289,7 @@ NetworkModel NetworkModel::clone() const {
 
 // ─── Parameter access ────────────────────────────────────────────────────────
 
-void NetworkModel::set_param(const std::string &name, double value) {
+void NetworkModel::set_param(const std::string &name, double value, bool force_override) {
     auto it = impl_->shared->param_name_to_idx.find(name);
     if (it == impl_->shared->param_name_to_idx.end()) {
         throw std::runtime_error("Parameter not found: " + name);
@@ -341,13 +350,69 @@ void NetworkModel::set_param(const std::string &name, double value) {
             "other compartment size in this model is an ordinary writable parameter.");
     }
 
+    // Issue #188 — a parameter that has a defining expression is expression-backed
+    // exactly while it holds the value that expression produces.
+    //
+    // BNG's setParameter() semantics still hold, and a value-CHANGING write still
+    // implements them: `d = d__FREE` written to 27 stops tracking `d__FREE` for
+    // the remainder of the action sequence. What changed is that the override is
+    // keyed on the *value* rather than latched by the act of writing, so it is
+    // reversible — writing back the value the expression produces re-attaches it.
+    //
+    // Latching it broke two things. A write of the value the parameter already
+    // held detached it, so `set_params(dict(zip(param_names, vec)))` — the whole
+    // parameter-vector round trip a fitting harness performs every iteration, and
+    // the one `Result.gradient`'s own docstring recommends — quietly turned every
+    // derived parameter in the model into an independent constant (9,524 of them
+    // across the 279 corpus models that have any). And detaching is not
+    // bookkeeping: a derived parameter that stops being derived stops
+    // contributing its chain-rule term to the primaries underneath it, so on
+    // BIOMD0000000701 that identity round trip took d(x)/d(alpha) from 1.0e-3 to
+    // exactly zero — a silently wrong sensitivity column for a parameter the
+    // caller never wrote. Neither reset() nor clone() could put it back, and nor
+    // could writing the primary underneath.
+    //
+    // The comparison is exact equality, and it is exact by construction rather
+    // than by luck: the loop below is the only writer of an attached derived
+    // parameter's value, so such a parameter always holds precisely
+    // `evaluate(expression)` — verified bit-for-bit on all 9,524.
+    //
+    // `evaluator_id`, not `expression`, is what says "there is an expression
+    // here": the .net reader stores the source text of every parameter,
+    // constants included (`kf 0.5` keeps "0.5"), and only an expression-valued
+    // one is ever compiled.
+    //
+    // `force_override` is the escape hatch for a caller whose whole contract is
+    // "this parameter is an independent input" — see the header. It pins
+    // regardless of the value, which is what the unconditional detach used to do
+    // for every caller.
+    double from_expr = 0.0;
+    bool expr_live = false;
+    if (!force_override && param.evaluator_id >= 0 && !param.expression.empty()) {
+        try {
+            from_expr = impl_->evaluator->evaluate(param.evaluator_id);
+            expr_live = true;
+        } catch (...) {
+            expr_live = false;
+        }
+    }
+
     param.value = value;
 
-    // If this parameter was expression-backed (e.g., "d = d__FREE"),
-    // detach it so the explicit value isn't overwritten by re-evaluation.
-    // This matches BNG's setParameter() semantics: the literal value
-    // overrides the expression for the remainder of the action sequence.
-    if (param.is_expression) {
+    if (expr_live) {
+        param.is_expression = (value == from_expr);
+    } else if (param.is_expression) {
+        // Two ways here, and both want the pre-#188 latch — detach, permanently.
+        //
+        // `force_override`: the caller asked for a pin that no later write can
+        // lift by accident, which is the legacy semantics exactly.
+        //
+        // Or an expression that will not evaluate — compilation failed at build
+        // time (model_builder swallows that case), or it reads something
+        // unavailable here — which has nothing to compare against.
+        //
+        // Dropping the evaluator is what makes this state distinguishable from
+        // the reattachable override above.
         param.is_expression = false;
         param.evaluator_id = -1;
         // Keep param.expression for debugging/introspection
