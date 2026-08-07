@@ -46,9 +46,10 @@ Two things are locked in here:
     so the default budget keeps it on the analytical path. This is the regression
     the budget value was chosen to avoid — a budget too small would turn its PASS
     into a solver failure. **Both halves of that rationale have since gone stale**
-    the same way the loser half did (see ``test_default_budget_covers_*``); the
-    assertions below are still true and still pass, but the fixture no longer
-    demonstrates what it was picked to demonstrate.
+    the same way the loser half did (issue #210, and see
+    ``test_default_budget_covers_*``); the assertions below are still true and
+    still pass, but the fixture no longer demonstrates what it was picked to
+    demonstrate.
 
 Like the chatter test, these are gated on both the gitignored corpus model and
 libRoadRunner being present locally.
@@ -106,7 +107,7 @@ _TEST_BUDGET_S = "0.25"
 # ``Simulator()``: on a Functional model that size the constructor is codegen, and
 # codegen cost is decided by the .so cache, not by anything #95 bounds — 0.08 s
 # warm against 35 s cold for 496, of which ~17 s is a speculative ∂f/∂p emission a
-# plain ODE run never calls (issue #190's second half, which has its own issue).
+# plain ODE run never calls (issue #209, #190's second half).
 # The old single 25 s wall spanned all of it, which is why it read as ~1 s of
 # margin from a warm checkout and blew the cap outright from a cold one.
 _ATTACH_WALL_CAP = 8.0
@@ -242,7 +243,7 @@ def test_default_budget_covers_needs_analytical_models():
     justified by anything measured — it is not *wrong*, and it is not being
     relaxed here, but the corpus no longer contains the evidence for it. Re-picking
     the fixture, or deriving the floor from whatever the slowest genuinely
-    needs-analytical model is today, has its own issue.
+    needs-analytical model is today, is issue #210.
     """
     assert _DEFAULT_DERIVATION_BUDGET_S >= 15.0, (
         f"default derivation budget {_DEFAULT_DERIVATION_BUDGET_S}s is below the "
