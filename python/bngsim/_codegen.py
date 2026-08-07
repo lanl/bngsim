@@ -2302,14 +2302,31 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
         entry per primary with a non-zero ∂f/∂primary, chained through nested
         derived parameters and evaluated at the current parameter values.
 
-    Returns ``[]`` when no species IC is a parameter reference (the overwhelming
-    majority of models — one cheap C++ vector fetch, no sympy import). A derived
-    IC whose expression cannot be differentiated is simply omitted, leaving that
-    species unseeded (pre-#43 behavior) without disturbing the others.
+    Returns ``[]`` when no species IC is a parameter reference and no compartment
+    size reaches one (the overwhelming majority of models — two cheap C++ vector
+    fetches, no sympy import). A derived IC whose expression cannot be
+    differentiated is simply omitted, leaving that species unseeded (pre-#43
+    behavior) without disturbing the others.
+
+    Issue #170 stage 3 adds the **storage** axis. bngsim stores amount/V_c, so a
+    species whose declared IC is an amount has a stored initial condition that
+    moves when its compartment size is written — ``∂x(0)/∂V = −x(0)/V``, which
+    :meth:`NetworkModel.compartment_ic_sens_seeds` computes next to the two
+    ``refresh_*`` functions that apply the same convention to the value. The same
+    divide also scales every *parameter* column of such a species: the parameter
+    names an amount, and ``species_ic_param_ref_divisors`` reports the ``1/V_c``
+    the parameter graph here cannot see.
     """
     refs = list(core.species_ic_param_refs)  # [(species_idx0, param_idx0)]
+    # (#170 stage 3) [(species_idx0, volume_param_idx0, ∂x(0)/∂V)]
+    vol_seeds = [tuple(t) for t in getattr(core, "compartment_ic_sens_seeds", ())]
     if not refs:
-        return []
+        return [(int(a), int(b), float(c)) for a, b, c in vol_seeds]
+    # Parallel to `refs`: the 1/V_c between "the parameter" and "the stored
+    # value". 1.0 for every .net model and every hOSU=false SBML species, so the
+    # loop below is arithmetically unchanged there. Degrades to "no divide"
+    # against a core built before the accessor existed.
+    ref_divisors = list(getattr(core, "species_ic_param_ref_divisors", ())) or [1.0] * len(refs)
 
     names = list(core.param_names)
     is_expr = list(core.param_is_expression)
@@ -2320,7 +2337,8 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
     derived_exprs = {names[i]: exprs[i] for i in range(len(names)) if is_expr[i] and exprs[i]}
 
     seeds: list[tuple[int, int, float]] = []
-    for species_idx0, param_idx0 in refs:
+    for (species_idx0, param_idx0), divisor in zip(refs, ref_divisors, strict=True):
+        vdiv = 1.0 / divisor if divisor not in (0.0, 1.0) else 1.0
         pname = names[param_idx0]
         if is_expr[param_idx0] and derived_exprs.get(pname):
             partials = _derived_expr_partials_numeric(
@@ -2345,12 +2363,24 @@ def compute_ic_param_sens_seed(core) -> list[tuple[int, int, float]]:
                     derived_exprs[pname], primary_names, derived_exprs
                 ):
                     seeds.append(
-                        (species_idx0, param_idx[prim_name], float(partials.get(prim_name, 0.0)))
+                        (
+                            species_idx0,
+                            param_idx[prim_name],
+                            float(partials.get(prim_name, 0.0)) * vdiv,
+                        )
                     )
         else:
             # Direct primary IC: seed coefficient 1 on the exact named
-            # parameter, matching the legacy C++ identity seeding.
-            seeds.append((species_idx0, param_idx0, 1.0))
+            # parameter, matching the legacy C++ identity seeding — except where
+            # the stored value is that parameter over a volume (issue #170 stage
+            # 3), which is 1.0 for every model the legacy seeding covers.
+            seeds.append((species_idx0, param_idx0, vdiv))
+    # The storage half. Kept separate rather than merged into a row above: a
+    # species can have both (an <initialAssignment> that reads the compartment
+    # gives ∂A/∂V through the parameter graph *and* the explicit −A/V² here), and
+    # the C++ seeding accumulates with `+=` precisely so the two arrive as two
+    # rows on the same (species, parameter) cell.
+    seeds.extend((int(a), int(b), float(c)) for a, b, c in vol_seeds)
     return seeds
 
 
@@ -7531,6 +7561,16 @@ def generate_sens_from_model(
     # AnalyticalJacobianData::ReactionTerms::amount_factor. 1.0 for .net / V=1 /
     # hOSU=false ⇒ byte-identical codegen.
     av_factor, av_param = _amount_volume_factors(species)
+    # (#170 stage 3) The rate's non-geometry factor, as C — ``p[k]`` for an
+    # Elementary rate constant, ``func[i]`` for a Functional rate law. The
+    # storage-half derivatives below are the rate times a volume exponent, so
+    # they need the same handle on the rate that generate_rhs_from_model uses to
+    # build it. Name → function index, the map that emitter builds too.
+    func_idx_by_name = {f["name"]: i for i, f in enumerate(data.get("functions", []))}
+    # Synthetic rxn_data entries for the ∂/∂V of the cross-compartment row
+    # divide, appended after every real reaction so the Elementary J·v groups
+    # (which number themselves by rxn_data index) keep their text.
+    volume_storage_rows: list[dict] = []
 
     rxn_data: list[dict] = []
     for rxn_idx, rxn in enumerate(reactions):
@@ -7591,6 +7631,49 @@ def generate_sens_from_model(
         # stoichiometry, which is exactly Σ_r stat_r·netstoich_ir·(∂func_r/∂p)·∏R_r.
         derived_terms.extend(functional_terms.get(rxn_idx, ()))
 
+        # ── (#170 stage 3) the STORAGE half of ∂f/∂V ───────────────────────
+        #
+        # A compartment size reaches ``f`` by two roads. The kinetic-law road —
+        # the volume as a symbol in a rate law — is already differentiated: it
+        # arrives above as ``_rateLaw_<rid> = k·(C/_V0_C)^n``'s chain rule, or as
+        # ∂func/∂C. The *storage* road is the one #170's refusal names, and it is
+        # the two factors the emitters put in by hand because they are a
+        # convention rather than a symbol the model wrote:
+        #
+        #   f_i = Σ_r (ν_ir / V_i) · rate_r,   rate_r = base_r · sf · ∏V_c^{m_c} · ∏x^m
+        #          ↑ the psvs row divide        ↑ the GH #75 amount factor
+        #
+        # Both are ``p[]`` reads since stage 2, so both are differentiable; until
+        # stage 3 neither contributed a term and the column was the kinetic half
+        # alone. ∂/∂V_c of the amount factor is ``rate·m_c/V_c``, which is the
+        # existing "(derivative expression) × geometry" shape with ``base_r·m_c/V_c``
+        # as the expression — so it rides ``derived_terms`` and needs no new
+        # emission. The row divide is handled below, where the row set differs.
+        #
+        # ``base_c`` is None only where the RHS itself emits no rate (an
+        # Elementary reaction with no rate constant, an unresolved function) or
+        # for Michaelis–Menten, whose rate carries no amount factor and which the
+        # psvs gate above already declines — so a None here always means "this
+        # reaction reads no volume", never "a term was dropped".
+        if is_elementary:
+            base_c = f"p[{rate_params[0]}]" if rate_params else None
+        elif rxn["type"] == "functional":
+            _fidx = func_idx_by_name.get(rate_pname, -1)
+            base_c = f"func[{_fidx}]" if _fidx >= 0 else None
+        else:
+            base_c = None
+
+        if base_c is not None and amount_factor_c is not None:
+            # One exponent per live compartment size across the reactant
+            # occurrences — the same list _amount_factor_c folds into the factor,
+            # counted rather than multiplied. A static (non-live) factor has no
+            # index and contributes no column.
+            for _vc, _m in sorted(
+                Counter(av_param[ri] for ri in reactants if ri in av_param).items()
+            ):
+                _num = f"{_m}.0 * " if _m != 1 else ""
+                derived_terms.append((_vc, f"{_num}{base_c} / p[{_vc}]"))
+
         entry = {
             "param_idx": pidx,
             "stat_factor": sf,
@@ -7613,10 +7696,42 @@ def generate_sens_from_model(
                     row_divisor[si] = (live_idx, sdiv, sdiv_param)
             if row_divisor:
                 entry["row_divisor"] = row_divisor
+                # (#170 stage 3) ∂/∂V_c of that divide. Row i contributes
+                # ν_i·rate/V_i, so ∂/∂V_i is −ν_i·rate/V_i² — a term the rows
+                # divided by *some other* compartment do not get, which is why
+                # this cannot ride the entry above (its scatter covers every
+                # row). It is emitted as its own rxn_data entry with the same
+                # geometry, the stoichiometry restricted to the rows that divide
+                # by this size, and one derived term ``−base/V_c``: the ordinary
+                # scatter then applies its own ν_i/V_i and lands exactly on
+                # −ν_i·rate/V_i². Reusing the entry shape rather than adding an
+                # emission keeps the obs[]/func[] signature resolution, the
+                # chunking and the issue #177 term-scale mirror in one place.
+                # ``param_idx = -1`` keeps it out of the Elementary J·v loop,
+                # the same way a Functional reaction stays out.
+                if base_c is not None:
+                    _by_size: dict[int, dict[int, int]] = {}
+                    for _si, (_live, _sdiv, _sdivp) in row_divisor.items():
+                        if _live < 0 and _sdivp >= 0:
+                            _by_size.setdefault(_sdivp, {})[_si] = stoich[_si]
+                    for _vc, _rows in sorted(_by_size.items()):
+                        volume_storage_rows.append(
+                            {
+                                "param_idx": -1,
+                                "stat_factor": sf,
+                                "stoich": _rows,
+                                "reactant_mult": dict(rmult),
+                                "derived_terms": [(_vc, f"-{base_c} / p[{_vc}]")],
+                                "amount_factor_c": amount_factor_c,
+                                "row_divisor": {_si: row_divisor[_si] for _si in _rows},
+                            }
+                        )
         mm_terms = mm_terms_by_rxn.get(rxn_idx)
         if mm_terms:
             entry["mm_terms"] = mm_terms
         rxn_data.append(entry)
+
+    rxn_data.extend(volume_storage_rows)
 
     src = _emit_sens_rhs_body(
         rxn_data,

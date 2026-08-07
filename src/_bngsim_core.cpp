@@ -938,6 +938,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
             ".net ``begin species`` block. Consumed by the forward-sensitivity "
             "IC-seed chain rule (issue #43).")
 
+        .def_property_readonly(
+            "species_ic_param_ref_divisors", &bngsim::NetworkModel::species_ic_param_ref_divisors,
+            "The divisor resolve_ic_from_param applies to each "
+            "``species_ic_param_refs`` entry, in the same order: the compartment "
+            "volume for an amount_valued species (whose IC parameter names an "
+            "amount over a stored amount/V), else 1.0. The IC-seed chain rule "
+            "scales each ∂(IC parameter)/∂primary by its reciprocal (issue #170 "
+            "stage 3).")
+
+        .def_property_readonly(
+            "compartment_ic_sens_seeds",
+            [](const bngsim::NetworkModel &self) {
+                py::list out;
+                for (const auto &s : self.compartment_ic_sens_seeds())
+                    out.append(py::make_tuple(std::get<0>(s), std::get<1>(s), std::get<2>(s)));
+                return out;
+            },
+            "List of (species_idx0, volume_param_idx0, d_ic_d_volume) triples for "
+            "the species whose stored initial condition is an amount over a "
+            "writable compartment size, so that x(0) = A/V and ∂x(0)/∂V = −x(0)/V "
+            "(issue #170 stage 3). Empty for .net, for a model with no writable "
+            "size, and after save_concentrations().")
+
         // State management
         .def("reset", &bngsim::NetworkModel::reset, "Reset species to initial concentrations")
 

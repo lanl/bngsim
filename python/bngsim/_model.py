@@ -1376,25 +1376,17 @@ class Model:
         from bngsim._codegen import compute_ic_param_sens_seed
 
         seeds = compute_ic_param_sens_seed(self._core)
-        # (#170) A ∂x(0)/∂V column is not reported and not seeded. An
-        # ``<initialAssignment>`` may now read a compartment size — that is what
-        # makes ``set_param`` on the size reproduce a rebuild — and the chain
-        # rule differentiates it happily, but what it produces is ∂(amount)/∂V
-        # where the state is ``amount/V``. The missing ``-amount/V²`` term is
-        # issue #170 stage 3, which is also why ``Simulator(...,
-        # sensitivity_params=[<a size>])`` refuses the axis outright; reporting
-        # here what the solver refuses there would be the same number arriving
-        # by a quieter door. MODEL1710030000 is the case: ``S21 =
-        # 393.927*0.055*cell`` is exactly V-invariant once stored, and the
-        # un-corrected column says 21.67 where a rebuild-to-rebuild difference
-        # says 0. Absent rather than 0.0, because issue #155 makes an absent
-        # entry mean "no seeding path" — which is what a refused axis is.
-        if seeds:
-            _sizes = {
-                i for i, n in enumerate(self.param_names) if n in set(self.compartment_size_params)
-            }
-            if _sizes:
-                seeds = [e for e in seeds if e[1] not in _sizes] or [(-1, 0, 0.0)]
+        # (#170 stage 3) The ∂x(0)/∂V column is seeded and reported now. It used
+        # to be filtered out here: an ``<initialAssignment>`` may read a
+        # compartment size — that is what makes ``set_param`` on the size
+        # reproduce a rebuild — and the chain rule differentiated it happily, but
+        # what it produced was ∂(amount)/∂V where the state is ``amount/V``, so
+        # the column was the numerator's derivative with neither the ``1/V`` on
+        # it nor the ``−amount/V²`` beside it. MODEL1710030000 is the case:
+        # ``S21 = 393.927*0.055*cell`` is exactly V-invariant once stored, and
+        # the un-corrected column said 21.67 where a rebuild-to-rebuild
+        # difference says 0. ``compute_ic_param_sens_seed`` now supplies both
+        # halves, and they cancel to that 0.
         declared = self._declared_ic_sens
         retired = self._superseded_ic_rows(seeds, declared) if seeds else set()
         if retired:
