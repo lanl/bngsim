@@ -18,7 +18,11 @@ class CvodeSimulator:
         """
     def set_max_steps(self, max_steps: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
+    @typing.overload
     def set_tolerances(self, rtol: typing.SupportsFloat | typing.SupportsIndex, atol: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @typing.overload
+    def set_tolerances(self, rtol: typing.SupportsFloat | typing.SupportsIndex, atol: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
         ...
 class ModelBuilder:
     def __init__(self) -> None:
@@ -738,6 +742,12 @@ class SolverOptions:
     def atol(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
+    def atol_vec(self) -> list[float]:
+        ...
+    @atol_vec.setter
+    def atol_vec(self, arg0: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        ...
+    @property
     def event_seed(self) -> int:
         ...
     @event_seed.setter
@@ -934,6 +944,12 @@ class SteadyStateOptions:
         ...
     @atol.setter
     def atol(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def atol_vec(self) -> list[float]:
+        ...
+    @atol_vec.setter
+    def atol_vec(self, arg0: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
         ...
     @property
     def max_steps(self) -> int:

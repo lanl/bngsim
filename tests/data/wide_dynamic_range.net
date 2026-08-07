@@ -1,0 +1,32 @@
+# Two decoupled first-order decays, nine decades apart in magnitude and three
+# in rate — the smallest reproducer of lanl/bngsim#196.
+#
+#   S(0) = 1e-09, decays fast (kS = 10)
+#   B(0) = 1e+01, decays slow (kB = 0.01)
+#
+# Analytical: S(t) = 1e-9*exp(-10*t), B(t) = 10*exp(-0.01*t).
+#
+# A single scalar atol cannot be a tolerance for both. At the default 1e-8, S is
+# an order of magnitude BELOW its own absolute tolerance for the whole run, so
+# it contributes nothing to the error test and its fast transient is resolved
+# only by whatever step size B happens to ask for. At the ~1e-17 S needs, the
+# step size collapses for a model that is otherwise trivial. Per-species
+# tolerances (CVodeSVtolerances) are the only way to state both at once.
+begin parameters
+    1 kS  10.0   # Constant
+    2 kB  0.01   # Constant
+end parameters
+begin species
+    1 S()  1.0e-9
+    2 B()  10.0
+    3 Sd() 0
+    4 Bd() 0
+end species
+begin reactions
+    1 1 3 kS #_R1
+    2 2 4 kB #_R2
+end reactions
+begin groups
+    1 S_tot  1
+    2 B_tot  2
+end groups

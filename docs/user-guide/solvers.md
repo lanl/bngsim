@@ -17,6 +17,69 @@ print(result.solver_stats)
 # {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
 ```
 
+## Per-species absolute tolerance
+
+`atol` also takes one value **per species**, ordered like
+`model.species_names`. That is `CVodeSVtolerances` rather than
+`CVodeSStolerances`, and it exists because a scalar `atol` is one number asked
+to mean the same thing for every state variable:
+
+| species | `y(0)` | the atol it needs alone (`rtol·y`) |
+|---|---:|---:|
+| `IRp` | 1.763e-09 | **1.8e-17** |
+| `IRSiP` | 1.33e-01 | 1.3e-09 |
+| `X` | 1.0e+01 | **1.0e-07** |
+
+Ten decades of species, and a scalar has to pick one number for all of them.
+Pinned near the tight end the model stops integrating; pinned near the loose
+end the small species sits under the noise floor for the entire run and its
+trajectory means nothing — it can come back negative. There is no scalar
+between them that is a tolerance for both.
+
+```python
+# Explicit — one value per species, in species_names order.
+result = sim.run(t_span=(0, 100), atol=[1e-17, 1e-9, 1e-7])
+
+# Derived from the model's own state: rtol * max(|y_i|, floor).
+result = sim.run(t_span=(0, 100), atol="auto")
+
+# ...or derive, inspect, adjust, then pass it back.
+atol = sim.auto_atol()
+atol[model.species_names.index("IRp")] *= 10
+result = sim.run(t_span=(0, 100), atol=atol)
+```
+
+The vector is positional and its length is checked, not adjusted: a wrong
+length raises `ValueError` rather than broadcasting or truncating, because the
+consequence of guessing is species *i* held to the number written for species
+*j*, with a plausible-looking trajectory to show for it.
+
+`atol=` accepts the same three forms on `set_tolerances`, `run_batch`,
+`parameter_scan`, `bifurcate`, `run_until`, `compute_all_sensitivities`,
+`steady_state`, `steady_state_batch`, and `EvaluationSpec`. Anything that runs
+many points (a batch, a scan, a chunked sensitivity job) resolves `atol` **once**
+up front, including `"auto"` — every point is held to the same tolerance, so the
+points can be compared with each other.
+
+Two things worth knowing:
+
+- **The sensitivity columns follow the state axis.** `atolS` for
+  ∂x_i/∂θ is built from species *i*'s own absolute tolerance, so a per-species
+  state tolerance is not collapsed back onto one number for the derivatives.
+- **`steady_state_tol` still reads the scalar.** The early-stop criterion is
+  `||f(t,y)||₂ / n_species`, one norm over every species with no per-species
+  reading to take. Say what "steady" means explicitly when running
+  `steady_state=True` with a vector.
+
+`atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
+smallest strictly positive species value in the model — a species sitting at
+zero has no magnitude of its own to scale, so it is treated as living at the
+smallest scale the model actually exhibits. Pass `floor=` to `auto_atol` to
+choose differently. Being built from *initial* values, this cannot see a species
+that starts at order one and decays to something tiny; that is a within-species,
+over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
+bngsim does not expose yet.
+
 ## Jacobian strategy
 
 The ODE solver (CVODE BDF/Newton) needs the Jacobian matrix ∂f/∂y at each

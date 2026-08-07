@@ -27,6 +27,7 @@
 // path, and both factors of dY_ss/dp were always finite differences.
 
 #include "bngsim/steady_state.hpp"
+#include "bngsim/atol_vector.hpp"
 #include "bngsim/codegen_abi.hpp"
 #include "bngsim/dense_eigenvalues.hpp"
 #include "bngsim/dynamic_library.hpp"
@@ -752,7 +753,11 @@ class SteadyStateMarcher {
             throw std::runtime_error("CVodeInit failed (steady_state)");
         }
 
-        CVodeSStolerances(cvode_mem_, opts.rtol, opts.atol);
+        // Scalar atol, or the per-species vector when the caller supplied one
+        // (issue #196). The convergence test below is unaffected either way —
+        // it is ||f(y)||_2/n_species against opts.tol, a norm with no
+        // per-species reading.
+        apply_cvode_tolerances(cvode_mem_, ctx_, opts.rtol, opts.atol, opts.atol_vec, ns_);
         CVodeSetUserData(cvode_mem_, &ud_);
         CVodeSetMaxNumSteps(cvode_mem_, opts.max_steps);
 
@@ -2566,6 +2571,11 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
             "exclusive; set at most one. Leave both false for the size/density "
             "auto-selection.");
     }
+
+    // Per-species atol for the march (issue #196), checked here so a
+    // wrong-length vector names itself rather than surfacing from inside the
+    // marcher's constructor.
+    validate_atol_vector(opts.atol_vec, ns, "find_steady_state()");
 
     // Normalize and validate method. "kinsol" is an input alias for "newton";
     // "auto" was removed (newton already means try-Newton-then-parity-fallback).

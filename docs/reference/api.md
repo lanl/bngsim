@@ -92,6 +92,14 @@ Steady-state (`method` ∈ `"newton"` (default), `"integration"`, `"kinsol"` ali
 Configuration:
 - **`set_tolerances(rtol, atol)`** — ODE solver tolerances
 - **`set_max_steps(max_steps)`** — Max internal solver steps
+- **`auto_atol(*, rtol=None, floor=None)`** → `ndarray` — derive a per-species absolute tolerance from the model's current state, `rtol * max(|y_i|, floor)` (issue #196)
+
+Every `atol` above takes a float (scalar, `CVodeSStolerances`), a sequence of
+`n_species` values ordered like `model.species_names` (per-species,
+`CVodeSVtolerances`), or `"auto"` (derive one — see `auto_atol`). A wrong-length
+vector raises `ValueError` rather than broadcasting. Multi-point calls resolve it
+once, so every point of a batch or scan shares one tolerance. See the
+[solver guide](../user-guide/solvers.md#per-species-absolute-tolerance).
 
 Properties:
 - `method`, `model`, `current_time`

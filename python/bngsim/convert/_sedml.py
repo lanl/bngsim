@@ -154,6 +154,21 @@ def write_sedml(
             f"term mapped (supported: {sorted(_METHOD_TO_KISAO)}). The SED-ML "
             "sidecar channel covers the uniform-time-course ODE/SSA protocol."
         )
+    # Issue #196 — a per-species absolute tolerance has no SED-ML spelling.
+    # KISAO:0000211 is one number for the whole solve, so emitting anything here
+    # would silently downgrade the protocol to a scalar and hand the reader a
+    # document that does not reproduce the run it claims to describe. Same for
+    # "auto", which resolves to a vector.
+    if spec.atol is not None and not isinstance(spec.atol, (int, float)):
+        raise ConversionError(
+            f"cannot emit SED-ML for atol={spec.atol!r}: this is a per-species "
+            f"absolute tolerance (issue #196), and {_KISAO_ATOL} (absolute "
+            "tolerance) is a single value for the whole solve. SED-ML has no "
+            "per-species form, so writing one entry — or any summary of the "
+            "vector — would describe a different run than the spec does. Export "
+            "with a scalar atol, or keep this protocol in the EvaluationSpec "
+            "JSON, which round-trips the vector exactly."
+        )
 
     ET.register_namespace("", _SEDML_NS)
     ET.register_namespace("mml", _MATHML_NS)

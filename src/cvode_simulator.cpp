@@ -13,6 +13,7 @@
 //
 // Uses Jacobian sparsity computed at model load time for sparse linear solves.
 
+#include "bngsim/atol_vector.hpp"
 #include "bngsim/codegen_abi.hpp"
 #include "bngsim/functional_jac_scatter.hpp"
 #include "bngsim/lapack_dense_linsol.hpp"
@@ -907,6 +908,10 @@ struct CvodeSimulator::Impl {
     NetworkModel &model;
     double rtol = 1e-8;
     double atol = 1e-8;
+    // Simulator-level per-species absolute tolerance (issue #196). Empty keeps
+    // the scalar `atol` above. A non-empty SolverOptions::atol_vec on the run
+    // itself wins over this, mirroring how opts.atol wins over `atol`.
+    std::vector<double> atol_vec;
     int max_steps = 20000; // Matches SolverOptions::max_steps default
 
     // Direct linear solver chosen by the most recent setup_linsol_and_jac()
@@ -975,6 +980,11 @@ struct CvodeSimulator::Impl {
         int ns = -1;
         double rtol = 0.0;
         double atol = 0.0;
+        // Per-species atol the persistent objects were built with (issue #196).
+        // Part of the fingerprint like every other tolerance: CVodeReInit does
+        // not touch tolerances, so reusing memory built for a different vector
+        // would silently integrate at the previous run's tolerances.
+        std::vector<double> atol_vec;
         double max_step_size = -1.0;
         int max_steps = 0;
         std::string jacobian;
@@ -1029,9 +1039,17 @@ struct CvodeSimulator::Impl {
     // declaration order there is the teardown order), so they are filled in
     // place here rather than returned.
     void create_cvode_core(const TimeSpec &times, const SolverOptions &opts, int ns, double rtol,
-                           double atol, int max_steps, SunContextGuard &ctx, NVectorGuard &y,
-                           CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
-                           std::vector<double> &codegen_param_buf);
+                           double atol, const std::vector<double> &atol_v, int max_steps,
+                           SunContextGuard &ctx, NVectorGuard &y, CvodeMemGuard &cvode_mem,
+                           CvodeUserData &user_data, std::vector<double> &codegen_param_buf);
+
+    // Resolve the per-species absolute tolerance in force for one run (issue
+    // #196): the run's own vector when it has one, else the simulator-level
+    // vector set by set_tolerances, else empty — which means the scalar atol
+    // and CVodeSStolerances, exactly as before #196.
+    const std::vector<double> &resolve_atol_vec(const SolverOptions &opts) const {
+        return opts.atol_vec.empty() ? atol_vec : opts.atol_vec;
+    }
 
     // Reject an unknown opts.jacobian, and reject the two strategies that ask
     // for something this model/request cannot supply. Also copies the JAX
@@ -1044,8 +1062,9 @@ struct CvodeSimulator::Impl {
     // ``times`` is read only for the integration horizon, which sets the time
     // scale of the issue #177 sensitivity error floor.
     void setup_forward_sensitivities(const TimeSpec &times, const SolverOptions &opts, int ns,
-                                     double rtol, double atol, N_Vector y, void *cvode_mem,
-                                     CvodeUserData &user_data, SensitivityState &sens);
+                                     double rtol, double atol, const std::vector<double> &atol_v,
+                                     N_Vector y, void *cvode_mem, CvodeUserData &user_data,
+                                     SensitivityState &sens);
 
     // ── Sensitivity error floor (issue #177) ─────────────────────────────
     // Decide whether the floor is armed for this run and size its scratch.
@@ -1513,6 +1532,8 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
 
     const double rtol = (opts.rtol > 0) ? opts.rtol : this->rtol;
     const double atol = (opts.atol > 0) ? opts.atol : this->atol;
+    const std::vector<double> &atol_v = resolve_atol_vec(opts);
+    validate_atol_vector(atol_v, ns, "run()");
     const int max_steps = (opts.max_steps > 0) ? opts.max_steps : this->max_steps;
 
     // Validate the Jacobian strategy exactly as the cold path does. ("jax"
@@ -1540,9 +1561,9 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // Can the persistent objects be reused, or must they be rebuilt? Reuse only
     // when every setup-affecting input is unchanged since the last build.
     const bool reuse =
-        w.valid && w.ns == ns && w.rtol == rtol && w.atol == atol && w.max_steps == max_steps &&
-        w.max_step_size == opts.max_step_size && w.jacobian == jac_strategy &&
-        w.force_dense == opts.force_dense_linear_solver &&
+        w.valid && w.ns == ns && w.rtol == rtol && w.atol == atol && w.atol_vec == atol_v &&
+        w.max_steps == max_steps && w.max_step_size == opts.max_step_size &&
+        w.jacobian == jac_strategy && w.force_dense == opts.force_dense_linear_solver &&
         w.force_sparse == opts.force_sparse_linear_solver && w.use_sparse == use_sparse &&
         w.linear_solver == desired_linear_solver && w.codegen_so_path == opts.codegen_so_path &&
         w.codegen_c_source == opts.codegen_c_source;
@@ -1586,10 +1607,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         if (flag != CV_SUCCESS) {
             throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
         }
-        flag = CVodeSStolerances(w.cvode_mem, rtol, atol);
-        if (flag != CV_SUCCESS) {
-            throw std::runtime_error("CVodeSStolerances failed");
-        }
+        apply_cvode_tolerances(w.cvode_mem, w.ctx, rtol, atol, atol_v, ns);
         CVodeSetUserData(w.cvode_mem, &w.user_data);
         CVodeSetMaxNumSteps(w.cvode_mem, max_steps);
         if (opts.max_step_size > 0) {
@@ -1603,6 +1621,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         w.ns = ns;
         w.rtol = rtol;
         w.atol = atol;
+        w.atol_vec = atol_v;
         w.max_steps = max_steps;
         w.max_step_size = opts.max_step_size;
         w.jacobian = jac_strategy;
@@ -1879,7 +1898,8 @@ bool CvodeSimulator::Impl::choose_use_sparse(const SolverOptions &opts, int ns) 
 // RAII guards handle all SUNDIALS cleanup automatically; run() owns them (its
 // declaration order there is the teardown order), so they are filled in place.
 void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const SolverOptions &opts,
-                                             int ns, double rtol, double atol, int max_steps,
+                                             int ns, double rtol, double atol,
+                                             const std::vector<double> &atol_v, int max_steps,
                                              SunContextGuard &ctx, NVectorGuard &y,
                                              CvodeMemGuard &cvode_mem, CvodeUserData &user_data,
                                              std::vector<double> &codegen_param_buf) {
@@ -1922,10 +1942,7 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
         throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
     }
 
-    flag = CVodeSStolerances(cvode_mem, rtol, atol);
-    if (flag != CV_SUCCESS) {
-        throw std::runtime_error("CVodeSStolerances failed");
-    }
+    apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns);
 
     flag = CVodeSetUserData(cvode_mem, &user_data);
     flag = CVodeSetMaxNumSteps(cvode_mem, max_steps);
@@ -1974,11 +1991,10 @@ void CvodeSimulator::Impl::validate_jacobian_option(const SolverOptions &opts,
 // sensitivity analysis. CVODES computes dY/dp alongside the ODE integration
 // using its internal finite-difference approximation of the sensitivity RHS.
 // This works for ALL rate law types (Elementary, Functional, MichaelisMenten).
-void CvodeSimulator::Impl::setup_forward_sensitivities(const TimeSpec &times,
-                                                       const SolverOptions &opts, int ns,
-                                                       double rtol, double atol, N_Vector y,
-                                                       void *cvode_mem, CvodeUserData &user_data,
-                                                       SensitivityState &sens) {
+void CvodeSimulator::Impl::setup_forward_sensitivities(
+    const TimeSpec &times, const SolverOptions &opts, int ns, double rtol, double atol,
+    const std::vector<double> &atol_v, N_Vector y, void *cvode_mem, CvodeUserData &user_data,
+    SensitivityState &sens) {
     sens.n_p = static_cast<int>(opts.sensitivity.param_names.size());
     sens.n_ic = static_cast<int>(opts.sensitivity.ic_species_names.size());
     sens.n_total = sens.n_p + sens.n_ic;
@@ -2282,10 +2298,19 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(const TimeSpec &times,
     // a proportionally relaxed (reachable) floor. rtol still governs the
     // relative accuracy uniformly. (CVODES clones these vectors internally, so
     // the guard's lifetime is not load-bearing.)
+    //
+    // Issue #196: when the state axis carries a per-species atol, each column's
+    // floor is built from ROW i's tolerance rather than from the one scalar.
+    // The structure is untouched — atol_i·scale[i]/pbar[iS] — so a constant
+    // vector reproduces this atolS entry for entry, and a caller who asked for
+    // a decade-spanning state tolerance gets sensitivities held to the same
+    // per-species statement instead of having it collapsed back onto one
+    // number here.
     std::vector<double> sens_state_scale(static_cast<size_t>(ns));
     for (int i = 0; i < ns; ++i) {
         sens_state_scale[i] = std::max(std::abs(y_data[i]), 1.0);
     }
+    const bool per_species_atol = !atol_v.empty();
     sens.abstolS = NVectorArrayGuard(N_VCloneVectorArray(n_sens, y), n_sens);
     if (!sens.abstolS) {
         throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
@@ -2295,7 +2320,8 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(const TimeSpec &times,
         double *atolS_col = N_VGetArrayPointer(sens.abstolS[iS]);
         const double pb = (pbar[iS] != 0.0) ? pbar[iS] : 1.0;
         for (int i = 0; i < ns; ++i) {
-            const double a = atol * sens_state_scale[i] / pb;
+            const double atol_i = per_species_atol ? atol_v[static_cast<size_t>(i)] : atol;
+            const double a = atol_i * sens_state_scale[i] / pb;
             sens.atolS_base[static_cast<size_t>(iS) * ns + i] = a;
             atolS_col[i] = a;
         }
@@ -4170,6 +4196,17 @@ CvodeSimulator::~CvodeSimulator() = default;
 void CvodeSimulator::set_tolerances(double rtol, double atol) {
     impl_->rtol = rtol;
     impl_->atol = atol;
+    // A scalar tolerance replaces a per-species one rather than sitting behind
+    // it (issue #196). The alternative — leaving a previously set vector in
+    // force — would make this call silently do nothing to the tolerance CVODE
+    // actually uses.
+    impl_->atol_vec.clear();
+}
+
+void CvodeSimulator::set_tolerances(double rtol, const std::vector<double> &atol) {
+    validate_atol_vector(atol, impl_->model.n_species(), "set_tolerances()");
+    impl_->rtol = rtol;
+    impl_->atol_vec = atol;
 }
 
 void CvodeSimulator::set_max_steps(int max_steps) { impl_->max_steps = max_steps; }
@@ -4191,6 +4228,13 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             "auto-selection.");
     }
 
+    // Per-species atol (issue #196). Checked here, alongside the pin above, for
+    // the same reason: it is a property of the request. A vector whose length
+    // does not match the model is a caller error that has to surface as one —
+    // reaching CVODE with it would either read past the end or quietly give
+    // species i the number written for species j.
+    validate_atol_vector(impl_->resolve_atol_vec(opts), ns, "run()");
+
     // Algebraic-only model (GH #229): with no ODE state there is no CVODE setup
     // at all, so the whole path lives in its own helper.
     if (ns == 0) {
@@ -4203,6 +4247,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
 
     double rtol = (opts.rtol > 0) ? opts.rtol : impl_->rtol;
     double atol = (opts.atol > 0) ? opts.atol : impl_->atol;
+    const std::vector<double> &atol_v = impl_->resolve_atol_vec(opts);
     int max_steps = (opts.max_steps > 0) ? opts.max_steps : impl_->max_steps;
 
     // Dense vs sparse (KLU) matrix, including the two force flags (GH #102,
@@ -4246,8 +4291,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     CvodeMemGuard cvode_mem;
     CvodeUserData user_data{&model};       // user data for RHS callback
     std::vector<double> codegen_param_buf; // RAII: replaces new[]/delete[]
-    impl_->create_cvode_core(times, opts, ns, rtol, atol, max_steps, ctx, y, cvode_mem, user_data,
-                             codegen_param_buf);
+    impl_->create_cvode_core(times, opts, ns, rtol, atol, atol_v, max_steps, ctx, y, cvode_mem,
+                             user_data, codegen_param_buf);
     double *y_data = y.data();
 
     // CVODE status flag, shared by the setup calls below and the stepping loop.
@@ -4274,7 +4319,8 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // codegen sensitivity RHS hold raw pointers into, so it is declared here,
     // alongside the other guards, and lives for the whole integration.
     SensitivityState sens;
-    impl_->setup_forward_sensitivities(times, opts, ns, rtol, atol, y, cvode_mem, user_data, sens);
+    impl_->setup_forward_sensitivities(times, opts, ns, rtol, atol, atol_v, y, cvode_mem, user_data,
+                                       sens);
 
     // Aliases for the names the recording blocks and the integration loop
     // below already use. The jump handlers take `sens` itself, so the method /
@@ -5032,7 +5078,11 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // Steady-state early-termination buffers and tolerance. Matches BNG2.pl
     // ``run_network -c`` semantics: after each output point is recorded,
     // compute ``||f(t,y)||_2 / n_species`` and stop integrating once it
-    // falls below ``ss_tol``. ``ss_tol`` defaults to the integrator atol.
+    // falls below ``ss_tol``. ``ss_tol`` defaults to the integrator atol — the
+    // SCALAR one, also when a per-species atol is in force (issue #196): the
+    // criterion is a single norm over every species and has no per-species
+    // reading to take. A caller running with a vector atol and wanting the
+    // early stop should say what "steady" means with steady_state_tol.
     const bool check_ss = opts.steady_state;
     const double ss_tol = (opts.steady_state_tol > 0.0) ? opts.steady_state_tol : atol;
     std::vector<double> ss_derivs;
@@ -5377,8 +5427,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 if (any_event_fired && !firing.empty()) {
                     bool subtol = true;
                     for (int si = 0; si < ns; ++si) {
+                        // "Below the tolerance" is a per-species statement, so
+                        // it reads the per-species atol when there is one
+                        // (issue #196); with none, atol_v is empty and this is
+                        // the scalar test it always was.
+                        const double atol_si =
+                            atol_v.empty() ? atol : atol_v[static_cast<size_t>(si)];
                         if (std::fabs(y_data[si] - chatter_y_before[si]) >
-                            atol + rtol * std::fabs(y_data[si])) {
+                            atol_si + rtol * std::fabs(y_data[si])) {
                             subtol = false;
                             break;
                         }
