@@ -92,7 +92,7 @@ Steady-state (`method` ∈ `"newton"` (default), `"integration"`, `"kinsol"` ali
 Configuration:
 - **`set_tolerances(rtol, atol)`** — ODE solver tolerances
 - **`set_max_steps(max_steps)`** — Max internal solver steps
-- **`auto_atol(*, rtol=None, floor=None)`** → `ndarray` — derive a per-species absolute tolerance from the model's current state, `rtol * max(|y_i|, floor)` (issue #196)
+- **`auto_atol(*, rtol=None, floor=None)`** → `ndarray` — derive a per-species absolute tolerance from the model's **current** state, `rtol * max(|y_i|, floor)` (issue #196). For a tolerance that is a constant of the model rather than of the point being integrated, use `bngsim.derive_atol` below.
 
 Every `atol` above takes a float (scalar, `CVodeSStolerances`), a sequence of
 `n_species` values ordered like `model.species_names` (per-species,
@@ -251,6 +251,20 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 
 - **`bngsim.parse_net_file(path)`** → `dict` — Parse a `.net` file into an engine-agnostic Python dict with keys: `parameters`, `species`, `observables`, `functions`, `reactions`. Pure Python — no C++ extension needed for parsing.
 - **`bngsim.build_model_from_parsed(parsed)`** → `Model` — Build a BNGsim `Model` from the dict returned by `parse_net_file()`. Routes through `ModelBuilder` for full optimization (analytical Jacobian, conservation laws, etc.).
+
+## Absolute tolerance (issues #196, #212)
+
+- **`bngsim.AUTO`** → `"auto"` — the token every `atol=` accepts. Also the capability probe for the whole per-species feature: `hasattr(bngsim, "AUTO")`. The version string is not one — the checkout that first carried #196 still declared `0.12.2`.
+- **`bngsim.derive_atol(state, rtol, *, floor=None)`** → `ndarray` — `rtol * max(|y_i|, floor)` over **a state you supply**, ordered like `model.species_names`. `floor` defaults to the smallest strictly positive entry of `state` (`1.0` if every entry is zero).
+- **`bngsim.normalize_atol_vector(atol, n_species, species_names=None, *, where="atol")`** → `list[float]` — the length/position/finiteness check `run()` applies, callable at the point a vector is built rather than at the first run.
+
+`derive_atol` and `Simulator.auto_atol` run the same rule; they differ only in
+which state they read. `auto_atol` (and `atol="auto"`) reads the model's **live**
+state, which is right for a one-off run and wrong for a fit that moves initial
+conditions — there the tolerance would become a function of the fit point and
+put a step in the objective. `derive_atol` reads whatever state you hand it, so
+the vector can be derived once from the nominal state and held constant. See the
+[solver guide](../user-guide/solvers.md#which-state-the-tolerance-comes-from).
 
 ## Utility functions
 

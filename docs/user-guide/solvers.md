@@ -68,8 +68,15 @@ Two things worth knowing:
   state tolerance is not collapsed back onto one number for the derivatives.
 - **`steady_state_tol` still reads the scalar.** The early-stop criterion is
   `||f(t,y)||₂ / n_species`, one norm over every species with no per-species
-  reading to take. Say what "steady" means explicitly when running
-  `steady_state=True` with a vector.
+  reading to take, so it falls back to the *scalar* `atol` even when a vector is
+  in force — and to this `Simulator`'s own scalar, not to anything derived from
+  the vector, because there is no honest single number to derive from one.
+  **Pass `steady_state_tol` explicitly whenever you pass a vector.** Left
+  unset it silently reverts to the default `1e-8`, and on a model whose states
+  are themselves ~1e-8 that criterion is already satisfied at *t* = 0: the
+  relaxation returns the initial state and calls it the steady state. That reads
+  as a modelling problem rather than a tolerance one, which is why it is worth
+  one kwarg to rule out.
 
 `atol="auto"` derives `rtol * max(|y_i|, floor)`, where `floor` defaults to the
 smallest strictly positive species value in the model — a species sitting at
@@ -78,7 +85,60 @@ smallest scale the model actually exhibits. Pass `floor=` to `auto_atol` to
 choose differently. Being built from *initial* values, this cannot see a species
 that starts at order one and decays to something tiny; that is a within-species,
 over-time mismatch, and the CVODE construct for it is `CVodeWFtolerances`, which
-bngsim does not expose yet.
+bngsim does not expose yet (issue #213). The corollary is worth stating plainly:
+on a model whose species all start at similar magnitudes there is no
+cross-species spread to compromise over, so a per-species vector is elementwise
+the scalar it replaces and changes nothing. It is not a general tolerance
+improvement — it is the fix for models spanning decades.
+
+### Which state the tolerance comes from
+
+`atol="auto"` and `sim.auto_atol()` read the model's **live** state — the one
+the next `run()` would start from. That is what you want for a one-off run, and
+it is the wrong thing for a **parameter fit that moves initial conditions**:
+the vector would be re-derived at every evaluation, so `atol` becomes a function
+of the fit point rather than of the model. The objective then steps wherever the
+derivation crosses a rounding boundary — invisible in the usual way, since the
+objective still looks correct and the finite-difference gradient check still
+passes, and only the search behaves oddly.
+
+`bngsim.derive_atol` is the same rule against a state **you** supply, so the
+result can be a constant of the model. Derive it once, hold it, pass it every
+time:
+
+```python
+import bngsim
+
+model = bngsim.Model.load("model.xml")
+sim = bngsim.Simulator(model, method="ode")
+
+RTOL = 1e-8
+nominal = model.get_state()                          # before anything is fitted
+atol = bngsim.derive_atol(nominal, RTOL)             # a constant of the model
+
+for theta in search:
+    model.set_params(theta)                          # may move initial conditions
+    result = sim.run(t_span=(0, 100), rtol=RTOL, atol=atol)
+```
+
+The rule, the `floor` default, and the length/order contract are identical to
+`auto_atol`'s; the only difference is which state is read. If you assemble the
+vector yourself instead — clamping per species, reading it off a table —
+`bngsim.normalize_atol_vector(vec, model.n_species, model.species_names)`
+applies the same length and position check `run()` would, so the mismatch
+surfaces where the vector was built rather than at the first evaluation.
+
+### Detecting the capability
+
+The version string will not tell you whether an install has any of this — the
+checkout that first carried it still declared `0.12.2`. Feature-detect instead:
+
+```python
+if hasattr(bngsim, "AUTO"):
+    atol = bngsim.derive_atol(nominal, RTOL)
+else:
+    atol = scalar_fallback(nominal, RTOL)
+```
 
 ## Jacobian strategy
 

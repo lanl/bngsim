@@ -15,6 +15,42 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Added
+- **The per-species `atol` derivation a caller needs is now public (issue
+  #212).** #196 shipped the capability and exported the wrong half of it.
+  `Simulator.auto_atol()` — which derives from the model's **live** state — was
+  public; the stateless `derive_atol(state, rtol, floor=...)`, which derives
+  from a state *you* hand it, was in the private `bngsim._atol`, along with the
+  `AUTO` token. That is backwards for the primary consumer. A parameter fit has
+  to derive from the model's **nominal** state and hold the vector constant: a
+  tolerance that moved with a fitted initial condition would put a step in the
+  objective everywhere the derivation crossed a rounding boundary, and it fails
+  invisibly — the objective still looks correct, the finite-difference gradient
+  check still passes, and only the search behaves oddly. So the function a
+  fitting frontend needs was the one it could not reach, and the one it could
+  reach was the one that would break it. `bngsim.derive_atol`,
+  `bngsim.normalize_atol_vector` and `bngsim.AUTO` are now exported from the
+  package namespace and listed in `__all__`.
+
+  `hasattr(bngsim, "AUTO")` is consequently a working capability probe for the
+  whole feature. It previously returned `False` on a build that *has* the
+  capability, which is the worst failure mode a probe has — it silently routes a
+  capable install down the scalar fallback and the result still looks right. The
+  version string is not a substitute: the checkout that first carried #196 still
+  declared `0.12.2`, the version of the wheel 25 commits behind it.
+
+  `normalize_atol_vector` went public rather than staying private on a narrower
+  argument: every `atol=` entry point already runs a vector through it, so
+  calling it yourself changes only *when* the error arrives — and for a caller
+  that assembles its own vector (per-species clamping, a table, a nominal
+  state), taking the length-and-position check once at setup beats taking it at
+  the first `run()` of a fit. `is_scalar_atol` and the `AtolLike` alias stay
+  internal.
+
+  No behavior changed and nothing was renamed; these are re-exports of the same
+  objects. The docs gained the distinction that motivated all of it: which state
+  each derivation reads, and the recipe for holding one constant across a fit
+  (`docs/user-guide/solvers.md`, "Which state the tolerance comes from").
+
 - **`atol` takes one value per species, so a model spanning decades has a usable
   tolerance (issue #196).** `Simulator.run` took a scalar and the core set it
   with `CVodeSStolerances`. For a model whose species span ten decades that is

@@ -23,6 +23,7 @@ import importlib.util as _importlib_util
 import logging
 from typing import Any
 
+from bngsim._atol import AUTO, derive_atol, normalize_atol_vector
 from bngsim._codegen import prepare_codegen
 from bngsim._eval_spec import EvaluationSpec
 from bngsim._exceptions import (
@@ -178,6 +179,15 @@ __all__ = [
     "reserved_names",
     "configure_logging",
     "normalize_method",
+    # Per-species absolute tolerance (GH #196, exported by GH #212).
+    # `hasattr(bngsim, "AUTO")` is the capability probe for the whole feature;
+    # the version string is not one. `derive_atol` is the half a caller needs
+    # when the tolerance must be a constant of the model rather than of the
+    # state a run happens to start from — `Simulator.auto_atol` reads the live
+    # state, this one reads whichever state you hand it.
+    "AUTO",
+    "derive_atol",
+    "normalize_atol_vector",
     # PSA diagnostics (GH #15)
     "psa_cost_decision",
     # Feature flags
