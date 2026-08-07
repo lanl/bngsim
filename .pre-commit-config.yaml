@@ -1,5 +1,15 @@
 default_install_hook_types: [pre-commit, pre-push]
-default_stages: [pre-commit]
+# Every gating hook runs at BOTH stages, because CI's gate is
+# `pre-commit run --all-files` and a `git push` that only ran a subset is not
+# evidence that gate will pass. It was not: with `[pre-commit]` here, ruff,
+# ruff-format, clang-format and mypy were skipped on push, so a commit made with
+# `--no-verify` (or amended after the commit hook ran) sailed through `git push`
+# and reddened the `lint` job minutes later — costing a second full pre-push
+# pytest run to correct. Everything added here is seconds; the 7-minute pytest
+# below is what makes a push slow, and it stays push-only.
+# Hooks that must NOT follow this default carry their own `stages:` — pytest
+# (pre-push only) and the local-ci-* set (manual only).
+default_stages: [pre-commit, pre-push]
 fail_fast: false
 
 # Standalone bngsim/ config. In the upstream development monorepo the active
