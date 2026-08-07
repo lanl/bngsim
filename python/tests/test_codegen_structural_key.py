@@ -205,9 +205,9 @@ def test_output_sensitivity_emission_moves_the_key():
     """``emit_output_sens`` appends a whole callback, so a plain-run ``.so`` must
     never satisfy a sensitivity run (the issue #51 inertness trap)."""
     m = _decay_model()
-    assert cg.compute_model_codegen_hash(m, emit_output_sens=True) != cg.compute_model_codegen_hash(
-        m, emit_output_sens=False
-    )
+    assert cg.compute_model_codegen_hash(
+        m, emit_output_sens=True
+    ) != cg.compute_model_codegen_hash(m, emit_output_sens=False)
 
 
 # ── The one path by which a parameter VALUE reaches the emitted source ───────
@@ -319,7 +319,9 @@ def test_the_net_cache_key_separates_the_chunking_hatch(monkeypatch, tmp_path):
     """
     # A TRACKED .net, so this runs in CI too — the gitignored ode_fullnet suite
     # would make it a silent no-op everywhere but the author's checkout.
-    nets = sorted((Path(__file__).resolve().parents[2] / "benchmarks/models/net/ode").glob("*.net"))
+    nets = sorted(
+        (Path(__file__).resolve().parents[2] / "benchmarks/models/net/ode").glob("*.net")
+    )
     net = next((p for p in nets if len(cg._parse_net_file(str(p))["reactions"]) >= 30), None)
     assert net is not None, "no tracked .net is large enough to chunk"
 

@@ -8949,9 +8949,7 @@ def prepare_model_codegen(model) -> Path | None:
             cache_hit = True
             return cached
 
-        c_source, has_sens = generate_combined_from_model(
-            model, emit_output_sens=emit_output_sens
-        )
+        c_source, has_sens = generate_combined_from_model(model, emit_output_sens=emit_output_sens)
         if has_sens:
             logger.info(
                 "Model codegen: combined RHS + sensitivity RHS (%d chars)",
