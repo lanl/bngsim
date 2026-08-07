@@ -504,7 +504,18 @@ class Simulator:
         # expensive on large functional models, so a non-sensitivity run must not
         # pay it. The .so cache key carries this flag (prepare_codegen), so a
         # non-sensitivity .so is never reused for a sensitivity run.
-        model._want_output_sens = bool(sensitivity_params or sensitivity_ic)
+        #
+        # Issue #209: the flag is also the RECORD of what the codegen artifact
+        # already sitting on the model was built with — ``_prepare_output_sens_codegen``
+        # relies on that reading — so capture the incoming value before clobbering
+        # it. The reuse block below needs it to tell "the model carries a
+        # sensitivity artifact" from "the model carries a plain one", and since
+        # #209 gates ``bngsim_codegen_sens_rhs`` on the same flag, inheriting the
+        # wrong one is a silent drop to CVODES' difference quotient rather than a
+        # missing evaluator.
+        want_sens_run = bool(sensitivity_params or sensitivity_ic)
+        model_codegen_has_sens = bool(getattr(model, "_want_output_sens", False))
+        model._want_output_sens = want_sens_run
         self._requested_method = method  # original user token
         self._method = dispatch  # internal dispatch key
         self._canonical_method = canonical
@@ -787,12 +798,14 @@ class Simulator:
                         _cg_src = prepare_model_codegen_source(model)
                         if _cg_src is not None:
                             model._codegen_c_source = _cg_src
+                            model_codegen_has_sens = want_sens_run
                     else:
                         from bngsim._codegen import prepare_model_codegen
 
                         _cg_so = prepare_model_codegen(model)
                         if _cg_so is not None:
                             model._codegen_so_path = str(_cg_so)
+                            model_codegen_has_sens = want_sens_run
                 except Exception as e:
                     logger.debug("Auto-codegen skipped: %s", e)
 
@@ -879,10 +892,27 @@ class Simulator:
         # Reuse model-based codegen output when the model already prepared it.
         # Prefer the JIT source when the JIT backend is active and the model
         # carries one; otherwise inherit the .so path.
+        #
+        # Issue #209 — but NOT a plain artifact into a sensitivity run. The
+        # sensitivity emit flags (bngsim_codegen_sens_rhs since #209,
+        # bngsim_codegen_output_sens since GH #198, bngsim_dfdp_term_scale since
+        # #177) are all keyed on _want_output_sens, so an artifact built by an
+        # earlier plain Simulator on this same model carries none of them; and
+        # _auto_codegen_for_sensitivity below no-ops the moment anything is
+        # attached, so inheriting one shadows the artifact this run needs. That
+        # was already live before #209 — a `Simulator(m)` followed by
+        # `Simulator(m, sensitivity_params=[...])` handed the second one a .so
+        # with no bngsim_codegen_output_sens in it, and d(func)/dθ silently took
+        # the finite-difference fallback. Refusing the inherit costs a rebuild
+        # that the structural .so cache (issue #174) makes a few stat()s on the
+        # second pass. The converse is fine and stays allowed: a sensitivity
+        # artifact is a superset, so a plain run may inherit one.
+        codegen_reusable = model_codegen_has_sens or not want_sens_run
         if (
             jit_backend
             and not self._codegen_c_source
             and dispatch == "ode"
+            and codegen_reusable
             and hasattr(model, "_codegen_c_source")
             and model._codegen_c_source
         ):
@@ -894,6 +924,7 @@ class Simulator:
             not self._codegen_so_path
             and not self._codegen_c_source
             and dispatch == "ode"
+            and codegen_reusable
             and hasattr(model, "_codegen_so_path")
             and model._codegen_so_path
         ):
@@ -1517,12 +1548,21 @@ class Simulator:
           already True (a ``sensitivity_params``-built sim, or a second call here),
           skip the clear so a large model is not needlessly re-generated.
 
-        A function-free model needs none of this: ``_codegen_emit_flags`` gates the
-        evaluator on ``n_functions``, so the source is byte-identical with or
-        without the flag and an inherited plain-RHS codegen is already right.
+        The trigger used to add ``n_functions > 0``, on the reasoning that a
+        function-free model's source is byte-identical with or without the flag.
+        That stopped being true and the comment outlived it: #177's
+        ``bngsim_dfdp_term_scale`` is gated on ``_want_output_sens`` with NO
+        has-functions condition (a function-free model is exactly its reproduction),
+        and issue #209 gates ``bngsim_codegen_sens_rhs`` on it for every
+        Functional *or* Michaelis-Menten model — and an MM model need have no
+        functions at all, so the old gate would have kept the plain artifact and
+        dropped ∂f/∂p to CVODES' difference quotient without a word. The condition
+        is now simply "the attached artifact was built for a plain run"; a model
+        that genuinely emits the same source either way pays one extra structural
+        cache lookup for it (issue #174), not a regeneration.
         """
         model = self._model
-        if model._core.n_functions > 0 and not model._want_output_sens:
+        if not model._want_output_sens:
             model._want_output_sens = True
             prev_so, prev_src = self._codegen_so_path, self._codegen_c_source
             self._codegen_so_path = ""
@@ -4037,13 +4077,11 @@ class Simulator:
         # ``Simulator(sensitivity_params=...)`` solve therefore ran up to 49x
         # slower on large function-free networks (fceri_fyn 768 s vs 15.7 s,
         # 40202 internal steps vs 656), making parameter sharding a pessimization
-        # exactly where it should help. Gating what is expression-
-        # specific stays below: only the output-sens *rebuild* looks at
-        # ``n_functions``, because ``_codegen_emit_flags`` emits the GH #198
-        # evaluator only when the model has functions — for a function-free model
-        # the source is byte-identical with or without ``_want_output_sens``, so
-        # there is nothing to rebuild and an inherited plain-RHS codegen is
-        # already the right artifact.
+        # exactly where it should help. The output-sens *rebuild* below used to
+        # keep a narrower ``n_functions > 0`` gate of its own; #177 and issue #209
+        # gate two more symbols on ``_want_output_sens`` with no has-functions
+        # condition, so that gate is gone too — see
+        # :meth:`_prepare_output_sens_codegen`.
         #
         # GH #205 — the GH #198 output-sensitivity evaluator is emitted only when
         # ``_want_output_sens`` is set (both the .net and model-based codegen paths

@@ -184,11 +184,14 @@ class TestCodegenCacheHit:
         # observables, so the default jacobian="auto" .net codegen compiles it under
         # the combined GH #162 ":codegen_jac" + GH #163 ":codegen_outputs" key, not
         # the plain RHS-only key — clear every suffix combination so the first
-        # construction is truly cold.
+        # construction is truly cold. Issue #209 added ":no_functional_sens" to
+        # every non-sensitivity key, so each combination has two forms now.
         base = cg.compute_model_hash(net)
         keys = [base]
-        for suffix in (":codegen_jac", ":codegen_outputs", ":codegen_jac:codegen_outputs"):
-            keys.append(hashlib.sha256((base + suffix).encode()).hexdigest()[:16])
+        for callbacks in ("", ":codegen_jac", ":codegen_outputs", ":codegen_jac:codegen_outputs"):
+            for suffix in (callbacks, callbacks + ":no_functional_sens"):
+                if suffix:
+                    keys.append(hashlib.sha256((base + suffix).encode()).hexdigest()[:16])
         for key in keys:
             so = cg.get_cached_so(key)
             if so is not None:

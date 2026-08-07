@@ -319,14 +319,34 @@ class TestSensAutoTrigger:
         with pytest.raises(ValueError, match="requires code generation"):
             bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
 
-    def test_existing_codegen_so_is_not_clobbered(self):
-        # If the model already carries a _codegen_so_path (e.g., the SBML
-        # loader threshold fired), the Simulator should reuse it, not
-        # re-prepare a fresh one.
+    def test_an_existing_sensitivity_codegen_so_is_not_clobbered(self):
+        # If the model already carries a _codegen_so_path built for a sensitivity
+        # run, the Simulator reuses it rather than re-preparing a fresh one.
+        # ``_want_output_sens`` is the record of what that artifact was built with
+        # (issue #209), and Model.copy() carries the two together.
         m = _build_decay_model()
         m._codegen_so_path = "/nonexistent/path.so"
+        m._want_output_sens = True
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
         assert sim._codegen_so_path == "/nonexistent/path.so"
+
+    def test_a_plain_codegen_so_is_not_reused_for_a_sensitivity_run(self):
+        """Issue #209 — the quiet failure the gate would otherwise cause.
+
+        Every sensitivity symbol is gated on ``_want_output_sens``:
+        ``bngsim_codegen_output_sens`` (GH #198), ``bngsim_codegen_sens_term_scale``
+        (#177) and, since #209, ``bngsim_codegen_sens_rhs`` itself. So an artifact
+        an earlier plain ``Simulator`` left on the model carries none of them, and
+        ``_auto_codegen_for_sensitivity`` no-ops the moment anything is attached —
+        inheriting one used to hand the sensitivity run a .so with no analytical
+        ∂f/∂p and drop it to CVODES' difference quotient without a word.
+        """
+        m = _build_decay_model()
+        m._codegen_so_path = "/nonexistent/path.so"
+        assert m._want_output_sens is False, "the plain-build record"
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
+        assert sim._codegen_so_path != "/nonexistent/path.so"
+        assert ctypes.CDLL(sim._codegen_so_path).bngsim_codegen_sens_rhs is not None
 
     def test_explicit_codegen_false_raises_for_sensitivity(self):
         # Hard requirement (GH #214): codegen=False + sensitivities → raise,
@@ -541,12 +561,18 @@ class TestModelCodegenHosuAmountFactor:
         m = Model.from_sbml_string(_HOSU_FUNCTIONAL_SBML)
         so = prepare_model_codegen(m)
         assert so is not None and so.exists()
-        # GH #67: a smooth Functional law now carries an analytical sens RHS too.
-        # This test is about the *RHS* reading amounts, so the symbol's presence
-        # is incidental — pinned only so the .so's contents stay described.
+        # GH #67 gives a smooth Functional law an analytical sens RHS; issue #209
+        # asks for it only when a sensitivity was requested, and nothing here did.
+        # This test is about the *RHS* reading amounts, so both symbols are
+        # incidental — pinned only so the .so's contents stay described.
         lib = ctypes.CDLL(str(so))
         assert hasattr(lib, "bngsim_codegen_rhs")
-        assert hasattr(lib, "bngsim_codegen_sens_rhs")
+        assert not hasattr(lib, "bngsim_codegen_sens_rhs")
+        m._want_output_sens = True
+        so_sens = prepare_model_codegen(m)
+        m._want_output_sens = False
+        assert so_sens is not None and so_sens != so
+        assert hasattr(ctypes.CDLL(str(so_sens)), "bngsim_codegen_sens_rhs")
         m._codegen_so_path = str(so)
         r_cg = bngsim.Simulator(m, method="ode").run(
             t_span=(0, 60), n_points=31, rtol=1e-10, atol=1e-14
