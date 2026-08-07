@@ -8748,6 +8748,15 @@ def _canon_update(h, obj) -> None:
         for key in sorted(obj):
             _canon_update(h, key)
             _canon_update(h, obj[key])
+    elif hasattr(obj, "shape") and hasattr(obj, "tolist"):
+        # A pybind11 accessor returning a numpy array rather than a list —
+        # ``codegen_jacobian_plan()["col_ptrs"]`` is one, on every model routed
+        # to the sparse Jacobian. Tagged with dtype and shape as well as the
+        # values, so a reshape or a widening cannot pass unnoticed.
+        h.update(b"a")
+        _canon_update(h, str(obj.dtype))
+        _canon_update(h, tuple(obj.shape))
+        _canon_update(h, obj.tolist())
     else:
         raise TypeError(f"codegen cache key cannot serialize {type(obj).__name__}")
 
@@ -8810,12 +8819,21 @@ def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
         for p in data["parameters"]
     ]
     ctx = core.functional_jacobian_context()
+    plan = core.codegen_jacobian_plan()
+
+    # RESOLVED decisions, not the raw hatches: BNGSIM_NO_CODEGEN_JAC changes
+    # nothing for a model whose analytical Jacobian is not complete anyway, and
+    # a chunking threshold changes nothing for a model below it. Folding the raw
+    # env in would split those into two keys for one source — a cache miss, not a
+    # collision, but a free one to avoid.
+    want_jac = bool(plan["available"]) and os.environ.get("BNGSIM_NO_CODEGEN_JAC") != "1"
+    chunk = _should_chunk(len(data["reactions"]))
 
     h = hashlib.sha256()
     h.update(_CODEGEN_CACHE_KEY.encode())
     h.update(b"\0model_structural_v1\0")
     _canon_update(h, data)
-    _canon_update(h, core.codegen_jacobian_plan())
+    _canon_update(h, plan)
     _canon_update(h, ctx)
     _canon_update(
         h,
@@ -8823,9 +8841,9 @@ def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
             bool(emit_output_sens),
             functional_sens_rhs_enabled(),
             _sens_budget_cache_tag(),
-            os.environ.get("BNGSIM_NO_CODEGEN_JAC") == "1",
-            _chunk_threshold(),
-            _chunk_block_size(),
+            want_jac,
+            chunk,
+            _chunk_block_size() if chunk else None,
         ),
     )
     _canon_update(h, switch_gate_cache_digest(core, ctx))
