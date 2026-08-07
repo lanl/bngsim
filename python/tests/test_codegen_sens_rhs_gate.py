@@ -247,7 +247,6 @@ class TestTheCacheKeyCarriesTheFlag:
         splitting the cache. Pinned because the alternative is a silent doubling
         of an already 2 GB cache (issue #205)."""
         m = _model(tmp_path, FUNCTIONAL)
-        hatched, _ = cg.generate_combined_from_model(m, emit_functional_sens=True)
         monkeypatch.delenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", raising=False)
         gated, _ = cg.generate_combined_from_model(m, emit_functional_sens=False)
         monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
