@@ -1459,10 +1459,17 @@ static std::vector<std::pair<int, int>> build_assignment_rule_copyback(const Net
 // source dx/dθ vector differs (yS parameter cols vs IC cols). Expression
 // (global-function) sensitivities are nonlinear and are left to the codegen
 // stage (#198) — those blocks stay empty here.
+// Issue #170 stage 3: `weight` is not constant in every parameter. When the
+// amount conversion above reads a *writable* compartment size, the coefficient
+// itself is that parameter, so d obs_j/dV carries a direct Σ factor_ji·x_i on
+// top of the chain rule — the observable's own units move with the volume. That
+// term is the whole answer at t=0, where every dx_i/dθ is still zero.
 struct ObsSensTerm {
-    int obs;       // observable row (0-based, recording order)
-    int species0;  // 0-based species index it reads
-    double weight; // c_ji = factor · (amount_valued ? volume_factor : 1)
+    int obs;           // observable row (0-based, recording order)
+    int species0;      // 0-based species index it reads
+    double weight;     // c_ji = factor · (amount_valued ? volume_factor : 1)
+    int vol_param;     // (#170) the parameter `weight`'s conversion IS, or -1
+    double raw_factor; // ∂c_ji/∂V = factor, meaningful when vol_param >= 0
 };
 
 static std::vector<ObsSensTerm> build_observable_sens_terms(const NetworkModel &model) {
@@ -1479,10 +1486,12 @@ static std::vector<ObsSensTerm> build_observable_sens_terms(const NetworkModel &
             }
             double weight = e.factor;
             const auto &sp = spec_list[idx0];
+            int vol_param = -1;
             if (sp.amount_valued) {
                 weight *= sp.volume_factor;
+                vol_param = sp.volume_param_idx0;
             }
-            terms.push_back({j, idx0, weight});
+            terms.push_back({j, idx0, weight, vol_param, e.factor});
         }
     }
     return terms;
@@ -4305,8 +4314,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // record_observable_sensitivities* the sens_data[c][j] view it expects.
     std::vector<double> obs_sens_p_buf, obs_sens_ic_buf;
     std::vector<const double *> obs_sens_p_ptrs, obs_sens_ic_ptrs;
+    bool obs_sens_has_volume = false;
     if (compute_obs_sens_p || compute_obs_sens_ic) {
         obs_sens_terms = build_observable_sens_terms(model);
+        for (const auto &term : obs_sens_terms) {
+            if (term.vol_param >= 0) {
+                obs_sens_has_volume = true;
+                break;
+            }
+        }
     }
     if (compute_obs_sens_p) {
         result.allocate_observable_sensitivities(n_out, n_obs, n_sens_p);
@@ -4335,8 +4351,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             for (int p = 0; p < n_sens_p; ++p) {
                 const double *ys = sens_ptrs[p];
                 double *out = obs_sens_p_buf.data() + static_cast<size_t>(p) * n_obs;
+                // (#170 stage 3) The differentiated parameter, so a column that
+                // IS a compartment size can pick up the direct ∂c_ji/∂V term
+                // below. `obs_sens_has_volume` is false for every model without
+                // an amount-valued species on a writable size, which is all of
+                // .net and every hOSU=false SBML model — the branch is then
+                // hoisted out of the inner loop entirely.
+                const int p_idx = sens_plist[p];
                 for (const auto &term : obs_sens_terms) {
                     out[term.obs] += term.weight * ys[term.species0];
+                    if (obs_sens_has_volume && term.vol_param == p_idx) {
+                        out[term.obs] += term.raw_factor * y_data[term.species0];
+                    }
                 }
             }
             result.record_observable_sensitivities(time_index, obs_sens_p_ptrs.data(), n_obs,

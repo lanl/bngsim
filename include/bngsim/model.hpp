@@ -299,6 +299,21 @@ class NetworkModel {
     // sensitivity to seed s(0) = ∂y(0)/∂p.
     const std::vector<std::pair<int, int>> &species_ic_param_refs() const;
 
+    // The divisor `resolve_ic_from_param` applies to each species_ic_param_refs
+    // entry, in the same order (issue #170 stage 3). An amount_valued species
+    // stores amount/V_c, so the parameter that names its IC names an *amount*
+    // and the stored value — and therefore ∂(stored IC)/∂p — carries a 1/V_c
+    // the parameter graph on the Python side cannot see. 1.0 for every other
+    // ref, which is every `.net` model and every hOSU=false SBML species.
+    std::vector<double> species_ic_param_ref_divisors() const;
+
+    // ∂(stored initial condition)/∂(compartment size), for the species whose
+    // stored IC moves when a compartment size is written (issue #170 stage 3).
+    // Returns (species_idx0, volume_param_idx0, d_ic_d_volume) triples; empty
+    // for `.net`, for a model with no writable compartment size, and once
+    // save_concentrations() has redefined the baseline. See model.cpp.
+    std::vector<std::tuple<int, int, double>> compartment_ic_sens_seeds() const;
+
     std::vector<std::string> species_names() const;
     // 0-based indices of species with `reported == true`, in species order
     // (GH #71). The trajectory-output layer projects Result species columns to

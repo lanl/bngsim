@@ -991,61 +991,76 @@ class Simulator:
                 self._volume_factors_cache = []
         return self._volume_factors_cache
 
-    def _compartment_size_params(self) -> set[str]:
-        """Names of the model's SBML compartment-size parameters (issue #164).
+    def _unwritable_compartment_size_params(self) -> set[str]:
+        """Names of the compartment sizes this model refuses to *write* (#170).
+
+        A subset of :attr:`Model.compartment_size_params` — and, since #170 stage
+        3, the only ones whose sensitivity column is refused too; see
+        :meth:`_raise_if_compartment_size_params` for why the two questions have
+        the same answer. (The wider set had its own helper here while every
+        compartment column was refused; nothing asks that question now.)
 
         Empty for ``.net`` models, for every model built through
-        :class:`ModelBuilder` directly, and for a compartment the SBML loader
-        promoted to a species (rate-rule / event-resized) — that one is genuine
-        live state, not a baked constant. Degrades to "none" against a core
-        built before the flag existed, which loses the refusal rather than
-        breaking the run.
+        :class:`ModelBuilder` directly, and for almost every SBML model.
+        Degrades to "none" against a core built before the flag existed, which
+        loses the refusal rather than breaking the run.
         """
         try:
-            flags = self._model._core.param_is_compartment_size
+            flags = self._model._core.param_volume_write_refused
         except AttributeError:  # pragma: no cover - defensive
             return set()
-        # strict=: see Model.compartment_size_params — same invariant.
         return {n for n, f in zip(self._model.param_names, flags, strict=True) if f}
 
     def _raise_if_compartment_size_params(self, param_names: list[str]) -> None:
-        """Refuse a forward-sensitivity column for a compartment size.
+        """Refuse a forward-sensitivity column for an **unwritable** compartment size.
 
-        Issue #164 — the reported column is wrong in **both** directions, and
-        every oracle reachable from inside the process agrees with it. A
-        compartment's value is folded at load into constants no derivative here
-        differentiates: per-species volume factors, amount-declared initial
-        conditions, the mass-action scalar's ``Π V^n / V_storage``, the SSA
-        propensity volume, and the emitted RHS. What CVODES differentiates is
-        the leftover ``p[]`` reference in whichever rate laws still carry one —
-        so on issue #164's model ``dA/dC1`` is reported as 36.6 where the truth
-        is 0 (``A`` is exactly ``C1``-invariant), and ``dB/dC2`` as 0 where the
-        truth is 2.30. Both errors survive a finite-difference check, because a
-        re-solve at ``p ± h`` moves the parameter through ``set_param`` and
-        inherits the same staleness; only rebuilding from source disagrees.
+        Issue #164 refused every compartment size, because the volume was folded
+        at load into constants no derivative differentiated — per-species volume
+        factors, amount-declared initial conditions, the mass-action scalar's
+        ``Π V^n / V_storage``, the emitted RHS — so what CVODES saw was the
+        leftover ``p[]`` reference in whichever rate laws still carried one. On
+        #164's model that reported ``dA/dC1`` as 36.6 where the truth is 0, and
+        ``dB/dC2`` as 0 where the truth is 2.30.
 
-        So refuse the column. The gradient is available by rebuilding at
-        ``V ± h`` (``Model.from_sbml(..., compartment_sizes=...)``), which is
-        what the tests use as the oracle. Issue #170 tracks the analytic column.
+        Issue #170 removed the fold. Stage 1 made the storage convention derive
+        from the parameter and stage 2 made the emitted C read it, so the RHS is
+        a function of ``p[V]``; stage 3 differentiates the two factors that
+        function still puts in by hand (the GH #75 amount conversion and the GH
+        #160 cross-compartment row divide) and seeds ``∂x(0)/∂V = -x(0)/V`` for
+        an amount-declared initial condition.
+
+        **The column is now exactly as trustworthy as the write is**, which is
+        what makes this refusal narrow rather than blanket. The emitted text does
+        not change when a size is written (that is stage 2's invariant), so with
+        the text fixed, moving ``p[V]`` *is* reloading at the new volume — for
+        every size where "a write reproduces a rebuild" holds. Where it does not,
+        the loader says so at load time and ``set_param`` refuses the write; the
+        same set is refused here, and for the same reason, rather than answered
+        with a derivative of a model the size no longer describes.
+
+        The gradient for those is available the way #164 always offered it:
+        rebuild at ``V ± h`` with ``Model.from_sbml(..., compartment_sizes=...)``
+        and difference. That is also the oracle the tests use, since a
+        finite difference through ``set_param`` would inherit the same staleness.
         """
         if not param_names:
             return
-        bad = sorted(set(param_names) & self._compartment_size_params())
+        bad = sorted(set(param_names) & self._unwritable_compartment_size_params())
         if bad:
             raise ValueError(
                 f"Forward sensitivity is not supported for compartment size(s) "
-                f"{bad}: issue #170 made a compartment size *writable* — the storage "
-                f"convention is re-derived from the parameter rather than folded at "
-                f"load — but not yet differentiable. The sensitivity RHS carries the "
-                f"kinetic-law half of d/dV and none of the storage half: the "
-                f"per-species amount conversion, an amount-declared initial condition "
-                f"(whose seed is -amount/V**2, not zero), the cross-compartment "
-                f"per-species divide, and the SSA propensity volume. A partial column "
-                f"is a confidently wrong derivative, not a conservative one, so bngsim "
-                f"refuses it. The gradient is available as a finite difference over "
-                f"the write itself now that the write is exact: set_param(V +/- h) on "
-                f"a fresh Model, which reproduces a rebuild bit for bit. Issue #170 "
-                f"stage 3 tracks the analytic column."
+                f"{bad}: this model cannot resolve them to live volumes, so "
+                f"set_param refuses to write them (see "
+                f"Model.unwritable_compartment_size_params, which names the reason "
+                f"per size — an assignment rule that recomputes the size, a "
+                f"mass-action scalar shared across two compartments, or an "
+                f"<initialAssignment> that folds the size into a quantity no "
+                f"parameter holds). A sensitivity column is the derivative of the "
+                f"same write, so where the write cannot be honored the column would "
+                f"be a confidently wrong derivative rather than a conservative one. "
+                f"Every other compartment size in this model is differentiable "
+                f"(issue #170 stage 3). For these, rebuild at V +/- h: "
+                f"Model.from_sbml(path, compartment_sizes={{...}})."
             )
 
     def _raise_if_event_sensitivities(self, param_names: list[str] | None = None) -> None:
@@ -3731,7 +3746,9 @@ class Simulator:
                     f"Unknown parameter(s): {sorted(unknown)}. Known: {sorted(known)}"
                 )
             target_params = list(params)
-            # Issue #164 — an explicit ask gets a hard answer.
+            # Issue #164 — an explicit ask gets a hard answer. Issue #170 stage 3
+            # narrowed *which* sizes that answer is "no" for: only the ones
+            # set_param itself refuses.
             self._raise_if_compartment_size_params(target_params)
         else:
             # ...but "every parameter" is a request for everything computable,
@@ -3739,18 +3756,24 @@ class Simulator:
             # would make this method unusable on any SBML model for the sake of
             # columns nobody asked for by name; silently including them would put
             # a wrong column in the tensor. So drop them and say so (issue #164).
-            skipped = sorted(set(all_param_names) & self._compartment_size_params())
+            # Issue #170 stage 3: an ordinary writable size is *computable* now
+            # and stays in the tensor — the skip list is the unwritable residue,
+            # which is empty for most models, so this warning has gone from
+            # firing on every SBML model to firing on almost none.
+            skipped = sorted(set(all_param_names) & self._unwritable_compartment_size_params())
             target_params = [p for p in all_param_names if p not in set(skipped)]
             if skipped:
                 warnings.warn(
                     f"compute_all_sensitivities: skipping compartment size(s) {skipped} "
-                    f"— an SBML compartment's value is folded into load-time constants "
-                    f"the sensitivity RHS does not differentiate, so its column would be "
-                    f"wrong in both directions (issue #164). The returned tensor has "
-                    f"{len(target_params)} parameter columns; result.sensitivity_params "
-                    f"lists them. Pass params=[...] to make the refusal explicit, or "
-                    f"finite-difference through a rebuild "
-                    f"(Model.from_sbml(..., compartment_sizes={{...}}) at V ± h).",
+                    f"— this model cannot resolve them to live volumes, so set_param "
+                    f"refuses to write them and their sensitivity column would be the "
+                    f"derivative of a write that cannot happen (issue #170; "
+                    f"Model.unwritable_compartment_size_params names the reason per "
+                    f"size). The returned tensor has {len(target_params)} parameter "
+                    f"columns; result.sensitivity_params lists them. Pass params=[...] "
+                    f"to make the refusal explicit, or finite-difference through a "
+                    f"rebuild (Model.from_sbml(..., compartment_sizes={{...}}) at "
+                    f"V ± h).",
                     stacklevel=2,
                 )
 
@@ -4194,9 +4217,14 @@ class Simulator:
         # classified against this call's requested sensitivity_params.
         if sensitivity_params:
             self._raise_if_event_sensitivities(sensitivity_params)
-            # Issue #164 — and the same refusal the constructor applies: a
-            # compartment size is not differentiable here either, and dY_ss/dp
-            # would inherit the wrong column through the linear solve.
+            # Issue #164/#170 — the same refusal the constructor applies, and
+            # only for the same narrow set. A steady-state column reads ∂f/∂p out
+            # of the same emitted sensitivity RHS and solves J·(dY/dp) = −∂f/∂p,
+            # so it inherits whatever that column is: right for a writable size
+            # now that stage 3 emits the storage half, and refusable for exactly
+            # the sizes whose write is refused. (dY_ss/dp carries no IC seed — a
+            # steady state has forgotten x(0) — so only the ∂f/∂V half is in play
+            # here, and it is the half that is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
             # Issue #63 — the same hard codegen requirement run() and
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the

@@ -2332,6 +2332,22 @@ static void compute_ss_output_sensitivity(NetworkModel &model, SteadyStateRhs &r
                 for (int p = 0; p < np; ++p) {
                     out[p] += weight * dxi[p];
                 }
+                // Issue #170 stage 3: `weight` is not constant in every parameter.
+                // When the amount conversion above reads a *writable* compartment
+                // size, that size is the coefficient, so its own column carries a
+                // direct ∂weight/∂V·x_i on top of the chain rule — the observable's
+                // units move with the volume. Same term the CVODES path and the
+                // compiled emitter add; this site is the third of the three, and
+                // keeping them together is what stopped the #119 divergence above.
+                if (sp.amount_valued && sp.volume_param_idx0 >= 0) {
+                    const std::string &vname =
+                        model.parameters()[static_cast<std::size_t>(sp.volume_param_idx0)].name;
+                    for (int p = 0; p < np; ++p) {
+                        if (param_names[static_cast<std::size_t>(p)] == vname) {
+                            out[p] += entry.factor * y_ss[i];
+                        }
+                    }
+                }
             }
         }
     }

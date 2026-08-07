@@ -2095,6 +2095,85 @@ const std::vector<std::pair<int, int>> &NetworkModel::species_ic_param_refs() co
     return impl_->shared->species_ic_param_refs;
 }
 
+// The 1/V_c that `resolve_ic_from_param` puts between "the parameter that names
+// this IC" and "the number stored" (issue #170 stage 3). Read from the same
+// species fields that function reads, in the ref order, so a caller building the
+// chain rule ∂(stored IC)/∂p cannot use a different convention than the loader
+// and set_param() use to produce the value.
+std::vector<double> NetworkModel::species_ic_param_ref_divisors() const {
+    const auto &refs = impl_->shared->species_ic_param_refs;
+    std::vector<double> out;
+    out.reserve(refs.size());
+    for (const auto &ref : refs) {
+        const auto &sp = impl_->species[static_cast<std::size_t>(ref.first)];
+        // `std::isfinite` is not in resolve_ic_from_param's guard, which divides
+        // by a NaN volume and stores the NaN — a model with an unset compartment
+        // size (MODEL2002070001) is NaN throughout and there is nothing here to
+        // rescue. What this guard buys is that the *seed* stays the finite number
+        // it was rather than becoming a NaN yS(0) that poisons a whole CVODES
+        // column. Same call as build_per_species_sympy's degenerate-coefficient
+        // check, for the same reason.
+        const bool usable =
+            sp.amount_valued && sp.volume_factor != 0.0 && std::isfinite(sp.volume_factor);
+        out.push_back(usable ? sp.volume_factor : 1.0);
+    }
+    return out;
+}
+
+// ∂(stored IC)/∂V — the forward-sensitivity seed a writable compartment size
+// needs (issue #170 stage 3).
+//
+// bngsim stores amount/V_c, so for the species whose declared initial condition
+// is an AMOUNT the stored number moves when the volume does, and the state's own
+// meaning moves with the parameter: x(0) = A/V ⇒ ∂x(0)/∂V = −A/V² = −x(0)/V.
+// Without this seed the column starts at zero and is wrong from t=0 by a term
+// that never decays. The two ways a stored IC can be an amount over a volume are
+// the two `refresh_*` functions above, and this returns a row for each:
+//
+//   * `initial_amount` non-NaN — an `initialAmount` or an amount-valued
+//     `<initialAssignment>`, refreshed by refresh_compartment_volume_state();
+//   * an `amount_valued` species whose IC a parameter names, refreshed by
+//     refresh_param_ref_ics() through resolve_ic_from_param's divide. Its
+//     *numerator* may move with the volume too (an `<initialAssignment>` reading
+//     the compartment is carried as a derived parameter); that half is the
+//     ordinary parameter-graph chain rule, scaled by
+//     species_ic_param_ref_divisors(). This is only the explicit divide.
+//
+// A concentration-declared species is not here: its stored value IS the declared
+// number at every volume, so the seed is a true zero rather than a missing row.
+// Neither is anything at all once save_concentrations() has redefined the
+// baseline — the same latch that stops both refresh functions, for the same
+// reason (issue #79/#81: the carried state is not the declared IC any more).
+std::vector<std::tuple<int, int, double>> NetworkModel::compartment_ic_sens_seeds() const {
+    std::vector<std::tuple<int, int, double>> out;
+    if (impl_->ic_baseline_saved)
+        return out;
+    std::vector<char> is_param_ref(impl_->species.size(), 0);
+    for (const auto &ref : impl_->shared->species_ic_param_refs)
+        is_param_ref[static_cast<std::size_t>(ref.first)] = 1;
+    for (std::size_t i = 0; i < impl_->species.size(); ++i) {
+        const auto &sp = impl_->species[i];
+        if (sp.volume_param_idx0 < 0)
+            continue;
+        const double v = impl_->parameters[static_cast<std::size_t>(sp.volume_param_idx0)].value;
+        if (v == 0.0)
+            continue; // both refresh paths leave a zero volume undivided
+        const bool amount_declared = !std::isnan(sp.initial_amount);
+        const bool amount_param_ref = sp.amount_valued && is_param_ref[i];
+        if (!amount_declared && !amount_param_ref)
+            continue;
+        const double seed = -sp.initial_conc / v;
+        // A model whose compartment size never got a value is NaN throughout
+        // (its stored IC included). Emitting the row would put a NaN in yS(0) and
+        // fail the whole solve; leaving it out is the pre-#170 behaviour for a
+        // model that has no usable numbers anyway.
+        if (!std::isfinite(seed))
+            continue;
+        out.emplace_back(static_cast<int>(i), sp.volume_param_idx0, seed);
+    }
+    return out;
+}
+
 std::vector<std::string> NetworkModel::species_names() const {
     std::vector<std::string> names;
     names.reserve(impl_->species.size());
