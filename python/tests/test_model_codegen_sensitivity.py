@@ -346,7 +346,13 @@ class TestSensAutoTrigger:
         assert m._want_output_sens is False, "the plain-build record"
         sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k1"])
         assert sim._codegen_so_path != "/nonexistent/path.so"
-        assert ctypes.CDLL(sim._codegen_so_path).bngsim_codegen_sens_rhs is not None
+        # Either backend proves the rebuild happened AND carries ∂f/∂p: the cc
+        # path resolves the symbol out of a .so, the MIR JIT backend
+        # (BNGSIM_CODEGEN_JIT=mir) has no .so at all and stashes C source.
+        if sim._codegen_c_source:
+            assert "bngsim_codegen_sens_rhs" in sim._codegen_c_source
+        else:
+            assert ctypes.CDLL(sim._codegen_so_path).bngsim_codegen_sens_rhs is not None
 
     def test_explicit_codegen_false_raises_for_sensitivity(self):
         # Hard requirement (GH #214): codegen=False + sensitivities → raise,
