@@ -14,8 +14,15 @@ The gate is cheap. **Not** silently downgrading a sensitivity run to CVODES'
 difference quotient is the whole cost of it, and it takes four things, each with a
 test below:
 
-* the resolved flag reaches BOTH cache keys, or a plain-run ``.so`` is served to a
-  sensitivity run and the symbol is simply absent (the issue #51 inertness trap);
+* the resolved flag reaches BOTH cache keys, so a plain-run ``.so`` is never served
+  to a sensitivity run with the symbol simply absent (the issue #51 inertness
+  trap). Measured honestly, that one is belt-and-braces today: ``emit_output_sens``
+  and #177's ``:sens_term_scale`` already separate the two keys, so the mutation
+  that blinds the keys to the new flag only trips
+  :meth:`test_the_structural_key_moves_with_the_flag` — the two "compiles two
+  distinct artifacts" tests below pass for that older reason. They earn their place
+  by pinning the *wiring* instead: reverting either production entry point to ask
+  unconditionally fails them;
 * an entry point that takes ``sensitivity_params`` as a *method* argument
   regenerates — ``compute_all_sensitivities`` and ``steady_state``, whose shared
   helper used to gate its regeneration on ``n_functions > 0`` and would therefore
@@ -204,6 +211,10 @@ class TestTheCacheKeyCarriesTheFlag:
 
     @requires_cc
     def test_the_model_path_compiles_two_distinct_artifacts(self, tmp_path, monkeypatch):
+        """End to end for ``prepare_model_codegen``: it must resolve the flag and
+        hand the SAME value to the key and to the generator. (The two artifacts
+        would be distinct on ``emit_output_sens`` alone; what this pins is that the
+        plain one really has no ∂f/∂p and the sensitivity one really does.)"""
         monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cache")
         m = _sbml_functional(tmp_path)
         plain_so = cg.prepare_model_codegen(m)
@@ -216,8 +227,9 @@ class TestTheCacheKeyCarriesTheFlag:
 
     @requires_cc
     def test_the_net_path_compiles_two_distinct_artifacts(self, tmp_path, monkeypatch):
-        """The .net key is built from the file's bytes plus cheap flags, so a flag
-        that never reached it would collide across the two builds."""
+        """Same, for ``prepare_codegen``. The .net key is built from the file's
+        bytes plus cheap flags rather than from the source, so every flag that
+        changes the source has to be in it."""
         monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "cache")
         cg._PREPARE_CODEGEN_MEMO.clear()
         m = _model(tmp_path, FUNCTIONAL)

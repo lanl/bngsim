@@ -106,6 +106,33 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Changed
+- **A plain ODE run no longer derives, emits or compiles the analytic `∂f/∂p` it
+  never installs (issue #209).** `generate_combined_from_model` called
+  `generate_sens_from_model` unconditionally, so `Simulator(model, method="ode")`
+  with no `sensitivity_params` ran the Functional sensitivity derivation through
+  sympy, emitted it, and compiled it into the cached `.so` — for a solve that
+  never calls `CVodeSensInit1`. On `BIOMD0000000496` (295 species, 333 functional
+  reactions, cold codegen cache) that was **39.5 s of construction against 21.5 s,
+  and a 26.7 MB `.so` against 1.8 MB (14.6x)**; the 12.6 MB of C source also
+  crossed the 8 MB `-O0` threshold, so the RHS the solve *does* call was compiling
+  unoptimized. The GH #198 output-sensitivity evaluator three lines below in the
+  same function was already gated on `_want_output_sens` for exactly this reason.
+  Trajectories are unchanged — this removes a symbol nothing was calling.
+
+  Scoped to the Functional/Michaelis-Menten half. An Elementary model's
+  sensitivity RHS is plain text emission with no sympy in it, so it stays
+  unconditional and its source (and every `.so` cached for it) is byte-identical.
+
+  The cost of the gate is entirely in *not* silently downgrading a sensitivity run
+  to CVODES' difference quotient, so the resolved flag reaches both cache keys
+  (sharing the existing `:no_functional_sens` namespace on the `.net` side — a
+  build with the GH #67 hatch set and a build with nobody asking emit the same
+  source), and `Simulator._prepare_output_sens_codegen` — which `steady_state()`
+  and `compute_all_sensitivities()` share — regenerates a plain artifact instead
+  of reusing it. That helper's own `n_functions > 0` condition is gone with it: a
+  Michaelis-Menten model can have no functions at all, and #177's
+  `bngsim_codegen_sens_term_scale` had already made the byte-identical-source
+  claim behind that condition false.
 - **The model-side `.so` cache key is structural, so a warm cache generates no C
   source (issue #174).** `prepare_model_codegen` derived its key by generating
   the source and hashing it, which meant a cache hit skipped only the `cc`
@@ -198,6 +225,21 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **A sensitivity `Simulator` reused the plain `.so` an earlier `Simulator` had
+  left on the same model, and silently lost `bngsim_codegen_output_sens`.** The
+  constructor's artifact-reuse block took whatever `model._codegen_so_path` /
+  `_codegen_c_source` held, and `_auto_codegen_for_sensitivity` no-ops the moment
+  anything is attached — so `Simulator(m)` followed by
+  `Simulator(m, sensitivity_params=[...])` handed the second one a `.so` built
+  when `_want_output_sens` was False, which carries neither the GH #198
+  expression evaluator nor #177's `bngsim_codegen_sens_term_scale`. No exception,
+  no warning: `d(func)/dθ` just took the finite-difference fallback. Measured on
+  `BIOMD0000000012` before the fix. Reuse is now conditional on the artifact
+  having been built for a sensitivity run — `_want_output_sens` is the record of
+  that, and `Model.copy()` already carried the two together. The converse stays
+  allowed, since a sensitivity artifact is a superset. Found while gating the
+  sensitivity RHS (issue #209), which would have added `bngsim_codegen_sens_rhs`
+  to the list of symbols this quietly dropped.
 - **The `∂func/∂θ` analysis memo did not follow a derived-parameter override, so
   a reused model kept emitting the pre-write partials.** `_analyze_output_sens`
   keyed its memo on four model counters and the derivation budget, on the stated

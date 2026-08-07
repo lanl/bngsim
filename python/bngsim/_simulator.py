@@ -895,7 +895,7 @@ class Simulator:
         #
         # Issue #209 — but NOT a plain artifact into a sensitivity run. The
         # sensitivity emit flags (bngsim_codegen_sens_rhs since #209,
-        # bngsim_codegen_output_sens since GH #198, bngsim_dfdp_term_scale since
+        # bngsim_codegen_output_sens since GH #198, bngsim_codegen_sens_term_scale since
         # #177) are all keyed on _want_output_sens, so an artifact built by an
         # earlier plain Simulator on this same model carries none of them; and
         # _auto_codegen_for_sensitivity below no-ops the moment anything is
@@ -1551,7 +1551,7 @@ class Simulator:
         The trigger used to add ``n_functions > 0``, on the reasoning that a
         function-free model's source is byte-identical with or without the flag.
         That stopped being true and the comment outlived it: #177's
-        ``bngsim_dfdp_term_scale`` is gated on ``_want_output_sens`` with NO
+        ``bngsim_codegen_sens_term_scale`` is gated on ``_want_output_sens`` with NO
         has-functions condition (a function-free model is exactly its reproduction),
         and issue #209 gates ``bngsim_codegen_sens_rhs`` on it for every
         Functional *or* Michaelis-Menten model — and an MM model need have no

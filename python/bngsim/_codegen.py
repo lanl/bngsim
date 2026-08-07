@@ -3766,9 +3766,12 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool, 
     GH #67 hatch resolved against the same ``_want_output_sens`` signal the two
     flags below read. The .net emitter declines every Functional model on its own,
     so this gates the model-based hook ``generate_combined_c`` reaches for after
-    that decline. Like ``want_term_scale`` it MUST reach the cache key below, or a
-    plain-run .so is handed to a sensitivity run and silently lacks
-    ``bngsim_codegen_sens_rhs`` (the issue #51 inertness trap).
+    that decline. It goes into the cache key as the *resolved* decision rather than
+    the raw hatch, for the reason stated at ``chunk_policy`` there: today
+    ``want_term_scale`` already separates a plain key from a sensitivity one, so
+    this is redundancy — but redundancy against a narrowing of either gate, and the
+    thing it would be protecting against is a plain-run .so silently lacking
+    ``bngsim_codegen_sens_rhs`` (the issue #51 inertness trap), not a build error.
 
     ``want_term_scale`` (issue #177): append the ∂f/∂p term scale only for a
     sensitivity run — the same ``_want_output_sens`` signal ``want_output_sens``
@@ -3848,7 +3851,7 @@ def want_functional_sens_rhs(model) -> bool:
     plain ``Simulator(model, method="ode")`` never installs forward sensitivities
     (``CVodeSensInit1`` is not called), so every second of ``sp.diff`` and every
     byte of ``bngsim_codegen_sens_rhs`` it emitted was thrown away — on
-    ``BIOMD0000000496`` that was 39.5 s of construction instead of 21.6 s, and a
+    ``BIOMD0000000496`` that was 39.5 s of construction instead of 21.5 s, and a
     26.7 MB ``.so`` instead of 1.8 MB. It is the same reasoning, and the same
     ``_want_output_sens`` signal, that already gates the GH #198 output-sensitivity
     evaluator; ``∂f/∂p`` is the more expensive of the two and was the one left
@@ -8883,11 +8886,13 @@ def compute_model_codegen_hash(
       derivation differentiates;
     * the emit decisions: ``emit_output_sens`` (the caller's ``_want_output_sens``),
       ``emit_functional_sens`` (issue #209 — the GH #67 hatch resolved against that
-      same signal, and it must be the value the caller hands
-      ``generate_combined_from_model``, or a plain-run ``.so`` with no
-      ``bngsim_codegen_sens_rhs`` in it is served to a sensitivity run), the GH #90
-      budget, ``BNGSIM_NO_CODEGEN_JAC``, and the *resolved* chunking policy
-      (resolved, so ``on`` and ``true`` do not make two keys for one source);
+      same signal; ``emit_output_sens`` and the raw hatch already determined it, so
+      folding in the resolved value is redundancy rather than the thing standing
+      between here and a collision, but it is the value the caller hands
+      ``generate_combined_from_model`` and keeping the two in lock-step is what
+      makes that stay true), the GH #90 budget, ``BNGSIM_NO_CODEGEN_JAC``, and the
+      *resolved* chunking policy (resolved, so ``on`` and ``true`` do not make two
+      keys for one source);
     * :func:`bngsim._switch_sensitivity.switch_gate_cache_digest` — the one
       verdict in the pipeline that reads parameter values and species initial
       concentrations.
