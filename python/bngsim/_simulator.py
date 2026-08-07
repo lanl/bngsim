@@ -991,30 +991,19 @@ class Simulator:
                 self._volume_factors_cache = []
         return self._volume_factors_cache
 
-    def _compartment_size_params(self) -> set[str]:
-        """Names of the model's SBML compartment-size parameters (issue #164).
-
-        Empty for ``.net`` models, for every model built through
-        :class:`ModelBuilder` directly, and for a compartment the SBML loader
-        promoted to a species (rate-rule / event-resized) — that one is genuine
-        live state, not a baked constant. Degrades to "none" against a core
-        built before the flag existed, which loses the refusal rather than
-        breaking the run.
-        """
-        try:
-            flags = self._model._core.param_is_compartment_size
-        except AttributeError:  # pragma: no cover - defensive
-            return set()
-        # strict=: see Model.compartment_size_params — same invariant.
-        return {n for n, f in zip(self._model.param_names, flags, strict=True) if f}
-
     def _unwritable_compartment_size_params(self) -> set[str]:
         """Names of the compartment sizes this model refuses to *write* (#170).
 
-        A subset of :meth:`_compartment_size_params`, and the only ones whose
-        sensitivity column is still refused — see
+        A subset of :attr:`Model.compartment_size_params` — and, since #170 stage
+        3, the only ones whose sensitivity column is refused too; see
         :meth:`_raise_if_compartment_size_params` for why the two questions have
-        the same answer.
+        the same answer. (The wider set had its own helper here while every
+        compartment column was refused; nothing asks that question now.)
+
+        Empty for ``.net`` models, for every model built through
+        :class:`ModelBuilder` directly, and for almost every SBML model.
+        Degrades to "none" against a core built before the flag existed, which
+        loses the refusal rather than breaking the run.
         """
         try:
             flags = self._model._core.param_volume_write_refused
