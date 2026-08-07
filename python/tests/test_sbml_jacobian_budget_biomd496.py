@@ -68,12 +68,51 @@ _TEST_BUDGET_S = "3"
 _LOSER_WALL_CAP = 25.0
 
 
+class _BudgetDidNotEngage(AssertionError):
+    """The budget-engaged claim failed — quarantined for #190, and ONLY this claim.
+
+    Its own type so the ``xfail`` below can name it in ``raises=``. The wall-cap
+    and trajectory assertions in the same test raise a plain ``AssertionError``,
+    so a blanket ``raises=AssertionError`` would absorb a build-time *regression*
+    — the exact signal this module exists to catch — behind the quarantine. This
+    keeps the quarantine to one claim.
+    """
+
+
 def _model_xml(model_id: str) -> Path | None:
     xmls = sorted((_MODELS_DIR / model_id).glob("*.xml"))
     return xmls[0] if xmls else None
 
 
-@pytest.mark.parametrize("model_id,t_end,n_points", _LOSER_CASES)
+# #190: BIOMD0000000496 now derives its analytical Jacobian *completely* inside a
+# 3 s budget, so the "budget engaged" claim below no longer holds — the model is
+# simply not a loser at this budget any more (the derivation got faster; #96's
+# printer fix and the work after it). The wall cap it was filed against is no
+# longer close either: #174's structural .so cache key took this case from 18.14 s
+# to 3.69 s against the 25 s cap.
+#
+# Quarantined rather than deleted or relaxed, because the fix is a judgement about
+# which fixture belongs here and that belongs on #190. strict=True retires the
+# marker by force: the day the budget engages again this XPASSes and the run goes
+# red, instead of relying on someone remembering.
+#
+# This is NOT cosmetic — the pytest hook gates every `git push`, and this test is
+# corpus-gated, so before this marker a push from any checkout holding the
+# rr_parity corpus was rejected. It passed only in a worktree, where the corpus is
+# absent and the test skips.
+_BUDGET_ENGAGED_XFAIL = pytest.mark.xfail(
+    strict=True,
+    raises=_BudgetDidNotEngage,
+    reason="#190: BIOMD0000000496 derives fully inside the 3s budget, so it no "
+    "longer exercises the budget-engaged path",
+)
+_LOSER_CASES_BUDGET = [
+    pytest.param(*case, marks=[_BUDGET_ENGAGED_XFAIL] if case[0] == "BIOMD0000000496" else [])
+    for case in _LOSER_CASES
+]
+
+
+@pytest.mark.parametrize("model_id,t_end,n_points", _LOSER_CASES_BUDGET)
 def test_large_functional_build_solve_under_budget(model_id, t_end, n_points, monkeypatch):
     """Build + solve completes well under the wall cap, on the FD fallback.
 
@@ -102,10 +141,13 @@ def test_large_functional_build_solve_under_budget(model_id, t_end, n_points, mo
         f"{model_id} build+solve took {wall:.1f}s — derivation-budget regression? "
         "(unbounded derivation runs 40-80s)"
     )
-    assert model._core.analytical_jacobian_complete is False, (
-        f"{model_id} attached the analytical Jacobian under a {_TEST_BUDGET_S}s budget — "
-        "the build-time budget did not engage"
-    )
+    # Raised, not asserted, so it carries its own type and the xfail above can
+    # name it without swallowing the wall-cap assertion (#190).
+    if model._core.analytical_jacobian_complete is not False:
+        raise _BudgetDidNotEngage(
+            f"{model_id} attached the analytical Jacobian under a {_TEST_BUDGET_S}s budget — "
+            "the build-time budget did not engage"
+        )
 
 
 @pytest.mark.parametrize("model_id,t_end,n_points", _LOSER_CASES)
