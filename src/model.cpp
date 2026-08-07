@@ -2106,7 +2106,16 @@ std::vector<double> NetworkModel::species_ic_param_ref_divisors() const {
     out.reserve(refs.size());
     for (const auto &ref : refs) {
         const auto &sp = impl_->species[static_cast<std::size_t>(ref.first)];
-        out.push_back((sp.amount_valued && sp.volume_factor != 0.0) ? sp.volume_factor : 1.0);
+        // `std::isfinite` is not in resolve_ic_from_param's guard, which divides
+        // by a NaN volume and stores the NaN — a model with an unset compartment
+        // size (MODEL2002070001) is NaN throughout and there is nothing here to
+        // rescue. What this guard buys is that the *seed* stays the finite number
+        // it was rather than becoming a NaN yS(0) that poisons a whole CVODES
+        // column. Same call as build_per_species_sympy's degenerate-coefficient
+        // check, for the same reason.
+        const bool usable =
+            sp.amount_valued && sp.volume_factor != 0.0 && std::isfinite(sp.volume_factor);
+        out.push_back(usable ? sp.volume_factor : 1.0);
     }
     return out;
 }
@@ -2153,7 +2162,14 @@ std::vector<std::tuple<int, int, double>> NetworkModel::compartment_ic_sens_seed
         const bool amount_param_ref = sp.amount_valued && is_param_ref[i];
         if (!amount_declared && !amount_param_ref)
             continue;
-        out.emplace_back(static_cast<int>(i), sp.volume_param_idx0, -sp.initial_conc / v);
+        const double seed = -sp.initial_conc / v;
+        // A model whose compartment size never got a value is NaN throughout
+        // (its stored IC included). Emitting the row would put a NaN in yS(0) and
+        // fail the whole solve; leaving it out is the pre-#170 behaviour for a
+        // model that has no usable numbers anyway.
+        if (!std::isfinite(seed))
+            continue;
+        out.emplace_back(static_cast<int>(i), sp.volume_param_idx0, seed);
     }
     return out;
 }
