@@ -21,6 +21,7 @@ import os
 import platform
 import re
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -8697,15 +8698,138 @@ def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple
     return "\n".join(parts), sens_code is not None
 
 
-def compute_model_codegen_hash(model) -> str:
-    """Compute a SHA-256 hash of model structure for codegen caching.
+def _canon_update(h, obj) -> None:
+    """Feed *obj* into the hasher *h* as a canonical, injective byte stream.
 
-    The hash is based on the generated C source code (RHS + sensitivity
-    RHS when available), so models with identical structure share the same
-    compiled .so and a change in either generator invalidates the cache.
+    Every value is type-tagged and every variable-length one is length-prefixed,
+    so no two distinct structures can produce the same bytes. That is not
+    pedantry: without the length prefix ``{"a": "b:c"}`` and ``{"a:b": "c"}``
+    serialize alike, and a collision in the codegen cache key loads the wrong
+    ``.so`` — silent numerical corruption rather than a slow build.
+
+    Floats go in as their IEEE-754 bit pattern rather than ``repr``: exact by
+    construction, and it keeps ``-0.0`` apart from ``0.0``. ``bool`` is matched
+    before ``int`` because it is a subclass of it. Dict keys are sorted, so
+    Python's insertion order never reaches the digest, and an unhandled type
+    raises instead of silently hashing its ``id()``.
     """
-    c_source, _ = generate_combined_from_model(model)
-    return hashlib.sha256(c_source.encode()).hexdigest()[:16]
+
+    def tagged(tag: bytes, payload: bytes) -> None:
+        h.update(tag)
+        h.update(str(len(payload)).encode())
+        h.update(b":")
+        h.update(payload)
+
+    if obj is None:
+        h.update(b"n")
+    elif obj is True:
+        h.update(b"T")
+    elif obj is False:
+        h.update(b"F")
+    elif isinstance(obj, int):
+        tagged(b"i", str(obj).encode())
+    elif isinstance(obj, float):
+        h.update(b"f")
+        h.update(struct.pack("<d", obj))
+    elif isinstance(obj, str):
+        tagged(b"s", obj.encode("utf-8"))
+    elif isinstance(obj, bytes):
+        tagged(b"y", obj)
+    elif isinstance(obj, (list, tuple)):
+        h.update(b"[")
+        h.update(str(len(obj)).encode())
+        h.update(b":")
+        for item in obj:
+            _canon_update(h, item)
+    elif isinstance(obj, dict):
+        h.update(b"{")
+        h.update(str(len(obj)).encode())
+        h.update(b":")
+        for key in sorted(obj):
+            _canon_update(h, key)
+            _canon_update(h, obj[key])
+    else:
+        raise TypeError(f"codegen cache key cannot serialize {type(obj).__name__}")
+
+
+# The value the model-based cache key deliberately drops. Everything else
+# codegen_data() carries is structure the emitters read; a parameter's current
+# VALUE is not — the whole design of the generated C is that parameters are read
+# from the runtime ``p[]`` array rather than baked as literals (see this module's
+# docstring), which is exactly what lets one .so serve every point of a fit.
+# Dropping it is what makes the key stable across a parameter scan; the one path
+# by which a value *can* still reach the emitted source — the issue #68
+# switch-condition gate — is carried as a verdict by switch_gate_cache_digest.
+_CODEGEN_KEY_DROPPED_PARAM_FIELDS = ("value",)
+
+
+def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
+    """Compute the model-based codegen cache key from model STRUCTURE (issue #174).
+
+    The key the compiled ``.so`` is cached under, for the model-based path
+    (SBML/Antimony, and any :class:`~bngsim.Model` built through
+    ``ModelBuilder``). It is derived from cheap O(model) reads — a few C++
+    accessors — and never generates source, so a warm cache resolves without
+    paying the RHS/sensitivity derivation that dominates ``Simulator``
+    construction (97% of it on ``Smith_BMCSystBiol2013``). That is the whole
+    point of the issue: hashing the generated source made the cache skip only
+    the ``cc`` compile.
+
+    The inputs are exactly what ``generate_combined_from_model`` and everything
+    it calls read off the model:
+
+    * ``codegen_data()`` minus each parameter's current *value* (see
+      ``_CODEGEN_KEY_DROPPED_PARAM_FIELDS``) — this carries the attachment
+      vector ``is_const``, which is live state a ``set_param`` on a derived
+      parameter moves (issue #188) and which the source genuinely depends on;
+    * ``codegen_jacobian_plan()`` — including ``available``, so a model whose
+      analytical Jacobian has not been attached yet never shares a key with the
+      same model after ``prepare_analytical_jacobian``;
+    * ``functional_jacobian_context()`` — the rate-law text the Functional
+      derivation differentiates;
+    * the process-scoped emit decisions: ``emit_output_sens`` (the caller's
+      ``_want_output_sens``), the GH #67 and GH #90 hatches, ``BNGSIM_NO_CODEGEN_JAC``,
+      and the *resolved* chunking policy (resolved, so ``on`` and ``true`` do not
+      make two keys for one source);
+    * :func:`bngsim._switch_sensitivity.switch_gate_cache_digest` — the one
+      verdict in the pipeline that reads parameter values and species initial
+      concentrations.
+
+    ``_CODEGEN_CACHE_KEY`` is mixed in first, so an emitter edit invalidates
+    every key here whether or not ``_CODEGEN_VERSION`` was bumped (issue #51).
+    Note this key closes the hole that constant's docstring names: a C++ change
+    that alters ``codegen_data()`` is not in the source digest, but the data
+    itself is now in the key.
+    """
+    from bngsim._switch_sensitivity import switch_gate_cache_digest
+
+    core = model._core if hasattr(model, "_core") else model
+    data = dict(core.codegen_data())
+    data["parameters"] = [
+        {k: v for k, v in p.items() if k not in _CODEGEN_KEY_DROPPED_PARAM_FIELDS}
+        for p in data["parameters"]
+    ]
+    ctx = core.functional_jacobian_context()
+
+    h = hashlib.sha256()
+    h.update(_CODEGEN_CACHE_KEY.encode())
+    h.update(b"\0model_structural_v1\0")
+    _canon_update(h, data)
+    _canon_update(h, core.codegen_jacobian_plan())
+    _canon_update(h, ctx)
+    _canon_update(
+        h,
+        (
+            bool(emit_output_sens),
+            functional_sens_rhs_enabled(),
+            _sens_budget_cache_tag(),
+            os.environ.get("BNGSIM_NO_CODEGEN_JAC") == "1",
+            _chunk_threshold(),
+            _chunk_block_size(),
+        ),
+    )
+    _canon_update(h, switch_gate_cache_digest(core, ctx))
+    return h.hexdigest()[:16]
 
 
 # ─── Codegen wall-time recorder (T0.3) ─────────────────────────────────────────
