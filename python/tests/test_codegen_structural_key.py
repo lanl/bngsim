@@ -308,6 +308,35 @@ def test_a_reused_model_emits_the_same_source_as_a_fresh_one_after_a_derived_ove
     assert _src_hash(reused, emit_output_sens=True) == pristine
 
 
+_BIOMD547 = sorted((_MODELS_DIR / "BIOMD0000000547").glob("*.xml"))
+
+
+@pytest.mark.skipif(not _BIOMD547, reason="rr_parity corpus model BIOMD0000000547 not present")
+def test_a_compartment_write_is_a_derived_override_and_the_memo_must_follow_it():
+    """The corpus instance of the test above, reached by a write nobody would
+    call a derived-parameter write.
+
+    ``BIOMD0000000547``'s ``Compartment_3`` is *defined as* ``compartment_4``, so
+    it is an expression-backed parameter and setting its size overrides it —
+    ``param_is_expression`` goes 10 → 9 and the emitted ``∂func/∂θ`` changes. Two
+    of the 44 corpus models sampled while verifying this fix showed it, and both
+    were compartments rather than the ``_rateLaw{N}`` symbols the mechanism was
+    found on. Kept so the fix cannot be narrowed back to "derived parameters" in
+    the spelling sense.
+    """
+    path = str(_BIOMD547[0])
+    reused = bngsim.Model.load(path)
+    reused._want_output_sens = True
+    _src_hash(reused, emit_output_sens=True)  # populates the memo
+    reused.set_param("Compartment_3", reused.get_param("Compartment_3") * 2.0)
+
+    fresh = bngsim.Model.load(path)
+    fresh._want_output_sens = True
+    fresh.set_param("Compartment_3", fresh.get_param("Compartment_3") * 2.0)
+
+    assert _src_hash(reused, emit_output_sens=True) == _src_hash(fresh, emit_output_sens=True)
+
+
 def test_the_net_cache_key_separates_the_chunking_hatch(monkeypatch, tmp_path):
     """The sibling key site had the same hole, for the fourth hatch (issue #174).
 
