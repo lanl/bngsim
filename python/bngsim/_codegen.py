@@ -8940,16 +8940,42 @@ def prepare_model_codegen(model) -> Path | None:
     cache_hit: bool | None = None
     try:
         emit_output_sens = bool(getattr(model, "_want_output_sens", False))
-        model_hash = compute_model_codegen_hash(model, emit_output_sens=emit_output_sens)
+        model_hash: str | None
+        try:
+            model_hash = compute_model_codegen_hash(model, emit_output_sens=emit_output_sens)
+        except Exception as e:
+            # The structural key refuses to guess at anything it cannot serialize
+            # exactly, because a mis-serialized key loads the wrong .so. That
+            # refusal must not take codegen down with it, though: an accessor
+            # that grows a return type the canonicalizer does not know would
+            # otherwise drop every model-path user onto the interpreted RHS,
+            # silently and permanently. Fall back to the pre-#174 key — hashing
+            # the generated source, which is always correct and merely slow.
+            logger.warning(
+                "Structural codegen cache key unavailable (%s); falling back to hashing "
+                "the generated source. Every construction will re-derive it (issue #174).",
+                e,
+            )
+            model_hash = None
 
         # Check cache — before generating anything, which is the whole point.
-        cached = get_cached_so(model_hash)
-        if cached is not None:
-            logger.debug("Model codegen cache hit: %s", cached)
-            cache_hit = True
-            return cached
+        if model_hash is not None:
+            cached = get_cached_so(model_hash)
+            if cached is not None:
+                logger.debug("Model codegen cache hit: %s", cached)
+                cache_hit = True
+                return cached
 
         c_source, has_sens = generate_combined_from_model(model, emit_output_sens=emit_output_sens)
+        if model_hash is None:
+            # Its own namespace, so a source-keyed artifact is never handed to a
+            # structural-key lookup or the other way round.
+            model_hash = "src_" + hashlib.sha256(c_source.encode()).hexdigest()[:16]
+            cached = get_cached_so(model_hash)
+            if cached is not None:
+                logger.debug("Model codegen cache hit (source-hash fallback): %s", cached)
+                cache_hit = True
+                return cached
         if has_sens:
             logger.info(
                 "Model codegen: combined RHS + sensitivity RHS (%d chars)",

@@ -158,6 +158,33 @@ def test_a_warm_cache_returns_the_so_without_generating_source(tmp_path, monkeyp
     assert cg.prepare_model_codegen(_decay_model()) == first
 
 
+def test_an_unusable_structural_key_falls_back_to_the_source_hash(tmp_path, monkeypatch, caplog):
+    """A key that cannot be computed must cost speed, not codegen.
+
+    The canonical serializer raises on a type it does not know, which is right —
+    a mis-serialized key loads the wrong ``.so``. But `prepare_model_codegen`
+    catches every exception and returns ``None``, so an unhandled type would
+    otherwise drop every model-path user onto the interpreted RHS, silently and
+    for good. Not hypothetical: ``codegen_jacobian_plan()["col_ptrs"]`` comes
+    back from pybind11 as an ndarray and did exactly this to 26 of the first 205
+    corpus models before the serializer learned it.
+    """
+    monkeypatch.setattr(cg, "CACHE_DIR", tmp_path)
+
+    def unusable(*a, **k):
+        raise TypeError("codegen cache key cannot serialize Widget")
+
+    monkeypatch.setattr(cg, "compute_model_codegen_hash", unusable)
+    so = cg.prepare_model_codegen(_decay_model())
+    if so is None:  # pragma: no cover - a toolchain without a working cc
+        pytest.skip("codegen compile unavailable in this environment")
+
+    assert "src_" in so.name, "the fallback must use its own key namespace"
+    assert any("falling back to hashing" in r.getMessage() for r in caplog.records)
+    # ...and it is still a cache: the second call resolves the same artifact.
+    assert cg.prepare_model_codegen(_decay_model()) == so
+
+
 # ── What the key must and must not follow ────────────────────────────────────
 
 
