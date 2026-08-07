@@ -724,7 +724,7 @@ class Model:
 
     # ─── Parameter access ─────────────────────────────────────────────────
 
-    def set_param(self, name: str, value: float) -> None:
+    def set_param(self, name: str, value: float, *, force_override: bool = False) -> None:
         """Set a parameter value by name.
 
         Parameters
@@ -733,6 +733,17 @@ class Model:
             Parameter name (e.g. "kf", "Km").
         value : float
             New value.
+        force_override : bool, optional
+            Pin a **derived** parameter to ``value`` regardless of whether its
+            expression currently produces that value, and permanently for this
+            model object — neither :meth:`reset`, :meth:`clone`, nor a later
+            write lifts it. The default (``False``) overrides only while the
+            value differs from the expression's, which is what makes an ordinary
+            write round-trip (issue #188, see Notes). Use this only when the
+            caller's contract is "this parameter is an independent input"; the
+            one such caller in bngsim is
+            :func:`bngsim.jax.differentiable_solve` with ``flat=True``. Has no
+            effect on a parameter that has no defining expression.
 
         Raises
         ------
@@ -803,7 +814,7 @@ class Model:
         round-trip above is the one to rely on.
         """
         try:
-            self._core.set_param(name, float(value))
+            self._core.set_param(name, float(value), force_override=force_override)
         except (KeyError, RuntimeError) as e:
             raise ParameterError(f"Parameter '{name}' not found in model") from e
 

@@ -178,6 +178,40 @@ def test_reset_and_clone_preserve_an_override_and_keep_it_reversible():
     assert not _attached(m, "k")
 
 
+def test_force_override_pins_a_derived_parameter_against_an_identity_write():
+    """``force_override=True`` is the "treat this as an independent input" escape hatch.
+
+    The rule that makes an ordinary write round-trip also takes something away:
+    a caller whose whole contract is "every parameter is its own axis" used to
+    get that for free from the unconditional detach, and an identity write no
+    longer supplies it. :func:`bngsim.jax.differentiable_solve` with
+    ``flat=True`` is that caller — without the pin, writing ``_rateLaw1`` its
+    own nominal value leaves it tracking ``kon``, and ``jax.grad`` returns a
+    non-zero gradient for a coordinate it was told is independent.
+
+    The pin is deliberately permanent for the model object: that is the legacy
+    behaviour exactly, and a pin a later identity write could lift would not be
+    one.
+    """
+    m = _two_param_model()
+    m.set_param("k", m.get_param("k"), force_override=True)
+
+    assert not _attached(m, "k"), "force_override must pin even on an identity write"
+    m.set_param("k_base", 3.0)
+    assert m.get_param("k") == pytest.approx(1.0), "pinned, so the primary must not move it"
+
+    # ...and unlike an ordinary override, writing the expression's value back
+    # does not lift it.
+    m.set_param("k", 6.0)  # == 2 * k_base now
+    assert not _attached(m, "k")
+    assert m.get_param("k") == pytest.approx(6.0)
+
+    # It is also inert on a parameter that has no expression to override.
+    m.set_param("k_base", 9.0, force_override=True)
+    assert not _attached(m, "k_base")
+    assert m.get_param("k_base") == pytest.approx(9.0)
+
+
 # ── The reported reproducer, inverted ───────────────────────────────────────
 
 

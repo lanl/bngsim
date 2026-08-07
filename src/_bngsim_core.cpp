@@ -803,9 +803,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // Parameter access
         .def(
             "set_param",
-            [](bngsim::NetworkModel &self, const std::string &name, double value) {
+            [](bngsim::NetworkModel &self, const std::string &name, double value,
+               bool force_override) {
                 try {
-                    self.set_param(name, value);
+                    self.set_param(name, value, force_override);
                 } catch (const bngsim::CompartmentSizeWriteError &e) {
                     // Issue #164 — a refusal, not a lookup failure. The generic
                     // catch below reports every throw as "Parameter not found",
@@ -815,7 +816,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     throw py::key_error(std::string("Parameter not found: ") + name);
                 }
             },
-            py::arg("name"), py::arg("value"), "Set a parameter value by name")
+            py::arg("name"), py::arg("value"), py::arg("force_override") = false,
+            "Set a parameter value by name. `force_override=True` pins a derived "
+            "(expression-backed) parameter to the literal regardless of its value, "
+            "permanently for this model object (issue #188); an ordinary write "
+            "overrides only while the value differs from the expression's, so it "
+            "round-trips.")
 
         .def(
             "get_param",

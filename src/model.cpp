@@ -289,7 +289,7 @@ NetworkModel NetworkModel::clone() const {
 
 // ─── Parameter access ────────────────────────────────────────────────────────
 
-void NetworkModel::set_param(const std::string &name, double value) {
+void NetworkModel::set_param(const std::string &name, double value, bool force_override) {
     auto it = impl_->shared->param_name_to_idx.find(name);
     if (it == impl_->shared->param_name_to_idx.end()) {
         throw std::runtime_error("Parameter not found: " + name);
@@ -381,9 +381,14 @@ void NetworkModel::set_param(const std::string &name, double value) {
     // here": the .net reader stores the source text of every parameter,
     // constants included (`kf 0.5` keeps "0.5"), and only an expression-valued
     // one is ever compiled.
+    //
+    // `force_override` is the escape hatch for a caller whose whole contract is
+    // "this parameter is an independent input" — see the header. It pins
+    // regardless of the value, which is what the unconditional detach used to do
+    // for every caller.
     double from_expr = 0.0;
     bool expr_live = false;
-    if (param.evaluator_id >= 0 && !param.expression.empty()) {
+    if (!force_override && param.evaluator_id >= 0 && !param.expression.empty()) {
         try {
             from_expr = impl_->evaluator->evaluate(param.evaluator_id);
             expr_live = true;
@@ -397,12 +402,17 @@ void NetworkModel::set_param(const std::string &name, double value) {
     if (expr_live) {
         param.is_expression = (value == from_expr);
     } else if (param.is_expression) {
-        // An expression that will not evaluate — compilation failed at build
+        // Two ways here, and both want the pre-#188 latch — detach, permanently.
+        //
+        // `force_override`: the caller asked for a pin that no later write can
+        // lift by accident, which is the legacy semantics exactly.
+        //
+        // Or an expression that will not evaluate — compilation failed at build
         // time (model_builder swallows that case), or it reads something
-        // unavailable here — has nothing to compare against, so it keeps the
-        // pre-#188 latch: any write detaches, and permanently. Dropping the
-        // evaluator here is what makes that state distinguishable from a
-        // reattachable override above.
+        // unavailable here — which has nothing to compare against.
+        //
+        // Dropping the evaluator is what makes this state distinguishable from
+        // the reattachable override above.
         param.is_expression = false;
         param.evaluator_id = -1;
         // Keep param.expression for debugging/introspection

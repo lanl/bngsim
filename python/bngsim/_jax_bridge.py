@@ -210,6 +210,7 @@ def differentiable_solve(
         int(chunk_size),
         int(n_workers),
         diff_param_names,
+        bool(flat),
     )
 
     return _solve_core(model, params, t_span, n_points, opts)
@@ -291,7 +292,7 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
     n_points : int
         Number of output points.
     opts : tuple
-        ``(rtol, atol, max_steps, chunk_size, n_workers, diff_param_names)``.
+        ``(rtol, atol, max_steps, chunk_size, n_workers, diff_param_names, flat)``.
 
     Returns
     -------
@@ -302,6 +303,7 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
 
     params_np = np.asarray(params_jnp, dtype=np.float64)
     diff_param_names = opts[5]
+    flat = bool(opts[6]) if len(opts) > 6 else False
 
     # Clone for thread safety
     clone = model.clone()
@@ -309,8 +311,16 @@ def _run_primal(model, params_jnp, t_span, n_points, opts):
     # Set the requested parameters in order. ``set_param`` re-evaluates
     # remaining ``is_expression`` parameters so derived parameters track
     # primaries automatically when ``flat=False``.
+    #
+    # ``flat=True`` means the opposite, and has to say so (issue #188). Its
+    # documented contract is that every parameter — derived included — is an
+    # independent axis, which it used to get for free because any write detached
+    # a derived parameter from its expression. Now that an ordinary write
+    # overrides only while the value differs, writing ``_rateLaw1`` its own
+    # nominal value would leave it tracking ``kon``, and a gradient JAX is told
+    # is zero would not be. ``force_override`` pins it regardless of value.
     for i, name in enumerate(diff_param_names):
-        clone._core.set_param(name, float(params_np[i]))
+        clone._core.set_param(name, float(params_np[i]), force_override=flat)
     clone.reset()
 
     # Set up solver
@@ -350,7 +360,7 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
     n_points : int
         Number of output points.
     opts : tuple
-        (rtol, atol, max_steps, chunk_size, n_workers).
+        ``(rtol, atol, max_steps, chunk_size, n_workers, diff_param_names, flat)``.
 
     Returns
     -------
@@ -363,6 +373,7 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
     chunk_size = opts[3] if len(opts) > 3 else 0
     n_workers = opts[4] if len(opts) > 4 else 0
     diff_param_names = opts[5]
+    flat = bool(opts[6]) if len(opts) > 6 else False
 
     if chunk_size > 0:
         # ── Parallel chunked path ──
@@ -371,10 +382,12 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
         from bngsim._simulator import Simulator
 
         # Create a temporary model with the JAX params applied. We feed
-        # primaries in order via set_param so derived parameters track.
+        # primaries in order via set_param so derived parameters track — or pin
+        # every parameter as its own axis under ``flat=True`` (issue #188; see
+        # ``_solve_impl``).
         clone = model.clone()
         for i, name in enumerate(diff_param_names):
-            clone._core.set_param(name, float(params_np[i]))
+            clone._core.set_param(name, float(params_np[i]), force_override=flat)
         clone.reset()
 
         sim = Simulator(clone, method="ode")
@@ -406,7 +419,7 @@ def _run_with_sensitivity(model, params_jnp, t_span, n_points, opts):
 
     clone = model.clone()
     for i, name in enumerate(diff_param_names):
-        clone._core.set_param(name, float(params_np[i]))
+        clone._core.set_param(name, float(params_np[i]), force_override=flat)
     clone.reset()
 
     sim = CvodeSimulator(clone._core)
