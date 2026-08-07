@@ -780,6 +780,27 @@ class Model:
         describes — dose such a protocol with :meth:`set_concentration`), and
         for an SBML ``initialAssignment`` too complex to be a single parameter
         reference (``2*init_X + offset``), which is evaluated once at load.
+
+        Writing a **derived** parameter — one of the
+        :attr:`param_is_expression` symbols, ``d`` in ``d = d__FREE`` or a
+        loader-synthesized ``_rateLaw{N}`` — *overrides* its expression rather
+        than moving it: ``d`` stops tracking ``d__FREE``, which is BNG's
+        ``setParameter`` semantics. The override is keyed on the value and so is
+        reversible (issue #188): writing back the value the expression produces
+        re-attaches it, and a write of the value the parameter already holds is
+        not an override at all, so ``set_params(dict(zip(param_names, vec)))``
+        round-trips a full parameter vector unchanged. Read the current state
+        off :attr:`param_is_expression`, which goes ``False`` for the duration
+        of an override while :attr:`param_expressions` keeps the defining
+        expression.
+
+        An override is a **structural** change and is meant to be: a derived
+        parameter pinned to a literal no longer carries the chain rule from the
+        primaries underneath it, so those primaries lose that reaction's term
+        from their sensitivity columns, and the generated RHS changes to match.
+        That is the correct derivative of the model you asked for — but it is
+        why an accidental override used to be so hard to see, and why the
+        round-trip above is the one to rely on.
         """
         try:
             self._core.set_param(name, float(value))
@@ -1524,6 +1545,17 @@ class Model:
         compound expression (e.g. ``chi*kon``). These are not independent
         knobs — their values are computed from primary parameters and are
         re-evaluated automatically by :meth:`set_param`.
+
+        This is *live* state, not a property of the declaration: writing a
+        derived parameter a value its expression does not currently produce
+        overrides the expression and flips its entry to ``False`` until the
+        override is lifted (issue #188 — see :meth:`set_param`).
+        :attr:`param_expressions` keeps the defining expression throughout, so
+        a non-empty expression paired with ``False`` here is exactly an
+        overridden derived parameter, as distinct from a genuine primary. That
+        pairing is also the whole of what the generated C source depends on:
+        an override moves the chain rule, and nothing else about a parameter
+        write does.
         """
         return list(self._core.param_is_expression)
 
