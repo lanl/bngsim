@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace bngsim {
 
@@ -35,6 +36,18 @@ class CvodeSimulator {
 
     // Solver configuration
     void set_tolerances(double rtol, double atol);
+    // Per-species absolute tolerances (issue #196). `atol` must hold exactly
+    // model.n_species() entries, ordered like NetworkModel::species(), each
+    // finite and >= 0; a length mismatch throws here rather than at the next
+    // run(). An empty vector clears the per-species tolerance and returns the
+    // simulator to the scalar overload above (which also clears it).
+    //
+    // A run whose SolverOptions carries its own atol_vec uses that one. A run
+    // whose SolverOptions carries only a scalar does NOT override this — an
+    // empty opts.atol_vec means "this run says nothing about a per-species
+    // tolerance", exactly as opts.atol <= 0 means it says nothing about the
+    // scalar. Call this with an empty vector to actually clear it.
+    void set_tolerances(double rtol, const std::vector<double> &atol);
     void set_max_steps(int max_steps);
 
   private:

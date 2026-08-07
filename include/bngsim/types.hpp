@@ -933,6 +933,15 @@ struct SteadyStateOptions {
     double rtol = 1e-8;    // CVODE relative tolerance
     double atol = 1e-8;    // CVODE absolute tolerance
     int max_steps = 20000; // max CVODE internal steps per output point
+    // Per-species absolute tolerance for the CVODE march (issue #196). Same
+    // contract as SolverOptions::atol_vec: empty keeps CVodeSStolerances and
+    // the scalar `atol` above; non-empty must carry exactly n_species entries
+    // ordered like Model.species_names and routes to CVodeSVtolerances. The
+    // convergence criterion ||f(y)||_2/n_species < `tol` is a norm over all
+    // species and stays scalar either way — this changes the accuracy the
+    // march is held to on the way to the root, not the test for having
+    // arrived.
+    std::vector<double> atol_vec;
     // "integration" (default; CVODE parity early-stop), "newton" (two-tier
     // integrate-then-polish), or "kinsol" (alias for newton).
     std::string method = "integration";
@@ -1164,6 +1173,31 @@ struct SolverOptions {
     double atol = 1e-8;         // absolute tolerance
     int max_steps = 20000;      // max internal steps per output point
     double max_step_size = 0.0; // 0 = no limit
+
+    // ─── Per-species absolute tolerance (issue #196) ─────────────────────────
+    // Empty (the default) leaves the scalar `atol` above on CVodeSStolerances,
+    // so every call that does not set this is bit-for-bit unchanged. Non-empty
+    // routes the state solve to CVodeSVtolerances with this vector instead.
+    //
+    // A scalar atol is one number asked to mean the same thing for every state.
+    // On a model whose species span decades that is not a tolerance, it is a
+    // choice of which end to resolve: the value the smallest species needs
+    // makes the model unintegrable, and the value the model integrates at
+    // leaves the smallest species below the noise floor. There is no scalar
+    // that satisfies both, which is why the answer is a vector.
+    //
+    // The contract is exact and unforgiving on purpose: `n_species` entries,
+    // ordered like NetworkModel::species() (== Model.species_names), each
+    // finite and >= 0. A length mismatch is an error, never a broadcast — a
+    // silently recycled tolerance would mean a different species than the
+    // caller wrote down.
+    //
+    // Scalar-shaped consumers of `atol` keep reading the scalar: the
+    // steady_state early-stop cutoff (which is a norm over all species, so it
+    // has no per-species reading) and nothing else. The two per-species
+    // readers — the GH #95 event chatter floor and the GH #214 sensitivity
+    // atolS — read this vector when it is set.
+    std::vector<double> atol_vec;
 
     // Jacobian strategy for ODE solver:
     //   "auto"       — analytical if available, else finite-difference (default)

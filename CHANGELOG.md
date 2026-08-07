@@ -14,6 +14,61 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+- **`atol` takes one value per species, so a model spanning decades has a usable
+  tolerance (issue #196).** `Simulator.run` took a scalar and the core set it
+  with `CVodeSStolerances`. For a model whose species span ten decades that is
+  one number asked to mean two incompatible things, and there is no value that
+  satisfies both ends: the tolerance the smallest species needs makes the model
+  unintegrable, and the tolerance the model can integrate at leaves the smallest
+  species unresolved. `Brannmark_JBC2010` is the case the issue was filed from —
+  `IRp` at 1.8e-09 wants an `atol` of 1.8e-17, `X` at 1.0e+01 wants 1.0e-07, and
+  the shipped job completes at 3.3e-10 and times out at either 1e-16 or 1.8e-17.
+
+  `atol` now also accepts a sequence of `n_species` values ordered like
+  `Model.species_names`, routed to `CVodeSVtolerances`. A float still goes to
+  `CVodeSStolerances` on the identical code path, so every existing call is
+  bit-for-bit unchanged. The vector is positional and its length is *checked*:
+  a mismatch raises rather than broadcasting or truncating, since the
+  alternative hands species *i* the number written for species *j* and returns a
+  plausible-looking trajectory. Accepted on `run`, `set_tolerances`, `run_batch`,
+  `parameter_scan`, `bifurcate`, `run_until`, `compute_all_sensitivities`,
+  `steady_state`, `steady_state_batch` and `EvaluationSpec`; a call that runs
+  many points resolves it once, so the points of a batch or scan can be compared
+  with one another.
+
+  `atol="auto"` (and the public `Simulator.auto_atol()`, which returns the same
+  array for inspection or adjustment) derives `rtol * max(|y_i|, floor)` from the
+  model's own state — the heuristic every caller was otherwise reimplementing.
+  `floor` defaults to the smallest strictly positive species value: a species
+  sitting at zero has no magnitude of its own, so it is treated as living at the
+  smallest scale the model exhibits.
+
+  Two consumers of `atol` follow the vector rather than the scalar, both
+  per-species by nature: the GH #214 sensitivity floor, so `atolS` for ∂x_i/∂θ
+  is built from species *i*'s own tolerance instead of collapsing the vector back
+  onto one number, and the GH #95 event chatter guard. `steady_state_tol` keeps
+  reading the scalar — `||f(t,y)||₂ / n_species` is one norm over every species
+  and has no per-species reading to take.
+
+  The new `wide_dynamic_range.net` fixture is the smallest reproducer of the
+  half that reproduces from a model alone (the issue is explicit that the
+  *unintegrable* half needs a full pre-equilibration protocol): two decoupled
+  decays nine decades apart, where the default `atol=1e-8` leaves the small
+  species uncontrolled for the whole run and it comes back **negative** where
+  the analytical answer is 6.7e-12. What this does not fix, and is not sold as
+  fixing: a species that starts at order one and decays to something tiny is a
+  within-species, over-time mismatch that no initial-value vector can see —
+  that one wants `CVodeWFtolerances`.
+
+  One caveat worth stating: a *constant* vector is not bit-identical to the same
+  scalar. `cvEwtSetSS` scales then adds a constant while `cvEwtSetSV` takes one
+  fused `N_VLinearSum`, and only the second is FMA-contractable, so the two agree
+  to about one ulp in the error weights. Passing a float keeps the old path
+  exactly; it is asking for the vector spelling of the same number that costs the
+  ulp. SED-ML export refuses a per-species `atol` outright rather than writing
+  one entry as `KISAO:0000211`, which would describe a different run.
+
 ### Changed
 - **The model-side `.so` cache key is structural, so a warm cache generates no C
   source (issue #174).** `prepare_model_codegen` derived its key by generating

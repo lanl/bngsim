@@ -89,8 +89,16 @@ class EvaluationSpec:
         Output selectors (``species:``/``observable:``/``expression:`` …) that
         the caller intends to read off the result. Recorded for provenance; not
         applied during integration.
-    rtol, atol : float, optional
-        Solver tolerances. ``None`` uses the Simulator defaults.
+    rtol : float, optional
+        Relative solver tolerance. ``None`` uses the Simulator default.
+    atol : float or sequence of float or ``"auto"``, optional
+        Absolute solver tolerance. ``None`` uses the Simulator default. A
+        sequence is the per-species tolerance of issue #196, ordered like
+        ``Model.species_names`` and normalized to a tuple so the spec stays
+        hashable and byte-stable; ``"auto"`` asks the worker to derive one from
+        the model it materializes. Both survive the JSON round trip, so a
+        decade-spanning model can be distributed at a tolerance that means
+        something for every species.
     max_steps : int, optional
         Max internal solver steps per output point. ``None`` uses the default.
     model_sha256 : str, optional
@@ -111,7 +119,7 @@ class EvaluationSpec:
     sensitivity_method: str = "staggered"
     outputs: Sequence[str] = ()
     rtol: float | None = None
-    atol: float | None = None
+    atol: float | Sequence[float] | str | None = None
     max_steps: int | None = None
     model_sha256: str | None = None
 
@@ -135,6 +143,12 @@ class EvaluationSpec:
         object.__setattr__(self, "sensitivity_params", tuple(self.sensitivity_params))
         object.__setattr__(self, "sensitivity_ic", tuple(self.sensitivity_ic))
         object.__setattr__(self, "outputs", tuple(self.outputs))
+        # A per-species atol (issue #196) arrives as a list from JSON and as a
+        # list/array from a caller; canonicalize to a tuple of floats so a spec
+        # built either way compares equal and hashes the same. A float or the
+        # "auto" token passes through untouched.
+        if self.atol is not None and not isinstance(self.atol, (str, int, float)):
+            object.__setattr__(self, "atol", tuple(float(v) for v in self.atol))
 
     # ─── Serialization ─────────────────────────────────────────────
 
@@ -157,7 +171,9 @@ class EvaluationSpec:
             "sensitivity_method": self.sensitivity_method,
             "outputs": list(self.outputs),
             "rtol": self.rtol,
-            "atol": self.atol,
+            # A per-species atol goes out as a JSON array; from_dict's tuple
+            # normalization is what brings it back identical (issue #196).
+            "atol": list(self.atol) if isinstance(self.atol, tuple) else self.atol,
             "max_steps": self.max_steps,
             "model_sha256": self.model_sha256,
         }

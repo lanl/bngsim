@@ -187,6 +187,11 @@ ss = sim.steady_state(
     atol=1e-10,        # CVODE absolute tolerance
     max_steps=50000,   # max CVODE internal steps
 )
+
+# atol also takes one value per species, or "auto" (issue #196) — the accuracy
+# the march is held to on the way to the root. `tol` above is the separate test
+# for having arrived, and stays a single norm over all species.
+ss = sim.steady_state(atol="auto")
 ```
 
 ### Write-only accumulator species (`mask=`, issue #74)

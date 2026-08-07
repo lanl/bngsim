@@ -286,6 +286,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(py::init<>())
         .def_readwrite("rtol", &bngsim::SolverOptions::rtol)
         .def_readwrite("atol", &bngsim::SolverOptions::atol)
+        // Issue #196 — per-species absolute tolerance. Empty (the default)
+        // leaves the run on the scalar `atol` above and CVodeSStolerances;
+        // n_species entries route it to CVodeSVtolerances instead.
+        .def_readwrite("atol_vec", &bngsim::SolverOptions::atol_vec)
         .def_readwrite("max_steps", &bngsim::SolverOptions::max_steps)
         .def_readwrite("max_step_size", &bngsim::SolverOptions::max_step_size)
         .def_readwrite("jacobian", &bngsim::SolverOptions::jacobian)
@@ -1672,8 +1676,17 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("times"), py::arg("opts") = bngsim::SolverOptions{},
             "Run ODE simulation (releases GIL)")
-        .def("set_tolerances", &bngsim::CvodeSimulator::set_tolerances, py::arg("rtol"),
-             py::arg("atol"))
+        .def("set_tolerances",
+             py::overload_cast<double, double>(&bngsim::CvodeSimulator::set_tolerances),
+             py::arg("rtol"), py::arg("atol"))
+        // Issue #196 — per-species absolute tolerances. Declared after the
+        // scalar so pybind11 tries that one first: a float would otherwise be
+        // convertible to a one-element vector on the second pass, and a
+        // one-species model would silently take the vector overload.
+        .def("set_tolerances",
+             py::overload_cast<double, const std::vector<double> &>(
+                 &bngsim::CvodeSimulator::set_tolerances),
+             py::arg("rtol"), py::arg("atol"))
         .def("set_max_steps", &bngsim::CvodeSimulator::set_max_steps, py::arg("max_steps"));
 
     // ─── SsaSimulator ────────────────────────────────────────────────────────
@@ -2191,6 +2204,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("max_time", &bngsim::SteadyStateOptions::max_time)
         .def_readwrite("rtol", &bngsim::SteadyStateOptions::rtol)
         .def_readwrite("atol", &bngsim::SteadyStateOptions::atol)
+        // Issue #196 — per-species absolute tolerance for the march. Empty
+        // keeps the scalar `atol` above.
+        .def_readwrite("atol_vec", &bngsim::SteadyStateOptions::atol_vec)
         .def_readwrite("max_steps", &bngsim::SteadyStateOptions::max_steps)
         .def_readwrite("method", &bngsim::SteadyStateOptions::method)
         .def_readwrite("jacobian", &bngsim::SteadyStateOptions::jacobian)

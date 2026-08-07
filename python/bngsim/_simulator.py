@@ -30,6 +30,8 @@ from typing import Any
 
 import numpy as np
 
+from bngsim._atol import AUTO as _ATOL_AUTO
+from bngsim._atol import AtolLike, derive_atol, is_scalar_atol, normalize_atol_vector
 from bngsim._codegen import _codegen_jit_backend, last_codegen_cache_hit, last_codegen_sec
 from bngsim._exceptions import (
     DenseSolverFallbackWarning,
@@ -423,6 +425,11 @@ class Simulator:
         "_sim",
         "_rtol",
         "_atol",
+        # Issue #196 — per-species absolute tolerance, or None for the scalar
+        # `_atol` above. Kept beside it rather than replacing it: the scalar is
+        # still what the scalar-shaped consumers read (the steady_state
+        # early-stop cutoff), so both have to be resolvable at once.
+        "_atol_vec",
         "_max_steps",
         "_stop_conditions",
         # Interactive simulation state
@@ -693,6 +700,7 @@ class Simulator:
         # Default solver options (ODE only)
         self._rtol = 1e-8
         self._atol = 1e-8
+        self._atol_vec: list[float] | None = None
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
@@ -1945,6 +1953,114 @@ class Simulator:
 
             self._sim = SsaSimulator(self._model._core)
 
+    # ─── Absolute tolerance, scalar or per-species (issue #196) ─────
+
+    def auto_atol(
+        self,
+        *,
+        rtol: float | None = None,
+        floor: float | None = None,
+    ) -> np.ndarray:
+        """Derive a per-species absolute tolerance from this model's state.
+
+        ``atol[i] = rtol * max(|y_i|, floor)``, where ``y`` is the model's
+        **current** species vector — the state the next :meth:`run` would start
+        from. Every species is therefore resolved to ``rtol`` of its own
+        magnitude, which is the statement a scalar ``atol`` cannot make about a
+        model whose species span decades.
+
+        This is what ``atol="auto"`` runs internally. It is public so a caller
+        can see the numbers before committing to them, and adjust: the return
+        value is an ordinary array, and passing a modified copy back as
+        ``atol=`` is the supported way to override any single species.
+
+        Parameters
+        ----------
+        rtol : float, optional
+            Relative tolerance to scale by. Defaults to this Simulator's
+            (``set_tolerances``, else ``1e-8``).
+        floor : float, optional
+            Magnitude substituted for a species whose current value is smaller
+            — the case where there is no magnitude to scale. Defaults to the
+            smallest strictly positive species value in the model (``1.0`` if
+            every species is zero).
+
+        Returns
+        -------
+        numpy.ndarray
+            ``n_species`` absolute tolerances, ordered like
+            :attr:`Model.species_names`.
+
+        Notes
+        -----
+        Derived from *initial* values, this cannot see a species that starts at
+        order one and decays to something tiny — a within-species, over-time
+        mismatch that needs an error-weight function (``CVodeWFtolerances``),
+        not a vector. What it removes is the cross-species compromise.
+
+        Examples
+        --------
+        >>> atol = sim.auto_atol()
+        >>> atol[sim.model.species_names.index("IRp")] *= 10   # loosen one
+        >>> result = sim.run(t_span=(0, 100), atol=atol)
+        """
+        eff_rtol = float(rtol) if rtol is not None else self._rtol
+        return derive_atol(self._model.get_state(), eff_rtol, floor=floor)
+
+    def _atol_vector_from(self, requested: object, rtol: float, *, where: str) -> list[float]:
+        """Turn a non-scalar ``atol`` request into a validated per-species list."""
+        if isinstance(requested, str):
+            if requested != _ATOL_AUTO:
+                raise ValueError(
+                    f"{where}: unknown atol token {requested!r}. Pass a float for a "
+                    f'scalar tolerance, a sequence of n_species values, or "{_ATOL_AUTO}" '
+                    f"to derive one from the model (see Simulator.auto_atol)."
+                )
+            return [float(v) for v in self.auto_atol(rtol=rtol)]
+        return normalize_atol_vector(
+            requested,  # type: ignore[arg-type]
+            self._model.n_species,
+            self._model.species_names,
+            where=where,
+        )
+
+    def _resolve_atol(
+        self, atol: AtolLike | None, rtol: float, *, where: str
+    ) -> tuple[float, list[float] | None]:
+        """Resolve one call's ``atol`` into ``(scalar, per-species or None)``.
+
+        ``None`` means "whatever this Simulator is configured for", which is the
+        per-species vector when :meth:`set_tolerances` was given one and the
+        scalar otherwise.
+
+        The scalar comes back either way, because it is still what the
+        scalar-shaped consumers read: ``steady_state_tol`` falls back to it, and
+        that criterion is a norm over every species with no per-species reading
+        to take. When a vector is in force the scalar is this Simulator's own
+        (default ``1e-8``) rather than anything derived from the vector — there
+        is no honest single number to derive.
+        """
+        requested: object
+        if atol is None:
+            requested = self._atol_vec if self._atol_vec is not None else self._atol
+        else:
+            requested = atol
+        if is_scalar_atol(requested):
+            return float(requested), None  # type: ignore[arg-type]
+        return self._atol, self._atol_vector_from(requested, rtol, where=where)
+
+    def _freeze_atol(self, atol: AtolLike | None, rtol: float, *, where: str) -> AtolLike:
+        """Resolve ``atol`` once for a call that runs many points.
+
+        Returns a plain float or an explicit list, so every point of a batch or
+        scan integrates at the SAME tolerance. Re-deriving ``"auto"`` per point
+        would make each row's error control a function of that row's initial
+        conditions, and a sweep whose points are held to different tolerances is
+        not a sweep you can compare across.
+        """
+        scalar, vec = self._resolve_atol(atol, rtol, where=where)
+        return scalar if vec is None else vec
+
     # ─── Run ────────────────────────────────────────────────────────
 
     def _resolve_max_step(self, max_step: float | None) -> float | None:
@@ -2025,7 +2141,7 @@ class Simulator:
         sample_times: list[float] | None = None,
         seed: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
         max_step: float | None = None,
         timeout: float | None = None,
@@ -2054,8 +2170,34 @@ class Simulator:
             Ignored for ``method="ode"``.
         rtol : float, optional
             Relative tolerance for ODE solver. Default ``1e-8``.
-        atol : float, optional
-            Absolute tolerance for ODE solver. Default ``1e-8``.
+        atol : float or array_like or ``"auto"``, optional
+            Absolute tolerance for the ODE solver. Default ``1e-8``.
+
+            A float is the scalar tolerance CVODE has always taken
+            (``CVodeSStolerances``). An array of ``n_species`` values, ordered
+            like :attr:`Model.species_names`, is a **per-species** tolerance
+            (``CVodeSVtolerances``, issue #196) — entry ``i`` is the absolute
+            tolerance for species ``i``. A wrong-length array raises
+            :class:`ValueError`; it is never broadcast or truncated, because
+            the consequence of guessing is species ``i`` held to the number
+            written for species ``j``.
+
+            ``"auto"`` derives the vector from the model's own current state as
+            ``rtol * max(|y_i|, floor)`` — see :meth:`auto_atol`, which returns
+            the same array so it can be inspected or adjusted first.
+
+            A per-species tolerance is what a model spanning decades of species
+            magnitude needs: one scalar cannot be a tolerance for a species at
+            1e-09 and one at 1e+01 at the same time, and picking either end
+            makes the model unintegrable or leaves the small species under the
+            noise floor.
+
+            Passing a float leaves the run on exactly the code path it was on
+            before, bit for bit. A *constant* vector is not the same thing: it
+            is the same tolerance but reaches CVODE through
+            ``CVodeSVtolerances``, whose error weights are computed by a
+            different (FMA-contractable) expression, so it agrees with the
+            scalar to about one ulp rather than exactly.
         max_steps : int, optional
             Max internal solver steps per output point.
             Default ``10000``.
@@ -2087,7 +2229,11 @@ class Simulator:
         steady_state_tol : float, optional
             Tolerance for the ``steady_state`` check above. ``None`` or
             ``<= 0`` falls back to ``atol`` (matching BNG2.pl, which
-            reuses the integrator atol as the steady-state cutoff).
+            reuses the integrator atol as the steady-state cutoff) — the
+            *scalar* atol, also when a per-species vector is in force, since
+            ``||f(t,y)||_2 / n_species`` is one norm over every species and has
+            no per-species reading. Say what "steady" means explicitly when
+            running with a vector.
         carry_sensitivities : bool, optional
             ODE-only, pre-equilibration (GH #210, ADR-0052). When ``True``
             and this run continues a carried-over species state from a
@@ -2254,7 +2400,13 @@ class Simulator:
 
                 opts = SolverOptions()
                 opts.rtol = rtol if rtol is not None else self._rtol
-                opts.atol = atol if atol is not None else self._atol
+                # Issue #196 — scalar or per-species. The vector is resolved
+                # against rtol (an "auto" request scales by it) and against the
+                # model's live state, so it is built after rtol is known.
+                eff_atol, atol_vec = self._resolve_atol(atol, opts.rtol, where="run(atol=...)")
+                opts.atol = eff_atol
+                if atol_vec is not None:
+                    opts.atol_vec = atol_vec
                 opts.max_steps = max_steps if max_steps is not None else self._max_steps
                 opts.jacobian = self._jacobian
                 opts.force_dense_linear_solver = self._force_dense_linear_solver
@@ -2385,7 +2537,7 @@ class Simulator:
         params: Sequence[dict[str, float]] | None = None,
         seed: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
         max_step: float | None = None,
         num_processors: int | None = None,
@@ -2420,8 +2572,12 @@ class Simulator:
             ``Result.seed`` on each result.
         rtol : float, optional
             Relative tolerance for ODE solver.
-        atol : float, optional
-            Absolute tolerance for ODE solver.
+        atol : float or array_like or ``"auto"``, optional
+            Absolute tolerance for the ODE solver — scalar, or one value per
+            species ordered like :attr:`Model.species_names` (issue #196). See
+            :meth:`run` for the full contract. Resolved **once** for the whole
+            batch, including ``"auto"``: every point integrates at the same
+            tolerance, so the results are comparable across the sweep.
         max_steps : int, optional
             Maximum internal solver steps per output point.
         num_processors : int, optional
@@ -2522,7 +2678,12 @@ class Simulator:
         )
 
         effective_rtol = rtol if rtol is not None else self._rtol
-        effective_atol = atol if atol is not None else self._atol
+        # Issue #196 — scalar or per-species, resolved once for the batch (see
+        # _freeze_atol: a per-row "auto" would hold each row to a tolerance
+        # derived from that row's own initial conditions).
+        effective_atol, effective_atol_vec = self._resolve_atol(
+            atol, effective_rtol, where="run_batch(atol=...)"
+        )
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
         # Integrator step bound (GH #88): an explicit max_step, else the
         # per-model periodic-dosing bound. None ⇒ unconstrained. Resolved once
@@ -2558,6 +2719,7 @@ class Simulator:
                 steady_state=bool(steady_state),
                 steady_state_tol=ss_tol_value,
                 max_step=effective_max_step,
+                atol_vec=effective_atol_vec,
             )
 
         if num_processors is not None and num_processors > 1:
@@ -3196,7 +3358,7 @@ class Simulator:
         on_point: Callable[[Model, float], None] | None = None,
         seed: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
         max_step: float | None = None,
         timeout: float | None = None,
@@ -3263,7 +3425,11 @@ class Simulator:
             Base seed for stochastic methods; point *i* uses ``seed_base + i``
             (drawn fresh from entropy when ``None``). Ignored for ODE.
         rtol, atol, max_steps, max_step, timeout, steady_state, steady_state_tol
-            Per-simulation solver options, forwarded to :meth:`run`.
+            Per-simulation solver options, forwarded to :meth:`run`. ``atol``
+            may be a per-species vector or ``"auto"`` (issue #196); it is
+            resolved once, at the invocation state, so every point of the scan
+            is held to the same tolerance rather than to one derived from its
+            own initial conditions.
         squeeze : bool
             When ``True``, stack the per-point results into a single
             :class:`Result` with 3-D arrays (like :meth:`run_batch`); otherwise
@@ -3352,6 +3518,18 @@ class Simulator:
         # model can be rewound afterward.
         invocation_state = self._model.get_state()
 
+        # Issue #196 — freeze the absolute tolerance at the invocation state,
+        # before the first point moves the model. Passing the resolved value to
+        # every run() means an "auto" vector is derived once, from the nominal
+        # point, rather than per point from whatever that point's initial
+        # conditions happen to be — a sweep whose points are error-controlled
+        # differently is not one whose points can be compared.
+        scan_atol = self._freeze_atol(
+            atol,
+            rtol if rtol is not None else self._rtol,
+            where="parameter_scan(atol=...)",
+        )
+
         # Each point's forward-sensitivity seed ∂x(0)/∂θ (issue #81). A scan point
         # starts from the snapshot, not the model seed, so re-seeding it fresh
         # would be wrong; ``None`` = this Simulator has no sensitivity columns and
@@ -3429,7 +3607,7 @@ class Simulator:
                     n_points=n_points,
                     seed=point_seed,
                     rtol=rtol,
-                    atol=atol,
+                    atol=scan_atol,
                     max_steps=max_steps,
                     max_step=max_step,
                     timeout=timeout,
@@ -3464,7 +3642,7 @@ class Simulator:
         n_points: int = 101,
         seed: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
         max_step: float | None = None,
         timeout: float | None = None,
@@ -3521,6 +3699,7 @@ class Simulator:
         steady_state: bool = False,
         steady_state_tol: float = 0.0,
         max_step: float | None = None,
+        atol_vec: list[float] | None = None,
     ) -> Result:
         """Run a single simulation in a batch (thread-safe)."""
         from bngsim._bngsim_core import TimeSpec
@@ -3548,6 +3727,10 @@ class Simulator:
                 opts = SolverOptions()
                 opts.rtol = rtol
                 opts.atol = atol
+                # Issue #196 — the batch resolved this once; the clone has the
+                # same species in the same order, so it applies row for row.
+                if atol_vec is not None:
+                    opts.atol_vec = atol_vec
                 opts.max_steps = max_steps
                 opts.jacobian = self._jacobian
                 opts.timeout_seconds = timeout_seconds
@@ -3625,7 +3808,7 @@ class Simulator:
         chunk_size: int = 2,
         n_workers: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
     ) -> Result:
         """Compute full sensitivity tensor via parallel chunked CVODES jobs.
@@ -3660,8 +3843,13 @@ class Simulator:
             Set to 1 for serial execution (debugging/profiling).
         rtol : float, optional
             Relative tolerance for ODE solver.
-        atol : float, optional
-            Absolute tolerance for ODE solver.
+        atol : float or array_like or ``"auto"``, optional
+            Absolute tolerance for the ODE solver — scalar, or one value per
+            species ordered like :attr:`Model.species_names` (issue #196). See
+            :meth:`run`. Resolved once and shared by every chunk, so the
+            columns being stitched back together were error-controlled
+            identically. Each column's own tolerance is then built from the
+            per-species value of the state it differentiates.
         max_steps : int, optional
             Max internal solver steps per output point.
 
@@ -3851,7 +4039,12 @@ class Simulator:
 
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
-        effective_atol = atol if atol is not None else self._atol
+        # Issue #196 — one tolerance for every chunk. The chunks are columns of
+        # a single tensor that gets stitched back together; deriving "auto"
+        # per chunk would stitch columns integrated to different accuracies.
+        effective_atol, effective_atol_vec = self._resolve_atol(
+            atol, effective_rtol, where="compute_all_sensitivities(atol=...)"
+        )
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
 
         def _run_chunk(chunk_idx: int) -> Result:
@@ -3864,6 +4057,7 @@ class Simulator:
                 effective_rtol,
                 effective_atol,
                 effective_max_steps,
+                atol_vec=effective_atol_vec,
             )
 
         # Run chunks (parallel or serial)
@@ -3896,6 +4090,7 @@ class Simulator:
         rtol: float,
         atol: float,
         max_steps: int,
+        atol_vec: list[float] | None = None,
     ) -> Result:
         """Run a single sensitivity chunk (thread-safe).
 
@@ -3921,6 +4116,8 @@ class Simulator:
         opts = SolverOptions()
         opts.rtol = rtol
         opts.atol = atol
+        if atol_vec is not None:
+            opts.atol_vec = atol_vec
         opts.max_steps = max_steps
         opts.jacobian = self._jacobian
         if self._codegen_so_path:
@@ -4070,7 +4267,7 @@ class Simulator:
         max_time: float = 1e6,
         method: str = "integration",
         rtol=None,
-        atol=None,
+        atol: AtolLike | None = None,
         max_steps=None,
         sensitivity_params=None,
         mask=None,
@@ -4128,6 +4325,16 @@ class Simulator:
         method : str
             ``"integration"`` (default), ``"newton"``, or ``"kinsol"``
             (alias for ``"newton"``).
+        rtol : float, optional
+            Relative tolerance for the CVODE march. Default ``1e-8``.
+        atol : float or array_like or ``"auto"``, optional
+            Absolute tolerance for the CVODE march — scalar, or one value per
+            species ordered like :attr:`Model.species_names` (issue #196). See
+            :meth:`run` for the contract. This is the accuracy the march is
+            held to on the way to the root; ``tol`` above is the separate test
+            for having arrived, and stays a single norm over all species.
+        max_steps : int, optional
+            Max CVODE internal steps per output point.
         sensitivity_params : list[str], optional
             Parameter names for dY_ss/dp sensitivity. Requires code generation,
             exactly as :meth:`run` and :meth:`compute_all_sensitivities` do —
@@ -4251,7 +4458,11 @@ class Simulator:
         opts.max_time = max_time
         opts.method = method
         opts.rtol = rtol if rtol is not None else self._rtol
-        opts.atol = atol if atol is not None else self._atol
+        # Issue #196 — scalar or per-species for the march.
+        ss_atol, ss_atol_vec = self._resolve_atol(atol, opts.rtol, where="steady_state(atol=...)")
+        opts.atol = ss_atol
+        if ss_atol_vec is not None:
+            opts.atol_vec = ss_atol_vec
         opts.max_steps = max_steps if max_steps is not None else self._max_steps
         # A previous solve on this Simulator already proved the closed-form
         # Jacobian makes CVODE give up on this model, and paid a doomed march to
@@ -4491,7 +4702,7 @@ class Simulator:
         max_time: float = 1e6,
         method: str = "integration",
         rtol=None,
-        atol=None,
+        atol: AtolLike | None = None,
         max_steps=None,
         n_workers=None,
         mask=None,
@@ -4505,6 +4716,10 @@ class Simulator:
         method : str
             ``"integration"`` (default), ``"newton"``, or ``"kinsol"``
             (alias for ``"newton"``). See :meth:`steady_state`.
+        rtol, atol, max_steps : optional
+            Solver options for each march, as in :meth:`steady_state`. ``atol``
+            may be a per-species vector or ``"auto"`` (issue #196), resolved
+            once and applied identically to every entry.
         n_workers : int, optional
             Number of parallel threads.
         mask : array-like of bool, or sequence of str, optional
@@ -4541,7 +4756,10 @@ class Simulator:
         )
 
         eff_rtol = rtol if rtol is not None else self._rtol
-        eff_atol = atol if atol is not None else self._atol
+        # Issue #196 — resolved once, applied to every entry (see run_batch).
+        eff_atol, eff_atol_vec = self._resolve_atol(
+            atol, eff_rtol, where="steady_state_batch(atol=...)"
+        )
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
 
         def _run_one(i):
@@ -4554,6 +4772,8 @@ class Simulator:
             opts.method = method
             opts.rtol = eff_rtol
             opts.atol = eff_atol
+            if eff_atol_vec is not None:
+                opts.atol_vec = eff_atol_vec
             opts.max_steps = eff_max_steps
             # Read (and, below, set) the same memo `steady_state()` keeps, so a
             # sweep over a model whose closed-form Jacobian CVODE cannot use pays
@@ -4781,7 +5001,7 @@ class Simulator:
         n_points: int | None = None,
         seed: int | None = None,
         rtol: float | None = None,
-        atol: float | None = None,
+        atol: AtolLike | None = None,
         max_steps: int | None = None,
     ) -> Result:
         """Run simulation from current time to *t*.
@@ -4801,7 +5021,10 @@ class Simulator:
             draws a fresh seed; pass an integer for reproducibility.
             See ``Simulator.run`` for the full contract.
         rtol, atol, max_steps : optional
-            Solver options (ODE only).
+            Solver options (ODE only). ``atol`` takes the same scalar,
+            per-species vector or ``"auto"`` as :meth:`run` (issue #196); an
+            ``"auto"`` vector is derived from the state this leg starts from,
+            which for an interactive protocol is where the previous leg ended.
 
         Returns
         -------
@@ -5009,20 +5232,47 @@ class Simulator:
 
     # ─── Solver configuration (ODE) ────────────────────────────────
 
-    def set_tolerances(self, rtol: float = 1e-8, atol: float = 1e-8) -> None:
-        """Set ODE solver tolerances.
+    def set_tolerances(self, rtol: float = 1e-8, atol: AtolLike = 1e-8) -> None:
+        """Set ODE solver tolerances for every subsequent call.
 
         Parameters
         ----------
         rtol : float
             Relative tolerance.
-        atol : float
-            Absolute tolerance.
+        atol : float or array_like or ``"auto"``
+            Absolute tolerance. A float is the scalar tolerance
+            (``CVodeSStolerances``). A sequence of ``n_species`` values,
+            ordered like :attr:`Model.species_names`, is a per-species
+            tolerance (``CVodeSVtolerances``, issue #196); ``"auto"`` derives
+            one now from the model's current state (see :meth:`auto_atol`) and
+            pins it, so a later state change does not silently re-derive it.
+
+            Setting a scalar clears any per-species tolerance previously set
+            here rather than sitting behind it — the alternative is a call that
+            appears to set the tolerance and changes nothing.
+
+        Raises
+        ------
+        ValueError
+            If a per-species vector is not ``n_species`` long, or holds an
+            entry that is not finite and ``>= 0``.
         """
         self._rtol = rtol
-        self._atol = atol
+        if is_scalar_atol(atol):
+            self._atol = float(atol)  # type: ignore[arg-type]
+            self._atol_vec = None
+        else:
+            self._atol_vec = self._atol_vector_from(atol, rtol, where="set_tolerances(atol=...)")
         if self._method == "ode":
-            self._sim.set_tolerances(rtol, atol)
+            # Only the SCALAR is pushed down to the core simulator, even when a
+            # vector was set here. Every call builds a SolverOptions that states
+            # this Simulator's tolerance in full, and at the core an unset
+            # opts.atol_vec means "no vector on this run" — it falls back to the
+            # core's own. Installing the vector there too would make that
+            # fallback fire behind a later run(atol=<scalar>), which could then
+            # not override it. The core-level vector is for C++ callers who own
+            # that lifecycle themselves.
+            self._sim.set_tolerances(rtol, self._atol)
 
     def set_max_steps(self, max_steps: int) -> None:
         """Set maximum internal solver steps per output point.
