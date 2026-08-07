@@ -9123,13 +9123,16 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # behavior change invalidates stale memo entries too — including one that edits an
 # emitter without bumping _CODEGEN_VERSION (issue #51).
 # Keyed by (net_abspath, want_jac, want_outputs, want_output_sens,
-# functional_sens): the compiled Jacobian (GH #162), output evaluator (GH #163),
-# and expression output-sensitivity evaluator (GH #198) are independent
-# content-distinct callbacks, and the GH #67 A/B hatch changes the sensitivity RHS
-# in place — so every flag is part of the key, and an entry for one combination
-# must never satisfy another.
+# want_term_scale, functional_sens, sens_budget_tag, chunk_policy): the compiled
+# Jacobian (GH #162), output evaluator (GH #163), and expression
+# output-sensitivity evaluator (GH #198) are independent content-distinct
+# callbacks; the GH #67 A/B hatch changes the sensitivity RHS in place; and the
+# chunking policy (issue #174) changes generate_rhs_c's emitted text — so every
+# flag is part of the key, and an entry for one combination must never satisfy
+# another.
 _PREPARE_CODEGEN_MEMO: dict[
-    tuple[str, bool, bool, bool, bool, bool, str], tuple[Path, tuple[tuple[str, int], ...], str]
+    tuple[str, bool, bool, bool, bool, bool, str, tuple[int | None, int]],
+    tuple[Path, tuple[tuple[str, int], ...], str],
 ] = {}
 _PREPARE_CODEGEN_MEMO_LOCK = threading.Lock()
 
