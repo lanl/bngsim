@@ -15,6 +15,31 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Changed
+- **The model-side `.so` cache key is structural, so a warm cache generates no C
+  source (issue #174).** `prepare_model_codegen` derived its key by generating
+  the source and hashing it, which meant a cache hit skipped only the `cc`
+  compile: every `Simulator` construction still paid the RHS + `∂f/∂p` + Jacobian
+  derivation, and none of that work depends on the parameter values a fit is
+  moving. `compute_model_codegen_hash` — dead code whose docstring already
+  claimed to hash "model structure" — now actually does: `codegen_data()` minus
+  each parameter's *value*, the Jacobian scatter plan, the functional-Jacobian
+  context, and the process-scoped emit decisions, all cheap C++ reads. This is
+  what `prepare_codegen` has always done for the `.net` path. On
+  `Smith_BMCSystBiol2013` construction against a warm cache goes from 1.31 s to
+  0.03 s.
+
+  Dropping parameter values is safe for one reason that had to be established
+  rather than assumed: the generated C reads parameters from the runtime `p[]`
+  array. The single exception is the issue #68 switch-condition gate, which
+  probes the RHS to find clock species and evaluates a clock threshold
+  numerically — so one `set_param` really can add or remove the whole analytic
+  sensitivity RHS. `switch_gate_cache_digest` carries that *verdict* (the
+  booleans, not the values), which keeps the key stable across a fit while still
+  separating the two artifacts.
+
+  **This invalidates every cached `.so` on the model path.** The next run per
+  model recompiles once. The `.net` path's key form is unchanged apart from the
+  chunking fix below.
 - **An SBML compartment size is a writable parameter (issue #170).** A volume
   plays two roles in a loaded model: a *symbol* in kinetic laws, which is an
   ordinary `p[]` a write has always moved, and the *storage convention* — bngsim
@@ -82,6 +107,25 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **The `∂func/∂θ` analysis memo did not follow a derived-parameter override, so
+  a reused model kept emitting the pre-write partials.** `_analyze_output_sens`
+  keyed its memo on four model counters and the derivation budget, on the stated
+  grounds that `set_param` only writes values — which issue #188 falsified for a
+  *derived* parameter: overriding one detaches it, the issue #15 chain rule
+  through it disappears from `∂func/∂θ`, and the emitted C changes with every
+  counter unmoved. Content addressing hid this (the `.so` was keyed on the stale
+  source it was compiled from, so it matched itself, and a fresh process derived
+  the right thing); under issue #174's structural key the stale source would be
+  cached under the *post*-write key and served to every later process. The
+  attachment vector is now part of the memo key.
+- **A `.net` `.so` compiled without source chunking was served to a chunked run.**
+  `prepare_codegen`'s key carries every process-scoped hatch that changes the
+  emitted source — `BNGSIM_NO_CODEGEN_JAC`, the GH #67 functional-sensitivity
+  hatch, the GH #90 budget — except `BNGSIM_CODEGEN_CHUNK`, which changes what
+  `generate_rhs_c` emits (4,974 → 5,385 chars on `akt-signaling`). So an A/B of
+  the chunking feature measured the same binary twice. The key gains a
+  `:chunk=<threshold>x<size>` suffix, appended only when the policy is
+  overridden, so the default key form is unchanged.
 - **An ExprTk derivative over a Python-keyword-named parameter silently dropped
   the whole model to the FD Jacobian.** `_exprtk_to_sympy` aliases a parameter
   named `def` / `lambda` / `is` to `_BNG_KW_def` so `parse_expr` accepts it, and
