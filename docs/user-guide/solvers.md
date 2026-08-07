@@ -204,7 +204,10 @@ the manual genome-scale escape hatch).
 **Sensitivity derivation budget (GH #90)**: a sensitivity run derives a second
 set of terms at build time — both halves of the compiled sensitivity RHS's
 `ySdot = J·yS + ∂f/∂p` — and that derivation has its own budget,
-`BNGSIM_SENS_DERIV_BUDGET_S`. It
+`BNGSIM_SENS_DERIV_BUDGET_S`. Only a *sensitivity* run pays it: a plain
+`Simulator(model, method="ode")` used to run the same derivation for a solve that
+never installs the result, which on a large Functional model was most of the build
+(issue #209). It
 shares the Jacobian budget's base and its per-species scaling, and takes the same
 values (seconds, or `inf`/`none`/`0` for unbounded), but the two are independent:
 raising one does not raise the other.

@@ -3756,10 +3756,22 @@ def _emit_sens_rhs_body(
     return "\n".join(lines) + "\n"
 
 
-def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool]:
-    """``(want_jac, want_outputs, want_output_sens)`` for the .net codegen append,
-    from cheap O(1) model flags — never generates source, so a .net cache hit stays
-    a few stat()s.
+def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool, bool]:
+    """``(want_jac, want_outputs, want_output_sens, want_term_scale,
+    want_functional_sens)`` for the .net codegen append, from cheap O(1) model
+    flags — never generates source, so a .net cache hit stays a few stat()s.
+
+    ``want_functional_sens`` (issue #209): ask for the Functional/MM analytic
+    ``∂f/∂p`` only on a sensitivity run — :func:`want_functional_sens_rhs`, the
+    GH #67 hatch resolved against the same ``_want_output_sens`` signal the two
+    flags below read. The .net emitter declines every Functional model on its own,
+    so this gates the model-based hook ``generate_combined_c`` reaches for after
+    that decline. It goes into the cache key as the *resolved* decision rather than
+    the raw hatch, for the reason stated at ``chunk_policy`` there: today
+    ``want_term_scale`` already separates a plain key from a sensitivity one, so
+    this is redundancy — but redundancy against a narrowing of either gate, and the
+    thing it would be protecting against is a plain-run .so silently lacking
+    ``bngsim_codegen_sens_rhs`` (the issue #51 inertness trap), not a build error.
 
     ``want_term_scale`` (issue #177): append the ∂f/∂p term scale only for a
     sensitivity run — the same ``_want_output_sens`` signal ``want_output_sens``
@@ -3787,7 +3799,7 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool]:
     """
     core = model._core if (model is not None and hasattr(model, "_core")) else model
     if core is None:
-        return False, False, False, False
+        return False, False, False, False, False
     want_jac = bool(
         emit_jac
         and core.analytical_jacobian_complete
@@ -3804,7 +3816,13 @@ def _codegen_emit_flags(model, emit_jac: bool) -> tuple[bool, bool, bool, bool]:
         want_outputs and core.n_functions > 0 and getattr(model, "_want_output_sens", False)
     )
     want_term_scale = bool(getattr(model, "_want_output_sens", False))
-    return want_jac, want_outputs, want_output_sens, want_term_scale
+    return (
+        want_jac,
+        want_outputs,
+        want_output_sens,
+        want_term_scale,
+        want_functional_sens_rhs(model),
+    )
 
 
 def functional_sens_rhs_enabled() -> bool:
@@ -3825,6 +3843,36 @@ def functional_sens_rhs_enabled() -> bool:
     return os.environ.get("BNGSIM_NO_FUNCTIONAL_SENS_RHS") != "1"
 
 
+def want_functional_sens_rhs(model) -> bool:
+    """Whether THIS build should derive the Functional/MM analytic ∂f/∂p (issue #209).
+
+    The GH #67 hatch above says whether the derivation is *permitted*; this says
+    whether it is *wanted*, which is a question about the run, not the process. A
+    plain ``Simulator(model, method="ode")`` never installs forward sensitivities
+    (``CVodeSensInit1`` is not called), so every second of ``sp.diff`` and every
+    byte of ``bngsim_codegen_sens_rhs`` it emitted was thrown away — on
+    ``BIOMD0000000496`` that is 46 s of codegen instead of 29 s, and a 26.7 MB
+    ``.so`` instead of 1.8 MB. It is the same reasoning, and the same
+    ``_want_output_sens`` signal, that already gates the GH #198 output-sensitivity
+    evaluator; ``∂f/∂p`` is the more expensive of the two and was the one left
+    ungated.
+
+    Scoped to the **Functional/MM** half deliberately. The Elementary sens RHS is
+    plain text emission with no sympy in it, and leaving it unconditional keeps
+    every all-Elementary model's source — and its cached ``.so`` — byte-for-byte
+    what it was.
+
+    Two things have to hold for this to be a gate and not a silent downgrade to
+    CVODES' difference quotient, and both are checked by the callers rather than
+    here: the ``.so`` cache key must carry the resolved flag (it does — see
+    :func:`compute_model_codegen_hash` and ``prepare_codegen``'s suffix), and any
+    entry point that takes ``sensitivity_params`` as a *method* argument must
+    regenerate a plain artifact rather than reuse it
+    (:meth:`bngsim.Simulator._prepare_output_sens_codegen`).
+    """
+    return functional_sens_rhs_enabled() and bool(getattr(model, "_want_output_sens", False))
+
+
 def generate_combined_c(
     net_path: str,
     model=None,
@@ -3832,6 +3880,7 @@ def generate_combined_c(
     emit_outputs: bool = True,
     emit_output_sens: bool = False,
     emit_term_scale: bool = False,
+    emit_functional_sens: bool = True,
 ) -> tuple[str, bool]:
     """Generate C source with RHS, sensitivity RHS (if possible), and — when the
     built model is supplied — the analytical Jacobian (GH #162), the output
@@ -3860,6 +3909,15 @@ def generate_combined_c(
       differentiation is expensive and only a sensitivity run needs it; the .net
       cache key carries the flag (``prepare_codegen``).
 
+    ``emit_functional_sens`` (issue #209) gates the GH #67 model-based sensitivity
+    RHS below — the one the .net text emitter cannot produce — for the same reason
+    and off the same signal: ``∂f/∂p`` over a large Functional model is the most
+    expensive derivation in the build, and a run that never calls
+    ``CVodeSensInit1`` discards all of it. ``prepare_codegen`` resolves it through
+    ``_codegen_emit_flags`` and carries it in the cache key. It defaults to True so
+    a direct caller (and every test that asks "can this model be differentiated?")
+    still exercises the emitter; only the production entry points gate it.
+
     The append is sound because the .net RHS already emits the ``CodegenUserData``
     typedef and the ``N_SPECIES``/``N_OBS``/``N_FUNC`` macros both callbacks reuse,
     and the .net parse and the built model agree on species/parameter/observable
@@ -3871,7 +3929,12 @@ def generate_combined_c(
     """
     rhs_code = generate_rhs_c(net_path)
     sens_code = generate_sens_rhs_c(net_path, emit_term_scale=emit_term_scale)
-    if sens_code is None and model is not None and functional_sens_rhs_enabled():
+    if (
+        sens_code is None
+        and model is not None
+        and emit_functional_sens
+        and functional_sens_rhs_enabled()
+    ):
         # GH #67: the .net emitter reads rate laws as text and has no rate-law
         # expression to differentiate, so it declines every Functional model. The
         # built model does — and this is the path a .net-loaded model actually
@@ -8654,7 +8717,9 @@ def generate_output_sens_from_model(model) -> str | None:
     return "\n".join(lines) + "\n"
 
 
-def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple[str, bool]:
+def generate_combined_from_model(
+    model, emit_output_sens: bool = False, emit_functional_sens: bool = True
+) -> tuple[str, bool]:
     """Generate combined RHS + sensitivity RHS from a built model.
 
     Returns ``(c_source, has_sens_rhs)``. Mirrors ``generate_combined_c``
@@ -8688,11 +8753,19 @@ def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple
     and on the non-smooth builtins that are permanently out of scope. Set
     ``BNGSIM_NO_FUNCTIONAL_SENS_RHS=1`` to force the pre-#67 behaviour — a
     Functional model back on the difference quotient — for an A/B.
+
+    ``emit_functional_sens`` (issue #209) is the *policy* half of that gate, as
+    opposed to the hatch's process half: a plain ODE run installs no sensitivities,
+    so asking for the Functional ``∂f/∂p`` at all is wasted — ~17 s of codegen and
+    +24.9 MB of ``.so`` on ``BIOMD0000000496``. ``prepare_model_codegen`` and
+    ``prepare_model_codegen_source`` resolve it through
+    :func:`want_functional_sens_rhs` and carry it in the cache key; it defaults to
+    True here so a direct caller still measures what the emitter *can* do.
     """
     rhs_code = generate_rhs_from_model(model)
     sens_code = generate_sens_from_model(
         model,
-        functional=functional_sens_rhs_enabled(),
+        functional=emit_functional_sens and functional_sens_rhs_enabled(),
         emit_term_scale=bool(getattr(model, "_want_output_sens", False)),
     )
     jac_code = generate_jacobian_from_model(model)
@@ -8785,7 +8858,9 @@ def _canon_update(h, obj) -> None:
 _CODEGEN_KEY_DROPPED_PARAM_FIELDS = ("value",)
 
 
-def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
+def compute_model_codegen_hash(
+    model, *, emit_output_sens: bool = False, emit_functional_sens: bool = True
+) -> str:
     """Compute the model-based codegen cache key from model STRUCTURE (issue #174).
 
     The key the compiled ``.so`` is cached under, for the model-based path
@@ -8809,10 +8884,15 @@ def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
       same model after ``prepare_analytical_jacobian``;
     * ``functional_jacobian_context()`` — the rate-law text the Functional
       derivation differentiates;
-    * the process-scoped emit decisions: ``emit_output_sens`` (the caller's
-      ``_want_output_sens``), the GH #67 and GH #90 hatches, ``BNGSIM_NO_CODEGEN_JAC``,
-      and the *resolved* chunking policy (resolved, so ``on`` and ``true`` do not
-      make two keys for one source);
+    * the emit decisions: ``emit_output_sens`` (the caller's ``_want_output_sens``),
+      ``emit_functional_sens`` (issue #209 — the GH #67 hatch resolved against that
+      same signal; ``emit_output_sens`` and the raw hatch already determined it, so
+      folding in the resolved value is redundancy rather than the thing standing
+      between here and a collision, but it is the value the caller hands
+      ``generate_combined_from_model`` and keeping the two in lock-step is what
+      makes that stay true), the GH #90 budget, ``BNGSIM_NO_CODEGEN_JAC``, and the
+      *resolved* chunking policy (resolved, so ``on`` and ``true`` do not make two
+      keys for one source);
     * :func:`bngsim._switch_sensitivity.switch_gate_cache_digest` — the one
       verdict in the pipeline that reads parameter values and species initial
       concentrations.
@@ -8852,7 +8932,7 @@ def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
         h,
         (
             bool(emit_output_sens),
-            functional_sens_rhs_enabled(),
+            bool(emit_functional_sens) and functional_sens_rhs_enabled(),
             _sens_budget_cache_tag(),
             want_jac,
             chunk,
@@ -8917,6 +8997,10 @@ def prepare_model_codegen(model) -> Path | None:
     Works with any model (SBML, Antimony, .net loaded via ModelBuilder).
     Emits combined RHS + analytical sensitivity RHS when every reaction is
     Elementary; otherwise falls back to RHS-only and CVODES uses internal FD.
+    Since issue #209 the Functional/MM extension of that RHS (GH #67) is asked for
+    only on a sensitivity run — see :func:`want_functional_sens_rhs` — so a plain
+    ``Simulator(model, method="ode")`` no longer derives, emits and compiles a
+    ``bngsim_codegen_sens_rhs`` that ``CVodeSensInit1`` is never going to install.
 
     The cache key is **structural** (:func:`compute_model_codegen_hash`, issue
     #174), so a warm cache resolves the ``.so`` from a handful of C++ reads and
@@ -8940,9 +9024,18 @@ def prepare_model_codegen(model) -> Path | None:
     cache_hit: bool | None = None
     try:
         emit_output_sens = bool(getattr(model, "_want_output_sens", False))
+        # Issue #209: resolved ONCE and handed to both the key and the generator,
+        # so the two cannot drift into serving a sens-free .so to a sensitivity
+        # run. Same lock-step rule ``_codegen_emit_flags`` enforces for the .net
+        # path's four flags.
+        emit_functional_sens = want_functional_sens_rhs(model)
         model_hash: str | None
         try:
-            model_hash = compute_model_codegen_hash(model, emit_output_sens=emit_output_sens)
+            model_hash = compute_model_codegen_hash(
+                model,
+                emit_output_sens=emit_output_sens,
+                emit_functional_sens=emit_functional_sens,
+            )
         except Exception as e:
             # The structural key refuses to guess at anything it cannot serialize
             # exactly, because a mis-serialized key loads the wrong .so. That
@@ -8966,7 +9059,11 @@ def prepare_model_codegen(model) -> Path | None:
                 cache_hit = True
                 return cached
 
-        c_source, has_sens = generate_combined_from_model(model, emit_output_sens=emit_output_sens)
+        c_source, has_sens = generate_combined_from_model(
+            model,
+            emit_output_sens=emit_output_sens,
+            emit_functional_sens=emit_functional_sens,
+        )
         if model_hash is None:
             # Its own namespace, so a source-keyed artifact is never handed to a
             # structural-key lookup or the other way round.
@@ -8979,6 +9076,14 @@ def prepare_model_codegen(model) -> Path | None:
         if has_sens:
             logger.info(
                 "Model codegen: combined RHS + sensitivity RHS (%d chars)",
+                len(c_source),
+            )
+        elif not emit_functional_sens and functional_sens_rhs_enabled():
+            # Issue #209 — distinguish "this model cannot be differentiated" from
+            # "nobody asked". Reading the old message on a plain run and concluding
+            # the model had declined is exactly the confusion this costs.
+            logger.info(
+                "Model codegen: RHS only (no sensitivity requested, %d chars)",
                 len(c_source),
             )
         else:
@@ -9014,9 +9119,13 @@ def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> 
     try:
         parsed = _parse_net_file(net_path)
         _validate_net_model_for_codegen(parsed, net_path)
-        want_jac, want_outputs, want_output_sens, want_term_scale = _codegen_emit_flags(
-            model, emit_jac
-        )
+        (
+            want_jac,
+            want_outputs,
+            want_output_sens,
+            want_term_scale,
+            want_functional_sens,
+        ) = _codegen_emit_flags(model, emit_jac)
         c_source, _ = generate_combined_c(
             net_path,
             model,
@@ -9024,6 +9133,7 @@ def prepare_codegen_source(net_path: str, model=None, emit_jac: bool = True) -> 
             emit_outputs=want_outputs,
             emit_output_sens=want_output_sens,
             emit_term_scale=want_term_scale,
+            emit_functional_sens=want_functional_sens,
         )
         return c_source
     finally:
@@ -9041,7 +9151,9 @@ def prepare_model_codegen_source(model) -> str | None:
     t0 = time.perf_counter()
     try:
         c_source, _ = generate_combined_from_model(
-            model, emit_output_sens=bool(getattr(model, "_want_output_sens", False))
+            model,
+            emit_output_sens=bool(getattr(model, "_want_output_sens", False)),
+            emit_functional_sens=want_functional_sens_rhs(model),
         )
         return c_source
     except Exception as e:
@@ -9186,7 +9298,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
     model whose rate laws are smooth algebra, reconstructed from the built model
     because the .net text alone has no expression to differentiate. MM models, and
     Functional ones carrying a condition or a non-smooth builtin, still get the RHS
-    only, and CVODES uses internal FD for sensitivity.
+    only, and CVODES uses internal FD for sensitivity. Issue #209: that
+    reconstruct-from-the-model step now runs only on a sensitivity run
+    (:func:`want_functional_sens_rhs`) — it is the most expensive derivation in the
+    build and a plain solve discards every byte of it — and the cache key carries
+    the flag through the shared ``:no_functional_sens`` namespace below.
 
     GH #162: when ``model`` (the built model for this .net) is supplied, ``emit_jac``
     is set, and its analytical Jacobian is complete, the compiled analytical Jacobian
@@ -9237,9 +9353,13 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # flags (no RHS source-gen): the analytical Jacobian (GH #162, gated by
         # emit_jac + completeness + A/B hatch) and the output evaluator (GH #163,
         # whenever the model has obs/func and no rateOf — independent of emit_jac).
-        want_jac, want_outputs, want_output_sens, want_term_scale = _codegen_emit_flags(
-            model, emit_jac
-        )
+        (
+            want_jac,
+            want_outputs,
+            want_output_sens,
+            want_term_scale,
+            want_functional_sens,
+        ) = _codegen_emit_flags(model, emit_jac)
         # The GH #67 hatch is process-scoped, not file-scoped, so it belongs in the
         # in-process memo key as well as the on-disk one below — a test that flips
         # it mid-process must not be handed the other variant's .so. GH #90's
@@ -9262,7 +9382,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             want_outputs,
             want_output_sens,
             want_term_scale,
-            functional_sens_rhs_enabled(),
+            want_functional_sens,
             _sens_budget_cache_tag(),
             chunk_policy,
         )
@@ -9301,9 +9421,14 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         if want_term_scale:
             suffix += ":sens_term_scale"
         # GH #67: the A/B hatch changes the emitted source but nothing else in the
-        # key, so it needs its own namespace. Appended only when the hatch is SET,
-        # so the default key — and every .so already in the cache — is unchanged.
-        if not functional_sens_rhs_enabled():
+        # key, so it needs its own namespace. Issue #209 gates the same emit on
+        # whether a sensitivity was requested at all, and a build with the hatch
+        # SET and a build with nobody asking produce the SAME source (no
+        # bngsim_codegen_sens_rhs), so they share this one namespace rather than
+        # splitting the cache. Appended only when the emit is off, so the
+        # sensitivity-run key — and every .so already in the cache for one — is
+        # unchanged.
+        if not want_functional_sens:
             suffix += ":no_functional_sens"
         suffix += _sens_budget_cache_tag()
         # Issue #174: appended only when the chunking policy is OVERRIDDEN, so the
@@ -9327,12 +9452,19 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             c_source, has_sens = generate_combined_c(
                 net_path,
                 model
-                if (want_jac or want_outputs or want_output_sens or want_term_scale)
+                if (
+                    want_jac
+                    or want_outputs
+                    or want_output_sens
+                    or want_term_scale
+                    or want_functional_sens
+                )
                 else None,
                 emit_jac=want_jac,
                 emit_outputs=want_outputs,
                 emit_output_sens=want_output_sens,
                 emit_term_scale=want_term_scale,
+                emit_functional_sens=want_functional_sens,
             )
             extra = ", ".join(
                 n
@@ -9346,6 +9478,9 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             extra_note = f" + {extra}" if extra else ""
             if has_sens:
                 logger.info("Codegen: combined RHS + sensitivity RHS (analytical)%s", extra_note)
+            elif not want_functional_sens and functional_sens_rhs_enabled():
+                # Issue #209 — "nobody asked" is not "this model declined".
+                logger.info("Codegen: RHS only (no sensitivity requested)%s", extra_note)
             else:
                 logger.info("Codegen: RHS only (Functional/MM model, no sens RHS)%s", extra_note)
             cache_hit = False
