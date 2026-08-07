@@ -21,6 +21,7 @@ import os
 import platform
 import re
 import signal
+import struct
 import subprocess
 import threading
 import time
@@ -8062,13 +8063,25 @@ def _is_auto_rate_law(name: str) -> bool:
 def _output_sens_analysis_key(core) -> tuple:
     """Memo key for :func:`_analyze_output_sens` (GH #97).
 
-    Cheap by construction — four counters off the built model plus the budget
-    override — because avoiding ``codegen_data()`` and the sympy behind it is the
-    whole point. The counters are a structural guard, not a content hash: the
-    analysis is a pure function of the model's *shape* (function bodies, parameter
-    expressions, and the species/parameter/observable ordering its emitted
-    ``y[i]``/``p[k]`` references are indices into), and none of that changes after
-    load — ``set_param`` writes values, which never reach the emitted partials.
+    Cheap by construction — four counters off the built model, the attachment
+    vector, and the budget override — because avoiding ``codegen_data()`` and the
+    sympy behind it is the whole point. The counters are a structural guard, not a
+    content hash: the analysis is a pure function of the model's *shape* (function
+    bodies, parameter expressions, and the species/parameter/observable ordering
+    its emitted ``y[i]``/``p[k]`` references are indices into), and none of that
+    changes after load.
+
+    ``param_is_expression`` is the exception, and it has to be here (issue #174).
+    This key used to read "``set_param`` writes values, which never reach the
+    emitted partials", which issue #188 falsified for a *derived* parameter:
+    overriding one detaches it, the #15 chain rule through it disappears from
+    ``∂func/∂θ``, and the emitted C changes — with every counter unmoved. So a
+    model whose analysis was memoized before the write kept emitting the
+    pre-write partials. Content addressing used to hide that (the ``.so`` was
+    keyed on the stale source it was compiled from, so at least it matched
+    itself); a structural key would have cached the stale source under the
+    *post*-write key and served it to every later process. One C++ vector read
+    per emit closes it.
 
     The budget tag is in the key for the same reason it is in the ``.net`` ``.so``
     key (:func:`_sens_budget_cache_tag`): an expiry changes which functions come
@@ -8080,6 +8093,7 @@ def _output_sens_analysis_key(core) -> tuple:
         core.n_parameters,
         core.n_observables,
         core.n_functions,
+        tuple(bool(x) for x in core.param_is_expression),
         _sens_budget_cache_tag(),
     )
 
@@ -8697,15 +8711,156 @@ def generate_combined_from_model(model, emit_output_sens: bool = False) -> tuple
     return "\n".join(parts), sens_code is not None
 
 
-def compute_model_codegen_hash(model) -> str:
-    """Compute a SHA-256 hash of model structure for codegen caching.
+def _canon_update(h, obj) -> None:
+    """Feed *obj* into the hasher *h* as a canonical, injective byte stream.
 
-    The hash is based on the generated C source code (RHS + sensitivity
-    RHS when available), so models with identical structure share the same
-    compiled .so and a change in either generator invalidates the cache.
+    Every value is type-tagged and every variable-length one is length-prefixed,
+    so no two distinct structures can produce the same bytes. That is not
+    pedantry: without the length prefix ``{"a": "b:c"}`` and ``{"a:b": "c"}``
+    serialize alike, and a collision in the codegen cache key loads the wrong
+    ``.so`` — silent numerical corruption rather than a slow build.
+
+    Floats go in as their IEEE-754 bit pattern rather than ``repr``: exact by
+    construction, and it keeps ``-0.0`` apart from ``0.0``. ``bool`` is matched
+    before ``int`` because it is a subclass of it. Dict keys are sorted, so
+    Python's insertion order never reaches the digest, and an unhandled type
+    raises instead of silently hashing its ``id()``.
     """
-    c_source, _ = generate_combined_from_model(model)
-    return hashlib.sha256(c_source.encode()).hexdigest()[:16]
+
+    def tagged(tag: bytes, payload: bytes) -> None:
+        h.update(tag)
+        h.update(str(len(payload)).encode())
+        h.update(b":")
+        h.update(payload)
+
+    if obj is None:
+        h.update(b"n")
+    elif obj is True:
+        h.update(b"T")
+    elif obj is False:
+        h.update(b"F")
+    elif isinstance(obj, int):
+        tagged(b"i", str(obj).encode())
+    elif isinstance(obj, float):
+        h.update(b"f")
+        h.update(struct.pack("<d", obj))
+    elif isinstance(obj, str):
+        tagged(b"s", obj.encode("utf-8"))
+    elif isinstance(obj, bytes):
+        tagged(b"y", obj)
+    elif isinstance(obj, (list, tuple)):
+        h.update(b"[")
+        h.update(str(len(obj)).encode())
+        h.update(b":")
+        for item in obj:
+            _canon_update(h, item)
+    elif isinstance(obj, dict):
+        h.update(b"{")
+        h.update(str(len(obj)).encode())
+        h.update(b":")
+        for key in sorted(obj):
+            _canon_update(h, key)
+            _canon_update(h, obj[key])
+    elif hasattr(obj, "shape") and hasattr(obj, "tolist"):
+        # A pybind11 accessor returning a numpy array rather than a list —
+        # ``codegen_jacobian_plan()["col_ptrs"]`` is one, on every model routed
+        # to the sparse Jacobian. Tagged with dtype and shape as well as the
+        # values, so a reshape or a widening cannot pass unnoticed.
+        h.update(b"a")
+        _canon_update(h, str(obj.dtype))
+        _canon_update(h, tuple(obj.shape))
+        _canon_update(h, obj.tolist())
+    else:
+        raise TypeError(f"codegen cache key cannot serialize {type(obj).__name__}")
+
+
+# The value the model-based cache key deliberately drops. Everything else
+# codegen_data() carries is structure the emitters read; a parameter's current
+# VALUE is not — the whole design of the generated C is that parameters are read
+# from the runtime ``p[]`` array rather than baked as literals (see this module's
+# docstring), which is exactly what lets one .so serve every point of a fit.
+# Dropping it is what makes the key stable across a parameter scan; the one path
+# by which a value *can* still reach the emitted source — the issue #68
+# switch-condition gate — is carried as a verdict by switch_gate_cache_digest.
+_CODEGEN_KEY_DROPPED_PARAM_FIELDS = ("value",)
+
+
+def compute_model_codegen_hash(model, *, emit_output_sens: bool = False) -> str:
+    """Compute the model-based codegen cache key from model STRUCTURE (issue #174).
+
+    The key the compiled ``.so`` is cached under, for the model-based path
+    (SBML/Antimony, and any :class:`~bngsim.Model` built through
+    ``ModelBuilder``). It is derived from cheap O(model) reads — a few C++
+    accessors — and never generates source, so a warm cache resolves without
+    paying the RHS/sensitivity derivation that dominates ``Simulator``
+    construction (97% of it on ``Smith_BMCSystBiol2013``). That is the whole
+    point of the issue: hashing the generated source made the cache skip only
+    the ``cc`` compile.
+
+    The inputs are exactly what ``generate_combined_from_model`` and everything
+    it calls read off the model:
+
+    * ``codegen_data()`` minus each parameter's current *value* (see
+      ``_CODEGEN_KEY_DROPPED_PARAM_FIELDS``) — this carries the attachment
+      vector ``is_const``, which is live state a ``set_param`` on a derived
+      parameter moves (issue #188) and which the source genuinely depends on;
+    * ``codegen_jacobian_plan()`` — including ``available``, so a model whose
+      analytical Jacobian has not been attached yet never shares a key with the
+      same model after ``prepare_analytical_jacobian``;
+    * ``functional_jacobian_context()`` — the rate-law text the Functional
+      derivation differentiates;
+    * the process-scoped emit decisions: ``emit_output_sens`` (the caller's
+      ``_want_output_sens``), the GH #67 and GH #90 hatches, ``BNGSIM_NO_CODEGEN_JAC``,
+      and the *resolved* chunking policy (resolved, so ``on`` and ``true`` do not
+      make two keys for one source);
+    * :func:`bngsim._switch_sensitivity.switch_gate_cache_digest` — the one
+      verdict in the pipeline that reads parameter values and species initial
+      concentrations.
+
+    ``_CODEGEN_CACHE_KEY`` is mixed in first, so an emitter edit invalidates
+    every key here whether or not ``_CODEGEN_VERSION`` was bumped (issue #51).
+    Note this key closes the hole that constant's docstring names: a C++ change
+    that alters ``codegen_data()`` is not in the source digest, but the data
+    itself is now in the key.
+    """
+    from bngsim._switch_sensitivity import switch_gate_cache_digest
+
+    core = model._core if hasattr(model, "_core") else model
+    data = dict(core.codegen_data())
+    data["parameters"] = [
+        {k: v for k, v in p.items() if k not in _CODEGEN_KEY_DROPPED_PARAM_FIELDS}
+        for p in data["parameters"]
+    ]
+    ctx = core.functional_jacobian_context()
+    plan = core.codegen_jacobian_plan()
+
+    # RESOLVED decisions, not the raw hatches: BNGSIM_NO_CODEGEN_JAC changes
+    # nothing for a model whose analytical Jacobian is not complete anyway, and
+    # a chunking threshold changes nothing for a model below it. Folding the raw
+    # env in would split those into two keys for one source — a cache miss, not a
+    # collision, but a free one to avoid.
+    want_jac = bool(plan["available"]) and os.environ.get("BNGSIM_NO_CODEGEN_JAC") != "1"
+    chunk = _should_chunk(len(data["reactions"]))
+
+    h = hashlib.sha256()
+    h.update(_CODEGEN_CACHE_KEY.encode())
+    h.update(b"\0model_structural_v1\0")
+    _canon_update(h, data)
+    _canon_update(h, plan)
+    _canon_update(h, ctx)
+    _canon_update(
+        h,
+        (
+            bool(emit_output_sens),
+            functional_sens_rhs_enabled(),
+            _sens_budget_cache_tag(),
+            want_jac,
+            chunk,
+            _chunk_block_size() if chunk else None,
+        ),
+    )
+    _canon_update(h, switch_gate_cache_digest(core, ctx))
+    return h.hexdigest()[:16]
 
 
 # ─── Codegen wall-time recorder (T0.3) ─────────────────────────────────────────
@@ -8763,6 +8918,14 @@ def prepare_model_codegen(model) -> Path | None:
     Emits combined RHS + analytical sensitivity RHS when every reaction is
     Elementary; otherwise falls back to RHS-only and CVODES uses internal FD.
 
+    The cache key is **structural** (:func:`compute_model_codegen_hash`, issue
+    #174), so a warm cache resolves the ``.so`` from a handful of C++ reads and
+    generates no source at all. It used to hash the generated source, which meant
+    a hit skipped only the ``cc`` compile — on ``Smith_BMCSystBiol2013`` that left
+    97% of ``Simulator`` construction being re-derived per construction, none of
+    it dependent on the parameter values a fit is moving. This mirrors what
+    ``prepare_codegen`` already does for the ``.net`` path.
+
     Parameters
     ----------
     model : Model
@@ -8776,18 +8939,43 @@ def prepare_model_codegen(model) -> Path | None:
     t0 = time.perf_counter()
     cache_hit: bool | None = None
     try:
-        c_source, has_sens = generate_combined_from_model(
-            model, emit_output_sens=bool(getattr(model, "_want_output_sens", False))
-        )
-        model_hash = hashlib.sha256(c_source.encode()).hexdigest()[:16]
+        emit_output_sens = bool(getattr(model, "_want_output_sens", False))
+        model_hash: str | None
+        try:
+            model_hash = compute_model_codegen_hash(model, emit_output_sens=emit_output_sens)
+        except Exception as e:
+            # The structural key refuses to guess at anything it cannot serialize
+            # exactly, because a mis-serialized key loads the wrong .so. That
+            # refusal must not take codegen down with it, though: an accessor
+            # that grows a return type the canonicalizer does not know would
+            # otherwise drop every model-path user onto the interpreted RHS,
+            # silently and permanently. Fall back to the pre-#174 key — hashing
+            # the generated source, which is always correct and merely slow.
+            logger.warning(
+                "Structural codegen cache key unavailable (%s); falling back to hashing "
+                "the generated source. Every construction will re-derive it (issue #174).",
+                e,
+            )
+            model_hash = None
 
-        # Check cache
-        cached = get_cached_so(model_hash)
-        if cached is not None:
-            logger.debug("Model codegen cache hit: %s", cached)
-            cache_hit = True
-            return cached
+        # Check cache — before generating anything, which is the whole point.
+        if model_hash is not None:
+            cached = get_cached_so(model_hash)
+            if cached is not None:
+                logger.debug("Model codegen cache hit: %s", cached)
+                cache_hit = True
+                return cached
 
+        c_source, has_sens = generate_combined_from_model(model, emit_output_sens=emit_output_sens)
+        if model_hash is None:
+            # Its own namespace, so a source-keyed artifact is never handed to a
+            # structural-key lookup or the other way round.
+            model_hash = "src_" + hashlib.sha256(c_source.encode()).hexdigest()[:16]
+            cached = get_cached_so(model_hash)
+            if cached is not None:
+                logger.debug("Model codegen cache hit (source-hash fallback): %s", cached)
+                cache_hit = True
+                return cached
         if has_sens:
             logger.info(
                 "Model codegen: combined RHS + sensitivity RHS (%d chars)",
@@ -8935,13 +9123,16 @@ def prepare_ssa_propensity_lib(model, *, force_recompile: bool = False) -> str |
 # behavior change invalidates stale memo entries too — including one that edits an
 # emitter without bumping _CODEGEN_VERSION (issue #51).
 # Keyed by (net_abspath, want_jac, want_outputs, want_output_sens,
-# functional_sens): the compiled Jacobian (GH #162), output evaluator (GH #163),
-# and expression output-sensitivity evaluator (GH #198) are independent
-# content-distinct callbacks, and the GH #67 A/B hatch changes the sensitivity RHS
-# in place — so every flag is part of the key, and an entry for one combination
-# must never satisfy another.
+# want_term_scale, functional_sens, sens_budget_tag, chunk_policy): the compiled
+# Jacobian (GH #162), output evaluator (GH #163), and expression
+# output-sensitivity evaluator (GH #198) are independent content-distinct
+# callbacks; the GH #67 A/B hatch changes the sensitivity RHS in place; and the
+# chunking policy (issue #174) changes generate_rhs_c's emitted text — so every
+# flag is part of the key, and an entry for one combination must never satisfy
+# another.
 _PREPARE_CODEGEN_MEMO: dict[
-    tuple[str, bool, bool, bool, bool, bool, str], tuple[Path, tuple[tuple[str, int], ...], str]
+    tuple[str, bool, bool, bool, bool, bool, str, tuple[int | None, int]],
+    tuple[Path, tuple[tuple[str, int], ...], str],
 ] = {}
 _PREPARE_CODEGEN_MEMO_LOCK = threading.Lock()
 
@@ -9055,6 +9246,16 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         # derivation-budget override is process-scoped in exactly the same way and
         # decides exactly the same thing (whether the analytic sens RHS is emitted),
         # so it rides along in both keys.
+        # The chunking hatch rides along for exactly the same reason (issue #174):
+        # BNGSIM_CODEGEN_CHUNK changes generate_rhs_c's emitted text — 4,974 chars
+        # to 5,385 on akt-signaling — and nothing else in this key saw it, so a
+        # chunked run was handed the unchunked .so and an A/B of the feature
+        # measured one binary twice. Resolved through the two policy functions
+        # rather than read raw, so `on` and `true` do not make two keys for one
+        # source. Same shape as the GH #67 hatch below: this is the fourth
+        # process-scoped knob that changes the emitted source, and the .net key is
+        # built from the file's bytes, so every one of them has to be here.
+        chunk_policy = (_chunk_threshold(), _chunk_block_size())
         memo_key = (
             net_key,
             want_jac,
@@ -9063,6 +9264,7 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
             want_term_scale,
             functional_sens_rhs_enabled(),
             _sens_budget_cache_tag(),
+            chunk_policy,
         )
 
         # Fast path (T2): an unchanged .net (and its .tfun deps) resolves to the
@@ -9104,6 +9306,11 @@ def prepare_codegen(net_path: str, model=None, emit_jac: bool = True) -> Path:
         if not functional_sens_rhs_enabled():
             suffix += ":no_functional_sens"
         suffix += _sens_budget_cache_tag()
+        # Issue #174: appended only when the chunking policy is OVERRIDDEN, so the
+        # default key — and every .so already in this cache — stays byte-identical,
+        # exactly as the GH #162 form above is preserved.
+        if chunk_policy != (_DEFAULT_CHUNK_THRESHOLD, _DEFAULT_CHUNK_SIZE):
+            suffix += f":chunk={chunk_policy[0]}x{chunk_policy[1]}"
         if suffix:
             model_hash = hashlib.sha256((model_hash + suffix).encode()).hexdigest()[:16]
 

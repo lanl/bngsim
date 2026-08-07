@@ -641,6 +641,70 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
     return conditions
 
 
+def switch_gate_cache_digest(core, ctx=None) -> tuple:
+    """The part of the issue #68 codegen gate's verdict that parameter VALUES decide.
+
+    Almost everything the model-based codegen reads is structure — stoichiometry,
+    rate-law text, the derived-parameter attachment vector — and none of it moves
+    when a fit moves a rate constant. This gate is the exception, in two places:
+
+    * :func:`_unit_rate_clock_species` **probes the RHS**, so which species count
+      as clocks depends on every parameter value and on the species initial
+      concentrations;
+    * :func:`clock_crossing_compensated` **evaluates a clock threshold
+      numerically** and admits the condition only when that evaluation resolves.
+
+    Either one flipping flips whether the analytic sensitivity RHS is emitted at
+    all, which changes the generated source. So a ``.so`` cache key that drops
+    parameter values (:func:`bngsim._codegen.compute_model_codegen_hash`) cannot
+    just assume they never reach the emitted C — it has to carry this verdict.
+
+    Carrying the *verdict* rather than the values is the whole point: moving a
+    rate constant does not move any of these booleans, so the key stays put
+    across a fit, while a change that really would re-emit the source moves it.
+
+    The scan mirrors what :func:`bngsim._codegen._functional_dfdp_terms` does —
+    same :func:`has_condition_construct` pre-gate over the same function bodies
+    and functional rate expressions, and the same inlining before the atoms are
+    read — so the digest is non-empty exactly when the gate builds a scope at all.
+    Returns ``()`` for the condition-free majority, which pays only the pre-gate
+    text scan.
+    """
+    from bngsim._jacobian import _inline_functions, has_condition_construct
+
+    if core.n_functions == 0:
+        return ()
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    texts = [
+        *func_map.values(),
+        *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
+    ]
+    conditional = [t for t in texts if has_condition_construct(t)]
+    if not conditional:
+        return ()
+    try:
+        scope = switch_condition_scope(core, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        # The gate's own fallback: with no scope every condition declines, and
+        # that decline reads no value, so there is nothing to carry.
+        logger.debug("switch-gate digest: scope unavailable (%s)", exc)
+        return ()
+    rows = set()
+    for text in conditional:
+        flat = _inline_functions(text, func_map) or text
+        for atom in _iter_condition_atoms(flat):
+            rows.add(
+                (
+                    atom,
+                    clock_crossing_compensated(atom, scope),
+                    bool(state_switch_residual(core, atom)),
+                )
+            )
+    return (tuple(sorted(scope.clocks.items())), tuple(sorted(rows)))
+
+
 def uncompensated_condition_reason(
     expr: str, scope: SwitchConditionScope
 ) -> UncompensatedCrossingReason | None:
