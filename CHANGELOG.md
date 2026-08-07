@@ -112,12 +112,20 @@ in `CMakeLists.txt`) is derived from it.
   with no `sensitivity_params` ran the Functional sensitivity derivation through
   sympy, emitted it, and compiled it into the cached `.so` — for a solve that
   never calls `CVodeSensInit1`. On `BIOMD0000000496` (295 species, 333 functional
-  reactions, cold codegen cache) that was **39.5 s of construction against 21.5 s,
-  and a 26.7 MB `.so` against 1.8 MB (14.6x)**; the 12.6 MB of C source also
-  crossed the 8 MB `-O0` threshold, so the RHS the solve *does* call was compiling
-  unoptimized. The GH #198 output-sensitivity evaluator three lines below in the
-  same function was already gated on `_want_output_sens` for exactly this reason.
-  Trajectories are unchanged — this removes a symbol nothing was calling.
+  reactions, cold codegen cache, the analytical Jacobian derived first so the GH
+  #95 budget cannot decide the answer) that was **46 s of codegen against 29 s, and
+  a 26.7 MB `.so` against 1.8 MB (14.6x)**, and the solve itself 0.45 s against
+  0.29 s. The GH #198 output-sensitivity evaluator three lines below in the same
+  function was already gated on `_want_output_sens` for exactly this reason.
+
+  Two side effects on models this large. 12.6 MB of C source crosses the 8 MB
+  `_CODEGEN_HUGE_SOURCE_BYTES` threshold and 3.7 MB does not, so the translation
+  unit now compiles at `-O1` rather than `-O0` — which moves the trajectory in the
+  last bits (7.5e-15 relative on this model; pinning `-O0` on the gated build
+  reproduces the old trajectory *bit for bit*, which is how that was attributed).
+  The faster solve is **not** that: `-O0` on the gated build is just as fast, so
+  what is left is the 8.9 MB of never-called code sharing the image, and this
+  change does not identify the mechanism further.
 
   Scoped to the Functional/Michaelis-Menten half. An Elementary model's
   sensitivity RHS is plain text emission with no sympy in it, so it stays

@@ -3851,8 +3851,8 @@ def want_functional_sens_rhs(model) -> bool:
     plain ``Simulator(model, method="ode")`` never installs forward sensitivities
     (``CVodeSensInit1`` is not called), so every second of ``sp.diff`` and every
     byte of ``bngsim_codegen_sens_rhs`` it emitted was thrown away — on
-    ``BIOMD0000000496`` that was 39.5 s of construction instead of 21.5 s, and a
-    26.7 MB ``.so`` instead of 1.8 MB. It is the same reasoning, and the same
+    ``BIOMD0000000496`` that is 46 s of codegen instead of 29 s, and a 26.7 MB
+    ``.so`` instead of 1.8 MB. It is the same reasoning, and the same
     ``_want_output_sens`` signal, that already gates the GH #198 output-sensitivity
     evaluator; ``∂f/∂p`` is the more expensive of the two and was the one left
     ungated.
@@ -8756,7 +8756,7 @@ def generate_combined_from_model(
 
     ``emit_functional_sens`` (issue #209) is the *policy* half of that gate, as
     opposed to the hatch's process half: a plain ODE run installs no sensitivities,
-    so asking for the Functional ``∂f/∂p`` at all is wasted — 11.1 s of sympy and
+    so asking for the Functional ``∂f/∂p`` at all is wasted — ~17 s of codegen and
     +24.9 MB of ``.so`` on ``BIOMD0000000496``. ``prepare_model_codegen`` and
     ``prepare_model_codegen_source`` resolve it through
     :func:`want_functional_sens_rhs` and carry it in the cache key; it defaults to
