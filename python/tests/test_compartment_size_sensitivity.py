@@ -107,6 +107,34 @@ ONE = """<?xml version="1.0" encoding="UTF-8"?>
   </model>
 </sbml>"""
 
+# A source/sink pair over an hOSU species, chosen so the STEADY STATE is nonzero
+# and V-invariant: the synthesis law is in amount/time (`C*ks`) and the decay law
+# reads A's amount (`kd*A` = kd·V·x), so dx/dt = ks − kd·x and x_ss = ks/kd = 4 at
+# every volume. The observable, which denotes the amount, is V·x_ss and does move.
+SOURCE_SINK = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="src_sink">
+    <listOfCompartments><compartment id="C" size="%(v)s" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="1" hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="ks" value="2" constant="true"/>
+      <parameter id="kd" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="syn" reversible="false" fast="false">
+        <listOfProducts><speciesReference species="A" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>C</ci><ci>ks</ci></apply></math></kineticLaw>
+      </reaction>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>kd</ci><ci>A</ci></apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
 MASS_ACTION = "<apply><times/><ci>C</ci><apply><times/><ci>k</ci><ci>A</ci></apply></apply>"
 # k*A/(50+A) — a Functional law, so its ∂/∂V goes through the observable that
 # carries A's amount rather than through an Elementary geometry factor.
@@ -350,6 +378,31 @@ def test_steady_state_sensitivity_accepts_a_writable_size():
     sim = bngsim.Simulator(bngsim.Model.from_sbml_string(_xcomp()), method="ode")
     ss = sim.steady_state(sensitivity_params=["C1", "C2"])
     assert ss is not None
+
+
+def test_steady_state_observable_column_carries_the_amount_conversion():
+    """The third and last site that folds a compartment size into an observable
+    weight — after the #197 CVODES chain rule and the #198 compiled emitter.
+
+    ``d obs/dV = Σ f·V·(dY_ss/dV) + Σ f·x_ss``. This fixture is built so the first
+    sum is exactly zero and the second is the whole answer: ``dx/dt = ks − kd·x``
+    once the volumes cancel, so ``x_ss = ks/kd = 4`` at every volume, while the
+    observable — which denotes ``A``'s *amount* — is ``V·x_ss`` and moves with it.
+    ``d obs/dV = 4``, statable outright rather than compared to a difference.
+    Without the direct term the column is 0, and its ``dY_ss/dV`` half agrees.
+
+    GH #119 is why all three sites are worth naming together: that issue was this
+    same weight going missing at exactly one of them, with ``expression:`` rows
+    right and ``observable:`` rows wrong inside a single result.
+    """
+    ss = bngsim.Simulator(
+        bngsim.Model.from_sbml_string(SOURCE_SINK % {"v": 3.0}), method="ode"
+    ).steady_state(sensitivity_params=["C"])
+    i = ss.species_names.index("A")
+    assert ss.concentrations[i] == pytest.approx(4.0, rel=1e-6)
+    assert float(np.asarray(ss.sensitivity).reshape(-1)[i]) == pytest.approx(0.0, abs=1e-6)
+    col = np.squeeze(np.asarray(ss.output_sensitivities("observable:A")))
+    assert float(col) == pytest.approx(4.0, rel=1e-6)
 
 
 # ── Both backends ───────────────────────────────────────────────────────────
