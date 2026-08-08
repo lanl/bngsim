@@ -15,7 +15,7 @@ import logging
 import re
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import libsbml
@@ -810,7 +810,14 @@ def _collect_time_discontinuity_conditions(
                     out.append(f"({lhs}{op}{rhs})")
 
 
-def _collect_relational_edge_conditions(node: libsbml.ASTNode, func_defs: dict, out: list) -> None:
+def _collect_relational_edge_conditions(
+    node: libsbml.ASTNode,
+    func_defs: dict,
+    out: list,
+    *,
+    keep: Callable[[libsbml.ASTNode, libsbml.ASTNode], bool] | None = None,
+    local_params: dict[str, str] | None = None,
+) -> None:
     """Append one root condition for each relational sub-expression in *node*.
 
     Event trigger roots are registered as the full Boolean trigger. That misses
@@ -818,6 +825,16 @@ def _collect_relational_edge_conditions(node: libsbml.ASTNode, func_defs: dict, 
     step sees the trigger false at both endpoints. Registering each relational
     edge separately forces a stop at the component threshold, where the normal
     event re-check can queue the event.
+
+    ``keep(a, b)`` filters the emitted atoms by the two sides of the relational.
+    Event triggers pass none — every trigger atom is a crossing worth stopping
+    at by construction — while the rule / kinetic-law scan (GH #194) passes one
+    that admits only the atoms reading integrated state.
+
+    ``local_params`` is the lexical scope the emitted text is written in: the
+    formal-parameter → call-site-expression binding when *node* is a function
+    definition's body (see :func:`_iter_state_scan_frames`). ``None`` — the
+    event-trigger and top-level cases — is model scope.
     """
     global _INEQ_RELATIONAL_OPS
     if node is None:
@@ -835,9 +852,170 @@ def _collect_relational_edge_conditions(node: libsbml.ASTNode, func_defs: dict, 
         if t in _INEQ_RELATIONAL_OPS and nc >= 2:
             op = _INEQ_RELATIONAL_OPS[t]
             for i in range(nc - 1):
-                lhs = _ast_to_exprtk_with_funcdefs(n.getChild(i), func_defs)
-                rhs = _ast_to_exprtk_with_funcdefs(n.getChild(i + 1), func_defs)
+                a, b = n.getChild(i), n.getChild(i + 1)
+                if keep is not None and not keep(a, b):
+                    continue
+                lhs = _ast_to_exprtk_with_funcdefs(a, func_defs, local_params)
+                rhs = _ast_to_exprtk_with_funcdefs(b, func_defs, local_params)
                 out.append(f"({lhs}{op}{rhs})")
+
+
+# ── State-threshold discontinuity detection (GH #194) ────────────────────
+#
+# The time collector above roots `piecewise(dose, time < 6, 0)`. Its state twin
+# — `piecewise(k_boost, X < hi and X > lo, k_base)` in an assignment rule or a
+# kinetic law — matched none of the three collectors and registered nothing, so
+# a window narrow in TIME (because the boosted rate is large) was stepped
+# straight over and the trajectory came back bit-identical to "the window was
+# never entered". The error does not move with rtol/atol, which is what
+# separates it from an accuracy shortfall.
+#
+# What varies continuously is what can be bracketed: a species concentration, a
+# rate-rule target, and anything an assignment rule builds out of those. A
+# threshold against a genuine constant never crosses, and one against a
+# parameter only an event writes changes only AT the event, where the
+# integrator already restarts — neither earns a root, and leaving them out is
+# what keeps this off the models that have nothing to gain.
+
+
+def _state_dependent_names(sbml_model) -> set[str]:
+    """Model symbols whose value moves continuously with the integrated state.
+
+    Non-constant species and rate-rule targets are the primitives; assignment
+    rules propagate the property to their targets, transitively (an assignment
+    rule may be written in terms of another). Deliberately excludes the ``time``
+    csymbol: a pure-time threshold is :func:`_collect_time_discontinuity_conditions`'s
+    job, and a mixed one (``X < 2*time``) is emitted identically by both, so the
+    builder's de-duplication makes it a single root either way.
+    """
+    dynamic: set[str] = set()
+    for i in range(sbml_model.getNumSpecies()):
+        sp = sbml_model.getSpecies(i)
+        if not sp.getConstant() and sp.getId():
+            dynamic.add(sp.getId())
+
+    asg_math: dict[str, libsbml.ASTNode] = {}
+    for i in range(sbml_model.getNumRules()):
+        rule = sbml_model.getRule(i)
+        if rule.getMath() is None:
+            continue
+        if rule.isRate():
+            dynamic.add(rule.getVariable())
+        elif rule.isAssignment():
+            asg_math[rule.getVariable()] = rule.getMath()
+
+    changed = True
+    while changed:
+        changed = False
+        for var, math in asg_math.items():
+            if var not in dynamic and (_ast_name_set(math) & dynamic):
+                dynamic.add(var)
+                changed = True
+    return dynamic
+
+
+def _make_state_relational_filter(
+    dynamic_names: set[str],
+    local_params: dict[str, str] | None = None,
+    local_dynamic: frozenset[str] = frozenset(),
+) -> Callable[[libsbml.ASTNode, libsbml.ASTNode], bool]:
+    """A ``keep`` predicate for :func:`_collect_relational_edge_conditions` that
+    admits exactly the relationals one of whose sides reads integrated state.
+
+    Inside a function definition's body a name is a *formal parameter* first: it
+    is state-dependent iff the call site bound it to something that is, which is
+    what ``local_dynamic`` carries. A formal that shadows a model symbol
+    (a parameter literally named after a species) therefore reads as its
+    binding, not as the species — the emitted text substitutes it the same way.
+    """
+    shadowed = frozenset(local_params or ())
+
+    def keep(a: libsbml.ASTNode, b: libsbml.ASTNode) -> bool:
+        names = _ast_name_set(a) | _ast_name_set(b)
+        return bool((names & local_dynamic) or ((names & dynamic_names) - shadowed))
+
+    return keep
+
+
+def _iter_state_scan_frames(
+    node: libsbml.ASTNode,
+    func_defs: dict,
+    dynamic_names: set[str],
+    local_params: dict[str, str] | None = None,
+) -> Iterator[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str]]]:
+    """Yield ``(subtree, local_params, local_dynamic)`` for *node* and for every
+    function-definition body reachable from it.
+
+    A ``piecewise`` gated on state is just as often written one level down —
+    ``MAX(a,b) := piecewise(a, a >= b, b)``, ``rDsRc(Dna,Rc) := piecewise(0, Dna <
+    1, …)`` — and a scan of the call site alone sees the *arguments* but never
+    the threshold. Each callee is visited under a scope binding its formals to
+    the call site's already-translated argument text, so the condition emitted
+    from the body is the same string the RHS itself evaluates. ``seen`` bounds a
+    self- or mutually-recursive definition to one expansion, and the walk is
+    iterative for the GH #111 reason every other scanner here is.
+
+    Time thresholds hidden the same way (``stepfunc(t, t_start, …)``) are the
+    twin gap in :func:`_collect_time_discontinuity_conditions`, which still scans
+    call sites only; this collector's ``keep`` filter admits state atoms alone,
+    so it neither fixes nor disturbs that case.
+
+    ``local_params`` seeds the outermost scope — for a kinetic law, its
+    ``<localParameter>`` id → mangled-id map, without which the emitted
+    condition names a symbol the evaluator does not have.
+    """
+    stack: list[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str], frozenset[str]]] = [
+        (node, local_params, frozenset(), frozenset())
+    ]
+    while stack:
+        body, scope, scope_dynamic, seen = stack.pop()
+        yield body, scope, scope_dynamic
+        shadowed = frozenset(scope or ())
+        for n in _iter_ast_subtree(body):
+            if n.getType() != libsbml.AST_FUNCTION:
+                continue
+            fname = n.getName()
+            entry = func_defs.get(fname)
+            # A rateOf-idiom funcDef has no real body to descend into (GH #106).
+            if entry is None or fname in seen or entry[1] is _RATEOF_FUNCDEF:
+                continue
+            param_names, callee_body = entry
+            next_scope = dict(scope or {})
+            next_dynamic = set(scope_dynamic)
+            for j in range(min(n.getNumChildren(), len(param_names))):
+                arg = n.getChild(j)
+                pname = param_names[j]
+                next_scope[pname] = _ast_to_exprtk_with_funcdefs(arg, func_defs, scope)
+                arg_names = _ast_name_set(arg)
+                if (arg_names & scope_dynamic) or ((arg_names & dynamic_names) - shadowed):
+                    next_dynamic.add(pname)
+                else:
+                    # The callee's own formal shadows anything of that name the
+                    # caller's scope carried; it is dynamic only if THIS call
+                    # bound it to something dynamic.
+                    next_dynamic.discard(pname)
+            stack.append((callee_body, next_scope, frozenset(next_dynamic), seen | {fname}))
+
+
+def _collect_state_relational_conditions(
+    node: libsbml.ASTNode,
+    func_defs: dict,
+    dynamic_names: set[str],
+    out: list,
+    local_params: dict[str, str] | None = None,
+) -> None:
+    """Append a root condition for every state-threshold relational feeding *node*,
+    including the ones inside the function definitions it calls (GH #194)."""
+    for body, scope, scope_dynamic in _iter_state_scan_frames(
+        node, func_defs, dynamic_names, local_params
+    ):
+        _collect_relational_edge_conditions(
+            body,
+            func_defs,
+            out,
+            keep=_make_state_relational_filter(dynamic_names, scope, scope_dynamic),
+            local_params=scope,
+        )
 
 
 # ── State-dependent floor/ceiling discontinuity detection (GH #244) ──────
@@ -4497,6 +4675,7 @@ def _build_model_from_sbml_doc(doc):
         refs_j.discard(rxn_j.getId())  # drop self-reference
         referenced_reaction_ids |= refs_j
 
+    reaction_local_param_maps: dict[int, dict[str, str]] = {}
     for i in range(sbml_model.getNumReactions()):
         rxn = sbml_model.getReaction(i)
         rid = rxn.getId()
@@ -4541,6 +4720,12 @@ def _build_model_from_sbml_doc(doc):
         # SBML L2: kl.getNumParameters() / kl.getParameter(j)
         # SBML L3: kl.getNumLocalParameters() / kl.getLocalParameter(j)
         local_param_map, local_param_values = _collect_local_params(kl, rid, builder)
+        # Keep the id→mangled map for §10.5's discontinuity scan, which reads
+        # the same kinetic-law math and must emit the same symbol names the RHS
+        # does. Captured here rather than recomputed there: `_collect_local_params`
+        # owns the mangling AND registers the parameter, so a second call would
+        # double-register and a re-derived name is one more site to keep in step.
+        reaction_local_param_maps[i] = local_param_map
 
         # If a rule or another reaction's kineticLaw references this reaction
         # id, emit `add_function(rid, ...)` up-front so any downstream
@@ -6130,7 +6315,7 @@ def _build_model_from_sbml_doc(doc):
             continue
         builder.add_reaction_live_volume_term(_rxn_idx, _live_idx0, _vstat, _exp)
 
-    # ── 10.5. Discontinuity triggers (GH #72, GH #246) ─────────────────
+    # ── 10.5. Discontinuity triggers (GH #72, GH #194, GH #246) ────────
     # Scan every expression that feeds the ODE RHS — assignment-rule and
     # rate-rule math, plus kinetic laws — for inequalities switching on the
     # `time` csymbol, and register each distinct threshold as a CVODE root.
@@ -6162,6 +6347,30 @@ def _build_model_from_sbml_doc(doc):
         trigger = event.getTrigger()
         if trigger is not None and trigger.getMath() is not None:
             _collect_relational_edge_conditions(trigger.getMath(), func_defs, disc_conditions)
+
+    # The same per-atom edge routine over the RHS-feeding math (GH #194), for
+    # the relationals that read integrated state rather than time. Splitting the
+    # Boolean into its atoms is what catches a narrow ``(X > lo) && (X < hi)``
+    # window: the conjunction reads false at both ends of one wide step, so the
+    # compound condition never changes sign, while each half does.
+    state_names = _state_dependent_names(sbml_model)
+    if state_names:
+        for i in range(sbml_model.getNumRules()):
+            rule = sbml_model.getRule(i)
+            if (rule.isAssignment() or rule.isRate()) and rule.getMath():
+                _collect_state_relational_conditions(
+                    rule.getMath(), func_defs, state_names, disc_conditions
+                )
+        for i in range(sbml_model.getNumReactions()):
+            kl = sbml_model.getReaction(i).getKineticLaw()
+            if kl and kl.getMath():
+                _collect_state_relational_conditions(
+                    kl.getMath(),
+                    func_defs,
+                    state_names,
+                    disc_conditions,
+                    reaction_local_param_maps.get(i),
+                )
 
     # State-dependent floor()/ceiling() thresholds (GH #244): small numeric
     # integer boundaries in expressions like ``ceiling(S1 * p1)`` are also

@@ -233,6 +233,56 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **A `piecewise` gated on a species, in a rule or a kinetic law, registered no
+  discontinuity root, so a narrow state-gated window was stepped over entirely
+  (issue #194).** The state twin of GH #72's time roots. The loader registered a
+  CVODE root for every inequality against the `time` csymbol in an
+  assignment/rate rule or kinetic law, and for every relational atom of an
+  *event trigger*, but nothing for a plain state threshold in the math that
+  feeds the RHS. `piecewise(k_boost, X < hi and X > lo, k_base)` matched none of
+  the three collectors, and a window narrow in *time* — narrow precisely because
+  the boosted rate is large — fell inside a single adaptive step. The reference
+  case came back at `10·exp(-0.2·6)` to the last bit: not the boost applied
+  badly, the boost not applied at all. The tell that this was a missing root
+  rather than an accuracy shortfall is that **the error did not move with
+  `rtol`/`atol`** — four decades of tolerance left it at `3.97e-03`.
+
+  The fix runs the existing per-atom edge routine
+  (`_collect_relational_edge_conditions`, until now used for event triggers
+  only) over assignment-rule, rate-rule and kinetic-law math, for the atoms one
+  of whose sides reads integrated state — a non-constant species, a rate-rule
+  target, or anything an assignment rule builds out of those. Splitting the
+  Boolean into atoms is the whole point: over one wide step the conjunction
+  `(X < hi) && (X > lo)` reads false at *both* ends and never changes sign,
+  while each half does. The scan descends into the function definitions a rule
+  or kinetic law calls, binding each callee's formals to the call site's
+  argument text, because the threshold is just as often written one level down
+  (`MAX(a,b) := piecewise(a, a >= b, b)`); a kinetic-law `<localParameter>` in
+  the threshold is emitted with the same `_lp_<rid>_` mangling the RHS uses. A
+  threshold neither side of which moves with the state is deliberately left
+  unrooted — it can never change sign — and a pure-time threshold stays GH #72's
+  single root.
+
+  Reference case: `3.97e-03` → `1.5e-09`, and the residual now falls with the
+  tolerance (`3.8e-08` at `rtol=1e-8` → `2.2e-11` at `rtol=1e-12`). Over the
+  1,291-model SBML corpus 64 models gain a root and the rest load byte-identical.
+  Against libRoadRunner on those 64 nothing changes verdict (52 PASS both arms);
+  two rows improve their failing-cell count (BIOMD0000000628 993→434 of 135,135;
+  BIOMD0000000923 342→293 of 4,004) and none worsens. At `1e-4×` the sweep
+  tolerance the two arms agree to a median `5.7e-10`, so the roots change how
+  fast a model reaches its answer, not what the answer is — the three models
+  that still differ there fail their own self-convergence check by order 1 in
+  *both* arms and are undetermined at any tolerance either can reach.
+
+  The retrigger hazard a state root carries — it is not monotone, so it can be
+  re-crossed or grazed — was settled by measurement rather than by adding a
+  dormancy guard: total internal steps over the 64 fall from 24,942 to 16,026,
+  57 of 63 are unchanged or cheaper (BIOMD0000000831 `891 → 19`,
+  BIOMD0000000787 `2,459 → 80`), the worst case is `+13 %`, and no model gains a
+  root that chatters. A sliding surface, a grazing one, and a damped oscillator
+  crossing its threshold 37 times all get *cheaper* (`4,019 → 89` steps on the
+  oscillator). A true Filippov chattering system is unsolvable identically
+  before and after.
 - **The steady-state conditioning-warning test asserted a pivot of 1.26e-17 —
   below machine epsilon — so which branch it exercised was decided by the LU
   implementation (issue #176, item 2).**
