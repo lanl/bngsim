@@ -233,6 +233,30 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **A forward-sensitivity run never returned after crossing a rate-law switch
+  that turned out to be continuous, and whether it did depended on `n_points`
+  (issue #187).** Issue #150 established that the integration must resume just
+  *past* a located crossing rather than on it — resuming on the surface puts the
+  discontinuity inside the first step after the restart, and the root fires again
+  — but it wrote that restart under the saltation jump. A switch measured
+  CONTINUOUS at its own threshold (the clamp idiom, the most common `piecewise`
+  in the corpus) returned before reaching it and left the state exactly where the
+  root finder put it; `cvRootfind` short-circuits on an exact zero, so that is
+  routinely `g(x) == 0.0` bit-for-bit. On `Smith_BMCSystBiol2013`
+  (`PI345P3 > pip3_basal`) the run then restarted at `h ≈ ε·|t_end| ≈ 3e-15`, took
+  a step far too short to move a 1.2e13-scale species by one ulp, rooted on the
+  same crossing and was re-initialized back to the same `h` — 19,297 times in
+  10 s, advancing simulated time by ~3.5e-15 an iteration, while the scalar run
+  of the same model took 0.02 s. `n_points` only decided whether a run reached
+  that state (2, 3, 4 and 8 hung; 5, 16 and 50 did not), which is why it looked
+  like output points changed solvability. The restart is now a property of having
+  stopped at a crossing, not of having jumped at one. The Smith gradient the
+  issue was found on now completes at every `n_points` in 0.87 s and agrees with
+  a three-step central difference over 199 resolved entries to 5.5e-5. Corpus
+  A/B: 145/145 byte-identical with sensitivities off (state-switch roots are
+  registered only under sensitivities), 145 identical + 22 identical refusals +
+  13 moved of 181 condition-carrying SBML models, and every mover moves by at
+  most what a 1% change in `rtol` alone moves it on the same binary.
 - **A sensitivity `Simulator` reused the plain `.so` an earlier `Simulator` had
   left on the same model, and silently lost `bngsim_codegen_output_sens`.** The
   constructor's artifact-reuse block took whatever `model._codegen_so_path` /

@@ -4067,6 +4067,55 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
     }
     dt = dt_used;
 
+    // ── Restart just PAST the surface, not on it (issue #82, rate-law side) ──
+    // CVODE locates a root only to ~100·ε·(|t| + |h|), so x(t*) lands on either
+    // side of g = 0 by a hair — or, as on Smith_BMCSystBiol2013's
+    // `PI345P3 > pip3_basal`, exactly ON it, with g(x(t*)) == 0.0 bit-for-bit.
+    // Restarting there puts the discontinuity inside the first step after the
+    // restart — the one thing stopping at the crossing exists to prevent. CVODES
+    // then sizes h from the before-branch RHS while every corrector answers with
+    // the after-branch one, the error test fails at every h down to ~1e-17, and
+    // the root fires a second time: a jump would be applied twice, which is the
+    // same wrong answer with a different sign of the error.
+    //
+    // Worse, the re-fire need not converge to anything. Sitting exactly on the
+    // surface, CVODES restarts at h ≈ ε·|t_end| (~3e-15 on Smith), takes one
+    // step too short to move the state by even one ulp, roots on the same
+    // crossing, and is re-initialized back to h ≈ ε·|t_end| — an unbounded loop
+    // that advances simulated time by ~3.5e-15 per iteration and never returns
+    // (issue #187). The scalar run of the same model is 0.02 s; whether the run
+    // reaches this state at all depends on where the output grid lands, which is
+    // why it read as an `n_points` dependence.
+    //
+    // `x + δt·f` is the probe point the ladder above VERIFIED is on the after
+    // side of every residual that fired at this instant — g there is nonzero and
+    // of the opposite sign, which is what the straddle test means — so taking it
+    // as the restart state is one explicit Euler step along the flow, an error of
+    // O(δt²) in the state with δt at most ~2e-9 of the run's own time scale. The
+    // state's own tolerance never sees it; the branch selection does.
+    //
+    // This is a property of having STOPPED at a crossing, not of having jumped
+    // there: a switch that turns out to be continuous applies no saltation term
+    // but is standing on exactly the same surface, so it restarts the same way.
+    // That is the whole of issue #187 — the continuous return below used to skip
+    // this and leave the state on the root.
+    auto restart_past_surface = [&]() {
+        for (int i = 0; i < ns; ++i) {
+            y_data[i] = x[static_cast<std::size_t>(i)] + dt * f0[static_cast<std::size_t>(i)];
+        }
+        // The evaluator (and everything reading concentrations downstream) must
+        // see the state the integration resumes from.
+        for (int i = 0; i < ns; ++i) {
+            xw[static_cast<std::size_t>(i)] = y_data[i];
+        }
+        sync(xw, t_evt);
+        const int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
+        if (rf != CV_SUCCESS) {
+            throw std::runtime_error("CVodeReInit past a state-switch crossing failed: " +
+                                     std::to_string(rf));
+        }
+    };
+
     // One probe pair for the whole batch: the ladder verified it crosses every
     // residual, so the branch change it reads is already the combined one and
     // there is nothing left to compose (issue #153).
@@ -4084,7 +4133,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         // residuals ever have to agree on a dt*/dθ.
         double f_scale = 0.0;
         if (branch_gap(f_scale) <= kStateSwitchContinuousRelTol * f_scale) {
-            sync(x, t_evt);
+            restart_past_surface();
             return;
         }
     }
@@ -4156,35 +4205,8 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
         }
     }
 
-    // ── Restart just PAST the surface, not on it (issue #82, rate-law side) ──
-    // CVODE locates a root only to ~100·ε·(|t| + |h|), so x(t*) lands on either
-    // side of g = 0 by a hair, deterministically but arbitrarily. Restarting on
-    // the BEFORE side puts the discontinuity inside the first step after the
-    // restart — the one thing stopping at the crossing exists to prevent. CVODES
-    // then sizes h from the before-branch RHS while every corrector answers with
-    // the after-branch one, the error test fails at every h down to ~1e-17, and
-    // the root fires a second time: this jump would be applied twice, which is
-    // the same wrong answer with a different sign of the error. `x + δt·f` is
-    // the probe point the ladder above VERIFIED is on the after side of every
-    // residual that fired at this instant, and taking it as the restart state
-    // is one explicit Euler step along the flow — an
-    // error of O(δt²) in the state, δt itself being at most ~2e-9 of the run's
-    // own time scale. The state's own tolerance never sees it; the branch
-    // selection does.
-    for (int i = 0; i < ns; ++i) {
-        y_data[i] = x[static_cast<std::size_t>(i)] + dt * f0[static_cast<std::size_t>(i)];
-    }
-    // The evaluator (and everything reading concentrations downstream) must see
-    // the state the integration resumes from.
-    for (int i = 0; i < ns; ++i) {
-        xw[i] = y_data[i];
-    }
-    sync(xw, t_evt);
-    const int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
-    if (rf != CV_SUCCESS) {
-        throw std::runtime_error("CVodeReInit past a state-switch crossing failed: " +
-                                 std::to_string(rf));
-    }
+    // Restart just past the surface — see the note at the lambda above.
+    restart_past_surface();
 }
 
 // ─── Public interface ────────────────────────────────────────────────────────
