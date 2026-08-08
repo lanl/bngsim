@@ -360,6 +360,14 @@ def test_surface_reached_but_not_crossed_still_integrates(threshold, x0, expecte
     )
     x = np.asarray(result.species)[:, list(result.species_names).index("X")]
     assert x[-1] == pytest.approx(expected_end, abs=1e-8)
-    # Locating the arrival is cheaper than chasing it: the un-rooted run needs
-    # ~40-50 steps to resolve the same kink by error-test failure alone.
-    assert result.solver_stats["n_steps"] < 20
+    # The step count is what says the root fired once rather than being chased:
+    # a retrigger on a surface the flow rests on chatters into the thousands.
+    #
+    # Recalibrated with issue #182, which made the counters cumulative across
+    # the re-init the root forces. `n_steps < 20` was measuring only the handful
+    # of steps taken AFTER that re-init; the same runs report 39 (`sliding`) and
+    # 32 (`grazing`) whole, nearly all of it spent walking down to the surface
+    # and locating the arrival, and the bound now has to cover that. Both
+    # numbers are identical on ubuntu-latest and macos-14, and stay in 22-40
+    # over `n_points` from 3 to 101.
+    assert result.solver_stats["n_steps"] < 80

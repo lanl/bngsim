@@ -312,6 +312,14 @@ in `CMakeLists.txt`) is derived from it.
   already whole-run (it is read off the linear solver, which a re-init does not
   touch), and `SteadyStateResult`'s own `n_steps` / `n_rhs_evals` march on one
   `CVodeInit` with no re-init at all; neither is affected.
+
+  A model that *does* re-initialize now reports a larger number than it did
+  yesterday, and anything calibrated against the old one moves with it. One
+  assertion in-tree was: `test_surface_reached_but_not_crossed_still_integrates`
+  (issue #194) bounded a rooted arrival at `n_steps < 20`, which was the handful
+  of steps after the root's re-init — the same run is 39 counted whole, nearly
+  all of it spent walking down to the surface. Its bound is recalibrated; what
+  it asserts (the root fires once and is not chased) is unchanged.
 - **The steady-state conditioning-warning test asserted a pivot of 1.26e-17 —
   below machine epsilon — so which branch it exercised was decided by the LU
   implementation (issue #176, item 2).**
