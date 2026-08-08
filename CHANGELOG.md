@@ -233,6 +233,40 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **`write_omex` stamped every zip entry with the wall clock, so the archive
+  `net_to_omex(created=...)` documents as byte-reproducible was reproducible only
+  when two builds landed in the same second (issue #224).** The stated purpose of
+  `created` is byte reproducibility, and it reached `metadata.rdf` — but never the
+  archive. `ZipFile.writestr` given a *str* name synthesizes a `ZipInfo` stamped
+  with `time.localtime(time.time())[:6]`, so every entry carried the build's clock
+  to the second: two archives from identical inputs and the same `created`, 1.2 s
+  apart, differed only in their entry headers (`(2026, 8, 8, 12, 27, 14)` vs
+  `…, 16`) while every member's decompressed content was byte-identical. That also
+  made `test_omex.py::test_net_to_omex_provenance` a coin flip on run duration — it
+  failed on the `macos-14` leg of #223, a `conftest.py`-only change that cannot
+  reach this code, while `ubuntu-latest` passed the same commit.
+
+  `write_omex` now takes the same `created` argument and stamps it on every entry,
+  and `net_to_omex` passes its own through — including under `provenance=False`,
+  where the entry headers are the only place it can land. The stamp uses the
+  timestamp's calendar fields verbatim: a zip entry header has no timezone field,
+  so a UTC offset is dropped rather than applied, and `metadata.rdf` stays the
+  carrier of the authoritative instant. `created=None` keeps the wall clock, so
+  the default is unchanged — and still not reproducible, which the docstrings now
+  say outright instead of implying the opposite. A `created` that is not ISO-8601,
+  or that predates the 1980 DOS epoch a zip header cannot encode, is refused by
+  name before any file is written; `net_to_omex` refuses it before running the
+  conversion and the gate rather than after. `bngsim-omex pack` gained the
+  matching `--created TIMESTAMP`: the knob was unreachable from the CLI, which is
+  the interface a reproducible build script actually calls.
+
+  Handing `writestr` an explicit `ZipInfo` also drops the two defaults it would
+  otherwise synthesize — a bare `ZipInfo` is `ZIP_STORED` with null permission
+  bits — so both are restored, and a test asserts the stamped and unstamped
+  archives agree on `compress_type`, `external_attr` and `compress_size`: the only
+  thing stamping changes is the timestamp. The reproducibility tests drive a fake
+  clock that jumps a day per reading, so they fail on the old behavior every run
+  rather than only when two builds straddle a second boundary.
 - **A `.net` without BNG2.pl's kind-annotation comments returned an identically
   zero sensitivity column, with no warning (issue #181).** Two `.net` files
   differing *only* in the trailing `# Constant` / `# ConstantExpression` comments

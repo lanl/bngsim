@@ -174,7 +174,12 @@ creation date, a description — the channel BioModels/COMBINE tools read) and a
 per-level L0–L4 result, `ok` / `rhs_faithful` / `max_rhs_delta`, and any
 dropped/lossy notes. So the *verified-faithful* claim is auditable by anyone who
 opens the archive, and a future reader can tell which bngsim version produced it.
-The `created` timestamp is injectable (`created="…"`) for byte-reproducible archives.
+The `created` timestamp is injectable (`created="…"` / `--created`) for byte-reproducible archives:
+it is stamped both into the RDF and onto every zip entry, so two builds from the same
+inputs and the same `created` are byte-identical however far apart they run. It applies
+with `provenance=False` too, where the entry headers are the only place it lands.
+Leave it out and the entries carry the build's wall clock instead, which is a fine
+default but *not* reproducible.
 
 If you omit the `.bngl` (or it carries no `simulate` action), BNGsim still bundles
 a **runnable default** protocol (a `t=0..100` uniform time course) — but it emits a

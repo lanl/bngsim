@@ -885,9 +885,14 @@ def net_to_omex(
         dropped/lossy notes, source→target, counts). Makes the *verified-faithful*
         claim auditable by anyone who opens the archive.
     created : str | None
-        Timestamp (ISO-8601 / W3CDTF) stamped into the provenance. ``None`` (default)
-        uses the current UTC time; pass a fixed string for reproducible (byte-stable)
-        archives.
+        Timestamp (ISO-8601 / W3CDTF) stamped into the provenance **and onto every
+        zip entry**, which is what makes the archive byte-reproducible: two builds
+        from identical inputs and the same ``created`` are byte-identical, however
+        far apart they run. ``None`` (default) uses the current time for both, so
+        the archive is *not* reproducible — the entry headers carry the wall clock
+        to the second. Applies even with ``provenance=False``, where it reaches
+        only the entry headers. Any UTC offset is dropped from the entry stamp (a
+        zip header has no timezone field); ``metadata.rdf`` keeps it in full.
     t_span, n_points : tuple[float, float], int
         Time grid for the default protocol / the gate's L3 fallback when no
         ``bngl`` horizon is available.
@@ -901,12 +906,15 @@ def net_to_omex(
         The underlying ``.net``→SBML report (with the L0–L4 ``validation`` and the
         parsed ``protocol``), ``out_path`` pointing at the ``.omex`` archive.
     """
-    from bngsim.convert._omex import write_omex
+    from bngsim.convert._omex import _zip_date_time, write_omex
     from bngsim.convert._sedml import default_protocol as _default_protocol
     from bngsim.convert._sedml import write_sedml, write_sedml_protocol
 
     if gate not in _GATE_TO_VALIDATE:
         raise ValueError(f"unknown gate={gate!r}; expected one of {sorted(_GATE_TO_VALIDATE)}")
+    # Parsed here only to reject a malformed `created` now rather than after the
+    # whole conversion and gate have run; write_omex parses it again for real.
+    _zip_date_time(created)
 
     net_path = Path(net_path)
     out_path = Path(out_path)
@@ -1055,6 +1063,7 @@ def net_to_omex(
         net_location=net_location,
         extra=extra or None,
         master="sbml",
+        created=created,
     )
 
     return ConversionReport(
