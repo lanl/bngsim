@@ -24,9 +24,11 @@ stdlib XML tools; there is no ``python-libcombine`` runtime dependency.
 from __future__ import annotations
 
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -470,6 +472,54 @@ def _build_manifest(contents: list[_Content]) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + body + "\n"
 
 
+# ─── Deterministic entry stamps ─────────────────────────────────────────────
+# `ZipFile.writestr` given a *str* name synthesizes a ZipInfo stamped with
+# `time.localtime()`, so two archives built from identical inputs are
+# byte-identical only when both builds land in the same second (GH #224).
+# Handing it an explicit ZipInfo puts the stamp under the caller's control — but
+# a bare ZipInfo also drops the two defaults writestr would have filled in, so
+# both are restored below; without them every entry silently becomes ZIP_STORED
+# with null permission bits.
+_ZIP_ENTRY_ATTR = 0o600 << 16  # ?rw------- , what writestr's own ZipInfo uses
+_ZIP_EPOCH_YEAR = 1980  # the DOS epoch; a zip header cannot encode earlier
+
+
+def _zip_date_time(created: str | None) -> tuple[int, int, int, int, int, int]:
+    """The ``(Y, M, D, h, m, s)`` stamp to put on every entry of the archive.
+
+    ``None`` keeps the wall clock — what ``writestr`` would have used on its own.
+    Otherwise the calendar fields of ``created`` are used *verbatim*: a zip entry
+    header has no timezone field, so a UTC offset is dropped rather than shifted,
+    and ``metadata.rdf`` remains the carrier of the authoritative instant.
+    """
+    if created is None:
+        return time.localtime(time.time())[:6]
+    text = created.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"  # fromisoformat only accepts Z from 3.11
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        raise ConversionError(
+            f"created={created!r} is not an ISO-8601 timestamp; expected something "
+            "like '2026-06-28T00:00:00+00:00' or '2026-06-28'"
+        ) from None
+    if stamp.year < _ZIP_EPOCH_YEAR:
+        raise ConversionError(
+            f"created={created!r} predates {_ZIP_EPOCH_YEAR}, which a zip entry header "
+            f"cannot encode; pass a timestamp from {_ZIP_EPOCH_YEAR} onward"
+        )
+    return stamp.timetuple()[:6]
+
+
+def _zip_entry(name: str, date_time: tuple[int, int, int, int, int, int]) -> zipfile.ZipInfo:
+    """A ZipInfo carrying an explicit stamp and ``writestr``'s own defaults."""
+    info = zipfile.ZipInfo(filename=name, date_time=date_time)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = _ZIP_ENTRY_ATTR
+    return info
+
+
 def write_omex(
     out_path: str | Path,
     *,
@@ -483,6 +533,7 @@ def write_omex(
     sedml_location: str = "./simulation.sedml",
     metadata_location: str = "./metadata.rdf",
     master: str = "auto",
+    created: str | None = None,
 ) -> Path:
     """Bundle model + protocol (+ optional metadata) into a ``.omex`` archive.
 
@@ -505,6 +556,13 @@ def write_omex(
     master : {"auto", "sbml", "net", "sedml", "none"}
         Which entry to mark ``master`` in the manifest. ``"auto"`` marks the
         model (SBML preferred over ``.net``).
+    created : str | None
+        ISO-8601 / W3CDTF timestamp to stamp on every zip entry. ``None``
+        (default) uses the build's wall clock, which makes the archive **not**
+        byte-reproducible: the entry headers then differ between two builds from
+        identical inputs that land in different seconds. Pass a fixed timestamp
+        for a byte-stable archive. Any UTC offset is dropped, not applied — a zip
+        entry header has no timezone field.
 
     Returns
     -------
@@ -518,6 +576,7 @@ def write_omex(
         )
 
     master_kind = _resolve_master(master, has_sbml=sbml is not None, has_net=net is not None)
+    stamp = _zip_date_time(created)  # up front: a bad `created` must not write a file
 
     contents: list[_Content] = []
     if sbml is not None:
@@ -537,9 +596,9 @@ def write_omex(
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("manifest.xml", manifest_text)
+        zf.writestr(_zip_entry("manifest.xml", stamp), manifest_text)
         for c in contents:
-            zf.writestr(c.location.lstrip("./"), c.data)
+            zf.writestr(_zip_entry(c.location.lstrip("./"), stamp), c.data)
     return out
 
 

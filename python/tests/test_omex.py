@@ -12,9 +12,12 @@ zip-slip guards, and the `bngsim-omex` pack/unpack CLI.
 
 from __future__ import annotations
 
+import itertools
+import time
 import warnings
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import bngsim
 import pytest
@@ -96,6 +99,87 @@ def test_write_omex_rejects_duplicate_locations(tmp_path: Path) -> None:
             sbml_location="./shared.xml",
             net_location="./shared.xml",
         )
+
+
+# ─── write_omex: byte-reproducible entry stamps (GH #224) ───────────────────
+
+
+@pytest.mark.parametrize(
+    "created, expected",
+    [
+        ("2026-06-28T04:05:06+00:00", (2026, 6, 28, 4, 5, 6)),
+        ("2026-06-28T04:05:06Z", (2026, 6, 28, 4, 5, 6)),  # Z: no fromisoformat before 3.11
+        ("2026-06-28T04:05:06-06:00", (2026, 6, 28, 4, 5, 6)),  # offset dropped, not applied
+        ("2026-06-28", (2026, 6, 28, 0, 0, 0)),
+    ],
+)
+def test_write_omex_created_stamps_every_entry(
+    tmp_path: Path, created: str, expected: tuple[int, ...]
+) -> None:
+    """`created` reaches the zip entry headers, not only the RDF: without it every
+    entry carries `time.localtime()` and the archive cannot be reproduced."""
+    out = tmp_path / "a.omex"
+    write_omex(out, sbml="<sbml/>", sedml="<sedML/>", metadata="<rdf/>", created=created)
+    with zipfile.ZipFile(out) as zf:
+        infos = zf.infolist()
+    assert len(infos) == 4  # manifest + the three contents
+    assert {i.date_time for i in infos} == {expected}
+
+
+def test_write_omex_explicit_stamp_keeps_writestr_defaults(tmp_path: Path) -> None:
+    """Handing writestr a ZipInfo drops the two defaults it would have synthesized:
+    a bare ZipInfo is ZIP_STORED with null permission bits. Both are restored, so
+    stamping costs nothing but the timestamp."""
+    stamped = tmp_path / "s.omex"
+    unstamped = tmp_path / "u.omex"
+    write_omex(stamped, sbml="<sbml/>" * 200, created="2026-06-28T04:05:06+00:00")
+    write_omex(unstamped, sbml="<sbml/>" * 200)
+    with zipfile.ZipFile(stamped) as a, zipfile.ZipFile(unstamped) as b:
+        for got, want in zip(a.infolist(), b.infolist(), strict=True):
+            assert got.filename == want.filename
+            assert got.compress_type == want.compress_type == zipfile.ZIP_DEFLATED
+            assert got.external_attr == want.external_attr
+            assert got.compress_size == want.compress_size  # still actually deflated
+    # ...and the result is still a readable archive.
+    assert read_omex(stamped, extract_dir=tmp_path / "ex").master_model_entry() is not None
+
+
+def test_write_omex_created_is_byte_reproducible(tmp_path: Path, monkeypatch) -> None:
+    """Two builds from identical inputs and the same `created` are byte-identical
+    however far the clock moves between them; the unpinned default still tracks it."""
+    from bngsim.convert import _omex
+
+    # A clock that jumps a day per reading, so the pre-fix behaviour fails every
+    # run rather than only when two builds straddle a second boundary.
+    ticks = itertools.count(1.0e9, 86_400.0)
+    monkeypatch.setattr(
+        _omex, "time", SimpleNamespace(time=lambda: next(ticks), localtime=time.localtime)
+    )
+
+    def build(name: str, **kw) -> bytes:
+        p = tmp_path / name
+        write_omex(p, sbml="<sbml/>", sedml="<sedML/>", **kw)
+        return p.read_bytes()
+
+    assert build("a.omex", created="2026-06-28T00:00:00+00:00") == build(
+        "b.omex", created="2026-06-28T00:00:00+00:00"
+    )
+    assert build("c.omex") != build("d.omex")
+
+
+@pytest.mark.parametrize(
+    "created, match",
+    [
+        ("not-a-date", "not an ISO-8601 timestamp"),
+        ("", "not an ISO-8601 timestamp"),
+        ("1970-01-01T00:00:00+00:00", "predates 1980"),  # before the DOS epoch
+    ],
+)
+def test_write_omex_rejects_unusable_created(tmp_path: Path, created: str, match: str) -> None:
+    out = tmp_path / "bad.omex"
+    with pytest.raises(bngsim.ConversionError, match=match):
+        write_omex(out, sbml="<sbml/>", created=created)
+    assert not out.exists()  # rejected before anything was written
 
 
 # ─── read_omex: hand-authored BioModels-style archive → network + protocol ──
@@ -300,7 +384,9 @@ def test_net_to_omex_provenance(data_dir: Path, tmp_path: Path) -> None:
     assert rec["conversion"]["ok"] is True
     assert {lv["level"] for lv in rec["conversion"]["validation"]} >= {"L0", "L3"}
 
-    # Reproducible: same inputs + same created → byte-identical archive.
+    # Reproducible: same inputs + same created → byte-identical archive. See
+    # test_net_to_omex_created_reaches_the_entry_headers for the clock-independent
+    # form of this assertion; here it is only as strong as the two builds' timing.
     out2 = tmp_path / "m2.omex"
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", bngsim.ConversionWarning)
@@ -321,6 +407,47 @@ def test_net_to_omex_provenance(data_dir: Path, tmp_path: Path) -> None:
         net_to_omex(src, bare, gate="none", include_source=False, provenance=False)
     with zipfile.ZipFile(bare) as zf:
         assert not ({"metadata.rdf", "bngsim-conversion.json"} & set(zf.namelist()))
+
+
+def test_net_to_omex_created_reaches_the_entry_headers(
+    data_dir: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """net_to_omex passes `created` through to the archive, not only to the RDF, so
+    two builds a day apart on the clock are byte-identical — and it does so with
+    provenance off, where the entry headers are the only place it lands."""
+    pytest.importorskip("libsbml")
+    from bngsim.convert import _omex
+
+    ticks = itertools.count(1.0e9, 86_400.0)
+    monkeypatch.setattr(
+        _omex, "time", SimpleNamespace(time=lambda: next(ticks), localtime=time.localtime)
+    )
+
+    src = _require("two_species_reversible.net", data_dir)
+
+    def build(name: str, **kw) -> Path:
+        p = tmp_path / name
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", bngsim.ConversionWarning)
+            net_to_omex(src, p, gate="none", t_span=(0, 30), n_points=16, **kw)
+        return p
+
+    a = build("a.omex", created="2026-06-28T04:05:06+00:00")
+    b = build("b.omex", created="2026-06-28T04:05:06+00:00")
+    assert a.read_bytes() == b.read_bytes()
+    with zipfile.ZipFile(a) as zf:
+        assert {i.date_time for i in zf.infolist()} == {(2026, 6, 28, 4, 5, 6)}
+
+    c = build("c.omex", created="2026-06-28T04:05:06+00:00", provenance=False)
+    d = build("d.omex", created="2026-06-28T04:05:06+00:00", provenance=False)
+    assert c.read_bytes() == d.read_bytes()
+
+
+def test_net_to_omex_rejects_unusable_created_before_converting(tmp_path: Path) -> None:
+    """A malformed `created` is refused up front, not after the conversion and gate
+    have run: the missing .net here is never reached."""
+    with pytest.raises(bngsim.ConversionError, match="not an ISO-8601 timestamp"):
+        net_to_omex(tmp_path / "absent.net", tmp_path / "x.omex", created="whenever")
 
 
 def test_extract_dir_persists(data_dir: Path, tmp_path: Path) -> None:
@@ -496,6 +623,45 @@ def test_cli_omex_pack_bngl_sibling_and_gate(data_dir: Path, tmp_path: Path) -> 
     # The sibling .bngl was picked up → multi-experiment protocol in the archive.
     sedml = zipfile.ZipFile(out).read("simulation.sedml").decode()
     assert sedml.count("<uniformTimeCourse") == 2
+
+
+def test_cli_omex_pack_created_is_byte_reproducible(
+    data_dir: Path, tmp_path: Path, monkeypatch
+) -> None:
+    """`--created` is the CLI's reach into the reproducibility knob: a build script
+    packs the same inputs twice and gets the same bytes."""
+    from bngsim.convert import _omex
+    from bngsim.convert._cli import omex_main
+
+    ticks = itertools.count(1.0e9, 86_400.0)
+    monkeypatch.setattr(
+        _omex, "time", SimpleNamespace(time=lambda: next(ticks), localtime=time.localtime)
+    )
+
+    src = _require("simple_decay.net", data_dir)
+
+    def pack(name: str, *extra: str) -> Path:
+        p = tmp_path / name
+        rc = omex_main(
+            ["pack", str(src), "-o", str(p), "--gate", "none", "--quiet", *extra],
+        )
+        assert rc == 0
+        return p
+
+    stamp = ("--created", "2026-06-28T04:05:06+00:00")
+    assert pack("a.omex", *stamp).read_bytes() == pack("b.omex", *stamp).read_bytes()
+    assert pack("c.omex").read_bytes() != pack("d.omex").read_bytes()
+
+
+def test_cli_omex_pack_rejects_unusable_created(data_dir: Path, tmp_path: Path, capsys) -> None:
+    from bngsim.convert._cli import omex_main
+
+    src = _require("simple_decay.net", data_dir)
+    out = tmp_path / "x.omex"
+    rc = omex_main(["pack", str(src), "-o", str(out), "--created", "whenever", "--quiet"])
+    assert rc == 1
+    assert "not an ISO-8601 timestamp" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_cli_omex_pack_missing_bngl_exits_two(data_dir: Path, tmp_path: Path) -> None:

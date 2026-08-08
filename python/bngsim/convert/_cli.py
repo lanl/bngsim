@@ -561,6 +561,16 @@ def _build_omex_parser() -> argparse.ArgumentParser:
         ),
     )
     pack.add_argument(
+        "--created",
+        metavar="TIMESTAMP",
+        help=(
+            "ISO-8601 creation timestamp, stamped into the provenance and onto every "
+            "zip entry. Fixing it is what makes the archive byte-reproducible: two "
+            "packs of the same inputs are then byte-identical however far apart they "
+            "run. Default: the build's wall clock, which is not reproducible"
+        ),
+    )
+    pack.add_argument(
         "-q", "--quiet", action="store_true", help="suppress the summary (still prints errors)"
     )
 
@@ -677,6 +687,7 @@ def omex_main(argv: list[str] | None = None) -> int:
                     gate=args.gate,
                     include_source=not args.no_source,
                     provenance=not args.no_provenance,
+                    created=args.created,
                     t_span=(0.0, args.t_end),
                     n_points=args.n_points,
                     strict=not args.allow_lossy,
