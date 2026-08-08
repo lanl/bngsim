@@ -233,6 +233,47 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **The steady-state conditioning-warning test asserted a pivot of 1.26e-17 —
+  below machine epsilon — so which branch it exercised was decided by the LU
+  implementation (issue #176, item 2).**
+  `test_degenerate_steady_state_is_flagged` used
+  `nested_derived_rate_const.net` to cover the "ill-conditioned, so warn" branch,
+  with its sibling covering "exactly singular, so refuse". But that model's
+  equilibrium set really is a line: `A→B→D` and `A→C` with no reverse steps
+  leaves J rank 2 of 4 with one conservation law, so the reduced 3x3 is **exactly
+  singular in exact arithmetic**. There is no conditioning to measure — only
+  which way the last pivot rounds — and the two roundings fall on opposite sides
+  of the branch, a clean `0.0` taking the non-finite refusal and a denormal-ish
+  `1.26e-17` passing for a merely ill-conditioned answer.
+
+  #176 recorded this as Linux-vs-macOS and suspected reference LAPACK vs
+  Accelerate, noting the discriminating experiment had not been run: "a macOS
+  build forced onto reference LAPACK would be the cheap way to confirm it." The
+  measurement says the axis is neither. On one macOS/Accelerate x86_64 build the
+  *same binary* reports `rcond = 0.00e+00` and refuses under SUNDIALS' built-in
+  GETRF, and `rcond = 1.26e-17` and warns under LAPACK `dgetrf`
+  (`BNGSIM_LAPACK_DENSE=1`) — same machine, same arithmetic width, opposite
+  branches. It is not the platform and not the BLAS; below eps there is nothing
+  to be right about.
+
+  The warning branch now has a fixture that is honestly ill-conditioned and full
+  rank: two decoupled reversible pairs ten orders apart in rate (`A ⇌ B` at 1,
+  `C ⇌ D` at 1e10), each conserving its own total, so the reduced 2x2 has pivots
+  `-(kf+kr)` and `-(kff+kfr)` and `rcond` is their ratio, `1e-10`, analytically
+  and to the last digit — two orders below `_SS_SENS_RCOND_FLOOR` so the warning
+  fires, six orders *above* eps so no rounding can tip it into the refusal
+  branch. It is identical under both LU backends.
+
+  The test is also strictly stronger than the one it replaces. The root is
+  isolated and reached exactly (all four species at 0.5), and the flagged
+  gradient is checked against the closed form `dA/dkf = -kr/(kf+kr)²`, which it
+  matches to 1.3e-15 relative. So it now pins what the warning actually claims of
+  itself — that the ratio "is wrong in both directions" and the caller may
+  overrule it — rather than only that the warning fires. The
+  `xfail(sys.platform.startswith("linux"), strict=True)` quarantine is removed;
+  the refusal branch keeps its own structural fixture. Items 1 and 3–4 of #176
+  (the three `test_jacobian_discontinuous_fallback.py` failures) are untouched
+  and that issue stays open.
 - **`write_omex` stamped every zip entry with the wall clock, so the archive
   `net_to_omex(created=...)` documents as byte-reproducible was reproducible only
   when two builds landed in the same second (issue #224).** The stated purpose of

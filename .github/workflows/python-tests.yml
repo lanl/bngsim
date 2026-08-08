@@ -178,7 +178,8 @@ jobs:
           #      between the columns without changing the total. A drop here means
           #      tests stopped being collected. Floor sits ~10 below.
           #   2. PASSED. This one IS environment-sensitive (3415 on macOS, 3411 on
-          #      Linux — the difference is lanl/bngsim#176's four xfails), so its
+          #      Linux — the difference is lanl/bngsim#176's xfails, four when this
+          #      was written and three since the steady-state one was fixed), so its
           #      floor is looser. It exists to catch the case COLLECTED cannot: a
           #      whole group converting to skips for a *declared* reason, e.g. an
           #      extra silently failing to install and taking the 13 roadrunner
