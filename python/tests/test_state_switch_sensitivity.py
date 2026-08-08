@@ -993,3 +993,150 @@ class TestAResidualThatIsIdenticallyZeroIsNotACrossing:
         scale = float(np.max(np.abs(s[:, 1, :])))
         assert scale > 0.0
         np.testing.assert_allclose(s[:, 2, :], 2.0 * s[:, 1, :], rtol=1e-9, atol=1e-12 * scale)
+
+
+# ─── issue #187: a crossing with no jump still has to be crossed ────────────
+#
+# The saltation jump is not the only thing that happens at a located crossing.
+# The integration also has to RESUME somewhere, and issue #82 established (from
+# the switch-time side) and issue #150 repeated (from the rate-law side) that
+# resuming on the surface is what puts the discontinuity inside the first step
+# after the restart: CVODES sizes h from one branch while every corrector answers
+# with the other, and the root fires again.
+#
+# Issue #150 wrote that restart under the jump, so a switch measured CONTINUOUS
+# at its own threshold — the clamp idiom above, the most common `piecewise` in
+# the corpus — returned before reaching it and left the state exactly where the
+# root finder put it. cvRootfind short-circuits on an exact zero (`ghi == 0`), so
+# "exactly where it put it" is routinely `g(x) == 0.0` bit-for-bit.
+#
+# On Smith_BMCSystBiol2013 (`PI345P3 > pip3_basal`, a two-line clamp) that never
+# returned. Standing on the surface, CVODES restarted at h ≈ ε·|t_end| ≈ 3e-15,
+# took a step far too short to move a 1.2e13-scale species by even one ulp,
+# rooted on the same crossing, and was re-initialized back to the same h — 19,297
+# times in 10 s, advancing simulated time by ~3.5e-15 an iteration. The scalar
+# run of that model is 0.02 s. Whether a run reached that state at all depended
+# on where the output grid landed, which is why it read as an `n_points`
+# dependence (2, 3, 4 and 8 hung; 5, 16 and 50 did not).
+#
+# The ramp below makes the state at the crossing exactly checkable: C is a
+# zeroth-order species, so C(t) = rate·t is integrated exactly and the crossing
+# at C = thr is located to the surface itself rather than to a solver tolerance.
+RAMP = """\
+begin parameters
+    1 rate   2.0  # Constant
+    2 thr    4.0  # Constant
+    3 rho    0.5  # Constant
+end parameters
+begin functions
+    1 ramp() rate
+    2 growth() if(C<thr,{live},0)
+end functions
+begin species
+    1 A() 0
+    2 B() 0
+end species
+begin reactions
+    1 0 1 ramp #_R1
+    2 0 2 growth #_R2
+end reactions
+begin groups
+    1 C 1
+    2 Bg 2
+end groups
+"""
+# `rho*(thr-C)` is 0 where C = thr, so the two branches meet and there is no jump
+# — the case issue #187 is about. `rho` alone does not, so the same crossing on
+# the same trajectory takes the jump path instead. C's own rate law is `ramp` in
+# both, so t*, f(t*) and the nudge the restart takes are identical: the two
+# fixtures differ ONLY in whether a saltation term is applied.
+RAMP_CONTINUOUS = RAMP.format(live="rho*(thr-C)")
+RAMP_JUMPING = RAMP.format(live="rho")
+
+
+RAMP_T_END = 6.0
+RAMP_AFTER = (3.0, 4.0, 5.0, RAMP_T_END)
+
+
+def _ramp_offset_after_crossing(tmp_path, text, name):
+    """How far C ends up ahead of its own exact ramp, well past the crossing.
+
+    C is zeroth-order, so ``C(t) = rate·t`` exactly and the only thing that can
+    displace it is the restart: resuming at ``x(t*) + δt·f`` shifts the whole ramp
+    by ``δt·rate`` for the rest of the run. Read after the crossing rather than at
+    it — whether the sample AT ``t*`` lands before or after the root is decided by
+    the last ulp of where the root finder stopped, and moves with the output grid
+    and with the platform.
+    """
+    model = _model(tmp_path, text, name)
+    thr, rate = model.get_param("thr"), model.get_param("rate")
+    times = sorted({0.0, thr / rate, *RAMP_AFTER})
+    run = bngsim.Simulator(model, method="ode", sensitivity_params=["rho", "rate"]).run(
+        sample_times=times, rtol=RTOL, atol=ATOL
+    )
+    c = np.asarray(run.species)[:, 0]
+    offsets = [float(c[times.index(t)] - rate * t) for t in RAMP_AFTER]
+    assert max(offsets) - min(offsets) <= 8.0 * np.spacing(rate * RAMP_T_END), (
+        f"the displacement is supposed to be a constant shift of the ramp: {offsets}"
+    )
+    return offsets[-1], float(thr), float(rate)
+
+
+@requires_cc
+class TestACrossingWithNoJumpStillResumesPastTheSurface:
+    def test_it_resumes_where_a_jumping_crossing_resumes(self, tmp_path):
+        """The invariant, stated without a magic number.
+
+        Two fixtures whose switching species has the same rate law and the same
+        threshold, differing only in whether the branches meet. The restart is a
+        property of having STOPPED at a crossing, not of having jumped there, so
+        both must resume from the same place — one explicit Euler step of the
+        ladder's verified δt along the flow, past the surface — and C carries that
+        shift for the rest of the run either way.
+
+        Pre-#187 the continuous one carried no shift at all and the jumping one
+        carried 2.28e-13, and that difference is the whole bug.
+        """
+        cont, thr, rate = _ramp_offset_after_crossing(tmp_path, RAMP_CONTINUOUS, "cont_ramp.net")
+        jump, _, _ = _ramp_offset_after_crossing(tmp_path, RAMP_JUMPING, "jump_ramp.net")
+        # Both restarts are `x(t*) + δt·f` off the same δt and the same f, so all
+        # that is left between them is where each run's own root finder landed —
+        # a few ulps of the sampled value.
+        assert abs(cont - jump) <= 8.0 * np.spacing(rate * RAMP_T_END), (
+            f"a continuous crossing shifts the ramp by {cont!r} where a jumping one shifts it "
+            f"by {jump!r}"
+        )
+
+    def test_it_resumes_past_the_surface_by_more_than_a_rounding_step(self, tmp_path):
+        """…and the shared place is the after side, by the verified nudge.
+
+        ``δt`` starts at ``256·ε·max(|t*|, 1)`` and only grows, so the shift is at
+        least that times ``f``. Bounding it from above too is what says this is
+        still a nudge and not a step: the state's own tolerance never sees it.
+        """
+        cont, thr, rate = _ramp_offset_after_crossing(tmp_path, RAMP_CONTINUOUS, "past_ramp.net")
+        floor = 64.0 * rate * np.spacing(max(thr / rate, 1.0))
+        assert cont >= floor, (
+            f"the ramp is shifted by {cont!r}, which is the root finder's own rounding rather "
+            "than a verified step off the surface"
+        )
+        assert cont <= 1e-9 * thr, "the nudge must stay far below the state's own tolerance"
+
+    def test_the_answer_does_not_depend_on_where_the_output_grid_lands(self, tmp_path):
+        """The issue's headline, on a model that crosses a continuous switch.
+
+        ``n_points`` chooses output times; it is not allowed to choose whether —
+        or how well — the problem is solved. On Smith it decided whether the run
+        returned at all.
+        """
+        ref = None
+        for n in (2, 3, 4, 5, 8, 16, 50):
+            model = _model(tmp_path, RAMP_CONTINUOUS, f"grid_ramp{n}.net")
+            sim = bngsim.Simulator(model, method="ode", sensitivity_params=["rho", "rate"])
+            run = sim.run(t_span=(0.0, 6.0), n_points=n, rtol=RTOL, atol=ATOL)
+            got = np.asarray(run.sensitivities)[-1]
+            if ref is None:
+                ref = got
+                assert np.abs(ref).max() > 0.0, "the fixture is not testing a live column"
+                continue
+            np.testing.assert_allclose(got, ref, rtol=1e-6, atol=1e-9 * np.abs(ref).max())
