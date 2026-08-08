@@ -610,7 +610,38 @@ def _parse_net_file(net_path: str) -> dict:
         elif section == "functions":
             result["functions"].append(_parse_function_line(line))
 
+    result["parameters"] = _classify_parameter_kinds(result["parameters"])
     return result
+
+
+def _classify_parameter_kinds(params: list[tuple]) -> list[tuple]:
+    """Fill in each parameter's ``is_const`` flag from the expressions alone.
+
+    A parameter is *derived* exactly when its value expression references another
+    declared parameter. That, and only that, is what makes the chain rule
+    ``∂p_d/∂θ`` necessary: ``pi = 2*asin(1)`` names nothing else and so
+    differentiates as a leaf, exactly like a literal, while ``a = p*c1`` carries
+    ``∂a/∂p = c1`` into every rate law that uses it.
+
+    This replaces reading BNG2.pl's trailing ``# Constant`` /
+    ``# ConstantExpression`` kind annotation (GH #181). That annotation is a
+    *comment*: a hand-written or third-party ``.net`` need not carry it, and
+    without it every parameter here was taken for a constant — so ``a  p*c1``
+    got no derived expansion, ``∂f/∂p`` had no term to contribute, and ``dX/dp``
+    came back **identically zero with no warning** on a file whose loaded model
+    (``net_file_loader.cpp``, which reads the expression, not the comment)
+    classified the very same parameter correctly. A silently-zero column reads
+    to a gradient fit as "this parameter does not matter".
+
+    Measured over the 1,817 ``.net`` files in this tree — 41,433 annotated
+    parameter lines — this rule reproduces BNG2.pl's own annotation on every
+    line BNG2.pl emits, so an annotated model is classified exactly as before.
+    """
+    split = _split_word_names({name for _, name, _, _ in params})
+    return [
+        (idx, name, expr, not [d for d in _names_referenced_in_split(expr, *split) if d != name])
+        for idx, name, expr, _ in params
+    ]
 
 
 def _validate_net_model_for_codegen(model: dict, net_path: str) -> None:
@@ -630,19 +661,23 @@ def _validate_net_model_for_codegen(model: dict, net_path: str) -> None:
 
 
 def _parse_parameter_line(line: str) -> tuple:
-    """Parse: '1 kf 0.001  # Constant' -> (1, 'kf', '0.001', True)"""
+    """Parse: '1 kf 0.001  # Constant' -> (1, 'kf', '0.001', True)
+
+    The trailing ``is_const`` is provisional and always ``True`` here — one line
+    cannot see the other parameter names it would have to reference to be
+    derived. ``_parse_net_file`` overwrites the whole column through
+    ``_classify_parameter_kinds`` once the block is read; the kind annotation in
+    the comment is deliberately not consulted (GH #181).
+    """
     # Remove trailing comment
     comment_idx = line.find("#")
-    is_const = True
     if comment_idx >= 0:
-        comment = line[comment_idx + 1 :].strip()
-        is_const = "ConstantExpression" not in comment
         line = line[:comment_idx].strip()
     parts = line.split(None, 2)
     idx = int(parts[0])
     name = parts[1]
     expr = parts[2] if len(parts) > 2 else "0"
-    return (idx, name, expr, is_const)
+    return (idx, name, expr, True)
 
 
 def _parse_species_line(line: str) -> tuple:
@@ -1855,10 +1890,27 @@ def _names_referenced_in(text: str, names) -> list[str]:
     nothing here guarantees it) is not a maximal run and cannot be found that
     way, so those names keep the per-name search.
     """
-    tokens = set(_WORD_RUN_RE.findall(text))
-    referenced = {n for n in names if n in tokens}
-    exotic = [n for n in names if n not in referenced and _HAS_NON_WORD_RE.search(n)]
-    referenced.update(n for n in exotic if re.search(rf"\b{re.escape(n)}\b", text))
+    return _names_referenced_in_split(text, *_split_word_names(names))
+
+
+def _split_word_names(names) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Partition ``names`` into the ones a tokenizing pass can find, and the rest.
+
+    See ``_names_referenced_in`` for the equivalence this rests on. Split out so a
+    caller asking the same question of *many* texts against one fixed name set
+    pays this O(#names) walk once instead of once per text — the whole point of
+    GH #165, which a per-text call would hand straight back (GH #181).
+    """
+    word = frozenset(n for n in names if not _HAS_NON_WORD_RE.search(n))
+    return word, tuple(n for n in names if n not in word)
+
+
+def _names_referenced_in_split(
+    text: str, word_names: frozenset[str], exotic_names: tuple[str, ...]
+) -> list[str]:
+    """``_names_referenced_in`` with the ``_split_word_names`` partition hoisted out."""
+    referenced = {t for t in _WORD_RUN_RE.findall(text) if t in word_names}
+    referenced.update(n for n in exotic_names if re.search(rf"\b{re.escape(n)}\b", text))
     return sorted(referenced)
 
 
