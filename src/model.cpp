@@ -912,6 +912,14 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
     return cache[event_idx0];
 }
 
+// THREAD SAFETY (issue #201). This and event_trigger_residual_expr above are lazy
+// memos: `const` methods that compile into `impl_->evaluator` on first use. That is
+// safe only because no fan-out in this library shares one NetworkModel across
+// threads — every one of them (compute_all_sensitivities' chunks, run_batch, the SSA
+// replicate worker, steady_state_batch) hands each worker its own clone(), so these
+// caches are per-clone. The mutex added in #201 serializes the *parser* the clones
+// share; it does NOT make one NetworkModel thread-safe. A future worker that skips
+// the per-worker clone() reintroduces a race this lock cannot see.
 const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &condition_src,
                                                             std::string *why) const {
     auto it = impl_->state_switch_cache.find(condition_src);
