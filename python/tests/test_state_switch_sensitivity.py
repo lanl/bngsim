@@ -1054,21 +1054,32 @@ RAMP_CONTINUOUS = RAMP.format(live="rho*(thr-C)")
 RAMP_JUMPING = RAMP.format(live="rho")
 
 
-def _ramp_state_at_crossing(tmp_path, text, name):
-    """C as the integration RESUMES from it at the crossing.
+RAMP_T_END = 6.0
+RAMP_AFTER = (3.0, 4.0, 5.0, RAMP_T_END)
 
-    Sampling lands on t* itself, so the recorded value is the state CVODES was
-    re-initialized with — the same trick issue #82's
-    ``test_counter_reaches_the_threshold_at_the_crossing`` uses.
+
+def _ramp_offset_after_crossing(tmp_path, text, name):
+    """How far C ends up ahead of its own exact ramp, well past the crossing.
+
+    C is zeroth-order, so ``C(t) = rate·t`` exactly and the only thing that can
+    displace it is the restart: resuming at ``x(t*) + δt·f`` shifts the whole ramp
+    by ``δt·rate`` for the rest of the run. Read after the crossing rather than at
+    it — whether the sample AT ``t*`` lands before or after the root is decided by
+    the last ulp of where the root finder stopped, and moves with the output grid
+    and with the platform.
     """
     model = _model(tmp_path, text, name)
     thr, rate = model.get_param("thr"), model.get_param("rate")
-    t_star = thr / rate
-    times = sorted({0.0, t_star, *np.linspace(0.0, 6.0, 13)})
+    times = sorted({0.0, thr / rate, *RAMP_AFTER})
     run = bngsim.Simulator(model, method="ode", sensitivity_params=["rho", "rate"]).run(
         sample_times=times, rtol=RTOL, atol=ATOL
     )
-    return float(np.asarray(run.species)[times.index(t_star), 0]), float(thr), float(rate)
+    c = np.asarray(run.species)[:, 0]
+    offsets = [float(c[times.index(t)] - rate * t) for t in RAMP_AFTER]
+    assert max(offsets) - min(offsets) <= 8.0 * np.spacing(rate * RAMP_T_END), (
+        f"the displacement is supposed to be a constant shift of the ramp: {offsets}"
+    )
+    return offsets[-1], float(thr), float(rate)
 
 
 @requires_cc
@@ -1080,38 +1091,36 @@ class TestACrossingWithNoJumpStillResumesPastTheSurface:
         threshold, differing only in whether the branches meet. The restart is a
         property of having STOPPED at a crossing, not of having jumped there, so
         both must resume from the same place — one explicit Euler step of the
-        ladder's verified δt along the flow, past the surface.
+        ladder's verified δt along the flow, past the surface — and C carries that
+        shift for the rest of the run either way.
 
-        Pre-#187 the continuous one resumed 3 ulps past the threshold (i.e. on
-        it, where the root finder left it) and the jumping one 257, and that
-        difference is the whole bug.
+        Pre-#187 the continuous one carried no shift at all and the jumping one
+        carried 2.28e-13, and that difference is the whole bug.
         """
-        cont, thr, _ = _ramp_state_at_crossing(tmp_path, RAMP_CONTINUOUS, "cont_ramp.net")
-        jump, _, _ = _ramp_state_at_crossing(tmp_path, RAMP_JUMPING, "jump_ramp.net")
+        cont, thr, rate = _ramp_offset_after_crossing(tmp_path, RAMP_CONTINUOUS, "cont_ramp.net")
+        jump, _, _ = _ramp_offset_after_crossing(tmp_path, RAMP_JUMPING, "jump_ramp.net")
         # Both restarts are `x(t*) + δt·f` off the same δt and the same f, so all
         # that is left between them is where each run's own root finder landed —
-        # a few ulps of the threshold.
-        assert abs(cont - jump) <= 8.0 * np.spacing(thr), (
-            f"a continuous crossing resumes {abs(cont - jump) / np.spacing(thr):.0f} ulps "
-            f"away from where a jumping one does: {cont!r} vs {jump!r}"
+        # a few ulps of the sampled value.
+        assert abs(cont - jump) <= 8.0 * np.spacing(rate * RAMP_T_END), (
+            f"a continuous crossing shifts the ramp by {cont!r} where a jumping one shifts it "
+            f"by {jump!r}"
         )
 
     def test_it_resumes_past_the_surface_by_more_than_a_rounding_step(self, tmp_path):
         """…and the shared place is the after side, by the verified nudge.
 
-        ``δt`` starts at ``256·ε·max(|t*|, 1)`` and only grows, so the
-        displacement is at least that times ``f``. Bounding it from above too is
-        what says this is still a nudge and not a step: the state's own tolerance
-        never sees it.
+        ``δt`` starts at ``256·ε·max(|t*|, 1)`` and only grows, so the shift is at
+        least that times ``f``. Bounding it from above too is what says this is
+        still a nudge and not a step: the state's own tolerance never sees it.
         """
-        cont, thr, rate = _ramp_state_at_crossing(tmp_path, RAMP_CONTINUOUS, "past_ramp.net")
-        t_star = thr / rate
-        floor = 64.0 * rate * np.spacing(max(t_star, 1.0))
-        assert cont - thr >= floor, (
-            f"resumed {(cont - thr) / np.spacing(thr):.0f} ulps past C = {thr}, which is the "
-            "root finder's own rounding rather than a verified step off the surface"
+        cont, thr, rate = _ramp_offset_after_crossing(tmp_path, RAMP_CONTINUOUS, "past_ramp.net")
+        floor = 64.0 * rate * np.spacing(max(thr / rate, 1.0))
+        assert cont >= floor, (
+            f"the ramp is shifted by {cont!r}, which is the root finder's own rounding rather "
+            "than a verified step off the surface"
         )
-        assert cont - thr <= 1e-9 * thr, "the nudge must stay far below the state's own tolerance"
+        assert cont <= 1e-9 * thr, "the nudge must stay far below the state's own tolerance"
 
     def test_the_answer_does_not_depend_on_where_the_output_grid_lands(self, tmp_path):
         """The issue's headline, on a model that crosses a continuous switch.
