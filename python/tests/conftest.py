@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,6 +110,63 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     ("not available", "optional fixture absent from this checkout"),
 )
 
+# ─── Corpus absence, reported as one number ───────────────────────────────────
+#
+# The three catch-alls above are the honest declaration for "a model file this
+# checkout does not have", and they should stay: those skips ARE legitimate, and
+# making them undeclared would fail BNGSIM_SKIP_AUDIT=strict on every CI leg and
+# in every worktree, which is the cry-wolf failure the note above warns about.
+#
+# But being legitimate is not the same as being legible, and this family is
+# illegible in two compounding ways:
+#
+#   * It FRAGMENTS. Each gate names its own model, so the ~47 skips a
+#     corpus-less checkout produces arrive as some thirty rows reading `1` or
+#     `2`, and the one number a reader actually needs — how much of the suite did
+#     not run — appears nowhere in the table.
+#   * It UNDERSTATES. A test parametrized over the corpus contributes ONE skip
+#     however many models it would have covered:
+#     ``test_codegen_structural_key.py::test_corpus_key_matches_source_under_perturbation``
+#     runs 14 models with the corpus present and 0 without, and reports `1`
+#     either way. So the count is a lower bound on lost coverage, not a measure
+#     of it, and the footer below says so rather than implying otherwise.
+#
+# Why it is worth a line at all: the two places the corpus is always absent are a
+# ``.claude/worktrees/*`` worktree and CI (it is 257 MB and gitignored), and the
+# pre-push hook prints the same `pytest (bngsim)....Passed` from a worktree as
+# from the main checkout — 3705 tests against 3765, no signal. GH #192 shipped a
+# 77-model `.net` regression through exactly this gap. Its *vacuous-pass* half was
+# fixed by gating on a model FILE rather than on the directory (which exists
+# empty, because ``models/.gitignore`` is tracked); this is the other half.
+#
+# The classifier is a RULE, not a list of models: a reason counts as corpus
+# absence when it says something is absent AND names a corpus. Phrasings drift —
+# that is the whole lesson of the audit above — so a new gate that says
+# "rr_parity corpus model FOO not present" is picked up with no edit here.
+_CORPUS_ABSENCE_TOKENS: tuple[str, ...] = ("not present", "not found", "not available")
+_CORPUS_NAME_TOKENS: tuple[str, ...] = ("corpus", "benchmark", "sbml", "rr_parity")
+
+# Where each corpus comes from, for the remediation line. Ordered most-cited
+# first; only the ones a run actually hit are printed.
+_CORPUS_REMEDIES: tuple[tuple[str, str], ...] = (
+    ("rr_parity", "python parity_checks/rr_parity/materialize.py"),
+    ("benchmark", "see benchmarks/suites/*/fetch.py"),
+)
+
+
+def _is_corpus_absence(reason: str) -> bool:
+    """Is this skip "a model corpus is not in this checkout"?
+
+    Deliberately conjunctive. ``not present`` alone also covers a one-off fixture
+    (``egfr_net.net not present``) that has nothing to do with a corpus, and
+    ``sbml`` alone appears in build-variant reasons; requiring both halves keeps
+    the count meaning what the footer claims it means.
+    """
+    low = reason.lower()
+    return any(t in low for t in _CORPUS_ABSENCE_TOKENS) and any(
+        t in low for t in _CORPUS_NAME_TOKENS
+    )
+
 
 def _skip_reason(report: object) -> str:
     """Pull the human reason out of a skip report, minus pytest's prefix."""
@@ -154,9 +212,29 @@ def pytest_terminal_summary(
 
     write = terminalreporter.write_line  # type: ignore[attr-defined]
     terminalreporter.write_sep("─", "skip audit")  # type: ignore[attr-defined]
+    # Corpus absence is collapsed to one row: thirty rows reading `1` are how the
+    # total stayed invisible. The per-test detail is still one `-rs` away.
+    corpus = {r: n for r, n in counts.items() if _is_corpus_absence(r)}
+    n_corpus = sum(corpus.values())
     for reason, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        if reason in corpus:
+            continue
         mark = "??" if reason in undeclared else "  "
         write(f" {mark} {n:>3}  {reason[:96]}")
+    if n_corpus:
+        plural = "reason" if len(corpus) == 1 else "reasons"
+        write(
+            f"    {n_corpus:>3}  model corpus absent from this checkout ({len(corpus)} {plural})"
+        )
+        write("")
+        write(f" {n_corpus} test(s) did not run because a model corpus is not in this checkout.")
+        for token, remedy in _CORPUS_REMEDIES:
+            if any(token in r.lower() for r in corpus):
+                write(f"   {token}:  {remedy}")
+        write(" This is a LOWER BOUND on the coverage that did not execute: a test")
+        write(" parametrized over the corpus contributes one skip however many models it")
+        write(" would have covered. CI never has the corpus and neither does a worktree,")
+        write(" so a green run from either says nothing about these paths (GH #192).")
     if undeclared:
         write("")
         write(f" {len(undeclared)} undeclared skip reason(s), marked ?? above.")
@@ -177,6 +255,21 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # own exit code, which is the more actionable one.
     if undeclared and exitstatus == 0:
         session.exitstatus = 1
+
+
+@pytest.fixture(scope="session")
+def skip_audit() -> SimpleNamespace:
+    """The audit's own internals, for ``test_skip_audit.py`` (GH #222).
+
+    Handed over as a fixture rather than imported: ``addopts`` sets
+    ``--import-mode=importlib``, which does not put this directory on
+    ``sys.path``, so ``import conftest`` from a test module does not resolve.
+    """
+    return SimpleNamespace(
+        is_corpus_absence=_is_corpus_absence,
+        declared_skips=_DECLARED_SKIPS,
+        corpus_remedies=_CORPUS_REMEDIES,
+    )
 
 
 @pytest.fixture
