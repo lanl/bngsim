@@ -552,10 +552,22 @@ static bool ss_states_agree(const std::vector<double> &a, const std::vector<doub
 //     all three are full rank and well conditioned (1.5e-3, 4.7e-3, 1.6e-4), and
 //     their dY_ss/dp now matches a finite difference of the steady state itself.
 //
-// What remains below the floor is a real minority — models like
-// tests/data/nested_derived_rate_const.net, whose equilibrium set is a line — so
-// the warning still earns its place. A refusal would need a rank-revealing
-// factorization or a proper condition estimator (LAPACK dgecon), not this ratio.
+// What remains below the floor is a real minority, so the warning still earns
+// its place. A refusal would need a rank-revealing factorization or a proper
+// condition estimator (LAPACK dgecon), not this ratio.
+//
+// One caution on reading a small value here, learned from lanl/bngsim#176. For a
+// matrix that is EXACTLY singular in exact arithmetic, this ratio does not
+// measure conditioning at all — it measures which way the last pivot happened to
+// round, and the two outcomes are on opposite sides of a branch: a clean 0.0
+// takes the caller to the non-finite refusal, while a denormal-ish 1e-17 looks
+// like a merely ill-conditioned answer. tests/data/nested_derived_rate_const.net
+// is such a model (equilibrium set a line; reduced Jacobian exactly singular),
+// and on one macOS/Accelerate build it reports 0.00e+00 under SUNDIALS' built-in
+// GETRF and 1.26e-17 under LAPACK dgetrf — same machine, same arithmetic width.
+// So a value at or below eps says "singular, and the LU rounded"; only a value
+// comfortably above eps is reporting conditioning. Do not use such a model to
+// exercise the warning path.
 static double lu_diag_rcond(const double *lu, int n) {
     if (n <= 0)
         return 0.0;

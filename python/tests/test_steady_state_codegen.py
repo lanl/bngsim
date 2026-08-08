@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 import bngsim
 import numpy as np
@@ -331,51 +330,87 @@ class TestSensitivityNumerics:
         ss = sim.steady_state(sensitivity_params=["kf", "kr"], tol=1e-12)
         assert ss.sens_jacobian_rcond > 1e-4
 
-    # Quarantined for lanl/bngsim#176. This test and its sibling below split a
-    # continuum into two branches — "ill-conditioned, so warn" and "exactly
-    # singular, so refuse" — and #169's first Linux run showed this fixture does
-    # not sit on one side of that line. Under Accelerate the pivots stay nonzero
-    # and the warning branch fires (what is asserted here); under Linux's
-    # reference LAPACK the reduced LU hits an exact zero pivot, rcond is 0.00e+00,
-    # and the code takes the *sibling's* refusal branch and raises.
-    #
-    # The docstring below already said the finite numbers survive "only because
-    # the pivots stay nonzero" — it just did not know that was platform-decided.
-    # The likely fix is a fixture whose conditioning is not a coin flip, not a new
-    # threshold; see Simulator._SS_SENS_RCOND_FLOOR and the sibling's note that no
-    # corpus cut can place one.
-    #
-    # strict=True so it retires itself once the fixture stops being borderline.
-    @pytest.mark.xfail(
-        sys.platform.startswith("linux"),
-        reason="lanl/bngsim#176: exactly singular under reference LAPACK, so this "
-        "takes the refusal branch instead of the ill-conditioned-warning branch",
-        strict=True,
-        raises=bngsim.SimulationError,
-    )
-    def test_degenerate_steady_state_is_flagged(self, caplog):
-        """``nested_derived_rate_const.net`` runs A→B→D and A→C with no reverse
-        reactions, so equilibrium is A=B=0 with any C+D=1 — a continuum, not a
-        point, and dY_ss/dp does not exist.
+    def test_ill_conditioned_but_nonsingular_sensitivity_warns(self, tmp_path, caplog):
+        """The warning branch: a root that is isolated and full rank, but whose
+        reduced Jacobian is badly conditioned. The gradient is *correct* — the
+        warning is advisory, exactly as its own text says.
 
-        With the old finite-difference Jacobian its ~sqrt(eps) noise perturbed the
-        singular direction into invertibility and the solve returned a modest,
-        meaningless answer. An exact Jacobian does not launder that.
+        Two decoupled reversible pairs, ten orders of magnitude apart in rate:
+        ``A ⇌ B`` at 1 and ``C ⇌ D`` at 1e10. Each pair conserves its own total,
+        so the reduction leaves a 2x2 whose LU pivots are -(kf+kr) and
+        -(kff+kfr): ``rcond`` is their ratio, ``1e-10``, analytically and to the
+        last digit. That is two orders below ``_SS_SENS_RCOND_FLOOR`` (so the
+        warning fires) and six orders *above* machine epsilon (so no rounding can
+        collapse it to a zero pivot and tip the solve into the sibling's refusal
+        branch).
 
-        This is a TRUE degeneracy, unlike the three large models issue #63
-        originally reported: those were an ill-posed conservation-law reduction
-        (see test_conservation_laws.py) and are full rank once it is repaired.
-        Here the equilibrium set really is a line, so the LU returns finite
-        numbers only because the pivots stay nonzero — the conditioning warning is
-        what surfaces it.
+        That last property is the point, and it is why this test does not use
+        ``nested_derived_rate_const.net`` (lanl/bngsim#176). That model's
+        equilibrium set is genuinely a line — J is rank 2 of 4 with one
+        conservation law, so the reduced 3x3 is exactly singular in exact
+        arithmetic — and the "ill-conditioned" pivot ratio this test used to
+        assert was 1.26e-17, *below* eps. It was rounding noise, not conditioning,
+        so which of the two branches fired was decided by the LU implementation:
+        on one machine the same macOS/Accelerate build warns under LAPACK
+        ``dgetrf`` and refuses under SUNDIALS' built-in GETRF. A fixture that
+        cannot be held on one side of the line cannot discriminate the two
+        branches, so the refusal branch keeps its own structural fixture
+        (``test_singular_solve_is_refused_rather_than_returning_nan``) and this
+        one gets a root that is honestly, stably ill-conditioned.
         """
-        model = bngsim.Model.from_net(net("nested_derived_rate_const.net"))
-        sim = bngsim.Simulator(model, method="ode")
+        text = """\
+begin parameters
+    1 kf     1.0     # Constant
+    2 kr     1.0     # Constant
+    3 kff    1e10    # Constant
+    4 kfr    1e10    # Constant
+end parameters
+begin species
+    1 A() 1.0
+    2 B() 0.0
+    3 C() 1.0
+    4 D() 0.0
+end species
+begin reactions
+    1 1 2 kf   #_R_A_to_B
+    2 2 1 kr   #_R_B_to_A
+    3 3 4 kff  #_R_C_to_D
+    4 4 3 kfr  #_R_D_to_C
+end reactions
+begin groups
+    1 Atot 1
+    2 Btot 2
+    3 Ctot 3
+    4 Dtot 4
+end groups
+"""
+        path = tmp_path / "two_timescale_reversible.net"
+        path.write_text(text)
+        sim = bngsim.Simulator(bngsim.Model.from_net(str(path)), method="ode")
         with caplog.at_level(logging.WARNING, logger="bngsim"):
-            ss = sim.steady_state(sensitivity_params=["kcr", "kf"], tol=1e-12)
+            ss = sim.steady_state(sensitivity_params=["kf", "kff"], tol=1e-12)
+
         assert ss.converged
-        assert ss.sens_jacobian_rcond < 1e-8
+        assert ss.sens_jacobian_rcond == pytest.approx(1e-10, rel=1e-9)
         assert any("badly conditioned" in r.message for r in caplog.records)
+
+        # Isolated root, reached exactly: each pair equilibrates at half its total.
+        assert np.asarray(ss.concentrations) == pytest.approx([0.5, 0.5, 0.5, 0.5], abs=1e-9)
+
+        # ...and the flagged gradient is right. y* = (kr/(kf+kr), kf/(kf+kr)) per
+        # pair, so dA/dkf = -kr/(kf+kr)^2 and the pairs do not cross-couple. A
+        # warning the caller can act on has to be one they can also overrule.
+        kf = kr = 1.0
+        kff = kfr = 1e10
+        exact = np.array(
+            [
+                [-kr / (kf + kr) ** 2, 0.0],
+                [kr / (kf + kr) ** 2, 0.0],
+                [0.0, -kfr / (kff + kfr) ** 2],
+                [0.0, kfr / (kff + kfr) ** 2],
+            ]
+        )
+        assert np.asarray(ss.sensitivity) == pytest.approx(exact, rel=1e-12, abs=1e-30)
 
     def test_singular_solve_is_refused_rather_than_returning_nan(self, tmp_path):
         """When the reduced LU hits an exact zero pivot there is no answer at all.
