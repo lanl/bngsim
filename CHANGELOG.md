@@ -233,6 +233,33 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **A `.net` without BNG2.pl's kind-annotation comments returned an identically
+  zero sensitivity column, with no warning (issue #181).** Two `.net` files
+  differing *only* in the trailing `# Constant` / `# ConstantExpression` comments
+  on the parameter lines loaded to models that were identical through every
+  accessor and integrated to the same trajectory, but one reported `dX/dp = 0`
+  everywhere and the other the correct answer. The codegen `.net` parser had been
+  reading those comments as the *definition* of which parameters are derived, so
+  without them `a  p*c1` was taken for a leaf, contributed no `∂a/∂p` to the
+  sensitivity RHS, and left `∂f/∂p` structurally empty. Nothing else was
+  affected — `primary_param_names` classified `a` as derived the whole time, and
+  the `set_param` chain rule, which does not go through that source, moved `a`
+  correctly — which is why the model looked right from Python while the gradient
+  did not. Any hand-written `.net`, or one from a tool other than BNG2.pl, was
+  exposed; a zero column reads to a gradient fit as "this parameter does not
+  matter".
+
+  A parameter is now derived exactly when its value expression **references
+  another declared parameter**, which is the condition that makes the chain rule
+  necessary in the first place. Over the 1,817 `.net` files in this tree (41,433
+  annotated parameter lines) that rule reproduces BNG2.pl's own annotation on
+  every line BNG2.pl emits, and an A/B of the generated C over all 1,817 moves
+  exactly one file: the un-annotated reproduction from the issue. The narrower
+  reading — decide the kind by whether the value text parses as a float — was
+  measured and rejected: it reclassifies the 628 lines of the
+  `pi = 2*asin(1)` / `Temp = 37+273.15` shape that BNG2.pl (correctly) calls
+  `# Constant`, and rewrites the sensitivity RHS of 54 models that were never
+  broken.
 - **A forward-sensitivity run never returned after crossing a rate-law switch
   that turned out to be continuous, and whether it did depended on `n_points`
   (issue #187).** Issue #150 established that the integration must resume just
