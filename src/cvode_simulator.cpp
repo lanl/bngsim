@@ -222,6 +222,14 @@ struct CvodeUserData {
     using CodegenOutputSensFn = bngsim::CodegenOutputSensFn;
     CodegenOutputSensFn codegen_output_sens_fn = nullptr;
 
+    // Tracking absolute tolerance (issue #213). Inactive (an empty ceiling) for
+    // every run that does not ask for it. When active, CVODE calls
+    // cvode_tracking_ewt below at every step and that reads this — so it is
+    // held BY VALUE here rather than pointed at, because the two setup paths
+    // have different lifetimes for their option structs and only the user data
+    // is guaranteed to outlive the integration on both.
+    AtolTracking atol_tracking;
+
     // JAX AD Jacobian callback.
     // Stored here so the CVODE Jacobian callback can access it.
     std::function<void(double, const double *, double *, int)> jax_jac_fn;
@@ -303,6 +311,14 @@ struct CvodeUserData {
     // model with no such condition. Owned by run().
     const std::vector<int> *state_switch_roots = nullptr;
 };
+
+// CVODE's error-weight callback for the tracking absolute tolerance (issue
+// #213). CVODE passes whatever went to CVodeSetUserData — cvInitialSetup copies
+// cv_user_data into cv_e_data for a user-supplied efun — so the cast is to this
+// file's user-data type and the shared rule lives in atol_vector.hpp.
+static int cvode_tracking_ewt(N_Vector y, N_Vector ewt, void *user_data) {
+    return fill_tracking_ewt(static_cast<CvodeUserData *>(user_data)->atol_tracking, y, ewt);
+}
 
 // Tfun dispatch thunk: invoked by codegen .so to evaluate a table function at
 // the given index value. ctx is opaque on the .so side; we set it to the
@@ -1022,6 +1038,12 @@ struct CvodeSimulator::Impl {
         // not touch tolerances, so reusing memory built for a different vector
         // would silently integrate at the previous run's tolerances.
         std::vector<double> atol_vec;
+        // Tracking depth the persistent objects were built with (issue #213).
+        // In the fingerprint for the same reason as atol_vec: CVodeReInit does
+        // not touch tolerances, so reusing memory that was put on
+        // CVodeWFtolerances (or left off it) would integrate this run at the
+        // previous run's rule.
+        double atol_track_decades = 0.0;
         double max_step_size = -1.0;
         int max_steps = 0;
         std::string jacobian;
@@ -1571,6 +1593,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     const double atol = (opts.atol > 0) ? opts.atol : this->atol;
     const std::vector<double> &atol_v = resolve_atol_vec(opts);
     validate_atol_vector(atol_v, ns, "run()");
+    validate_atol_tracking(opts.atol_track_decades, atol_v, ns, "run()");
     const int max_steps = (opts.max_steps > 0) ? opts.max_steps : this->max_steps;
 
     // Validate the Jacobian strategy exactly as the cold path does. ("jax"
@@ -1599,8 +1622,9 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // when every setup-affecting input is unchanged since the last build.
     const bool reuse =
         w.valid && w.ns == ns && w.rtol == rtol && w.atol == atol && w.atol_vec == atol_v &&
-        w.max_steps == max_steps && w.max_step_size == opts.max_step_size &&
-        w.jacobian == jac_strategy && w.force_dense == opts.force_dense_linear_solver &&
+        w.atol_track_decades == opts.atol_track_decades && w.max_steps == max_steps &&
+        w.max_step_size == opts.max_step_size && w.jacobian == jac_strategy &&
+        w.force_dense == opts.force_dense_linear_solver &&
         w.force_sparse == opts.force_sparse_linear_solver && w.use_sparse == use_sparse &&
         w.linear_solver == desired_linear_solver && w.codegen_so_path == opts.codegen_so_path &&
         w.codegen_c_source == opts.codegen_c_source;
@@ -1644,7 +1668,9 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         if (flag != CV_SUCCESS) {
             throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
         }
-        apply_cvode_tolerances(w.cvode_mem, w.ctx, rtol, atol, atol_v, ns);
+        w.user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
+        apply_cvode_tolerances(w.cvode_mem, w.ctx, rtol, atol, atol_v, ns,
+                               w.user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
         CVodeSetUserData(w.cvode_mem, &w.user_data);
         CVodeSetMaxNumSteps(w.cvode_mem, max_steps);
         if (opts.max_step_size > 0) {
@@ -1659,6 +1685,7 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         w.rtol = rtol;
         w.atol = atol;
         w.atol_vec = atol_v;
+        w.atol_track_decades = opts.atol_track_decades;
         w.max_steps = max_steps;
         w.max_step_size = opts.max_step_size;
         w.jacobian = jac_strategy;
@@ -1989,7 +2016,13 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     // the run's totals is an Impl member and has to be cleared (issue #182).
     closed_segments = SegmentCounters{};
 
-    apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns);
+    // Tracking (issue #213) is decided here rather than in run(), so the two
+    // statements that have to agree — the spec the callback reads and the
+    // CVodeWFtolerances that installs the callback — are one block. Depth 0
+    // leaves both empty and the SS/SV dispatch below exactly as it was.
+    user_data.atol_tracking = make_atol_tracking(rtol, atol_v, opts.atol_track_decades);
+    apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns,
+                           user_data.atol_tracking.active() ? cvode_tracking_ewt : nullptr);
 
     flag = CVodeSetUserData(cvode_mem, &user_data);
     flag = CVodeSetMaxNumSteps(cvode_mem, max_steps);
@@ -2353,6 +2386,18 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // a decade-spanning state tolerance gets sensitivities held to the same
     // per-species statement instead of having it collapsed back onto one
     // number here.
+    //
+    // Issue #213: when the state axis is TRACKING, atol_v is the ceiling of
+    // that rule, and this block reads the ceiling — deliberately, not by
+    // inheritance. Turning tracking on therefore leaves the sensitivity
+    // tolerances exactly where the same vector would have put them without it.
+    // The alternative, re-deriving atolS from the live state at each refresh,
+    // would make this base TIGHTEN mid-run, and that is the hazard the issue
+    // #183 block below had to add a high-water mark to avoid: CVODES then has
+    // to re-pass an error test it already passed, at a step size chosen under
+    // the looser rule. It would also only be reachable on models that armed the
+    // #177 refresh at all, so it would be a mode that silently applied to some
+    // models and not others. The state axis is what tracking moves.
     std::vector<double> sens_state_scale(static_cast<size_t>(ns));
     for (int i = 0; i < ns; ++i) {
         sens_state_scale[i] = std::max(std::abs(y_data[i]), 1.0);
@@ -4320,6 +4365,9 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     // reaching CVODE with it would either read past the end or quietly give
     // species i the number written for species j.
     validate_atol_vector(impl_->resolve_atol_vec(opts), ns, "run()");
+    // ...and the extra contract a tracking depth adds on top of it (issue
+    // #213): a ceiling to track below, every entry of it strictly positive.
+    validate_atol_tracking(opts.atol_track_decades, impl_->resolve_atol_vec(opts), ns, "run()");
 
     // Algebraic-only model (GH #229): with no ODE state there is no CVODE setup
     // at all, so the whole path lives in its own helper.

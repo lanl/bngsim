@@ -363,7 +363,17 @@ struct SteadyStateUserData {
     // sized once when that callback is selected so a per-step Jacobian
     // allocates nothing. Empty on every other path.
     std::vector<double> fd_y_pert, fd_fy_pert, fd_h_vals;
+    // Tracking absolute tolerance for the march (issue #213). Inactive for
+    // every solve that does not ask for it.
+    AtolTracking atol_tracking;
 };
+
+// CVODE's error-weight callback for the tracking absolute tolerance (issue
+// #213), over this file's user-data type. The rule itself lives once, in
+// bngsim/atol_vector.hpp; only the cast differs from the CvodeSimulator twin.
+static int ss_tracking_ewt(N_Vector y, N_Vector ewt, void *user_data) {
+    return fill_tracking_ewt(static_cast<SteadyStateUserData *>(user_data)->atol_tracking, y, ewt);
+}
 
 // Does SteadyStateOptions::jacobian ask for the closed form?
 //
@@ -783,11 +793,17 @@ class SteadyStateMarcher {
             throw std::runtime_error("CVodeInit failed (steady_state)");
         }
 
-        // Scalar atol, or the per-species vector when the caller supplied one
-        // (issue #196). The convergence test below is unaffected either way —
-        // it is ||f(y)||_2/n_species against opts.tol, a norm with no
-        // per-species reading.
-        apply_cvode_tolerances(cvode_mem_, ctx_, opts.rtol, opts.atol, opts.atol_vec, ns_);
+        // Scalar atol, the per-species vector when the caller supplied one
+        // (issue #196), or the tracking rule over that vector (issue #213). The
+        // convergence test below is unaffected by all three — it is
+        // ||f(y)||_2/n_species against opts.tol, a norm with no per-species
+        // reading. What tracking changes is the accuracy of the state the march
+        // ARRIVES at: a species decaying toward zero is under its own atol long
+        // before the residual norm settles, so without it the reported root
+        // holds that species' noise floor rather than its value.
+        ud_.atol_tracking = make_atol_tracking(opts.rtol, opts.atol_vec, opts.atol_track_decades);
+        apply_cvode_tolerances(cvode_mem_, ctx_, opts.rtol, opts.atol, opts.atol_vec, ns_,
+                               ud_.atol_tracking.active() ? ss_tracking_ewt : nullptr);
         CVodeSetUserData(cvode_mem_, &ud_);
         CVodeSetMaxNumSteps(cvode_mem_, opts.max_steps);
 
@@ -2680,6 +2696,7 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
     // wrong-length vector names itself rather than surfacing from inside the
     // marcher's constructor.
     validate_atol_vector(opts.atol_vec, ns, "find_steady_state()");
+    validate_atol_tracking(opts.atol_track_decades, opts.atol_vec, ns, "find_steady_state()");
 
     // Normalize and validate method. "kinsol" is an input alias for "newton";
     // "auto" was removed (newton already means try-Newton-then-parity-fallback).
