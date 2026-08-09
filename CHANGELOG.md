@@ -106,6 +106,43 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Changed
+- **A plain ODE build no longer emits the sensitivity RHS at all — the
+  Elementary half is gated too (issue #217).** #209/#214 stopped a plain
+  `Simulator(model, method="ode")` from deriving the Functional/MM analytic
+  `∂f/∂p`, but deliberately left the Elementary `bngsim_codegen_sens_rhs`
+  unconditional: it is plain text emission with no sympy in it, so gating it
+  would buy no *derivation* time, only source size, and leaving it alone kept
+  every all-Elementary model's source byte-identical. Correct about the
+  derivation, wrong about the size. On the 20 largest `.net` models it is
+  **55.6% of a plain build's C source** (44.8 MB of 80.6 MB) — a symbol
+  `CVodeSensInit1` is never called to install — and because `_resolve_opt_flag`
+  picks its tier from total translation-unit size, that dead weight held five of
+  them at a lower `-O` for the RHS the solve *does* call: `fceri_fyn` compiled
+  its plain RHS at `-O0` where 5.2 MB gets `-O1`, and four models took `-O1`
+  where `-O3` was available. Measured on the in-repo `.net` corpus after the
+  change: plain source down **47.9%** (68.6 MB → 35.8 MB over 12 models), 4 of
+  12 recovering a higher `-O`.
+
+  The cost that held it back was already paid. Gating this was argued to make
+  every model's plain artifact differ from its sensitivity artifact "where today
+  only Functional/MM ones do", roughly doubling entries in an already 2 GB cache
+  (issue #205) — but #177's `:sens_term_scale` has been in both keys since
+  before #209, so plain and sensitivity have had separate entries, and separate
+  sources, for every model since then. What changes is the *content* of the
+  plain entry.
+
+  Sensitivity runs are unaffected: a 16-model A/B over the `.net` corpus keeps
+  `bngsim_codegen_sens_rhs` on every one and reproduces every sensitivity value
+  bit-for-bit. `emit_functional_sens` is now `emit_sens_rhs` and
+  `want_functional_sens_rhs()` is `want_sens_rhs()`, both private. The
+  `.net` cache suffix `:no_functional_sens` now means only what GH #67 gave it
+  (the `BNGSIM_NO_FUNCTIONAL_SENS_RHS` A/B hatch); "nobody asked" gets its own
+  `:no_sens_rhs`, because for an Elementary model those two stopped emitting the
+  same source and sharing one namespace across that difference is the issue #51
+  inertness trap. The hatch is correspondingly no longer folded into
+  `want_sens_rhs()` — with it set, a sensitivity run still emits the Elementary
+  sensitivity RHS and loses only the Functional extension, which is the pre-#67
+  behaviour it exists to restore.
 - **`compute_all_sensitivities(params=None)` now returns independent columns —
   `Model.primary_param_names` rather than `Model.param_names` (issue #203).**
   The default meant "every parameter", and on a model with derived

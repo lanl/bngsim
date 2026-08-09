@@ -184,12 +184,22 @@ class TestCodegenCacheHit:
         # observables, so the default jacobian="auto" .net codegen compiles it under
         # the combined GH #162 ":codegen_jac" + GH #163 ":codegen_outputs" key, not
         # the plain RHS-only key — clear every suffix combination so the first
-        # construction is truly cold. Issue #209 added ":no_functional_sens" to
-        # every non-sensitivity key, so each combination has two forms now.
+        # construction is truly cold. Issue #209 added a no-sensitivity namespace to
+        # every non-sensitivity key, so each combination has more than one form: it
+        # was ":no_functional_sens" until issue #217 widened the gate to the
+        # Elementary half and renamed it ":no_sens_rhs", leaving ":no_functional_sens"
+        # to mean only what it meant in GH #67 (the A/B hatch). Both are cleared —
+        # an artifact under the old name is still on disk in any checkout that ran
+        # the suite before #217, and a stale one is exactly what makes a "cold"
+        # construction quietly warm.
         base = cg.compute_model_hash(net)
         keys = [base]
         for callbacks in ("", ":codegen_jac", ":codegen_outputs", ":codegen_jac:codegen_outputs"):
-            for suffix in (callbacks, callbacks + ":no_functional_sens"):
+            for suffix in (
+                callbacks,
+                callbacks + ":no_sens_rhs",
+                callbacks + ":no_functional_sens",
+            ):
                 if suffix:
                     keys.append(hashlib.sha256((base + suffix).encode()).hexdigest()[:16])
         for key in keys:

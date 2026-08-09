@@ -381,18 +381,42 @@ def _as_before_75():
     through ``monkeypatch.undo()`` — the ``monkeypatch`` fixture is shared with the
     autouse ``_force_codegen`` above, so an ``undo()`` mid-test would silently drop
     its environment too.
+
+    **Suppressing the re-prep is no longer enough to isolate one symbol** (issue
+    #217). ``_want_output_sens`` gates three emissions now — GH #198's
+    ``bngsim_codegen_output_sens``, #177's ``bngsim_codegen_sens_term_scale``, and
+    since #209/#217 ``bngsim_codegen_sens_rhs`` itself — so a bare
+    ``_auto_codegen_for_sensitivity`` builds an artifact missing all three. That is
+    not the pre-#75 state; pre-#75 had ∂f/∂p compiled and only ``d(func)/dp``
+    finite-differenced, which is what the accuracy comparison below is about. So the
+    re-prep runs normally and exactly one emitter is silenced.
+
+    The private cache dir is not optional with that patch in place: the key says
+    "output sensitivities wanted" while the source deliberately lacks the symbol, so
+    sharing the real cache would hand this artifact to a later sensitivity run — the
+    issue #51 inertness trap, inside the suite.
     """
-    from bngsim._simulator import _codegen_jit_backend
+    import tempfile
 
-    def _pre_75(sim):
-        sim._auto_codegen_for_sensitivity(jit_backend=_codegen_jit_backend())
+    from bngsim import _codegen as cg
 
-    saved = bngsim.Simulator._prepare_output_sens_codegen
-    bngsim.Simulator._prepare_output_sens_codegen = _pre_75
+    saved_prep = bngsim.Simulator._prepare_output_sens_codegen
+    saved_emit = cg.generate_output_sens_from_model
+    saved_cache = cg.CACHE_DIR
+    saved_memo = dict(cg._PREPARE_CODEGEN_MEMO)
+    tmp = tempfile.TemporaryDirectory()
     try:
+        cg.generate_output_sens_from_model = lambda model: None
+        cg.CACHE_DIR = Path(tmp.name)
+        cg._PREPARE_CODEGEN_MEMO.clear()
         yield
     finally:
-        bngsim.Simulator._prepare_output_sens_codegen = saved
+        bngsim.Simulator._prepare_output_sens_codegen = saved_prep
+        cg.generate_output_sens_from_model = saved_emit
+        cg.CACHE_DIR = saved_cache
+        cg._PREPARE_CODEGEN_MEMO.clear()
+        cg._PREPARE_CODEGEN_MEMO.update(saved_memo)
+        tmp.cleanup()
 
 
 def _core_steady_state(net, params):
