@@ -89,6 +89,22 @@ _IC_SENS_PROBE_EPS = 1e-6
 _IC_SENS_PROBE_COARSE = 4.0
 _IC_SENS_PROBE_TOL = 1e-4
 
+# How many names a warning that skips a *class* of parameters spells out before
+# it stops. The skipped-derived list runs to 1,265 names on one rr_parity model
+# (MODEL1112100000) and 253 internal ones on the same model, which is a warning
+# nobody reads to the end of; the count and the accessor that reproduces the full
+# list are what the reader needs. Classes that are structurally tiny — the
+# unwritable compartment sizes — spell themselves out in full and do not use this.
+_SKIP_WARN_NAME_LIMIT = 8
+
+
+def _abbreviate(names: list[str], limit: int = _SKIP_WARN_NAME_LIMIT) -> str:
+    """``['a', 'b', ...]`` for a warning, truncated with a count past ``limit``."""
+    if len(names) <= limit:
+        return repr(names)
+    shown = ", ".join(repr(n) for n in names[:limit])
+    return f"[{shown}, ... and {len(names) - limit} more]"
+
 
 # ─── Network-free method normalization ───────────────────────────────
 
@@ -3898,8 +3914,21 @@ class Simulator:
         n_points : int
             Number of output time points (including t_start).
         params : list[str], optional
-            Parameter names to compute sensitivities for.
-            Default: all model parameters.
+            Parameter names to compute sensitivities for. Default
+            (``None``): :attr:`Model.primary_param_names` — the model's
+            *independent* knobs, which is a subset of
+            :attr:`Model.param_names`. A **derived** (expression-backed)
+            parameter is left out because its column is not a coordinate of
+            its own: the primaries underneath it already carry its effect by
+            the chain rule, so the two columns are not independent and
+            :meth:`Result.gradient` would count the same physical effect twice
+            (issue #203). A synthesized ``_V0_<comp>`` is left out because it
+            is bngsim's record of a compartment's load-time size rather than a
+            knob at all (issue #170). Both are dropped with a warning naming
+            them, exactly as an unwritable compartment size is. Naming either
+            in ``params`` keeps its column — an explicit ask is a statement
+            that you want that derivative on its own terms, which is how
+            ``bngsim.jax.differentiable_solve(..., flat=True)`` obtains one.
         chunk_size : int
             Number of sensitivity parameters per CVODES job.
             Default 2, which benchmarking found to work well for large
@@ -3926,7 +3955,9 @@ class Simulator:
             Simulation result with full ``sensitivities`` tensor
             of shape ``(n_times, n_species, n_params)``.
             The ``sensitivity_params`` attribute lists all parameter
-            names in the order they appear in the tensor.
+            names in the order they appear in the tensor, and is the
+            authority on the column set — under ``params=None`` it is
+            narrower than :attr:`Model.param_names`, as described above.
             Species trajectories are from the first chunk's ODE solve
             (all chunks produce identical trajectories since they share
             the same model and parameters).
@@ -4015,8 +4046,36 @@ class Simulator:
             # and stays in the tensor — the skip list is the unwritable residue,
             # which is empty for most models, so this warning has gone from
             # firing on every SBML model to firing on almost none.
-            skipped = sorted(set(all_param_names) & self._unwritable_compartment_size_params())
-            target_params = [p for p in all_param_names if p not in set(skipped)]
+            #
+            # Issue #203 — and "everything computable" is also a request for a
+            # set of *independent* coordinates, because Result.gradient contracts
+            # the whole parameter axis into one (n_params,) vector and hands it to
+            # an optimizer over a vector of the same width. Two more classes fail
+            # that, and neither is a compartment size, so each is dropped with its
+            # own reason rather than folded into the message above. The default is
+            # therefore Model.primary_param_names minus the unwritable sizes,
+            # which is also what bngsim.jax.differentiable_solve differentiates
+            # over by default (`flat=False`).
+            known = set(all_param_names)
+            refused_sizes = known & self._unwritable_compartment_size_params()
+            internal = (known & self._model._internal_param_names()) - refused_sizes
+            primaries = self._model.primary_param_names
+            primary_set = set(primaries)
+            target_params = [p for p in primaries if p not in refused_sizes]
+            # `primaries` is `param_names` minus (derived ∪ internal), so what is
+            # left over here is exactly the attached derived parameters. Computed
+            # as a residue rather than from the flag directly so that every name
+            # is reported by exactly one of the three warnings below, whatever a
+            # future model does to make these classes overlap (in the 1,291-model
+            # rr_parity corpus they are disjoint: 9,524 derived, 524 internal, and
+            # no parameter carries two of the three flags).
+            derived = [
+                p
+                for p in all_param_names
+                if p not in primary_set and p not in internal and p not in refused_sizes
+            ]
+
+            skipped = sorted(refused_sizes)
             if skipped:
                 warnings.warn(
                     f"compute_all_sensitivities: skipping compartment size(s) {skipped} "
@@ -4031,9 +4090,53 @@ class Simulator:
                     f"V ± h).",
                     stacklevel=2,
                 )
+            if derived:
+                warnings.warn(
+                    f"compute_all_sensitivities: skipping {len(derived)} derived "
+                    f"parameter(s) {_abbreviate(derived)} — each is a constant "
+                    f"expression over other parameters, so its column is not "
+                    f"independent of theirs: the primaries underneath already carry "
+                    f"its effect through the chain rule, and Result.gradient sums the "
+                    f"whole parameter axis, which would count that effect twice "
+                    f"(issue #203). The returned tensor has {len(target_params)} "
+                    f"parameter columns (Model.primary_param_names); "
+                    f"result.sensitivity_params lists them, and "
+                    f"set(model.param_names) - set(result.sensitivity_params) is "
+                    f"every name dropped. Pass params=[...] naming one to get "
+                    f"d(x)/d(that parameter) on its own terms — a column that treats "
+                    f"it as an independent axis, which is what it becomes once "
+                    f"set_param overrides its expression.",
+                    stacklevel=2,
+                )
+            if internal:
+                warnings.warn(
+                    f"compute_all_sensitivities: skipping {len(internal)} internal "
+                    f"parameter(s) {_abbreviate(sorted(internal))} — each is "
+                    f"bngsim's record of a compartment's size at load time, which "
+                    f"the rate constants in that compartment are normalised "
+                    f"against, not a knob of the model: moving it rescales those "
+                    f"rates while the volume stays put, so set_param refuses a "
+                    f"value-changing write to it and an optimizer handed its "
+                    f"gradient would fit a quantity with no meaning (issues #170, "
+                    f"#203). Differentiate the compartment size itself instead — an "
+                    f"ordinary writable parameter since #170, and one of the "
+                    f"{len(target_params)} columns result.sensitivity_params lists "
+                    f"unless a compartment-size skip above names it.",
+                    stacklevel=2,
+                )
 
         n_params = len(target_params)
         if n_params == 0:
+            # Reachable two ways: an empty explicit `params=[]`, and a model with
+            # parameters of which none is an independent knob. Say which, so the
+            # second does not read as "this model has no parameters".
+            if params is None and all_param_names:
+                raise ValueError(
+                    f"No independent parameters to compute sensitivities for: all "
+                    f"{len(all_param_names)} of this model's parameters were dropped "
+                    f"from the default column set (see the warnings above). Pass "
+                    f"params=[...] to ask for a specific column on its own terms."
+                )
             raise ValueError("No parameters to compute sensitivities for.")
 
         # GH #205 — events: allowed only for the subclasses whose ∂t*/∂p is
