@@ -148,11 +148,24 @@ def test_env_finite_override_is_respected_exactly(monkeypatch):
     assert _derivation_budget_s(n_species=500) == 12.5
 
 
-def test_base_still_covers_needs_analytical_floor():
-    """The base must clear the slowest needs-analytical derivation (BIOMD0000000457,
-    ~12 s) with margin — the #95 invariant the scaling must not erode."""
-    assert _DEFAULT_DERIVATION_BUDGET_S >= 15.0
+def test_base_stays_a_finite_floor_under_the_scaling():
+    """The base is a *floor* the size policy scales up from, and it stays finite.
+
+    Both halves matter to #187: ``max(base, slope * n_species)`` degenerates if the
+    base is infinite (nothing is ever cut off, which is the pre-#95 behaviour), and
+    the scaling is only a scaling if the base is what small models get.
+
+    This used to also assert ``base >= 15.0`` — a second copy of the #95
+    needs-analytical floor, carrying a second copy of the ~12 s measurement behind
+    it, and neither copy was re-measured when the derivation got an order of
+    magnitude faster (issue #210). The floor now lives once, next to the corpus
+    sweep that sizes it, in ``test_sbml_jacobian_budget_biomd496.py``
+    (``_NEEDS_ANALYTICAL_FLOOR_S``). Nothing is relaxed by dropping it here; a
+    duplicated constant with no measurement attached is how it rotted.
+    """
     assert not math.isinf(_DEFAULT_DERIVATION_BUDGET_S)
+    assert _DEFAULT_DERIVATION_BUDGET_S > 0
+    assert _derivation_budget_s(n_species=1) == _DEFAULT_DERIVATION_BUDGET_S
 
 
 # ── the loud-fallback path is wired end-to-end (GH #187 option 3) ───────────────
