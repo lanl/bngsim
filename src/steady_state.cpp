@@ -745,6 +745,24 @@ static int cvode_ss_colored_jac(sunrealtype t, N_Vector y, N_Vector fy, SUNMatri
 // then just the one-leg case of the same code.
 class SteadyStateMarcher {
   public:
+    // Consecutive steps with no meaningful residual improvement before the march
+    // decides BDF has been captured and re-initializes (issue #235). Generous on
+    // purpose: a slow approach still improves, however gradually, and only a
+    // genuinely frozen march trips this. The observed capture holds its residual
+    // constant to five significant figures for >100,000 steps, so any threshold
+    // in the hundreds separates the two cleanly.
+    static constexpr long STAGNATION_STEPS = 400;
+
+    // How many times one march may escape before concluding the model, not the
+    // integrator, is what will not settle. A limit cycle would otherwise buy a
+    // fresh restart every 400 steps forever.
+    static constexpr int MAX_REINITS = 4;
+
+    // Improvement smaller than this counts as none: without it, a residual
+    // drifting in the last bits would read as progress and the capture would
+    // never be recognized.
+    static constexpr double STAGNATION_RTOL = 1e-3;
+
     SteadyStateMarcher(NetworkModel &model, SteadyStateRhs &rhs, const SteadyStateOptions &opts,
                        const ResidualSubspace &sub)
         : model_(model), rhs_(rhs), opts_(opts), sub_(sub), ud_{&rhs, &model},
@@ -792,7 +810,43 @@ class SteadyStateMarcher {
         double *y_data = y_.data();
         bool converged = false;
 
+        // Stagnation escape (issue #235). BDF can reach a configuration where the
+        // state, the step size, the order and the accumulated history are
+        // mutually self-consistent at a point that is NOT a steady state, and
+        // then reproduce it indefinitely: measured on
+        // ltype_calcium_discontinuous_jacobian.net, the march held h = 8.091,
+        // q = 2, every failure counter frozen and the residual constant at
+        // 1.7400e-07 for over 100,000 steps, until the budget ran out. It was not
+        // chattering and not struggling — it was captured.
+        //
+        // The state it was captured at is 2e-9 (relative) from the true root, and
+        // the trap is in the integrator's history rather than in the problem: a
+        // fresh march started from that exact state converges in FOUR steps. So
+        // the escape is to keep the state and throw the history away.
+        //
+        // This is why the failure looked like a lottery in two unrelated
+        // parameters — the parking gap in #176 and max_time here. Neither creates
+        // the trap; they only decide whether a given trajectory falls into it,
+        // max_time because CVODE also derives the initial step from the `tout` it
+        // is handed. Tuning either one just re-rolls that dice, which is why this
+        // fixes the mechanism instead.
+        double best_resid = std::numeric_limits<double>::infinity();
+        long stagnant = 0;
+        int reinits = 0;
+
         while (t_ < t_stop) {
+            // `tout` is NOT the budget (issue #235). In CV_ONE_STEP CVODE returns
+            // after one internal step whatever tout is, so tout only picks the
+            // integration direction and bounds the FIRST step: cvHin starts from
+            // the geometric mean of its bracket, whose upper end is
+            // proportional to |tout - t|, making h0 ∝ √tout. Passing t_stop there
+            // therefore made a knob documented as "max integration time" set the
+            // initial step, and with it the whole trajectory — measurably so:
+            // max_time 1e6 vs 2e6 gave h0 1.4901161193847657e-10 vs
+            // 2.1073424255447016e-10, exactly √2 apart, and the marches then
+            // diverged from step 1 (563 steps to converge vs 124189 and a
+            // give-up). The budget is enforced by CVodeSetStopTime above and by
+            // this loop, which is where a budget belongs.
             int flag = CVode(cvode_mem_, t_stop, y_, &t_, CV_ONE_STEP);
             if (flag < 0) {
                 // Integration failed -- report unconverged. Remembered, not just
@@ -816,6 +870,36 @@ class SteadyStateMarcher {
                 // Exhausted this march's time budget without converging.
                 break;
             }
+
+            if (resid < best_resid * (1.0 - STAGNATION_RTOL)) {
+                best_resid = resid;
+                stagnant = 0;
+            } else if (++stagnant >= STAGNATION_STEPS) {
+                stagnant = 0;
+                if (++reinits > MAX_REINITS) {
+                    // Escaped as often as it is worth escaping and still not
+                    // settling: this is the model, not the history. Stop here
+                    // rather than spend the rest of the budget confirming it.
+                    break;
+                }
+                // Banked before the reset, which zeroes them.
+                long int nst_so_far = 0, nfe_so_far = 0;
+                CVodeGetNumSteps(cvode_mem_, &nst_so_far);
+                CVodeGetNumRhsEvals(cvode_mem_, &nfe_so_far);
+                steps_before_reinit_ += nst_so_far;
+                rhs_evals_before_reinit_ += nfe_so_far;
+
+                // Keep the state and t; discard the step, the order and the BDF
+                // history. Tolerances, user data and the linear solver survive
+                // CVodeReInit, so the only thing that changes is what the
+                // integrator believes about where it has been.
+                if (CVodeReInit(cvode_mem_, t_, y_) != CV_SUCCESS) {
+                    integrator_failed_ = true;
+                    break;
+                }
+                CVodeSetStopTime(cvode_mem_, t_stop);
+                best_resid = std::numeric_limits<double>::infinity();
+            }
         }
 
         if (!converged) {
@@ -838,11 +922,15 @@ class SteadyStateMarcher {
         result.n_residual_species = static_cast<int>(sub_.included.size());
         result.excluded_species = sub_.excluded;
 
+        // CVodeReInit zeroes CVODE's own counters, so a march that escaped a
+        // stagnation (issue #235) would otherwise report only the work done since
+        // its last escape — understating the cost of exactly the runs a caller
+        // most wants to see the cost of. Carry the pre-escape totals forward.
         long int nst = 0, nfe = 0;
         CVodeGetNumSteps(cvode_mem_, &nst);
         CVodeGetNumRhsEvals(cvode_mem_, &nfe);
-        result.n_steps = static_cast<int>(nst);
-        result.n_rhs_evals = static_cast<int>(nfe);
+        result.n_steps = static_cast<int>(nst + steps_before_reinit_);
+        result.n_rhs_evals = static_cast<int>(nfe + rhs_evals_before_reinit_);
         return result;
     }
 
@@ -933,6 +1021,10 @@ class SteadyStateMarcher {
     SUNLinSolGuard LS_;
     sunrealtype t_ = 0.0;
     bool integrator_failed_ = false;
+    // Work done before each stagnation escape (issue #235); CVodeReInit resets
+    // CVODE's counters, and these carry the total across the resets.
+    long int steps_before_reinit_ = 0;
+    long int rhs_evals_before_reinit_ = 0;
 };
 
 static SteadyStateResult solve_by_integration(NetworkModel &model, SteadyStateRhs &rhs,
