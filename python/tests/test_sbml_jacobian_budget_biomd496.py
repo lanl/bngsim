@@ -48,16 +48,21 @@ Two things are locked in here:
 
   * **The losers fall back and stay correct** (``test_large_functional_*``): the
     build collapses and the FD-fallback trajectory still matches RoadRunner.
-  * **A model that genuinely needs the analytical Jacobian is not starved**
-    (``test_needs_analytical_*``): ``BIOMD0000000457`` is stiff enough that its FD
-    solve *fails* at the 1e-9/1e-12 parity tolerance, so the default budget must be
-    large enough to keep it on the analytical path. This is the regression the
-    budget value was chosen to avoid — a budget too small would turn its PASS into
-    a solver failure. That claim is no longer prose: the ``fails_on_the_fd_jacobian``
-    case below runs it. What *had* gone stale (issue #210) is the derivation cost
-    the floor was sized against — ~12 s when #95 picked it, **0.51 s** now. See
-    ``test_default_budget_covers_*`` for the re-derived floor and the corpus sweep
-    behind it.
+  * **No corpus model needs the analytical Jacobian, so the budget has no
+    correctness floor left** (``test_no_corpus_model_needs_*``, issue #249). This
+    replaces the claim that stood here through #95, #210 and #244: that
+    ``BIOMD0000000457``'s FD solve *fails* at the parity tolerance, so the default
+    budget had to stay large enough to keep it on the analytical path. It does not
+    fail. Re-running #244's own classification over the whole corpus finds **zero**
+    needs-analytical models — see ``_NEEDS_ANALYTICAL_SWEEP`` for the numbers and
+    ``_DEFAULT_BUDGET_IS_A_PERFORMANCE_KNOB`` for what now guards the constant.
+
+**Why the old claim went unnoticed for a merge.** It was true when #95 wrote it
+and it is corpus-gated, so it *skips* in CI (``ssss.ss`` for this file, under
+``model corpus absent from this checkout``). Only a developer checkout with the
+corpus materialized runs it, where it went red the moment #244 landed. A
+corpus-gated assertion is worth having, but the tick on a green PR is not evidence
+about any of them.
 
 Like the chatter test, these are gated on both the gitignored corpus model and
 libRoadRunner being present locally.
@@ -81,7 +86,8 @@ _LOSER_CASES = [
     ("BIOMD0000000496", 10.0, 1001),
     ("BIOMD0000000628", 10.0, 1001),
 ]
-# The model whose solve genuinely needs the analytical Jacobian.
+# The model #95 picked as needing the analytical Jacobian. It does not any more
+# (issue #249) — kept as the canary the sweep below is re-opened by.
 _NEEDS_ANALYTICAL = ("BIOMD0000000457", 10.0, 1001)
 
 # The parity sweep forces these (tight) tolerances on both engines.
@@ -125,14 +131,50 @@ _TEST_BUDGET_S = "0.25"
 _ATTACH_WALL_CAP = 8.0
 _SOLVE_WALL_CAP = 25.0
 
-# The floor ``test_default_budget_covers_needs_analytical_models`` holds the
-# shipping default to, and the measurement it is derived from (issue #210).
+# ─── The floor is retired: it has no subject left (issue #249) ───────────────
 #
-# #95 set the floor at 15 s to clear a ~12 s derivation for the one model whose
-# solve needs the analytical Jacobian. The 12 s is gone — the #96-and-after
-# speed-ups took it to 0.51 s — so the floor was left standing on a number that no
-# longer exists anywhere in the corpus. Re-derived by re-running the classification
-# #95 did, on the whole corpus:
+# #95 floored the shipping default at 15 s to clear a ~12 s derivation for the one
+# model whose solve was said to need the analytical Jacobian; #210/#244 lowered
+# that to 5 s after re-measuring the derivation at 0.51 s. Both rested on
+# ``BIOMD0000000457``'s FD solve failing. It does not fail, and the assertion that
+# claimed it did was red on ``main`` from the moment #244 merged — invisible
+# because it is corpus-gated and CI has no corpus.
+#
+# It is not marginal and it is not this machine. 457's FD solve returns in 0.07 s
+# with 626 steps and a finite trajectory, and it survives the whole ladder either
+# side of the parity pair — rtol 1e-6/1e-12 through 1e-12/1e-15, dense and sparse
+# linear solvers, interpreted and codegen RHS. Nothing resembling the "CVODE
+# returns -3 at t~3.36 with h~1e-42" the old docstring describes appears anywhere
+# in that grid. Its derivation is 0.283 s, which puts it *below* the 0.5 s band
+# #244 selected fixtures from, so its own recipe would not pick it today either.
+# (The two loser fixtures re-measure at 3.486 s and 19.821 s here, against #244's
+# 3.2-3.5 s and 17.5-18.7 s — so this is the same machine class its numbers came
+# from, not a fast outlier.)
+#
+# _NEEDS_ANALYTICAL_SWEEP — #244's classification, re-run over the whole corpus
+# rather than a slow band, one fresh process and one fresh model per arm:
+#
+#   * 1,323 rr_parity ODE models probed; 1,291 load (32 do not). The analytical
+#     Jacobian attaches on 1,218 and declines on 73 — a decline is on FD at *every*
+#     budget, so no budget can starve it, and those 73 drop out of the question.
+#   * All 1,218 attaching models were then forced onto FD (``jacobian="fd"`` costs
+#     no derivation, so the whole set is affordable — there is no band and nothing
+#     is sampled). **1,198 solve.** 15 fail, and every one of the 15 fails
+#     identically *with* the analytical Jacobian — no Jacobian saves them. 5 cannot
+#     be simulated at all (``fast="true"`` reactions the loader declines).
+#   * **Needs-analytical models: zero.**
+#   * Nor is there a weaker property to re-anchor on. Over the 23 models whose
+#     derivation is slow enough (>= 0.5 s) to be starved by any plausible budget,
+#     the worst FD-vs-analytical trajectory difference is 1.9e-6 relative — solver
+#     noise at rtol 1e-9, not a correctness gap.
+#
+# So the budget is a *performance* knob on this corpus, not a correctness one, and
+# a floor derived from a needs-analytical derivation would be the exact mistake
+# #244 called out: a tripwire standing on a measurement that has evaporated. What
+# replaces it is a pin on the constant (below) plus a canary on 457, so the
+# question re-opens by itself if a needs-analytical model ever reappears.
+#
+# The sweep behind the retired floor, kept for provenance:
 #
 #   * 1319 rr_parity ODE models materialized; 1286 load (32 fail to load, 1 ran
 #     past a 400 s probe cap). The analytical Jacobian attaches on 1214 and
@@ -156,18 +198,19 @@ _SOLVE_WALL_CAP = 25.0
 #     under 0.5 s — so nothing left untested can push the slowest needs-analytical
 #     derivation above 457's.
 #
-# The margin, composed from measured spreads rather than picked: 3.3x for machine
-# speed (the #190-vs-#210 ratio in the module docstring), 1.3x for worker
-# contention (0.51 s serial against 0.66 s under a 4-worker sweep), and 2x of
-# ordinary headroom — ~10x over 0.51 s.
+# Two of that sweep's readings do not reproduce, and the difference is the whole
+# of #249: the band is 23 models here rather than 68 (its threshold appears to
+# have been applied to load+derive, 39 by that reading, the rest being 4-worker
+# contention it says it measured 1.3x of), and 457's FD arm solves. The #249 sweep
+# above needs neither judgement, because it runs the FD arm on *every* attaching
+# model instead of a band drawn by a timing threshold.
 #
-# This LOWERS a tripwire on a constant; it does not lower the constant. The
-# shipping default is unchanged at 20 s and is not this module's to re-tune. What
-# the old value did do is forbid the re-tuning: at 15 s the default could never be
-# moved down toward the loser band (10.9 s for the fastest loser here) however
-# strong the evidence, on the strength of a 12 s measurement that had evaporated.
-_SLOWEST_NEEDS_ANALYTICAL_S = 0.51
-_NEEDS_ANALYTICAL_FLOOR_S = 5.0
+# The shipping default stays 20 s: dropping the floor removes a requirement, it
+# does not license a change, and re-tuning the default is not this module's to do.
+# What guards it now is an equality pin rather than an inequality, because with no
+# correctness requirement left there is no inequality that means anything — see
+# ``test_default_budget_is_a_performance_knob``.
+_DEFAULT_BUDGET_S = 20.0
 
 
 def _model_xml(model_id: str) -> Path | None:
@@ -283,76 +326,114 @@ def test_large_functional_fd_matches_roadrunner(model_id, t_end, n_points, monke
     assert over.mean() < 1e-2, f"{model_id} fail fraction {over.mean():.2e} over budget"
 
 
-def test_default_budget_covers_needs_analytical_models():
-    """The shipping default must clear the slowest needs-analytical derivation.
+def test_default_budget_is_a_performance_knob():
+    """The default is pinned, because no corpus model needs it to be anything.
 
-    ``BIOMD0000000457`` *needs* the analytical Jacobian — on FD its solve fails
-    outright, which ``test_needs_analytical_model_fails_on_the_fd_jacobian`` runs
-    rather than asserting in prose. A default below its derivation cost would
-    silently strand it on that failing solve, so the default is floored at ~10x the
-    cost with the margin composed from measured spreads. See
-    ``_NEEDS_ANALYTICAL_FLOOR_S`` for the corpus sweep the number comes from, and
-    for why the old 15 s floor (a ~12 s derivation that is now 0.51 s) had to go.
+    This used to be an inequality — the default had to clear the slowest
+    *needs-analytical* derivation, so a smaller one would strand a model on a
+    failing FD solve. Issue #249 retired that floor: forcing FD on all 1,218
+    models the analytical Jacobian attaches to, none of them needs it (see
+    ``_NEEDS_ANALYTICAL_SWEEP``), and the worst FD-vs-analytical difference in the
+    slow band is 1.9e-6 relative, which is solver noise at rtol 1e-9. With no
+    correctness requirement there is no meaningful inequality left to assert: any
+    floor would be a number chosen to look like evidence.
 
-    The guard is on the constant, so it needs no corpus and no reference engine.
-    What it protects is the corpus fixture two tests below.
+    An equality pin says the honest thing instead. Moving the default is now a
+    *performance* decision — how much derivation a build is willing to pay for and
+    discard — and this test makes it a deliberate one: change the constant here,
+    and say in the commit what the new value was measured against. It needs no
+    corpus and no reference engine, which is the point, since everything that does
+    need a corpus skips in CI.
     """
-    assert _DEFAULT_DERIVATION_BUDGET_S >= _NEEDS_ANALYTICAL_FLOOR_S, (
-        f"default derivation budget {_DEFAULT_DERIVATION_BUDGET_S}s is below the "
-        f"{_NEEDS_ANALYTICAL_FLOOR_S}s needs-analytical floor — BIOMD0000000457 "
-        f"derives in {_SLOWEST_NEEDS_ANALYTICAL_S}s here and cannot solve without "
-        "the analytical Jacobian, and the floor carries ~10x for machine speed and "
-        "contention. Re-measure the corpus before lowering this, and record what "
-        "the slowest needs-analytical derivation became."
+    assert _DEFAULT_DERIVATION_BUDGET_S == _DEFAULT_BUDGET_S, (
+        f"the default derivation budget moved from {_DEFAULT_BUDGET_S}s to "
+        f"{_DEFAULT_DERIVATION_BUDGET_S}s. That is allowed — no corpus model needs "
+        "the analytical Jacobian (issue #249), so nothing here forbids it — but it "
+        "is a performance decision, not a free one: a budget below a model's "
+        "derivation cost makes the build pay the derivation and then discard it. "
+        "Update _DEFAULT_BUDGET_S with the new value and record what it was "
+        "measured against; do not delete this pin."
     )
 
 
-def test_needs_analytical_model_fails_on_the_fd_jacobian():
-    """The premise under the floor, run instead of asserted in prose.
+def test_no_corpus_model_needs_the_analytical_jacobian():
+    """The canary that re-opens ``_NEEDS_ANALYTICAL_SWEEP`` if it stops being true.
 
-    Everything ``_NEEDS_ANALYTICAL_FLOOR_S`` claims rests on this fixture actually
-    *needing* the analytical Jacobian. That was a docstring sentence while the
-    corpus moved under it (issue #210), so it is a test now: force FD and the solve
-    does not come back. Here that is a ``SimulationError`` — CVODE returns -3 at
-    t~3.36 with h~1e-42 — and a machine on which it grinds instead of giving up
-    fails the same way through ``timeout`` (``SimulationTimeout``), which is the
-    other half of "FD is not a viable path here."
+    Through #95, #210 and #244 this asserted the opposite — that ``BIOMD0000000457``
+    is stiff enough that its FD solve *fails* at the parity tolerance, which is
+    what floored the shipping budget. It does not fail (issue #249). Forcing FD on
+    all 1,218 models the analytical Jacobian attaches to finds no model that needs
+    it, so what is worth running per-commit is the one model the claim was made
+    about: FD solves it, and to the same trajectory the analytical Jacobian does.
 
-    Two ways to accidentally not test this, both of which report a comfortable PASS:
+    A full re-sweep costs about an hour, so this stands in for it. **If this test
+    fails, do not adjust it** — re-run the classification (``jacobian="fd"`` over
+    every attaching model; it needs no derivation, so the whole corpus is
+    affordable) and, if a needs-analytical model has appeared, restore a floor
+    derived from *its* derivation cost.
+
+    Two ways to accidentally not test this, both of which report a comfortable PASS
+    (kept from the original, because both still apply):
 
     * Reuse a ``Model`` that has already been run. ``run()`` leaves the model's
       species at the end state (that is what ``Model.reset()`` is for), so a second
-      ``Simulator`` on it starts from t_end and never reaches the stiff transient at
-      t~3.36 that FD fails on. **This is what made #210 report that the FD solve had
-      stopped failing** — it read `fd: OK` off a model the preceding analytical run
-      had already carried to t=10. Load a fresh model, as below.
-    * Let the analytical Jacobian attach anyway. ``jacobian="fd"`` is the switch;
-      ``BNGSIM_ANALYTICAL_FUNCTIONAL_JAC=0`` and a sub-derivation budget reach the
-      same solve, and all three fail here.
-
-    If this ever stops raising, the floor above has lost its subject: re-run the
-    corpus classification and re-pick the fixture from whatever needs analytical
-    then. Do not delete the assertion and keep the floor.
+      ``Simulator`` on it starts from t_end and never reaches the transient at
+      t~3.36 the old claim turned on. **This is what made #210 report that the FD
+      solve had stopped failing.** Load a fresh model per arm, as below.
+    * Let the analytical Jacobian attach anyway, so the "FD" arm is not one.
+      ``analytical_jacobian_complete`` stays True on a model whose Jacobian needs
+      no sympy derivation at all, so it is asserted False here rather than used as
+      the FD signal generally — 77 corpus models are all-mass-action and would fail
+      that reading.
     """
     model_id, t_end, n_points = _NEEDS_ANALYTICAL
     xml = _model_xml(model_id)
     if xml is None:
         pytest.skip(f"rr_parity corpus model not present: {_MODELS_DIR / model_id}")
 
-    model = bngsim.Model.from_sbml(str(xml))
-    sim = bngsim.Simulator(model, method="ode", jacobian="fd")
-    assert model._core.analytical_jacobian_complete is False, (
+    run_kw = dict(
+        t_span=(0.0, t_end),
+        n_points=n_points,
+        rtol=_RTOL,
+        atol=_ATOL,
+        timeout=_SOLVE_WALL_CAP,
+    )
+
+    fd_model = bngsim.Model.from_sbml(str(xml))
+    fd_sim = bngsim.Simulator(fd_model, method="ode", jacobian="fd")
+    assert fd_model._core.analytical_jacobian_complete is False, (
         f'{model_id} attached the analytical Jacobian under jacobian="fd" — this '
         "test is not measuring the FD solve"
     )
-    with pytest.raises((SimulationError, SimulationTimeout)):
-        sim.run(
-            t_span=(0.0, t_end),
-            n_points=n_points,
-            rtol=_RTOL,
-            atol=_ATOL,
-            timeout=_SOLVE_WALL_CAP,
+    try:
+        fd = np.asarray(fd_sim.run(**run_kw).species)
+    except (SimulationError, SimulationTimeout) as exc:  # pragma: no cover - the canary
+        pytest.fail(
+            f"{model_id}'s FD solve failed ({type(exc).__name__}) — it succeeded in "
+            "0.07s over rtol 1e-6..1e-12 and both linear solvers when #249 retired "
+            "the needs-analytical floor. Re-run the corpus classification: if a "
+            "needs-analytical model exists again, restore a floor from its "
+            "derivation cost rather than editing this test."
         )
+    assert np.isfinite(fd).all(), f"{model_id} FD trajectory is non-finite"
+
+    # ...and the analytical Jacobian buys nothing on it: same trajectory, so the
+    # budget cannot strand this model however small it gets.
+    an_model = bngsim.Model.from_sbml(str(xml))
+    an = np.asarray(bngsim.Simulator(an_model, method="ode").run(**run_kw).species)
+    scale = float(np.maximum(np.abs(an), np.abs(fd)).max())
+    rel = float(np.abs(an - fd).max() / scale) if scale else 0.0
+    # Measured 8.5e-6 — two Jacobians take different step sequences, and this is
+    # the largest such gap anywhere in the corpus (the 23-model slow band tops out
+    # at 1.9e-6). The threshold carries ~120x over it, because what it has to
+    # separate is solver noise from the analytical Jacobian actually changing the
+    # answer, and only the second is worth re-opening the sweep for.
+    assert rel < 1e-3, (
+        f"{model_id} FD and analytical trajectories differ by {rel:.2e} relative "
+        "(measured 8.5e-6 when #249 retired the floor) — both solve, but not to "
+        "the same answer, so the analytical Jacobian is doing something here after "
+        "all. Re-run the #249 classification."
+    )
 
 
 def test_needs_analytical_model_keeps_analytical_and_solves(monkeypatch):
