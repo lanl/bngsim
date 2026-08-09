@@ -293,6 +293,41 @@ in `CMakeLists.txt`) is derived from it.
   instead.
 
 ### Fixed
+- **The integration march could be captured by its own BDF history and sit still
+  until the budget ran out (issue #235).** CVODE can reach a configuration where
+  the state, the step size, the order and the accumulated history are mutually
+  self-consistent at a point that is *not* a steady state, and then reproduce it
+  indefinitely. On `ltype_calcium_discontinuous_jacobian.net` the march held
+  `h = 8.091`, `q = 2`, every failure counter frozen and the residual constant at
+  `1.7400e-07` for more than 100,000 steps, then reported unconverged — while
+  holding a state 2e-9 (relative) away from the right answer.
+
+  The trap is in the integrator's history, not in the problem: a fresh march
+  started from that exact state converges in **four** steps. So the march now
+  notices when the residual has stopped improving and re-initializes, keeping the
+  state and discarding the step, the order and the history. Tolerances, user data
+  and the linear solver survive `CVodeReInit`, so nothing else changes. Escapes
+  are capped, because a model that will not settle is a different answer from an
+  integrator that has stalled.
+
+  The captured case goes from 124,189 steps and unconverged to **1,004 steps and
+  converged**, and — the load-bearing check — asking it for `tol=1e-13` now
+  yields a residual of `5.2e-15`, so it is sitting on the true root rather than
+  having clipped a low point in transit. All six parking gaps from #176 × five
+  budgets converge, against three gaps that failed at the default. Models that
+  were never stuck are untouched: the rule needs 400 consecutive steps without
+  improvement, and an ordinary march converges in far fewer.
+
+  Three diagnoses were discarded against measurement, and all three are recorded
+  in the tests because each is a plausible thing to re-propose. It is **not** the
+  convergence criterion (the same march reaches 5e-15 once it is not captured);
+  **not** a residual floor (stuck at 1.2e-7, escaped reaches 1e-13, same model,
+  same tolerances); and **not** chatter at the discontinuity, which is what the
+  issue was originally filed as. The symptom presented as an isolated-island
+  lottery in two unrelated parameters — #176's parking gap and `max_time` —
+  because neither creates the trap; they only decide whether a given trajectory
+  falls into it, `max_time` because CVODE also derives the initial step from the
+  `tout` it is handed. Tuning either one only re-rolls that dice.
 - **The GH #176 fallback tests asserted that FD rescues their fixture, which is
   a rounding outcome rather than a property of the model (issue #176).** The
   fixture's `v_rec = if((-70+V)<-20, 0.5, 0.05)` steps at `V == 50`, and `V`
