@@ -261,6 +261,13 @@ in `CMakeLists.txt`) is derived from it.
   rescue-asserting tests where FD gives up is itself covered, because its branch
   is by construction never taken on the host that usually runs the suite.
 
+  Not fixed here, and filed as issue #235: sweeping the parking gap over 23
+  values finds isolated gaps — 2e-12, 9e-11, 1e-10 — where the steady-state march
+  burns 68k–147k steps and reports unconverged while both neighbours converge in
+  ~600. The fixture sits mid-way through the widest clean run and the four
+  steady-state tests pass, but what the march should do when the RHS chatters at
+  a state discontinuity needs its own design.
+
   Two claims in the surrounding prose were wrong and are corrected rather than
   softened. A threshold the state crosses *transversally* does not reproduce the
   failure at all — with the asymptote at 55, 60 or 100 the analytical Jacobian

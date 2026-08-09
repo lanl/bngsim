@@ -204,8 +204,8 @@ def test_repeated_runs_skip_the_doomed_attempt(
 # even while the run half failed there. That is not a guarantee — the sweep in
 # the module docstring found parking gaps where the march instead burns >100k
 # steps and reports unconverged — but a march that chatters at a state
-# discontinuity is its own defect with its own blast radius, so it is tracked
-# separately rather than papered over here.
+# discontinuity is its own defect with its own blast radius, so it is tracked in
+# issue #235 rather than papered over here.
 
 
 def test_steady_state_auto_falls_back_and_converges(data_dir: Path) -> None:
