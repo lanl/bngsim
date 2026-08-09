@@ -138,7 +138,7 @@ def test_psa_run_passes_timeout_kwarg(simple_decay_net) -> None:
 # ─── RuleMonkey timeout (closes followup to issue #32) ────────────────
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_stateless_timeout_raises(simple_decay_net, nfsim_xml) -> None:
     """Simulator.run(method='nf_exact', timeout=...) honors the budget via
     the upstream RuleMonkey cancellation hook (richardposner/RuleMonkey#3)."""
@@ -160,7 +160,7 @@ def test_rulemonkey_stateless_timeout_raises(simple_decay_net, nfsim_xml) -> Non
     )
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_sample_times_timeout_raises_and_recovers(simple_decay_net, nfsim_xml) -> None:
     """The explicit sample_times path (GH #169) honors the budget and stays usable.
 
@@ -185,7 +185,7 @@ def test_rulemonkey_sample_times_timeout_raises_and_recovers(simple_decay_net, n
     np.testing.assert_allclose(recovered.time, [0, 0.05, 0.1], atol=1e-12)
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_stateless_generous_timeout_completes(simple_decay_net, nfsim_xml) -> None:
     """A generous budget on a quick segment completes with a full Result."""
     dummy_model = bngsim.Model.from_net(str(simple_decay_net))
@@ -197,7 +197,7 @@ def test_rulemonkey_stateless_generous_timeout_completes(simple_decay_net, nfsim
     assert r2.n_times == 11
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_simulate_timeout_raises(nfsim_xml) -> None:
     """RuleMonkeySession.simulate must honor a wall-clock budget."""
     budget = 0.3
@@ -217,7 +217,7 @@ def test_rulemonkey_session_simulate_timeout_raises(nfsim_xml) -> None:
         assert not rm.destroyed
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_simulate_destroys_cleanly_after_timeout(nfsim_xml) -> None:
     """After a timed-out simulate(), explicit destroy() must succeed."""
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
@@ -228,7 +228,7 @@ def test_rulemonkey_session_simulate_destroys_cleanly_after_timeout(nfsim_xml) -
         assert rm.destroyed
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_simulate_generous_timeout_completes(nfsim_xml) -> None:
     """A generous budget on a quick segment finishes normally."""
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
@@ -237,7 +237,7 @@ def test_rulemonkey_session_simulate_generous_timeout_completes(nfsim_xml) -> No
         assert r.n_times == 11
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_simulate_negative_timeout_rejected(nfsim_xml) -> None:
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
         rm.initialize(seed=1)
@@ -245,7 +245,7 @@ def test_rulemonkey_session_simulate_negative_timeout_rejected(nfsim_xml) -> Non
             rm.simulate(0.0, 1.0, n_points=11, timeout=-1.0)
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_simulate_zero_and_none_disable_budget(nfsim_xml) -> None:
     """timeout=0 and timeout=None both disable the wall-clock budget."""
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
@@ -256,7 +256,7 @@ def test_rulemonkey_session_simulate_zero_and_none_disable_budget(nfsim_xml) -> 
         assert r2.n_times == 11
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_step_to_timeout_raises(nfsim_xml) -> None:
     """step_to() also honors the cooperative-cancellation hook."""
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
@@ -267,7 +267,7 @@ def test_rulemonkey_session_step_to_timeout_raises(nfsim_xml) -> None:
         assert info.value.elapsed >= 0.3
 
 
-@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not built")
+@pytest.mark.skipif(not bngsim.HAS_RULEMONKEY, reason="RuleMonkey not compiled in")
 def test_rulemonkey_session_step_to_negative_timeout_rejected(nfsim_xml) -> None:
     with bngsim.RuleMonkeySession(str(nfsim_xml)) as rm:
         rm.initialize(seed=1)
@@ -292,7 +292,7 @@ def test_solver_options_timeout_seconds_field() -> None:
 # ─── NfsimSession.simulate timeout (closes issue #32) ─────────────────
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not built")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_nfsim_session_simulate_timeout_raises(nfsim_xml) -> None:
     """NfsimSession.simulate must honor a wall-clock budget by raising
     SimulationTimeout between stepTo() output points."""
@@ -323,7 +323,7 @@ def test_nfsim_session_simulate_timeout_raises(nfsim_xml) -> None:
         assert not nf.destroyed
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not built")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_nfsim_session_simulate_destroys_cleanly_after_timeout(nfsim_xml) -> None:
     """After a timed-out simulate(), explicit destroy() must succeed and
     the session must report destroyed=True."""
@@ -338,7 +338,7 @@ def test_nfsim_session_simulate_destroys_cleanly_after_timeout(nfsim_xml) -> Non
         assert nf.destroyed
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not built")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_nfsim_session_simulate_generous_timeout_completes(nfsim_xml) -> None:
     """A generous budget on a quick segment finishes normally with a full Result."""
     with bngsim.NfsimSession(str(nfsim_xml)) as nf:
@@ -349,7 +349,7 @@ def test_nfsim_session_simulate_generous_timeout_completes(nfsim_xml) -> None:
         assert r.observables.shape[0] == 11
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not built")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_nfsim_session_simulate_negative_timeout_rejected(nfsim_xml) -> None:
     """Mirrors Simulator.run's argument-validation contract."""
     with bngsim.NfsimSession(str(nfsim_xml)) as nf:
@@ -358,7 +358,7 @@ def test_nfsim_session_simulate_negative_timeout_rejected(nfsim_xml) -> None:
             nf.simulate(0.0, 1.0, n_points=11, timeout=-1.0)
 
 
-@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not built")
+@pytest.mark.skipif(not bngsim.HAS_NFSIM, reason="NFsim not compiled in")
 def test_nfsim_session_simulate_zero_and_none_disable_budget(nfsim_xml) -> None:
     """timeout=0 and timeout=None both disable the wall-clock budget."""
     with bngsim.NfsimSession(str(nfsim_xml)) as nf:

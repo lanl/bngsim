@@ -35,12 +35,12 @@ def _has_rulemonkey() -> bool:
 BACKENDS = [
     pytest.param(
         "NfsimSession",
-        marks=pytest.mark.skipif(not _has_nfsim(), reason="no NFsim support"),
+        marks=pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in"),
         id="nfsim",
     ),
     pytest.param(
         "RuleMonkeySession",
-        marks=pytest.mark.skipif(not _has_rulemonkey(), reason="no RuleMonkey support"),
+        marks=pytest.mark.skipif(not _has_rulemonkey(), reason="RuleMonkey not compiled in"),
         id="rulemonkey",
     ),
 ]
@@ -142,7 +142,7 @@ class TestSessionSampleTimes:
                 s.simulate(0.0, 10.0)  # missing n_points, no sample_times
 
 
-@pytest.mark.skipif(not _has_nfsim(), reason="no NFsim support")
+@pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in")
 def test_nfsim_relative_time_and_sample_times_mutually_exclusive(nfsim_xml):
     with bngsim.NfsimSession(str(nfsim_xml)) as s:
         s.initialize(seed=1)

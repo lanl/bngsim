@@ -145,6 +145,17 @@ jobs:
 
       - name: Run non-NFsim tail
         shell: bash
+        env:
+          # The other KLU-off leg under the audit (issue #179). This one carries
+          # the NFsim-off and RuleMonkey-off phrasings that #179 found had drifted
+          # into nine spellings for two conditions; they are consolidated onto the
+          # two declared strings now, and strict is what stops them drifting again
+          # somewhere no default-build run would notice.
+          #
+          # The step above already prints `_find_c_compiler()` and `command -v cl`
+          # for this job; the LOCAL_ONLY tier turns that from something a reader
+          # has to check into something the run enforces.
+          BNGSIM_SKIP_AUDIT: strict
         run: |
           set -o pipefail
           python -m pytest -p no:cacheprovider \

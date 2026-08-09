@@ -144,6 +144,19 @@ jobs:
         env:
           BNGSIM_CODEGEN_JIT: mir
           BNGSIM_TEST_DATA: ${{ github.workspace }}/tests/data
+          # First KLU-off leg to run under the audit (issue #179). Before it, the
+          # audit had teeth only in the default build, so the build-variant skip
+          # reasons — the ones this leg is the whole point of — were unchecked;
+          # #179 measured 25 undeclared reasons that no default-build run could
+          # ever surface. Strict here is what keeps the KLU-off, NFsim-off and
+          # RuleMonkey-off phrasings honest.
+          #
+          # It also enforces the LOCAL_ONLY tier, which matters most on exactly
+          # this job: it exists so codegen works on a machine with no C compiler,
+          # so a lost `cc` is the failure it is least able to notice. The step
+          # above already refuses a build where HAS_MIR came out False, for the
+          # same reason and by the same argument.
+          BNGSIM_SKIP_AUDIT: strict
         run: |
           set -o pipefail
           python -m pytest -p no:cacheprovider \

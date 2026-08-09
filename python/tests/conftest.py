@@ -61,22 +61,69 @@ def pytest_configure(config: pytest.Config) -> None:
 #
 # Undeclared reasons warn by default. Set BNGSIM_SKIP_AUDIT=strict to make them
 # fail instead; BNGSIM_SKIP_AUDIT=off silences the block entirely. Strict stays
-# opt-in rather than becoming the default because a CURATED leg skips a different
-# subset than a whole-suite run, and a guard that cries wolf gets disabled — which
-# would leave us worse off than a quiet one. The distinction that makes it safe to
-# turn on in python-tests.yml is that that job runs everything in the default
-# build, so every reason it can produce is one somebody can actually reason about.
+# opt-in rather than becoming the default because a developer box legitimately
+# lacks things CI has, and a guard that cries wolf gets disabled — which would
+# leave us worse off than a quiet one.
+#
+# Strict is now on for three jobs, not one. python-tests.yml runs everything in
+# the default build; mir.yml and windows-tail.yml run curated lists in KLU-off
+# builds. Curated was the original argument against turning it on — a curated leg
+# skips a different subset than a whole-suite run — but that argument was about
+# the TABLE, and strict does not fire on the table's size. It fires per reason,
+# and issue #179 is what made per-reason safe: the reasons those legs emit are
+# the build-variant ones, and they had drifted to 25 undeclared precisely because
+# no default-build run can produce them. A KLU-off leg was the only place they
+# could ever be checked, so it is the place strict earns the most.
 
-# Declared skip reasons: (substring to match, why this skip is legitimate).
+# ─── Tiers ────────────────────────────────────────────────────────────────────
+#
+# One flat list could not express the difference issue #179 turned up, and the
+# difference matters: "this build does not have KLU" and "this machine has no C
+# compiler" are both legitimate skips locally, but only the first is legitimate
+# in CI. A CI leg that silently lost `cc` would skip ~22 files' worth of codegen
+# tests and report success — a false green of exactly the kind this audit exists
+# to catch, waved through by the very list that is supposed to catch it.
+#
+# ANYWHERE   the skip is a statement about a deliberate configuration — a build
+#            variant, an optional extra, a corpus that is not vendored, a
+#            platform that genuinely lacks the feature. Fine everywhere.
+# LOCAL_ONLY the skip is a statement about the ENVIRONMENT being incomplete. A
+#            developer laptop is allowed to be incomplete; a CI leg is not, and
+#            one that becomes incomplete has broken rather than adapted.
+#
+# Strict mode is the CI signal — nothing but a workflow sets BNGSIM_SKIP_AUDIT,
+# so LOCAL_ONLY is enforced exactly where "this environment is incomplete" stops
+# being an acceptable answer, and stays a quiet table row on a laptop. The
+# empirical check that this does not just add red: none of the LOCAL_ONLY reasons
+# below fires on any leg today. GitHub's windows-latest ships MinGW gcc, so even
+# the compiler gates have never skipped there (0 across all four mir.yml legs).
+_ANYWHERE = "anywhere"
+_LOCAL_ONLY = "local-only"
+
+# Declared skip reasons: (substring to match, tier, why this skip is legitimate).
 # A skip whose reason matches none of these is reported as undeclared. Adding an
 # entry is the point — it forces a new permanent skip to be justified in a diff
 # rather than blending into the summary count.
-_DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
+_DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # Build-configuration variants — the feature is genuinely absent from this build.
-    ("without the MIR backend", "MIR JIT is off unless -DBNGSIM_ENABLE_MIR=ON"),
-    ("KLU not compiled", "KLU-off builds are a supported configuration"),
-    ("requires a build without SuiteSparse/KLU", "inverse of the above; KLU-off builds only"),
-    ("LAPACK-dense not built", "LAPACK is optional; CMake degrades to the reference solver"),
+    ("without the MIR backend", _ANYWHERE, "MIR JIT is off unless -DBNGSIM_ENABLE_MIR=ON"),
+    ("KLU not compiled", _ANYWHERE, "KLU-off builds are a supported configuration"),
+    (
+        "KLU sparse solver not built",
+        _ANYWHERE,
+        "as above; the phrasing test_codegen_jacobian_sparse.py uses",
+    ),
+    (
+        "requires a build without SuiteSparse/KLU",
+        _ANYWHERE,
+        "inverse of the above; KLU-off builds only",
+    ),
+    ("build has no SuiteSparse/KLU", _ANYWHERE, "as above; the other half of the same gate"),
+    (
+        "LAPACK-dense not built",
+        _ANYWHERE,
+        "LAPACK is optional; CMake degrades to the reference solver",
+    ),
     # Same build-variant condition as the line above, phrased differently by a
     # different file: test_engine_choice_accessors.py says "LAPACK-dense not built
     # in this configuration", test_lapack_dense_solver.py says "build links no
@@ -84,29 +131,81 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     # invisible on macOS (Accelerate is always found, so neither test skips) —
     # it surfaces only where find_package(LAPACK) comes up empty, which nothing
     # ran the full suite on until #169 added a Linux leg.
-    ("no BLAS dense backend", "as above; the other half of the same gate"),
-    ("RuleMonkey compiled in", "inverse-condition test; runs only on RuleMonkey-off builds"),
-    ("RuleMonkey not compiled in", "RuleMonkey is a build-time opt-in"),
+    ("no BLAS dense backend", _ANYWHERE, "as above; the other half of the same gate"),
+    (
+        "RuleMonkey compiled in",
+        _ANYWHERE,
+        "inverse-condition test; runs only on RuleMonkey-off builds",
+    ),
+    ("RuleMonkey not compiled in", _ANYWHERE, "RuleMonkey is a build-time opt-in"),
+    # The NFsim half of the pair above. Issue #179 found NINE phrasings for these
+    # two conditions across 29 sites ("NFsim not built", "bngsim compiled without
+    # NFsim support", "no NFsim support", …) — drift away from a convention that
+    # already existed here rather than the absence of one. They are consolidated
+    # onto the two strings declared here; keep new gates on the same wording.
+    ("NFsim not compiled in", _ANYWHERE, "NFsim is a build-time opt-in"),
     # Optional / developer-only Python dependencies.
-    ("could not import", "optional extra (h5py, jax, pandas, sympy, xarray, ...) absent"),
-    ("roadrunner", "DEVELOPER-ONLY reference engine; never a base dependency"),
-    ("scipy", "optional extra"),
-    ("antimony", "optional extra; loaders fall back to SBML"),
+    (
+        "could not import",
+        _ANYWHERE,
+        "optional extra (h5py, jax, pandas, sympy, xarray, ...) absent",
+    ),
+    (
+        "JAX not installed",
+        _ANYWHERE,
+        "hand-written twin of the importorskip above; jax is an extra",
+    ),
+    (
+        "vivarium-core not installed",
+        _ANYWHERE,
+        "optional extra (bngsim[vivarium]); the process shell is opt-in. Spelled "
+        "out rather than left to the generated text because that importorskip "
+        "passes an explicit reason=, which suppresses it",
+    ),
+    ("roadrunner", _ANYWHERE, "DEVELOPER-ONLY reference engine; never a base dependency"),
+    ("antimony", _ANYWHERE, "optional extra; loaders fall back to SBML"),
+    # `scipy` was here and is gone: no hand-written reason contains it, so every
+    # scipy skip is an importorskip-generated "could not import 'scipy'" that the
+    # entry above already matches. A pattern that matches nothing is not free —
+    # it reads as a fourth optional extra somebody decided about (#179).
     # External tools and corpora that are not vendored.
-    ("BNG2.pl", "external perl toolchain, not a bngsim dependency"),
-    ("biomodels", "BioModels corpus is fetched, not vendored ($BIOMODELS_SBML_DIR)"),
-    ("benchmark", "benchmark corpus lives outside the packaged tree"),
-    ("abc.xml not at", "fixture in a sibling PyBNF checkout; dev-only"),
+    ("BNG2.pl", _ANYWHERE, "external perl toolchain, not a bngsim dependency"),
+    ("biomodels", _ANYWHERE, "BioModels corpus is fetched, not vendored ($BIOMODELS_SBML_DIR)"),
+    ("benchmark", _ANYWHERE, "benchmark corpus lives outside the packaged tree"),
+    ("abc.xml not at", _ANYWHERE, "fixture in a sibling PyBNF checkout; dev-only"),
+    ("no .ant fixture available", _ANYWHERE, "antimony fixture is optional in this checkout"),
+    # Platform, as opposed to environment: the feature is absent because of what
+    # the OS/toolchain IS, not because this box is missing something.
+    ("POSIX-specific", _ANYWHERE, "process-group reaping has no Windows equivalent"),
+    ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
+    ("gcc/clang only", _ANYWHERE, "the sharded compile path; MSVC takes the other branch"),
     # Source-tree vs installed-wheel context.
-    ("installed wheel", "source-tree-only guard, correctly inert against a wheel"),
-    ("source root", "version-consistency check needs the source tree"),
-    ("CMake", "CMakeCache cross-checks need a configured build dir"),
-    ("explicitly bypassed via env", "the escape hatch reporting that it was used"),
+    ("installed wheel", _ANYWHERE, "source-tree-only guard, correctly inert against a wheel"),
+    ("source root", _ANYWHERE, "version-consistency check needs the source tree"),
+    ("CMake", _ANYWHERE, "CMakeCache cross-checks need a configured build dir"),
+    ("not in this checkout", _ANYWHERE, "packaging script absent from a wheel/subtree checkout"),
+    ("explicitly bypassed via env", _ANYWHERE, "the escape hatch reporting that it was used"),
+    # ── LOCAL_ONLY: an incomplete environment, which CI is not allowed to be ──
+    #
+    # The C-compiler family. Four phrasings over ~22 sites, consolidated to the
+    # one substring below. On a laptop with no compiler this is a fair skip; on a
+    # CI leg it is the false green the audit exists to catch, so strict mode ends
+    # the run rather than printing a row. #179 argued this class specifically:
+    # these have never skipped on any leg, so making them fatal costs nothing
+    # today and buys the alarm on the day a leg loses its toolchain.
+    ("no C compiler", _LOCAL_ONLY, "a CI leg without cc has broken, not adapted"),
+    ("codegen compile unavailable", _LOCAL_ONLY, "same condition, reported from the codegen side"),
+    ("no codegen backend available", _LOCAL_ONLY, "as above"),
+    # libsbml is a HARD dependency in pyproject (`python-libsbml>=5.20`) and
+    # HAS_LIBSBML is a plain import check, so this cannot be a build variant — if
+    # it fires, the install is broken, and in CI a broken install must not pass.
+    ("requires libsbml", _LOCAL_ONLY, "libsbml is a base dependency, not an extra"),
     # Numerics that a given host does not reproduce. Narrow on purpose: this is a
     # licence to not run a test, so it is spelled out per case rather than left as
     # a general "the numbers came out differently here" escape.
     (
         "finite-difference Jacobian does not carry this fixture",
+        _ANYWHERE,
         "lanl/bngsim#176: the FD retry is a second attempt, not a guarantee, so "
         "the tests that assert a successful rescue stand down where there is no "
         "rescue to assert. The contract itself (auto reproduces explicit-FD "
@@ -116,9 +215,9 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     # Missing .net / .xml fixtures. Deliberately last and deliberately narrow:
     # this is the category that rots silently, so it matches the exact phrasings
     # in use rather than a blanket "not found".
-    ("not present", "optional fixture absent from this checkout"),
-    ("not found", "optional fixture absent from this checkout"),
-    ("not available", "optional fixture absent from this checkout"),
+    ("not present", _ANYWHERE, "optional fixture absent from this checkout"),
+    ("not found", _ANYWHERE, "optional fixture absent from this checkout"),
+    ("not available", _ANYWHERE, "optional fixture absent from this checkout"),
 )
 
 # ─── Corpus absence, reported as one number ───────────────────────────────────
@@ -189,8 +288,27 @@ def _skip_reason(report: object) -> str:
     return reason[len("Skipped: ") :] if reason.startswith("Skipped: ") else reason
 
 
-def _audit_skips(terminalreporter: object) -> tuple[dict[str, int], dict[str, int]]:
-    """Return (reason -> count, undeclared subset thereof).
+def _tier_of(reason: str) -> str | None:
+    """The tier of the first declared pattern this reason matches, or None.
+
+    First match wins, and LOCAL_ONLY is checked first so that a reason matching
+    both tiers is treated as the stricter one. Otherwise a broad ANYWHERE
+    pattern like ``not available`` could quietly launder a specific LOCAL_ONLY
+    reason back into "fine everywhere", which is how the flat list lost this
+    distinction in the first place.
+    """
+    low = reason.lower()
+    for tier in (_LOCAL_ONLY, _ANYWHERE):
+        for pattern, entry_tier, _ in _DECLARED_SKIPS:
+            if entry_tier == tier and pattern.lower() in low:
+                return tier
+    return None
+
+
+def _audit_skips(
+    terminalreporter: object,
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Return (reason -> count, undeclared subset, LOCAL_ONLY subset).
 
     Recomputed by each hook rather than shared through the stash: conftest's
     pytest_sessionfinish can run *before* the terminal reporter's (which is what
@@ -201,12 +319,10 @@ def _audit_skips(terminalreporter: object) -> tuple[dict[str, int], dict[str, in
     for report in getattr(terminalreporter, "stats", {}).get("skipped", []):
         reason = _skip_reason(report)
         counts[reason] = counts.get(reason, 0) + 1
-    undeclared = {
-        reason: n
-        for reason, n in counts.items()
-        if not any(pattern.lower() in reason.lower() for pattern, _ in _DECLARED_SKIPS)
-    }
-    return counts, undeclared
+    tiers = {reason: _tier_of(reason) for reason in counts}
+    undeclared = {r: n for r, n in counts.items() if tiers[r] is None}
+    local_only = {r: n for r, n in counts.items() if tiers[r] == _LOCAL_ONLY}
+    return counts, undeclared, local_only
 
 
 @pytest.hookimpl(trylast=True)
@@ -217,7 +333,8 @@ def pytest_terminal_summary(
     mode = os.environ.get("BNGSIM_SKIP_AUDIT", "warn").lower()
     if mode == "off":
         return
-    counts, undeclared = _audit_skips(terminalreporter)
+    counts, undeclared, local_only = _audit_skips(terminalreporter)
+    strict = mode == "strict"
     if not counts:
         return
 
@@ -230,7 +347,14 @@ def pytest_terminal_summary(
     for reason, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         if reason in corpus:
             continue
-        mark = "??" if reason in undeclared else "  "
+        if reason in undeclared:
+            mark = "??"
+        elif reason in local_only:
+            # `!!` rather than `??`: this one IS declared, and the complaint is
+            # about where it fired, not about nobody having decided on it.
+            mark = "!!"
+        else:
+            mark = "  "
         write(f" {mark} {n:>3}  {reason[:96]}")
     if n_corpus:
         plural = "reason" if len(corpus) == 1 else "reasons"
@@ -252,19 +376,31 @@ def pytest_terminal_summary(
         write(" Add each to _DECLARED_SKIPS in python/tests/conftest.py with a rationale,")
         write(" or fix the test so it runs. A skip nobody declared is usually a test that")
         write(" stopped running without anyone deciding it should.")
+    if local_only:
+        write("")
+        n_local = sum(local_only.values())
+        write(f" {n_local} test(s) skipped for an INCOMPLETE ENVIRONMENT, marked !! above.")
+        write(" These are declared and fine on a developer box — a missing C compiler, a")
+        write(" missing base dependency — and are a defect in CI, where the environment is")
+        if strict:
+            write(" built rather than found. Under BNGSIM_SKIP_AUDIT=strict they end the run.")
+        else:
+            write(" built rather than found. BNGSIM_SKIP_AUDIT=strict would end the run here.")
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Fail the run for undeclared skips under BNGSIM_SKIP_AUDIT=strict."""
+    """Fail the run under BNGSIM_SKIP_AUDIT=strict for an undeclared skip, or for
+    a LOCAL_ONLY skip — one that says the environment is incomplete, which is a
+    statement a CI leg is not entitled to make."""
     if os.environ.get("BNGSIM_SKIP_AUDIT", "warn").lower() != "strict":
         return
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     if reporter is None:
         return
-    _, undeclared = _audit_skips(reporter)
+    _, undeclared, local_only = _audit_skips(reporter)
     # Only escalate a run that would otherwise pass; a real failure keeps its
     # own exit code, which is the more actionable one.
-    if undeclared and exitstatus == 0:
+    if (undeclared or local_only) and exitstatus == 0:
         session.exitstatus = 1
 
 
@@ -280,6 +416,9 @@ def skip_audit() -> SimpleNamespace:
         is_corpus_absence=_is_corpus_absence,
         declared_skips=_DECLARED_SKIPS,
         corpus_remedies=_CORPUS_REMEDIES,
+        tier_of=_tier_of,
+        ANYWHERE=_ANYWHERE,
+        LOCAL_ONLY=_LOCAL_ONLY,
     )
 
 
