@@ -13,6 +13,7 @@ rather than a wrong answer for inputs the path cannot handle.
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 
@@ -281,6 +282,136 @@ class TestFallbackContract:
         # (empty list), NOT a fallback (None) — a constant-rate functional
         # reaction must not knock the whole model onto the FD path.
         assert J.build_per_observable_terms("k*Km", {}, {"A"}, {"k", "Km"}) == []
+
+
+class TestNonDifferentiableConstructs:
+    """GH #250 — rate laws the emitter accepts but cannot differentiate.
+
+    ``abs``, ``min``, ``max``, ``floor``, ``ceil`` and ``sign`` are all ExprTk
+    builtins, so they reach the symbolic core happily as *inputs*. None of them has
+    a derivative the emitter can print: the first three produce ``re``/``im``/
+    ``Heaviside`` and the last three an unevaluated ``Derivative``. The contract is
+    that such a rate law falls back (``None``), and that it does so **before**
+    paying the derivation — on ``BIOMD0000000385`` that is 138 s against a 20 s
+    budget, unbounded by it because one ``Abs`` derivative is a single ``sp.diff``.
+    """
+
+    @pytest.mark.parametrize("fn", ["abs", "floor", "ceil", "sign"])
+    def test_unary_nondifferentiable_over_observable_falls_back(self, fn):
+        assert J.build_per_observable_terms(f"k*{fn}(A)", {}, {"A"}, {"k"}) is None
+
+    @pytest.mark.parametrize("fn", ["min", "max"])
+    def test_binary_nondifferentiable_over_observable_falls_back(self, fn):
+        assert J.build_per_observable_terms(f"k*{fn}(A,B)", {}, {"A", "B"}, {"k"}) is None
+
+    @pytest.mark.parametrize("fn", ["abs", "floor", "ceil", "sign"])
+    def test_over_a_parameter_only_still_differentiates(self, fn):
+        # d/dA of abs(k)*A is abs(k) — the construct is only a problem when a
+        # *differentiation variable* sits under it, so this must NOT fall back.
+        terms = J.build_per_observable_terms(f"{fn}(k)*A", {}, {"A"}, {"k"})
+        assert terms is not None and len(terms) == 1
+
+    def test_inside_a_piecewise_condition_still_differentiates(self):
+        # d/dx Piecewise((f, c), ...) = Piecewise((df/dx, c), ...): conditions are
+        # copied through, never differentiated, so a blocked function in one is
+        # emitted verbatim and stays legal. MODEL1006230034 is this shape and keeps
+        # a complete analytical Jacobian; a position-blind check would take it away.
+        terms = J.build_per_observable_terms("if(abs(A)>Km, k*A, 0)", {}, {"A"}, {"k", "Km"})
+        assert terms is not None and len(terms) == 1
+        assert "abs(A)" in terms[0][1], f"condition lost its abs(): {terms[0][1]}"
+
+    def test_reached_through_an_inlined_function(self):
+        # The check runs on the *inlined* expression, so a construct hidden behind
+        # a user function is caught the same way.
+        assert J.build_per_observable_terms("g", {"g": "k*abs(A)"}, {"A"}, {"k"}) is None
+
+    def test_declines_without_paying_the_derivation(self):
+        # The point of the pre-check: the expensive case is expensive *because*
+        # sympy expands Abs into re/im, so a rate law with several of them over
+        # several observables must return in well under the time one such
+        # derivative takes (measured: 62 s for a single dAbs on BIOMD0000000385).
+        expr = "k*abs(A*B + A/B) + abs(B*B - A) + abs(A + B)"
+        t0 = time.perf_counter()
+        assert J.build_per_observable_terms(expr, {}, {"A", "B"}, {"k"}) is None
+        assert time.perf_counter() - t0 < 1.0, "fell back only after differentiating"
+
+
+class TestUnevaluatedDerivativeIsNotEmittable:
+    """GH #250 — ``_is_emittable`` must reject an unevaluated ``Derivative``.
+
+    It scanned ``atoms(sp.Function)`` only, and ``Derivative`` is not a ``Function``,
+    so ``d/dx sign(x)`` — which sympy returns as ``Derivative(sign(x), x)`` — passed
+    the gate and both printers then printed it verbatim. ``Derivative(sign(x), x)``
+    is not an ExprTk builtin and ``Derivative(...)`` is not a declared C function,
+    so the emitters produced a broken derivative instead of declining to one.
+    """
+
+    @pytest.mark.parametrize("fn", [sp.sign, sp.floor, sp.ceiling])
+    def test_unevaluated_derivative_rejected(self, fn):
+        x = sp.Symbol("A")
+        d = sp.diff(fn(x), x)
+        assert isinstance(d, sp.Derivative), "fixture no longer produces a Derivative"
+        assert J._is_emittable(d) is False
+
+    @pytest.mark.parametrize("fn", [sp.sign, sp.floor, sp.ceiling])
+    def test_printers_decline_rather_than_emit_it(self, fn):
+        x = sp.Symbol("A")
+        d = sp.diff(fn(x), x)
+        assert J.sympy_to_exprtk(d) is None
+        assert J.sympy_to_c(d, lambda n: n) is None
+
+    def test_ordinary_derivatives_still_emittable(self):
+        x = sp.Symbol("A")
+        for e in (x / (1 + x**2), sp.exp(x) * x, sp.sqrt(x), sp.sin(x) * sp.log(x)):
+            d = sp.diff(e, x)
+            assert J._is_emittable(d) is True, f"{e} regressed"
+            assert J.sympy_to_exprtk(d) is not None
+
+
+def test_nondifferentiable_set_matches_a_live_rederivation():
+    """``_NONDIFFERENTIABLE_EMITTER_FUNCS`` is a cache; this runs the derivation.
+
+    The constant was produced by differentiating every name in
+    ``_SYMPY_FUNC_TO_EXPRTK`` and keeping the ones whose result the emitter refuses
+    to print. That makes it a *fact about the emitter map*, not a judgement — so
+    adding a function to the map without re-deriving would silently reintroduce
+    GH #250 for that function, and dropping one would leave a stale name declining
+    rate laws for no reason. Neither is caught by the cases above, which only test
+    the six names already in the constant.
+
+    Re-derived here through ``sympy_to_exprtk`` rather than ``_is_emittable``,
+    because the printer is the gate that actually matters and it is what the #250
+    fix had to change: ``_is_emittable`` passed ``Derivative(sign(x), x)`` while the
+    printer happily emitted it.
+    """
+    a, b = sp.Symbol("A"), sp.Symbol("B")
+    derived = set()
+    for name in J._SYMPY_FUNC_TO_EXPRTK:
+        fn = getattr(sp, name, None)
+        assert fn is not None, f"{name} maps to no sympy object — emitter map is stale"
+        # Both arities, unioned, rather than the first that builds: `Min(A)`
+        # degenerates to `A` (a clean derivative) and only `Min(A, B)` shows the
+        # Heaviside, while `sqrt(A, B)` does not exist at all. A function belongs
+        # in the set if *any* arity it accepts has an underivable form.
+        built = False
+        for args in ((a,), (a, b)):
+            try:
+                deriv = sp.diff(fn(*args), a)
+            except (TypeError, ValueError):
+                continue
+            built = True
+            if J.sympy_to_exprtk(deriv) is None:
+                derived.add(name)
+        assert built, f"could not build {name} at arity 1 or 2"
+
+    assert derived == set(J._NONDIFFERENTIABLE_EMITTER_FUNCS), (
+        "the non-differentiable set no longer matches the emitter map: "
+        f"re-derived {sorted(derived)}, constant holds "
+        f"{sorted(J._NONDIFFERENTIABLE_EMITTER_FUNCS)}. If a function was added to "
+        "_SYMPY_FUNC_TO_EXPRTK, re-derive the constant rather than editing this "
+        "test — a name missing from it means rate laws using that function pay a "
+        "derivation the emitter will refuse (GH #250)."
+    )
 
 
 class TestEmitterRoundTrip:

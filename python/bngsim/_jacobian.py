@@ -277,6 +277,74 @@ def _inline_functions(
     return out
 
 
+# GH #250: functions the emitter accepts as *input* but whose derivative it can
+# never print, so a rate law using one over a differentiation variable is going to
+# decline however long the derivation is allowed to run.
+#
+# Derived rather than listed by hand: differentiate every name in
+# _SYMPY_FUNC_TO_EXPRTK and check whether the result survives _is_emittable and
+# the printers. Exactly six do not, in two flavours —
+#
+#   * Abs / Min / Max produce re()/im()/Heaviside, which are Functions outside the
+#     emitter map, so _is_emittable already rejects them *after* the derivation;
+#   * ceiling / floor / sign produce an unevaluated Derivative, which is not a
+#     Function at all and needed _is_emittable's own fix above.
+#
+# Catching them before ``sp.diff`` is a build-time saving, not a behaviour change:
+# the model declines either way. The saving is not marginal, because these are
+# exactly the constructs sympy is worst at. BIOMD0000000385 carries three Abs over
+# its differentiation variables and spends **138 s** discovering the decline — a
+# 6.9x overshoot of the 20 s budget, and unbounded by it, since the budget can only
+# be tested between sp.diff calls and one of these *is* a single call. Subdividing
+# the derivation does not help: recursing to 117 checkable steps still leaves the
+# two dAbs at 62.4 s and 34.8 s, with every other step under 0.04 s. The 138 s
+# becomes ~0.5 s here, and the model lands on the same FD Jacobian it did before.
+#
+# Matched on the type name during one traversal, because Min/Max are Application
+# but *not* Function subclasses, so ``atoms(sp.Function)`` misses them.
+_NONDIFFERENTIABLE_EMITTER_FUNCS = frozenset({"Abs", "Max", "Min", "ceiling", "floor", "sign"})
+
+
+def _nondifferentiable_over(expr, targets: set[str]) -> str | None:
+    """Name of a :data:`_NONDIFFERENTIABLE_EMITTER_FUNCS` node in a position that
+    will be differentiated with respect to one of ``targets``, or ``None`` if the
+    expression can be differentiated and emitted for all of them (GH #250).
+
+    Two things keep this from over-declining, and the corpus has a model for each:
+
+    * **The target intersection.** ``Abs(k) * A`` differentiates to ``Abs(k)``,
+      perfectly emittable — only a *differentiation variable* under one of these
+      functions is a problem, not a parameter.
+    * **Piecewise conditions are not differentiated.** ``d/dx Piecewise((f, c), …)``
+      is ``Piecewise((df/dx, c), …)``: the conditions are copied through verbatim,
+      so a blocked function inside one is emitted unchanged and stays legal.
+      ``MODEL1006230034`` is the case — ``Piecewise(…, mincond_J_K < Abs(deltaPsi))``
+      over ``deltaPsi``, a differentiation variable — and it keeps a complete
+      analytical Jacobian today. A position-blind scan would take it away.
+
+    Hence an explicit walk rather than ``preorder_traversal``: the recursion has to
+    skip the condition half of every ``ExprCondPair``.
+    """
+    try:
+        import sympy as sp
+    except ImportError:
+        return None
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        name = type(node).__name__
+        if (
+            name in _NONDIFFERENTIABLE_EMITTER_FUNCS
+            and {str(s) for s in node.free_symbols} & targets
+        ):
+            return name
+        if isinstance(node, sp.Piecewise):
+            stack.extend(value for value, _cond in node.args)
+        else:
+            stack.extend(node.args)
+    return None
+
+
 # ─── Core: differentiate w.r.t. observables ────────────────────────────────
 
 
@@ -345,6 +413,19 @@ def differentiate_rate_law(
         # symbol survived → cannot guarantee a correct analytical derivative.
         return None
 
+    # GH #250: fall back *before* differentiating when the answer is already
+    # decided. See _NONDIFFERENTIABLE_EMITTER_FUNCS — this is the same decline the
+    # _is_emittable check below would reach, minus the derivation, and on the one
+    # corpus model that hits it that is 138 s minus.
+    blocked = _nondifferentiable_over(sym_expr, {a for a in obs_alias if a in free})
+    if blocked is not None:
+        logger.debug(
+            "GH#76 analytical Jacobian: rate law uses %s over a differentiation "
+            "variable, whose derivative cannot be emitted; using finite differences.",
+            blocked,
+        )
+        return None
+
     result: dict = {}
     # Sorted so the emitted ExprTk/C derivative ordering is deterministic
     # regardless of set hash-seed — ``observable_names`` is a set, so iterating it
@@ -376,10 +457,20 @@ def differentiate_rate_law(
 
 def _is_emittable(expr) -> bool:
     """True iff every function in ``expr`` maps to an ExprTk builtin. Rejects
-    derivatives that introduced Heaviside / DiracDelta / special functions."""
+    derivatives that introduced Heaviside / DiracDelta / special functions, and
+    any unevaluated ``Derivative`` (GH #250)."""
     try:
         import sympy as sp
     except ImportError:
+        return False
+    # An unevaluated Derivative is sympy saying it *cannot* differentiate the
+    # node: sign, floor and ceiling all come back as `Derivative(f(x), x)`. It is
+    # not a Function, so the atoms() scan below never sees it, and both printers
+    # then fall through to printing it verbatim — `Derivative(sign(x), x)` is not
+    # an ExprTk builtin, and `Derivative(...)` is not a declared C function, so
+    # what reached the emitter was a broken derivative rather than a fallback to
+    # FD. Checked first because it is the cheap structural case (GH #250).
+    if expr.has(sp.Derivative):
         return False
     for fn in expr.atoms(sp.Function):
         name = type(fn).__name__
@@ -1365,12 +1456,19 @@ def differentiate_rate_law_c(
 #
 # That bound is real but not tight, because "one derivative" is not a bounded
 # quantity: the deadline can only be tested between sp.diff calls, never inside
-# one. Measured against the 20 s default (issue #245), the corpus overshoots by
-# 1.0x on MODEL1006230053 (20.2 s) and MODEL1006230090 (21.7 s) — and by **6.9x on
+# one. Measured against the 20 s default, #245 found the corpus overshooting by
+# 1.0x on MODEL1006230053 (20.2 s) and MODEL1006230090 (20.1 s) — and by **6.9x on
 # BIOMD0000000385**, whose five rate laws inline to a single 47 k-token expression
-# that takes 138 s to reach the first deadline check and then declines anyway.
-# Cutting that shorter means subdividing the derivation so the deadline is
-# reachable, not tightening this number — GH #250.
+# that took 138 s to reach the first deadline check and then declined anyway.
+#
+# GH #250 closed that without touching the deadline, because subdividing the
+# derivation could not have closed it: recursing 385's rate law to 117
+# deadline-checkable steps still leaves two dAbs at 62.4 s and 34.8 s, every other
+# step under 0.04 s. Abs is an atomic leaf and sp.diff on it is one call. What the
+# profile showed instead is that those 138 s were spent deriving something the
+# emitter can never print, so the answer was known before the derivation started —
+# see _NONDIFFERENTIABLE_EMITTER_FUNCS. 385 now declines in 0.8 s, and the worst
+# overshoot left in the corpus is 1.0x.
 
 # Base wall-clock budget (seconds) for the build-time derivation on a *small*
 # model.
