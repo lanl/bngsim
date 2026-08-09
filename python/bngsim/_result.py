@@ -221,6 +221,7 @@ class Result:
         "_varvol_amount_factor",
         "_ar_sens_map",
         "_ar_sens_blocked",
+        "_ar_sens_refused",
         "_seed",
         "_ic_sensitivity_seed",
         "_core",
@@ -441,7 +442,9 @@ class Result:
         # sensitivity must follow that assignment expression (the observable for
         # a linear-on-species rule, the function/expression otherwise), not the
         # raw integrated state sensitivity — output_sensitivities("species:<ar>")
-        # redirects through this. The raw tensor stays as sensitivities_species.
+        # redirects through this. GH #221 applies the same redirect to the
+        # sensitivity TENSOR rows, so the two agree by construction; the redirect
+        # is kept here because it also carries the by-name refusals below.
         # Empty for .net and non-AR models (no redirect). Set by Simulator._stamp.
         self._ar_sens_map: dict[str, tuple[str, str, float]] = {}
 
@@ -450,6 +453,16 @@ class Result:
         # redirect above accounts only for the constant vdiv, so those species'
         # output sensitivities are refused rather than returned subtly wrong.
         self._ar_sens_blocked: frozenset[str] = frozenset()
+
+        # GH #221: AR-species names whose sensitivity TENSOR row carries NaN
+        # because the redirect could not be honoured — blocked above, a source
+        # output-sensitivity block this run never computed, or (the common one)
+        # a source row that is itself NaN because codegen declined that
+        # expression, GH #198. Subset of the map's keys; empty on every model
+        # that resolves. A structural zero left in place would be
+        # indistinguishable from a measured one, which is the failure GH #221 is
+        # about. Set by Simulator._stamp.
+        self._ar_sens_refused: frozenset[str] = frozenset()
 
         # Stochastic seed actually used for this simulation. None for
         # ODE results (deterministic) and for results loaded from older
@@ -818,9 +831,12 @@ class Result:
         reported value is the rule's live value (its state slot is frozen), so
         its output sensitivity follows the assignment expression: the
         sensitivity of the rule's observable (linear-on-species rule) or
-        function (everything else), GH #205. The raw integrated-state
-        sensitivity for such a species stays available as the low-level
-        :attr:`sensitivities_species` tensor.
+        function (everything else), GH #205. Since GH #221 the
+        :attr:`sensitivities` tensor carries that same redirected row, so this
+        method and the tensor agree for those species; the redirect is kept here
+        because it raises **by name** where the tensor can only hold ``NaN``
+        (a blocked variable-volume species; an expression whose output
+        sensitivity a construct declines).
 
         .. rubric:: The two axes are not independent (GH #155)
 
@@ -959,9 +975,11 @@ class Result:
         # function). Its OUTPUT sensitivity must follow that assignment
         # expression — the sensitivity of the observable (linear-on-species rule,
         # GH #197) or the function/expression (everything else, GH #198) — not
-        # the raw integrated ``yS`` of the frozen state (which is ~0). The raw
-        # tensor stays available as ``Result.sensitivities_species``. Recurse on
-        # the source selector so its support / empty-block errors propagate.
+        # the raw integrated ``yS`` of the frozen state (which is ~0). GH #221
+        # puts that same redirected row in the species tensor, so this recursion
+        # is no longer the only place it exists — it is kept because recursing on
+        # the SOURCE selector propagates that source's support / empty-block
+        # errors, which a NaN row in the tensor cannot state by name.
         if kind == "species":
             redirect = self._ar_sens_map.get(meta["name"])
             if redirect is not None:
@@ -970,9 +988,10 @@ class Result:
                         f"output_sensitivities: assignment-rule species "
                         f"{meta['selector']!r} is reported with a time-varying "
                         "volume rescale (variable-volume compartment); its "
-                        "output sensitivity is not supported (GH #205). Use "
-                        "Result.sensitivities_species for the raw integrated "
-                        "state sensitivity."
+                        "output sensitivity is not supported (GH #205). "
+                        "Result.sensitivities is NaN in this row for the same "
+                        "reason (GH #221); Result.ar_sensitivity_refused lists "
+                        "every such species."
                     )
                 src_kind, src_name = redirect[0], redirect[1]
                 vdiv = redirect[2] if len(redirect) > 2 else 1.0
@@ -1055,6 +1074,12 @@ class Result:
         selectors (GH #202) — using the output-sensitivity tensor (GH
         #197/#198). For the richer eigenvalue / identifiability readout, see
         :meth:`identifiability`.
+
+        Unlike the gradient methods, the FIM weights **every** output it is built
+        over, so there is no unweighted row to drop: a model with a refused
+        assignment-rule row (:attr:`ar_sensitivity_refused`, GH #221) returns a
+        ``NaN`` matrix by default. Name the outputs you want in *outputs* to
+        build it over the rows that are known.
 
         Parameters
         ----------
@@ -1368,9 +1393,43 @@ class Result:
 
         # ∇_p L = Σ_t (dY/dp)^T · (dL/dY)
         # Vectorized: contract over time and species via einsum.
-        grad = np.einsum("tsi,ts->i", sens, dL_dY)  # (n_params,)
+        grad = self._contract_dL_dY(sens, dL_dY, self._refused_row_mask())  # (n_params,)
 
         return grad
+
+    def _refused_row_mask(self) -> NDArray[np.bool_] | None:
+        """Species-axis mask of the GH #221 NaN rows, or ``None`` if there are none.
+
+        Aligned with :attr:`species_names`, so a caller that subsets the species
+        axis (``species_indices=``) must subset this the same way.
+        """
+        if not self._ar_sens_refused:
+            return None
+        return np.array([n in self._ar_sens_refused for n in self._species_names], dtype=bool)
+
+    @staticmethod
+    def _contract_dL_dY(
+        sens: NDArray[np.float64],
+        dL_dY: NDArray[np.float64],
+        refused: NDArray[np.bool_] | None,
+    ) -> NDArray[np.float64]:
+        """``Σ_t (dY/dp)^T·(dL/dY)``, with the GH #221 NaN rows carried correctly.
+
+        A refused assignment-rule row is ``NaN`` on purpose — the derivative of
+        that column is genuinely unknown, and reporting 0.0 is the failure #221
+        is about. But IEEE makes ``0 · NaN`` NaN, so without this an unknown row
+        the loss puts **no weight on** would turn every parameter of the gradient
+        into NaN. Entries where ``dL/dY`` is exactly zero are therefore dropped
+        before the contraction (they contributed exactly zero anyway, so a run
+        with nothing refused takes the untouched ``einsum`` path). An entry the
+        loss *does* weight keeps its NaN and poisons the gradient — correctly:
+        that number is not known, and must not come back looking like one.
+        """
+        if refused is not None and refused.any():
+            drop = refused[None, :] & (dL_dY == 0.0)
+            if drop.any():
+                sens = np.where(drop[:, :, None], 0.0, sens)
+        return np.einsum("tsi,ts->i", sens, dL_dY)
 
     def sse_gradient(
         self,
@@ -1422,9 +1481,12 @@ class Result:
         Y = self._species
         sens = self._sensitivities  # (nt, ns, np)
 
+        refused = self._refused_row_mask()
         if species_indices is not None:
             Y = Y[:, species_indices]
             sens = sens[:, species_indices, :]
+            if refused is not None:
+                refused = refused[species_indices]
 
         if data.shape != Y.shape:
             raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
@@ -1435,7 +1497,7 @@ class Result:
         # dL/dY = 2 * (Y - data), then contract with sens
         # Vectorized: contract over time and species via einsum.
         dL_dY = 2.0 * residual  # (nt, ns_sel)
-        grad = np.einsum("tsi,ts->i", sens, dL_dY)  # (n_params,)
+        grad = self._contract_dL_dY(sens, dL_dY, refused)  # (n_params,)
 
         return loss, grad
 
@@ -1487,9 +1549,12 @@ class Result:
         Y = self._species
         sens = self._sensitivities
 
+        refused = self._refused_row_mask()
         if species_indices is not None:
             Y = Y[:, species_indices]
             sens = sens[:, species_indices, :]
+            if refused is not None:
+                refused = refused[species_indices]
 
         if data.shape != Y.shape:
             raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
@@ -1511,7 +1576,7 @@ class Result:
         # dL/dY = 2 * (Y - D) / sigma^2
         # Vectorized: contract over time and species via einsum.
         dL_dY = 2.0 * residual * inv_var
-        grad = np.einsum("tsi,ts->i", sens, dL_dY)  # (n_params,)
+        grad = self._contract_dL_dY(sens, dL_dY, refused)  # (n_params,)
 
         return chi2, grad
 
@@ -1559,9 +1624,12 @@ class Result:
         Y = self._species
         sens = self._sensitivities
 
+        refused = self._refused_row_mask()
         if species_indices is not None:
             Y = Y[:, species_indices]
             sens = sens[:, species_indices, :]
+            if refused is not None:
+                refused = refused[species_indices]
 
         if data.shape != Y.shape:
             raise ValueError(f"data shape {data.shape} != species shape {Y.shape}")
@@ -1592,7 +1660,7 @@ class Result:
         # d(NLL)/dY = (Y - D) / sigma^2  (the 0.5 * 2 cancel)
         # Vectorized: contract over time and species via einsum.
         dL_dY = residual * inv_var
-        grad = np.einsum("tsi,ts->i", sens, dL_dY)  # (n_params,)
+        grad = self._contract_dL_dY(sens, dL_dY, refused)  # (n_params,)
 
         return nll, grad
 
@@ -1613,6 +1681,15 @@ class Result:
         here, and its derivative is
         ``output_sensitivities("observable:<name>")`` — the loader gives every
         promoted symbol a same-named observable (GH #202).
+
+        Row *i* is the derivative of **the value in column *i***, which for an
+        SBML AssignmentRule-target species is the rule's live value, not the
+        frozen state slot the integrator carries (GH #221): those rows are the
+        chain rule through the assignment, the same quantity
+        ``output_sensitivities("species:<name>")`` returns. Where that chain rule
+        is unavailable the row is ``NaN`` — never a structural zero, which no
+        consumer could tell from a measured one — and the run warns naming the
+        species (:attr:`ar_sensitivity_refused`).
 
         Example
         -------
@@ -1675,13 +1752,40 @@ class Result:
         ``sensitivities_observables``, ``sensitivities_expressions`` (+ the
         ``_ic`` variants). Identical array to :attr:`sensitivities`.
 
-        This is the **raw integrated state** tensor — for an SBML
-        AssignmentRule-target species its slot is the frozen state's
-        sensitivity (~0), not the rule's. The rule-following derivative is the
-        one :meth:`output_sensitivities` returns for ``species:<name>``
-        (GH #205); this attribute is the documented low-level escape hatch.
+        Every row is the derivative of the value the matching :attr:`species`
+        column reports. For an SBML AssignmentRule-target species that is the
+        rule's live value: GH #205 routed ``output_sensitivities("species:…")``
+        through the rule, and GH #221 put the same row in this tensor, because
+        the raw integrated ``yS`` of the frozen slot it used to hold is
+        identically zero — not a low-level escape hatch, just a silent zero that
+        :meth:`gradient` read as a flat objective.
         """
         return self._sensitivities
+
+    @property
+    def ar_sensitivity_refused(self) -> frozenset[str]:
+        """AssignmentRule-target species whose sensitivity row carries ``NaN``.
+
+        An AR-target species' sensitivity row is the chain rule through its
+        assignment (GH #221). Where that is unavailable the row is ``NaN`` rather
+        than left at the structural zero no consumer could distinguish from a
+        measurement, and the run warns naming these species. Two causes: codegen
+        declined the rule's own output sensitivity (GH #198 refuses an ``if()``
+        conditional or a table function rather than guess — the common one), or
+        the reported value carries a time-varying volume rescale the redirect
+        does not model (GH #85/#87).
+
+        Membership means *some* entry of the row is ``NaN``, not necessarily all
+        of them. :meth:`gradient` and the built-in objective gradients drop these
+        rows wherever ``dL/dY`` is exactly zero, so a fit that never scores these
+        species still gets a number; an entry the loss does weight stays ``NaN``.
+        :meth:`output_sensitivities` raises for these names with the specific
+        reason.
+
+        Empty on every model that resolves: 590 of the 639 AR rows reachable
+        across the 215 rr_parity corpus models that run under sensitivities.
+        """
+        return self._ar_sens_refused
 
     @property
     def sensitivities_observables(self) -> NDArray[np.float64]:
@@ -2305,6 +2409,15 @@ class Result:
                 f.create_dataset(
                     "sensitivity_ic_species", data=self._sensitivity_ic_species, dtype=dt
                 )
+            # GH #221: which species rows above are NaN by refusal rather than by
+            # a failed solve. Written only when there are any, so an ordinary
+            # result's file is unchanged. Without it a reloaded result cannot
+            # tell the two apart, and `gradient` would lose the exemption that
+            # lets a loss which never weights those rows still return a number.
+            if self._ar_sens_refused:
+                f.create_dataset(
+                    "ar_sensitivity_refused", data=sorted(self._ar_sens_refused), dtype=dt
+                )
 
             # Solver stats
             stats_grp = f.create_group("solver_stats")
@@ -2415,6 +2528,7 @@ class Result:
             expression_sensitivities_ic = _sens("expression_sensitivities_ic")
             sensitivity_params = _names("sensitivity_params")
             sensitivity_ic_species = _names("sensitivity_ic_species")
+            ar_sens_refused = _names("ar_sensitivity_refused") or []
 
         result = cls(
             core=None,
@@ -2437,6 +2551,9 @@ class Result:
             _observable_sensitivities_ic=observable_sensitivities_ic,
             _expression_sensitivities_ic=expression_sensitivities_ic,
         )
+        # GH #221 — the NaN rows this file records as refusals, not as a failed
+        # solve, so `gradient` keeps its zero-weight exemption after a round trip.
+        result._ar_sens_refused = frozenset(ar_sens_refused)
         logger.info(
             "Loaded result: %d time points, %d species, %d observables",
             result.n_times,

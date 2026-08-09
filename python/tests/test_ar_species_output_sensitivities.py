@@ -1,13 +1,22 @@
-"""GH #205 (b): output sensitivities for SBML AssignmentRule-target species.
+"""GH #205 (b) / GH #221: sensitivities for SBML AssignmentRule-target species.
 
 An AssignmentRule-target species is emitted ``fixed`` — the loader zeroes its
 ODE derivative and the value path overwrites its column from the rule's live
 value (an *observable* for a linear-on-species rule, GH #197; a *function /
 expression* otherwise, GH #198). The raw integrated forward-sensitivity ``yS``
-for that frozen slot is therefore meaningless (~0). So ``species:<name>`` output
-sensitivity must follow the **assignment expression**: the sensitivity of the
-rule's observable/expression, not the raw state sensitivity. The raw tensor
-stays available as the low-level ``Result.sensitivities_species``.
+for that frozen slot is therefore meaningless: identically zero, because the
+frozen slot's variational RHS is zero too. So the derivative must follow the
+**assignment expression**: the sensitivity of the rule's observable/expression.
+
+GH #205 did that for the ``species:<name>`` *selector*
+(``Result.output_sensitivities``). GH #221 does it for the
+``Result.sensitivities`` **tensor**, which is what ``Result.gradient`` /
+``Result.sse_gradient`` contract ``dL/dY`` against row-for-row — so before it,
+a fit scoring an assignment-rule species (``IRS_total``, ``InR_active``: the
+*reported* quantities of an SBML model, which is what assignment rules are for)
+read a gradient that was zero in every direction, and could not tell that from a
+flat objective. Where the chain rule is unavailable the row is ``NaN`` and the
+run warns, never a structural zero.
 
 ``from_sbml`` + sensitivities is a never-before-tested intersection, so these are
 authored from scratch. Oracles, in order of authority:
@@ -22,6 +31,8 @@ authored from scratch. Oracles, in order of authority:
     natural AR oracle but flaky on this machine, so it only sanity-checks the
     value the FD oracle differentiates, never gates the suite.
 """
+
+import warnings
 
 import bngsim
 import numpy as np
@@ -165,14 +176,16 @@ class TestLinearARSpecies:
             r.output_sensitivities("observable:S"),
         )
 
-    def test_raw_state_sensitivity_is_low_level(self):
-        # Contract: the raw integrated yS for the frozen AR slot stays the
-        # low-level tensor (~0 here) and is NOT what species: returns.
+    def test_tensor_row_follows_the_rule(self):
+        # GH #221 — the tensor row IS the redirect now, not the frozen slot's yS
+        # (which is identically 0 and used to sit here silently).
         r = _sim(LINEAR).run(t_span=T_SPAN, n_points=N, **_RUN)
         iS = list(r.species_names).index("S")
-        assert np.max(np.abs(r.sensitivities_species[:, iS, :])) == pytest.approx(0.0, abs=1e-9)
-        # ... and it genuinely differs from the rule-following output.
-        assert np.max(np.abs(r.output_sensitivities("species:S")[:, 0, :])) > 1.0
+        np.testing.assert_array_equal(
+            r.sensitivities_species[:, iS, :],
+            r.output_sensitivities("species:S")[:, 0, :],
+        )
+        assert np.max(np.abs(r.sensitivities_species[:, iS, :])) > 1.0
 
 
 # ── Nonlinear rule → function/expression redirect (GH #198, codegen) ────────
@@ -209,11 +222,14 @@ class TestNonlinearARSpecies:
             r.output_sensitivities("expression:S2"),
         )
 
-    def test_raw_state_sensitivity_is_low_level(self):
+    def test_tensor_row_follows_the_rule(self):
         r = _sim(NONLINEAR).run(t_span=T_SPAN, n_points=N, **_RUN)
         iS2 = list(r.species_names).index("S2")
-        assert np.max(np.abs(r.sensitivities_species[:, iS2, :])) == pytest.approx(0.0, abs=1e-9)
-        assert np.max(np.abs(r.output_sensitivities("species:S2")[:, 0, :])) > 1.0
+        np.testing.assert_array_equal(
+            r.sensitivities_species[:, iS2, :],
+            r.output_sensitivities("species:S2")[:, 0, :],
+        )
+        assert np.max(np.abs(r.sensitivities_species[:, iS2, :])) > 1.0
 
 
 # ── compute_all_sensitivities (stitched) carries the redirect ───────────────
@@ -289,6 +305,407 @@ class TestComputeAllSensitivitiesRedirect:
         )
 
 
+# ── GH #221: the sensitivity TENSOR row, and what reads it ──────────────────
+#
+# The selector API was already right after GH #205. What #221 is about is the
+# tensor: Result.gradient / sse_gradient / fisher_information never go through a
+# selector, they contract the raw (n_times, n_species, n_params) block, so an
+# untouched AR row made the objective look flat in every direction.
+
+
+_RULES = [
+    pytest.param(LINEAR, "S", id="linear"),
+    pytest.param(NONLINEAR, "S2", id="nonlinear"),
+]
+
+
+class TestARRowInTheTensor:
+    @pytest.mark.parametrize(
+        "sbml,sid,closed_form",
+        [
+            # dS/dkd  = dA/dkd     = -A0·t·e^(-kd·t)
+            # dS2/dkd = 2·A·dA/dkd = 2·(A0·e^(-kd·t))·(-A0·t·e^(-kd·t))
+            pytest.param(LINEAR, "S", lambda t: -A0 * t * np.exp(-KD * t), id="linear"),
+            pytest.param(
+                NONLINEAR,
+                "S2",
+                lambda t: 2.0 * A0 * np.exp(-KD * t) * (-A0 * t * np.exp(-KD * t)),
+                id="nonlinear",
+            ),
+        ],
+    )
+    def test_tensor_row_matches_the_closed_form(self, sbml, sid, closed_form):
+        r = _sim(sbml).run(t_span=T_SPAN, n_points=N, **_RUN)
+        i = list(r.species_names).index(sid)
+        ikd = r.sensitivity_params.index("kd")
+        _assert_close(r.sensitivities[:, i, ikd], closed_form(np.asarray(r.time)))
+
+    @pytest.mark.parametrize("sbml,sid", _RULES)
+    def test_tensor_row_matches_fd_of_the_reported_value(self, sbml, sid):
+        # The independent oracle: central difference of the column the value path
+        # actually emits. It never touches the sensitivity machinery.
+        r = _sim(sbml).run(t_span=T_SPAN, n_points=N, **_RUN)
+        i = list(r.species_names).index(sid)
+        ikd = r.sensitivity_params.index("kd")
+        _assert_close(r.sensitivities[:, i, ikd], _fd_kd(sbml, sid))
+
+    @pytest.mark.parametrize("sbml,sid", _RULES)
+    def test_gradient_over_the_ar_species_is_not_flat(self, sbml, sid):
+        """The reported harm: an SSE gradient scored on the AR species alone.
+
+        Oracle is a central difference of the loss itself — no sensitivity
+        tensor on either side of the comparison, so this pins the number a
+        fitter would read, not just the tensor's self-consistency.
+        """
+        r = _sim(sbml).run(t_span=T_SPAN, n_points=N, **_RUN)
+        i = list(r.species_names).index(sid)
+        target = np.zeros(N)  # L(kd) = Σ_t value(t; kd)²
+
+        def loss_at(kd):
+            return float(np.sum((_value_kd(sbml, sid, kd) - target) ** 2))
+
+        def dL_dY(species, time):
+            g = np.zeros_like(species)
+            g[:, i] = 2.0 * (species[:, i] - target)
+            return g
+
+        grad = r.gradient(dL_dY)
+        ikd = r.sensitivity_params.index("kd")
+        h = 5e-6
+        fd = (loss_at(KD + h) - loss_at(KD - h)) / (2 * h)
+        assert abs(grad[ikd]) > 0.0
+        assert grad[ikd] == pytest.approx(fd, rel=1e-4)
+
+    def test_ic_axis_row_follows_the_rule_too(self):
+        # ∂S/∂A(0) = ∂A/∂A(0) = e^(-kd·t) for the linear rule S = A.
+        m = bngsim.Model.from_sbml_string(LINEAR)
+        r = bngsim.Simulator(m, method="ode", sensitivity_ic=["A"]).run(
+            t_span=T_SPAN, n_points=N, **_RUN
+        )
+        i = list(r.species_names).index("S")
+        _assert_close(r.sensitivities_ic[:, i, 0], np.exp(-KD * np.asarray(r.time)))
+        np.testing.assert_array_equal(
+            r.sensitivities_ic[:, i, :],
+            r.output_sensitivities("species:S", axis="ic")[:, 0, :],
+        )
+
+    @pytest.mark.parametrize("sbml,sid", _RULES)
+    def test_only_the_ar_row_moved(self, sbml, sid):
+        """Every non-AR row is bit-identical to the block the integrator wrote.
+
+        The pass copies into a fresh array, so "it only touched one row" is a
+        claim worth pinning rather than assuming: rebuild the untouched block by
+        stacking the ordinary species' own selector slices.
+        """
+        r = _sim(sbml).run(t_span=T_SPAN, n_points=N, **_RUN)
+        names = list(r.species_names)
+        for name in names:
+            if name == sid:
+                continue
+            i = names.index(name)
+            np.testing.assert_array_equal(
+                r.sensitivities[:, i, :], r.output_sensitivities(f"species:{name}")[:, 0, :]
+            )
+
+    def test_stitched_result_carries_the_row(self):
+        # compute_all_sensitivities fills each chunk's AR row from that chunk's
+        # own observable block, then concatenates along the parameter axis.
+        m = bngsim.Model.from_sbml_string(LINEAR)
+        r = bngsim.Simulator(m, method="ode").compute_all_sensitivities(
+            t_span=T_SPAN, n_points=N, params=["k", "kd"], chunk_size=1, **_RUN
+        )
+        i = list(r.species_names).index("S")
+        ikd = r.sensitivity_params.index("kd")
+        t = np.asarray(r.time)
+        _assert_close(r.sensitivities[:, i, ikd], -A0 * t * np.exp(-KD * t))
+        np.testing.assert_array_equal(
+            r.sensitivities[:, i, :], r.output_sensitivities("species:S")[:, 0, :]
+        )
+
+
+# ── GH #221: refusal — NaN and a named warning, never a structural zero ─────
+
+# ``T`` is an hOSU=true AssignmentRule target in a compartment driven by a rate
+# rule, so its reported value is (rule / vdiv) · V_static/V_live(t): the redirect
+# models only the constant vdiv, and the missing d V_live/dθ makes the row wrong
+# rather than merely imprecise. GH #205 refuses the selector by name; #221 must
+# not leave the tensor row at 0.0, which no consumer could tell from a
+# measurement.
+BLOCKED_VARVOL = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ar_varvol">
+    <listOfCompartments><compartment id="C" size="1" constant="false"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="100"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="T" compartment="C" initialAmount="0"
+               hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k" value="0.3" constant="true"/>
+      <parameter id="g" value="0.1" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <rateRule variable="C"><math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply><times/><ci>g</ci><ci>C</ci></apply>
+      </math></rateRule>
+      <assignmentRule variable="T"><math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply><times/><cn>3</cn><ci>A</ci></apply>
+      </math></assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>C</ci><apply><times/><ci>k</ci><ci>A</ci></apply></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+class TestRefusedARRow:
+    def _run(self):
+        """Run the blocked model, letting the refusal warning through quietly —
+        ``test_warns_naming_the_species`` is what pins the warning itself, so the
+        other assertions here stay independent of it."""
+        m = bngsim.Model.from_sbml_string(BLOCKED_VARVOL)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k", "g"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return sim.run(t_span=(0.0, 5.0), n_points=6, **_RUN)
+
+    def test_warns_naming_the_species(self):
+        m = bngsim.Model.from_sbml_string(BLOCKED_VARVOL)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k", "g"])
+        with pytest.warns(UserWarning, match=r"Assignment-rule species \['T'\].*NaN"):
+            sim.run(t_span=(0.0, 5.0), n_points=6, **_RUN)
+
+    def test_the_fixture_is_actually_blocked(self):
+        # Guard the fixture itself: if the loader ever stops classifying T as a
+        # variable-volume AR species, every assertion below passes vacuously.
+        m = bngsim.Model.from_sbml_string(BLOCKED_VARVOL)
+        assert "T" in (getattr(m, "_ar_report_map", None) or {})
+        assert "T" in (getattr(m, "_varvol_conc_map", None) or {})
+
+    def test_row_is_nan_not_zero(self):
+        r = self._run()
+        i = list(r.species_names).index("T")
+        assert np.isnan(r.sensitivities[:, i, :]).all()
+        assert r.ar_sensitivity_refused == frozenset({"T"})
+
+    def test_ordinary_rows_survive_the_refusal(self):
+        r = self._run()
+        i = list(r.species_names).index("A")
+        assert np.isfinite(r.sensitivities[:, i, :]).all()
+        assert np.max(np.abs(r.sensitivities[:, i, :])) > 0.0
+
+    def test_selector_still_raises_by_name(self):
+        r = self._run()
+        with pytest.raises(ValueError, match="time-varying volume rescale"):
+            r.output_sensitivities("species:T")
+
+    def test_a_loss_that_ignores_the_refused_row_still_gets_a_gradient(self):
+        """IEEE makes ``0 · NaN`` NaN, so one refused row would otherwise poison
+        every parameter of a fit that never scored that species."""
+        r = self._run()
+        names = list(r.species_names)
+        iA, iT = names.index("A"), names.index("T")
+
+        def dL_dY(species, time):
+            g = np.zeros_like(species)
+            g[:, iA] = 2.0 * species[:, iA]  # weight A only
+            return g
+
+        grad = r.gradient(dL_dY)
+        assert np.isfinite(grad).all()
+        # And it is the same number the refused row's absence would give.
+        expected = np.einsum(
+            "tsi,ts->i", r.sensitivities[:, [iA], :], dL_dY(np.asarray(r.species), r.time)[:, [iA]]
+        )
+        np.testing.assert_array_equal(grad, expected)
+        assert np.max(np.abs(grad)) > 0.0
+        # sse_gradient's own way of saying "not this species" agrees.
+        data = np.zeros((len(r.time), 1))
+        _, sub = r.sse_gradient(data, species_indices=[iA])
+        assert np.isfinite(sub).all()
+        assert iT != iA  # the refused row really is in the full array
+
+    def test_fisher_information_has_no_unweighted_row_to_drop(self):
+        """The FIM weights every output it is built over, so the exemption the
+        gradients get does not apply — naming the outputs is the way out, and
+        that is what the docstring promises."""
+        r = self._run()
+        assert np.isnan(r.fisher_information()).all()
+        assert np.isfinite(r.fisher_information(outputs=["species:A"])).all()
+
+    def test_a_loss_that_weights_the_refused_row_gets_nan(self):
+        # The other half: an unknown derivative the objective actually depends on
+        # must not come back looking like a number.
+        r = self._run()
+        iT = list(r.species_names).index("T")
+
+        def dL_dY(species, time):
+            g = np.zeros_like(species)
+            g[:, iT] = 1.0
+            return g
+
+        assert np.isnan(r.gradient(dL_dY)).all()
+
+
+# ``F``'s rule is a piecewise, which codegen lowers to an `if()` and then
+# declines to differentiate (GH #198 refuses rather than guess). The rule's own
+# expression row is already NaN; what #221 adds is that the SPECIES row stops
+# disagreeing with it. This is the common refusal on the corpus — 50 of the 639
+# AR rows across 215 models, versus 15 blocked by a variable volume — and it is
+# the one the issue's `IRS_total`-style report does not cover.
+DECLINED_PIECEWISE = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ar_declined">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="c" initialConcentration="10"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="F" compartment="c" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="kd" value="0.5" constant="true"/>
+      <parameter id="ton" value="5" constant="true"/>
+    </listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="F"><math xmlns="http://www.w3.org/1998/Math/MathML">
+        <piecewise>
+          <piece><apply><times/><cn>2</cn><ci>A</ci></apply>
+            <apply><lt/><csymbol encoding="text"
+              definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol><ci>ton</ci></apply>
+          </piece>
+          <otherwise><ci>A</ci></otherwise>
+        </piecewise>
+      </math></assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>kd</ci><ci>A</ci></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+class TestDeclinedExpressionARRow:
+    def _run(self):
+        m = bngsim.Model.from_sbml_string(DECLINED_PIECEWISE)
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["kd"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return sim.run(t_span=(0.0, 10.0), n_points=6, **_RUN)
+
+    def test_the_fixture_really_is_declined(self):
+        r = self._run()
+        assert r._ar_sens_map["F"][0] == "expression"
+        assert "if()" in (r._expression_sens_support.get("F") or "")
+
+    def test_species_row_agrees_with_the_expression_row_it_mirrors(self):
+        r = self._run()
+        i = list(r.species_names).index("F")
+        j = list(r.expression_names).index("F")
+        assert np.isnan(r.sensitivities_expressions[:, j, :]).all()
+        assert np.isnan(r.sensitivities[:, i, :]).all()
+        assert r.ar_sensitivity_refused == frozenset({"F"})
+
+    def test_selector_reports_the_construct_that_declined(self):
+        r = self._run()
+        with pytest.raises(ValueError, match=r"if\(\) conditional"):
+            r.output_sensitivities("species:F")
+
+    def test_the_integrated_species_is_unaffected(self):
+        r = self._run()
+        i = list(r.species_names).index("A")
+        _assert_close(
+            r.sensitivities[:, i, 0], -A0 * np.asarray(r.time) * np.exp(-KD * np.asarray(r.time))
+        )
+
+
+# ── GH #221: one vdiv, resolved live (#170 writable compartment size) ───────
+
+
+class TestWritableVolumeDivisor:
+    """``vdiv`` is ``V_c(target)`` for an hOSU=true AR species, and #170 makes a
+    compartment size writable — so the value pass reads it live. The redirect
+    used to keep the *load-time* number, which put the reported value and its
+    derivative out by exactly the write's factor. One resolution site now."""
+
+    _SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ar_writable_v">
+    <listOfCompartments><compartment id="C" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="100"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="T" compartment="C" initialAmount="0"
+               hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k" value="0.3" constant="true"/></listOfParameters>
+    <listOfRules>
+      <assignmentRule variable="T"><math xmlns="http://www.w3.org/1998/Math/MathML">
+        <apply><times/><cn>3</cn><ci>A</ci></apply>
+      </math></assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="A" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>C</ci><apply><times/><ci>k</ci><ci>A</ci></apply></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+    _V_NEW = 3.0
+    _T = (0.0, 5.0)
+    _N = 6
+
+    def _model(self, k=0.3):
+        m = bngsim.Model.from_sbml_string(self._SBML)
+        m.set_param("C", self._V_NEW)
+        m.set_param("k", k)
+        return m
+
+    def test_value_and_derivative_use_the_same_divisor(self):
+        r = bngsim.Simulator(self._model(), method="ode", sensitivity_params=["k"]).run(
+            t_span=self._T, n_points=self._N, **_RUN
+        )
+        i = list(r.species_names).index("T")
+        assert r._ar_sens_map["T"][2] == pytest.approx(self._V_NEW)
+        np.testing.assert_array_equal(
+            r.sensitivities[:, i, :], r.output_sensitivities("species:T")[:, 0, :]
+        )
+
+    def test_matches_fd_of_the_written_model(self):
+        r = bngsim.Simulator(self._model(), method="ode", sensitivity_params=["k"]).run(
+            t_span=self._T, n_points=self._N, **_RUN
+        )
+        i = list(r.species_names).index("T")
+
+        def value(k):
+            sim = bngsim.Simulator(self._model(k), method="ode")
+            return np.asarray(sim.run(t_span=self._T, n_points=self._N, **_FD).species)[:, i]
+
+        h = 0.3 * 1e-5
+        _assert_close(r.sensitivities[:, i, 0], (value(0.3 + h) - value(0.3 - h)) / (2 * h))
+
+
 # ── Non-AR species are untouched by the redirect (regression guard) ─────────
 
 
@@ -334,3 +751,30 @@ class TestRoadrunnerValueCrossCheck:
         # tolerances, so this is a sanity cross-check of the value, not a
         # precision comparison (the analytic/FD asserts above are the oracle).
         np.testing.assert_allclose(np.asarray(data[:, 1]), ours, rtol=1e-4, atol=1e-6)
+
+
+# ── GH #221: the refusal survives an HDF5 round trip ───────────────────────
+
+
+def test_refused_set_round_trips_through_hdf5(tmp_path):
+    """A reloaded result must still know its NaN rows are refusals rather than a
+    failed solve — otherwise ``gradient`` silently loses the zero-weight
+    exemption and a fit that never scored the species gets NaN everywhere."""
+    pytest.importorskip("h5py")
+    m = bngsim.Model.from_sbml_string(BLOCKED_VARVOL)
+    sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k", "g"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = sim.run(t_span=(0.0, 5.0), n_points=6, **_RUN)
+    path = tmp_path / "r.h5"
+    r.save(path)
+    back = bngsim.Result.load(path)
+    assert back.ar_sensitivity_refused == frozenset({"T"})
+    iA = list(back.species_names).index("A")
+
+    def dL_dY(species, time):
+        g = np.zeros_like(species)
+        g[:, iA] = 1.0
+        return g
+
+    assert np.isfinite(back.gradient(dL_dY)).all()
