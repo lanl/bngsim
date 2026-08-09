@@ -1362,51 +1362,95 @@ def differentiate_rate_law_c(
 # solve, build collapses 47×–>100×). The budget is checked both between reactions
 # and inside differentiate_rate_law's per-observable loop, so overshoot is bounded
 # to one rate law's derivative even for a pathological single reaction.
+#
+# That bound is real but not tight, because "one derivative" is not a bounded
+# quantity: the deadline can only be tested between sp.diff calls, never inside
+# one. Measured against the 20 s default (issue #245), the corpus overshoots by
+# 1.0x on MODEL1006230053 (20.2 s) and MODEL1006230090 (21.7 s) — and by **6.9x on
+# BIOMD0000000385**, whose five rate laws inline to a single 47 k-token expression
+# that takes 138 s to reach the first deadline check and then declines anyway.
+# Cutting that shorter means subdividing the derivation so the deadline is
+# reachable, not tightening this number — GH #250.
 
 # Base wall-clock budget (seconds) for the build-time derivation on a *small*
 # model.
 #
 # Choosing the value: the budget must (a) exceed the derivation time of every model
-# whose *solve* genuinely needs the analytical Jacobian, or it would regress that
-# model from PASS to a solver failure, and (b) stay below the pathological
-# derivations it exists to cut off. A full rr_parity corpus classification (build
-# analytical vs finite-difference, then solve at the harness's 1e-9/1e-12
-# tolerance) found the two populations cleanly separated:
+# the analytical Jacobian actually buys something on, or it regresses that model,
+# and (b) stay below the pathological derivations it exists to cut off. #95 read
+# (a) as "the solve *fails* on FD" and found the two populations 3.4x apart —
+# BIOMD0000000457 needing ~12 s to derive, the cheapest waste (BIOMD0000000496) at
+# ~41 s — and put 20 s in the middle.
 #
-#   * needs-analytical (FD solve *fails*): only BIOMD0000000457 among the corpus —
-#     derives in ~12 s (even under 4-worker contention) and must keep its
-#     analytical Jacobian.
-#   * derivation losers (FD solve identical, derivation pure waste): the next
-#     slowest is BIOMD0000000496 at ~41 s, then 595/574/628 at 52–75 s.
+# Both endpoints have since moved by more than the gap between them, so the value
+# was re-derived from the corpus rather than adjusted (issues #249 and #245; the
+# sweeps behind every number here, and the floor the value is held to, are in
+# python/tests/test_sbml_jacobian_budget_biomd496.py). Unbudgeted derivation over
+# 1319 rr_parity ODE models, then analytical / FD-forced / RoadRunner at the
+# harness's 1e-9/1e-12 tolerance in fresh processes. **Solve times are medians of
+# repeats on a warm codegen cache** — a single cold-cache sample reports
+# FD/analytical ratios wrong by up to 9x in either direction, which is what made
+# 496 read as a model worth protecting and MODEL1603150001 read as one that is not.
 #
-# 20 s sits in the [~12 s, ~41 s] gap with ~1.7x margin over the slowest
-# needs-analytical model and ~2x under the fastest loser — the widest separation a
-# single fixed budget gives this pair. Crucially every model in that pair is small
-# (<= 295 species), so on the model-size-scaled budget below they all stay pinned
-# to this base. Models that derive quickly (the vast majority, << 1 s) are
-# unaffected. Override / disable with BNGSIM_JAC_DERIV_BUDGET_S (<= 0 or
-# "inf"/"none" → unbounded, the pre-#95 behavior; raise it on a slow machine if a
-# needs-analytical model logs a fallback).
+#   * (a) is no longer a *correctness* constraint at all (issue #249): forcing FD
+#     on all 1,218 attaching models finds none that needs the analytical Jacobian
+#     to solve. BIOMD0000000457, the model #95 sized the budget against, is the one
+#     apparent exception and is not one — its FD solve fails at exactly rtol 1e-9 on
+#     x86_64 and nowhere else, succeeding on both neighbouring tolerances and on
+#     arm64 at all of them. That is an arithmetic knife-edge, not a model property,
+#     and it is unpinnable in either direction (issue #245).
+#   * (a) survives as a *cost* constraint, which is what sets the floor:
+#       - BIOMD0000000608 solves 4.2x faster with the analytical Jacobian
+#         (0.015 s vs 0.065 s) and derives in **4.76 s**. FD *works* here, so the
+#         #95 screen could not see it; it is nonetheless the most expensive
+#         derivation in the corpus that pays for itself, and it sets the floor.
+#         Not a lone fixture either — MODEL1603150001 (3.0x), MODEL1601050000
+#         (2.7x), MODEL1602080000 (1.7x) and MODEL1504130000 (1.4x) derive in
+#         2.2-3.0 s and pay too. Every one of them reads as a *loss* (0.2-0.3x) in
+#         a single cold-cache sample, which is the same artifact from the other
+#         side: whichever mode runs first absorbs the codegen warm-up.
+#   * (b) the cheapest derivation that does NOT pay for itself is BIOMD0000000628
+#     at 59.3 s, whose analytical solve is if anything slower than its FD one. Above
+#     it: MODEL1006230049/077/053 at 85-133 s, BIOMD0000000385 (118 s, and it
+#     *declines* after paying — waste at any budget), and MODEL1006230090, whose
+#     unbudgeted derivation ran past a 400 s probe cap without a verdict.
+#   * Between 4.76 s and 59.3 s there is nothing to get right. 496 (10.9 s) and 497
+#     (11.1 s) derive to completion on this default and measure 1.02x and 1.25x —
+#     the waste #245 reported, and real, but ~22 s of build across the whole corpus.
 #
-# That gap has closed from the left, and the classification was re-run over the
-# whole corpus to find out by how much (issue #210; the sweep and the numbers are
-# recorded in python/tests/test_sbml_jacobian_budget_biomd496.py, which is also
-# where the floor the value is held to now lives):
+# So the window is (4.76 s, 59.3 s): **12.5x wide, against #95's 3.4x**. The gap did
+# not close, it moved and opened. 20 s sits 4.2x above the floor and 3.0x below the
+# ceiling — deliberately above the 16.8 s geometric centre, because the two ways to
+# be wrong do not cost the same: too high spends build seconds once, too low buys a
+# permanently slower solve. That asymmetry is also what makes the value survive the
+# machine spread
+# (~3.3x between two development machines, ratios travel and seconds do not): on a
+# machine 3.3x slower, 608 derives in 15.7 s and is still kept; on one 3.3x faster,
+# 628 derives in 18 s and is kept, which costs 18 s of build and no correctness.
+# Both models that set the window are small — 608 at 52 species, 628 at 139 — so on
+# the model-size-scaled budget below they see this base and not the scaled value,
+# which is what makes the base the thing being reasoned about here rather than a
+# lower bound on something else. Models that derive quickly (the
+# vast majority, << 1 s) are unaffected. Override / disable with
+# BNGSIM_JAC_DERIV_BUDGET_S (<= 0 or "inf"/"none" → unbounded, the pre-#95
+# behavior; raise it on a slow machine if a model whose derivation pays for itself
+# logs a fallback — no corpus model needs it to *solve*, so this is a speed knob).
 #
-#   * The needs-analytical population is still exactly BIOMD0000000457, and its
-#     FD solve still *fails* (CVODE -3 at t~3.36) rather than merely drifting. But
-#     the #96-and-after speed-ups took its derivation from ~12 s to 0.51 s, and it
-#     is now the CHEAPEST derivation in the slow band, not the boundary of it.
-#   * The losers moved the same way: 496 from ~41 s to 10.9 s, 628 from ~75 s to
-#     58.5 s (this machine; ~3.3x faster on another — every second here is
-#     machine-scoped, so only ratios travel).
-#
-# So 20 s no longer sits *between* the populations: it clears the needs-analytical
-# derivation by ~40x, and it is above the fastest loser rather than below it, which
-# means 496/497 now derive to completion on the shipping default instead of being
-# cut off. The value is still safe — the direction that would break a model is
-# down, and it has a large margin — but it is no longer tuned, and re-tuning it is
-# a behaviour change for every Functional model build, not a test fix.
+# Why this stays keyed on wall-clock, which is #245's other half. Seconds do not
+# travel between machines, so the obvious repair is to key the cut-off on something
+# that does — derivation cost per reaction, inlined rate-law size, a #97-style step
+# count. Measured over the same corpus, each of those predicts derivation cost far
+# worse than the machine spread it would be replacing: per-inlined-token cost runs
+# 2.5-2351 us/token over the 256 models with >= 1000 tokens (**923x** end to end,
+# 142x from the median up), and BIOMD0000000385 and BIOMD0000000246 have the same
+# largest inlined rate law (~47 k tokens) and derive 19x apart. Best log-log
+# correlation of any static key is 0.685 (total inlined tokens, the metric behind
+# every number above). Concretely: the loosest such budget that cuts
+# nothing it cuts today needs 8 ms/token, which hands MODEL1006230049 5838 s —
+# 290x what wall-clock gives it. A key that travels is not the same as a key that
+# predicts, and this one does neither well enough to replace the clock. What #187
+# and #97 already do is the sound version of the idea and stays: keep the clock as
+# the mechanism, and let a size that travels scale the *allowance* upward.
 _DEFAULT_DERIVATION_BUDGET_S = 20.0
 
 # GH #187: scale the budget with model size, and make the finite-difference (FD)

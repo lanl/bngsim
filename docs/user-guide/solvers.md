@@ -199,7 +199,11 @@ the corrector), so the default config still integrates the model. An explicit
 Michaelis-Menten rate laws, the analytical Jacobian terms are derived once
 (symbolically) at model load. That derivation is wall-clock-budgeted so a
 pathological *small* model cannot hang the load — it simply falls back to the FD
-Jacobian, which is just as fast to solve at small scale. The budget **scales with
+Jacobian, which at small scale is never wrong and usually solves just as fast.
+Not always, though — on some small models the analytical Jacobian is genuinely
+several times faster to solve with, so the default is set above the slowest
+derivation measured to buy such a speed-up rather than at the point waste stops
+(GH #245); raising it is rarely necessary. The budget **scales with
 species count** and becomes **unbounded** on genome-scale models
 (≥ 20,000 species): there an FD Jacobian needs ~`n_species` RHS evaluations per
 Newton step and is not a viable solver path, so the analytical Jacobian is

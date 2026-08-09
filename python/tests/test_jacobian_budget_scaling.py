@@ -160,8 +160,10 @@ def test_base_stays_a_finite_floor_under_the_scaling():
     it, and neither copy was re-measured when the derivation got an order of
     magnitude faster (issue #210). The floor now lives once, next to the corpus
     sweep that sizes it, in ``test_sbml_jacobian_budget_biomd496.py``
-    (``_NEEDS_ANALYTICAL_FLOOR_S``). Nothing is relaxed by dropping it here; a
-    duplicated constant with no measurement attached is how it rotted.
+    (``_PAYING_DERIVATION_FLOOR_S``). Nothing is relaxed by dropping it here; a
+    duplicated constant with no measurement attached is how it rotted — and #245
+    re-derived that single copy from a different model again, which two copies
+    would have made two chances to miss.
     """
     assert not math.isinf(_DEFAULT_DERIVATION_BUDGET_S)
     assert _DEFAULT_DERIVATION_BUDGET_S > 0

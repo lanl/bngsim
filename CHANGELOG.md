@@ -145,6 +145,77 @@ in `CMakeLists.txt`) is derived from it.
   canary: 457's FD solve must keep succeeding *and* keep agreeing with the
   analytical one (measured 8.5e-6, asserted under 1e-3). If either flips, the
   instruction is to re-run the classification, not to edit the test.
+- **The budget does have a floor — on cost, not correctness — and the 457 canary
+  was pinning the one thing about that model that is not portable (issue #245).**
+  #249 above is right that no corpus model *needs* the analytical Jacobian, and
+  right to make the guard an equality pin rather than invent a correctness floor.
+  It also concluded that with no correctness requirement there is no meaningful
+  inequality left to assert. There is one, because its sweep asked whether the FD
+  solve **works** and never what it **costs**.
+
+  `BIOMD0000000608` derives for **4.76 s** and solves **4.16x faster** for it
+  (0.065 s vs 0.015 s, 52 species). FD is perfectly correct there, just slow, so a
+  viability screen is blind to it by construction. Nor is it alone:
+  `MODEL1603150001` (3.0x), `MODEL1601050000` (2.7x), `MODEL1602080000` (1.7x) and
+  `MODEL1504130000` (1.4x) derive in 2.2–3.0 s and pay too. 608 is the most
+  expensive derivation that pays for itself; the cheapest that does not is
+  `BIOMD0000000628` at 59.3 s, whose analytical solve is *slower* than its FD one.
+  That window is 12.5x wide against #95's 3.4x — the gap did not close, it moved
+  and opened — and 20 s sits 4.2x above the floor and 3.0x below the ceiling,
+  above the 16.8 s geometric centre because too high spends build seconds once
+  while too low buys a permanently slower solve. Between the bounds nothing needs
+  getting right: `BIOMD0000000496` and `497` derive to completion on the default
+  and measure 1.02x and 1.25x — real waste, ~22 s of it across 1286 models.
+
+  So a floor comes back at **15.0 s** (4.76 s × the 3.3x machine spread), beside
+  #249's equality pin rather than instead of it: the pin catches any move of the
+  constant and asks for a justification, the floor is the bound a justification
+  may not talk past. 608's premise is run, not asserted in prose.
+
+  **Solve times must be medians over repeats on a warm codegen cache.**
+  `fd_viability.jsonl` takes one cold sample per mode, analytical first, so that
+  arm absorbs codegen warm-up: it reports 496 at 5.84x (really 1.02x) and
+  `MODEL1603150001` at 0.33x (really 3.01x) — wrong by 5.8x one way and 9x the
+  other. That artifact is why the paying population was invisible.
+
+  **The 457 canary is now a tolerance ladder.** Its FD solve fails at exactly rtol
+  1e-9/atol 1e-12 on x86_64 macOS — "CVODE -3 at t~3.36 with h~3.1e-42", #95's
+  signature — and succeeds at 1e-6, 1e-8, 1e-10 and 1e-12, while on arm64 it
+  succeeds at all five. Same commit, corpus present, core rebuilt from the tree.
+  Both readings are real: this is a knife-edge stiff transient whose convergence
+  is not portable, and #244 and #249 each pinned the single cell where the two
+  architectures disagree — so that assertion has been red on one machine or the
+  other continuously since #244, invisibly, because the file is corpus-gated and
+  CI has no corpus. It **strengthens** #249's conclusion: a model that genuinely
+  needed the analytical Jacobian would fail across a band and hardest at the
+  tightest rung, where 457 instead agrees to 9.8e-10. The canary now walks the
+  ladder, tolerates one isolated interior failure, requires the tightest rung to
+  solve, and requires agreement wherever it solves. Mutation-checked both ways.
+
+  The key stays wall-clock, which #245's other half proposed replacing with
+  something that travels between machines (cost per reaction, inlined rate-law
+  size, a #97-style step count). Measured over the same corpus, each predicts
+  derivation cost far worse than the 3.3x machine spread it would replace:
+  per-inlined-token cost runs 2.5–2351 µs/token over the 256 models with ≥ 1000
+  tokens (**923x** end to end, 142x from the median up), `BIOMD0000000385` and
+  `246` share a largest inlined rate law (~47k tokens) and derive 19x apart, and
+  the best log-log correlation of any static key is 0.685. The loosest size-keyed budget that cuts nothing it cuts today
+  hands `MODEL1006230049` 5838 s where wall-clock gives it 20 s. #187 and #97
+  already ship the sound version and are unchanged: clock as the mechanism, a
+  size that travels scaling the allowance upward.
+
+  What the sweep does leave open, recorded next to the budget rather than fixed
+  here: the deadline can only be tested *between* `sp.diff` calls, so a single
+  pathological rate law overshoots it by however long one derivative takes.
+  Against the 20 s default that is 1.0x on `MODEL1006230053` and
+  `MODEL1006230090`, and **6.9x on `BIOMD0000000385`** — 138 s to reach the first
+  check, after which it declines anyway. Filed as #250: bounding it means
+  subdividing the derivation so the deadline is reachable, and a size gate is not
+  the answer (`BIOMD0000000246`'s largest inlined rate law is 1% smaller and
+  derives in 6.2 s).
+
+  No shipped value changed, so no model's build or solve behaves differently;
+  `main` goes green again on a corpus-bearing x86_64 checkout.
 
 - **A plain ODE build no longer emits the sensitivity RHS at all — the
   Elementary half is gated too (issue #217).** #209/#214 stopped a plain
