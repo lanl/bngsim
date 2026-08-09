@@ -19,10 +19,10 @@ dropping the saltation jump the issue #150 machinery exists to apply, and its
 probe evaluates ``f`` at ``y + σ·s`` — which just past the surface lands on the
 other branch. Forcing the *nested* spelling onto the same fallback reproduces the
 ``and`` spelling's number to every digit (``-6.197678503e-01`` against a closed
-form of ``-1.3120451477e+00``, 122 steps against 40) and its failure to integrate
-below ``rtol=1e-9``. So the second half of the fix is that the warning stops
-promising a correct fallback whenever the declined model carries a crossing whose
-time moves.
+form of ``-1.3120451477e+00``, 273 steps against 179) and its failure to
+integrate below ``rtol=1e-9``. So the second half of the fix is that the warning
+stops promising a correct fallback whenever the declined model carries a crossing
+whose time moves.
 
 What this locks:
 
@@ -292,6 +292,96 @@ class TestTheAdmittedHeads:
         terms, reason = cg._functional_rate_law_partials(self.PROBES[head], scope)
         assert terms is None
         assert reason.startswith("uses unsupported construct: ")
+
+
+# ─── the condition scan has to terminate ───────────────────────────────────
+
+
+class TestANegatedCompoundConditionTerminates:
+    """``_split_logical_atoms`` re-descended into any part carrying a logical,
+    including one it had not reduced. ``not((X<hi) and (X>lo))`` — what the SBML
+    loader emits for a ``<not/>`` around an ``<and/>`` — has its ``and`` neither
+    at depth 0 nor inside a strippable paren group, so the strip step returned
+    the string unchanged and the function called itself on it forever.
+
+    The blast radius is wider than the sensitivity path, because
+    ``switch_gate_cache_digest`` reads the same atoms: on ``MODEL0911047946``
+    the ``RecursionError`` propagated into ``compute_model_codegen_hash``, which
+    caught it and silently fell back to the source-hash key — issue #216, whose
+    own diagnosis blamed ``_canon_update``'s nesting depth. It is this loop."""
+
+    NEGATED = "not((X>1) and (X<2))"
+    # The same defect reached through a call rather than a negation: an argument
+    # carrying a word-spelled logical is equally unreduced by the strip step.
+    CALL_ARG = "max(a, b and c) > 1"
+
+    def test_a_negated_compound_condition_returns(self):
+        assert sw._split_logical_atoms(self.NEGATED) == [self.NEGATED]
+
+    def test_a_logical_inside_a_call_argument_returns(self):
+        assert sw._split_logical_atoms(self.CALL_ARG) == [self.CALL_ARG]
+
+    @pytest.mark.parametrize(
+        ("cond", "atoms"),
+        [
+            ("(X<8.0) and (X>3.0)", ["X<8.0", "X>3.0"]),
+            ("((t>=sigma)&&(t<tau1))", ["t>=sigma", "t<tau1"]),
+            ("!((a>1) && (b>2))", ["a>1", "b>2"]),
+            ("!(X>3)", ["(X>3)"]),
+            ("(a>1) || ((b>2) && (c>3))", ["a>1", "b>2", "c>3"]),
+            ("not(X>3.0)", ["not(X>3.0)"]),
+            ("0>0", ["0>0"]),
+        ],
+    )
+    def test_every_shape_that_already_terminated_is_unchanged(self, cond, atoms):
+        """The guard only ever stops a call that could not have returned, so
+        nothing that used to produce atoms may produce different ones. Note the
+        third and sixth rows: ``!`` splits the negated conjunction and ``not()``
+        does not, which is a real disagreement between two spellings of one
+        operator — but resolving it *lifts a decline*, so it is tracked as issue
+        #234 rather than folded in here."""
+        assert sw._split_logical_atoms(cond) == atoms
+
+    def test_the_codegen_cache_key_no_longer_falls_back(self, tmp_path):
+        """Issue #216's symptom, on a model small enough to keep in the file."""
+        path = tmp_path / "negated.xml"
+        path.write_text(
+            _SBML.replace(
+                "{CONDITION}",
+                textwrap.indent(
+                    "<piecewise>\n"
+                    "  <piece><ci>k_base</ci>\n"
+                    "    <apply><not/>\n"
+                    "      <apply><and/>\n"
+                    "        <apply><lt/><ci>X</ci><cn>8</cn></apply>\n"
+                    "        <apply><gt/><ci>X</ci><cn>3</cn></apply>\n"
+                    "      </apply>\n"
+                    "    </apply>\n"
+                    "  </piece>\n"
+                    "  <otherwise><ci>k_boost</ci></otherwise>\n"
+                    "</piecewise>",
+                    " " * 12,
+                ),
+            )
+        )
+        model = bngsim.Model.from_sbml(path)
+        assert isinstance(cg.compute_model_codegen_hash(model._core), str)
+
+    def test_the_model_is_declined_rather_than_admitted(self, tmp_path, caplog):
+        """Keeping the part whole is the conservative reading, and it lands the
+        condition in the class it belongs to: nobody can locate that crossing, so
+        the analytic RHS is declined and the warning says the difference quotient
+        will not recover it either. A number that is flagged, where before there
+        was a ``RecursionError``."""
+        import logging
+
+        path = tmp_path / "negated.net"
+        path.write_text(_SWITCHED.replace("{LAW}", "if(not((I>=thresh) and (I<900)),beta,0)*I"))
+        core = bngsim.Model.from_net(path)._core
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.UncompensatedCrossingReason)
+        assert any("does NOT recover the missing term" in r.getMessage() for r in caplog.records)
 
 
 # ─── the decline warning's claim ───────────────────────────────────────────

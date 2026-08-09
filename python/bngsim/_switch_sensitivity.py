@@ -125,10 +125,11 @@ def _split_logical_atoms(cond: str) -> list[str]:
     :func:`_clock_threshold_split` nor :func:`state_switch_residual` claims, so
     :func:`uncompensated_condition_reason` declines it as a crossing nothing
     compensates — the class a ``not()`` call is already documented to land in.
-    Whether the *negated* atoms ought to be split out and admitted instead (the
-    ``!``-spelled form of the same condition does exactly that, which is a
-    disagreement worth resolving) moves a decline rather than a crash, so it
-    wants its own corpus measurement and is filed separately.
+    Whether the *negated* atoms ought to be split out and admitted instead —
+    ``!((a>1) && (b>2))`` splits and ``not((a>1) and (b>2))`` does not, which is
+    a real disagreement between two spellings of one operator — moves a decline
+    rather than a crash, so it wants its own corpus arm and is tracked in issue
+    #234.
     """
     parts: list[str] = []
     depth = 0
@@ -606,8 +607,8 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
     that, because its probe evaluates ``f`` at ``y + σ·s``, which just past the
     surface lands on the other branch (the note in
     :func:`uncompensated_condition_reason` works that through). Measured on
-    issue #232's two-spelling reproduction: 53 % error at ``rtol=1e-8``, 122
-    steps against 40, and no result at all below ``rtol=1e-9``, on a model whose
+    issue #232's two-spelling reproduction: 53 % error at ``rtol=1e-8``, 273
+    steps against 179, and no result at all below ``rtol=1e-9``, on a model whose
     analytic RHS is right to 2e-10 at every tolerance. So whenever this returns
     something, the warning must stop calling the fallback "correct, but slower".
 
@@ -624,7 +625,7 @@ def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
     the point: this is about what happens once the model is on the fallback,
     where neither jump is applied.
 
-    The scan mirrors :func:`switch_gate_digest` — same ``has_condition_construct``
+    The scan mirrors :func:`switch_gate_cache_digest` — same ``has_condition_construct``
     pre-gate over the same function bodies and functional rate expressions, and
     the same inlining before the atoms are read — so a threshold written inside
     a called function definition is found under its call site.

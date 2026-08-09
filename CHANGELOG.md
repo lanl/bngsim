@@ -276,6 +276,111 @@ in `CMakeLists.txt`) is derived from it.
   "FD … integrate[s] the model cleanly" was never true in general, so
   `_run_ode_with_jacobian_fallback`'s docstring now says the retry is a second
   attempt and not a guarantee.
+- **Writing a `piecewise` condition with `<and/>` declined the whole model's
+  analytic sensitivity RHS, and the difference quotient it fell back to was 53%
+  wrong (issue #232).** `_functional_rate_law_partials` ends its pre-scan by
+  looking for call heads it does not recognize, so a rate law reaching a table
+  function or an un-inlined SBML helper declines with a message naming the call.
+  That scan is *lexical* — it matches `identifier(` — and in `(X<hi) and (X>lo)`
+  the `and` is an infix operator whose right operand merely happens to be
+  parenthesized. It read as a call to an unknown function `and`, and since
+  `CVodeSensInit1` takes one callback for every column, one such rate law
+  declined the entire model. Invisible on the `.net` side, where BNGL writes
+  `&&` (not an identifier, so the scan never saw it — 0 of 585 corpus `.net`
+  models can reach this), and universal on the SBML side, where `_ast_to_exprtk`
+  renders every `<and/>` as the word.
+
+  The measurement that isolates it is one window written three ways —
+  `piecewise(k_boost, (X<8) and (X>3), k_base)`, the same window as nested
+  `piecewise`, and `or` over De Morgan's complement — against the closed form
+  `dX(6)/dk_boost = -1.3120451477`. The `and` and `or` arms came back
+  `-6.197678503e-01` (**53% wrong**) at `rtol=1e-8` in 273 steps and raised
+  `SimulationError` at `1e-10` and below; the nested arm was right to `2.5e-10`
+  in 179 steps. All three now return the same doubles in the same number of
+  steps at every tolerance.
+
+  Boolean connectives are now admitted as call heads behind the same
+  `switch_scope is not None` gate `if` has always been behind, so a model whose
+  conditions were *not* cleared still reports them as unsupported. The set is
+  read out of `_LOGICAL_LEVELS` rather than re-listed, so a spelling added to
+  the ExprTk→sympy rewrite cannot go missing here; `xor`/`nand`/`nor`/`xnor` are
+  deliberately excluded from both, since no rewrite translates them.
+
+  Over the 132 SBML corpus models carrying a MathML logical: 45 go from declined
+  to admitted (41 of them gaining an emitted sensitivity RHS; the other 4 hit an
+  unrelated decline further down), **0 lose one, and 0 model that was already
+  admitted changed a single byte of emitted C**. Over the 80 condition-bearing
+  `.net` models, nothing changes at all.
+
+  The new admissions were checked against a central difference of each model's
+  own trajectory, re-solved at `p(1±h)` through `set_param` — a valid oracle at a
+  state switch, because it re-solves the moved crossing too. Over 20 of them, each
+  judged on its most responsive parameter at its own SED-ML horizon, the worst
+  analytic-vs-FD relative error is `1.1e-02`, on a model whose FD disagrees with
+  itself by `1.2e-02` across two step sizes; 13 of 20 sit at or below the FD's own
+  noise and 18 of 20 within 3x of it. No row disagrees at a level the oracle can
+  resolve.
+
+- **The decline warning called CVODES' difference quotient "correct, but
+  slower"; at a state switch it is neither (issue #232).** For an underivable
+  rate law or an exhausted derivation budget the claim is true — the problem is
+  smooth and the difference quotient answers the same question. It is false
+  whenever the declined model carries a branch crossing whose *time* moves: the
+  fallback integrates the variational equation smoothly through the crossing,
+  dropping the jump `(f⁻−f⁺)·dt*/dθ`, and for a state threshold its probe
+  evaluates `f` at `y + σ·s`, which just past the surface lands on the other
+  branch. That sentence is what made the 53% above silent — a reader had no
+  reason to distrust the number.
+
+  This half was established by measurement rather than inherited from the issue:
+  forcing the *nested* spelling (correct to `2.5e-10`) onto the same fallback
+  reproduces the `and` spelling exactly — `-6.197678503e-01`, 273 steps, the
+  same `SimulationError` below `rtol=1e-9` — so the error is the fallback, not
+  the connective.
+
+  `model_moving_crossings` now answers, per model, which branch conditions can
+  cross at a moving time, excluding the two shapes that cannot: a comparison
+  naming no symbol, and a clock threshold against a literal (whose `∂t*/∂p` is
+  exactly 0, the same ground `clock_crossing_compensated` admits it on — now one
+  predicate, `fixed_clock_threshold`, with both readers on it). A decline on a
+  model that has one is tagged `DeclinedAtMovingCrossingReason` and gets the
+  honest message, ending with the remedy that actually applies: removing the
+  named decline restores the analytic path, which does apply the jump. Every
+  decline in `generate_sens_from_model` and `_functional_dfdp_terms` routes
+  through one place so none can be the quiet one, and the derived-rate-constant
+  warning was folded into the same function (byte-identical output) rather than
+  left as a second site to drift. 18 SBML and 13 `.net` corpus models are
+  relabelled; the wording is unchanged for a model with no moving crossing, and
+  the issue #146 class keeps its own class and its own issue #150 pointer.
+
+- **`_split_logical_atoms` never returned on a negated compound condition, which
+  is the real mechanism behind issue #216.** It re-descended into any part
+  carrying a logical, including one it had not reduced: in
+  `not((X<hi) and (X>lo))` — what the SBML loader emits for `<not/>` around
+  `<and/>` — the `and` is neither at depth 0 nor inside a strippable paren
+  group, so the strip step returned the string unchanged and the function called
+  itself on it forever. Any *call* whose argument carries a word-spelled logical
+  (`max(a, b and c) > 1`) is the same shape.
+
+  Issue #216 reported the symptom on `MODEL0911047946` — `compute_model_codegen_hash`
+  raising `RecursionError` and silently falling back to the source-hash key —
+  and attributed it to `_canon_update`'s nesting depth. It is not: the frames are
+  `compute_model_codegen_hash → switch_gate_cache_digest → _iter_condition_atoms
+  → _split_logical_atoms`, self-recursing. #216's own reproducer no longer emits
+  the warning.
+
+  The guard recurses only into a part this pass actually reduced, which is
+  conservative by construction: every step above only shortens, so an unchanged
+  part is one that could not have returned. Verified rather than argued: over 22
+  hand-written condition shapes only the four that used to raise move, and an
+  atom-level differential across all 1,908 corpus models (`.net` and SBML, 255 of
+  which yield at least one condition atom) moves **exactly one** — MODEL0911047946,
+  from `RecursionError` to a list. Every other model's atoms are identical, so
+  nothing downstream of them can have moved either. Keeping the unreduced part whole also lands it in the
+  class it belongs to (a crossing nobody can locate, declined with the warning
+  above) rather than the `RecursionError` it used to be. Splitting the negated
+  atoms out instead would lift a decline, so it is tracked as issue #234.
+
 - **A `piecewise` gated on a species, in a rule or a kinetic law, registered no
   discontinuity root, so a narrow state-gated window was stepped over entirely
   (issue #194).** The state twin of GH #72's time roots. The loader registered a
