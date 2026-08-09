@@ -1006,16 +1006,20 @@ class Result:
                 f"output_sensitivities: no {kind} sensitivities are available for selector "
                 f"{meta['selector']!r}.{extra}"
             )
-        # The species sensitivity axis is the full species list, but species
-        # value columns/names are projected to the reported subset (GH #71).
-        # When a projection is active the resolved index addresses the wrong
-        # axis, so refuse rather than return a silently mismatched slice. The
-        # observable/expression blocks are never projected, so they always pass.
+        # Every sensitivity block projects its row axis by the same rule its
+        # name list uses (GH #202), so a resolved index addresses the matching
+        # row. This is a defensive check on that invariant — the one way to
+        # reach it now is an ``.h5`` written before GH #202, whose stored
+        # species block still carries the unreported (promoted-parameter) rows
+        # its ``species_names`` dropped. Refuse rather than return a silently
+        # mismatched slice.
         if block.shape[-2] != len(self._names_for_kind(kind)):
             raise ValueError(
                 f"output_sensitivities: cannot address {kind} selector "
-                f"{meta['selector']!r} by index because this result projects its "
-                f"{kind} columns (GH #71); use the .sensitivities array directly."
+                f"{meta['selector']!r} by index — the {kind} sensitivity block has "
+                f"{block.shape[-2]} rows but this result names "
+                f"{len(self._names_for_kind(kind))} {kind}s (GH #202). Re-run the "
+                "simulation, or use the .sensitivities array directly."
             )
         return block[..., meta["index"], :]
 
@@ -1170,9 +1174,9 @@ class Result:
     ) -> NDArray[np.float64]:
         """``(n_times, n_rows, n_axis)`` sensitivity block backing the FIM.
 
-        Species (``outputs=None``) read the raw species block directly —
-        preserving the original species-only behaviour and sidestepping the
-        column-projection guard (GH #71). Named outputs route through
+        Species (``outputs=None``) read the species block directly — one row
+        per :attr:`species_names` entry, so a per-species *sigma* vector is
+        ``n_species`` long (GH #202). Named outputs route through
         :meth:`output_sensitivities`, which stacks one slice per selector.
         """
         if axis not in ("parameter", "ic"):
@@ -1252,10 +1256,15 @@ class Result:
             A function with signature ``loss_fn(species, time) -> dL_dY``
             where:
 
-            - ``species`` — ``(n_times, n_species)`` array of species values
+            - ``species`` — :attr:`species`, the ``(n_times, n_species)``
+              array of species values
             - ``time`` — ``(n_times,)`` array of time points
             - returns ``dL_dY`` — ``(n_times, n_species)`` array of
               :math:`\partial L / \partial Y_{i,t}`.
+
+            ``dL_dY`` is contracted against :attr:`sensitivities`, whose
+            species axis is the same one ``species`` is indexed on (GH #202),
+            so a ``dL_dY`` shaped like the ``species`` argument always fits.
 
             Common example (sum-of-squares vs data):
 
@@ -1569,6 +1578,17 @@ class Result:
         Shape ``(n_times, n_species, n_params)`` when sensitivities
         are available, or empty ``(0, 0, 0)`` otherwise.
 
+        The species axis is the **same** axis as :attr:`species` /
+        :attr:`species_names`: row *i* is ``d species_names[i]/dp``, so a
+        ``dL/dY`` built from :attr:`species` contracts against this tensor
+        row-for-row (:meth:`gradient`, :meth:`sse_gradient`, …). On a model
+        where an SBML parameter or compartment is an event-assignment target,
+        bngsim promotes that symbol to full integrator state but does **not**
+        report it as a trajectory column (GH #71); its row is likewise absent
+        here, and its derivative is
+        ``output_sensitivities("observable:<name>")`` — the loader gives every
+        promoted symbol a same-named observable (GH #202).
+
         Example
         -------
         >>> sim = Simulator(model, method="ode",
@@ -1597,7 +1617,8 @@ class Result:
         Shape ``(n_times, n_species, n_ic_species)`` when IC
         sensitivities are available, or empty ``(0, 0, 0)`` otherwise.
         Column ``k`` is ``∂Y(t)/∂Y_k(0)`` where the ordering of ``k``
-        matches ``sensitivity_ic_species``.
+        matches ``sensitivity_ic_species``. The **row** axis is
+        :attr:`species_names`, exactly as in :attr:`sensitivities` (GH #202).
         """
         return self._sensitivities_ic
 
@@ -1642,8 +1663,10 @@ class Result:
         """Observable parameter sensitivities ``d observable / dp``.
 
         Shape ``(n_times, n_observables, n_params)`` when computed, or empty
-        ``(0, 0, 0)`` otherwise. The parameter axis matches
-        :attr:`sensitivity_params`.
+        ``(0, 0, 0)`` otherwise. The row axis matches
+        :attr:`observable_names` (the loader's internal network-rewrite
+        observables are dropped here as well, GH #202) and the parameter axis
+        matches :attr:`sensitivity_params`.
         """
         return self._observable_sensitivities
 
@@ -1672,7 +1695,8 @@ class Result:
         """Observable IC sensitivities ``d observable / dY(0)``.
 
         Shape ``(n_times, n_observables, n_ic_species)`` when computed, or
-        empty ``(0, 0, 0)`` otherwise. The IC axis matches
+        empty ``(0, 0, 0)`` otherwise. The row axis matches
+        :attr:`observable_names` (GH #202) and the IC axis matches
         :attr:`sensitivity_ic_species`.
         """
         return self._observable_sensitivities_ic

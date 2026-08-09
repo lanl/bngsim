@@ -328,6 +328,54 @@ in `CMakeLists.txt`) is derived from it.
   because neither creates the trap; they only decide whether a given trajectory
   falls into it, `max_time` because CVODE also derives the initial step from the
   `tout` it is handed. Tuning either one only re-rolls that dice.
+
+- **The sensitivity tensor and `result.species` disagreed about what a species
+  index means, so `Result.gradient`'s own documented workflow raised (issue
+  #202).** `gradient(loss_fn)` hands `loss_fn` the `result.species` array and
+  contracts what it returns against `result.sensitivities`. GH #71 projects
+  `species` / `species_names` / `n_species` to the *reported* species — an SBML
+  parameter or compartment that an event assigns to is promoted to full
+  integrator state but is not a floating-species trajectory column — while the
+  tensor kept the promoted rows. So the two arrays handed to the same callback
+  were different widths, and the documented scipy objective
+  (`lambda sp, t: 2 * (sp - data)`) could not run for *any* `data` shaped like
+  `result.species`. **120 of the 212 tracked models under
+  `benchmarks/sbml_events` carry that projection.**
+
+  The species (row) axis of `sensitivity_data` and `sensitivity_ic_data` is now
+  projected in the pybind layer, where `species_data` / `species_names` /
+  `n_species` already project — one rule, one place, and an empty projection
+  takes the byte-identical path, so a model that reports every species is
+  untouched. Six surfaces were dead on a projected model and all six now work:
+  `gradient`, `sse_gradient` / `chi2_gradient` /
+  `neg_log_likelihood_gradient` (these three raised a raw NumPy `einsum`
+  broadcast error), `fisher_information` with a per-species `sigma` vector,
+  `output_sensitivities("species:…")` (which refused by design rather than
+  return a mismatched slice), `to_xarray` (conflicting `state` dimension), and
+  the JAX bridge, which pairs `species_data` with `sensitivity_data` directly.
+
+  Dropping the promoted rows loses nothing: the loader gives every promoted
+  symbol a same-named observable precisely so referencing expressions resolve
+  its live value, so its derivative is
+  `output_sensitivities("observable:<name>")` — a nonzero, event-stepped column,
+  not a placeholder. Verified two ways beyond the unit tests: across the 175
+  runnable models of that corpus every same-named observable's output
+  sensitivity is a constant multiple of the species' tensor row (the constant is
+  1, or the amount/concentration factor when the compartment is not unit-sized),
+  and a finite-difference of `result.species` reproduces the projected tensor
+  column on the projected models. Two caveats that cost time and are worth
+  recording: a species column is a *concentration* while its same-named
+  observable is an *amount*, so the two derivatives differ under
+  `d/d(compartment size)` and coincide only at V = 1; and an AssignmentRule
+  target's state slot is frozen (GH #205), so its raw tensor row is ~0 by
+  design.
+
+  Fixed in the same pass, being the same defect one axis over: the observable
+  output-sensitivity blocks kept the loader's internal
+  `__bngsim_net_rewrite_obs_*` scaffolding rows (issue #61) while
+  `observable_names` dropped them, so `output_sensitivities("observable:…")` and
+  a named-output FIM refused on every legacy `Sat`/`Hill` `.net` model.
+
 - **The GH #176 fallback tests asserted that FD rescues their fixture, which is
   a rounding outcome rather than a property of the model (issue #176).** The
   fixture's `v_rec = if((-70+V)<-20, 0.5, 0.05)` steps at `V == 50`, and `V`
