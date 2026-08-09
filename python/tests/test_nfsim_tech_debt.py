@@ -27,7 +27,7 @@ def _has_nfsim() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _has_nfsim(),
-    reason="bngsim compiled without NFsim support",
+    reason="NFsim not compiled in",
 )
 
 

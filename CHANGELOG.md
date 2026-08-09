@@ -232,6 +232,66 @@ in `CMakeLists.txt`) is derived from it.
   interpreted and `codegen=True` alike, even though the emitted C text changes for
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
+### Changed
+- **`_DECLARED_SKIPS` is now checked against the reason strings the tests emit,
+  in both directions, and carries a tier (issue #179).** The list is the
+  codebase's mechanism for forcing a permanent skip to be justified in a diff,
+  and nothing compared it to reality. It had drifted to **25 undeclared reasons
+  across 47 files** — none of which fire in the default build, which is exactly
+  why nobody saw them. They are *build-variant* reasons, and the variants they
+  describe are the ones the other CI legs use, so the only run that could have
+  surfaced them was the one nobody had turned the audit on for.
+
+  A new AST-based check in `test_skip_audit.py` asserts every hand-written skip
+  reason matches a declared pattern, and every declared pattern still matches
+  something. Both directions are verified to fail on real drift rather than
+  being vacuous. The two traps #179 flagged are handled and pinned by their own
+  tests: `pytest.importorskip("sympy")` *generates* `could not import 'sympy'`
+  at run time, so scanning its call sites invents failures (~3× the apparent
+  problem size), and `xfail(reason=...)` is not a skip reason at all. Both are
+  decided by what the AST node is, which no regex over `reason=` can do.
+
+  Trap 1 has a sub-case the issue did not name, and the first version of this
+  check had it wrong: `importorskip` takes an optional `reason=`, and when it is
+  given the generated text is never produced — so the string in the source *is*
+  what the audit sees. Ignoring those call sites wholesale hid two genuine
+  undeclared reasons (`vivarium-core not installed`, `tomllib is 3.11+`). A
+  strict run caught them minutes after the scan had pronounced the tree clean,
+  which is the argument for both checks existing rather than either alone.
+
+  Nine phrasings for two conditions — `NFsim not built`, `bngsim compiled
+  without NFsim support`, `no NFsim support`, … — are consolidated onto the two
+  strings the list already declared, across 29 sites. That was drift away from
+  an existing convention, not the absence of one. `scipy` is removed: no
+  hand-written reason contains it, so every scipy skip is an
+  `importorskip`-generated `could not import 'scipy'` the neighbouring entry
+  already matched.
+
+  Declarations now carry a **tier**, because one flat list could not say the
+  thing that matters. `KLU not compiled` and `no C compiler on PATH` are both
+  fair skips on a laptop, but only the first is fair in CI: a leg that silently
+  lost `cc` would skip ~22 files' worth of codegen tests and report success —
+  a false green waved through by the list meant to catch it. `LOCAL_ONLY`
+  reasons (the C-compiler family; `requires libsbml`, which is a *hard*
+  dependency and so cannot be a build variant) print a `!!` row and end the run
+  under `BNGSIM_SKIP_AUDIT=strict`. Strict is only ever set by a workflow, so
+  the tier is enforced exactly where "this environment is incomplete" stops
+  being an acceptable answer. None of these fires on any leg today, so it costs
+  nothing now and buys the alarm later.
+
+  `BNGSIM_SKIP_AUDIT=strict` is consequently on for `mir.yml` and
+  `windows-tail.yml`, the two KLU-off legs — the first time the audit has had
+  teeth outside the default build, which is where these reasons live. Note the
+  issue proposed `native-tests.yml` as the cheapest KLU-off leg; that workflow
+  is ctest-only and runs no pytest, so there is nothing there to turn on.
+
+  One test changed rather than being declared: `test_conservation_laws.py`'s
+  `test_dependent_block_is_identity` skipped when a model reported no
+  conservation laws. All five of its fixtures are checked-in `.net` files that
+  have them, so the branch had never fired — and had conservation-law detection
+  regressed to zero, the test would have gone green by skipping. It asserts
+  instead.
+
 ### Fixed
 - **The GH #176 fallback tests asserted that FD rescues their fixture, which is
   a rounding outcome rather than a property of the model (issue #176).** The

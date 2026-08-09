@@ -124,11 +124,11 @@ def _has_rulemonkey() -> bool:
 _NF_BACKENDS = [
     pytest.param(
         "nfsim",
-        marks=pytest.mark.skipif(not _has_nfsim(), reason="bngsim built without NFsim"),
+        marks=pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in"),
     ),
     pytest.param(
         "rm",
-        marks=pytest.mark.skipif(not _has_rulemonkey(), reason="bngsim built without RuleMonkey"),
+        marks=pytest.mark.skipif(not _has_rulemonkey(), reason="RuleMonkey not compiled in"),
     ),
 ]
 

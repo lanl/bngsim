@@ -81,7 +81,7 @@ class TestRoundHalfUp:
 # ─── NFsim cold-start seed concentrations ────────────────────────────────────
 
 
-@pytest.mark.skipif(not _has_nfsim(), reason="bngsim compiled without NFsim support")
+@pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in")
 class TestNfsimColdStartRounding:
     def test_literal_fractional_concentration_rounds_up(self, fractional_init_xml: Path):
         # <Parameter n_init value="1.9"/> drives <Species concentration="n_init">.
@@ -113,7 +113,7 @@ class TestNfsimColdStartRounding:
 # ─── NFsim warm / dosing count mutations ─────────────────────────────────────
 
 
-@pytest.mark.skipif(not _has_nfsim(), reason="bngsim compiled without NFsim support")
+@pytest.mark.skipif(not _has_nfsim(), reason="NFsim not compiled in")
 class TestNfsimWarmCountRounding:
     @pytest.mark.parametrize(
         "value,delta",
@@ -143,7 +143,7 @@ class TestNfsimWarmCountRounding:
 # ─── RuleMonkey cold-start seed concentrations ───────────────────────────────
 
 
-@pytest.mark.skipif(not _has_rulemonkey(), reason="bngsim compiled without RuleMonkey support")
+@pytest.mark.skipif(not _has_rulemonkey(), reason="RuleMonkey not compiled in")
 class TestRuleMonkeyColdStartRounding:
     def test_literal_fractional_concentration_rounds_up(self, fractional_init_xml: Path):
         with bngsim.RuleMonkeySession(str(fractional_init_xml)) as rm:

@@ -20,7 +20,7 @@ def _has_rulemonkey() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _has_rulemonkey(),
-    reason="bngsim compiled without RuleMonkey support",
+    reason="RuleMonkey not compiled in",
 )
 
 

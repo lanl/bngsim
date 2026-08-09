@@ -112,8 +112,13 @@ class TestDependentSpeciesChoice:
     def test_dependent_block_is_identity(self, data_dir, net_name):
         model = bngsim.Model.from_net(str(data_dir / net_name))
         cl = model.conservation_laws
-        if cl["n_laws"] == 0:
-            pytest.skip(f"{net_name} has no conservation laws")
+        # Was `pytest.skip(...)`, which never fired: all five fixtures below have
+        # conservation laws and are checked-in .net files, so "none found" is not
+        # a property of the input this test has to tolerate — it is this feature
+        # failing. A skip there would have turned that regression into a green
+        # run, which is the failure mode the audit in conftest exists to catch
+        # (#179 found it as the suite's one remaining undeclared skip reason).
+        assert cl["n_laws"] > 0, f"{net_name} should have conservation laws"
         coeffs = np.array([np.asarray(c, dtype=float) for c in cl["coefficients"]])
         dep = np.asarray(cl["dependent"], dtype=int)
         np.testing.assert_allclose(coeffs[:, dep], np.eye(dep.size), atol=1e-12)
