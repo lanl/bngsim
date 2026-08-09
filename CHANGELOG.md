@@ -106,6 +106,46 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Changed
+- **The analytical-Jacobian budget has no correctness floor left, and the test
+  that claimed one was red on `main` (issue #249).** Since #95 this suite held
+  the shipping derivation budget above a floor justified by one model —
+  `BIOMD0000000457` was said to be stiff enough that its finite-difference solve
+  *fails* at the parity tolerance, so a smaller budget would strand it. #244 made
+  that premise a test rather than a docstring sentence, which was the right move
+  and immediately showed it to be false: the assertion has been failing since
+  `bac36e7` merged. It went unnoticed because it is corpus-gated and CI has no
+  corpus — the job log reads `ssss.ss` for that file under `model corpus absent
+  from this checkout`, so a green tick says nothing about it, while every local
+  push from a checkout that *has* the corpus was blocked.
+
+  457's FD solve is not marginal: it returns in 0.07 s with 626 steps and a
+  finite trajectory, and survives rtol 1e-6/1e-12 through 1e-12/1e-15 on both
+  linear solvers and both RHS backends. Nothing resembling the documented "CVODE
+  returns -3 at t~3.36 with h~1e-42" appears anywhere in that grid. Its
+  derivation now costs 0.283 s, which puts it below the 0.5 s band #244 selected
+  fixtures from, so that recipe would not pick it today either.
+
+  Re-running the classification over the **whole** corpus rather than a slow
+  band — forcing `jacobian="fd"`, which costs no derivation, so all of it is
+  affordable — the floor turns out to have no subject at all. Of the 1,218 models
+  the analytical Jacobian attaches to (1,323 probed, 1,291 load, 73 declines),
+  **1,198 solve on FD; the 15 that fail fail identically with the analytical
+  Jacobian**, and 5 cannot be simulated at all (`fast="true"` reactions). **Zero
+  models need it.** Nor is there a weaker property to re-anchor on: across the 23
+  models whose derivation is slow enough to be starved by any plausible budget,
+  the worst FD-vs-analytical trajectory difference is 1.9e-6 relative — solver
+  noise at rtol 1e-9.
+
+  So the floor is retired rather than re-derived, which would have repeated the
+  mistake #244 named: a tripwire standing on a measurement that has evaporated.
+  The shipping default is **unchanged at 20 s** — dropping a requirement is not a
+  licence to move the constant. What guards it now is an equality pin with an
+  actionable message, because with no correctness requirement there is no
+  meaningful inequality left to assert, and the premise test is inverted into a
+  canary: 457's FD solve must keep succeeding *and* keep agreeing with the
+  analytical one (measured 8.5e-6, asserted under 1e-3). If either flips, the
+  instruction is to re-run the classification, not to edit the test.
+
 - **A plain ODE build no longer emits the sensitivity RHS at all — the
   Elementary half is gated too (issue #217).** #209/#214 stopped a plain
   `Simulator(model, method="ode")` from deriving the Functional/MM analytic
