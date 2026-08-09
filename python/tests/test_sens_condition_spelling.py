@@ -1,0 +1,466 @@
+"""Issue #232 — a boolean connective in a *condition* must not decline the model.
+
+``_functional_rate_law_partials`` ends its pre-scan by looking for call heads it
+does not recognize, so a rate law that reaches out to a table function or an
+un-inlined SBML helper declines with a message naming the call. The scan is
+lexical: it matches ``identifier(``. In ``(X<hi) and (X>lo)`` the ``and`` is an
+*infix operator* whose right operand merely happens to be parenthesized, and the
+scan read it as a call to an unknown function ``and`` — so the whole model's
+analytic sensitivity RHS was declined over a piece of syntax.
+
+That is invisible on the ``.net`` side, where BNGL writes ``&&`` (not an
+identifier, so the scan never sees it), and universal on the SBML side, where
+``_ast_to_exprtk`` renders every ``<and/>`` as the word.
+
+**Why it is not merely slow.** The decline message said the difference-quotient
+fallback is "correct, but slower". At a state switch it is neither. CVODES'
+internal DQ integrates the variational equation smoothly through the crossing,
+dropping the saltation jump the issue #150 machinery exists to apply, and its
+probe evaluates ``f`` at ``y + σ·s`` — which just past the surface lands on the
+other branch. Forcing the *nested* spelling onto the same fallback reproduces the
+``and`` spelling's number to every digit (``-6.197678503e-01`` against a closed
+form of ``-1.3120451477e+00``, 122 steps against 40) and its failure to integrate
+below ``rtol=1e-9``. So the second half of the fix is that the warning stops
+promising a correct fallback whenever the declined model carries a crossing whose
+time moves.
+
+What this locks:
+
+  1. one window, three SBML spellings (``and``, nested ``piecewise``, ``or``
+     over the complement), one gradient — matching the closed form, and each
+     other, at every tolerance. That invariant is what removes the constant;
+  2. the admitted head set is exactly the heads the ExprTk→sympy preprocessor
+     rewrites into a construct, asserted by running them through it rather than
+     by re-listing them, and the excluded ones really are untranslatable;
+  3. the heads are admitted only behind the same gate ``if`` is — a model whose
+     conditions were NOT cleared still reports them as unsupported;
+  4. the decline warning's claim: honest when the model has a moving crossing,
+     unchanged when it does not, and never downgrading the issue #146 class.
+"""
+
+from __future__ import annotations
+
+import math
+import textwrap
+
+import bngsim
+import numpy as np
+import pytest
+from bngsim import _codegen as cg
+from bngsim import _switch_sensitivity as sw
+
+pytest.importorskip("sympy")
+
+
+def _has_cc() -> bool:
+    try:
+        cg._find_c_compiler()
+        return True
+    except Exception:
+        return False
+
+
+requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available")
+
+
+# ─── one window, three spellings ───────────────────────────────────────────
+#
+# X' = -k(X)·X, with k = K_BOOST while LO < X < HI and K_BASE outside it. Wide
+# enough that the trajectory is easy for every arm (issue #194 owns the narrow
+# window, where the question is whether the window is entered at all); the only
+# thing that moves between the arms here is how the one condition is written.
+
+X0, K_BASE, K_BOOST, T_END = 10.0, 0.2, 0.5, 6.0
+LO, HI = 3.0, 8.0
+
+
+def _closed_form() -> tuple[float, float]:
+    """``(X(T_END), dX(T_END)/dK_BOOST)``.
+
+    Three exact segments: decay at ``K_BASE`` down to ``HI``, at ``K_BOOST``
+    down to ``LO``, then at ``K_BASE`` again. Only the *duration* of the middle
+    segment depends on ``K_BOOST``, so the whole gradient is the shift it puts on
+    the exit time ``t2``:  ``dX/dK_BOOST = X(T_END)·K_BASE·dt2/dK_BOOST``.
+    """
+    t1 = math.log(X0 / HI) / K_BASE
+    t2 = t1 + math.log(HI / LO) / K_BOOST
+    x_end = LO * math.exp(-K_BASE * (T_END - t2))
+    dt2_dk = -math.log(HI / LO) / K_BOOST**2
+    return x_end, x_end * K_BASE * dt2_dk
+
+
+_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="state_window">
+    <listOfCompartments><compartment id="c" size="1" constant="true"/></listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="c" initialConcentration="10" hasOnlySubstanceUnits="false"
+               boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k_base" value="0.2" constant="true"/>
+      <parameter id="k_boost" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="deg" reversible="false" fast="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/>
+{CONDITION}
+            <ci>X</ci>
+          </apply></math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+# The `and` spelling: one compound condition. This is the arm the issue is about.
+_CONJUNCTIVE = """\
+<piecewise>
+  <piece><ci>k_boost</ci>
+    <apply><and/>
+      <apply><lt/><ci>X</ci><cn>8</cn></apply>
+      <apply><gt/><ci>X</ci><cn>3</cn></apply>
+    </apply>
+  </piece>
+  <otherwise><ci>k_base</ci></otherwise>
+</piecewise>"""
+
+# The same window with no connective at all: one comparison per `piecewise`.
+# This arm was already correct, which is what makes it the control — it is the
+# existence proof that the derivative the other two need is representable.
+_NESTED = """\
+<piecewise>
+  <piece>
+    <piecewise>
+      <piece><ci>k_boost</ci>
+        <apply><gt/><ci>X</ci><cn>3</cn></apply></piece>
+      <otherwise><ci>k_base</ci></otherwise>
+    </piecewise>
+    <apply><lt/><ci>X</ci><cn>8</cn></apply>
+  </piece>
+  <otherwise><ci>k_base</ci></otherwise>
+</piecewise>"""
+
+# De Morgan's complement: `or` over the negated comparisons, with the branches
+# swapped. Same window everywhere except on the measure-zero boundary itself,
+# and it exercises the other connective.
+_DISJUNCTIVE = """\
+<piecewise>
+  <piece><ci>k_base</ci>
+    <apply><or/>
+      <apply><geq/><ci>X</ci><cn>8</cn></apply>
+      <apply><leq/><ci>X</ci><cn>3</cn></apply>
+    </apply>
+  </piece>
+  <otherwise><ci>k_boost</ci></otherwise>
+</piecewise>"""
+
+SPELLINGS = {"and": _CONJUNCTIVE, "nested": _NESTED, "or": _DISJUNCTIVE}
+
+
+def _sbml(tmp_path, name: str):
+    path = tmp_path / f"window_{name}.xml"
+    condition = textwrap.indent(SPELLINGS[name], " " * 12)
+    path.write_text(_SBML.replace("{CONDITION}", condition))
+    return bngsim.Model.from_sbml(path)
+
+
+def _sens_at_end(tmp_path, name: str, rtol: float):
+    """``(X(T_END), dX(T_END)/dk_boost, n_steps)`` for one spelling."""
+    sim = bngsim.Simulator(_sbml(tmp_path, name), sensitivity_params=["k_boost"])
+    res = sim.run(t_span=(0.0, T_END), n_points=7, rtol=rtol, atol=rtol * 1e-3)
+    return (
+        float(np.asarray(res.species)[-1, 0]),
+        float(np.asarray(res.sensitivities)[-1, 0, 0]),
+        int(res.solver_stats.get("n_steps", -1)),
+    )
+
+
+@requires_cc
+class TestOneWindowThreeSpellings:
+    """The invariant that removes the constant. The mathematics is fixed and only
+    the syntax varies, so any disagreement between the arms is a bug in how the
+    syntax is read — there is nothing else left for it to be."""
+
+    @pytest.mark.parametrize("name", sorted(SPELLINGS))
+    @pytest.mark.parametrize("rtol", [1e-8, 1e-10])
+    def test_every_spelling_matches_the_closed_form(self, tmp_path, name, rtol):
+        """Before the fix the ``and`` and ``or`` arms came back 53 % low at
+        ``rtol=1e-8`` and raised :class:`SimulationError` at ``1e-10``; the
+        ``nested`` arm passed both."""
+        x_ref, dx_ref = _closed_form()
+        x, dx, _steps = _sens_at_end(tmp_path, name, rtol)
+        assert x == pytest.approx(x_ref, rel=1e-6)
+        assert dx == pytest.approx(dx_ref, rel=1e-6)
+
+    def test_the_spellings_agree_with_each_other_to_the_last_digit(self, tmp_path):
+        """Stronger than agreeing with the closed form, and the point of the
+        issue: one window written three ways has to produce one sensitivity RHS,
+        so the runs are not merely close — they take the same number of steps and
+        return the same doubles."""
+        results = {name: _sens_at_end(tmp_path, name, 1e-10) for name in SPELLINGS}
+        assert len({r[1] for r in results.values()}) == 1, results
+        assert len({r[2] for r in results.values()}) == 1, results
+
+    @pytest.mark.parametrize("name", sorted(SPELLINGS))
+    def test_no_spelling_falls_back_to_the_difference_quotient(
+        self, tmp_path, monkeypatch, caplog, name
+    ):
+        """The mechanism, asserted directly rather than through the number.
+
+        The codegen cache is redirected at a fresh directory on purpose: the
+        decline is emitted during *derivation*, which a cache hit skips, so on a
+        warm cache a declined model looks exactly like one that took the analytic
+        path.
+        """
+        import logging
+
+        monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "codegen")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _sens_at_end(tmp_path, name, 1e-8)
+        assert not [r for r in caplog.records if "sensitivity RHS is declined" in r.getMessage()]
+
+
+# ─── which call heads are admitted, and why ────────────────────────────────
+
+
+class TestTheAdmittedHeads:
+    """``_condition_call_heads`` is not a list of names someone thought were
+    safe: it is the set the ExprTk→sympy preprocessor rewrites into a construct
+    before ``parse_expr`` performs any function lookup, so none of them ever
+    reaches one. These tests ask the preprocessor rather than the list."""
+
+    PROBES = {
+        "if": "if(X>1,a,b)",
+        "and": "if((X>1) and (X<2),a,b)",
+        "or": "if((X>1) or (X<2),a,b)",
+        "not": "if(not(X>1),a,b)",
+    }
+    UNTRANSLATED = ["xor", "nand", "nor", "xnor"]
+
+    def test_the_set_is_exactly_the_probed_heads(self):
+        assert cg._condition_call_heads() == frozenset(self.PROBES)
+
+    @pytest.mark.parametrize("head", sorted(PROBES))
+    def test_each_admitted_head_survives_the_round_trip(self, head):
+        """An admitted head must leave a fully bound sympy expression — no
+        applied undefined function, which is the shape the free-symbol check
+        below the scan cannot see and the scan exists to reject."""
+        from bngsim._jacobian import _exprtk_to_sympy
+        from sympy.core.function import AppliedUndef
+
+        expr = _exprtk_to_sympy(self.PROBES[head])
+        assert expr is not None, head
+        assert not expr.atoms(AppliedUndef), (head, expr)
+
+    @pytest.mark.parametrize("head", UNTRANSLATED)
+    def test_an_unadmitted_connective_really_is_untranslatable(self, head):
+        """The companion that makes the exclusion mean something. ExprTk has four
+        more connectives and no rewrite maps any of them, so admitting them would
+        hand ``parse_expr`` a call it cannot bind — the scan's message ("calls
+        unsupported function(s)") is the better of the two failures."""
+        from bngsim._jacobian import _exprtk_to_sympy
+
+        assert head not in cg._condition_call_heads()
+        assert _exprtk_to_sympy(f"if((X>1) {head} (X<2),a,b)") is None
+
+    @pytest.mark.parametrize("head", sorted(PROBES))
+    def test_the_heads_are_admitted_only_behind_the_condition_gate(self, head):
+        """Same gate ``if`` has always been behind: ``switch_scope is not None``,
+        which means the model's conditions cleared
+        :func:`sw.uncompensated_condition_reason`. Without one, every probe must
+        still be refused — otherwise the derivation would proceed on a branch
+        whose crossing nobody compensates, and sympy differentiates that to a
+        clean, wrong ``0``.
+
+        The refusal comes from the *construct* pre-scan rather than the head
+        scan, because both read the same flag and the construct scan runs first.
+        That is the belt to the scan's braces, and it is why the assertion here
+        is on the outcome rather than on which check produced it."""
+        scope = cg._FunctionalDfdpScope(
+            func_map={},
+            c_ref={"X": "y[0]", "a": "p[0]", "b": "p[1]"},
+            param_of_alias={"a": "a", "b": "b"},
+            param_idx_by_name={"a": 0, "b": 1},
+            primary_param_names={"a", "b"},
+            derived_exprs={},
+            switch_scope=None,
+        )
+        terms, reason = cg._functional_rate_law_partials(self.PROBES[head], scope)
+        assert terms is None
+        assert reason.startswith("uses unsupported construct: ")
+
+
+# ─── the decline warning's claim ───────────────────────────────────────────
+#
+# The counter-clock SIR ``test_codegen_switch_condition_sens`` uses, restated
+# here rather than imported (a sibling import does not survive the out-of-tree
+# test runner). ``counter()`` is a species synthesized at rate 1 and exposed as
+# the observable ``t`` — the BNGL idiom for a rate law that reads simulation
+# time, so the clock is *detected* rather than assumed. ``erf`` is the
+# undifferentiable half below: a genuinely ExprTk-unknown call, so the decline
+# it produces has nothing to do with the model's conditions.
+
+_SWITCHED = """\
+begin parameters
+    1 S0      1000  # Constant
+    2 I0      1  # Constant
+    3 beta    0.002  # Constant
+    4 gamma   0.15  # Constant
+    5 sigma   3.0  # Constant
+    6 kclock  1  # Constant
+    7 thresh  40.0  # Constant
+end parameters
+begin functions
+    1 betaI() {LAW}
+end functions
+begin species
+    1 person(state~S) S0
+    2 person(state~I) I0
+    3 person(state~R) 0
+    4 counter() 0
+end species
+begin reactions
+    1 1 2 betaI #_R1
+    2 2 3 gamma #_R2
+    3 0 4 kclock #_R3
+end reactions
+begin groups
+    1 S                    1
+    2 I                    2
+    3 R                    3
+    4 t                    4
+end groups
+"""
+
+
+def _core(tmp_path, law: str, name="m.net"):
+    net = tmp_path / name
+    net.write_text(_SWITCHED.replace("{LAW}", law))
+    return bngsim.Model.from_net(net)._core
+
+
+def _messages(caplog):
+    return [r.getMessage() for r in caplog.records]
+
+
+class TestMovingCrossings:
+    """What :func:`sw.model_moving_crossings` counts. The question is only
+    "can this condition cross at a time that moves", never "is the crossing
+    compensated" — because once the model is on the difference quotient, no
+    jump is applied either way."""
+
+    def test_a_state_threshold_moves(self, tmp_path):
+        core = _core(tmp_path, "if(I>=thresh,beta,0)*I")
+        assert sw.model_moving_crossings(core) == ("I>=thresh",)
+
+    def test_both_halves_of_a_compound_condition_are_reported(self, tmp_path):
+        core = _core(tmp_path, "if((I>=thresh) and (I<900),beta,0)*I")
+        assert sw.model_moving_crossings(core) == ("I>=thresh", "I<900")
+
+    def test_a_parameter_clock_threshold_moves(self, tmp_path):
+        core = _core(tmp_path, "if(t>=sigma,beta,0)*I")
+        assert sw.model_moving_crossings(core) == ("t>=sigma",)
+
+    def test_a_literal_clock_threshold_does_not(self, tmp_path):
+        """``t>=3.0`` crosses at the same instant for every parameter, so
+        ``∂t*/∂p`` is exactly 0 and the difference quotient misses nothing.
+        Excluded through :func:`sw.fixed_clock_threshold`, the same predicate
+        :func:`sw.clock_crossing_compensated` admits it on."""
+        core = _core(tmp_path, "if(t>=3.0,beta,0)*I")
+        assert sw.fixed_clock_threshold("t>=3.0", sw.switch_condition_scope(core))
+        assert sw.model_moving_crossings(core) == ()
+
+    def test_a_constant_comparison_does_not(self, tmp_path):
+        """``0>0`` is decided at load — the same ground
+        :func:`sw.uncompensated_condition_reason` admits it on."""
+        core = _core(tmp_path, "if(0>0,beta,beta)*I")
+        assert sw.model_moving_crossings(core) == ()
+
+    def test_a_condition_free_model_does_not(self, tmp_path):
+        core = _core(tmp_path, "beta*I")
+        assert sw.model_moving_crossings(core) == ()
+
+
+class TestTheWarningStopsPromisingACorrectFallback:
+    """Issue #232's second, independent half. ``CVodeSensInit1`` takes one
+    callback for every column, so a decline for a reason that has nothing to do
+    with the conditions still puts the model's crossing on the difference
+    quotient — and "correct, but slower" is then the sentence that makes a 53 %
+    error silent."""
+
+    UNDERIVABLE_AT_A_CROSSING = "if(I>=thresh,beta,0)*erf(I)*I"
+    UNDERIVABLE_SMOOTH = "erf(I)*beta*I"
+
+    def test_the_decline_is_tagged(self, tmp_path):
+        core = _core(tmp_path, self.UNDERIVABLE_AT_A_CROSSING)
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.DeclinedAtMovingCrossingReason)
+        assert "unsupported function(s): erf" in reason
+        assert "'I>=thresh'" in reason
+
+    def test_the_warning_says_the_fallback_is_wrong(self, tmp_path, caplog):
+        import logging
+
+        core = _core(tmp_path, self.UNDERIVABLE_AT_A_CROSSING)
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            cg._functional_dfdp_terms(core, core.codegen_data())
+        msgs = _messages(caplog)
+        assert any("does NOT recover the missing term" in m for m in msgs)
+        assert any("issue #232" in m for m in msgs)
+        assert not any("correct, but slower" in m for m in msgs)
+
+    def test_a_smooth_model_keeps_the_correct_fallback_wording(self, tmp_path, caplog):
+        """The control, and the thing that keeps this change from just moving the
+        dishonesty: the SAME undifferentiable call, on a model with no branch
+        condition at all, really does fall back to a correct difference quotient
+        and must keep saying so."""
+        import logging
+
+        core = _core(tmp_path, self.UNDERIVABLE_SMOOTH)
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert not isinstance(reason, sw.UncompensatedCrossingReason)
+        msgs = _messages(caplog)
+        assert any("correct, but slower" in m for m in msgs)
+        assert not any("does NOT recover" in m for m in msgs)
+
+    def test_a_literal_clock_switch_keeps_it_too(self, tmp_path, caplog):
+        """The second control. A crossing at a fixed time contributes no jump to
+        any column, so the fallback really is correct there — over-warning would
+        cost the message its meaning."""
+        import logging
+
+        core = _core(tmp_path, "if(t>=3.0,beta,0)*erf(I)*I")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert not isinstance(reason, sw.UncompensatedCrossingReason)
+        assert any("correct, but slower" in m for m in _messages(caplog))
+
+    def test_an_uncompensated_crossing_keeps_its_own_class_and_pointer(self, tmp_path, caplog):
+        """The issue #146 class must not be downgraded — nor re-tagged. It got
+        its verdict by naming the crossing itself, which is the better message,
+        and it still points at issue #150 rather than at a decline there is
+        nothing to remove."""
+        import logging
+
+        core = _core(tmp_path, "if(I==thresh,beta,0)*I")
+        with caplog.at_level(logging.WARNING, logger="bngsim"):
+            _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert isinstance(reason, sw.UncompensatedCrossingReason)
+        assert not isinstance(reason, sw.DeclinedAtMovingCrossingReason)
+        assert any("issue #150" in m for m in _messages(caplog))
+
+    def test_the_reaction_wrapper_does_not_downgrade_the_subclass(self):
+        """``_carry_reason_class`` rebuilds the reason as ``type(inner)``. Doing
+        it as the base class would silently swap the closing sentence — the exact
+        drift that helper exists to prevent."""
+        inner = sw.DeclinedAtMovingCrossingReason("inner")
+        assert isinstance(cg._carry_reason_class(inner, "wrapped"), type(inner))
+        base = sw.UncompensatedCrossingReason("inner")
+        wrapped = cg._carry_reason_class(base, "wrapped")
+        assert isinstance(wrapped, sw.UncompensatedCrossingReason)
+        assert not isinstance(wrapped, sw.DeclinedAtMovingCrossingReason)

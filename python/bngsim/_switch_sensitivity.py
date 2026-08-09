@@ -494,6 +494,31 @@ class UncompensatedCrossingReason(str):
     cached, stored in dicts and formatted at half a dozen sites between here and
     the warning; carrying the distinction on the value itself means none of them
     has to be taught to thread it, and none of them can drop it.
+
+    :class:`DeclinedAtMovingCrossingReason` is the *other* producer of the same
+    fallback-is-wrong-too verdict, arrived at from the opposite direction.
+    """
+
+    __slots__ = ()
+
+
+class DeclinedAtMovingCrossingReason(UncompensatedCrossingReason):
+    """A decline for an unrelated reason, on a model that HAS a moving crossing.
+
+    The parent class is reached by asking "is this crossing compensated?" and
+    answering no. This one is reached by asking nothing about the crossing at
+    all: the analytic sensitivity RHS was declined because some rate law calls
+    an unsupported function, or its derivative will not render as C, or the
+    derivation budget expired — and the model happens also to carry a branch
+    condition :func:`model_moving_crossings` recognizes. ``CVodeSensInit1`` takes
+    ONE callback for every column, so that decline puts the *whole* model on the
+    difference quotient, crossing included, and the fallback is then wrong for
+    exactly the reason the parent class exists (issue #232).
+
+    Kept apart from the parent only so the warning can end with the right
+    sentence: what is missing here is not machinery nobody has written, it is
+    the named decline above. Remove that and the analytic path — which does
+    apply the jump — comes back.
     """
 
     __slots__ = ()
@@ -530,6 +555,96 @@ def _iter_condition_atoms(expr: str):
         yield from _split_logical_atoms(cond)
 
 
+def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
+    """True when *atom* is a clock threshold against a value nothing moves.
+
+    ``t < 14`` — or ``t < half_life`` where ``half_life`` reduces to literals —
+    crosses at a time that is the same for every parameter, so ``∂t*/∂p`` is
+    exactly 0 and the crossing contributes no jump to any sensitivity column.
+    That is what makes it harmless twice over: :func:`clock_crossing_compensated`
+    admits it because there is nothing to compensate, and
+    :func:`model_moving_crossings` excludes it because there is nothing for the
+    difference-quotient fallback to miss either. One definition, two readers, so
+    they cannot answer the same question differently (issue #232).
+    """
+    split = _clock_threshold_split(atom, scope.clock_symbols)
+    if split is None:
+        return False
+    thr_flat = _inline_derived_param_refs(split[1], scope.derived_exprs) or split[1]
+    return not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names)
+
+
+def model_moving_crossings(core, ctx=None) -> tuple[str, ...]:
+    """Every rate-law branch condition in the model whose crossing *time* moves.
+
+    The question the decline warning has to ask (issue #232). A model carrying
+    one of these is a model for which declining the analytic sensitivity RHS is
+    not a free choice: CVODES' internal difference quotient integrates the
+    variational equation smoothly through a crossing, so it drops the jump
+    ``(f⁻−f⁺)·dt*/dθ`` outright — and for a *state* threshold it is worse than
+    that, because its probe evaluates ``f`` at ``y + σ·s``, which just past the
+    surface lands on the other branch (the note in
+    :func:`uncompensated_condition_reason` works that through). Measured on
+    issue #232's two-spelling reproduction: 53 % error at ``rtol=1e-8``, 122
+    steps against 40, and no result at all below ``rtol=1e-9``, on a model whose
+    analytic RHS is right to 2e-10 at every tolerance. So whenever this returns
+    something, the warning must stop calling the fallback "correct, but slower".
+
+    Deliberately coarse, in the safe direction: it asks only whether an atom
+    *can* cross at a moving time, never whether anything compensates the
+    crossing. Two grounds exclude an atom, both borrowed from
+    :func:`uncompensated_condition_reason` so the two agree about what is not a
+    crossing at all — a comparison naming no symbol (``0>0``, decided at load),
+    and a :func:`fixed_clock_threshold` (``t<14``, whose ``∂t*/∂p`` is exactly
+    0). Everything else reads live state or a parameter, so some θ moves it.
+
+    It follows that an atom here may be one the analytic path *would* have
+    compensated — issue #48's clock jump, issue #150's saltation jump. That is
+    the point: this is about what happens once the model is on the fallback,
+    where neither jump is applied.
+
+    The scan mirrors :func:`switch_gate_digest` — same ``has_condition_construct``
+    pre-gate over the same function bodies and functional rate expressions, and
+    the same inlining before the atoms are read — so a threshold written inside
+    a called function definition is found under its call site.
+    """
+    from bngsim._jacobian import _inline_functions, has_condition_construct
+
+    if core.n_functions == 0:
+        return ()
+    if ctx is None:
+        ctx = core.functional_jacobian_context()
+    func_map = dict(ctx["function_map"])
+    texts = [
+        *func_map.values(),
+        *(str(r.get("rate_expr", "")) for r in ctx["functional_reactions"]),
+    ]
+    conditional = [t for t in texts if has_condition_construct(t)]
+    if not conditional:
+        return ()
+    try:
+        scope = switch_condition_scope(core, ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        # Same fallback as the gate's: with no scope nothing can be classified,
+        # and reporting a crossing we cannot name would not help anyone.
+        logger.debug("moving-crossing scan: scope unavailable (%s)", exc)
+        return ()
+
+    found: list[str] = []
+    for text in conditional:
+        flat = _inline_functions(text, func_map) or text
+        for atom in _iter_condition_atoms(flat):
+            if atom in found:
+                continue
+            atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+            if not _IDENTIFIER.search(atom_flat):
+                continue
+            if fixed_clock_threshold(atom, scope):
+                continue
+            found.append(atom)
+    return tuple(found)
+
+
 def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     """Will :func:`compute_switch_time_sens` account for *atom*'s crossing?
 
@@ -557,8 +672,7 @@ def clock_crossing_compensated(atom: str, scope: SwitchConditionScope) -> bool:
     if split is None:
         return False
     threshold_expr = split[1]
-    thr_flat = _inline_derived_param_refs(threshold_expr, scope.derived_exprs) or threshold_expr
-    if not any(scope.param_pats[n].search(thr_flat) for n in scope.param_names):
+    if fixed_clock_threshold(atom, scope):
         return True  # a literal threshold: fixed, so nothing moves the crossing
     # ``warn_on_failure=False`` for the same reason the detector passes it: an
     # empty result is the supported "not a switch time" answer, which the caller

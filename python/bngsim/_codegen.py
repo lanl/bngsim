@@ -1401,24 +1401,29 @@ def _preprocess_derived_expr(expr: str) -> str:
     return _rewrite_logicals(s)
 
 
+def _derived_rate_constant_decline(name: str, expr: str, reason: str) -> str:
+    """The decline reason for a derived rate constant that would not
+    differentiate (issue #56), phrased for
+    :func:`_warn_functional_sens_rhs_refused`."""
+    return f"the derived rate constant {name} = {expr!r} could not be differentiated ({reason})"
+
+
 def _warn_sens_rhs_refused(name: str, expr: str, reason: str) -> None:
     """Report that the analytic sensitivity RHS was declined because a derived
     rate constant could not be differentiated (issue #56).
 
-    This is the *good* outcome — the run falls back to CVODES' internal
-    difference quotient and the gradient stays correct, just slower — but it is
-    worth saying out loud, because the alternative the caller is avoiding is a
-    sensitivity column of exact zeros that looks like a converged answer.
+    Usually the *good* outcome — the run falls back to CVODES' internal
+    difference quotient and the gradient stays correct, just slower — but worth
+    saying out loud either way, because the alternative the caller is avoiding is
+    a sensitivity column of exact zeros that looks like a converged answer.
+
+    Routed through :func:`_warn_functional_sens_rhs_refused` rather than logging
+    its own sentence, so there is one place that decides whether the fallback may
+    be called correct: a model that also carries a moving branch crossing hands
+    that function a tagged reason and gets the honest message instead (issue
+    #232). The text is otherwise unchanged.
     """
-    logger.warning(
-        "Forward sensitivity: the derived rate constant %s = %r could not be "
-        "differentiated (%s), so the analytic sensitivity RHS is declined for "
-        "this model and CVODES' internal difference quotient is used instead "
-        "(correct, but slower).",
-        name,
-        expr,
-        reason,
-    )
+    _warn_functional_sens_rhs_refused(_derived_rate_constant_decline(name, expr, reason))
 
 
 def _warn_chain_rule_dropped(expr: str, referenced: list[str], reason: str) -> None:
@@ -6991,6 +6996,28 @@ def _exprtk_call_heads() -> frozenset[str]:
     return frozenset(_EXPRTK_TO_SYMPY_FUNC)
 
 
+# The heads that ``_preprocess_exprtk`` rewrites into a sympy *construct* before
+# ``parse_expr`` performs any function lookup, so none of them ever reaches one:
+# ``if(c,t,f)`` → ``Piecewise`` (:func:`_translate_bngl_if_to_piecewise`),
+# ``not(x)`` → ``Not(x)``, and the word-spelled connectives → ``And``/``Or``
+# (:func:`_rewrite_logicals`). Every one is nonetheless *shaped* like a call to
+# the lexical scan in :func:`_functional_rate_law_partials` — ``and`` in
+# ``(X<hi) and (X>lo)`` is an infix operator whose right operand merely happens
+# to be parenthesized — so without this set the scan reports a boolean
+# connective in a *condition* as an unknown function and declines the whole
+# model's analytic sensitivity RHS (issue #232). A connective in a condition is
+# never differentiated: it selects a branch.
+#
+# The connectives are read out of ``_LOGICAL_LEVELS`` rather than re-listed, so
+# a word spelling added to the rewrite cannot go missing here (the #56 lesson,
+# same as :func:`_exprtk_call_heads` above). ``xor``/``nand``/``nor``/``xnor``
+# are deliberately absent from BOTH: no rewrite translates them, so admitting
+# them would hand ``parse_expr`` a call it cannot bind.
+def _condition_call_heads() -> frozenset[str]:
+    words = {tok for _fn, tokens in _LOGICAL_LEVELS for tok, is_word in tokens if is_word}
+    return frozenset({"if", "not"} | words)
+
+
 # ``_pi`` / ``_e`` are ExprTk's math constants, not model parameters (they appear
 # in no ``codegen_data()["parameters"]`` entry), so they need their own resolution
 # — same pair, same C spellings, as ``differentiate_expression_output_partials``.
@@ -7011,8 +7038,37 @@ def _carry_reason_class(inner: str | None, wrapped: str) -> str:
     from bngsim._switch_sensitivity import UncompensatedCrossingReason
 
     if isinstance(inner, UncompensatedCrossingReason):
-        return UncompensatedCrossingReason(wrapped)
+        # ``type(inner)`` rather than the base class: the verdict has a subclass
+        # (:class:`~bngsim._switch_sensitivity.DeclinedAtMovingCrossingReason`)
+        # that only differs in the sentence the warning ends with, and rebuilding
+        # it as the base would silently downgrade that — the very drift this
+        # helper exists to prevent.
+        return type(inner)(wrapped)
     return wrapped
+
+
+def _tag_decline_at_moving_crossing(reason: str, crossings: tuple[str, ...]) -> str:
+    """Re-tag *reason* when declining lands the model's own moving crossing on
+    CVODES' difference quotient (issue #232).
+
+    ``crossings`` is :func:`~bngsim._switch_sensitivity.model_moving_crossings`'
+    answer for the model being declined. A reason that already carries the
+    fallback-is-wrong-too verdict is returned untouched — it got there by naming
+    the crossing itself, which is the better message of the two.
+    """
+    from bngsim._switch_sensitivity import (
+        DeclinedAtMovingCrossingReason,
+        UncompensatedCrossingReason,
+    )
+
+    if not crossings or isinstance(reason, UncompensatedCrossingReason):
+        return reason
+    shown = ", ".join(repr(c) for c in crossings[:4])
+    if len(crossings) > 4:
+        shown += f", and {len(crossings) - 4} more"
+    return DeclinedAtMovingCrossingReason(
+        f"{reason}; this model also branches on {shown}, whose crossing time(s) move"
+    )
 
 
 def _warn_functional_sens_rhs_refused(reason: str) -> None:
@@ -7038,10 +7094,32 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     column comes back a factor of two low after the crossing (issue #146). Until
     issue #150 supplies the jump, this warning is the only thing standing between
     that and a number a caller would take at face value.
+
+    Issue #232 added the second producer of that same verdict, and it is the one
+    that made "correct, but slower" dangerous rather than merely imprecise: a
+    model can be declined for a reason that has nothing to do with its branch
+    conditions and still have one. ``CVodeSensInit1`` takes one callback for
+    every column, so the whole model goes onto the difference quotient, crossing
+    included. Measured on #232's reproduction — the same window written two ways,
+    one of which was being declined over a lexical detail — the fallback returns
+    a gradient 53 % wrong at ``rtol=1e-8`` and stops integrating below
+    ``rtol=1e-9``, where the analytic path is right to 2e-10 throughout. That is
+    :class:`~bngsim._switch_sensitivity.DeclinedAtMovingCrossingReason`, and the
+    only thing it changes here is the closing sentence: the missing piece is not
+    machinery nobody has written, it is the decline itself.
     """
-    from bngsim._switch_sensitivity import UncompensatedCrossingReason
+    from bngsim._switch_sensitivity import (
+        DeclinedAtMovingCrossingReason,
+        UncompensatedCrossingReason,
+    )
 
     if isinstance(reason, UncompensatedCrossingReason):
+        remedy = (
+            "The analytic sensitivity RHS does apply that jump, so removing the decline "
+            "named above restores a correct gradient (issue #232)."
+            if isinstance(reason, DeclinedAtMovingCrossingReason)
+            else "Tracked in issue #150."
+        )
         logger.warning(
             "Forward sensitivity: %s. The analytic sensitivity RHS is declined for this "
             "model, and CVODES' internal difference quotient — which is used instead — "
@@ -7049,8 +7127,9 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
             "smoothly through a crossing whose time moves, so wherever that condition "
             "actually crosses during the run, EVERY sensitivity column is wrong there "
             "and after it by the crossing's jump. Validate against a finite difference "
-            "of the trajectory before relying on these columns. Tracked in issue #150.",
+            "of the trajectory before relying on these columns. %s",
             reason,
+            remedy,
         )
         return
     logger.warning(
@@ -7173,12 +7252,12 @@ def _functional_rate_law_partials(
     probe = _EMPTY_CALL_RE.sub(r"\1", re.sub(r"\b(?:time|t)\s*\(\s*\)", " ", inlined))
     known = _exprtk_call_heads()
     if scope.switch_scope is not None:
-        # ``if`` is a recognized head, just not through _EXPRTK_TO_SYMPY_FUNC:
-        # _exprtk_to_sympy rewrites it to a sympy ``Piecewise`` before parsing
-        # (_translate_bngl_if_to_piecewise), so it never reaches a function
-        # lookup. Admitted only alongside the gate above, so a model whose
-        # conditions were NOT cleared still reports it as unsupported.
-        known = known | {"if"}
+        # ``if``, ``and``, ``or`` and ``not`` are recognized heads, just not
+        # through _EXPRTK_TO_SYMPY_FUNC: _exprtk_to_sympy rewrites each into a
+        # sympy construct before parsing, so none reaches a function lookup.
+        # Admitted only alongside the gate above, so a model whose conditions
+        # were NOT cleared still reports them as unsupported.
+        known = known | _condition_call_heads()
     stray = sorted({m.group(1) for m in _IDENT_CALL_RE.finditer(probe)} - known)
     if stray:
         return None, "calls unsupported function(s): " + ", ".join(stray)
@@ -7445,7 +7524,27 @@ def _functional_dfdp_terms(
     cache: dict[str, tuple[list[tuple[int, str]] | None, str | None]] = {}
     out: dict[int, list[tuple[int, str]]] = {}
 
+    # (#232) Which of the model's branch conditions cross at a time that moves —
+    # the fact that decides whether the difference quotient this decline falls
+    # back to is a correct answer or a wrong one. Resolved on the first decline
+    # rather than up front: it rebuilds the switch scope and re-scans every
+    # condition-bearing body, and the overwhelming majority of models never
+    # decline at all.
+    moving: list[tuple[str, ...]] = []  # empty until resolved; then one entry
+
+    def _moving_crossings() -> tuple[str, ...]:
+        if not moving:
+            from bngsim._switch_sensitivity import model_moving_crossings
+
+            try:
+                moving.append(model_moving_crossings(core, ctx))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("GH #232: moving-crossing scan unavailable (%s)", exc)
+                moving.append(())
+        return moving[0]
+
     def _decline(reason: str) -> tuple[dict[int, list[tuple[int, str]]], str]:
+        reason = _tag_decline_at_moving_crossing(reason, _moving_crossings())
         _warn_functional_sens_rhs_refused(reason)
         return {}, reason
 
@@ -7578,6 +7677,23 @@ def generate_sens_from_model(
 
     deadline = _sens_derivation_deadline(n_sp)
 
+    # (#232) Every decline below goes through here, so exactly one place decides
+    # whether the difference quotient it falls back to may be called correct.
+    # Same lazy-on-first-decline scan as _functional_dfdp_terms', for the same
+    # reason: the scan is not free and almost nothing declines.
+    _moving: list[tuple[str, ...]] = []  # empty until resolved; then one entry
+
+    def _refuse(reason: str) -> None:
+        if not _moving:
+            from bngsim._switch_sensitivity import model_moving_crossings
+
+            try:
+                _moving.append(model_moving_crossings(core))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("GH #232: moving-crossing scan unavailable (%s)", exc)
+                _moving.append(())
+        _warn_functional_sens_rhs_refused(_tag_decline_at_moving_crossing(reason, _moving[0]))
+
     # Bail if any reaction is non-Elementary — analytical sens RHS is only
     # defined for k * sf * ∏y^m kinetics. Same constraint as
     # generate_sens_rhs_c (line 762-765) for the .net path.
@@ -7595,7 +7711,7 @@ def generate_sens_from_model(
         # a divide. No loader produces one today; the check is what keeps that
         # true rather than assumed.
         if rxn.get("per_species_volume_scaling", False) and rxn["type"] != "functional":
-            _warn_functional_sens_rhs_refused(
+            _refuse(
                 f"reaction {rxn_idx + 1} ({rxn['function_name']}) is cross-compartment "
                 f"(per-species volume scaling) with rate-law type {rxn['type']!r}, whose "
                 "J*yS has no form for the per-species compartment divide"
@@ -7636,14 +7752,14 @@ def generate_sens_from_model(
             try:
                 groups = _functional_jacobian_groups(core, data, _jacv_add, deadline)
             except _DerivationBudgetExceeded:
-                _warn_functional_sens_rhs_refused(
+                _refuse(
                     _sens_budget_decline_reason(
                         n_sp, "deriving J*yS over the Functional reactions"
                     )
                 )
                 return None
             if groups is None:
-                _warn_functional_sens_rhs_refused(
+                _refuse(
                     "a Functional rate law's derivative with respect to the species it "
                     "reads could not be emitted as C, so J*yS would be incomplete"
                 )
@@ -7677,7 +7793,7 @@ def generate_sens_from_model(
         mm_rxn_count = sum(1 for r in reactions if r["type"] == "mm")
         if mm_rxn_count:
             if not plan.get("available"):
-                _warn_functional_sens_rhs_refused(
+                _refuse(
                     f"the model has {mm_rxn_count} Michaelis–Menten reaction(s) but no "
                     "analytical Jacobian plan to build their J*yS from"
                 )
@@ -7686,13 +7802,11 @@ def generate_sens_from_model(
                 data, plan["mm"], param_idx_by_name, primary_param_names, derived_exprs
             )
             if mm_decline is not None:
-                _warn_functional_sens_rhs_refused(mm_decline)
+                _refuse(mm_decline)
                 return None
             mm_jacv = _mm_jacobian_groups(plan["mm"], _jacv_add)
             if mm_jacv is None:  # pragma: no cover - a dense vector never misses
-                _warn_functional_sens_rhs_refused(
-                    "a Michaelis–Menten Jacobian entry had no home in J*yS"
-                )
+                _refuse("a Michaelis–Menten Jacobian entry had no home in J*yS")
                 return None
             functional_jacv_groups = functional_jacv_groups + mm_jacv
 
@@ -7726,7 +7840,7 @@ def generate_sens_from_model(
             # model with thousands of derived rate constants hang the build. This
             # loop is reached by Elementary-only models too, which have no other
             # sympy on this path.
-            _warn_functional_sens_rhs_refused(
+            _refuse(
                 _sens_budget_decline_reason(
                     n_sp, f"deriving the rate constant {p['name']} = {expr!r}"
                 )
@@ -7736,7 +7850,7 @@ def generate_sens_from_model(
             # Issue #56 — see generate_sens_rhs_c: a dropped chain rule here
             # reads downstream as a hard zero, so refuse the analytic RHS and
             # let CVODES' internal difference quotient answer correctly.
-            _warn_sens_rhs_refused(p["name"], expr, reason)
+            _refuse(_derived_rate_constant_decline(p["name"], expr, reason))
             return None
         if jac is not None:
             derived_expansion[p["name"]] = jac
@@ -7939,7 +8053,7 @@ def generate_sens_from_model(
         # reachable only through ``data->tfun_eval``, or a rateOf body (GH #65).
         # Declining is right; doing it silently is not, since this is the one
         # decline the per-reaction loop above cannot see coming.
-        _warn_functional_sens_rhs_refused(
+        _refuse(
             "every Functional rate law was differentiated, but the observable/function "
             "values they read cannot be recomputed inside the sensitivity RHS (a table "
             "function or rateOf)"
