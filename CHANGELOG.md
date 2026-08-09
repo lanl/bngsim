@@ -416,6 +416,65 @@ in `CMakeLists.txt`) is derived from it.
   instead.
 
 ### Fixed
+- **An SBML `<assignmentRule>` species had an identically-zero sensitivity row,
+  with no warning (issue #221).** A species an assignment rule defines has no ODE
+  of its own: BNGsim emits its state slot `fixed` and overwrites the reported
+  column each step from the rule's live value. The forward-sensitivity tensor was
+  left as the integrator wrote it — the `yS` of that frozen slot, which is
+  identically zero because its variational right-hand side is zero too. So
+  `result.species[:, i]` and `result.sensitivities[:, i, :]` described different
+  quantities, and the zero was silent. `Result.gradient` / `sse_gradient`
+  contract a `dL/dY` built from `result.species` against that tensor
+  **row-for-row**, so a fit scoring an assignment-rule species — `IRS_total`,
+  `InR_active`, the *reported* quantities of a published model, which is what
+  assignment rules are for — got a gradient that was zero in every direction and
+  read it as a flat objective rather than as a missing term.
+
+  The row is a chain rule away, and the run already computes it. GH #205 routed
+  the `output_sensitivities("species:<name>")` *selector* through the rule's
+  observable (linear-on-species) or expression; the tensor now carries the same
+  row, so the two agree by construction and every consumer that never goes
+  through a selector works. On `Smith_BMCSystBiol2013` — the model the issue was
+  filed from — a central difference of the model's own trajectory at `rtol 1e-11`
+  over three relative steps agreed with **0 of 52** resolvable assignment-rule
+  entries before and **52 of 52** after, to 8.5e-6.
+
+  Across the rr_parity corpus, 257 of the 1,291 loadable models carry
+  assignment-rule species (955 of them). All 257 were probed; of the 639 such
+  rows reachable in the 215 that run under sensitivities, **590 now carry the
+  chain rule and 551 of those were exactly 0.0 before**. **No
+  non-assignment-rule row moved, in any model** — the pass fills the derivative
+  exactly where the value pass fills the value, and a species whose rule source
+  is not reported keeps its frozen value, whose derivative the raw `yS` already
+  is.
+
+  The remaining 49 rows (31 models) are `NaN` rather than 0.0, which is the point
+  of the issue: a structural zero is indistinguishable from a measured one.
+  Almost all are rules codegen already declined to differentiate (a `piecewise`
+  lowers to an `if()`, which #198 refuses rather than guess at) — the species row
+  now agrees with the expression row it mirrors instead of contradicting it; the
+  rest are species whose reported value carries a time-varying volume rescale the
+  redirect does not model. The run warns naming them, `Result.output_sensitivities`
+  raises with the specific reason, and the new `Result.ar_sensitivity_refused`
+  reports them programmatically (it survives an HDF5 round trip).
+
+  A `NaN` row does not cost you the rest of the gradient. IEEE makes `0 · NaN`
+  NaN, so one unknown row would otherwise poison every parameter of a fit that
+  never scored that species; `gradient`, `sse_gradient`, `chi2_gradient` and
+  `neg_log_likelihood_gradient` now drop a refused row wherever `dL/dY` is
+  exactly zero — which contributed exactly zero anyway, so a run with nothing
+  refused takes the untouched `einsum` path. An entry the loss *does* weight
+  keeps its `NaN`: that derivative is genuinely unknown and must not come back
+  looking like a number.
+
+  Fixed alongside, because it is the same defect one level down: the redirect map
+  handed to `Result` kept the **load-time** compartment size while the value pass
+  read it live, so on a model with a writable compartment size (#170) the
+  reported value and `output_sensitivities("species:<ar>")` were out by exactly
+  the write's factor — `set_param("C", 3.0)` on a V=1 load gave a derivative 3×
+  the finite difference of the column it claims to differentiate. There is now
+  one resolution site, and both passes read it.
+
 - **The integration march could be captured by its own BDF history and sit still
   until the budget ran out (issue #235).** CVODE can reach a configuration where
   the state, the step size, the order and the accumulated history are mutually

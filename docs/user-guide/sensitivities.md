@@ -55,6 +55,38 @@ Inside a `parameter_scan` `on_point` hook the derivative is *measured* through t
 hook instead, so a dose there needs no declaration — see
 [Steady state](steady-state.md#the-dose-an-on_point-hook-applies-issue-111).
 
+### SBML species set by an `<assignmentRule>`
+
+A species an assignment rule defines — `IRS_total`, `InR_active`, the *reported*
+quantities of a published SBML model — has no ODE of its own. BNGsim emits its
+state slot `fixed` and overwrites the reported column each step from the rule's
+live value: an observable when the rule is linear in species, a function
+otherwise. Its **sensitivity row is the chain rule through that assignment**, and
+`result.sensitivities[:, i, :]` carries it, so it lines up with
+`result.species[:, i]` the way every other row does and `Result.gradient` can
+score it (issue #221). `output_sensitivities("species:<name>")` returns the same
+numbers.
+
+Where the chain rule is not available the row is `NaN`, never `0.0` — a
+structural zero is indistinguishable from a measured one, and an optimizer reads
+it as a flat objective rather than as a missing term. The run warns naming the
+species, and `result.ar_sensitivity_refused` lists them:
+
+```python
+result.ar_sensitivity_refused          # frozenset({"stimulus"})
+result.output_sensitivities("species:stimulus")
+# ValueError: ... has no output sensitivity — uses unsupported construct: if() conditional
+```
+
+Two things put a species there: codegen declined the rule's own output
+sensitivity (a `piecewise` lowers to an `if()`, which #198 refuses rather than
+guess at), or the reported value carries a time-varying volume rescale the
+redirect does not model. A `NaN` row does **not** cost you the rest of the
+gradient: `gradient`, `sse_gradient`, `chi2_gradient` and
+`neg_log_likelihood_gradient` drop these rows wherever your `dL/dY` is exactly
+zero, so a fit that never scores that species still gets a number. Weight one and
+the gradient is `NaN`, which is the honest answer.
+
 ## Parallel sensitivity computation
 
 For models with many parameters (Np), computing all sensitivities serially

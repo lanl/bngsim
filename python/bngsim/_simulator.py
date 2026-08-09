@@ -1641,13 +1641,18 @@ class Simulator:
             result._seed = seed
         if ic_seed is not None:
             result._ic_sensitivity_seed = ic_seed
-        self._apply_ar_report_map(result)
+        # The AR value column and its sensitivity row are the same quantity read
+        # two ways, so both passes take the ONE resolved map (GH #221) — a second
+        # place that recomputes `vdiv` is a place the two can drift apart, which
+        # is exactly how the #170 writable-volume divisor went stale on one side.
+        ar_map, ar_blocked = self._ar_sensitivity_metadata()
+        self._apply_ar_report_map(result, ar_map)
         self._apply_varvol_conc_map(result)
         self._apply_varvol_ar_conc_map(result)
         self._apply_varvol_event_resize_map(result)
-        ar_map, ar_blocked = self._ar_sensitivity_metadata()
         result._ar_sens_map = ar_map
         result._ar_sens_blocked = ar_blocked
+        self._apply_ar_sensitivity_map(result, ar_map, ar_blocked)
         return result
 
     def _ar_sensitivity_metadata(self) -> tuple[dict[str, tuple[str, str, float]], frozenset[str]]:
@@ -1666,6 +1671,14 @@ class Simulator:
         GH #85/#87): the redirect scales only by the constant ``vdiv``, so those
         species' output sensitivities are refused rather than returned subtly
         wrong. Both are empty for .net and non-AR models (no redirect).
+
+        The ``vdiv`` carried here is **resolved live** (:meth:`_ar_report_vdiv`),
+        not the load-time number baked into ``_ar_report_map``. A ``Result`` has
+        no model to resolve it against, so leaving the raw entry made
+        ``output_sensitivities`` divide by a stale volume the moment a writable
+        compartment size was written (#170): with ``set_param("C", 3.0)`` on a
+        V=1 load, the value column divided by 3 and the selector's derivative did
+        not, putting the two out by exactly that factor.
         """
         amap = getattr(self._model, "_ar_report_map", None) or {}
         if not amap:
@@ -1673,9 +1686,14 @@ class Simulator:
         vc = getattr(self._model, "_varvol_conc_map", None) or {}
         vac = getattr(self._model, "_varvol_ar_conc_map", None) or {}
         blocked = frozenset(name for name in amap if name in vc or name in vac)
-        return dict(amap), blocked
+        resolved = {
+            name: (entry[0], entry[1], self._ar_report_vdiv(entry)) for name, entry in amap.items()
+        }
+        return resolved, blocked
 
-    def _apply_ar_report_map(self, result: Result) -> None:
+    def _apply_ar_report_map(
+        self, result: Result, amap: dict[str, tuple[str, str, float]]
+    ) -> None:
         """Report AssignmentRule-target species at their live rule value.
 
         An AR-target species is emitted ``fixed`` (the loader zeroes its ODE
@@ -1685,8 +1703,11 @@ class Simulator:
         as an observable (linear-on-species rules) or an expression/function
         (everything else). Overwrite the frozen species column with that live
         column. No-op for .net and non-AR models (empty map).
+
+        *amap* is the vdiv-resolved map from :meth:`_ar_sensitivity_metadata`;
+        :meth:`_apply_ar_sensitivity_map` differentiates exactly what this pass
+        writes, from the same map.
         """
-        amap = getattr(self._model, "_ar_report_map", None)
         if not amap:
             return
         species_names = result._species_names
@@ -1704,21 +1725,7 @@ class Simulator:
         # Copy once so we never mutate a buffer aliasing C++-owned memory.
         sp = np.array(result._species, dtype=np.float64, copy=True)
         changed = False
-        for name, entry in amap.items():
-            # entry is (kind, src, vdiv). vdiv (GH #75) is V_c(target) when the
-            # AR target is an hOSU=true V≠1 species — the rule's observable /
-            # expression yields the target's amount, and bngsim reports stored
-            # concentration = amount / V_c(target). 1.0 for V=1 / hOSU=false /
-            # legacy 2-tuples ⇒ no-op (byte-identical reporting).
-            kind, src = entry[0], entry[1]
-            vdiv = entry[2] if len(entry) > 2 else 1.0
-            # (#170) A writable compartment size is read live rather than taken
-            # from the load-time value baked into the map, so this rescale follows
-            # a `set_param` on the volume. Empty name ⇒ the static value above.
-            if len(entry) > 3 and entry[3]:
-                # Fall back to the load-time value if the name does not resolve.
-                with contextlib.suppress(Exception):
-                    vdiv = float(self._model.get_param(entry[3]))
+        for name, (kind, src, vdiv) in amap.items():
             j = sp_idx.get(name)
             if j is None:
                 continue
@@ -1733,6 +1740,151 @@ class Simulator:
             changed = True
         if changed:
             result._species = sp
+
+    def _ar_report_vdiv(self, entry: tuple) -> float:
+        """The ``vdiv`` an ``_ar_report_map`` entry reports its rule's value through.
+
+        ``entry`` is ``(kind, src, vdiv[, vdiv_param])``. ``vdiv`` (GH #75) is
+        ``V_c(target)`` when the AR target is an hOSU=true V≠1 species — the
+        rule's observable / expression yields the target's *amount*, and bngsim
+        reports stored concentration = amount / V_c(target). 1.0 for V=1 /
+        hOSU=false / legacy 2-tuples ⇒ no-op (byte-identical reporting).
+
+        (#170) A *writable* compartment size is read live rather than taken from
+        the load-time value baked into the map, so the rescale follows a
+        ``set_param`` on the volume; an empty/absent name means the static value.
+
+        Called once per run, by :meth:`_ar_sensitivity_metadata`, whose resolved
+        map both the value pass (:meth:`_apply_ar_report_map`) and the derivative
+        pass (:meth:`_apply_ar_sensitivity_map`) then read — so there is no second
+        site the divisor can drift at.
+        """
+        vdiv = entry[2] if len(entry) > 2 else 1.0
+        if len(entry) > 3 and entry[3]:
+            # Fall back to the load-time value if the name does not resolve.
+            with contextlib.suppress(Exception):
+                vdiv = float(self._model.get_param(entry[3]))
+        return float(vdiv)
+
+    def _apply_ar_sensitivity_map(
+        self,
+        result: Result,
+        amap: dict[str, tuple[str, str, float]],
+        blocked: frozenset[str],
+    ) -> None:
+        """Differentiate the value :meth:`_apply_ar_report_map` reported (GH #221).
+
+        The value pass above overwrites an AssignmentRule-target species' column
+        with the rule's live value, but the forward-sensitivity tensor is written
+        by the integrator and still holds the ``yS`` of the *frozen* state slot —
+        identically zero, since the loader emits that slot ``fixed`` (its ODE and
+        therefore its variational RHS are both 0). The tensor and the value column
+        then describe different quantities, and the zero is silent:
+        :meth:`Result.gradient` / :meth:`Result.sse_gradient` contract ``dL/dY``
+        built from :attr:`Result.species` against :attr:`Result.sensitivities`
+        row-for-row, so a fit scoring an assignment-rule species (``IRS_total``,
+        ``InR_active`` — the *reported* quantities of an SBML model, which is what
+        assignment rules are for) reads a flat objective rather than a missing
+        term.
+
+        An assignment rule is a function of integrated state, so the row is a
+        chain rule away, and the run already computes it: the rule's observable
+        (linear-on-species, GH #197) or expression (everything else, GH #198)
+        block — the exact source ``Result.output_sensitivities("species:<ar>")``
+        redirects a selector through (GH #205). Copy that row in, divided by the
+        same ``vdiv`` the value pass used.
+
+        The invariant is **fill the derivative exactly where the value pass
+        filled the value**: a species whose rule source is not reported keeps its
+        frozen value, and the raw ``yS`` is then already that value's derivative.
+        Where the value *was* remapped but the derivative cannot be honoured, the
+        row ends up ``NaN`` rather than at a structural zero nobody can tell from
+        a measurement — the one outcome GH #221 rules out — and the species is
+        recorded in ``Result.ar_sensitivity_refused`` and named in a warning.
+        Three cases: a *blocked* species, whose reported value carries a
+        time-varying volume rescale the constant ``vdiv`` does not (GH #85/#87,
+        the same refusal ``output_sensitivities`` raises by name); a source block
+        that was never computed for this run; and — the common one on the corpus
+        — a source row that is itself ``NaN`` because codegen declined that
+        expression's own output sensitivity (GH #198).
+
+        Applies to both sensitivity axes (parameter and IC) and is a no-op for
+        .net / non-AR models, for runs without sensitivities, and for the 3-D
+        batch layout the value pass skips as well.
+        """
+        if not amap:
+            return
+        species_names = result._species_names
+        # Mirror the value pass's guards exactly: without them the value column
+        # was not remapped either, so the raw yS row is already consistent.
+        if not species_names or result._species.ndim != 2:
+            return
+        sp_idx = {n: i for i, n in enumerate(species_names)}
+        obs_idx = {n: i for i, n in enumerate(result._observable_names)}
+        expr_idx = {n: i for i, n in enumerate(result._expression_names)}
+        axes = (
+            ("_sensitivities", "_observable_sensitivities", "_expression_sensitivities"),
+            ("_sensitivities_ic", "_observable_sensitivities_ic", "_expression_sensitivities_ic"),
+        )
+        refused: set[str] = set()
+        for sp_attr, obs_attr, expr_attr in axes:
+            block = getattr(result, sp_attr)
+            if block.size == 0 or block.ndim != 3:
+                continue
+            obs_block = getattr(result, obs_attr)
+            expr_block = getattr(result, expr_attr)
+            out = np.array(block, dtype=np.float64, copy=True)
+            changed = False
+            for name, (kind, src, vdiv) in amap.items():
+                j = sp_idx.get(name)
+                if j is None:
+                    continue
+                # Did the value pass remap this column? If not, leave the row:
+                # the frozen value's derivative IS the raw yS already sitting there.
+                if kind not in ("observable", "expression"):
+                    continue
+                src_idx = obs_idx if kind == "observable" else expr_idx
+                if src not in src_idx:
+                    continue
+                src_block = obs_block if kind == "observable" else expr_block
+                if name in blocked or src_block.size == 0 or src_block.ndim != 3:
+                    out[:, j, :] = np.nan
+                    refused.add(name)
+                    changed = True
+                    continue
+                row = src_block[:, src_idx[src], :]
+                out[:, j, :] = row / vdiv if vdiv != 1.0 else row
+                changed = True
+                # The third refusal, and the common one on the corpus: the source
+                # row is ITSELF NaN because codegen declined that expression's
+                # output sensitivity (an `if()` conditional, a table function, a
+                # dependency on another declined function — GH #198 refuses rather
+                # than guess). Copying it through is right; going unreported is
+                # not, so classify by the row that landed rather than by cause —
+                # ANY NaN entry, since one is enough to poison a contraction, and
+                # a row NaN only at t=0 is a real case (BIOMD0000000829).
+                if not np.isfinite(out[:, j, :]).all():
+                    refused.add(name)
+            if changed:
+                setattr(result, sp_attr, out)
+        if refused:
+            result._ar_sens_refused = frozenset(refused)
+            warnings.warn(
+                f"Assignment-rule species {sorted(refused)} have NaN entries in their "
+                "Result.sensitivities row: the chain rule through the assignment is not "
+                "available for them, either because codegen declined the rule's own "
+                "output sensitivity (GH #198 refuses an `if()` conditional or a table "
+                "function rather than guess) or because the reported value carries a "
+                "time-varying volume rescale the redirect does not model (GH #85/#87). "
+                "NaN rather than 0.0 because a structural zero is indistinguishable "
+                "from a measured one, and Result.gradient would read it as a flat "
+                "objective (GH #221). Only these rows are NaN; every other row is a "
+                "normal derivative, and a loss that puts no weight on them still gets "
+                "a gradient. Result.ar_sensitivity_refused lists them, and "
+                "Result.output_sensitivities('species:<name>') raises with the "
+                "specific reason.",
+                stacklevel=2,
+            )
 
     def _apply_varvol_conc_map(self, result: Result) -> None:
         """Report species in variable-volume compartments at amount/V_live(t).
@@ -4420,9 +4572,14 @@ class Simulator:
 
         # GH #205 — carry the AR-species output-sensitivity redirect map (and
         # its blocked set) from a stamped chunk so species:<ar> selectors follow
-        # the assignment expression on the stitched result too.
+        # the assignment expression on the stitched result too. GH #221: the
+        # tensor rows themselves need no second pass here — each chunk's species
+        # block was already filled from that chunk's own observable/expression
+        # block, on the same parameter axis this concatenates along — but the
+        # refused set must ride through, since those rows are NaN in `full_sens`.
         result._ar_sens_map = base._ar_sens_map
         result._ar_sens_blocked = base._ar_sens_blocked
+        result._ar_sens_refused = base._ar_sens_refused
 
         return result
 
