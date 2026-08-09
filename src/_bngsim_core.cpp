@@ -684,12 +684,26 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly(
             "sensitivity_data",
             [](const bngsim::Result &r) {
-                // Return as 3D array: (n_times, n_species, n_sens_params)
+                // Return as 3D array: (n_times, n_species, n_sens_params).
+                //
+                // The species (row) axis is projected to the reported subset, the
+                // same rule species_data/species_names/n_species follow above (GH
+                // #71/#202) — one species axis on the Python surface, so a
+                // dL/dY built from ``result.species`` contracts against this
+                // tensor row-for-row (Result.gradient and friends). Empty
+                // projection ⇒ the full block, byte-identical. The derivative of
+                // a promoted (event-target) symbol stays reachable: the loader
+                // gives every one of them a same-named observable, so it is
+                // ``output_sensitivities("observable:<name>")``.
                 int nt = r.n_times();
                 int ns = r.n_species();
                 int np = r.n_sens_params();
                 if (np == 0 || r.sensitivity_data().empty()) {
                     return py::array_t<double>({0, 0, 0});
+                }
+                const auto &keep = r.reported_species_indices();
+                if (!keep.empty()) {
+                    return sens_block_to_ndarray_3d_rows(r.sensitivity_data(), nt, np, keep);
                 }
                 auto *vec = new std::vector<double>(r.sensitivity_data());
                 auto capsule =
@@ -706,11 +720,18 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly(
             "sensitivity_ic_data",
             [](const bngsim::Result &r) {
+                // Row axis projected exactly like ``sensitivity_data`` above; the
+                // *column* axis is sens_ic_species_names(), an explicitly named
+                // request, and is left alone.
                 int nt = r.n_times();
                 int ns = r.n_species();
                 int nic = r.n_sens_ic_species();
                 if (nic == 0 || r.sensitivity_ic_data().empty()) {
                     return py::array_t<double>({0, 0, 0});
+                }
+                const auto &keep = r.reported_species_indices();
+                if (!keep.empty()) {
+                    return sens_block_to_ndarray_3d_rows(r.sensitivity_ic_data(), nt, nic, keep);
                 }
                 auto *vec = new std::vector<double>(r.sensitivity_ic_data());
                 auto capsule =
@@ -721,17 +742,24 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                             static_cast<py::ssize_t>(sizeof(double))},
                                            vec->data(), capsule);
             })
-        // GH #196 — observable/expression output sensitivities (storage only).
+        // GH #196 — observable/expression output sensitivities.
         // Shape (n_times, n_rows, depth), or empty (0,0,0) when not computed.
         // The parameter blocks share the species parameter axis (n_sens_params);
-        // the IC blocks share the species IC axis (n_sens_ic_species). The row
-        // count is recovered from the buffer size. The species-only
-        // ``sensitivity_data`` / ``sensitivity_ic_data`` properties above are
-        // intentionally left untouched.
+        // the IC blocks share the species IC axis (n_sens_ic_species). The raw
+        // row count is recovered from the buffer size.
+        //
+        // Every one of these blocks projects its row axis by the same rule its
+        // name/value columns use, so a row index resolved from
+        // observable_names / expression_names addresses the matching row here
+        // (GH #202): the observable blocks drop the loader's internal
+        // `__bngsim_net_rewrite_obs_*` scaffolding (issue #61) and the
+        // expression blocks drop the auto-generated _rateLawN rows.
         .def_property_readonly("observable_sensitivity_data",
                                [](const bngsim::Result &r) {
-                                   return sens_block_to_ndarray_3d(r.observable_sensitivity_data(),
-                                                                   r.n_times(), r.n_sens_params());
+                                   return sens_block_to_ndarray_3d_rows(
+                                       r.observable_sensitivity_data(), r.n_times(),
+                                       r.n_sens_params(),
+                                       bngsim::public_observable_indices(r.observable_names()));
                                })
         .def_property_readonly("expression_sensitivity_data",
                                [](const bngsim::Result &r) {
@@ -742,9 +770,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                })
         .def_property_readonly("observable_sensitivity_ic_data",
                                [](const bngsim::Result &r) {
-                                   return sens_block_to_ndarray_3d(
+                                   return sens_block_to_ndarray_3d_rows(
                                        r.observable_sensitivity_ic_data(), r.n_times(),
-                                       r.n_sens_ic_species());
+                                       r.n_sens_ic_species(),
+                                       bngsim::public_observable_indices(r.observable_names()));
                                })
         .def_property_readonly("expression_sensitivity_ic_data", [](const bngsim::Result &r) {
             return sens_block_to_ndarray_3d_rows(r.expression_sensitivity_ic_data(), r.n_times(),

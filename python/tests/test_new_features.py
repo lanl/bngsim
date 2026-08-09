@@ -1169,6 +1169,34 @@ end groups
         assert result.n_observables == 2
         assert np.asarray(result.observables).shape == (25, 2)
 
+    def test_rewrite_observables_filtered_from_sensitivity_block(self, sat_rewrite_net: Path):
+        """The filter reaches the observable *sensitivity* rows too (GH #202).
+
+        The block was recorded per raw observable while `observable_names`
+        dropped the scaffolding, so the row an `observable:` selector resolved
+        to did not exist in the block — `output_sensitivities` (and the FIM
+        built over named outputs) refused on every legacy Sat/Hill model.
+        """
+        with pytest.warns(UserWarning, match="Sat"):
+            model = Model.from_net(sat_rewrite_net)
+
+        result = Simulator(model, method="ode", sensitivity_params=["k3"]).run(
+            t_span=(0, 20), n_points=11
+        )
+        assert result.observable_names == ["Stot"]
+        assert result.sensitivities_observables.shape == (11, 1, 1)
+
+        # Stot counts species S alone, so its output sensitivity IS S's row —
+        # which is also what pins that the *surviving* row is the right one.
+        assert result.species_names[0].startswith("S")
+        np.testing.assert_allclose(
+            np.asarray(result.output_sensitivities("observable:Stot"))[:, 0, :],
+            np.asarray(result.sensitivities)[:, 0, :],
+            rtol=0.0,
+            atol=0.0,
+        )
+        assert result.fisher_information(outputs=["observable:Stot"]).shape == (1, 1)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Michaelis-Menten tQSSA
