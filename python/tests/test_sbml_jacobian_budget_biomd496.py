@@ -44,7 +44,7 @@ integrates correctly. ``_TEST_BUDGET_S`` is therefore chosen from each fixture's
 default resembles. When the assertion below flips again, the fix is to re-measure
 and lower the budget, or to re-pick the fixture — not to relax the claim.
 
-Two things are locked in here:
+Three things are locked in here:
 
   * **The losers fall back and stay correct** (``test_large_functional_*``): the
     build collapses and the FD-fallback trajectory still matches RoadRunner.
@@ -52,17 +52,24 @@ Two things are locked in here:
     correctness floor left** (``test_no_corpus_model_needs_*``, issue #249). This
     replaces the claim that stood here through #95, #210 and #244: that
     ``BIOMD0000000457``'s FD solve *fails* at the parity tolerance, so the default
-    budget had to stay large enough to keep it on the analytical path. It does not
-    fail. Re-running #244's own classification over the whole corpus finds **zero**
-    needs-analytical models — see ``_NEEDS_ANALYTICAL_SWEEP`` for the numbers and
-    ``_DEFAULT_BUDGET_IS_A_PERFORMANCE_KNOB`` for what now guards the constant.
+    budget had to stay large enough to keep it on the analytical path. Re-running
+    #244's own classification over the whole corpus finds **zero** needs-analytical
+    models — see ``_NEEDS_ANALYTICAL_SWEEP``.
+  * **But it does have a performance floor, and 457 is not where it lives**
+    (``test_paying_model_*`` / ``test_default_budget_covers_*``, issue #245).
+    ``BIOMD0000000608``'s FD solve is correct and **4.16x slower**, and its
+    derivation costs 4.76 s — nearly 10x 457's. A screen that asks only whether FD
+    *works* is blind to that population by construction, which is why #249 could
+    conclude no inequality was left to assert. One is: not on correctness, on cost.
 
-**Why the old claim went unnoticed for a merge.** It was true when #95 wrote it
-and it is corpus-gated, so it *skips* in CI (``ssss.ss`` for this file, under
-``model corpus absent from this checkout``). Only a developer checkout with the
-corpus materialized runs it, where it went red the moment #244 landed. A
-corpus-gated assertion is worth having, but the tick on a green PR is not evidence
-about any of them.
+**Why these claims keep going unnoticed for a merge.** The file is corpus-gated, so
+it *skips* in CI (``ssss.ss``, under ``model corpus absent from this checkout``).
+Only a developer checkout with the corpus runs it. The 457 assertion has now been
+red on one architecture or the other continuously since #244 — as #244 wrote it, on
+arm64; as #249 rewrote it, on x86_64 — because both pinned the single tolerance
+where the two machines disagree. It is a ladder now, and asserts only the part that
+travels. A corpus-gated assertion is worth having, but a green tick is not evidence
+about any of them, and neither is one machine.
 
 Like the chatter test, these are gated on both the gitignored corpus model and
 libRoadRunner being present locally.
@@ -140,16 +147,37 @@ _SOLVE_WALL_CAP = 25.0
 # claimed it did was red on ``main`` from the moment #244 merged — invisible
 # because it is corpus-gated and CI has no corpus.
 #
-# It is not marginal and it is not this machine. 457's FD solve returns in 0.07 s
-# with 626 steps and a finite trajectory, and it survives the whole ladder either
-# side of the parity pair — rtol 1e-6/1e-12 through 1e-12/1e-15, dense and sparse
-# linear solvers, interpreted and codegen RHS. Nothing resembling the "CVODE
-# returns -3 at t~3.36 with h~1e-42" the old docstring describes appears anywhere
-# in that grid. Its derivation is 0.283 s, which puts it *below* the 0.5 s band
-# #244 selected fixtures from, so its own recipe would not pick it today either.
-# (The two loser fixtures re-measure at 3.486 s and 19.821 s here, against #244's
-# 3.2-3.5 s and 17.5-18.7 s — so this is the same machine class its numbers came
-# from, not a fast outlier.)
+# 457's FD solve returns in 0.07 s with 626 steps and a finite trajectory, and it
+# survives the whole ladder either side of the parity pair — rtol 1e-6/1e-12
+# through 1e-12/1e-15, dense and sparse linear solvers, interpreted and codegen
+# RHS. Its derivation is 0.283 s, which puts it *below* the 0.5 s band #244
+# selected fixtures from, so its own recipe would not pick it today either.
+#
+# **On x86_64 macOS that ladder has exactly one rung missing, and it is the parity
+# rung** (issue #245). Same commit, core rebuilt from the tree, corpus present:
+#
+#   | rtol      | 1e-6 | 1e-8   | 1e-9 (parity) | 1e-10  | 1e-12  |
+#   |-----------|------|--------|---------------|--------|--------|
+#   | arm64     | ok   | ok     | ok, 626 steps | ok     | ok     |
+#   | x86_64    | ok   | ok     | **CVODE -3**  | ok     | ok     |
+#   | |an - fd| | 0.0  | 1.9e-6 | —             | 2.7e-8 | 9.8e-10|
+#
+# The failure is "CVODE -3 at t~3.36 with h~3.1e-42" — #95's signature exactly. So
+# both readings are real and neither machine is misconfigured: this is a knife-edge
+# stiff transient whose convergence is not portable, and #244 and #249 each sampled
+# the one tolerance where the two architectures disagree.
+#
+# **That strengthens #249's conclusion rather than weakening it.** A model that
+# genuinely needed the analytical Jacobian would fail across a *band*, hardest at
+# the tightest tolerance. 457 fails at an isolated point with success on both
+# immediate neighbours and its cleanest agreement (9.8e-10) at the tightest rung —
+# an arithmetic accident, not a property of the model. What it does rule out is
+# ever pinning that one cell, which is what the canary below used to do from each
+# side in turn: red on x86_64 as written, red on arm64 as #244 wrote it.
+#
+# (The two loser fixtures re-measure at 3.486 s and 19.821 s on the arm64 machine
+# against #244's 3.2-3.5 s and 17.5-18.7 s, so #249's numbers are the same machine
+# class #244's came from; the x86_64 figures quoted below are ~3.3x slower again.)
 #
 # _NEEDS_ANALYTICAL_SWEEP — #244's classification, re-run over the whole corpus
 # rather than a slow band, one fresh process and one fresh model per arm:
@@ -207,10 +235,64 @@ _SOLVE_WALL_CAP = 25.0
 #
 # The shipping default stays 20 s: dropping the floor removes a requirement, it
 # does not license a change, and re-tuning the default is not this module's to do.
-# What guards it now is an equality pin rather than an inequality, because with no
-# correctness requirement left there is no inequality that means anything — see
+# What guards it now is an equality pin — see
 # ``test_default_budget_is_a_performance_knob``.
 _DEFAULT_BUDGET_S = 20.0
+
+# ─── One inequality does survive, on performance rather than correctness (#245) ──
+#
+# #249 retired the floor on the grounds that with no correctness requirement there
+# is no meaningful inequality left, and any floor would be a number chosen to look
+# like evidence. That is right about *correctness* and it is why the pin above is
+# an equality. It is not the whole picture, because #249's sweep asked whether the
+# FD solve **works**, never what it **costs**, and one of those has a floor in it.
+#
+# Re-running the >= 2 s band for solve *time* — medians of repeats on a warm
+# codegen cache — finds models FD solves correctly and slowly:
+#
+#   | model           | derivation | FD / analytical solve |
+#   |-----------------|-----------:|----------------------:|
+#   | BIOMD0000000608 |     4.76 s |             **4.16x** |
+#   | MODEL1603150001 |     2.51 s |                 3.01x |
+#   | MODEL1601050000 |     2.98 s |                 2.74x |
+#   | MODEL1602080000 |     2.32 s |                 1.70x |
+#   | MODEL1504130000 |     2.16 s |                 1.40x |
+#
+# A default below 608's 4.76 s does not merely make that build pay a derivation and
+# discard it — it hands the model a solve 4.16x slower for the rest of its life. So
+# the floor is 4.76 s times the one spread that can move it, 3.3x for machine speed
+# (the ratio in the module docstring; seconds do not travel, ratios do): 15.7 s,
+# held at 15.0. The shipping default clears it by 1.33x.
+#
+# **These ratios are only visible on a warm cache.** ``fd_viability.jsonl`` runs one
+# cold sample per mode, analytical first, so that arm absorbs codegen warm-up: it
+# reports 496 at 5.84x (really 1.02x) and MODEL1603150001 at 0.33x (really 3.01x) —
+# wrong by 5.8x in one direction and 9x in the other. Every number above is a
+# median of repeats after a discarded warm-up run.
+#
+# The ceiling, for the same reason it is not asserted: the cheapest derivation that
+# does *not* pay for itself is BIOMD0000000628 at 59.3 s, whose analytical solve is
+# 0.49x — slower than its FD one. Between 4.76 s and 59.3 s nothing needs getting
+# right (496 at 10.9 s measures 1.02x, 497 at 11.1 s measures 1.25x), so the window
+# is 12.5x wide and 20 s sits 4.2x above the floor and 3.0x below the ceiling.
+_SLOWEST_PAYING_DERIVATION_S = 4.76
+_PAYING_DERIVATION_FLOOR_S = 15.0
+
+# The most expensive derivation that still pays for itself, and the speed-up
+# asserted for it — well under the measured 4.16x, so the claim is a decision
+# rather than a coin flip.
+_PAYING_ANALYTICAL = ("BIOMD0000000608", 10.0, 1001)
+_PAYING_SOLVE_SPEEDUP = 2.0
+
+# The tolerance ladder the 457 canary walks, and how much of it must hold. A
+# needs-analytical model fails across a band and hardest at the tightest rung; the
+# measured x86_64/arm64 disagreement is a single interior rung, so one failure is
+# tolerated and two are not. See the block comment above for the grid.
+_CANARY_LADDER = ((1e-6, 1e-9), (1e-8, 1e-11), (1e-9, 1e-12), (1e-10, 1e-13), (1e-12, 1e-15))
+_CANARY_MAX_ISOLATED_FAILURES = 1
+# Largest FD-vs-analytical relative difference to call solver noise. Measured
+# 8.5e-6 (arm64) / 1.9e-6 (x86_64); ~120x margin over the worse of the two.
+_CANARY_AGREEMENT_REL = 1e-3
 
 
 def _model_xml(model_id: str) -> Path | None:
@@ -350,9 +432,11 @@ def test_default_budget_is_a_performance_knob():
         f"{_DEFAULT_DERIVATION_BUDGET_S}s. That is allowed — no corpus model needs "
         "the analytical Jacobian (issue #249), so nothing here forbids it — but it "
         "is a performance decision, not a free one: a budget below a model's "
-        "derivation cost makes the build pay the derivation and then discard it. "
-        "Update _DEFAULT_BUDGET_S with the new value and record what it was "
-        "measured against; do not delete this pin."
+        "derivation cost makes the build pay the derivation and then discard it, "
+        f"and below {_PAYING_DERIVATION_FLOOR_S}s it also costs a 4.16x slower "
+        "solve on BIOMD0000000608 (issue #245, see the floor test). Update "
+        "_DEFAULT_BUDGET_S with the new value and record what it was measured "
+        "against; do not delete this pin."
     )
 
 
@@ -371,6 +455,22 @@ def test_no_corpus_model_needs_the_analytical_jacobian():
     every attaching model; it needs no derivation, so the whole corpus is
     affordable) and, if a needs-analytical model has appeared, restore a floor
     derived from *its* derivation cost.
+
+    **It walks a tolerance ladder rather than pinning the parity rung**, which is
+    the one thing about 457 that does not travel (issue #245). At rtol 1e-9/atol
+    1e-12 the FD solve returns 626 steps on arm64 and CVODE -3 on x86_64 — the same
+    commit, the same corpus, a core built from the tree. Pinning that cell asserts
+    an arithmetic accident, and it has now been red on one architecture or the other
+    continuously since #244: as written by #244 it failed on arm64, and as written
+    by #249 it failed on x86_64. Both were invisible for a merge because the file is
+    corpus-gated and CI has no corpus.
+
+    What *is* portable is the shape of the failure. A model that genuinely needed
+    the analytical Jacobian would fail across a band and hardest at the tightest
+    rung; 457 fails at an isolated interior point with success on both immediate
+    neighbours and its cleanest agreement at the tightest rung. So the ladder is
+    walked, one isolated failure is tolerated, two are not, the tightest rung must
+    solve, and every rung that solves must agree with the analytical arm.
 
     Two ways to accidentally not test this, both of which report a comfortable PASS
     (kept from the original, because both still apply):
@@ -391,59 +491,167 @@ def test_no_corpus_model_needs_the_analytical_jacobian():
     if xml is None:
         pytest.skip(f"rr_parity corpus model not present: {_MODELS_DIR / model_id}")
 
-    run_kw = dict(
-        t_span=(0.0, t_end),
-        n_points=n_points,
-        rtol=_RTOL,
-        atol=_ATOL,
-        timeout=_SOLVE_WALL_CAP,
-    )
+    def _solve(jacobian: str | None, rtol: float, atol: float):
+        """One arm, on a model that has never been run. Returns None if it fails."""
+        model = bngsim.Model.from_sbml(str(xml))
+        kwargs = {"jacobian": jacobian} if jacobian else {}
+        sim = bngsim.Simulator(model, method="ode", **kwargs)
+        if jacobian == "fd":
+            assert model._core.analytical_jacobian_complete is False, (
+                f'{model_id} attached the analytical Jacobian under jacobian="fd" '
+                "— this test is not measuring the FD solve"
+            )
+        try:
+            return np.asarray(
+                sim.run(
+                    t_span=(0.0, t_end),
+                    n_points=n_points,
+                    rtol=rtol,
+                    atol=atol,
+                    timeout=_SOLVE_WALL_CAP,
+                ).species
+            )
+        except (SimulationError, SimulationTimeout):
+            return None
 
-    fd_model = bngsim.Model.from_sbml(str(xml))
-    fd_sim = bngsim.Simulator(fd_model, method="ode", jacobian="fd")
-    assert fd_model._core.analytical_jacobian_complete is False, (
-        f'{model_id} attached the analytical Jacobian under jacobian="fd" — this '
-        "test is not measuring the FD solve"
-    )
-    try:
-        fd = np.asarray(fd_sim.run(**run_kw).species)
-    except (SimulationError, SimulationTimeout) as exc:  # pragma: no cover - the canary
-        pytest.fail(
-            f"{model_id}'s FD solve failed ({type(exc).__name__}) — it succeeded in "
-            "0.07s over rtol 1e-6..1e-12 and both linear solvers when #249 retired "
-            "the needs-analytical floor. Re-run the corpus classification: if a "
-            "needs-analytical model exists again, restore a floor from its "
-            "derivation cost rather than editing this test."
+    failed: list[float] = []
+    worst_rel = 0.0
+    for rtol, atol in _CANARY_LADDER:
+        fd = _solve("fd", rtol, atol)
+        if fd is None:
+            failed.append(rtol)
+            continue
+        assert np.isfinite(fd).all(), f"{model_id} FD trajectory non-finite at rtol {rtol:.0e}"
+        # ...and where it solves, the analytical Jacobian must not change the answer:
+        # a budget cannot strand a model whose two Jacobians agree.
+        an = _solve(None, rtol, atol)
+        assert an is not None, (
+            f"{model_id}'s ANALYTICAL solve failed at rtol {rtol:.0e} while FD "
+            "succeeded — that is not a Jacobian question, re-run the classification"
         )
-    assert np.isfinite(fd).all(), f"{model_id} FD trajectory is non-finite"
+        scale = float(np.maximum(np.abs(an), np.abs(fd)).max())
+        worst_rel = max(worst_rel, float(np.abs(an - fd).max() / scale) if scale else 0.0)
 
-    # ...and the analytical Jacobian buys nothing on it: same trajectory, so the
-    # budget cannot strand this model however small it gets.
-    an_model = bngsim.Model.from_sbml(str(xml))
-    an = np.asarray(bngsim.Simulator(an_model, method="ode").run(**run_kw).species)
-    scale = float(np.maximum(np.abs(an), np.abs(fd)).max())
-    rel = float(np.abs(an - fd).max() / scale) if scale else 0.0
-    # Measured 8.5e-6 — two Jacobians take different step sequences, and this is
-    # the largest such gap anywhere in the corpus (the 23-model slow band tops out
-    # at 1.9e-6). The threshold carries ~120x over it, because what it has to
-    # separate is solver noise from the analytical Jacobian actually changing the
-    # answer, and only the second is worth re-opening the sweep for.
-    assert rel < 1e-3, (
-        f"{model_id} FD and analytical trajectories differ by {rel:.2e} relative "
-        "(measured 8.5e-6 when #249 retired the floor) — both solve, but not to "
+    tightest = _CANARY_LADDER[-1][0]
+    assert len(failed) <= _CANARY_MAX_ISOLATED_FAILURES and tightest not in failed, (
+        f"{model_id}'s FD solve failed at rtol {[f'{r:.0e}' for r in failed]} — "
+        f"at most {_CANARY_MAX_ISOLATED_FAILURES} isolated interior rung may fail "
+        f"(the known x86_64/arm64 disagreement at rtol {_RTOL:.0e}), and never the "
+        f"tightest at {tightest:.0e}. A failure band means a needs-analytical model "
+        "may exist again: re-run the classification and, if one does, restore a "
+        "floor from its derivation cost rather than editing this test."
+    )
+    assert worst_rel < _CANARY_AGREEMENT_REL, (
+        f"{model_id} FD and analytical trajectories differ by {worst_rel:.2e} "
+        "relative (measured 8.5e-6 arm64 / 1.9e-6 x86_64) — both solve, but not to "
         "the same answer, so the analytical Jacobian is doing something here after "
         "all. Re-run the #249 classification."
     )
 
 
-def test_needs_analytical_model_keeps_analytical_and_solves(monkeypatch):
-    """A stiff model that FD cannot solve keeps its analytical Jacobian.
+def test_paying_model_solves_faster_on_the_analytical_jacobian(monkeypatch):
+    """The premise under ``_PAYING_DERIVATION_FLOOR_S``, run instead of asserted.
 
-    The other half of the test above: ``BIOMD0000000457``'s finite-difference solve
-    fails at the 1e-9/1e-12 parity tolerance, and only the analytical Jacobian
-    integrates it. With a generous budget (so the result does not depend on machine
-    speed) the derivation completes, ``analytical_jacobian_complete`` is True, and
-    the solve succeeds — the regression the budget value exists to prevent.
+    #249 was right that there is no *correctness* floor left, and the equality pin
+    above says so. What survives is a performance one: ``BIOMD0000000608`` derives
+    for 4.76 s and solves 4.16x faster for it (0.065 s vs 0.015 s, 52 species, 86
+    functional reactions). FD is perfectly correct there — which is precisely why a
+    screen asking only whether FD *works* cannot see it, and why the floor it
+    supports had to be re-derived rather than inherited (issue #245).
+
+    The measurement traps, both of which report a comfortable PASS:
+
+    * Time one run each. The first ``run()`` after a cold ``Simulator`` carries
+      codegen warm-up and it lands on whichever mode went first — that is how
+      ``BIOMD0000000496`` reads as a 5.8x analytical win in ``fd_viability.jsonl``
+      when it is really 1.02x, and how ``MODEL1603150001`` reads as 0.33x when it is
+      really 3.01x. Both arms are constructed, warmed, then timed best-of-3 here.
+    * Reuse a model across runs. ``run()`` leaves the species at the end state, so
+      the second run integrates a different problem (see the canary above).
+      ``reset()`` between.
+
+    Asserted at 2x against a measured 4.16x. The budget is lifted for the analytical
+    arm so this measures the *value* of the derivation rather than whether the
+    shipping default happens to cover it — that is the pin's job, and coupling them
+    would make one failure report as two.
+    """
+    model_id, t_end, n_points = _PAYING_ANALYTICAL
+    xml = _model_xml(model_id)
+    if xml is None:
+        pytest.skip(f"rr_parity corpus model not present: {_MODELS_DIR / model_id}")
+    monkeypatch.setenv("BNGSIM_JAC_DERIV_BUDGET_S", "inf")
+
+    def _best_run_s(jacobian: str | None) -> float:
+        model = bngsim.Model.from_sbml(str(xml))
+        kwargs = {"jacobian": jacobian} if jacobian else {}
+        sim = bngsim.Simulator(model, method="ode", **kwargs)
+        expect_analytical = jacobian is None
+        assert model._core.analytical_jacobian_complete is expect_analytical, (
+            f"{model_id} attached={model._core.analytical_jacobian_complete} with "
+            f"jacobian={jacobian!r} — this measurement is not comparing what it says"
+        )
+        best = float("inf")
+        # One warm-up (codegen / first-touch) that is not timed, then best-of-3.
+        for rep in range(4):
+            model.reset()
+            t0 = time.perf_counter()
+            sim.run(
+                t_span=(0.0, t_end),
+                n_points=n_points,
+                rtol=_RTOL,
+                atol=_ATOL,
+                timeout=_SOLVE_WALL_CAP,
+            )
+            if rep:
+                best = min(best, time.perf_counter() - t0)
+        return best
+
+    analytical_s = _best_run_s(None)
+    fd_s = _best_run_s("fd")
+    assert fd_s > _PAYING_SOLVE_SPEEDUP * analytical_s, (
+        f"{model_id} FD solve {fd_s:.4f}s is not {_PAYING_SOLVE_SPEEDUP}x the "
+        f"analytical {analytical_s:.4f}s (measured 4.16x: 0.065s vs 0.015s) — the "
+        f"{_PAYING_DERIVATION_FLOOR_S}s floor rests on this derivation being worth "
+        "paying for. Re-run the classification and re-pick the fixture from "
+        "whatever pays then; do not delete this and keep the floor."
+    )
+
+
+def test_default_budget_covers_paying_derivations():
+    """The default may not drop below the slowest derivation that pays for itself.
+
+    The pin above catches *any* move of the constant and asks for a justification;
+    this is the one bound a justification may not talk its way past. They are not
+    redundant: the pin is a change detector that an intentional re-tune updates,
+    and this is what still holds after it has been updated.
+
+    ``BIOMD0000000608`` derives in 4.76 s here and solves 4.16x slower without the
+    result, so a default under it does not merely waste a derivation — it hands the
+    model a permanently slower solve. See ``_PAYING_DERIVATION_FLOOR_S`` for the
+    band behind the number and for why the margin is 3.3x.
+
+    The guard is on the constant, so it needs no corpus and no reference engine.
+    """
+    assert _DEFAULT_DERIVATION_BUDGET_S >= _PAYING_DERIVATION_FLOOR_S, (
+        f"default derivation budget {_DEFAULT_DERIVATION_BUDGET_S}s is below the "
+        f"{_PAYING_DERIVATION_FLOOR_S}s floor — BIOMD0000000608 derives in "
+        f"{_SLOWEST_PAYING_DERIVATION_S}s here and solves 4.16x slower without the "
+        "analytical Jacobian, and the floor carries 3.3x for machine speed. "
+        "Re-measure before lowering this, and record what the slowest derivation "
+        "that still pays for itself became — a cold codegen cache or a single "
+        "sample per mode will get the ratio wrong by up to 9x in either direction."
+    )
+
+
+def test_needs_analytical_model_keeps_analytical_and_solves(monkeypatch):
+    """The analytical arm of the canary's fixture solves and is finite.
+
+    ``BIOMD0000000457`` was picked by #95 as the model FD could not integrate. It
+    can (issue #249) — except at the parity tolerance on x86_64, where the two
+    architectures disagree (issue #245, see ``_CANARY_LADDER``). What is true on
+    every machine is this half: with a generous budget the derivation completes,
+    ``analytical_jacobian_complete`` is True, and the solve returns a finite
+    trajectory. That is what makes it usable as the canary's reference arm.
     """
     model_id, t_end, n_points = _NEEDS_ANALYTICAL
     xml = _model_xml(model_id)
