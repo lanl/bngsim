@@ -1031,6 +1031,22 @@ struct SteadyStateResult {
     int n_steps = 0; // CVODE steps or Newton iterations
     int n_rhs_evals = 0;
 
+    // Observable totals and raw function values AT the returned state (issue
+    // #247), evaluated once after the solve by the same update_observables() +
+    // evaluate_functions() pair the RHS uses. Parallel to
+    // NetworkModel::observable_names() and ::function_names().
+    //
+    // These exist because an SBML <assignmentRule>-target species has no ODE:
+    // its slot is emitted `fixed`, so `concentrations` holds its INITIAL value
+    // forever, and the value it should report is its rule's — carried under the
+    // same bare name as an observable (linear-on-species rule) or a function
+    // (everything else). The time-course path solves this by overwriting the
+    // column from Result's own observable/expression arrays; a steady state had
+    // no such arrays, so it reported the frozen slot. Populated on every solve,
+    // sensitivity or not, since that is exactly the case that was wrong.
+    std::vector<double> observable_values;
+    std::vector<double> function_values;
+
     // Steady-state sensitivity: dY_ss/dp = -J^{-1} * df/dp
     // Shape: (n_species, n_params) stored row-major
     std::vector<double> sensitivity; // empty if no sensitivity requested

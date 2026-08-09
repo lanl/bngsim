@@ -1741,7 +1741,7 @@ class Simulator:
         if changed:
             result._species = sp
 
-    def _ar_report_vdiv(self, entry: tuple) -> float:
+    def _ar_report_vdiv(self, entry: tuple, model: Model | None = None) -> float:
         """The ``vdiv`` an ``_ar_report_map`` entry reports its rule's value through.
 
         ``entry`` is ``(kind, src, vdiv[, vdiv_param])``. ``vdiv`` (GH #75) is
@@ -1763,7 +1763,7 @@ class Simulator:
         if len(entry) > 3 and entry[3]:
             # Fall back to the load-time value if the name does not resolve.
             with contextlib.suppress(Exception):
-                vdiv = float(self._model.get_param(entry[3]))
+                vdiv = float((model or self._model).get_param(entry[3]))
         return float(vdiv)
 
     def _apply_ar_sensitivity_map(
@@ -4805,6 +4805,13 @@ class Simulator:
             opts.codegen_c_source = self._codegen_c_source
         if sensitivity_params:
             opts.sensitivity_params = list(sensitivity_params)
+        # GH #247 — an AssignmentRule-target species is emitted ``fixed``, so its
+        # RHS row is identically zero and it is not an unknown of f(y) = 0 at all:
+        # its value is dictated by the rule. Leaving it in makes J structurally
+        # singular and the dY_ss/dp solve refuses the WHOLE model, gradient and
+        # all. Fold it out of the subspace, exactly as #74 does for the zero
+        # *column* an accumulator contributes.
+        mask_selector = self._ss_mask_excluding_ar_species(mask_selector)
         if mask_selector is not None:
             opts.steady_state_mask = mask_selector
 
@@ -4820,6 +4827,8 @@ class Simulator:
             raise SimulationError(f"Steady-state computation failed: {e}") from e
 
         result = SteadyStateResult(core_result)
+        self._apply_ss_ar_report_map(result)
+        self._apply_ss_ar_sensitivity_map(result)
 
         logger.info(
             "Steady state %s: method=%s, backend=%s, residual=%.2e, steps=%d, species_tested=%d",
@@ -4834,6 +4843,149 @@ class Simulator:
         self._warn_about_pure_sinks(result)
         self._warn_about_ss_sensitivity(result)
         return result
+
+    def _ss_mask_excluding_ar_species(self, mask_selector: list[int] | None) -> list[int] | None:
+        """Drop AssignmentRule-target species from the steady-state subspace (#247).
+
+        An AR-target species has no equation of its own: the loader emits its slot
+        ``fixed``, so its RHS row — and therefore its Jacobian row — is identically
+        zero, and its value comes from the rule instead. That makes it exactly the
+        mirror of the write-only accumulator issue #74 introduced ``mask=`` for:
+        an accumulator contributes a structurally zero *column* and a rule target a
+        zero *row*, and either one makes ``J`` singular. Before this, one
+        assignment rule made ``-J⁻¹·(∂f/∂p)`` refuse the entire model — including
+        the perfectly well-posed gradients of every integrated species — under a
+        message about a conservation-law continuum, which is a real but different
+        cause.
+
+        Excluding them also takes them out of the residual average, which is the
+        right reading rather than a side effect: a slot whose derivative is
+        identically zero contributes nothing to "has the system settled" but does
+        inflate the divisor, making ``tol`` easier to meet the more rule targets a
+        model has.
+
+        A caller's own ``mask=`` is intersected, never overridden. Returns
+        *mask_selector* unchanged when the model has no AR species (so a .net model
+        keeps the byte-identical no-mask path), and also when every species is one
+        — the core rejects an empty subspace, and a model that is nothing but
+        assignment rules has no ODE to solve anyway, so it should reach that error
+        on its own terms rather than a mask this method invented.
+        """
+        amap = getattr(self._model, "_ar_report_map", None)
+        if not amap:
+            return mask_selector
+        names = self._model.species_names
+        ar_idx = {i for i, n in enumerate(names) if n in amap}
+        if not ar_idx or len(ar_idx) >= len(names):
+            return mask_selector
+        base = mask_selector if mask_selector is not None else [1] * len(names)
+        keep = [0 if i in ar_idx else v for i, v in enumerate(base)]
+        if not any(keep):
+            # The caller's mask kept only rule targets. Their own selection wins:
+            # let the core raise its "excludes every species" error against what
+            # they asked for.
+            return mask_selector
+        return keep
+
+    def _apply_ss_ar_report_map(
+        self, result: SteadyStateResult, model: Model | None = None
+    ) -> None:
+        """Report AR-target species at their rule's value, not the frozen slot (#247).
+
+        The steady-state analogue of :meth:`_apply_ar_report_map`, and the same
+        map. An AssignmentRule-target species is emitted ``fixed``, so
+        ``concentrations`` holds the value its slot was seeded with at t=0 —
+        ``2.0`` on the issue's fixture where the steady value is ``20.0``, while
+        ``run()`` on the same model reports ``20.0``. Two entry points, one
+        quantity, a factor of ten, with the steady-state one presenting an initial
+        condition as an equilibrium.
+
+        The rule's value at the returned state comes from the core's
+        ``observable_values`` / ``expression_values``, evaluated there by the same
+        ``update_observables`` + ``evaluate_functions`` pair the RHS uses. Skips a
+        species whose rule source is not reported, exactly as the time-course pass
+        does — the frozen value is then the only answer available, and quietly
+        substituting something else would be worse than leaving it.
+        """
+        model = model or self._model
+        amap = getattr(model, "_ar_report_map", None)
+        if not amap:
+            return
+        obs_vals, expr_vals = result._observable_values, result._expression_values
+        if obs_vals.size == 0 and expr_vals.size == 0:
+            return
+        sp_idx = {n: i for i, n in enumerate(result._species_names)}
+        obs_idx = {n: i for i, n in enumerate(result._observable_names)}
+        expr_idx = {n: i for i, n in enumerate(result._expression_names)}
+        conc = np.array(result._concentrations, dtype=np.float64, copy=True)
+        changed = False
+        for name, entry in amap.items():
+            kind, src = entry[0], entry[1]
+            vdiv = self._ar_report_vdiv(entry, model)
+            j = sp_idx.get(name)
+            if j is None:
+                continue
+            val = None
+            if kind == "observable" and src in obs_idx and obs_idx[src] < obs_vals.size:
+                val = float(obs_vals[obs_idx[src]])
+            elif kind == "expression" and src in expr_idx and expr_idx[src] < expr_vals.size:
+                val = float(expr_vals[expr_idx[src]])
+            if val is None:
+                continue
+            conc[j] = val / vdiv if vdiv != 1.0 else val
+            changed = True
+        if changed:
+            result._concentrations = conc
+
+    def _apply_ss_ar_sensitivity_map(
+        self, result: SteadyStateResult, model: Model | None = None
+    ) -> None:
+        """Give an AR species' ``dY_ss/dp`` row the derivative of its rule (#247).
+
+        The species-axis row is ``NaN`` by construction once
+        :meth:`_ss_mask_excluding_ar_species` has taken the slot out of the solve.
+        But unlike a masked-out accumulator — which genuinely has no steady value
+        and so no steady-state gradient — a rule target *has* both: its value is a
+        function of the integrated species, so the derivative is the same chain
+        rule GH #221 fills the time-course tensor with, one level over. The
+        observable / expression steady-state blocks already carry it (GH #12), and
+        they are an exact linear projection of the species solve that just
+        succeeded, so this is a copy rather than a second computation.
+
+        No-op when no sensitivity was requested (there is no row to fill), for
+        .net and non-AR models, and for any rule whose source block this run did
+        not produce — that row stays ``NaN``, which is the honest answer and is
+        already exempt from the refusal in :meth:`_warn_about_ss_sensitivity`.
+        """
+        model = model or self._model
+        amap = getattr(model, "_ar_report_map", None)
+        if not amap or result._sensitivity is None or result._sensitivity.size == 0:
+            return
+        sens = np.array(result._sensitivity, dtype=np.float64, copy=True)
+        names = list(result._species_names)
+        sp_idx = {n: i for i, n in enumerate(names)}
+        obs_idx = {n: i for i, n in enumerate(result._observable_names)}
+        expr_idx = {n: i for i, n in enumerate(result._expression_names)}
+        changed = False
+        for name, entry in amap.items():
+            kind, src = entry[0], entry[1]
+            vdiv = self._ar_report_vdiv(entry, model)
+            j = sp_idx.get(name)
+            if j is None:
+                continue
+            if kind == "observable" and src in obs_idx:
+                block, k = result._observable_sensitivity, obs_idx[src]
+            elif kind == "expression" and src in expr_idx:
+                block, k = result._expression_sensitivity, expr_idx[src]
+            else:
+                continue
+            if block is None or block.size == 0:
+                continue
+            row = np.asarray(block)[k]
+            sens[j, :] = row / vdiv if vdiv != 1.0 else row
+            changed = True
+        if changed:
+            result._sensitivity = sens
 
     def _note_ss_jacobian_retry(self, result) -> None:
         """Say so when the solver had to call off the closed-form Jacobian.
@@ -5111,13 +5263,20 @@ class Simulator:
                 opts.codegen_so_path = self._codegen_so_path
             if self._codegen_c_source:
                 opts.codegen_c_source = self._codegen_c_source
-            if mask_selector is not None:
-                opts.steady_state_mask = mask_selector
+            entry_mask = self._ss_mask_excluding_ar_species(mask_selector)
+            if entry_mask is not None:
+                opts.steady_state_mask = entry_mask
             try:
                 core_result = find_steady_state(clone._core, opts)
             except RuntimeError as e:
                 raise SimulationError(f"Batch {i} failed: {e}") from e
             result = SteadyStateResult(core_result)
+            # GH #247 — the same two passes steady_state() runs, against the
+            # CLONE: a scan that moves a compartment volume moves the divisor with
+            # it, so resolving vdiv off self._model would report every entry
+            # through the unscanned volume.
+            self._apply_ss_ar_report_map(result, clone)
+            self._apply_ss_ar_sensitivity_map(result, clone)
             self._note_ss_jacobian_retry(result)
             self._warn_about_pure_sinks(result)
             return result
@@ -6099,6 +6258,8 @@ class SteadyStateResult:
         "_expression_names",
         "_observable_sensitivity",
         "_expression_sensitivity",
+        "_observable_values",
+        "_expression_values",
     )
 
     def __init__(self, core) -> None:
@@ -6155,6 +6316,15 @@ class SteadyStateResult:
         self._expression_names = list(getattr(core, "expression_names", []))
         self._observable_sensitivity = _ss_output_sens_block(core, "observable_sensitivity_data")
         self._expression_sensitivity = _ss_output_sens_block(core, "expression_sensitivity_data")
+        # Issue #247 — observable / function VALUES at the returned state. Present
+        # on every solve (the sensitivity blocks above are not), because what they
+        # are here for is the assignment-rule species whose own slot is frozen.
+        self._observable_values = np.asarray(
+            getattr(core, "observable_values", []), dtype=np.float64
+        )
+        self._expression_values = np.asarray(
+            getattr(core, "expression_values", []), dtype=np.float64
+        )
 
     @property
     def concentrations(self):
