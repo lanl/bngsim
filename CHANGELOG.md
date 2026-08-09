@@ -105,7 +105,62 @@ in `CMakeLists.txt`) is derived from it.
   ulp. SED-ML export refuses a per-species `atol` outright rather than writing
   one entry as `KISAO:0000211`, which would describe a different run.
 
+### Fixed
+- **A rate law using `sign`, `floor` or `ceil` over a state variable emitted a
+  broken Jacobian term instead of falling back (issue #250).** Those three
+  differentiate to an unevaluated sympy `Derivative`, and `_is_emittable` scanned
+  `atoms(sp.Function)` only — `Derivative` is not a `Function`, so it passed the
+  gate and both printers printed it verbatim:
+
+  ```
+  sympy_to_exprtk -> 'Derivative(sign(x), x)'
+  sympy_to_c      -> 'Derivative(((double)((0.0 < (x)) - ((x) < 0.0))), x)'
+  ```
+
+  `Derivative` is not an ExprTk builtin and not a declared C function, so what
+  reached the emitter was not a usable derivative. `_is_emittable` now rejects any
+  unevaluated `Derivative`, which covers `differentiate_rate_law`,
+  `sympy_to_exprtk` and `sympy_to_c` in one place — the three call sites — and the
+  affected model falls back to finite differences as it should. No corpus model
+  currently reaches this (`BIOMD0000001072` carries `floor` but declines earlier),
+  so it is a latent defect fixed rather than an observed one.
+
 ### Changed
+- **The build-time derivation now declines before differentiating what it could
+  never emit (issue #250).** `BIOMD0000000385` spent **138 s** against a 20 s
+  budget deriving a Jacobian the emitter then refused — a 6.9x overshoot the
+  budget could not bound, because the deadline is only testable between `sp.diff`
+  calls and this was one call.
+
+  The issue proposed subdividing the derivation to make the deadline reachable.
+  Profiling says that would not have worked: recursing that rate law to 117
+  deadline-checkable steps still leaves two `dAbs` at 62.4 s and 34.8 s, with
+  every other step under 0.04 s. `Abs` is an atomic leaf. What the profile showed
+  instead is that the 138 s bought a 5.7-million-op expression (a ~1500x blow-up)
+  that `sympy_to_exprtk` then rejected — the verdict was decidable up front.
+
+  Six functions the emitter accepts have no derivative it can print, derived by
+  differentiating every name in `_SYMPY_FUNC_TO_EXPRTK` rather than listed by
+  hand: `Abs`, `Max`, `Min` (which produce `re`/`im`/`Heaviside`) and `ceiling`,
+  `floor`, `sign` (an unevaluated `Derivative`, per the fix above). That set is a
+  fact about the emitter map rather than a judgement, so a test re-runs the
+  derivation and compares — adding a function to the map without re-deriving
+  would otherwise reintroduce this quietly for that function. A rate law
+  with one of those over a **differentiation variable** now falls back
+  immediately. Position matters and the check respects it — `Abs(k)*A`
+  differentiates to `Abs(k)` and is fine, and a Piecewise *condition* is copied
+  through undifferentiated, so `MODEL1006230034`'s
+  `Piecewise(…, mincond_J_K < Abs(deltaPsi))` keeps its complete analytical
+  Jacobian. A position-blind check took it away; that regression is what the
+  corpus A/B caught.
+
+  **Verified over the whole rr_parity corpus** (1319 models, unbudgeted
+  derivation, `complete` flag diffed against the pre-change sweep): **0 models
+  changed classification** in either direction, 0 error-status changes, 0 models
+  measurably slower. Total unbudgeted derivation 1296 s → 1100 s (−15.1%);
+  `BIOMD0000000385` 148.3 s → 0.9 s, `470`/`473`/`472` ~7-10 s → ~0.7 s. Worst
+  overshoot left in the corpus is **1.0x** the budget, down from 6.9x.
+
 - **The analytical-Jacobian budget has no correctness floor left, and the test
   that claimed one was red on `main` (issue #249).** Since #95 this suite held
   the shipping derivation budget above a floor justified by one model —
