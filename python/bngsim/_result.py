@@ -1276,7 +1276,11 @@ class Result:
         Returns
         -------
         ndarray, shape ``(n_params,)``
-            Parameter gradient :math:`\nabla_p L`.
+            Parameter gradient :math:`\nabla_p L`, one entry per column of
+            :attr:`sensitivities`, ordered like :attr:`sensitivity_params`.
+            That list — not :attr:`Model.param_names` — is what the returned
+            vector is aligned with, and it is what an optimizer's parameter
+            vector must be built from (issue #203; see Notes).
 
         Raises
         ------
@@ -1298,21 +1302,42 @@ class Result:
         >>> grad.shape
         (n_params,)
 
-        >>> # Use with scipy L-BFGS-B
+        >>> # Use with scipy L-BFGS-B. The fitted vector is the *default*
+        >>> # sensitivity column set, so `grad` lines up with `p_vec`.
         >>> from scipy.optimize import minimize
+        >>> names = model.primary_param_names
         >>> def objective(p_vec):
-        ...     model.set_params(dict(zip(param_names, p_vec)))
+        ...     model.set_params(dict(zip(names, p_vec)))
         ...     model.reset()
         ...     result = sim.compute_all_sensitivities(...)
+        ...     assert result.sensitivity_params == names
         ...     loss = np.sum((result.species - data)**2)
         ...     grad = result.gradient(
         ...         lambda sp, t: 2 * (sp - data)
         ...     )
         ...     return loss, grad
+        >>> x0 = [model.get_param(n) for n in names]
         >>> minimize(objective, x0, method='L-BFGS-B', jac=True)
 
         Notes
         -----
+        **The columns must be independent coordinates, and under the
+        ``compute_all_sensitivities()`` default they are** (issue #203). This
+        method contracts the *whole* parameter axis into one ``(n_params,)``
+        vector, so it is only a gradient if no two columns describe the same
+        physical effect. A **derived** parameter's column does describe an
+        effect the primaries underneath it already carry — ``_rateLaw1 =
+        chi*kon`` reaches the trajectory only through ``chi`` and ``kon``, whose
+        own columns are total derivatives *through* it — so summing all three
+        counts that effect twice. ``compute_all_sensitivities(params=None)``
+        drops the derived columns for this reason and warns; a
+        ``sensitivity_params=`` list you wrote yourself is your own to keep
+        independent, and if it names both a derived parameter and a primary
+        underneath it, do not hand this vector to an optimizer over both.
+        (Same shape as issue #155 one level down: the ``parameter`` axis of an
+        initial-condition sensitivity is a *total* derivative and must not be
+        summed with the ``ic`` axis.)
+
         The gradient computation is O(n_times × n_species × n_params) —
         a single matrix multiply per time point. With parallel
         ``compute_all_sensitivities()``, the total cost of computing

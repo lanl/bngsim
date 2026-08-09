@@ -106,6 +106,52 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Changed
+- **`compute_all_sensitivities(params=None)` now returns independent columns —
+  `Model.primary_param_names` rather than `Model.param_names` (issue #203).**
+  The default meant "every parameter", and on a model with derived
+  (expression-backed) parameters that list is not a set of coordinates. A
+  derived parameter reaches the trajectory only through the primaries it is
+  built from, and *their* columns are total derivatives **through** it — the
+  chain rule #188 restored. So `alpha` and `_rateLaw_R16_fwd = alpha*konBT`
+  reported the same physical effect twice, in exact proportion
+  `d(derived)/d(primary)`, and `Result.gradient` contracts that whole axis into
+  one `(n_params,)` vector its own docstring hands to `scipy.optimize.minimize`
+  over a parameter vector of the same width. Nothing bounded the size of the
+  error: on `BIOMD0000000701` the derived columns are ~6.7e-12 against `alpha`'s
+  1.0e-3 and it does not matter, but the ratio is the model's, not a constant.
+
+  `Result.fisher_information` is the sharper symptom, because there the damage
+  does not depend on that ratio at all: `Sᵀ Σ⁻¹ S` over an axis holding two
+  exactly proportional columns is rank-deficient **by construction**, so the old
+  default handed back a matrix with a null direction on every model carrying
+  derived parameters — and the identifiability reading the user guide recommends
+  (smallest eigenvalues → least identifiable) takes that round-off eigenvalue for
+  a finding about the model.
+
+  Dropped the way issue #164 established in the same five lines for the
+  compartment sizes `set_param` refuses: a warning naming them, and an explicit
+  `params=[...]` that still returns the column for anyone who wants
+  `∂x/∂_rateLaw` **on its own terms** — the axis
+  `bngsim.jax.differentiable_solve(..., flat=True)` asks for, which goes through
+  the explicit path and is unchanged. The default now agrees with that function's
+  own `flat=False` default, which has always differentiated over
+  `primary_param_names`.
+
+  The synthesized `_V0_<comp>` goes the same way, for the older reason: it is
+  bngsim's record of a compartment's size at load, which the rate constants in
+  that compartment are normalised against, and `set_param` refuses a
+  value-changing write to it (`test_the_load_time_volume_record_is_not_a_knob`
+  has said so since #170 stage 1) — so a gradient entry for it is one an
+  optimizer would fit against nothing. The compartment size itself is an
+  ordinary writable, differentiable parameter and stays in the tensor.
+
+  Measured on the 1,291 loadable rr_parity models: 279 carry derived parameters
+  and 216 of those also carry a `_V0_`, so 279 models see a narrower default —
+  10,048 columns dropped in total (9,524 derived, 524 internal), no model left
+  with an empty column set, and the three skip classes disjoint (no parameter
+  carries two of the flags). On the models A/B'd column for column, the columns
+  that remain are unchanged.
+
 - **A plain ODE run no longer derives, emits or compiles the analytic `∂f/∂p` it
   never installs (issue #209).** `generate_combined_from_model` called
   `generate_sens_from_model` unconditionally, so `Simulator(model, method="ode")`

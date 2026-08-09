@@ -74,12 +74,40 @@ result = sim.compute_all_sensitivities(
 
 # Full tensor: (n_times, n_species, n_params)
 print(result.sensitivities.shape)  # (101, 149, 40)
-print(result.sensitivity_params)   # all 40 param names
+print(result.sensitivity_params)   # == model.primary_param_names
 ```
 
 Each chunk clones the model (thread-safe deep copy) and runs an independent
 CVODES instance. The GIL is released during C++ CVODE integration, so threads
 achieve real parallelism. Near-linear speedup from 1→2→4→8 workers.
+
+### What the default column set is, and why it is narrower than `param_names`
+
+`params=None` means *every independent knob*, which is
+`model.primary_param_names` — not `model.param_names` (issue #203).
+`result.sensitivity_params` is always the authority on what the columns are, and
+anything dropped is named in a warning. Two classes come out:
+
+- **Derived (expression-backed) parameters** — `_rateLaw1 = chi*kon` from a
+  compound BNGL rate law, `_rateLaw_R16_fwd = alpha*konBT` from an SBML kinetic
+  law. Such a parameter reaches the trajectory only through the primaries it is
+  built from, and *their* columns are total derivatives through it. So the two
+  columns are the same physical effect twice, in exact proportion
+  `d(derived)/d(primary)`, and `Result.gradient` contracts the whole parameter
+  axis into one vector an optimizer then steps along in every coordinate at
+  once. Roughly one SBML model in five carries some (279 of the 1,291 loadable
+  rr_parity models, 9,524 parameters in total).
+- **`_V0_<comp>`** — bngsim's record of a compartment's size at load, which the
+  rate constants in that compartment are normalised against. `set_param`
+  refuses a value-changing write to it, so it is not a coordinate that can move
+  on its own; differentiate the compartment size itself, which is an ordinary
+  writable parameter.
+
+Naming either in `params=[...]` still returns its column — an explicit ask is a
+statement that you want that derivative *on its own terms*, treating the
+parameter as a free axis. That is exactly what
+`bngsim.jax.differentiable_solve(..., flat=True)` asks for, and why the default
+here (`flat=False`'s list) and that opt-in now agree end to end.
 
 ## Fisher Information Matrix
 
@@ -106,6 +134,13 @@ The FIM is the Cramér–Rao lower bound on parameter covariance:
 Cov(p̂) ≥ FIM⁻¹. Large diagonal entries indicate identifiable parameters;
 near-zero eigenvalues indicate practical non-identifiability.
 
+That last reading is only sound if the columns are independent, which is what
+the default column set above guarantees. `Sᵀ Σ⁻¹ S` over a parameter axis that
+contains both a derived parameter and a primary underneath it is rank-deficient
+**by construction** — the two columns are exactly proportional, so there is a
+null direction that says nothing about the model or the data. Before #203 that
+was the default on any model with derived parameters.
+
 ## Parameter gradients for optimization
 
 `Result.gradient()` computes ∇_p L from the sensitivity tensor and a
@@ -117,14 +152,18 @@ from scipy.optimize import minimize
 
 data = np.load("experimental_data.npy")  # (n_times, n_species)
 
+# The fitted vector is the default column set, so `grad` lines up with `p_vec`.
+names = model.primary_param_names
+
 def objective(p_vec):
     # Set parameters and simulate with sensitivities
-    model.set_params(dict(zip(param_names, p_vec)))
+    model.set_params(dict(zip(names, p_vec)))
     model.reset()
     result = sim.compute_all_sensitivities(
         t_span=(0, 100), n_points=101,
         n_workers=8,
     )
+    assert result.sensitivity_params == names
 
     # Compute loss and gradient
     loss = np.sum((result.species - data) ** 2)
@@ -134,17 +173,25 @@ def objective(p_vec):
     return loss, grad
 
 # L-BFGS-B optimization with analytical gradients
-opt = minimize(objective, x0=initial_params,
+opt = minimize(objective, x0=[model.get_param(n) for n in names],
                method='L-BFGS-B', jac=True)
 ```
+
+`gradient()` sums over time and species but *not* over parameters — the
+double-counting hazard is downstream, in the optimizer, which steps along every
+coordinate of the returned vector at once. That is only meaningful if the
+coordinates are independent, which is what the default column set above
+guarantees and a hand-written `sensitivity_params=` list does not: if such a
+list names both `_rateLaw1` and the `kon` underneath it, do not hand the
+resulting vector to an optimizer over both.
 
 The gradient computation is O(n_times × n_species × n_params) — a single
 matrix multiply per time point. Combined with parallel
 `compute_all_sensitivities()`, the total cost of loss + gradient is
 dominated by the CVODES solve, not the gradient algebra.
 
-**SBML compartment sizes are writable but not differentiable** (issues #164,
-#170). On an SBML model `model.param_names` includes the compartments. A
+**SBML compartment sizes are writable and differentiable** (issues #164, #170).
+On an SBML model `model.param_names` includes the compartments. A
 compartment size is now an ordinary writable parameter — `set_param("Liver", v)`
 re-derives everything the volume decides (the amount↔concentration conversion,
 an amount-declared initial condition, the mass-action scalar, the SSA propensity
@@ -157,38 +204,33 @@ the load-time size and the write lands on `codegen=True` and on an
 already-compiled `.so` too — including a write that arrives mid-scan, after the
 source was generated.
 
-What is still refused is the **gradient**: `compute_all_sensitivities()` skips a
-compartment column with a warning and `sensitivity_params=["Liver"]` raises,
-because the sensitivity RHS carries the kinetic-law half of `d/dV` and not the
-storage half — including the initial-condition seed, which is `-amount/V²` for an
-amount-declared species rather than zero. A partial column is a confidently wrong
-gradient, so it is refused rather than reported. Build the fitted vector from the
-parameters that have one:
+The **gradient** followed in stage 3: `d/dV` now carries the storage half as well
+as the kinetic-law half — including the initial-condition seed, which is
+`-amount/V²` for an amount-declared species rather than zero — so `Liver` is an
+ordinary column of `compute_all_sensitivities()` and `sensitivity_params=["Liver"]`
+is accepted. `_V0_Liver` is not: that is bngsim's record of the load-time size
+rather than the volume, `set_param` refuses to move it, and it is one of the
+things the `params=None` default drops (see
+[the default column set](#what-the-default-column-set-is-and-why-it-is-narrower-than-param_names)).
 
-```python
-param_names = [p for p in model.param_names
-               if p not in set(model.compartment_size_params)]
-```
-
-A volume's gradient is a finite difference over the write, which is exact:
-
-```python
-def dloss_dV(v, h):
-    up, dn = bngsim.Model.from_sbml("pbpk.xml"), bngsim.Model.from_sbml("pbpk.xml")
-    up.set_param("Liver", v + h)
-    dn.set_param("Liver", v - h)
-    return (loss(up) - loss(dn)) / (2 * h)
-```
-
-A handful of compartments cannot be written even so —
-`model.unwritable_compartment_size_params` lists them, and the error names the
-reason. Reload at the size instead:
+A handful of compartments still cannot be written, and those keep the original
+refusal — `compute_all_sensitivities()` skips the column with a warning and
+`sensitivity_params=["Liver"]` raises, because a column is exactly as trustworthy
+as the write is. `model.unwritable_compartment_size_params` lists them and the
+error names the reason per size. Reload at the size instead:
 
 ```python
 m = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v})
 ```
 
-Issue #170 stage 3 tracks the analytic `d/dV` column.
+...or difference over the rebuild, which is exact:
+
+```python
+def dloss_dV(v, h):
+    up = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v + h})
+    dn = bngsim.Model.from_sbml("pbpk.xml", compartment_sizes={"Liver": v - h})
+    return (loss(up) - loss(dn)) / (2 * h)
+```
 
 ## Differentiable ODE solving with JAX
 
