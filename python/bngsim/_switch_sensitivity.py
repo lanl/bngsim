@@ -111,6 +111,24 @@ def _split_logical_atoms(cond: str) -> list[str]:
     group. A leading ``!`` is dropped: negation flips which branch is taken but
     not *where* the crossing is, and the core reads f⁻/f⁺ by evaluating the real
     RHS on each side rather than by interpreting the condition.
+
+    The re-descent only happens on a part this pass actually *reduced*. A logical
+    that is neither at depth 0 nor inside a strippable paren group leaves ``p``
+    equal to what came in, and re-descending on an unchanged string never
+    terminates: ``not((X<hi) and (X>lo))`` — what the SBML loader emits for a
+    ``<not/>`` wrapped around an ``<and/>`` — recursed until the interpreter gave
+    up, taking out the switch gate, the crossing scan and the ``.so`` cache key
+    with it. Found while verifying issue #232.
+
+    Keeping such a part whole is the conservative reading and the one the callers
+    already handle: an atom nobody can split is an atom neither
+    :func:`_clock_threshold_split` nor :func:`state_switch_residual` claims, so
+    :func:`uncompensated_condition_reason` declines it as a crossing nothing
+    compensates — the class a ``not()`` call is already documented to land in.
+    Whether the *negated* atoms ought to be split out and admitted instead (the
+    ``!``-spelled form of the same condition does exactly that, which is a
+    disagreement worth resolving) moves a decline rather than a crash, so it
+    wants its own corpus measurement and is filed separately.
     """
     parts: list[str] = []
     depth = 0
@@ -136,7 +154,10 @@ def _split_logical_atoms(cond: str) -> list[str]:
         p = _strip_redundant_parens(part).lstrip("!").strip()
         if not p:
             continue
-        if _LOGICAL.search(p):
+        # Every step above only ever shortens, so ``p != cond.strip()`` means this
+        # pass made progress and the recursion is finite; equality means it did
+        # not, and recursing would repeat this call forever (see the docstring).
+        if p != cond.strip() and _LOGICAL.search(p):
             atoms.extend(_split_logical_atoms(p))
         else:
             atoms.append(p)
