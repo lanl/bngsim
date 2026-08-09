@@ -154,6 +154,10 @@ class TestParameterProbe:
         is exact and owes the step size nothing."""
         warm = bngsim.Model.from_net(str(_RECIPROCAL))
         warm.prepare_analytical_jacobian()
+        # Issue #217: the sens RHS is emitted only for a build that asks for it.
+        # ``Simulator`` sets this from ``sensitivity_params``; this test drives
+        # ``prepare_codegen`` directly, so it says so itself.
+        warm._want_output_sens = True
         so = str(cg.prepare_codegen(str(_RECIPROCAL), warm, emit_jac=True))
 
         fd_result, fd = _core_sensitivity(_RECIPROCAL, ["KD", "kon", "koff"])
@@ -270,6 +274,10 @@ class TestCancelledTerm:
         the step size nothing."""
         warm = bngsim.Model.from_net(str(_CANCELLED))
         warm.prepare_analytical_jacobian()
+        # Issue #217: the sens RHS is emitted only for a build that asks for it.
+        # ``Simulator`` sets this from ``sensitivity_params``; this test drives
+        # ``prepare_codegen`` directly, so it says so itself.
+        warm._want_output_sens = True
         so = str(cg.prepare_codegen(str(_CANCELLED), warm, emit_jac=True))
         params = ["ktrace", "ksyn", "kdeg"]
 

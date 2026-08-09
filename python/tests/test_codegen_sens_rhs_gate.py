@@ -1,4 +1,4 @@
-"""Issue #209 — the analytic ∂f/∂p is derived only when a sensitivity is asked for.
+"""Issues #209/#217 — a sensitivity RHS is emitted only when a sensitivity is asked for.
 
 ``generate_combined_from_model`` called ``generate_sens_from_model`` unconditionally,
 so ``Simulator(model, method="ode")`` with no ``sensitivity_params`` derived the
@@ -9,6 +9,22 @@ and a 26.7 MB ``.so``, against 21.5 s and 1.8 MB once the derivation is skipped.
 The GH #198 output-sensitivity evaluator three lines below in the same function was
 already gated on ``_want_output_sens`` for exactly this reason; ``∂f/∂p`` is the
 more expensive of the two and was the one left ungated.
+
+**#209 gated only the Functional/MM half, and #217 is why that was the wrong
+place to stop.** The reasoning for leaving the Elementary half unconditional was
+that it is plain text emission with no sympy in it, so gating it would buy no
+*derivation* time — only source size — while costing every all-Elementary model
+its byte-identical source. Correct about the derivation, wrong about the size: on
+the 20 largest ``.net`` models the Elementary sens RHS is **55.6% of the plain
+build's C source**, and because ``_resolve_opt_flag`` picks its tier from total
+translation-unit size, that dead weight held five of them — ``fceri_fyn`` among
+them — at a *lower* ``-O`` for the RHS the solve actually calls.
+
+The byte-identical-source cost never existed either. A plain build and a
+sensitivity build have not shared a cache entry since #177 put ``:sens_term_scale``
+in the key, so the widening changes what is *in* the plain entry, not how many
+entries there are — see :meth:`TestTheCacheKeyCarriesTheFlag.
+test_plain_and_sensitivity_were_already_separate_entries`.
 
 The gate is cheap. **Not** silently downgrading a sensitivity run to CVODES'
 difference quotient is the whole cost of it, and it takes four things, each with a
@@ -62,12 +78,13 @@ requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available"
 
 # ─── fixtures ──────────────────────────────────────────────────────────────
 #
-# FUNCTIONAL is the class the gate is FOR (its ∂f/∂p is the sympy derivation);
+# FUNCTIONAL is the class the gate started FOR (its ∂f/∂p is the sympy derivation);
 # MM_NO_FUNCTIONS is the class the gate's plumbing is most likely to drop, because
 # a Michaelis-Menten model needs no functions at all and the regeneration trigger
-# used to key on ``n_functions > 0``; ELEMENTARY is the class that must not move —
-# its sensitivity RHS is plain text emission with no sympy in it, so #209 leaves
-# it unconditional and its source (and cached .so) byte-identical.
+# used to key on ``n_functions > 0``; ELEMENTARY is the class #209 exempted and
+# #217 brought in — its sensitivity RHS costs no derivation time, which is why it
+# looked free to leave alone, and is over half the emitted source on a large model,
+# which is why it was not.
 
 FUNCTIONAL = """\
 begin parameters
@@ -160,41 +177,75 @@ def _emits_sens_rhs(source_or_so) -> bool:
 
 
 class TestTheGate:
-    def test_a_plain_build_does_not_derive_the_functional_sens_rhs(self, tmp_path):
-        """The issue in one assertion, at the emitter."""
-        m = _model(tmp_path, FUNCTIONAL)
-        plain, has_sens = cg.generate_combined_from_model(m, emit_functional_sens=False)
+    @pytest.mark.parametrize(
+        "text", [FUNCTIONAL, MM_NO_FUNCTIONS, ELEMENTARY], ids=["functional", "mm", "elementary"]
+    )
+    def test_a_plain_build_emits_no_sens_rhs(self, tmp_path, text):
+        """The issue in one assertion, at the emitter — for every rate-law class.
+
+        ``ELEMENTARY`` is the parameter #217 added: under #209 it emitted its
+        sensitivity RHS here regardless, because the gate only reached the
+        ``functional=`` argument and not the call.
+        """
+        m = _model(tmp_path, text)
+        plain, has_sens = cg.generate_combined_from_model(m, emit_sens_rhs=False)
         assert has_sens is False
         assert "bngsim_codegen_sens_rhs" not in plain
 
-    def test_a_sensitivity_build_still_derives_it(self, tmp_path):
-        m = _model(tmp_path, FUNCTIONAL)
+    @pytest.mark.parametrize("text", [FUNCTIONAL, ELEMENTARY], ids=["functional", "elementary"])
+    def test_a_sensitivity_build_still_emits_it(self, tmp_path, text):
+        m = _model(tmp_path, text)
         m._want_output_sens = True
         src, has_sens = cg.generate_combined_from_model(
-            m, emit_output_sens=True, emit_functional_sens=cg.want_functional_sens_rhs(m)
+            m, emit_output_sens=True, emit_sens_rhs=cg.want_sens_rhs(m)
         )
         assert has_sens is True
         assert "bngsim_codegen_sens_rhs" in src
 
-    def test_the_resolved_flag_is_the_hatch_and_the_request(self, tmp_path, monkeypatch):
-        """``want_functional_sens_rhs`` is the GH #67 process hatch AND the
-        per-run question. Either one off is off."""
-        m = _model(tmp_path, FUNCTIONAL)
-        assert cg.want_functional_sens_rhs(m) is False, "nobody asked"
-        m._want_output_sens = True
-        assert cg.want_functional_sens_rhs(m) is True
-        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
-        assert cg.want_functional_sens_rhs(m) is False, "the GH #67 hatch still wins"
+    def test_the_gate_is_the_request_and_the_hatch_is_separate(self, tmp_path, monkeypatch):
+        """``want_sens_rhs`` asks only whether a sensitivity was requested.
 
-    def test_an_elementary_model_is_untouched(self, tmp_path):
-        """#209 gates only the Functional/MM half. An Elementary sensitivity RHS
-        is text emission with no sympy in it, so its source — and every ``.so``
-        cached for it — must not move."""
+        Under #209 it also folded in the GH #67 hatch, because the only thing it
+        gated *was* the Functional half. Now that it gates both halves, folding the
+        hatch in would make ``BNGSIM_NO_FUNCTIONAL_SENS_RHS=1`` silently switch off
+        an Elementary model's sensitivity RHS too — a much bigger hammer than the
+        A/B it is documented to be.
+        """
+        m = _model(tmp_path, FUNCTIONAL)
+        assert cg.want_sens_rhs(m) is False, "nobody asked"
+        m._want_output_sens = True
+        assert cg.want_sens_rhs(m) is True
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
+        assert cg.want_sens_rhs(m) is True, "the GH #67 hatch is not this question"
+
+    def test_the_hatch_still_only_takes_the_functional_half(self, tmp_path, monkeypatch):
+        """With the hatch set, a sensitivity run keeps the Elementary sens RHS and
+        loses only the Functional one — the pre-#67 behaviour it exists to restore."""
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
+        elem = _model(tmp_path, ELEMENTARY, name="e.net")
+        elem._want_output_sens = True
+        src, has_sens = cg.generate_combined_from_model(elem, emit_sens_rhs=True)
+        assert has_sens is True and "bngsim_codegen_sens_rhs" in src
+
+        func = _model(tmp_path, FUNCTIONAL, name="f.net")
+        func._want_output_sens = True
+        fsrc, fhas = cg.generate_combined_from_model(func, emit_sens_rhs=True)
+        assert fhas is False and "bngsim_codegen_sens_rhs" not in fsrc
+
+    def test_the_net_text_emitter_is_gated_too(self, tmp_path):
+        """``generate_combined_c``'s own half. The .net text emitter produces the
+        Elementary sens RHS without ever consulting the model, so gating
+        ``generate_sens_from_model`` alone left it emitting on every plain build —
+        the 55.6% #217 measured.
+        """
         m = _model(tmp_path, ELEMENTARY)
-        gated, gated_has = cg.generate_combined_from_model(m, emit_functional_sens=False)
-        ungated, ungated_has = cg.generate_combined_from_model(m, emit_functional_sens=True)
-        assert gated_has is True and ungated_has is True
-        assert gated == ungated
+        net = str(tmp_path / "m.net")
+        gated, gated_has = cg.generate_combined_c(net, m, emit_sens_rhs=False)
+        ungated, ungated_has = cg.generate_combined_c(net, m, emit_sens_rhs=True)
+        assert gated_has is False and ungated_has is True
+        assert "bngsim_codegen_sens_rhs" not in gated
+        assert "bngsim_codegen_sens_rhs" in ungated
+        assert len(gated) < len(ungated)
 
 
 # ─── the cache keys, both paths ────────────────────────────────────────────
@@ -213,8 +264,49 @@ class TestTheCacheKeyCarriesTheFlag:
         """
         m = _model(tmp_path, FUNCTIONAL)
         assert cg.compute_model_codegen_hash(
-            m, emit_functional_sens=True
-        ) != cg.compute_model_codegen_hash(m, emit_functional_sens=False)
+            m, emit_sens_rhs=True
+        ) != cg.compute_model_codegen_hash(m, emit_sens_rhs=False)
+
+    def test_plain_and_sensitivity_were_already_separate_entries(self, tmp_path):
+        """The objection #217 was filed holding open, measured.
+
+        Gating the Elementary half was held back because it would make every
+        model's plain artifact differ from its sensitivity artifact "where today
+        only Functional/MM ones do", roughly doubling entries in an already 2 GB
+        cache (issue #205). It does not: #177's ``:sens_term_scale`` has been in
+        both keys since before #209, so plain and sensitivity have had separate
+        entries — and separate *sources* — for every model, including this
+        all-Elementary one. What #217 changes is what is in the plain entry.
+
+        Asserted on ELEMENTARY specifically because that is the class the objection
+        was about; a Functional model would separate on the gate itself.
+        """
+        m = _model(tmp_path, ELEMENTARY)
+        m._want_output_sens = False
+        plain_key = cg.compute_model_codegen_hash(m, emit_output_sens=False, emit_sens_rhs=True)
+        m._want_output_sens = True
+        sens_key = cg.compute_model_codegen_hash(m, emit_output_sens=True, emit_sens_rhs=True)
+        assert plain_key != sens_key
+
+    def test_nobody_asked_and_the_hatch_do_not_share_a_key(self, tmp_path, monkeypatch):
+        """The collision the widening opens, closed.
+
+        Under #209 "nobody asked" and "the GH #67 hatch is set" emitted the same
+        source, so one boolean covered both and they shared the
+        ``:no_functional_sens`` namespace. For an Elementary model that stopped
+        being true the moment the gate covered its half: the hatch leaves the sens
+        RHS in, and nobody-asked takes it out. Sharing a key across that is the
+        issue #51 inertness trap — a sensitivity run handed a ``.so`` whose
+        ``bngsim_codegen_sens_rhs`` is simply absent, no error, just a difference
+        quotient.
+        """
+        m = _model(tmp_path, ELEMENTARY)
+        m._want_output_sens = True
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
+        hatched = cg.compute_model_codegen_hash(m, emit_output_sens=True, emit_sens_rhs=True)
+        monkeypatch.delenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", raising=False)
+        nobody_asked = cg.compute_model_codegen_hash(m, emit_output_sens=True, emit_sens_rhs=False)
+        assert hatched != nobody_asked
 
     @requires_cc
     def test_the_model_path_compiles_two_distinct_artifacts(self, tmp_path, monkeypatch):
@@ -248,17 +340,52 @@ class TestTheCacheKeyCarriesTheFlag:
         assert not _emits_sens_rhs(plain_so)
         assert _emits_sens_rhs(sens_so)
 
-    def test_the_flag_shares_the_hatch_namespace(self, tmp_path, monkeypatch):
-        """A build with the GH #67 hatch SET and a build with nobody asking emit
-        the same source — no sens RHS — so they may share one key rather than
-        splitting the cache. Pinned because the alternative is a silent doubling
-        of an already 2 GB cache (issue #205)."""
+    def test_the_flag_still_shares_the_hatch_namespace_for_a_functional_model(
+        self, tmp_path, monkeypatch
+    ):
+        """Where the #209 sharing survives, it is kept.
+
+        For a **Functional** model the hatch and nobody-asking still emit the same
+        source — no sens RHS either way — so they may still share a key rather than
+        splitting an already 2 GB cache (issue #205). Only the Elementary case
+        needed the split above. Keeping the two apart is what lets the ``.net``
+        suffix stay ``:no_functional_sens`` for the hatch and spend a new
+        ``:no_sens_rhs`` only on the case that actually differs.
+        """
         m = _model(tmp_path, FUNCTIONAL)
         monkeypatch.delenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", raising=False)
-        gated, _ = cg.generate_combined_from_model(m, emit_functional_sens=False)
+        gated, _ = cg.generate_combined_from_model(m, emit_sens_rhs=False)
         monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
-        hatched, _ = cg.generate_combined_from_model(m, emit_functional_sens=True)
+        hatched, _ = cg.generate_combined_from_model(m, emit_sens_rhs=True)
         assert gated == hatched
+
+
+# ─── the second-order effect: the -O tier the RHS is compiled at ───────────
+
+
+class TestTheOptimizationLevel:
+    def test_dead_sens_rhs_can_hold_the_rhs_at_a_lower_opt_tier(self):
+        """Why source size was worth gating even though it costs no derivation.
+
+        ``_resolve_opt_flag`` picks its tier from the size of the whole translation
+        unit, so a symbol nothing calls drags the RHS that everything calls down
+        with it. On the 20 largest ``.net`` models #217 measured five such flips —
+        ``fceri_fyn`` compiling its plain RHS at ``-O0`` because of 4.8 MB of dead
+        sensitivity source, and four models dropping ``-O1`` where ``-O3`` was
+        available.
+
+        Pinned as a property of ``_resolve_opt_flag`` rather than against a corpus
+        model, so it holds in a checkout with no ``.net`` corpus: some pair of
+        sizes either side of a tier boundary must resolve differently, or removing
+        the dead weight buys nothing and the size argument in
+        :func:`bngsim._codegen.want_sens_rhs` is wrong.
+        """
+        tiers = {cg._resolve_opt_flag("cc", n) for n in (10_000, 1_000_000, 3_000_000, 12_000_000)}
+        assert len(tiers) > 1, (
+            "opt tiers are size-derived, so dead source must be able to move them"
+        )
+        # fceri_fyn's measured pair: 10,044,927 chars now, 5,208,268 once gated.
+        assert cg._resolve_opt_flag("cc", 10_044_927) != cg._resolve_opt_flag("cc", 5_208_268)
 
 
 # ─── what must NOT silently drop to the difference quotient ────────────────
@@ -296,8 +423,8 @@ class TestNoSilentDifferenceQuotient:
     @requires_cc
     @pytest.mark.parametrize(
         "text,param",
-        [(FUNCTIONAL, "kmax"), (MM_NO_FUNCTIONS, "kcat")],
-        ids=["functional", "michaelis-menten-no-functions"],
+        [(FUNCTIONAL, "kmax"), (MM_NO_FUNCTIONS, "kcat"), (ELEMENTARY, "k1")],
+        ids=["functional", "michaelis-menten-no-functions", "elementary"],
     )
     def test_a_method_argument_request_regenerates(self, tmp_path, text, param):
         """``steady_state(sensitivity_params=...)`` takes its request as a METHOD

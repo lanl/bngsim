@@ -55,6 +55,19 @@ def _build_reversible_model() -> Model:
     return Model(b.build())
 
 
+def _prepare_sens_codegen(model):
+    """``prepare_model_codegen`` for a sensitivity consumer (issue #217).
+
+    The sens RHS is emitted only for a build that asks for one — ``Simulator``
+    sets ``_want_output_sens`` from its ``sensitivity_params``, and every test in
+    this file drives the emitter directly, so it has to say so itself. Before #217
+    an Elementary model got ``bngsim_codegen_sens_rhs`` from a plain build too,
+    which is exactly the dead weight that issue removed.
+    """
+    model._want_output_sens = True
+    return prepare_model_codegen(model)
+
+
 class TestModelCodegenSensGeneration:
     """Unit tests on the C source emitted by generate_sens_from_model."""
 
@@ -126,7 +139,7 @@ class TestModelCodegenSensCompilation:
 
     def test_combined_compiles_and_exports_both_symbols(self):
         m = _build_decay_model()
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None and so.exists()
 
         lib = ctypes.CDLL(str(so))
@@ -157,7 +170,7 @@ class TestModelCodegenSensCorrectness:
     def test_decay_codegen_sens_matches_external_fd(self):
         # Codegen-on path
         m = _build_decay_model()
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None
         m._codegen_so_path = str(so)
 
@@ -170,7 +183,7 @@ class TestModelCodegenSensCorrectness:
 
     def test_reversible_two_param_codegen_sens_matches_external_fd(self):
         m = _build_reversible_model()
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None
         m._codegen_so_path = str(so)
 
@@ -225,12 +238,14 @@ class TestCodegenFDSensCorrectness:
         pytest.importorskip("antimony")
         monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
         m = self._antimony_mm()
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None
         m._codegen_so_path = str(so)
 
         # Confirm the .so really lacks the sens RHS — otherwise this test
-        # would silently exercise the analytical path instead of FD.
+        # would silently exercise the analytical path instead of FD. Asked for
+        # (issue #217's helper) so the GH #67 hatch above is the ONLY reason it is
+        # missing; a plain build would omit it for two reasons and pin neither.
         lib = ctypes.CDLL(str(so))
         assert hasattr(lib, "bngsim_codegen_rhs")
         assert not hasattr(lib, "bngsim_codegen_sens_rhs")
@@ -536,7 +551,7 @@ class TestModelCodegenHosuAmountFactor:
         # Codegen ODE trajectory must match the analytical amount-law oracle
         # AND the ExprTk engine (which reads amounts via amount_valued).
         m = Model.from_sbml_string(_HOSU_BIMOL_SBML)
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None and so.exists()
         m._codegen_so_path = str(so)
         r = bngsim.Simulator(m, method="ode").run(
@@ -565,10 +580,12 @@ class TestModelCodegenHosuAmountFactor:
         # A Functional (non-mass-action) law referencing an hOSU species must
         # read the amount under codegen too — via the same-named observable.
         m = Model.from_sbml_string(_HOSU_FUNCTIONAL_SBML)
+        # Deliberately the PLAIN build — this half asserts the symbol is absent.
         so = prepare_model_codegen(m)
         assert so is not None and so.exists()
-        # GH #67 gives a smooth Functional law an analytical sens RHS; issue #209
-        # asks for it only when a sensitivity was requested, and nothing here did.
+        # GH #67 gives a smooth Functional law an analytical sens RHS; issues
+        # #209/#217 ask for it only when a sensitivity was requested, and nothing
+        # here did.
         # This test is about the *RHS* reading amounts, so both symbols are
         # incidental — pinned only so the .so's contents stay described.
         lib = ctypes.CDLL(str(so))
@@ -602,7 +619,7 @@ class TestModelCodegenHosuAmountFactor:
         # against an external centered-FD reference. Concentrations here are
         # O(1e5) (amount/V, V=1e-3), so compare with a relative tolerance.
         m = Model.from_sbml_string(_HOSU_BIMOL_SBML)
-        so = prepare_model_codegen(m)
+        so = _prepare_sens_codegen(m)
         assert so is not None
         lib = ctypes.CDLL(str(so))
         assert hasattr(lib, "bngsim_codegen_sens_rhs"), "elementary hOSU model should get sens RHS"

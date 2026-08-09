@@ -251,6 +251,9 @@ class TestSensitivityNumerics:
         path = net("two_species_reversible.net")
         warm = bngsim.Model.from_net(path)
         warm.prepare_analytical_jacobian()
+        # Issue #217: a sensitivity consumer must ask for the sens RHS, which is
+        # what ``Simulator(sensitivity_params=...)`` does on the production path.
+        warm._want_output_sens = True
         so = str(prepare_codegen(path, warm, emit_jac=True))
 
         fd = _core_sensitivity(path, ["kf", "kr"], jacobian="fd")
@@ -311,6 +314,9 @@ class TestSensitivityNumerics:
         path = net("derived_rate_const.net")
         warm = bngsim.Model.from_net(path)
         warm.prepare_analytical_jacobian()
+        # Issue #217: a sensitivity consumer must ask for the sens RHS, which is
+        # what ``Simulator(sensitivity_params=...)`` does on the production path.
+        warm._want_output_sens = True
         so = str(prepare_codegen(path, warm, emit_jac=True))
         params = ["kon", "chi", "koff", "_rateLaw1"]
 
