@@ -1387,6 +1387,26 @@ def differentiate_rate_law_c(
 # unaffected. Override / disable with BNGSIM_JAC_DERIV_BUDGET_S (<= 0 or
 # "inf"/"none" → unbounded, the pre-#95 behavior; raise it on a slow machine if a
 # needs-analytical model logs a fallback).
+#
+# That gap has closed from the left, and the classification was re-run over the
+# whole corpus to find out by how much (issue #210; the sweep and the numbers are
+# recorded in python/tests/test_sbml_jacobian_budget_biomd496.py, which is also
+# where the floor the value is held to now lives):
+#
+#   * The needs-analytical population is still exactly BIOMD0000000457, and its
+#     FD solve still *fails* (CVODE -3 at t~3.36) rather than merely drifting. But
+#     the #96-and-after speed-ups took its derivation from ~12 s to 0.51 s, and it
+#     is now the CHEAPEST derivation in the slow band, not the boundary of it.
+#   * The losers moved the same way: 496 from ~41 s to 10.9 s, 628 from ~75 s to
+#     58.5 s (this machine; ~3.3x faster on another — every second here is
+#     machine-scoped, so only ratios travel).
+#
+# So 20 s no longer sits *between* the populations: it clears the needs-analytical
+# derivation by ~40x, and it is above the fastest loser rather than below it, which
+# means 496/497 now derive to completion on the shipping default instead of being
+# cut off. The value is still safe — the direction that would break a model is
+# down, and it has a large margin — but it is no longer tuned, and re-tuning it is
+# a behaviour change for every Functional model build, not a test fix.
 _DEFAULT_DERIVATION_BUDGET_S = 20.0
 
 # GH #187: scale the budget with model size, and make the finite-difference (FD)
