@@ -919,6 +919,43 @@ struct CvodeSimulator::Impl {
     // integrating, so this is fresh when the solver stats are recorded.
     int linear_solver_used = LINEAR_SOLVER_DENSE;
 
+    // ─── Counters of the run's closed segments (issue #182) ─────────────────
+    // Every CVodeGetNum* counter restarts at 0 on a (re-)initialization, and
+    // this path re-initializes at every event fire, switch crossing and chatter
+    // re-arm. Sampling them once at the end therefore reports only the segment
+    // after the LAST re-init — which is empty, and so reads 0 steps, when an
+    // event fires at the final instant (the issue's `t_ins == t_end`). What a
+    // caller wants is the run, so the segments are banked here as they close:
+    // reinit_cvode() adds the segment CVodeReInit is about to zero, and
+    // record_solver_stats() adds the one still open. Reset at the top of each
+    // run (both paths), since the counts belong to that run alone.
+    struct SegmentCounters {
+        long int steps = 0;
+        long int rhs_evals = 0;
+        long int lin_solv_setups = 0;
+        long int nonlin_iters = 0;
+        long int nonlin_conv_fails = 0;
+        long int err_test_fails = 0;
+
+        void operator+=(const SegmentCounters &o) {
+            steps += o.steps;
+            rhs_evals += o.rhs_evals;
+            lin_solv_setups += o.lin_solv_setups;
+            nonlin_iters += o.nonlin_iters;
+            nonlin_conv_fails += o.nonlin_conv_fails;
+            err_test_fails += o.err_test_fails;
+        }
+    };
+    SegmentCounters closed_segments;
+
+    // The counters CVODE has accumulated since its last (re-)initialization.
+    static SegmentCounters read_segment_counters(void *cvode_mem);
+
+    // The one way to re-initialize CVODE mid-run: banks the closing segment's
+    // counters before CVodeReInit zeroes them (issue #182), then re-inits.
+    // Returns CVodeReInit's flag so each caller keeps its own error message.
+    int reinit_cvode(void *cvode_mem, sunrealtype t, N_Vector y);
+
     // Cached codegen library + resolved symbols (GH #77). dlopen + dlsym +
     // dlclose on every run() is the dominant fixed per-run overhead on the
     // codegen path — enough that codegen lost to ExprTk on short-horizon
@@ -1662,6 +1699,13 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // build branch above, where the counter is already 0.
     lapack_dense_reset_factor_count(w.LS);
 
+    // Same restart, for the same reason, on the issue #182 counters: the
+    // re-entry CVodeReInit above zeroed CVODE's own, and the carried half is an
+    // Impl member that would otherwise still hold the previous run's segments.
+    // (Nothing re-inits mid-run here — the warm path takes no events — so this
+    // stays 0 through to record_solver_stats.)
+    closed_segments = SegmentCounters{};
+
     // ─── Integration loop (no events, no sensitivities) ──────────────────────
     void *cvode_mem = w.cvode_mem;
     double *y_data = w.y.data();
@@ -1941,6 +1985,9 @@ void CvodeSimulator::Impl::create_cvode_core(const TimeSpec &times, const Solver
     if (flag != CV_SUCCESS) {
         throw std::runtime_error("CVodeInit failed: " + std::to_string(flag));
     }
+    // Fresh CVODE memory, so its own counters start at 0; the carried half of
+    // the run's totals is an Impl member and has to be cleared (issue #182).
+    closed_segments = SegmentCounters{};
 
     apply_cvode_tolerances(cvode_mem, ctx, rtol, atol, atol_v, ns);
 
@@ -2777,22 +2824,39 @@ void CvodeSimulator::Impl::allocate_run_result(Result &result, const SolverOptio
 }
 
 // ─── Solver statistics ───────────────────────────────────────────────────────
+CvodeSimulator::Impl::SegmentCounters CvodeSimulator::Impl::read_segment_counters(void *cvode_mem) {
+    SegmentCounters c;
+    CVodeGetNumSteps(cvode_mem, &c.steps);
+    CVodeGetNumRhsEvals(cvode_mem, &c.rhs_evals);
+    CVodeGetNumLinSolvSetups(cvode_mem, &c.lin_solv_setups);
+    CVodeGetNumNonlinSolvIters(cvode_mem, &c.nonlin_iters);
+    CVodeGetNumNonlinSolvConvFails(cvode_mem, &c.nonlin_conv_fails);
+    CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
+    return c;
+}
+
+int CvodeSimulator::Impl::reinit_cvode(void *cvode_mem, sunrealtype t, N_Vector y) {
+    // Bank what this segment cost before CVodeReInit zeroes every counter
+    // (cvodes.c "Initialize all the counters"), so the run's totals survive the
+    // restart — issue #182.
+    closed_segments += read_segment_counters(cvode_mem);
+    return CVodeReInit(cvode_mem, t, y);
+}
+
 void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver ls,
                                                Result &result) {
-    long int nst, nfe, nsetups, nni, ncfn, netf;
-    CVodeGetNumSteps(cvode_mem, &nst);
-    CVodeGetNumRhsEvals(cvode_mem, &nfe);
-    CVodeGetNumLinSolvSetups(cvode_mem, &nsetups);
-    CVodeGetNumNonlinSolvIters(cvode_mem, &nni);
-    CVodeGetNumNonlinSolvConvFails(cvode_mem, &ncfn);
-    CVodeGetNumErrTestFails(cvode_mem, &netf);
+    // The still-open segment plus every segment a mid-run re-init closed
+    // (issue #182). Without the carried half, a model with events reports only
+    // the tail after its last fire.
+    SegmentCounters total = closed_segments;
+    total += read_segment_counters(cvode_mem);
 
-    result.solver_stats().n_steps = static_cast<int>(nst);
-    result.solver_stats().n_rhs_evals = static_cast<int>(nfe);
-    result.solver_stats().n_jac_evals = static_cast<int>(nsetups);
-    result.solver_stats().n_nonlin_iters = static_cast<int>(nni);
-    result.solver_stats().n_nonlin_conv_fails = static_cast<int>(ncfn);
-    result.solver_stats().n_err_test_fails = static_cast<int>(netf);
+    result.solver_stats().n_steps = static_cast<int>(total.steps);
+    result.solver_stats().n_rhs_evals = static_cast<int>(total.rhs_evals);
+    result.solver_stats().n_jac_evals = static_cast<int>(total.lin_solv_setups);
+    result.solver_stats().n_nonlin_iters = static_cast<int>(total.nonlin_iters);
+    result.solver_stats().n_nonlin_conv_fails = static_cast<int>(total.nonlin_conv_fails);
+    result.solver_stats().n_err_test_fails = static_cast<int>(total.err_test_fails);
     result.solver_stats().linear_solver = linear_solver_used;
     // GH #132: BLAS dgetrf factorization count for this run (0 unless LAPACK-dense
     // and the adaptive K gate was crossed). `ls` is the caller's linear solver —
@@ -3622,7 +3686,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     // Restart the state stepper AT the kink (order drops to 1, history
     // discarded) — the same reason the GH #72 discontinuity root reinits —
     // then resume CVODES from the jumped sensitivities.
-    int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
+    int rf = reinit_cvode(cvode_mem, static_cast<sunrealtype>(t_evt), y);
     if (rf != CV_SUCCESS) {
         throw std::runtime_error("CVodeReInit at switch time failed: " + std::to_string(rf));
     }
@@ -4109,7 +4173,7 @@ void CvodeSimulator::Impl::apply_state_switch_sensitivity_jump(
             xw[static_cast<std::size_t>(i)] = y_data[i];
         }
         sync(xw, t_evt);
-        const int rf = CVodeReInit(cvode_mem, static_cast<sunrealtype>(t_evt), y);
+        const int rf = reinit_cvode(cvode_mem, static_cast<sunrealtype>(t_evt), y);
         if (rf != CV_SUCCESS) {
             throw std::runtime_error("CVodeReInit past a state-switch crossing failed: " +
                                      std::to_string(rf));
@@ -5038,7 +5102,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // the original y above; without ReInit, internal state is
             // inconsistent with our writes.)
             if (t0_immediate_fired) {
-                int reinit_flag = CVodeReInit(cvode_mem, times.t_start, y);
+                int reinit_flag = impl_->reinit_cvode(cvode_mem, times.t_start, y);
                 if (reinit_flag != CV_SUCCESS) {
                     throw std::runtime_error("CVodeReInit after t=0 event failed: " +
                                              std::to_string(reinit_flag));
@@ -5509,7 +5573,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 cascade_triggered_events(static_cast<double>(t_ret));
 
                 // Reinitialize CVODE with modified state vector
-                int reinit_flag = CVodeReInit(cvode_mem, t_ret, y);
+                int reinit_flag = impl_->reinit_cvode(cvode_mem, t_ret, y);
                 if (reinit_flag != CV_SUCCESS) {
                     throw std::runtime_error("CVodeReInit after event failed: " +
                                              std::to_string(reinit_flag));
@@ -5709,7 +5773,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                     // refusal owns the jump AND the CVodeSensReInit — the state
                     // has jumped by then, so re-seeding s unchanged (what
                     // resume_sens_after_reinit does) would be wrong here.
-                    int reinit_flag = CVodeReInit(cvode_mem, t_ret, y);
+                    int reinit_flag = impl_->reinit_cvode(cvode_mem, t_ret, y);
                     if (reinit_flag != CV_SUCCESS) {
                         throw std::runtime_error("CVodeReInit after delayed event failed: " +
                                                  std::to_string(reinit_flag));
@@ -5760,7 +5824,7 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // event changes no state — so the columns go back unchanged.
                 std::vector<std::vector<double>> rearm_s =
                     impl_->capture_event_sens(cvode_mem, ns, static_cast<double>(t_now), sens);
-                int rf = CVodeReInit(cvode_mem, t_now, y);
+                int rf = impl_->reinit_cvode(cvode_mem, t_now, y);
                 if (rf != CV_SUCCESS) {
                     throw std::runtime_error("CVodeReInit after chatter re-arm failed: " +
                                              std::to_string(rf));

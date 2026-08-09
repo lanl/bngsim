@@ -17,6 +17,12 @@ print(result.solver_stats)
 # {'n_steps': 1247, 'n_rhs_evals': 2891, 'n_jac_evals': 43, ...}
 ```
 
+Those counters cover the **whole run**. CVODE's own counters restart at every
+re-initialization — an event fire, a rate-law switch crossing and a chatter
+re-arm each force one — so bngsim banks each segment as it closes rather than
+sampling the counters once at the end, which would report only the span after
+the last restart (issue #182).
+
 ## Per-species absolute tolerance
 
 `atol` also takes one value **per species**, ordered like

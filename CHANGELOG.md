@@ -283,6 +283,43 @@ in `CMakeLists.txt`) is derived from it.
   crossing its threshold 37 times all get *cheaper* (`4,019 → 89` steps on the
   oscillator). A true Filippov chattering system is unsolvable identically
   before and after.
+- **`solver_stats` counted only the segment after the last event fire, so
+  `n_steps` could read 0 for a run that took thousands of steps (issue #182).**
+  Every `CVodeGetNum*` counter counts from CVODE's last (re-)initialization, and
+  this path re-initializes at each event fire, at a switch-time or state-switch
+  crossing, and at a chatter re-arm. `record_solver_stats` sampled the counters
+  once at the end, so what it reported was the tail after the final restart and
+  nothing before it — an under-count on **any** model with events, by however
+  much of the run preceded the last fire.
+
+  The issue was found by moving `t_ins` across the end of the span on
+  `Smith_BMCSystBiol2013`: 4 steps at 239, **0** at 240, 1065 at 241, with an
+  identical trajectory in all three. Zero is the worst of those, because it
+  reads as a cheap run rather than as a broken counter — and these are the
+  numbers a benchmark or a performance diagnosis records. The smallest form of
+  it is one species: exponential decay with a single `time() >= 10` bolus over
+  `t_span=(0, 10)` reported `n_steps=0`, `n_rhs_evals=0` for the same 127-step
+  integration the undosed model reports in full.
+
+  Each segment's counters are now banked when a re-init closes it and added to
+  the still-open segment at the end, so `n_steps`, `n_rhs_evals`, `n_jac_evals`,
+  `n_err_test_fails`, `n_nonlin_iters` and `n_nonlin_conv_fails` all cover the
+  run. Every mid-run `CVodeReInit` goes through a single accumulate-then-reinit
+  helper, so a re-init added later cannot silently drop a segment on the floor.
+  Nothing changes for a model that never re-initializes: the banked half stays
+  empty and the reported numbers are the ones it reported before — including on
+  the warm path, which takes no events. `n_dense_blas_factorizations` was
+  already whole-run (it is read off the linear solver, which a re-init does not
+  touch), and `SteadyStateResult`'s own `n_steps` / `n_rhs_evals` march on one
+  `CVodeInit` with no re-init at all; neither is affected.
+
+  A model that *does* re-initialize now reports a larger number than it did
+  yesterday, and anything calibrated against the old one moves with it. One
+  assertion in-tree was: `test_surface_reached_but_not_crossed_still_integrates`
+  (issue #194) bounded a rooted arrival at `n_steps < 20`, which was the handful
+  of steps after the root's re-init — the same run is 39 counted whole, nearly
+  all of it spent walking down to the surface. Its bound is recalibrated; what
+  it asserts (the root fires once and is not chased) is unchanged.
 - **The steady-state conditioning-warning test asserted a pivot of 1.26e-17 —
   below machine epsilon — so which branch it exercised was decided by the LU
   implementation (issue #176, item 2).**
