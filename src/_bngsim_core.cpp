@@ -2334,10 +2334,29 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                        user_function_indices(r.function_names));
                                })
         .def_readonly("raw_expression_names", &bngsim::SteadyStateResult::function_names)
-        .def_property_readonly(
-            "raw_expression_sensitivity_data", [](const bngsim::SteadyStateResult &r) {
-                return matrix_to_ndarray_2d(r.function_sensitivity, r.n_sens_params);
-            });
+        .def_property_readonly("raw_expression_sensitivity_data",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   return matrix_to_ndarray_2d(r.function_sensitivity,
+                                                               r.n_sens_params);
+                               })
+        // Issue #247 — observable / function VALUES at the returned state, on
+        // every solve. ``expression_values`` filters the auto-generated _rateLawN
+        // rows by the same rule ``expression_names`` does, so the two stay
+        // index-parallel; ``raw_expression_values`` keeps them.
+        .def_readonly("observable_values", &bngsim::SteadyStateResult::observable_values)
+        .def_property_readonly("expression_values",
+                               [](const bngsim::SteadyStateResult &r) {
+                                   const auto keep = user_function_indices(r.function_names);
+                                   std::vector<double> filtered;
+                                   filtered.reserve(keep.size());
+                                   for (size_t i : keep) {
+                                       if (i < r.function_values.size()) {
+                                           filtered.push_back(r.function_values[i]);
+                                       }
+                                   }
+                                   return filtered;
+                               })
+        .def_readonly("raw_expression_values", &bngsim::SteadyStateResult::function_values);
 
     // --- find_steady_state ---
     m.def(

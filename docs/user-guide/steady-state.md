@@ -288,6 +288,34 @@ BNG2.pl criterion and takes no mask. On an accumulator model it simply never
 fires early and you get the full `t_span`, which is a complete and correct
 trajectory rather than a reported failure.
 
+### SBML species set by an `<assignmentRule>` (issue #247)
+
+A species an assignment rule defines is the mirror image of an accumulator, and
+it is handled the same way — automatically, because it is structural rather than
+a judgement call. Such a species has no equation of its own: BNGsim emits its
+slot `fixed` and its value comes from the rule, so its RHS row, and therefore its
+Jacobian row, is identically zero. An accumulator contributes a zero *column*; a
+rule target contributes a zero *row*; either one makes the system singular.
+
+So rule targets are excluded from the solved subspace on every solve, and
+`ss.excluded_species` lists them alongside anything your own `mask=` dropped —
+the two are intersected, never overridden. Their reported value is the rule
+evaluated at the returned state, so it agrees with what `run()` reports late in a
+trajectory, and their `dY_ss/dp` row is the chain rule through the assignment:
+
+```python
+ss = sim.steady_state(sensitivity_params=["ks"])
+ss["S"]                      # the rule's value, not the frozen initial one
+ss.sensitivity[i_S]          # d(rule)/dks, the same number as
+ss.output_sensitivities(["observable:S"])
+```
+
+Before this, the value was whatever the slot was seeded with at t=0 — a factor of
+ten out on a model whose rule doubles a species that grows tenfold — and a single
+assignment rule made the sensitivity solve refuse the whole model, gradients of
+ordinary integrated species included, with a message that blamed a
+conservation-law continuum.
+
 ### Unstable roots (saddles)
 
 Not every root of `f(y) = 0` is a steady state the system can occupy. A bistable

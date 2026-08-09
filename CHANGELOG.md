@@ -487,6 +487,51 @@ in `CMakeLists.txt`) is derived from it.
   instead.
 
 ### Fixed
+- **`steady_state()` reported an SBML `<assignmentRule>` species at its frozen
+  initial value, and that species' zero Jacobian row refused the whole model's
+  sensitivity solve (issue #247).** #221 fixed the time-course path; the
+  steady-state one ran neither of its two passes, and the consequences there were
+  worse, because the **value** was wrong and not only the derivative.
+
+  A rule-target species is emitted `fixed`, so it is not an unknown of `f(y) = 0`
+  at all — its value is dictated by the rule and its Jacobian row is identically
+  zero. `ss.concentrations` therefore held whatever the slot was seeded with at
+  t=0: `2.0` on the issue's fixture where the steady value is `20.0`, while
+  `run()` on the same model reports `20.0`. Two entry points, one quantity, a
+  factor of ten, with the steady-state one presenting an initial condition as an
+  equilibrium. Across the rr_parity corpus, **790 reported values were wrong in
+  198 models, and in 146 of them by more than 50%**.
+
+  The zero row also made `J` structurally singular, so `-J⁻¹·(∂f/∂p)` refused
+  **the entire model** — including the perfectly well-posed gradient of every
+  integrated species — under a message about a conservation-law continuum, which
+  is a real but different cause. One assignment rule was enough. **91 corpus
+  models now return a steady-state gradient that was refused outright**, with no
+  model losing one.
+
+  Both halves mirror machinery that already existed. The value comes from the
+  rule's observable / function evaluated at the returned state — the steady-state
+  analogue of the `_apply_ar_report_map` pass `run()` has always had, using the
+  same `update_observables` + `evaluate_functions` pair the RHS uses. The species
+  is folded out of the solved subspace exactly as issue #74 folds out a
+  write-only accumulator: an accumulator contributes a structurally zero
+  *column*, a rule target a zero *row*, and either one makes the system singular.
+  Its `dY_ss/dp` row is then the chain rule through the assignment, which is what
+  #221 fills the time-course tensor with. A caller's own `mask=` is intersected,
+  never overridden.
+
+  Excluding these species also takes them out of the residual average, which is
+  the right reading rather than a side effect — a slot whose derivative is
+  identically zero contributes nothing to "has the system settled" but does
+  inflate the divisor, making `tol` easier to meet the more rules a model has. On
+  the corpus that changes **no** convergence verdict, and no non-rule species'
+  reported value moves anywhere.
+
+  `steady_state_batch()` builds its results from a per-entry clone and needed the
+  same two passes: without them a dose scan reported every entry at the seeded
+  value. Its divisor is resolved against the clone, so a scan that moves a
+  compartment volume moves the rescale with it.
+
 - **An SBML `<assignmentRule>` species had an identically-zero sensitivity row,
   with no warning (issue #221).** A species an assignment rule defines has no ODE
   of its own: BNGsim emits its state slot `fixed` and overwrites the reported

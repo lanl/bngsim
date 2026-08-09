@@ -1006,6 +1006,9 @@ class SteadyStateResultCore:
     def expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property
+    def expression_values(self) -> list[float]:
+        ...
+    @property
     def linear_solver(self) -> str:
         ...
     @property
@@ -1033,10 +1036,16 @@ class SteadyStateResultCore:
     def observable_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
         ...
     @property
+    def observable_values(self) -> list[float]:
+        ...
+    @property
     def raw_expression_names(self) -> list[str]:
         ...
     @property
     def raw_expression_sensitivity_data(self) -> numpy.typing.NDArray[numpy.float64]:
+        ...
+    @property
+    def raw_expression_values(self) -> list[float]:
         ...
     @property
     def residual(self) -> float:

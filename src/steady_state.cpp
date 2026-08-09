@@ -2799,6 +2799,52 @@ SteadyStateResult find_steady_state(NetworkModel &model, const SteadyStateOption
         }
     }
 
+    // ── Outputs at the returned state (issue #247) ────────────────────────────
+    // Evaluate the observables and functions once, at the state actually being
+    // returned, so a caller can report what an <assignmentRule> target species
+    // *is* there rather than the initial value its `fixed` slot still holds. The
+    // same pair the RHS runs, in the same order (observables feed the functions),
+    // against freshly synced parameters. Deliberately outside the sensitivity
+    // branch and outside `converged`: the frozen-value bug is worst on a plain
+    // solve, and an unconverged state is still the state being reported.
+    //
+    // Cost is one observable pass plus one function evaluation on a solve that
+    // has just run thousands of them.
+    {
+        // Save and restore the model's species state around this. The
+        // sensitivity block below leaves the model AT the steady state on
+        // purpose, but it only runs on a converged sensitivity solve; this runs
+        // on every solve, and carrying the state out of it silently changes what
+        // a second steady_state() on the same Simulator starts from. Measured:
+        // an accumulator whose plain solve ends at 49990 came back at 99990 on
+        // the second call — it had integrated twice.
+        auto &species = const_cast<std::vector<Species> &>(model.species());
+        std::vector<double> saved(static_cast<size_t>(ns));
+        for (int i = 0; i < ns; ++i) {
+            saved[static_cast<size_t>(i)] = species[i].concentration;
+            species[i].concentration = result.concentrations[i];
+        }
+        rhs.sync_params();
+        model.update_observables(result.concentrations.data());
+        model.evaluate_functions(0.0);
+        const auto &obs = model.observables();
+        result.observable_values.reserve(obs.size());
+        for (const auto &o : obs) {
+            result.observable_values.push_back(o.total);
+        }
+        result.function_values = model.function_value_cache();
+        // The name lists were previously written only by
+        // compute_ss_output_sensitivity, so a plain solve reported no observables
+        // at all — which is also why the values above had nothing to be indexed
+        // against. Write them here so every solve carries them; the sensitivity
+        // path re-assigns the identical vectors.
+        result.observable_names = model.observable_names();
+        result.function_names = model.function_names();
+        for (int i = 0; i < ns; ++i) {
+            species[i].concentration = saved[static_cast<size_t>(i)];
+        }
+    }
+
     // Compute sensitivity if requested and converged
     if (result.converged && !opts.sensitivity_params.empty()) {
         // Update model state to steady-state values for sensitivity
