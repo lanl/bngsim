@@ -2137,14 +2137,23 @@ class Simulator:
         strict speedup where it integrates, but it is not guaranteed to. A rate
         law that is genuinely discontinuous in a state variable — e.g.
         l-type-calcium-channel-dynamics' ``v_rec = if((-70+V)<-20, 0.5, 0.05)``
-        with the state ``V`` asymptotically approaching the threshold 50 at
-        t≈25 — has an exact derivative that omits the jump, so the analytical
-        Jacobian cannot warn CVODE's implicit corrector about the step. The BDF
-        predictor overshoots the discontinuity, the corrector meets an
-        unanticipated jump, the local error test fails repeatedly and the step
-        collapses to hmin (flag=-3). The finite-difference Jacobian instead
-        straddles the step and supplies a regularizing slope, which is why FD and
-        legacy run_network (always FD) integrate the same model cleanly.
+        with the state ``V`` relaxing towards the threshold 50 and parking just
+        below it — has an exact derivative that omits the jump, so the analytical
+        Jacobian cannot warn CVODE's implicit corrector about the step the
+        predictor keeps landing on. The corrector meets an unanticipated jump,
+        the local error test fails repeatedly and the step collapses to hmin
+        (flag=-3). The finite-difference Jacobian instead perturbs the state by
+        ``srur*|y|`` and so straddles the step, supplying a regularizing slope —
+        which is why FD and legacy run_network (always FD) commonly integrate a
+        model the closed form cannot.
+
+        "Commonly", not "always": the retry is a second attempt, not a guarantee.
+        The FD slope only exists where the perturbation actually reaches across
+        the step, so on a trajectory parked within rounding distance of one, FD
+        can fail too — lanl/bngsim#176 is exactly that, the same source
+        integrating on one host and dying at t≈34.6 on another. When the retry
+        also fails its error is what propagates, with the analytical failure
+        chained beneath it as ``__context__``.
 
         So under ``auto`` we honour the meaning of "auto": try the analytical
         Jacobian, and on a solver failure transparently retry once with the FD

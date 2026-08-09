@@ -102,6 +102,17 @@ _DECLARED_SKIPS: tuple[tuple[str, str], ...] = (
     ("source root", "version-consistency check needs the source tree"),
     ("CMake", "CMakeCache cross-checks need a configured build dir"),
     ("explicitly bypassed via env", "the escape hatch reporting that it was used"),
+    # Numerics that a given host does not reproduce. Narrow on purpose: this is a
+    # licence to not run a test, so it is spelled out per case rather than left as
+    # a general "the numbers came out differently here" escape.
+    (
+        "finite-difference Jacobian does not carry this fixture",
+        "lanl/bngsim#176: the FD retry is a second attempt, not a guarantee, so "
+        "the tests that assert a successful rescue stand down where there is no "
+        "rescue to assert. The contract itself (auto reproduces explicit-FD "
+        "whatever FD does) is asserted unconditionally and does not skip, so this "
+        "never hides the fallback going missing",
+    ),
     # Missing .net / .xml fixtures. Deliberately last and deliberately narrow:
     # this is the category that rots silently, so it matches the exact phrasings
     # in use rather than a blanket "not found".

@@ -233,6 +233,49 @@ in `CMakeLists.txt`) is derived from it.
   the whole SBML corpus (a new `.so` cache key, not a new answer).
 
 ### Fixed
+- **The GH #176 fallback tests asserted that FD rescues their fixture, which is
+  a rounding outcome rather than a property of the model (issue #176).** The
+  fixture's `v_rec = if((-70+V)<-20, 0.5, 0.05)` steps at `V == 50`, and `V`
+  obeys `dV/dt = k_v_stim - k_v_leak*V` with `k_v_stim/k_v_leak` = `50/1` — so
+  the asymptote *was the threshold*. `V` never crossed the step; it parked on it,
+  landing an ulp either side of 50 with the side decided by the last bit. FD's
+  rescue exists only on the low side, where its `srur*|V|` = 7.4e-7 perturbation
+  reaches across the step and returns the regularizing slope; on the high side
+  the perturbation stays in the same branch and returns nothing. That is the
+  whole of the reported Linux failure — the same source integrating on one host
+  and dying at t≈34.6 on another — and it is the third defect of this shape after
+  #228, where the branch taken was decided by which way the last pivot rounded.
+
+  The asymptote now sits a defined `1e-11` below the threshold: 1407 ulps of 50,
+  so no host's rounding can move `V` to the far side, and ~5 orders below the
+  7.4e-7 FD perturbation, so that perturbation still straddles the step
+  everywhere. Both margins are stated in the fixture header, which also records
+  that the file is deliberately edited away from its upstream BNGL source.
+
+  The three quarantined run-half tests come off `xfail(sys.platform ==
+  "linux", strict=True)` and now assert the *policy* — `auto` is "try analytical,
+  then FD", so it reproduces an explicit-FD run taken on the same host, bit for
+  bit when FD integrates and identically when it does not — instead of a
+  hard-coded "this model integrates". A new `test_auto_is_exactly_the_fd_run`
+  carries that contract on every host, and the guard that skips the
+  rescue-asserting tests where FD gives up is itself covered, because its branch
+  is by construction never taken on the host that usually runs the suite.
+
+  Not fixed here, and filed as issue #235: sweeping the parking gap over 23
+  values finds isolated gaps — 2e-12, 9e-11, 1e-10 — where the steady-state march
+  burns 68k–147k steps and reports unconverged while both neighbours converge in
+  ~600. The fixture sits mid-way through the widest clean run and the four
+  steady-state tests pass, but what the march should do when the RHS chatters at
+  a state discontinuity needs its own design.
+
+  Two claims in the surrounding prose were wrong and are corrected rather than
+  softened. A threshold the state crosses *transversally* does not reproduce the
+  failure at all — with the asymptote at 55, 60 or 100 the analytical Jacobian
+  integrates the same model fine, because CVODE steps over a lone value jump
+  whatever the Jacobian says; the effect needs the trajectory to park. And
+  "FD … integrate[s] the model cleanly" was never true in general, so
+  `_run_ode_with_jacobian_fallback`'s docstring now says the retry is a second
+  attempt and not a guarantee.
 - **A `piecewise` gated on a species, in a rule or a kinetic law, registered no
   discontinuity root, so a narrow state-gated window was stepped over entirely
   (issue #194).** The state twin of GH #72's time roots. The loader registered a
