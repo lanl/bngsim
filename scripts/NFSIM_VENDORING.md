@@ -216,21 +216,10 @@ This updates:
 - `bngsim/third_party/nfsim`
 - `bngsim/third_party/nfsim/VENDOR.json`
 
-In a standalone `bngsim` checkout (repo root *is* `bngsim/`, rather than a
-parent holding it) this step currently fails before it writes anything:
-`ensure_clean_destination()` runs `git status` with `cwd=REPO_ROOT`, and
-`REPO_ROOT` is `Path(__file__).parents[2]` — the directory *above* the git
-repo. Confirm by hand that the destination is clean and pass `--force` to skip
-that one guard:
-
-```sh
-git status --porcelain -- third_party/nfsim   # must print nothing
-python3 scripts/vendor_nfsim.py \
-  --nfsim-repo /tmp/nfsim-vendor-candidate \
-  --ref bngsim/vendor --force
-```
-
-`--verify-clean` is unaffected and is still the check that matters afterward.
+It refuses to write if `bngsim/third_party/nfsim/` has uncommitted changes —
+including untracked files — since the refresh replaces the tree wholesale.
+Commit or stash them; `--force` overrides the check but does not make the
+overwrite recoverable.
 
 ### 4. Validate Inside BNGsim
 
