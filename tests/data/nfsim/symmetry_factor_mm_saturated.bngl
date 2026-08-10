@@ -1,0 +1,69 @@
+# Michaelis-Menten symmetry correction ABOVE the linear regime (GH #195).
+#
+# Companion to symmetry_factor_rate_laws.bngl, which keeps its MM pair far
+# below saturation. That fixture cannot tell the two placements of the symmetry
+# factor apart, because where the law is linear in the substrate match count
+# they coincide:
+#
+#     sigma * MM(2N, E)   ==   MM(sigma * 2N, E)      (linear regime only)
+#
+# Here X0/Km == 0.4, far enough into the law's nonlinear range that the two
+# placements separate by ~29 sigma while the pools still decay to a comfortable
+# ~1/5 of X0. (Pushing saturation harder, e.g. Km == X0, separates them further
+# in principle but decays the pools to ~75 counts, where Poisson noise eats the
+# gain.) What the factor corrects is a match multiplicity --
+# a symmetric substrate pattern matches each complex twice, so the law is
+# handed 2N when only N complexes exist. Scaling the substrate count is
+# therefore exact at any saturation; scaling the finished propensity is not.
+#
+# Measured at t=2000, 10 seeds (correct is agreement between the two rows):
+#
+#     no symmetry factor at all       sym  153.0    asym 754.8
+#     factor on the propensity        sym  977.0    asym 746.0
+#     factor on the substrate count   sym  758.0    asym 756.3
+#
+# The two rows are identical except for whether the substrate dimer's halves
+# are the same molecule type, so they must decay together. There is no closed
+# form to compare against -- the pairing IS the oracle.
+#
+# The enzyme is deliberately asymmetric. An MM rule does not transform its
+# enzyme, and BNG's MultScale counts reaction-center automorphisms, so an
+# enzyme-side symmetry gets symmetry_factor=1 and this factor is always the
+# substrate's. NFsim does over-count a symmetric context pattern, but that is
+# a separate defect with no symmetry_factor involved (GH #281).
+
+begin model
+begin parameters
+  kcat  1.0
+  Km    1.0e4      # X0/Km == 0.4: nonlinear, but not so deep that noise wins
+  X0    4000
+  Enz0  10
+end parameters
+
+begin molecule types
+  A(d,p~0~1)
+  P(d,p~0~1)
+  Q(d,p~0~1)
+  Enz()
+end molecule types
+
+begin seed species
+  Enz()                  Enz0
+  A(d!1,p~0).A(d!1,p~0)  X0
+  P(d!1,p~0).Q(d!1,p~0)  X0
+end seed species
+
+begin observables
+  Species   Sym_mm   A(d!1,p~0).A(d!1,p~0)
+  Species   Asym_mm  P(d!1,p~0).Q(d!1,p~0)
+end observables
+
+begin reaction rules
+  Rmm_sym:  A(d!1,p~0).A(d!1,p~0) + Enz() -> A(d!1,p~1).A(d!1,p~1) + Enz() MM(kcat,Km)
+  Rmm_asym: P(d!1,p~0).Q(d!1,p~0) + Enz() -> P(d!1,p~1).Q(d!1,p~1) + Enz() MM(kcat,Km)
+end reaction rules
+end model
+
+begin actions
+  writeXML()
+end actions

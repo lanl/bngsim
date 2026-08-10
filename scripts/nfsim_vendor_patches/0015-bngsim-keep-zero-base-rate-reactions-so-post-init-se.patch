@@ -1,4 +1,4 @@
-From 0f3f88411f9c8b9c3bc9153e8a0f832d3c6fca76 Mon Sep 17 00:00:00 2001
+From f27c93e048ae4347621aef6b8a946528d13f9c2c Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 24 Jul 2026 14:44:10 -0600
 Subject: [PATCH 15/16] bngsim: keep zero-base-rate reactions so post-init

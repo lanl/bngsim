@@ -1,4 +1,4 @@
-From 43f3e6db911da294bfa260e1af3ee967e74f969b Mon Sep 17 00:00:00 2001
+From 68798208bf3dad71f1961bd1de7253d4514c27f8 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:28:07 -0600
 Subject: [PATCH 10/16] bngsim: guard reactant-count composite scope-free eval

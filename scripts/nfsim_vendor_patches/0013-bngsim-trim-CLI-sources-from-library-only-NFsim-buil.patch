@@ -1,4 +1,4 @@
-From 4e39b55dbbbf236da0f0964cd4924faa8f13d63a Mon Sep 17 00:00:00 2001
+From cecf9b8006b620bbbae22627b4d9fe5e7cee2cb3 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:33:55 -0600
 Subject: [PATCH 13/16] bngsim: trim CLI sources from library-only NFsim build
