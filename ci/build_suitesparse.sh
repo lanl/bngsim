@@ -9,10 +9,11 @@
 # CMAKE_OSX_DEPLOYMENT_TARGET yields low-min-target dylibs -> broad-compat wheels.
 #
 # Subset = the exact set SUNDIALS' KLU TPL needs: suitesparse_config, amd,
-# colamd, btf, klu. No CHOLMOD/UMFPACK -> no BLAS dependency. SHARED (not static):
-# KLU and BTF are LGPL-2.1+, so the wheel bundles the shared libs (auditwheel /
-# delocate / delvewheel) rather than static-linking (which triggers LGPL relink
-# obligations).
+# colamd, btf, klu. No CHOLMOD/UMFPACK -> nothing here LINKS a BLAS (see the
+# BLAS_LIBRARIES note below for the configure-time probe, which is separate).
+# SHARED (not static): KLU and BTF are LGPL-2.1+, so the wheel bundles the shared
+# libs (auditwheel / delocate / delvewheel) rather than static-linking (which
+# triggers LGPL relink obligations).
 #
 # SUITESPARSE_USE_FORTRAN=OFF: AMD ships an optional Fortran interface KLU never
 # calls. When a Fortran compiler is on PATH (e.g. a dev box with Homebrew gcc's
@@ -20,6 +21,21 @@
 # libgfortran/libgcc_s/libquadmath (min target 11.0/15.0) -> delocate then refuses
 # the low-tagged wheel. The bare CI runners have no gfortran so they never hit it;
 # disabling Fortran makes the build reproducible regardless of host toolchain.
+#
+# BLAS_LIBRARIES= (empty, GH #178): the subset above links no BLAS, but
+# SuiteSparse_config includes SuiteSparseBLAS.cmake unconditionally and that
+# module ends in `find_package(BLAS REQUIRED)`. On a host with no BLAS the
+# configure therefore dies inside SuiteSparse_config before KLU is reached at
+# all, which is what made BNGSIM_KLU_AUTOBUILD a hard `pip install` failure on a
+# bare Linux box; macOS survived only because Accelerate answers the probe.
+# The probe is pure bookkeeping for the packages we do not build --
+# SuiteSparse_config/CMakeLists.txt says outright that it "does not itself
+# require the BLAS. It just needs to know which BLAS is going to be used by the
+# rest of SuiteSparse" (CHOLMOD/UMFPACK/SPQR). Defining BLAS_LIBRARIES takes
+# SuiteSparseBLAS.cmake's documented user-supplied-BLAS early return
+# (`if (DEFINED BLAS_LIBRARIES OR DEFINED BLAS_INCLUDE_DIRS)`), which skips the
+# probe and still includes SuiteSparseBLAS32 -- so SuiteSparse_BLAS_integer
+# lands on int32_t, exactly what the probe's own 32-bit outcome sets it to.
 #
 # Usage: build_suitesparse.sh <install-prefix>
 #   Reads MACOSX_DEPLOYMENT_TARGET from the env (set by the workflow matrix) so
@@ -59,6 +75,10 @@ args=(
     -DSUITESPARSE_USE_OPENMP=OFF
     -DSUITESPARSE_USE_CUDA=OFF
     -DSUITESPARSE_DEMOS=OFF
+    # Skip SuiteSparse_config's BLAS probe entirely -- see the BLAS_LIBRARIES
+    # paragraph in the header. Empty, not a stub library, so that anything which
+    # did try to link it gets nothing rather than a lie.
+    -DBLAS_LIBRARIES=
 )
 
 if [[ "$(uname -s)" == "Darwin" ]]; then

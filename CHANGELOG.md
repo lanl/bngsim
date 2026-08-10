@@ -198,6 +198,44 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **`BNGSIM_KLU_AUTOBUILD` could not complete on a host with no BLAS, which made
+  a source `pip install` on a bare Linux box a hard configure failure rather
+  than a dense-only fallback (issue #178).** The autobuild exists so a box with
+  no system SuiteSparse still gets the sparse solver, and `pyproject.toml` sets
+  `BNGSIM_REQUIRE_KLU=ON` for every scikit-build-core build — so an autobuild
+  that cannot finish does not degrade quietly, it errors out. That was every
+  stock Linux host: HPC modules, conda-less clusters, `pip install --no-binary`,
+  aarch64 and musllinux (which `cibuildwheel` skips), and any Python outside the
+  `cp310-cp313` wheel range. Published wheels bundle KLU and were never affected.
+
+  The blocker was never KLU. KLU is a sparse LU with a BTF/AMD/COLAMD
+  preordering and calls no BLAS — nor do AMD, COLAMD or BTF; none of the four so
+  much as mentions one in its CMake. `SuiteSparse_config`, which every component
+  includes, probes for one unconditionally, and that module ends in
+  `find_package(BLAS REQUIRED)`. On an image with no BLAS this killed the
+  configure inside `SuiteSparse_config`, before KLU was reached at all. macOS
+  survived only because Accelerate answers the probe.
+
+  `SuiteSparseBLAS.cmake` has an opt-out the earlier work believed did not exist
+  — `ci/build_suitesparse.ps1` said "no opt-out" and downloaded OpenBLAS on
+  Windows purely to answer the probe. Defining `BLAS_LIBRARIES` takes its
+  user-supplied-BLAS early return, which skips the probe outright; both
+  `ci/build_suitesparse.sh` and `.ps1` now pass it empty, and the Windows
+  OpenBLAS download is gone with it. Nothing is lost: the probe is bookkeeping
+  for the packages this subset does not build (`SuiteSparse_config`'s own CMake
+  says it "does not itself require the BLAS"), and the branch taken still
+  includes `SuiteSparseBLAS32`, so `SuiteSparse_BLAS_integer` lands on `int32_t`
+  either way. Measured probe-found vs probe-skipped on the same source tree:
+  identical installed file sets, identical `SuiteSparse_config.h`, identical
+  defined-symbol tables in all five libraries, and in both arms zero BLAS
+  symbols and no BLAS linked.
+
+  `python-tests.yml`'s Linux leg no longer installs `libsuitesparse-dev`. That
+  step was the workaround for this bug, so dropping it is the standing proof:
+  both legs now build the KLU subset from source exactly as an sdist install on
+  a bare host does, and the job's existing `HAS_KLU` assertion fails if either
+  stops getting it.
+
 - **`not(...)` around a compound condition was declined where the `!` spelling
   of the same condition was admitted (issue #234).** `_split_logical_atoms`
   dropped a leading `!` and split what was under it, but kept a `not(...)` call

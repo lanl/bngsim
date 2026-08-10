@@ -35,35 +35,26 @@ if ($got -ne $SsCommit) {
     throw "SuiteSparse $SsVersion resolved to $got, expected $SsCommit"
 }
 
-# --- provide a BLAS for SuiteSparse_config's REQUIRED find_package(BLAS) ------
-# SuiteSparseBLAS.cmake ends in an unconditional `find_package(BLAS REQUIRED)`
-# with no opt-out; macOS satisfies it via the Accelerate framework, but Windows
-# has no system BLAS. None of the 5 libraries we build (config/amd/colamd/btf/klu)
-# LINK a BLAS -- suitesparse_config only DETECTS one to record its integer size --
-# so this OpenBLAS is used at configure time ONLY and is neither linked into nor
-# bundled with the wheel (verified: no output lib references it).
-$OpenBlasVer = "0.3.33"
-$blasRoot = Join-Path $env:RUNNER_TEMP "openblas"
-if (-not (Get-ChildItem -Path $blasRoot -Recurse -Filter "libopenblas.lib" -ErrorAction SilentlyContinue)) {
-    $zip = Join-Path $env:RUNNER_TEMP "openblas.zip"
-    $url = "https://github.com/OpenMathLib/OpenBLAS/releases/download/v$OpenBlasVer/OpenBLAS-$OpenBlasVer-x64.zip"
-    Write-Host "==> Fetching OpenBLAS $OpenBlasVer (configure-only BLAS; not bundled)"
-    Invoke-WebRequest -Uri $url -OutFile $zip
-    Expand-Archive -Path $zip -DestinationPath $blasRoot -Force
-}
-$blasLib = Get-ChildItem -Path $blasRoot -Recurse -Filter "libopenblas.lib" | Select-Object -First 1
-if (-not $blasLib) { throw "OpenBLAS import lib not found under $blasRoot" }
-# <prefix>/lib/libopenblas.lib -> <prefix>, so find_package(BLAS) resolves it
-# from CMAKE_PREFIX_PATH regardless of the zip's internal layout.
-$blasPrefix = Split-Path (Split-Path $blasLib.FullName -Parent) -Parent
-Write-Host "==> OpenBLAS import lib: $($blasLib.FullName) (prefix $blasPrefix)"
-
 # --- configure + build + install (KLU subset, shared, no OpenMP/CUDA) --------
 # Default generator = latest Visual Studio (multi-config) -> pass --config on
 # build/install. cmake locates MSVC itself; no vcvars pre-sourcing needed.
+#
+# BLAS_LIBRARIES= (empty): SuiteSparse_config includes SuiteSparseBLAS.cmake
+# unconditionally and that module ends in `find_package(BLAS REQUIRED)`, which
+# nothing on a stock Windows runner answers. Defining BLAS_LIBRARIES takes the
+# module's user-supplied-BLAS early return (`if (DEFINED BLAS_LIBRARIES OR
+# DEFINED BLAS_INCLUDE_DIRS)`), skipping the probe; SuiteSparseBLAS32 is still
+# included, so SuiteSparse_BLAS_integer lands on int32_t exactly as it did when
+# the probe found one. This replaces a configure-only OpenBLAS download that
+# existed solely to answer the probe: none of the 5 libraries built here
+# (config/amd/colamd/btf/klu) LINKS a BLAS, suitesparse_config only DETECTED one
+# to record its integer size for CHOLMOD/UMFPACK/SPQR (which we do not build),
+# and no output lib ever referenced OpenBLAS. Same change as the Unix script;
+# see the BLAS_LIBRARIES paragraph in ci/build_suitesparse.sh and lanl/bngsim#178,
+# where the missing opt-out made a bare-Linux `pip install` fail outright.
 cmake -B "$work/build" -S "$work" `
     -DCMAKE_INSTALL_PREFIX="$Prefix" `
-    -DCMAKE_PREFIX_PATH="$blasPrefix" `
+    "-DBLAS_LIBRARIES=" `
     -DBUILD_SHARED_LIBS=ON `
     -DBUILD_STATIC_LIBS=OFF `
     -DSUITESPARSE_ENABLE_PROJECTS="suitesparse_config;amd;colamd;btf;klu" `
