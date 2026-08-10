@@ -197,6 +197,54 @@ in `CMakeLists.txt`) is derived from it.
   ulp. SED-ML export refuses a per-species `atol` outright rather than writing
   one entry as `KISAO:0000211`, which would describe a different run.
 
+### Changed
+- **The GH #88 periodic step bound is now derived only where the discontinuity
+  roots provably cannot reach (issue #274).** #262 measured that no corpus model's
+  answer the bound changes; this acts on it. The bound and the GH #72/#231/#259
+  roots address the same hazard — an integrator step spanning a schedule edge —
+  and where a root already forces the stop, `max_step` is pure cost: it shortens
+  every step over the whole horizon, not just the ones near an edge.
+
+  The test is value-position reachability from the ODE RHS through the assignment
+  rules, pruning every piecewise condition that IS a registered root
+  (`_periodic_disc_escapes_roots`). A `floor`/`ceiling`/`modulo` influences the
+  RHS two ways and only one of them is rooted: through a piecewise **condition**
+  (`exposure = piecewise(D, frac < w, 0)` — a root on that condition forces the
+  stop, so the bound adds nothing), or as a **value** (`dose = D * frac`, or
+  `k = k0 * i` with `i = floor(time/24)` — the sawtooth jump is an RHS
+  discontinuity in its own right, at an instant no relational brackets). Only the
+  second keeps the bound.
+
+  On the 25 corpus models that carried one: kept on 10, dropped on 15, cutting
+  1,015,702 internal steps to 519,472 (**-49%**) with no answer moving —
+  `MODEL0406553884` -60%, `MODEL0406793751` -44%, `MODEL0847869198` -40%,
+  `MODEL1708310001` -29%. That last one is the check that matters: it is the model
+  #259 gave the roots to, with an exact segmented oracle (953.07) confirming they
+  resolve its schedule, and the predicate drops its bound without being told.
+
+  **Not a root count.** The tempting predicate — "apply the bound only when the
+  model registered no roots" — is unsound, and measurably so: three corpus models
+  (`BIOMD0000000577`, `BIOMD0000000589`, `MODEL1006230027`) are rooted yet carry a
+  periodic disc node reaching the RHS ungated. `BIOMD0000000589` is the clearest,
+  with 15 of its 16 schedule conditions of the form `i == 0`, `i == 1`, … on
+  `i := floor(time/24)`: **equalities**, which the inequality-only emitters cannot
+  root, on a step function that genuinely moves with time.
+
+  A new fixture makes that concrete, and is the first thing in the suite to
+  witness the bound's *necessity* since #259 removed the old one — the reason this
+  is a narrowing rather than a retirement. Its pulse is gated by an equality on a
+  floor while an unrelated `time < 5` threshold is rooted, so the model has roots
+  and still needs the bound: with it, `y(10) = 36.788` against an exact 36.788;
+  without, 182.212 — 395% high, identically at rtol 1e-9 and 1e-11. Tol-stably
+  wrong is the signature of a pulse never sampled at all. A root-count predicate
+  returns 182.212 here.
+
+  `Model._periodic_disc_max_step` is `None` for the 15 dropped models, so anything
+  reading it now reads "the bound this model needs" rather than "a periodic
+  schedule was detected". `_periodic_time_disc_max_step` keeps its pre-#274
+  behaviour when called without the registered-condition set, so a caller that has
+  not run the root scan cannot accidentally drop a bound it has no basis to drop.
+
 ### Fixed
 - **A parameter that a same-named function shadows was still listed as a knob
   (issues #256 and #266 — the same defect reported from the SBML side and the

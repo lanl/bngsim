@@ -1809,7 +1809,113 @@ def _replace_exprtk_symbols(expr: str, replacements: dict[str, str]) -> str:
     return pat.sub(lambda m: f"({replacements[m.group(1)]})", expr)
 
 
-def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx):
+def _piecewise_branches(node) -> tuple[list, list]:
+    """``(condition_children, value_children)`` of a MathML ``piecewise``.
+
+    Each ``<piece>`` contributes a value at an even index and its condition at
+    the next odd one; a trailing ``<otherwise>`` is a value with no condition.
+    """
+    nc = node.getNumChildren()
+    conds, vals = [], []
+    i = 0
+    while i < nc:
+        if i + 1 < nc:
+            vals.append(node.getChild(i))
+            conds.append(node.getChild(i + 1))
+            i += 2
+        else:
+            vals.append(node.getChild(i))
+            i += 1
+    return conds, vals
+
+
+def _periodic_disc_escapes_roots(
+    rhs_maths: list,
+    asg_math: dict,
+    td: set,
+    func_defs: dict,
+    registered_conditions: set,
+) -> bool:
+    """Does a periodic discontinuity reach the RHS by a path no root stops at?
+
+    GH #274. The GH #88 step bound and the GH #72/#231/#259 roots address the
+    same hazard — an integrator step spanning a schedule edge — by different
+    means, and where a root already forces the stop the bound is pure cost
+    (``max_step`` shortens every step over the whole horizon, not just the ones
+    near an edge: up to 2.5x the internal steps on the corpus, for an answer
+    that does not move). So the bound is kept only for what the roots do not
+    reach, which is what this decides.
+
+    A time-dependent ``floor``/``ceiling``/``modulo`` influences the RHS two
+    ways, and only one of them is rooted:
+
+    * through a piecewise CONDITION — ``exposure = piecewise(D, frac < w, 0)``.
+      A registered root on that condition forces a stop exactly at the edge, so
+      the branch cannot be stepped over and the bound adds nothing. That path is
+      pruned here.
+    * as a VALUE — ``dose = D * frac``, or ``k = k0 * i`` with
+      ``i = floor(time/24)``. The sawtooth jump is then an RHS discontinuity in
+      its own right, at an instant no relational brackets. Rooting some other
+      condition in the same model does not help, and the bound is what keeps a
+      step from spanning it.
+
+    So this is value-position reachability from the ODE RHS, followed through
+    the assignment rules and pruned at every rooted condition; ``True`` means
+    some periodic disc node survives that pruning.
+
+    A note for anyone extending this: it is deliberately ONE pass that carries
+    context down, rather than two passes compared afterwards. libsbml returns a
+    *fresh* Python wrapper from every ``getChild()`` call, so ``id(node)`` is not
+    stable across traversals and any "was this node also seen over there" test
+    silently answers no — which reads as full root coverage and drops the bound
+    everywhere.
+    """
+    disc_types = {
+        libsbml.AST_FUNCTION_FLOOR,
+        libsbml.AST_FUNCTION_CEILING,
+        libsbml.AST_FUNCTION_REM,
+    }
+
+    def _scan(node, names_out: list) -> bool:
+        """True as soon as an unrooted time-dependent disc node is reached."""
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            ntype = n.getType()
+            if ntype in disc_types and (_ast_references_time(n) or (_ast_name_set(n) & td)):
+                return True
+            if ntype == libsbml.AST_FUNCTION_PIECEWISE:
+                conds, vals = _piecewise_branches(n)
+                stack.extend(vals)
+                for cond in conds:
+                    emitted: list[str] = []
+                    _collect_time_discontinuity_conditions(cond, func_defs, emitted, None, td)
+                    # Emitted AND registered ⇒ the integrator stops at this edge.
+                    if emitted and all(e in registered_conditions for e in emitted):
+                        continue
+                    stack.append(cond)
+                continue
+            if ntype == libsbml.AST_NAME:
+                names_out.append(n.getName())
+            stack.extend(n.getChild(k) for k in range(n.getNumChildren()))
+        return False
+
+    pending: list[str] = []
+    for math in rhs_maths:
+        if _scan(math, pending):
+            return True
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in asg_math and _scan(asg_math[name], pending):
+            return True
+    return False
+
+
+def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx, registered_conditions=None):
     """Recommend a ``max_step_size`` that resolves periodic floor/modulo dosing
     discontinuities in the ODE RHS, or ``None`` when the model has none.
 
@@ -1820,6 +1926,14 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx):
     signature — the integer value of each floor/ceil/modulo and the active branch
     of each piecewise — which changes ONLY at a true edge (continuous values like
     `rem_time` move every sample and would mask the spacing).
+
+    ``registered_conditions`` is the set of discontinuity conditions the caller
+    just registered as CVODE roots. Given it, GH #274 returns ``None`` for a
+    schedule those roots already cover, since a root forces the same stop the
+    bound would and costs nothing between edges — see
+    :func:`_periodic_disc_escapes_roots`. Omitting it keeps the pre-#274
+    behaviour: a caller that has not run the root scan has no basis for that
+    judgement, and the safe default is to bound.
     """
     global _DISC_FUNCS
     if _DISC_FUNCS is None:
@@ -1891,6 +2005,17 @@ def _periodic_time_disc_max_step(sbml_model, func_defs, base_ctx):
             elif ntype == libsbml.AST_FUNCTION_PIECEWISE:
                 piecewise_nodes.append(n)
     if not has_periodic:
+        return None
+
+    # GH #274 — the roots have overtaken the bound on most of the shapes it was
+    # written for. Derive one only where they provably cannot reach; see
+    # :func:`_periodic_disc_escapes_roots`. Checked before the numeric edge scan
+    # below, which is the expensive part and is pure waste when the answer is
+    # None. ``registered_conditions=None`` means the caller did not run the root
+    # scan and cannot make this judgement, so the bound stands.
+    if registered_conditions is not None and not _periodic_disc_escapes_roots(
+        rhs_maths, asg_math, td, func_defs, registered_conditions
+    ):
         return None
 
     # Order the time-dependent assignment rules by dependency so each can be
@@ -6496,11 +6621,16 @@ def _build_model_from_sbml_doc(doc):
             seen_disc.add(cond)
             builder.add_discontinuity_trigger(cond)
 
-    # Periodic floor()/modulo dosing schedules (GH #88) can't be resolved by the
-    # monotonic roots above — register a step-size bound that keeps the adaptive
+    # Periodic floor()/modulo dosing schedules (GH #88) that the monotonic roots
+    # above can't resolve — register a step-size bound that keeps the adaptive
     # integrator from stepping over a narrow dose pulse. None for any model with
-    # no time-dependent floor/ceil/modulo feeding the RHS (the common case).
-    periodic_disc_max_step = _periodic_time_disc_max_step(sbml_model, func_defs, eval_ctx)
+    # no time-dependent floor/ceil/modulo feeding the RHS (the common case), and
+    # since GH #274 also None when every such node's influence on the RHS is
+    # already gated by one of the roots just registered — hence `seen_disc`,
+    # which is what makes that judgement possible rather than a guess.
+    periodic_disc_max_step = _periodic_time_disc_max_step(
+        sbml_model, func_defs, eval_ctx, seen_disc
+    )
 
     # ── 10.6. rateOf csymbol support (GH #106) ─────────────────────────
     # Enable the live-derivative path iff the model actually *references*
