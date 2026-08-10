@@ -280,6 +280,42 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **`ship_wheel.py` refused to build for an interpreter pip could have built
+  for, on a claim about the wheel matrix that was not true (issue #275).**
+  `_build_command` had three outcomes — unisolated `pip wheel`, `uv build`, or a
+  `RuntimeError` — and justified the refusal by calling the unisolated form
+  "what the wheel matrix validates". Measured, it is not: `local_ci.py` builds
+  each matrix wheel with pypa/build's **default isolation** in a throwaway venv
+  holding `build`/`cmake`/`ninja` and no PEP 517 backend, and the Linux leg runs
+  cibuildwheel, likewise isolated. The unisolated command is the dev-loop
+  shortcut; isolation is what `scripts/LOCAL_CI.md` actually measures. So the
+  refusal was defending the artifact against the one form the matrix does
+  validate.
+
+  It now falls back to plain `pip wheel .` after `uv build`, leaving "no pip
+  *and* no uv" as the only unrecoverable combination — the same answer #272
+  landed in `rebuild_editable.py`. Verified end to end on a `uv venv --seed`
+  interpreter (pip, no `scikit-build-core`): the isolated build produces a wheel
+  that installs and imports with `capabilities()["features"]["klu"] == True`.
+  `uv build` stays ahead of isolated pip here, unlike in `rebuild_editable.py`,
+  because this script ships the artifact elsewhere and `--python` pins the ABI
+  tag explicitly. Nothing that built before changes branch: the documented dev
+  venv is a `uv venv` with no pip at all, so it took, and still takes, `uv
+  build`.
+
+  Two wheels built from the same commit — one unisolated against a pinned
+  backend, one isolated — carry the **same file set and the same extension
+  size**, and differ only in `SUN_JOB_ID` (a build timestamp), the `.a` archives
+  and `.so` that embed it, and the CMake-generated `sundials_export.h` /
+  `SUNDIALSTargets.cmake`. Those last two are a CMake version difference (4.4.2
+  from the `cmake` wheel vs the Homebrew 3.28.3 on `PATH`) — a `NOLINTNEXTLINE`
+  comment and some version-guard boilerplate — not an isolation difference,
+  which is the honest form of the answer, because the backend
+  versions the two builds declare do not reach `find_package(pybind11)` at all
+  on a machine with a `.venv` in the checkout. That is filed separately as #288.
+
+  A test pins the fact the fallback rests on, so `local_ci.py` cannot quietly
+  start building unisolated and leave the docstring wrong again.
 - **`test_lapack_dense_linsol` reported four no-ops and two self-comparisons as
   `6/6 passed` (issue #269).** Four cases opened with `return 0` when no BLAS
   backend was linked, and `RUN_TEST` counts `rc == 0` as a pass, so a host

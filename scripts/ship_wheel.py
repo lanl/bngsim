@@ -3,13 +3,13 @@
 
 This is the supported one-command path for the "rebuild → ship" loop. It
 
-  1. builds a wheel for the *current* interpreter using the canonical command
-     (``pip wheel . --no-build-isolation --no-deps``; note that ``python -m
-     build`` is unreliable here because the importable ``build`` package in
-     the dev venv is not pypa/build), falling back to ``uv build`` when the
-     interpreter cannot build unisolated — it has no pip, as a `uv venv` does
-     not, or no build backend, as a bare `uv python` does not — and pinning
-     ``MACOSX_DEPLOYMENT_TARGET`` per
+  1. builds a wheel for the *current* interpreter, preferring
+     ``pip wheel . --no-build-isolation --no-deps`` when this interpreter can
+     run it (note that ``python -m build`` is unreliable here because the
+     importable ``build`` package in the dev venv is not pypa/build), falling
+     back to ``uv build`` and then to an isolated ``pip wheel`` when it cannot
+     — it has no pip, as a `uv venv` does not, or no build backend, as a bare
+     `uv python` does not — and pinning ``MACOSX_DEPLOYMENT_TARGET`` per
      build architecture (10.15 on x86_64, the ``wheelhouse-local`` convention;
      11.0 on arm64, which has no valid 10.x tag), then
   2. force-installs that wheel into each downstream consumer venv, handling
@@ -220,10 +220,11 @@ def _has_build_deps(python_exe: str) -> bool:
 def _build_command(wheelhouse: Path) -> list[str]:
     """The wheel-build command for the current interpreter.
 
-    ``pip wheel . --no-build-isolation`` is the canonical form (the dev venv
-    already carries the build deps, so skipping isolation is both faster and
-    what the wheel matrix validates). It needs BOTH pip and the build backend in
-    this interpreter, and the two come apart in both directions:
+    ``pip wheel . --no-build-isolation`` is the *fast* form, preferred wherever
+    it runs: it reuses the build deps already in this interpreter instead of
+    resolving them from PyPI and paying for a from-scratch build env. It needs
+    BOTH pip and the build backend here, and the two come apart in both
+    directions:
 
     * A `uv venv` — which is how CONTRIBUTING says to create the project venv —
       ships **no pip at all**, so the command dies with "No module named pip".
@@ -231,10 +232,34 @@ def _build_command(wheelhouse: Path) -> list[str]:
       **no scikit-build-core**, so the command reaches pip and dies in the build
       with a traceback naming neither the missing module nor the fix.
 
-    Test the precondition that is actually load-bearing, then fall back to
-    `uv build`, which reaches the same backend; it keeps build isolation (so it
-    supplies the backend itself) and `--python` pins the wheel to this
-    interpreter's ABI tag.
+    So probe the precondition that is actually load-bearing, and when it fails
+    build **isolated** rather than refusing (GH #275). Every isolated route
+    reaches the same PEP 517 backend:
+
+    * `uv build` first, when uv is on PATH: `--python` pins the wheel to this
+      interpreter's ABI tag, and it is the branch the documented dev venv
+      already takes, since a `uv venv` has no pip.
+    * otherwise plain ``pip wheel .``, which supplies the backend through pip's
+      own build isolation. That leaves "no pip *and* no uv" as the only
+      unrecoverable combination — the same answer
+      `rebuild_editable.py:_editable_install_cmd` gives one file over.
+
+    Preferring `uv build` over isolated pip is the one place the two scripts
+    order the fallbacks differently, and it is deliberate: this script produces
+    an artifact for *other* environments, so pinning the ABI tag explicitly
+    beats inferring it from whichever interpreter invoked pip.
+
+    Isolation is not a deviation from what is validated. Both legs of the local
+    wheel matrix build isolated — `local_ci.py` runs pypa/build with its default
+    isolation in a throwaway venv holding only `build`/`cmake`/`ninja`, and the
+    Linux leg runs cibuildwheel, likewise isolated. The unisolated form is the
+    dev-loop shortcut; the isolated one is what `scripts/LOCAL_CI.md` measures.
+    Measured on this source at 0.12.2, the two produce the same file set and the
+    same extension size, differing only in an embedded build timestamp and a
+    CMake-version artifact in a generated header. Backend *version* skew between
+    the two is not currently a way the wheels can differ, because CMake resolves
+    pybind11 from the checkout's `.venv` rather than from either build env — see
+    GH #288, which is that bug and not this one.
     """
     has_pip = _has_pip(sys.executable)
     has_build_deps = _has_build_deps(sys.executable)
@@ -261,11 +286,27 @@ def _build_command(wheelhouse: Path) -> list[str]:
             str(wheelhouse),
             str(SOURCE_DIR),
         ]
-    lacks = "has no pip" if not has_pip else f"has pip but not the build deps ({BUILD_DEP_DISTS})"
-    fix = "Install pip" if not has_pip else f"Install {BUILD_DEP_DISTS}"
+    if has_pip:
+        print(
+            f"note: {sys.executable} has pip but not {BUILD_DEP_DISTS}, and uv is not "
+            "on PATH; building with pip's own build isolation, which resolves the "
+            f"backend from PyPI and rebuilds from scratch. Install {BUILD_DEP_DISTS} "
+            "into this interpreter to skip that.",
+            flush=True,
+        )
+        return [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            str(SOURCE_DIR),
+            "--no-deps",
+            "-w",
+            str(wheelhouse),
+        ]
     raise RuntimeError(
-        f"{sys.executable} {lacks}, and uv is not on PATH; cannot build a wheel. "
-        f"{fix} into this interpreter, or put uv on PATH."
+        f"{sys.executable} has no pip, and uv is not on PATH; cannot build a wheel. "
+        "Install pip into this interpreter, or put uv on PATH."
     )
 
 

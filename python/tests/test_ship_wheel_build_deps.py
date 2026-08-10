@@ -12,11 +12,18 @@ longer needs and every interpreter looks unable to build unisolated (slow but
 correct); miss one the build *does* need and the probe waves through an
 interpreter that then dies inside pip, which is the bug this file exists to
 prevent recurring.
+
+Since GH #275 a failed probe costs speed rather than the build — pip's own
+isolation supplies the backend — so the tests here also pin the two facts that
+fallback rests on: which combination is genuinely unrecoverable, and that the
+local wheel matrix builds isolated too, so an isolated fallback is not a
+deviation from what the matrix validates.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -28,19 +35,19 @@ tomllib = pytest.importorskip("tomllib", reason="tomllib is 3.11+")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 SHIP_WHEEL = REPO_ROOT / "scripts" / "ship_wheel.py"
+LOCAL_CI = REPO_ROOT / "scripts" / "local_ci.py"
 
 
-def _load_ship_wheel():
-    """Import ship_wheel.py by path — scripts/ is not a package.
+def _load_script(name: str, path: Path):
+    """Import a scripts/ module by path — scripts/ is not a package.
 
-    The module must be in ``sys.modules`` *before* it executes: it defines a
-    ``@dataclass``, and dataclasses resolves field types through
+    The module must be in ``sys.modules`` *before* it executes: ship_wheel
+    defines a ``@dataclass``, and dataclasses resolves field types through
     ``sys.modules[cls.__module__]``, which is ``None`` for an unregistered module.
     """
-    name = "_ship_wheel_under_test"
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, SHIP_WHEEL)
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
@@ -50,6 +57,14 @@ def _load_ship_wheel():
         del sys.modules[name]
         raise
     return mod
+
+
+def _load_ship_wheel():
+    return _load_script("_ship_wheel_under_test", SHIP_WHEEL)
+
+
+def _load_local_ci():
+    return _load_script("_local_ci_under_test", LOCAL_CI)
 
 
 def _pyproject_build_requires() -> list[str]:
@@ -145,12 +160,57 @@ def test_build_command_uses_pip_when_backend_is_present(monkeypatch, tmp_path):
     assert cmd[1:3] == ["-m", "pip"]
 
 
-def test_error_names_the_missing_build_deps(monkeypatch, tmp_path):
-    """With no uv to fall back to, the message must say what is missing."""
+def test_pip_without_the_backend_and_no_uv_builds_isolated(monkeypatch, tmp_path, capsys):
+    """pip alone is enough: pip's own isolation supplies the backend (GH #275).
+
+    This used to raise. It rested on `_build_command`'s claim that the
+    unisolated form is "what the wheel matrix validates", which
+    `test_local_ci_matrix_builds_isolated` shows is false — so refusing here
+    bought no artifact fidelity and cost the build outright.
+    """
     mod = _load_ship_wheel()
     monkeypatch.setattr(mod, "_has_pip", lambda exe: True)
     monkeypatch.setattr(mod, "_has_build_deps", lambda exe: False)
     monkeypatch.setattr(mod.shutil, "which", lambda name: None)
 
-    with pytest.raises(RuntimeError, match=r"scikit-build-core"):
+    cmd = mod._build_command(tmp_path)
+
+    assert cmd[1:4] == ["-m", "pip", "wheel"]
+    assert "--no-build-isolation" not in cmd
+    # The slow path is announced, and says how to get off it.
+    assert "scikit-build-core" in capsys.readouterr().out
+
+
+def test_no_pip_and_no_uv_still_raises(monkeypatch, tmp_path):
+    """The one unrecoverable combination, and the message must name the fix."""
+    mod = _load_ship_wheel()
+    monkeypatch.setattr(mod, "_has_pip", lambda exe: False)
+    monkeypatch.setattr(mod, "_has_build_deps", lambda exe: False)
+    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match=r"no pip.*uv is not on PATH"):
         mod._build_command(tmp_path)
+
+
+@pytest.mark.skipif(not LOCAL_CI.exists(), reason="local_ci.py not in this checkout")
+def test_local_ci_matrix_builds_isolated():
+    """The claim `_build_command` now rests on: the wheel matrix builds isolated.
+
+    `_build_command` falls back to an isolated build instead of refusing, and
+    justifies it by saying isolation is what `scripts/LOCAL_CI.md` actually
+    measures. That is a fact about `local_ci.py`, so pin it here: the matrix
+    provisions its throwaway build venv with `build`/`cmake`/`ninja` and no PEP
+    517 backend, then runs pypa/build with its default isolation. Adding
+    `--no-isolation` there would silently invalidate the docstring.
+    """
+    mod = _load_local_ci()
+    source = inspect.getsource(mod.build_wheel)
+
+    assert '"build"' in source
+    for opt_out in ("--no-isolation", "--no-build-isolation"):
+        assert opt_out not in source, f"local_ci.py's matrix build now passes {opt_out}"
+    for backend_dist in ("scikit-build-core", "pybind11"):
+        assert backend_dist not in source, (
+            f"local_ci.py's build venv now installs {backend_dist}; the matrix may no "
+            "longer be building isolated, which ship_wheel._build_command relies on."
+        )
