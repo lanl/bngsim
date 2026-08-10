@@ -280,6 +280,70 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **`find_package(pybind11)` resolved from whatever `.venv` sat in the checkout,
+  not from the interpreter the build targets (issue #288).** CMake asked a list
+  of candidate interpreters for `pybind11.get_cmake_dir()` and took the first
+  answer. The list did not contain `Python_EXECUTABLE` — the interpreter
+  scikit-build-core is actually building for — and its third entry was
+  `${CMAKE_SOURCE_DIR}/.venv/bin/python`. So on any machine whose checkout has a
+  `.venv`, that entry won every build that set neither `BNGSIM_PYTHON_EXECUTABLE`
+  nor `VIRTUAL_ENV`: wheel builds for other interpreters, and isolated builds
+  whose own `[build-system] requires` had already resolved and installed a
+  different pybind11, all compiled against the dev venv's copy. Two wheels built
+  from one commit while answering #275 recorded the same
+  `<checkout>/.venv/.../pybind11` in their caches although `Python_EXECUTABLE`
+  named two different venvs in them, and although the isolated one had resolved
+  `pybind11>=2.13` to a newer release and installed it.
+
+  `Python_EXECUTABLE` (with the `Python3_`/`PYTHON_` spellings) is now consulted
+  right after the `$BNGSIM_PYTHON_EXECUTABLE` escape hatch and ahead of
+  everything else. It is a *prepend*, not a replacement, because the rest of the
+  list is what makes `scripts/rebuild_editable.py` work "after the
+  build-isolation venv is gone" (#23, #229) — the target interpreter of a plain
+  cmake rebuild routinely has no pybind11 in it, since pybind11 is a
+  build-system requirement uv never installs into `.venv`. Both ways of failing
+  to answer fall straight through: a *deleted* build env is dropped from the
+  cache before the walk (the phantom guard #23 added, which is what keeps the new
+  first entry from shadowing the fallbacks), and a live interpreter without
+  pybind11 just declines. An interpreter that reports a directory holding no
+  `pybind11Config.cmake` is now skipped too, rather than pinned — that trades a
+  clear "could not find pybind11" for a stranger error about a bad
+  `pybind11_DIR`, the same reasoning as #229.
+
+  The logic moved to `cmake/BngsimResolvePybind11.cmake` so the ordering can be
+  tested: the new suite runs the real module under real cmake against fake
+  interpreters, and each rule above is one case. Building the whole project per
+  case, against interpreters that genuinely carry different pybind11 versions,
+  is the alternative — which is why this went untested and then wrong. The
+  stale-binary guard (#125) now counts `cmake/*.cmake` as build-graph source, so
+  an edit to that module invalidates the binary the way a `CMakeLists.txt` edit
+  does.
+
+  None of this was visible in an artifact, which is what let it run: nothing
+  recorded which pybind11 compiled an extension. The binary now carries
+  `_bngsim_core.__pybind11_version__`, `local_ci_smoke.py` reports it (a wheel
+  that still says `unknown` fails the check), and the configure log names the
+  interpreter that answered. The macOS arm64 matrix re-run is green for
+  cp310–cp313, and each of the four wheels now resolves pybind11 from its own
+  isolated build env — 3.1.0, what `pybind11>=2.13` resolves to, where the
+  caches previously recorded the dev venv's 3.0.4 for every one of them. The
+  Linux x86_64 leg (`scripts/local_ci_linux_docker.sh`) has not been re-run;
+  it needs a Docker daemon this box did not have up.
+- **`local_ci.py matrix` could not build a wheel on macOS at all, and said so in
+  a report nobody read.** Found re-running the matrix for #288. `build_wheel`
+  has passed `CMAKE_ARGS=-DBNGSIM_ENABLE_KLU=OFF` on Darwin since the initial
+  release; `BNGSIM_REQUIRE_KLU = "ON"` went into pyproject's
+  `[tool.scikit-build.cmake.define]` months later (#209), and it reaches every
+  scikit-build-core build. CMake rejects the pair outright, so every macOS
+  matrix run since then failed to configure for all four Pythons and wrote
+  `build: FAIL` into `local_ci_report-darwin-arm64-matrix.md`. Before that it
+  was validating a dense-only wheel no published macOS wheel resembles —
+  `[tool.cibuildwheel.macos]` sets `ENABLE_KLU=ON` and `REQUIRE_KLU=ON` — which
+  is #275's finding one layer down. The override is gone; KLU now comes from
+  whatever the box has (a system SuiteSparse, or the pinned
+  `BNGSIM_KLU_AUTOBUILD` source build), and the macOS matrix reports
+  `klu: True` like the published wheels do. A test checks the two halves against
+  each other for every `BNGSIM_REQUIRE_*` pyproject declares, not KLU alone.
 - **`ship_wheel.py` refused to build for an interpreter pip could have built
   for, on a claim about the wheel matrix that was not true (issue #275).**
   `_build_command` had three outcomes — unisolated `pip wheel`, `uv build`, or a

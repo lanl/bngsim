@@ -244,6 +244,44 @@ def test_real_pybind11_resolves_to_a_usable_cmake_dir() -> None:
     assert (Path(cmake_dir) / "pybind11Config.cmake").is_file()
 
 
+# ── Per-build stamps in the committed stub ────────────────────────────────────
+
+
+def test_stub_normalization_covers_every_per_build_stamp() -> None:
+    """pybind11-stubgen copies build facts into a committed file; both get pinned.
+
+    ``__pybind11_version__`` (GH #288) joined ``__build_commit__`` as a value that
+    differs per build environment, so it is the same spurious-diff hazard PR #70
+    merged once already — and here the differing value would be *the* symptom
+    #288 exists to surface, flip-flopping in the stub instead of being read off
+    the binary.
+    """
+    mod = _load_rebuild_editable()
+    generated = "\n".join(
+        [
+            "HAS_KLU: bool = True",
+            "__build_commit__: str = 'e61f83d57358+dirty'",
+            "__pybind11_version__: str = '3.0.4'",
+            "__version__: str = '0.12.2'",
+        ]
+    )
+
+    normalized = mod._normalize_stub_build_stamps(generated)
+
+    assert "__build_commit__: str = 'unknown'" in normalized
+    assert "__pybind11_version__: str = 'unknown'" in normalized
+    # Only the per-build stamps: the package version is an API fact, not a build one.
+    assert "__version__: str = '0.12.2'" in normalized
+    assert "HAS_KLU: bool = True" in normalized
+
+
+def test_stub_normalization_is_a_noop_when_a_stamp_is_absent() -> None:
+    mod = _load_rebuild_editable()
+    generated = "__version__: str = '0.12.2'\n"
+
+    assert mod._normalize_stub_build_stamps(generated) == generated
+
+
 # ── The remedy text and the extra behind it ───────────────────────────────────
 
 

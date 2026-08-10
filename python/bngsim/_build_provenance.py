@@ -47,16 +47,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-# C++/CMake source extensions whose change should invalidate the binary.
+# C++/CMake source extensions whose change should invalidate the binary. ``.cmake``
+# is here for the same reason ``CMakeLists.txt`` is below: build-graph edits change
+# what gets compiled and how (GH #288 moved the pybind11 resolution — which decides
+# *which pybind11 headers* the extension is built against — into cmake/), and a
+# guard that only watches C++ would call the resulting binary fresh.
 _SOURCE_SUFFIXES = frozenset(
-    {".cpp", ".cc", ".cxx", ".c", ".hpp", ".hh", ".hxx", ".h", ".ipp", ".inl"}
+    {".cpp", ".cc", ".cxx", ".c", ".hpp", ".hh", ".hxx", ".h", ".ipp", ".inl", ".cmake"}
 )
 # Directories under the source root that contain C++ compiled into _bngsim_core.
 # include/ and src/ are bngsim's own; third_party/ holds the vendored slices
 # (sundials, nfsim, exprtk, rulemonkey) statically linked into the extension —
 # a hand-patch there (e.g. the GH #116 compositeFunction.cpp fix) also requires
-# a rebuild, so it counts.
-_SOURCE_DIRS = ("src", "include", "third_party")
+# a rebuild, so it counts. cmake/ holds the project's own CMake modules.
+_SOURCE_DIRS = ("src", "include", "third_party", "cmake")
 # Build-graph files that change the compiled output without being .cpp/.hpp.
 _SOURCE_FILES = ("CMakeLists.txt",)
 
