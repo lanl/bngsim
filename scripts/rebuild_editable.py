@@ -539,9 +539,10 @@ def _refresh_editable_metadata(source_dir: Path, *, env: dict[str, str] | None) 
     with ``--no-build-isolation --no-deps`` re-registers the metadata cheaply
     (it reuses the already-built extension; no from-scratch C++ rebuild).
 
-    On the ``uv pip`` fallback (see ``_editable_install_cmd``) the build is
-    isolated, so this costs a real rebuild rather than a metadata-only refresh.
-    It runs only on a detected version drift, so that is a rare price.
+    On either isolated branch (see ``_editable_install_cmd``: no pip, or pip
+    without the build backend) the build is isolated, so this costs a real
+    rebuild rather than a metadata-only refresh. It runs only on a detected
+    version drift, so that is a rare price.
     """
     _run(_editable_install_cmd(source_dir), env=env)
 
