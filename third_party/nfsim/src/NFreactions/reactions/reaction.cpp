@@ -193,15 +193,30 @@ double MMRxnClass::exactRuleMonkey_a()
 
 double MMRxnClass::update_a()
 {
-	double S = (double)getCorrectedReactantCount(0);
-	double E = (double)getCorrectedReactantCount(1);
-	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
-	a=kcat*sFree*E/(Km+sFree);
 	// See FunctionalRxnClass::update_a() -- an MMRxnClass is likewise built with
 	// baseRate=1 and never calls setBaseRate(), so baseRate carries the reaction
 	// center symmetry correction.  BNG emits symmetry_factor with an MM rate law
 	// whenever the substrate pattern has a non-trivial automorphism.
-	a*=this->baseRate;
+	//
+	// It belongs on the substrate COUNT, inside the law -- not on the finished
+	// propensity.  What the factor corrects is a match multiplicity:
+	// getCorrectedReactantCount(0) counts pattern embeddings, and a substrate
+	// pattern with a non-trivial automorphism matches each complex more than
+	// once, so the law is being handed more substrate than exists.  Michaelis-
+	// Menten is not linear in that count, so scaling the finished propensity
+	// instead is exact only below saturation; scaling the count is exact
+	// everywhere, and the two agree wherever the law is linear.
+	//
+	// Only the substrate needs it. The enzyme is pure context here -- an MM rule
+	// does not transform it -- and BNG's MultScale counts reaction-center
+	// automorphisms, so it emits symmetry_factor=1 for an enzyme-side symmetry
+	// and this factor is always the substrate's. (NFsim does over-count a
+	// symmetric context pattern, but that is a separate defect with no
+	// symmetry_factor attached to it; see bngsim GH #281.)
+	double S = (double)getCorrectedReactantCount(0) * this->baseRate;
+	double E = (double)getCorrectedReactantCount(1);
+	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
+	a=kcat*sFree*E/(Km+sFree);
 	return a;
 }
 

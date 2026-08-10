@@ -284,11 +284,34 @@ in `CMakeLists.txt`) is derived from it.
   now scale by it like every other rate law class. The RuleMonkey-exact entry
   points inherit the fix.
 
-  One limit worth stating: the MM correction is exact only where the rate law
-  is linear in the substrate match count. NFsim feeds *match counts* into the
-  saturating MM law and a symmetric substrate pattern matches twice per
-  complex, so a saturated MM rule cannot be reconciled with BNG by any scalar
-  factor. The fixture keeps its MM pair far below saturation (`Km >> X0`).
+  Michaelis-Menten needs the factor in a different place from the others. What
+  the factor corrects is a *match multiplicity*: `getCorrectedReactantCount(0)`
+  counts pattern embeddings, and a symmetric substrate pattern matches each
+  complex twice, so the law is handed `2N` substrate when only `N` complexes
+  exist. Scaling the finished propensity is therefore exact only where MM is
+  linear in that count; scaling the substrate count is exact at any saturation,
+  and the two agree wherever the law is linear. Measured at `X0/Km = 0.4`,
+  where the two placements separate (10 seeds, `t=2000`; the pairing is the
+  oracle — the two rules differ only in whether the substrate dimer's halves
+  are the same molecule type, so they must land together):
+
+  | | symmetric | asymmetric |
+  |---|---|---|
+  | no factor at all | 153.0 | 754.8 |
+  | factor on the propensity | 977.0 | 746.0 |
+  | factor on the substrate count | **758.0** | **756.3** |
+
+  Only the substrate needs it: an MM rule does not transform its enzyme, and
+  BNG's `MultScale` counts reaction-center automorphisms, so an enzyme-side
+  symmetry comes through as `symmetry_factor="1"` and this factor is always the
+  substrate's. Guarded by `symmetry_factor_mm_saturated.xml`, which the
+  companion linear-regime fixture cannot replace — below saturation the two
+  placements are numerically identical.
+
+  Separately, NFsim *does* over-count a symmetric reactant pattern that carries
+  no reaction center, at N× for a homo-N-mer, and BNG attaches no
+  `symmetry_factor` to that shape at all. That is a distinct defect from this
+  one and is tracked in issue #281.
 
   Ships as vendored-NFsim carry `bngsim/carry-symmetry-factor-all-rate-laws`;
   candidate to push upstream, where the defect is ~14 years old and untouched

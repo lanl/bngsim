@@ -7,11 +7,11 @@
     "local_origin_remote": "https://github.com/RuleWorld/nfsim.git",
     "fork_remote": null,
     "branch_or_ref": "bngsim/vendor",
-    "commit": "6688167a52acf9a5fa79dc45233d22d7cc969719",
+    "commit": "571bdd4bc439d117c816c595210188baebc0f97b",
     "base_ref": "origin/master",
     "base_commit": "4c3da839f6c1ecdf1a1ea32942c5de52904e0377"
   },
-  "imported_at_utc": "2026-08-10T18:24:38+00:00",
+  "imported_at_utc": "2026-08-10T19:56:50+00:00",
   "pruning": {
     "included_paths": [
       "CMakeLists.txt",
@@ -195,7 +195,7 @@
     {
       "topic": "bngsim/carry-symmetry-factor-all-rate-laws",
       "kind": "local",
-      "status": "Apply the reaction center symmetry factor on every rate law, not just Ele. ReactionClass's constructor scaled its own baseRate *argument*, which shadows the member the argument was already copied into, so the correction was discarded; only Ele recovered it, because NFinput follows the constructor with setBaseRate(), which applies the factor itself. Every other rate law is built with baseRate=1 and never calls setBaseRate, so a rule whose reactant pattern has a non-trivial automorphism fired at 1/symmetryFactor times its intended rate -- 2x for a homodimer -- under a global function (FunctionalRxnClass), a local function (DORRxnClass), a function product (DOR2RxnClass), or Michaelis-Menten (MMRxnClass). BNG emits symmetry_factor independently of rate law type, so all four disagree with BNG's own semantics and with NFsim's constant-rate path for the same rule. Assigning through this-> repairs the two DOR classes, which build the propensity as a = baseRate * ...; FunctionalRxnClass and MMRxnClass override update_a() without reading baseRate at all and additionally scale by it. Candidate to push upstream. See bngsim GH #195.",
+      "status": "Apply the reaction center symmetry factor on every rate law, not just Ele. ReactionClass's constructor scaled its own baseRate *argument*, which shadows the member the argument was already copied into, so the correction was discarded; only Ele recovered it, because NFinput follows the constructor with setBaseRate(), which applies the factor itself. Every other rate law is built with baseRate=1 and never calls setBaseRate, so a rule whose reactant pattern has a non-trivial automorphism fired at 1/symmetryFactor times its intended rate -- 2x for a homodimer -- under a global function (FunctionalRxnClass), a local function (DORRxnClass), a function product (DOR2RxnClass), or Michaelis-Menten (MMRxnClass). BNG emits symmetry_factor independently of rate law type, so all four disagree with BNG's own semantics and with NFsim's constant-rate path for the same rule. Assigning through this-> repairs the two DOR classes, which build the propensity as a = baseRate * ...; FunctionalRxnClass and MMRxnClass override update_a() without reading baseRate at all and additionally scale by it -- for MM on the substrate COUNT inside the law, not on the finished propensity, since the factor corrects a match multiplicity and MM is not linear in that count (scaling the propensity is exact only below saturation). Candidate to push upstream. See bngsim GH #195.",
       "commits": [
         {
           "commit": "6688167a52acf9a5fa79dc45233d22d7cc969719",

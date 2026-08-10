@@ -1,4 +1,4 @@
-From 8e8d046cc5d3cf59ad2c766ebf93b280df94246f Mon Sep 17 00:00:00 2001
+From 5d4562fa18bab33e29653100d950c48bc7304f4d Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 15 May 2026 15:01:46 -0600
 Subject: [PATCH 01/16] bngsim: add NFsim v1.14.3 selector compat toggle

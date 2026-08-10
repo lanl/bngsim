@@ -355,7 +355,10 @@ CARRY_QUEUE = (
             "rule. Assigning through this-> repairs the two DOR classes, which "
             "build the propensity as a = baseRate * ...; FunctionalRxnClass and "
             "MMRxnClass override update_a() without reading baseRate at all and "
-            "additionally scale by it. Candidate to push upstream. "
+            "additionally scale by it -- for MM on the substrate COUNT inside the "
+            "law, not on the finished propensity, since the factor corrects a match "
+            "multiplicity and MM is not linear in that count (scaling the propensity "
+            "is exact only below saturation). Candidate to push upstream. "
             "See bngsim GH #195."
         ),
         "commits": [

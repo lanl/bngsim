@@ -1,4 +1,4 @@
-From 2774f6619c8cb9372997f75f4dd04ee9dedeb121 Mon Sep 17 00:00:00 2001
+From 681eab82682ab234f93bdc57842be9ce5193e012 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Mon, 18 May 2026 10:38:04 -0600
 Subject: [PATCH 04/16] bngsim: don't force universal macOS arch in subprojects

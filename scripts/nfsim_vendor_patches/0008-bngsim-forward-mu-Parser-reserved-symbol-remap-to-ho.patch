@@ -1,4 +1,4 @@
-From 9d020f15907174bb18f36ea02c02d129011798a6 Mon Sep 17 00:00:00 2001
+From f397f1271264e01e6bddaaa73cd305423fffa8eb Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Wed, 10 Jun 2026 07:07:03 -0600
 Subject: [PATCH 08/16] bngsim: forward mu::Parser reserved-symbol remap to

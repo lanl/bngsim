@@ -1,4 +1,4 @@
-From 6688167a52acf9a5fa79dc45233d22d7cc969719 Mon Sep 17 00:00:00 2001
+From 571bdd4bc439d117c816c595210188baebc0f97b Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Mon, 10 Aug 2026 12:23:21 -0600
 Subject: [PATCH 16/16] bngsim: apply the reaction center symmetry factor on
@@ -40,11 +40,23 @@ FunctionalRxnClass::exactRuleMonkey_a() and MMRxnClass::exactRuleMonkey_a()
 delegate to update_a(), and the Basic/DOR/DOR2 variants already scale by
 baseRate.
 
+For Michaelis-Menten the factor goes on the substrate COUNT, inside the law,
+rather than on the finished propensity. What it corrects is a match
+multiplicity -- getCorrectedReactantCount(0) counts pattern embeddings, and a
+substrate pattern with a non-trivial automorphism matches each complex more
+than once -- so the law is otherwise handed more substrate than exists. MM is
+not linear in that count, so scaling the propensity is exact only below
+saturation while scaling the count is exact everywhere; the two agree
+wherever the law is linear. Only the substrate needs it: an MM rule does not
+transform its enzyme, and BNG's MultScale counts reaction-center
+automorphisms, so an enzyme-side symmetry yields symmetry_factor=1 and this
+factor is always the substrate's.
+
 Candidate to push upstream. See bngsim GH #195.
 ---
- src/NFcore/reactionClass.cpp           | 14 +++++++++++---
- src/NFreactions/reactions/reaction.cpp | 12 ++++++++++++
- 2 files changed, 23 insertions(+), 3 deletions(-)
+ src/NFcore/reactionClass.cpp           | 14 ++++++++++---
+ src/NFreactions/reactions/reaction.cpp | 29 +++++++++++++++++++++++++-
+ 2 files changed, 39 insertions(+), 4 deletions(-)
 
 diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
 index d42e4d0..9f0d281 100755
@@ -88,7 +100,7 @@ index d42e4d0..9f0d281 100755
  			}
  		}
 diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
-index 9fa1ca9..a1e00b0 100644
+index 9fa1ca9..53d4b62 100644
 --- a/src/NFreactions/reactions/reaction.cpp
 +++ b/src/NFreactions/reactions/reaction.cpp
 @@ -80,6 +80,13 @@ double FunctionalRxnClass::update_a() {
@@ -105,18 +117,35 @@ index 9fa1ca9..a1e00b0 100644
  	if(a<0) {
  		cout<<"Warning!!  The function you provided for functional rxn: '"<<name<<"' evaluates\n";
  		cout<<"to a value less than zero!  You cannot have a negative propensity!";
-@@ -190,6 +197,11 @@ double MMRxnClass::update_a()
- 	double E = (double)getCorrectedReactantCount(1);
- 	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
- 	a=kcat*sFree*E/(Km+sFree);
+@@ -186,7 +193,27 @@ double MMRxnClass::exactRuleMonkey_a()
+ 
+ double MMRxnClass::update_a()
+ {
+-	double S = (double)getCorrectedReactantCount(0);
 +	// See FunctionalRxnClass::update_a() -- an MMRxnClass is likewise built with
 +	// baseRate=1 and never calls setBaseRate(), so baseRate carries the reaction
 +	// center symmetry correction.  BNG emits symmetry_factor with an MM rate law
 +	// whenever the substrate pattern has a non-trivial automorphism.
-+	a*=this->baseRate;
- 	return a;
- }
- 
++	//
++	// It belongs on the substrate COUNT, inside the law -- not on the finished
++	// propensity.  What the factor corrects is a match multiplicity:
++	// getCorrectedReactantCount(0) counts pattern embeddings, and a substrate
++	// pattern with a non-trivial automorphism matches each complex more than
++	// once, so the law is being handed more substrate than exists.  Michaelis-
++	// Menten is not linear in that count, so scaling the finished propensity
++	// instead is exact only below saturation; scaling the count is exact
++	// everywhere, and the two agree wherever the law is linear.
++	//
++	// Only the substrate needs it. The enzyme is pure context here -- an MM rule
++	// does not transform it -- and BNG's MultScale counts reaction-center
++	// automorphisms, so it emits symmetry_factor=1 for an enzyme-side symmetry
++	// and this factor is always the substrate's. (NFsim does over-count a
++	// symmetric context pattern, but that is a separate defect with no
++	// symmetry_factor attached to it; see bngsim GH #281.)
++	double S = (double)getCorrectedReactantCount(0) * this->baseRate;
+ 	double E = (double)getCorrectedReactantCount(1);
+ 	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
+ 	a=kcat*sFree*E/(Km+sFree);
 -- 
 2.50.1 (Apple Git-155)
 

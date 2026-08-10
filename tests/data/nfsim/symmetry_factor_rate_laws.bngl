@@ -17,10 +17,16 @@
 # path honored it, so the four symmetric non-Ele pools decayed at 2*mu.
 #
 # The MM pair is deliberately kept far below saturation (Km >> X0), where
-# NFsim's MM rate is linear in the substrate match count. The symmetry factor
-# corrects a *match multiplicity*, so it is only exact where the rate law is
-# linear in that count; a saturating MM rule cannot be reconciled with BNG by
-# any scalar factor. kcat*Enz/Km == mu makes the two MM pools decay at mu too.
+# NFsim's MM rate is linear in the substrate match count, so that one expected
+# value covers all five pools: kcat*Enz/Km == mu makes the MM pools decay at mu
+# like the rest.
+#
+# That linearity is also this fixture's blind spot. The symmetry factor
+# corrects a *match multiplicity*, and MM is not linear in that count, so
+# applying the factor to the substrate count and applying it to the finished
+# propensity give different answers -- but only above saturation. Down here
+# they are numerically identical, so this model cannot tell them apart.
+# symmetry_factor_mm_saturated.bngl is the one that can.
 
 begin model
 begin parameters

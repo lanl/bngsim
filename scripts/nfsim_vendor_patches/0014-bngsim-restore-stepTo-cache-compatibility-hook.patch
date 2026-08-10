@@ -1,4 +1,4 @@
-From 45ad51d8a271b325abd59d623da5ce57ce56d39b Mon Sep 17 00:00:00 2001
+From 0abdc10927786e07003f3508d49901e52c0e3736 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:36:15 -0600
 Subject: [PATCH 14/16] bngsim: restore stepTo cache compatibility hook
