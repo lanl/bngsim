@@ -198,6 +198,53 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **NFsim dropped the reaction center symmetry factor on every rate law except
+  a constant one (issue #195).** BNG2.pl emits `symmetry_factor` on a
+  `<ReactionRule>` whenever the reactant pattern has a non-trivial automorphism
+  — `RxnRule.pm` computes `MultScale = 1/automorphisms/context-permutations`
+  and applies it as the statistical factor to every generated reaction,
+  independently of rate law type. NFsim computed the correction and then threw
+  it away: `ReactionClass`'s constructor scaled its own `baseRate` *argument*,
+  which shadows the member the argument had already been copied into. Only
+  `Ele` recovered it, because `NFinput` follows the constructor with
+  `setBaseRate()`, which applies the factor itself.
+
+  So the issue's report — a symmetric rule with a *functional* rate firing at
+  2x — was one of four. Every rate law that is constructed with `baseRate=1`
+  and never routes through `setBaseRate` was affected: a global function
+  (`FunctionalRxnClass`), a local function (`DORRxnClass`), a function product
+  (`DOR2RxnClass`), and Michaelis-Menten (`MMRxnClass`). Measured on
+  `tests/data/nfsim/symmetry_factor_rate_laws.xml`, where five pools of 4000
+  dimers decay under five rate laws that all encode the same per-dimer rate, so
+  the correct survivor count at `t=1000` is 1471.5 and the 2x-too-fast one is
+  541.3:
+
+  | rate law | before | after |
+  |---|---|---|
+  | symmetric, global function | 539.3 | 1463.3 |
+  | symmetric, local function (DOR) | 548.3 | 1479.5 |
+  | symmetric, Michaelis-Menten | 527.8 | 1451.3 |
+  | symmetric, constant (control) | 1472.2 | 1479.0 |
+  | asymmetric, global function (control) | 1459.5 | 1464.8 |
+  | asymmetric, Michaelis-Menten (control) | 1469.3 | 1470.3 |
+
+  Assigning through `this->` repairs the two DOR classes, which build the
+  propensity as `a = baseRate * ...`; `setBaseRate()` assigns rather than
+  multiplies, so `Ele` does not double-apply. `FunctionalRxnClass::update_a()`
+  and `MMRxnClass::update_a()` never read `baseRate` at all — they override
+  `BasicRxnClass::update_a()` and rebuild the propensity from scratch — so both
+  now scale by it like every other rate law class. The RuleMonkey-exact entry
+  points inherit the fix.
+
+  One limit worth stating: the MM correction is exact only where the rate law
+  is linear in the substrate match count. NFsim feeds *match counts* into the
+  saturating MM law and a symmetric substrate pattern matches twice per
+  complex, so a saturated MM rule cannot be reconciled with BNG by any scalar
+  factor. The fixture keeps its MM pair far below saturation (`Km >> X0`).
+
+  Ships as vendored-NFsim carry `bngsim/carry-symmetry-factor-all-rate-laws`;
+  candidate to push upstream, where the defect is ~14 years old and untouched
+  on `RuleWorld/nfsim` master.
 - **A parameter that a same-named function shadows was still listed as a knob
   (issues #256 and #266 — the same defect reported from the SBML side and the
   `.net` side).** Every function gets a parameter slot to hold its evaluated
