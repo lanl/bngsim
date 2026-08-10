@@ -198,6 +198,41 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **`rebuild_editable.py` picked `--no-build-isolation` on the strength of `pip`
+  alone, the inference `ship_wheel.py` exists to reject (issue #271).** An
+  unisolated PEP 517 build needs pip *and* `[build-system] requires` importable
+  in the same interpreter, and the two come apart: a `uv venv --seed`
+  interpreter has pip and no `scikit-build-core`, because the backend lives only
+  in `[build-system] requires` and uv puts that in a transient build env — the
+  same fact behind #229. Measured on exactly such an interpreter, the command
+  the script chose died with `BackendUnavailable: Cannot import
+  'scikit_build_core.build'`, from inside pip's vendored `pyproject_hooks`,
+  naming neither the missing dist nor the fix.
+
+  Reachable through both callers — `_bootstrap_editable` (no build metadata for
+  this interpreter) and `_refresh_editable_metadata` (a `pyproject.toml` version
+  bump, since `cmake --install` refreshes the extension but not the dist-info).
+  A uv venv has no pip at all and so never saw it; a pip-carrying venv whose
+  editable install was built isolated hits it on the next version bump.
+
+  `scripts/ship_wheel.py:_has_build_deps` already rejects this exact inference
+  in a docstring that says so outright ("Having pip is not it"). One dependency
+  question answered in two files, fixed in one.
+
+  **The fix is not a refusal.** Dropping the flag lets pip supply the backend
+  through its own build isolation, which is a path that works — the same
+  `pip install --no-deps -e .` that failed unisolated on that interpreter
+  succeeds with isolation and produces a loadable extension. So no environment
+  that built before stops building, and the only unrecoverable combination (no
+  pip *and* no uv) keeps the named error it already had. The cost is a
+  from-scratch build on that branch, which is why it is the fallback.
+
+  The module list is **read from `[build-system] requires`** rather than copied
+  into a third constant: ship_wheel has to hardcode its copy because it probes
+  *foreign* interpreters, while this script only ever targets the one it is
+  running in and is always run from a checkout. An unparseable table is treated
+  as "assume the deps are absent" — the direction that costs time rather than a
+  build. A test pins the parse against `tomllib` and against ship_wheel's copy.
 - **`scripts/rebuild_editable.py` could not configure in a uv venv, and it is the
   remedy the stale-binary guard names (issue #229).** The script drives `cmake`
   directly against the environment it runs in, so `find_package(pybind11)` has to
