@@ -37,6 +37,7 @@ PyPy. These fall out of the `build` / `skip` selectors in
 | SBML loader          | Runtime dep `python-libsbml>=5.20`            | `HAS_LIBSBML=True` everywhere      |
 | Antimony loader      | Optional extra: `pip install bngsim[antimony]`| `HAS_ANTIMONY` depends on extra    |
 | KLU sparse solver    | Bundled in every wheel (Linux/macOS/Windows) — SuiteSparse vendored by auditwheel/delocate/delvewheel | `HAS_KLU=True` everywhere |
+| BLAS dense factor    | macOS wheels only (Accelerate); source builds where CMake finds a LAPACK | `HAS_LAPACK_DENSE` + `BNGSIM_LAPACK_DENSE=1` |
 | HDF5 save/load       | Optional extra: `pip install bngsim[hdf5]`    | requires `h5py`                    |
 | pandas integration   | Optional extra: `pip install bngsim[pandas]`  | requires `pandas`                  |
 | JAX gradient bridge  | Optional extra: `pip install bngsim[jax]`     | requires `jax`, `jaxlib`, `diffrax`|
@@ -66,6 +67,33 @@ degrading. `HAS_KLU=False` therefore only happens on a deliberate
 This matters for performance, not just capability: automatic sparse-solver
 selection is the main reason BNGsim's advantage over dense-only paths grows with
 network size, so it is on wherever the ODE backend is.
+
+### The BLAS dense factor is the one feature that is macOS-only
+
+`HAS_LAPACK_DENSE` (GH #84) is the opposite case from KLU, and the only entry in
+the table above whose availability differs across published wheels. It reports
+whether CMake linked a BLAS/LAPACK for the optimized dense factorization:
+
+| Wheel               | Backend                | `HAS_LAPACK_DENSE` |
+|---------------------|------------------------|--------------------|
+| macOS arm64 / x86_64| Accelerate (system)    | `True`             |
+| manylinux x86_64    | none found             | `False`            |
+| Windows AMD64       | none found             | `False`            |
+
+Nothing is missing on `False`: dense factorizations use the built-in LU, which
+is what runs by default *everywhere* — the BLAS path is opt-in via
+`BNGSIM_LAPACK_DENSE=1` and produces the same trajectory either way. So this
+flag answers "will that environment variable do anything on this install?", and
+the honest answer on a Linux or Windows wheel is no.
+
+A source install on a host with LAPACK does get it: `apt-get install
+liblapack-dev`, `dnf install lapack-devel` or a conda-forge `openblas` before
+`pip install bngsim` is enough for `find_package(LAPACK)` to resolve, and
+`bngsim.capabilities()["missing"]["lapack_dense"]` spells that out at runtime.
+That configuration — an HPC or cluster box building from source against the
+system LAPACK — is the population this backend actually reaches, which is why
+CI gained a Linux-with-LAPACK leg on both the C++ and Python side (GH #269)
+rather than relying on the macOS legs alone.
 
 ## Validation
 

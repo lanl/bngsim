@@ -20,6 +20,7 @@ EXPECTED_FEATURE_KEYS = frozenset(
         "nfsim",
         "rulemonkey",
         "klu",
+        "lapack_dense",
         "mir",
         "libsbml",
         "antimony",
@@ -53,6 +54,17 @@ class TestModuleFlags:
 
     def test_has_klu_is_bool(self):
         assert isinstance(bngsim.HAS_KLU, bool)
+
+    def test_has_lapack_dense_is_bool(self):
+        # GH #269: the flag existed only as bngsim._bngsim_core.HAS_LAPACK_DENSE,
+        # which is why test_lapack_dense_solver.py had to getattr into the
+        # private extension module to gate on it.
+        assert isinstance(bngsim.HAS_LAPACK_DENSE, bool)
+
+    def test_has_lapack_dense_matches_extension_flag(self):
+        from bngsim import _bngsim_core as _core
+
+        assert bool(getattr(_core, "HAS_LAPACK_DENSE", False)) == bngsim.HAS_LAPACK_DENSE
 
 
 class TestCapabilitiesSchema:
@@ -89,6 +101,9 @@ class TestCapabilitiesConsistency:
 
     def test_klu_matches_module_flag(self):
         assert bngsim.capabilities()["features"]["klu"] == bngsim.HAS_KLU
+
+    def test_lapack_dense_matches_module_flag(self):
+        assert bngsim.capabilities()["features"]["lapack_dense"] == bngsim.HAS_LAPACK_DENSE
 
     def test_libsbml_matches_module_flag(self):
         assert bngsim.capabilities()["features"]["libsbml"] == bngsim.HAS_LIBSBML
@@ -165,6 +180,17 @@ class TestCapabilitiesMissingExplanations:
         assert "suitesparse" in msg.lower()
         assert caps["features"]["klu"] is False
 
+    def test_missing_lapack_dense_explanation(self, monkeypatch):
+        monkeypatch.setattr(bngsim, "HAS_LAPACK_DENSE", False)
+        caps = bngsim.capabilities()
+        msg = caps["missing"]["lapack_dense"]
+        # Names the env var it makes inert, a concrete way to get a backend, and
+        # — the part that distinguishes it from klu — says results do not change.
+        assert "BNGSIM_LAPACK_DENSE" in msg
+        assert "lapack" in msg.lower()
+        assert "correctness" in msg
+        assert caps["features"]["lapack_dense"] is False
+
     def test_missing_libsbml_explanation(self, monkeypatch):
         monkeypatch.setattr(bngsim, "HAS_LIBSBML", False)
         caps = bngsim.capabilities()
@@ -226,6 +252,10 @@ class TestCapabilitiesMissingExplanations:
         # every optional feature were present, nothing is missing" — so pin it too;
         # otherwise the test spuriously fails on any default (non-MIR) build.
         monkeypatch.setattr(bngsim, "HAS_MIR", True)
+        # Same for the BLAS dense backend (GH #269): a compiled flag that is
+        # False on a Linux/Windows wheel and True on macOS, so pin it rather
+        # than let the local build decide whether this logic test passes.
+        monkeypatch.setattr(bngsim, "HAS_LAPACK_DENSE", True)
         caps = bngsim.capabilities()
         assert caps["missing"] == {}
         assert all(caps["features"].values())
@@ -235,13 +265,29 @@ class TestPublicSurface:
     """The new API must be reachable via the public namespace and `__all__`."""
 
     @pytest.mark.parametrize(
-        "name", ["HAS_LIBSBML", "HAS_ANTIMONY", "HAS_VIVARIUM", "HAS_KLU", "capabilities"]
+        "name",
+        [
+            "HAS_LIBSBML",
+            "HAS_ANTIMONY",
+            "HAS_VIVARIUM",
+            "HAS_KLU",
+            "HAS_LAPACK_DENSE",
+            "capabilities",
+        ],
     )
     def test_in_all(self, name):
         assert name in bngsim.__all__
 
     @pytest.mark.parametrize(
-        "name", ["HAS_LIBSBML", "HAS_ANTIMONY", "HAS_VIVARIUM", "HAS_KLU", "capabilities"]
+        "name",
+        [
+            "HAS_LIBSBML",
+            "HAS_ANTIMONY",
+            "HAS_VIVARIUM",
+            "HAS_KLU",
+            "HAS_LAPACK_DENSE",
+            "capabilities",
+        ],
     )
     def test_attribute_present(self, name):
         assert hasattr(bngsim, name)

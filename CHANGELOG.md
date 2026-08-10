@@ -15,6 +15,40 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Added
+- **`bngsim.HAS_LAPACK_DENSE`, and a Linux CI leg that actually runs the BLAS
+  dense solver (issue #269).** The optional `dgetrf` dense factor (GH #84) had
+  no supported capability probe and, after #265, no Linux coverage at all.
+
+  The probe first, because the CI guard needed it: the flag existed only as
+  `bngsim._bngsim_core.HAS_LAPACK_DENSE`, so the one test file that gated on it
+  reached into the private extension module with a `getattr` default. It is now
+  `bngsim.HAS_LAPACK_DENSE`, in `__all__`, mirrored by
+  `capabilities()["features"]["lapack_dense"]` with a `missing` entry that names
+  a concrete rebuild path. `False` costs speed on large dense Jacobians and
+  nothing else — the built-in LU is the default on every platform and the BLAS
+  path is opt-in via `BNGSIM_LAPACK_DENSE=1` — so the flag answers "will that
+  variable do anything here?". Of the published wheels only the macOS ones say
+  yes; the manylinux and Windows legs resolve no LAPACK. The population this
+  backend actually reaches is source installs on a LAPACK-equipped Linux box.
+
+  That population had never run a CI job. `python-tests.yml` built the backend
+  on Linux only as a side effect of `libsuitesparse-dev`, which #265 removed on
+  purpose (it is what makes that leg the bare host an sdist install lands on),
+  and `native-tests.yml` builds on a stock `ubuntu-latest` where
+  `find_package(LAPACK QUIET)` finds nothing. Two new legs, neither touching the
+  bare-host proof:
+
+  - `native-tests.yml` gains a `blas: liblapack` matrix entry. It configures
+    `-DBNGSIM_ENABLE_KLU=OFF`, so it never reaches the SuiteSparse autobuild and
+    cannot weaken #178 by construction. The stock entry stays — that is the
+    configuration the manylinux and Windows wheels ship.
+  - `python-tests.yml` gains a third leg, `ubuntu-latest` + `liblapack-dev` and
+    nothing else. Still no SuiteSparse, so it still exercises
+    `BNGSIM_KLU_AUTOBUILD`. The bare leg is untouched.
+
+  Both assert the backend they expect, in both directions: a leg that quietly
+  loses its BLAS fails, and so does a bare leg that quietly gains one.
+
 - **An absolute tolerance that follows the trajectory: `atol="tracking"` /
   `bngsim.TrackingAtol` (issue #213).** #196 gave the state axis a per-species
   `atol` and removed the *cross-species* compromise. It left the *within-species,
@@ -246,6 +280,31 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **`test_lapack_dense_linsol` reported four no-ops and two self-comparisons as
+  `6/6 passed` (issue #269).** Four cases opened with `return 0` when no BLAS
+  backend was linked, and `RUN_TEST` counts `rc == 0` as a pass, so a host
+  without one printed a summary byte-identical to a host where all six really
+  ran — in 0.03 s. The other two were `solve_with(false, …)` vs
+  `solve_with(true, …)`; with no backend the second call falls back to the
+  built-in factor, so both arms were the same code and the reported difference
+  was exactly `0`. The only tell was a `lapack_dense_available = no` line that
+  nothing gated on, and `ctest` suppresses stdout on success so it never reached
+  the log.
+
+  Skips are now a third status (ctest's `77` convention, per case): the summary
+  reads `2/7 passed, 5 SKIPPED (no BLAS dense backend)` on a bare host and
+  `7/7 passed` with one. The exit code still stays `0` when cases skip — a host
+  with no BLAS is a supported configuration — so the count is the signal, and
+  the CI leg that is supposed to have a backend asserts it is zero.
+
+  The two parity tests now skip rather than compare the built-in solver against
+  itself. What they exercised incidentally — that asking for the BLAS factor on
+  a build without one still returns a working dense solver — is covered on
+  purpose by a new `test_prefer_lapack_fallback_contract`, which runs on every host and
+  also pins the counter accessors to `lapack_dense_available()`. So the no-BLAS
+  leg keeps real coverage while no longer claiming the parity coverage it never
+  had.
+
 - **NFsim dropped the reaction center symmetry factor on every rate law except
   a constant one (issue #195).** BNG2.pl emits `symmetry_factor` on a
   `<ReactionRule>` whenever the reactant pattern has a non-trivial automorphism

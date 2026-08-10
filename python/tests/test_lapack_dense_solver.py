@@ -9,12 +9,17 @@ must report the backend it actually used.
 
 from __future__ import annotations
 
+import bngsim
 import numpy as np
 import pytest
 from bngsim import Model, Simulator
-from bngsim import _bngsim_core as _core
 
-HAS_LAPACK = bool(getattr(_core, "HAS_LAPACK_DENSE", False))
+# The public flag (GH #269). This used to be
+# `getattr(bngsim._bngsim_core, "HAS_LAPACK_DENSE", False)` — a reach into the
+# private extension module with a getattr default, because there was no
+# supported way to ask. There is now: `bngsim.HAS_LAPACK_DENSE`, mirrored by
+# `capabilities()["features"]["lapack_dense"]`.
+HAS_LAPACK = bngsim.HAS_LAPACK_DENSE
 
 # LinearSolverKind codes — mirror include/bngsim/result.hpp.
 LS_DENSE, LS_KLU, LS_LAPACK = 0, 1, 2
