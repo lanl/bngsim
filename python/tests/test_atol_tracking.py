@@ -195,7 +195,9 @@ def test_tracking_is_never_looser_than_its_ceiling(decay_sim):
     tracked = _run(sim, model, atol=TrackingAtol(ceiling=ceiling))
 
     assert tracked[0] <= plain[0]
-    assert tracked[1] <= plain[1] * 10  # C is at roundoff either way
+    # C is at roundoff under both, so this is an absolute bound rather than a
+    # ratio of two noise numbers — the ratio is a coin flip across platforms.
+    assert tracked[1] < 1e-12 and plain[1] < 1e-12
 
 
 # ─── The mode actually reaches CVODE, and only where asked ────────────────────
@@ -427,34 +429,39 @@ def test_a_mistyped_token_names_the_two_that_exist(decay_sim):
         sim.run(t_span=(0.0, 1.0), atol="trackng")
 
 
-def test_a_solver_failure_under_tracking_names_tracking(decay_sim):
+def test_a_solver_failure_under_tracking_names_tracking(data_dir: Path):
     """CVODE's own report never mentions the tolerance mode that caused it.
 
     Measured on 391 rr_parity models that integrate at the default tolerance: 6
     do not at ``decades=12``, 1 at 6, none at 3. So a tracking depth is much the
     likeliest reason a model that integrated a moment ago suddenly does not, and
-    "CVODE integration failed ... with flag=-4" points nowhere.
+    "CVODE made no progress ..." points nowhere near it.
 
-    Provoked here with an absurd depth rather than a corpus model, deliberately:
-    the models that fail at the *default* depth are all corpus models, and a
-    test gated on the corpus skips in every worktree and in CI.
+    Provoked on issue #54's stall fixture rather than on one of those 6: they
+    are all corpus models, and a corpus-gated test skips in every worktree and
+    in CI. It is also the only provocation that is *portable* — the first
+    version of this test used an absurd tolerance on the decay fixture, which
+    collapses the step size on macOS and integrates cleanly on Linux. This
+    model stalls at its discontinuity on every platform, which is what
+    ``test_discontinuity_stall_bound.py`` already relies on.
     """
-    sim, model = decay_sim
-    with pytest.raises(bngsim.SimulationError, match=r"tracking absolute tolerance 50 decades"):
-        sim.run(
-            t_span=(0.0, _T_END),
-            n_points=6,
-            rtol=_RTOL,
-            atol=TrackingAtol(decades=50, ceiling=1e-250),
-            max_steps=5000,
-        )
+    model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
+    sim = bngsim.Simulator(model, method="ode")
+    with pytest.raises(bngsim.SimulationError, match=r"tracking absolute tolerance 12 decades"):
+        sim.run(t_span=(0.0, 648.0), n_points=649, atol="tracking")
 
 
-def test_a_solver_failure_without_tracking_says_nothing_about_it(decay_sim):
-    """The other half: the hint is not glued onto every failure."""
-    sim, model = decay_sim
+def test_a_solver_failure_without_tracking_says_nothing_about_it(data_dir: Path):
+    """The other half: the hint is not glued onto every failure.
+
+    Same model, same stall, no tracking — so this pins the *gate*, not just the
+    text. Without it the first half would pass on a hint appended to everything.
+    """
+    model = bngsim.Model.from_net(str(data_dir / "switch_discontinuity_stall.net"))
+    sim = bngsim.Simulator(model, method="ode")
     with pytest.raises(bngsim.SimulationError) as excinfo:
-        sim.run(t_span=(0.0, _T_END), n_points=6, rtol=_RTOL, atol=1e-250, max_steps=5000)
+        sim.run(t_span=(0.0, 648.0), n_points=649)
+    assert "no progress" in str(excinfo.value)
     assert "tracking" not in str(excinfo.value)
 
 
