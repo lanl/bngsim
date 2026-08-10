@@ -225,7 +225,9 @@ def _pybind11_cmake_dir() -> str | None:
         (cmake_dir / name).is_file() for name in ("pybind11Config.cmake", "pybind11-config.cmake")
     ):
         return None
-    return str(cmake_dir)
+    # Forward slashes: a Windows site-packages path carries backslashes, and a
+    # backslash in a -D value is an escape to CMake. Identical to str() on POSIX.
+    return cmake_dir.as_posix()
 
 
 #: What to tell someone whose configure just died for want of pybind11.
