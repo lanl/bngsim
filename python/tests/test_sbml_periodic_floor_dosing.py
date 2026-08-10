@@ -243,21 +243,40 @@ def test_model1708310001_converges_to_segmented_oracle(jac):
 
 
 @pytest.mark.skipif(not os.path.exists(_MODEL1708), reason="MODEL1708310001 SBML not present")
-def test_model1708310001_disabling_bound_steps_over_pulses():
-    """Disabling the bound (max_step<=0) reproduces the original step-over: the
-    integrator jumps over the 0.0625-day chemo pulses, misses the dose-decay, and
-    overshoots to y(100)≈1603 at the sweep tol — the bound is what collapses it to
-    the exact 953.07."""
-    m = bngsim.Model.from_sbml(_MODEL1708)
-    sim = bngsim.Simulator(m, method="ode", jacobian="analytical")
-    r = sim.run(
-        t_span=(0.0, 100.0),
-        n_points=101,
-        rtol=1e-9,
-        atol=1e-12,
-        max_steps=50_000_000,
-        max_step=-1,
-        timeout=120,
-    )
-    y = np.asarray(r.species)[-1, list(r.species_names).index("y")]
-    assert y > 1.3 * 953.07  # emphatically stepped over (≈1603, not 953)
+def test_model1708310001_roots_resolve_the_schedule_without_the_bound():
+    """This model no longer witnesses the *necessity* of the step bound.
+
+    It used to: with the bound disabled (``max_step <= 0``) the integrator
+    jumped the 0.0625-day chemo pulses in 221 steps and overshot to
+    y(100)≈1602.95, and the bound was the only thing collapsing that to the
+    exact segmented 953.07. GH #259 gave the model five more discontinuity roots
+    (1 → 6) by reading its ``rem_time - floor(rem_time)`` cycle arithmetic as
+    time-dependent on *both* sides of each relational, and those roots now
+    bracket the same pulse edges: bound disabled, it reaches 953.069 in 7,632
+    steps, tol-stably.
+
+    So this asserts what is true now — the roots alone resolve the schedule —
+    and it still fails loudly if they regress, because the step-over answer is
+    68% high. The bound itself is still derived (the test above pins that) and
+    still on by default; whether any model still *needs* it is GH #262.
+    """
+    for rtol in (1e-9, 1e-11):
+        m = bngsim.Model.from_sbml(_MODEL1708)
+        sim = bngsim.Simulator(m, method="ode", jacobian="analytical")
+        r = sim.run(
+            t_span=(0.0, 100.0),
+            n_points=101,
+            rtol=rtol,
+            atol=1e-12,
+            max_steps=50_000_000,
+            max_step=-1,
+            timeout=120,
+        )
+        y = np.asarray(r.species)[-1, list(r.species_names).index("y")]
+        assert y == pytest.approx(953.07, rel=5e-3), f"rtol={rtol}: {y}"
+        # Emphatically not the pre-#259 step-over, which was ≈1602.95.
+        assert y < 1.1 * 953.07
+        assert r.solver_stats["n_steps"] > 1000, (
+            "221 steps was the step-over signature; resolving the pulses costs "
+            f"thousands (rtol={rtol}: {r.solver_stats['n_steps']})"
+        )

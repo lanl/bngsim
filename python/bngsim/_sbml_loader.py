@@ -809,15 +809,27 @@ def _make_time_arg_predicate(
 def _make_time_relational_filter(
     time_names: frozenset[str] | set[str] = frozenset(),
 ) -> Callable[[libsbml.ASTNode, libsbml.ASTNode], bool]:
-    """A ``keep`` predicate admitting exactly the ``time vs threshold`` edges.
+    """A ``keep`` predicate admitting every relational that moves with time.
 
-    Exactly one side time-dependent ⇒ a clean crossing. (Both-sides-time, e.g.
-    ``time < 2*time``, is not a fixed threshold and is skipped; neither-side is
-    not time-dependent at all.)
+    *Either* side time-dependent is enough (GH #259). The original test was
+    *exactly* one side, written to exclude shapes like ``time < 2*time`` that
+    compare time against itself — but it excludes real crossings too, because
+    "moves with time" is transitive once an alias counts: ``2*time >= time+0.7``
+    is the ``t >= 0.7`` edge with no constant side, and BIOMD0000000589's
+    ``time >= i*24`` (``i := floor(time/24)``) is a genuine sawtooth crossing.
+    Both were refused, and a pulse whose *opening* edge is refused is missed
+    however well the closing edge is rooted.
+
+    Admitting a relational that never actually flips costs one ExprTk evaluation
+    per root-function call and nothing else: a discontinuity root is the boolean
+    condition itself (``gout = evaluate(cond) - 0.5``), so its value is ±0.5 and
+    it can neither vanish identically nor be bracketed where it does not change.
+    That asymmetry — a missed crossing is a wrong trajectory, a spurious
+    candidate is an evaluation — is why this errs toward admitting.
     """
 
     def keep(a: libsbml.ASTNode, b: libsbml.ASTNode) -> bool:
-        return _ast_side_is_time(a, time_names) != _ast_side_is_time(b, time_names)
+        return _ast_side_is_time(a, time_names) or _ast_side_is_time(b, time_names)
 
     return keep
 
@@ -840,17 +852,18 @@ def _collect_time_discontinuity_conditions(
     reached at any depth.
 
     ``time_names`` are the assignment-rule targets that transitively read the
-    ``time`` csymbol — an SBML model routinely aliases it
-    (``<assignmentRule variable="model_time"> time``) and then passes the alias,
-    so an argument naming one binds a time-dependent formal.
+    ``time`` csymbol. A model routinely aliases it
+    (``<assignmentRule variable="model_time"> time``) and then writes its whole
+    schedule against the alias, so ``model_time > 1800`` names no csymbol on
+    either side and was not a threshold to a csymbol-only test (GH #259). A
+    formal parameter bound to such an alias is time-dependent for the same
+    reason (GH #231). The C++ root function refreshes every assignment rule at
+    the trial ``(t, y)`` before evaluating a trigger, so a condition written
+    against an alias is evaluated with a live value.
 
-    They are deliberately NOT admitted as a time side of a relational *written
-    at the call site*, which keeps GH #72's own reading of a threshold exactly
-    as it was. Widening that reading subtracts as well as adds, because a side
-    counts only when the other does not: BIOMD0000000589's ``time >= i*24``,
-    with ``i := floor(time/24)``, becomes time-vs-time and loses both of the
-    roots it has today. That is its own change with its own blast radius, and is
-    tracked as GH #259.
+    A name is read in the innermost frame that binds it: a formal shadows a
+    model symbol of the same name, and is time-dependent only if *this* call
+    bound it to something that is.
     """
     for body, scope, scope_time in _iter_funcdef_scan_frames(
         node, func_defs, _make_time_arg_predicate(time_names), local_params
@@ -859,7 +872,9 @@ def _collect_time_discontinuity_conditions(
             body,
             func_defs,
             out,
-            keep=_make_time_relational_filter(scope_time),
+            keep=_make_time_relational_filter(
+                (frozenset(time_names) - frozenset(scope or ())) | scope_time
+            ),
             local_params=scope,
         )
 
