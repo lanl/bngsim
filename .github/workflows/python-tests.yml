@@ -38,23 +38,25 @@ name: python-tests
 # so green here means what a clean `git push` means locally — on a host the
 # developer does not have.
 #
-# SuiteSparse/KLU is provisioned differently per leg, and the asymmetry is
-# deliberate rather than an inconsistency:
+# NEITHER leg installs SuiteSparse, and that is the point rather than an
+# omission. Both take BNGSIM_KLU_AUTOBUILD (GH #209) — the from-source fallback
+# an sdist `pip install` on a bare box depends on — which no other job anywhere
+# exercises: every wheel leg resolves a prebuilt SuiteSparse through
+# SUITESPARSE_ROOT and every other job sets ENABLE_KLU=OFF.
 #
-#   * macOS installs nothing. Accelerate supplies the BLAS, so
-#     BNGSIM_KLU_AUTOBUILD (GH #209) builds the pinned KLU subset from source —
-#     which makes this the ONLY job anywhere that exercises that path. Every
-#     wheel leg resolves a prebuilt SuiteSparse through SUITESPARSE_ROOT and
-#     every other job sets ENABLE_KLU=OFF, so the fallback an sdist install on a
-#     bare box depends on had no CI at all.
-#   * Linux installs libsuitesparse-dev, because on a bare ubuntu-latest the
-#     autobuild does NOT work: SuiteSparse's own CMake calls find_package(BLAS)
-#     and the runner image ships no BLAS, so the build dies in SuiteSparse_config
-#     before KLU is reached. Measured here, not assumed — the first run of this
-#     job failed exactly that way, which means GH #209's self-sufficiency claim
-#     holds on macOS but not on a bare Linux host. Installing the system package
-#     is what cibuildwheel's Linux leg already does (`dnf install
-#     suitesparse-devel`), so this leg matches the shipped wheel either way.
+# The Linux leg used to `apt-get install libsuitesparse-dev` because on a bare
+# ubuntu-latest the autobuild did NOT work: SuiteSparse_config calls
+# find_package(BLAS REQUIRED) whether or not anything links a BLAS, the runner
+# image ships none, and the configure died there before KLU was reached
+# (lanl/bngsim#178 — measured here, on this job's first run). The apt step was a
+# workaround for that, so removing it is now the CI proof that #178 is fixed:
+# ci/build_suitesparse.sh skips the probe outright, and a leg that installs
+# nothing is exactly the bare host an sdist install lands on. Do not re-add it to
+# fix a red build — a red build here means the self-sufficiency claim regressed.
+#
+# System-SuiteSparse discovery (the other half of GH #209) stays covered by
+# cibuildwheel's Linux leg, which resolves `dnf install suitesparse-devel`
+# through SUITESPARSE_ROOT.
 #
 # The HAS_KLU assertion below is what keeps both honest — without it a build that
 # quietly lost KLU would skip the sparse tests and still report green.
@@ -110,15 +112,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      # See the SuiteSparse note in the header: Linux only, because the runner
-      # image has no BLAS for the from-source autobuild to link against. macOS
-      # deliberately gets nothing so its leg exercises BNGSIM_KLU_AUTOBUILD.
-      - name: Install SuiteSparse (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y libsuitesparse-dev
+      # No SuiteSparse install step, on either leg — see the header. Both build
+      # the pinned KLU subset from source through BNGSIM_KLU_AUTOBUILD, which is
+      # what an sdist `pip install` on a bare host does.
 
       # --extra dev rather than an enumerated extras list: `dev` is the set a
       # developer's `uv sync` installs, so this job and the pre-push hook see the

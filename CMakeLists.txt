@@ -182,9 +182,13 @@ endmacro()
 # runs on an sdist install; the extension gets a matching rpath below.
 #
 # Gated to non-Windows (Windows ships a wheel; its from-source build needs the
-# MSVC/OpenBLAS handling in ci/build_suitesparse.ps1). On any failure — e.g.
-# Linux with no BLAS for SuiteSparse_config's find_package(BLAS REQUIRED) — this
+# MSVC generator handling in ci/build_suitesparse.ps1). On any failure this
 # leaves BNGSIM_KLU_FOUND OFF so the caller falls through to require-or-die.
+# The failure this used to hit in practice was a host with no BLAS, where
+# SuiteSparse_config's find_package(BLAS REQUIRED) killed the configure before
+# KLU was reached — a hard `pip install` failure on a bare Linux box (GH #178).
+# ci/build_suitesparse.sh now skips that probe, so the fallback is genuinely
+# self-sufficient rather than self-sufficient-where-a-BLAS-happens-to-exist.
 macro(_bngsim_autobuild_klu)
     if(WIN32)
         message(STATUS
