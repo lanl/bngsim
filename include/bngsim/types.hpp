@@ -942,6 +942,14 @@ struct SteadyStateOptions {
     // march is held to on the way to the root, not the test for having
     // arrived.
     std::vector<double> atol_vec;
+    // Tracking depth for the march (issue #213). Same contract and same rule as
+    // SolverOptions::atol_track_decades: 0 is off, > 0 needs a strictly
+    // positive atol_vec to track below. The convergence criterion is a norm and
+    // stays scalar; what this changes is the accuracy of the state the march
+    // arrives at, which matters for a species that decays toward zero on the
+    // way to the root and is under its own atol long before the residual
+    // settles.
+    double atol_track_decades = 0.0;
     // "integration" (default; CVODE parity early-stop), "newton" (two-tier
     // integrate-then-polish), or "kinsol" (alias for newton).
     std::string method = "integration";
@@ -1214,6 +1222,27 @@ struct SolverOptions {
     // readers — the GH #95 event chatter floor and the GH #214 sensitivity
     // atolS — read this vector when it is set.
     std::vector<double> atol_vec;
+
+    // ─── Tracking absolute tolerance (issue #213) ────────────────────────────
+    // How many decades below its own entry in `atol_vec` a species keeps being
+    // resolved relatively. 0 (the default) is off and leaves the vector above
+    // exactly as #196 set it; anything > 0 routes the state solve to
+    // CVodeWFtolerances with the AtolTracking rule in bngsim/atol_vector.hpp:
+    //
+    //     atol_i(y) = clamp(rtol·|y_i|, atol_vec[i]·10^-decades, atol_vec[i])
+    //
+    // A vector is a statement about which species; this is the statement about
+    // WHEN. A tolerance built from initial values is one number for that
+    // species for the whole run, so a species that starts at order one and
+    // decays to something tiny drops below its own atol partway through and
+    // stops being error-controlled from there on — the #196 failure reached
+    // through time rather than through the species list.
+    //
+    // Requires a non-empty `atol_vec` whose every entry is strictly > 0: the
+    // vector is the ceiling being tracked below, and a zero ceiling scales to
+    // a zero floor (an infinite error weight at a species sitting at zero).
+    // Both are rejected at setup rather than at the first failed step.
+    double atol_track_decades = 0.0;
 
     // Jacobian strategy for ODE solver:
     //   "auto"       — analytical if available, else finite-difference (default)

@@ -23,7 +23,7 @@ import importlib.util as _importlib_util
 import logging
 from typing import Any
 
-from bngsim._atol import AUTO, derive_atol, normalize_atol_vector
+from bngsim._atol import AUTO, TRACKING, TrackingAtol, derive_atol, normalize_atol_vector
 from bngsim._codegen import prepare_codegen
 from bngsim._eval_spec import EvaluationSpec
 from bngsim._exceptions import (
@@ -188,6 +188,13 @@ __all__ = [
     "AUTO",
     "derive_atol",
     "normalize_atol_vector",
+    # ...and its over-time twin (GH #213): the same vector, re-evaluated against
+    # the state being integrated instead of against t=0, through CVODE's
+    # CVodeWFtolerances. `hasattr(bngsim, "TrackingAtol")` is the probe for it.
+    # A vector says WHICH species; this says WHEN, and a species that starts at
+    # order one and decays to something tiny needs the second one said.
+    "TRACKING",
+    "TrackingAtol",
     # PSA diagnostics (GH #15)
     "psa_cost_decision",
     # Feature flags

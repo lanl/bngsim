@@ -26,12 +26,19 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from bngsim._atol import AUTO as _ATOL_AUTO
-from bngsim._atol import AtolLike, derive_atol, is_scalar_atol, normalize_atol_vector
+from bngsim._atol import TRACKING as _ATOL_TRACKING
+from bngsim._atol import (
+    AtolLike,
+    TrackingAtol,
+    derive_atol,
+    is_scalar_atol,
+    normalize_atol_vector,
+)
 from bngsim._codegen import _codegen_jit_backend, last_codegen_cache_hit, last_codegen_sec
 from bngsim._exceptions import (
     DenseSolverFallbackWarning,
@@ -67,6 +74,51 @@ except (ImportError, AttributeError):
 # starts to matter; below it the dense solver is fine and the notice would be
 # noise. Matches the trigger suggested in GH #209.
 _DENSE_FALLBACK_WARN_NSPECIES = 2000
+
+
+class _ResolvedAtol(NamedTuple):
+    """One call's absolute tolerance, resolved into what SolverOptions takes.
+
+    Three fields rather than three ``atol=`` shapes, because the core reads
+    three orthogonal things: a scalar (which the norm-shaped consumers need
+    whatever else is set), a per-species vector, and — since issue #213 — a
+    tracking depth that turns the vector into the *ceiling* of an error-weight
+    function. ``decades == 0`` is the whole of the pre-#213 world.
+    """
+
+    scalar: float
+    vector: list[float] | None
+    decades: float
+
+    def apply_to(self, opts: Any) -> None:
+        """Write this onto a ``SolverOptions``, touching nothing it does not set."""
+        opts.atol = self.scalar
+        if self.vector is not None:
+            opts.atol_vec = self.vector
+        if self.decades:
+            opts.atol_track_decades = self.decades
+
+
+def _tracking_hint(decades: float) -> str:
+    """Sentence appended to a solver failure when tracking was in force (#213).
+
+    Measured on 391 rr_parity models that integrate at the default tolerance: 6
+    of them do not at ``decades=12``, 1 at 6, and 0 at 3. So a tracking depth is
+    much the likeliest reason a model that integrated a moment ago suddenly does
+    not — and CVODE's own report ("made no progress", "flag=-3") never mentions
+    it, because from inside the step controller it is just a tight tolerance.
+    """
+    if not decades:
+        return ""
+    return (
+        f" This run used a tracking absolute tolerance {decades:g} decades deep "
+        f"(issue #213), which asks for relative accuracy on every species all the "
+        f"way down and is the first thing to suspect: a species whose value is a "
+        f"difference of large fluxes cannot be resolved below its own roundoff, and "
+        f"the step size collapses instead. Try a smaller TrackingAtol(decades=...), "
+        f"or a plain per-species atol."
+    )
+
 
 # Process-wide one-shot guard for the dense-fallback notice, so a run_batch over
 # many large models (or repeated run() calls) warns at most once, not per run.
@@ -446,6 +498,10 @@ class Simulator:
         # still what the scalar-shaped consumers read (the steady_state
         # early-stop cutoff), so both have to be resolvable at once.
         "_atol_vec",
+        # Issue #213 — a pinned TrackingAtol, or None. Mutually exclusive with
+        # `_atol_vec`: the tracking spec carries its own (already resolved)
+        # ceiling, so keeping both would leave two answers to "which vector".
+        "_atol_track",
         "_max_steps",
         "_stop_conditions",
         # Interactive simulation state
@@ -728,6 +784,7 @@ class Simulator:
         self._rtol = 1e-8
         self._atol = 1e-8
         self._atol_vec: list[float] | None = None
+        self._atol_track: TrackingAtol | None = None
         self._max_steps = 10000
         self._jacobian = jacobian
         self._ode_jacobian_fell_back = False
@@ -2216,8 +2273,10 @@ class Simulator:
         -----
         Derived from *initial* values, this cannot see a species that starts at
         order one and decays to something tiny — a within-species, over-time
-        mismatch that needs an error-weight function (``CVodeWFtolerances``),
-        not a vector. What it removes is the cross-species compromise.
+        mismatch that needs an error-weight function, not a vector. What it
+        removes is the cross-species compromise. The vector returned here is
+        exactly what :class:`bngsim.TrackingAtol` takes as its *ceiling* and
+        re-evaluates against the trajectory (``CVodeWFtolerances``, issue #213).
 
         Examples
         --------
@@ -2234,8 +2293,10 @@ class Simulator:
             if requested != _ATOL_AUTO:
                 raise ValueError(
                     f"{where}: unknown atol token {requested!r}. Pass a float for a "
-                    f'scalar tolerance, a sequence of n_species values, or "{_ATOL_AUTO}" '
-                    f"to derive one from the model (see Simulator.auto_atol)."
+                    f'scalar tolerance, a sequence of n_species values, "{_ATOL_AUTO}" '
+                    f"to derive one from the model (see Simulator.auto_atol), or "
+                    f'"{_ATOL_TRACKING}" / bngsim.TrackingAtol(...) for one that '
+                    f"follows the trajectory (issue #213)."
                 )
             return [float(v) for v in self.auto_atol(rtol=rtol)]
         return normalize_atol_vector(
@@ -2245,10 +2306,41 @@ class Simulator:
             where=where,
         )
 
-    def _resolve_atol(
-        self, atol: AtolLike | None, rtol: float, *, where: str
-    ) -> tuple[float, list[float] | None]:
-        """Resolve one call's ``atol`` into ``(scalar, per-species or None)``.
+    def _tracking_ceiling(self, spec: TrackingAtol, rtol: float, *, where: str) -> list[float]:
+        """Resolve and check a :class:`TrackingAtol` ceiling into a list.
+
+        The extra check over :func:`normalize_atol_vector` is strict positivity.
+        A zero entry is a legal *fixed* tolerance — it puts that species under
+        pure relative control, which is exactly what CVODE's built-in weight
+        routines test for before inverting. Under tracking it is not legal: the
+        floor is the ceiling scaled down, so a zero ceiling is a zero floor, and
+        CVODE explicitly does NOT run that test for a user-supplied weight
+        function. The species would get an infinite error weight and the run
+        would die on the first step with nothing to point at.
+        """
+        ceiling = spec.ceiling
+        if is_scalar_atol(ceiling):
+            vec = [float(ceiling)] * self._model.n_species  # type: ignore[arg-type]
+            normalize_atol_vector(vec, self._model.n_species, where=where)
+        else:
+            vec = self._atol_vector_from(ceiling, rtol, where=where)
+        for i, v in enumerate(vec):
+            if v > 0.0:
+                continue
+            names = self._model.species_names
+            name = f" ('{names[i]}')" if i < len(names) else ""
+            raise ValueError(
+                f"{where}: tracking ceiling entry {i}{name} is {v!r}, but every entry "
+                f"must be strictly > 0 under a tracking absolute tolerance. The floor "
+                f"is the ceiling {spec.decades:g} decades down, so a zero ceiling is a "
+                f"zero floor and that species would carry an infinite error weight. "
+                f"An 'auto' ceiling hits this only for a model whose species are all "
+                f"zero; pass TrackingAtol(ceiling=...) with a positive vector instead."
+            )
+        return vec
+
+    def _resolve_atol(self, atol: AtolLike | None, rtol: float, *, where: str) -> _ResolvedAtol:
+        """Resolve one call's ``atol`` into scalar / per-species / tracking depth.
 
         ``None`` means "whatever this Simulator is configured for", which is the
         per-species vector when :meth:`set_tolerances` was given one and the
@@ -2260,27 +2352,51 @@ class Simulator:
         to take. When a vector is in force the scalar is this Simulator's own
         (default ``1e-8``) rather than anything derived from the vector — there
         is no honest single number to derive.
+
+        Tracking (issue #213) rides on the vector rather than replacing it: the
+        vector that comes back is the tracking *ceiling*, and ``decades`` says
+        how far below it the tolerance is allowed to follow the trajectory. At
+        ``decades == 0`` the two are the same request, which is why the depth is
+        a separate number and not a fourth kind of ``atol``.
         """
         requested: object
         if atol is None:
-            requested = self._atol_vec if self._atol_vec is not None else self._atol
+            if self._atol_track is not None:
+                requested = self._atol_track
+            elif self._atol_vec is not None:
+                requested = self._atol_vec
+            else:
+                requested = self._atol
         else:
             requested = atol
+        # `isinstance` first: `requested` can be a numpy array here, and
+        # `array == "tracking"` is an elementwise comparison whose truth value
+        # is ambiguous, not False.
+        if isinstance(requested, str) and requested == _ATOL_TRACKING:
+            requested = TrackingAtol()
+        if isinstance(requested, TrackingAtol):
+            ceiling = self._tracking_ceiling(requested, rtol, where=where)
+            return _ResolvedAtol(self._atol, ceiling, requested.decades)
         if is_scalar_atol(requested):
-            return float(requested), None  # type: ignore[arg-type]
-        return self._atol, self._atol_vector_from(requested, rtol, where=where)
+            return _ResolvedAtol(float(requested), None, 0.0)  # type: ignore[arg-type]
+        return _ResolvedAtol(self._atol, self._atol_vector_from(requested, rtol, where=where), 0.0)
 
     def _freeze_atol(self, atol: AtolLike | None, rtol: float, *, where: str) -> AtolLike:
         """Resolve ``atol`` once for a call that runs many points.
 
-        Returns a plain float or an explicit list, so every point of a batch or
-        scan integrates at the SAME tolerance. Re-deriving ``"auto"`` per point
-        would make each row's error control a function of that row's initial
-        conditions, and a sweep whose points are held to different tolerances is
-        not a sweep you can compare across.
+        Returns a plain float, an explicit list, or a :class:`TrackingAtol` with
+        an explicit ceiling, so every point of a batch or scan integrates at the
+        SAME tolerance. Re-deriving ``"auto"`` per point would make each row's
+        error control a function of that row's initial conditions, and a sweep
+        whose points are held to different tolerances is not a sweep you can
+        compare across. That applies to a tracking ceiling too — the rule is
+        state-dependent *within* a run by design, but the ceiling it tracks
+        below must be the same one for every row.
         """
-        scalar, vec = self._resolve_atol(atol, rtol, where=where)
-        return scalar if vec is None else vec
+        resolved = self._resolve_atol(atol, rtol, where=where)
+        if resolved.decades:
+            return TrackingAtol(decades=resolved.decades, ceiling=resolved.vector or [])
+        return resolved.scalar if resolved.vector is None else resolved.vector
 
     # ─── Run ────────────────────────────────────────────────────────
 
@@ -2400,7 +2516,7 @@ class Simulator:
             Ignored for ``method="ode"``.
         rtol : float, optional
             Relative tolerance for ODE solver. Default ``1e-8``.
-        atol : float or array_like or ``"auto"``, optional
+        atol : float, array_like, ``"auto"``, ``"tracking"``, or TrackingAtol, optional
             Absolute tolerance for the ODE solver. Default ``1e-8``.
 
             A float is the scalar tolerance CVODE has always taken
@@ -2427,12 +2543,24 @@ class Simulator:
             makes the model unintegrable or leaves the small species under the
             noise floor.
 
+            ``"tracking"`` (or :class:`bngsim.TrackingAtol`, which is the same
+            thing with the depth and ceiling spelled out) is the third mode,
+            issue #213. It hands CVODE an error-weight function
+            (``CVodeWFtolerances``) that re-evaluates the vector above against
+            the state being integrated, so a species that starts at order one
+            and **decays** to something tiny keeps a tolerance that means
+            something for it. A vector says which species; this says when. It
+            costs steps — roughly 4x on a pure decay resolved twelve decades
+            down — and it is the difference between an answer and noise for the
+            species it is about.
+
             Passing a float leaves the run on exactly the code path it was on
-            before, bit for bit. A *constant* vector is not the same thing: it
-            is the same tolerance but reaches CVODE through
-            ``CVodeSVtolerances``, whose error weights are computed by a
-            different (FMA-contractable) expression, so it agrees with the
-            scalar to about one ulp rather than exactly.
+            before, bit for bit. Neither of the other two is the same thing: a
+            *constant* vector is the same tolerance reaching CVODE through
+            ``CVodeSVtolerances``, and a depth-0 ``TrackingAtol`` is the same
+            tolerance again through ``CVodeWFtolerances``. All three compute the
+            same error weights by differently contractable expressions, so they
+            agree to about one ulp rather than exactly.
         max_steps : int, optional
             Max internal solver steps per output point.
             Default ``10000``.
@@ -2625,6 +2753,11 @@ class Simulator:
         # stamped onto the Result (issue #155). None ⇒ no parameter-sensitivity
         # request, so there is no `parameter` axis to describe.
         ic_seed: dict[str, dict[str, float]] | None = None
+        # Tracking depth in force for this run (issue #213), so a solver failure
+        # can name it. A tracking tolerance is by far the most likely reason a
+        # model that integrated a moment ago suddenly does not, and CVODE's own
+        # report — "made no progress", "flag=-3" — says nothing about it.
+        track_decades = 0.0
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import SolverOptions
@@ -2638,10 +2771,9 @@ class Simulator:
                 # Issue #196 — scalar or per-species. The vector is resolved
                 # against rtol (an "auto" request scales by it) and against the
                 # model's live state, so it is built after rtol is known.
-                eff_atol, atol_vec = self._resolve_atol(atol, opts.rtol, where="run(atol=...)")
-                opts.atol = eff_atol
-                if atol_vec is not None:
-                    opts.atol_vec = atol_vec
+                resolved_atol = self._resolve_atol(atol, opts.rtol, where="run(atol=...)")
+                resolved_atol.apply_to(opts)
+                track_decades = resolved_atol.decades
                 opts.max_steps = max_steps if max_steps is not None else self._max_steps
                 opts.jacobian = self._jacobian
                 opts.force_dense_linear_solver = self._force_dense_linear_solver
@@ -2725,7 +2857,7 @@ class Simulator:
             # terminations distinctly from solver errors.
             raise
         except RuntimeError as e:
-            raise SimulationError(f"Simulation failed: {e}") from e
+            raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
 
         # Stamp the seed on the Result when it identifies the realization (any
         # stochastic method) or drives ODE equal-priority event tie-breaking
@@ -2916,9 +3048,7 @@ class Simulator:
         # Issue #196 — scalar or per-species, resolved once for the batch (see
         # _freeze_atol: a per-row "auto" would hold each row to a tolerance
         # derived from that row's own initial conditions).
-        effective_atol, effective_atol_vec = self._resolve_atol(
-            atol, effective_rtol, where="run_batch(atol=...)"
-        )
+        effective_atol_spec = self._resolve_atol(atol, effective_rtol, where="run_batch(atol=...)")
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
         # Integrator step bound (GH #88): an explicit max_step, else the
         # per-model periodic-dosing bound. None ⇒ unconstrained. Resolved once
@@ -2948,13 +3078,12 @@ class Simulator:
                 n_points,
                 base_seed,
                 effective_rtol,
-                effective_atol,
+                effective_atol_spec,
                 effective_max_steps,
                 effective_timeout,
                 steady_state=bool(steady_state),
                 steady_state_tol=ss_tol_value,
                 max_step=effective_max_step,
-                atol_vec=effective_atol_vec,
             )
 
         if num_processors is not None and num_processors > 1:
@@ -3928,13 +4057,12 @@ class Simulator:
         n_points: int,
         base_seed: int,
         rtol: float,
-        atol: float,
+        atol_spec: _ResolvedAtol,
         max_steps: int,
         timeout_seconds: float = 0.0,
         steady_state: bool = False,
         steady_state_tol: float = 0.0,
         max_step: float | None = None,
-        atol_vec: list[float] | None = None,
     ) -> Result:
         """Run a single simulation in a batch (thread-safe)."""
         from bngsim._bngsim_core import TimeSpec
@@ -3961,11 +4089,12 @@ class Simulator:
                 sim: Any = CvodeSimulator(clone._core)
                 opts = SolverOptions()
                 opts.rtol = rtol
-                opts.atol = atol
-                # Issue #196 — the batch resolved this once; the clone has the
-                # same species in the same order, so it applies row for row.
-                if atol_vec is not None:
-                    opts.atol_vec = atol_vec
+                # Issue #196 / #213 — the batch resolved this once; the clone
+                # has the same species in the same order, so it applies row for
+                # row. A tracking depth rides along with the ceiling: the rule
+                # is state-dependent within each row, but the ceiling it tracks
+                # below is the batch's, not the row's.
+                atol_spec.apply_to(opts)
                 opts.max_steps = max_steps
                 opts.jacobian = self._jacobian
                 opts.timeout_seconds = timeout_seconds
@@ -4362,7 +4491,7 @@ class Simulator:
         # Issue #196 — one tolerance for every chunk. The chunks are columns of
         # a single tensor that gets stitched back together; deriving "auto"
         # per chunk would stitch columns integrated to different accuracies.
-        effective_atol, effective_atol_vec = self._resolve_atol(
+        effective_atol_spec = self._resolve_atol(
             atol, effective_rtol, where="compute_all_sensitivities(atol=...)"
         )
         effective_max_steps = max_steps if max_steps is not None else self._max_steps
@@ -4375,9 +4504,8 @@ class Simulator:
                 t_span,
                 n_points,
                 effective_rtol,
-                effective_atol,
+                effective_atol_spec,
                 effective_max_steps,
-                atol_vec=effective_atol_vec,
             )
 
         # Run chunks (parallel or serial)
@@ -4408,9 +4536,8 @@ class Simulator:
         t_span: tuple[float, float],
         n_points: int,
         rtol: float,
-        atol: float,
+        atol_spec: _ResolvedAtol,
         max_steps: int,
-        atol_vec: list[float] | None = None,
     ) -> Result:
         """Run a single sensitivity chunk (thread-safe).
 
@@ -4435,9 +4562,7 @@ class Simulator:
 
         opts = SolverOptions()
         opts.rtol = rtol
-        opts.atol = atol
-        if atol_vec is not None:
-            opts.atol_vec = atol_vec
+        atol_spec.apply_to(opts)
         opts.max_steps = max_steps
         opts.jacobian = self._jacobian
         if self._codegen_so_path:
@@ -4783,11 +4908,8 @@ class Simulator:
         opts.max_time = max_time
         opts.method = method
         opts.rtol = rtol if rtol is not None else self._rtol
-        # Issue #196 — scalar or per-species for the march.
-        ss_atol, ss_atol_vec = self._resolve_atol(atol, opts.rtol, where="steady_state(atol=...)")
-        opts.atol = ss_atol
-        if ss_atol_vec is not None:
-            opts.atol_vec = ss_atol_vec
+        # Issue #196 / #213 — scalar, per-species, or tracking for the march.
+        self._resolve_atol(atol, opts.rtol, where="steady_state(atol=...)").apply_to(opts)
         opts.max_steps = max_steps if max_steps is not None else self._max_steps
         # A previous solve on this Simulator already proved the closed-form
         # Jacobian makes CVODE give up on this model, and paid a doomed march to
@@ -5233,10 +5355,9 @@ class Simulator:
         )
 
         eff_rtol = rtol if rtol is not None else self._rtol
-        # Issue #196 — resolved once, applied to every entry (see run_batch).
-        eff_atol, eff_atol_vec = self._resolve_atol(
-            atol, eff_rtol, where="steady_state_batch(atol=...)"
-        )
+        # Issue #196 / #213 — resolved once, applied to every entry (see
+        # run_batch).
+        eff_atol_spec = self._resolve_atol(atol, eff_rtol, where="steady_state_batch(atol=...)")
         eff_max_steps = max_steps if max_steps is not None else self._max_steps
 
         def _run_one(i):
@@ -5248,9 +5369,7 @@ class Simulator:
             opts.max_time = max_time
             opts.method = method
             opts.rtol = eff_rtol
-            opts.atol = eff_atol
-            if eff_atol_vec is not None:
-                opts.atol_vec = eff_atol_vec
+            eff_atol_spec.apply_to(opts)
             opts.max_steps = eff_max_steps
             # Read (and, below, set) the same memo `steady_state()` keeps, so a
             # sweep over a model whose closed-form Jacobian CVODE cannot use pays
@@ -5506,9 +5625,10 @@ class Simulator:
             See ``Simulator.run`` for the full contract.
         rtol, atol, max_steps : optional
             Solver options (ODE only). ``atol`` takes the same scalar,
-            per-species vector or ``"auto"`` as :meth:`run` (issue #196); an
-            ``"auto"`` vector is derived from the state this leg starts from,
-            which for an interactive protocol is where the previous leg ended.
+            per-species vector, ``"auto"`` or ``"tracking"`` as :meth:`run`
+            (issues #196, #213); an ``"auto"`` vector — including a tracking
+            ceiling — is derived from the state this leg starts from, which for
+            an interactive protocol is where the previous leg ended.
 
         Returns
         -------
@@ -5723,30 +5843,49 @@ class Simulator:
         ----------
         rtol : float
             Relative tolerance.
-        atol : float or array_like or ``"auto"``
+        atol : float, array_like, ``"auto"``, ``"tracking"``, or TrackingAtol
             Absolute tolerance. A float is the scalar tolerance
             (``CVodeSStolerances``). A sequence of ``n_species`` values,
             ordered like :attr:`Model.species_names`, is a per-species
             tolerance (``CVodeSVtolerances``, issue #196); ``"auto"`` derives
             one now from the model's current state (see :meth:`auto_atol`) and
             pins it, so a later state change does not silently re-derive it.
+            A :class:`bngsim.TrackingAtol` (or ``"tracking"``) installs the
+            error-weight function of issue #213, which re-evaluates that vector
+            against the state being integrated; its ceiling is pinned here for
+            the same reason ``"auto"`` is.
 
-            Setting a scalar clears any per-species tolerance previously set
-            here rather than sitting behind it — the alternative is a call that
-            appears to set the tolerance and changes nothing.
+            Each of the three clears the others rather than sitting behind them
+            — the alternative is a call that appears to set the tolerance and
+            changes nothing.
 
         Raises
         ------
         ValueError
             If a per-species vector is not ``n_species`` long, or holds an
-            entry that is not finite and ``>= 0``.
+            entry that is not finite and ``>= 0`` (strictly ``> 0`` when it is
+            a tracking ceiling).
         """
         self._rtol = rtol
-        if is_scalar_atol(atol):
+        if isinstance(atol, str) and atol == _ATOL_TRACKING:
+            atol = TrackingAtol()
+        if isinstance(atol, TrackingAtol):
+            # Pin the ceiling now, exactly as "auto" is pinned: the depth is
+            # what makes the tolerance follow the trajectory WITHIN a run, and
+            # a ceiling that also moved between runs would make two runs of the
+            # same model incomparable for a reason nothing reports.
+            self._atol_track = TrackingAtol(
+                decades=atol.decades,
+                ceiling=self._tracking_ceiling(atol, rtol, where="set_tolerances(atol=...)"),
+            )
+            self._atol_vec = None
+        elif is_scalar_atol(atol):
             self._atol = float(atol)  # type: ignore[arg-type]
             self._atol_vec = None
+            self._atol_track = None
         else:
             self._atol_vec = self._atol_vector_from(atol, rtol, where="set_tolerances(atol=...)")
+            self._atol_track = None
         if self._method == "ode":
             # Only the SCALAR is pushed down to the core simulator, even when a
             # vector was set here. Every call builds a SolverOptions that states

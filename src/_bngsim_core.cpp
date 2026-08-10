@@ -290,6 +290,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // leaves the run on the scalar `atol` above and CVodeSStolerances;
         // n_species entries route it to CVodeSVtolerances instead.
         .def_readwrite("atol_vec", &bngsim::SolverOptions::atol_vec)
+        // Issue #213 — decades below `atol_vec` that a species keeps being
+        // resolved relatively. 0 (the default) is off; > 0 routes the state
+        // solve to CVodeWFtolerances and needs a strictly positive atol_vec.
+        .def_readwrite("atol_track_decades", &bngsim::SolverOptions::atol_track_decades)
         .def_readwrite("max_steps", &bngsim::SolverOptions::max_steps)
         .def_readwrite("max_step_size", &bngsim::SolverOptions::max_step_size)
         .def_readwrite("jacobian", &bngsim::SolverOptions::jacobian)
@@ -2236,6 +2240,9 @@ PYBIND11_MODULE(_bngsim_core, m) {
         // Issue #196 — per-species absolute tolerance for the march. Empty
         // keeps the scalar `atol` above.
         .def_readwrite("atol_vec", &bngsim::SteadyStateOptions::atol_vec)
+        // Issue #213 — decades below `atol_vec` the march keeps resolving a
+        // species relatively. 0 (the default) is off.
+        .def_readwrite("atol_track_decades", &bngsim::SteadyStateOptions::atol_track_decades)
         .def_readwrite("max_steps", &bngsim::SteadyStateOptions::max_steps)
         .def_readwrite("method", &bngsim::SteadyStateOptions::method)
         .def_readwrite("jacobian", &bngsim::SteadyStateOptions::jacobian)

@@ -1,0 +1,36 @@
+# Two first-order decays that START at the same magnitude and END sixteen
+# decades apart — the smallest reproducer of lanl/bngsim#213.
+#
+#   D(0) = 1.0, kD = 1.0    → D(t) = exp(-t);      D(30) = 9.357623e-14
+#   C(0) = 1.0, kC = 1.0e-4 → C(t) = exp(-1e-4 t); C(30) = 9.997000e-01
+#
+# The point of the equal initial values is that no initial-value heuristic can
+# tell these two species apart: atol="auto" (issue #196) derives 1e-8 for both,
+# which is exactly the scalar it replaces, so the per-species vector is provably
+# a NO-OP here. Yet D crosses under 1e-8 around t = 18 and spends the rest of
+# the run below its own absolute tolerance, contributing nothing to the error
+# test — it comes back as 3.8e-10 at t = 30, four orders of magnitude too large,
+# and negative at some tolerances.
+#
+# That is the within-species, over-time half of #196's problem: the tolerance is
+# wrong not for the wrong species but at the wrong time, and the construct for it
+# is CVodeWFtolerances — an error-weight function evaluated at the state actually
+# being integrated (bngsim.TrackingAtol).
+begin parameters
+    1 kD  1.0     # Constant
+    2 kC  1.0e-4  # Constant
+end parameters
+begin species
+    1 D()  1.0
+    2 C()  1.0
+    3 Dd() 0
+    4 Cd() 0
+end species
+begin reactions
+    1 1 3 kD #_R1
+    2 2 4 kC #_R2
+end reactions
+begin groups
+    1 D_tot  1
+    2 C_tot  2
+end groups

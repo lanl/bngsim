@@ -91,14 +91,18 @@ class EvaluationSpec:
         applied during integration.
     rtol : float, optional
         Relative solver tolerance. ``None`` uses the Simulator default.
-    atol : float or sequence of float or ``"auto"``, optional
+    atol : float, sequence of float, ``"auto"`` or ``"tracking"``, optional
         Absolute solver tolerance. ``None`` uses the Simulator default. A
         sequence is the per-species tolerance of issue #196, ordered like
         ``Model.species_names`` and normalized to a tuple so the spec stays
         hashable and byte-stable; ``"auto"`` asks the worker to derive one from
         the model it materializes. Both survive the JSON round trip, so a
         decade-spanning model can be distributed at a tolerance that means
-        something for every species.
+        something for every species. ``"tracking"`` is the over-time mode of
+        issue #213 at its default depth — a token, so it round-trips too.
+        A :class:`bngsim.TrackingAtol` with a non-default depth or an explicit
+        ceiling does **not**: it is not JSON, and a spec is a wire format.
+        Distribute the token, or the ceiling as a plain sequence.
     max_steps : int, optional
         Max internal solver steps per output point. ``None`` uses the default.
     model_sha256 : str, optional

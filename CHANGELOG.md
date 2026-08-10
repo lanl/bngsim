@@ -15,6 +15,98 @@ in `CMakeLists.txt`) is derived from it.
 ## [Unreleased]
 
 ### Added
+- **An absolute tolerance that follows the trajectory: `atol="tracking"` /
+  `bngsim.TrackingAtol` (issue #213).** #196 gave the state axis a per-species
+  `atol` and removed the *cross-species* compromise. It left the *within-species,
+  over-time* half untouched: whatever number species `i` gets, it keeps for the
+  whole run, so a species that starts at order one and decays to something tiny
+  outgrows its own tolerance partway through and stops being error-controlled
+  from there on. CVODE's construct for that is `CVodeWFtolerances`, an
+  error-weight function evaluated at the state actually being integrated, and
+  this is that third mode. The rule:
+
+      atol_i(y) = clamp(rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)
+
+  `ceiling` is the #196 vector (`"auto"` by default), so the mode is a strict
+  extension of it: at `decades=0` it reduces to that vector exactly, and the
+  clamp's upper end means tracking is never *looser* than the vector it was
+  built from — only tighter, by at most `decades`.
+
+  New `tests/data/deep_decay.net` is the reproducer, and it is built so the
+  #196 vector is provably a no-op on it: both live species start at exactly
+  1.0, so `atol="auto"` derives 1e-8 for every species — the number the scalar
+  it replaces would have used. One then decays sixteen decades. Worst relative
+  error in that species against the analytical `exp(-t)`:
+
+  | mode                        | rel. err. | steps |
+  |-----------------------------|----------:|------:|
+  | scalar `atol=1e-8`          |   1.8e+04 |   162 |
+  | `atol="auto"` (#196 vector) |   1.8e+04 |   162 |
+  | `TrackingAtol(decades=3)`   |   3.6e+01 |   275 |
+  | `TrackingAtol(decades=6)`   |   9.5e-02 |   366 |
+  | `TrackingAtol()` (12)       |   2.6e-06 |   605 |
+  | `TrackingAtol(decades=20)`  |   9.4e-06 |   477 |
+
+  The default depth of 12 is where the accuracy stops improving; past it the
+  limit is roundoff rather than the tolerance, which is why it gets slightly
+  *worse* at 16 and 20. The cost is real and is not hidden: roughly 4x the
+  steps on this model.
+
+  Opt-in and orthogonal to #196 — a scalar `atol` stays on `CVodeSStolerances`
+  and a vector on `CVodeSVtolerances`, unchanged. Accepted by `Simulator.run`,
+  `run_batch`, `parameter_scan`, `compute_all_sensitivities`, `steady_state`,
+  `steady_state_batch` and `set_tolerances`, and frozen once per batch/scan the
+  same way `"auto"` is. `hasattr(bngsim, "TrackingAtol")` is the capability
+  probe.
+
+  The **sensitivity** axis is re-decided rather than left to inherit: `atolS`
+  keeps reading the *ceiling*, so turning tracking on leaves the sensitivity
+  tolerances exactly where the same vector would have put them. Re-deriving
+  `atolS` from the live state would make that base *tighten* mid-run, which is
+  the step-controller hazard the issue #183 high-water mark exists to avoid.
+  Measured on the same fixture, that costs nothing: the sensitivity column's
+  worst relative error against `-t exp(-t)` goes from 2.4e+02 to 1.8e-06 under
+  tracking anyway, because the state axis is what drives the step size.
+
+  **What it costs on real models**, swept over the first 400 `rr_parity` SBML
+  models (391 of which integrate at the default tolerance over `t = 0..100`).
+  37 of those 391 have a species that falls six or more decades below its own
+  initial value, so the mechanism is not exotic:
+
+  | arm | integrates | lost | gained | steps vs default |
+  |---|---:|---:|---:|---:|
+  | default (control) | 391 | — | — | 1.00 |
+  | `decades=3` | 393 | 0 | 2 | 1.18 |
+  | `decades=6` | 392 | 1 | 2 | 1.24 |
+  | `decades=12` | 387 | 6 | 2 | 1.58 |
+
+  Six models that integrate at the default tolerance do **not** at the default
+  depth — a species whose value is a difference of large fluxes cannot be
+  resolved below its own roundoff, and the step size collapses instead. Those
+  failures are loud, not silent, and a solver failure under tracking now names
+  the depth and suggests lowering it, because CVODE's own report ("made no
+  progress", `flag=-3`) mentions nothing about the tolerance mode that caused
+  it. Two models go the other way and integrate *only* under tracking.
+
+  The control arm is the important row: the same 391 models, run with the
+  default scalar `atol` before and after this change, produce **391/391
+  byte-identical trajectories with identical step counts**. Nothing moves
+  unless it is asked to.
+
+  **On `Bruno_JExpBot2016`**, which #213 cites as the measured case, the
+  premise does not reproduce. The issue reports the objective moving 1.3e-05
+  between `atol=1e-8` and "a converged tail near 1e-16". There is no tail:
+  reconstructing the shipped job's six conditions and sweeping both axes, the
+  worst deviation of any observable from a `rtol=1e-12, atol=1e-16` reference
+  is 7.3e-08 at `atol=1e-8` and 2.4e-08 at `atol=1e-16` — both at the `rtol=1e-8`
+  truncation floor, which is where the sequence stops. Drop `rtol` to 1e-10 and
+  the whole atol axis below 1e-10 collapses onto 5e-10. The reason is
+  structural: every live species in that model stays between about 0.2 and 6.4
+  for the whole run, so none of them ever goes under its own `atol`. Tracking
+  moves it by 7.9e-08, i.e. into the same band — which is the right answer for a
+  model that has nothing for it to fix. The mechanism is real; that model is not
+  an instance of it, and `tests/data/deep_decay.net` is.
+
 - **The per-species `atol` derivation a caller needs is now public (issue
   #212).** #196 shipped the capability and exported the wrong half of it.
   `Simulator.auto_atol()` — which derives from the model's **live** state — was
