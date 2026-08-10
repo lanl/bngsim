@@ -26,9 +26,13 @@ whose time moves.
 
 What this locks:
 
-  1. one window, three SBML spellings (``and``, nested ``piecewise``, ``or``
-     over the complement), one gradient — matching the closed form, and each
-     other, at every tolerance. That invariant is what removes the constant;
+  1. one window, four SBML spellings (``and``, nested ``piecewise``, ``or`` over
+     the complement, and ``not(... and ...)``), one gradient — matching the
+     closed form, and each other, at every tolerance. That invariant is what
+     removes the constant. The fourth arm is issue #234: ``_split_logical_atoms``
+     dropped a leading ``!`` and split what was under it, but kept a ``not(...)``
+     call whole, so the only negation spelling SBML can produce was the only one
+     whose surfaces never reached the crossing machinery;
   2. the admitted head set is exactly the heads the ExprTk→sympy preprocessor
      rewrites into a construct, asserted by running them through it rather than
      by re-listing them, and the excluded ones really are untranslatable;
@@ -63,7 +67,7 @@ def _has_cc() -> bool:
 requires_cc = pytest.mark.skipif(not _has_cc(), reason="no C compiler available")
 
 
-# ─── one window, three spellings ───────────────────────────────────────────
+# ─── one window, four spellings ────────────────────────────────────────────
 #
 # X' = -k(X)·X, with k = K_BOOST while LO < X < HI and K_BASE outside it. Wide
 # enough that the trajectory is easy for every arm (issue #194 owns the narrow
@@ -158,7 +162,32 @@ _DISJUNCTIVE = """\
   <otherwise><ci>k_boost</ci></otherwise>
 </piecewise>"""
 
-SPELLINGS = {"and": _CONJUNCTIVE, "nested": _NESTED, "or": _DISJUNCTIVE}
+# De Morgan again, but as `not(... and ...)` rather than as `or` over the
+# complement — the fourth spelling, and issue #234's. This is the only one of
+# the four a `<not/>` in SBML can produce, and until #234 it was the only one
+# that did not reach the crossing machinery: `_split_logical_atoms` kept the
+# whole `not(((X<8.0) and (X>3.0)))` as one atom, which is neither a clock
+# threshold nor a rootable comparison, so the model was declined and ran on the
+# difference quotient — 18 % wrong at rtol=1e-8, and no result at all at 1e-10.
+_NEGATED = """\
+<piecewise>
+  <piece><ci>k_base</ci>
+    <apply><not/>
+      <apply><and/>
+        <apply><lt/><ci>X</ci><cn>8</cn></apply>
+        <apply><gt/><ci>X</ci><cn>3</cn></apply>
+      </apply>
+    </apply>
+  </piece>
+  <otherwise><ci>k_boost</ci></otherwise>
+</piecewise>"""
+
+SPELLINGS = {
+    "and": _CONJUNCTIVE,
+    "nested": _NESTED,
+    "or": _DISJUNCTIVE,
+    "not_and": _NEGATED,
+}
 
 
 def _sbml(tmp_path, name: str):
@@ -180,7 +209,7 @@ def _sens_at_end(tmp_path, name: str, rtol: float):
 
 
 @requires_cc
-class TestOneWindowThreeSpellings:
+class TestOneWindowFourSpellings:
     """The invariant that removes the constant. The mathematics is fixed and only
     the syntax varies, so any disagreement between the arms is a bug in how the
     syntax is read — there is nothing else left for it to be."""
@@ -189,8 +218,9 @@ class TestOneWindowThreeSpellings:
     @pytest.mark.parametrize("rtol", [1e-8, 1e-10])
     def test_every_spelling_matches_the_closed_form(self, tmp_path, name, rtol):
         """Before the fix the ``and`` and ``or`` arms came back 53 % low at
-        ``rtol=1e-8`` and raised :class:`SimulationError` at ``1e-10``; the
-        ``nested`` arm passed both."""
+        ``rtol=1e-8`` and raised :class:`SimulationError` at ``1e-10``, and
+        ``not_and`` came back 18 % low and raised the same (issue #234); the
+        ``nested`` arm passed both throughout."""
         x_ref, dx_ref = _closed_form()
         x, dx, _steps = _sens_at_end(tmp_path, name, rtol)
         assert x == pytest.approx(x_ref, rel=1e-6)
@@ -198,7 +228,7 @@ class TestOneWindowThreeSpellings:
 
     def test_the_spellings_agree_with_each_other_to_the_last_digit(self, tmp_path):
         """Stronger than agreeing with the closed form, and the point of the
-        issue: one window written three ways has to produce one sensitivity RHS,
+        issue: one window written four ways has to produce one sensitivity RHS,
         so the runs are not merely close — they take the same number of steps and
         return the same doubles."""
         results = {name: _sens_at_end(tmp_path, name, 1e-10) for name in SPELLINGS}
@@ -297,91 +327,174 @@ class TestTheAdmittedHeads:
 # ─── the condition scan has to terminate ───────────────────────────────────
 
 
-class TestANegatedCompoundConditionTerminates:
+class TestTheConditionScanTerminates:
     """``_split_logical_atoms`` re-descended into any part carrying a logical,
-    including one it had not reduced. ``not((X<hi) and (X>lo))`` — what the SBML
-    loader emits for a ``<not/>`` around an ``<and/>`` — has its ``and`` neither
-    at depth 0 nor inside a strippable paren group, so the strip step returned
-    the string unchanged and the function called itself on it forever.
+    including one it had not reduced. A logical that is neither at depth 0 nor
+    inside a strippable paren group left the strip step returning the string
+    unchanged, and the function called itself on it forever.
 
     The blast radius is wider than the sensitivity path, because
     ``switch_gate_cache_digest`` reads the same atoms: on ``MODEL0911047946``
     the ``RecursionError`` propagated into ``compute_model_codegen_hash``, which
     caught it and silently fell back to the source-hash key — issue #216, whose
-    own diagnosis blamed ``_canon_update``'s nesting depth. It is this loop."""
+    own diagnosis blamed ``_canon_update``'s nesting depth. It is this loop.
 
-    NEGATED = "not((X>1) and (X<2))"
-    # The same defect reached through a call rather than a negation: an argument
-    # carrying a word-spelled logical is equally unreduced by the strip step.
+    ``not((X<hi) and (X>lo))`` used to be the headline shape here; issue #234
+    took it out of this class by *reducing* it (see below), which leaves the
+    guard load-bearing for what is genuinely irreducible — a logical buried in a
+    call argument — and for anything malformed enough that no peel applies."""
+
+    # A logical the strip step cannot reach: neither at depth 0 nor under a
+    # negation nor inside a strippable paren group.
     CALL_ARG = "max(a, b and c) > 1"
+    # Malformed, so the `not(` peel finds no matching close paren and declines to
+    # fire. Nothing downstream will compile this either; the requirement is only
+    # that the scan hand it back rather than spin.
+    UNBALANCED = "not((a>1) and (b>2)"
 
-    def test_a_negated_compound_condition_returns(self):
-        assert sw._split_logical_atoms(self.NEGATED) == [self.NEGATED]
-
-    def test_a_logical_inside_a_call_argument_returns(self):
-        assert sw._split_logical_atoms(self.CALL_ARG) == [self.CALL_ARG]
+    @pytest.mark.parametrize("cond", [CALL_ARG, UNBALANCED])
+    def test_an_irreducible_logical_is_returned_whole(self, cond):
+        assert sw._split_logical_atoms(cond) == [cond]
 
     @pytest.mark.parametrize(
         ("cond", "atoms"),
         [
             ("(X<8.0) and (X>3.0)", ["X<8.0", "X>3.0"]),
             ("((t>=sigma)&&(t<tau1))", ["t>=sigma", "t<tau1"]),
-            ("!((a>1) && (b>2))", ["a>1", "b>2"]),
-            ("!(X>3)", ["(X>3)"]),
             ("(a>1) || ((b>2) && (c>3))", ["a>1", "b>2", "c>3"]),
-            ("not(X>3.0)", ["not(X>3.0)"]),
             ("0>0", ["0>0"]),
         ],
     )
-    def test_every_shape_that_already_terminated_is_unchanged(self, cond, atoms):
+    def test_every_unnegated_shape_is_unchanged(self, cond, atoms):
         """The guard only ever stops a call that could not have returned, so
-        nothing that used to produce atoms may produce different ones. Note the
-        third and sixth rows: ``!`` splits the negated conjunction and ``not()``
-        does not, which is a real disagreement between two spellings of one
-        operator — but resolving it *lifts a decline*, so it is tracked as issue
-        #234 rather than folded in here."""
+        nothing that used to produce atoms may produce different ones."""
         assert sw._split_logical_atoms(cond) == atoms
 
     def test_the_codegen_cache_key_no_longer_falls_back(self, tmp_path):
         """Issue #216's symptom, on a model small enough to keep in the file."""
-        path = tmp_path / "negated.xml"
-        path.write_text(
-            _SBML.replace(
-                "{CONDITION}",
-                textwrap.indent(
-                    "<piecewise>\n"
-                    "  <piece><ci>k_base</ci>\n"
-                    "    <apply><not/>\n"
-                    "      <apply><and/>\n"
-                    "        <apply><lt/><ci>X</ci><cn>8</cn></apply>\n"
-                    "        <apply><gt/><ci>X</ci><cn>3</cn></apply>\n"
-                    "      </apply>\n"
-                    "    </apply>\n"
-                    "  </piece>\n"
-                    "  <otherwise><ci>k_boost</ci></otherwise>\n"
-                    "</piecewise>",
-                    " " * 12,
-                ),
-            )
-        )
-        model = bngsim.Model.from_sbml(path)
+        model = _sbml(tmp_path, "not_and")
         assert isinstance(cg.compute_model_codegen_hash(model._core), str)
 
-    def test_the_model_is_declined_rather_than_admitted(self, tmp_path, caplog):
-        """Keeping the part whole is the conservative reading, and it lands the
-        condition in the class it belongs to: nobody can locate that crossing, so
-        the analytic RHS is declined and the warning says the difference quotient
-        will not recover it either. A number that is flagged, where before there
-        was a ``RecursionError``."""
+
+# ─── one operator, two spellings ───────────────────────────────────────────
+
+
+class TestNegationIsPeeledNotInterpreted:
+    """Issue #234. ``_split_logical_atoms`` dropped a leading ``!`` and split
+    what was under it, but kept a ``not(...)`` call whole — two readings of one
+    operator, and the whole one is the reading every SBML model got, because
+    ``_ast_to_exprtk`` renders ``<not/>`` as the call form (ExprTk rejects ``!``
+    outright, so the operator spelling is reachable only at this level).
+
+    Peeling is sound for these callers and not merely convenient: they ask
+    *where* the branch flips, never which side is true, because the core reads
+    f⁻/f⁺ by evaluating the real RHS on each side of the located crossing. De
+    Morgan supplies the rest — ∂(¬(A∧B)) ⊆ ∂A ∪ ∂B — so the peeled reading names
+    no surface the condition does not have, and names exactly the pair the
+    un-negated spelling already registers."""
+
+    @pytest.mark.parametrize(
+        ("cond", "atoms"),
+        [
+            # The pair, both spellings, with and without the loader's extra parens.
+            ("not((X>1) and (X<2))", ["X>1", "X<2"]),
+            ("not(((X<8.0) and (X>3.0)))", ["X<8.0", "X>3.0"]),
+            ("!((a>1) && (b>2))", ["a>1", "b>2"]),
+            # A single comparison: peeled AND unparenthesised, because
+            # `_relational_split_op` stops looking at depth > 0 and so does not
+            # read `(X>3)` as a comparison at all. That is what the `!` spelling
+            # used to hand it, and why it was refused where `not(X>3)` is not.
+            ("not(X>3.0)", ["X>3.0"]),
+            ("!(X>3)", ["X>3"]),
+            # Negation is an involution here, and it composes with a connective
+            # at depth 0 on either side of it.
+            ("not(not(a>1))", ["a>1"]),
+            ("not((a>1) and (b>2)) or (c>3)", ["a>1", "b>2", "c>3"]),
+            ("not(a>1) and (b>2)", ["a>1", "b>2"]),
+            # A `not` that does not wrap the whole part is not a negation of it.
+            ("not(a) > 1", ["not(a) > 1"]),
+        ],
+    )
+    def test_the_atoms(self, cond, atoms):
+        assert sw._split_logical_atoms(cond) == atoms
+
+    def test_the_two_spellings_agree(self):
+        """Stated as an identity rather than as two expected lists, because the
+        defect was precisely that the two answers were allowed to differ."""
+        assert sw._split_logical_atoms("not((a>1) and (b>2))") == sw._split_logical_atoms(
+            "!((a>1) && (b>2))"
+        )
+
+    def test_the_model_is_admitted_and_both_crossings_rooted(self, tmp_path, caplog):
+        """The decline this lifts, and — asserted in the same breath — the
+        machinery behind the admission. An admission with no registered crossing
+        is the silent zero the issue #68 gate exists to prevent, so the test that
+        the reason is ``None`` is worth nothing without the second assertion."""
         import logging
 
         path = tmp_path / "negated.net"
         path.write_text(_SWITCHED.replace("{LAW}", "if(not((I>=thresh) and (I<900)),beta,0)*I"))
         core = bngsim.Model.from_net(path)._core
         with caplog.at_level(logging.WARNING, logger="bngsim"):
-            _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+            terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        assert terms
+        assert sw.state_switch_conditions(core) == ["I>=thresh", "I<900"]
+        assert not [m for m in _messages(caplog) if "sensitivity RHS is declined" in m]
+
+    def test_the_negated_pair_is_the_pair_the_plain_conjunction_registers(self, tmp_path):
+        """Issue #153's hazard is two roots at one instant, so a change that
+        hands the solver new roots owes an answer about collisions. This is the
+        answer: the negated spelling registers no root the un-negated spelling
+        does not, so it cannot collide anywhere ``(A and B)`` does not already."""
+        plain = _core(tmp_path, "if((I>=thresh) and (I<900),beta,0)*I", name="plain.net")
+        negated = _core(tmp_path, "if(not((I>=thresh) and (I<900)),beta,0)*I", name="neg.net")
+        assert sw.state_switch_conditions(negated) == sw.state_switch_conditions(plain)
+
+    def test_a_negated_clock_threshold_is_claimed_by_the_clock_path(self, tmp_path):
+        """The other side of the partition: peeling must not hand a counter-clock
+        threshold to the issue #150 detector, which would jump it twice. The
+        crossing under a ``not()`` is a clock crossing exactly as the bare one
+        is, so issue #48 claims it and #150 stands off."""
+        core = _core(tmp_path, "if(not(t>=sigma),beta,0)*I")
+        records, pinned = sw.compute_switch_time_sens(core, ["sigma"], 0.0, 100.0)
+        assert records and pinned
+        assert sw.state_switch_conditions(core) == []
+
+    @pytest.mark.parametrize("law", ["not(I)", "if(I>=thresh,beta,not(I))*I"])
+    def test_a_negation_outside_a_condition_is_still_refused(self, tmp_path, law):
+        """The same two-spellings gap one level out, found while fixing this one
+        and fixed with it. ``uncompensated_condition_reason`` rejects a
+        comparison that is not inside an ``if()`` head — ``beta*(I>1)``, the
+        boolean-as-a-number idiom — and watched ``!`` for it but not ``not()``.
+        ``not(I)`` is a step at ``I=0`` carrying no operator either of the other
+        patterns match, so it was admitted and sympy differentiated ``~I`` to a
+        clean ``1``, with nothing warned.
+
+        Peeling does not reach here: peeling is for a *condition*, where the
+        branch has a crossing something can be made to locate. Outside one there
+        is no ``if()`` head to root on, which is the whole objection."""
+        core = _core(tmp_path, law)
+        _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert isinstance(reason, sw.UncompensatedCrossingReason)
-        assert any("does NOT recover the missing term" in r.getMessage() for r in caplog.records)
+        assert "'not' in" in reason and "not inside an if() condition" in reason
+
+    def test_the_event_path_still_refuses_a_negated_trigger(self, tmp_path):
+        """The asymmetry the peel must not spread to. An event's ∂t*/∂p is
+        derived for a false→true edge, so that reduction orients every atom into
+        a lower or an upper bound and takes ``t* = max(lower)``; negation swaps
+        those roles, and peeling there would return a confidently wrong number
+        rather than a coarser one. The refusal is a whole-trigger text scan that
+        runs *before* the splitter, so the peel is unreachable from it."""
+        core = _core(tmp_path, "if(t>=sigma,beta,0)*I")
+        ctx = core.functional_jacobian_context()
+        scope = sw.switch_condition_scope(core, ctx)
+        thresholds = sw._threshold_scope(scope, ctx)
+        for trigger in ("not(time>=sigma)", "not((time>=sigma) and (time<200))"):
+            verdict = sw._analyze_event_trigger(
+                core, trigger, scope, thresholds, scope.clocks, set(scope.clock_symbols), 0.0
+            )
+            assert isinstance(verdict, str) and "is negated" in verdict
 
 
 # ─── the decline warning's claim ───────────────────────────────────────────
