@@ -553,7 +553,12 @@ class TestTheGateAndTheDetectorsAgree:
             ("if(t>=sigma*I,beta,0)*I", True, "state"),
             ("if(t<2*t,beta,0)*I", True, "state"),
             ("if(I==thresh,beta,0)*I", False, None),
-            ("if(not(I>1),beta,0)*I", False, None),
+            # Negation names the same surface as the comparison under it — issue
+            # #234 peels it, so the partition claims this exactly once, on the
+            # state side, just like the un-negated `if(I<=1,...)` spelling.
+            # (`not(...)` and not `!(...)`: ExprTk rejects the operator form, so
+            # the two spellings can only be compared at the splitter.)
+            ("if(not(I>1),beta,0)*I", True, "state"),
             ("beta*(I>1)", False, None),
         ],
     )

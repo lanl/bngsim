@@ -59,6 +59,23 @@ _LOGICAL = re.compile(r"&&|\|\||(?<![A-Za-z0-9_])(?:and|or|nand|nor|xor)(?![A-Za
 # Longest-first so `<=` is never read as `<` followed by `=`.
 _RELATIONAL = re.compile(r"<=|>=|==|!=|<|>")
 
+# The two spellings of negation, defined together because they mean the same
+# thing and every reader of one has to read the other (issue #234). Reading them
+# differently is what let `!((a>1) && (b>2))` split into its two surfaces while
+# `not((a>1) and (b>2))` — the same window, and the only one of the two a model
+# can be written in at all — was kept whole and declined.
+
+# A bare `!` that is not part of `!=`; the rest of the operator surface is
+# covered by _RELATIONAL / _LOGICAL. This build's ExprTk rejects `!` outright
+# (ERR007/ERR248), so no *loaded* model reaches here carrying one — but the
+# pattern is what `uncompensated_condition_reason` and the issue #49 event path
+# refuse on, and both of those read text before anything has compiled it.
+_NOT_OP = re.compile(r"(?<![=!<>])!(?!=)")
+
+# `not` as a call — what the SBML loader emits for <not/> (_ast_to_exprtk),
+# and the only negation spelling ExprTk actually compiles.
+_NOT_CALL = re.compile(r"(?<![A-Za-z0-9_])not\s*\(")
+
 # ExprTk exposes simulation time as a nullary function (see expression.cpp), and
 # BNGL models conventionally spell it bare; accept both.
 _TIME_SYMBOLS = frozenset({"time", "time()"})
@@ -75,6 +92,45 @@ def _strip_redundant_parens(s: str) -> str:
     s = s.strip()
     while s.startswith("(") and _find_close_paren_strict(s, 0) == len(s) - 1:
         s = s[1:-1].strip()
+    return s
+
+
+def _strip_negation(s: str) -> str:
+    """Peel every negation that wraps the whole of *s*, in either spelling.
+
+    ``!((a>1) && (b>2))`` and ``not(((a>1) and (b>2)))`` both come back as
+    ``(a>1) && (b>2)`` / ``(a>1) and (b>2)`` — the compound the negation was
+    applied to, ready for :func:`_split_logical_atoms` to split at depth 0.
+
+    Dropping the negation is sound for the issue #48/#150 callers for the reason
+    :func:`_split_logical_atoms` documents: they want to know *where* the
+    branch flips, and ¬c flips wherever c does. It is emphatically NOT sound for
+    the issue #49 event path, which reduces a trigger to its *rising* edge and
+    therefore reads the sense of every comparison; that path refuses a negated
+    trigger outright (see :func:`_analyze_event_trigger`) before it ever gets
+    here.
+
+    Redundant parentheses are stripped on both sides of each peel, so the two
+    spellings converge on one string rather than on two that differ by a pair of
+    parens. Without the trailing strip, ``!(t>=sigma)`` came back as
+    ``(t>=sigma)``, which :func:`_relational_split_op` does not read as a
+    relational atom at all (it stops looking at depth > 0) — so the ``!``
+    spelling of a *clock* threshold was refused where ``not(t>=sigma)`` is now
+    admitted. Not model-reachable today, since ExprTk rejects ``!``; asserted at
+    this level so the two spellings cannot drift apart again.
+    """
+    s = _strip_redundant_parens(s)
+    while s:
+        if _NOT_OP.match(s) is not None:
+            s = _strip_redundant_parens(s[1:])
+            continue
+        m = _NOT_CALL.match(s)
+        # Only a call whose argument list closes at the very end wraps the whole
+        # of `s`; `not(a) > 1` is a comparison of a negation, not a negated one.
+        if m is not None and _find_close_paren_strict(s, m.end() - 1) == len(s) - 1:
+            s = _strip_redundant_parens(s[m.end() : -1])
+            continue
+        break
     return s
 
 
@@ -107,29 +163,34 @@ def _split_logical_atoms(cond: str) -> list[str]:
     """Split a boolean condition into its relational atoms.
 
     ``((t>=sigma)&&(t<tau1))`` → ``['t>=sigma', 't<tau1']``. Splits only at
-    paren depth 0, then re-descends into atoms that were parenthesised as a
-    group. A leading ``!`` is dropped: negation flips which branch is taken but
-    not *where* the crossing is, and the core reads f⁻/f⁺ by evaluating the real
-    RHS on each side rather than by interpreting the condition.
+    paren depth 0, then re-descends into parts that were parenthesised as a
+    group or negated.
 
-    The re-descent only happens on a part this pass actually *reduced*. A logical
-    that is neither at depth 0 nor inside a strippable paren group leaves ``p``
+    Negation is peeled rather than interpreted — both spellings, through
+    :func:`_strip_negation`. It flips which branch is taken but not *where* the
+    crossing is, and the core reads f⁻/f⁺ by evaluating the real RHS on each side
+    rather than by interpreting the condition. So a negated *compound* yields the
+    surfaces of its parts: ``not((X<hi) and (X>lo))`` — what the SBML loader
+    emits for a ``<not/>`` around an ``<and/>`` — splits into
+    ``['X<hi', 'X>lo']``, the same pair the un-negated spelling gives, which is
+    what stops one window written two ways from reaching two different machines
+    (issue #234). De Morgan is the warrant: ∂(¬(A∧B)) ⊆ ∂A ∪ ∂B, so the peeled
+    reading names no surface the condition does not have, and the pair it names
+    is the pair ``(A and B)`` already registers.
+
+    Both peels and the paren strip only ever shorten, which is what bounds the
+    re-descent — and the re-descent happens only on a part this pass actually
+    *reduced*. A logical that is at depth > 0 and under no negation leaves ``p``
     equal to what came in, and re-descending on an unchanged string never
-    terminates: ``not((X<hi) and (X>lo))`` — what the SBML loader emits for a
-    ``<not/>`` wrapped around an ``<and/>`` — recursed until the interpreter gave
-    up, taking out the switch gate, the crossing scan and the ``.so`` cache key
-    with it. Found while verifying issue #232.
+    terminates: ``max(a, b and c) > 1`` recursed until the interpreter gave up,
+    taking out the switch gate, the crossing scan and the ``.so`` cache key with
+    it (issue #216, found while verifying issue #232).
 
     Keeping such a part whole is the conservative reading and the one the callers
     already handle: an atom nobody can split is an atom neither
     :func:`_clock_threshold_split` nor :func:`state_switch_residual` claims, so
     :func:`uncompensated_condition_reason` declines it as a crossing nothing
-    compensates — the class a ``not()`` call is already documented to land in.
-    Whether the *negated* atoms ought to be split out and admitted instead —
-    ``!((a>1) && (b>2))`` splits and ``not((a>1) and (b>2))`` does not, which is
-    a real disagreement between two spellings of one operator — moves a decline
-    rather than a crash, so it wants its own corpus arm and is tracked in issue
-    #234.
+    compensates.
     """
     parts: list[str] = []
     depth = 0
@@ -152,7 +213,7 @@ def _split_logical_atoms(cond: str) -> list[str]:
 
     atoms: list[str] = []
     for part in parts:
-        p = _strip_redundant_parens(part).lstrip("!").strip()
+        p = _strip_negation(part)
         if not p:
             continue
         # Every step above only ever shortens, so ``p != cond.strip()`` means this
@@ -482,14 +543,6 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
 # literals — a compile-time constant, with no crossing at all.
 _IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*")
 
-# A bare `!` that is not part of `!=`; the rest of the operator surface is
-# covered by _RELATIONAL / _LOGICAL.
-_NOT_OP = re.compile(r"(?<![=!<>])!(?!=)")
-
-# `not` as a call — what the SBML loader emits for <not/> (_ast_to_exprtk),
-# and the only negation spelling ExprTk actually compiles.
-_NOT_CALL = re.compile(r"(?<![A-Za-z0-9_])not\s*\(")
-
 
 class UncompensatedCrossingReason(str):
     """A decline reason for which the difference-quotient fallback is ALSO wrong.
@@ -508,9 +561,12 @@ class UncompensatedCrossingReason(str):
     located as a CVODE root and its saltation jump applied there
     (:func:`state_switch_conditions`), so the in-branch derivative is again the
     whole in-branch story and the analytic RHS is admitted. What is left in this
-    class is the crossing nothing compensates — a conjunction inside one atom, a
-    ``not()`` call, an equality, a comparison outside an ``if()`` head, or a
-    clock threshold that does not reduce to a constant.
+    class is the crossing nothing compensates — a comparison inside a call
+    argument, an equality, a comparison outside an ``if()`` head, or a clock
+    threshold that does not reduce to a constant. A conjunction is not one of
+    them, and neither is a negation: :func:`_split_logical_atoms` reduces both to
+    the surfaces underneath, so ``not((X<hi) and (X>lo))`` is admitted on ground
+    2 exactly as ``(X<hi) and (X>lo)`` is (issue #234).
 
     A ``str`` subclass rather than a second return value because the reason is
     cached, stored in dicts and formatted at half a dozen sites between here and
@@ -897,12 +953,22 @@ def uncompensated_condition_reason(
     # boolean-as-a-number idiom — is a branch with no locatable threshold at all.
     # Checked first, and over the whole expression, because everything below
     # reasons about `if()` conditions and would simply not see it.
+    #
+    # `_NOT_CALL` joins the scan for the same reason issue #234 taught the
+    # splitter to peel it: `not()` is the SBML spelling of `!`, and only the `!`
+    # spelling was being watched here. A rate law of `not(X)` is a step at X=0 —
+    # the same boolean-as-a-number idiom as `(X>0)`, which this rejects — but it
+    # carries no operator either pattern matches, so it was admitted, sympy
+    # differentiated `~X` to a clean 1, and nothing warned. Both spellings now
+    # land in the same class.
     spans = _condition_spans(expr)
-    for pat in (_RELATIONAL, _LOGICAL, _NOT_OP):
+    for pat in (_RELATIONAL, _LOGICAL, _NOT_OP, _NOT_CALL):
         for m in pat.finditer(expr):
             if not any(lo <= m.start() and m.end() <= hi for lo, hi in spans):
+                # `not(` is matched with its paren; report the operator alone.
+                op = m.group(0).rstrip("( \t")
                 return UncompensatedCrossingReason(
-                    f"the comparison {m.group(0)!r} in {expr!r} is not inside an if() "
+                    f"the comparison {op!r} in {expr!r} is not inside an if() "
                     "condition, so there is no threshold to locate its crossing at and "
                     "nothing can compensate the jump"
                 )
@@ -949,8 +1015,11 @@ def _not_a_clock_threshold(
 
     Reached only after :func:`state_switch_residual` has already declined it, so
     the crossing is neither a clock threshold issue #48 stops at nor a state
-    threshold issue #150 roots on: a conjunction inside one atom, a ``not()``
-    call, an equality, a comparison whose residual will not compile. Names the
+    threshold issue #150 roots on: a logical the splitter could not reduce (one
+    buried in a call argument, say), an equality, a comparison whose residual
+    will not compile. A plain conjunction or negation is *not* one of these —
+    :func:`_split_logical_atoms` hands their surfaces over one at a time, so this
+    is never reached for them (issues #232, #234). Names the
     parameters the atom carries when it has any — a *fitted* threshold is the
     case issue #68 was most concerned with — and otherwise says that the crossing
     moves through the trajectory instead.
@@ -1411,6 +1480,18 @@ def _analyze_event_trigger(
     # Both spellings: ExprTk's `!` and the `not(...)` call form the SBML loader
     # emits for <not/> (_ast_to_exprtk). Negation turns the false→true edge this
     # jump is derived for into a true→false one.
+    #
+    # This refusal and the rate-law path's *peel* (:func:`_strip_negation`, issue
+    # #234) look like two answers to one question; they are answers to two. A
+    # rate-law switch needs only to know WHERE the branch flips: the core reads
+    # f⁻/f⁺ by evaluating the real RHS on each side of the located crossing, so
+    # ¬c and c name the same surface and the sense is never consulted. This
+    # reduction needs to know WHICH crossing is the rising edge, which is a
+    # statement about the sense — it orients every atom into a lower or an upper
+    # bound (`_clock_threshold_split_oriented`) and takes `t* = max(lower)`.
+    # Negation swaps those roles, so peeling here would hand back a confidently
+    # wrong ∂t*/∂p rather than a coarser one. Refusing anywhere in the trigger,
+    # rather than per atom, keeps that true under `&&` as well.
     if _NOT_OP.search(expr) or _NOT_CALL.search(expr):
         return (
             f"the trigger {trigger!r} is negated; negation turns the false→true edge this "

@@ -198,6 +198,63 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **`not(...)` around a compound condition was declined where the `!` spelling
+  of the same condition was admitted (issue #234).** `_split_logical_atoms`
+  dropped a leading `!` and split what was under it, but kept a `not(...)` call
+  whole. Negation is the one operator with two spellings here, and the whole one
+  was the reading every real model got: `_ast_to_exprtk` renders `<not/>` as the
+  call form (and `<implies/>` as `(not(a)) or (b)`), while this build's ExprTk
+  rejects `!` outright (`ERR007`/`ERR248`) — so `!((a>1) && (b>2))` split into
+  its two surfaces at the splitter and `not((a>1) and (b>2))`, the same window
+  and the only one of the two a model can be written in, did not. (That corrects
+  the issue's framing: no loadable `.net` model was getting the good reading
+  either.) Kept
+  whole, the atom is neither a clock threshold nor a rootable comparison, so the
+  model's analytic sensitivity RHS was declined and it ran on CVODES' internal
+  difference quotient. On #232's reproduction written as De Morgan's complement
+  (`piecewise(k_base, not((X<8) and (X>3)), k_boost)`, closed form
+  `dX(6)/dk_boost = -1.3120451477`) that is **18 % wrong** at `rtol=1e-8` and
+  raises `SimulationError` at `1e-10` — the same difference-quotient-at-a-state-
+  switch mechanism #232 measured.
+
+  Negation is now **peeled rather than interpreted**, in both spellings and
+  through one helper. That is sound for these callers precisely because they ask
+  only *where* the branch flips: the core reads f⁻/f⁺ by evaluating the real RHS
+  on each side of the located crossing, never by interpreting the condition, and
+  De Morgan supplies the rest — ∂(¬(A∧B)) ⊆ ∂A ∪ ∂B, so the peeled reading names
+  no surface the condition does not have and names exactly the pair the
+  un-negated spelling already registers. That also answers #153's collision
+  question: the negated spelling hands the solver no root the plain conjunction
+  does not, so it cannot collide anywhere `(A and B)` does not already. The
+  event-trigger path (#49) still **refuses** a negated trigger, and the two are
+  not in tension — an event's ∂t\*/∂p is derived for a false→true edge, so that
+  reduction orients each atom into a lower or an upper bound and takes
+  `t* = max(lower)`; negation swaps those roles, and peeling there would return a
+  confidently wrong number rather than a coarser one.
+
+  #232's acceptance criterion is now met in full: all four spellings of its one
+  window — `and`, nested `piecewise`, `or` over the complement, and
+  `not(... and ...)` — return the same gradient, in the same number of steps, to
+  the last digit. **Corpus: 0 models move.** No model in the 1,319-model
+  BioModels corpus carries a `<not/>` or an `<implies/>` (126 carry `<and/>`, 18
+  `<or/>`, 13 `<xor/>`), and no `.net`/BNGL model in this tree carries a `not(`
+  outside a comment — so this lifts a decline that nothing committed exercises.
+  Probed `main` against the branch over the 255 condition-bearing corpus files
+  (243 SBML + 12 `.net`, 252 distinct models; 230 load, 22 refuse identically on
+  both sides, 188 carry a condition, 23,209 condition atoms in total): the
+  atoms, the crossings handed to the solver, the `.so` cache digests and the
+  gate verdicts are identical on every one.
+
+  Two smaller disagreements of the same shape, found in the same functions and
+  fixed here: `!(t>=sigma)` came back from the splitter as `(t>=sigma)`, which
+  `_relational_split_op` does not read as a relational atom at all (it stops
+  looking at depth > 0), so the `!` spelling of a *clock* threshold was refused
+  where `not(t>=sigma)` is now admitted; and `uncompensated_condition_reason`'s
+  scan for a comparison outside an `if()` head watched `!` but not `not()`, so a
+  rate law of `not(X)` — a step at `X=0`, the same boolean-as-a-number idiom as
+  `(X>0)`, which that scan rejects — was admitted and sympy differentiated `~X`
+  to a clean `1` with nothing warned.
+
 - **`Model.primary_param_names` was wrong in both directions on a `.net` model:
   it omitted literal-valued constants and listed every function name (issue
   #227).** This is the accessor whose own docstring says to hand it to an
