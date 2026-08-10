@@ -16,8 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-VENDOR_DIR = REPO_ROOT / "bngsim" / "third_party" / "nfsim"
-PATCHES_DIR = REPO_ROOT / "bngsim" / "scripts" / "nfsim_vendor_patches"
+# The bngsim checkout itself. REPO_ROOT is its *parent*, which is a Git work
+# tree only in the monorepo layout this script was written for -- in a
+# standalone bngsim clone it is just the directory above the repo. Anything
+# that shells out to git must use BNGSIM_ROOT. Matches the other four
+# scripts/vendor_*.py.
+BNGSIM_ROOT = REPO_ROOT / "bngsim"
+VENDOR_DIR = BNGSIM_ROOT / "third_party" / "nfsim"
+PATCHES_DIR = BNGSIM_ROOT / "scripts" / "nfsim_vendor_patches"
 METADATA_NAME = "VENDOR.json"
 DEFAULT_NFSIM_REPO = Path("/tmp/nfsim-vendor-candidate")
 DEFAULT_VENDOR_REF = "bngsim/vendor"
@@ -461,13 +467,19 @@ def export_nfsim_tree(nfsim_repo: Path, commit: str, destination: Path) -> Path:
 
 
 def ensure_clean_destination(force: bool) -> None:
+    # Query git from BNGSIM_ROOT, not REPO_ROOT: REPO_ROOT is the *parent* of
+    # the bngsim checkout, which is not itself a work tree in a standalone
+    # clone -- `git -C <parent> status` then exits 128 and this guard aborts the
+    # whole refresh instead of checking anything, pushing everyone to --force,
+    # which skips the check outright. vendor_rulemonkey.py already fixed this.
     if force:
         return
-    rel_vendor = VENDOR_DIR.relative_to(REPO_ROOT)
-    status = run(["git", "status", "--porcelain", "--", str(rel_vendor)], cwd=REPO_ROOT).stdout
+    rel_vendor = VENDOR_DIR.relative_to(BNGSIM_ROOT)
+    status = run(["git", "status", "--porcelain", "--", str(rel_vendor)], cwd=BNGSIM_ROOT).stdout
     if status.strip():
         raise RuntimeError(
-            f"{rel_vendor} has uncommitted changes. Commit/stash them or rerun with --force."
+            f"{VENDOR_DIR.relative_to(REPO_ROOT)} has uncommitted changes. "
+            "Commit/stash them or rerun with --force."
         )
 
 
