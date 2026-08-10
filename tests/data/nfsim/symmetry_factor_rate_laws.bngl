@@ -1,0 +1,86 @@
+# Reaction center symmetry across every NFsim rate law type (GH #195).
+#
+# Five dimer pools of X0 copies each decay with the same intended per-dimer
+# rate mu, under five different rate laws. Every pool must therefore follow
+# the same exponential X0*exp(-mu*t), regardless of whether its reactant
+# pattern is symmetric.
+#
+#   Rsym_fn   symmetric   global function    -> FunctionalRxnClass
+#   Rsym_k    symmetric   constant (Ele)     -> BasicRxnClass    (control: was already correct)
+#   Rasym_fn  asymmetric  global function    -> FunctionalRxnClass (control)
+#   Rsym_dor  symmetric   local function     -> DORRxnClass
+#   Rsym_mm   symmetric   Michaelis-Menten   -> MMRxnClass
+#   Rasym_mm  asymmetric  Michaelis-Menten   -> MMRxnClass       (control)
+#
+# BNG2.pl emits symmetry_factor="0.5" on each symmetric rule and "1" on each
+# asymmetric one, independently of rate law type. Before the fix only the Ele
+# path honored it, so the four symmetric non-Ele pools decayed at 2*mu.
+#
+# The MM pair is deliberately kept far below saturation (Km >> X0), where
+# NFsim's MM rate is linear in the substrate match count. The symmetry factor
+# corrects a *match multiplicity*, so it is only exact where the rate law is
+# linear in that count; a saturating MM rule cannot be reconciled with BNG by
+# any scalar factor. kcat*Enz/Km == mu makes the two MM pools decay at mu too.
+
+begin model
+begin parameters
+  mu    1.0e-3
+  Km    1.0e7
+  Enz0  10
+  kcat  1.0e3       # kcat*Enz0/Km == mu
+  X0    4000
+end parameters
+
+begin molecule types
+  Src()
+  A(d)
+  B(d)
+  C(d)
+  D(d)
+  E(d)
+  G(d,p~0~1)
+  P(d,p~0~1)
+  Q(d,p~0~1)
+  Enz()
+end molecule types
+
+begin seed species
+  Src()                  1
+  Enz()                  Enz0
+  A(d!1).A(d!1)          X0
+  B(d!1).B(d!1)          X0
+  C(d!1).D(d!1)          X0
+  E(d!1).E(d!1)          X0
+  G(d!1,p~0).G(d!1,p~0)  X0
+  P(d!1,p~0).Q(d!1,p~0)  X0
+end seed species
+
+begin observables
+  Molecules Obs_Src  Src()
+  Molecules Cnt_E    E()
+  Species   Sym_fn   A(d!1).A(d!1)
+  Species   Sym_k    B(d!1).B(d!1)
+  Species   Asym_fn  C(d!1).D(d!1)
+  Species   Sym_dor  E(d!1).E(d!1)
+  Species   Sym_mm   G(d!1,p~0).G(d!1,p~0)
+  Species   Asym_mm  P(d!1,p~0).Q(d!1,p~0)
+end observables
+
+begin functions
+  glob()  = mu*Obs_Src
+  loc(x)  = mu*Obs_Src + 0*Cnt_E(x)
+end functions
+
+begin reaction rules
+  Rsym_fn:  A(d!1).A(d!1)   -> 0 glob() DeleteMolecules
+  Rsym_k:   B(d!1).B(d!1)   -> 0 mu     DeleteMolecules
+  Rasym_fn: C(d!1).D(d!1)   -> 0 glob() DeleteMolecules
+  Rsym_dor: E(d!1)%x.E(d!1) -> 0 loc(x) DeleteMolecules
+  Rsym_mm:  G(d!1,p~0).G(d!1,p~0) + Enz() -> G(d!1,p~1).G(d!1,p~1) + Enz() MM(kcat,Km)
+  Rasym_mm: P(d!1,p~0).Q(d!1,p~0) + Enz() -> P(d!1,p~1).Q(d!1,p~1) + Enz() MM(kcat,Km)
+end reaction rules
+end model
+
+begin actions
+  writeXML()
+end actions

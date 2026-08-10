@@ -1,7 +1,7 @@
-From caae937ace28325d0df5956be3c0b2dd373655bc Mon Sep 17 00:00:00 2001
+From 24fe77cee457b29e25a1c2e99b3798a2493240bc Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:28:13 -0600
-Subject: [PATCH 11/14] bngsim: restore hard stop for
+Subject: [PATCH 11/16] bngsim: restore hard stop for
  include_products/exclude_products
 
 ---
@@ -103,5 +103,5 @@ index 6a1735c..8f5a72c 100644
  
  				//Next extract out the state changes
 -- 
-2.53.0
+2.50.1 (Apple Git-155)
 

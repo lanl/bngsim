@@ -1,7 +1,7 @@
-From e8abbaa44172bf650eccf778824485a930e1efd7 Mon Sep 17 00:00:00 2001
+From 43f3e6db911da294bfa260e1af3ee967e74f969b Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:28:07 -0600
-Subject: [PATCH 10/14] bngsim: guard reactant-count composite scope-free eval
+Subject: [PATCH 10/16] bngsim: guard reactant-count composite scope-free eval
 
 ---
  src/NFfunction/compositeFunction.cpp | 6 ++++--
@@ -25,5 +25,5 @@ index a5e5999..52a088b 100644
  	for(int r=0; r<n_reactantCounts; r++) {
  		reactantCount[r]=curReactantCounts[r];
 -- 
-2.53.0
+2.50.1 (Apple Git-155)
 

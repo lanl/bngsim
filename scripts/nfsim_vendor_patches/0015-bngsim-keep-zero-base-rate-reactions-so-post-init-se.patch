@@ -1,7 +1,7 @@
-From ea2ddcf05613df29dd3c2c6f724acb11f5d57c3a Mon Sep 17 00:00:00 2001
+From 0f3f88411f9c8b9c3bc9153e8a0f832d3c6fca76 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Fri, 24 Jul 2026 14:44:10 -0600
-Subject: [PATCH 15/15] bngsim: keep zero-base-rate reactions so post-init
+Subject: [PATCH 15/16] bngsim: keep zero-base-rate reactions so post-init
  set_param can activate them
 
 NFsim drops reaction rules whose base rate is exactly zero at parse time

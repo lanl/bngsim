@@ -1,7 +1,7 @@
-From 95b0a26a14927eddac03aa7e9129c5f3ea38d1f0 Mon Sep 17 00:00:00 2001
+From 4e39b55dbbbf236da0f0964cd4924faa8f13d63a Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:33:55 -0600
-Subject: [PATCH 13/14] bngsim: trim CLI sources from library-only NFsim build
+Subject: [PATCH 13/16] bngsim: trim CLI sources from library-only NFsim build
 
 ---
  CMakeLists.txt | 10 ++++++++++
@@ -29,5 +29,5 @@ index 2bb40a4..3f0279a 100644
  if(NFSIM_USE_EXPRTK)
      list(FILTER src_files EXCLUDE REGEX ".*/muParser/.*")
 -- 
-2.53.0
+2.50.1 (Apple Git-155)
 

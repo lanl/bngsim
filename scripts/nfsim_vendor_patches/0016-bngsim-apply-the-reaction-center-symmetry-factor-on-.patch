@@ -1,0 +1,122 @@
+From 6688167a52acf9a5fa79dc45233d22d7cc969719 Mon Sep 17 00:00:00 2001
+From: Bill Hlavacek <bill.hlavacek@gmail.com>
+Date: Mon, 10 Aug 2026 12:23:21 -0600
+Subject: [PATCH 16/16] bngsim: apply the reaction center symmetry factor on
+ every rate law
+
+ReactionClass's constructor scaled its own `baseRate` *argument* by the
+symmetry factor, but the member had already been copied from that argument
+several lines earlier, so the correction was computed and then discarded.
+The only rate law that recovered it was `Ele`, because NFinput follows the
+constructor with setBaseRate(), which applies the factor itself.
+
+Every other rate law is constructed with baseRate=1 and never calls
+setBaseRate, so a rule whose reactant pattern has a non-trivial automorphism
+fired at 1/symmetryFactor times its intended rate -- 2x for a homodimer:
+
+  * global function  -> FunctionalRxnClass
+  * local function   -> DORRxnClass
+  * function product -> DOR2RxnClass
+  * Michaelis-Menten -> MMRxnClass
+
+BNG emits `symmetry_factor` on the ReactionRule independently of rate law
+type (RxnRule.pm computes MultScale = 1/automorphisms/context-permutations
+and applies it as the statistical factor to every generated reaction), so
+all four are wrong against BNG's own semantics, and against NFsim's own
+constant-rate path for the same rule.
+
+Assign through `this->` so the member actually receives the correction.
+That repairs DORRxnClass and DOR2RxnClass directly, since both build the
+propensity as `a = baseRate * ...`; setBaseRate() assigns rather than
+multiplies, so `Ele` does not double-apply.
+
+FunctionalRxnClass::update_a() and MMRxnClass::update_a() additionally never
+read baseRate at all -- they override BasicRxnClass::update_a() and rebuild
+the propensity from scratch. Scale both by baseRate, matching what every
+other rate law class already does. For these two classes baseRate is exactly
+the symmetry correction, since they are constructed with baseRate=1 and have
+no setBaseRate path. The RuleMonkey-exact entry points inherit the fix:
+FunctionalRxnClass::exactRuleMonkey_a() and MMRxnClass::exactRuleMonkey_a()
+delegate to update_a(), and the Basic/DOR/DOR2 variants already scale by
+baseRate.
+
+Candidate to push upstream. See bngsim GH #195.
+---
+ src/NFcore/reactionClass.cpp           | 14 +++++++++++---
+ src/NFreactions/reactions/reaction.cpp | 12 ++++++++++++
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/src/NFcore/reactionClass.cpp b/src/NFcore/reactionClass.cpp
+index d42e4d0..9f0d281 100755
+--- a/src/NFcore/reactionClass.cpp
++++ b/src/NFcore/reactionClass.cpp
+@@ -178,9 +178,17 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
+ 		}
+ 	}
+ 
++	// Correct the rate for reaction center symmetry.  Note that these all assign
++	// through 'this->': the constructor argument 'baseRate' shadows the member,
++	// and the member was copied from it above, so scaling the argument here would
++	// discard the correction.  Only rate laws that route through setBaseRate()
++	// (which applies the factor itself) used to recover it; every other rate law
++	// -- global function, local function (DOR), function product, MM -- is
++	// constructed with baseRate=1 and never calls setBaseRate, so a symmetric
++	// rule fired at 1/symmetryFactor times its intended rate (2x for a homodimer).
+ 	if ( this->transformationSet->usingSymmetryFactor() )
+ 	{	// new general method for handling reaction center symmetry
+-		baseRate *= this->transformationSet->getSymmetryFactor();
++		this->baseRate *= this->transformationSet->getSymmetryFactor();
+ 	}
+ 	else
+ 	{	// old method for handling symmetric binding and unbinding
+@@ -193,7 +201,7 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
+ 				cout<<"Make sure that is correct."<<endl;
+ 
+ 				cout<<endl;
+-				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
++				this->baseRate = this->baseRate*0.5;  //We have to correct the rate to get the proper factor
+ 				isDimerStyle=true;
+ 			}
+ 		}
+@@ -205,7 +213,7 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
+ 				cout<<"Warning! You have an unbinding rxn (" << name << ") that is symmetric."<<endl;
+ 				cout<<"Make sure that is correct."<<endl;
+ 				cout<<endl;
+-				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
++				this->baseRate = this->baseRate*0.5;  //We have to correct the rate to get the proper factor
+ 				isDimerStyle=true;
+ 			}
+ 		}
+diff --git a/src/NFreactions/reactions/reaction.cpp b/src/NFreactions/reactions/reaction.cpp
+index 9fa1ca9..a1e00b0 100644
+--- a/src/NFreactions/reactions/reaction.cpp
++++ b/src/NFreactions/reactions/reaction.cpp
+@@ -80,6 +80,13 @@ double FunctionalRxnClass::update_a() {
+ 
+ 	a *= this->volumeConversionFactor;
+ 
++	// Scale by baseRate, exactly as BasicRxnClass/DORRxnClass/DOR2RxnClass do.
++	// A FunctionalRxnClass is constructed with baseRate=1 and never routes
++	// through setBaseRate(), so this factor is the reaction center symmetry
++	// correction and nothing else.  Without it a symmetric rule with a
++	// functional rate fires at 1/symmetryFactor times its intended rate.
++	a *= this->baseRate;
++
+ 	if(a<0) {
+ 		cout<<"Warning!!  The function you provided for functional rxn: '"<<name<<"' evaluates\n";
+ 		cout<<"to a value less than zero!  You cannot have a negative propensity!";
+@@ -190,6 +197,11 @@ double MMRxnClass::update_a()
+ 	double E = (double)getCorrectedReactantCount(1);
+ 	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
+ 	a=kcat*sFree*E/(Km+sFree);
++	// See FunctionalRxnClass::update_a() -- an MMRxnClass is likewise built with
++	// baseRate=1 and never calls setBaseRate(), so baseRate carries the reaction
++	// center symmetry correction.  BNG emits symmetry_factor with an MM rate law
++	// whenever the substrate pattern has a non-trivial automorphism.
++	a*=this->baseRate;
+ 	return a;
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
