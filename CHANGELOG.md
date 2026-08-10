@@ -198,6 +198,50 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **A time threshold inside a called `<functionDefinition>` registered no
+  discontinuity root, so the window was stepped over (issue #231).** The GH #72
+  scan walked the *call site's* AST only. A schedule written one level down —
+  `pulse(tt, t_on, t_off, amp) := piecewise(amp, tt >= t_on and tt <= t_off, 0)`,
+  called with the `time` csymbol — put the relational in the callee's body,
+  against the callee's formal, where the scan never looked. GH #194 closed this
+  gap on the state side; this is its time twin, and it shares #194's frame walk
+  rather than adding a second one.
+
+  It is a wrong trajectory, not only a structural gap. On the #72 chemo-pulse
+  fixture with the piecewise moved into a function definition, the 0.05-wide
+  infusion is never delivered and `X(3)` comes back **exactly 0.0** against a
+  closed form of 0.514 — identically at rtol 1e-6, 1e-8, 1e-10 and 1e-12. An
+  error that does not move across six decades of tolerance is a missing root,
+  not an accuracy shortfall. Post-fix that model is bit-identical to the inline
+  one at every tolerance.
+
+  Two pieces the descent needs and would be silently wrong without:
+
+  - **The reaction's `<localParameter>` map**, threaded into the time scan the
+    way #194 threads it into the state scan. `MODEL2105110001`'s four `t_switch`
+    thresholds are kinetic-law parameters with no global of that name, so an
+    unmangled condition is an undefined ExprTk symbol: the model does not load
+    at all (`failed to compile discontinuity trigger '(time()<t_switch)'`).
+  - **Assignment-rule aliases of the csymbol.** `BIOMD0000000255` calls
+    `stepfunc(model_time, 1799.99, …)` where `model_time` is an assignment rule
+    that *is* `time`, so nothing in the argument is a csymbol. A formal bound to
+    such an alias counts as time-dependent.
+
+  Corpus blast radius over all 1,323 `rr_parity` SBML models, comparing the
+  registered condition *strings* rather than their count: **1,316 byte-identical,
+  7 gain conditions, none lose any, and no model changes load outcome.** The
+  seven agree with their pre-change selves to 1e-12 … 2e-8 at a tolerance
+  tightened 1e-4x — the roots change how fast a model reaches its answer, not
+  the answer — and total internal steps over them fall 3,945 → 3,924. Cross-engine
+  `rr_parity` verdicts are unchanged on all seven (6 PASS, 1 REFERENCE_FAILED
+  from RoadRunner's own `CV_TOO_MUCH_WORK`, both before and after).
+
+  Deliberately **not** widened: a threshold written against a time alias at the
+  *call site* (`model_time > 1800` directly in a rule) still registers nothing,
+  as before. That reading subtracts as well as adds, because a side counts as
+  the time side only when the other does not — `BIOMD0000000589`'s
+  `time >= i*24` with `i := floor(time/24)` becomes time-vs-time and loses both
+  roots it has today. Tracked separately as issue #259.
 - **A rate law using `sign`, `floor` or `ceil` over a state variable emitted a
   broken Jacobian term instead of falling back (issue #250).** Those three
   differentiate to an unevaluated sympy `Derivative`, and `_is_emittable` scanned

@@ -770,44 +770,98 @@ def _ast_references_time(node: libsbml.ASTNode) -> bool:
     return any(n.getType() == libsbml.AST_NAME_TIME for n in _iter_ast_subtree(node))
 
 
+def _ast_side_is_time(
+    node: libsbml.ASTNode, time_names: frozenset[str] | set[str] = frozenset()
+) -> bool:
+    """True iff one side of a relational moves with time, in *its own* frame.
+
+    The ``time`` csymbol is not always what appears. An SBML model routinely
+    aliases it — ``<assignmentRule variable="model_time"> time`` — and inside a
+    function definition's body the threshold is written against a *formal
+    parameter* the call site bound to something time-dependent (``stepfunc(t,
+    t_start, …)`` with ``t`` ← ``model_time``). ``time_names`` carries both:
+    the assignment-rule targets that transitively read time, plus the formals
+    of the enclosing call frames. Reading them as time-dependent is what makes
+    this judge the relational the way the inlined expression the RHS actually
+    evaluates would.
+    """
+    return _ast_references_time(node) or bool(_ast_name_set(node) & time_names)
+
+
+def _make_time_arg_predicate(
+    time_names: frozenset[str] | set[str],
+) -> Callable[[libsbml.ASTNode, frozenset[str], frozenset[str]], bool]:
+    """:func:`_iter_funcdef_scan_frames`' ``arg_is_dynamic`` for the time scan.
+
+    ``shadowed`` is unused here, unlike the state twin: a formal parameter can
+    shadow a model symbol, but the ``time`` csymbol is not a name, so the
+    direct-reference half can never be shadowed.
+    """
+
+    def arg_is_dynamic(
+        arg: libsbml.ASTNode, scope_time: frozenset[str], shadowed: frozenset[str]
+    ) -> bool:
+        return _ast_side_is_time(arg, (time_names - shadowed) | scope_time)
+
+    return arg_is_dynamic
+
+
+def _make_time_relational_filter(
+    time_names: frozenset[str] | set[str] = frozenset(),
+) -> Callable[[libsbml.ASTNode, libsbml.ASTNode], bool]:
+    """A ``keep`` predicate admitting exactly the ``time vs threshold`` edges.
+
+    Exactly one side time-dependent ⇒ a clean crossing. (Both-sides-time, e.g.
+    ``time < 2*time``, is not a fixed threshold and is skipped; neither-side is
+    not time-dependent at all.)
+    """
+
+    def keep(a: libsbml.ASTNode, b: libsbml.ASTNode) -> bool:
+        return _ast_side_is_time(a, time_names) != _ast_side_is_time(b, time_names)
+
+    return keep
+
+
 def _collect_time_discontinuity_conditions(
-    node: libsbml.ASTNode, func_defs: dict, out: list
+    node: libsbml.ASTNode,
+    func_defs: dict,
+    out: list,
+    local_params: dict[str, str] | None = None,
+    time_names: frozenset[str] | set[str] = frozenset(),
 ) -> None:
-    """Walk an AST and append ExprTk condition strings for every inequality
-    comparing ``time`` against a non-time expression (a discontinuity edge).
+    """Append an ExprTk condition string for every inequality comparing ``time``
+    against a non-time expression (a discontinuity edge), including the ones
+    inside the function definitions *node* calls (GH #231).
 
     n-ary relationals (``a < b < c``) are split into the consecutive pairs
     MathML defines them as, so each emitted condition is a single
     monotonic-in-time threshold — exactly what CVODE root-finding brackets
-    reliably regardless of step size. Recurses through piecewise / and / or /
-    nested structure to reach conditions at any depth.
+    reliably regardless of step size. piecewise / and / or / nested structure is
+    reached at any depth.
+
+    ``time_names`` are the assignment-rule targets that transitively read the
+    ``time`` csymbol — an SBML model routinely aliases it
+    (``<assignmentRule variable="model_time"> time``) and then passes the alias,
+    so an argument naming one binds a time-dependent formal.
+
+    They are deliberately NOT admitted as a time side of a relational *written
+    at the call site*, which keeps GH #72's own reading of a threshold exactly
+    as it was. Widening that reading subtracts as well as adds, because a side
+    counts only when the other does not: BIOMD0000000589's ``time >= i*24``,
+    with ``i := floor(time/24)``, becomes time-vs-time and loses both of the
+    roots it has today. That is its own change with its own blast radius, and is
+    tracked as GH #259.
     """
-    global _INEQ_RELATIONAL_OPS
-    if node is None:
-        return
-    if _INEQ_RELATIONAL_OPS is None:
-        _INEQ_RELATIONAL_OPS = {
-            libsbml.AST_RELATIONAL_LT: "<",
-            libsbml.AST_RELATIONAL_LEQ: "<=",
-            libsbml.AST_RELATIONAL_GT: ">",
-            libsbml.AST_RELATIONAL_GEQ: ">=",
-        }
-    # Walk the whole subtree iteratively (GH #111) so a deep observable-sum
-    # rule can't overflow the stack; emit one condition per inequality found.
-    for n in _iter_ast_subtree(node):
-        t = n.getType()
-        nc = n.getNumChildren()
-        if t in _INEQ_RELATIONAL_OPS and nc >= 2:
-            op = _INEQ_RELATIONAL_OPS[t]
-            for i in range(nc - 1):
-                a, b = n.getChild(i), n.getChild(i + 1)
-                # Exactly one side time-dependent ⇒ a clean `time vs threshold`
-                # edge. (Both-sides-time, e.g. `time < 2*time`, is not a fixed
-                # crossing and is skipped; neither-side is not time-dependent.)
-                if _ast_references_time(a) != _ast_references_time(b):
-                    lhs = _ast_to_exprtk_with_funcdefs(a, func_defs)
-                    rhs = _ast_to_exprtk_with_funcdefs(b, func_defs)
-                    out.append(f"({lhs}{op}{rhs})")
+    for body, scope, scope_time in _iter_funcdef_scan_frames(
+        node, func_defs, _make_time_arg_predicate(time_names), local_params
+    ):
+        _collect_relational_edge_conditions(
+            body,
+            func_defs,
+            out,
+            keep=_make_time_relational_filter(scope_time),
+            local_params=scope,
+        )
 
 
 def _collect_relational_edge_conditions(
@@ -833,7 +887,7 @@ def _collect_relational_edge_conditions(
 
     ``local_params`` is the lexical scope the emitted text is written in: the
     formal-parameter → call-site-expression binding when *node* is a function
-    definition's body (see :func:`_iter_state_scan_frames`). ``None`` — the
+    definition's body (see :func:`_iter_funcdef_scan_frames`). ``None`` — the
     event-trigger and top-level cases — is model scope.
     """
     global _INEQ_RELATIONAL_OPS
@@ -858,6 +912,67 @@ def _collect_relational_edge_conditions(
                 lhs = _ast_to_exprtk_with_funcdefs(a, func_defs, local_params)
                 rhs = _ast_to_exprtk_with_funcdefs(b, func_defs, local_params)
                 out.append(f"({lhs}{op}{rhs})")
+
+
+def _iter_funcdef_scan_frames(
+    node: libsbml.ASTNode,
+    func_defs: dict,
+    arg_is_dynamic: Callable[[libsbml.ASTNode, frozenset[str], frozenset[str]], bool],
+    local_params: dict[str, str] | None = None,
+) -> Iterator[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str]]]:
+    """Yield ``(subtree, local_params, local_dynamic)`` for *node* and for every
+    function-definition body reachable from it.
+
+    A threshold is just as often written one level down — ``MAX(a,b) :=
+    piecewise(a, a >= b, b)`` on the state side (GH #194), ``stepfunc(t, t_start,
+    …)`` on the time side (GH #231) — and a scan of the call site alone sees the
+    *arguments* but never the threshold. Each callee is visited under a scope
+    binding its formals to the call site's already-translated argument text, so
+    the condition emitted from the body is the same string the RHS itself
+    evaluates. ``seen`` bounds a self- or mutually-recursive definition to one
+    expansion, and the walk is iterative for the GH #111 reason every other
+    scanner here is.
+
+    ``arg_is_dynamic(arg, scope_dynamic, shadowed)`` decides whether a call-site
+    argument makes the formal it binds "dynamic" in the callee's frame — reading
+    integrated state for the state scan, reading ``time`` for the time one. The
+    yielded ``local_dynamic`` is that set, which each collector's ``keep`` filter
+    reads to judge a relational written in the callee's own names.
+
+    ``local_params`` seeds the outermost scope — for a kinetic law, its
+    ``<localParameter>`` id → mangled-id map, without which the emitted
+    condition names a symbol the evaluator does not have.
+    """
+    stack: list[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str], frozenset[str]]] = [
+        (node, local_params, frozenset(), frozenset())
+    ]
+    while stack:
+        body, scope, scope_dynamic, seen = stack.pop()
+        yield body, scope, scope_dynamic
+        shadowed = frozenset(scope or ())
+        for n in _iter_ast_subtree(body):
+            if n.getType() != libsbml.AST_FUNCTION:
+                continue
+            fname = n.getName()
+            entry = func_defs.get(fname)
+            # A rateOf-idiom funcDef has no real body to descend into (GH #106).
+            if entry is None or fname in seen or entry[1] is _RATEOF_FUNCDEF:
+                continue
+            param_names, callee_body = entry
+            next_scope = dict(scope or {})
+            next_dynamic = set(scope_dynamic)
+            for j in range(min(n.getNumChildren(), len(param_names))):
+                arg = n.getChild(j)
+                pname = param_names[j]
+                next_scope[pname] = _ast_to_exprtk_with_funcdefs(arg, func_defs, scope)
+                if arg_is_dynamic(arg, scope_dynamic, shadowed):
+                    next_dynamic.add(pname)
+                else:
+                    # The callee's own formal shadows anything of that name the
+                    # caller's scope carried; it is dynamic only if THIS call
+                    # bound it to something dynamic.
+                    next_dynamic.discard(pname)
+            stack.append((callee_body, next_scope, frozenset(next_dynamic), seen | {fname}))
 
 
 # ── State-threshold discontinuity detection (GH #194) ────────────────────
@@ -937,64 +1052,20 @@ def _make_state_relational_filter(
     return keep
 
 
-def _iter_state_scan_frames(
-    node: libsbml.ASTNode,
-    func_defs: dict,
+def _make_state_arg_predicate(
     dynamic_names: set[str],
-    local_params: dict[str, str] | None = None,
-) -> Iterator[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str]]]:
-    """Yield ``(subtree, local_params, local_dynamic)`` for *node* and for every
-    function-definition body reachable from it.
+) -> Callable[[libsbml.ASTNode, frozenset[str], frozenset[str]], bool]:
+    """:func:`_iter_funcdef_scan_frames`' ``arg_is_dynamic`` for the state scan:
+    a call-site argument that reads integrated state (directly, or through a
+    formal of the caller's own frame that does)."""
 
-    A ``piecewise`` gated on state is just as often written one level down —
-    ``MAX(a,b) := piecewise(a, a >= b, b)``, ``rDsRc(Dna,Rc) := piecewise(0, Dna <
-    1, …)`` — and a scan of the call site alone sees the *arguments* but never
-    the threshold. Each callee is visited under a scope binding its formals to
-    the call site's already-translated argument text, so the condition emitted
-    from the body is the same string the RHS itself evaluates. ``seen`` bounds a
-    self- or mutually-recursive definition to one expansion, and the walk is
-    iterative for the GH #111 reason every other scanner here is.
+    def arg_is_dynamic(
+        arg: libsbml.ASTNode, scope_dynamic: frozenset[str], shadowed: frozenset[str]
+    ) -> bool:
+        names = _ast_name_set(arg)
+        return bool((names & scope_dynamic) or ((names & dynamic_names) - shadowed))
 
-    Time thresholds hidden the same way (``stepfunc(t, t_start, …)``) are the
-    twin gap in :func:`_collect_time_discontinuity_conditions`, which still scans
-    call sites only; this collector's ``keep`` filter admits state atoms alone,
-    so it neither fixes nor disturbs that case.
-
-    ``local_params`` seeds the outermost scope — for a kinetic law, its
-    ``<localParameter>`` id → mangled-id map, without which the emitted
-    condition names a symbol the evaluator does not have.
-    """
-    stack: list[tuple[libsbml.ASTNode, dict[str, str] | None, frozenset[str], frozenset[str]]] = [
-        (node, local_params, frozenset(), frozenset())
-    ]
-    while stack:
-        body, scope, scope_dynamic, seen = stack.pop()
-        yield body, scope, scope_dynamic
-        shadowed = frozenset(scope or ())
-        for n in _iter_ast_subtree(body):
-            if n.getType() != libsbml.AST_FUNCTION:
-                continue
-            fname = n.getName()
-            entry = func_defs.get(fname)
-            # A rateOf-idiom funcDef has no real body to descend into (GH #106).
-            if entry is None or fname in seen or entry[1] is _RATEOF_FUNCDEF:
-                continue
-            param_names, callee_body = entry
-            next_scope = dict(scope or {})
-            next_dynamic = set(scope_dynamic)
-            for j in range(min(n.getNumChildren(), len(param_names))):
-                arg = n.getChild(j)
-                pname = param_names[j]
-                next_scope[pname] = _ast_to_exprtk_with_funcdefs(arg, func_defs, scope)
-                arg_names = _ast_name_set(arg)
-                if (arg_names & scope_dynamic) or ((arg_names & dynamic_names) - shadowed):
-                    next_dynamic.add(pname)
-                else:
-                    # The callee's own formal shadows anything of that name the
-                    # caller's scope carried; it is dynamic only if THIS call
-                    # bound it to something dynamic.
-                    next_dynamic.discard(pname)
-            stack.append((callee_body, next_scope, frozenset(next_dynamic), seen | {fname}))
+    return arg_is_dynamic
 
 
 def _collect_state_relational_conditions(
@@ -1006,8 +1077,8 @@ def _collect_state_relational_conditions(
 ) -> None:
     """Append a root condition for every state-threshold relational feeding *node*,
     including the ones inside the function definitions it calls (GH #194)."""
-    for body, scope, scope_dynamic in _iter_state_scan_frames(
-        node, func_defs, dynamic_names, local_params
+    for body, scope, scope_dynamic in _iter_funcdef_scan_frames(
+        node, func_defs, _make_state_arg_predicate(dynamic_names), local_params
     ):
         _collect_relational_edge_conditions(
             body,
@@ -6334,14 +6405,27 @@ def _build_model_from_sbml_doc(doc):
     # one root. Models with no such discontinuities register nothing and
     # integrate exactly as before.
     disc_conditions: list[str] = []
+    time_dependent_names = _assignment_time_dependent_names(sbml_model)
     for i in range(sbml_model.getNumRules()):
         rule = sbml_model.getRule(i)
         if (rule.isAssignment() or rule.isRate()) and rule.getMath():
-            _collect_time_discontinuity_conditions(rule.getMath(), func_defs, disc_conditions)
+            _collect_time_discontinuity_conditions(
+                rule.getMath(), func_defs, disc_conditions, None, time_dependent_names
+            )
     for i in range(sbml_model.getNumReactions()):
         kl = sbml_model.getReaction(i).getKineticLaw()
         if kl and kl.getMath():
-            _collect_time_discontinuity_conditions(kl.getMath(), func_defs, disc_conditions)
+            # The reaction's <localParameter> map is the lexical scope the
+            # condition is written in; without it a threshold naming a local
+            # parameter emits a symbol the evaluator does not have (GH #194's
+            # four ExprTk load failures, on the state side of the same scan).
+            _collect_time_discontinuity_conditions(
+                kl.getMath(),
+                func_defs,
+                disc_conditions,
+                reaction_local_param_maps.get(i),
+                time_dependent_names,
+            )
     for i in range(sbml_model.getNumEvents()):
         event = sbml_model.getEvent(i)
         trigger = event.getTrigger()
@@ -6377,7 +6461,7 @@ def _build_model_from_sbml_doc(doc):
     # discontinuities in the RHS, but the crossing is a state threshold rather
     # than a fixed time threshold. Register the bounded cases we can infer at
     # load time; models outside that conservative envelope are left unchanged.
-    time_dependent_names = _assignment_time_dependent_names(sbml_model)
+    # (`time_dependent_names` is the same set the time scan above reads.)
     for i in range(sbml_model.getNumRules()):
         rule = sbml_model.getRule(i)
         if (rule.isAssignment() or rule.isRate()) and rule.getMath():
