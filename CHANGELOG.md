@@ -240,6 +240,16 @@ in `CMakeLists.txt`) is derived from it.
   `primary_param_names` is the residue of subtracting both, so a row carrying
   each would be reported under neither reason.
 
+  That row also carried a live violation of #181's "one rule, two readers"
+  invariant. The build had an explicit carve-out — a function-bound parameter
+  was exempt from #261's "a constant written as arithmetic is a knob" demotion —
+  so the loader called `recycle 1/4` derived while `_classify_parameter_kinds`,
+  reading the same line, called it a constant. The two `.net` readers are
+  supposed to partition the parameter block identically, and that is what makes
+  the model-based and text-based codegen paths emit the same sensitivity RHS.
+  No corpus model has the shape, so nothing could see it; the new fixture fails
+  `test_the_loader_agrees_with_the_codegen_net_parser` against the old binary.
+
   Classification only: `is_internal` is read in exactly one place that affects
   behaviour (the `set_param` refusal). Across 1819 `.net` models the emitted C
   and the trajectories are byte-identical, and exactly 5 models change
