@@ -368,6 +368,38 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-pure-context-per-complex",
+        "kind": "local",
+        "status": (
+            "Count a reactant pattern the rule does not transform once per "
+            "matching complex, as BioNetGen does, rather than once per matching "
+            "molecule. Every embedding of such a pattern yields the identical "
+            "reaction -- same reactants, products and transformation -- so BNG "
+            "counts one instance; NFsim enumerates matches per molecule, so a "
+            "homodimeric catalyst fired twice as fast as a heterodimeric one and "
+            "a homotrimer ring three times as fast. Verified against BNG's "
+            "generated network: a whole homodimer, one subunit of it, a "
+            "heterodimer and a scaffold holding two DISTINGUISHABLE copies all "
+            "get a bare rate constant, while a homodimer whose subunit the rule "
+            "binds gets 2*k because there the subunits are two real reactive "
+            "sites. Not a symmetry effect -- the scaffold case has no "
+            "automorphism anywhere and is still over-counted -- so anything keyed "
+            "on automorphisms gets it wrong. A DOR reactant's propensity comes "
+            "from its tree's rate factor sum, so that path sums one "
+            "representative term per complex instead. Requires complex "
+            "bookkeeping. Candidate to push upstream; reported as "
+            "RuleWorld/nfsim#87. See bngsim GH #281."
+        ),
+        "commits": [
+            {
+                "commit": "12fad95034d8d79f1082dc78cc6955b612357213",
+                "summary": (
+                    "bngsim: count a pure context reactant once per complex, as BioNetGen does"
+                ),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

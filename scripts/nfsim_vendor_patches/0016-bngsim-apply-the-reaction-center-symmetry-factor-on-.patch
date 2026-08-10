@@ -1,7 +1,7 @@
-From 571bdd4bc439d117c816c595210188baebc0f97b Mon Sep 17 00:00:00 2001
+From 2a1555329544e1d107ee994ab6777502b2390a90 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Mon, 10 Aug 2026 12:23:21 -0600
-Subject: [PATCH 16/16] bngsim: apply the reaction center symmetry factor on
+Subject: [PATCH 16/17] bngsim: apply the reaction center symmetry factor on
  every rate law
 
 ReactionClass's constructor scaled its own `baseRate` *argument* by the

@@ -4,6 +4,7 @@
 
 #include "../NFreactions.hh"
 #include <algorithm>
+#include <set>
 #include <unordered_set>
 #include <vector>
 #include <utility>
@@ -317,6 +318,15 @@ namespace NFcore
 			double getSymmetryFactor() const { return symmetryFactor; };
 			void   setSymmetryFactor(double val) { symmetryFactor = val; useSymmetryFactor = true; };
 
+			/*!
+				True if the rule does not transform reactant `reactantIndex` at all -- the
+				pattern is pure context.  Must be called after finalize(), which is where
+				this is decided; see the note there for why the transformation types alone
+				cannot answer it afterwards.
+				@author bngsim
+			*/
+			bool isPureContextReactant(unsigned int reactantIndex) const;
+
 			// To get the connected reactions for each transformation
 			bool checkConnection(ReactionClass * rxn);
 
@@ -380,6 +390,10 @@ namespace NFcore
 
 			/*!	A vector that holds the actual Transformation objects	*/
 			vector <Transformation *> *transformations;
+
+			/*!	Reactant indices the rule does not transform, recorded by finalize()
+			 *   before it appends a placeholder EMPTY transform to each of them	*/
+			set <unsigned int> pureContextReactants;
 
 			/*!	A vector that holds the addMolecule Transformations, because they are handled separately	*/
 			vector <AddMoleculeTransform *> addMoleculeTransformations;

@@ -1,0 +1,185 @@
+# Counting a reactant pattern the rule does not transform (GH #281).
+#
+# BioNetGen gives such a pattern ONE reaction instance per matching complex,
+# however many molecules inside that complex match it: every embedding yields
+# the identical reaction -- same reactants, same products, same transformation
+# -- so there is only one. NFsim and RuleMonkey enumerate matches per molecule,
+# so they over-count any multi-subunit context and the rule fires that many
+# times too fast. BNG emits symmetry_factor="1" for all of these, so nothing in
+# the XML corrects it.
+#
+# Note the over-count is NOT a pattern-symmetry effect, which is why the last
+# two pairs below matter: Sub_scaffold's catalyst holds two *distinguishable*
+# copies and its pattern is a single molecule, so there is no symmetry anywhere,
+# and it is still counted twice.
+#
+# Every pool encodes the same intended per-substrate rate mu = kcat*E0, so all
+# of them must follow the same X0*exp(-mu*t):
+#
+#   Dim_sym / Dim_asym      Ez.Ez homodimer catalyst, constant rate    2x
+#   Ring_sym / Ring_asym    Tz.Tz.Tz homotrimer ring catalyst          3x
+#   Fn_sym / Fn_asym        homodimer catalyst, global function        2x
+#   Dor_sym / Dor_asym      homodimer catalyst, local function         2x
+#   Sub_subunit             ONE subunit pattern Ux(d!+) vs a homodimer 2x
+#   Sub_scaffold            Vx(d) vs a scaffold holding two distinct   2x
+#
+# In each pair the two rules differ only in whether the catalyst complex's
+# halves (or thirds) are the same molecule type. The catalyst is never
+# transformed, so the pairs are a direct control: a gap between them is the
+# defect, whatever the rate law.
+#
+# Mm_sym / Mm_asym is the Michaelis-Menten pair. It has no closed form here, so
+# the pairing is its only oracle. Note the enzyme is the axis MM is nearly
+# linear in, so this pair sees the 2x but cannot say whether the correction sits
+# on the count or on the propensity; symmetry_factor_mm_saturated.bngl is the
+# fixture that probes placement, on the substrate axis (GH #195).
+#
+# Bind_sym / Bind_asym is the guard in the other direction. Its catalyst dimer
+# IS a reaction center -- one half of it binds -- so BNG emits
+# symmetry_factor="0.5" and NFsim already divides that out. It must NOT be
+# corrected a second time. This pair is not incidental: NFsim marks the second
+# partner of a binding with an EMPTY transform, the same type finalize() uses
+# for the placeholder on an untransformed reactant, so "no real transformation"
+# read off the transformation types alone misclassifies exactly this rule.
+
+begin model
+begin parameters
+  X0    4000
+  E0    10
+  kcat  2.5e-5      # mu = kcat*E0 = 2.5e-4; at t=2000, mu*t = 0.5
+
+  # Michaelis-Menten pair: X0/Km = 0.4, above the linear regime
+  Km     1.0e4
+  kcatM  0.35
+
+  # Binding pair: B0 free monomers against D0 catalyst dimers
+  B0    500
+  D0    1000
+  kb    2.5e-7      # kb*D0*t = 0.5 at t=2000
+end parameters
+
+begin molecule types
+  Src()
+  DimS(s~0~1)
+  DimA(s~0~1)
+  RingS(s~0~1)
+  RingA(s~0~1)
+  FnS(s~0~1)
+  FnA(s~0~1)
+  DorS(s~0~1)
+  DorA(s~0~1)
+  MmS(s~0~1)
+  MmA(s~0~1)
+  SubU(s~0~1)
+  SubV(s~0~1)
+  BndS(b)
+  BndA(b)
+  # catalysts, one distinct set per rule so the rules cannot cross-talk
+  Ez(d)
+  Fz(d)
+  Gz(d)
+  Tz(a,b)
+  Pz(a,b)
+  Qz(a,b)
+  Rz(a,b)
+  Nz(d)
+  Uz(d)
+  Vz(d)
+  Wz(d)
+  Yz(d)
+  Zz(d)
+  Cz(d)
+  Iz(d)
+  Jz(d)
+  Hz(d,c)
+  Kz(d,c)
+  Lz(d,c)
+  Ux(d)
+  Vx(d,t)
+  Vs(p,q)
+end molecule types
+
+begin seed species
+  Src()        1
+  DimS(s~0)    X0
+  DimA(s~0)    X0
+  RingS(s~0)   X0
+  RingA(s~0)   X0
+  FnS(s~0)     X0
+  FnA(s~0)     X0
+  DorS(s~0)    X0
+  DorA(s~0)    X0
+  MmS(s~0)     X0
+  MmA(s~0)     X0
+  SubU(s~0)    X0
+  SubV(s~0)    X0
+  BndS(b)      B0
+  BndA(b)      B0
+
+  Ez(d!1).Ez(d!1)                     E0
+  Fz(d!1).Gz(d!1)                     E0
+  Tz(a!1,b!3).Tz(a!2,b!1).Tz(a!3,b!2) E0
+  Pz(a!1,b!3).Qz(a!2,b!1).Rz(a!3,b!2) E0
+  Nz(d!1).Nz(d!1)                     E0
+  Uz(d!1).Vz(d!1)                     E0
+  Wz(d!1).Wz(d!1)                     E0
+  Yz(d!1).Zz(d!1)                     E0
+  Cz(d!1).Cz(d!1)                     E0
+  Iz(d!1).Jz(d!1)                     E0
+  Hz(d!1,c).Hz(d!1,c)                 D0
+  Kz(d!1,c).Lz(d!1,c)                 D0
+  # two Ux per complex, related by symmetry
+  Ux(d!1).Ux(d!1)                     E0
+  # two Vx per complex at DISTINGUISHABLE scaffold positions -- no symmetry at all
+  Vx(d,t!1).Vs(p!1,q!2).Vx(d,t!2)     E0
+end seed species
+
+begin observables
+  Molecules Obs_Src    Src()
+  Molecules Cnt_Wz     Wz()
+  Molecules Cnt_Zz     Zz()
+  Molecules Dim_sym    DimS(s~0)
+  Molecules Dim_asym   DimA(s~0)
+  Molecules Ring_sym   RingS(s~0)
+  Molecules Ring_asym  RingA(s~0)
+  Molecules Fn_sym     FnS(s~0)
+  Molecules Fn_asym    FnA(s~0)
+  Molecules Dor_sym    DorS(s~0)
+  Molecules Dor_asym   DorA(s~0)
+  Molecules Mm_sym     MmS(s~0)
+  Molecules Mm_asym    MmA(s~0)
+  Molecules Bind_sym   BndS(b)
+  Molecules Bind_asym  BndA(b)
+  Molecules Sub_subunit   SubU(s~0)
+  Molecules Sub_scaffold  SubV(s~0)
+end observables
+
+begin functions
+  gfn()    = kcat*Obs_Src
+  locs(x)  = kcat*Obs_Src + 0*Cnt_Wz(x)
+  loca(x)  = kcat*Obs_Src + 0*Cnt_Zz(x)
+end functions
+
+begin reaction rules
+  R_dim_sym:   DimS(s~0)  + Ez(d!1).Ez(d!1)                     -> DimS(s~1)  + Ez(d!1).Ez(d!1)                     kcat
+  R_dim_asym:  DimA(s~0)  + Fz(d!1).Gz(d!1)                     -> DimA(s~1)  + Fz(d!1).Gz(d!1)                     kcat
+  R_ring_sym:  RingS(s~0) + Tz(a!1,b!3).Tz(a!2,b!1).Tz(a!3,b!2) -> RingS(s~1) + Tz(a!1,b!3).Tz(a!2,b!1).Tz(a!3,b!2) kcat
+  R_ring_asym: RingA(s~0) + Pz(a!1,b!3).Qz(a!2,b!1).Rz(a!3,b!2) -> RingA(s~1) + Pz(a!1,b!3).Qz(a!2,b!1).Rz(a!3,b!2) kcat
+  R_fn_sym:    FnS(s~0)   + Nz(d!1).Nz(d!1)                     -> FnS(s~1)   + Nz(d!1).Nz(d!1)                     gfn()
+  R_fn_asym:   FnA(s~0)   + Uz(d!1).Vz(d!1)                     -> FnA(s~1)   + Uz(d!1).Vz(d!1)                     gfn()
+  R_dor_sym:   DorS(s~0)  + Wz(d!1)%x.Wz(d!1)                   -> DorS(s~1)  + Wz(d!1)%x.Wz(d!1)                   locs(x)
+  R_dor_asym:  DorA(s~0)  + Yz(d!1).Zz(d!1)%x                   -> DorA(s~1)  + Yz(d!1).Zz(d!1)%x                   loca(x)
+  R_mm_sym:    MmS(s~0)   + Cz(d!1).Cz(d!1)                     -> MmS(s~1)   + Cz(d!1).Cz(d!1)                     MM(kcatM,Km)
+  R_mm_asym:   MmA(s~0)   + Iz(d!1).Jz(d!1)                     -> MmA(s~1)   + Iz(d!1).Jz(d!1)                     MM(kcatM,Km)
+  # Single-molecule context patterns. No pattern symmetry, yet two molecules per
+  # complex match, so a fix keyed on the pattern's own symmetry misses both.
+  R_subunit:   SubU(s~0)  + Ux(d!+)                             -> SubU(s~1)  + Ux(d!+)                             kcat
+  R_scaffold:  SubV(s~0)  + Vx(d)                               -> SubV(s~1)  + Vx(d)                               kcat
+  R_bind_sym:  BndS(b)    + Hz(d!1,c).Hz(d!1,c)                 -> BndS(b!2).Hz(d!1,c!2).Hz(d!1,c)                  kb
+  R_bind_asym: BndA(b)    + Kz(d!1,c).Lz(d!1,c)                 -> BndA(b!2).Kz(d!1,c!2).Lz(d!1,c)                  kb
+end reaction rules
+end model
+
+begin actions
+  writeXML({overwrite=>1})
+end actions

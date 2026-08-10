@@ -12,6 +12,20 @@ using namespace std;
 namespace NFcore
 {
 
+	/* Helpers for counting a pure context reactant the way BioNetGen does: one
+	 * reaction instance per matching complex rather than one per matching
+	 * molecule.  See ReactionClass::contextCountsPerComplex.  --bngsim */
+
+	/*! Number of distinct complexes represented among a reactant list's matches. */
+	int countDistinctComplexes(ReactantList *rl);
+
+	/*! Same, for a DOR reactant's tree. */
+	int countDistinctComplexes(ReactantTree *tree);
+
+	/*! Sum of one representative rate factor per distinct complex in a DOR tree.
+	    Exact: it sums the same terms BNG would count instances for. */
+	double perComplexRateFactorSum(ReactantTree *tree);
+
 	class BasicRxnClass : public ReactionClass {
 		public:
 			BasicRxnClass(string name, double baseRate, string baseRateName, TransformationSet *transformationSet, System *s);

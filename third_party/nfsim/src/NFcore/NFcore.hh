@@ -1361,6 +1361,12 @@ namespace NFcore
 				return (reactantIndex < n_reactants) ? matchOncePerReactant[reactantIndex] : false;
 			}
 
+			/* True when this reactant's matches must be counted once per complex
+			 * rather than once per molecule; see contextCountsPerComplex below. */
+			bool getCountsPerComplex(unsigned int reactantIndex) const {
+				return (reactantIndex < n_reactants) ? contextCountsPerComplex[reactantIndex] : false;
+			}
+
 
 			void setRxnId(int rxnId) { this->rxnId = rxnId; };
 			int getRxnId() const { return rxnId; };
@@ -1466,6 +1472,17 @@ namespace NFcore
 
 			/* flag for MatchOnce */
 			bool *matchOncePerReactant;
+
+			/* True for a reactant the rule does not transform, when the system is
+			 * tracking complexes.  BioNetGen gives such a pattern one reaction
+			 * instance per matching COMPLEX, however many molecules inside that
+			 * complex match it, because every embedding yields the identical
+			 * reaction.  NFsim enumerates matches per molecule, so without this it
+			 * over-counts any multi-subunit context -- a homodimeric enzyme twice,
+			 * a homotrimer ring three times, a scaffold carrying two copies twice.
+			 * Requires complex bookkeeping: with it off every molecule reports
+			 * complex id -1 and there is no way to tell the cases apart. */
+			bool *contextCountsPerComplex;
 
 			/* if population reactants are identical, this is the discrete
 			 * count correction for calculating the ratelaw

@@ -1,7 +1,7 @@
-From 0abdc10927786e07003f3508d49901e52c0e3736 Mon Sep 17 00:00:00 2001
+From 2783096a998fe47f48b8219df81ae6683184ac22 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Tue, 9 Jun 2026 12:36:15 -0600
-Subject: [PATCH 14/16] bngsim: restore stepTo cache compatibility hook
+Subject: [PATCH 14/17] bngsim: restore stepTo cache compatibility hook
 
 ---
  src/NFcore/NFcore.hh | 8 ++++----

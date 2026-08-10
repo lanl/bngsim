@@ -5,6 +5,8 @@ using namespace NFcore;
 
 ReactantList::ReactantList(unsigned int reactantIndex, TransformationSet *ts, unsigned int init_capacity=50)
 {
+	this->version = 0;
+	this->anyMultiMoleculeComplex = false;
 
 	this->n_mappingSets = 0;
 	this->capacity = init_capacity;
@@ -75,6 +77,7 @@ int ReactantList::getPopulation() const
 
 MappingSet * ReactantList::pushNextAvailableMappingSet()
 {
+	++version;
 	//Check if we are going to exceed capacity
 	if(n_mappingSets>=capacity)
 	{
@@ -118,6 +121,7 @@ MappingSet * ReactantList::pushNextAvailableMappingSet()
 
 void ReactantList::popLastMappingSet()
 {
+	++version;
 	if(n_mappingSets<=0) {
 		printDetails();
 		cout.flush();
@@ -170,6 +174,7 @@ MappingSet * ReactantList::getMappingSetByIndex(unsigned int index) const {
 
 void ReactantList::removeMappingSet(unsigned int mappingSetId)
 {
+	++version;
 	//Make sure this mappingSet is not empty
 	if(n_mappingSets==0) {
 		printDetails();

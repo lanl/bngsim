@@ -1,7 +1,7 @@
-From 11eef8d449d857c303089efd5003c29605141ca9 Mon Sep 17 00:00:00 2001
+From fd88f25f5bd37214d46827fcd82b43180a30f02a Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Sat, 23 May 2026 01:52:11 -0600
-Subject: [PATCH 06/16] bngsim: fix product-molecularity check for multi-bond
+Subject: [PATCH 06/17] bngsim: fix product-molecularity check for multi-bond
  ring-opening
 
 TransformationSet::checkMolecularity enforces product-side molecularity for

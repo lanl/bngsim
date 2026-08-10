@@ -280,6 +280,92 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **NFsim counted a reactant pattern the rule does not transform once per
+  matching *molecule* instead of once per matching *complex* (issue #281).**
+  BioNetGen gives such a pattern one reaction instance per complex, however many
+  molecules inside that complex match it: every embedding yields the identical
+  reaction — same reactants, same products, same transformation — so there is
+  only one reaction to count. NFsim enumerates matches per molecule, so a rule
+  whose catalyst was a homodimer fired twice as fast as the same rule with a
+  heterodimer, and a homotrimer ring three times as fast. That is a common
+  shape: a dimeric enzyme or a receptor dimer used as catalytic context.
+
+  This is distinct from #195, where BNG emitted a `symmetry_factor` and NFsim
+  discarded it. Here BNG emits `symmetry_factor="1"` and there is nothing to
+  discard.
+
+  **It is not a symmetry effect**, although the symmetric cases are the ones
+  that make it obvious. Checked against BNG's generated network, a whole
+  homodimer, a *single subunit* of that homodimer, a heterodimer, and a scaffold
+  holding two **distinguishable** copies all get a bare rate constant — and the
+  scaffold case has no automorphism in either its pattern or its species. So any
+  rule keyed on automorphisms, including the `embeddings / |Aut(pattern)|` the
+  issue proposes, gets that case wrong. What BNG discriminates on is whether the
+  rule *transforms* the pattern: a homodimer whose subunit the rule binds gets
+  `2*k`, because there the two subunits are two real reactive sites.
+
+  Measured on the new `tests/data/nfsim/context_symmetry.xml` against BNG's own
+  network expansion simulated with bngsim's ODE engine, 10 seeds, `t=2000`:
+
+  | pool | before | after | BNG network → ODE |
+  |---|---|---|---|
+  | homodimer catalyst, constant rate | 1485.7 | 2435.0 | 2426.1 |
+  | homodimer catalyst, global function | 1475.3 | 2423.4 | 2426.1 |
+  | homodimer catalyst, local function (DOR) | 1470.3 | 2425.0 | 2426.1 |
+  | homotrimer ring catalyst | 892.7 | 2432.4 | 2426.1 |
+  | symmetric enzyme, Michaelis-Menten | 1290.4 | 2333.2 | 2344.8 |
+  | single-subunit pattern `Ux(d!+)` vs a homodimer | 1474.6 | 2424.8 | 2426.1 |
+  | single-molecule pattern vs two distinguishable copies | 1474.9 | 2426.9 | 2426.1 |
+  | single-subunit controls (4 pools) | correct | correct | — |
+
+  `ReactionClass` flags such reactants at construction and the three reaction
+  classes route their propensity-side counts through `countDistinctComplexes()`.
+  A DOR reactant's propensity comes from its reactant tree's rate factor sum
+  rather than from a count, so that path sums one representative term per
+  complex instead; `ReactantTree` gains the flat `getMappingSetByIndex()`
+  accessor `ReactantList` already had, which pairs with the identically indexed
+  `getRateFactor()`.
+
+  Which reactants are pure context cannot be read off the transformation types
+  after the fact: `TransformationSet::finalize()` marks an untransformed
+  reactant with an `EMPTY` transform, and `EMPTY` is also what
+  `genBindingTransform2()` puts on the second partner of a binding — which is
+  the `2*k` case above, and correcting it would cost that factor of two.
+  `finalize()` therefore records the pure context reactants *before* appending
+  the placeholder, treating a `LOCAL_FUNCTION_REFERENCE` as non-transforming so
+  a DOR reactant can still qualify. That case is in the fixture as
+  `Bind_sym`/`Bind_asym`.
+
+  The correction requires complex bookkeeping — with it off every molecule
+  reports complex id `-1`, so "two molecules in one complex" and "two complexes"
+  are indistinguishable and the correction is skipped. `NFinput` already enables
+  it whenever `blockSameComplexBinding` is set (bngsim's default) or the model
+  declares a `Species` observable.
+
+  Counting complexes rather than molecules is O(n) in the reactant list where
+  reading `size()` was O(1), and `getCorrectedReactantCount()` sits on the
+  propensity hot path, so a naive version costs a great deal: a transcription
+  model (`DNA() -> DNA() + RNA()`, 500 templates, `RNA` growing to ~1000, both
+  pure context) went from 0.14 s to 5.99 s, 43x. Two changes remove it. The
+  scan reuses a thread-local buffer and sorts instead of building a `std::set`,
+  and — the one that matters — a reactant container records whether any molecule
+  mapped into it has ever belonged to a complex of more than one molecule. While
+  that is false no complex can hold two matches, so the count *is* `size()` and
+  the scan is skipped outright. That is the common case for a catalytic rule
+  over a large monomer pool. The flag is conservative: a stale `true` only costs
+  the scan. Measured back at 0.15 s against main's 0.14 s, with identical output.
+
+  Checked for regressions by running 181 models from the RuleMonkey corpora
+  (`corpus`, `feature_coverage`, `nfsim_basicmodels`) through NFsim at a fixed
+  seed before and after: 169 ran and gave identical trajectories, 2 were inert,
+  10 failed identically in both arms, and the only model whose output changed
+  was the deliberate positive control.
+
+  Carried as `bngsim/carry-pure-context-per-complex` and reported upstream as
+  RuleWorld/nfsim#87. The same over-count is present in vendored RuleMonkey
+  (`method="nf_exact"`), which is a separate engine and is not addressed here.
+
+
 - **`find_package(pybind11)` resolved from whatever `.venv` sat in the checkout,
   not from the interpreter the build targets (issue #288).** CMake asked a list
   of candidate interpreters for `pybind11.get_cmake_dir()` and took the first
