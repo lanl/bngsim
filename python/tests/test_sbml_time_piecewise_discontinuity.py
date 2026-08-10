@@ -18,7 +18,9 @@ regardless of the output grid. This test locks:
   2. a narrow pulse falling *between* coarse output samples is still delivered,
      matching a closed-form oracle and being grid-independent,
   3. models with no time-dependent piecewise register zero triggers (the
-     integrator path is then bit-for-bit unchanged).
+     integrator path is then bit-for-bit unchanged),
+  4. the same threshold written one level down — inside a ``<functionDefinition>``
+     the rule or kinetic law *calls* — is found too (GH #231).
 
 Oracle is closed-form: for ``dX/dt = inp(t) - d·X`` with ``inp = kin`` only on
 ``[t0, t0+w]`` (else 0), the post-pulse decay is
@@ -222,6 +224,168 @@ SBML_STATE_CEIL_RATE_RULE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </sbml>"""
 
 
+# ── The same pulse, one level down (GH #231) ────────────────────────────────
+# `pulse(tt, t_on, t_off, amp) := piecewise(amp, tt >= t_on and tt <= t_off, 0)`.
+# The threshold is written against the callee's *formal*; a scan of the call
+# site sees `time` only as an argument and never reaches the relational, so
+# pre-fix these models registered nothing and returned X ≡ 0 — the pulse
+# stepped over — at every tolerance.
+_PULSE_FUNCDEF = """    <listOfFunctionDefinitions>
+      <functionDefinition id="pulse">
+        <math xmlns="http://www.w3.org/1998/Math/MathML"><lambda>
+          <bvar><ci>tt</ci></bvar>
+          <bvar><ci>t_on</ci></bvar>
+          <bvar><ci>t_off</ci></bvar>
+          <bvar><ci>amp</ci></bvar>
+          <piecewise>
+            <piece>
+              <ci>amp</ci>
+              <apply><and/>
+                <apply><geq/><ci>tt</ci><ci>t_on</ci></apply>
+                <apply><leq/><ci>tt</ci><ci>t_off</ci></apply>
+              </apply>
+            </piece>
+            <otherwise><cn>0</cn></otherwise>
+          </piecewise>
+        </lambda></math>
+      </functionDefinition>
+    </listOfFunctionDefinitions>"""
+
+_TIME_CSYMBOL = (
+    '<csymbol encoding="text" definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol>'
+)
+
+
+def _funcdef_pulse_model(first_arg, extra_params="", extra_rules=""):
+    """The SBML_PULSE model with the piecewise moved into ``pulse``, called from
+    the ``inp`` assignment rule with *first_arg* bound to the callee's ``tt``."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="pulse_funcdef">
+{_PULSE_FUNCDEF}
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="kin" value="100" constant="true"/>
+      <parameter id="d" value="1" constant="true"/>
+      <parameter id="t_on" value="0.7" constant="true"/>
+      <parameter id="t_off" value="0.75" constant="true"/>
+      <parameter id="inp" value="0" constant="false"/>
+{extra_params}
+    </listOfParameters>
+    <listOfRules>
+{extra_rules}
+      <assignmentRule variable="inp">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><ci>pulse</ci>{first_arg}<ci>t_on</ci><ci>t_off</ci><ci>kin</ci></apply>
+        </math>
+      </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="prod" reversible="false">
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci><ci>inp</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci><ci>d</ci><ci>X</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+# The csymbol itself is the argument.
+SBML_PULSE_FUNCDEF = _funcdef_pulse_model(_TIME_CSYMBOL)
+
+# BIOMD0000000255's shape: the model aliases the csymbol to a parameter with an
+# assignment rule and passes the *alias*, so the argument carries no csymbol at
+# all and only the transitive time-dependence of `model_time` identifies it.
+SBML_PULSE_FUNCDEF_ALIAS = _funcdef_pulse_model(
+    "<ci>model_time</ci>",
+    extra_params='      <parameter id="model_time" value="0" constant="false"/>',
+    extra_rules=(
+        '      <assignmentRule variable="model_time">\n'
+        '        <math xmlns="http://www.w3.org/1998/Math/MathML">'
+        f"{_TIME_CSYMBOL}</math>\n"
+        "      </assignmentRule>"
+    ),
+)
+
+# Nothing time-dependent reaches the callee: `tt` is bound to a constant, so the
+# body's `tt >= t_on` can never change sign and earns no root. This is the
+# branch that has to *discard* a formal rather than inherit it.
+SBML_PULSE_FUNCDEF_CONSTANT_ARG = _funcdef_pulse_model("<ci>t_on</ci>")
+
+# MODEL2105110001's shape: the call is in a kinetic law and the thresholds are
+# that law's <localParameter>s. There is deliberately no global `t_on`/`t_off`,
+# so an emitted condition that does not carry the loader's `_lp_<rid>_` mangling
+# names a symbol the evaluator does not have and the model refuses to LOAD.
+SBML_PULSE_FUNCDEF_LOCAL_PARAM = f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="pulse_funcdef_localparam">
+{_PULSE_FUNCDEF}
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="d" value="1" constant="true"/>
+    </listOfParameters>
+    <listOfReactions>
+      <reaction id="prod" reversible="false">
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci>
+              <apply><ci>pulse</ci>{_TIME_CSYMBOL}<ci>t_on</ci><ci>t_off</ci>
+                <ci>kin</ci></apply>
+            </apply>
+          </math>
+          <listOfLocalParameters>
+            <localParameter id="t_on" value="0.7"/>
+            <localParameter id="t_off" value="0.75"/>
+            <localParameter id="kin" value="100"/>
+          </listOfLocalParameters>
+        </kineticLaw>
+      </reaction>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci><ci>d</ci><ci>X</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
 def _pulse_oracle(t):
     """Closed-form X(t) for the single-pulse model, valid for t >= T0+W."""
     x_peak = (KIN / DVAL) * (1.0 - math.exp(-DVAL * W))
@@ -316,6 +480,84 @@ def test_pulse_delivered_on_fine_grid_too():
         assert f == pytest.approx(_pulse_oracle(tv), rel=1.5e-2), f"t={tv}: {f}"
 
 
+# ── The threshold one level down (GH #231) ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "sbml",
+    [SBML_PULSE_FUNCDEF, SBML_PULSE_FUNCDEF_ALIAS, SBML_PULSE_FUNCDEF_LOCAL_PARAM],
+    ids=["csymbol_arg", "assignment_rule_alias", "kinetic_law_local_param"],
+)
+def test_time_threshold_inside_a_called_function_definition_is_found(sbml):
+    """Both edges of the window are registered even though the relational lives
+    in the callee's body, written against its formal parameter. The condition is
+    emitted under the call site's binding, so it must both compile — the
+    ``kinetic_law_local_param`` case does not load at all if the local ids are
+    not mangled — and deliver the same trajectory as the inline model."""
+    model = bngsim.Model.from_sbml_string(sbml)
+    assert model._core.n_discontinuity_triggers == 2
+
+    sim = bngsim.Simulator(model, method="ode")
+    r = sim.run(sample_times=[0.0, 0.5, 1.0, 2.0, 3.0, 5.0], rtol=1e-10, atol=1e-12, timeout=30)
+    X, t = _X(r), np.asarray(r.time)
+    for tv in (1.0, 2.0, 3.0, 5.0):
+        got = X[t.tolist().index(tv)]
+        assert got == pytest.approx(_pulse_oracle(tv), rel=2e-3), f"t={tv}: {got}"
+
+
+def test_funcdef_pulse_error_moves_with_tolerance():
+    """The tell that this was a missing root rather than an accuracy shortfall:
+    pre-fix the answer was X ≡ 0.0 — the pulse never delivered — identically at
+    every tolerance from 1e-6 to 1e-12. Post-fix the residual is discretization
+    and shrinks with the tolerance."""
+    exact = _pulse_oracle(3.0)
+    errs = []
+    for rtol, atol in ((1e-6, 1e-9), (1e-12, 1e-14)):
+        # A fresh Model per run: a Simulator leaves integrated state behind on
+        # the Model it was built from, so reusing one seeds the next run.
+        model = bngsim.Model.from_sbml_string(SBML_PULSE_FUNCDEF)
+        r = bngsim.Simulator(model, method="ode").run(
+            sample_times=[0.0, 3.0], rtol=rtol, atol=atol, timeout=30
+        )
+        got = _X(r)[-1]
+        assert got > 0.0, "pre-fix this was exactly 0.0 at every tolerance"
+        errs.append(abs(got - exact) / exact)
+
+    loose, tight = errs
+    assert tight < loose / 10.0, (
+        "the error must move with the tolerance — a fixed error six decades "
+        f"apart is the missing root, not an accuracy shortfall ({loose:.3e} "
+        f"vs {tight:.3e})"
+    )
+
+
+def test_funcdef_pulse_matches_the_inline_model_exactly():
+    """Descending into the callee must emit the same condition the inlined
+    expression would, so the two models are the same problem: same root count,
+    same trajectory to the last bit."""
+    inline = bngsim.Model.from_sbml_string(SBML_PULSE)
+    funcdef = bngsim.Model.from_sbml_string(SBML_PULSE_FUNCDEF)
+    assert inline._core.n_discontinuity_triggers == funcdef._core.n_discontinuity_triggers == 2
+
+    runs = [
+        _X(
+            bngsim.Simulator(m, method="ode").run(
+                sample_times=[0.0, 1.0, 2.0, 3.0, 5.0], rtol=1e-10, atol=1e-12, timeout=30
+            )
+        )
+        for m in (inline, funcdef)
+    ]
+    np.testing.assert_array_equal(runs[0], runs[1])
+
+
+def test_constant_argument_to_the_callee_registers_no_root():
+    """A formal bound to a constant is not time-dependent, so the body's
+    ``tt >= t_on`` can never change sign and earns no root. This is what keeps
+    the descent off every model with a function definition but no schedule."""
+    model = bngsim.Model.from_sbml_string(SBML_PULSE_FUNCDEF_CONSTANT_ARG)
+    assert model._core.n_discontinuity_triggers == 0
+
+
 # ── The real model that surfaced the bug ────────────────────────────────────
 _BIOMD879 = os.path.join(
     os.path.dirname(__file__),
@@ -356,3 +598,39 @@ def test_biomd879_reaches_immune_controlled_branch():
     # (N(42)≈5.18e9, all 7 infusions delivered), not the pre-fix runaway.
     assert N_at(42.0) == pytest.approx(5.18e9, rel=3e-2)
     assert N_at(126.0) == pytest.approx(3.55e8, rel=5e-2)
+
+
+# ── The corpus models the funcDef descent reaches (GH #231) ─────────────────
+_CORPUS = os.path.join(
+    os.path.dirname(__file__), "..", "..", "parity_checks", "rr_parity", "models"
+)
+_MODEL2105110001 = os.path.join(_CORPUS, "MODEL2105110001", "MODEL2105110001.xml")
+_BIOMD255 = os.path.join(_CORPUS, "BIOMD0000000255", "BIOMD0000000255_url.xml")
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_MODEL2105110001), reason="MODEL2105110001 SBML not present"
+)
+def test_model2105110001_roots_both_halves_of_its_compound_condition():
+    """``depletion_neu_0(t, t_switch, …) := piecewise(…, t > t_switch and NEU > 0, 0)``
+    and three siblings, plus four ``recruit_*`` definitions with the mirrored
+    ``t < t_switch``. GH #194 rooted the state halves (2); the time halves are
+    the four this adds.
+
+    Loading at all is the assertion that matters most: each ``t_switch`` is a
+    *kinetic-law* parameter with no global of that name, so a condition emitted
+    without the ``_lp_<rid>_`` mangling is an undefined ExprTk symbol and the
+    model is refused outright.
+    """
+    model = bngsim.Model.from_sbml(_MODEL2105110001)
+    assert model._core.n_discontinuity_triggers == 6
+
+
+@pytest.mark.skipif(not os.path.exists(_BIOMD255), reason="BIOMD255 SBML not present")
+def test_biomd255_roots_its_stepfunc_schedule():
+    """Ten assignment rules call ``stepfunc(model_time, t_start, …)``. Nothing in
+    the call site is the ``time`` csymbol — ``model_time`` is an assignment rule
+    that *is* time — so this is the alias half of the descent. Two switch times
+    (1799.99/1800 and 2659.99/2660) ⇒ four thresholds."""
+    model = bngsim.Model.from_sbml(_BIOMD255)
+    assert model._core.n_discontinuity_triggers == 4
