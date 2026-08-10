@@ -4390,19 +4390,40 @@ class Simulator:
                     stacklevel=2,
                 )
             if internal:
+                # Two kinds under one flag, wrong for different reasons, so each
+                # gets its own sentence and neither claims the other's names.
+                functions = internal & set(self._model.function_names)
+                sizes = internal - functions
+                why = ""
+                if functions:
+                    why += (
+                        f" {len(functions)} of them "
+                        f"{_abbreviate(sorted(functions))} hold a FUNCTION's "
+                        f"evaluated value, which the engine rewrites from that "
+                        f"function's own expression before every derivative "
+                        f"evaluation, so the column would be identically zero "
+                        f"(issue #227) — differentiate the parameters that "
+                        f"function's expression reads instead."
+                    )
+                if sizes:
+                    why += (
+                        f" {len(sizes)} {_abbreviate(sorted(sizes))} are bngsim's "
+                        f"record of a compartment's size at load time, which the "
+                        f"rate constants in that compartment are normalised "
+                        f"against: moving one rescales those rates while the "
+                        f"volume stays put (issue #170) — differentiate the "
+                        f"compartment size itself instead, an ordinary writable "
+                        f"parameter since #170."
+                    )
                 warnings.warn(
                     f"compute_all_sensitivities: skipping {len(internal)} internal "
-                    f"parameter(s) {_abbreviate(sorted(internal))} — each is "
-                    f"bngsim's record of a compartment's size at load time, which "
-                    f"the rate constants in that compartment are normalised "
-                    f"against, not a knob of the model: moving it rescales those "
-                    f"rates while the volume stays put, so set_param refuses a "
-                    f"value-changing write to it and an optimizer handed its "
-                    f"gradient would fit a quantity with no meaning (issues #170, "
-                    f"#203). Differentiate the compartment size itself instead — an "
-                    f"ordinary writable parameter since #170, and one of the "
-                    f"{len(target_params)} columns result.sensitivity_params lists "
-                    f"unless a compartment-size skip above names it.",
+                    f"parameter(s) {_abbreviate(sorted(internal))} — each is a slot "
+                    f"bngsim synthesized rather than a knob the model declared, so "
+                    f"set_param refuses a value-changing write to it and an "
+                    f"optimizer handed its gradient would fit a quantity with no "
+                    f"meaning (issue #203).{why} The returned tensor has "
+                    f"{len(target_params)} parameter columns; "
+                    f"result.sensitivity_params lists them.",
                     stacklevel=2,
                 )
 

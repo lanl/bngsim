@@ -333,17 +333,32 @@ def test_biomd701_default_is_its_primary_parameters():
     pinning them and watching ``d(x)/d(alpha)`` go to exactly zero — so its
     column is a total derivative through all six, and the tensor reported each
     of those effects twice.
+
+    The same model carries 47 **functions**, 35 of which bngsim gave a backing
+    slot of their own — and until #227 every one of those was a column too, so 35
+    of the 71 this used to return were identically zero and could never be
+    anything else. The count here is ``param_names`` minus both classes, and the
+    two do not overlap. (The other 12 functions carry the name of a parameter the
+    SBML file itself declared — an ``<assignmentRule>`` — and those are still
+    listed; that is issue #256, deliberately not #227's.)
     """
     m = bngsim.Model.load(str(_REPRO))
     derived = [n for n, f in zip(m.param_names, m.param_is_expression, strict=True) if f]
     assert len(derived) == 6 and all(d.startswith("_rateLaw_R") for d in derived)
+    synthesized = set(m.function_names) & m._internal_param_names()
+    assert len(m.function_names) == 47 and len(synthesized) == 35
+    assert not synthesized & set(derived)
 
-    with pytest.warns(UserWarning, match="skipping 6 derived parameter"):
+    with (
+        pytest.warns(UserWarning, match="skipping 6 derived parameter"),
+        pytest.warns(UserWarning, match=r"skipping 35 internal parameter\(s\)"),
+    ):
         res = bngsim.Simulator(m).compute_all_sensitivities((0.0, 100.0), 3, n_workers=1)
 
     assert res.sensitivity_params == m.primary_param_names
-    assert len(res.sensitivity_params) == len(m.param_names) - 6
+    assert len(res.sensitivity_params) == len(m.param_names) - 6 - 35
     assert not set(res.sensitivity_params) & set(derived)
+    assert not set(res.sensitivity_params) & synthesized
 
 
 # ── The corpus assumption the filter is built on ────────────────────────────

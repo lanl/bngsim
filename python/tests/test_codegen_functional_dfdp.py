@@ -544,13 +544,18 @@ def _perturbed(core, data, k, rel):
     mirrors, and the only way the ∂f/∂S0 column is under test at all. A derived
     parameter moves in the raw vector alone, matching the direct partial the
     emitter writes for its own column.
+
+    A **function's** slot (issue #227) takes that same raw-vector branch: it is a
+    ``p[]`` entry the emitted ``f`` overwrites from the function's own expression
+    before reading it, so its column stays under test — it must be zero, and the
+    difference is what says so — while ``set_param`` refuses the write.
     """
     params = data["parameters"]
     names = [p["name"] for p in params]
     base = [float(p["value"]) for p in params]
     v = base[k]
     h = rel * abs(v) if v != 0.0 else rel
-    if not bool(params[k].get("is_const", True)):
+    if list(core.param_is_internal)[k] or not bool(params[k].get("is_const", True)):
         plus, minus = list(base), list(base)
         plus[k], minus[k] = v + h, v - h
         return plus, minus

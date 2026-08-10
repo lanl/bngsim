@@ -765,6 +765,15 @@ class Model:
             ``compartment_sizes={...}``). Writing the value it already holds is
             allowed, so round-tripping a full parameter vector still works.
 
+            Also raised, on the same unchanged-write rule, for a *synthesized
+            slot* — :attr:`param_is_internal`. One of those is a **function's**
+            name: the engine keeps the function's evaluated value in a parameter
+            slot and rewrites it from the function's own expression before every
+            derivative evaluation, so a write here is discarded at the next one.
+            It used to be accepted — :meth:`get_param` echoed the new value back
+            and the trajectory did not move (issue #227). Write the parameters
+            the function's expression reads instead.
+
         Notes
         -----
         Writing a parameter also re-derives every expression-valued parameter
@@ -894,12 +903,14 @@ class Model:
         return name in set(self.unwritable_compartment_size_params)
 
     def _internal_param_names(self) -> set[str]:
-        """Synthesized parameters that are not knobs of the model (issue #170).
+        """Synthesized parameters that are not knobs of the model.
 
-        Today just ``_V0_<comp>``, an SBML compartment's size as it was at load.
-        ``set_param`` refuses a value-changing write to one; this is how
-        ``set_params`` learns that in its *validation* phase, so the refusal
-        cannot fire halfway through the apply loop.
+        :attr:`param_is_internal` as a set: ``_V0_<comp>``, an SBML
+        compartment's size as it was at load (issue #170), and the slot holding
+        a function's evaluated value (issue #227). ``set_param`` refuses a
+        value-changing write to either; this is how ``set_params`` learns that
+        in its *validation* phase, so the refusal cannot fire halfway through
+        the apply loop.
         """
         try:
             flags = self._core.param_is_internal
@@ -1518,6 +1529,18 @@ class Model:
         return self._core.n_functions
 
     @property
+    def function_names(self) -> list[str]:
+        """Names of the model's functions, in declaration order.
+
+        A function is not a parameter, even though each one also names a
+        parameter *slot* — where the engine stores the value it last evaluated
+        to, rewritten before every derivative evaluation.
+        :attr:`param_is_internal` flags those slots and
+        :attr:`primary_param_names` omits them (issue #227).
+        """
+        return list(self._core.function_names)
+
+    @property
     def n_events(self) -> int:
         """Number of events (SBML/Antimony ``at (...)`` triggers) in the model."""
         return self._core.n_events
@@ -1557,6 +1580,16 @@ class Model:
         knobs — their values are computed from primary parameters and are
         re-evaluated automatically by :meth:`set_param`.
 
+        *Derived* means the value expression **references another of the model's
+        symbols**, which is the condition that makes the chain rule necessary and
+        the line BNG2.pl itself draws between ``# ConstantExpression`` and
+        ``# Constant``. A constant written as arithmetic — ``gamma 1/7``,
+        ``pi 2*asin(1)``, ``c6 ln(2)/120`` — names nothing, so it differentiates
+        as a leaf exactly like a literal and reports ``False`` here (issue #227).
+        It used to report ``True``, on the narrower reading that the value text
+        does not parse as a float, and the recovery rate of ``SIR.net`` was
+        consequently missing from :attr:`primary_param_names`.
+
         This is *live* state, not a property of the declaration: writing a
         derived parameter a value its expression does not currently produce
         overrides the expression and flips its entry to ``False`` until the
@@ -1571,8 +1604,32 @@ class Model:
         return list(self._core.param_is_expression)
 
     @property
+    def param_is_internal(self) -> list[bool]:
+        """Per-parameter *synthesized-slot* flag, parallel to :attr:`param_names`.
+
+        ``True`` for a slot bngsim created for its own bookkeeping rather than
+        one the model declared. Two kinds, and neither is a knob — each is left
+        out of :attr:`primary_param_names` and refused a value-changing
+        :meth:`set_param`:
+
+        * ``_V0_<comp>`` (issue #170) — an SBML compartment's size as it was at
+          load, which the rate constants in that compartment are normalised
+          against. Moving it rescales those rates while the volume stays put.
+        * a **function's backing slot** (issue #227) — where the engine stores
+          what the function last evaluated to. Every function that does not
+          already name a declared parameter has one, so every model with a
+          ``functions`` block carries these.
+
+        Distinct from :attr:`param_is_expression`: a derived parameter is
+        recomputed from primaries, these are not primaries in the first place.
+        The two flags are disjoint in practice, and
+        :attr:`primary_param_names` is :attr:`param_names` minus both.
+        """
+        return list(self._core.param_is_internal)
+
+    @property
     def primary_param_names(self) -> list[str]:
-        """List of parameter names that are *not* derived constant expressions.
+        """List of parameter names that are the model's independent knobs.
 
         These are the genuine knobs of the model — primary rate constants,
         initial-condition parameters, etc. Use this when you want to expose
@@ -1580,14 +1637,25 @@ class Model:
         each parameter as an independent variable; varying a primary via
         :meth:`set_param` automatically propagates to derived parameters.
 
-        Two kinds are left out. A derived ``ConstantExpression`` (``_rateLaw{N}``)
-        is recomputed from its primaries. And (issue #170) a synthesized
-        *internal* constant — ``_V0_<comp>``, an SBML compartment's size as it was
-        at load, which the rate constants in that compartment are normalised
-        against — is not a knob at all: moving it would rescale those rates
-        without moving the volume, so an optimizer handed it would fit a quantity
-        with no meaning. Set the compartment size itself instead; that is now a
-        writable parameter.
+        Two kinds are left out, one per flag. A derived ``ConstantExpression``
+        (:attr:`param_is_expression`, e.g. ``_rateLaw{N}``) is recomputed from
+        its primaries, so it is not independent of them. And a synthesized slot
+        (:attr:`param_is_internal`) is not a parameter at all: ``_V0_<comp>``,
+        an SBML compartment's size as it was at load, which the rate constants
+        in that compartment are normalised against — moving it would rescale
+        those rates without moving the volume, so set the compartment size
+        itself, an ordinary writable parameter since issue #170 — or the slot
+        holding a **function's** evaluated value, which the engine overwrites
+        before every derivative evaluation (issue #227).
+
+        Both exclusions are about the *same* failure: a coordinate an optimizer
+        cannot move. Issue #227 is where this list stopped being either. It
+        listed every function name — 327 of 327 function-carrying ``.net``
+        models leaked them — so ``jax.grad`` spent a coordinate on one and got
+        exactly ``0.0``, forever. And it dropped a constant written as
+        arithmetic (``gamma 1/7``), which is a working knob by every other
+        measure, so a fit over this list held the recovery rate of ``SIR.net``
+        fixed with no warning.
         """
         names = self.param_names
         flags = self.param_is_expression

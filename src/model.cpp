@@ -313,14 +313,34 @@ void NetworkModel::set_param(const std::string &name, double value, bool force_o
     // blanket refusal. Writing the value it already holds stays legal even then:
     // `set_params(dict(zip(param_names, vec)))` round-trips a full parameter
     // vector through here, and a write that changes nothing has nothing to desync.
+    // A synthesized slot is not a knob (`primary_param_names` excludes it), so
+    // reaching one at all is a mistake worth naming. An unchanged write stays
+    // legal, for the same round-trip reason as below. Two kinds, and the message
+    // says which — they are wrong for different reasons:
+    //
     // Issue #170 — `_V0_<comp>` records the compartment size *as it was at load*
     // so the rate parameter's `(C / _V0_C)` ratio is exactly 1.0 there. Moving it
     // would rescale every rate in that compartment while the volume itself stayed
     // put, and would leave the next write to `C` computing its ratio against the
-    // wrong baseline. It is not a knob (`primary_param_names` excludes it), so
-    // reaching it at all is a mistake worth naming. An unchanged write stays
-    // legal, for the same round-trip reason as below.
+    // wrong baseline.
+    //
+    // Issue #227 — a function's backing slot holds whatever
+    // `evaluate_functions()` last wrote there, and it writes again before every
+    // RHS evaluation. So the write used to be *accepted*: `get_param` echoed the
+    // new value back, and the trajectory did not move. That is the worst shape a
+    // no-op can take, and it is why a `jax.grad` over `primary_param_names` used
+    // to spend a coordinate returning exactly 0.0 forever.
     if (param.is_internal && value != param.value) {
+        if (impl_->shared->function_name_to_idx.count(param.name) != 0) {
+            throw CompartmentSizeWriteError(
+                "Cannot set '" + param.name +
+                "': it is not a parameter of the model but a function, and this is the slot "
+                "bngsim stores its evaluated value in — the function is re-evaluated from its "
+                "own expression before every derivative evaluation, so a write here is "
+                "discarded at the next one and the trajectory does not move (issue #227). "
+                "Set the parameters the function's expression reads instead; "
+                "Model.primary_param_names omits this name for that reason.");
+        }
         throw CompartmentSizeWriteError(
             "Cannot set '" + param.name +
             "': it is not a parameter of the model but bngsim's record of a compartment's "

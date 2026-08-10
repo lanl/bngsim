@@ -446,19 +446,26 @@ def _perturbed(core, data, k, rel):
     is only needed for the chain rule it applies on the way, and that has
     nothing to re-derive unless some parameter is expression-valued. Asserted
     below rather than assumed, so a future fixture with a compartment-dependent
-    derived parameter fails here instead of silently losing the chain term."""
+    derived parameter fails here instead of silently losing the chain term.
+
+    Issue #227 — a synthesized slot takes the same direct branch, and for the
+    same reason: ``set_param`` refuses it too. A function's slot is a ``p[]``
+    entry the emitted ``f`` overwrites from the function's own expression before
+    reading it, so its column stays under test here (it must be zero, and the
+    difference below is what says so) without a write no caller can make."""
     params = data["parameters"]
     names = [p["name"] for p in params]
     base = [float(p["value"]) for p in params]
     v = base[k]
     h = rel * abs(v) if v != 0.0 else rel
     is_compartment = list(core.param_is_compartment_size)[k]
+    is_internal = list(core.param_is_internal)[k]
     if is_compartment:
         assert not any(p.get("is_expression") for p in params), (
             "a compartment-dependent derived parameter needs the set_param chain "
             "rule this branch skips (issue #164 refuses the write; see issue #170)"
         )
-    if is_compartment or not bool(params[k].get("is_const", True)):
+    if is_compartment or is_internal or not bool(params[k].get("is_const", True)):
         plus, minus = list(base), list(base)
         plus[k], minus[k] = v + h, v - h
         return plus, minus

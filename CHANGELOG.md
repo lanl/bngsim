@@ -198,6 +198,71 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **`Model.primary_param_names` was wrong in both directions on a `.net` model:
+  it omitted literal-valued constants and listed every function name (issue
+  #227).** This is the accessor whose own docstring says to hand it to an
+  external optimizer or sampler, and `bngsim.jax.differentiable_solve` takes it
+  as the default differentiation set (`flat=False`), so both errors landed in a
+  gradient. `benchmarks/models/net/ode/SIR.net` — 23 lines — showed both at once:
+  `gamma`, the recovery rate, was absent, and `betaI`, a *function*, was present
+  with a gradient of exactly `0.0`.
+
+  **A constant written as arithmetic is a knob.** The loader decided "derived" by
+  whether the value text parses as a float, so `gamma 1/7` was derived and the
+  list dropped it. But `1/7` references nothing: there is no primary underneath
+  it to fit instead, `set_param` moves the trajectory through it, and its
+  sensitivity column is live (`max|S| = 8.7e7` on `SIR.net`). BNG2.pl draws the
+  line the other way and annotates that line `# Constant`, reserving
+  `# ConstantExpression` for a value that names another parameter — which is
+  exactly the rule #181 gave the codegen `.net` parser, so since #226 the loader
+  and the codegen had disagreed about the same lines. A parameter is now derived
+  when, and only when, its expression **references another of the model's
+  symbols**; a referenceless one is constant-folded in `ModelBuilder::build()`,
+  *after* it is evaluated, which is also what keeps `gamma` at `1/7` rather than
+  the `1.0` a partial `stod("1/7")` stops at. 76 parameter lines across 14 of the
+  139 `.net` files in this tree move; **0 of the 1,614 SBML models that load do**,
+  and the two `.net` readers (`net_file_loader.cpp` and `bngsim._net_reader`) now
+  converge on one answer because the classification happens in the builder they
+  share.
+
+  **A function is not a knob.** Each function gets a parameter slot to hold its
+  evaluated value, and the engine rewrites that slot from the function's own
+  expression before every derivative evaluation. The slot set neither flag
+  `primary_param_names` filtered on, so it was listed — universally, on `.net`:
+  every function-carrying `.net` model leaked every one of its function names,
+  because a BNG2.pl `.net` never gives a function the name of a declared
+  parameter. `set_param("betaI", 3.0)` was **accepted**, `get_param` echoed `3.0`
+  back, and the trajectory did not move. The slot now carries `is_internal`, the flag #170 gave `_V0_<comp>`, for
+  the same reason and with the same two consequences: out of
+  `primary_param_names`, and a value-changing write is refused with a message
+  naming the function instead of silently discarded. On
+  `BIOMD0000000701` that is 35 of the 71 default sensitivity columns, every one
+  of them identically zero.
+
+  **Breaking**, and deliberately so — a silently-absent parameter and a
+  permanently-zero coordinate both survive every check a fitting frontend can
+  make locally. The gradient vector `differentiable_solve(flat=False)` returns
+  changes *length and order* on any model with a function or with a constant
+  written as arithmetic, as does the default `compute_all_sensitivities` tensor;
+  `result.sensitivity_params` and `Model.primary_param_names` remain the
+  authority on both. `set_param` on a function name now raises `ValueError` where
+  it used to return; an unchanged write is still legal, so a full parameter-vector
+  round trip is untouched. `flat=True` is now `param_names` minus the synthesized
+  slots rather than `param_names`: it writes every name it claims to
+  differentiate, and those writes are refused — which also un-breaks `flat=True`
+  on any SBML model carrying a `_V0_<comp>`, where it has raised since #170.
+
+  `Model.param_is_internal` and `Model.function_names` are now public, so the
+  flat vector and the two exclusions above are computable from the API rather
+  than only observable through it.
+
+  What is **not** fixed here is the other half of the same binding: a function
+  whose name is a parameter the input itself declared, which is how an SBML
+  `<assignmentRule>` arrives. Those are still listed, still writable, and still
+  discard the write — 722 of the 1,614 loadable SBML models in this tree carry
+  one, 10,954 names in total. Refusing a write to a name the user's own file
+  declared wants its own measurement, so it is issue #256.
+
 - **A time threshold inside a called `<functionDefinition>` registered no
   discontinuity root, so the window was stepped over (issue #231).** The GH #72
   scan walked the *call site's* AST only. A schedule written one level down —

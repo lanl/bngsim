@@ -239,6 +239,11 @@ class NetworkModel:
         Conservation laws detected from stoichiometry matrix
         """
     @property
+    def function_names(self) -> list[str]:
+        """
+        Names of the model's functions, in declaration order. Each also names a parameter slot holding its evaluated value, which ``param_is_internal`` flags and ``primary_param_names`` omits (issue #227).
+        """
+    @property
     def has_baseline_sensitivity_seed(self) -> bool:
         """
         True iff the IC baseline itself carries a dx/dθ — i.e. save_concentrations() redefined the baseline to a pre-equilibrated state, so reset() returns to a θ-dependent initial condition and restores its derivative with it (GH #81).
@@ -304,12 +309,12 @@ class NetworkModel:
     @property
     def param_is_expression(self) -> list[bool]:
         """
-        Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``).
+        Per-parameter ``is_expression`` flag (True for derived ConstantExpression parameters such as BNG2.pl-emitted ``_rateLaw{N}``). Derived means the expression references another of the model's symbols, which is what makes the chain rule necessary; a constant written as arithmetic (``gamma 1/7``) is folded at build and reports False (issue #227).
         """
     @property
     def param_is_internal(self) -> list[bool]:
         """
-        Per-parameter flag, parallel to ``param_names``: True for a synthesized parameter holding a load-time constant that other expressions are normalised against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from ``primary_param_names``; ``set_param`` refuses a value-changing write. All False for .net models.
+        Per-parameter flag, parallel to ``param_names``: True for a slot bngsim synthesized, which is not a knob of the model. Two kinds — issue #170's ``_V0_<comp>``, a load-time constant other expressions are normalised against, and issue #227's backing slot for a function's evaluated value, which every model with a ``functions`` block carries one of per function. Excluded from ``primary_param_names``; ``set_param`` refuses a value-changing write.
         """
     @property
     def param_names(self) -> list[str]:

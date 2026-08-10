@@ -902,7 +902,10 @@ PYBIND11_MODULE(_bngsim_core, m) {
                 return out;
             },
             "Per-parameter ``is_expression`` flag (True for derived ConstantExpression "
-            "parameters such as BNG2.pl-emitted ``_rateLaw{N}``).")
+            "parameters such as BNG2.pl-emitted ``_rateLaw{N}``). Derived means the "
+            "expression references another of the model's symbols, which is what makes the "
+            "chain rule necessary; a constant written as arithmetic (``gamma 1/7``) is "
+            "folded at build and reports False (issue #227).")
 
         .def_property_readonly(
             "param_is_compartment_size",
@@ -931,11 +934,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     out.push_back(p.is_internal);
                 return out;
             },
-            "Per-parameter flag, parallel to ``param_names``: True for a synthesized "
-            "parameter holding a load-time constant that other expressions are normalised "
-            "against (issue #170's ``_V0_<comp>``), not a knob of the model. Excluded from "
-            "``primary_param_names``; ``set_param`` refuses a value-changing write. All "
-            "False for .net models.")
+            "Per-parameter flag, parallel to ``param_names``: True for a slot bngsim "
+            "synthesized, which is not a knob of the model. Two kinds — issue #170's "
+            "``_V0_<comp>``, a load-time constant other expressions are normalised against, "
+            "and issue #227's backing slot for a function's evaluated value, which every "
+            "model with a ``functions`` block carries one of per function. Excluded from "
+            "``primary_param_names``; ``set_param`` refuses a value-changing write.")
 
         .def_property_readonly(
             "param_volume_write_refused",
@@ -1408,6 +1412,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_property_readonly("n_observables", &bngsim::NetworkModel::n_observables)
         .def_property_readonly("n_parameters", &bngsim::NetworkModel::n_parameters)
         .def_property_readonly("n_functions", &bngsim::NetworkModel::n_functions)
+        .def_property_readonly("function_names", &bngsim::NetworkModel::function_names,
+                               "Names of the model's functions, in declaration order. Each also "
+                               "names a parameter slot holding its evaluated value, which "
+                               "``param_is_internal`` flags and ``primary_param_names`` omits "
+                               "(issue #227).")
         .def_property_readonly("n_events", &bngsim::NetworkModel::n_events)
         .def("event_sensitivity_unsupported_reason",
              &bngsim::NetworkModel::event_sensitivity_unsupported_reason,
