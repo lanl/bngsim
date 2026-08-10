@@ -293,6 +293,72 @@ in `CMakeLists.txt`) is derived from it.
   Ships as vendored-NFsim carry `bngsim/carry-symmetry-factor-all-rate-laws`;
   candidate to push upstream, where the defect is ~14 years old and untouched
   on `RuleWorld/nfsim` master.
+- **A parallel fan-out could still die with no diagnosis: clones shared one
+  ExprTk parser, and a parser keeps a strong handle on the last symbol table
+  compiled through it (issue #257).** #201 found two threads compiling through
+  one `exprtk::parser` and serialized `compile()`. The regression test it added
+  then failed about **10% of the time on `main`** — 2 of 20 consecutive runs,
+  and it took a `git push` down through the pre-push hook once. The residue was
+  not the `compile()` race: the macOS crash report puts the faulting thread in
+  `NetworkModel::clone()` and another, concurrently, in
+  `ExprTkEvaluator::evaluate()` under `CVode` with the GIL released — an
+  evaluator being *read* against an evaluator being *constructed*, which a mutex
+  around `compile()` cannot cover.
+
+  The mechanism is one line of ExprTk. `parser::compile()` ends with
+
+      symtab_store_.symtab_list_ = expr.get_symbol_table_list();
+
+  and never clears it, so a parser retains a *strong handle* on the symbol table
+  of the last expression compiled through it — and ExprTk refcounts symbol
+  tables with a plain `std::size_t`. One parser behind two evaluators therefore
+  means thread B's compile dropping thread A's symbol table while thread A is
+  churning that same counter with no lock at all: in `register_symbol_table`,
+  in the growth of its expression vector, in its own destructor. A lost update
+  runs `clear()` on a symbol table whose variable addresses are already baked
+  into A's live compiled nodes. The failure is a corrupt heap, so it surfaces
+  wherever the *next* allocation looks — the reported signature is `SIGTRAP`
+  from the macOS malloc freelist check, which is none of the three signals #201
+  was calibrated against.
+
+  No lock could have closed it, because the counter is touched on paths no
+  evaluator API sees. So the sharing is gone instead: **an `ExprTkEvaluator` now
+  owns all of its ExprTk state and shares none of it** — parser, symbol table,
+  expression list, function adapters — and `clone_empty()` hands back an
+  evaluator that inherits nothing. The mutex #201 added is gone with it.
+
+  The performance argument for sharing turned out to be illusory. It existed to
+  avoid re-constructing the ~100 KB `exprtk::parser<double>` (51 µs, measured)
+  per model clone — but `NetworkModel copy;` default-constructs an evaluator that
+  `clone()` replaces one line later, so that construction was being paid and
+  thrown away on every clone anyway. The parser is now built lazily on first
+  compile, which makes the discarded evaluator free, and the clone that needs a
+  parser builds exactly the one it uses. `NetworkModel::clone()`, before → after:
+
+  | model | before | after |
+  |---|---:|---:|
+  | `BIOMD0000000701.xml` (71 params, events) | 521 µs | 527 µs |
+  | `func_composition.net` | 92 µs | 94 µs |
+  | `simple_decay.net` (no expressions) | 67 µs | **34 µs** |
+
+  Unchanged where the clone compiles anything, and halved where it compiles
+  nothing — that model used to construct a parser only to discard it.
+
+  Every `run_batch` / `parameter_scan` / `compute_all_sensitivities` fan-out over
+  a model with events was on this path, and the failure was a silent process
+  death rather than an exception — a long job lost a worker with nothing to read.
+  Two new cases in `tests/test_bngsim.cpp` cover it, both run against the pre-fix
+  design before being trusted: the invariant directly (a clone's parser is not
+  its source's, via the new `ExprTkEvaluator::parser_identity()`), and the race
+  it prevents (8 threads cloning, compiling and evaluating). Rebuilt on the old
+  shared-parser evaluator, the test binary died in **8 of 8** runs, always inside
+  that second case, always on the `SIGTRAP`; a standalone harness at the same
+  parameters put the rate at 19 of 20 over a wider sample and turned up `SIGSEGV`
+  and `SIGBUS` as well. On the fix, 20 of 20 clean.
+
+  `python/tests/test_expression_parser_thread_safety.py` — the #201 test that was
+  flaking, 18 of 20 on `main` — is **25 of 25** clean on the fix, and its failure
+  message now says which of the two defects a given signal would mean.
 - **A parameter that a same-named function shadows was still listed as a knob
   (issues #256 and #266 — the same defect reported from the SBML side and the
   `.net` side).** Every function gets a parameter slot to hold its evaluated

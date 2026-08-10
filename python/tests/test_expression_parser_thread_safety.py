@@ -1,16 +1,32 @@
-"""Issue #201 — the ExprTk parser is shared across clones and must be serialized.
+"""Issues #201 and #257 — no two model clones may share ExprTk state.
 
-``ExprTkEvaluator::Impl`` shares one ``exprtk::parser`` across every clone of a
-model, to avoid re-constructing the ~100KB template object per clone. The comment
-justifying that said the parser "is stateless between compile() calls", which is
-true *between* sequential calls and false *during* one: ``compile()`` drives a
-lexer, a token scanner and an error list that all live in the parser object.
+``ExprTkEvaluator::Impl`` used to share one ``exprtk::parser`` across every clone
+of a model, to avoid re-constructing the ~100KB template object per clone. The
+comment justifying that said the parser "is stateless between compile() calls",
+which is true *between* sequential calls and false *during* one: ``compile()``
+drives a lexer, a token scanner and an error list that all live in the parser
+object.
 
 Two threads compiling through one parser therefore corrupt each other. The
 observed failures on ``compute_all_sensitivities``'s default fan-out were 0 of 8
 runs surviving — SIGSEGV, SIGABRT and SIGBUS, plus an ``ERR244 - Expected ')'``
 which is ExprTk's way of reporting an *unregistered symbol* when one compile's
 symbol resolution is clobbered by another.
+
+**#201's fix — a mutex around compile() — was necessary and not sufficient, and
+this test measured the difference.** It went on failing about 10% of the time
+(2 of 20 consecutive runs on ``main``), with a *fourth* signature: SIGTRAP, the
+macOS malloc freelist check, raised in ``NetworkModel::clone()`` while another
+thread sat in ``ExprTkEvaluator::evaluate()`` under ``CVode``. That thread was
+not compiling, so no lock on ``compile()`` was ever going to cover it. The cause
+(issue #257) is that ``exprtk::parser::compile()`` ends by copying the compiled
+expression's symbol tables into the parser and never clears them, so a shared
+parser holds a strong handle on one clone's symbol table and drops it from
+whichever thread compiles next — through a refcount that is a plain
+``std::size_t``. Clones now share no ExprTk state at all, and this test went from
+18 of 20 to 25 of 25. The C++ side of the coverage is
+``test_evaluator_clone_shares_no_exprtk_state`` and
+``test_concurrent_clone_compile_evaluate`` in ``tests/test_bngsim.cpp``.
 
 **Why it needs an integration running, not just concurrent clones.** Concurrent
 ``clone()`` alone cannot trip it — the GIL serializes it (1200 concurrent clones of
@@ -21,20 +37,23 @@ integration. So the trip is one thread compiling GIL-free inside a run while
 another compiles inside ``clone()`` — which is why this reproduces on an *events*
 model under a parallel sensitivity job and nowhere else.
 
-**The subprocess, and why there is no in-process companion.** Half the failure
+**The subprocess, and why the in-process companion is in C++.** Half the failure
 modes are a signal, not an exception, so an in-process assertion cannot observe
 them — a SIGSEGV takes the whole pytest session down and reports nothing useful.
 Each trial therefore runs in its own process and the assertion is on the exit
-status. A faster in-process test of the same mechanism (clone on one thread while
-another integrates) was written and then **deleted**: rebuilt without the lock it
-still passed at 400 iterations, so it could not fail, and a test that cannot fail
-is worse than no test — it reads as coverage. What survives is calibrated: 6 of 6
-trials die on the unlocked build (SIGSEGV, 3x SIGABRT, SIGBUS, one ERR247).
+status. A faster in-process *Python* test of the same mechanism (clone on one
+thread while another integrates) was written and then **deleted**: rebuilt without
+the lock it still passed at 400 iterations, so it could not fail, and a test that
+cannot fail is worse than no test — it reads as coverage. The GIL is why: it
+serializes the clone-side compiles, leaving only the handful of GIL-free lazy
+memos per run to collide. The #257 companion is in C++ for exactly that reason —
+no GIL, so 8 threads collide freely and the pre-fix design dies in 8 of 8 runs
+rather than 1 in 10.
 
 **The repeat count.** A race that has been fixed and a race that merely did not
 fire look identical in one run. Six trials is not proof either; it is calibrated
 against the measured pre-fix rate of 0 survivors in 8, where P(6 false passes) is
-negligible. The real guarantee is that the parser now travels with its mutex.
+negligible. The real guarantee is that no ExprTk state crosses a clone boundary.
 """
 
 from __future__ import annotations
@@ -88,7 +107,9 @@ def test_parallel_compute_all_sensitivities_survives_its_default_fanout():
             how = f"signal {-p.returncode}" if p.returncode < 0 else f"exit {p.returncode}"
             failures.append(f"trial {trial}: {how}\n{p.stderr[-700:]}")
     assert not failures, (
-        f"{len(failures)} of {_TRIALS} parallel sensitivity runs died — the shared "
-        f"ExprTk parser is being compiled through by more than one thread (issue "
-        f"#201).\n\n" + "\n\n".join(failures)
+        f"{len(failures)} of {_TRIALS} parallel sensitivity runs died — ExprTk state "
+        f"is crossing a model-clone boundary. A signal here means memory, not logic: "
+        f"SIGSEGV/SIGABRT/SIGBUS is a parser compiled through by more than one thread "
+        f"(issue #201), SIGTRAP is the macOS malloc freelist check firing on a heap "
+        f"already corrupted by a shared symbol table (issue #257).\n\n" + "\n\n".join(failures)
     )

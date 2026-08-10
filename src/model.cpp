@@ -72,14 +72,19 @@ void NetworkModel::set_load_warnings_(std::vector<std::string> warnings) {
 // ─── Clone ───────────────────────────────────────────────────────────────────
 
 NetworkModel NetworkModel::clone() const {
-    // Deep copy with shared ExprTk parser and pre-processed expression cache.
+    // Deep copy. The clone's evaluator shares NOTHING with this one (issue
+    // #257): clone_empty() hands back an evaluator with its own parser, symbol
+    // table and expression list, and the loop below rebuilds it from the
+    // pre-processed expression cache. compile_preprocessed() skips the
+    // logical-operator and underscore remapping that compile() does — the
+    // cached strings are already preprocessed — so the clone still avoids the
+    // string-preprocessing pass, which is the part of the saving that was real.
     //
-    // clone_empty() shares the heavyweight
-    // ExprTk parser (~100KB template object) with the original model.
-    // compile_preprocessed() skips the logical-operator and underscore
-    // remapping that compile() does — the cached strings are already
-    // preprocessed. This eliminates parser construction + string
-    // preprocessing overhead on every clone.
+    // The evaluator this constructs and then throws away one line below is
+    // deliberate leverage, not waste: because the parser is built lazily on
+    // first compile, that discarded evaluator never builds one, so the clone
+    // pays for exactly one parser — the same count it paid when the parser was
+    // shared and the default-constructed one was discarded fully built.
     //
     // ── ORDERING CONTRACT — preserve when modifying ─────────────────────────
     //
@@ -935,22 +940,29 @@ int NetworkModel::event_trigger_residual_expr(int event_idx0, std::string *why) 
     return cache[event_idx0];
 }
 
-// THREAD SAFETY (issue #201). This and event_trigger_residual_expr above are lazy
-// memos: `const` methods that compile into `impl_->evaluator` on first use, so two
-// threads calling them on ONE NetworkModel race. But do not read that as "the memos
-// are the fragile part" — they are not, and treating them as the hazard understates
-// it. An integration writes impl_->species concentrations and impl_->current_time
-// straight back onto the model, so two threads integrating one NetworkModel corrupt
-// each other's state long before either reaches a lazy compile. (Measured: sharing
-// the model across run_batch's workers does not produce a subtly wrong answer, it
-// kills CVODE with flag=-3 on the first step.)
+// THREAD SAFETY (issues #201, #257). This and event_trigger_residual_expr above are
+// lazy memos: `const` methods that compile into `impl_->evaluator` on first use, so
+// two threads calling them on ONE NetworkModel race. But do not read that as "the
+// memos are the fragile part" — they are not, and treating them as the hazard
+// understates it. An integration writes impl_->species concentrations and
+// impl_->current_time straight back onto the model, so two threads integrating one
+// NetworkModel corrupt each other's state long before either reaches a lazy compile.
+// (Measured: sharing the model across run_batch's workers does not produce a subtly
+// wrong answer, it kills CVODE with flag=-3 on the first step.)
 //
 // The invariant is therefore the blunt one: a NetworkModel is NOT thread-safe, and
-// every fan-out must give each worker its own clone(). #201's mutex serializes the
-// *parser* that clones legitimately share; it does not make the model itself safe.
-// python/tests/test_parallel_workers_clone_the_model.py enforces the invariant at
-// runtime over every parallel entry point, so a new fan-out that forgets to clone
-// fails there rather than in a user's fit.
+// every fan-out must give each worker its own clone().
+// python/tests/test_parallel_workers_clone_the_model.py enforces it at runtime over
+// every parallel entry point, so a new fan-out that forgets to clone fails there
+// rather than in a user's fit.
+//
+// What #201 got wrong, and #257 corrected, is the *other* half: that clones could
+// "legitimately share" the ExprTk parser as long as compile() was serialized. They
+// could not. A parser retains a strong handle on the symbol table of the last
+// expression compiled through it, so sharing one made a clone's symbol table
+// reachable — and droppable, through a non-atomic refcount — from whichever thread
+// compiled next. Clones now share no ExprTk state at all; see the class comment on
+// ExprTkEvaluator.
 const NetworkModel::StateSwitch *NetworkModel::state_switch(const std::string &condition_src,
                                                             std::string *why) const {
     auto it = impl_->state_switch_cache.find(condition_src);
