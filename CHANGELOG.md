@@ -198,6 +198,51 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **`scripts/rebuild_editable.py` could not configure in a uv venv, and it is the
+  remedy the stale-binary guard names (issue #229).** The script drives `cmake`
+  directly against the environment it runs in, so `find_package(pybind11)` has to
+  resolve from there. pybind11 is declared only in `[build-system] requires`,
+  which uv supplies in a transient isolated build env and never installs into
+  `.venv` — no extra declared it either. Someone who hit the staleness guard and
+  followed its instruction got a CMake error 900 lines into someone else's build
+  system, and the only other thing the guard offers is
+  `BNGSIM_ALLOW_STALE_CORE=1`: proceed against a binary that does not match the
+  source, which is exactly what the guard exists to prevent. The failure pushed
+  people toward the unsafe escape hatch, on the path designed to keep them off it.
+
+  Latent rather than always-broken, and the reason it took this long to surface
+  is worth stating precisely. `CMakeLists.txt` already probes a list of candidate
+  interpreters for `pybind11.get_cmake_dir()` before `find_package`, so the
+  script worked wherever *any* of them had pybind11 — a venv that kept a copy
+  from an earlier `uv pip install`, a `python3` on `PATH` that happens to carry
+  one, or a system-wide install (Homebrew ships `pybind11` under
+  `/opt/homebrew/share/cmake`). It broke the moment none of them did, and
+  CONTRIBUTING.md's own `uv sync --reinstall-package bngsim` line was enough to
+  get there: without extras named, that command prunes the venv on its way to
+  rebuilding. That is how the report started.
+
+  Two halves. `pybind11>=2.13` is now declared in the `dev` extra — the same
+  specifier as `[build-system] requires`, since it is one dependency reached by
+  two routes, with a test that fails if they drift. And the script asks its own
+  interpreter and pins `-Dpybind11_DIR`, which fixes more than the error: this
+  machine's build directory had cached Homebrew's pybind11 **3.0.2** while uv's
+  isolated build used **3.1.0**, so the two documented rebuild paths were
+  compiling the same source against different pybind11 versions, silently. The
+  pin ends that — the cmake rebuild now uses the pybind11 the project resolves.
+
+  Measured on one box by hiding every pybind11 the machine had: the old script
+  died with the reported `Could not find a package configuration file provided by
+  "pybind11"` plus a `CalledProcessError` traceback; the new one prints
+  `pybind11: not importable in this interpreter` *before* the configure and, when
+  it fails, exits with a note naming `uv sync --extra dev` and the isolated-build
+  alternative. With pybind11 present the same configure succeeds where the old
+  one could not. A missing pybind11 is deliberately **not** a refusal — cmake can
+  still find a system copy, and plenty of machines rebuild that way today.
+
+  The guard message at `_build_provenance.py` gained a conditional line: when
+  pybind11 is not importable it says so next to the remedy, so a remedy that may
+  fail no longer sits alone beside `BNGSIM_ALLOW_STALE_CORE=1`. CONTRIBUTING.md's
+  rebuild line now names its extras.
 - **`BNGSIM_KLU_AUTOBUILD` could not complete on a host with no BLAS, which made
   a source `pip install` on a bare Linux box a hard configure failure rather
   than a dense-only fallback (issue #178).** The autobuild exists so a box with
