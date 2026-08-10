@@ -29,10 +29,11 @@ documents), and both used to make this script unusable there:
   ``Python_EXECUTABLE`` to the running interpreter so the stale cache entry is
   overridden rather than trusted.
 * a uv-created venv has **no ``pip``**, so ``python -m pip install -e`` fails
-  outright. The install steps route through ``uv pip`` in that case (see
-  ``_editable_install_cmd``). Note the happy path needs no installer at all —
-  it is pure cmake — so this only matters for the bootstrap and version-drift
-  branches.
+  outright. The install steps route through ``uv pip`` in that case, and a
+  ``uv venv --seed`` interpreter — pip but no build backend — takes pip's own
+  build isolation (see ``_editable_install_cmd``). Note the happy path needs no
+  installer at all — it is pure cmake — so this only matters for the bootstrap
+  and version-drift branches.
 * pybind11 is a ``[build-system] requires`` entry, which uv supplies in a
   transient isolated build env and **never installs into ``.venv``**. The pure
   cmake happy path has no such env, so ``find_package(pybind11)`` has to succeed
@@ -306,29 +307,109 @@ def _configure_cmd(
     return cmd
 
 
+def _can_import(module: str) -> bool:
+    """Whether ``module`` is importable in *this* interpreter.
+
+    ``find_spec`` rather than a real import: these are probes, and importing the
+    build backend to find out whether it exists would cost more than the answer
+    is worth. It raises rather than returns ``None`` for a few shapes of broken
+    entry (a ``None`` parked in ``sys.modules``, a module with no ``__spec__``);
+    every one of them means "not usable from here", which is the answer.
+    """
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def _build_dep_modules(source_dir: Path) -> tuple[str, ...] | None:
+    """Import names for pyproject's ``[build-system] requires``, or ``None``.
+
+    Read out of pyproject rather than copied into a constant here. There is
+    already one copy of this list — ``scripts/ship_wheel.py:BUILD_DEP_MODULES``,
+    which has to hardcode it because it probes *foreign* interpreters — and a
+    second copy is how a paired site starts drifting. This script only ever
+    targets the interpreter it is running in, and it is always run from a source
+    checkout, so it can read the requirement itself.
+
+    ``None`` means the table could not be parsed, which the caller treats as
+    "assume the deps are absent". That is the safe direction: an isolated build
+    always works and merely costs time, while assuming deps that are not there
+    fails inside pip with a traceback naming neither the module nor the fix.
+    """
+    pyproject = source_dir / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    table = re.search(
+        r"^\[build-system\]\s*$(?P<body>.*?)(?=^\[|\Z)",
+        pyproject.read_text(),
+        re.MULTILINE | re.DOTALL,
+    )
+    if table is None:
+        return None
+    requires = re.search(
+        r"^requires\s*=\s*\[(?P<items>[^\]]*)\]",
+        table.group("body"),
+        re.MULTILINE | re.DOTALL,
+    )
+    if requires is None:
+        return None
+    # Comments inside the array are prose about what is deliberately *not*
+    # required (ninja), so strip them before reading the quoted entries.
+    items = re.sub(r"#[^\n]*", "", requires.group("items"))
+    dists = re.findall(r"""['"]([^'"]+)['"]""", items)
+    return tuple(
+        re.split(r"[<>=!~;\[\s]", d, maxsplit=1)[0].strip().replace("-", "_") for d in dists
+    )
+
+
+def _has_build_deps(source_dir: Path) -> bool:
+    """Whether this interpreter can run a PEP 517 build without isolation."""
+    modules = _build_dep_modules(source_dir)
+    if not modules:
+        return False
+    return all(_can_import(m) for m in modules)
+
+
 def _editable_install_cmd(source_dir: Path) -> list[str]:
     """Build the argv that (re)registers the editable install for this interpreter.
 
-    ``python -m pip`` is the historical path and stays preferred: where pip
-    exists the project's build deps are expected alongside it, so
-    ``--no-build-isolation`` reuses the already-configured build tree instead of
-    paying for a from-scratch one.
+    ``python -m pip install --no-build-isolation`` is the fast form and stays
+    preferred: it reuses the already-configured build tree instead of paying for
+    a from-scratch one. What it needs is not pip, though — it is pip **plus the
+    PEP 517 backend importable in this same interpreter**, and the two come
+    apart in both directions (GH #271):
 
-    A uv-created venv ships no pip at all, which made every call site here die
-    with ``No module named pip``. Fall back to ``uv pip`` against this exact
-    interpreter. Build isolation is deliberately left ON for that branch: uv
-    venvs do not carry scikit-build-core or pybind11 (they live only in the
-    transient build env), so ``--no-build-isolation`` would fail to find the
-    backend. The isolated build records a dead ``python_executable``, which is
-    precisely the case ``_load_build_info`` now tolerates.
+    * A uv-created venv ships **no pip at all**, which made every call site here
+      die with ``No module named pip``.
+    * A ``uv venv --seed`` interpreter ships pip but **no scikit-build-core**,
+      because the backend lives only in ``[build-system] requires`` and uv puts
+      that in a transient isolated build env (the same fact behind GH #229).
+      Asking only about pip sent that interpreter down the unisolated path,
+      where it died with ``BackendUnavailable: Cannot import
+      'scikit_build_core.build'`` — a traceback naming neither the missing dist
+      nor the fix. ``scripts/ship_wheel.py:_has_build_deps`` exists to reject
+      exactly this inference; this function had not learned it.
+
+    So probe the precondition that is load-bearing, and when it fails let the
+    installer supply the backend itself rather than refusing: pip's own build
+    isolation reaches the same backend, so no environment that used to work
+    stops working and no new hard failure is introduced. Only "no pip and no uv"
+    is unrecoverable, and that one still raises.
+
+    Both isolated branches record a dead ``python_executable`` in the build
+    metadata, which is precisely the case ``_load_build_info`` tolerates — and
+    they cost a real from-scratch build, which is why they are the fallback and
+    not the default.
     """
-    if importlib.util.find_spec("pip") is not None:
+    if _can_import("pip"):
+        skip_isolation = ["--no-build-isolation"] if _has_build_deps(source_dir) else []
         return [
             sys.executable,
             "-m",
             "pip",
             "install",
-            "--no-build-isolation",
+            *skip_isolation,
             "--no-deps",
             "-e",
             str(source_dir),
