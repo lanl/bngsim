@@ -198,6 +198,59 @@ in `CMakeLists.txt`) is derived from it.
   one entry as `KISAO:0000211`, which would describe a different run.
 
 ### Fixed
+- **A parameter that a same-named function shadows was still listed as a knob
+  (issues #256 and #266 — the same defect reported from the SBML side and the
+  `.net` side).** Every function gets a parameter slot to hold its evaluated
+  value, and `evaluate_functions()` overwrites that slot before every derivative
+  evaluation. #227 flagged the slots bngsim *synthesizes*; it left the other
+  branch of the same binding loop, where the function's name matches a parameter
+  the input already declared and the function binds to **that** slot. The engine
+  overwrites it exactly the same way, so the number in the `parameters` block is
+  the seed the slot holds until the function first evaluates — never a knob. But
+  `primary_param_names` listed it, so an optimizer handed that list spent a
+  coordinate on a column that is identically zero, and `set_param` accepted a
+  write that `get_param` echoed back and the next RHS evaluation discarded.
+
+  This is the SBML `<assignmentRule>` shape: the parameter keeps its initial
+  value and the rule becomes the function. Measured before and after on two
+  binaries, it is much more common than either issue's reproducer suggested:
+
+  | corpus | models | carrying the shape |
+  |---|---:|---:|
+  | tracked `.net` | 140 | **0** |
+  | tracked SBML | 327 | **107** |
+  | generated `.net` under `benchmarks/` | 677 | 4 |
+
+  `BIOMD0000000613` alone leaked 141 names; #256's own reproducer
+  (`BIOMD0000000701`) leaked 12, and its default sensitivity column set goes
+  36 → 24. The sweep that should have caught this
+  (`test_primary_param_names.py`) globs `*.net`, and the shape reaches `.net`
+  only through conversion — so the gap was never tracked-vs-untracked, it was
+  one input format's sweep standing in for both. `tests/data/
+  shadowed_function_param.net` now carries the shape in the format those sweeps
+  read.
+
+  A second, quieter half: a shadowed row written as arithmetic (`recycle 1/4`)
+  was already kept out of the list, because the `.net` reader guesses
+  `is_expression` from the value text — the right outcome for the wrong reason,
+  and #203 reported it to the user as a *derived* parameter "not independent of
+  its primaries". It is not derived; nothing recomputes it from primaries, a
+  function overwrites it. The fact now rides `is_internal` and the derived flag
+  comes off, which is also what keeps the two flags disjoint —
+  `primary_param_names` is the residue of subtracting both, so a row carrying
+  each would be reported under neither reason.
+
+  Classification only: `is_internal` is read in exactly one place that affects
+  behaviour (the `set_param` refusal). Across 1819 `.net` models the emitted C
+  and the trajectories are byte-identical, and exactly 5 models change
+  classification — the 4 known plus the new fixture. No `_CODEGEN_VERSION` bump
+  is needed, which is a measurement and not an argument: codegen re-derives its
+  `is_const` from the expression text rather than from this flag, so the emitted
+  source did not move even for the model whose flag flipped.
+
+  `set_param`'s refusal was reworded. It said the name "is not a parameter of
+  the model but a function" — true of a synthesized slot, and exactly what a
+  reader looking at their own `parameters` block would dispute.
 - **`rebuild_editable.py` picked `--no-build-isolation` on the strength of `pip`
   alone, the inference `ship_wheel.py` exists to reject (issue #271).** An
   unisolated PEP 517 build needs pip *and* `[build-system] requires` importable
