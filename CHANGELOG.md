@@ -433,6 +433,33 @@ in `CMakeLists.txt`) is derived from it.
   currently reaches this (`BIOMD0000001072` carries `floor` but declines earlier),
   so it is a latent defect fixed rather than an observed one.
 
+- **`CONTRIBUTING.md` named three of the four modules the codegen source digest
+  covers, so it told you to bump `_CODEGEN_VERSION` for an edit the digest
+  already catches (issue #267).** The "Changing generated code" section is how a
+  contributor decides whether their change needs a hand-written version bump: the
+  digest covers the modules on the list, and the constant is the escape hatch for
+  everything else. #51 wrote that paragraph out longhand when the list held three
+  names; #68 added `_switch_sensitivity` to `_CODEGEN_SOURCE_MODULES` — precisely
+  because an edit there changes which models get an analytic sensitivity RHS at
+  all — and did not touch the prose, which nothing tied to it. The function's own
+  docstring carried a second copy of the stale count ("three file reads (~350
+  KB)"; four files, and 648 KB by now, the modules having roughly doubled since).
+
+  Erring toward a bump is the safe direction — over-invalidation costs one
+  recompile, under-invalidation is a silently wrong gradient, which is #51's
+  whole point — but it is not free: a bump discards every user's cache on the
+  next release and adds an entry to a comment block that is a curated record of
+  real reasons.
+
+  Fixed by deleting the second copy rather than re-syncing it, since re-syncing
+  leaves the same trap set for the next module anyone adds:
+  `_CODEGEN_SOURCE_MODULES` is now the only list, `CONTRIBUTING.md` points at it,
+  and the docstring states neither a count nor a byte total. Two tests hold that
+  — one that the pointer is present, one that a restated list may not be a
+  *subset* of the tuple, which is the exact shape that drifted. (The shipped #51
+  changelog entry below still describes the list as it was then; it is a dated
+  record and is left alone.)
+
 ### Changed
 - **The build-time derivation now declines before differentiating what it could
   never emit (issue #250).** `BIOMD0000000385` spent **138 s** against a 20 s

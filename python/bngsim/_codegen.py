@@ -237,6 +237,12 @@ _CODEGEN_VERSION = "28"
 # #68), so an edit there changes which models get a sensitivity RHS — exactly the
 # kind of silent inertness this digest exists to prevent. A change to any of them
 # can change the generated source.
+#
+# This tuple is the ONLY list. CONTRIBUTING.md's "Changing generated code"
+# section — the thing a contributor reads to decide whether they must bump
+# _CODEGEN_VERSION by hand — points here instead of restating the names, because
+# the copy it used to carry went stale the moment `_switch_sensitivity` was added
+# (issue #267). TestTheDocumentedModuleList holds that to it.
 _CODEGEN_SOURCE_MODULES = (
     "_codegen",
     "_jacobian",
@@ -261,8 +267,10 @@ def _compute_codegen_source_digest(src_dir: Path | None = None) -> str:
 
     Folding this digest in makes the omission harmless: editing an emitter
     changes the key whether or not anyone remembers the constant. It is computed
-    once at import from three file reads (~350 KB, well under a millisecond) and
-    costs nothing per probe, so the fast path stays fast.
+    once at import, from one read of each module in
+    :data:`_CODEGEN_SOURCE_MODULES`, and costs nothing per probe, so the fast
+    path stays fast. (The count and the byte total used to be written out here;
+    both went stale — see issue #267 — so neither is stated any more.)
 
     Deliberately conservative in two directions. It hashes source text, so a
     comment-only edit also invalidates — over-invalidation costs one recompile,
