@@ -28,8 +28,20 @@ reason and with the same two consequences: out of this list, and a
 value-changing write is refused instead of silently discarded.
 
 The other half of that binding — a function whose name is a parameter the *input*
-declared, which is how an SBML ``<assignmentRule>`` arrives — is issue #256 and
-is deliberately not fixed here.
+declared, which is how an SBML ``<assignmentRule>`` arrives — was issues #256 and
+#266 (the same defect reported from the SBML side and the ``.net`` side), and is
+fixed now: the function binds to the *declared* slot and ``evaluate_functions()``
+overwrites it exactly as it overwrites a synthesized one, so the number in the
+``parameters`` block is the seed that slot holds until the function first
+evaluates, never a knob.
+
+Why the sweeps below did not catch it, which is the lesson worth keeping: they
+glob ``*.net``, and the shape is overwhelmingly an SBML phenomenon. Zero of the
+140 tracked ``.net`` files carry it; **107 of 327 tracked SBML models do**
+(``BIOMD0000000613`` alone leaked 141 names). The gap was never
+tracked-vs-untracked, it was one input format's sweep standing in for both — so
+``tests/data/shadowed_function_param.net`` now carries the shape in the format
+these sweeps actually read.
 """
 
 from __future__ import annotations
@@ -44,6 +56,10 @@ from bngsim._bngsim_core import ModelBuilder
 
 _SIR = Path(__file__).resolve().parents[2] / "benchmarks" / "models" / "net" / "ode" / "SIR.net"
 _NET_TREE = Path(__file__).resolve().parents[2]
+#: The #266 shape, in the format these sweeps read. See the module docstring for
+#: why a tracked fixture was needed: the defect lives in SBML `<assignmentRule>`
+#: models (107 of 327 tracked), and zero tracked `.net` files carried it.
+_SHADOWED = _NET_TREE / "tests" / "data" / "shadowed_function_param.net"
 _NETS = (
     sorted(p for p in _NET_TREE.rglob("*.net") if "build" not in p.parts)
     if _NET_TREE.is_dir()
@@ -292,7 +308,19 @@ def test_no_net_model_in_the_tree_leaks_a_function_name():
         leaked = set(m.function_names) & set(m.primary_param_names)
         assert not leaked, f"{path.name}: {sorted(leaked)}"
 
-    assert with_functions > 20, f"only {with_functions} function-carrying models reached"
+    assert with_functions > 20, (
+        f"only {with_functions} function-carrying models reached under {_NET_TREE}"
+    )
+    # `_NETS` is an rglob of the repo root, so the corpus is whatever `.net`
+    # files this machine happens to have — 140 in a clean checkout, 677+ on a box
+    # that has run the benchmark suites. That is what made #266 red on one
+    # developer's pre-push hook and green in CI, so name the one file the sweep
+    # must always have found: without it, a green run here means only that
+    # nothing on *this* machine carries the shape.
+    assert _SHADOWED in _NETS, (
+        f"{_SHADOWED.name} is missing from the {len(_NETS)} .net files found under "
+        f"{_NET_TREE} — this sweep cannot see the #266 shape without it"
+    )
 
 
 # ── The two flags stay disjoint, and together they define the list ──────────
@@ -320,4 +348,74 @@ def test_primary_is_param_names_minus_the_two_flags():
         assert not derived & internal, f"{path.name}: derived ∩ internal"
         assert set(m.primary_param_names) == names - derived - internal, path.name
 
-    assert checked > 50, f"only {checked} .net models checked"
+    assert checked > 50, f"only {checked} .net models checked under {_NET_TREE}"
+
+
+# ── A declared row a same-named function shadows (issues #256 / #266) ────────
+#
+# Driven from a tracked fixture rather than the sweeps above, which cannot be
+# relied on to contain the shape: they glob `*.net`, and this is an SBML
+# `<assignmentRule>` phenomenon that reaches `.net` only through conversion.
+
+
+@pytest.fixture
+def shadowed():
+    return bngsim.Model.load(str(_SHADOWED))
+
+
+def test_shadowed_literal_row_is_not_a_knob(shadowed):
+    """`supply 0.0` + `supply()` — the shape #227 left behind.
+
+    A literal, so nothing about its *syntax* marks it; the only thing that makes
+    it a non-knob is that a function is bound to its slot.
+    """
+    flags = dict(zip(shadowed.param_names, shadowed.param_is_internal, strict=True))
+    assert flags["supply"] is True
+    assert "supply" not in shadowed.primary_param_names
+    assert set(shadowed.primary_param_names) == {"kdeg", "kmax"}
+
+
+def test_shadowed_arithmetic_row_is_internal_and_not_derived(shadowed):
+    """`recycle 1/4` + `recycle()` — excluded before, but for the wrong reason.
+
+    The `.net` reader guesses ``is_expression`` from the value text, so this row
+    was already kept out of the list — and reported to the user as a *derived*
+    parameter, "not independent of its primaries" (issue #203's warning). It is
+    not derived: nothing recomputes it from primaries, a function overwrites it.
+    The two flags also have to stay disjoint, since ``primary_param_names`` is
+    the residue of subtracting both.
+    """
+    internal = dict(zip(shadowed.param_names, shadowed.param_is_internal, strict=True))
+    derived = dict(zip(shadowed.param_names, shadowed.param_is_expression, strict=True))
+    assert internal["recycle"] is True
+    assert derived["recycle"] is False
+
+
+def test_the_seed_is_a_seed_and_the_function_drives_the_run(shadowed):
+    """What makes the row a seed rather than a knob, shown rather than asserted.
+
+    ``supply`` is the rate of the zero-order source feeding A. Its declared value
+    is ``0.0``: a run that used the number in the ``parameters`` block would leave
+    A at zero forever. A moves, so the function's value is what reaches the RHS.
+    """
+    assert shadowed.get_param("supply") == 0.0
+
+    res = bngsim.Simulator(shadowed).run(t_span=(0.0, 5.0), n_points=3)
+    a = np.asarray(res.species)[:, shadowed.species_names.index("A()")]
+
+    assert a[0] == 0.0
+    assert a[-1] > 1.0, "A never grew — the 0.0 seed reached the RHS, not the function"
+
+
+def test_set_param_refuses_the_shadowed_row(shadowed):
+    """It used to be accepted, echoed back by ``get_param``, and discarded.
+
+    The message has to work for a row the model *declared* — the pre-#266 text
+    said the name "is not a parameter of the model", which is exactly what a
+    reader looking at their own ``parameters`` block would dispute.
+    """
+    with pytest.raises(Exception, match=r"a function of that name owns this slot"):
+        shadowed.set_param("supply", 10.0)
+
+    with pytest.raises(Exception, match=r"issue #266"):
+        shadowed.set_param("recycle", 10.0)

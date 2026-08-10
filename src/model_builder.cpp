@@ -1288,6 +1288,19 @@ NetworkModel ModelBuilder::build() {
         auto pit = sd->param_name_to_idx.find(impl.functions[fi].name);
         if (pit != sd->param_name_to_idx.end()) {
             func_param_idx[fi] = pit->second;
+            // Issue #266 — the slot the function binds to is the function's
+            // storage whether bngsim synthesized it (below) or the model
+            // declared it, because `evaluate_functions()` walks
+            // `var_param_bindings` and overwrites the bound slot either way. So
+            // a declared row that a same-named function shadows is a discarded
+            // seed, not a knob, and carries the same flag as the synthesized
+            // one. #227 dropped the synthesized slots and left these, which is
+            // the residue: an SBML `<assignmentRule>` converted to `.net`
+            // emits both rows — the parameter keeps the species' *initial*
+            // value and the rule becomes the function — so `set_param` on it
+            // was accepted and discarded one step later, and an optimizer
+            // handed the name through `primary_param_names` fitted nothing.
+            impl.parameters[pit->second].is_internal = true;
         } else {
             // Create synthetic parameter for this function.
             //
@@ -1428,10 +1441,17 @@ NetworkModel ModelBuilder::build() {
     // own nominal value would re-attach it (issue #188's value-keyed override)
     // and take it back out of `primary_param_names`.
     //
-    // A function-bound parameter is left alone whatever its expression says: an
+    // A function-bound parameter is not a knob whatever its expression says: an
     // SBML `<assignmentRule>` arrives as a function that overwrites this slot
     // every step, so the slot is not a knob even when its `<initialAssignment>`
-    // is referenceless arithmetic.
+    // is referenceless arithmetic. It is not *derived* either, though — nothing
+    // recomputes it from primaries, the function simply overwrites it — so the
+    // fact is carried by `is_internal` (set at bind time above) and the derived
+    // flag comes off. Issue #266: the two flags have to stay disjoint, since
+    // `primary_param_names` is the residue of subtracting both and a row
+    // carrying each would be reported under neither reason. The expression is
+    // still compiled and evaluated first, because that is what seeds the value
+    // this slot holds until the function's first evaluation.
     std::unordered_set<int> function_bound(func_param_idx.begin(), func_param_idx.end());
     for (int pi = 0; pi < static_cast<int>(impl.parameters.size()); ++pi) {
         auto &p = impl.parameters[pi];
@@ -1444,7 +1464,7 @@ NetworkModel ModelBuilder::build() {
             // May reference functions — handle below
             continue;
         }
-        if (!function_bound.count(pi) && !references_model_symbol(p.expression, p.name, *sd)) {
+        if (function_bound.count(pi) || !references_model_symbol(p.expression, p.name, *sd)) {
             p.is_expression = false;
             p.evaluator_id = -1;
         }

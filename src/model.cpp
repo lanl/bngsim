@@ -334,10 +334,13 @@ void NetworkModel::set_param(const std::string &name, double value, bool force_o
         if (impl_->shared->function_name_to_idx.count(param.name) != 0) {
             throw CompartmentSizeWriteError(
                 "Cannot set '" + param.name +
-                "': it is not a parameter of the model but a function, and this is the slot "
-                "bngsim stores its evaluated value in — the function is re-evaluated from its "
-                "own expression before every derivative evaluation, so a write here is "
-                "discarded at the next one and the trajectory does not move (issue #227). "
+                "': a function of that name owns this slot — bngsim stores the function's "
+                "evaluated value here and recomputes it from the function's own expression "
+                "before every derivative evaluation, so a write here is discarded at the next "
+                "one and the trajectory does not move (issue #227). If '" +
+                param.name +
+                "' also appears in the parameters block, that row is the seed this slot holds "
+                "until the function first evaluates, not a knob (issue #266). "
                 "Set the parameters the function's expression reads instead; "
                 "Model.primary_param_names omits this name for that reason.");
         }
