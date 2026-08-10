@@ -263,6 +263,56 @@ in `CMakeLists.txt`) is derived from it.
   one, 10,954 names in total. Refusing a write to a name the user's own file
   declared wants its own measurement, so it is issue #256.
 
+- **A time threshold with no csymbol, or with no constant side, registered no
+  discontinuity root (issue #259).** The GH #72 scan called a relational a time
+  threshold when *exactly one* side referenced the `time` csymbol. Two common
+  schedules fail that test and were stepped over exactly as #72 and #231 were:
+
+  - **An assignment-rule alias.** A model writes
+    `<assignmentRule variable="model_time"> time` and then spends the rest of
+    the file comparing against `model_time`. Neither side of
+    `model_time >= 0.7` is a csymbol.
+  - **No constant side.** `2*time >= time + 0.7` is the `t >= 0.7` edge, and
+    `BIOMD0000000589`'s `time >= i*24` with `i := floor(time/24)` is a real
+    sawtooth crossing. "Exactly one side" refuses both.
+
+  Both return X ≡ 0.0 on #72's pulse fixture, identically at rtol 1e-6 through
+  1e-12 — and note the second does so with its *closing* edge rooted: a window
+  whose opening edge is missed is missed however well the other end is
+  bracketed.
+
+  The filter now admits a relational when **either** side moves with time, and
+  "moves with time" includes the assignment-rule aliases. Admitting one that
+  never actually flips costs one ExprTk evaluation per root-function call and
+  nothing else: a discontinuity root is the boolean condition itself
+  (`gout = evaluate(cond) - 0.5`), so its value is ±0.5 and it can neither
+  vanish identically nor be bracketed where it does not change. A missed
+  crossing is a wrong trajectory; a spurious candidate is an evaluation.
+
+  Because "either side" is strictly weaker than "exactly one side" over a
+  strictly larger set of time-dependent names, **no model can lose a root**, and
+  none does. Over the 1,323 `rr_parity` SBML models, comparing registered
+  condition strings: 1,312 byte-identical, 11 gain 42 conditions between them,
+  **0 lose any**, 0 change load outcome. Keeping the old "exactly one side" test
+  while admitting aliases — the naive widening — instead moves 12 models and
+  costs `BIOMD0000000589` both of the roots it has.
+
+  What the 11 gain is schedule arithmetic: `X1 := (time - tdose1)/24` dose
+  onsets (`BIOMD0000000238`), `daytime` circadian windows (`BIOMD0000000268`,
+  `450`, `674`), a `Light_Dark_Tracker` (`BIOMD0000000858/859`),
+  `x := time - t0` (`BIOMD0000001007/1009/1010`), a cell-cycle phase
+  `ltime < t_cycle/3` where `t_cycle` is itself time-switched
+  (`MODEL1006230027`), and `rem_time - floor(rem_time)` chemo intervals
+  (`MODEL1708310001`). The arms agree to 4e-10 … 7e-8 at a tolerance tightened
+  1e-4x, 8 of the 11 become *more* tolerance-stable, and `rr_parity` verdicts
+  are unchanged (12/12 PASS including `BIOMD0000000589` as the no-loss control).
+
+  One consequence worth naming: `MODEL1708310001` no longer needs the GH #88
+  periodic step bound. With the bound disabled it used to jump its pulses in 221
+  steps and overshoot to y(100)≈1602.95 against an exact 953.07; it now reaches
+  953.069 without it. It was the only test in the suite asserting that bound is
+  necessary, so that test now asserts the roots resolve the schedule instead,
+  and whether the bound still earns its place anywhere is issue #262.
 - **A time threshold inside a called `<functionDefinition>` registered no
   discontinuity root, so the window was stepped over (issue #231).** The GH #72
   scan walked the *call site's* AST only. A schedule written one level down —

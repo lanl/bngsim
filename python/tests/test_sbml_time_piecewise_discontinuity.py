@@ -20,7 +20,10 @@ regardless of the output grid. This test locks:
   3. models with no time-dependent piecewise register zero triggers (the
      integrator path is then bit-for-bit unchanged),
   4. the same threshold written one level down — inside a ``<functionDefinition>``
-     the rule or kinetic law *calls* — is found too (GH #231).
+     the rule or kinetic law *calls* — is found too (GH #231),
+  5. and the same threshold written without a csymbol or without a constant
+     side — against an assignment-rule alias of ``time``, or with a
+     time-dependent expression on *both* sides (GH #259).
 
 Oracle is closed-form: for ``dX/dt = inp(t) - d·X`` with ``inp = kin`` only on
 ``[t0, t0+w]`` (else 0), the post-pulse decay is
@@ -558,6 +561,185 @@ def test_constant_argument_to_the_callee_registers_no_root():
     assert model._core.n_discontinuity_triggers == 0
 
 
+# ── The threshold written against a time alias (GH #259) ────────────────────
+# The same pulse again, with no function definition anywhere: the window is
+# written at the call site against `model_time`, an assignment rule that IS the
+# csymbol. Nothing on either side of the relational is a csymbol, so a
+# csymbol-only reading finds no threshold — and, separately, a reading that
+# admits a side only when the *other* side is constant refuses
+# `2*time >= time + 0.7`, which is the same `t >= 0.7` edge with no constant
+# side. Both shapes returned X ≡ 0.0: the pulse stepped over.
+
+_ALIAS_RULE = f"""      <assignmentRule variable="model_time">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">{_TIME_CSYMBOL}</math>
+      </assignmentRule>"""
+
+_COND_CSYMBOL = f"""
+              <apply><and/>
+                <apply><geq/>{_TIME_CSYMBOL}<cn>0.7</cn></apply>
+                <apply><leq/>{_TIME_CSYMBOL}<cn>0.75</cn></apply>
+              </apply>"""
+
+_COND_ALIAS = """
+              <apply><and/>
+                <apply><geq/><ci>model_time</ci><cn>0.7</cn></apply>
+                <apply><leq/><ci>model_time</ci><cn>0.75</cn></apply>
+              </apply>"""
+
+_COND_BOTH_SIDES = f"""
+              <apply><and/>
+                <apply><geq/>
+                  <apply><times/><cn>2</cn>{_TIME_CSYMBOL}</apply>
+                  <apply><plus/>{_TIME_CSYMBOL}<cn>0.7</cn></apply></apply>
+                <apply><leq/>{_TIME_CSYMBOL}<cn>0.75</cn></apply>
+              </apply>"""
+
+# The window, plus a conjunct that is true for every t >= 0. It registers a
+# third root whose condition never flips — the shape the `exactly one side`
+# reading existed to exclude — and must cost nothing but an evaluation.
+_COND_WITH_VACUOUS_CONJUNCT = f"""
+              <apply><and/>
+                <apply><geq/>{_TIME_CSYMBOL}<cn>0.7</cn></apply>
+                <apply><leq/>{_TIME_CSYMBOL}<cn>0.75</cn></apply>
+                <apply><lt/>{_TIME_CSYMBOL}
+                  <apply><plus/>
+                    <apply><times/><cn>2</cn>{_TIME_CSYMBOL}</apply>
+                    <cn>1</cn></apply></apply>
+              </apply>"""
+
+
+def _alias_pulse_model(cond):
+    """The SBML_PULSE model with *cond* as the piecewise condition and a
+    `model_time := time` alias rule available to it."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="pulse_alias">
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="X" compartment="C" initialConcentration="0"
+               hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="kin" value="100" constant="true"/>
+      <parameter id="d" value="1" constant="true"/>
+      <parameter id="model_time" value="0" constant="false"/>
+      <parameter id="inp" value="0" constant="false"/>
+    </listOfParameters>
+    <listOfRules>
+{_ALIAS_RULE}
+      <assignmentRule variable="inp">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <piecewise>
+            <piece><ci>kin</ci>{cond}</piece>
+            <otherwise><cn>0</cn></otherwise>
+          </piecewise>
+        </math>
+      </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="prod" reversible="false">
+        <listOfProducts>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfProducts>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci><ci>inp</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+      <reaction id="deg" reversible="false">
+        <listOfReactants>
+          <speciesReference species="X" stoichiometry="1" constant="true"/>
+        </listOfReactants>
+        <kineticLaw>
+          <math xmlns="http://www.w3.org/1998/Math/MathML">
+            <apply><times/><ci>C</ci><ci>d</ci><ci>X</ci></apply>
+          </math>
+        </kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+
+SBML_PULSE_ALIAS_CSYMBOL = _alias_pulse_model(_COND_CSYMBOL)
+SBML_PULSE_ALIAS = _alias_pulse_model(_COND_ALIAS)
+SBML_PULSE_BOTH_SIDES_TIME = _alias_pulse_model(_COND_BOTH_SIDES)
+SBML_PULSE_VACUOUS_CONJUNCT = _alias_pulse_model(_COND_WITH_VACUOUS_CONJUNCT)
+
+
+def _alias_run(sbml, **kw):
+    model = bngsim.Model.from_sbml_string(sbml)
+    r = bngsim.Simulator(model, method="ode").run(
+        sample_times=[0.0, 0.5, 1.0, 2.0, 3.0, 5.0], timeout=30, **kw
+    )
+    return model, r
+
+
+@pytest.mark.parametrize(
+    "sbml",
+    [SBML_PULSE_ALIAS, SBML_PULSE_BOTH_SIDES_TIME],
+    ids=["assignment_rule_alias", "both_sides_time_dependent"],
+)
+def test_time_threshold_without_a_constant_side_is_rooted(sbml):
+    """Both edges are registered and the pulse is delivered. Pre-fix the alias
+    model registered 0 roots and the both-sides model 1 (its closing edge only)
+    — and a window whose *opening* edge is unrooted is missed however well the
+    closing edge is bracketed, so both returned X ≡ 0.0."""
+    model, r = _alias_run(sbml, rtol=1e-10, atol=1e-12)
+    assert model._core.n_discontinuity_triggers == 2
+
+    X, t = _X(r), np.asarray(r.time)
+    for tv in (1.0, 2.0, 3.0, 5.0):
+        got = X[t.tolist().index(tv)]
+        assert got == pytest.approx(_pulse_oracle(tv), rel=2e-3), f"t={tv}: {got}"
+
+
+def test_alias_pulse_error_moves_with_tolerance():
+    """Pre-fix the answer was exactly 0.0 six decades apart, which is a missing
+    root rather than an accuracy shortfall."""
+    exact = _pulse_oracle(3.0)
+    errs = []
+    for rtol, atol in ((1e-6, 1e-9), (1e-12, 1e-14)):
+        _, r = _alias_run(SBML_PULSE_ALIAS, rtol=rtol, atol=atol)
+        got = _X(r)[np.asarray(r.time).tolist().index(3.0)]
+        assert got > 0.0, "pre-fix this was exactly 0.0 at every tolerance"
+        errs.append(abs(got - exact) / exact)
+    loose, tight = errs
+    assert tight < loose / 10.0, f"{loose:.3e} vs {tight:.3e}"
+
+
+@pytest.mark.parametrize(
+    "sbml",
+    [SBML_PULSE_ALIAS, SBML_PULSE_BOTH_SIDES_TIME],
+    ids=["assignment_rule_alias", "both_sides_time_dependent"],
+)
+def test_alias_and_both_sides_match_the_csymbol_model_exactly(sbml):
+    """Each spelling is the same problem as the plain csymbol one, so it must
+    produce the same trajectory to the last bit — not merely a close one."""
+    _, ref = _alias_run(SBML_PULSE_ALIAS_CSYMBOL, rtol=1e-10, atol=1e-12)
+    _, got = _alias_run(sbml, rtol=1e-10, atol=1e-12)
+    np.testing.assert_array_equal(_X(ref), _X(got))
+
+
+def test_a_condition_that_never_flips_costs_nothing():
+    """A discontinuity root is the boolean condition itself
+    (``gout = evaluate(cond) - 0.5``), so a condition that is true for every
+    reachable t is a constant +0.5 — it can neither vanish identically nor be
+    bracketed. Admitting one is why the filter can afford to err toward
+    inclusion: the third conjunct here is true for all t >= 0, registers a
+    third root, and changes neither the answer nor the step count."""
+    ref_model, ref = _alias_run(SBML_PULSE_ALIAS_CSYMBOL, rtol=1e-10, atol=1e-12)
+    vac_model, vac = _alias_run(SBML_PULSE_VACUOUS_CONJUNCT, rtol=1e-10, atol=1e-12)
+
+    assert ref_model._core.n_discontinuity_triggers == 2
+    assert vac_model._core.n_discontinuity_triggers == 3
+    np.testing.assert_array_equal(_X(ref), _X(vac))
+    assert vac.solver_stats["n_steps"] == ref.solver_stats["n_steps"]
+
+
 # ── The real model that surfaced the bug ────────────────────────────────────
 _BIOMD879 = os.path.join(
     os.path.dirname(__file__),
@@ -634,3 +816,28 @@ def test_biomd255_roots_its_stepfunc_schedule():
     (1799.99/1800 and 2659.99/2660) ⇒ four thresholds."""
     model = bngsim.Model.from_sbml(_BIOMD255)
     assert model._core.n_discontinuity_triggers == 4
+
+
+# ── The corpus models the alias reading reaches (GH #259) ───────────────────
+_BIOMD238 = os.path.join(_CORPUS, "BIOMD0000000238", "BIOMD0000000238_url.xml")
+_BIOMD589 = os.path.join(_CORPUS, "BIOMD0000000589", "Valero et al 2015 ASC-GSH-Fig 10a.xml")
+
+
+@pytest.mark.skipif(not os.path.exists(_BIOMD238), reason="BIOMD238 SBML not present")
+def test_biomd238_roots_its_dose_onsets():
+    """`X1 := (time - tdose1)/24` and two siblings are pure time aliases, so
+    `X1 > 0` is the dose onset `time > tdose1` written one substitution away.
+    Three onsets plus the model's day/night pair."""
+    model = bngsim.Model.from_sbml(_BIOMD238)
+    assert model._core.n_discontinuity_triggers == 5
+
+
+@pytest.mark.skipif(not os.path.exists(_BIOMD589), reason="BIOMD589 SBML not present")
+def test_biomd589_keeps_both_roots_of_its_daily_cycle():
+    """The regression guard this widening is shaped around. `i := floor(time/24)`
+    is a time alias, so `time >= i*24` and `time <= i*24 + b + incr*i` have a
+    time-dependent expression on *both* sides. Reading a side as the time side
+    only when the other is constant would refuse both and leave this daily cycle
+    with no roots at all — which is why the filter admits on *either* side."""
+    model = bngsim.Model.from_sbml(_BIOMD589)
+    assert model._core.n_discontinuity_triggers == 2
