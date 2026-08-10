@@ -867,68 +867,16 @@ endif()
 
 # ─── Python bindings ────────────────────────────────────────────────────────────
 if(BNGSIM_BUILD_PYTHON)
-    # editable.rebuild = false (pyproject.toml), but the manual helper
-    # bngsim/scripts/rebuild_editable.py re-runs CMake later against the
-    # existing editable build directory. The original configure may have run
-    # inside a uv build-isolation venv that gets deleted, leaving cached
-    # Python_EXECUTABLE / pybind11_DIR paths pointing at phantoms. Drop stale
-    # cache entries before find_package so the manual rebuild helper can
-    # re-discover the live runtime venv. See #23.
-    foreach(_var Python_EXECUTABLE Python3_EXECUTABLE PYTHON_EXECUTABLE)
-        if(${_var} AND NOT EXISTS "${${_var}}")
-            unset(${_var} CACHE)
-            unset(_${_var} CACHE)
-        endif()
-    endforeach()
-    if(pybind11_DIR
-       AND NOT EXISTS "${pybind11_DIR}/pybind11Config.cmake"
-       AND NOT EXISTS "${pybind11_DIR}/pybind11-config.cmake")
-        unset(pybind11_DIR CACHE)
-    endif()
-
-    # Resolve pybind11 via the runtime Python so the editable rebuild path
-    # works after the build-isolation venv is gone. Try several candidates
-    # because $VIRTUAL_ENV is unset when `.venv/bin/python` is invoked
-    # directly, and FindPython resolves venv symlinks to the underlying
-    # interpreter (which lacks the venv's site-packages).
-    if(NOT pybind11_DIR)
-        set(_bngsim_py_candidates "")
-        if(DEFINED ENV{BNGSIM_PYTHON_EXECUTABLE})
-            list(APPEND _bngsim_py_candidates "$ENV{BNGSIM_PYTHON_EXECUTABLE}")
-        endif()
-        if(DEFINED ENV{VIRTUAL_ENV})
-            list(APPEND _bngsim_py_candidates "$ENV{VIRTUAL_ENV}/bin/python")
-        endif()
-        list(APPEND _bngsim_py_candidates
-            "${CMAKE_SOURCE_DIR}/.venv/bin/python"
-            "${CMAKE_SOURCE_DIR}/../.venv/bin/python"
-        )
-        find_program(_bngsim_py_path NAMES python3 python)
-        if(_bngsim_py_path)
-            list(APPEND _bngsim_py_candidates "${_bngsim_py_path}")
-        endif()
-
-        foreach(_py IN LISTS _bngsim_py_candidates)
-            if(EXISTS "${_py}")
-                execute_process(
-                    COMMAND "${_py}" -c
-                        "import pybind11; print(pybind11.get_cmake_dir())"
-                    OUTPUT_VARIABLE _bngsim_pybind11_dir
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    RESULT_VARIABLE _bngsim_pybind11_lookup
-                    ERROR_QUIET
-                )
-                if(_bngsim_pybind11_lookup EQUAL 0 AND _bngsim_pybind11_dir)
-                    set(pybind11_DIR "${_bngsim_pybind11_dir}"
-                        CACHE PATH "pybind11 cmake dir" FORCE)
-                    break()
-                endif()
-            endif()
-        endforeach()
-    endif()
+    # Pin pybind11_DIR to the interpreter this configure targets, falling back to
+    # the runtime-Python candidates that keep the editable rebuild path working
+    # after its build-isolation venv is gone (#23, #229, #288). The ordering is
+    # the whole substance of that module; it is documented there.
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/BngsimResolvePybind11.cmake")
+    bngsim_resolve_pybind11_dir()
 
     set(PYBIND11_FINDPYTHON ON)
     find_package(pybind11 CONFIG REQUIRED)
+    message(STATUS "BNGsim: pybind11 ${pybind11_VERSION} (${pybind11_DIR})")
 
     pybind11_add_module(_bngsim_core MODULE src/_bngsim_core.cpp)
     target_link_libraries(_bngsim_core PRIVATE bngsim)
@@ -939,9 +887,14 @@ if(BNGSIM_BUILD_PYTHON)
     # C++ side never holds its own literal copy (issue #31). The build commit
     # (issue #125) is stamped the same way so the loaded binary can report the
     # source it was built from — the identity half of the stale-binary guard.
+    # pybind11's version joins them for the same reason one layer out (issue
+    # #288): which pybind11 compiled a given extension was previously recorded
+    # nowhere at all, in the wheel or anywhere else, which is what made building
+    # against the wrong one silent.
     target_compile_definitions(_bngsim_core PRIVATE
         BNGSIM_VERSION_STR="${PROJECT_VERSION}"
         BNGSIM_BUILD_COMMIT_STR="${BNGSIM_BUILD_COMMIT}"
+        BNGSIM_PYBIND11_VERSION_STR="${pybind11_VERSION}"
     )
     # The MIR define is PRIVATE on the bngsim static lib, so it does not reach this
     # pybind TU; without it mir_jit.hpp compiles to the inert stub and any direct

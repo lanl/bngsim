@@ -172,7 +172,18 @@ def build_wheel(uv: str, pyver: str) -> Path | None:
 
         env = {}
         if platform.system() == "Darwin":
-            env["CMAKE_ARGS"] = "-DBNGSIM_ENABLE_KLU=OFF"
+            # No -DBNGSIM_ENABLE_KLU=OFF here. It predates
+            # `BNGSIM_REQUIRE_KLU = "ON"` in pyproject's [tool.scikit-build.cmake.define]
+            # (GH #209), which every scikit-build-core build gets — so since that
+            # landed the two contradicted each other and CMake refused to
+            # configure at all: `matrix` reported "build failed" for all four
+            # Pythons on macOS and wrote it into the report as such. Even before
+            # then it validated a dense-only wheel no published macOS wheel
+            # resembles ([tool.cibuildwheel.macos] sets ENABLE_KLU=ON and
+            # REQUIRE_KLU=ON), which is the same "the matrix does not validate
+            # what you think" that #275 found one layer up. KLU now comes from
+            # whatever the box has — a system SuiteSparse or the pinned
+            # BNGSIM_KLU_AUTOBUILD source build — rather than being switched off.
             # 11.0 for arm64, 10.15 for Intel.
             env["MACOSX_DEPLOYMENT_TARGET"] = "11.0" if platform.machine() == "arm64" else "10.15"
 

@@ -1152,4 +1152,5 @@ HAS_MIR: bool = False
 HAS_NFSIM: bool = True
 HAS_RULEMONKEY: bool = True
 __build_commit__: str = 'unknown'
+__pybind11_version__: str = 'unknown'
 __version__: str = '0.12.2'

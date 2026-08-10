@@ -554,33 +554,42 @@ def _ext_suffix() -> str:
     return str(ext_suffix)
 
 
-#: The one value in the generated stub that changes on *every* rebuild, and the
-#: placeholder it is rewritten to. CMake stamps `__build_commit__` with the
-#: current git commit plus a `+dirty` suffix when the tree has uncommitted
-#: changes, and pybind11-stubgen faithfully copies whatever the just-built module
-#: reports — so a stub regenerated mid-change carries one developer's commit, or
-#: worse a `+dirty` marker, into a committed file. That is a spurious diff on
-#: every rebuild and a claim about a build nobody else made; PR #70 merged an
-#: `e61f83d57358+dirty` stamp exactly this way.
+#: The values in the generated stub that describe *this particular build* rather
+#: than the API, and the placeholder each is rewritten to. CMake stamps
+#: `__build_commit__` with the current git commit plus a `+dirty` suffix when the
+#: tree has uncommitted changes, and `__pybind11_version__` with whichever
+#: pybind11 that configure resolved (GH #288); pybind11-stubgen faithfully copies
+#: whatever the just-built module reports — so a stub regenerated mid-change
+#: carries one developer's commit, or worse a `+dirty` marker, into a committed
+#: file. That is a spurious diff on every rebuild and a claim about a build
+#: nobody else made; PR #70 merged an `e61f83d57358+dirty` stamp exactly this
+#: way. The pybind11 stamp is the same hazard by construction: it differs between
+#: two developers whose environments resolved different pybind11 versions, which
+#: is the very condition #288 exists to make visible — visible in the *binary*,
+#: not as a committed diff that flips back and forth.
 #:
-#: "unknown" is CMake's own default when git provenance is unavailable
+#: "unknown" is CMake's own default when the underlying fact is unavailable
 #: (CMakeLists.txt), which is precisely the stub's situation: a type stub cannot
-#: know the commit any given build came from. The value in a `.pyi` is
-#: documentation — mypy checks the *type* — so nothing downstream reads it, and
-#: `test_build_provenance.py` asserts on the runtime attribute of the compiled
-#: module, never on this line.
-_STUB_BUILD_COMMIT_RE = re.compile(r"^(__build_commit__: str = )'[^']*'", re.MULTILINE)
-_STUB_BUILD_COMMIT_PLACEHOLDER = "unknown"
+#: know what any given build came from. The value in a `.pyi` is documentation —
+#: mypy checks the *type* — so nothing downstream reads it, and
+#: `test_build_provenance.py` asserts on the runtime attributes of the compiled
+#: module, never on these lines.
+_STUB_PER_BUILD_STAMPS = ("__build_commit__", "__pybind11_version__")
+_STUB_STAMP_PLACEHOLDER = "unknown"
+_STUB_STAMP_RE = re.compile(
+    rf"^((?:{'|'.join(_STUB_PER_BUILD_STAMPS)}): str = )'[^']*'", re.MULTILINE
+)
 
 
-def _normalize_stub_build_commit(stub_text: str) -> str:
-    """Replace the generated ``__build_commit__`` value with a stable placeholder.
+def _normalize_stub_build_stamps(stub_text: str) -> str:
+    """Replace the generated per-build stamps with a stable placeholder.
 
-    Keeps the committed stub reproducible across machines, commits, and dirty
-    working trees. A no-op when the module reported no stamp at all.
+    Keeps the committed stub reproducible across machines, commits, dirty working
+    trees, and build environments. A no-op for any stamp the module did not
+    report at all.
     """
-    return _STUB_BUILD_COMMIT_RE.sub(
-        rf"\1'{_STUB_BUILD_COMMIT_PLACEHOLDER}'",
+    return _STUB_STAMP_RE.sub(
+        rf"\1'{_STUB_STAMP_PLACEHOLDER}'",
         stub_text,
     )
 
@@ -599,8 +608,9 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     pybind11-stubgen ships in the ``dev`` extra, but a plain rebuild without it
     warns and skips rather than failing (the binary is already built by now).
 
-    The generated ``__build_commit__`` value is normalized away before the stub
-    lands — see :func:`_normalize_stub_build_commit`.
+    The generated per-build stamps (``__build_commit__``,
+    ``__pybind11_version__``) are normalized away before the stub lands — see
+    :func:`_normalize_stub_build_stamps`.
     """
     if os.environ.get("BNGSIM_SKIP_STUBGEN", "") not in ("", "0"):
         print("stubgen=skipped (BNGSIM_SKIP_STUBGEN)", flush=True)
@@ -638,7 +648,7 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
         generated = Path(tmp) / "bngsim" / "_bngsim_core.pyi"
         if not generated.is_file():
             raise FileNotFoundError(f"pybind11-stubgen did not produce {generated}")
-        stub_dest.write_text(_normalize_stub_build_commit(generated.read_text()))
+        stub_dest.write_text(_normalize_stub_build_stamps(generated.read_text()))
     print(f"stub_regenerated={stub_dest}", flush=True)
 
 

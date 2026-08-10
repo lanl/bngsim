@@ -51,21 +51,48 @@ def test_build_commit_stamp_present() -> None:
     )
 
 
-def test_committed_stub_carries_no_build_stamp() -> None:
-    """The *committed* stub must NOT carry anyone's build commit.
+def test_pybind11_version_stamp_present() -> None:
+    """The binary must say which pybind11 built it (issue #288).
 
-    The runtime attribute above is per-build and must be real. The ``.pyi`` is
+    It said nothing before, in the extension or the wheel, so a build that
+    resolved pybind11 from an unrelated interpreter's site-packages instead of
+    the one its own `[build-system] requires` installed produced an artifact
+    indistinguishable from the intended one. Two wheels from a single commit,
+    built for two different interpreters, were both silently compiled against a
+    third environment's copy — and nothing anywhere recorded it.
+    """
+    from bngsim import _bngsim_core
+
+    stamp = getattr(_bngsim_core, "__pybind11_version__", None)
+    assert stamp is not None, (
+        "__pybind11_version__ missing — the CMake stamp (issue #288) is not wired"
+    )
+    assert stamp not in ("", "unknown"), (
+        "the extension was built without find_package reporting a pybind11 version; "
+        "which pybind11 compiled this binary is exactly what #288 made recordable."
+    )
+    assert stamp[0].isdigit(), f"expected a version string, got {stamp!r}"
+
+
+@pytest.mark.parametrize("attr", ["__build_commit__", "__pybind11_version__"])
+def test_committed_stub_carries_no_build_stamp(attr: str) -> None:
+    """The *committed* stub must NOT carry any one build's provenance.
+
+    The runtime attributes above are per-build and must be real. The ``.pyi`` is
     the opposite: pybind11-stubgen copies whatever the just-built module reports,
     so ``scripts/rebuild_editable.py`` — which every C++ change runs — rewrites
-    that one line into a committed file on every invocation. Left alone it
+    those lines into a committed file on every invocation. Left alone it
     produces a spurious diff per rebuild and bakes in one developer's commit, or
     a ``+dirty`` marker from a half-finished tree. PR #70 merged
-    ``'e61f83d57358+dirty'`` exactly that way.
+    ``'e61f83d57358+dirty'`` exactly that way. ``__pybind11_version__`` (#288) is
+    the same hazard: it differs between two developers whose environments
+    resolved different pybind11 versions, and would flip back and forth in the
+    committed file — visibility belongs in the *binary*, not in a diff.
 
-    ``_normalize_stub_build_commit`` in that script pins the value to
-    ``'unknown'`` (CMake's own no-provenance default); this is the check that
-    notices if the normalization is ever dropped or bypassed. Nothing reads the
-    stub's value — mypy checks the declared *type* — so pinning it costs nothing.
+    ``_normalize_stub_build_stamps`` in that script pins both to ``'unknown'``
+    (CMake's own no-provenance default); this is the check that notices if the
+    normalization is ever dropped or bypassed. Nothing reads the stub's value —
+    mypy checks the declared *type* — so pinning it costs nothing.
     """
     prov = bp.gather()
     if not prov.is_source_checkout:
@@ -80,16 +107,12 @@ def test_committed_stub_carries_no_build_stamp() -> None:
     stub = Path(bngsim.__file__).resolve().parent / "_bngsim_core.pyi"
     assert stub.is_file(), f"committed stub missing from the source package ({stub})"
 
-    stamps = [
-        line
-        for line in stub.read_text().splitlines()
-        if line.startswith("__build_commit__: str = ")
-    ]
-    assert len(stamps) == 1, f"expected exactly one __build_commit__ line, got {stamps}"
-    assert stamps[0] == "__build_commit__: str = 'unknown'", (
+    stamps = [line for line in stub.read_text().splitlines() if line.startswith(f"{attr}: str = ")]
+    assert len(stamps) == 1, f"expected exactly one {attr} line, got {stamps}"
+    assert stamps[0] == f"{attr}: str = 'unknown'", (
         f"committed stub carries a machine-specific build stamp ({stamps[0]!r}). "
         "Re-run scripts/rebuild_editable.py, or normalize the line by hand — the "
-        "stub must not record the commit any particular build came from."
+        "stub must not record what any particular build came from."
     )
 
 
@@ -166,6 +189,32 @@ def test_newest_source_finds_latest_cpp(tmp_path: Path) -> None:
     os.utime(header, (1500.0, 1500.0))
     newest = tp / "patched.cpp"  # a vendored hand-patch (e.g. the #116 fix)
     newest.write_text("// new")
+    os.utime(newest, (2000.0, 2000.0))
+
+    path, mtime = bp._newest_source(root)
+    assert path == newest
+    assert mtime == pytest.approx(2000.0)
+
+
+def test_newest_source_counts_the_projects_cmake_modules(tmp_path: Path) -> None:
+    """A build-graph edit changes the binary even when no C++ moved (GH #288).
+
+    `cmake/BngsimResolvePybind11.cmake` decides which pybind11 headers the
+    extension compiles against. Watching only `CMakeLists.txt` and C++ would call
+    a binary fresh after exactly the kind of edit that changes what it is.
+    """
+    root = tmp_path
+    (root / "CMakeLists.txt").write_text("project(x)")
+    os.utime(root / "CMakeLists.txt", (500.0, 500.0))
+    src = root / "src"
+    src.mkdir()
+    code = src / "a.cpp"
+    code.write_text("// code")
+    os.utime(code, (1000.0, 1000.0))
+    modules = root / "cmake"
+    modules.mkdir()
+    newest = modules / "BngsimResolvePybind11.cmake"
+    newest.write_text("# module")
     os.utime(newest, (2000.0, 2000.0))
 
     path, mtime = bp._newest_source(root)

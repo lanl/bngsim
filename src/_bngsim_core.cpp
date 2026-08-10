@@ -2415,6 +2415,17 @@ PYBIND11_MODULE(_bngsim_core, m) {
 #endif
     m.attr("__build_commit__") = BNGSIM_BUILD_COMMIT_STR;
 
+    // Which pybind11 built this binary (issue #288). Nothing recorded that
+    // before — not the wheel, not the extension — so a build that resolved
+    // pybind11 from some unrelated interpreter's site-packages instead of the
+    // one its own [build-system] requires had installed produced an artifact
+    // indistinguishable from the intended one. CMake stamps the version
+    // find_package actually loaded; "unknown" only if that define is missing.
+#ifndef BNGSIM_PYBIND11_VERSION_STR
+#define BNGSIM_PYBIND11_VERSION_STR "unknown"
+#endif
+    m.attr("__pybind11_version__") = BNGSIM_PYBIND11_VERSION_STR;
+
     // ── GH #190: structure-specialized SSA propensity-vector codegen ────────────
     // Emit the model's structure-specialized propensity source (rate constants
     // read from a runtime params[] arg, only the structural factor baked).

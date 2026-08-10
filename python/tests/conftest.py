@@ -176,13 +176,24 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ("no .ant fixture available", _ANYWHERE, "antimony fixture is optional in this checkout"),
     # Platform, as opposed to environment: the feature is absent because of what
     # the OS/toolchain IS, not because this box is missing something.
-    ("POSIX-specific", _ANYWHERE, "process-group reaping has no Windows equivalent"),
+    (
+        "POSIX-specific",
+        _ANYWHERE,
+        "no Windows equivalent: process-group reaping, and the /bin/sh fake "
+        "interpreters the pybind11-resolution probe walks (GH #288)",
+    ),
     ("tomllib is 3.11+", _ANYWHERE, "stdlib module absent on 3.10, which is still supported"),
     ("gcc/clang only", _ANYWHERE, "the sharded compile path; MSVC takes the other branch"),
     # Source-tree vs installed-wheel context.
     ("installed wheel", _ANYWHERE, "source-tree-only guard, correctly inert against a wheel"),
     ("source root", _ANYWHERE, "version-consistency check needs the source tree"),
-    ("CMake", _ANYWHERE, "CMakeCache cross-checks need a configured build dir"),
+    (
+        "CMake",
+        _ANYWHERE,
+        "CMakeCache cross-checks need a configured build dir; the "
+        "pybind11-resolution probe (GH #288) needs a cmake binary, which a leg "
+        "testing an installed wheel has no reason to carry",
+    ),
     ("not in this checkout", _ANYWHERE, "packaging script absent from a wheel/subtree checkout"),
     ("explicitly bypassed via env", _ANYWHERE, "the escape hatch reporting that it was used"),
     # ── LOCAL_ONLY: an incomplete environment, which CI is not allowed to be ──

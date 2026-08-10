@@ -66,6 +66,29 @@ def main() -> int:
         )
         return 1
 
+    print("=== build provenance ===")
+    # GH #288: the wheel recorded nothing about which pybind11 compiled it, so a
+    # build that resolved one from an unrelated interpreter's site-packages was
+    # indistinguishable from the intended one — and that is exactly what happened
+    # on any machine with a `.venv` in the checkout. This is the artifact-level
+    # half of the fix: the matrix report now carries the answer for every wheel it
+    # builds, so "the artifacts are unchanged apart from the pybind11 bump" is
+    # something a reader can check instead of assume. A wheel that still says
+    # "unknown" came from a path that does not stamp it — the same blind spot
+    # back again — so it is a failed check, not a note.
+    try:
+        from bngsim import _bngsim_core
+
+        pybind11_version = getattr(_bngsim_core, "__pybind11_version__", "unknown")
+        commit = getattr(_bngsim_core, "__build_commit__", "unknown")
+    except Exception as e:  # pragma: no cover - the import above already succeeded
+        pybind11_version, commit = "unknown", repr(e)
+    record(
+        "build stamp",
+        pybind11_version != "unknown",
+        f"pybind11={pybind11_version} commit={commit}",
+    )
+
     print("=== capabilities ===")
     try:
         caps = bngsim.capabilities()

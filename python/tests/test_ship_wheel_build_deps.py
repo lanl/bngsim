@@ -22,10 +22,12 @@ deviation from what the matrix validates.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -192,6 +194,20 @@ def test_no_pip_and_no_uv_still_raises(monkeypatch, tmp_path):
         mod._build_command(tmp_path)
 
 
+def _string_literals(func) -> list[str]:
+    """Every string literal in ``func``'s body — its arguments, not its prose.
+
+    Reading the raw source instead cannot tell an argument from a comment about
+    one: a note in `build_wheel` explaining which flag it no longer passes, and
+    why, reads as the flag itself. GH #288 added exactly such a comment and this
+    file's assertions fired on it.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    return [
+        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+
+
 @pytest.mark.skipif(not LOCAL_CI.exists(), reason="local_ci.py not in this checkout")
 def test_local_ci_matrix_builds_isolated():
     """The claim `_build_command` now rests on: the wheel matrix builds isolated.
@@ -204,13 +220,15 @@ def test_local_ci_matrix_builds_isolated():
     `--no-isolation` there would silently invalidate the docstring.
     """
     mod = _load_local_ci()
-    source = inspect.getsource(mod.build_wheel)
+    literals = _string_literals(mod.build_wheel)
 
-    assert '"build"' in source
+    assert "build" in literals
     for opt_out in ("--no-isolation", "--no-build-isolation"):
-        assert opt_out not in source, f"local_ci.py's matrix build now passes {opt_out}"
+        assert not [text for text in literals if opt_out in text], (
+            f"local_ci.py's matrix build now passes {opt_out}"
+        )
     for backend_dist in ("scikit-build-core", "pybind11"):
-        assert backend_dist not in source, (
+        assert not [text for text in literals if backend_dist in text], (
             f"local_ci.py's build venv now installs {backend_dist}; the matrix may no "
             "longer be building isolated, which ship_wheel._build_command relies on."
         )
