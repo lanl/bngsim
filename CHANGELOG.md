@@ -68,6 +68,45 @@ in `CMakeLists.txt`) is derived from it.
   worst relative error against `-t exp(-t)` goes from 2.4e+02 to 1.8e-06 under
   tracking anyway, because the state axis is what drives the step size.
 
+  **What it costs on real models**, swept over the first 400 `rr_parity` SBML
+  models (391 of which integrate at the default tolerance over `t = 0..100`).
+  37 of those 391 have a species that falls six or more decades below its own
+  initial value, so the mechanism is not exotic:
+
+  | arm | integrates | lost | gained | steps vs default |
+  |---|---:|---:|---:|---:|
+  | default (control) | 391 | — | — | 1.00 |
+  | `decades=3` | 393 | 0 | 2 | 1.18 |
+  | `decades=6` | 392 | 1 | 2 | 1.24 |
+  | `decades=12` | 387 | 6 | 2 | 1.58 |
+
+  Six models that integrate at the default tolerance do **not** at the default
+  depth — a species whose value is a difference of large fluxes cannot be
+  resolved below its own roundoff, and the step size collapses instead. Those
+  failures are loud, not silent, and a solver failure under tracking now names
+  the depth and suggests lowering it, because CVODE's own report ("made no
+  progress", `flag=-3`) mentions nothing about the tolerance mode that caused
+  it. Two models go the other way and integrate *only* under tracking.
+
+  The control arm is the important row: the same 391 models, run with the
+  default scalar `atol` before and after this change, produce **391/391
+  byte-identical trajectories with identical step counts**. Nothing moves
+  unless it is asked to.
+
+  **On `Bruno_JExpBot2016`**, which #213 cites as the measured case, the
+  premise does not reproduce. The issue reports the objective moving 1.3e-05
+  between `atol=1e-8` and "a converged tail near 1e-16". There is no tail:
+  reconstructing the shipped job's six conditions and sweeping both axes, the
+  worst deviation of any observable from a `rtol=1e-12, atol=1e-16` reference
+  is 7.3e-08 at `atol=1e-8` and 2.4e-08 at `atol=1e-16` — both at the `rtol=1e-8`
+  truncation floor, which is where the sequence stops. Drop `rtol` to 1e-10 and
+  the whole atol axis below 1e-10 collapses onto 5e-10. The reason is
+  structural: every live species in that model stays between about 0.2 and 6.4
+  for the whole run, so none of them ever goes under its own `atol`. Tracking
+  moves it by 7.9e-08, i.e. into the same band — which is the right answer for a
+  model that has nothing for it to fix. The mechanism is real; that model is not
+  an instance of it, and `tests/data/deep_decay.net` is.
+
 - **The per-species `atol` derivation a caller needs is now public (issue
   #212).** #196 shipped the capability and exported the wrong half of it.
   `Simulator.auto_atol()` — which derives from the model's **live** state — was

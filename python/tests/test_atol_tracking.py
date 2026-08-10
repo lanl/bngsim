@@ -379,6 +379,37 @@ def test_a_mistyped_token_names_the_two_that_exist(decay_sim):
         sim.run(t_span=(0.0, 1.0), atol="trackng")
 
 
+def test_a_solver_failure_under_tracking_names_tracking(decay_sim):
+    """CVODE's own report never mentions the tolerance mode that caused it.
+
+    Measured on 391 rr_parity models that integrate at the default tolerance: 6
+    do not at ``decades=12``, 1 at 6, none at 3. So a tracking depth is much the
+    likeliest reason a model that integrated a moment ago suddenly does not, and
+    "CVODE integration failed ... with flag=-4" points nowhere.
+
+    Provoked here with an absurd depth rather than a corpus model, deliberately:
+    the models that fail at the *default* depth are all corpus models, and a
+    test gated on the corpus skips in every worktree and in CI.
+    """
+    sim, model = decay_sim
+    with pytest.raises(bngsim.SimulationError, match=r"tracking absolute tolerance 50 decades"):
+        sim.run(
+            t_span=(0.0, _T_END),
+            n_points=6,
+            rtol=_RTOL,
+            atol=TrackingAtol(decades=50, ceiling=1e-250),
+            max_steps=5000,
+        )
+
+
+def test_a_solver_failure_without_tracking_says_nothing_about_it(decay_sim):
+    """The other half: the hint is not glued onto every failure."""
+    sim, model = decay_sim
+    with pytest.raises(bngsim.SimulationError) as excinfo:
+        sim.run(t_span=(0.0, _T_END), n_points=6, rtol=_RTOL, atol=1e-250, max_steps=5000)
+    assert "tracking" not in str(excinfo.value)
+
+
 def test_the_capability_is_feature_detectable():
     """``hasattr`` is the probe; the version string is not one (issue #212)."""
     assert hasattr(bngsim, "TrackingAtol")

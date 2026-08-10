@@ -99,6 +99,27 @@ class _ResolvedAtol(NamedTuple):
             opts.atol_track_decades = self.decades
 
 
+def _tracking_hint(decades: float) -> str:
+    """Sentence appended to a solver failure when tracking was in force (#213).
+
+    Measured on 391 rr_parity models that integrate at the default tolerance: 6
+    of them do not at ``decades=12``, 1 at 6, and 0 at 3. So a tracking depth is
+    much the likeliest reason a model that integrated a moment ago suddenly does
+    not — and CVODE's own report ("made no progress", "flag=-3") never mentions
+    it, because from inside the step controller it is just a tight tolerance.
+    """
+    if not decades:
+        return ""
+    return (
+        f" This run used a tracking absolute tolerance {decades:g} decades deep "
+        f"(issue #213), which asks for relative accuracy on every species all the "
+        f"way down and is the first thing to suspect: a species whose value is a "
+        f"difference of large fluxes cannot be resolved below its own roundoff, and "
+        f"the step size collapses instead. Try a smaller TrackingAtol(decades=...), "
+        f"or a plain per-species atol."
+    )
+
+
 # Process-wide one-shot guard for the dense-fallback notice, so a run_batch over
 # many large models (or repeated run() calls) warns at most once, not per run.
 _dense_fallback_warned = False
@@ -2730,6 +2751,11 @@ class Simulator:
         # stamped onto the Result (issue #155). None ⇒ no parameter-sensitivity
         # request, so there is no `parameter` axis to describe.
         ic_seed: dict[str, dict[str, float]] | None = None
+        # Tracking depth in force for this run (issue #213), so a solver failure
+        # can name it. A tracking tolerance is by far the most likely reason a
+        # model that integrated a moment ago suddenly does not, and CVODE's own
+        # report — "made no progress", "flag=-3" — says nothing about it.
+        track_decades = 0.0
         try:
             if self._method == "ode":
                 from bngsim._bngsim_core import SolverOptions
@@ -2743,7 +2769,9 @@ class Simulator:
                 # Issue #196 — scalar or per-species. The vector is resolved
                 # against rtol (an "auto" request scales by it) and against the
                 # model's live state, so it is built after rtol is known.
-                self._resolve_atol(atol, opts.rtol, where="run(atol=...)").apply_to(opts)
+                resolved_atol = self._resolve_atol(atol, opts.rtol, where="run(atol=...)")
+                resolved_atol.apply_to(opts)
+                track_decades = resolved_atol.decades
                 opts.max_steps = max_steps if max_steps is not None else self._max_steps
                 opts.jacobian = self._jacobian
                 opts.force_dense_linear_solver = self._force_dense_linear_solver
@@ -2827,7 +2855,7 @@ class Simulator:
             # terminations distinctly from solver errors.
             raise
         except RuntimeError as e:
-            raise SimulationError(f"Simulation failed: {e}") from e
+            raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
 
         # Stamp the seed on the Result when it identifies the realization (any
         # stochastic method) or drives ODE equal-priority event tie-breaking

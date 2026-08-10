@@ -67,6 +67,76 @@ many points (a batch, a scan, a chunked sensitivity job) resolves `atol` **once*
 up front, including `"auto"` — every point is held to the same tolerance, so the
 points can be compared with each other.
 
+## Tracking absolute tolerance
+
+A vector fixes the tolerance *per species*. It does not fix it *per instant*:
+whatever number species `i` gets, it keeps for the whole run. So a species that
+starts at order one and **decays** to something tiny crosses under its own
+`atol` partway through and stops being error-controlled from there on — the
+same failure as above, reached through time rather than through the species
+list. No initial-value heuristic can see it coming, because at `t = 0` there is
+nothing to see.
+
+`atol="tracking"` hands CVODE an error-weight function (`CVodeWFtolerances`)
+that re-evaluates the vector against the state actually being integrated:
+
+```
+atol_i(y) = clamp(rtol * |y_i|, ceiling_i * 10**-decades, ceiling_i)
+```
+
+```python
+result = sim.run(t_span=(0, 30), atol="tracking")                     # default depth
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(decades=6))  # shallower
+result = sim.run(t_span=(0, 30), atol=bngsim.TrackingAtol(ceiling=my_vector))
+```
+
+`ceiling` is the vector from the previous section (`"auto"` by default), so
+this is a strict extension of it — at `decades=0` the rule *is* that vector,
+and the clamp's upper end means tracking is never looser than it, only tighter.
+
+`tests/data/deep_decay.net` is the worked example: two species that both start
+at exactly `1.0`, so `atol="auto"` derives the same `1e-8` for both and the
+per-species vector is provably a no-op. One of them decays sixteen decades.
+Worst relative error in that species against the analytical `exp(-t)`:
+
+| `atol` | rel. err. | steps |
+|---|---:|---:|
+| `1e-8` (scalar) | 1.8e+04 | 162 |
+| `"auto"` (vector) | 1.8e+04 | 162 |
+| `TrackingAtol(decades=6)` | 9.5e-02 | 366 |
+| `TrackingAtol()` (12) | 2.6e-06 | 605 |
+
+Two things worth knowing before reaching for it:
+
+- **It costs steps** — roughly 4x here. That is the price of resolving a decay
+  over twelve decades, and it is why the mode is opt-in rather than the default.
+- **It cannot conjure digits that are not there.** A species whose value is a
+  *difference* of large fluxes carries absolute roundoff of order `eps × flux`;
+  asking for relative accuracy below that collapses the step size instead of
+  sharpening the answer. `decades` is the bound on how far it will try, and 12
+  is where the measured accuracy above stops improving.
+
+Swept over the first 400 `rr_parity` SBML models (391 integrate at the default
+tolerance; 37 of them have a species that falls six or more decades below its
+own initial value, so this is not an exotic shape):
+
+| `decades` | still integrate | lost | gained | steps vs default |
+|---|---:|---:|---:|---:|
+| 3 | 393 | 0 | 2 | 1.18 |
+| 6 | 392 | 1 | 2 | 1.24 |
+| 12 (default) | 387 | 6 | 2 | 1.58 |
+
+So six models that integrate at the default tolerance do not at the default
+depth. That failure is loud — the solver error names the depth and tells you to
+lower it — and **lowering `decades` is the first thing to try**. (Two models
+integrate *only* under tracking, which is the same effect from the other side.)
+
+On the **sensitivity** axis nothing changes: `atolS` is still built from the
+ceiling, so turning tracking on leaves the sensitivity tolerances where the same
+vector would have put them. Measured on the fixture above, that costs nothing —
+the sensitivity column comes back resolved anyway, because the state axis is
+what drives the step size.
+
 Two things worth knowing:
 
 - **The sensitivity columns follow the state axis.** `atolS` for
