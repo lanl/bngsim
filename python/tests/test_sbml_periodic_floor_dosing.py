@@ -21,10 +21,32 @@ the narrowest dose window, so no step can span a pulse. This test locks:
      time-dependent floor/modulo feeding the ODE RHS;
   2. a narrow periodic pulse is delivered every cycle, matching a closed-form
      oracle on both coarse and fine grids, and tol-stably;
-  3. disabling the bound (``max_step<=0``) reproduces the stepped-over wrong
-     answer — i.e. the bound is what fixes it;
+  3. what disabling the bound (``max_step<=0``) does now — see below;
   4. a plain ``time<const`` schedule gets NO bound (it stays on the #72 root
      path, unchanged), and the bound survives ``Model.clone``.
+
+Item 3 used to read "disabling the bound reproduces the stepped-over wrong answer
+— i.e. the bound is what fixes it", and it was true: MODEL1708310001 jumped its
+0.0625-day pulses in 221 steps and overshot to y(100)≈1602.95. GH #259 gave that
+model five more discontinuity roots and they bracket the same pulse edges, so it
+reaches 953.07 without the bound and stopped witnessing necessity.
+
+GH #262 asked whether ANY model still does. It does not. A two-arm sweep
+(``max_step`` default vs ``max_step=-1``, at rtol and rtol/100) over all 25
+rr_parity models the loader gives a bound found no model whose answer the bound
+changes: 23 agree to within their own tolerance stability, and the other two
+(BIOMD0000000858/859) are not tol-stable in either arm and are byte-identical
+between them — the bound never binds there, so they cannot adjudicate anything.
+The bound is inert on 15 of the 25 (identical step counts both arms) and, where
+it does bind, costs up to 2.5x the steps (MODEL0406553884: 439,367 vs 176,919)
+for no change in the answer.
+
+So item 3 is now the opposite assertion, on the class GH #262 flagged as the one
+roots provably cannot reach — a model carrying a bound and NO discontinuity roots
+at all — plus one rooted model where the bound demonstrably binds. Both say the
+same thing: the bound changes step selection and nothing else. Whether it should
+then be narrowed or retired is a separate call; these pin the measurement so it
+cannot rot silently the way the necessity claim did.
 
 Oracle is closed-form. For ``dy/dt = (g - kd·dose(t))·y`` with ``dose = D`` while
 ``frac(time) = time - floor(time) < w`` (else 0) and constant ``kd``, each unit
@@ -280,3 +302,123 @@ def test_model1708310001_roots_resolve_the_schedule_without_the_bound():
             "221 steps was the step-over signature; resolving the pulses costs "
             f"thousands (rtol={rtol}: {r.solver_stats['n_steps']})"
         )
+
+
+# ── GH #262: is the bound still doing work anywhere? ────────────────────────
+_MODELS = os.path.join(
+    os.path.dirname(__file__), "..", "..", "parity_checks", "rr_parity", "models"
+)
+
+
+def _rr_model(model_id: str) -> str:
+    # The corpus carries BioModels entries as `<id>_url.xml` and the older
+    # MODEL* ones as plain `<id>.xml`; return whichever is there.
+    for fn in (f"{model_id}_url.xml", f"{model_id}.xml"):
+        path = os.path.join(_MODELS, model_id, fn)
+        if os.path.exists(path):
+            return path
+    return os.path.join(_MODELS, model_id, f"{model_id}_url.xml")
+
+
+def _final_state_rel_diff(a, b) -> float:
+    """Max relative difference between two final-state vectors.
+
+    Floored at the run's absolute tolerance and at 1e-8 of the largest state, so
+    a species parked at 1e-20 — where the two arms differ only in roundoff —
+    cannot dominate a *relative* comparison and manufacture a disagreement.
+    """
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    assert a.shape == b.shape
+    floor = max(1e-10, 1e-8 * float(np.max(np.abs(np.concatenate([a, b]))) or 1.0))
+    denom = np.maximum(np.maximum(np.abs(a), np.abs(b)), floor)
+    return float(np.max(np.abs(a - b) / denom))
+
+
+def _two_arm(path: str, t_end: float, n_points: int):
+    """(bound-on, bound-off) x (rtol, rtol/100) final states and step counts."""
+    out = {}
+    for arm, max_step in (("on", None), ("off", -1.0)):
+        for tag, rtol in (("loose", 1e-8), ("tight", 1e-10)):
+            kw = dict(
+                t_span=(0.0, t_end),
+                n_points=n_points,
+                rtol=rtol,
+                atol=1e-10,
+                max_steps=20_000_000,
+                timeout=120,
+            )
+            if max_step is not None:
+                kw["max_step"] = max_step
+            sim = bngsim.Simulator(bngsim.Model.from_sbml(path), method="ode")
+            r = sim.run(**kw)
+            out[f"{arm}_{tag}"] = (
+                np.asarray(r.species)[-1, :],
+                int(r.solver_stats["n_steps"]),
+            )
+    return out
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_rr_model("BIOMD0000000312")), reason="BIOMD0000000312 SBML not present"
+)
+def test_bound_unnecessary_even_where_no_root_can_reach():
+    """The one class GH #262 kept the bound for turns out not to need it either.
+
+    #262's caveat was that "the bound also covers schedules whose thresholds the
+    loader cannot emit as an ExprTk condition at all", so a model with a bound
+    and *zero* discontinuity roots is where the bound is the only mechanism in
+    play — nothing else can be resolving its pulses. BIOMD0000000312 is exactly
+    that, and its bound is not inert (the two arms take different numbers of
+    steps, which is what keeps this test from being vacuous). Disabling it
+    changes the answer by ~1e-10, four orders below either arm's own tolerance
+    stability.
+    """
+    path = _rr_model("BIOMD0000000312")
+    model = bngsim.Model.from_sbml(path)
+    assert model._periodic_disc_max_step is not None
+    assert model._core.n_discontinuity_triggers == 0, (
+        "this fixture's whole point is that no root can be resolving the "
+        "schedule — pick another zero-root model if this one gains roots"
+    )
+
+    arms = _two_arm(path, t_end=10.0, n_points=1001)
+    # The bound must actually constrain the integration, or agreement is vacuous.
+    assert arms["on_tight"][1] != arms["off_tight"][1], (
+        f"bound is inert here ({arms['on_tight'][1]} steps in both arms) — it "
+        "cannot witness anything either way"
+    )
+    for arm in ("on", "off"):
+        stability = _final_state_rel_diff(arms[f"{arm}_loose"][0], arms[f"{arm}_tight"][0])
+        assert stability < 1e-5, f"{arm} arm is not tol-stable ({stability:.2e})"
+    diff = _final_state_rel_diff(arms["on_tight"][0], arms["off_tight"][0])
+    assert diff < 1e-6, f"the bound changes this model's answer by {diff:.2e}"
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_rr_model("MODEL0847869198")), reason="MODEL0847869198 SBML not present"
+)
+def test_bound_costs_steps_and_buys_nothing_on_a_rooted_model():
+    """Same verdict on the rooted side, and here the price is visible.
+
+    MODEL0847869198 carries both a bound and four discontinuity roots. The bound
+    binds hard — it forces >20% more internal steps — and buys an answer that
+    matches the unbounded one to ~1e-9. This is the shape of the cost #262
+    weighed: ``max_step`` is a blunt instrument that shortens every step over the
+    whole horizon, not just the ones near a pulse edge.
+    """
+    path = _rr_model("MODEL0847869198")
+    model = bngsim.Model.from_sbml(path)
+    assert model._periodic_disc_max_step is not None
+    assert model._core.n_discontinuity_triggers > 0
+
+    arms = _two_arm(path, t_end=100.0, n_points=101)
+    steps_on, steps_off = arms["on_tight"][1], arms["off_tight"][1]
+    assert steps_on > 1.2 * steps_off, (
+        f"expected the bound to cost steps ({steps_on} with vs {steps_off} without); "
+        "if it no longer binds, this model has stopped being a cost witness"
+    )
+    for arm in ("on", "off"):
+        stability = _final_state_rel_diff(arms[f"{arm}_loose"][0], arms[f"{arm}_tight"][0])
+        assert stability < 1e-5, f"{arm} arm is not tol-stable ({stability:.2e})"
+    diff = _final_state_rel_diff(arms["on_tight"][0], arms["off_tight"][0])
+    assert diff < 1e-6, f"the bound changes this model's answer by {diff:.2e}"

@@ -5,6 +5,9 @@ Tests the full pipeline: .net parsing → C code generation → compilation
 """
 
 import os
+import re
+import shutil
+import subprocess
 import sys
 import types
 
@@ -59,6 +62,87 @@ class TestReplacePowerOp:
 
     def test_no_caret_is_passthrough(self):
         assert _replace_power_op("k0 * A_obs / 10") == "k0 * A_obs / 10"
+
+
+class TestReplacePowerOpScientificNotation:
+    """A signed exponent must not split the literal (GH #240).
+
+    Both operand scans walk the character class ``alnum . _``, which the ``+``
+    or ``-`` of a scientific-notation exponent is not in — so the scan stopped
+    inside the number and took only the digits after the sign:
+    ``2.4279e-09^1.6123`` became ``2.4279e-pow(09, 1.6123)``. That is not valid
+    C (``exponent has no digits``, and ``09`` is an invalid octal constant), so
+    the model lost codegen entirely and the failure surfaced downstream as
+    "could not generate an analytical sensitivity RHS" — a rate-law
+    differentiability message for what is a printer bug. An *unsigned* exponent
+    (``1.5e3^2``) always worked, which is why it took a signed one to notice.
+    """
+
+    @pytest.mark.parametrize(
+        "expr,want",
+        [
+            # base side — the MODEL1108260014 literal that surfaced this
+            ("2.4279e-09^1.6123", "pow(2.4279e-09, 1.6123)"),
+            ("2.0e-3^2", "pow(2.0e-3, 2)"),
+            ("2.0E+3^2", "pow(2.0E+3, 2)"),
+            ("2e+3^2", "pow(2e+3, 2)"),
+            (".5e-3^2", "pow(.5e-3, 2)"),
+            # exponent side — the mirror-image scan
+            ("x^1e-3", "pow(x, 1e-3)"),
+            ("x^1E+3", "pow(x, 1E+3)"),
+            ("x^-1e-3", "pow(x, -1e-3)"),
+            # both operands at once, and after identifier substitution
+            ("1e-2^1e-3", "pow(1e-2, 1e-3)"),
+            ("obs[82]^1.6123", "pow(obs[82], 1.6123)"),
+        ],
+    )
+    def test_signed_exponent_stays_one_literal(self, expr, want):
+        assert _replace_power_op(expr) == want
+
+    @pytest.mark.parametrize(
+        "expr,want",
+        [
+            # An identifier that merely ends in `e` is not a mantissa: these are
+            # a subtraction whose right operand is the base.
+            ("k_2e-3^2", "k_2e-pow(3, 2)"),
+            ("a2e-3^2", "a2e-pow(3, 2)"),
+            ("e-3^2", "e-pow(3, 2)"),
+            # Ordinary arithmetic must not be swallowed either.
+            ("x+3^2", "x+pow(3, 2)"),
+            ("p[3]-2^2", "p[3]-pow(2, 2)"),
+            ("x^y-3", "pow(x, y)-3"),
+            # Unsigned exponents were always right; keep them that way.
+            ("1.5e3^2", "pow(1.5e3, 2)"),
+        ],
+    )
+    def test_does_not_over_reach(self, expr, want):
+        assert _replace_power_op(expr) == want
+
+    def test_no_split_literal_artifact_in_output(self):
+        """The signature of the bug, as a property of the emitted text."""
+        rendered = _replace_power_op(
+            "((obs[0]^1.6123)/((obs[0]^1.6123)+(2.4279000000000003e-09^1.6123)))"
+        )
+        # `...e-pow(` on the base side, `1e)` / `1e,` on the exponent side.
+        assert "e-pow(" not in rendered and "e+pow(" not in rendered
+        assert not re.search(r"[0-9][eE][,)]", rendered)
+        assert rendered.count("pow(") == 3
+
+    def test_emitted_c_compiles(self, tmp_path):
+        """End to end: the rewrite's output must be a C expression a compiler
+        accepts. Pre-fix this was two hard errors, not a wrong number."""
+        cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+        if cc is None:
+            pytest.skip("no C compiler on PATH")
+        expr = _replace_power_op("2.4279e-09^1.6123 + x^1e-3 + x^-1e-3")
+        src = tmp_path / "p.c"
+        src.write_text(f"#include <math.h>\ndouble f(double x) {{ return {expr}; }}\n")
+        proc = subprocess.run(
+            [cc, "-c", "-o", str(tmp_path / "p.o"), str(src)],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
 
 
 class TestNetParser:

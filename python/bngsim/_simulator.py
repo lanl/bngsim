@@ -4214,6 +4214,11 @@ class Simulator:
             Number of sensitivity parameters per CVODES job.
             Default 2, which benchmarking found to work well for large
             models because 2-parameter chunks add only ~1.2× overhead.
+            Chiefly a throughput knob, but not *only* one: a chunk's columns
+            share one CVODES error test, so the grouping can decide whether a
+            marginal column's step is accepted (issue #243). A chunk that fails
+            as a group is therefore retried column by column before anything is
+            reported — see :meth:`_recover_failed_chunk`.
         n_workers : int, optional
             Number of parallel threads. Default:
             ``min(⌈Np/chunk_size⌉, os.cpu_count())``.
@@ -4254,7 +4259,10 @@ class Simulator:
             (GH #214): the interpreted finite-difference sensitivity path is not
             reliable at tight tolerances, so it is refused rather than used.
         SimulationError
-            If any chunk simulation fails.
+            If a chunk simulation fails *and* the column-by-column retry shows
+            at least one of its columns cannot be integrated on its own either
+            (issue #243). A chunk that fails only as a group is recovered from
+            those single-column solves, with a warning, rather than raising.
 
         Examples
         --------
@@ -4529,20 +4537,41 @@ class Simulator:
                 effective_max_steps,
             )
 
-        # Run chunks (parallel or serial)
+        def _recover_chunk(chunk_idx: int, exc: BaseException) -> list[Result]:
+            """Retry a failed chunk one column at a time (GH #243)."""
+            return self._recover_failed_chunk(
+                chunk_idx,
+                chunks,
+                target_params,
+                exc,
+                t_span,
+                n_points,
+                effective_rtol,
+                effective_atol_spec,
+                effective_max_steps,
+            )
+
+        # Run chunks (parallel or serial). GH #243 — a chunk that fails is not
+        # the end of the call: the grouping itself is part of what failed, so
+        # each failure is retried column by column before anything is reported.
+        # `_recover_chunk` returns one single-column Result per column, which
+        # splices into this list in parameter order, or raises.
+        per_chunk: list[list[Result]] = [[] for _ in range(n_chunks)]
         if n_workers > 1 and n_chunks > 1:
             with ThreadPoolExecutor(max_workers=n_workers) as executor:
                 futures = [executor.submit(_run_chunk, i) for i in range(n_chunks)]
-                chunk_results: list[Result] = []
                 for i, future in enumerate(futures):
                     try:
-                        chunk_results.append(future.result())
+                        per_chunk[i] = [future.result()]
                     except Exception as e:
-                        raise SimulationError(
-                            f"Sensitivity chunk {i} (params={chunks[i]}) failed: {e}"
-                        ) from e
+                        per_chunk[i] = _recover_chunk(i, e)
         else:
-            chunk_results = [_run_chunk(i) for i in range(n_chunks)]
+            for i in range(n_chunks):
+                try:
+                    per_chunk[i] = [_run_chunk(i)]
+                except Exception as e:
+                    per_chunk[i] = _recover_chunk(i, e)
+        chunk_results: list[Result] = [r for part in per_chunk for r in part]
 
         # Stitch sensitivity tensors along param axis
         stitched = self._stitch_sensitivity_results(chunk_results, target_params)
@@ -4550,6 +4579,137 @@ class Simulator:
         # the specific reason on the stitched result too.
         stitched._expression_sens_support = self._expression_sens_support()
         return stitched
+
+    # GH #243 — how wide a failed chunk may be before the column-by-column retry
+    # is skipped. The retry costs one solve per column, and the solve it repeats
+    # is a *failing* one, which is the slowest kind (the step collapses toward
+    # hmin and the run burns `max_steps` before giving up). At the default
+    # chunk_size of 2 that is two extra solves; past a couple of dozen it would
+    # turn a failed call into a much longer failed call, so beyond this width the
+    # error reports chunk scope and names the retry rather than running it.
+    _MAX_COLUMNS_FOR_SOLO_RETRY = 16
+
+    def _recover_failed_chunk(
+        self,
+        chunk_idx: int,
+        chunks: list[list[str]],
+        target_params: list[str],
+        exc: BaseException,
+        t_span: tuple[float, float],
+        n_points: int,
+        rtol: float,
+        atol_spec: _ResolvedAtol,
+        max_steps: int,
+    ) -> list[Result]:
+        """Retry a failed sensitivity chunk one column at a time (GH #243).
+
+        A chunk is ``chunk_size`` sensitivity columns sharing one CVODES error
+        test, so the grouping is part of what succeeded or failed: the same
+        column can integrate alongside easier neighbours and fail on its own, or
+        the reverse. ``chunk_size`` is documented as a throughput knob, so a
+        caller has no reason to read a chunk failure as a statement about the
+        model — and the bare CVODE message reads exactly like one.
+
+        So a failure is not reported until each of the chunk's columns has been
+        tried alone, which answers the question the raw failure cannot: is any
+        single column unresolvable at this tolerance, or was this grouping
+        unlucky?
+
+        * Every column integrates alone → the grouping was the problem. Returns
+          one single-column ``Result`` per column, which the caller splices into
+          the chunk's slot in parameter order; the call succeeds.
+        * Some column fails alone → raises :class:`SimulationError` naming which
+          columns are unresolvable and which are fine, so the caller can re-run
+          without them instead of bisecting by hand.
+
+        A one-column chunk skips the retry: it already *is* the solo run.
+        """
+        chunk_params = chunks[chunk_idx]
+        solo_results: list[Result] = []
+        solo_ok: list[str] = []
+        solo_failed: list[str] = []
+        diagnosed = True
+
+        if len(chunk_params) == 1:
+            # `chunk_size=1` already ran the column alone — no grouping to blame.
+            solo_failed = list(chunk_params)
+        elif len(chunk_params) > self._MAX_COLUMNS_FOR_SOLO_RETRY:
+            diagnosed = False
+        else:
+            logger.info(
+                "compute_all_sensitivities: chunk %d (params=%s) failed; retrying "
+                "its %d columns one at a time (GH #243)",
+                chunk_idx,
+                chunk_params,
+                len(chunk_params),
+            )
+            for name in chunk_params:
+                try:
+                    solo_results.append(
+                        self._run_sensitivity_chunk(
+                            [name], t_span, n_points, rtol, atol_spec, max_steps
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — classified, then reported below
+                    solo_failed.append(name)
+                else:
+                    solo_ok.append(name)
+            if not solo_failed:
+                warnings.warn(
+                    f"compute_all_sensitivities: sensitivity chunk {chunk_idx} "
+                    f"(params={chunk_params}) failed as a group but every one of its "
+                    f"columns integrated on its own, so the tensor is complete and "
+                    f"those columns came from single-column solves. The grouping, not "
+                    f"the model, was the problem: a chunk's columns share one CVODES "
+                    f"error test, so chunk_size decides which columns are error-"
+                    f"controlled together and can decide whether the step is accepted "
+                    f"(issue #243). Underlying failure: {exc}",
+                    # user → compute_all_sensitivities → _recover_chunk → here
+                    stacklevel=4,
+                )
+                return solo_results
+
+        # Something in this chunk cannot be integrated at these tolerances.
+        if diagnosed:
+            verdict = (
+                f"Column(s) {solo_failed} also fail on their own, so they are "
+                f"unresolvable at this tolerance rather than badly grouped"
+            )
+            if solo_ok:
+                verdict += f"; {solo_ok} integrated fine alone"
+            verdict += "."
+            computable = [p for p in target_params if p not in set(solo_failed)]
+            # The point of spelling the list out is that it is copy-pasteable —
+            # that is the hand bisection this replaces. Past a screenful it stops
+            # being that and starts being a wall, so say it the short way instead.
+            advice = (
+                f" Re-run with params={computable!r} for the remaining "
+                f"{len(computable)} column(s), or loosen rtol/atol."
+                if len(computable) <= 40
+                else (
+                    f" Re-run without {solo_failed!r} — the other {len(computable)} "
+                    f"column(s) are unaffected — or loosen rtol/atol."
+                )
+            )
+        else:
+            verdict = (
+                f"This chunk is wider than {self._MAX_COLUMNS_FOR_SOLO_RETRY} columns, "
+                f"so its columns were NOT retried individually — which of them is "
+                f"unresolvable is unknown"
+            ) + "."
+            advice = (
+                f" Re-run just this chunk with params={chunk_params!r}, chunk_size=1 "
+                f"to find out, or loosen rtol/atol."
+            )
+
+        raise SimulationError(
+            f"Sensitivity chunk {chunk_idx} (params={chunk_params}) failed: {exc}\n"
+            f"{verdict}"
+            f" A chunk's columns share one CVODES error test, so chunk_size — "
+            f"documented as a throughput knob — also decides which columns are "
+            f"error-controlled together, and a different value can change whether "
+            f"this call succeeds (issue #243).{advice}"
+        ) from exc
 
     def _run_sensitivity_chunk(
         self,
@@ -4606,7 +4766,56 @@ class Simulator:
         except RuntimeError as e:
             raise SimulationError(f"Sensitivity chunk failed (params={sens_params}): {e}") from e
 
-        return self._stamp(Result(core_result), ic_seed=chunk_ic_seed)
+        result = self._stamp(Result(core_result), ic_seed=chunk_ic_seed)
+        self._raise_if_nonfinite_sensitivities(result, sens_params)
+        return result
+
+    @staticmethod
+    def _raise_if_nonfinite_sensitivities(result: Result, sens_params: list[str]) -> None:
+        """Refuse a chunk whose sensitivity block came back non-finite (GH #243).
+
+        A CVODES failure is not the only way a sensitivity column can be
+        unusable, and it is not the way that hurts. On BIOMD0000000044 the
+        ``_lp_v7_n`` column integrates to NaN from the first output point on
+        while the *solve returns success* — the columns sharing its chunk pass
+        the error test on its behalf — so at ``chunk_size=3`` that model returns
+        a complete-looking tensor with one silently dead column, and at 1, 2 and
+        4 it raises. Same model, same columns; the throughput knob decided
+        whether the caller was told anything at all.
+
+        A NaN column is not a partial answer either: :meth:`Result.gradient`
+        contracts the whole parameter axis, so one of them NaNs every entry of
+        the returned gradient. So it is treated as a chunk failure — same
+        column-by-column retry, same report — and the answer to "can this column
+        be computed" stops depending on how the columns were grouped.
+
+        Rows the GH #221 assignment-rule redirect refused are NaN on purpose and
+        are excluded; :attr:`Result.ar_sensitivity_refused` is that set.
+        """
+        if not result.has_sensitivities:
+            return
+        sens = np.asarray(result.sensitivities)
+        if sens.ndim != 3 or sens.size == 0:
+            return
+        finite = np.isfinite(sens)
+        if finite.all():
+            return
+        refused = result._ar_sens_refused
+        if refused and len(result._species_names) == sens.shape[1]:
+            keep = np.array([n not in refused for n in result._species_names], dtype=bool)
+            finite = finite[:, keep, :]
+            if finite.all():
+                return
+        bad = (
+            [sens_params[j] for j in range(finite.shape[2]) if not finite[:, :, j].all()]
+            if finite.shape[2] == len(sens_params)
+            else list(sens_params)
+        )
+        raise SimulationError(
+            f"Sensitivity chunk failed (params={sens_params}): the solver reported "
+            f"success but column(s) {bad} came back non-finite, so the tensor would "
+            f"carry a silently dead column (issue #243)."
+        )
 
     @staticmethod
     def _stitch_sensitivity_results(
