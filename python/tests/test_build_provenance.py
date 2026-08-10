@@ -291,6 +291,43 @@ def test_format_report_flags_stale_and_points_to_rebuild() -> None:
     assert "rebuild_editable.py" in report
 
 
+def test_stale_report_flags_a_rebuild_prerequisite_this_env_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remedy that fails sends the reader to BNGSIM_ALLOW_STALE_CORE=1 (GH #229).
+
+    ``scripts/rebuild_editable.py`` drives cmake against this environment, so it
+    needs pybind11 here — and pybind11 lives only in ``[build-system] requires``,
+    which uv never installs into ``.venv``. When it is missing, say so *next to*
+    the remedy, because the alternative sitting beside that remedy is the escape
+    hatch the whole guard exists to keep people off.
+    """
+    monkeypatch.setattr(bp, "_pybind11_missing", lambda: True)
+    report = bp.format_report(_prov(core_mtime=0.0, newest_mtime=1e9))
+    assert "pybind11" in report
+    assert "uv sync --extra dev" in report
+
+
+def test_stale_report_stays_quiet_when_pybind11_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It is a conditional aside, not boilerplate: no note when nothing is missing."""
+    monkeypatch.setattr(bp, "_pybind11_missing", lambda: False)
+    report = bp.format_report(_prov(core_mtime=0.0, newest_mtime=1e9))
+    assert "pybind11" not in report
+    assert "rebuild_editable.py" in report
+
+
+def test_pybind11_probe_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A diagnostic aside must not be able to break the guard it annotates."""
+
+    def boom(name: str) -> None:
+        raise RuntimeError("broken import system")
+
+    monkeypatch.setattr(bp.sys.modules["importlib.util"], "find_spec", boom)
+    assert bp._pybind11_missing() is False
+
+
 def test_identity_line_is_single_line() -> None:
     line = bp.identity_line(_prov(core_mtime=2000.0, newest_mtime=1000.0))
     assert "\n" not in line

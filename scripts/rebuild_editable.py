@@ -33,6 +33,12 @@ documents), and both used to make this script unusable there:
   ``_editable_install_cmd``). Note the happy path needs no installer at all —
   it is pure cmake — so this only matters for the bootstrap and version-drift
   branches.
+* pybind11 is a ``[build-system] requires`` entry, which uv supplies in a
+  transient isolated build env and **never installs into ``.venv``**. The pure
+  cmake happy path has no such env, so ``find_package(pybind11)`` has to succeed
+  from the environment this script is running in. ``_pybind11_cmake_dir`` asks
+  the running interpreter and pins ``pybind11_DIR`` when it can answer; see
+  that function for what happens when it cannot (GH #229).
 """
 
 from __future__ import annotations
@@ -183,6 +189,121 @@ def _requested_macos_architectures() -> str | None:
     if arch in {"arm64", "x86_64"}:
         return arch
     return None
+
+
+def _pybind11_cmake_dir() -> str | None:
+    """This interpreter's pybind11 CMake package directory, or ``None``.
+
+    ``find_package(pybind11 CONFIG REQUIRED)`` in CMakeLists.txt has to resolve
+    from whatever environment the configure runs in. Under uv that environment
+    is the project ``.venv``, and pybind11 is declared only in
+    ``[build-system] requires`` — uv installs it into a transient isolated build
+    env, never into ``.venv``. So the one interpreter that is guaranteed to be
+    *right* (the one we are building for) is also the one CMake cannot ask
+    without help. We are already running in it, so we ask it directly and pin
+    the answer with ``-Dpybind11_DIR``. GH #229.
+
+    Returning ``None`` is deliberately non-fatal: CMake can still find a
+    system-wide pybind11 (Homebrew ships one under ``/opt/homebrew``), and that
+    path works today on plenty of machines. Refusing here would break them for
+    a dependency they demonstrably do not need. What the caller does instead is
+    say so up front and, if the configure then fails, name the remedy — see
+    :data:`_PYBIND11_MISSING_NOTE`.
+    """
+    try:
+        import pybind11
+    except ImportError:
+        return None
+    try:
+        cmake_dir = Path(str(pybind11.get_cmake_dir()))
+    except Exception:
+        return None
+    # Pinning a directory with no config file in it turns one CMake error into a
+    # different, more confusing one ("pybind11_DIR was set to a directory not
+    # containing..."). Both spellings, matching the CMakeLists.txt prelude.
+    if not any(
+        (cmake_dir / name).is_file() for name in ("pybind11Config.cmake", "pybind11-config.cmake")
+    ):
+        return None
+    # Forward slashes: a Windows site-packages path carries backslashes, and a
+    # backslash in a -D value is an escape to CMake. Identical to str() on POSIX.
+    return cmake_dir.as_posix()
+
+
+#: What to tell someone whose configure just died for want of pybind11.
+#:
+#: The stale-binary guard names this script as *the* remedy
+#: (``_build_provenance.py``), and the only other thing it offers is
+#: ``BNGSIM_ALLOW_STALE_CORE=1`` — run against a binary that does not match the
+#: source, which is precisely what the guard exists to prevent. So a raw CMake
+#: error here does not just fail; it pushes the reader toward the unsafe escape
+#: hatch, on the path designed to keep them off it. GH #229.
+_PYBIND11_MISSING_NOTE = """\
+The cmake configure above failed, and pybind11 is not importable in this
+interpreter. So if the error is
+
+    Could not find a package configuration file provided by "pybind11"
+
+then that is why, and here is the fix. (If cmake failed for some other reason,
+read its message above — this note does not apply.)
+
+pybind11 is a [build-system] requirement, which uv installs into a transient
+isolated build env and never into .venv — so a venv only carries it if some
+extra declares it. The `dev` extra does:
+
+    uv sync --extra dev
+
+Or rebuild through uv's own isolated build env, which needs no local pybind11
+(name every extra you want — `uv sync` prunes the ones you omit):
+
+    uv sync --extra dev --reinstall-package bngsim\
+"""
+
+
+def _configure_cmd(
+    source_dir: Path,
+    build_dir: Path,
+    *,
+    pybind11_cmake_dir: str | None,
+    sdkroot: str | None,
+    macos_architectures: str | None,
+) -> list[str]:
+    """The cmake configure argv for an editable rebuild of ``_bngsim_core``."""
+    cmd = [
+        "cmake",
+        "-S",
+        str(source_dir),
+        "-B",
+        str(build_dir),
+        "-DBNGSIM_BUILD_PYTHON=ON",
+        "-DBNGSIM_BUILD_TESTS=OFF",
+        # Pin the interpreter we are building *for*. Without this, FindPython
+        # reuses the cache, and a tree produced under build isolation cached a
+        # Python_EXECUTABLE inside a build venv that no longer exists (uv wipes
+        # ~/.cache/uv/builds-v0/.tmpXXXX after each build). Passing it also
+        # makes the ABI-selected fallback in _load_build_info safe: whichever
+        # tree we reuse is retargeted at this interpreter before it is built.
+        f"-DPython_EXECUTABLE={sys.executable}",
+        f"-DPython3_EXECUTABLE={sys.executable}",
+    ]
+    # Pin the bindings to *this* interpreter's pybind11 when it has one. Beyond
+    # making the configure work at all where nothing else supplies pybind11,
+    # this is what keeps the two rebuild paths agreeing: uv's isolated build
+    # resolves pybind11 from [build-system] requires, and without this flag a
+    # cmake-only rebuild silently compiles against whatever unrelated copy the
+    # system happens to ship instead. GH #229.
+    if pybind11_cmake_dir is not None:
+        cmd.append(f"-Dpybind11_DIR={pybind11_cmake_dir}")
+    if sdkroot:
+        cmd.append(f"-DCMAKE_OSX_SYSROOT={sdkroot}")
+    if macos_architectures:
+        cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={macos_architectures}")
+    # Carry the GH #78 MIR micro-JIT opt-in through to the configure so a
+    # reconfigure doesn't silently turn the prototype backend off. Default
+    # OFF (matches the CMake option); set BNGSIM_ENABLE_MIR=1 to build it.
+    if os.environ.get("BNGSIM_ENABLE_MIR", "").strip().lower() in ("1", "on", "true", "yes"):
+        cmd.append("-DBNGSIM_ENABLE_MIR=ON")
+    return cmd
 
 
 def _editable_install_cmd(source_dir: Path) -> list[str]:
@@ -466,39 +587,41 @@ def main() -> int:
         cmake_env = os.environ.copy()
     cmake_env["SKBUILD_EDITABLE_SKIP"] = skip_value
 
+    pybind11_cmake_dir = _pybind11_cmake_dir()
+    if pybind11_cmake_dir is None:
+        # Said before the configure, not after, so the correlation is visible
+        # even when cmake goes on to succeed against a system pybind11 — in
+        # which case this line is also the only notice that the bindings were
+        # built against a copy the project never pinned.
+        print(
+            "pybind11: not importable in this interpreter; leaving discovery to CMake (GH #229)",
+            flush=True,
+        )
+    else:
+        print(f"pybind11: {pybind11_cmake_dir}", flush=True)
+
     timeout = float(os.environ.get("BNGSIM_REBUILD_LOCK_TIMEOUT", _LOCK_TIMEOUT_SECONDS))
     with _editable_rebuild_lock(build_dir, timeout=timeout):
-        configure_cmd = [
-            "cmake",
-            "-S",
-            str(source_dir),
-            "-B",
-            str(build_dir),
-            "-DBNGSIM_BUILD_PYTHON=ON",
-            "-DBNGSIM_BUILD_TESTS=OFF",
-            # Pin the interpreter we are building *for*. Without this, FindPython
-            # reuses the cache, and a tree produced under build isolation cached a
-            # Python_EXECUTABLE inside a build venv that no longer exists (uv wipes
-            # ~/.cache/uv/builds-v0/.tmpXXXX after each build). Passing it also
-            # makes the ABI-selected fallback in _load_build_info safe: whichever
-            # tree we reuse is retargeted at this interpreter before it is built.
-            f"-DPython_EXECUTABLE={sys.executable}",
-            f"-DPython3_EXECUTABLE={sys.executable}",
-        ]
-        if cmake_sdkroot:
-            configure_cmd.append(f"-DCMAKE_OSX_SYSROOT={cmake_sdkroot}")
-        if macos_architectures:
-            configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={macos_architectures}")
-        # Carry the GH #78 MIR micro-JIT opt-in through to the configure so a
-        # reconfigure doesn't silently turn the prototype backend off. Default
-        # OFF (matches the CMake option); set BNGSIM_ENABLE_MIR=1 to build it.
-        if os.environ.get("BNGSIM_ENABLE_MIR", "").strip().lower() in ("1", "on", "true", "yes"):
-            configure_cmd.append("-DBNGSIM_ENABLE_MIR=ON")
-
-        _run(
-            configure_cmd,
-            env=cmake_env,
+        configure_cmd = _configure_cmd(
+            source_dir,
+            build_dir,
+            pybind11_cmake_dir=pybind11_cmake_dir,
+            sdkroot=cmake_sdkroot,
+            macos_architectures=macos_architectures,
         )
+
+        try:
+            _run(
+                configure_cmd,
+                env=cmake_env,
+            )
+        except subprocess.CalledProcessError:
+            if pybind11_cmake_dir is not None:
+                raise
+            # Only reachable with pybind11 absent, so the note is a candidate
+            # diagnosis rather than a verdict — it says which failure it
+            # explains, and cmake's own error is directly above it.
+            raise SystemExit(_PYBIND11_MISSING_NOTE) from None
 
         _run(
             ["cmake", "--build", str(build_dir), "--target", "_bngsim_core"],

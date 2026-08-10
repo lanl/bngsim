@@ -289,6 +289,32 @@ def identity_line(prov: Provenance | None = None) -> str:
     )
 
 
+def _pybind11_missing() -> bool:
+    """True when this environment cannot supply pybind11 to the rebuild helper.
+
+    The remedy this report names — ``scripts/rebuild_editable.py`` — drives cmake
+    directly against the current environment, so ``find_package(pybind11)`` has
+    to resolve from here. pybind11 is declared only in ``[build-system]
+    requires``, which uv installs into a transient isolated build env and never
+    into ``.venv``; the ``dev`` extra is what puts it in reach (GH #229).
+
+    A missing pybind11 does not *guarantee* the rebuild fails — cmake can still
+    find a system-wide copy — so this only adds a note, never withholds the
+    remedy. It matters because the alternative sitting next to that remedy is
+    ``BNGSIM_ALLOW_STALE_CORE=1``: a remedy that fails does not send the reader
+    back for a better one, it sends them to the escape hatch this guard exists
+    to keep them off.
+
+    Never raises: a diagnostic aside must not be able to break the guard.
+    """
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("pybind11") is None
+    except Exception:
+        return False
+
+
 def format_report(prov: Provenance | None = None) -> str:
     """Multi-line human report used in warnings and the preflight error."""
     prov = prov or gather()
@@ -307,6 +333,11 @@ def format_report(prov: Provenance | None = None) -> str:
             "[bngsim]   Rebuild:  python scripts/rebuild_editable.py   "
             "(or set BNGSIM_ALLOW_STALE_CORE=1 to proceed anyway)."
         )
+        if _pybind11_missing():
+            lines.append(
+                "[bngsim]   NOTE: pybind11 is not installed in this environment, so that "
+                "rebuild needs a system copy; `uv sync --extra dev` declares it (GH #229)."
+            )
     return "\n".join(lines)
 
 
