@@ -808,3 +808,225 @@ class TestFunctionFreeSensitivityCodegen:
                 chunk_size=1,
                 n_workers=1,
             )
+
+
+# ── GH #243: a chunk failure is about the grouping until proven otherwise ────
+class TestChunkFailureIsRetriedPerColumn:
+    """``chunk_size`` decided whether the *answer existed*, not just how fast.
+
+    A chunk is ``chunk_size`` sensitivity columns sharing one CVODES error test,
+    so the grouping is part of what succeeded or failed. On BIOMD0000000044 the
+    same 23 columns raised at ``chunk_size`` 1, 2 and 4 and returned at 3 — and
+    the bare ``CVODE integration failed`` message read as a statement about the
+    model, which is the one thing it was not. Now every failed chunk is retried
+    one column at a time before anything is reported, which answers the question
+    the raw failure could not: unresolvable column, or unlucky grouping?
+    """
+
+    _PARAMS = ["kf", "kr"]
+    _RUN = dict(t_span=(0.0, 10.0), n_points=11)
+
+    def _sim(self):
+        return bngsim.Simulator(bngsim.Model.from_net(_get_reversible_net()), method="ode")
+
+    @staticmethod
+    def _fail_when(monkeypatch, predicate):
+        """Make ``_run_sensitivity_chunk`` raise for the chunks ``predicate`` picks."""
+        real = bngsim.Simulator._run_sensitivity_chunk
+        seen: list[list[str]] = []
+
+        def fake(self, sens_params, *args, **kwargs):
+            seen.append(list(sens_params))
+            if predicate(list(sens_params)):
+                raise SimulationError(
+                    f"Sensitivity chunk failed (params={list(sens_params)}): "
+                    "CVODE integration failed at t=2.000000 with flag=-4"
+                )
+            return real(self, sens_params, *args, **kwargs)
+
+        monkeypatch.setattr(bngsim.Simulator, "_run_sensitivity_chunk", fake)
+        return seen
+
+    def test_group_only_failure_is_recovered(self, monkeypatch):
+        """Every column integrates alone → the grouping was the problem, and the
+        call returns the full tensor built from the single-column solves."""
+        seen = self._fail_when(monkeypatch, lambda p: len(p) > 1)
+        with pytest.warns(UserWarning, match="integrated on its own"):
+            got = self._sim().compute_all_sensitivities(
+                **self._RUN, params=list(self._PARAMS), chunk_size=2, n_workers=1
+            )
+
+        assert list(got.sensitivity_params) == self._PARAMS
+        assert got.sensitivities.shape[2] == 2
+        assert np.isfinite(got.sensitivities).all()
+        # The grouped attempt came first, then one solo run per column.
+        assert seen == [["kf", "kr"], ["kf"], ["kr"]]
+
+        # ...and the recovered tensor is the chunk_size=1 tensor, column for column.
+        ref = self._sim().compute_all_sensitivities(
+            **self._RUN, params=list(self._PARAMS), chunk_size=1, n_workers=1
+        )
+        np.testing.assert_allclose(got.sensitivities, ref.sensitivities, rtol=1e-9, atol=1e-12)
+
+    def test_recovery_preserves_column_order(self, monkeypatch):
+        """The spliced solo results must land in parameter order, not run order."""
+        self._fail_when(monkeypatch, lambda p: len(p) > 1)
+        with pytest.warns(UserWarning, match="integrated on its own"):
+            got = self._sim().compute_all_sensitivities(
+                **self._RUN, params=["kr", "kf"], chunk_size=2, n_workers=1
+            )
+        ref = self._sim().compute_all_sensitivities(
+            **self._RUN, params=["kr", "kf"], chunk_size=1, n_workers=1
+        )
+        assert list(got.sensitivity_params) == ["kr", "kf"]
+        np.testing.assert_allclose(got.sensitivities, ref.sensitivities, rtol=1e-9, atol=1e-12)
+
+    def test_unresolvable_column_is_named_with_the_survivors(self, monkeypatch):
+        """One column fails alone → raise, but say which column, which are fine,
+        that the scope is the chunk, and what to re-run."""
+        self._fail_when(monkeypatch, lambda p: "kr" in p)
+        with pytest.raises(SimulationError) as exc:
+            self._sim().compute_all_sensitivities(
+                **self._RUN, params=list(self._PARAMS), chunk_size=2, n_workers=1
+            )
+        msg = str(exc.value)
+        assert "['kr'] also fail on their own" in msg
+        assert "['kf'] integrated fine alone" in msg
+        assert "issue #243" in msg
+        # A copy-pasteable next step that keeps the columns that do work.
+        assert "params=['kf']" in msg
+        # The CVODE message is still there, and still the cause.
+        assert "flag=-4" in msg
+        assert isinstance(exc.value.__cause__, SimulationError)
+
+    def test_single_column_chunk_skips_the_retry(self, monkeypatch):
+        """``chunk_size=1`` already ran the column alone — there is no grouping
+        to blame and no second run to make."""
+        seen = self._fail_when(monkeypatch, lambda p: "kr" in p)
+        with pytest.raises(SimulationError, match=r"\['kr'\] also fail on their own"):
+            self._sim().compute_all_sensitivities(
+                **self._RUN, params=list(self._PARAMS), chunk_size=1, n_workers=1
+            )
+        assert seen.count(["kr"]) == 1, "the failing column must not be re-run"
+
+    def test_wide_chunk_reports_that_it_did_not_diagnose(self, monkeypatch):
+        """The retry costs one solve per column of a *failing* chunk, so past a
+        couple of dozen columns it is named rather than run — and the message
+        must not then claim to know which column is at fault."""
+        monkeypatch.setattr(bngsim.Simulator, "_MAX_COLUMNS_FOR_SOLO_RETRY", 1)
+        seen = self._fail_when(monkeypatch, lambda p: len(p) > 1)
+        with pytest.raises(SimulationError) as exc:
+            self._sim().compute_all_sensitivities(
+                **self._RUN, params=list(self._PARAMS), chunk_size=2, n_workers=1
+            )
+        msg = str(exc.value)
+        assert "were NOT retried individually" in msg
+        assert "chunk_size=1" in msg
+        assert seen == [["kf", "kr"]], "no solo runs should have been attempted"
+
+    def test_parallel_path_recovers_too(self, monkeypatch):
+        """Same treatment when the chunks ran on a ThreadPoolExecutor: only the
+        failed chunk is retried, and the chunks that were fine are untouched."""
+        params = ["k1", "k2", "scale", "eps"]
+        self._fail_when(monkeypatch, lambda p: p == ["k1", "k2"])
+        sim = bngsim.Simulator(bngsim.Model.from_net(_get_expr_chain_net()), method="ode")
+        with pytest.warns(UserWarning, match="integrated on its own"):
+            got = sim.compute_all_sensitivities(
+                **self._RUN, params=params, chunk_size=2, n_workers=2
+            )
+        assert list(got.sensitivity_params) == params
+        assert got.sensitivities.shape[2] == 4
+        assert np.isfinite(got.sensitivities).all()
+
+
+class TestNonFiniteSensitivityChunkIsAFailure:
+    """A NaN column is a failure the solver forgot to report (GH #243).
+
+    On BIOMD0000000044 at ``chunk_size=3`` the ``_lp_v7_n`` column integrates to
+    NaN from the first output point on while CVODES returns success — the
+    columns sharing its chunk pass the error test on its behalf. That tensor is
+    not a partial answer: :meth:`Result.gradient` contracts the whole parameter
+    axis, so one dead column NaNs every entry of the gradient. Left unchecked it
+    made the *silent* outcome the one you get at some chunk sizes and the loud
+    one at others.
+    """
+
+    def _chunk_result(self):
+        m = bngsim.Model.from_net(_get_reversible_net())
+        sim = bngsim.Simulator(m, method="ode")
+        r = sim.compute_all_sensitivities(
+            t_span=(0.0, 10.0), n_points=11, params=["kf", "kr"], chunk_size=2, n_workers=1
+        )
+        assert np.isfinite(r.sensitivities).all()
+        return r
+
+    def test_clean_chunk_passes(self):
+        r = self._chunk_result()
+        bngsim.Simulator._raise_if_nonfinite_sensitivities(r, ["kf", "kr"])
+
+    def test_nan_column_raises_and_is_named(self):
+        r = self._chunk_result()
+        r._sensitivities = np.array(r.sensitivities, copy=True)
+        r._sensitivities[1:, :, 1] = np.nan
+        with pytest.raises(SimulationError) as exc:
+            bngsim.Simulator._raise_if_nonfinite_sensitivities(r, ["kf", "kr"])
+        assert "['kr']" in str(exc.value)
+        assert "non-finite" in str(exc.value)
+
+    def test_infinite_column_raises_too(self):
+        r = self._chunk_result()
+        r._sensitivities = np.array(r.sensitivities, copy=True)
+        r._sensitivities[-1, 0, 0] = np.inf
+        with pytest.raises(SimulationError, match=r"\['kf'\]"):
+            bngsim.Simulator._raise_if_nonfinite_sensitivities(r, ["kf", "kr"])
+
+    def test_deliberately_refused_ar_row_is_not_a_failure(self):
+        """GH #221 NaNs an assignment-rule row on purpose and records it in
+        ``ar_sensitivity_refused``; that row must not be read as a blow-up."""
+        r = self._chunk_result()
+        r._sensitivities = np.array(r.sensitivities, copy=True)
+        refused_species = r.species_names[0]
+        r._sensitivities[:, 0, :] = np.nan
+        r._ar_sens_refused = frozenset({refused_species})
+        bngsim.Simulator._raise_if_nonfinite_sensitivities(r, ["kf", "kr"])
+
+        # ...but a NaN OUTSIDE the refused row is still a failure.
+        r._sensitivities[2, 1, 0] = np.nan
+        with pytest.raises(SimulationError, match=r"\['kf'\]"):
+            bngsim.Simulator._raise_if_nonfinite_sensitivities(r, ["kf", "kr"])
+
+
+_BIOMD44 = (
+    Path(__file__).resolve().parent.parent.parent
+    / "parity_checks"
+    / "rr_parity"
+    / "models"
+    / "BIOMD0000000044"
+    / "BIOMD0000000044_url.xml"
+)
+
+
+@pytest.mark.skipif(not _BIOMD44.exists(), reason="BIOMD0000000044 SBML not present")
+def test_biomd44_verdict_no_longer_depends_on_chunk_size():
+    """The model that filed GH #243, end to end.
+
+    Before: ``chunk_size`` 1, 2 and 4 raised a bare CVODE message and 3 returned
+    a tensor whose ``_lp_v7_n`` column was silently all-NaN. Now every grouping
+    reaches the same verdict, names the same marginal column, and none of them
+    hands back a dead column dressed as an answer.
+    """
+    m0 = bngsim.Model.load(str(_BIOMD44))
+    refused = set(m0.unwritable_compartment_size_params)
+    names = [p for p in m0.param_names if p not in refused]
+    assert "_lp_v7_n" in names
+
+    for chunk_size in (1, 2, 3, 4):
+        sim = bngsim.Simulator(bngsim.Model.load(str(_BIOMD44)), method="ode")
+        with pytest.raises(SimulationError) as exc:
+            sim.compute_all_sensitivities(
+                (0.0, 10.0), 6, params=names, chunk_size=chunk_size, n_workers=1
+            )
+        msg = str(exc.value)
+        assert "['_lp_v7_n'] also fail on their own" in msg, f"chunk_size={chunk_size}: {msg}"
+        # The other 22 columns are named as the ones worth re-running.
+        assert "'_lp_v7_n'" not in msg.split("Re-run with params=")[1]

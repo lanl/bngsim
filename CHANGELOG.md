@@ -278,6 +278,98 @@ in `CMakeLists.txt`) is derived from it.
   pybind11 is not importable it says so next to the remedy, so a remedy that may
   fail no longer sits alone beside `BNGSIM_ALLOW_STALE_CORE=1`. CONTRIBUTING.md's
   rebuild line now names its extras.
+
+- **The `^` → `pow()` rewrite split a scientific-notation literal at its
+  exponent sign, emitting C that does not compile (issue #240).** Both operand
+  scans in `_codegen._replace_power_op` walk the character class `alnum . _`,
+  which the `+`/`-` of a signed exponent is not in — so the scan stopped inside
+  the number: `2.4279e-09^1.6123` became `2.4279e-pow(09, 1.6123)`, and on the
+  other operand `x^1e-3` became `pow(x, 1e)-3`. An *unsigned* exponent
+  (`1.5e3^2`) was always fine, which is why it took a signed one to surface.
+
+  `clang` rejects the result twice over (`exponent has no digits`, and `09` is
+  an invalid octal constant), so the model lost codegen entirely rather than
+  computing a wrong number. The visible symptom was downstream and misleading:
+  `MODEL1108260014` reported `Could not generate an analytical sensitivity RHS
+  for this model`, which reads as a statement about rate-law
+  differentiability rather than about the printer.
+
+  Both scans now take a numeric literal as a unit. The gate is deliberately
+  narrow: the base-side extension only fires when the run collected is all
+  digits and the characters before it spell `<mantissa>[eE][+-]` with the
+  mantissa not itself the tail of an identifier, so `k_2e-3^2` stays
+  `k_2e-pow(3, 2)` — a subtraction, not a literal.
+
+  Blast radius, measured: every string in `codegen_data()` for all 1,537 models
+  of `parity_checks/rr_parity` + `benchmarks/sbml_events`, rewritten both ways.
+  Two expressions change, both `MODEL1108260014` (it is in both corpora), both
+  carrying the split-literal artifact before and none after. That model now
+  builds its analytical sensitivity RHS, and its compiled and interpreted
+  trajectories agree to 8.9e-12 — the ExprTk path always read the literal
+  correctly, since only the compiled path goes through this rewrite.
+
+- **`compute_all_sensitivities`: whether the solve succeeded depended on
+  `chunk_size`, a documented performance knob (issue #243).** A chunk is
+  `chunk_size` sensitivity columns sharing one CVODES error test, so the
+  grouping decides whether a marginal column's step is accepted. On
+  `BIOMD0000000044` the same 23 columns raised at `chunk_size` 1, 2 and 4 and
+  returned at 3; `BIOMD0000000166` had its own version of the same. Nothing in
+  the failure said the scope was the chunk — the bare `CVODE integration
+  failed` message reads as a statement about the model — and one marginal
+  column took down the other 22 with it.
+
+  A failed chunk is now retried one column at a time before anything is
+  reported. Every column integrating alone means the grouping was the problem:
+  the tensor is completed from those single-column solves and the call
+  succeeds, with a warning saying so. A column that fails alone is
+  unresolvable, and the `SimulationError` names it, names the columns that were
+  fine, states that the scope is the chunk and that another `chunk_size` may
+  succeed, and prints the `params=[...]` that keeps every computable column —
+  the bisection a caller previously had to do by hand. The retry costs one
+  solve per column of a failing chunk, so past 16 columns it is named rather
+  than run, and the message then does not claim to know which column is at
+  fault.
+
+  Also caught by the same work: a CVODES failure is not the only way a column
+  can be unusable, and not the way that hurts. At `chunk_size=3`
+  `BIOMD0000000044` returned *success* with `_lp_v7_n` NaN from the first output
+  point on — the columns sharing its chunk passed the error test on its behalf.
+  `Result.gradient` contracts the whole parameter axis, so one such column NaNs
+  every entry of the gradient. A non-finite sensitivity block is now a chunk
+  failure and takes the same retry (rows the #221 assignment-rule redirect
+  refuses on purpose are excluded — `Result.ar_sensitivity_refused` is that
+  set). Both models the issue names now reach the same verdict at every
+  `chunk_size`, naming the same marginal column.
+
+- **Nothing asserted whether the GH #88 periodic step bound is still necessary,
+  and the module docstring still claimed it was (issue #262).** The bound
+  derives a `max_step` ceiling for models whose dosing schedule is periodic
+  `floor`/`modulo` arithmetic; 25 of the 1,323 `rr_parity` models get one. GH
+  #259 gave `MODEL1708310001` five more discontinuity roots, they bracket the
+  same pulse edges, and the test that used to witness necessity became a test
+  that the roots resolve the schedule *without* the bound — leaving
+  `test_sbml_periodic_floor_dosing.py`'s header asserting the opposite of what
+  its tests do.
+
+  Measured, as #262 asked: a two-arm sweep (`max_step` default vs
+  `max_step=-1`) at rtol and rtol/100 over all 25, each arm scored against its
+  own tolerance stability. No model's answer the bound changes. 23 agree to
+  within their own tol-stability; the other two (`BIOMD0000000858`/`859`) are
+  not tol-stable in either arm and are byte-identical between them, so they
+  cannot adjudicate. The bound is inert on 15 of the 25 — identical step counts
+  in both arms — and where it binds it costs up to 2.5x the steps
+  (`MODEL0406553884`: 439,367 vs 176,919) for no change in the answer.
+
+  That includes the class #262 flagged as the one roots provably cannot reach:
+  seven of the 25 carry a bound and *zero* discontinuity roots, and disabling it
+  changes nothing on any of them. Two tests now pin this — `BIOMD0000000312`
+  (bound, no roots, and the bound does bind, so the agreement is not vacuous)
+  and `MODEL0847869198` (rooted, bound binds hard: >20% more steps for a
+  1e-9 difference) — and each asserts its own precondition, so neither can decay
+  into a vacuous pass the way the necessity claim did. The docstring now records
+  the measurement instead of the stale claim. Narrowing or retiring the bound on
+  the strength of it is a separate call and is not made here.
+
 - **`BNGSIM_KLU_AUTOBUILD` could not complete on a host with no BLAS, which made
   a source `pip install` on a bare Linux box a hard configure failure rather
   than a dense-only fallback (issue #178).** The autobuild exists so a box with

@@ -5136,6 +5136,68 @@ def _replace_power_op(expr: str) -> str:
     return "".join(result)
 
 
+# A numeric mantissa immediately followed by the exponent marker — the shape a
+# scientific-notation literal has once its exponent digits have been consumed
+# separately (``1e``, ``2.0E``, ``.5e``). Anchored, so an identifier that merely
+# ENDS that way (``a1e``, ``k_2e``) is not mistaken for one.
+_SCI_MANTISSA_E_RE = re.compile(r"\A(?:[0-9]+\.?[0-9]*|\.[0-9]+)[eE]\Z")
+
+
+def _sci_exponent_prefix_len(chars: list[str]) -> int:
+    """Length of the ``<mantissa>[eE][+-]`` run ending at ``chars[-1]``, or 0.
+
+    GH #240 — the operand scans below walk a character class (``alnum . _``)
+    that a *signed* exponent breaks: scanning left from the ``^`` in
+    ``2.4279e-09^1.6123`` stops at the ``-`` and takes ``09`` as the base. This
+    reports how much more of the literal sits to the left of those digits, so
+    the scan can take the number as a unit.
+
+    Zero when the run is not one: no ``[eE][+-]``, no mantissa digits, or a
+    mantissa that is really the tail of an identifier (``k_2e-3`` is ``k_2e``
+    minus ``3``, not a literal) or of a dotted name.
+    """
+    n = len(chars)
+    i = n - 1
+    if i < 0 or chars[i] not in "+-":
+        return 0
+    i -= 1
+    if i < 0 or chars[i] not in "eE":
+        return 0
+    i -= 1
+    seen_digit = False
+    seen_dot = False
+    while i >= 0 and (chars[i].isdigit() or (chars[i] == "." and not seen_dot)):
+        if chars[i] == ".":
+            seen_dot = True
+        else:
+            seen_digit = True
+        i -= 1
+    if not seen_digit:
+        return 0
+    # `e` preceded by an identifier character is part of that identifier.
+    if i >= 0 and (chars[i].isalnum() or chars[i] in "_."):
+        return 0
+    return n - 1 - i
+
+
+def _sci_exponent_suffix_len(tok: str, expr: str, i: int) -> int:
+    """How many chars at ``expr[i:]`` complete ``tok`` into one literal, or 0.
+
+    The mirror image of :func:`_sci_exponent_prefix_len` for the exponent
+    operand: scanning right from the ``^`` in ``x^1e-3`` stops at the ``-``
+    with ``tok == "1e"``, and ``-3`` is the rest of the same number.
+    """
+    if not _SCI_MANTISSA_E_RE.match(tok):
+        return 0
+    if i >= len(expr) or expr[i] not in "+-":
+        return 0
+    j = i + 1
+    start = j
+    while j < len(expr) and expr[j].isdigit():
+        j += 1
+    return j - i if j > start else 0
+
+
 def _extract_base_left(result_chars: list[str]) -> str:
     """Extract the base operand from the left side of ^.
 
@@ -5175,6 +5237,14 @@ def _extract_base_left(result_chars: list[str]) -> str:
         # Collect identifier or number
         while result_chars and (result_chars[-1].isalnum() or result_chars[-1] in "_."):
             collected.append(result_chars.pop())
+        # GH #240 — that class excludes the `+`/`-` of a signed exponent, so on
+        # `2.4279e-09^1.6123` the scan just took `09` and left `2.4279e-` behind
+        # as loose text. Take the rest of the literal too. Gated on the run being
+        # all digits: that is what an exponent tail looks like, and it keeps an
+        # ordinary subtraction (`x+3^2`) out of the branch.
+        if collected and all(c.isdigit() for c in collected):
+            for _ in range(_sci_exponent_prefix_len(result_chars)):
+                collected.append(result_chars.pop())
 
     collected.reverse()
     return "".join(collected)
@@ -5203,11 +5273,17 @@ def _extract_exp_right(expr: str, start: int) -> tuple[str, int]:
         start_num = i
         while i < len(expr) and (expr[i].isalnum() or expr[i] in "_.[]"):
             i += 1
+        # GH #240 — `x^-1e-3`: the class stops at the exponent's sign, so the
+        # literal is only half taken. Same fix as the unsigned case below.
+        i += _sci_exponent_suffix_len(expr[start_num:i], expr, i)
         return f"-{expr[start_num:i]}", i
     # Collect identifier or number
     start_tok = i
     while i < len(expr) and (expr[i].isalnum() or expr[i] in "_.[]"):
         i += 1
+    # GH #240 — `x^1e-3` would otherwise emit `pow(x, 1e)-3`, which is neither
+    # valid C (`exponent has no digits`) nor the intended number.
+    i += _sci_exponent_suffix_len(expr[start_tok:i], expr, i)
     return expr[start_tok:i], i
 
 
