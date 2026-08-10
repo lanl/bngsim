@@ -141,6 +141,13 @@ the `_bngsim_core` extension target:
 uv run --directory bngsim python scripts/rebuild_editable.py
 ```
 
+This drives cmake against the environment you are in, so `find_package(pybind11)`
+has to resolve from there. `pybind11` is a `[build-system]` requirement — uv
+installs it into a transient isolated build env, never into `.venv` — so the
+`dev` extra declares it (`uv sync --extra dev`). Without it the script falls back
+to a system-wide pybind11 if there is one, says so on the `pybind11:` line it
+prints, and names the fix if cmake then comes up empty (GH #229).
+
 Then run a quick regression check against the installed runtime:
 
 ```bash

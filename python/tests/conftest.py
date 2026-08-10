@@ -193,6 +193,19 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     # the run rather than printing a row. #179 argued this class specifically:
     # these have never skipped on any leg, so making them fatal costs nothing
     # today and buys the alarm on the day a leg loses its toolchain.
+    # pybind11 looks like an optional extra and is not one: the whole-suite job
+    # syncs `--extra dev`, which declares it (GH #229), so the only environment
+    # that can produce this skip is a venv provisioned with a narrower extra
+    # list. That makes it a statement about the environment, not the build —
+    # and if the `dev` extra ever loses the declaration, this is the tier that
+    # says so instead of quietly dropping the check that the rebuild helper can
+    # still find pybind11. The curated strict legs (mir.yml, windows-tail.yml)
+    # do not list that file, so it cannot fire there.
+    (
+        "pybind11 is not installed",
+        _LOCAL_ONLY,
+        "CI syncs --extra dev, which declares pybind11; absent only in a narrower venv",
+    ),
     ("no C compiler", _LOCAL_ONLY, "a CI leg without cc has broken, not adapted"),
     ("codegen compile unavailable", _LOCAL_ONLY, "same condition, reported from the codegen side"),
     ("no codegen backend available", _LOCAL_ONLY, "as above"),

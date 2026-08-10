@@ -126,6 +126,22 @@ dev = [
     # scripts/rebuild_editable.py, keeping the type stub in sync with the C++
     # bindings so mypy does not drift into spurious attr-defined errors.
     "pybind11-stubgen>=2.5",
+    # The *other* thing scripts/rebuild_editable.py needs, and the one nothing
+    # else provides. That script drives cmake directly against this venv, so
+    # find_package(pybind11) has to resolve from here — but pybind11 is a
+    # [build-system] requirement, which uv puts in a transient isolated build
+    # env and never installs into .venv. Undeclared, the script worked only on
+    # machines carrying a system pybind11 (or a venv that happened to keep one
+    # from some earlier `uv pip install`, until the next `uv sync` pruned it) —
+    # and it is the remedy the stale-binary guard names, so its failure pushed
+    # people toward BNGSIM_ALLOW_STALE_CORE=1. GH #229.
+    #
+    # The specifier must match [build-system] requires above: the two are the
+    # same dependency reached by two routes, and a skew means the incremental
+    # cmake rebuild and `uv sync --reinstall-package bngsim` can compile the
+    # same source against different pybind11 versions.
+    # test_rebuild_editable_pybind11.py fails if they drift.
+    "pybind11>=2.13",
 ]
 
 # PEP 735 dependency groups — local-only, NEVER part of published metadata.

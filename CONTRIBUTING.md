@@ -35,8 +35,25 @@ The editable install does **not** auto-rebuild the C++ extension
 (`editable.rebuild = false`). After changing C++, refresh it:
 
 ```bash
-uv sync --reinstall-package bngsim   # rebuild + reinstall the editable extension
+uv sync --extra test --reinstall-package bngsim   # rebuild + reinstall the extension
 ```
+
+The extras belong on that line — `--reinstall-package` does not exempt it from
+the prune rule above, so a bare `uv sync --reinstall-package bngsim` rebuilds the
+extension *and* strips every extra on the way (GH #229 is what that costs).
+
+The faster path is an incremental cmake rebuild, which touches nothing else in
+the venv:
+
+```bash
+python scripts/rebuild_editable.py
+```
+
+That one needs `pybind11` importable in the venv, which is why the `dev` extra
+declares it: `pybind11` is a `[build-system]` requirement, so uv installs it into
+a transient isolated build env and never into `.venv`. On `--extra test` the
+script falls back to whatever pybind11 the system supplies, and tells you when it
+is doing that.
 
 ### Legacy BioNetGen (BNG2.pl) for `parity_checks/`
 
