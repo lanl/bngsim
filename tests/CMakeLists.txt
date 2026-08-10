@@ -4,7 +4,12 @@
 set(TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 add_executable(test_bngsim test_bngsim.cpp)
-target_link_libraries(test_bngsim PRIVATE bngsim)
+# test_concurrent_clone_compile_evaluate (issue #257) spawns std::threads. On
+# Apple that needs no extra link, but on glibc/libstdc++ std::thread without
+# -pthread builds and then aborts at the first thread creation, so ask CMake for
+# the platform's thread library rather than relying on the default.
+find_package(Threads REQUIRED)
+target_link_libraries(test_bngsim PRIVATE bngsim Threads::Threads)
 target_compile_definitions(test_bngsim PRIVATE TEST_DATA_DIR="${TEST_DATA_DIR}")
 add_test(NAME bngsim_tests COMMAND test_bngsim)
 

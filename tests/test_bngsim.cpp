@@ -7,6 +7,7 @@
 #include <bngsim/bngsim_api.h>
 #include <bngsim/mm_jacobian.hpp> // test_mm_tqssa_stiff_root calls mm_tqssa directly
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Test data directory (set by CMake)
@@ -2590,6 +2592,179 @@ int test_nonfinite_return_warning() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Issue #257: an evaluator and its clone_empty() must share NO ExprTk state.
+//
+// They used to share the exprtk::parser, on the reasoning that it is a ~100KB
+// template object worth not re-constructing per model clone and that #201's
+// mutex made the sharing safe. It did not. exprtk's compile() ends with
+//
+//     symtab_store_.symtab_list_ = expr.get_symbol_table_list();
+//
+// and never clears it, so a parser keeps a strong handle on the symbol table of
+// the last expression compiled through it — and exprtk refcounts symbol tables
+// with a plain std::size_t. Two evaluators behind one parser therefore means one
+// thread's compile drops the *other* thread's symbol table while that thread is
+// churning the same counter with no lock (register_symbol_table, growth of the
+// expression vector, its own destructor), and a lost update frees a symbol table
+// whose variable addresses are already baked into live compiled nodes.
+//
+// The two tests below are the two halves of that. This one is the invariant,
+// asserted directly and deterministically; the next one is the failure it
+// prevents.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_evaluator_clone_shares_no_exprtk_state() {
+    bngsim::ExprTkEvaluator source;
+    double a = 3.0;
+    source.define_variable("a", &a);
+    const int src_id = source.compile("a * 2");
+    CHECK_CLOSE(source.evaluate(src_id), 6.0, 1e-12, "source evaluates its own binding");
+
+    auto clone = source.clone_empty();
+    CHECK(clone->n_expressions() == 0, "a clone inherits no compiled expressions");
+
+    // The clone binds the same name to its own storage and recompiles the
+    // source's cached preprocessed string — the NetworkModel::clone() contract.
+    double b = 10.0;
+    clone->define_variable("a", &b);
+    const int clone_id = clone->compile_preprocessed(source.preprocessed_expr(src_id));
+
+    // THE invariant. Pre-#257 these two were the same object.
+    CHECK(source.parser_identity() != nullptr, "the source built a parser to compile with");
+    CHECK(clone->parser_identity() != nullptr, "the clone built a parser to compile with");
+    CHECK(clone->parser_identity() != source.parser_identity(),
+          "the clone's parser must not be the source's");
+
+    CHECK_CLOSE(clone->evaluate(clone_id), 20.0, 1e-12, "clone reads its own binding");
+    CHECK_CLOSE(source.evaluate(src_id), 6.0, 1e-12, "source binding survives the clone");
+
+    // Lazily, too: the parser arrives with the first compile, not with the
+    // constructor. That is what keeps the un-sharing free — NetworkModel::clone()
+    // default-constructs an evaluator and immediately discards it, and a
+    // discarded evaluator that never compiled now costs no parser at all.
+    {
+        bngsim::ExprTkEvaluator fresh;
+        CHECK(fresh.parser_identity() == nullptr, "a fresh evaluator has built no parser");
+        fresh.define_constant("k", 2.0);
+        fresh.compile("k + 1");
+        CHECK(fresh.parser_identity() != nullptr, "the first compile builds the parser");
+    }
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Issue #257: cloning and evaluating from many threads at once must be
+// memory-safe. This is the shape every run_batch / parameter_scan /
+// compute_all_sensitivities fan-out takes — clone the model per worker, rebuild
+// its evaluator from the cached preprocessed strings, then integrate against it
+// with the GIL released — plus the lazy compile that fires *mid-integration*
+// (NetworkModel::event_trigger_residual_expr), which is what puts a compile and
+// an evaluate on two threads at the same instant.
+//
+// CALIBRATION. A concurrency test that cannot fail is worse than no test — it
+// reads as coverage — so this one was run against the pre-fix ExprTkEvaluator
+// (shared parser, mutex around compile) before being trusted here: this binary
+// died in 8 of 8 runs, always inside this case, with the SIGTRAP of the macOS
+// malloc freelist check. A standalone harness at the same thread count,
+// iteration count and per-iteration work put the rate at 19 of 20 across a wider
+// sample and turned up SIGSEGV and SIGBUS too — the same zoo of signatures
+// issues #201 and #257 report between them. The fixed design was clean 20 of 20.
+//
+// Those failure modes are a signal, not an exception, so a regression here takes
+// the test binary down rather than printing FAIL; ctest reports it as the binary
+// failing, which is the intended report.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int test_concurrent_clone_compile_evaluate() {
+    // Sized from the calibration above: fewer threads or iterations and the
+    // pre-fix design starts surviving runs. ~0.2 s.
+    constexpr int kThreads = 8;
+    constexpr int kIters = 400;
+    constexpr int kSteps = 2000;
+    constexpr int kVars = 8;
+
+    static const char *kExprs[] = {
+        "v0 + 2*v1",
+        "v2*v3 - v4/2",
+        "if(v5 > 1, v6, v7)",
+        "sqrt(abs(v0*v1)) + v2",
+        "(v3 + v4)*(v5 - v6)",
+    };
+    constexpr int kNExprs = static_cast<int>(sizeof(kExprs) / sizeof(kExprs[0]));
+
+    // The "built" model every worker clones from.
+    bngsim::ExprTkEvaluator source;
+    std::vector<double> source_vars(kVars);
+    for (int i = 0; i < kVars; ++i) {
+        source_vars[i] = 1.0 + i;
+        source.define_variable("v" + std::to_string(i), &source_vars[i]);
+    }
+    std::vector<int> source_ids;
+    for (int k = 0; k < kNExprs; ++k) {
+        source_ids.push_back(source.compile(kExprs[k]));
+    }
+
+    // Every clone binds the same values, so every clone must produce the same
+    // numbers. A corrupted-but-not-crashed run shows up here rather than as a
+    // signal, and a torn read of a freed symbol table lands nowhere near these.
+    std::vector<double> expected;
+    for (int k = 0; k < kNExprs; ++k) {
+        expected.push_back(source.evaluate(source_ids[k]));
+    }
+
+    std::atomic<int> mismatches{0};
+    std::atomic<int> failures{0};
+    std::vector<std::thread> workers;
+    workers.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        workers.emplace_back([&] {
+            try {
+                for (int iter = 0; iter < kIters; ++iter) {
+                    auto ev = source.clone_empty();
+                    // Bound once and never resized: define_variable takes the
+                    // address, so the storage has to outlive every evaluate().
+                    std::vector<double> vars(kVars);
+                    for (int i = 0; i < kVars; ++i) {
+                        vars[i] = 1.0 + i;
+                        ev->define_variable("v" + std::to_string(i), &vars[i]);
+                    }
+                    std::vector<int> ids;
+                    for (int k = 0; k < kNExprs; ++k) {
+                        ids.push_back(
+                            ev->compile_preprocessed(source.preprocessed_expr(source_ids[k])));
+                    }
+                    for (int step = 0; step < kSteps; ++step) {
+                        for (int k = 0; k < kNExprs; ++k) {
+                            if (std::abs(ev->evaluate(ids[k]) - expected[k]) > 1e-12) {
+                                ++mismatches;
+                            }
+                        }
+                        // The lazy memo firing inside the integration: a compile
+                        // on this thread while every other thread is evaluating.
+                        if (step == kSteps / 2) {
+                            ev->compile_preprocessed("v0*v1 + v2");
+                        }
+                    }
+                }
+            } catch (const std::exception &) {
+                ++failures;
+            }
+        });
+    }
+    for (auto &w : workers) {
+        w.join();
+    }
+
+    CHECK(failures.load() == 0,
+          std::to_string(failures.load()) + " worker(s) threw while cloning/compiling");
+    CHECK(mismatches.load() == 0,
+          std::to_string(mismatches.load()) + " evaluation(s) disagreed with the serial answer");
+
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Main
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2670,6 +2845,10 @@ int main() {
 
     // Issue #42 follow-up: nan/inf return diagnostic for custom functions
     RUN_TEST(test_nonfinite_return_warning);
+
+    std::cout << "\n--- ExprTk evaluator thread safety (issue #257) ---" << std::endl;
+    RUN_TEST(test_evaluator_clone_shares_no_exprtk_state);
+    RUN_TEST(test_concurrent_clone_compile_evaluate);
 
     // Model validation on construction (Session 65, P9)
     RUN_TEST(test_validate_duplicate_species);

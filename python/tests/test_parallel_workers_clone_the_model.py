@@ -1,7 +1,13 @@
 """Every parallel worker integrates its OWN model clone — the invariant #201 rests on.
 
-Issue #201 fixed a race on the one object clones genuinely share, the ExprTk parser.
-The audit that accompanied it found no second race, but the reason was
+Issue #201 fixed a race on the one object clones then shared, the ExprTk parser, by
+serializing ``compile()``. Issue #257 found the rest of that race — a parser also
+retains a handle on the last symbol table compiled through it, which no lock on
+``compile()`` could cover — and removed the sharing entirely, so clones now share no
+ExprTk state at all. The invariant below is what makes *that* sufficient rather than
+merely necessary, and it is the one this test holds.
+
+The audit that accompanied #201 found no second race, but the reason was
 circumstantial: ``NetworkModel::state_switch`` and ``event_trigger_residual_expr``
 are lazy memos — ``const`` methods that compile into ``impl_->evaluator`` on first
 use — and they are safe *only* because every thread fan-out in the library hands

@@ -62,6 +62,34 @@ class ExpressionEvaluator {
 //   if(cond, true_val, false_val), mratio(a, b, z), time()
 // Note: `t` is intentionally NOT registered (BNG2.pl uses time() only),
 // leaving `t` free as a model identifier.
+//
+// ─── THREAD SAFETY (issues #201, #257) ───────────────────────────────────────
+//
+// An ExprTkEvaluator owns ALL of its ExprTk state and shares NONE of it with any
+// other evaluator — parser, symbol table, expression list, function adapters.
+// That is a deliberate design decision, not an accident of implementation, and
+// `parser_identity()` exists so it can be asserted rather than merely believed.
+//
+// The evaluator itself is *not* internally synchronized: it is per-model-instance
+// state, and a NetworkModel is not thread-safe (every fan-out clones — see the
+// THREAD SAFETY note in model.cpp and
+// python/tests/test_parallel_workers_clone_the_model.py). One thread per
+// evaluator is the contract; concurrent compile()/evaluate() on ONE evaluator is
+// a caller bug that no lock in here would make correct anyway, because
+// compile() grows `expressions` under an evaluate() that is reading it.
+//
+// What made the shared parser unsalvageable rather than merely lock-hungry:
+// exprtk::parser::compile() ends with
+//     symtab_store_.symtab_list_ = expr.get_symbol_table_list();
+// and never clears it, so a parser keeps a *strong handle* on the symbol table of
+// the last expression compiled through it — and exprtk's symbol_table refcount is
+// a plain std::size_t. With one parser behind two evaluators, thread B's next
+// compile drops thread A's symbol table while thread A is still incrementing and
+// decrementing that same counter outside any lock (register_symbol_table, growth
+// of the expression vector, destruction). A lost update frees the symbol table's
+// data underneath the variable pointers already baked into A's compiled nodes.
+// #201's mutex serialized compile() and could not have covered that, which is why
+// the regression test it added stayed ~10% flaky until #257.
 class ExprTkEvaluator : public ExpressionEvaluator {
   public:
     ExprTkEvaluator();
@@ -89,15 +117,28 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // Must be called after construction, before compiling time-dependent expressions.
     void set_time_ptr(double *time_addr);
 
-    // ─── Efficient clone support ─────────────────────────────────────────
+    // ─── Clone support ───────────────────────────────────────────────────
     //
-    // clone_empty() creates a new evaluator that shares the heavyweight
-    // ExprTk parser with this evaluator, but has its own symbol table and
-    // expression list. The caller must register variables and compile
-    // expressions on the returned evaluator.
+    // clone_empty() creates a new evaluator that shares NOTHING with this one:
+    // its own parser, symbol table, expression list and function adapters. The
+    // caller must register variables and compile expressions on the returned
+    // evaluator (NetworkModel::clone() does, from the cached preprocessed
+    // strings this one exposes via preprocessed_expr()).
     //
-    // This avoids re-constructing the ~100KB exprtk::parser<double>
-    // template object on every model clone.
+    // It used to hand the new evaluator this one's exprtk::parser<double>, to
+    // save re-constructing the ~100KB template object per model clone. Issue
+    // #257 retired that: the parser retains a strong handle on the last symbol
+    // table compiled through it (see the class comment), so sharing it couples
+    // the lifetime of one evaluator's symbol table to another evaluator's next
+    // compile, across threads, through a non-atomic refcount.
+    //
+    // The saving was illusory in any case. `NetworkModel copy;` default-
+    // constructs an evaluator before clone() overwrites it, so the "avoided"
+    // parser construction was being paid and thrown away on every clone. The
+    // parser is now built lazily on first compile, which means that discarded
+    // evaluator never builds one: measured, a clone pays the same single ~51 µs
+    // parser construction it always did, and a model with no expressions at all
+    // now pays none.
     std::unique_ptr<ExprTkEvaluator> clone_empty() const;
 
     // compile_preprocessed() compiles an already-preprocessed expression
@@ -113,12 +154,17 @@ class ExprTkEvaluator : public ExpressionEvaluator {
     // Number of compiled expressions.
     int n_expressions() const;
 
+    // Identity of this evaluator's exprtk::parser, or nullptr if it has not
+    // compiled anything yet (the parser is constructed lazily on first
+    // compile). Two distinct evaluators must never report the same non-null
+    // value — that is the whole of the issue #257 invariant, and this accessor
+    // is what makes it testable instead of merely documented. Not for
+    // dereferencing: the value is an identity, and the type says so.
+    const void *parser_identity() const;
+
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-
-    // Private constructor for clone_empty() — shares parser
-    explicit ExprTkEvaluator(std::shared_ptr<void> shared_parser);
 };
 
 // ─── Reserved names introspection ────────────────────────────────────────────
