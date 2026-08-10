@@ -1,7 +1,7 @@
-From 05b42d7dfc1faa5d24e60b302d535ef76956ee6b Mon Sep 17 00:00:00 2001
+From cdd7b613a9d0c9eb2602997419a8b5a8dca798c9 Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <hlavacek@lanl.gov>
 Date: Sun, 22 Feb 2026 01:59:39 -0700
-Subject: [PATCH 05/14] bngsim: convert exit(1) calls to throw
+Subject: [PATCH 05/16] bngsim: convert exit(1) calls to throw
  std::runtime_error
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -545,5 +545,5 @@ index fc6bd35..9fa1ca9 100644
  
 -
 -- 
-2.53.0
+2.50.1 (Apple Git-155)
 

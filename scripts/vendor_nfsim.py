@@ -328,6 +328,37 @@ CARRY_QUEUE = (
             },
         ],
     },
+    {
+        "topic": "bngsim/carry-symmetry-factor-all-rate-laws",
+        "kind": "local",
+        "status": (
+            "Apply the reaction center symmetry factor on every rate law, not "
+            "just Ele. ReactionClass's constructor scaled its own baseRate "
+            "*argument*, which shadows the member the argument was already "
+            "copied into, so the correction was discarded; only Ele recovered "
+            "it, because NFinput follows the constructor with setBaseRate(), "
+            "which applies the factor itself. Every other rate law is built "
+            "with baseRate=1 and never calls setBaseRate, so a rule whose "
+            "reactant pattern has a non-trivial automorphism fired at "
+            "1/symmetryFactor times its intended rate -- 2x for a homodimer -- "
+            "under a global function (FunctionalRxnClass), a local function "
+            "(DORRxnClass), a function product (DOR2RxnClass), or "
+            "Michaelis-Menten (MMRxnClass). BNG emits symmetry_factor "
+            "independently of rate law type, so all four disagree with BNG's "
+            "own semantics and with NFsim's constant-rate path for the same "
+            "rule. Assigning through this-> repairs the two DOR classes, which "
+            "build the propensity as a = baseRate * ...; FunctionalRxnClass and "
+            "MMRxnClass override update_a() without reading baseRate at all and "
+            "additionally scale by it. Candidate to push upstream. "
+            "See bngsim GH #195."
+        ),
+        "commits": [
+            {
+                "commit": "6688167a52acf9a5fa79dc45233d22d7cc969719",
+                "summary": ("bngsim: apply the reaction center symmetry factor on every rate law"),
+            },
+        ],
+    },
 )
 
 SUMMARY_PREVIEW_LIMIT = 12

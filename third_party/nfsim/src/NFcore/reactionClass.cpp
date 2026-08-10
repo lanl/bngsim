@@ -178,9 +178,17 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
 		}
 	}
 
+	// Correct the rate for reaction center symmetry.  Note that these all assign
+	// through 'this->': the constructor argument 'baseRate' shadows the member,
+	// and the member was copied from it above, so scaling the argument here would
+	// discard the correction.  Only rate laws that route through setBaseRate()
+	// (which applies the factor itself) used to recover it; every other rate law
+	// -- global function, local function (DOR), function product, MM -- is
+	// constructed with baseRate=1 and never calls setBaseRate, so a symmetric
+	// rule fired at 1/symmetryFactor times its intended rate (2x for a homodimer).
 	if ( this->transformationSet->usingSymmetryFactor() )
 	{	// new general method for handling reaction center symmetry
-		baseRate *= this->transformationSet->getSymmetryFactor();
+		this->baseRate *= this->transformationSet->getSymmetryFactor();
 	}
 	else
 	{	// old method for handling symmetric binding and unbinding
@@ -193,7 +201,7 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
 				cout<<"Make sure that is correct."<<endl;
 
 				cout<<endl;
-				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
+				this->baseRate = this->baseRate*0.5;  //We have to correct the rate to get the proper factor
 				isDimerStyle=true;
 			}
 		}
@@ -205,7 +213,7 @@ ReactionClass::ReactionClass(string name, double baseRate, string baseRateParame
 				cout<<"Warning! You have an unbinding rxn (" << name << ") that is symmetric."<<endl;
 				cout<<"Make sure that is correct."<<endl;
 				cout<<endl;
-				baseRate = baseRate*0.5;  //We have to correct the rate to get the proper factor
+				this->baseRate = this->baseRate*0.5;  //We have to correct the rate to get the proper factor
 				isDimerStyle=true;
 			}
 		}

@@ -80,6 +80,13 @@ double FunctionalRxnClass::update_a() {
 
 	a *= this->volumeConversionFactor;
 
+	// Scale by baseRate, exactly as BasicRxnClass/DORRxnClass/DOR2RxnClass do.
+	// A FunctionalRxnClass is constructed with baseRate=1 and never routes
+	// through setBaseRate(), so this factor is the reaction center symmetry
+	// correction and nothing else.  Without it a symmetric rule with a
+	// functional rate fires at 1/symmetryFactor times its intended rate.
+	a *= this->baseRate;
+
 	if(a<0) {
 		cout<<"Warning!!  The function you provided for functional rxn: '"<<name<<"' evaluates\n";
 		cout<<"to a value less than zero!  You cannot have a negative propensity!";
@@ -190,6 +197,11 @@ double MMRxnClass::update_a()
 	double E = (double)getCorrectedReactantCount(1);
 	sFree=0.5*( (S-Km-E) + pow((pow( (S-Km-E),2.0) + 4.0*Km*S),  0.5) );
 	a=kcat*sFree*E/(Km+sFree);
+	// See FunctionalRxnClass::update_a() -- an MMRxnClass is likewise built with
+	// baseRate=1 and never calls setBaseRate(), so baseRate carries the reaction
+	// center symmetry correction.  BNG emits symmetry_factor with an MM rate law
+	// whenever the substrate pattern has a non-trivial automorphism.
+	a*=this->baseRate;
 	return a;
 }
 
