@@ -143,6 +143,13 @@ inline void validate_atol_tracking(double decades, const std::vector<double> &at
             << "exactly zero; ask for a finite number of decades instead.";
         throw std::invalid_argument(msg.str());
     }
+    if (n_species == 0) {
+        // No ODE state to weight (GH #229's algebraic-only model, which bails
+        // out before CVODE is created at all). An empty vector is the correct
+        // "auto" ceiling there, and refusing it would make tracking the one
+        // atol form such a model cannot be handed.
+        return;
+    }
     validate_atol_vector(atol_vec, n_species, where);
     if (atol_vec.empty()) {
         std::ostringstream msg;

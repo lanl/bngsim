@@ -2273,8 +2273,10 @@ class Simulator:
         -----
         Derived from *initial* values, this cannot see a species that starts at
         order one and decays to something tiny — a within-species, over-time
-        mismatch that needs an error-weight function (``CVodeWFtolerances``),
-        not a vector. What it removes is the cross-species compromise.
+        mismatch that needs an error-weight function, not a vector. What it
+        removes is the cross-species compromise. The vector returned here is
+        exactly what :class:`bngsim.TrackingAtol` takes as its *ceiling* and
+        re-evaluates against the trajectory (``CVodeWFtolerances``, issue #213).
 
         Examples
         --------
@@ -5623,9 +5625,10 @@ class Simulator:
             See ``Simulator.run`` for the full contract.
         rtol, atol, max_steps : optional
             Solver options (ODE only). ``atol`` takes the same scalar,
-            per-species vector or ``"auto"`` as :meth:`run` (issue #196); an
-            ``"auto"`` vector is derived from the state this leg starts from,
-            which for an interactive protocol is where the previous leg ended.
+            per-species vector, ``"auto"`` or ``"tracking"`` as :meth:`run`
+            (issues #196, #213); an ``"auto"`` vector — including a tracking
+            ceiling — is derived from the state this leg starts from, which for
+            an interactive protocol is where the previous leg ended.
 
         Returns
         -------

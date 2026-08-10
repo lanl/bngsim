@@ -272,6 +272,29 @@ def test_parameter_scan_reaches_the_tracking_path(decay_net: Path):
         assert result.species[-1, idx] == pytest.approx(_D_END_EXACT, rel=1e-4)
 
 
+def test_the_token_survives_an_evaluation_spec_round_trip(decay_net: Path):
+    """A spec is a wire format, and ``"tracking"`` is a token, so it crosses it.
+
+    A ``TrackingAtol`` with a non-default depth does not — it is not JSON — and
+    that is stated in the spec's own docs rather than papered over here.
+    """
+    spec = bngsim.EvaluationSpec(
+        model_format="net",
+        model_source=str(decay_net),
+        t_span=(0.0, _T_END),
+        n_points=_N_POINTS,
+        rtol=_RTOL,
+        atol="tracking",
+        max_steps=1_000_000,
+    )
+    reloaded = bngsim.EvaluationSpec.from_json(spec.to_json())
+    assert reloaded == spec
+
+    result = reloaded.evaluate()
+    idx = bngsim.Model.from_net(str(decay_net)).species_names.index("D()")
+    assert result.species[-1, idx] == pytest.approx(_D_END_EXACT, rel=1e-4)
+
+
 def test_steady_state_march_takes_the_mode_too(decay_net: Path):
     """The march is shared plumbing (issue #196 wired the vector into it).
 
@@ -357,6 +380,31 @@ def test_a_wrong_length_ceiling_is_rejected(decay_sim):
     sim, model = decay_sim
     with pytest.raises(ValueError, match=r"entries but the model has"):
         sim.run(t_span=(0.0, 1.0), atol=TrackingAtol(ceiling=[1e-8, 1e-8]))
+
+
+def test_a_model_with_no_ode_state_accepts_it_and_ignores_it():
+    """GH #229's algebraic-only model has nothing to weight.
+
+    Its ``"auto"`` ceiling is a legitimately empty vector, so the "tracking
+    needs a ceiling" rule would otherwise make this the one ``atol`` form such
+    a model cannot be handed — a refusal with no defect behind it.
+    """
+    body = (
+        '<sbml xmlns="http://www.sbml.org/sbml/level3/version2/core" level="3" version="2">'
+        '<model id="m"><listOfParameters>'
+        '<parameter id="p2" constant="false"/></listOfParameters><listOfRules>'
+        '<assignmentRule variable="p2"><math xmlns="http://www.w3.org/1998/Math/MathML">'
+        '<apply><plus/><cn type="integer">1</cn><csymbol encoding="text" '
+        'definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol></apply>'
+        "</math></assignmentRule></listOfRules></model></sbml>"
+    )
+    model = bngsim.Model.from_sbml_string(body)
+    assert model.n_species == 0
+    sim = bngsim.Simulator(model, method="ode")
+
+    plain = list(sim.run(t_span=(0.0, 4.0), n_points=5).expressions["p2"])
+    tracked = list(sim.run(t_span=(0.0, 4.0), n_points=5, atol="tracking").expressions["p2"])
+    assert tracked == plain == [1.0, 2.0, 3.0, 4.0, 5.0]
 
 
 @pytest.mark.parametrize("decades", [-1.0, float("inf"), float("nan")])

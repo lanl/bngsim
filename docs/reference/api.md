@@ -252,11 +252,14 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`bngsim.parse_net_file(path)`** → `dict` — Parse a `.net` file into an engine-agnostic Python dict with keys: `parameters`, `species`, `observables`, `functions`, `reactions`. Pure Python — no C++ extension needed for parsing.
 - **`bngsim.build_model_from_parsed(parsed)`** → `Model` — Build a BNGsim `Model` from the dict returned by `parse_net_file()`. Routes through `ModelBuilder` for full optimization (analytical Jacobian, conservation laws, etc.).
 
-## Absolute tolerance (issues #196, #212)
+## Absolute tolerance (issues #196, #212, #213)
 
 - **`bngsim.AUTO`** → `"auto"` — the token every `atol=` accepts. Also the capability probe for the whole per-species feature: `hasattr(bngsim, "AUTO")`. The version string is not one — the checkout that first carried #196 still declared `0.12.2`.
 - **`bngsim.derive_atol(state, rtol, *, floor=None)`** → `ndarray` — `rtol * max(|y_i|, floor)` over **a state you supply**, ordered like `model.species_names`. `floor` defaults to the smallest strictly positive entry of `state` (`1.0` if every entry is zero).
 - **`bngsim.normalize_atol_vector(atol, n_species, species_names=None, *, where="atol")`** → `list[float]` — the length/position/finiteness check `run()` applies, callable at the point a vector is built rather than at the first run.
+
+- **`bngsim.TRACKING`** → `"tracking"` — the token for the over-time mode of issue #213; sugar for `TrackingAtol()`.
+- **`bngsim.TrackingAtol(decades=12.0, ceiling="auto")`** — an `atol=` value that re-evaluates the vector against the state being integrated (`CVodeWFtolerances`): `atol_i(y) = clamp(rtol*|y_i|, ceiling_i * 10**-decades, ceiling_i)`. A vector fixes the tolerance per species; this fixes it per instant, which is what a species that starts at order one and **decays** to something tiny needs. At `decades=0` it is the ceiling vector exactly, and it is never looser than that vector. `hasattr(bngsim, "TrackingAtol")` is the probe. Costs steps and can make a stiff model unintegrable — see the [solver guide](../user-guide/solvers.md#tracking-absolute-tolerance) for the corpus numbers.
 
 `derive_atol` and `Simulator.auto_atol` run the same rule; they differ only in
 which state they read. `auto_atol` (and `atol="auto"`) reads the model's **live**
