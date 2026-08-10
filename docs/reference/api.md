@@ -15,7 +15,8 @@ Factory methods:
 
 Properties:
 - `n_species`, `n_reactions`, `n_observables`, `n_parameters`, `n_functions`, `n_events`
-- `species_names`, `param_names`, `observable_names`
+- `species_names`, `param_names`, `observable_names`, `function_names`
+- `primary_param_names` — the model's independent **knobs**, and the list to hand an optimizer or sampler. `param_names` minus two classes, one per flag: `param_is_expression` (a derived `ConstantExpression`, recomputed from the primaries underneath it) and `param_is_internal` (a slot bngsim synthesized — an SBML `_V0_<comp>`, or a function's backing slot — which `set_param` refuses to write). A constant written as arithmetic (`gamma 1/7`) is **not** in either class and is an ordinary knob (issue #227)
 
 Methods:
 - **`set_param(name, value)`** — Set a parameter value

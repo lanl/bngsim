@@ -129,17 +129,28 @@ anything dropped is named in a warning. Two classes come out:
   axis into one vector an optimizer then steps along in every coordinate at
   once. Roughly one SBML model in five carries some (279 of the 1,291 loadable
   rr_parity models, 9,524 parameters in total).
-- **`_V0_<comp>`** — bngsim's record of a compartment's size at load, which the
-  rate constants in that compartment are normalised against. `set_param`
-  refuses a value-changing write to it, so it is not a coordinate that can move
-  on its own; differentiate the compartment size itself, which is an ordinary
-  writable parameter.
+- **Synthesized slots** (`model.param_is_internal`) — parameter slots bngsim
+  created for its own bookkeeping rather than ones the model declared.
+  `set_param` refuses a value-changing write to either kind, so neither is a
+  coordinate that can move on its own. `_V0_<comp>` is bngsim's record of a
+  compartment's size at load, which the rate constants in that compartment are
+  normalised against — differentiate the compartment size itself, an ordinary
+  writable parameter. And every **function** has one, holding the value it last
+  evaluated to; the engine rewrites it from the function's own expression before
+  every derivative evaluation, so that column is identically zero (issue #227) —
+  differentiate the parameters the function's expression reads.
 
 Naming either in `params=[...]` still returns its column — an explicit ask is a
 statement that you want that derivative *on its own terms*, treating the
 parameter as a free axis. That is exactly what
 `bngsim.jax.differentiable_solve(..., flat=True)` asks for, and why the default
-here (`flat=False`'s list) and that opt-in now agree end to end.
+here (`flat=False`'s list) and that opt-in now agree end to end. (`flat=True`
+leaves out the synthesized slots too, for the same reason: its vector is one
+`set_param` per name, and those writes are refused.)
+
+What is *not* dropped is a constant written as arithmetic — `gamma 1/7`,
+`pi 2*asin(1)`, `c6 ln(2)/120`. Those name nothing, so there is no primary
+underneath them carrying their effect, and they are ordinary knobs (issue #227).
 
 ## Fisher Information Matrix
 
@@ -311,8 +322,12 @@ J = jax.jacfwd(solve_flat)(p0)  # (n_times*n_species, n_primary_params)
 # Legacy / advanced: treat every parameter (including derived
 # ``_rateLaw{N}``) as an independent coordinate. Use only when you
 # really want to vary derived parameters independently of their
-# defining expression.
-p_flat = jnp.array([model.get_param(n) for n in model.param_names])
+# defining expression. The vector is ``param_names`` minus the
+# synthesized slots ``set_param`` refuses to write (issues #170, #227).
+internal = [n for n, f in zip(model.param_names, model.param_is_internal) if f]
+p_flat = jnp.array(
+    [model.get_param(n) for n in model.param_names if n not in internal]
+)
 Y_flat = differentiable_solve(model, p_flat, (0, 100), 101, flat=True)
 ```
 

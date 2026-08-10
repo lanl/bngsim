@@ -167,17 +167,23 @@ struct Parameter {
     // and the great majority of SBML compartments.
     bool volume_write_refused = false;
 
-    // Issue #170 — a parameter this loader synthesized to hold a load-time
-    // CONSTANT that other expressions are normalised against, not a knob of the
-    // model. Today that is `_V0_<comp>`: the compartment size as it was at load,
-    // which the reaction's rate parameter divides the live size by so the ratio
-    // is exactly 1.0 there. Writing it would rescale every rate in that
-    // compartment while the volume itself stayed put, and would leave the next
-    // `set_param` on the compartment computing its ratio against the wrong
-    // baseline — so `set_param` refuses a value-changing write and
+    // A parameter slot bngsim SYNTHESIZED, which is not a knob of the model.
+    // `set_param` refuses a value-changing write to one and
     // `primary_param_names` leaves it out of the knobs an optimizer is handed.
     // Distinct from `is_expression`: a derived parameter is recomputed from
-    // primaries, this one is a stored constant that simply is not a primary.
+    // primaries, these are not primaries in the first place. Two kinds:
+    //
+    //   * Issue #170 — `_V0_<comp>`: the compartment size as it was at load,
+    //     which the reaction's rate parameter divides the live size by so the
+    //     ratio is exactly 1.0 there. Writing it would rescale every rate in
+    //     that compartment while the volume itself stayed put, and would leave
+    //     the next `set_param` on the compartment computing its ratio against
+    //     the wrong baseline.
+    //   * Issue #227 — a function's backing slot: storage for the value
+    //     `evaluate_functions()` writes there before every RHS evaluation, so a
+    //     write to it survives until the next one and its sensitivity column is
+    //     identically zero forever. `ModelBuilder::build()` sets this itself for
+    //     every function that does not already name a declared parameter.
     bool is_internal = false;
 };
 

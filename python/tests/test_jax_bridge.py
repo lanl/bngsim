@@ -652,11 +652,21 @@ class TestFunctionalRates:
 
         time_dependent_func.net has Functional rate laws. CVODES
         uses internal FD for sensitivity (not analytical).
+
+        The vector is built from ``primary_param_names``, which is what
+        ``flat=False`` differentiates over. Until #227 that list also carried
+        ``_rateLaw1`` — the *function*, whose backing slot the engine rewrites
+        before every derivative evaluation — so this test used to pass a
+        2-vector whose second coordinate could only ever have gradient 0.0.
         """
         try:
-            model, p0, _ = _get_model_and_params("time_dependent_func.net")
+            model = bngsim.Model.from_net(_get_net("time_dependent_func.net"))
         except (AssertionError, FileNotFoundError):
             pytest.skip("time_dependent_func.net not available")
+
+        names = model.primary_param_names
+        assert names == ["k1"], f"the function slot is not a knob (#227): {names}"
+        p0 = jnp.array([model.get_param(n) for n in names], dtype=jnp.float64)
 
         def loss(p):
             Y = differentiable_solve(model, p, (0, 10), 51)
@@ -864,3 +874,30 @@ class TestFlatLegacyMode:
         )
         with pytest.raises(ValueError, match="flat parameter set"):
             differentiable_solve(model, p_primary, (0, 5.0), 11, flat=True)
+
+    def test_flat_leaves_out_the_slots_set_param_refuses(self):
+        """Every parameter means every parameter, not every *slot* (#227).
+
+        ``flat=True`` writes each name it claims to differentiate, with
+        ``force_override=True``. A synthesized slot is refused that write — a
+        function's, since #227; ``_V0_<comp>``'s since #170 — so keeping one in
+        the vector does not hand the caller a legacy coordinate, it raises on the
+        first solve. ``time_dependent_func.net`` carries one function and one
+        real parameter, so the flat vector is the shorter of the two lists.
+        """
+        model = bngsim.Model.from_net(_get_net("time_dependent_func.net"))
+        internal = model._internal_param_names()
+        assert internal == {"_rateLaw1"}, internal
+
+        flat_names = [n for n in model.param_names if n not in internal]
+        p0 = jnp.array([model.get_param(n) for n in flat_names], dtype=jnp.float64)
+
+        Y = differentiable_solve(model, p0, (0, 5.0), 11, flat=True)
+        assert Y.shape == (11, model.n_species)
+
+        # The whole-vector length is the contract; passing param_names now fails
+        # the same way a wrong length always has, rather than raising from the
+        # refused write halfway into the solve.
+        p_with_slot = jnp.array([model.get_param(n) for n in model.param_names], dtype=jnp.float64)
+        with pytest.raises(ValueError, match="flat parameter set"):
+            differentiable_solve(model, p_with_slot, (0, 5.0), 11, flat=True)

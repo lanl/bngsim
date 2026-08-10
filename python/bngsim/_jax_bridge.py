@@ -82,11 +82,14 @@ def differentiable_solve(
           the primaries each call, so ``jax.grad`` returns gradients
           with respect to the primary parameters with the chain rule
           through derived expressions correctly applied.
-        - When ``flat=True``: shape ``(n_params,)``, ordered to match
-          ``model.param_names``. Every parameter (primary and derived)
-          is treated as an independent coordinate. Use this only if you
-          really want to vary derived parameters independently of their
-          defining expression — most users do not.
+        - When ``flat=True``: ordered to match ``model.param_names`` with
+          the synthesized slots removed — those bngsim's own bookkeeping
+          created rather than the model declaring them, which
+          ``model.param_is_internal`` flags and ``set_param`` refuses to
+          write (issues #170, #227). Every remaining parameter (primary
+          and derived) is treated as an independent coordinate. Use this
+          only if you really want to vary derived parameters
+          independently of their defining expression — most users do not.
     t_span : tuple[float, float]
         ``(t_start, t_end)`` time interval. Not differentiated.
     n_points : int
@@ -189,7 +192,19 @@ def differentiable_solve(
     # ``flat=False`` (default) takes only primary parameters and lets
     # ``set_param`` propagate them to derived ConstantExpression
     # parameters (e.g., ``_rateLaw{N} = chi*kon`` from BNG2.pl).
-    diff_param_names = tuple(model.param_names) if flat else tuple(model.primary_param_names)
+    #
+    # "Every parameter" still means every parameter — not every *slot*. A
+    # synthesized one (issue #170's ``_V0_<comp>``, issue #227's backing slot for
+    # a function's value) is not an axis at all: ``set_param`` refuses to write
+    # it, so keeping it here does not give the caller a legacy coordinate, it
+    # raises on the first solve. That refusal predates #227 for ``_V0_``, which
+    # is why ``flat=True`` did not work on an SBML model with a compartment; the
+    # subtraction fixes that case too.
+    if flat:
+        internal = model._internal_param_names()
+        diff_param_names = tuple(n for n in model.param_names if n not in internal)
+    else:
+        diff_param_names = tuple(model.primary_param_names)
 
     params = jnp.asarray(params, dtype=jnp.float64)
     if int(params.shape[0]) != len(diff_param_names):

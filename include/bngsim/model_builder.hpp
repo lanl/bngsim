@@ -54,10 +54,14 @@ class ModelBuilder {
     /// it so `set_param` refuses a value-changing write rather than desync the
     /// two representations (issue #164). Default false leaves `.net` and every
     /// non-compartment parameter unchanged.
-    /// is_internal: a synthesized parameter holding a load-time constant that
-    /// other expressions are normalised against (issue #170's `_V0_<comp>`), not
-    /// a knob. Kept out of `primary_param_names` and refused a value-changing
-    /// write. Default false leaves every ordinary parameter unchanged.
+    /// is_internal: a synthesized parameter slot that is not a knob of the
+    /// model. Two kinds, both bngsim's own bookkeeping rather than anything the
+    /// input declared: issue #170's `_V0_<comp>`, a load-time constant that
+    /// other expressions are normalised against, and issue #227's backing slot
+    /// for a function's evaluated value, which `build()` sets on its own for
+    /// every function that does not already name a parameter. Kept out of
+    /// `primary_param_names` and refused a value-changing write. Default false
+    /// leaves every ordinary parameter unchanged.
     int add_parameter(const std::string &name, double value, const std::string &expression = "",
                       bool is_expression = false, bool is_compartment_size = false,
                       bool is_internal = false);

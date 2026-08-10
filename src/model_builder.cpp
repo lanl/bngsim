@@ -26,6 +26,47 @@
 
 namespace bngsim {
 
+// Issue #227 — does `expr` name anything in this model whose value can move
+// after load? That, and only that, is what makes a parameter *derived*: an
+// expression that names another parameter carries `∂p_d/∂θ` into every rate law
+// that reads it, while `gamma = 1/7` or `pi = 2*asin(1)` names nothing and is a
+// constant written as arithmetic — which is exactly the line BNG2.pl draws when
+// it annotates the first `# ConstantExpression` and the second `# Constant`, and
+// the rule GH #181 gave the codegen `.net` parser.
+//
+// Scanned against the *source* text, so the names matched are the model's own —
+// the evaluator mangles a name before registering it (`_X` → `u_X`, reserved
+// words → `r_<name>`), and matching post-mangling would miss them.
+//
+// Species are checked even though a parameter expression that reads one cannot
+// compile at the point this is called (species become evaluator variables later
+// in build()) — a caller that reorders those steps should not silently start
+// folding a species reference into a constant.
+static bool references_model_symbol(const std::string &expr, const std::string &self_name,
+                                    const SharedModelData &sd) {
+    size_t i = 0, n = expr.size();
+    while (i < n) {
+        if (std::isalpha(static_cast<unsigned char>(expr[i])) || expr[i] == '_') {
+            size_t start = i;
+            while (i < n && (std::isalnum(static_cast<unsigned char>(expr[i])) || expr[i] == '_'))
+                ++i;
+            const std::string token = expr.substr(start, i - start);
+            // `time()` is a registered function and `rate_of__<species>` a
+            // registered variable; both read the running solve, so an expression
+            // naming either is not a load-time constant however it is annotated.
+            if (token == "time" || token.rfind("rate_of__", 0) == 0)
+                return true;
+            if (token != self_name && sd.param_name_to_idx.count(token))
+                return true;
+            if (sd.observable_name_to_idx.count(token) || sd.species_name_to_idx.count(token))
+                return true;
+        } else {
+            ++i;
+        }
+    }
+    return false;
+}
+
 // ─── BuilderImpl ─────────────────────────────────────────────────────────────
 
 struct ModelBuilder::BuilderImpl {
@@ -1248,13 +1289,24 @@ NetworkModel ModelBuilder::build() {
         if (pit != sd->param_name_to_idx.end()) {
             func_param_idx[fi] = pit->second;
         } else {
-            // Create synthetic parameter for this function
+            // Create synthetic parameter for this function.
+            //
+            // Issue #227 — this slot is storage for the function's evaluated
+            // value, not a knob of the model: `evaluate_functions()` overwrites
+            // it before every RHS evaluation, so a write to it survives exactly
+            // until the next one and its sensitivity column is identically zero
+            // forever. `is_internal` is what says so — the same flag #170 gave
+            // `_V0_<comp>`, and for the same reason: a synthesized slot an
+            // optimizer handed would fit a quantity with no meaning. It keeps
+            // the name out of `primary_param_names` and makes `set_param`
+            // refuse the write rather than accept one that does nothing.
             Parameter synth;
             synth.index = static_cast<int>(impl.parameters.size()) + 1;
             synth.name = impl.functions[fi].name;
             synth.value = 0.0;
             synth.expression = "";
             synth.is_expression = false;
+            synth.is_internal = true;
             synth.evaluator_id = -1;
 
             int new_idx = static_cast<int>(impl.parameters.size());
@@ -1358,14 +1410,43 @@ NetworkModel ModelBuilder::build() {
     }
 
     // Compile expression-valued parameters
-    for (auto &p : impl.parameters) {
-        if (p.is_expression && !p.expression.empty()) {
-            try {
-                p.evaluator_id = eval.compile(p.expression);
-                p.value = eval.evaluate(p.evaluator_id);
-            } catch (...) {
-                // May reference functions — handle below
-            }
+    //
+    // Issue #227 — and then demote the ones that turn out to be constants. A
+    // front end has to guess `is_expression` from the value text alone (the
+    // `.net` reader asks whether `std::stod` consumes the whole token), so
+    // `gamma = 1/7` arrives here flagged derived — and it is not: it references
+    // nothing, so there is no chain rule to carry and no primary underneath it
+    // to be fitted instead. Left flagged, `primary_param_names` drops it, and
+    // the recovery rate of `SIR.net` is silently absent from the vector the
+    // accessor's own docstring says to hand an optimizer.
+    //
+    // The demotion has to happen *here*, after the evaluation: the guess is what
+    // gets the expression compiled at all, and without that `gamma` would keep
+    // the 1.0 that a partial `stod("1/7")` left behind. Dropping `evaluator_id`
+    // with it is what makes the parameter an ordinary constant rather than a
+    // derived one that happens to have no primaries — otherwise writing it its
+    // own nominal value would re-attach it (issue #188's value-keyed override)
+    // and take it back out of `primary_param_names`.
+    //
+    // A function-bound parameter is left alone whatever its expression says: an
+    // SBML `<assignmentRule>` arrives as a function that overwrites this slot
+    // every step, so the slot is not a knob even when its `<initialAssignment>`
+    // is referenceless arithmetic.
+    std::unordered_set<int> function_bound(func_param_idx.begin(), func_param_idx.end());
+    for (int pi = 0; pi < static_cast<int>(impl.parameters.size()); ++pi) {
+        auto &p = impl.parameters[pi];
+        if (!p.is_expression || p.expression.empty())
+            continue;
+        try {
+            p.evaluator_id = eval.compile(p.expression);
+            p.value = eval.evaluate(p.evaluator_id);
+        } catch (...) {
+            // May reference functions — handle below
+            continue;
+        }
+        if (!function_bound.count(pi) && !references_model_symbol(p.expression, p.name, *sd)) {
+            p.is_expression = false;
+            p.evaluator_id = -1;
         }
     }
 
