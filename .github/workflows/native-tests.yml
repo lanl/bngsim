@@ -32,9 +32,32 @@ name: native-tests
 #
 # Scope: Linux only, and deliberately lean. KLU, NFsim and RuleMonkey are all
 # OFF — the tests run here link none of them, and skipping the vendored builds
-# takes the target count from 146 to 81. LAPACK is left at its default:
-# find_package(LAPACK QUIET) degrades to the reference dense solver when
-# absent, so the build is fine either way.
+# takes the target count from 146 to 81.
+#
+# LAPACK is the one build input this job now varies deliberately (GH #269).
+# It used to be "left at its default", which on a stock ubuntu-latest means
+# find_package(LAPACK QUIET) finds nothing — so test_lapack_dense_linsol was
+# registered and green here while executing none of the BLAS path, and after
+# #265 removed the transitive liblapack from python-tests.yml's Linux leg, NO
+# job anywhere built a BLAS on Linux. Two matrix entries now:
+#
+#   * blas: none — the stock runner, unchanged from before. This is the
+#     configuration the manylinux and Windows wheels actually ship (neither
+#     resolves a LAPACK), so it is not a degraded stand-in for the other leg;
+#     it is the shipped one. The skip counter added to
+#     test_lapack_dense_linsol makes what it does NOT cover legible instead of
+#     printing "6/6 passed" for four no-ops and two self-comparisons.
+#   * blas: liblapack (i.e. apt liblapack-dev) — reference LAPACK on the host,
+#     which is what a source install on an HPC or cluster box gets. The leg that
+#     executes dgetrf, and the only one that can catch a symbol-decoration or
+#     LP64/ILP64 mismatch, since Accelerate (the macOS legs) differs from
+#     reference LAPACK/OpenBLAS in exactly those two ways.
+#
+# Adding the package here cannot weaken lanl/bngsim#178's proof the way adding
+# it to python-tests.yml's Linux leg would: this job configures
+# -DBNGSIM_ENABLE_KLU=OFF, so it never reaches the SuiteSparse autobuild whose
+# self-sufficiency that proof is about. See python-tests.yml's header, which
+# gained a third leg of its own for the Python half of the same gap.
 #
 # NFsim tradeoff (called out explicitly per #39): the two NFsim tests
 # (nfsim_library_test, nfsim_simulator_test) exist only when
@@ -63,27 +86,50 @@ concurrency:
 
 jobs:
   native-tests:
-    name: C++ unit suite · ubuntu-latest
+    name: C++ unit suite · ubuntu-latest · BLAS ${{ matrix.blas }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Stock runner: find_package(LAPACK QUIET) finds nothing. What the
+          # manylinux and Windows wheels ship.
+          - blas: none
+            apt: ""
+            expect_lapack: "no"
+          # Reference LAPACK: what a source install on a LAPACK-equipped Linux
+          # box gets, and the only leg in CI that executes dgetrf on Linux.
+          - blas: liblapack
+            apt: liblapack-dev
+            expect_lapack: "yes"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Ninja
+      - name: Install Ninja (BLAS ${{ matrix.blas }})
         run: |
           set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          # matrix.apt is empty on the stock leg — that leg installs no BLAS and
+          # is the configuration the manylinux/Windows wheels ship.
+          sudo apt-get install -y ninja-build ${{ matrix.apt }}
 
       - name: Configure (tests ON; KLU / NFsim / RuleMonkey OFF)
         run: |
           set -euxo pipefail
+          # LAPACK is left at its default (BNGSIM_ENABLE_LAPACK_DENSE=ON,
+          # find_package(LAPACK QUIET)) on BOTH legs — the matrix varies what is
+          # installed on the host, not what CMake is told to look for, so the
+          # detection logic itself is what gets exercised. Teed for the guard,
+          # which cross-checks the "optimized dense solver ..." line against the
+          # leg's expectation.
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBNGSIM_BUILD_TESTS=ON \
             -DBNGSIM_ENABLE_KLU=OFF \
             -DBNGSIM_REQUIRE_KLU=OFF \
             -DBNGSIM_BUILD_NFSIM=OFF \
-            -DBNGSIM_BUILD_RULEMONKEY=OFF
+            -DBNGSIM_BUILD_RULEMONKEY=OFF \
+            2>&1 | tee /tmp/cmake-configure.log
 
       - name: Build the test suite
         run: |
@@ -145,4 +191,60 @@ jobs:
           if [ "$ran" -lt "$BNGSIM_FLOOR" ]; then
             echo "::error::Only $ran test_bngsim cases, expected >= $BNGSIM_FLOOR — cases vanished rather than failed."
             exit 1
+          fi
+
+      # Third denominator, and the one this matrix exists for (GH #269). The two
+      # above cannot see it: test_lapack_dense_linsol is one green ctest binary
+      # whether or not a BLAS is linked, because five of its seven cases are
+      # no-ops without one. So assert the LEG got the backend it asked for, at
+      # both the point of detection (CMake) and the point of use (the binary),
+      # and that the case count that actually ran matches.
+      - name: Guard the BLAS dense backend (expected ${{ matrix.expect_lapack }})
+        run: |
+          set -euo pipefail
+          EXPECT="${{ matrix.expect_lapack }}"
+
+          # 1. What CMake resolved. A silent detection regression (a renamed
+          #    CMake variable, a probe that stops compiling) would otherwise
+          #    just move this leg to the other configuration without a word.
+          if grep -q "optimized dense solver ENABLED" /tmp/cmake-configure.log; then
+            cmake_saw=yes
+          else
+            cmake_saw=no
+          fi
+          grep -E "BNGsim: optimized dense solver" /tmp/cmake-configure.log || true
+          if [ "$cmake_saw" != "$EXPECT" ]; then
+            echo "::error::CMake reports BLAS dense backend '$cmake_saw', this leg expects '$EXPECT'."
+            exit 1
+          fi
+
+          # 2. What the test binary sees, and how much of it actually ran. ctest
+          #    swallows stdout on success, so re-run it alone (0.03s, no deps).
+          ./build/tests/test_lapack_dense_linsol 2>&1 | tee /tmp/test_lapack.log
+          bin_saw="$(grep -oE 'lapack_dense_available = (yes|no)' /tmp/test_lapack.log \
+            | tail -1 | grep -oE '(yes|no)$' || true)"
+          if [ "$bin_saw" != "$EXPECT" ]; then
+            echo "::error::test_lapack_dense_linsol reports lapack_dense_available='$bin_saw', expected '$EXPECT'."
+            exit 1
+          fi
+
+          skipped="$(grep -oE '[0-9]+ SKIPPED' /tmp/test_lapack.log | tail -1 \
+            | grep -oE '^[0-9]+' || echo 0)"
+          if [ "$EXPECT" = "yes" ]; then
+            # The whole point of this leg. A skip here means the backend went
+            # missing between configure and run, which is precisely the state
+            # that read as "6/6 passed" before #269.
+            if [ "$skipped" -ne 0 ]; then
+              echo "::error::$skipped LAPACK cases skipped on the leg that installs liblapack-dev — the dgetrf path did not run."
+              exit 1
+            fi
+            echo "All LAPACK dense cases ran (0 skipped)."
+          else
+            # The no-BLAS leg is expected to skip; assert it SAYS so, so a future
+            # change that reverts the skips to silent `return 0` passes is caught.
+            if [ "$skipped" -eq 0 ]; then
+              echo "::error::No BLAS backend but 0 cases reported skipped — the skip reporting regressed to a false green."
+              exit 1
+            fi
+            echo "No BLAS backend: $skipped LAPACK cases skipped, as expected."
           fi

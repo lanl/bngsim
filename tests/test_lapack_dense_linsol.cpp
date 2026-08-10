@@ -25,6 +25,23 @@
 
 static int tests_run = 0;
 static int tests_passed = 0;
+static int tests_skipped = 0;
+
+// A third status alongside pass (0) and fail (1), added by GH #269. Four of the
+// cases below open with an early return when the build links no BLAS backend,
+// and a plain `return 0` counted every one of them as a PASS: a bare
+// ubuntu-latest printed "6/6 passed" in 0.03 s, byte-identical to the summary on
+// a host where all six really ran. ctest suppresses stdout on success, so even
+// the `lapack_dense_available = no` line never reached the log — the whole leg
+// read as coverage it did not have. 77 is ctest's own SKIP_RETURN_CODE
+// convention, used here per-case rather than per-binary.
+#define SKIP_RC 77
+
+#define SKIP(reason)                                                                                \
+    do {                                                                                            \
+        std::cout << "SKIPPED (" << reason << ")";                                                  \
+        return SKIP_RC;                                                                             \
+    } while (0)
 
 #define CHECK(cond, msg)                                                                            \
     do {                                                                                            \
@@ -40,7 +57,10 @@ static int tests_passed = 0;
         ++tests_run;                                                                                \
         std::cout << "  " << #func << "... " << std::flush;                                         \
         int _rc = func();                                                                           \
-        if (_rc == 0) {                                                                             \
+        if (_rc == SKIP_RC) {                                                                       \
+            ++tests_skipped;                                                                        \
+            std::cout << std::endl;                                                                 \
+        } else if (_rc == 0) {                                                                      \
             ++tests_passed;                                                                         \
             std::cout << "OK" << std::endl;                                                         \
         } else {                                                                                    \
@@ -102,7 +122,17 @@ static int solve_with(bool prefer_lapack, const double *A_src, const double *b, 
 
 // The core test: built-in vs LAPACK on the same well-conditioned system, across
 // the corpus-relevant size range. Residuals tiny AND the two solutions agree.
+//
+// This one used to RUN on a no-BLAS host, and that was the subtler half of the
+// GH #269 false green: with no backend, solve_with(true, …) falls back to the
+// built-in factor, so both arms of the comparison are the same code and dmax is
+// identically 0. It passed by asserting the built-in solver agrees with itself.
+// The fallback path it did exercise incidentally is now covered on purpose by
+// test_prefer_lapack_fallback_contract below, so this can say plainly that a
+// parity test with only one implementation present has nothing to compare.
 static int test_builtin_vs_lapack_parity() {
+    if (!bngsim::lapack_dense_available())
+        SKIP("no BLAS backend — both arms would be the built-in factor");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
 
@@ -142,7 +172,7 @@ static int test_builtin_vs_lapack_parity() {
 // small test systems can take the BLAS path; K small so the switch happens.)
 static int test_adaptive_switch() {
     if (!bngsim::lapack_dense_available())
-        return 0; // no BLAS backend → solver is the built-in fallback; nothing to switch
+        SKIP("no BLAS backend — solver is the built-in fallback, nothing to switch");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
     ::setenv("BNGSIM_LAPACK_DENSE_K", "3", 1);   // built-in for 3 factorizations, then dgetrf
@@ -207,7 +237,7 @@ static int test_adaptive_switch() {
 // answer-invariant, so the counter is the only observable that proves reset.)
 static int test_adaptive_reset() {
     if (!bngsim::lapack_dense_available())
-        return 0; // no BLAS backend → no adaptive solver to reset
+        SKIP("no BLAS backend — no adaptive solver to reset");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
     ::setenv("BNGSIM_LAPACK_DENSE_K", "3", 1);
@@ -266,7 +296,7 @@ static int test_adaptive_reset() {
 // the gate (reported via SolverStats::n_dense_blas_factorizations).
 static int test_blas_factor_count() {
     if (!bngsim::lapack_dense_available())
-        return 0; // no BLAS backend → no dgetrf path to count
+        SKIP("no BLAS backend — no dgetrf path to count");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
     ::setenv("BNGSIM_LAPACK_DENSE_K", "3", 1); // built-in for 3, then dgetrf
@@ -320,6 +350,11 @@ static int test_blas_factor_count() {
 
 // The gate predicate is OPT-IN (GH #84): default keeps the built-in dense LU
 // regardless of size/density; only BNGSIM_LAPACK_DENSE=1 engages the BLAS factor.
+//
+// Deliberately NOT a SKIP on a no-BLAS host (unlike the four above): the
+// no-backend branch asserts something real and host-specific — that opting in
+// on a build with no backend still refuses the BLAS path rather than routing to
+// a solver that is not there.
 static int test_gate_predicate() {
     using bngsim::should_use_lapack_dense;
     if (!bngsim::lapack_dense_available()) {
@@ -349,6 +384,8 @@ static int test_gate_predicate() {
 // rebase makes the two solutions agree to rounding; a mis-rebased pivot would
 // permute the solve wrongly → large residual and disagreement.
 static int test_pivoting_parity() {
+    if (!bngsim::lapack_dense_available())
+        SKIP("no BLAS backend — both arms would be the built-in factor");
     bngsim::SunContextGuard ctx;
     CHECK(ctx, "SUNContext_Create");
     const int sizes[] = {2, 3, 16, 64, 150};
@@ -379,10 +416,55 @@ static int test_pivoting_parity() {
     return 0;
 }
 
+// The one case with something to assert on EVERY host, and the reason the two
+// parity tests above can now skip without losing coverage (GH #269). Asking for
+// the BLAS factor is a request, not a requirement: on a build that has none it
+// must still hand back a working dense solver — the whole contract of the
+// !BNGSIM_HAS_LAPACK_DENSE branch of make_dense_linear_solver — and on a build
+// that has one it must hand back the adaptive solver. The accessors agree with
+// lapack_dense_available() about which solver came back: -1 ("not applicable")
+// from the plain SUNDIALS solver on a no-backend build, a real count from the
+// adaptive one otherwise. A build that linked a backend but still returned the
+// built-in solver would look identical from the outside without this.
+static int test_prefer_lapack_fallback_contract() {
+    bngsim::SunContextGuard ctx;
+    CHECK(ctx, "SUNContext_Create");
+    const int n = 24;
+    std::vector<double> A((long)n * n);
+    fill_well_conditioned(A.data(), n, 8123u);
+    std::vector<double> b(n);
+    for (int i = 0; i < n; ++i)
+        b[i] = 1.0 + (i % 3);
+
+    std::vector<double> x;
+    double resid = 0.0;
+    // prefer_lapack = true on any host: with a backend this is the adaptive
+    // solver, without one it must degrade to the built-in dense LU, not fail.
+    if (solve_with(true, A.data(), b.data(), n, ctx, x, resid) != 0)
+        return 1;
+    CHECK(resid < 1e-11, "prefer_lapack solve is accurate on every build");
+
+    bngsim::SUNMatrixGuard A2(SUNDenseMatrix(n, n, ctx));
+    bngsim::NVectorGuard yv(N_VNew_Serial(n, ctx));
+    CHECK(A2 && yv, "alloc");
+    bngsim::SUNLinSolGuard LS(bngsim::make_dense_linear_solver(yv, A2, ctx, true));
+    CHECK(LS, "solver alloc");
+    if (bngsim::lapack_dense_available()) {
+        CHECK(bngsim::lapack_dense_factor_count(LS) == 0,
+              "backend present → adaptive solver, count starts at 0");
+    } else {
+        CHECK(bngsim::lapack_dense_factor_count(LS) == -1,
+              "no backend → built-in solver, count not applicable");
+        CHECK(bngsim::lapack_dense_blas_factor_count(LS) == -1,
+              "no backend → no dgetrf count either");
+    }
+    return 0;
+}
+
 int main() {
+    const bool have_blas = bngsim::lapack_dense_available();
     std::cout << "test_lapack_dense_linsol (GH #84)\n";
-    std::cout << "  lapack_dense_available = " << (bngsim::lapack_dense_available() ? "yes" : "no")
-              << "\n";
+    std::cout << "  lapack_dense_available = " << (have_blas ? "yes" : "no") << "\n";
     // The kernel-parity tests must exercise the BLAS dgetrf path directly, so
     // defeat the GH #132 adaptive gate: K=0 → dgetrf from the first factorization,
     // MIN_N=0 → no small-N exclusion (these tests run N as small as 1). The
@@ -397,6 +479,15 @@ int main() {
     RUN_TEST(test_adaptive_reset);
     RUN_TEST(test_blas_factor_count);
     RUN_TEST(test_gate_predicate);
-    std::cout << tests_passed << "/" << tests_run << " passed\n";
-    return (tests_passed == tests_run) ? 0 : 1;
+    RUN_TEST(test_prefer_lapack_fallback_contract);
+    std::cout << tests_passed << "/" << tests_run << " passed";
+    if (tests_skipped > 0)
+        std::cout << ", " << tests_skipped << " SKIPPED (no BLAS dense backend)";
+    std::cout << "\n";
+    // GH #269: a skip is not a failure — a host with no BLAS is a supported
+    // configuration and the exit code has to stay 0 there, or native-tests.yml's
+    // stock ubuntu leg goes permanently red for a build option it never asked
+    // for. The skip COUNT on the summary line is the signal instead; the leg
+    // that is supposed to have a backend asserts it is zero.
+    return (tests_passed + tests_skipped == tests_run) ? 0 : 1;
 }

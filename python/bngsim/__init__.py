@@ -99,6 +99,22 @@ try:
 except (ImportError, AttributeError):
     HAS_KLU = False
 
+# Optimized BLAS dense-factor availability flag (GH #84, promoted to the public
+# namespace by GH #269) — True when the C++ extension linked a BLAS/LAPACK
+# backend (macOS Accelerate, or a system LAPACK found by find_package(LAPACK)),
+# so BNGSIM_LAPACK_DENSE=1 can route dense factorizations through `dgetrf`.
+# When False that env var is a no-op and the dense path is always the built-in
+# LU: correctness is identical either way, only speed on large dense Jacobians
+# differs. Of the published wheels only the macOS ones carry it — the manylinux
+# and Windows legs build with no BLAS on the CMake prefix — so on Linux this is
+# a source-install capability, and there was previously no supported way to ask.
+try:
+    from bngsim._bngsim_core import HAS_LAPACK_DENSE as _HAS_LAPACK_DENSE
+
+    HAS_LAPACK_DENSE: bool = _HAS_LAPACK_DENSE
+except (ImportError, AttributeError):
+    HAS_LAPACK_DENSE = False
+
 # True when the vendored MIR micro-JIT codegen backend is compiled in
 # (BNGSIM_ENABLE_MIR=ON, GH #78). Gate the compiler-free JIT path
 # (BNGSIM_CODEGEN_JIT=mir) on this; default wheels ship it OFF.
@@ -201,6 +217,7 @@ __all__ = [
     "HAS_NFSIM",
     "HAS_RULEMONKEY",
     "HAS_KLU",
+    "HAS_LAPACK_DENSE",
     "HAS_MIR",
     "HAS_LIBSBML",
     "HAS_ANTIMONY",
@@ -303,10 +320,10 @@ def capabilities() -> dict[str, Any]:
           Python dependency (``pip install ...``).
 
         ``"features"`` always contains the same keys regardless of build:
-        ``nfsim``, ``rulemonkey``, ``klu``, ``libsbml``, ``antimony``,
-        ``vivarium``, ``sbml_import``, ``sbml_ssa``, ``sbml_psa``,
-        ``antimony_import``, ``codegen``, ``output_sensitivities``,
-        ``effective_ic_sensitivity``.
+        ``nfsim``, ``rulemonkey``, ``klu``, ``lapack_dense``, ``mir``,
+        ``libsbml``, ``antimony``, ``vivarium``, ``sbml_import``, ``sbml_ssa``,
+        ``sbml_psa``, ``antimony_import``, ``codegen``,
+        ``output_sensitivities``, ``effective_ic_sensitivity``.
         ``"missing"`` is empty when every feature is available.
 
         ``output_sensitivities`` reports whether this install can emit the
@@ -330,6 +347,14 @@ def capabilities() -> dict[str, Any]:
         this to detect a dense-only install before a slow genome-scale run
         (GH #209).
 
+        ``lapack_dense`` reports whether a BLAS/LAPACK backend was linked for
+        the optional optimized dense factor (GH #84). Unlike ``klu`` this one
+        changes speed and nothing else — the built-in dense LU is used either
+        way unless ``BNGSIM_LAPACK_DENSE=1`` is set, and both produce the same
+        trajectory — so it answers "will that env var do anything here?".
+        ``False`` in the manylinux and Windows wheels, ``True`` in the macOS
+        ones (Accelerate) and in a source build on a host with LAPACK.
+
         Feature names are stable across releases; new features may be
         added but existing names will not be renamed or removed.
 
@@ -345,11 +370,14 @@ def capabilities() -> dict[str, Any]:
     True
     >>> caps["features"]["klu"] == bngsim.HAS_KLU
     True
+    >>> caps["features"]["lapack_dense"] == bngsim.HAS_LAPACK_DENSE
+    True
     """
     features: dict[str, bool] = {
         "nfsim": HAS_NFSIM,
         "rulemonkey": HAS_RULEMONKEY,
         "klu": HAS_KLU,
+        "lapack_dense": HAS_LAPACK_DENSE,
         "mir": HAS_MIR,
         "libsbml": HAS_LIBSBML,
         "antimony": HAS_ANTIMONY,
@@ -388,6 +416,19 @@ def capabilities() -> dict[str, Any]:
             "-c conda-forge suitesparse) and rebuild from source; if it lives "
             "on a non-standard prefix pass -DCMAKE_PREFIX_PATH or -DKLU_ROOT "
             "(GH #209). A macOS wheel is intentionally dense-only."
+        )
+    if not HAS_LAPACK_DENSE:
+        missing["lapack_dense"] = (
+            "no BLAS/LAPACK backend linked, so the optimized dense factor "
+            "(BNGSIM_LAPACK_DENSE=1) is a no-op and dense factorizations use "
+            "the built-in LU. Results are unaffected — this costs speed on "
+            "large dense Jacobians, not correctness. macOS builds get it from "
+            "Accelerate with no extra dependency; elsewhere install a LAPACK "
+            "(apt-get install liblapack-dev / dnf install lapack-devel / conda "
+            "install -c conda-forge openblas) and rebuild from source, passing "
+            "-DCMAKE_PREFIX_PATH if it lives on a non-standard prefix (GH #84). "
+            "The manylinux and Windows wheels are intentionally built without "
+            "one."
         )
     if not HAS_LIBSBML:
         libsbml_msg = "optional dependency 'python-libsbml' not installed"

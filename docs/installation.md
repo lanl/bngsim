@@ -188,11 +188,22 @@ unconditionally.
 
 ```python
 import bngsim
-bngsim.HAS_NFSIM       # compiled C++ NFsim backend
-bngsim.HAS_RULEMONKEY  # compiled C++ RuleMonkey backend
-bngsim.HAS_LIBSBML     # optional Python dependency 'python-libsbml'
-bngsim.HAS_ANTIMONY    # optional Python dependency 'antimony'
+bngsim.HAS_NFSIM         # compiled C++ NFsim backend
+bngsim.HAS_RULEMONKEY    # compiled C++ RuleMonkey backend
+bngsim.HAS_KLU           # compiled SuiteSparse/KLU sparse linear solver
+bngsim.HAS_LAPACK_DENSE  # compiled BLAS/LAPACK dense factor (opt-in, speed only)
+bngsim.HAS_LIBSBML       # optional Python dependency 'python-libsbml'
+bngsim.HAS_ANTIMONY      # optional Python dependency 'antimony'
 ```
+
+`HAS_LAPACK_DENSE` is the one flag that is `True` on the macOS wheels
+(Accelerate) and `False` on the manylinux and Windows ones. Nothing is missing
+when it is `False`: dense factorizations use the built-in LU, which is the
+default everywhere — the BLAS path is opt-in via `BNGSIM_LAPACK_DENSE=1` and
+gives the same trajectory. The flag answers whether setting that variable will
+do anything on this install. A source build picks the backend up from a system
+LAPACK (`apt-get install liblapack-dev`, `dnf install lapack-devel`, or a
+conda-forge `openblas`) with no other configuration.
 
 **Aggregator** — `bngsim.capabilities()` returns a structured dict whose
 schema is stable across releases. Feature names will not be renamed or

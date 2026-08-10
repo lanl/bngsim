@@ -33,19 +33,19 @@ name: python-tests
 #     takes the pyproject defaults: KLU on (REQUIRE_KLU=ON), NFsim on, RuleMonkey
 #     on, MIR off.
 #
-# It is the pre-push hook, on two more platforms. `uv sync --extra dev` provisions
-# from uv.lock and the pytest call is the hook's own (.pre-commit-config.yaml),
-# so green here means what a clean `git push` means locally — on a host the
-# developer does not have.
+# It is the pre-push hook, on platforms the developer does not have. `uv sync
+# --extra dev` provisions from uv.lock and the pytest call is the hook's own
+# (.pre-commit-config.yaml), so green here means what a clean `git push` means
+# locally — on a host the developer does not have.
 #
-# NEITHER leg installs SuiteSparse, and that is the point rather than an
-# omission. Both take BNGSIM_KLU_AUTOBUILD (GH #209) — the from-source fallback
+# NO leg installs SuiteSparse, and that is the point rather than an omission.
+# All of them take BNGSIM_KLU_AUTOBUILD (GH #209) — the from-source fallback
 # an sdist `pip install` on a bare box depends on — which no other job anywhere
 # exercises: every wheel leg resolves a prebuilt SuiteSparse through
 # SUITESPARSE_ROOT and every other job sets ENABLE_KLU=OFF.
 #
-# The Linux leg used to `apt-get install libsuitesparse-dev` because on a bare
-# ubuntu-latest the autobuild did NOT work: SuiteSparse_config calls
+# The bare Linux leg used to `apt-get install libsuitesparse-dev` because on a
+# bare ubuntu-latest the autobuild did NOT work: SuiteSparse_config calls
 # find_package(BLAS REQUIRED) whether or not anything links a BLAS, the runner
 # image ships none, and the configure died there before KLU was reached
 # (lanl/bngsim#178 — measured here, on this job's first run). The apt step was a
@@ -68,11 +68,32 @@ name: python-tests
 # on a stock ubuntu-latest and reports "optimized dense solver DISABLED (no
 # BLAS/LAPACK found)", so the Linux LAPACK build was an accident of the workaround
 # and lasted exactly as long as it did. The seven still run on the macOS leg,
-# where Accelerate supplies the backend. Installing liblapack-dev to get them back
-# would put a BLAS on the host and silently retire the #178 proof above.
+# where Accelerate supplies the backend. Installing liblapack-dev on THIS leg to
+# get them back would put a BLAS on the host and silently retire the #178 proof
+# above — do not do that.
 #
-# The HAS_KLU assertion below is what keeps both honest — without it a build that
-# quietly lost KLU would skip the sparse tests and still report green.
+# The seven tests are covered instead by a THIRD leg (GH #269), because leaving
+# them to macOS alone was not good enough: Accelerate and reference LAPACK are
+# the two implementations this integration is most likely to disagree about
+# (symbol decoration, LP64 vs ILP64 default), and #265 left no job anywhere
+# building a BLAS on Linux. That leg is `ubuntu-latest` + `liblapack-dev` and
+# NOTHING else — still no SuiteSparse, so it still takes BNGSIM_KLU_AUTOBUILD on
+# a host with no system SuiteSparse. It does not stand in for the bare leg and
+# cannot retire its proof: the bare leg is still there, still installs nothing,
+# and is still what an sdist install lands on. The two ubuntu legs differ by one
+# package, which is the point — one is the wheel/bare-host configuration, the
+# other is the source-install-on-a-LAPACK-box configuration that actually ships
+# HAS_LAPACK_DENSE=True.
+#
+# native-tests.yml gained the matching C++ leg; between them the Ax=b kernel and
+# the full-CVODE assertions (n_dense_blas_factorizations vs the Jacobian count,
+# trajectory parity) both run against reference LAPACK now.
+#
+# The HAS_KLU assertion below is what keeps all three honest — without it a build
+# that quietly lost KLU would skip the sparse tests and still report green. Each
+# leg carries the same shape of assertion on HAS_LAPACK_DENSE, against the value
+# THAT leg expects (false on bare ubuntu, true on macOS/Accelerate and on the
+# liblapack leg), so neither a disappearing nor a re-appearing BLAS is silent.
 #
 # Two coverage axes are deliberately NOT taken here, so they are not mistaken for
 # oversights:
@@ -107,7 +128,7 @@ concurrency:
 
 jobs:
   python-tests:
-    name: Python suite · ${{ matrix.os }}
+    name: Python suite · ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -115,9 +136,31 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest # x86_64 Linux — no Python coverage at all before #169
+            label: ubuntu-latest
+            apt: "" # bare host: the #178 proof. Do not add a package here.
+            expect_lapack: "false"
           - os: macos-14 # macOS arm64 — covered only by one developer's pre-push hook
+            label: macos-14
+            apt: ""
+            expect_lapack: "true" # Accelerate, no install needed
+          # GH #269. Same bare-host build as the first leg plus exactly one
+          # package, so the LAPACK dense solver (GH #84) is exercised against
+          # reference LAPACK and not only against macOS Accelerate.
+          - os: ubuntu-latest
+            label: ubuntu-latest-lapack
+            apt: liblapack-dev
+            expect_lapack: "true"
     steps:
       - uses: actions/checkout@v4
+
+      # Only the LAPACK leg installs anything, and only this one package. The
+      # other two legs must stay bare — see the header on lanl/bngsim#178.
+      - name: Install liblapack-dev (LAPACK leg only)
+        if: matrix.apt != ''
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -125,7 +168,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      # No SuiteSparse install step, on either leg — see the header. Both build
+      # No SuiteSparse install step, on any leg — see the header. All three build
       # the pinned KLU subset from source through BNGSIM_KLU_AUTOBUILD, which is
       # what an sdist `pip install` on a bare host does.
 
@@ -140,15 +183,39 @@ jobs:
         run: uv sync --extra dev --python 3.12
 
       - name: Show build / capability info
+        env:
+          EXPECT_LAPACK: ${{ matrix.expect_lapack }}
         run: |
           set -euxo pipefail
           uv run --no-sync python -c "import platform, sys; print(platform.platform()); print(sys.version)"
-          uv run --no-sync python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_KLU', bngsim.HAS_KLU); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_MIR', bngsim.HAS_MIR)"
+          uv run --no-sync python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_KLU', bngsim.HAS_KLU); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_MIR', bngsim.HAS_MIR); print('HAS_LAPACK_DENSE', bngsim.HAS_LAPACK_DENSE)"
           # The point of this job is the DEFAULT configuration, and KLU is the
           # part of it nothing else in CI builds. A build that silently lost KLU
           # would skip the sparse-solver tests and still be green, so fail here
           # instead — the same false-green guard mir.yml puts on HAS_MIR.
           uv run --no-sync python -c "import bngsim, sys; sys.exit(0 if bngsim.HAS_KLU else 'HAS_KLU is False — the default build did not link SuiteSparse/KLU')"
+          # Same guard for the BLAS dense backend (GH #269), in BOTH directions.
+          # On the liblapack / macOS legs a False means the seven LAPACK tests
+          # quietly turned back into skips and the leg stopped testing the thing
+          # it exists to test. On the bare ubuntu leg a True means a BLAS arrived
+          # on the host by some other route — which is the failure mode #265's
+          # header warns about, since a BLAS is what made the #178 workaround
+          # unnecessary to notice.
+          uv run --no-sync python - <<'PY'
+          import os
+          import sys
+
+          import bngsim
+
+          expected = os.environ["EXPECT_LAPACK"] == "true"
+          got = bngsim.HAS_LAPACK_DENSE
+          assert bngsim.capabilities()["features"]["lapack_dense"] == got
+          if got != expected:
+              sys.exit(
+                  f"HAS_LAPACK_DENSE is {got}, this leg expects {expected} — "
+                  "the BLAS dense backend appeared or vanished on this host."
+              )
+          PY
           # The runtime codegen path shells out to this compiler at simulate time.
           uv run --no-sync python -c "from bngsim import _codegen; print('C compiler:', _codegen._find_c_compiler())"
 
@@ -166,7 +233,7 @@ jobs:
           set -o pipefail
           uv run --no-sync python -m pytest -p no:cacheprovider python/tests \
             -q --tb=short --durations=15 ${{ github.event.inputs.pytest_args }} \
-            2>&1 | tee python-tests-${{ matrix.os }}.log
+            2>&1 | tee python-tests-${{ matrix.label }}.log
 
       - name: Guard against a false green
         if: ${{ !github.event.inputs.pytest_args }}
@@ -200,7 +267,7 @@ jobs:
           COLLECTED_FLOOR=3480
           PASS_FLOOR=3380
 
-          LOG="python-tests-${{ matrix.os }}.log"
+          LOG="python-tests-${{ matrix.label }}.log"
           summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
           if [ -z "$summary" ]; then
             echo "::error::No pytest summary line — the suite did not run to completion."
@@ -232,6 +299,6 @@ jobs:
         if: always() && steps.pytest.conclusion != 'skipped'
         uses: actions/upload-artifact@v4
         with:
-          name: python-tests-log-${{ matrix.os }}
-          path: python-tests-${{ matrix.os }}.log
+          name: python-tests-log-${{ matrix.label }}
+          path: python-tests-${{ matrix.label }}.log
           if-no-files-found: error
