@@ -58,6 +58,19 @@ name: python-tests
 # cibuildwheel's Linux leg, which resolves `dnf install suitesparse-devel`
 # through SUITESPARSE_ROOT.
 #
+# One measured side effect of dropping the apt step, so the skip count is not a
+# mystery later: `libsuitesparse-dev` pulled in liblapack/libblas transitively,
+# which is the only reason this leg ever built the optional LAPACK dense solver
+# (GH #84). Without it `find_package(LAPACK QUIET)` finds nothing and seven tests
+# go from passed to skipped on Linux — five "build links no BLAS dense backend"
+# plus two "LAPACK-dense not built in this configuration" (85 -> 92 skips). That
+# is the runner's real default state, not a loss: native-tests.yml already builds
+# on a stock ubuntu-latest and reports "optimized dense solver DISABLED (no
+# BLAS/LAPACK found)", so the Linux LAPACK build was an accident of the workaround
+# and lasted exactly as long as it did. The seven still run on the macOS leg,
+# where Accelerate supplies the backend. Installing liblapack-dev to get them back
+# would put a BLAS on the host and silently retire the #178 proof above.
+#
 # The HAS_KLU assertion below is what keeps both honest — without it a build that
 # quietly lost KLU would skip the sparse tests and still report green.
 #

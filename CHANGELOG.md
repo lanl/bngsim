@@ -293,7 +293,6 @@ in `CMakeLists.txt`) is derived from it.
   `(X>0)`, which that scan rejects — was admitted and sympy differentiated `~X`
   to a clean `1` with nothing warned.
 
-
 - **`Model.primary_param_names` was wrong in both directions on a `.net` model:
   it omitted literal-valued constants and listed every function name (issue
   #227).** This is the accessor whose own docstring says to hand it to an
