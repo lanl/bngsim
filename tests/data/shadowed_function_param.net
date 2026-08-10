@@ -1,0 +1,50 @@
+# A parameter row shadowed by a same-named function (GH #266).
+#
+# This is the SBML `<assignmentRule>` shape after conversion to `.net`: the
+# parameter keeps the species' *initial* value and the rule becomes a function
+# of the same name. bngsim binds the function to the declared slot and
+# `evaluate_functions()` overwrites it before every derivative evaluation — so
+# the number in the `parameters` block is the seed that slot holds until the
+# function first evaluates, and never a knob. `set_param` on it used to be
+# accepted and discarded one step later.
+#
+# Tracked deliberately. The shape occurs in four models under
+# `benchmarks/suites/ssa_table5/results/converted/` (BIOMD0000000344 alone leaks
+# 83 names) and in **zero** of the 140 `.net` files tracked in git, so the sweep
+# in `test_primary_param_names.py` was green in CI and red only on a machine
+# that had generated that corpus. Without this file the fix has no CI coverage.
+#
+# Two shadowed rows, because the loader reaches them by different routes:
+#   supply   0.0    a literal, so the `.net` reader flags it a plain constant —
+#                   the case #227 left behind, and the one the four models have.
+#   recycle  1/4    arithmetic, so the reader guesses `is_expression` from the
+#                   value text. The slot is not *derived* either (nothing
+#                   recomputes it from primaries; the function overwrites it),
+#                   so the derived flag comes off and `is_internal` carries the
+#                   fact — the two flags have to stay disjoint.
+#
+# Both are live: `supply` is the rate of a zero-order source, so a run that used
+# the 0.0 seed instead of the function would leave A at zero forever.
+begin parameters
+    1 kdeg    0.20
+    2 kmax    3.0
+    3 supply  0.0
+    4 recycle 1/4
+end parameters
+begin species
+    1 A() 0
+    2 B() 5
+end species
+begin reactions
+    1 0 1 supply
+    2 1 2 kdeg
+    3 2 1 recycle
+end reactions
+begin groups
+    1 A_obs 1
+    2 B_obs 2
+end groups
+begin functions
+    1 supply() kmax*B_obs/(1+B_obs)
+    2 recycle() kdeg
+end functions
