@@ -19,6 +19,7 @@ a newer one.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -30,6 +31,27 @@ _CC = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
 needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "tests" / "data"
+
+
+def _source_root() -> Path | None:
+    """The repository root, or ``None`` when this is not a source checkout.
+
+    Restated rather than imported from ``test_version_consistency`` for the
+    reason that file gives: ``run_tests.sh`` copies the tests to a temp
+    directory, where a sibling import does not resolve and a fixed ``__file__``
+    walk-up does not reach the tree. Same three candidates, same order.
+    """
+    candidates: list[Path] = []
+    if env_data := os.environ.get("BNGSIM_TEST_DATA"):
+        candidates.extend(Path(env_data).resolve().parents)
+    if env_root := os.environ.get("BNGSIM_SOURCE_ROOT"):
+        candidates.append(Path(env_root).resolve())
+    candidates.extend(Path(__file__).resolve().parents)
+    for candidate in candidates:
+        py = candidate / "pyproject.toml"
+        if py.is_file() and 'name = "bngsim"' in py.read_text(encoding="utf-8"):
+            return candidate
+    return None
 
 
 def _fake_src_tree(root: Path, marker: str = "") -> Path:
@@ -78,6 +100,52 @@ class TestSourceDigest:
         assert cg._CODEGEN_CACHE_KEY.startswith(cg._CODEGEN_VERSION + "+")
         assert cg._CODEGEN_SOURCE_DIGEST, "codegen source digest is empty in a source install"
         assert f"{cg._CODEGEN_VERSION}+{cg._CODEGEN_SOURCE_DIGEST}" == cg._CODEGEN_CACHE_KEY
+
+
+class TestTheDocumentedModuleList:
+    """Issue #267 — the prose a contributor reads must not carry its own copy.
+
+    ``CONTRIBUTING.md``'s "Changing generated code" section is how someone
+    decides whether their edit needs a hand-written ``_CODEGEN_VERSION`` bump:
+    the digest covers the modules on the list, and the constant is the escape
+    hatch for everything else. It used to restate the list, and #68 added
+    ``_switch_sensitivity`` to the tuple without updating it — so from then on
+    the file told anyone editing that module to bump a constant the digest had
+    already made unnecessary. Over-invalidation, so nothing broke; but a bump
+    discards every user's cache and puts an entry in a comment block that is a
+    curated record of real reasons.
+
+    The fix is that there is no second copy, and these two tests are what keep
+    it that way — one for the pointer, one for the enumeration that must not
+    come back partial."""
+
+    @pytest.fixture(scope="class")
+    def contributing(self) -> str:
+        root = _source_root()
+        if root is None or not (root / "CONTRIBUTING.md").is_file():
+            pytest.skip("not a source checkout — CONTRIBUTING.md is not present")
+        return (root / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    def test_it_points_at_the_tuple(self, contributing):
+        """Naming the tuple is what makes the list findable without a copy. If a
+        rewrite drops the pointer, the section stops answering the question it
+        exists to answer."""
+        assert "_CODEGEN_SOURCE_MODULES" in contributing
+
+    def test_it_does_not_enumerate_a_subset(self, contributing):
+        """A restated list is allowed only if it is complete. Partial is the
+        exact shape that drifted: three of four names, indistinguishable from a
+        deliberate statement that the fourth is not covered."""
+        named = [n for n in cg._CODEGEN_SOURCE_MODULES if f"`{n}.py`" in contributing]
+        assert not named or len(named) == len(cg._CODEGEN_SOURCE_MODULES), (
+            "CONTRIBUTING.md names "
+            + ", ".join(f"{n}.py" for n in named)
+            + " but not "
+            + ", ".join(f"{n}.py" for n in cg._CODEGEN_SOURCE_MODULES if n not in named)
+            + " — a contributor reading it would bump _CODEGEN_VERSION for an edit the "
+            "source digest already covers (issue #267). Point at "
+            "_CODEGEN_SOURCE_MODULES rather than restating it."
+        )
 
 
 class TestModelHashHonorsTheKey:

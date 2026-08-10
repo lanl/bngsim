@@ -121,11 +121,15 @@ hashing the C would mean regenerating it on every cache probe.
 
 `_CODEGEN_CACHE_KEY` is `_CODEGEN_VERSION` (a hand-maintained constant in
 `python/bngsim/_codegen.py`) plus a digest of the source of every module that
-determines the emitted C: `_codegen.py`, `_jacobian.py`, and
-`_saturable_jacobian.py`. The digest means an edit to any of those invalidates
-stale artifacts on its own, so a change cannot go silently inert on a machine
-with a warm cache the way issues #41 and #43 did — there, the fixes appeared to
-do nothing at all, reporting `dy/dp == 0` where a cold cache gave correct values.
+determines the emitted C. **`_CODEGEN_SOURCE_MODULES`, in that same file, is that
+list** — read it there rather than from a copy here. This paragraph used to
+restate the names and went stale the first time one was added, so from #68 until
+issue #267 it told you to bump the version by hand for an edit the digest had
+covered all along. The digest means an edit to any module on that list
+invalidates stale artifacts on its own, so a change cannot go silently inert on a
+machine with a warm cache the way issues #41 and #43 did — there, the fixes
+appeared to do nothing at all, reporting `dy/dp == 0` where a cold cache gave
+correct values.
 
 Two cases the digest does not cover, where you must bump `_CODEGEN_VERSION`
 yourself and say why in the comment block above it:
