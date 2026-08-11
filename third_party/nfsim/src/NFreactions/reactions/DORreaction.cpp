@@ -225,6 +225,10 @@ int DORRxnClass::checkForCollision(Molecule *m, MappingSet* ms, int rxnIndex){
 }
 
 bool DORRxnClass::tryToAdd(Molecule *m, unsigned int reactantPos) {
+	// see BasicRxnClass::tryToAdd()
+	if (contextCountsPerComplex[reactantPos] && reactantPos == (unsigned)DORreactantIndex) {
+		reactantTree->noteMappedComplexSize(m->getComplex()->getComplexSize());
+	}
 	if(reactantPos==(unsigned)this->DORreactantIndex) {
 
 		// handle the DOR reactant
@@ -415,23 +419,17 @@ int DORRxnClass::getReactantCount(unsigned int reactantIndex) const
 int DORRxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
 {
 	if(reactantIndex==(unsigned)this->DORreactantIndex) {
-		return reactantTree->size();
+		return contextCountsPerComplex[reactantIndex]
+		         ? countDistinctComplexes(reactantTree)
+		         : reactantTree->size();
 	}
 
-	if (matchOncePerReactant[reactantIndex] && !isPopulationType[reactantIndex]) {
-		std::set<int> uniqueComplexes;
-		ReactantList *rl = reactantLists[reactantIndex];
-		int size = rl->size();
-		for (int i = 0; i < size; ++i) {
-			MappingSet *ms = rl->getMappingSetByIndex(i);
-			if (ms && ms->getNumOfMappings() > 0) {
-				Mapping *mapping = ms->get(0);
-				if (mapping && mapping->getMolecule()) {
-					uniqueComplexes.insert(mapping->getMolecule()->getComplexID());
-				}
-			}
-		}
-		return (int)uniqueComplexes.size();
+	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+	// same counting applied automatically to a reactant the rule never transforms,
+	// which is how BNG counts one.
+	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+	    && !isPopulationType[reactantIndex]) {
+		return countDistinctComplexes(reactantLists[reactantIndex]);
 	}
 
 	return isPopulationType[reactantIndex] ?
@@ -527,7 +525,11 @@ double DORRxnClass::update_a() {
 		if(i!=DORreactantIndex) {
 			a*=(double)getCorrectedReactantCount(i);
 		} else {
-			a*=reactantTree->getRateFactorSum();
+			// This reactant's propensity comes from the tree's rate factor sum, not
+			// from a count, so per-complex counting has to be applied to the sum.
+			a *= contextCountsPerComplex[i]
+			       ? perComplexRateFactorSum(reactantTree)
+			       : reactantTree->getRateFactorSum();
 		}
 	}
 	return a;
@@ -1181,26 +1183,20 @@ int DOR2RxnClass::getReactantCount(unsigned int reactantIndex) const
 int DOR2RxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
 {
 	if (reactantIndex==(unsigned)DORreactantIndex1) {
-		return reactantTree1->size();
+		return contextCountsPerComplex[reactantIndex]
+		         ? countDistinctComplexes(reactantTree1) : reactantTree1->size();
 	}
 	else if (reactantIndex==(unsigned)DORreactantIndex2) {
-		return reactantTree2->size();
+		return contextCountsPerComplex[reactantIndex]
+		         ? countDistinctComplexes(reactantTree2) : reactantTree2->size();
 	}
 
-	if (matchOncePerReactant[reactantIndex] && !isPopulationType[reactantIndex]) {
-		std::set<int> uniqueComplexes;
-		ReactantList *rl = reactantLists[reactantIndex];
-		int size = rl->size();
-		for (int i = 0; i < size; ++i) {
-			MappingSet *ms = rl->getMappingSetByIndex(i);
-			if (ms && ms->getNumOfMappings() > 0) {
-				Mapping *mapping = ms->get(0);
-				if (mapping && mapping->getMolecule()) {
-					uniqueComplexes.insert(mapping->getMolecule()->getComplexID());
-				}
-			}
-		}
-		return (int)uniqueComplexes.size();
+	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+	// same counting applied automatically to a reactant the rule never transforms,
+	// which is how BNG counts one.
+	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+	    && !isPopulationType[reactantIndex]) {
+		return countDistinctComplexes(reactantLists[reactantIndex]);
 	}
 
 	return isPopulationType[reactantIndex] ?
@@ -1282,11 +1278,17 @@ double DOR2RxnClass::update_a() {
 	}
 	a = baseRate;
 	for (unsigned int i=0; i<n_reactants; i++) {
+		// as in DORRxnClass::update_a(), a DOR reactant's propensity comes from its
+		// rate factor sum, so that is where per-complex counting goes
 		if (i==(unsigned int)DORreactantIndex1) {
-			a*=reactantTree1->getRateFactorSum();
+			a *= contextCountsPerComplex[i]
+			       ? perComplexRateFactorSum(reactantTree1)
+			       : reactantTree1->getRateFactorSum();
 		}
 		else if (i==(unsigned int)DORreactantIndex2) {
-			a*=reactantTree2->getRateFactorSum();
+			a *= contextCountsPerComplex[i]
+			       ? perComplexRateFactorSum(reactantTree2)
+			       : reactantTree2->getRateFactorSum();
 		}
 		else {
 			a*=(double)getCorrectedReactantCount(i);

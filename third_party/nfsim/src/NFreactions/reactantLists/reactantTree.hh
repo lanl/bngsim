@@ -102,6 +102,25 @@ namespace NFcore
 			 */
 			virtual MappingSet * getMappingSet(unsigned int mappingSetId) const;
 
+			/*!
+				Returns the MappingSet at a position in the flat mappingSets array, so
+				callers can walk the live entries alongside getRateFactor(), which is
+				indexed the same way.  ReactantList offers the same accessor.
+				@author bngsim
+			 */
+			virtual MappingSet * getMappingSetByIndex(unsigned int index) const { return mappingSets[index]; }
+
+			/*! True once any molecule mapped into this container has belonged to a
+			    complex of more than one molecule.  While it is false no complex can
+			    hold two matches, so the distinct-complex count is just size() and the
+			    O(n) scan can be skipped -- which is the common case for catalytic
+			    rules over large monomer pools.  Conservative: a stale true only
+			    costs the scan.  --bngsim */
+			void noteMappedComplexSize(int complexSize) {
+				if (complexSize > 1) anyMultiMoleculeComplex = true;
+			}
+			bool mayShareComplexes() const { return anyMultiMoleculeComplex; }
+
 
 
 			/*!
@@ -151,6 +170,7 @@ namespace NFcore
 			unsigned int navigateAndInsertTree(unsigned int firstTreeIndex, int* lElementCount, int* rElementCount, double* lRateFactorSum, double rateFactor);
 
 
+			bool anyMultiMoleculeComplex;
 			TransformationSet *ts;       //Keeps track of the set of transformations
 			unsigned int reactantIndex;  //the index of the tree
 

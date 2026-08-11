@@ -922,11 +922,35 @@ MappingSet *TransformationSet::generateBlankMappingSet(unsigned int reactantInde
 	return new MappingSet(mappingSetId, transformations[reactantIndex]);
 }
 
+
+bool TransformationSet::isPureContextReactant(unsigned int reactantIndex) const
+{
+	if( reactantIndex >= n_reactants ) return false;
+	return pureContextReactants.find(reactantIndex) != pureContextReactants.end();
+}
+
+
 void TransformationSet::finalize()
 {
 	//Be sure to add at least a blank transformation to every reactant if there is no transformation
 	//specified so that we count the reactants even if we don't do anything to it.
 	for(unsigned int r=0; r<getNmappingSets(); r++)  {
+
+		// Record which reactants the rule does not transform, before the placeholder
+		// below makes that indistinguishable.  EMPTY cannot be the test: it is also
+		// what genBindingTransform2() puts on the second partner of a binding, which
+		// very much is a reaction center.  A LOCAL_FUNCTION_REFERENCE, on the other
+		// hand, only marks the molecule a local function reads, so a DOR reactant
+		// can still be pure context.
+		bool pureContext = true;
+		for(unsigned int t=0; t<transformations[r].size(); t++) {
+			if(transformations[r].at(t)->getType() != (int)TransformationFactory::LOCAL_FUNCTION_REFERENCE) {
+				pureContext = false;
+				break;
+			}
+		}
+		if(pureContext) pureContextReactants.insert(r);
+
 		if(transformations[r].size()==0) {
 			transformations[r].push_back(TransformationFactory::genEmptyTransform());
 			MapGenerator *mg = new MapGenerator(transformations[r].size()-1);

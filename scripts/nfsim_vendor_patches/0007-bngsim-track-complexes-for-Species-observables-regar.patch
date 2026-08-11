@@ -1,7 +1,7 @@
-From 82d7df3821bde7ce368905616b53db11b733ad4b Mon Sep 17 00:00:00 2001
+From c93e48a9a21bc418a24cbfdc61f50bc1be10cbbc Mon Sep 17 00:00:00 2001
 From: Bill Hlavacek <bill.hlavacek@gmail.com>
 Date: Sat, 23 May 2026 09:29:03 -0600
-Subject: [PATCH 07/16] bngsim: track complexes for Species observables
+Subject: [PATCH 07/17] bngsim: track complexes for Species observables
  regardless of -bscb
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

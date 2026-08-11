@@ -239,6 +239,75 @@ void MMRxnClass::printDetails() const {
 
 
 
+/* --- pure context counting, shared by every reaction class (bngsim) ---------
+ *
+ * BioNetGen gives a reactant pattern the rule does not transform one reaction
+ * instance per matching COMPLEX, however many molecules in that complex match
+ * it: every embedding produces the identical reaction, so there is only one.
+ * NFsim enumerates matches per molecule, so these collapse the difference.
+ * Both read the complex off mapping 0, which for such a reactant is the root
+ * molecule placed by the placeholder transform TransformationSet::finalize()
+ * adds. */
+
+/* Scratch buffer for the counts below.  These run on the propensity hot path --
+ * once per reactant per update_a(), which is millions of calls on a model with a
+ * catalytic rule -- so they must not allocate.  A reused vector plus sort beats
+ * building a std::set by more than an order of magnitude, and thread_local keeps
+ * concurrent sessions from sharing it. */
+static thread_local std::vector<int> s_complexScratch;
+
+template <typename Container>
+static int distinctComplexesOf(Container *rc, int size)
+{
+	s_complexScratch.clear();
+	if ((int)s_complexScratch.capacity() < size) s_complexScratch.reserve(size);
+	for (int i = 0; i < size; ++i) {
+		MappingSet *ms = rc->getMappingSetByIndex(i);
+		if (ms && ms->getNumOfMappings() > 0) {
+			Mapping *mapping = ms->get(0);
+			if (mapping && mapping->getMolecule()) {
+				s_complexScratch.push_back(mapping->getMolecule()->getComplexID());
+			}
+		}
+	}
+	std::sort(s_complexScratch.begin(), s_complexScratch.end());
+	return (int)(std::unique(s_complexScratch.begin(), s_complexScratch.end())
+	             - s_complexScratch.begin());
+}
+
+int NFcore::countDistinctComplexes(ReactantList *rl)
+{
+	if (!rl->mayShareComplexes()) return rl->size();
+	return distinctComplexesOf(rl, rl->size());
+}
+
+int NFcore::countDistinctComplexes(ReactantTree *tree)
+{
+	if (!tree->mayShareComplexes()) return tree->size();
+	return distinctComplexesOf(tree, tree->size());
+}
+
+double NFcore::perComplexRateFactorSum(ReactantTree *tree)
+{
+	// One representative term per complex.  getRateFactor() is indexed by the
+	// same flat array position as getMappingSetByIndex(), so this walks the live
+	// entries and keeps the first seen for each complex.
+	std::set<int> seen;
+	double sum = 0.0;
+	int size = tree->size();
+	for (int i = 0; i < size; ++i) {
+		MappingSet *ms = tree->getMappingSetByIndex(i);
+		if (!ms || ms->getNumOfMappings() == 0) continue;
+		Mapping *mapping = ms->get(0);
+		if (!mapping || !mapping->getMolecule()) continue;
+		if (seen.insert(mapping->getMolecule()->getComplexID()).second) {
+			sum += tree->getRateFactor(i);
+		}
+	}
+	return sum;
+}
+
+
 BasicRxnClass::BasicRxnClass(string name, double baseRate, string baseRateName, TransformationSet *transformationSet, System *s) :
 	ReactionClass(name,baseRate,baseRateName,transformationSet,s)
 {
@@ -367,6 +436,13 @@ bool BasicRxnClass::tryToAdd(Molecule *m, unsigned int reactantPos)
 
 	//Here we get the standard update...
 	set<int> deleteMs = m->getRxnListMappingSet(rxnIndex);
+
+	// Cheap note for countDistinctComplexes(): while every matched molecule is a
+	// singleton complex, no complex can hold two matches and the distinct-complex
+	// count is just size().
+	if (contextCountsPerComplex[reactantPos]) {
+		rl->noteMappedComplexSize(m->getComplex()->getComplexSize());
+	}
 
 	//Try to map it!
 	MappingSet *ms = rl->pushNextAvailableMappingSet();
@@ -552,20 +628,12 @@ int BasicRxnClass::getCorrectedReactantCount(unsigned int reactantIndex) const
 	}
 	*/
 
-	if (matchOncePerReactant[reactantIndex] && !isPopulationType[reactantIndex]) {
-		std::set<int> uniqueComplexes;
-		ReactantList *rl = reactantLists[reactantIndex];
-		int size = rl->size();
-		for (int i = 0; i < size; ++i) {
-			MappingSet *ms = rl->getMappingSetByIndex(i);
-			if (ms && ms->getNumOfMappings() > 0) {
-				Mapping *mapping = ms->get(0);
-				if (mapping && mapping->getMolecule()) {
-					uniqueComplexes.insert(mapping->getMolecule()->getComplexID());
-				}
-			}
-		}
-		return (int)uniqueComplexes.size();
+	// MatchOnce is the user's explicit request; contextCountsPerComplex is the
+	// same counting applied automatically to a reactant the rule never transforms,
+	// which is how BNG counts one.
+	if ((matchOncePerReactant[reactantIndex] || contextCountsPerComplex[reactantIndex])
+	    && !isPopulationType[reactantIndex]) {
+		return countDistinctComplexes(reactantLists[reactantIndex]);
 	}
 
 	return isPopulationType[reactantIndex] ?
