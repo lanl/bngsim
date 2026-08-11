@@ -14,7 +14,10 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-11
+
 ### Added
+
 - **`bngsim.HAS_LAPACK_DENSE`, and a Linux CI leg that actually runs the BLAS
   dense solver (issue #269).** The optional `dgetrf` dense factor (GH #84) had
   no supported capability probe and, after #265, no Linux coverage at all.
@@ -231,7 +234,117 @@ in `CMakeLists.txt`) is derived from it.
   ulp. SED-ML export refuses a per-species `atol` outright rather than writing
   one entry as `KISAO:0000211`, which would describe a different run.
 
+- **A cross-platform Python test gate (issue #169).**
+  `.github/workflows/python-tests.yml` runs the whole of `python/tests` on
+  `ubuntu-latest` and `macos-14` in the **default** build configuration. Before
+  it, GitHub CI ran 533 of the suite's ~3490 Python tests on any non-Windows
+  host — and every one of them under `BNGSIM_CODEGEN_JIT=mir` on a
+  `-DBNGSIM_ENABLE_MIR=ON` build, so the count exercised in the configuration a
+  wheel actually ships was **zero** on Linux and macOS. A regression in SBML
+  loading, `.net` parsing, events, steady state, SSA, conversion or coupling
+  could be caught only on Windows, and only if the file happened to be named in
+  one of two hand-maintained lists.
+
+  The gap was structural, not a bug. Every job that runs pytest names a curated
+  file list, so a *new* test file defaults to running nowhere, and the assumed
+  backstop was the local pre-push hook — which covers whichever platform the
+  developer happens to be on (here macOS arm64) and which `git push --no-verify`
+  removes. `native-tests.yml` stated that assumption in its header as fact.
+
+  The new job therefore carries no `paths:` filter (a selectively-firing gate
+  reintroduces the per-file opt-in through the trigger instead of the run list),
+  no file list (it runs the directory, the way `native-tests.yml` drives `ctest`
+  rather than one named target), and no `-D` overrides (every other workflow
+  disables something — KLU off in four of them, MIR *on* in `mir.yml` — which is
+  how the shipped configuration ended up untested). Provisioning is `uv sync
+  --extra dev` off `uv.lock` and the pytest call is the pre-push hook's own, so a
+  green run means what a clean `git push` means locally, on a host the developer
+  does not have.
+
+  Two false-green guards, mirroring the ones `native-tests.yml` added for the C++
+  suite: a floor on the passed count, because a module that stops importing skips
+  at collection and shrinks the denominator without failing anything; and
+  `BNGSIM_SKIP_AUDIT=strict`, because a test that quietly turns into a skip for
+  an undeclared reason is the same invisibility in a different form. `HAS_KLU` is
+  asserted after the build for the reason `mir.yml` asserts `HAS_MIR` — a build
+  that silently lost KLU would skip the sparse-solver tests and still be green.
+
+  Side effect worth naming: the macOS leg is the only place anywhere that
+  exercises `BNGSIM_KLU_AUTOBUILD` (GH #209). The wheel legs all resolve a
+  prebuilt SuiteSparse through `SUITESPARSE_ROOT` and every other job sets
+  `ENABLE_KLU=OFF`, so the from-source KLU subset that an sdist install on a bare
+  box falls back to had no CI at all. Wiring it up immediately showed why that
+  matters: the same autobuild **cannot** complete on a bare `ubuntu-latest`,
+  because SuiteSparse's own CMake calls `find_package(BLAS)` and the runner image
+  ships none, so the configure dies in `SuiteSparse_config` before KLU is
+  reached. So GH #209's self-sufficiency claim holds on macOS but not on a bare
+  Linux host. The Linux leg therefore installs `libsuitesparse-dev`, the same
+  system-package route cibuildwheel's Linux leg takes.
+
+  And the gate earned itself on its first real run: **four tests fail on Linux
+  that pass on macOS**, in two unrelated subsystems, both pre-existing on `main`
+  and both exactly the class #169 said nothing could see. GH #176's
+  finite-difference retry fires correctly on
+  `ltype_calcium_discontinuous_jacobian.net` and then dies at a *second*
+  threshold crossing (t≈34.6) the fixture's own header does not mention; and
+  `nested_derived_rate_const.net`'s reduced Jacobian is exactly singular under
+  Linux's reference LAPACK where Accelerate leaves it merely ill-conditioned, so
+  it takes the refusal branch its sibling test exists to assert rather than the
+  warning branch its own test asserts. Both are quarantined under
+  `xfail(sys.platform.startswith("linux"), strict=True, raises=SimulationError)`
+  and reported in lanl/bngsim#176 — `strict` so they retire themselves, and
+  quarantined at all so the new gate lands green rather than permanently red,
+  which is the distinction `native-tests.yml`'s header spells out.
+
+- **`compartment_sizes=` at load, the supported way to change a volume (issue
+  #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
+  `from_antimony_string`, and `Model.load` take
+  `compartment_sizes={"Liver": 2.5}`, applied to the parsed document before
+  bngsim interprets it — so the size reaches every constant it is folded into,
+  and the result is bit-identical to loading a source that carries that `size=`
+  outright. A volume scan or a fit over a volume is a loop over such loads, and
+  its gradient is a finite difference over two of them. An `initialAssignment`
+  on an overridden compartment is dropped (it would otherwise take precedence);
+  a compartment whose size an *assignment rule* computes is refused, since the
+  rule and not the attribute is its volume; `.net` is refused for having no
+  compartment left to set.
+
+- **`Model.compartment_size_params`** — the parameter names the two rules above
+  apply to, so a fitting harness can build its vector from what is writable.
+
+- **Analytic forward sensitivities for cross-compartment reactions (issue
+  #160).** A reaction whose affected species live in compartments of different
+  size (`per_species_volume_scaling`) used to decline the analytic sensitivity
+  RHS for the **whole model** — `CVodeSensInit1` installs one callback for every
+  column, so a single such reaction put every column on CVODES' internal
+  difference quotient. The fallback was correct, so this is a cost fix, not a
+  correctness one.
+
+  The missing piece was never a derivative: a cross-compartment kinetic law
+  evaluates to amount/time while each affected species stores amount/V_c with a
+  V_c of its own, so every accumulation row divides by its own compartment
+  volume — and the `∂f/∂p` scatter had no form for that divide. It has one now,
+  taken from the same `_psvs_row_divisor` lookup the RHS scatter (which defines
+  the divide) and the `J·yS` half already share, folded into the scatter
+  coefficient for a static compartment and emitted as a runtime divide by the
+  live volume for a variable one (issue #171). Both halves of
+  `ySdot = J·yS + ∂f/∂p` are therefore analytic for these models.
+
+  Measured over the two SBML corpora plus the `.net` corpus (1,380 models):
+  **21 models gain an analytic sensitivity RHS** (`benchmarks/sbml_events`
+  177 → 198), none lose one, and every other model's emitted RHS, analytical
+  Jacobian and sensitivity RHS is byte-identical. Where the difference quotient
+  used to converge the two agree to 8.3e-06 relative over 65 sensitivity columns
+  on 14 real models; where it did not, the step counts are the story —
+  `BIOMD0000000706` integrates 460 steps against the difference quotient's 23.0
+  million.
+
+  Elementary and Michaelis–Menten reactions carrying the flag still decline (and
+  now say so): their `J·v` comes from a scatter that has no per-row divide, so
+  half a divide would be worse than the fallback. No loader emits one.
+
 ### Changed
+
 - **The GH #88 periodic step bound is now derived only where the discontinuity
   roots provably cannot reach (issue #274).** #262 measured that no corpus model's
   answer the bound changes; this acts on it. The bound and the GH #72/#231/#259
@@ -279,7 +392,501 @@ in `CMakeLists.txt`) is derived from it.
   behaviour when called without the registered-condition set, so a caller that has
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
+- **The build-time derivation now declines before differentiating what it could
+  never emit (issue #250).** `BIOMD0000000385` spent **138 s** against a 20 s
+  budget deriving a Jacobian the emitter then refused — a 6.9x overshoot the
+  budget could not bound, because the deadline is only testable between `sp.diff`
+  calls and this was one call.
+
+  The issue proposed subdividing the derivation to make the deadline reachable.
+  Profiling says that would not have worked: recursing that rate law to 117
+  deadline-checkable steps still leaves two `dAbs` at 62.4 s and 34.8 s, with
+  every other step under 0.04 s. `Abs` is an atomic leaf. What the profile showed
+  instead is that the 138 s bought a 5.7-million-op expression (a ~1500x blow-up)
+  that `sympy_to_exprtk` then rejected — the verdict was decidable up front.
+
+  Six functions the emitter accepts have no derivative it can print, derived by
+  differentiating every name in `_SYMPY_FUNC_TO_EXPRTK` rather than listed by
+  hand: `Abs`, `Max`, `Min` (which produce `re`/`im`/`Heaviside`) and `ceiling`,
+  `floor`, `sign` (an unevaluated `Derivative`, per the fix above). That set is a
+  fact about the emitter map rather than a judgement, so a test re-runs the
+  derivation and compares — adding a function to the map without re-deriving
+  would otherwise reintroduce this quietly for that function. A rate law
+  with one of those over a **differentiation variable** now falls back
+  immediately. Position matters and the check respects it — `Abs(k)*A`
+  differentiates to `Abs(k)` and is fine, and a Piecewise *condition* is copied
+  through undifferentiated, so `MODEL1006230034`'s
+  `Piecewise(…, mincond_J_K < Abs(deltaPsi))` keeps its complete analytical
+  Jacobian. A position-blind check took it away; that regression is what the
+  corpus A/B caught.
+
+  **Verified over the whole rr_parity corpus** (1319 models, unbudgeted
+  derivation, `complete` flag diffed against the pre-change sweep): **0 models
+  changed classification** in either direction, 0 error-status changes, 0 models
+  measurably slower. Total unbudgeted derivation 1296 s → 1100 s (−15.1%);
+  `BIOMD0000000385` 148.3 s → 0.9 s, `470`/`473`/`472` ~7-10 s → ~0.7 s. Worst
+  overshoot left in the corpus is **1.0x** the budget, down from 6.9x.
+
+- **The analytical-Jacobian budget has no correctness floor left, and the test
+  that claimed one was red on `main` (issue #249).** Since #95 this suite held
+  the shipping derivation budget above a floor justified by one model —
+  `BIOMD0000000457` was said to be stiff enough that its finite-difference solve
+  *fails* at the parity tolerance, so a smaller budget would strand it. #244 made
+  that premise a test rather than a docstring sentence, which was the right move
+  and immediately showed it to be false: the assertion has been failing since
+  `bac36e7` merged. It went unnoticed because it is corpus-gated and CI has no
+  corpus — the job log reads `ssss.ss` for that file under `model corpus absent
+  from this checkout`, so a green tick says nothing about it, while every local
+  push from a checkout that *has* the corpus was blocked.
+
+  457's FD solve is not marginal: it returns in 0.07 s with 626 steps and a
+  finite trajectory, and survives rtol 1e-6/1e-12 through 1e-12/1e-15 on both
+  linear solvers and both RHS backends. Nothing resembling the documented "CVODE
+  returns -3 at t~3.36 with h~1e-42" appears anywhere in that grid. Its
+  derivation now costs 0.283 s, which puts it below the 0.5 s band #244 selected
+  fixtures from, so that recipe would not pick it today either.
+
+  Re-running the classification over the **whole** corpus rather than a slow
+  band — forcing `jacobian="fd"`, which costs no derivation, so all of it is
+  affordable — the floor turns out to have no subject at all. Of the 1,218 models
+  the analytical Jacobian attaches to (1,323 probed, 1,291 load, 73 declines),
+  **1,198 solve on FD; the 15 that fail fail identically with the analytical
+  Jacobian**, and 5 cannot be simulated at all (`fast="true"` reactions). **Zero
+  models need it.** Nor is there a weaker property to re-anchor on: across the 23
+  models whose derivation is slow enough to be starved by any plausible budget,
+  the worst FD-vs-analytical trajectory difference is 1.9e-6 relative — solver
+  noise at rtol 1e-9.
+
+  So the floor is retired rather than re-derived, which would have repeated the
+  mistake #244 named: a tripwire standing on a measurement that has evaporated.
+  The shipping default is **unchanged at 20 s** — dropping a requirement is not a
+  licence to move the constant. What guards it now is an equality pin with an
+  actionable message, because with no correctness requirement there is no
+  meaningful inequality left to assert, and the premise test is inverted into a
+  canary: 457's FD solve must keep succeeding *and* keep agreeing with the
+  analytical one (measured 8.5e-6, asserted under 1e-3). If either flips, the
+  instruction is to re-run the classification, not to edit the test.
+
+- **The budget does have a floor — on cost, not correctness — and the 457 canary
+  was pinning the one thing about that model that is not portable (issue #245).**
+  #249 above is right that no corpus model *needs* the analytical Jacobian, and
+  right to make the guard an equality pin rather than invent a correctness floor.
+  It also concluded that with no correctness requirement there is no meaningful
+  inequality left to assert. There is one, because its sweep asked whether the FD
+  solve **works** and never what it **costs**.
+
+  `BIOMD0000000608` derives for **4.76 s** and solves **4.16x faster** for it
+  (0.065 s vs 0.015 s, 52 species). FD is perfectly correct there, just slow, so a
+  viability screen is blind to it by construction. Nor is it alone:
+  `MODEL1603150001` (3.0x), `MODEL1601050000` (2.7x), `MODEL1602080000` (1.7x) and
+  `MODEL1504130000` (1.4x) derive in 2.2–3.0 s and pay too. 608 is the most
+  expensive derivation that pays for itself; the cheapest that does not is
+  `BIOMD0000000628` at 59.3 s, whose analytical solve is *slower* than its FD one.
+  That window is 12.5x wide against #95's 3.4x — the gap did not close, it moved
+  and opened — and 20 s sits 4.2x above the floor and 3.0x below the ceiling,
+  above the 16.8 s geometric centre because too high spends build seconds once
+  while too low buys a permanently slower solve. Between the bounds nothing needs
+  getting right: `BIOMD0000000496` and `497` derive to completion on the default
+  and measure 1.02x and 1.25x — real waste, ~22 s of it across 1286 models.
+
+  So a floor comes back at **15.0 s** (4.76 s × the 3.3x machine spread), beside
+  #249's equality pin rather than instead of it: the pin catches any move of the
+  constant and asks for a justification, the floor is the bound a justification
+  may not talk past. 608's premise is run, not asserted in prose.
+
+  **Solve times must be medians over repeats on a warm codegen cache.**
+  `fd_viability.jsonl` takes one cold sample per mode, analytical first, so that
+  arm absorbs codegen warm-up: it reports 496 at 5.84x (really 1.02x) and
+  `MODEL1603150001` at 0.33x (really 3.01x) — wrong by 5.8x one way and 9x the
+  other. That artifact is why the paying population was invisible.
+
+  **The 457 canary is now a tolerance ladder.** Its FD solve fails at exactly rtol
+  1e-9/atol 1e-12 on x86_64 macOS — "CVODE -3 at t~3.36 with h~3.1e-42", #95's
+  signature — and succeeds at 1e-6, 1e-8, 1e-10 and 1e-12, while on arm64 it
+  succeeds at all five. Same commit, corpus present, core rebuilt from the tree.
+  Both readings are real: this is a knife-edge stiff transient whose convergence
+  is not portable, and #244 and #249 each pinned the single cell where the two
+  architectures disagree — so that assertion has been red on one machine or the
+  other continuously since #244, invisibly, because the file is corpus-gated and
+  CI has no corpus. It **strengthens** #249's conclusion: a model that genuinely
+  needed the analytical Jacobian would fail across a band and hardest at the
+  tightest rung, where 457 instead agrees to 9.8e-10. The canary now walks the
+  ladder, tolerates one isolated interior failure, requires the tightest rung to
+  solve, and requires agreement wherever it solves. Mutation-checked both ways.
+
+  The key stays wall-clock, which #245's other half proposed replacing with
+  something that travels between machines (cost per reaction, inlined rate-law
+  size, a #97-style step count). Measured over the same corpus, each predicts
+  derivation cost far worse than the 3.3x machine spread it would replace:
+  per-inlined-token cost runs 2.5–2351 µs/token over the 256 models with ≥ 1000
+  tokens (**923x** end to end, 142x from the median up), `BIOMD0000000385` and
+  `246` share a largest inlined rate law (~47k tokens) and derive 19x apart, and
+  the best log-log correlation of any static key is 0.685. The loosest size-keyed budget that cuts nothing it cuts today
+  hands `MODEL1006230049` 5838 s where wall-clock gives it 20 s. #187 and #97
+  already ship the sound version and are unchanged: clock as the mechanism, a
+  size that travels scaling the allowance upward.
+
+  What the sweep does leave open, recorded next to the budget rather than fixed
+  here: the deadline can only be tested *between* `sp.diff` calls, so a single
+  pathological rate law overshoots it by however long one derivative takes.
+  Against the 20 s default that is 1.0x on `MODEL1006230053` and
+  `MODEL1006230090`, and **6.9x on `BIOMD0000000385`** — 138 s to reach the first
+  check, after which it declines anyway. Filed as #250: bounding it means
+  subdividing the derivation so the deadline is reachable, and a size gate is not
+  the answer (`BIOMD0000000246`'s largest inlined rate law is 1% smaller and
+  derives in 6.2 s).
+
+  No shipped value changed, so no model's build or solve behaves differently;
+  `main` goes green again on a corpus-bearing x86_64 checkout.
+
+- **A plain ODE build no longer emits the sensitivity RHS at all — the
+  Elementary half is gated too (issue #217).** #209/#214 stopped a plain
+  `Simulator(model, method="ode")` from deriving the Functional/MM analytic
+  `∂f/∂p`, but deliberately left the Elementary `bngsim_codegen_sens_rhs`
+  unconditional: it is plain text emission with no sympy in it, so gating it
+  would buy no *derivation* time, only source size, and leaving it alone kept
+  every all-Elementary model's source byte-identical. Correct about the
+  derivation, wrong about the size. On the 20 largest `.net` models it is
+  **55.6% of a plain build's C source** (44.8 MB of 80.6 MB) — a symbol
+  `CVodeSensInit1` is never called to install — and because `_resolve_opt_flag`
+  picks its tier from total translation-unit size, that dead weight held five of
+  them at a lower `-O` for the RHS the solve *does* call: `fceri_fyn` compiled
+  its plain RHS at `-O0` where 5.2 MB gets `-O1`, and four models took `-O1`
+  where `-O3` was available. Measured on the in-repo `.net` corpus after the
+  change: plain source down **47.9%** (68.6 MB → 35.8 MB over 12 models), 4 of
+  12 recovering a higher `-O`.
+
+  The cost that held it back was already paid. Gating this was argued to make
+  every model's plain artifact differ from its sensitivity artifact "where today
+  only Functional/MM ones do", roughly doubling entries in an already 2 GB cache
+  (issue #205) — but #177's `:sens_term_scale` has been in both keys since
+  before #209, so plain and sensitivity have had separate entries, and separate
+  sources, for every model since then. What changes is the *content* of the
+  plain entry.
+
+  Sensitivity runs are unaffected: a 16-model A/B over the `.net` corpus keeps
+  `bngsim_codegen_sens_rhs` on every one and reproduces every sensitivity value
+  bit-for-bit. `emit_functional_sens` is now `emit_sens_rhs` and
+  `want_functional_sens_rhs()` is `want_sens_rhs()`, both private. The
+  `.net` cache suffix `:no_functional_sens` now means only what GH #67 gave it
+  (the `BNGSIM_NO_FUNCTIONAL_SENS_RHS` A/B hatch); "nobody asked" gets its own
+  `:no_sens_rhs`, because for an Elementary model those two stopped emitting the
+  same source and sharing one namespace across that difference is the issue #51
+  inertness trap. The hatch is correspondingly no longer folded into
+  `want_sens_rhs()` — with it set, a sensitivity run still emits the Elementary
+  sensitivity RHS and loses only the Functional extension, which is the pre-#67
+  behaviour it exists to restore.
+
+- **`compute_all_sensitivities(params=None)` now returns independent columns —
+  `Model.primary_param_names` rather than `Model.param_names` (issue #203).**
+  The default meant "every parameter", and on a model with derived
+  (expression-backed) parameters that list is not a set of coordinates. A
+  derived parameter reaches the trajectory only through the primaries it is
+  built from, and *their* columns are total derivatives **through** it — the
+  chain rule #188 restored. So `alpha` and `_rateLaw_R16_fwd = alpha*konBT`
+  reported the same physical effect twice, in exact proportion
+  `d(derived)/d(primary)`, and `Result.gradient` contracts that whole axis into
+  one `(n_params,)` vector its own docstring hands to `scipy.optimize.minimize`
+  over a parameter vector of the same width. Nothing bounded the size of the
+  error: on `BIOMD0000000701` the derived columns are ~6.7e-12 against `alpha`'s
+  1.0e-3 and it does not matter, but the ratio is the model's, not a constant.
+
+  `Result.fisher_information` is the sharper symptom, because there the damage
+  does not depend on that ratio at all: `Sᵀ Σ⁻¹ S` over an axis holding two
+  exactly proportional columns is rank-deficient **by construction**, so the old
+  default handed back a matrix with a null direction on every model carrying
+  derived parameters — and the identifiability reading the user guide recommends
+  (smallest eigenvalues → least identifiable) takes that round-off eigenvalue for
+  a finding about the model.
+
+  Dropped the way issue #164 established in the same five lines for the
+  compartment sizes `set_param` refuses: a warning naming them, and an explicit
+  `params=[...]` that still returns the column for anyone who wants
+  `∂x/∂_rateLaw` **on its own terms** — the axis
+  `bngsim.jax.differentiable_solve(..., flat=True)` asks for, which goes through
+  the explicit path and is unchanged. The default now agrees with that function's
+  own `flat=False` default, which has always differentiated over
+  `primary_param_names`.
+
+  The synthesized `_V0_<comp>` goes the same way, for the older reason: it is
+  bngsim's record of a compartment's size at load, which the rate constants in
+  that compartment are normalised against, and `set_param` refuses a
+  value-changing write to it (`test_the_load_time_volume_record_is_not_a_knob`
+  has said so since #170 stage 1) — so a gradient entry for it is one an
+  optimizer would fit against nothing. The compartment size itself is an
+  ordinary writable, differentiable parameter and stays in the tensor.
+
+  Measured on the 1,291 loadable rr_parity models: 279 carry derived parameters
+  and 216 of those also carry a `_V0_`, so 279 models see a narrower default —
+  10,048 columns dropped in total (9,524 derived, 524 internal), no model left
+  with an empty column set, and the three skip classes disjoint (no parameter
+  carries two of the flags). On the models A/B'd column for column, the columns
+  that remain are unchanged.
+
+- **A plain ODE run no longer derives, emits or compiles the analytic `∂f/∂p` it
+  never installs (issue #209).** `generate_combined_from_model` called
+  `generate_sens_from_model` unconditionally, so `Simulator(model, method="ode")`
+  with no `sensitivity_params` ran the Functional sensitivity derivation through
+  sympy, emitted it, and compiled it into the cached `.so` — for a solve that
+  never calls `CVodeSensInit1`. On `BIOMD0000000496` (295 species, 333 functional
+  reactions, cold codegen cache, the analytical Jacobian derived first so the GH
+  #95 budget cannot decide the answer) that was **46 s of codegen against 29 s, and
+  a 26.7 MB `.so` against 1.8 MB (14.6x)**, and the solve itself 0.45 s against
+  0.29 s. The GH #198 output-sensitivity evaluator three lines below in the same
+  function was already gated on `_want_output_sens` for exactly this reason.
+
+  Two side effects on models this large. 12.6 MB of C source crosses the 8 MB
+  `_CODEGEN_HUGE_SOURCE_BYTES` threshold and 3.7 MB does not, so the translation
+  unit now compiles at `-O1` rather than `-O0` — which moves the trajectory in the
+  last bits (7.5e-15 relative on this model; pinning `-O0` on the gated build
+  reproduces the old trajectory *bit for bit*, which is how that was attributed).
+  The faster solve is **not** that: `-O0` on the gated build is just as fast, so
+  what is left is the 8.9 MB of never-called code sharing the image, and this
+  change does not identify the mechanism further.
+
+  Scoped to the Functional/Michaelis-Menten half. An Elementary model's
+  sensitivity RHS is plain text emission with no sympy in it, so it stays
+  unconditional and its source (and every `.so` cached for it) is byte-identical.
+
+  The cost of the gate is entirely in *not* silently downgrading a sensitivity run
+  to CVODES' difference quotient, so the resolved flag reaches both cache keys
+  (sharing the existing `:no_functional_sens` namespace on the `.net` side — a
+  build with the GH #67 hatch set and a build with nobody asking emit the same
+  source), and `Simulator._prepare_output_sens_codegen` — which `steady_state()`
+  and `compute_all_sensitivities()` share — regenerates a plain artifact instead
+  of reusing it. That helper's own `n_functions > 0` condition is gone with it: a
+  Michaelis-Menten model can have no functions at all, and #177's
+  `bngsim_codegen_sens_term_scale` had already made the byte-identical-source
+  claim behind that condition false.
+
+- **The model-side `.so` cache key is structural, so a warm cache generates no C
+  source (issue #174).** `prepare_model_codegen` derived its key by generating
+  the source and hashing it, which meant a cache hit skipped only the `cc`
+  compile: every `Simulator` construction still paid the RHS + `∂f/∂p` + Jacobian
+  derivation, and none of that work depends on the parameter values a fit is
+  moving. `compute_model_codegen_hash` — dead code whose docstring already
+  claimed to hash "model structure" — now actually does: `codegen_data()` minus
+  each parameter's *value*, the Jacobian scatter plan, the functional-Jacobian
+  context, and the process-scoped emit decisions, all cheap C++ reads. This is
+  what `prepare_codegen` has always done for the `.net` path. On
+  `Smith_BMCSystBiol2013` construction against a warm cache goes from 1.31 s to
+  0.03 s.
+
+  Dropping parameter values is safe for one reason that had to be established
+  rather than assumed: the generated C reads parameters from the runtime `p[]`
+  array. The single exception is the issue #68 switch-condition gate, which
+  probes the RHS to find clock species and evaluates a clock threshold
+  numerically — so one `set_param` really can add or remove the whole analytic
+  sensitivity RHS. `switch_gate_cache_digest` carries that *verdict* (the
+  booleans, not the values), which keeps the key stable across a fit while still
+  separating the two artifacts.
+
+  **This invalidates every cached `.so` on the model path.** The next run per
+  model recompiles once. The `.net` path's key form is unchanged apart from the
+  chunking fix below.
+
+- **An SBML compartment size is a writable parameter (issue #170).** A volume
+  plays two roles in a loaded model: a *symbol* in kinetic laws, which is an
+  ordinary `p[]` a write has always moved, and the *storage convention* — bngsim
+  stores `amount/V_c`, so V decides the amount↔concentration conversion, an
+  amount-declared initial condition, the mass-action scalar's `Π V^n / V_storage`
+  and the SSA propensity volume. The second was folded at load and never
+  re-derived, so issue #164 refused the write outright. Each fold is now put back
+  on the parameter: the mass-action scalar carries the volume as a ratio on the
+  reaction's rate parameter (`k · (C/V_load)`, exactly 1.0 at the nominal point),
+  the Functional storage divide is emitted against the compartment symbol even
+  when the load-time size is 1, and `set_param` re-derives `volume_factor` and an
+  amount-declared IC. The load-time size the ratio normalises against is carried
+  by a synthesized `_V0_<comp>` parameter rather than a printed literal — ExprTk's
+  decimal literal parser is not correctly rounded, and a 1-ulp denominator moves
+  the rate constant. `_V0_<comp>` is marked internal: `primary_param_names` omits
+  it and `set_param` refuses a value-changing write, since moving it would
+  rescale the rates in that compartment without moving the volume. `set_param("cell", v)` now reproduces *loading the model at
+  `v`* bit for bit, and matches RoadRunner, on every shape issue #170 tabulated —
+  including the pair that made its case, where the same law loaded at V=1 and at
+  V=4 gave opposite answers.
+
+  The **generated C** reads the volume from `p[]` too, so the write lands on the
+  compiled backend as well as the interpreted one. Previously the emitted source
+  baked it — the amount factor of an amount-valued (`hasOnlySubstanceUnits`)
+  species's rate, its observable weights, its `∂/∂x` chain factor and `rateOf`
+  scaling, plus a cross-compartment reaction's `inv_vf` reciprocal table and
+  per-row Jacobian / `∂f/∂p` divisors — and those two shapes were refused rather
+  than honored on one backend and half-applied on the other. The invariant that
+  makes it safe: **the emitted source no longer depends on the load-time volume at
+  all**, so one compiled `.so` is valid at every size and a write that arrives
+  after the source was generated (a `parameter_scan`, any post-construction
+  `set_param`) still lands. The per-species `∂func/∂x` chain coefficient went
+  symbolic for the same reason, on both backends: it is the `J·yS` half of the
+  forward-sensitivity RHS, so freezing V there was a wrong *sensitivity* (measured
+  at 100% on a 400x volume write), not merely a slower solve.
+
+  Lifting that refusal made 38 more corpus models writable, and a sweep of "does
+  `set_param` reproduce `compartment_sizes=` at the same value?" over all 173 found
+  three more places where a load at V=1 emitted something a load at V≠1 did not,
+  so the write had nothing to move — the `_vd_<rid>_unified` Functional storage
+  divide for a *multi-compartment* reaction, an event assignment writing an amount
+  into an `hasOnlySubstanceUnits` species's slot, and the report-time
+  amount→concentration divide for an assignment-rule target (the one conversion
+  that lives entirely on the Python side, so no engine refresh could reach it).
+  All three are fixed and all three are numerically free at the nominal point,
+  since `x/1.0 == x` exactly.
+
+  **177 of the corpus's 207 compartment-carrying models are now fully writable**
+  (135 before the codegen half), 9 partly; the models with any refused size drop
+  from 72 to 30 and the refused sizes from 230 to 132. Refused by name rather than
+  in a blanket (`Model.unwritable_compartment_size_params`), and now for two
+  reasons rather than three: an assignment-rule compartment (the rule recomputes
+  its size every step), and one whose storage divide a single mass-action scalar
+  shares across two equal-sized compartments (that scalar stops being exact the
+  moment they differ). Not yet *differentiable*: forward sensitivity still refuses
+  a `d/dV` column (issue #170 stage 3).
+
+  Behaviour at the nominal point is unchanged: over the 214-model SBML corpus the
+  RHS is bit-identical on all 214 and the trajectory on 206. Five of the eight
+  that move do so because they *gained* an analytical Jacobian (202 → 207
+  complete, none lost) — see below; the other three differ by ≤ 8.3e-16 relative.
+  The codegen half moves nothing further: against the interpreted-and-writable
+  build, the RHS fingerprint and the trajectory are bit-identical on every model,
+  interpreted and `codegen=True` alike, even though the emitted C text changes for
+  the whole SBML corpus (a new `.so` cache key, not a new answer).
+
+- **`_DECLARED_SKIPS` is now checked against the reason strings the tests emit,
+  in both directions, and carries a tier (issue #179).** The list is the
+  codebase's mechanism for forcing a permanent skip to be justified in a diff,
+  and nothing compared it to reality. It had drifted to **25 undeclared reasons
+  across 47 files** — none of which fire in the default build, which is exactly
+  why nobody saw them. They are *build-variant* reasons, and the variants they
+  describe are the ones the other CI legs use, so the only run that could have
+  surfaced them was the one nobody had turned the audit on for.
+
+  A new AST-based check in `test_skip_audit.py` asserts every hand-written skip
+  reason matches a declared pattern, and every declared pattern still matches
+  something. Both directions are verified to fail on real drift rather than
+  being vacuous. The two traps #179 flagged are handled and pinned by their own
+  tests: `pytest.importorskip("sympy")` *generates* `could not import 'sympy'`
+  at run time, so scanning its call sites invents failures (~3× the apparent
+  problem size), and `xfail(reason=...)` is not a skip reason at all. Both are
+  decided by what the AST node is, which no regex over `reason=` can do.
+
+  Trap 1 has a sub-case the issue did not name, and the first version of this
+  check had it wrong: `importorskip` takes an optional `reason=`, and when it is
+  given the generated text is never produced — so the string in the source *is*
+  what the audit sees. Ignoring those call sites wholesale hid two genuine
+  undeclared reasons (`vivarium-core not installed`, `tomllib is 3.11+`). A
+  strict run caught them minutes after the scan had pronounced the tree clean,
+  which is the argument for both checks existing rather than either alone.
+
+  Nine phrasings for two conditions — `NFsim not built`, `bngsim compiled
+  without NFsim support`, `no NFsim support`, … — are consolidated onto the two
+  strings the list already declared, across 29 sites. That was drift away from
+  an existing convention, not the absence of one. `scipy` is removed: no
+  hand-written reason contains it, so every scipy skip is an
+  `importorskip`-generated `could not import 'scipy'` the neighbouring entry
+  already matched.
+
+  Declarations now carry a **tier**, because one flat list could not say the
+  thing that matters. `KLU not compiled` and `no C compiler on PATH` are both
+  fair skips on a laptop, but only the first is fair in CI: a leg that silently
+  lost `cc` would skip ~22 files' worth of codegen tests and report success —
+  a false green waved through by the list meant to catch it. `LOCAL_ONLY`
+  reasons (the C-compiler family; `requires libsbml`, which is a *hard*
+  dependency and so cannot be a build variant) print a `!!` row and end the run
+  under `BNGSIM_SKIP_AUDIT=strict`. Strict is only ever set by a workflow, so
+  the tier is enforced exactly where "this environment is incomplete" stops
+  being an acceptable answer. None of these fires on any leg today, so it costs
+  nothing now and buys the alarm later.
+
+  `BNGSIM_SKIP_AUDIT=strict` is consequently on for `mir.yml` and
+  `windows-tail.yml`, the two KLU-off legs — the first time the audit has had
+  teeth outside the default build, which is where these reasons live. Note the
+  issue proposed `native-tests.yml` as the cheapest KLU-off leg; that workflow
+  is ctest-only and runs no pytest, so there is nothing there to turn on.
+
+  One test changed rather than being declared: `test_conservation_laws.py`'s
+  `test_dependent_block_is_identity` skipped when a model reported no
+  conservation laws. All five of its fixtures are checked-in `.net` files that
+  have them, so the branch had never fired — and had conservation-law detection
+  regressed to zero, the test would have gone green by skipping. It asserts
+  instead.
+
+- **A parity run now records WHICH bngsim produced it, not just which version
+  (issue #163).** The `bng_parity` harness records the engines behind a run so a
+  golden can be reproduced. PyBioNetGen was recorded as a resolved git commit;
+  bngsim was recorded as a bare `__version__` — which identified an artifact only
+  while bngsim could not be installed from PyPI. It can now, and `__version__`
+  bumps only at release, so a PyPI install, a `ship_wheel.py` wheel, and every
+  commit between two releases all report the same string.
+
+  `bngsim_backend.backend_status()` — and through it each sweep's `_summary.json`
+  and `golden.json`'s `_meta` — gains **`bngsim_build_commit`** (the commit the
+  loaded `_bngsim_core` was compiled from, baked in by CMake) and
+  **`bngsim_install`** (PEP 610 origin: `index` / `wheel:<file>` / `editable` /
+  `vcs:<sha>`). Both are needed: the release protocol builds the published wheel
+  *from* the release commit, so a locally built wheel of that commit reports the
+  identical build commit (measured — PyPI 0.12.2 and a `ship_wheel.py` wheel both
+  report `1737003f0c81`); the install origin is what separates them.
+  `bngsim_version` is now read from `bngsim.__version__` directly rather than
+  through the bridge's `bionetgen.BNGSIM_VERSION` re-export, and the whole bngsim
+  half is collected before bionetgen is imported, so an env with a broken or
+  absent bridge still records which bngsim is installed in it. The bridge's own
+  view is kept alongside as `bngsim_bridge_version`, where the two disagreeing is
+  now visible instead of silently authoritative.
+
+  `bootstrap_parity_env.py` gains **`--bngsim-pypi <version>`**, mutually
+  exclusive with `--bngsim-wheel` / `--build-bngsim`: for a consumer *reproducing*
+  a published golden, installing the released wheel is the faithful route, and it
+  is the case the harness was written to assume impossible. Its no-source ABORT
+  used to say "bngsim is not on PyPI" and foreclose exactly that option; it now
+  names all three sources. No harness prose claims bngsim is absent from PyPI.
+
+- **An SBML compartment size is no longer writable, and says so (issue #164).**
+  A compartment volume had two representations in a loaded model and a write
+  moved only one. The kinetic law reads `p[]`; the *storage convention* is
+  folded at load into constants nothing re-derives — `Species::volume_factor`,
+  an amount-declared `initial_conc` (= amount/V), the Elementary scalar rate's
+  `Π V^n / V_storage`, `Reaction::ssa_volume_factor`, and the `inv_vf` table in
+  the emitted C. `set_param` reached the first and none of the second.
+
+  The result was not a stale value but an internally inconsistent model. On the
+  issue's two-compartment model `set_param("C1", 3.0)` moved `A(5)` from 22.3 to
+  1.11 — a factor of 20 — on a trajectory that is *exactly* `C1`-invariant; the
+  other direction was a silent no-op (`set_param("C2", 7.0)` changed nothing),
+  `parameter_scan` over a compartment returned one trajectory N times, and a
+  forward-sensitivity column was wrong in **both** directions at once: `dA/dC1`
+  reported 36.6 against a true 0, `dB/dC2` reported 0 against a true 2.30.
+
+  **Wider than the issue scoped it.** #164 measured single-compartment models as
+  safe. Against RoadRunner as an independent oracle, only the exact
+  `compartment·k·A` convention with concentration ICs is V-invariant: a bare
+  `k*A` law (the common BioModels form), any `initialAmount` species, and every
+  `hasOnlySubstanceUnits="true"` species move with V under a rebuild and did not
+  under a write. Which half of a write landed was not even uniform inside one
+  model — a mass-action law folded the volume away entirely, a Functional law
+  loaded at V ≠ 1 divided by the live compartment symbol, and the same law
+  loaded at V = 1 had that divide normalized out — with nothing visible to the
+  caller to tell them apart. Hence a refusal rather than a patched subset.
+
+  So: `set_param` / `set_params` raise `ValueError` on a compartment-size
+  *change*, `Simulator(sensitivity_params=[...])` and
+  `steady_state(sensitivity_params=[...])` refuse the column, and
+  `compute_all_sensitivities()` skips compartments from its "all parameters"
+  default with a warning (an explicit `params=[...]` raises). Writing the value
+  a compartment already holds stays legal, so round-tripping a full parameter
+  vector through `set_params` still works, and the check runs in that method's
+  validation phase so its all-or-nothing contract holds. `.net` models are
+  unaffected — BNG2.pl folded their volumes into rate constants long before
+  bngsim sees them — and a compartment the loader promotes to a species
+  (rate-rule or event-resized) is genuine live state, not flagged.
+
+  Inert for every model that does not write a compartment: no emitted source,
+  cache key, or trajectory changes.
+
+  Issue #170 tracks making the volume live everywhere, which retires the
+  refusal and turns the sensitivity column into a real one.
+
 ### Fixed
+
 - **The committed `_bngsim_core.pyi` had drifted from the bindings, and nothing
   checked that it hadn't.** The stub is machine-written and committed because it
   is the only description of the compiled extension a type checker or an editor
@@ -446,7 +1053,6 @@ in `CMakeLists.txt`) is derived from it.
   RuleWorld/nfsim#87. The same over-count is present in vendored RuleMonkey
   (`method="nf_exact"`), which is a separate engine and is not addressed here.
 
-
 - **`find_package(pybind11)` resolved from whatever `.venv` sat in the checkout,
   not from the interpreter the build targets (issue #288).** CMake asked a list
   of candidate interpreters for `pybind11.get_cmake_dir()` and took the first
@@ -496,6 +1102,7 @@ in `CMakeLists.txt`) is derived from it.
   caches previously recorded the dev venv's 3.0.4 for every one of them. The
   Linux x86_64 leg (`scripts/local_ci_linux_docker.sh`) has not been re-run;
   it needs a Docker daemon this box did not have up.
+
 - **`local_ci.py matrix` could not build a wheel on macOS at all, and said so in
   a report nobody read.** Found re-running the matrix for #288. `build_wheel`
   has passed `CMAKE_ARGS=-DBNGSIM_ENABLE_KLU=OFF` on Darwin since the initial
@@ -511,6 +1118,7 @@ in `CMakeLists.txt`) is derived from it.
   `BNGSIM_KLU_AUTOBUILD` source build), and the macOS matrix reports
   `klu: True` like the published wheels do. A test checks the two halves against
   each other for every `BNGSIM_REQUIRE_*` pyproject declares, not KLU alone.
+
 - **`ship_wheel.py` refused to build for an interpreter pip could have built
   for, on a claim about the wheel matrix that was not true (issue #275).**
   `_build_command` had three outcomes — unisolated `pip wheel`, `uv build`, or a
@@ -547,6 +1155,7 @@ in `CMakeLists.txt`) is derived from it.
 
   A test pins the fact the fallback rests on, so `local_ci.py` cannot quietly
   start building unisolated and leave the docstring wrong again.
+
 - **`test_lapack_dense_linsol` reported four no-ops and two self-comparisons as
   `6/6 passed` (issue #269).** Four cases opened with `return 0` when no BLAS
   backend was linked, and `RUN_TEST` counts `rc == 0` as a pass, so a host
@@ -642,6 +1251,7 @@ in `CMakeLists.txt`) is derived from it.
   Ships as vendored-NFsim carry `bngsim/carry-symmetry-factor-all-rate-laws`;
   candidate to push upstream, where the defect is ~14 years old and untouched
   on `RuleWorld/nfsim` master.
+
 - **A parallel fan-out could still die with no diagnosis: clones shared one
   ExprTk parser, and a parser keeps a strong handle on the last symbol table
   compiled through it (issue #257).** #201 found two threads compiling through
@@ -708,6 +1318,7 @@ in `CMakeLists.txt`) is derived from it.
   `python/tests/test_expression_parser_thread_safety.py` — the #201 test that was
   flaking, 18 of 20 on `main` — is **25 of 25** clean on the fix, and its failure
   message now says which of the two defects a given signal would mean.
+
 - **A parameter that a same-named function shadows was still listed as a knob
   (issues #256 and #266 — the same defect reported from the SBML side and the
   `.net` side).** Every function gets a parameter slot to hold its evaluated
@@ -771,6 +1382,7 @@ in `CMakeLists.txt`) is derived from it.
   `set_param`'s refusal was reworded. It said the name "is not a parameter of
   the model but a function" — true of a synthesized slot, and exactly what a
   reader looking at their own `parameters` block would dispute.
+
 - **`rebuild_editable.py` picked `--no-build-isolation` on the strength of `pip`
   alone, the inference `ship_wheel.py` exists to reject (issue #271).** An
   unisolated PEP 517 build needs pip *and* `[build-system] requires` importable
@@ -806,6 +1418,7 @@ in `CMakeLists.txt`) is derived from it.
   running in and is always run from a checkout. An unparseable table is treated
   as "assume the deps are absent" — the direction that costs time rather than a
   build. A test pins the parse against `tomllib` and against ship_wheel's copy.
+
 - **`scripts/rebuild_editable.py` could not configure in a uv venv, and it is the
   remedy the stale-binary guard names (issue #229).** The script drives `cmake`
   directly against the environment it runs in, so `find_package(pybind11)` has to
@@ -1153,6 +1766,7 @@ in `CMakeLists.txt`) is derived from it.
   953.069 without it. It was the only test in the suite asserting that bound is
   necessary, so that test now asserts the roots resolve the schedule instead,
   and whether the bound still earns its place anywhere is issue #262.
+
 - **A time threshold inside a called `<functionDefinition>` registered no
   discontinuity root, so the window was stepped over (issue #231).** The GH #72
   scan walked the *call site's* AST only. A schedule written one level down —
@@ -1197,6 +1811,7 @@ in `CMakeLists.txt`) is derived from it.
   the time side only when the other does not — `BIOMD0000000589`'s
   `time >= i*24` with `i := floor(time/24)` becomes time-vs-time and loses both
   roots it has today. Tracked separately as issue #259.
+
 - **A rate law using `sign`, `floor` or `ceil` over a state variable emitted a
   broken Jacobian term instead of falling back (issue #250).** Those three
   differentiate to an unevaluated sympy `Derivative`, and `_is_emittable` scanned
@@ -1243,423 +1858,6 @@ in `CMakeLists.txt`) is derived from it.
   changelog entry below still describes the list as it was then; it is a dated
   record and is left alone.)
 
-### Changed
-- **The build-time derivation now declines before differentiating what it could
-  never emit (issue #250).** `BIOMD0000000385` spent **138 s** against a 20 s
-  budget deriving a Jacobian the emitter then refused — a 6.9x overshoot the
-  budget could not bound, because the deadline is only testable between `sp.diff`
-  calls and this was one call.
-
-  The issue proposed subdividing the derivation to make the deadline reachable.
-  Profiling says that would not have worked: recursing that rate law to 117
-  deadline-checkable steps still leaves two `dAbs` at 62.4 s and 34.8 s, with
-  every other step under 0.04 s. `Abs` is an atomic leaf. What the profile showed
-  instead is that the 138 s bought a 5.7-million-op expression (a ~1500x blow-up)
-  that `sympy_to_exprtk` then rejected — the verdict was decidable up front.
-
-  Six functions the emitter accepts have no derivative it can print, derived by
-  differentiating every name in `_SYMPY_FUNC_TO_EXPRTK` rather than listed by
-  hand: `Abs`, `Max`, `Min` (which produce `re`/`im`/`Heaviside`) and `ceiling`,
-  `floor`, `sign` (an unevaluated `Derivative`, per the fix above). That set is a
-  fact about the emitter map rather than a judgement, so a test re-runs the
-  derivation and compares — adding a function to the map without re-deriving
-  would otherwise reintroduce this quietly for that function. A rate law
-  with one of those over a **differentiation variable** now falls back
-  immediately. Position matters and the check respects it — `Abs(k)*A`
-  differentiates to `Abs(k)` and is fine, and a Piecewise *condition* is copied
-  through undifferentiated, so `MODEL1006230034`'s
-  `Piecewise(…, mincond_J_K < Abs(deltaPsi))` keeps its complete analytical
-  Jacobian. A position-blind check took it away; that regression is what the
-  corpus A/B caught.
-
-  **Verified over the whole rr_parity corpus** (1319 models, unbudgeted
-  derivation, `complete` flag diffed against the pre-change sweep): **0 models
-  changed classification** in either direction, 0 error-status changes, 0 models
-  measurably slower. Total unbudgeted derivation 1296 s → 1100 s (−15.1%);
-  `BIOMD0000000385` 148.3 s → 0.9 s, `470`/`473`/`472` ~7-10 s → ~0.7 s. Worst
-  overshoot left in the corpus is **1.0x** the budget, down from 6.9x.
-
-- **The analytical-Jacobian budget has no correctness floor left, and the test
-  that claimed one was red on `main` (issue #249).** Since #95 this suite held
-  the shipping derivation budget above a floor justified by one model —
-  `BIOMD0000000457` was said to be stiff enough that its finite-difference solve
-  *fails* at the parity tolerance, so a smaller budget would strand it. #244 made
-  that premise a test rather than a docstring sentence, which was the right move
-  and immediately showed it to be false: the assertion has been failing since
-  `bac36e7` merged. It went unnoticed because it is corpus-gated and CI has no
-  corpus — the job log reads `ssss.ss` for that file under `model corpus absent
-  from this checkout`, so a green tick says nothing about it, while every local
-  push from a checkout that *has* the corpus was blocked.
-
-  457's FD solve is not marginal: it returns in 0.07 s with 626 steps and a
-  finite trajectory, and survives rtol 1e-6/1e-12 through 1e-12/1e-15 on both
-  linear solvers and both RHS backends. Nothing resembling the documented "CVODE
-  returns -3 at t~3.36 with h~1e-42" appears anywhere in that grid. Its
-  derivation now costs 0.283 s, which puts it below the 0.5 s band #244 selected
-  fixtures from, so that recipe would not pick it today either.
-
-  Re-running the classification over the **whole** corpus rather than a slow
-  band — forcing `jacobian="fd"`, which costs no derivation, so all of it is
-  affordable — the floor turns out to have no subject at all. Of the 1,218 models
-  the analytical Jacobian attaches to (1,323 probed, 1,291 load, 73 declines),
-  **1,198 solve on FD; the 15 that fail fail identically with the analytical
-  Jacobian**, and 5 cannot be simulated at all (`fast="true"` reactions). **Zero
-  models need it.** Nor is there a weaker property to re-anchor on: across the 23
-  models whose derivation is slow enough to be starved by any plausible budget,
-  the worst FD-vs-analytical trajectory difference is 1.9e-6 relative — solver
-  noise at rtol 1e-9.
-
-  So the floor is retired rather than re-derived, which would have repeated the
-  mistake #244 named: a tripwire standing on a measurement that has evaporated.
-  The shipping default is **unchanged at 20 s** — dropping a requirement is not a
-  licence to move the constant. What guards it now is an equality pin with an
-  actionable message, because with no correctness requirement there is no
-  meaningful inequality left to assert, and the premise test is inverted into a
-  canary: 457's FD solve must keep succeeding *and* keep agreeing with the
-  analytical one (measured 8.5e-6, asserted under 1e-3). If either flips, the
-  instruction is to re-run the classification, not to edit the test.
-- **The budget does have a floor — on cost, not correctness — and the 457 canary
-  was pinning the one thing about that model that is not portable (issue #245).**
-  #249 above is right that no corpus model *needs* the analytical Jacobian, and
-  right to make the guard an equality pin rather than invent a correctness floor.
-  It also concluded that with no correctness requirement there is no meaningful
-  inequality left to assert. There is one, because its sweep asked whether the FD
-  solve **works** and never what it **costs**.
-
-  `BIOMD0000000608` derives for **4.76 s** and solves **4.16x faster** for it
-  (0.065 s vs 0.015 s, 52 species). FD is perfectly correct there, just slow, so a
-  viability screen is blind to it by construction. Nor is it alone:
-  `MODEL1603150001` (3.0x), `MODEL1601050000` (2.7x), `MODEL1602080000` (1.7x) and
-  `MODEL1504130000` (1.4x) derive in 2.2–3.0 s and pay too. 608 is the most
-  expensive derivation that pays for itself; the cheapest that does not is
-  `BIOMD0000000628` at 59.3 s, whose analytical solve is *slower* than its FD one.
-  That window is 12.5x wide against #95's 3.4x — the gap did not close, it moved
-  and opened — and 20 s sits 4.2x above the floor and 3.0x below the ceiling,
-  above the 16.8 s geometric centre because too high spends build seconds once
-  while too low buys a permanently slower solve. Between the bounds nothing needs
-  getting right: `BIOMD0000000496` and `497` derive to completion on the default
-  and measure 1.02x and 1.25x — real waste, ~22 s of it across 1286 models.
-
-  So a floor comes back at **15.0 s** (4.76 s × the 3.3x machine spread), beside
-  #249's equality pin rather than instead of it: the pin catches any move of the
-  constant and asks for a justification, the floor is the bound a justification
-  may not talk past. 608's premise is run, not asserted in prose.
-
-  **Solve times must be medians over repeats on a warm codegen cache.**
-  `fd_viability.jsonl` takes one cold sample per mode, analytical first, so that
-  arm absorbs codegen warm-up: it reports 496 at 5.84x (really 1.02x) and
-  `MODEL1603150001` at 0.33x (really 3.01x) — wrong by 5.8x one way and 9x the
-  other. That artifact is why the paying population was invisible.
-
-  **The 457 canary is now a tolerance ladder.** Its FD solve fails at exactly rtol
-  1e-9/atol 1e-12 on x86_64 macOS — "CVODE -3 at t~3.36 with h~3.1e-42", #95's
-  signature — and succeeds at 1e-6, 1e-8, 1e-10 and 1e-12, while on arm64 it
-  succeeds at all five. Same commit, corpus present, core rebuilt from the tree.
-  Both readings are real: this is a knife-edge stiff transient whose convergence
-  is not portable, and #244 and #249 each pinned the single cell where the two
-  architectures disagree — so that assertion has been red on one machine or the
-  other continuously since #244, invisibly, because the file is corpus-gated and
-  CI has no corpus. It **strengthens** #249's conclusion: a model that genuinely
-  needed the analytical Jacobian would fail across a band and hardest at the
-  tightest rung, where 457 instead agrees to 9.8e-10. The canary now walks the
-  ladder, tolerates one isolated interior failure, requires the tightest rung to
-  solve, and requires agreement wherever it solves. Mutation-checked both ways.
-
-  The key stays wall-clock, which #245's other half proposed replacing with
-  something that travels between machines (cost per reaction, inlined rate-law
-  size, a #97-style step count). Measured over the same corpus, each predicts
-  derivation cost far worse than the 3.3x machine spread it would replace:
-  per-inlined-token cost runs 2.5–2351 µs/token over the 256 models with ≥ 1000
-  tokens (**923x** end to end, 142x from the median up), `BIOMD0000000385` and
-  `246` share a largest inlined rate law (~47k tokens) and derive 19x apart, and
-  the best log-log correlation of any static key is 0.685. The loosest size-keyed budget that cuts nothing it cuts today
-  hands `MODEL1006230049` 5838 s where wall-clock gives it 20 s. #187 and #97
-  already ship the sound version and are unchanged: clock as the mechanism, a
-  size that travels scaling the allowance upward.
-
-  What the sweep does leave open, recorded next to the budget rather than fixed
-  here: the deadline can only be tested *between* `sp.diff` calls, so a single
-  pathological rate law overshoots it by however long one derivative takes.
-  Against the 20 s default that is 1.0x on `MODEL1006230053` and
-  `MODEL1006230090`, and **6.9x on `BIOMD0000000385`** — 138 s to reach the first
-  check, after which it declines anyway. Filed as #250: bounding it means
-  subdividing the derivation so the deadline is reachable, and a size gate is not
-  the answer (`BIOMD0000000246`'s largest inlined rate law is 1% smaller and
-  derives in 6.2 s).
-
-  No shipped value changed, so no model's build or solve behaves differently;
-  `main` goes green again on a corpus-bearing x86_64 checkout.
-
-- **A plain ODE build no longer emits the sensitivity RHS at all — the
-  Elementary half is gated too (issue #217).** #209/#214 stopped a plain
-  `Simulator(model, method="ode")` from deriving the Functional/MM analytic
-  `∂f/∂p`, but deliberately left the Elementary `bngsim_codegen_sens_rhs`
-  unconditional: it is plain text emission with no sympy in it, so gating it
-  would buy no *derivation* time, only source size, and leaving it alone kept
-  every all-Elementary model's source byte-identical. Correct about the
-  derivation, wrong about the size. On the 20 largest `.net` models it is
-  **55.6% of a plain build's C source** (44.8 MB of 80.6 MB) — a symbol
-  `CVodeSensInit1` is never called to install — and because `_resolve_opt_flag`
-  picks its tier from total translation-unit size, that dead weight held five of
-  them at a lower `-O` for the RHS the solve *does* call: `fceri_fyn` compiled
-  its plain RHS at `-O0` where 5.2 MB gets `-O1`, and four models took `-O1`
-  where `-O3` was available. Measured on the in-repo `.net` corpus after the
-  change: plain source down **47.9%** (68.6 MB → 35.8 MB over 12 models), 4 of
-  12 recovering a higher `-O`.
-
-  The cost that held it back was already paid. Gating this was argued to make
-  every model's plain artifact differ from its sensitivity artifact "where today
-  only Functional/MM ones do", roughly doubling entries in an already 2 GB cache
-  (issue #205) — but #177's `:sens_term_scale` has been in both keys since
-  before #209, so plain and sensitivity have had separate entries, and separate
-  sources, for every model since then. What changes is the *content* of the
-  plain entry.
-
-  Sensitivity runs are unaffected: a 16-model A/B over the `.net` corpus keeps
-  `bngsim_codegen_sens_rhs` on every one and reproduces every sensitivity value
-  bit-for-bit. `emit_functional_sens` is now `emit_sens_rhs` and
-  `want_functional_sens_rhs()` is `want_sens_rhs()`, both private. The
-  `.net` cache suffix `:no_functional_sens` now means only what GH #67 gave it
-  (the `BNGSIM_NO_FUNCTIONAL_SENS_RHS` A/B hatch); "nobody asked" gets its own
-  `:no_sens_rhs`, because for an Elementary model those two stopped emitting the
-  same source and sharing one namespace across that difference is the issue #51
-  inertness trap. The hatch is correspondingly no longer folded into
-  `want_sens_rhs()` — with it set, a sensitivity run still emits the Elementary
-  sensitivity RHS and loses only the Functional extension, which is the pre-#67
-  behaviour it exists to restore.
-- **`compute_all_sensitivities(params=None)` now returns independent columns —
-  `Model.primary_param_names` rather than `Model.param_names` (issue #203).**
-  The default meant "every parameter", and on a model with derived
-  (expression-backed) parameters that list is not a set of coordinates. A
-  derived parameter reaches the trajectory only through the primaries it is
-  built from, and *their* columns are total derivatives **through** it — the
-  chain rule #188 restored. So `alpha` and `_rateLaw_R16_fwd = alpha*konBT`
-  reported the same physical effect twice, in exact proportion
-  `d(derived)/d(primary)`, and `Result.gradient` contracts that whole axis into
-  one `(n_params,)` vector its own docstring hands to `scipy.optimize.minimize`
-  over a parameter vector of the same width. Nothing bounded the size of the
-  error: on `BIOMD0000000701` the derived columns are ~6.7e-12 against `alpha`'s
-  1.0e-3 and it does not matter, but the ratio is the model's, not a constant.
-
-  `Result.fisher_information` is the sharper symptom, because there the damage
-  does not depend on that ratio at all: `Sᵀ Σ⁻¹ S` over an axis holding two
-  exactly proportional columns is rank-deficient **by construction**, so the old
-  default handed back a matrix with a null direction on every model carrying
-  derived parameters — and the identifiability reading the user guide recommends
-  (smallest eigenvalues → least identifiable) takes that round-off eigenvalue for
-  a finding about the model.
-
-  Dropped the way issue #164 established in the same five lines for the
-  compartment sizes `set_param` refuses: a warning naming them, and an explicit
-  `params=[...]` that still returns the column for anyone who wants
-  `∂x/∂_rateLaw` **on its own terms** — the axis
-  `bngsim.jax.differentiable_solve(..., flat=True)` asks for, which goes through
-  the explicit path and is unchanged. The default now agrees with that function's
-  own `flat=False` default, which has always differentiated over
-  `primary_param_names`.
-
-  The synthesized `_V0_<comp>` goes the same way, for the older reason: it is
-  bngsim's record of a compartment's size at load, which the rate constants in
-  that compartment are normalised against, and `set_param` refuses a
-  value-changing write to it (`test_the_load_time_volume_record_is_not_a_knob`
-  has said so since #170 stage 1) — so a gradient entry for it is one an
-  optimizer would fit against nothing. The compartment size itself is an
-  ordinary writable, differentiable parameter and stays in the tensor.
-
-  Measured on the 1,291 loadable rr_parity models: 279 carry derived parameters
-  and 216 of those also carry a `_V0_`, so 279 models see a narrower default —
-  10,048 columns dropped in total (9,524 derived, 524 internal), no model left
-  with an empty column set, and the three skip classes disjoint (no parameter
-  carries two of the flags). On the models A/B'd column for column, the columns
-  that remain are unchanged.
-
-- **A plain ODE run no longer derives, emits or compiles the analytic `∂f/∂p` it
-  never installs (issue #209).** `generate_combined_from_model` called
-  `generate_sens_from_model` unconditionally, so `Simulator(model, method="ode")`
-  with no `sensitivity_params` ran the Functional sensitivity derivation through
-  sympy, emitted it, and compiled it into the cached `.so` — for a solve that
-  never calls `CVodeSensInit1`. On `BIOMD0000000496` (295 species, 333 functional
-  reactions, cold codegen cache, the analytical Jacobian derived first so the GH
-  #95 budget cannot decide the answer) that was **46 s of codegen against 29 s, and
-  a 26.7 MB `.so` against 1.8 MB (14.6x)**, and the solve itself 0.45 s against
-  0.29 s. The GH #198 output-sensitivity evaluator three lines below in the same
-  function was already gated on `_want_output_sens` for exactly this reason.
-
-  Two side effects on models this large. 12.6 MB of C source crosses the 8 MB
-  `_CODEGEN_HUGE_SOURCE_BYTES` threshold and 3.7 MB does not, so the translation
-  unit now compiles at `-O1` rather than `-O0` — which moves the trajectory in the
-  last bits (7.5e-15 relative on this model; pinning `-O0` on the gated build
-  reproduces the old trajectory *bit for bit*, which is how that was attributed).
-  The faster solve is **not** that: `-O0` on the gated build is just as fast, so
-  what is left is the 8.9 MB of never-called code sharing the image, and this
-  change does not identify the mechanism further.
-
-  Scoped to the Functional/Michaelis-Menten half. An Elementary model's
-  sensitivity RHS is plain text emission with no sympy in it, so it stays
-  unconditional and its source (and every `.so` cached for it) is byte-identical.
-
-  The cost of the gate is entirely in *not* silently downgrading a sensitivity run
-  to CVODES' difference quotient, so the resolved flag reaches both cache keys
-  (sharing the existing `:no_functional_sens` namespace on the `.net` side — a
-  build with the GH #67 hatch set and a build with nobody asking emit the same
-  source), and `Simulator._prepare_output_sens_codegen` — which `steady_state()`
-  and `compute_all_sensitivities()` share — regenerates a plain artifact instead
-  of reusing it. That helper's own `n_functions > 0` condition is gone with it: a
-  Michaelis-Menten model can have no functions at all, and #177's
-  `bngsim_codegen_sens_term_scale` had already made the byte-identical-source
-  claim behind that condition false.
-- **The model-side `.so` cache key is structural, so a warm cache generates no C
-  source (issue #174).** `prepare_model_codegen` derived its key by generating
-  the source and hashing it, which meant a cache hit skipped only the `cc`
-  compile: every `Simulator` construction still paid the RHS + `∂f/∂p` + Jacobian
-  derivation, and none of that work depends on the parameter values a fit is
-  moving. `compute_model_codegen_hash` — dead code whose docstring already
-  claimed to hash "model structure" — now actually does: `codegen_data()` minus
-  each parameter's *value*, the Jacobian scatter plan, the functional-Jacobian
-  context, and the process-scoped emit decisions, all cheap C++ reads. This is
-  what `prepare_codegen` has always done for the `.net` path. On
-  `Smith_BMCSystBiol2013` construction against a warm cache goes from 1.31 s to
-  0.03 s.
-
-  Dropping parameter values is safe for one reason that had to be established
-  rather than assumed: the generated C reads parameters from the runtime `p[]`
-  array. The single exception is the issue #68 switch-condition gate, which
-  probes the RHS to find clock species and evaluates a clock threshold
-  numerically — so one `set_param` really can add or remove the whole analytic
-  sensitivity RHS. `switch_gate_cache_digest` carries that *verdict* (the
-  booleans, not the values), which keeps the key stable across a fit while still
-  separating the two artifacts.
-
-  **This invalidates every cached `.so` on the model path.** The next run per
-  model recompiles once. The `.net` path's key form is unchanged apart from the
-  chunking fix below.
-- **An SBML compartment size is a writable parameter (issue #170).** A volume
-  plays two roles in a loaded model: a *symbol* in kinetic laws, which is an
-  ordinary `p[]` a write has always moved, and the *storage convention* — bngsim
-  stores `amount/V_c`, so V decides the amount↔concentration conversion, an
-  amount-declared initial condition, the mass-action scalar's `Π V^n / V_storage`
-  and the SSA propensity volume. The second was folded at load and never
-  re-derived, so issue #164 refused the write outright. Each fold is now put back
-  on the parameter: the mass-action scalar carries the volume as a ratio on the
-  reaction's rate parameter (`k · (C/V_load)`, exactly 1.0 at the nominal point),
-  the Functional storage divide is emitted against the compartment symbol even
-  when the load-time size is 1, and `set_param` re-derives `volume_factor` and an
-  amount-declared IC. The load-time size the ratio normalises against is carried
-  by a synthesized `_V0_<comp>` parameter rather than a printed literal — ExprTk's
-  decimal literal parser is not correctly rounded, and a 1-ulp denominator moves
-  the rate constant. `_V0_<comp>` is marked internal: `primary_param_names` omits
-  it and `set_param` refuses a value-changing write, since moving it would
-  rescale the rates in that compartment without moving the volume. `set_param("cell", v)` now reproduces *loading the model at
-  `v`* bit for bit, and matches RoadRunner, on every shape issue #170 tabulated —
-  including the pair that made its case, where the same law loaded at V=1 and at
-  V=4 gave opposite answers.
-
-  The **generated C** reads the volume from `p[]` too, so the write lands on the
-  compiled backend as well as the interpreted one. Previously the emitted source
-  baked it — the amount factor of an amount-valued (`hasOnlySubstanceUnits`)
-  species's rate, its observable weights, its `∂/∂x` chain factor and `rateOf`
-  scaling, plus a cross-compartment reaction's `inv_vf` reciprocal table and
-  per-row Jacobian / `∂f/∂p` divisors — and those two shapes were refused rather
-  than honored on one backend and half-applied on the other. The invariant that
-  makes it safe: **the emitted source no longer depends on the load-time volume at
-  all**, so one compiled `.so` is valid at every size and a write that arrives
-  after the source was generated (a `parameter_scan`, any post-construction
-  `set_param`) still lands. The per-species `∂func/∂x` chain coefficient went
-  symbolic for the same reason, on both backends: it is the `J·yS` half of the
-  forward-sensitivity RHS, so freezing V there was a wrong *sensitivity* (measured
-  at 100% on a 400x volume write), not merely a slower solve.
-
-  Lifting that refusal made 38 more corpus models writable, and a sweep of "does
-  `set_param` reproduce `compartment_sizes=` at the same value?" over all 173 found
-  three more places where a load at V=1 emitted something a load at V≠1 did not,
-  so the write had nothing to move — the `_vd_<rid>_unified` Functional storage
-  divide for a *multi-compartment* reaction, an event assignment writing an amount
-  into an `hasOnlySubstanceUnits` species's slot, and the report-time
-  amount→concentration divide for an assignment-rule target (the one conversion
-  that lives entirely on the Python side, so no engine refresh could reach it).
-  All three are fixed and all three are numerically free at the nominal point,
-  since `x/1.0 == x` exactly.
-
-  **177 of the corpus's 207 compartment-carrying models are now fully writable**
-  (135 before the codegen half), 9 partly; the models with any refused size drop
-  from 72 to 30 and the refused sizes from 230 to 132. Refused by name rather than
-  in a blanket (`Model.unwritable_compartment_size_params`), and now for two
-  reasons rather than three: an assignment-rule compartment (the rule recomputes
-  its size every step), and one whose storage divide a single mass-action scalar
-  shares across two equal-sized compartments (that scalar stops being exact the
-  moment they differ). Not yet *differentiable*: forward sensitivity still refuses
-  a `d/dV` column (issue #170 stage 3).
-
-  Behaviour at the nominal point is unchanged: over the 214-model SBML corpus the
-  RHS is bit-identical on all 214 and the trajectory on 206. Five of the eight
-  that move do so because they *gained* an analytical Jacobian (202 → 207
-  complete, none lost) — see below; the other three differ by ≤ 8.3e-16 relative.
-  The codegen half moves nothing further: against the interpreted-and-writable
-  build, the RHS fingerprint and the trajectory are bit-identical on every model,
-  interpreted and `codegen=True` alike, even though the emitted C text changes for
-  the whole SBML corpus (a new `.so` cache key, not a new answer).
-
-### Changed
-- **`_DECLARED_SKIPS` is now checked against the reason strings the tests emit,
-  in both directions, and carries a tier (issue #179).** The list is the
-  codebase's mechanism for forcing a permanent skip to be justified in a diff,
-  and nothing compared it to reality. It had drifted to **25 undeclared reasons
-  across 47 files** — none of which fire in the default build, which is exactly
-  why nobody saw them. They are *build-variant* reasons, and the variants they
-  describe are the ones the other CI legs use, so the only run that could have
-  surfaced them was the one nobody had turned the audit on for.
-
-  A new AST-based check in `test_skip_audit.py` asserts every hand-written skip
-  reason matches a declared pattern, and every declared pattern still matches
-  something. Both directions are verified to fail on real drift rather than
-  being vacuous. The two traps #179 flagged are handled and pinned by their own
-  tests: `pytest.importorskip("sympy")` *generates* `could not import 'sympy'`
-  at run time, so scanning its call sites invents failures (~3× the apparent
-  problem size), and `xfail(reason=...)` is not a skip reason at all. Both are
-  decided by what the AST node is, which no regex over `reason=` can do.
-
-  Trap 1 has a sub-case the issue did not name, and the first version of this
-  check had it wrong: `importorskip` takes an optional `reason=`, and when it is
-  given the generated text is never produced — so the string in the source *is*
-  what the audit sees. Ignoring those call sites wholesale hid two genuine
-  undeclared reasons (`vivarium-core not installed`, `tomllib is 3.11+`). A
-  strict run caught them minutes after the scan had pronounced the tree clean,
-  which is the argument for both checks existing rather than either alone.
-
-  Nine phrasings for two conditions — `NFsim not built`, `bngsim compiled
-  without NFsim support`, `no NFsim support`, … — are consolidated onto the two
-  strings the list already declared, across 29 sites. That was drift away from
-  an existing convention, not the absence of one. `scipy` is removed: no
-  hand-written reason contains it, so every scipy skip is an
-  `importorskip`-generated `could not import 'scipy'` the neighbouring entry
-  already matched.
-
-  Declarations now carry a **tier**, because one flat list could not say the
-  thing that matters. `KLU not compiled` and `no C compiler on PATH` are both
-  fair skips on a laptop, but only the first is fair in CI: a leg that silently
-  lost `cc` would skip ~22 files' worth of codegen tests and report success —
-  a false green waved through by the list meant to catch it. `LOCAL_ONLY`
-  reasons (the C-compiler family; `requires libsbml`, which is a *hard*
-  dependency and so cannot be a build variant) print a `!!` row and end the run
-  under `BNGSIM_SKIP_AUDIT=strict`. Strict is only ever set by a workflow, so
-  the tier is enforced exactly where "this environment is incomplete" stops
-  being an acceptable answer. None of these fires on any leg today, so it costs
-  nothing now and buys the alarm later.
-
-  `BNGSIM_SKIP_AUDIT=strict` is consequently on for `mir.yml` and
-  `windows-tail.yml`, the two KLU-off legs — the first time the audit has had
-  teeth outside the default build, which is where these reasons live. Note the
-  issue proposed `native-tests.yml` as the cheapest KLU-off leg; that workflow
-  is ctest-only and runs no pytest, so there is nothing there to turn on.
-
-  One test changed rather than being declared: `test_conservation_laws.py`'s
-  `test_dependent_block_is_identity` skipped when a model reported no
-  conservation laws. All five of its fixtures are checked-in `.net` files that
-  have them, so the branch had never fired — and had conservation-law detection
-  regressed to zero, the test would have gone green by skipping. It asserts
-  instead.
-
-### Fixed
 - **`steady_state()` reported an SBML `<assignmentRule>` species at its frozen
   initial value, and that species' zero Jacobian row refused the whole model's
   sensitivity solve (issue #247).** #221 fixed the time-course path; the
@@ -1890,6 +2088,7 @@ in `CMakeLists.txt`) is derived from it.
   "FD … integrate[s] the model cleanly" was never true in general, so
   `_run_ode_with_jacobian_fallback`'s docstring now says the retry is a second
   attempt and not a guarantee.
+
 - **Writing a `piecewise` condition with `<and/>` declined the whole model's
   analytic sensitivity RHS, and the difference quotient it fell back to was 53%
   wrong (issue #232).** `_functional_rate_law_partials` ends its pre-scan by
@@ -2045,6 +2244,7 @@ in `CMakeLists.txt`) is derived from it.
   crossing its threshold 37 times all get *cheaper* (`4,019 → 89` steps on the
   oscillator). A true Filippov chattering system is unsolvable identically
   before and after.
+
 - **`solver_stats` counted only the segment after the last event fire, so
   `n_steps` could read 0 for a run that took thousands of steps (issue #182).**
   Every `CVodeGetNum*` counter counts from CVODE's last (re-)initialization, and
@@ -2082,6 +2282,7 @@ in `CMakeLists.txt`) is derived from it.
   of steps after the root's re-init — the same run is 39 counted whole, nearly
   all of it spent walking down to the surface. Its bound is recalibrated; what
   it asserts (the root fires once and is not chased) is unchanged.
+
 - **The steady-state conditioning-warning test asserted a pivot of 1.26e-17 —
   below machine epsilon — so which branch it exercised was decided by the LU
   implementation (issue #176, item 2).**
@@ -2123,6 +2324,7 @@ in `CMakeLists.txt`) is derived from it.
   the refusal branch keeps its own structural fixture. Items 1 and 3–4 of #176
   (the three `test_jacobian_discontinuous_fallback.py` failures) are untouched
   and that issue stays open.
+
 - **`write_omex` stamped every zip entry with the wall clock, so the archive
   `net_to_omex(created=...)` documents as byte-reproducible was reproducible only
   when two builds landed in the same second (issue #224).** The stated purpose of
@@ -2157,6 +2359,7 @@ in `CMakeLists.txt`) is derived from it.
   thing stamping changes is the timestamp. The reproducibility tests drive a fake
   clock that jumps a day per reading, so they fail on the old behavior every run
   rather than only when two builds straddle a second boundary.
+
 - **A `.net` without BNG2.pl's kind-annotation comments returned an identically
   zero sensitivity column, with no warning (issue #181).** Two `.net` files
   differing *only* in the trailing `# Constant` / `# ConstantExpression` comments
@@ -2184,6 +2387,7 @@ in `CMakeLists.txt`) is derived from it.
   `pi = 2*asin(1)` / `Temp = 37+273.15` shape that BNG2.pl (correctly) calls
   `# Constant`, and rewrites the sensitivity RHS of 54 models that were never
   broken.
+
 - **A forward-sensitivity run never returned after crossing a rate-law switch
   that turned out to be continuous, and whether it did depended on `n_points`
   (issue #187).** Issue #150 established that the integration must resume just
@@ -2208,6 +2412,7 @@ in `CMakeLists.txt`) is derived from it.
   registered only under sensitivities), 145 identical + 22 identical refusals +
   13 moved of 181 condition-carrying SBML models, and every mover moves by at
   most what a 1% change in `rtol` alone moves it on the same binary.
+
 - **A sensitivity `Simulator` reused the plain `.so` an earlier `Simulator` had
   left on the same model, and silently lost `bngsim_codegen_output_sens`.** The
   constructor's artifact-reuse block took whatever `model._codegen_so_path` /
@@ -2223,6 +2428,7 @@ in `CMakeLists.txt`) is derived from it.
   allowed, since a sensitivity artifact is a superset. Found while gating the
   sensitivity RHS (issue #209), which would have added `bngsim_codegen_sens_rhs`
   to the list of symbols this quietly dropped.
+
 - **The `∂func/∂θ` analysis memo did not follow a derived-parameter override, so
   a reused model kept emitting the pre-write partials.** `_analyze_output_sens`
   keyed its memo on four model counters and the derivation budget, on the stated
@@ -2234,6 +2440,7 @@ in `CMakeLists.txt`) is derived from it.
   the right thing); under issue #174's structural key the stale source would be
   cached under the *post*-write key and served to every later process. The
   attachment vector is now part of the memo key.
+
 - **A `.net` `.so` compiled without source chunking was served to a chunked run.**
   `prepare_codegen`'s key carries every process-scoped hatch that changes the
   emitted source — `BNGSIM_NO_CODEGEN_JAC`, the GH #67 functional-sensitivity
@@ -2242,6 +2449,7 @@ in `CMakeLists.txt`) is derived from it.
   the chunking feature measured the same binary twice. The key gains a
   `:chunk=<threshold>x<size>` suffix, appended only when the policy is
   overridden, so the default key form is unchanged.
+
 - **An ExprTk derivative over a Python-keyword-named parameter silently dropped
   the whole model to the FD Jacobian.** `_exprtk_to_sympy` aliases a parameter
   named `def` / `lambda` / `is` to `_BNG_KW_def` so `parse_expr` accepts it, and
@@ -2250,10 +2458,12 @@ in `CMakeLists.txt`) is derived from it.
   came back reading `_BNG_KW_def`, ExprTk rejected it as an undefined symbol, and
   `set_functional_jacobian` failed for the entire model. Visible only under
   `BNGSIM_JAC_DEBUG`. Five corpus models regain their analytical Jacobian.
+
 - **A synthesized `_rateLaw_<rid>` could collide with an SBML parameter of the
   same name**, which `ModelBuilder::validate` rejected outright — reached by
   re-importing bngsim's own `.net` → SBML export, which writes `_rateLaw_<rid>`
   out as a real parameter. Synthesized names are now uniquified.
+
 - **A sensitivity absolute tolerance set below the roundoff of the arithmetic
   that produces it, so CVODES micro-stepped forever (issue #177).** For column
   `iS` the variational equation is `ṡ = J·s + ∂f/∂p`, so row `i`'s derivative is
@@ -2398,190 +2608,6 @@ in `CMakeLists.txt`) is derived from it.
   changes the loader's *classification*, so the uniform model's reactions are
   Elementary (closed-form ∂f/∂p, no sympy at all) while the cross-compartment
   model's are Functional.
-
-### Changed
-- **A parity run now records WHICH bngsim produced it, not just which version
-  (issue #163).** The `bng_parity` harness records the engines behind a run so a
-  golden can be reproduced. PyBioNetGen was recorded as a resolved git commit;
-  bngsim was recorded as a bare `__version__` — which identified an artifact only
-  while bngsim could not be installed from PyPI. It can now, and `__version__`
-  bumps only at release, so a PyPI install, a `ship_wheel.py` wheel, and every
-  commit between two releases all report the same string.
-
-  `bngsim_backend.backend_status()` — and through it each sweep's `_summary.json`
-  and `golden.json`'s `_meta` — gains **`bngsim_build_commit`** (the commit the
-  loaded `_bngsim_core` was compiled from, baked in by CMake) and
-  **`bngsim_install`** (PEP 610 origin: `index` / `wheel:<file>` / `editable` /
-  `vcs:<sha>`). Both are needed: the release protocol builds the published wheel
-  *from* the release commit, so a locally built wheel of that commit reports the
-  identical build commit (measured — PyPI 0.12.2 and a `ship_wheel.py` wheel both
-  report `1737003f0c81`); the install origin is what separates them.
-  `bngsim_version` is now read from `bngsim.__version__` directly rather than
-  through the bridge's `bionetgen.BNGSIM_VERSION` re-export, and the whole bngsim
-  half is collected before bionetgen is imported, so an env with a broken or
-  absent bridge still records which bngsim is installed in it. The bridge's own
-  view is kept alongside as `bngsim_bridge_version`, where the two disagreeing is
-  now visible instead of silently authoritative.
-
-  `bootstrap_parity_env.py` gains **`--bngsim-pypi <version>`**, mutually
-  exclusive with `--bngsim-wheel` / `--build-bngsim`: for a consumer *reproducing*
-  a published golden, installing the released wheel is the faithful route, and it
-  is the case the harness was written to assume impossible. Its no-source ABORT
-  used to say "bngsim is not on PyPI" and foreclose exactly that option; it now
-  names all three sources. No harness prose claims bngsim is absent from PyPI.
-- **An SBML compartment size is no longer writable, and says so (issue #164).**
-  A compartment volume had two representations in a loaded model and a write
-  moved only one. The kinetic law reads `p[]`; the *storage convention* is
-  folded at load into constants nothing re-derives — `Species::volume_factor`,
-  an amount-declared `initial_conc` (= amount/V), the Elementary scalar rate's
-  `Π V^n / V_storage`, `Reaction::ssa_volume_factor`, and the `inv_vf` table in
-  the emitted C. `set_param` reached the first and none of the second.
-
-  The result was not a stale value but an internally inconsistent model. On the
-  issue's two-compartment model `set_param("C1", 3.0)` moved `A(5)` from 22.3 to
-  1.11 — a factor of 20 — on a trajectory that is *exactly* `C1`-invariant; the
-  other direction was a silent no-op (`set_param("C2", 7.0)` changed nothing),
-  `parameter_scan` over a compartment returned one trajectory N times, and a
-  forward-sensitivity column was wrong in **both** directions at once: `dA/dC1`
-  reported 36.6 against a true 0, `dB/dC2` reported 0 against a true 2.30.
-
-  **Wider than the issue scoped it.** #164 measured single-compartment models as
-  safe. Against RoadRunner as an independent oracle, only the exact
-  `compartment·k·A` convention with concentration ICs is V-invariant: a bare
-  `k*A` law (the common BioModels form), any `initialAmount` species, and every
-  `hasOnlySubstanceUnits="true"` species move with V under a rebuild and did not
-  under a write. Which half of a write landed was not even uniform inside one
-  model — a mass-action law folded the volume away entirely, a Functional law
-  loaded at V ≠ 1 divided by the live compartment symbol, and the same law
-  loaded at V = 1 had that divide normalized out — with nothing visible to the
-  caller to tell them apart. Hence a refusal rather than a patched subset.
-
-  So: `set_param` / `set_params` raise `ValueError` on a compartment-size
-  *change*, `Simulator(sensitivity_params=[...])` and
-  `steady_state(sensitivity_params=[...])` refuse the column, and
-  `compute_all_sensitivities()` skips compartments from its "all parameters"
-  default with a warning (an explicit `params=[...]` raises). Writing the value
-  a compartment already holds stays legal, so round-tripping a full parameter
-  vector through `set_params` still works, and the check runs in that method's
-  validation phase so its all-or-nothing contract holds. `.net` models are
-  unaffected — BNG2.pl folded their volumes into rate constants long before
-  bngsim sees them — and a compartment the loader promotes to a species
-  (rate-rule or event-resized) is genuine live state, not flagged.
-
-  Inert for every model that does not write a compartment: no emitted source,
-  cache key, or trajectory changes.
-
-  Issue #170 tracks making the volume live everywhere, which retires the
-  refusal and turns the sensitivity column into a real one.
-
-### Added
-- **A cross-platform Python test gate (issue #169).**
-  `.github/workflows/python-tests.yml` runs the whole of `python/tests` on
-  `ubuntu-latest` and `macos-14` in the **default** build configuration. Before
-  it, GitHub CI ran 533 of the suite's ~3490 Python tests on any non-Windows
-  host — and every one of them under `BNGSIM_CODEGEN_JIT=mir` on a
-  `-DBNGSIM_ENABLE_MIR=ON` build, so the count exercised in the configuration a
-  wheel actually ships was **zero** on Linux and macOS. A regression in SBML
-  loading, `.net` parsing, events, steady state, SSA, conversion or coupling
-  could be caught only on Windows, and only if the file happened to be named in
-  one of two hand-maintained lists.
-
-  The gap was structural, not a bug. Every job that runs pytest names a curated
-  file list, so a *new* test file defaults to running nowhere, and the assumed
-  backstop was the local pre-push hook — which covers whichever platform the
-  developer happens to be on (here macOS arm64) and which `git push --no-verify`
-  removes. `native-tests.yml` stated that assumption in its header as fact.
-
-  The new job therefore carries no `paths:` filter (a selectively-firing gate
-  reintroduces the per-file opt-in through the trigger instead of the run list),
-  no file list (it runs the directory, the way `native-tests.yml` drives `ctest`
-  rather than one named target), and no `-D` overrides (every other workflow
-  disables something — KLU off in four of them, MIR *on* in `mir.yml` — which is
-  how the shipped configuration ended up untested). Provisioning is `uv sync
-  --extra dev` off `uv.lock` and the pytest call is the pre-push hook's own, so a
-  green run means what a clean `git push` means locally, on a host the developer
-  does not have.
-
-  Two false-green guards, mirroring the ones `native-tests.yml` added for the C++
-  suite: a floor on the passed count, because a module that stops importing skips
-  at collection and shrinks the denominator without failing anything; and
-  `BNGSIM_SKIP_AUDIT=strict`, because a test that quietly turns into a skip for
-  an undeclared reason is the same invisibility in a different form. `HAS_KLU` is
-  asserted after the build for the reason `mir.yml` asserts `HAS_MIR` — a build
-  that silently lost KLU would skip the sparse-solver tests and still be green.
-
-  Side effect worth naming: the macOS leg is the only place anywhere that
-  exercises `BNGSIM_KLU_AUTOBUILD` (GH #209). The wheel legs all resolve a
-  prebuilt SuiteSparse through `SUITESPARSE_ROOT` and every other job sets
-  `ENABLE_KLU=OFF`, so the from-source KLU subset that an sdist install on a bare
-  box falls back to had no CI at all. Wiring it up immediately showed why that
-  matters: the same autobuild **cannot** complete on a bare `ubuntu-latest`,
-  because SuiteSparse's own CMake calls `find_package(BLAS)` and the runner image
-  ships none, so the configure dies in `SuiteSparse_config` before KLU is
-  reached. So GH #209's self-sufficiency claim holds on macOS but not on a bare
-  Linux host. The Linux leg therefore installs `libsuitesparse-dev`, the same
-  system-package route cibuildwheel's Linux leg takes.
-
-  And the gate earned itself on its first real run: **four tests fail on Linux
-  that pass on macOS**, in two unrelated subsystems, both pre-existing on `main`
-  and both exactly the class #169 said nothing could see. GH #176's
-  finite-difference retry fires correctly on
-  `ltype_calcium_discontinuous_jacobian.net` and then dies at a *second*
-  threshold crossing (t≈34.6) the fixture's own header does not mention; and
-  `nested_derived_rate_const.net`'s reduced Jacobian is exactly singular under
-  Linux's reference LAPACK where Accelerate leaves it merely ill-conditioned, so
-  it takes the refusal branch its sibling test exists to assert rather than the
-  warning branch its own test asserts. Both are quarantined under
-  `xfail(sys.platform.startswith("linux"), strict=True, raises=SimulationError)`
-  and reported in lanl/bngsim#176 — `strict` so they retire themselves, and
-  quarantined at all so the new gate lands green rather than permanently red,
-  which is the distinction `native-tests.yml`'s header spells out.
-
-- **`compartment_sizes=` at load, the supported way to change a volume (issue
-  #164).** `Model.from_sbml`, `from_sbml_string`, `from_antimony`,
-  `from_antimony_string`, and `Model.load` take
-  `compartment_sizes={"Liver": 2.5}`, applied to the parsed document before
-  bngsim interprets it — so the size reaches every constant it is folded into,
-  and the result is bit-identical to loading a source that carries that `size=`
-  outright. A volume scan or a fit over a volume is a loop over such loads, and
-  its gradient is a finite difference over two of them. An `initialAssignment`
-  on an overridden compartment is dropped (it would otherwise take precedence);
-  a compartment whose size an *assignment rule* computes is refused, since the
-  rule and not the attribute is its volume; `.net` is refused for having no
-  compartment left to set.
-- **`Model.compartment_size_params`** — the parameter names the two rules above
-  apply to, so a fitting harness can build its vector from what is writable.
-
-- **Analytic forward sensitivities for cross-compartment reactions (issue
-  #160).** A reaction whose affected species live in compartments of different
-  size (`per_species_volume_scaling`) used to decline the analytic sensitivity
-  RHS for the **whole model** — `CVodeSensInit1` installs one callback for every
-  column, so a single such reaction put every column on CVODES' internal
-  difference quotient. The fallback was correct, so this is a cost fix, not a
-  correctness one.
-
-  The missing piece was never a derivative: a cross-compartment kinetic law
-  evaluates to amount/time while each affected species stores amount/V_c with a
-  V_c of its own, so every accumulation row divides by its own compartment
-  volume — and the `∂f/∂p` scatter had no form for that divide. It has one now,
-  taken from the same `_psvs_row_divisor` lookup the RHS scatter (which defines
-  the divide) and the `J·yS` half already share, folded into the scatter
-  coefficient for a static compartment and emitted as a runtime divide by the
-  live volume for a variable one (issue #171). Both halves of
-  `ySdot = J·yS + ∂f/∂p` are therefore analytic for these models.
-
-  Measured over the two SBML corpora plus the `.net` corpus (1,380 models):
-  **21 models gain an analytic sensitivity RHS** (`benchmarks/sbml_events`
-  177 → 198), none lose one, and every other model's emitted RHS, analytical
-  Jacobian and sensitivity RHS is byte-identical. Where the difference quotient
-  used to converge the two agree to 8.3e-06 relative over 65 sensitivity columns
-  on 14 real models; where it did not, the step counts are the story —
-  `BIOMD0000000706` integrates 460 steps against the difference quotient's 23.0
-  million.
-
-  Elementary and Michaelis–Menten reactions carrying the flag still decline (and
-  now say so): their `J·v` comes from a scatter that has no per-row divide, so
-  half a divide would be worse than the fallback. No loader emits one.
 
 ## [0.12.2] - 2026-08-03
 
