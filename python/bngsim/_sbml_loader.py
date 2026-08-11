@@ -6660,6 +6660,16 @@ def _build_model_from_sbml_doc(doc):
     model = Model(_core=core)
     model._ssa_issues = ssa_issues
     model._periodic_disc_max_step = periodic_disc_max_step
+    # The registered discontinuity conditions, verbatim (issue #305). A root at
+    # a crossing is only half of reaching it: CVODE tests for one solely on a
+    # step it ACCEPTS, so where the jump is large enough that the error test
+    # rejects every step containing the crossing, the root never fires and the
+    # run wedges at t + h == t just below it. Simulator.run resolves each of
+    # these to a crossing *time* it can stop the step on
+    # (_switch_sensitivity.fixed_time_crossings). Handing over the registered
+    # set itself, rather than re-deriving one from the rule text, is what keeps
+    # the stops a subset of the roots.
+    model._time_disc_conditions = tuple(sorted(seen_disc))
 
     # AR-target species report map. An AssignmentRule target species is
     # emitted ``fixed`` (its ODE derivative is zeroed), so the integrator

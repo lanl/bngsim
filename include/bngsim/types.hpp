@@ -1204,6 +1204,33 @@ struct SolverOptions {
     int max_steps = 20000;      // max internal steps per output point
     double max_step_size = 0.0; // 0 = no limit
 
+    // ─── Fixed time-discontinuity crossings to land on (issue #305) ──────────
+    // Model times at which a time-dependent `piecewise`/`if()` branch flips,
+    // for crossings whose time is a constant of the run. Sorted ascending by
+    // the Python layer (bngsim._switch_sensitivity.fixed_time_crossings), and
+    // empty for every model that registers no GH #72 discontinuity trigger —
+    // which leaves that model's stepping untouched.
+    //
+    // These are STEPPING aids, not gradient terms, and that is the whole reason
+    // they are separate from SensitivityOptions::switch_times: a crossing no
+    // fitted parameter moves contributes a ∂t*/∂p of exactly 0 and needs no
+    // jump, but it still has to be *reached*.
+    //
+    // Reaching it is not something the GH #72 root can do on its own. CVODE
+    // tests for a root only on a step it ACCEPTS, and at a large enough jump
+    // the error test rejects every step that contains the crossing: h shrinks,
+    // the accepted steps land short, t creeps to the last double below t*, and
+    // from there every h that would carry it across is under one ulp, so
+    // t + h == t and the run dies with the issue #54 stall error. g is never
+    // evaluated at any t ≥ t*, so the registered root never fires — not once.
+    // Measured on Weber_BMC2015 (a `piecewise` on `(time - PdBu_time) < 0`,
+    // PdBu_time = 24 fixed): 6 of 100 box-sampled parameter points, every one
+    // wedged at nextafter(24, -inf), with 0 root returns and half of 20,000
+    // steps rejected. Registration is necessary; reachability is the other
+    // half, and CVodeSetStopTime is what supplies it — the same mechanism
+    // issue #48 uses for a crossing that a fitted parameter moves.
+    std::vector<double> crossing_stop_times;
+
     // ─── Per-species absolute tolerance (issue #196) ─────────────────────────
     // Empty (the default) leaves the scalar `atol` above on CVodeSStolerances,
     // so every call that does not set this is bit-for-bit unchanged. Non-empty

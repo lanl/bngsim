@@ -79,6 +79,7 @@ class Model:
         "_varvol_ar_amount_map",
         "_varvol_event_resize_map",
         "_periodic_disc_max_step",
+        "_time_disc_conditions",
         "_want_output_sens",
         "_output_sens_analysis",
         "_named_conc_states",
@@ -199,6 +200,12 @@ class Model:
         # byte-identical to before. Simulator.run applies it unless the caller
         # passes an explicit ``max_step``. See _sbml_loader.py.
         self._periodic_disc_max_step: float | None = None
+        # Issue #305: the GH #72 discontinuity-trigger conditions this model
+        # registered, verbatim, as source text. Empty for every model with no
+        # time-dependent piecewise. Simulator.run resolves the fixed-time ones
+        # to crossing times and stops the step on each, because a registered
+        # root is only reachable on a step CVODE accepts. See _sbml_loader.py.
+        self._time_disc_conditions: tuple[str, ...] = ()
         # Issue #11: named saved concentration states. Maps a user label to a
         # snapshot of the full live species-concentration vector (a copy of
         # get_state(), ordered like species_names). This is the multi-slot
@@ -686,6 +693,7 @@ class Model:
         m._varvol_ar_amount_map = dict(self._varvol_ar_amount_map)
         m._varvol_event_resize_map = dict(self._varvol_event_resize_map)
         m._periodic_disc_max_step = self._periodic_disc_max_step
+        m._time_disc_conditions = self._time_disc_conditions
         # Issue #11: carry named concentration snapshots to the clone, each a
         # fresh copy so the clone's restore can never alias the parent's stored
         # vector. (The default slot lives in the C++ core, deep-copied above.)

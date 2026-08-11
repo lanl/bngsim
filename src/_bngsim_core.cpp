@@ -308,6 +308,23 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("steady_state_tol", &bngsim::SolverOptions::steady_state_tol)
         .def_readwrite("carry_sensitivities", &bngsim::SolverOptions::carry_sensitivities)
         .def_readwrite("event_seed", &bngsim::SolverOptions::event_seed)
+        .def(
+            "set_crossing_stop_times",
+            [](bngsim::SolverOptions &self, std::vector<double> times) {
+                std::sort(times.begin(), times.end());
+                self.crossing_stop_times = std::move(times);
+            },
+            py::arg("times"),
+            "Set the model times a fixed time-dependent `piecewise`/`if()` "
+            "branch flips at, so the integrator lands ON each crossing instead "
+            "of trying to step over it (issue #305). A GH #72 discontinuity "
+            "root cannot do this by itself: CVODE tests for a root only on a "
+            "step it ACCEPTS, and where the jump is large enough that the error "
+            "test rejects every step containing the crossing, t creeps to the "
+            "last double below it and wedges at t + h == t without the root "
+            "ever firing. Resolved by bngsim._switch_sensitivity."
+            "fixed_time_crossings; empty (the default) leaves the integration "
+            "loop untouched.")
         // Forward sensitivity options
         .def(
             "set_sensitivity_params",

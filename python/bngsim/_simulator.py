@@ -1347,6 +1347,60 @@ class Simulator:
             opts.set_ic_param_sens([t for t in triples if t[2] != 0.0] or [(-1, 0, 0.0)])
         return model.effective_ic_sensitivity(names)
 
+    def _apply_crossing_stops(self, opts, t_start, t_end, model=None) -> None:
+        """Stop the integration step on every fixed time discontinuity (#305).
+
+        A GH #72 discontinuity root is registered so the integrator cannot step
+        over a narrow forcing pulse — but CVODE tests for a root only on a step
+        it **accepts**. Where the branch jump is large enough that the error
+        test rejects every step spanning the crossing, the accepted steps land
+        short, ``t`` creeps to the last double below ``t*``, and from there
+        every step that would cross is under one ulp: ``t + h == t``, the run
+        dies with the issue #54 stall error, and the root has never fired once.
+        ``CVodeSetStopTime`` at ``t*`` is what makes it reachable — the same
+        mechanism issue #48 uses for a crossing a *fitted* parameter moves,
+        applied here for the far more common crossing that nothing moves.
+
+        Resolution happens per run and against live parameter values, which is
+        load-bearing rather than incidental: an experimental-condition
+        parameter puts the crossing at ``t = 24`` in the measured phase and at
+        ``t = 0`` in the pre-equilibration phase that precedes it, and stopping
+        the second one at 24 — where it has no crossing — measurably perturbs
+        its steady-state march.
+
+        A no-op for every model that registers no time discontinuity, which is
+        almost all of them; their stepping is untouched.
+
+        ``model`` is the model this run integrates — the batch and chunked
+        sensitivity paths run on a *clone* carrying that row's parameter point,
+        and resolving against the parent's values would put the stop at the
+        wrong time for exactly the rows a scan exists to explore.
+        """
+        model = model if model is not None else self._model
+        conditions = getattr(model, "_time_disc_conditions", ())
+        if not conditions:
+            return
+        from bngsim._switch_sensitivity import fixed_time_crossings
+
+        try:
+            times = fixed_time_crossings(model._core, float(t_start), float(t_end), conditions)
+        except Exception as e:  # pragma: no cover - defensive
+            # Resolution is best-effort: failing it leaves the pre-#305 stepping,
+            # which is correct wherever it completes at all. Warn rather than
+            # break a run whose crossing may be perfectly reachable.
+            logger.warning(
+                "Discontinuity crossing-stop resolution failed (%s); the "
+                "integrator will approach each crossing unclamped (issue #305).",
+                e,
+            )
+            return
+        if times:
+            logger.debug(
+                "Discontinuity crossing stops at t=%s (issue #305)",
+                ", ".join(f"{t:.6g}" for t in times),
+            )
+            opts.set_crossing_stop_times(times)
+
     def _apply_switch_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject the switch-time crossings and their ∂t*/∂p (issue #48).
 
@@ -2788,6 +2842,7 @@ class Simulator:
                 eff_max_step = self._resolve_max_step(max_step)
                 if eff_max_step is not None:
                     opts.max_step_size = eff_max_step
+                self._apply_crossing_stops(opts, t_start, t_end)
                 if self._codegen_so_path:
                     opts.codegen_so_path = self._codegen_so_path
                 if self._codegen_c_source:
@@ -4113,6 +4168,9 @@ class Simulator:
                     opts.codegen_so_path = self._codegen_so_path
                 if self._codegen_c_source:
                     opts.codegen_c_source = self._codegen_c_source
+                # This row's own discontinuity crossings, for the same reason the
+                # switch times below are detected on the clone (issue #305).
+                self._apply_crossing_stops(opts, t_span[0], t_span[1], model=clone)
                 if self._sensitivity_params:
                     opts.set_sensitivity_params(self._sensitivity_params)
                     # Seed ∂x_i(0)/∂p from the CLONE's params (this row's point):
@@ -4751,6 +4809,11 @@ class Simulator:
         if self._codegen_c_source:
             opts.codegen_c_source = self._codegen_c_source
         opts.set_sensitivity_params(sens_params)
+        # Every chunk integrates the same trajectory, so every chunk needs the
+        # same crossing stops — a chunk that lost them would wedge where the
+        # others did not, and issue #243 is the standing reminder that "which
+        # chunk you are in" must not decide whether the solve succeeds.
+        self._apply_crossing_stops(opts, t_span[0], t_span[1], model=clone)
         # Report this chunk's OWN subset of ∂x(0)/∂θ; the stitch takes the union
         # over chunks, which is the full requested set (issue #155).
         chunk_ic_seed = self._apply_ic_param_sens_seed(opts, clone, sens_params)
