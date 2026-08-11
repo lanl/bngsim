@@ -336,9 +336,23 @@ build = "cp310-* cp311-* cp312-* cp313-*"
 skip = "*-musllinux_* *_i686 *-win32"
 build-verbosity = 1
 environment = { BNGSIM_ENABLE_KLU = "ON", BNGSIM_REQUIRE_KLU = "ON" }
-# Smoke test: the wheel imports in a clean env AND KLU is actually bundled +
-# loadable (HAS_KLU is False when the sparse solver was not linked).
-test-command = 'python -c "import bngsim; print(bngsim.__version__); assert bngsim.HAS_KLU"'
+# Smoke test: the wheel imports in a clean env, and the SuiteSparse/KLU vendored
+# into it actually factorizes -- routed to KLU on a model past the auto gates,
+# cross-checked against the dense LU (which touches no SuiteSparse) and against
+# exact mass conservation. See ci/wheel_smoke_klu.py.
+#
+# This used to be `assert bngsim.HAS_KLU` alone, which is a COMPILE-TIME flag
+# (issue #303): True because the extension was built against SuiteSparse, and
+# still True when the libraries inside the wheel cannot do anything. Every wheel
+# here is repaired -- delvewheel content-hashes the DLL names and injects a
+# loader patch, delocate rewrites install names, auditwheel mangles SONAMEs --
+# and none of that is exercised by the source build windows-klu.yml tests (#296).
+#
+# Global rather than per-platform on purpose: Windows at least has a source-build
+# leg now, while the macOS and Linux repairs have no counterpart anywhere.
+# The script needs no C compiler and nothing beyond bngsim's own runtime
+# dependencies, so there is no test-requires and it runs on every CPython here.
+test-command = "python {project}/ci/wheel_smoke_klu.py"
 
 [tool.cibuildwheel.linux]
 # manylinux_2_28 = AlmaLinux 8 (has dnf); SuiteSparse/KLU comes from EPEL. Its
