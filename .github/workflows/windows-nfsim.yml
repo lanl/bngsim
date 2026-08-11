@@ -11,12 +11,28 @@ name: windows-nfsim
 #
 # Scoped to paths that can affect NFsim-on-Windows so it does not rebuild on
 # every push. Also runnable manually (workflow_dispatch) for ad-hoc repros.
+#
+# The run step selects the test cluster with the SAME glob the paths filter uses,
+# and that is load-bearing (issue #291). It was a hand-maintained list of six
+# filenames until then, untouched since the workflow was created, so the three
+# NFsim test files added after that triggered this leg and were never executed by
+# it — including both symmetry regression guards for the vendored NFsim carries.
+# The failure mode is the bad one: editing test_nfsim_symmetry_factor.py fired the
+# leg, the leg went green, and it had said nothing about the file that summoned
+# it. One selector for both is what stops the two from drifting again;
+# python/tests/test_windows_nfsim_ci_coverage.py fails if they ever do.
+#
+# The other two ways this leg can go green having tested nothing are guarded
+# below rather than left to the file list: a build that lost NFsim (asserted on
+# HAS_NFSIM), and a module that turns into a skip (asserted on the skip count —
+# test_nfsim_exprtk_parity.py needs scipy for its oracle and degrades to one
+# silent module skip without it, which is why the pip install carries scipy).
 
 on:
   workflow_dispatch:
     inputs:
       pytest_args:
-        description: "Extra pytest args (e.g. -x, -k some_pattern, or a single file path)"
+        description: "Extra pytest args (e.g. -x, or -k some_pattern to narrow the cluster)"
         required: false
         default: ""
       python_version:
@@ -58,14 +74,20 @@ jobs:
           python -m pip install --upgrade pip
           # Override the pyproject BNGSIM_REQUIRE_KLU=ON define so the build does
           # not need SuiteSparse; ENABLE_KLU=OFF avoids the KLU autobuild too.
-          # The NFsim test cluster + conftest only need pytest (numpy is a base
-          # bngsim dep); skip the [test] extra (antimony/scipy) to stay lean.
           python -m pip install -v \
             --config-settings=cmake.define.BNGSIM_ENABLE_KLU=OFF \
             --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=OFF \
             --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
             .
-          python -m pip install "pytest>=8.0"
+          # Still not the [test] extra — antimony/pytest-cov/jsonschema/xarray
+          # are for tests this leg does not run. scipy is here because one file
+          # in the cluster needs it and would otherwise be worse than absent:
+          # test_nfsim_exprtk_parity.py takes scipy.special.hyp1f1 as the
+          # independent oracle for NFsim's mratio() and guards it with a
+          # MODULE-level pytest.importorskip, so a leg without scipy collects
+          # none of its six tests and reports one silent skip instead (#291).
+          # The pin matches the [test] extra's.
+          python -m pip install "pytest>=8.0" "scipy>=1.15"
 
       - name: Show build / capability info
         shell: bash
@@ -73,23 +95,75 @@ jobs:
           set -euxo pipefail
           python -c "import platform, sys; print(platform.platform()); print(sys.version)"
           python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_NFSIM', bngsim.HAS_NFSIM); print('HAS_KLU', bngsim.HAS_KLU)"
+          # Every test in this cluster is guarded by `skipif(not HAS_NFSIM)`, so
+          # a build that quietly stopped linking the vendored NFsim would skip
+          # all of them and still report green — the same false-green guard
+          # python-tests.yml puts on HAS_KLU. This job has no reason to exist
+          # without NFsim, so fail here rather than pass an empty run.
+          python -c "import bngsim, sys; sys.exit(0 if bngsim.HAS_NFSIM else 'HAS_NFSIM is False - this build did not link the vendored NFsim')"
 
       - name: Run NFsim test cluster
+        id: pytest
         shell: bash
         run: |
           set -o pipefail
+          # The glob, not a list — see the header on issue #291. It is the same
+          # string as the paths filter above, which is the point. If it ever
+          # matches nothing, bash passes it through literally and pytest exits 4
+          # rather than reporting a green empty run.
           python -m pytest -p no:cacheprovider \
-            python/tests/test_nfsim_session.py \
-            python/tests/test_nfsim.py \
-            python/tests/test_nfsim_tech_debt.py \
-            python/tests/test_nfsim_tstart.py \
-            python/tests/test_nfsim_molecularity.py \
-            python/tests/test_nfsim_selectors.py \
+            python/tests/test_nfsim*.py \
             -rA --tb=long ${{ inputs.pytest_args }} \
             2>&1 | tee nfsim-windows.log
 
+      # A glob cannot drift out of sync with the trigger the way a file list can,
+      # but the run can still shrink without failing: a module that stops being
+      # collected, and a module that turns into a skip. Both leave this leg green
+      # while it tests less than it claims, which is the #291 shape.
+      - name: Guard against a false green
+        if: ${{ !inputs.pytest_args }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 178 passed / 0 skipped at the commit that opted the last three files
+          # in (147 before it, on the six-file list). The floor sits far enough
+          # below to survive a test being retired and close enough to trip when a
+          # whole file stops running. It only rises as tests are added.
+          PASS_FLOOR=170
+
+          summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' nfsim-windows.log | tail -1 || true)"
+          if [ -z "$summary" ]; then
+            echo "::error::No pytest summary line — the cluster did not run to completion."
+            exit 1
+          fi
+          echo "summary: $summary"
+
+          # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
+          count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
+          passed="$(count passed)"
+          skipped="$(count skipped)"
+
+          echo "passed $passed (floor $PASS_FLOOR); skipped $skipped (must be 0)."
+          if [ "$passed" -lt "$PASS_FLOOR" ]; then
+            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a file stopped being collected rather than failing."
+            exit 1
+          fi
+          # Unlike python-tests.yml, which tolerates a declared-skip budget, this
+          # leg measures zero skips and every skip reason reachable here is a
+          # false green: "NFsim not compiled in" means the build lost NFsim, and
+          # a missing optional import means a module's oracle is absent (#291). A
+          # test that is genuinely inapplicable on Windows should be xfailed or
+          # deselected by name, and this guard amended to say which and why.
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped test(s) skipped. On this leg a skip is a false green — see the comment above this check."
+            exit 1
+          fi
+
+      # Conditioned on the pytest step having been reached rather than on
+      # always(): if the build fails there is no log, and if-no-files-found=error
+      # would report a second, misleading failure on top of the real one.
       - name: Upload pytest log
-        if: always()
+        if: always() && steps.pytest.conclusion != 'skipped'
         uses: actions/upload-artifact@v4
         with:
           name: nfsim-windows-log-py${{ inputs.python_version || '3.12' }}
