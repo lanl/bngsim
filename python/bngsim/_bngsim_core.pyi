@@ -697,6 +697,10 @@ class SolverOptions:
     steady_state: bool
     def __init__(self) -> None:
         ...
+    def set_crossing_stop_times(self, times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        """
+        Set the model times a fixed time-dependent `piecewise`/`if()` branch flips at, so the integrator lands ON each crossing instead of trying to step over it (issue #305). A GH #72 discontinuity root cannot do this by itself: CVODE tests for a root only on a step it ACCEPTS, and where the jump is large enough that the error test rejects every step containing the crossing, t creeps to the last double below it and wedges at t + h == t without the root ever firing. Resolved by bngsim._switch_sensitivity.fixed_time_crossings; empty (the default) leaves the integration loop untouched.
+        """
     def set_event_time_sens(self, records: collections.abc.Sequence[tuple[typing.SupportsInt | typing.SupportsIndex, collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]]]) -> None:
         """
         Set the event-time sensitivities ∂t*/∂p as (event_idx0, [∂t*/∂p per param column]) records (issue #49). An event whose trigger thresholds a fitted constant — `time >= T0` with T0 requested — fires at a time that moves with the parameter, so its forward-sensitivity jump carries two extra terms beyond the GH #212 state jump: s⁺ = ∂h/∂x·(s⁻ + f⁻·∂t*/∂p) + ∂h/∂p − f⁺·∂t*/∂p. Detection and the chain rule to fitted primaries are done by bngsim._switch_sensitivity; empty (the default) collapses the jump to the GH #212 form — except for a state-dependent trigger, whose ∂t*/∂p the solver differentiates at the fire instead (issue #144).

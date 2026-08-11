@@ -280,6 +280,26 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **The committed `_bngsim_core.pyi` had drifted from the bindings, and nothing
+  checked that it hadn't.** The stub is machine-written and committed because it
+  is the only description of the compiled extension a type checker or an editor
+  can read. #305 added `SolverOptions.set_crossing_stop_times` without
+  regenerating it, so main described an API missing a method it had: every
+  rebuild dirtied the tree with the regenerated hunk, and mypy — which believes
+  the stub — reports `"SolverOptions" has no attribute "set_crossing_stop_times"`
+  for any caller reaching it through a typed reference. That drift survived
+  review only because the one caller passes `opts` as an untyped parameter, so
+  the attribute was never checked; the invariant was resting on call sites
+  *staying* untyped.
+
+  The stub is regenerated, and a test now asserts every pybind11-bound name
+  appears in it (224 names today). Names rather than signatures on purpose:
+  regenerating in CI and diffing would also catch a changed signature, but needs
+  a built extension on the leg and `pybind11_stubgen` output moves with the tool
+  version and the platform, so the strictness would be paid for in flakes. The
+  realistic failure is a binding added without a regeneration, which a regex
+  catches in milliseconds on every leg.
+
 - **A registered time-discontinuity root could never be reached, so the run
   wedged one ulp below the crossing (issue #305).** GH #72 registers every
   `time` inequality in a `piecewise` as a CVODE root so the integrator stops at
