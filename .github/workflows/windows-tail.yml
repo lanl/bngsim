@@ -182,15 +182,19 @@ jobs:
           # that a reachable skip is a false green (issue #295).
           #
           # not-run: test_codegen_compile_reaping.py -- POSIX-only by construction (module-level skipif on os.name); 4 collected, 4 skipped here
-          # not-run: test_codegen_jacobian_sparse.py -- every case is KLU-gated and this leg builds ENABLE_KLU=OFF; 13 collected, 13 skipped here
+          # not-run: test_codegen_jacobian_sparse.py -- every case is KLU-gated and this leg builds ENABLE_KLU=OFF; runs on windows-klu.yml instead (issue #296)
           #
-          # The second one is a real Windows coverage gap and not a decision to
-          # stop caring: no leg anywhere runs pytest on a Windows build with KLU
-          # (wheels.yml builds one and only smoke-tests the import), so the
-          # sparse-Jacobian emitter -- a symbol resolved by name out of the
-          # built DLL, i.e. the half that is platform-specific -- has never run
-          # there. Closing it needs a leg or a wheel test command, not a list
-          # entry: issue #296.
+          # The second one was a real Windows coverage gap when it was written:
+          # no leg anywhere ran pytest on a Windows build with KLU (wheels.yml
+          # builds one and only smoke-tests the import), so the sparse-Jacobian
+          # emitter -- a symbol resolved by name out of the built DLL, i.e. the
+          # half that is platform-specific -- had never run there. Closing it
+          # needed a leg, not a list entry, and windows-klu.yml is that leg
+          # (issue #296). It stays out HERE for the same reason as before: this
+          # job is the ENABLE_KLU=OFF half of the pair, and that is what makes it
+          # the only job that can run test_force_sparse_linear_solver.py's
+          # no-KLU cases. Turning the flag on to pick up 13 tests would have cost
+          # those, which is a trade and not a fix.
           python -m pytest -p no:cacheprovider \
             python/tests/test_version_consistency.py \
             python/tests/test_method_normalization.py \
