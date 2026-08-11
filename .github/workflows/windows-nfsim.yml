@@ -48,6 +48,13 @@ on:
       - "third_party/nfsim/**"
       - "python/bngsim/_nfsim_session.py"
       - "python/tests/test_nfsim*.py"
+      # The cluster's fixtures are its inputs, so an edit to one is an edit to
+      # what these tests assert -- context_symmetry.xml carries the #281 shapes
+      # and symmetry_factor_*.xml the #195 ones. Registered only under the test
+      # filenames, a fixture change would run this leg only when the test file
+      # happened to change too, which is the trigger-completeness gap #167 fixed
+      # for source files and #295 for the run list.
+      - "tests/data/nfsim/**"
       - ".github/workflows/windows-nfsim.yml"
   pull_request:
     paths: *nfsim_paths

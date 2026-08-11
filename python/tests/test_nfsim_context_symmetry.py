@@ -129,11 +129,42 @@ class TestContextIsCountedOncePerComplex:
         # The over-count is N-fold in the number of matching molecules per complex,
         # not 2-fold. A fix hardcoded to a factor of two passes every pair above and
         # fails only here.
+        #
+        # What this case does NOT do is separate per-complex counting from
+        # `embeddings / |Aut(pattern)|`: Ring_sym's pattern is the whole ring, so
+        # its 3 embeddings are divided by an automorphism group of order 3 and both
+        # rules answer 1. Sub_trimer below is the shape that tells them apart.
         got = context_observables["Ring_sym"]
         assert got == pytest.approx(EXACT, abs=TOLERANCE), (
             f"Ring_sym ended at {got:.1f}; expected ~{EXACT:.1f}. ~893 means the "
             "homotrimer ring catalyst was counted three times per complex; ~1471 "
             "means only a factor of two was divided out (#281)."
+        )
+
+    def test_a_three_fold_context_with_no_pattern_symmetry(
+        self, context_observables: dict[str, float]
+    ) -> None:
+        # The two properties above, in one pool, which is what makes it the sharpest
+        # case in the file (lanl/bngsim#298 asked for exactly this shape).
+        #
+        # Sub_trimer's pattern is the single molecule Tx(a!+) and its catalyst is a
+        # homotrimer ring, so there are 3 embeddings and |Aut(pattern)| = 1. The
+        # three candidate rules answer differently here and nowhere else:
+        #
+        #     embeddings / |Aut(pattern)|   -> 3   (#281's original proposal)
+        #     a hardcoded factor of two     -> 1.5
+        #     once per matching complex     -> 1   <- what BNG emits
+        #
+        # Confirmed against BNG 2.9.3 directly: generate_network() gives R_trimer a
+        # bare `kcat`, and the network integrated as ODEs ends this pool on the same
+        # 2426.1 as every other pool in the fixture.
+        got = context_observables["Sub_trimer"]
+        assert got == pytest.approx(EXACT, abs=TOLERANCE), (
+            f"Sub_trimer ended at {got:.1f}; expected ~{EXACT:.1f}. ~893 means the "
+            "three subunits of the ring were counted as three reaction instances -- "
+            "which is what embeddings/|Aut(pattern)| prescribes, since this pattern "
+            "has no automorphism to divide by. ~1471 means a factor of two was "
+            "hardcoded somewhere (#281, #298)."
         )
 
     @pytest.mark.parametrize(
