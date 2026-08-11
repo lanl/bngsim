@@ -633,6 +633,213 @@ def _iter_condition_atoms(expr: str):
         yield from _split_logical_atoms(cond)
 
 
+# `time` written bare or as ExprTk's nullary call, as a whole word.
+_TIME_REF = re.compile(r"(?<![A-Za-z0-9_])time(?:\s*\(\s*\))?(?![A-Za-z0-9_(])")
+
+# How far off zero a residual may sit at the crossing it just predicted, as a
+# fraction of the slope times the run's own time scale. This is a *linearity*
+# check, not a root-finding tolerance: the two probes below already solve the
+# linear case exactly, so anything failing it is a residual that is not linear
+# in time, whose crossing this cannot claim to know.
+_CROSSING_RESIDUAL_TOL = 1e-9
+
+# Resolved crossing times, keyed on the condition text, the run window and the
+# values of every parameter the condition reads once derived names are inlined —
+# which is everything the answer depends on. Two sympy round trips per condition
+# is ~2 ms, and a scan or a fit calls run() thousands of times while the
+# parameters a *schedule* reads (an experimental-condition dose time) change
+# once per experiment, so the hit rate is close to 1. Bounded and cleared whole
+# rather than LRU-evicted: the population is tiny and the cost of a cold miss is
+# the 2 ms it always was.
+_CROSSING_CACHE: dict[tuple, float | None] = {}
+_CROSSING_CACHE_MAX = 4096
+
+
+def _time_alias_bodies(ctx) -> dict[str, str]:
+    """Every function/assignment-rule name whose value is a function of time.
+
+    ``model_time := time`` is the shape (GH #259): a condition may threshold the
+    *alias* rather than the csymbol, and the alias is also a plain model
+    parameter carrying a stale number. Reading that number is how a residual
+    that is genuinely time-dependent comes back looking constant, so this map
+    is needed twice over — to inline the aliases that resolve, and to refuse the
+    ones that do not.
+
+    Transitive: an alias of an alias reads time too.
+    """
+    bodies = dict(ctx["function_map"])
+    aliases: dict[str, str] = {}
+    changed = True
+    while changed:
+        changed = False
+        for name, body in bodies.items():
+            if name in aliases or not isinstance(body, str):
+                continue
+            if _TIME_REF.search(body) or any(
+                re.search(rf"(?<![A-Za-z0-9_]){re.escape(a)}(?![A-Za-z0-9_])", body)
+                for a in aliases
+            ):
+                aliases[name] = body
+                changed = True
+    return aliases
+
+
+def _inline_time_aliases(expr: str, aliases: dict[str, str]) -> str:
+    """Substitute every *bare* reference to a time alias by its body.
+
+    Bare only: ``f(x)`` is a call whose body takes an argument, and pasting the
+    body over the call site would drop the argument. A call to a time-dependent
+    function therefore survives the substitution and is caught by the caller's
+    identifier check, which is the conservative direction.
+    """
+    for _ in range(len(aliases) + 1):
+        before = expr
+        for name, body in aliases.items():
+            expr = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_(])", f"({body})", expr
+            )
+        if expr == before:
+            break
+    return expr
+
+
+def _crossing_time_of_condition(
+    cond: str,
+    scope: SwitchConditionScope,
+    t_start: float,
+    t_end: float,
+    aliases: dict[str, str] | None = None,
+) -> float | None:
+    """The model time at which *cond* flips, or ``None`` when it is not a fixed
+    time crossing this function can resolve exactly.
+
+    *cond* is one registered GH #72 discontinuity trigger, verbatim — the text
+    the root function evaluates, not a re-derivation of it. Resolving it means
+    answering "at what t does the sign of ``lhs − rhs`` change", and the answer
+    has to be a constant of the run: a condition reading live state
+    (``time < S1``) has no such answer and is declined, as is one whose residual
+    is not linear in time.
+
+    Deliberately *not* routed through :func:`_clock_threshold_split`, which
+    requires a **bare** clock symbol on one side and would decline the shape
+    this issue is about (``(time - PdBu_time) < 0``, the PEtab spelling of
+    ``time < PdBu_time``). That function answers a different question — whether
+    a crossing's ``∂t*/∂p`` can be chain-ruled to fitted primaries — and the
+    #259 lesson is that root registration and threshold *recognition* must not
+    be held to the same spelling: registration already admits either side being
+    time-dependent, and a crossing that is registered but unresolvable here is
+    exactly the one that wedges.
+
+    Two probes decide it. The residual is evaluated at two times, which solves
+    the linear case exactly, and then re-evaluated at the predicted crossing:
+    a residual that is not linear in time fails that check and is declined
+    rather than stopped at in the wrong place.
+    """
+    # The registered text is a whole condition, so it arrives wrapped —
+    # `((time()-PdBu_time)<0)` — and the relational splitter only matches at
+    # paren depth 0.
+    split = _relational_split(_strip_redundant_parens(cond.strip()))
+    if split is None:
+        return None
+    lhs, rhs = split
+    aliases = aliases or {}
+    # An alias of `time` is a plain parameter as far as the tables below are
+    # concerned, and carries a stale number, so it has to be substituted BEFORE
+    # anything reads a value — otherwise `model_time >= 0.7` looks constant.
+    # Substituting also keeps the #259 property that the alias spelling and the
+    # csymbol spelling are the same run to the last bit.
+    residual = _inline_time_aliases(f"({lhs})-({rhs})", aliases)
+    flat = _inline_derived_param_refs(residual, scope.derived_exprs) or residual
+    if not _TIME_REF.search(flat):
+        return None
+    # Every other identifier must be a model parameter, and must not be one of
+    # the time-dependent names — a surviving alias is one this could only read
+    # as a constant, and a species or observable name means the crossing moves
+    # with the trajectory (issue #150's business, not a fixed stop time).
+    read: list[str] = []
+    for m in _IDENTIFIER.finditer(_TIME_REF.sub(" 0 ", flat)):
+        if m.group(0) not in scope.param_idx or m.group(0) in aliases:
+            return None
+        read.append(m.group(0))
+
+    key = (
+        cond,
+        t_start,
+        t_end,
+        tuple(sorted((n, scope.values[scope.param_idx[n]]) for n in set(read))),
+    )
+    if key in _CROSSING_CACHE:
+        return _CROSSING_CACHE[key]
+
+    def at(t: float) -> float | None:
+        return _evaluate_threshold(
+            _TIME_REF.sub(f"({t!r})", residual), scope.param_idx, scope.values, scope.derived_exprs
+        )
+
+    def resolve() -> float | None:
+        scale = max(abs(t_start), abs(t_end), 1.0)
+        r0, r1 = at(0.0), at(scale)
+        if r0 is None or r1 is None:
+            return None
+        slope = (r1 - r0) / scale
+        if slope == 0.0 or not (abs(slope) < float("inf")):
+            return None  # `time` cancels out: no crossing to stop at
+        t_star = -r0 / slope
+        check = at(t_star)
+        if check is None or abs(check) > _CROSSING_RESIDUAL_TOL * abs(slope) * scale:
+            logger.debug(
+                "crossing stop: %r is not linear in time (residual %r at t=%r); skipping",
+                cond,
+                check,
+                t_star,
+            )
+            return None
+        return t_star
+
+    answer = resolve()
+    if len(_CROSSING_CACHE) >= _CROSSING_CACHE_MAX:
+        _CROSSING_CACHE.clear()
+    _CROSSING_CACHE[key] = answer
+    return answer
+
+
+def fixed_time_crossings(core, t_start: float, t_end: float, conditions=()) -> list[float]:
+    """Times in ``(t_start, t_end]`` at which a registered time discontinuity
+    flips, for ``SolverOptions.set_crossing_stop_times`` (issue #305).
+
+    The core stops the integration step exactly on each of these. That is not a
+    refinement of the GH #72 root — it is what makes the root reachable at all.
+    CVODE tests for a root only on a step it **accepts**, and where the branch
+    jump is large enough that the error test rejects every step spanning the
+    crossing, the accepted steps land short, ``t`` creeps to the last double
+    below ``t*``, and every remaining step is under one ulp: ``t + h == t``,
+    with ``g`` never once evaluated past the crossing. On Weber_BMC2015 that
+    kills 6% of a fitting box outright, with zero root returns in the whole run.
+
+    Empty (so: no change to any model's stepping) unless the model registered a
+    discontinuity trigger AND its crossing time is a constant of the run.
+    Resolution reads the *current* parameter values, so a condition is answered
+    for the phase it is asked in — the same experimental-condition parameter can
+    put the crossing inside the window in one phase and outside it in another,
+    and stopping at a time that phase has no crossing at is a pure perturbation
+    of its stepping.
+    """
+    if not conditions or core.n_discontinuity_triggers == 0:
+        return []
+    ctx = core.functional_jacobian_context()
+    scope = switch_condition_scope(core, ctx)
+    aliases = _time_alias_bodies(ctx)
+    out: list[float] = []
+    for cond in conditions:
+        t_star = _crossing_time_of_condition(cond, scope, t_start, t_end, aliases)
+        if t_star is None or not (t_start < t_star <= t_end):
+            continue
+        if not any(abs(t_star - seen) <= 1e-12 * max(abs(t_star), 1.0) for seen in out):
+            out.append(t_star)
+    out.sort()
+    return out
+
+
 def fixed_clock_threshold(atom: str, scope: SwitchConditionScope) -> bool:
     """True when *atom* is a clock threshold against a value nothing moves.
 

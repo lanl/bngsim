@@ -280,6 +280,67 @@ in `CMakeLists.txt`) is derived from it.
   not run the root scan cannot accidentally drop a bound it has no basis to drop.
 
 ### Fixed
+- **A registered time-discontinuity root could never be reached, so the run
+  wedged one ulp below the crossing (issue #305).** GH #72 registers every
+  `time` inequality in a `piecewise` as a CVODE root so the integrator stops at
+  each pulse edge instead of stepping over it. That is only half of reaching the
+  crossing: **CVODE tests for a root solely on a step it accepts**, and where
+  the branch jump is large enough that the local error test rejects every step
+  containing the crossing, the accepted steps land short. `h` shrinks, `t`
+  creeps to the last representable double below `t*`, and from there every step
+  that would carry it across is under one ulp — `t + h == t`, and the run dies
+  with the #54 stall error having never once evaluated `g` past the crossing.
+  The root never fires, not once.
+
+  Measured on `Weber_BMC2015` (`piecewise(0, (time - PdBu_time) < 0, PdBu_dose)`
+  at a fixed `PdBu_time = 24`): 6 of 100 points sampled from that fit's own
+  parameter box die outright, every one wedged at `nextafter(24, -inf)`, with
+  **zero root returns** and half of 20,000 steps rejected by the error test.
+
+  Neither of the two things it looks like. Not a sensitivity defect — the plain
+  state solve dies identically, and on this model the analytic sensitivity RHS
+  is declined anyway. Not honest stiffness at an awkward parameter point — the
+  same points at the same tolerances integrate the moment the step is made to
+  land on the crossing, and in the failing runs the post-jump right-hand side is
+  never reached at all.
+
+  The fix resolves each *registered* condition to a crossing time and stops the
+  step there (`CVodeSetStopTime`), which is the mechanism issue #48 already uses
+  for a crossing a **fitted** parameter moves — applied here to the far more
+  common crossing that nothing moves and that therefore has no `dt*/dp` to jump
+  by. Three things had to change together, since any one alone leaves Weber
+  wedged:
+
+  - the crossing time is resolved from the registered condition text, by two
+    probes of its residual in `time` plus a linearity check, rather than through
+    `_clock_threshold_split` — which requires a **bare** clock symbol on one
+    side and so declines `(time - p) < 0`, the spelling a PEtab export writes.
+    This is #259's lesson (registration already admits either side being
+    time-dependent) carried to the resolution path;
+  - a crossing no requested sensitivity parameter moves is no longer skipped.
+    Its `dt*/dp` is a correct zero; it still has to be *reached*;
+  - none of it is gated on sensitivities, because the plain solve needs it too.
+
+  Resolution runs per `run()` against **live** parameter values, which is
+  load-bearing for pre-equilibration protocols: the same condition parameter can
+  put the crossing inside the measured window and outside the equilibration
+  window that precedes it, and a stop armed where a phase has no crossing
+  measurably perturbs its steady-state march.
+
+  On the minimal reproduction the crossing also stops being expensive: error
+  test failures at the crossing fall from 33–58 to 0–4, and the step count
+  roughly halves. `max_step` is *not* an alternative remedy — measured at 1.0,
+  0.1 and 0.01 it still wedges — so the GH #88 periodic step bound would not
+  have covered this either, and #274's "where a root already forces the stop,
+  `max_step` is pure cost" holds only where the root can fire.
+
+  Also worth knowing: of the two remedies the stall error message suggests,
+  moving the discontinuity onto an **event** works (the RHS is then smooth in
+  `t` and the jump is applied discretely at the root), and moving it onto a
+  **sample time** does not — `CV_NORMAL` interpolates output points, so an
+  output point at the crossing does not bound the step that spans it. Weber's
+  own failing runs already had `t = 24` as a sample time.
+
 - **NFsim counted a reactant pattern the rule does not transform once per
   matching *molecule* instead of once per matching *complex* (issue #281).**
   BioNetGen gives such a pattern one reaction instance per complex, however many

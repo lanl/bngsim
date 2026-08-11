@@ -115,9 +115,13 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
             << "internal time not at all, at t=" << std::setprecision(17) << t_after
             << " with step size h=" << h_now << " (after " << n_steps << " steps). Retrying "
             << "cannot help — the step size has collapsed, typically at a discontinuity such as "
-            << "an if(t >= sigma) rate jump, where t + h == t. Loosen rtol/atol, or move the "
-            << "discontinuity onto an event or a sample time so the integrator can restart "
-            << "across it.";
+            << "an if(t >= sigma) rate jump, where t + h == t. A crossing at a time bngsim can "
+            << "resolve is stopped on exactly (issue #305), so what is left here is one it "
+            << "cannot: a threshold over live state, or one whose time is not constant over the "
+            << "run. Loosen rtol/atol, or move the discontinuity onto an event — its trigger "
+            << "leaves the right-hand side smooth in t and applies the jump at the root, which "
+            << "an output point does NOT do (CV_NORMAL interpolates output points, so a sample "
+            << "time at the crossing does not bound the step that spans it).";
         throw std::runtime_error(msg.str());
     }
 }
@@ -5069,6 +5073,29 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
         sw_scratch.resize(ns);
     }
 
+    // ─── Fixed time-discontinuity crossings to land on (issue #305) ──────────
+    // Same window filter as the issue #48 list above, minus any crossing that
+    // list already stops at — a #48 crossing carries a sensitivity jump this
+    // one must not pre-empt, and stopping twice at one instant would leave the
+    // jump keyed on a t_ret the stop already consumed.
+    std::vector<double> crossing_stops;
+    for (double t_cross : opts.crossing_stop_times) {
+        if (!(t_cross > t_out.front() && t_cross <= t_out.back())) {
+            continue;
+        }
+        bool claimed_by_switch = false;
+        for (const auto *sw : switch_list) {
+            if (std::fabs(sw->t_star - t_cross) <= switch_t_eps) {
+                claimed_by_switch = true;
+                break;
+            }
+        }
+        if (!claimed_by_switch) {
+            crossing_stops.push_back(t_cross);
+        }
+    }
+    size_t next_crossing = 0; // index into crossing_stops of the next one ahead
+
     if (n_roots > 0) {
         // Register the event + discontinuity roots (Impl::register_roots).
         impl_->register_roots(cvode_mem, ctx, n_roots, n_disc);
@@ -5362,13 +5389,30 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // crossing once sensitivities are active and never gets across.
             // Skipped entirely when no switch-time crossing was detected, which
             // leaves every other model's stepping bit-for-bit unchanged.
+            //
+            // A fixed crossing (issue #305) is stopped at through the same
+            // call, for the same reason one step further back: the step that
+            // spans the kink is the one that cannot be taken. It differs only
+            // in what happens on arrival — there is no ∂t*/∂p to jump by, so
+            // the stop is spent entirely on landing the step.
             bool stop_at_switch = false;
+            bool stop_at_crossing = false;
             double t_switch = 0.0;
+            double t_crossing = 0.0;
             while (next_switch < switch_list.size() &&
                    switch_list[next_switch]->t_star <= static_cast<double>(t_now) + switch_t_eps) {
                 ++next_switch; // defensive: a crossing we are already past
             }
-            if (next_switch < switch_list.size()) {
+            while (next_crossing < crossing_stops.size() &&
+                   crossing_stops[next_crossing] <= static_cast<double>(t_now) + switch_t_eps) {
+                ++next_crossing;
+            }
+            // Whichever comes first. Ties cannot happen: a crossing at a #48
+            // switch time was dropped from crossing_stops when it was built.
+            const bool have_switch = next_switch < switch_list.size();
+            const bool have_crossing = next_crossing < crossing_stops.size();
+            if (have_switch && (!have_crossing || switch_list[next_switch]->t_star <=
+                                                      crossing_stops[next_crossing])) {
                 t_switch = switch_list[next_switch]->t_star;
                 int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_switch));
                 if (sf != CV_SUCCESS) {
@@ -5377,7 +5421,16 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         " failed: " + std::to_string(sf));
                 }
                 stop_at_switch = true;
-            } else if (!switch_list.empty()) {
+            } else if (have_crossing) {
+                t_crossing = crossing_stops[next_crossing];
+                int sf = CVodeSetStopTime(cvode_mem, static_cast<sunrealtype>(t_crossing));
+                if (sf != CV_SUCCESS) {
+                    throw std::runtime_error("CVodeSetStopTime for discontinuity crossing t=" +
+                                             std::to_string(t_crossing) +
+                                             " failed: " + std::to_string(sf));
+                }
+                stop_at_crossing = true;
+            } else if (!switch_list.empty() || !crossing_stops.empty()) {
                 // Every crossing is behind us — clear the stop time explicitly
                 // rather than trusting CVODE to have cleared it. CVODE only
                 // clears tstop on a CV_TSTOP_RETURN; when a root lands on the
@@ -5404,6 +5457,18 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // test_switch_time_sensitivity's wide-spread cases failing outright
             // (CV_ERR_FAILURE at t=29) — the switch tests are delicate about the
             // last step before t* for exactly the reasons issue #82 documents.
+            // NOT suppressed by an issue #305 crossing stop, though, and the
+            // difference matters: the #48 stop is armed only as the run closes
+            // on t*, while a crossing stop is armed from wherever the run is to
+            // wherever the next crossing is — on Smith_BMCSystBiol2013 that is
+            // the whole 240-unit horizon. Suppressing the ladder for its
+            // duration turns the #177 floor off for the entire run, and the
+            // #183 columns it exists for then collapse the step at t≈23 and
+            // spend the wall-clock budget. There is nothing to protect anyway:
+            // a crossing stop carries no jump whose accuracy depends on the
+            // tolerances the approach was taken under, and CVODE honours tstop
+            // in CV_ONE_STEP just as it does in CV_NORMAL, so the step still
+            // lands exactly on the crossing.
             const bool one_step = step_for_floor && !stop_at_switch;
             sunrealtype t_ret;
             flag = CVode(cvode_mem, t_target, y, &t_ret, one_step ? CV_ONE_STEP : CV_NORMAL);
@@ -5707,6 +5772,43 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         cvode_mem, y, ns, static_cast<double>(t_ret), *switch_list[next_switch],
                         sw_scratch, sens);
                     ++next_switch;
+                }
+            }
+
+            // ─── Fixed crossing reached: restart on the after-branch (#305) ──
+            // The stop landed the step exactly on t*, so the whole approach was
+            // taken on the before-branch and the kink never entered an error
+            // test. What is left is to drop the before-branch BDF history, or
+            // the first step past the crossing is predicted from a polynomial
+            // fitted entirely to the branch that just ended — the same reason
+            // the GH #72 root reinits, and the reason issue #48's jump ends in
+            // one too.
+            //
+            // A root landing on the same instant has already done exactly that
+            // (and, with sensitivities active, re-seeded s(t*) across it for
+            // issue #146), so this runs only when none fired: an unconditional
+            // second reinit would be harmless but wasteful, while skipping the
+            // s⁻ capture/resume on the path where no root fires would not be.
+            if (stop_at_crossing && static_cast<double>(t_ret) >= t_crossing - switch_t_eps) {
+                while (next_crossing < crossing_stops.size() &&
+                       crossing_stops[next_crossing] <= static_cast<double>(t_ret) + switch_t_eps) {
+                    ++next_crossing;
+                }
+                if (flag != CV_ROOT_RETURN) {
+                    std::vector<std::vector<double>> cross_s_minus;
+                    if (sens.n_total > 0) {
+                        cross_s_minus = impl_->capture_event_sens(cvode_mem, ns,
+                                                                  static_cast<double>(t_ret), sens);
+                    }
+                    int rf = impl_->reinit_cvode(cvode_mem, t_ret, y);
+                    if (rf != CV_SUCCESS) {
+                        throw std::runtime_error("CVodeReInit at the discontinuity crossing t=" +
+                                                 std::to_string(t_crossing) +
+                                                 " failed: " + std::to_string(rf));
+                    }
+                    if (!cross_s_minus.empty()) {
+                        impl_->resume_sens_after_reinit(cvode_mem, ns, cross_s_minus, sens);
+                    }
                 }
             }
 
