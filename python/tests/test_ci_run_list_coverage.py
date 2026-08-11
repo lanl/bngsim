@@ -77,6 +77,15 @@ def _in_scope() -> list[str]:
 
 IN_SCOPE = _in_scope()
 
+#: What the parametrized classes below iterate. An *empty* parameter set makes
+#: pytest skip with a reason of its own wording, which conftest's skip audit has
+#: no ``_DECLARED_SKIPS`` entry for -- so a checkout without ``.github/`` would
+#: report undeclared skips (fatal under BNGSIM_SKIP_AUDIT=strict) instead of the
+#: declared one the module-level skipif already supplies.
+CASES = IN_SCOPE or [
+    pytest.param("", marks=pytest.mark.skip(reason=".github/ not in this checkout"))
+]
+
 pytestmark = pytest.mark.skipif(not WORKFLOWS.is_dir(), reason=".github/ not in this checkout")
 
 
@@ -113,7 +122,7 @@ def test_the_scope_is_discovered_and_is_not_empty():
     )
 
 
-@pytest.mark.parametrize("workflow", IN_SCOPE)
+@pytest.mark.parametrize("workflow", CASES)
 class TestEveryTriggeredFileIsRunOrDeclared:
     def test_a_leg_does_not_fire_on_a_file_it_says_nothing_about(self, workflow):
         """The regression itself, generalized.
@@ -163,7 +172,7 @@ class TestEveryTriggeredFileIsRunOrDeclared:
         )
 
 
-@pytest.mark.parametrize("workflow", IN_SCOPE)
+@pytest.mark.parametrize("workflow", CASES)
 class TestOptingAFileInIsNotEnoughToRunIt:
     def test_module_level_optional_imports_are_provisioned(self, workflow):
         """A module-scope ``importorskip`` the leg does not install is worse
