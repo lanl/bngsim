@@ -159,6 +159,32 @@ jobs:
           BNGSIM_SKIP_AUDIT: strict
         run: |
           set -o pipefail
+          # The list below is narrower than the paths filter above, on purpose,
+          # and issue #295 is what happens when nobody writes down which. Every
+          # test_codegen*.py file this leg fires on but does not run is declared
+          # here with the reason, in the form python/tests/test_ci_run_list_coverage.py
+          # parses -- so a new file is a decision somebody makes rather than a
+          # line somebody forgets. Two of these had already drifted in as
+          # forgotten rather than chosen (sens_term_scale, structural_key); they
+          # turn out to belong out, but nothing said so.
+          #
+          # Two distinct reasons, worth keeping apart. (a) The JIT produces no
+          # .so, so an assertion about a compiled artifact has nothing to hold.
+          # (b) The test calls cg.compile_rhs / _find_c_compiler itself, and
+          # those never consult BNGSIM_CODEGEN_JIT -- so running it here is the
+          # cc path a second time, at this leg's expense and under a name that
+          # claims otherwise. windows-tail.yml is where (b) belongs: it sets up
+          # msvc-dev-cmd precisely so the cc path runs, and #295 added them there.
+          #
+          # not-run: test_codegen_cache_key.py -- (a) keys, invalidates and re-serves a compiled .so; the JIT caches no artifact to key
+          # not-run: test_codegen_chunking.py -- (a) asserts the chunked .so is bit-identical to the flat one; neither exists here
+          # not-run: test_codegen_compile_reaping.py -- (b) reaps the cc subprocess's process group; the JIT forks no compiler to reap
+          # not-run: test_codegen_shard_compile.py -- (b) drives sharded cc -c + link directly, so the JIT selector never enters
+          # not-run: test_codegen_sens_obs_func.py -- (b) compiles and dlopens its own source via cg.compile_rhs, backend-independent
+          # not-run: test_codegen_sens_term_scale.py -- (b) same: cg.compile_rhs + ctypes.CDLL, so this leg re-runs the cc path verbatim
+          # not-run: test_codegen_structural_key.py -- (a) the warm-cache case asserts a .so is returned without generating source
+          # not-run: test_codegen_gen_scaling.py -- source *generation* scaling; identical Python before either backend is chosen
+          # not-run: test_codegen_jacobian_sparse.py -- the sparse Jacobian entry point is KLU-gated and this leg builds ENABLE_KLU=OFF
           python -m pytest -p no:cacheprovider \
             python/tests/test_mir_equivalence.py \
             python/tests/test_mir_vendoring.py \
