@@ -22,6 +22,17 @@
 #   Dor_sym / Dor_asym      homodimer catalyst, local function         2x
 #   Sub_subunit             ONE subunit pattern Ux(d!+) vs a homodimer 2x
 #   Sub_scaffold            Vx(d) vs a scaffold holding two distinct   2x
+#   Sub_trimer              ONE subunit pattern Tx(a!+) vs a homotrimer 3x
+#
+# Sub_trimer is the one shape that separates per-complex counting from
+# `embeddings / |Aut(pattern)|`, the formula GH #281 originally proposed, at a
+# factor of THREE. Read the two together: Ring_sym's pattern is the whole ring,
+# so its 3 embeddings are divided by |Aut(pattern)|=3 and both rules answer 1 --
+# which is why the ring alone cannot tell them apart. Sub_trimer's pattern is a
+# single molecule with no automorphism at all, so the formula answers 3 and BNG
+# answers 1. Sub_subunit and Sub_scaffold make the same point at 2x; this makes
+# it where a fix hardcoded to a factor of two would also be caught
+# (lanl/bngsim#298 asked for exactly this shape).
 #
 # In each pair the two rules differ only in whether the catalyst complex's
 # halves (or thirds) are the same molecule type. The catalyst is never
@@ -35,12 +46,28 @@
 # fixture that probes placement, on the substrate axis (GH #195).
 #
 # Bind_sym / Bind_asym is the guard in the other direction. Its catalyst dimer
-# IS a reaction center -- one half of it binds -- so BNG emits
-# symmetry_factor="0.5" and NFsim already divides that out. It must NOT be
-# corrected a second time. This pair is not incidental: NFsim marks the second
-# partner of a binding with an EMPTY transform, the same type finalize() uses
-# for the placeholder on an untransformed reactant, so "no real transformation"
-# read off the transformation types alone misclassifies exactly this rule.
+# IS a reaction center -- one half of it binds -- so its two halves are two
+# genuinely distinct reactions and the 2x is correct. BNG says so in the
+# generated network: this rule gets `2*kb` where the heterodimer control gets
+# `kb`. The factor lives THERE and not in symmetry_factor, which is "1" for this
+# rule as it is for every other rule in this file -- so there is nothing for
+# NFsim to divide out, and per-molecule counting is what reproduces the 2x.
+# (An earlier version of this note said BNG emits symmetry_factor="0.5" here and
+# that NFsim divides it out. Both halves were wrong; the XML beside this file
+# has always read "1". The conclusion the note drew is unaffected -- this pair
+# must not be corrected a second time -- but do not reason from the mechanism it
+# named.) This pair is not incidental: NFsim marks the second partner of a
+# binding with an EMPTY transform, the same type finalize() uses for the
+# placeholder on an untransformed reactant, so "no real transformation" read off
+# the transformation types alone misclassifies exactly this rule.
+#
+# Bind_sym is also the case that bounds how the rule may be STATED. It is a
+# single distinct (reactant species tuple -> product species tuple) -- both
+# embeddings give the identical product, because the dimer is symmetric -- and
+# BNG still emits 2*kb. So "BNG deduplicates identical reactions during network
+# expansion" over-collapses: the discriminator is not whether the products
+# coincide, it is whether the rule TRANSFORMS the pattern. That is what
+# TransformationSet::isPureContextReactant() keys on (lanl/bngsim#298).
 
 begin model
 begin parameters
@@ -72,6 +99,7 @@ begin molecule types
   MmA(s~0~1)
   SubU(s~0~1)
   SubV(s~0~1)
+  SubT(s~0~1)
   BndS(b)
   BndA(b)
   # catalysts, one distinct set per rule so the rules cannot cross-talk
@@ -97,6 +125,7 @@ begin molecule types
   Ux(d)
   Vx(d,t)
   Vs(p,q)
+  Tx(a,b)
 end molecule types
 
 begin seed species
@@ -113,6 +142,7 @@ begin seed species
   MmA(s~0)     X0
   SubU(s~0)    X0
   SubV(s~0)    X0
+  SubT(s~0)    X0
   BndS(b)      B0
   BndA(b)      B0
 
@@ -132,6 +162,9 @@ begin seed species
   Ux(d!1).Ux(d!1)                     E0
   # two Vx per complex at DISTINGUISHABLE scaffold positions -- no symmetry at all
   Vx(d,t!1).Vs(p!1,q!2).Vx(d,t!2)     E0
+  # THREE Tx per complex against a single-molecule pattern: embeddings=3,
+  # |Aut(pattern)|=1, so this is where the two candidate rules differ by 3x
+  Tx(a!1,b!3).Tx(a!2,b!1).Tx(a!3,b!2) E0
 end seed species
 
 begin observables
@@ -152,6 +185,7 @@ begin observables
   Molecules Bind_asym  BndA(b)
   Molecules Sub_subunit   SubU(s~0)
   Molecules Sub_scaffold  SubV(s~0)
+  Molecules Sub_trimer    SubT(s~0)
 end observables
 
 begin functions
@@ -175,6 +209,7 @@ begin reaction rules
   # complex match, so a fix keyed on the pattern's own symmetry misses both.
   R_subunit:   SubU(s~0)  + Ux(d!+)                             -> SubU(s~1)  + Ux(d!+)                             kcat
   R_scaffold:  SubV(s~0)  + Vx(d)                               -> SubV(s~1)  + Vx(d)                               kcat
+  R_trimer:    SubT(s~0)  + Tx(a!+)                             -> SubT(s~1)  + Tx(a!+)                             kcat
   R_bind_sym:  BndS(b)    + Hz(d!1,c).Hz(d!1,c)                 -> BndS(b!2).Hz(d!1,c!2).Hz(d!1,c)                  kb
   R_bind_asym: BndA(b)    + Kz(d!1,c).Lz(d!1,c)                 -> BndA(b!2).Kz(d!1,c!2).Lz(d!1,c)                  kb
 end reaction rules
