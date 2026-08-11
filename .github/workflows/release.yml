@@ -89,3 +89,36 @@ jobs:
           # backfilling a newly-supported platform's wheels into an existing release).
           skip-existing: true
           repository-url: ${{ (github.event_name == 'push' || inputs.target == 'pypi') && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+
+  github-release:
+    # The GitHub Release is the human-readable half of a publish, and until now it
+    # was the hand-made half: 0.11.35 through 0.12.2 shipped to PyPI while the
+    # Releases page — and the repo sidebar widget — sat frozen at 0.11.34.
+    #
+    # Gated on a tag push, so a `workflow_dispatch` TestPyPI rehearsal never
+    # creates a public Release. `needs: publish` so the Release only appears for a
+    # version that actually reached PyPI.
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create/edit the Release object
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the release notes from CHANGELOG.md
+        run: python3 ci/release_notes.py "${GITHUB_REF_NAME#v}" > release-notes.md
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Idempotent for the same reason the publish step is: a re-run of a
+          # release must converge, not fail on what it already did.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists — refreshing its notes."
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "bngsim ${GITHUB_REF_NAME#v}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi
