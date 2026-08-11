@@ -1,0 +1,265 @@
+name: windows-klu
+
+# Windows sparse/KLU guard (issue #296). Every other Windows leg builds
+# -DBNGSIM_ENABLE_KLU=OFF on purpose, to skip the from-source SuiteSparse build
+# that would otherwise dominate the job, so {Windows} x {KLU on} x {runs pytest}
+# was empty and had been since the sparse Jacobian was added. This leg is that
+# intersection, and nothing else: SuiteSparse from source, ENABLE_KLU=ON, and
+# the two test files that are 100% KLU-gated.
+#
+# Why it is worth a job of its own. The sparse Jacobian is not arithmetic that
+# happens to sit behind a build flag; it is a compiled-artifact path. Codegen
+# emits `bngsim_codegen_jac_sparse`, the C++ side resolves it BY NAME out of the
+# built shared library (cvode_simulator.cpp for run(), steady_state.cpp for the
+# steady-state march), and the CSC index arrays it fills go straight into KLU's
+# numeric factorization. Windows is the platform where that resolve differs --
+# __declspec(dllexport) + GetProcAddress rather than default-visible symbols +
+# dlsym -- which is the exact class of defect that made windows-tail.yml exist
+# (issues #5/#6, and again for the SSA propensity export). So the one codegen
+# entry point with no Windows execution anywhere was the one whose failure mode
+# is Windows-specific.
+#
+# The three candidates in #296 and why this is the one:
+#
+#   * Extending wheels.yml's cibuildwheel test-command is cheaper -- a Windows
+#     wheel with KLU linked and delvewheel-vendored DLLs is already built on
+#     every wheels run, and its test-command only asserts `bngsim.HAS_KLU`. But
+#     wheels.yml has no pull_request trigger and its paths filter does not
+#     include python/tests/**, so it would catch a regression after the merge
+#     that caused it, and never when the test itself changed. It also runs four
+#     times per platform (one per CPython), which is three redundant copies of a
+#     guard whose whole content is platform-specific, not interpreter-specific.
+#     Worth doing on its own merits as a wheel-artifact check; it is not this.
+#   * Turning KLU on for windows-tail.yml trades coverage rather than adding it.
+#     That leg being KLU-OFF is what makes it the only job anywhere that runs
+#     test_force_sparse_linear_solver.py's no-KLU half (issue #29) -- the
+#     assertion that force_sparse_linear_solver really is the documented no-op in
+#     a build without SuiteSparse. Flipping the flag would delete that.
+#
+# SuiteSparse is built explicitly here because it cannot be inferred: the
+# CMakeLists KLU auto-build (_bngsim_autobuild_klu, GH #209) is gated
+# `if(WIN32) ... not supported`, so ENABLE_KLU=ON with no prefix on this runner
+# is a hard REQUIRE_KLU configure failure, not a slow success. ci/
+# build_suitesparse.ps1 with -Prefix C:/suitesparse is the same invocation
+# pyproject.toml's [tool.cibuildwheel.windows] before-all uses, deliberately:
+# one recipe, so the KLU this leg tests is the KLU the wheel ships.
+#
+# That script builds SHARED libraries (KLU/BTF are LGPL-2.1+; the wheel bundles
+# the DLLs rather than static-linking them), and the wheel gets them relocated
+# next to the extension by delvewheel. A `pip install .` runs no delvewheel and
+# CMakeLists only bundles KLU on the auto-build path, i.e. never here -- so the
+# DLLs are copied beside the installed .pyd by hand below. Python 3.8+ does not
+# search PATH for an extension module's dependencies; the module's own directory
+# is what LOAD_WITH_ALTERED_SEARCH_PATH covers, which is the same placement
+# delvewheel arrives at.
+#
+# Cost, so nobody trims it on a guess: 13m14s end to end, of which SuiteSparse
+# is 45 s and pytest 56 s -- the other ~11 minutes are the bngsim build, the
+# same build every Windows leg pays. For scale: windows-nfsim ~12 min,
+# windows-tail ~15 min, wheels ~51 min.
+#
+# Worth recording because it contradicts something the sibling legs say: their
+# headers turn KLU off to skip a from-source SuiteSparse build "that would
+# dominate the job", and measured here it is 45 s of 13 minutes. That is not
+# the reason to leave them alone -- the reason is the coverage trade below --
+# but do not repeat the cost claim, it is not true of the current script (#178
+# took the OpenBLAS fetch out of it).
+#
+# Two false-green guards, because every test this leg runs is behind a KLU gate
+# and would therefore SKIP rather than fail if the build quietly lost KLU:
+# HAS_KLU is asserted right after the install, and the pytest summary must show
+# zero skips. The second is the #291 rule for a small single-purpose cluster --
+# a pass floor with the usual few-percent slack cannot see a 7-test file stop
+# being collected, and here every reachable skip reason is a false green.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra pytest args (e.g. -x, or -k some_pattern to narrow the cluster)"
+        required: false
+        default: ""
+      python_version:
+        description: "Python version to build/test against"
+        required: false
+        default: "3.12"
+  push:
+    branches: [main]
+    paths: &klu_paths
+      # The emit side: _codegen.py writes bngsim_codegen_jac_sparse, _jacobian.py
+      # is in _CODEGEN_SOURCE_MODULES beside it (it decides what gets derived),
+      # and _simulator.py is the gate that hands the model to codegen at all.
+      - "python/bngsim/_codegen.py"
+      - "python/bngsim/_jacobian.py"
+      - "python/bngsim/_simulator.py"
+      # The resolve side: both call sites that pull the symbol out of the built
+      # DLL by name, the interpreted assembly the compiled emit mirrors, and the
+      # header the two halves agree on.
+      - "src/cvode_simulator.cpp"
+      - "src/steady_state.cpp"
+      - "src/model.cpp"
+      - "include/bngsim/codegen_abi.hpp"
+      - "include/bngsim/platform_compat.hpp"
+      # The build side: KLU discovery/link, and this leg's SuiteSparse.
+      - "CMakeLists.txt"
+      - "ci/build_suitesparse.ps1"
+      - "python/tests/test_codegen_jacobian_sparse.py"
+      - "python/tests/test_steady_state_linear_solver.py"
+      - ".github/workflows/windows-klu.yml"
+  pull_request:
+    paths: *klu_paths
+
+concurrency:
+  group: windows-klu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  klu-tests:
+    name: sparse/KLU tests · windows-latest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.12' }}
+
+      # Before the MSVC developer environment, matching the order cibuildwheel
+      # uses (before-all runs outside any vcvars shell): the script drives the
+      # multi-config Visual Studio generator and locates MSVC itself.
+      - name: Build SuiteSparse/KLU from source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          powershell -ExecutionPolicy Bypass -File ci/build_suitesparse.ps1 -Prefix C:/suitesparse
+
+      # Put cl.exe on PATH for the runtime codegen compile: the sparse Jacobian
+      # tests compile generated C and ctypes-load the result, and without a
+      # compiler here they would report their KLU-gate skip reason rather than a
+      # missing-compiler one. This also makes the compiler MSVC, which is what
+      # the wheel is built with; mir.yml's Windows leg already covers the MinGW
+      # gcc that is on PATH by default.
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build & install bngsim (KLU on)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --upgrade pip
+          # REQUIRE_KLU=ON is the point of the leg: a KLU-off build here does not
+          # degrade to a smaller test run, it invalidates the whole job, so fail
+          # at configure with the CMake fix-it message rather than at pytest with
+          # twenty skips.
+          SUITESPARSE_ROOT=C:/suitesparse python -m pip install -v \
+            --config-settings=cmake.define.BNGSIM_ENABLE_KLU=ON \
+            --config-settings=cmake.define.BNGSIM_REQUIRE_KLU=ON \
+            --config-settings=cmake.define.BNGSIM_BUILD_TESTS=OFF \
+            --config-settings=cmake.define.CMAKE_PREFIX_PATH=C:/suitesparse \
+            .
+          # pytest only: numpy, sympy and python-libsbml are base dependencies of
+          # bngsim, and both files in the cluster reach for nothing else. The
+          # sympy one is load-bearing -- test_codegen_jacobian_sparse.py guards it
+          # with a MODULE-level importorskip, so an environment without it would
+          # take all 13 tests out of collection and report a single skip (#291).
+          python -m pip install "pytest>=8.0"
+
+      - name: Bundle the KLU DLLs beside the extension
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # See the header: shared SuiteSparse + no delvewheel on a source
+          # install, and PATH is not searched for an extension's dependencies.
+          # find_spec rather than `import bngsim`, because the import is exactly
+          # what does not work yet -- locating a package does not execute its
+          # __init__, which is where the extension (and therefore the missing
+          # DLL) is loaded. as_posix() because this runs under Git Bash, whose
+          # coreutils are not reliable with the backslashes sysconfig hands back.
+          pkg="$(python -c 'import importlib.util, pathlib; print(pathlib.PurePath(importlib.util.find_spec("bngsim").submodule_search_locations[0]).as_posix())')"
+          cp -v /c/suitesparse/bin/*.dll "$pkg/"
+          ls -l "$pkg"
+
+      - name: Show build / capability / compiler info
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -c "import platform, sys; print(platform.platform()); print(sys.version)"
+          python -c "import bngsim; print('bngsim', bngsim.__version__); print('HAS_KLU', bngsim.HAS_KLU)"
+          # Every test in this cluster is KLU-gated, so a build that stopped
+          # linking SuiteSparse would skip all of them and still report green.
+          # Same guard python-tests.yml puts on its default build.
+          python -c "import bngsim, sys; sys.exit(0 if bngsim.HAS_KLU else 'HAS_KLU is False - this build did not link SuiteSparse/KLU')"
+          # 13 of the 20 tests are behind `needs_cc` as well, and the sparse
+          # file's skip reason names KLU for both conditions -- so a missing
+          # compiler would be reported as a missing solver. Fail on it here,
+          # where the message can say which.
+          python -c "from bngsim import _codegen; print('C compiler:', _codegen._find_c_compiler())"
+          python -c "import shutil, sys; sys.exit(0 if (shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')) else 'no cc/clang/gcc on PATH - the sparse cluster gates on this and would report it as a KLU skip')"
+
+      - name: Run sparse/KLU cluster
+        id: pytest
+        shell: bash
+        env:
+          # The other Windows leg under the audit (issue #179). Nothing in this
+          # cluster is expected to skip at all, so this is not a budget: it is
+          # what turns a skip that slips past into a named reason in the log
+          # instead of a bare count in the guard below.
+          BNGSIM_SKIP_AUDIT: strict
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider \
+            python/tests/test_codegen_jacobian_sparse.py \
+            python/tests/test_steady_state_linear_solver.py \
+            -rA --tb=long ${{ inputs.pytest_args }} \
+            2>&1 | tee klu-windows.log
+
+      - name: Guard against a false green
+        if: ${{ !inputs.pytest_args }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Measured on windows-latest when the leg was added: 20 passed /
+          # 0 skipped in 55.75 s (13 sparse-Jacobian + 7 steady-state routing),
+          # the same 20/0 a KLU-on macOS build reports. The floor is close
+          # because the cluster is small: losing either file costs 7 or 13, and
+          # the usual few-percent slack would not see that. It only rises as
+          # tests are added.
+          PASS_FLOOR=18
+
+          summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' klu-windows.log | tail -1 || true)"
+          if [ -z "$summary" ]; then
+            echo "::error::No pytest summary line — the cluster did not run to completion."
+            exit 1
+          fi
+          echo "summary: $summary"
+
+          # "3 xpassed" cannot match "[0-9]+ passed", so the categories stay disjoint.
+          count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
+          passed="$(count passed)"
+          skipped="$(count skipped)"
+
+          echo "passed $passed (floor $PASS_FLOOR); skipped $skipped (must be 0)."
+          if [ "$passed" -lt "$PASS_FLOOR" ]; then
+            echo "::error::Only $passed tests passed, expected >= $PASS_FLOOR — a file stopped being collected rather than failing."
+            exit 1
+          fi
+          # Every skip reason reachable in this cluster is a false green: the KLU
+          # gate means the build lost SuiteSparse, the cc gate means the runner
+          # lost its compiler, and the corpus gate means benchmarks/models/net/ode
+          # went missing from the checkout. Each one empties the job of content
+          # while leaving it green, which is the state issue #296 describes.
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped test(s) skipped. On this leg a skip is a false green — see the comment above this check."
+            exit 1
+          fi
+
+      # Conditioned on the pytest step having been reached rather than on
+      # always(): if the build fails there is no log, and if-no-files-found=error
+      # would report a second, misleading failure on top of the real one.
+      - name: Upload pytest log
+        if: always() && steps.pytest.conclusion != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: klu-windows-log-py${{ inputs.python_version || '3.12' }}
+          path: klu-windows.log
+          if-no-files-found: error
