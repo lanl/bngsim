@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 _PC = Path(__file__).resolve().parent.parent  # parity_checks/
-for p in (_PC, _PC / "rr_parity", _PC / "tests"):
+for p in (_PC, _PC / "rr_parity", _PC / "amici_parity", _PC / "tests"):
     s = str(p)
     if s not in sys.path:
         sys.path.insert(0, s)
