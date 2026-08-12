@@ -554,8 +554,8 @@ def _ext_suffix() -> str:
     return str(ext_suffix)
 
 
-#: The values in the generated stub that describe *this particular build* rather
-#: than the API, and the placeholder each is rewritten to. CMake stamps
+#: The values in the generated stub that describe *the build that produced it*
+#: rather than the API, and the placeholder each is rewritten to. CMake stamps
 #: `__build_commit__` with the current git commit plus a `+dirty` suffix when the
 #: tree has uncommitted changes, and `__pybind11_version__` with whichever
 #: pybind11 that configure resolved (GH #288); pybind11-stubgen faithfully copies
@@ -568,13 +568,25 @@ def _ext_suffix() -> str:
 #: is the very condition #288 exists to make visible — visible in the *binary*,
 #: not as a committed diff that flips back and forth.
 #:
+#: `__version__` is stamped from `BNGSIM_VERSION_STR`, so it is not
+#: machine-specific — it is *release*-specific, which goes stale on a cadence all
+#: its own. A release bumps `pyproject.toml` and nothing rebuilds, so the
+#: committed stub keeps describing the previous release until the next person to
+#: run this script finds a one-line diff they did not make: 0.13.0 shipped with
+#: the stub still reading `'0.12.2'`. Since #31 `pyproject.toml` is the single
+#: source of truth for the version and every other anchor derives from it; a
+#: snapshot in a generated file is not a derivation, it is a fifth anchor that
+#: can only ever be right by coincidence.
+#:
 #: "unknown" is CMake's own default when the underlying fact is unavailable
 #: (CMakeLists.txt), which is precisely the stub's situation: a type stub cannot
 #: know what any given build came from. The value in a `.pyi` is documentation —
 #: mypy checks the *type* — so nothing downstream reads it, and
 #: `test_build_provenance.py` asserts on the runtime attributes of the compiled
-#: module, never on these lines.
-_STUB_PER_BUILD_STAMPS = ("__build_commit__", "__pybind11_version__")
+#: module, never on these lines. `test_version_consistency.py` still holds the
+#: *runtime* `_bngsim_core.__version__` to `pyproject.toml`, which is where that
+#: invariant belongs.
+_STUB_PER_BUILD_STAMPS = ("__build_commit__", "__pybind11_version__", "__version__")
 _STUB_STAMP_PLACEHOLDER = "unknown"
 _STUB_STAMP_RE = re.compile(
     rf"^((?:{'|'.join(_STUB_PER_BUILD_STAMPS)}): str = )'[^']*'", re.MULTILINE
@@ -582,11 +594,11 @@ _STUB_STAMP_RE = re.compile(
 
 
 def _normalize_stub_build_stamps(stub_text: str) -> str:
-    """Replace the generated per-build stamps with a stable placeholder.
+    """Replace the generated build-describing stamps with a stable placeholder.
 
     Keeps the committed stub reproducible across machines, commits, dirty working
-    trees, and build environments. A no-op for any stamp the module did not
-    report at all.
+    trees, build environments, and releases. A no-op for any stamp the module did
+    not report at all.
     """
     return _STUB_STAMP_RE.sub(
         rf"\1'{_STUB_STAMP_PLACEHOLDER}'",
@@ -608,8 +620,9 @@ def _regenerate_stub(source_dir: Path, *, env: dict[str, str] | None) -> None:
     pybind11-stubgen ships in the ``dev`` extra, but a plain rebuild without it
     warns and skips rather than failing (the binary is already built by now).
 
-    The generated per-build stamps (``__build_commit__``,
-    ``__pybind11_version__``) are normalized away before the stub lands — see
+    The generated stamps that describe the build rather than the API
+    (``__build_commit__``, ``__pybind11_version__``, ``__version__``) are
+    normalized away before the stub lands — see
     :func:`_normalize_stub_build_stamps`.
     """
     if os.environ.get("BNGSIM_SKIP_STUBGEN", "") not in ("", "0"):

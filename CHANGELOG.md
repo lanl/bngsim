@@ -14,6 +14,28 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The committed type stub no longer snapshots the version it was built from.**
+  `python/bngsim/_bngsim_core.pyi` is machine-written by `pybind11_stubgen`,
+  which copies whatever the freshly built module reports — including the
+  `__version__` CMake stamps from `pyproject.toml`. Committed as a literal, that
+  line is a fifth version anchor that nothing derives and nothing updates: a
+  release bumps `pyproject.toml`, no one rebuilds, and the stub goes on naming
+  the previous release. 0.13.0 shipped with the stub still reading `'0.12.2'`,
+  and the drift surfaced only as a phantom one-line diff in the working tree of
+  the next person to run `scripts/rebuild_editable.py` — noise from the build
+  script, not a change anyone made.
+
+  `_normalize_stub_build_stamps` now pins `__version__` to `'unknown'` the same
+  way it already pins `__build_commit__` and `__pybind11_version__` (PR #70, GH
+  #288), so a rebuild is version-neutral and no release step has to remember the
+  stub. Nothing reads the value — mypy checks the declared *type*, and a stale
+  version is worse documentation than none. The invariant that matters is
+  unchanged and still enforced where it can be true: `test_version_consistency`
+  holds the *runtime* `_bngsim_core.__version__` to `pyproject.toml`, and a new
+  test there fails if a version literal ever lands back in the committed stub.
+
 ## [0.13.0] - 2026-08-11
 
 ### Added

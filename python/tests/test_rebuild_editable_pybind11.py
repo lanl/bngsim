@@ -248,13 +248,21 @@ def test_real_pybind11_resolves_to_a_usable_cmake_dir() -> None:
 
 
 def test_stub_normalization_covers_every_per_build_stamp() -> None:
-    """pybind11-stubgen copies build facts into a committed file; both get pinned.
+    """pybind11-stubgen copies build facts into a committed file; all three get pinned.
 
     ``__pybind11_version__`` (GH #288) joined ``__build_commit__`` as a value that
     differs per build environment, so it is the same spurious-diff hazard PR #70
     merged once already — and here the differing value would be *the* symptom
     #288 exists to surface, flip-flopping in the stub instead of being read off
     the binary.
+
+    ``__version__`` is the same hazard on a slower clock. It does not differ
+    between machines, it differs between *releases*: the bump lands in
+    ``pyproject.toml``, nothing rebuilds, and the committed stub keeps naming the
+    previous release until someone's unrelated rebuild surfaces the diff — which
+    is how 0.13.0 shipped a stub reading ``'0.12.2'``. What must match
+    ``pyproject.toml`` is the runtime attribute of the compiled module, and
+    ``test_version_consistency.py`` is where that is asserted.
     """
     mod = _load_rebuild_editable()
     generated = "\n".join(
@@ -270,14 +278,14 @@ def test_stub_normalization_covers_every_per_build_stamp() -> None:
 
     assert "__build_commit__: str = 'unknown'" in normalized
     assert "__pybind11_version__: str = 'unknown'" in normalized
-    # Only the per-build stamps: the package version is an API fact, not a build one.
-    assert "__version__: str = '0.12.2'" in normalized
+    assert "__version__: str = 'unknown'" in normalized
+    # Only the stamps: an actual API declaration is left alone.
     assert "HAS_KLU: bool = True" in normalized
 
 
 def test_stub_normalization_is_a_noop_when_a_stamp_is_absent() -> None:
     mod = _load_rebuild_editable()
-    generated = "__version__: str = '0.12.2'\n"
+    generated = "HAS_KLU: bool = True\n"
 
     assert mod._normalize_stub_build_stamps(generated) == generated
 

@@ -121,6 +121,43 @@ def test_cmakelists_has_no_version_literal(src_root: Path) -> None:
     )
 
 
+def test_committed_stub_has_no_version_literal(src_root: Path) -> None:
+    """The committed type stub must not snapshot the version it was built from.
+
+    ``_bngsim_core.pyi`` is machine-written by ``pybind11_stubgen``, which copies
+    whatever the just-built module reports — including the ``__version__`` CMake
+    stamped from ``pyproject.toml``. Committed as a literal it becomes a fifth
+    anchor that nothing derives and nothing updates: a release bumps
+    ``pyproject.toml``, no one rebuilds, and the stub keeps describing the
+    previous release. 0.13.0 shipped with the stub still reading ``'0.12.2'``,
+    and the staleness surfaced only as a phantom one-line diff in the working
+    tree of the next person to run ``scripts/rebuild_editable.py``.
+
+    So ``_normalize_stub_build_stamps`` pins it to ``'unknown'`` alongside the
+    per-build provenance stamps, and this is the check that notices if the
+    normalization is dropped or a regenerated stub is committed around it. The
+    declared *type* is what mypy reads; the value is documentation, and a stale
+    version is worse documentation than no version. The live invariant lives in
+    ``test_c_extension_version_matches_pyproject`` above, on the runtime
+    attribute of the compiled module, where it can be true.
+    """
+    stub = src_root / "python" / "bngsim" / "_bngsim_core.pyi"
+    if not stub.is_file():
+        pytest.skip(f"no committed stub at {stub}")
+    lines = [
+        line
+        for line in stub.read_text(encoding="utf-8").splitlines()
+        if line.startswith("__version__: str = ")
+    ]
+    assert len(lines) == 1, f"expected exactly one __version__ line in {stub}, got {lines}"
+    assert lines[0] == "__version__: str = 'unknown'", (
+        f"committed stub records a build's version ({lines[0]!r}). It goes stale at "
+        "the next release and dirties every rebuild; pyproject.toml is the single "
+        "source of truth (issue #31). Re-run scripts/rebuild_editable.py, or "
+        "normalize the line by hand."
+    )
+
+
 def test_pyproject_is_the_only_anchor(src_root: Path, pyproject_version: str) -> None:
     """End-to-end: the four derived anchors must not embed the literal version.
 
