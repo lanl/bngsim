@@ -4029,14 +4029,85 @@ def _build_model_from_sbml_doc(doc):
     # with §0's folded number and nothing re-evaluates a derived parameter until
     # something is written.
     #
-    # Liftable means every symbol the expression reads is already declared when
-    # this loop reaches the target, which is what the one-pass derived-parameter
-    # re-evaluation needs (declaration order must be dependency order): the
-    # compartment sizes from §1, and the parameters earlier in this loop. An
-    # expression reading a species amount, a reaction rate, a stoichiometry id or
-    # `time` is therefore not liftable — those are not parameters at all.
+    # (#313) The lift is not about volumes. §0 folds EVERY initialAssignment to a
+    # number, so any parameter that reaches the model only by feeding one is a
+    # dangling constant: `set_param` on it moves nothing, and — the loud half —
+    # its forward sensitivity is identically zero at every species and time,
+    # because the symbol is absent from the RHS the chain rule differentiates.
+    # BIOMD0000000569 is the case that proves it: a chain
+    # ``BSk0 = BSk1*BSc^p``, ``BSk1 = BSk2*BSc^p``, … puts the `BSk*` constants in
+    # the rate laws and `BSc` nowhere else, so a 50% write to `BSc` left all four
+    # derived constants where they were and `dx/dBSc` came back a confident zero
+    # against AMICI's nonzero column. 113 of the 1324 vendored BioModels (8.5%,
+    # 678 parameters) have at least one such parameter; they are the ordinary
+    # COPASI spelling for a derived rate constant. So every parameter
+    # initialAssignment that CAN be lifted is, and only the residue is refused.
+    #
+    # Liftable means every symbol the expression reads is itself a parameter of
+    # the built model: the compartment sizes from §1 and the parameters this loop
+    # declares. An expression reading a species amount, a reaction rate, a
+    # stoichiometry id or `time` is not liftable — those are not parameters at
+    # all — nor is one whose target a rate rule or an event promotes to a species.
+    #
+    # The declaration order is what makes it work. Derived parameters are
+    # re-evaluated in one pass over the parameter list (`NetworkModel::set_param`
+    # and the four sensitivity/steady-state loops that mirror it), so declaration
+    # order must be dependency order — and SBML's is not: 569 declares `BSk0`
+    # before the `BSk1` it reads, so lifting in place would leave `BSk0` reading a
+    # stale `BSk1` for one write. The lifted targets are therefore held back and
+    # declared after the plain parameters, topologically sorted; a reference cycle
+    # (illegal SBML) simply drops out of the lift and stays folded.
+    _param_pool = set(comp_param_idx)
+    _param_decl_index: dict[str, int] = {}
+    for i in range(sbml_model.getNumParameters()):
+        _pid = sbml_model.getParameter(i).getId()
+        if _pid in rate_rule_targets or _pid in event_promoted_params:
+            continue
+        _param_decl_index[_pid] = i
+        _param_pool.add(_pid)
+
+    # Candidates: a parameter initialAssignment over parameters alone. An
+    # assignment rule recomputes its target every step, so the IA fold is only a
+    # t=0 value and the rule — not this expression — is what a write has to
+    # survive; those are left to §4 and not refused over, since `ia_values` for
+    # an AR target is overwritten by the rule anyway.
+    _lift_expr: dict[str, str] = {}
+    _lift_deps: dict[str, set[str]] = {}
+    for _pid, _m in _ia_math.items():
+        if _pid in comp_param_idx or _pid not in _param_decl_index or _pid in _ar_targets:
+            continue
+        _names = _ast_name_set(_m)
+        if not _names or not _names <= _param_pool or _ast_references_time(_m):
+            continue
+        try:
+            _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(_m, func_defs)
+        except Exception as e:  # noqa: BLE001 - fall through to the refusal
+            logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
+            continue
+        _lift_deps[_pid] = _names
+
+    # Kahn, with SBML declaration order as the tie-break so the emitted parameter
+    # list is deterministic. Whatever is still pending when nothing is ready sits
+    # in a cycle and cannot be lifted.
+    _lift_order: list[str] = []
+    _pending = dict(_lift_deps)
+    while _pending:
+        _ready = sorted(
+            (k for k, d in _pending.items() if not (d & _pending.keys())),
+            key=lambda k: _param_decl_index[k],
+        )
+        if not _ready:
+            for k in _pending:
+                logger.debug("initialAssignment for %s not lifted: reference cycle", k)
+                _lift_expr.pop(k, None)
+            break
+        _lift_order.extend(_ready)
+        for k in _ready:
+            del _pending[k]
+
     _declared_param_ids = set(comp_param_idx)
     lifted_ia_param_expr: dict[str, str] = {}
+    _deferred_lift_val: dict[str, float] = {}
     for i in range(sbml_model.getNumParameters()):
         p = sbml_model.getParameter(i)
         pid = p.getId()
@@ -4049,32 +4120,43 @@ def _build_model_from_sbml_doc(doc):
         if pid in ia_values:
             val = ia_values[pid]
         _vdeps = volume_dependent_ia.get(pid)
-        _expr = None
-        if _vdeps:
-            _m = _ia_math[pid]
-            _names = _ast_name_set(_m)
-            # An assignment rule recomputes the target every step, so the IA fold
-            # is only its t=0 value and the rule — not this expression — is what
-            # a write has to survive. Leave those to §4 and do not refuse over
-            # them: `ia_values` for an AR target is overwritten by the rule.
-            _liftable = (
-                pid not in _ar_targets
-                and _names <= _declared_param_ids
-                and not _ast_references_time(_m)
-            )
-            if _liftable:
-                try:
-                    _expr = _ast_to_exprtk_with_funcdefs(_m, func_defs)
-                except Exception as e:  # noqa: BLE001 - fall through to the refusal
-                    logger.debug("initialAssignment for %s not lifted: %s", pid, e)
-            if _expr is None and pid not in _ar_targets:
-                compartment_write_refused.update(_vdeps)
-        if _expr is None:
-            builder.add_parameter(_safe_name(pid), val)
+        if pid in _lift_expr:
+            _deferred_lift_val[pid] = val
         else:
-            builder.add_parameter(_safe_name(pid), val, expression=_expr, is_expression=True)
-            lifted_ia_param_expr[pid] = _expr
+            if _vdeps and pid not in _ar_targets:
+                compartment_write_refused.update(_vdeps)
+            builder.add_parameter(_safe_name(pid), val)
         _declared_param_ids.add(pid)
+
+    for pid in _lift_order:
+        _expr = _lift_expr[pid]
+        builder.add_parameter(
+            _safe_name(pid), _deferred_lift_val[pid], expression=_expr, is_expression=True
+        )
+        lifted_ia_param_expr[pid] = _expr
+
+    # The residue: a parameter initialAssignment §0 folded that the lift above
+    # could not put back on its symbols. Anything the fold read that a caller can
+    # still write is frozen behind it — `set_param` takes and moves nothing, and
+    # the sensitivity column is an identical zero — so say so once, by name,
+    # rather than let both failures stay silent (#313).
+    _frozen_upstream: set[str] = set()
+    for _pid, _m in _ia_math.items():
+        if _pid in _lift_expr or _pid in comp_param_idx or _pid not in _param_decl_index:
+            continue
+        if _pid in _ar_targets:
+            continue  # §4's rule recomputes it; the fold is not what a write faces
+        # Parameters only: a compartment size behind an unliftable fold is #170's
+        # business, and it is refused by name rather than reported here.
+        _frozen_upstream |= _ast_name_set(_m) & _param_decl_index.keys()
+    if _frozen_upstream:
+        logger.warning(
+            "initialAssignment(s) that bngsim could not keep symbolic read the "
+            "parameter(s) %s. Their contribution through that initialAssignment is "
+            "frozen at its load-time value: set_param on them will not move the "
+            "assigned symbol, and their forward sensitivity carries no term for it.",
+            ", ".join(sorted(_frozen_upstream)),
+        )
 
     # ── 3. Species ────────────────────────────────────────────────────
     # Collect assignment rule targets for step 4. linear_assignment_rules
