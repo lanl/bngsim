@@ -16,6 +16,65 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A parameter that reaches the model only through an `<initialAssignment>` is
+  no longer frozen (issue #313).** bngsim evaluates every `<initialAssignment>`
+  once at load and hands the builder a number, so a parameter whose only route
+  into the model is that expression became a dangling constant that nothing
+  depended on. `set_param` on it succeeded and changed nothing, and its forward
+  sensitivity was **identically zero** at every species and every time — not
+  merely inaccurate, since the symbol was absent from the RHS the chain rule
+  differentiates.
+
+  `BIOMD0000000569` is the case that found it, via the new `amici_parity`
+  sensitivity job. The document defines a chain — `BSk0 = BSk1*BSc^p`,
+  `BSk1 = BSk2*BSc^p`, … — puts the `BSk*` constants in the rate laws, and
+  mentions `BSc` nowhere else, so a 50% write to `BSc` moved none of the four
+  derived constants. It is not one document's quirk: 113 of the 1324 vendored
+  BioModels (8.5%, 678 parameters) have at least one such parameter, because it
+  is the ordinary COPASI spelling for a derived rate constant.
+
+  The fix is issue #170's lift, applied to every parameter `<initialAssignment>`
+  rather than only the volume-dependent ones: the target becomes a *derived*
+  parameter, so #43's chain rule re-derives it on a write and differentiates
+  through it for the sensitivity. Two consequences are worth naming. Lifted
+  targets are emitted in **dependency order** rather than document order —
+  derived parameters are re-evaluated in one pass over the parameter list, and
+  569 declares `BSk0` before the `BSk1` it reads, so lifting in place would leave
+  `BSk0` reading a stale `BSk1` for one write. And a lifted target drops out of
+  `primary_param_names`, exactly as `_rateLaw_<rid>` does: the document defines
+  its value, so it is not a knob a caller can hold.
+
+  An `<initialAssignment>` over an **assignmentRule target** is refused rather
+  than lifted, on both sides of the assignment. The rule already disqualified
+  such a parameter as a lift *target* — the fold is only its t=0 value and the
+  rule, not the expression, is what a write has to survive — and the same fact
+  disqualifies it as a lift *dependency*: its slot is function-backed, rewritten
+  from the rule before every derivative evaluation, so a lifted expression
+  reading it would re-derive from whatever that slot held at write time. After a
+  run that is the rule's value at the last integrated point. `BIOMD0000000570`
+  is the shape (`ModelValue_60 = O2c_bar`): lifted, it went 5.68 → 7.87 on the
+  next write after a run, including the identity write
+  `set_params(dict(zip(param_names, vec)))` round-trips through. 22 corpus
+  models carry it. The cost is three compartment sizes — `compartment_2` and
+  `compartment_3` of 570, `artery` of `BIOMD0000000627` — whose folds can no
+  longer be put back on the size and which are therefore refused by name, which
+  is #170's contract for exactly this residue.
+
+  Nothing moves at the nominal point — the builder is still seeded with the
+  folded number, and a derived parameter is not re-evaluated until a write
+  arrives. Across the 1323-model corpus (101 models, 598 parameters lifted),
+  load-time parameter values, species initial conditions and trajectories are
+  bit-identical, with one exception: five parameters of `BIOMD0000000833` move by
+  one ulp, because a lifted expression is evaluated by ExprTk rather than by the
+  loader's numeric folder and the two associate `0.1*150*u/0.9` differently. That
+  is 7.6e-6 relative at the end of its trajectory — under the parity suite's 1e-4
+  gate, and the only trajectory in the corpus that moves at all.
+
+  What still cannot be lifted — an `<initialAssignment>` reading a species, a
+  reaction rate, `time`, or a symbol some rule or event promotes to a state — is
+  no longer silent about it. The loader warns once, naming the parameters whose
+  contribution through that assignment stays frozen at its load-time value.
+
 - **Forward sensitivity w.r.t. a power/Hill exponent no longer NaNs when the
   base is zero (issue #310).** Differentiating `base^n` with respect to the
   exponent gives `base^n · ln(base)`. At `base = 0` — five of the six species in

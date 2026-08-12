@@ -188,9 +188,15 @@ def test_a_lifted_parameter_is_no_longer_a_primary():
     m = bngsim.Model.from_sbml_string(_src(1.0))
     assert "P" not in m.primary_param_names
     assert "k" in m.primary_param_names
-    # A parameter with no volume-dependent initialAssignment is untouched.
+    # A parameter no initialAssignment defines is untouched.
     assert "off" in m.primary_param_names
-    assert "P" in bngsim.Model.from_sbml_string(_src(1.0, IA_CONST)).primary_param_names
+    # (#313) And the lift is not about volumes: an initialAssignment over an
+    # ordinary parameter costs the target its primary slot on the same terms,
+    # because the same thing is true of it — `off` is what defines its value, so
+    # a write to `P` is a write the next re-derivation overwrites.
+    const = bngsim.Model.from_sbml_string(_src(1.0, IA_CONST))
+    assert "P" not in const.primary_param_names
+    assert "off" in const.primary_param_names
 
 
 def test_the_double_rounding_through_the_lifted_parameter_is_at_most_one_ulp():
