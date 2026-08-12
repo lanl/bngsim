@@ -188,6 +188,13 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
     ("installed wheel", _ANYWHERE, "source-tree-only guard, correctly inert against a wheel"),
     ("source root", _ANYWHERE, "version-consistency check needs the source tree"),
     (
+        "no committed stub at",
+        _ANYWHERE,
+        "test_committed_stub_has_no_version_literal reads python/bngsim/"
+        "_bngsim_core.pyi out of the source tree; a wheel/subtree checkout has no "
+        "committed stub to inspect. Same source-tree-only class as the two above",
+    ),
+    (
         "CMake",
         _ANYWHERE,
         "CMakeCache cross-checks need a configured build dir; the "
