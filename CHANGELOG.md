@@ -16,6 +16,38 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **Forward sensitivity w.r.t. a power/Hill exponent no longer NaNs when the
+  base is zero (issue #310).** Differentiating `base^n` with respect to the
+  exponent gives `base^n · ln(base)`. At `base = 0` — five of the six species in
+  `BIOMD0000000012` start there, and an unset initial condition is the ordinary
+  case at `t = 0` — that evaluates as `0 · (-inf)` = `NaN`, even though the limit
+  exists and is `0` for every `n > 0`.
+
+  One NaN there is not a local blemish. It enters `∂f/∂p` on the first step, and
+  from there either poisons that parameter's whole sensitivity column while every
+  other column reads fine, or, when the exponent is the only column, defeats the
+  corrector and fails the solve outright (`flag=-4` at `t = 0`). AMICI returns
+  the limit; central finite differences on bngsim's own state trajectories agree
+  with AMICI to ~5 significant figures. The new `amici_parity` forward-sensitivity
+  job is what surfaced it.
+
+  `bngsim._jacobian` now rewrites the `base^exp · log(base)` form to its limit at
+  a zero base. It is one symbolic pass applied by both emitters on their way out,
+  so the interpreted ExprTk path and every codegen backend (cc / MIR compile the
+  same C) get the same value from one place, rather than a guard replicated per
+  backend. The guard is not a blanket `base == 0 → 0`: the limit is `0` only for
+  a **positive** exponent, so a numeric non-positive exponent is left alone and a
+  symbolic one is decided at run time against its current value — where the limit
+  does not exist, the NaN is the honest answer and survives. A negative base is
+  untouched for the same reason.
+
+  This also resolves the one column GH #243 could only report on: BIOMD0000000044's
+  `_lp_v7_n` is a Hill exponent, and it was unresolvable at every `chunk_size` for
+  exactly this reason. All 23 of that model's columns now integrate, agree across
+  chunk sizes, and match finite differences. The #243 machinery — retry a failed
+  chunk column by column, refuse a non-finite column instead of returning it —
+  is unchanged; it guards a property of chunking, not of that one model.
+
 - **The committed type stub no longer snapshots the version it was built from.**
   `python/bngsim/_bngsim_core.pyi` is machine-written by `pybind11_stubgen`,
   which copies whatever the freshly built module reports — including the
