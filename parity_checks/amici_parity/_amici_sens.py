@@ -462,6 +462,11 @@ def amici_sens(
         ls_code = -1
     linear_solver = ac._linear_solver_names().get(ls_code, f"kind_{ls_code}")
 
+    # Anchor the initial condition at t_start — see the same call in
+    # _amici_common.amici_ode. Sensitivities inherit the problem doubly: an
+    # unrequested [0, t_start] prelude moves the state the sensitivities are
+    # linearized about, so dx/dp is computed at the wrong operating point.
+    model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     model.set_timepoints(ts)
 
