@@ -4065,6 +4065,19 @@ def _build_model_from_sbml_doc(doc):
             continue
         _param_decl_index[_pid] = i
         _param_pool.add(_pid)
+    # An assignmentRule target is not a symbol the lift can rest on, on EITHER
+    # side of the assignment. The candidate filter below already declines one as
+    # a lift *target* (§4's rule recomputes it, so the fold is not what a write
+    # faces); the same fact disqualifies it as a lift *dependency*. Its slot is
+    # function-backed — the engine rewrites it from the rule's own expression
+    # before every derivative evaluation — so a lifted expression reading it
+    # re-derives from whatever that slot holds at write time, which after a run
+    # is the rule's value at the last integrated point, not the t=0 fold the
+    # initialAssignment means. BIOMD0000000570 is the case: `ModelValue_60 =
+    # O2c_bar` would go 5.68 → 7.87 on the next write after a run, including the
+    # identity write `set_params(dict(zip(param_names, vec)))` round-trips
+    # through. Refused instead, which leaves the fold where §0 put it.
+    _param_pool -= _ar_targets
 
     # Candidates: a parameter initialAssignment over parameters alone. An
     # assignment rule recomputes its target every step, so the IA fold is only a
@@ -4147,8 +4160,14 @@ def _build_model_from_sbml_doc(doc):
         if _pid in _ar_targets:
             continue  # §4's rule recomputes it; the fold is not what a write faces
         # Parameters only: a compartment size behind an unliftable fold is #170's
-        # business, and it is refused by name rather than reported here.
-        _frozen_upstream |= _ast_name_set(_m) & _param_decl_index.keys()
+        # business, and it is refused by name rather than reported here. An
+        # assignmentRule target is dropped too — the rule, not a caller, defines
+        # it, so "`set_param` on it will not move the assigned symbol" names a
+        # write nobody can make (the engine refuses one on a function-backed slot,
+        # #227). An initialAssignment that reads NOTHING else therefore stays
+        # quiet, which is the honest report: it is frozen, but no writable
+        # parameter is frozen behind it.
+        _frozen_upstream |= _ast_name_set(_m) & (_param_decl_index.keys() - _ar_targets)
     if _frozen_upstream:
         logger.warning(
             "initialAssignment(s) that bngsim could not keep symbolic read the "

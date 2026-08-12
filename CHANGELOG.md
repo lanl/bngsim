@@ -44,9 +44,25 @@ in `CMakeLists.txt`) is derived from it.
   `primary_param_names`, exactly as `_rateLaw_<rid>` does: the document defines
   its value, so it is not a knob a caller can hold.
 
+  An `<initialAssignment>` over an **assignmentRule target** is refused rather
+  than lifted, on both sides of the assignment. The rule already disqualified
+  such a parameter as a lift *target* — the fold is only its t=0 value and the
+  rule, not the expression, is what a write has to survive — and the same fact
+  disqualifies it as a lift *dependency*: its slot is function-backed, rewritten
+  from the rule before every derivative evaluation, so a lifted expression
+  reading it would re-derive from whatever that slot held at write time. After a
+  run that is the rule's value at the last integrated point. `BIOMD0000000570`
+  is the shape (`ModelValue_60 = O2c_bar`): lifted, it went 5.68 → 7.87 on the
+  next write after a run, including the identity write
+  `set_params(dict(zip(param_names, vec)))` round-trips through. 22 corpus
+  models carry it. The cost is three compartment sizes — `compartment_2` and
+  `compartment_3` of 570, `artery` of `BIOMD0000000627` — whose folds can no
+  longer be put back on the size and which are therefore refused by name, which
+  is #170's contract for exactly this residue.
+
   Nothing moves at the nominal point — the builder is still seeded with the
   folded number, and a derived parameter is not re-evaluated until a write
-  arrives. Across the 1323-model corpus (106 models, 751 parameters lifted),
+  arrives. Across the 1323-model corpus (101 models, 598 parameters lifted),
   load-time parameter values, species initial conditions and trajectories are
   bit-identical, with one exception: five parameters of `BIOMD0000000833` move by
   one ulp, because a lifted expression is evaluated by ExprTk rather than by the

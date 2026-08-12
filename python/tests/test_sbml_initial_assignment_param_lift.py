@@ -255,3 +255,75 @@ def test_a_liftable_model_says_nothing(caplog):
     with caplog.at_level(logging.WARNING, logger="bngsim"):
         bngsim.Model.from_sbml_string(_src())
     assert [r.getMessage() for r in caplog.records if "frozen" in r.getMessage()] == []
+
+
+# ── An assignmentRule target is not a symbol the lift can rest on ───────────
+#
+# `q` is defined by an assignmentRule that reads a species, so its parameter
+# slot is function-backed: the engine rewrites it from the rule before every
+# derivative evaluation. `k0 = q*2` is therefore NOT liftable — lift it and the
+# one-pass re-derivation reads whatever that slot happens to hold, which after a
+# run is `q` at the last integrated point rather than the t=0 value the
+# initialAssignment means. BIOMD0000000570 (`ModelValue_60 = O2c_bar`) is the
+# corpus case; 21 more models carry the same shape.
+
+AR_DEPENDENT = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="ia_over_assignment_rule">
+    <listOfCompartments>
+      <compartment id="C" size="1" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="2" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+      <species id="B" compartment="C" initialConcentration="0" hasOnlySubstanceUnits="false" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters>
+      <parameter id="k0" value="-1" constant="true"/>
+      <parameter id="q" value="-1" constant="false"/>
+      <parameter id="base" value="0.5" constant="true"/>
+    </listOfParameters>
+    <listOfInitialAssignments>
+      <initialAssignment symbol="k0">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>q</ci><cn>2</cn></apply>
+        </math>
+      </initialAssignment>
+    </listOfInitialAssignments>
+    <listOfRules>
+      <assignmentRule variable="q">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>base</ci><ci>A</ci></apply>
+        </math>
+      </assignmentRule>
+    </listOfRules>
+    <listOfReactions>
+      <reaction id="r" reversible="false" fast="false">
+        <listOfReactants><speciesReference species="A" stoichiometry="1" constant="true"/></listOfReactants>
+        <listOfProducts><speciesReference species="B" stoichiometry="1" constant="true"/></listOfProducts>
+        <kineticLaw><math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><times/><ci>k0</ci><ci>A</ci></apply>
+        </math></kineticLaw>
+      </reaction>
+    </listOfReactions>
+  </model>
+</sbml>"""
+
+K0_AT_LOAD = 2.0  # q = base*A = 0.5*2 at t=0, so k0 = q*2
+
+
+def test_an_initial_assignment_over_an_assignment_rule_target_is_not_lifted():
+    m = bngsim.Model.from_sbml_string(AR_DEPENDENT)
+    assert m.get_param("k0") == K0_AT_LOAD
+    assert not m.param_is_expression[list(m.param_names).index("k0")]
+    assert "k0" in m.primary_param_names
+
+
+def test_a_write_after_a_run_does_not_move_it_to_the_rules_current_value():
+    """The failure the refusal exists for, at its sharpest: an *identity* write,
+    which :meth:`set_param` documents as not an override at all, so
+    ``set_params(dict(zip(param_names, vec)))`` round-trips unchanged."""
+    m = bngsim.Model.from_sbml_string(AR_DEPENDENT)
+    bngsim.Simulator(m, method="ode").run(t_span=T_SPAN, n_points=N_POINTS)
+    assert m.get_param("q") != pytest.approx(K0_AT_LOAD / 2), "precondition: the rule moved"
+    m.set_param("base", m.get_param("base"))
+    assert m.get_param("k0") == K0_AT_LOAD
