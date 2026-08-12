@@ -302,3 +302,85 @@ class TestMakeSpecs:
         a_specs = [s for s in specs if s["model_id"] == "A"]
         assert all(s["params"]["rtol"] == 1e-6 for s in a_specs)
         assert all(s["params"]["rtol"] == 1e-9 for s in specs if s["model_id"] == "B")
+
+
+# --------------------------------------------------------------------------- #
+# Solver-resolution noise floor
+# --------------------------------------------------------------------------- #
+class TestSensitivityNoiseFloor:
+    """The floor exists for one specific, common situation that no scale-relative
+    tolerance can handle: a sensitivity that is *identically zero*.
+
+    A parameter that does not influence a species has dx/dp == 0. One engine
+    returns exact 0.0, the other returns its own integration noise, and
+    |a-b|/max(|a|,|b|) is then exactly 1.0 however tiny both numbers are — the
+    ratio is scale-free, so differ's per-column and file-peak terms cannot forgive
+    it. Observed on BIOMD0000000569, where finite differences on bngsim's own
+    trajectories confirm the true value is 0, bngsim returns 0, and AMICI returns
+    ~1e-11.
+
+    The floor must NOT be a blanket softening: the two guards below (a real
+    large-magnitude divergence, and the GH #310 NaN column) are the properties
+    that keep it honest.
+    """
+
+    ATOL = 1e-12
+
+    def test_zero_derivative_versus_reference_noise_is_forgiven(self):
+        p = [1.0, 1.0]
+        bn = np.zeros((8, 3, 2))
+        am = np.zeros((8, 3, 2))
+        am[:, :, 1] = 1e-11  # reference noise where the true derivative is 0
+        assert not asens.sens_verdict(bn, am)["passed"], "precondition: fails without the floor"
+        v = asens.sens_verdict(bn, am, param_values=p, atol=self.ATOL)
+        assert v["passed"]
+        assert v["n_noise_forgiven"] > 0
+
+    def test_a_real_large_magnitude_divergence_still_fails(self):
+        """BIOMD0000000457's shape: one parameter column completely wrong at a
+        magnitude far above any solver noise. The floor must not touch it."""
+        rng = np.random.default_rng(3)
+        bn = rng.normal(size=(12, 4, 3)) * 1e6
+        am = bn.copy()
+        am[:, :, 1] *= 2.0
+        v = asens.sens_verdict(bn, am, param_values=[1.0] * 3, atol=self.ATOL)
+        assert not v["passed"]
+
+    def test_nan_column_still_fails_with_the_floor_active(self):
+        """GH #310's signature. differ never forgives a one-sided non-finite cell,
+        and the floor must not create a path around that — a blow-up is not noise."""
+        bn = np.ones((10, 3, 2))
+        am = np.ones((10, 3, 2))
+        bn[:, :, 1] = np.nan
+        assert not asens.sens_verdict(bn, am, param_values=[1.0, 1.0], atol=self.ATOL)["passed"]
+
+    def test_floor_scales_inversely_with_the_parameter_value(self):
+        """CVODES resolves s_ij only to atol/|p_j|, so a large-valued parameter has
+        a TIGHTER floor in sx units. Getting this backwards would forgive real
+        differences on exactly the parameters measured most precisely."""
+        big = asens.sensitivity_noise_mask(
+            np.zeros((2, 1, 1)), np.full((2, 1, 1), 1e-9), [1e6], self.ATOL
+        )
+        small = asens.sensitivity_noise_mask(
+            np.zeros((2, 1, 1)), np.full((2, 1, 1), 1e-9), [1e-6], self.ATOL
+        )
+        assert not big.any(), "a 1e-9 gap must NOT be noise for |p|=1e6"
+        assert small.all(), "a 1e-9 gap must be noise for |p|=1e-6"
+
+    def test_zero_valued_parameter_falls_back_to_raw_atol(self):
+        """|p| = 0 has no atol/|p| scaling. Falling back to atol is the
+        conservative choice — it forgives less than any 0 < |p| < 1 would."""
+        mask = asens.sensitivity_noise_mask(
+            np.zeros((2, 1, 1)), np.full((2, 1, 1), 1e-9), [0.0], self.ATOL
+        )
+        assert not mask.any()
+
+    def test_omitting_the_inputs_reproduces_the_unfloored_verdict(self):
+        """Back-compat: a caller that does not know the parameter values gets
+        exactly the original scale-only behavior, and an honest zero count."""
+        bn = np.zeros((6, 2, 2))
+        am = np.zeros((6, 2, 2))
+        am[:, :, 0] = 1e-11
+        v = asens.sens_verdict(bn, am)
+        assert not v["passed"]
+        assert v["n_noise_forgiven"] == 0

@@ -96,13 +96,18 @@ DEFAULT_RTOL = asens.DEFAULT_RTOL
 DEFAULT_ATOL = asens.DEFAULT_ATOL
 
 
-def _compare(bn, am) -> dict:
+def _compare(bn, am, param_values=None, atol=None) -> dict:
     """Compare one (state, sensitivity) pair. Returns a result-fragment dict.
 
     ``bn``/``am`` are ``(t, x, sx, species_names)``. The parameter axis needs no
     alignment — both engines were handed the identical shared id list in the
     identical order — but the species axis does, since neither engine's column
     order is assumed (and AMICI's state set can be a subset).
+
+    ``param_values`` / ``atol`` enable the solver-resolution noise floor (see
+    ``_amici_sens.sensitivity_noise_mask``): a sensitivity that is identically
+    zero makes the relative metric saturate at 1.0 against the other engine's
+    integration noise, which nothing scale-relative can forgive.
     """
     bn_t, bn_x, bn_sx, bn_names = bn
     am_t, am_x, am_sx, am_names = am
@@ -126,13 +131,16 @@ def _compare(bn, am) -> dict:
     sv = differ.deterministic_verdict(bn_x[:, bn_idx], am_x[:, am_idx])
 
     # Sensitivity parity: the headline.
-    v = asens.sens_verdict(bn_sx[:, bn_idx, :], am_sx[:, am_idx, :])
+    v = asens.sens_verdict(
+        bn_sx[:, bn_idx, :], am_sx[:, am_idx, :], param_values=param_values, atol=atol
+    )
 
     n_p = bn_sx.shape[2]
     comment = (
         f"{len(common)} sp x {n_p} par; fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
-        f"forgiven {v['budget_forgiven']}); state {'ok' if sv['passed'] else 'DIFF'}"
+        f"forgiven {v['budget_forgiven']}, noise {v['n_noise_forgiven']}); "
+        f"state {'ok' if sv['passed'] else 'DIFF'}"
     )
     return {
         "status": "pass" if v["passed"] else "diff",
@@ -142,6 +150,7 @@ def _compare(bn, am) -> dict:
         "state_max_rel": float(sv["max_rel"]),
         "n_common_species": len(common),
         "n_params": int(n_p),
+        "n_noise_forgiven": int(v["n_noise_forgiven"]),
     }
 
 
@@ -259,6 +268,11 @@ def _worker(spec: dict, q) -> None:
         shared_ids, bn_by_id, n_cand = asens.shared_sensitivity_params(
             list(_m.param_names), _m.compartment_size_params, am_ids, cap=spec["param_cap"]
         )
+        # Parameter VALUES, in the shared order — the noise floor needs |p_j| to
+        # convert the solver's state-space atol into a resolvable magnitude for
+        # s_ij = dx_i/dp_j. Read here, while the model is loaded for the name
+        # negotiation, rather than reloading the SBML a third time.
+        param_values = [float(_m.get_param(bn_by_id[i])) for i in shared_ids]
         del _m
     except Exception as exc:
         res["status"] = "exception"
@@ -346,7 +360,7 @@ def _worker(spec: dict, q) -> None:
         return
 
     try:
-        res.update(_compare(bn, am))
+        res.update(_compare(bn, am, param_values=param_values, atol=p["atol"]))
     except Exception as exc:
         res["status"] = "exception"
         res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
