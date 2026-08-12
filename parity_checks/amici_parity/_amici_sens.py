@@ -537,20 +537,96 @@ def flatten_tensor(sx: np.ndarray) -> np.ndarray:
     return sx.reshape(n_t, -1)
 
 
-def sens_verdict(bn_sx: np.ndarray, am_sx: np.ndarray) -> dict:
+# How many multiples of the solver's resolvable sensitivity magnitude a cell must
+# exceed before a disagreement there is treated as signal. See
+# :func:`sensitivity_noise_mask` for the derivation; 100 is chosen empirically as
+# the smallest round factor that clears the observed reference-side noise (AMICI
+# reporting ~1e-11 where the true derivative is exactly 0) while leaving a genuine
+# large-magnitude divergence — BIOMD0000000457's parameter_12, |sx| ~ 1e15 — fully
+# intact. Local error control does not bound global error, so some headroom over
+# the raw 1x floor is required; the value is deliberately reported per run rather
+# than hidden, via the report's ``noise_floor`` block.
+SENS_NOISE_FACTOR = 100.0
+
+
+def sensitivity_noise_mask(
+    bn_sx: np.ndarray,
+    am_sx: np.ndarray,
+    param_values,
+    atol: float,
+    factor: float = SENS_NOISE_FACTOR,
+) -> np.ndarray:
+    """Cells where a disagreement is below what either solver could resolve.
+
+    CVODES does not error-control the sensitivity variables on the same absolute
+    scale as the states: with the standard scaling it applies ``atol_S_j =
+    atol / |p_j|`` to ``s_ij = dx_i/dp_j``, which is the statement that the
+    *product* ``s_ij * p_j`` — a quantity in the units of ``x_i`` — is resolvable
+    only down to ``atol``. A disagreement smaller than that is two engines
+    reporting their own noise, not a difference in the model.
+
+    This matters far more for sensitivities than for trajectories, and in a way
+    ``differ``'s scale-relative terms cannot express. A sensitivity that is
+    *identically zero* is common and correct — a parameter simply does not
+    influence a species — and the engines disagree about it in the worst possible
+    way for a relative metric: one returns exact ``0.0`` and the other returns its
+    own integration noise, so ``|a-b| / max(|a|,|b|)`` saturates at exactly 1.0 no
+    matter how tiny both numbers are. Observed on BIOMD0000000569, where finite
+    differences on bngsim's own trajectories confirm the true derivative is 0,
+    bngsim returns 0, and AMICI returns ~1e-11..1e-14. Nothing keyed to the
+    tensor's own peak can fix that, because the saturated ratio is scale-free.
+
+    So the floor is absolute and physically derived: forgive a cell when
+    ``|bn - am| <= factor * atol / |p_j|``. Returns a boolean mask shaped like the
+    inputs, suitable for ``differ``'s ``forgive_mask``. Note that ``differ`` never
+    forgives a one-sided non-finite cell regardless of this mask, so a NaN column
+    (the GH #310 signature) still fails — the floor silences noise, not blow-ups.
+
+    A parameter whose value is 0 has no meaningful ``atol/|p|`` scaling; those
+    columns fall back to the raw ``atol``, which is the conservative choice (it
+    forgives less than any positive ``|p| < 1`` would).
+    """
+    p = np.abs(np.asarray(param_values, dtype=float))
+    floor = np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
+    return np.abs(np.asarray(bn_sx) - np.asarray(am_sx)) <= floor[np.newaxis, np.newaxis, :]
+
+
+def sens_verdict(
+    bn_sx: np.ndarray,
+    am_sx: np.ndarray,
+    *,
+    param_values=None,
+    atol: float | None = None,
+) -> dict:
     """Verdict for two aligned sensitivity tensors, via the shared differ protocol.
 
     Deliberately reuses ``_core.differ.deterministic_verdict`` on the flattened
-    tensor rather than defining a second oracle. Its per-cell tolerance
-    ``ABS_TOL_FILE*file_peak + ABS_TOL_COL*col_peak + REL_TOL*|y|`` already
-    implements the noise floor a sensitivity comparison needs (the
-    ``max(abs_floor, rel_floor*max|sx|)`` rule
-    ``benchmarks/suites/forward_sens`` uses), and keeping one protocol means a
-    tolerance change lands in every suite at once.
+    tensor rather than defining a second oracle, so a tolerance change lands in
+    every suite at once. The one sensitivity-specific addition is the
+    solver-resolution floor of :func:`sensitivity_noise_mask`, passed through
+    ``differ``'s existing ``forgive_mask`` hook rather than by weakening any shared
+    constant — ``differ``'s own terms are all relative to the compared data's
+    scale, and the zero-derivative case above is scale-free.
+
+    ``param_values`` (in the same order as the tensor's parameter axis) and
+    ``atol`` (the integration tolerance both engines ran at) enable the floor.
+    Omitting either reproduces the original scale-only behavior, so the function
+    stays usable from a context that does not know the parameter values.
+
+    The returned dict is ``differ``'s, plus ``n_noise_forgiven`` — the count of
+    cells the floor silenced, recorded so a run can never quietly forgive its way
+    to a PASS without that being visible in the report.
     """
     from _core import differ
 
-    return differ.deterministic_verdict(flatten_tensor(bn_sx), flatten_tensor(am_sx))
+    mask = None
+    if param_values is not None and atol is not None:
+        mask = flatten_tensor(sensitivity_noise_mask(bn_sx, am_sx, param_values, atol))
+    v = differ.deterministic_verdict(
+        flatten_tensor(bn_sx), flatten_tensor(am_sx), forgive_mask=mask
+    )
+    v["n_noise_forgiven"] = int(mask.sum()) if mask is not None else 0
+    return v
 
 
 def measure_warmup() -> dict:
