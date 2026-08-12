@@ -123,6 +123,7 @@ def ensure_build_path() -> str:
         os.environ["PATH"] = os.pathsep.join([bindir] + [p for p in parts if p != bindir])
     return bindir
 
+
 # Build flags pinned for parity (NOT AMICI defaults):
 #   generate_sensitivity_code=False — pure forward ODE; skips the sensitivity C++.
 #   compute_conservation_laws=False — keep every species an independent STATE so the
