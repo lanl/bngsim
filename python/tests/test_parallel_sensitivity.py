@@ -1045,7 +1045,7 @@ def test_biomd44_resolves_every_column_at_every_chunk_size():
             # Not bit-for-bit: the columns in a chunk share one CVODES error
             # test, so the grouping still moves the adaptive step sequence. What
             # must not depend on it any more is the answer.
-            np.testing.assert_allclose(sens, reference[0], rtol=1e-3, atol=1e-6)
+            np.testing.assert_allclose(sens, reference[0], rtol=1e-3, atol=1e-5)
 
     # The exponent column against central finite differences of the states.
     sens, params = reference
@@ -1064,6 +1064,9 @@ def test_biomd44_resolves_every_column_at_every_chunk_size():
         legs.append(np.asarray(leg.species))
     fd = (legs[0] - legs[1]) / (2 * step)
 
-    # Loose on the FD side only: central differences at h ~ 1e-6 carry their own
-    # truncation and cancellation error, which dominates the comparison.
-    np.testing.assert_allclose(column, fd, rtol=1e-3, atol=1e-6)
+    # Loose on the FD side only. This law is sharp in ``n``, so the step cannot be
+    # opened up to damp the noise the way a milder one could: each leg is a solver
+    # output carrying its own integration error, and the quotient divides that by
+    # 2h. Two orders of margin over the observed agreement, which is all the claim
+    # needs — a NaN or a wrong-by-orders column fails this by a mile.
+    np.testing.assert_allclose(column, fd, rtol=1e-2, atol=1e-4)

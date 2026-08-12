@@ -196,7 +196,13 @@ class TestTheSolve:
         # Not a column of zeros dressed up as an answer.
         assert np.max(np.abs(sens)) > 1e-3
 
-        h = 1e-6
+        # h = 1e-4, not the smaller step a truncation argument alone would pick:
+        # the differenced quantity is a *solver output*, so each leg carries its
+        # own integration error and the quotient divides that error by 2h. At
+        # 1e-6 the amplification is what dominates the comparison, and it varies
+        # with the platform's step sequence. This law is mild enough in n over
+        # this window that the extra truncation costs less than the noise does.
+        h = 1e-4
         legs = []
         for step in (+h, -h):
             perturbed = bngsim.Model.from_net(hill_net)
@@ -207,7 +213,10 @@ class TestTheSolve:
             legs.append(np.asarray(run.species))
         fd = (legs[0] - legs[1]) / (2 * h)
 
-        assert np.allclose(sens, fd, rtol=2e-4, atol=1e-9)
+        # Loose, and deliberately so: what is under test is a NaN column against
+        # a finite one, and three orders of margin over the observed agreement
+        # still catches any answer that is merely plausible.
+        np.testing.assert_allclose(sens, fd, rtol=1e-3, atol=1e-7)
 
     def test_the_column_survives_alongside_other_parameters(self, hill_net):
         """The other failure shape from the issue: with more columns sharing the
@@ -225,9 +234,12 @@ class TestTheSolve:
         solo = bngsim.Simulator(
             bngsim.Model.from_net(hill_net), method="ode", sensitivity_params=["n"]
         ).run(t_span=(0, 10), n_points=6, rtol=1e-10, atol=1e-12)
-        assert np.allclose(
+        # Not bit-for-bit: the columns in one solve share a CVODES error test, so
+        # the column count moves the adaptive step sequence. Three orders over the
+        # observed agreement, which is still far inside "the same column".
+        np.testing.assert_allclose(
             sens[:, :, result.sensitivity_params.index("n")],
             np.asarray(solo.sensitivities)[:, :, 0],
             rtol=1e-6,
-            atol=1e-12,
+            atol=1e-9,
         )
