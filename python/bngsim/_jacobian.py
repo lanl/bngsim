@@ -596,6 +596,78 @@ def _remove_removable_power_denominators(expr):
     return bottom_up(expr, rewrite_mul)
 
 
+def _guard_exponent_log_at_zero(expr):
+    """Guard the ``base**exp * log(base)`` form against ``base == 0`` (GH #310).
+
+    Differentiating a Hill/power law w.r.t. its **exponent** produces
+    ``d/dn base^n = base^n · ln(base)``. On the non-negative concentration domain
+    BNGsim evaluates, a species that is exactly zero — an unset initial condition
+    is the common case — makes that ``0 · (-inf)`` = ``NaN`` in floating point,
+    even though the limit exists and is ``0`` for every ``exp > 0``. One NaN in
+    ``∂f/∂p`` is enough to poison that parameter's whole sensitivity column, or
+    to defeat the corrector outright when it is the only column.
+
+    So each ``Pow(base, exp) · log(base)`` pair inside a ``Mul`` is rewritten to
+    the limit at ``base == 0``:
+
+    * ``exp`` a positive number → ``Piecewise((0, Eq(base, 0)), (raw, True))``,
+      the branch decided at build time;
+    * ``exp`` symbolic → ``Piecewise((0, Eq(base, 0) & (exp > 0)), (raw, True))``,
+      the sign of the exponent settled at run time against its current value;
+    * ``exp`` a non-positive number → left alone. ``base^exp·ln(base)`` has no
+      finite limit there (``base^exp`` is already ``inf``/``1``), so a NaN is the
+      honest answer and a blanket ``0`` would paper over a real singularity.
+
+    Only ``base == 0`` is caught, never ``base < 0``: a negative base under a
+    fractional exponent is a genuine NaN and stays one.
+
+    Applied *after* :func:`_remove_removable_power_denominators`, so the exponent
+    tested is the one that survives that rewrite (``base^n/base`` → ``base^(n-1)``
+    turns the run-time test into ``n - 1 > 0``, which is the correct condition for
+    the rewritten term).
+    """
+    import sympy as sp
+    from sympy.core.traversal import bottom_up
+
+    def rewrite_mul(node):
+        if not isinstance(node, sp.Mul):
+            return node
+
+        factors = list(node.args)
+        absorbed: set[int] = set()
+        for log_i, factor in enumerate(factors):
+            if log_i in absorbed:
+                continue
+            if not (isinstance(factor, sp.log) and len(factor.args) == 1):
+                continue
+            base = factor.args[0]
+            # ``log(2)`` and friends are constant and finite; nothing to guard.
+            if base.is_number or base.is_positive:
+                continue
+            for pow_i, power_factor in enumerate(factors):
+                if pow_i in absorbed or not isinstance(power_factor, sp.Pow):
+                    continue
+                if power_factor.base != base:
+                    continue
+                exp = power_factor.exp
+                if exp.is_number:
+                    if not exp.is_positive:
+                        continue
+                    cond = sp.Eq(base, 0)
+                else:
+                    cond = sp.And(sp.Eq(base, 0), exp > 0)
+                raw = sp.Mul(power_factor, factor, evaluate=False)
+                factors[pow_i] = sp.Piecewise((sp.Integer(0), cond), (raw, True))
+                absorbed.add(log_i)
+                break
+
+        if not absorbed:
+            return node
+        return sp.Mul(*(f for i, f in enumerate(factors) if i not in absorbed), evaluate=False)
+
+    return bottom_up(expr, rewrite_mul)
+
+
 # ─── sympy → ExprTk emitter ────────────────────────────────────────────────
 
 
@@ -632,6 +704,13 @@ def _make_printer():
             for cond_s, val_s in reversed(pieces):
                 out = f"if({cond_s},{val_s},{out})"
             return out
+
+        def _print_Relational(self, expr):
+            # sympy's StrPrinter prints Eq/Ne in *function* form (``Eq(a, b)``),
+            # which ExprTk does not know. Every relational it can produce has an
+            # infix ExprTk spelling, so print them all that way (GH #310).
+            lhs, rhs = (self._print(a) for a in expr.args)
+            return f"({lhs} {expr.rel_op} {rhs})"
 
         def _print_And(self, expr):
             return "(" + " and ".join(self._print(a) for a in expr.args) + ")"
@@ -698,7 +777,7 @@ def sympy_to_exprtk(expr) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _remove_removable_power_denominators(expr)
+        expr = _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
     except Exception:
         return None
     if not _printer_cache:
@@ -803,6 +882,13 @@ def _make_c_printer():
                 out = f"(({cond_s}) ? ({val_s}) : ({out}))"
             return out
 
+        def _print_Relational(self, expr):
+            # As in the ExprTk printer: StrPrinter's ``Eq(a, b)`` / ``Ne(a, b)``
+            # function form is not C, and every relational has an infix C
+            # spelling (GH #310).
+            lhs, rhs = (self._print(a) for a in expr.args)
+            return f"({lhs} {expr.rel_op} {rhs})"
+
         def _print_And(self, expr):
             return "(" + " && ".join(self._print(a) for a in expr.args) + ")"
 
@@ -903,7 +989,7 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _remove_removable_power_denominators(expr)
+        expr = _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
     except Exception:
         return None
     printer = _c_printer()

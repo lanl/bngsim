@@ -4,3 +4,8 @@ runs/
 # compiles a bespoke C++ shared library per model (~20s cold); these are large,
 # machine-specific build artifacts, never committed.
 amici_cache/
+# The same, for the SENSITIVITY build (generate_sensitivity_code=True). A separate
+# directory on purpose: that extension carries the dxdotdp / sx right-hand side on
+# top of the pure-ODE body, so it is not interchangeable with an amici_cache/ entry
+# and must never collide with one.
+amici_sens_cache/

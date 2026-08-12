@@ -1,17 +1,25 @@
-# `amici_parity` — bngsim vs AMICI (SBML ODE parity)
+# `amici_parity` — bngsim vs AMICI (SBML ODE + forward-sensitivity parity)
 
 Cross-engine correctness + efficiency of bngsim's ODE path against
 [AMICI](https://github.com/AMICI-dev/AMICI), the SBML/CVODES reference. The AMICI
 sibling of `rr_parity` (bngsim vs RoadRunner): same bngsim adapter, same
 `_core.differ` oracle, same SBML corpus and HTML matrix format — only the
-*reference* engine changes. ODE-only by design. The AMICI reference build is
+*reference* engine changes. The AMICI reference build is
 pinned to `AMICI-dev/AMICI@667b17b6b` (`v1.0.1-12-g667b17b6b`) — see `AMICI_PIN.json`.
 
-> **Scope note.** This suite was previously a placeholder for sensitivity /
-> gradient validation. It is now the **ODE trajectory + timing parity** suite
-> (mirroring rr_parity's ODE matrix). Sensitivity validation can return later as a
-> separate mode; the forward-sensitivity benchmark still lives at
-> `benchmarks/suites/forward_sens`.
+The suite runs **two independent jobs** over the same corpus:
+
+| Job | Compares | Runner | Report | Page |
+|---|---|---|---|---|
+| ODE | state trajectories `x(t)` | `amici_run.py` | `runs/report_ode.json` | `runs/amici_matrix.html` |
+| forward sensitivity | the tensor `dx_i(t)/dp_j` | `amici_sens_run.py` | `runs/report_sens.json` | `runs/amici_sens_matrix.html` |
+
+They share the corpus, the oracle, the verdict taxonomy and the cold/warm timing
+taxonomy; they differ in the quantity under test. See
+[Forward-sensitivity job](#forward-sensitivity-job-amici_sens_runpy) below. The
+older, `.net`/BNGL-driven sensitivity **benchmark** (a 4-model timing table for
+the paper, not a corpus sweep) still lives separately at
+`benchmarks/suites/forward_sens`.
 
 ## Why AMICI is a useful second reference
 
@@ -120,6 +128,9 @@ applied. AMICI adjudicates every model independently.
 | `build_amici_jobs.py` | builds the curated subset `amici_ode_jobs.json` (stratified by species count + feature coverage) |
 | `generate_amici_matrix.py` | renders `runs/report_ode.json` → `runs/amici_matrix.html` (fork of rr_parity's generator) |
 | `amici_ode_jobs.json` | the curated job manifest (model paths resolve under `rr_parity/`) |
+| `amici_sens_run.py` | the **forward-sensitivity** sweep runner; writes `runs/report_sens.json` |
+| `_amici_sens.py` | the sensitivity adapters (`bn_sens`, `amici_sens`) + the cross-engine parameter alignment |
+| `generate_amici_sens_matrix.py` | renders `runs/report_sens.json` → `runs/amici_sens_matrix.html` |
 
 The SBML corpus and the full ODE manifest are **reused from `rr_parity/`** (no
 duplication); model paths resolve under `../rr_parity/`.
@@ -181,3 +192,111 @@ the run: `generate_amici_matrix.py --report <path>` points at any report.
 - Output `runs/report_ode.json` + `runs/amici_matrix.html` are gitignored
   (regenerable). Versions stamped via `_core.versions.amici_version()` (the live
   package version); the exact AMICI reference build is pinned in `AMICI_PIN.json`.
+
+## Forward-sensitivity job (`amici_sens_run.py`)
+
+The second job. Where the ODE job asks *do the two engines agree on the
+trajectory*, this one asks *do they agree on its derivatives with respect to the
+model parameters* — the forward-sensitivity tensor `dx_i(t)/dp_j` that both
+engines obtain from a coupled CVODES extended-ODE solve — and what the **warm**
+per-solve cost of producing it is on each side.
+
+It shares the corpus, the `_core.differ` oracle, the verdict taxonomy and the
+cold/warm timing taxonomy with the ODE job. What is genuinely new is the
+parameter alignment, the parameter cap, and the method pinning.
+
+### Parameter alignment — the one hard part
+
+Species ids match across engines (same SBML), so `align_common` handles them
+unchanged. Parameter ids do **not**, because each engine flattens SBML *local*
+(per-`kineticLaw`) parameters under its own scheme:
+
+| | SBML reaction `J0`, local parameter `V1` |
+|---|---|
+| bngsim | `_lp_J0_V1` |
+| AMICI | `J0_V1` |
+
+Global parameters keep their SBML id on both sides, so the mapping is a `_lp_`
+prefix strip and the shared list is the intersection, minus two exclusions:
+bngsim's **compartment-size parameters** (it refuses them as sensitivity targets)
+and anything AMICI reports as **fixed** rather than free (no `sx` column exists
+for it). A model whose intersection is empty is `BAD_TEST` — no oracle exists —
+never a vacuous pass.
+
+Both engines then receive the identical list in the identical order, so the
+parameter axis needs no alignment at comparison time. AMICI's parameter scale is
+pinned to **linear**, because AMICI can report `dx/d ln(p)` and comparing that
+against bngsim's `dx/dp` would differ by a factor of `p` on every cell — a
+whole-tensor DIFF that looks like an engine bug.
+
+### The parameter cap (`--param-cap`, default 20)
+
+Forward sensitivity integrates a coupled system of size `n_species*(Np+1)`, so
+cost is linear in `Np` and a 100-parameter model is 100× a 1-parameter one.
+Uncapped, the big models dominate the wall clock and no two rows' timings are
+comparable. The cap picks its parameters by sorting the shared ids and taking an
+**evenly spaced** subset — deterministic across re-runs and across machines, and
+not clustered on whichever reaction sorts first (a sorted SBML id list groups by
+reaction prefix). Every row records the `Np` used *and* the pre-cap candidate
+count, so the matrix shows "20 of 43" rather than silently truncating.
+
+### Methods
+
+One job per (model, CVODES corrector method), with **both engines pinned to the
+same method** within a job so a timing pair is strictly apples-to-apples:
+
+- `staggered` (CV_STAGGERED) — state advanced first, then the sensitivities as a
+  separate linear-in-the-sensitivities solve. CVODES' and bngsim's default.
+- `simultaneous` (CV_SIMULTANEOUS) — state and all sensitivity variables advanced
+  as one coupled nonlinear system per step. AMICI's compiled-in default.
+
+Running both separates the engine effect from the method effect. The AMICI
+compile is shared between them (the corrector method is a solver setting, not a
+codegen one), so jobs are scheduled **method-major**: the second method's pass is
+load-only.
+
+### State parity is checked too, and reported separately
+
+A sensitivity comparison means nothing if the engines are not on the same
+trajectory. Each row carries its own state verdict, kept out of the headline
+metric so a sensitivity DIFF on a model whose states already disagree is never
+mistaken for a sensitivity-specific bug.
+
+### Run + render
+
+```bash
+# curated 50-model subset, both methods (the fast default)
+.venv/bin/python parity_checks/amici_parity/amici_sens_run.py --workers 4
+
+# render → runs/amici_sens_matrix.html
+.venv/bin/python parity_checks/amici_parity/generate_amici_sens_matrix.py
+open parity_checks/amici_parity/runs/amici_sens_matrix.html
+```
+
+**Full corpus** — the reportable run, all 1323 vendored BioModels SBML:
+
+```bash
+.venv/bin/python parity_checks/amici_parity/amici_sens_run.py \
+    --manifest parity_checks/rr_parity/ode_jobs.json --workers 4 --timeout 900
+```
+
+**Other flags:** `--methods staggered` (one method only) · `--param-cap N`
+(`0` = uncapped) · `--models` / `--include` / `--exclude` / `--limit` ·
+`--checkpoint runs/sens_ck.jsonl` (JSONL sidecar so a killed run is
+reconstructable) · `--out`.
+
+**Know before running:**
+
+- Cold compiles are **heavier than the ODE job's** — the sensitivity build emits
+  the `dxdotdp` / sensitivity-RHS C++ on top of the pure-ODE body. The cache is
+  `amici_sens_cache/` (gitignored), **separate from `amici_cache/`**: the two
+  extensions are not interchangeable and must never collide.
+- The cache commits by **atomic rename**, so it is safe under concurrency (both
+  methods of a model share a key) and kill-safe: a directory that exists is a
+  complete build, so kill/rerun is resumable.
+- Needs the `amici` dependency group (`uv sync --extra dev --group amici`). The
+  runner puts the venv's `bin/` at the front of `PATH` itself, so cmake finds
+  AMICI's pinned `swig` even when the venv was never activated — without that,
+  every model fails to compile and the sweep reports a wall of
+  `REFERENCE_FAILED/compile` that looks like an AMICI feature gap.
+- **Exit code 1 when DIFFs exist** — normal, not a crash.

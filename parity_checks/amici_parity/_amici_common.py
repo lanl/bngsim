@@ -84,6 +84,46 @@ DEFAULT_ATOL = _rc.DEFAULT_ATOL
 # the cold C++ compile, every re-run is a load-only cache hit.
 AMICI_CACHE = Path(__file__).resolve().parent / "amici_cache"
 
+
+def ensure_build_path() -> str:
+    """Put this environment's script dir at the FRONT of ``PATH`` and return it.
+
+    AMICI compiles each model by shelling out to ``cmake``, which locates SWIG via
+    ``find_package(SWIG)`` — a plain ``PATH`` search. The ``amici`` dependency
+    group installs its own matching ``swig`` into ``.venv/bin/``, but a worker
+    launched as ``.venv/bin/python …`` from a shell that never *activated* the venv
+    does NOT have that directory on ``PATH``. Two failure modes follow, both of
+    which cost real debugging time:
+
+      * no swig anywhere ⇒ ``cmake`` fails with "Could NOT find SWIG
+        (SWIG_EXECUTABLE SWIG_DIR)" and EVERY model lands in the REFERENCE_FAILED
+        bucket with refusal=compile — a whole sweep of false negatives that looks
+        like an AMICI feature gap rather than a missing tool;
+      * a *system* swig (e.g. homebrew) is found first ⇒ it builds, but against a
+        different SWIG than AMICI's own core was wrapped with, and AMICI warns
+        "SWIG version mismatch … may lead to unexpected behavior" — i.e. a
+        silently-suspect reference oracle, which is worse than a hard failure.
+
+    Prepending (not appending) the script dir fixes both: the venv's pinned swig
+    wins over any system copy. Idempotent — calling twice does not duplicate the
+    entry.
+
+    The directory comes from ``sysconfig.get_path("scripts")``, NOT from
+    ``Path(sys.executable).parent``. In a uv-created venv ``.venv/bin/python`` is a
+    symlink to an interpreter under ``~/.local/share/uv/python/…/bin``, so
+    ``.resolve()`` lands in the *base* interpreter's bin — which has no swig — and
+    the entry is silently useless. ``sysconfig`` reports the venv's own script dir
+    and is correct on Windows (``Scripts``) too.
+    """
+    import sysconfig
+
+    bindir = sysconfig.get_path("scripts")
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if not parts or parts[0] != bindir:
+        os.environ["PATH"] = os.pathsep.join([bindir] + [p for p in parts if p != bindir])
+    return bindir
+
+
 # Build flags pinned for parity (NOT AMICI defaults):
 #   generate_sensitivity_code=False — pure forward ODE; skips the sensitivity C++.
 #   compute_conservation_laws=False — keep every species an independent STATE so the
@@ -277,6 +317,9 @@ def _build_model(sbml_str: str):
     always paid. On a cache HIT only ``load_sec`` is nonzero. The hash key folds the
     build flags so a flag change never reuses a stale directory."""
     import amici
+
+    # cmake finds SWIG on PATH; make sure the venv's pinned copy is the one it sees.
+    ensure_build_path()
 
     key = hashlib.sha256((sbml_str + _BUILD_FLAGS).encode()).hexdigest()[:16]
     name = f"amici_{key}"

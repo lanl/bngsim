@@ -4839,12 +4839,16 @@ class Simulator:
 
         A CVODES failure is not the only way a sensitivity column can be
         unusable, and it is not the way that hurts. On BIOMD0000000044 the
-        ``_lp_v7_n`` column integrates to NaN from the first output point on
-        while the *solve returns success* — the columns sharing its chunk pass
-        the error test on its behalf — so at ``chunk_size=3`` that model returns
+        ``_lp_v7_n`` column integrated to NaN from the first output point on
+        while the *solve returned success* — the columns sharing its chunk passed
+        the error test on its behalf — so at ``chunk_size=3`` that model returned
         a complete-looking tensor with one silently dead column, and at 1, 2 and
-        4 it raises. Same model, same columns; the throughput knob decided
-        whether the caller was told anything at all.
+        4 it raised. Same model, same columns; the throughput knob decided
+        whether the caller was told anything at all. (That particular column is
+        no longer marginal: GH #310 traced its NaN to ``∂/∂n base^n`` at a zero
+        base and guarded it at the limit. The check stays, because the failure
+        mode it catches — a dead column reported as an answer — is a property of
+        chunking, not of that one model.)
 
         A NaN column is not a partial answer either: :meth:`Result.gradient`
         contracts the whole parameter axis, so one of them NaNs every entry of

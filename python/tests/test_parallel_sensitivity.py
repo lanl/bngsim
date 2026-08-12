@@ -1007,26 +1007,66 @@ _BIOMD44 = (
 
 
 @pytest.mark.skipif(not _BIOMD44.exists(), reason="BIOMD0000000044 SBML not present")
-def test_biomd44_verdict_no_longer_depends_on_chunk_size():
+def test_biomd44_resolves_every_column_at_every_chunk_size():
     """The model that filed GH #243, end to end.
 
-    Before: ``chunk_size`` 1, 2 and 4 raised a bare CVODE message and 3 returned
-    a tensor whose ``_lp_v7_n`` column was silently all-NaN. Now every grouping
-    reaches the same verdict, names the same marginal column, and none of them
-    hands back a dead column dressed as an answer.
+    Three verdicts, in order. ``chunk_size`` 1, 2 and 4 raised a bare CVODE
+    message while 3 returned a tensor whose ``_lp_v7_n`` column was silently
+    all-NaN — the grouping decided whether an answer existed. #243 made the
+    verdict grouping-independent: every chunk size then reported the same
+    marginal column rather than one of them handing back a dead column dressed
+    as an answer.
+
+    GH #310 removed the cause. ``_lp_v7_n`` is a **Hill exponent**, and the
+    column was unresolvable only because ``∂/∂n base^n = base^n·ln(base)`` was
+    ``NaN`` wherever the base was zero. With that guarded at its limit the
+    column integrates like any other, so what this pins now is the third
+    verdict: all 23 columns resolve, at every chunk size, to the same numbers —
+    and the formerly-marginal one is checked against finite differences, since
+    "it no longer raises" is not by itself evidence that it is right.
     """
     m0 = bngsim.Model.load(str(_BIOMD44))
     refused = set(m0.unwritable_compartment_size_params)
     names = [p for p in m0.param_names if p not in refused]
     assert "_lp_v7_n" in names
 
+    run = dict(params=names, n_workers=1, rtol=1e-10, atol=1e-12)
+    reference = None
     for chunk_size in (1, 2, 3, 4):
         sim = bngsim.Simulator(bngsim.Model.load(str(_BIOMD44)), method="ode")
-        with pytest.raises(SimulationError) as exc:
-            sim.compute_all_sensitivities(
-                (0.0, 10.0), 6, params=names, chunk_size=chunk_size, n_workers=1
-            )
-        msg = str(exc.value)
-        assert "['_lp_v7_n'] also fail on their own" in msg, f"chunk_size={chunk_size}: {msg}"
-        # The other 22 columns are named as the ones worth re-running.
-        assert "'_lp_v7_n'" not in msg.split("Re-run with params=")[1]
+        got = sim.compute_all_sensitivities((0.0, 10.0), 6, chunk_size=chunk_size, **run)
+        sens = np.asarray(got.sensitivities)
+        assert list(got.sensitivity_params) == names
+        assert np.isfinite(sens).all(), f"chunk_size={chunk_size}"
+        if reference is None:
+            reference = (sens, list(got.sensitivity_params))
+        else:
+            assert list(got.sensitivity_params) == reference[1]
+            # Not bit-for-bit: the columns in a chunk share one CVODES error
+            # test, so the grouping still moves the adaptive step sequence. What
+            # must not depend on it any more is the answer.
+            np.testing.assert_allclose(sens, reference[0], rtol=1e-3, atol=1e-5)
+
+    # The exponent column against central finite differences of the states.
+    sens, params = reference
+    column = sens[:, :, params.index("_lp_v7_n")]
+    assert np.abs(column).max() > 1.0
+
+    nominal = m0.get_param("_lp_v7_n")
+    step = 1e-6 * max(1.0, abs(nominal))
+    legs = []
+    for offset in (+step, -step):
+        perturbed = bngsim.Model.load(str(_BIOMD44))
+        perturbed.set_param("_lp_v7_n", nominal + offset)
+        leg = bngsim.Simulator(perturbed, method="ode").run(
+            t_span=(0.0, 10.0), n_points=6, rtol=1e-12, atol=1e-14
+        )
+        legs.append(np.asarray(leg.species))
+    fd = (legs[0] - legs[1]) / (2 * step)
+
+    # Loose on the FD side only. This law is sharp in ``n``, so the step cannot be
+    # opened up to damp the noise the way a milder one could: each leg is a solver
+    # output carrying its own integration error, and the quotient divides that by
+    # 2h. Two orders of margin over the observed agreement, which is all the claim
+    # needs — a NaN or a wrong-by-orders column fails this by a mile.
+    np.testing.assert_allclose(column, fd, rtol=1e-2, atol=1e-4)

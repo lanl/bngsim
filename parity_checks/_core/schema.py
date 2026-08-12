@@ -159,6 +159,16 @@ class JobResult:
     #   }
     # }
     timing: dict | None = None
+    # Free-form per-row facts a specific regime needs to carry that are neither a
+    # verdict, a timing, nor a sub-classification — kept out of ``comment`` so a
+    # renderer can read them as data instead of parsing prose. Example: the
+    # amici_parity forward-sensitivity job records ``{"sens_method": "staggered",
+    # "n_params": 20, "n_param_candidates": 43, "n_common_species": 8,
+    # "state_passed": true, "state_max_rel": 3.1e-09}`` — the parameter count is
+    # required to interpret that row's timing at all (cost scales with Np), and the
+    # state verdict qualifies the sensitivity verdict. Defaulted/optional, so every
+    # other suite and every older report simply leaves it null.
+    extra: dict | None = None
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
