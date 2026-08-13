@@ -4,9 +4,10 @@ The sensitivity sibling of :mod:`_amici_common`. That module compares *state
 trajectories* ``x(t)``; this one compares the **forward-sensitivity tensor**
 ``dx_i(t)/dp_j`` that both engines obtain from a coupled CVODES/CVODES extended
 ODE solve. Everything engine-agnostic (the scheduler, the cold/warm integration
-taxonomy, ``align_common``, the shared tolerances) is imported from
-:mod:`_amici_common`, which in turn takes it from ``rr_parity._rr_common`` — so
-all three suites share ONE timing taxonomy and ONE comparison protocol.
+taxonomy, the shared tolerances) is imported from :mod:`_amici_common`, which in
+turn takes it from ``rr_parity._rr_common`` — so all three suites share ONE
+timing taxonomy and ONE comparison protocol. ``align_common`` also comes from
+:mod:`_amici_common`, but wrapped rather than verbatim (see below).
 
 What this module adds:
 
@@ -17,10 +18,12 @@ What this module adds:
 
 Parameter alignment — the one genuinely new problem
 ---------------------------------------------------
-Both engines read the same SBML, so their *species* ids match and
-``align_common`` handles them unchanged. Their *parameter* ids do NOT, because
-each engine flattens SBML **local** (per-reaction ``kineticLaw``) parameters
-under its own naming scheme:
+Both engines read the same SBML, so their *species* ids match, and
+``align_common`` handles them with only one adjustment: AMICI renames an id that
+collides with its own generated C++ symbols (``x`` IS the state vector there), so
+``_amici_common.align_common`` undoes that ``amici_`` prefix first (issue #321).
+Their *parameter* ids do NOT match, because each engine flattens SBML **local**
+(per-reaction ``kineticLaw``) parameters under its own naming scheme:
 
     SBML   reaction "J0", local parameter "V1"
     bngsim ``_lp_J0_V1``      (``_lp_`` + reaction id + ``_`` + parameter id)

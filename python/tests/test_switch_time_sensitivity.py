@@ -43,6 +43,7 @@ import bngsim
 import numpy as np
 import pytest
 from bngsim._bngsim_core import ModelBuilder
+from bngsim._exceptions import SensitivityUnsupportedError
 from bngsim._switch_sensitivity import compute_switch_time_sens
 
 # ─── Minimal model: counter T (dT/dt=1, T(0)=0 so `t` IS simulation time) and
@@ -339,6 +340,40 @@ class TestUnsupported:
         )
         with pytest.raises(ValueError, match="issue #48"):
             sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
+
+    # ── The refusal is TYPED (issue #320) ───────────────────────────────────
+    #
+    # This is a declared capability gap, not a bug: bngsim inspected the model,
+    # found a parameter whose gradient it cannot assemble, and refused rather
+    # than return the jump alone. Before it was typed, the amici_parity sweep
+    # scored it EXCEPTION ("AMICI ran and bngsim broke" — the bucket a reader
+    # triages), where it was 26 of 77 rows across 13 corpus models. The two
+    # tests above deliberately keep catching `ValueError`: that is the
+    # back-compat contract, and they fail if the ValueError base is ever
+    # dropped.
+
+    def test_the_detection_refusal_is_typed(self):
+        with pytest.raises(SensitivityUnsupportedError):
+            compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
+
+    def test_the_run_refusal_is_typed(self):
+        """Through the public API, which is what the parity harness sees — the
+        detection helper being typed is worth nothing if the Simulator path
+        rewraps it on the way out."""
+        sim = bngsim.Simulator(
+            self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
+        )
+        with pytest.raises(SensitivityUnsupportedError, match="issue #48"):
+            sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
+
+    def test_it_is_not_typed_as_the_codegen_refusal(self):
+        """Distinct declared gaps share a type but must keep distinct messages —
+        'split the parameter' and 'the rate law is not differentiable' call for
+        different user actions."""
+        with pytest.raises(SensitivityUnsupportedError) as ei:
+            compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
+        assert "closed form" not in str(ei.value)
+        assert "Split the parameter" in str(ei.value)
 
 
 # ─── SBML shape ──────────────────────────────────────────────────────────────

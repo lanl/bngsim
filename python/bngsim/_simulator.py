@@ -2944,6 +2944,20 @@ class Simulator:
             # — pass through unchanged so callers can classify wall-clock
             # terminations distinctly from solver errors.
             raise
+        except SensitivityUnsupportedError:
+            # Same reason, one regime over: a DECLARED refusal to differentiate a
+            # construct is not a solver failure, and wrapping it in
+            # SimulationError would destroy exactly the distinction issue #320
+            # typed it to preserve. This clause is load-bearing *because* the
+            # class inherits RuntimeError (via BngsimError) as well as
+            # ValueError: before it was typed the refusal was a plain ValueError
+            # and fell past the RuntimeError arm below untouched, so adding the
+            # BngsimError base silently routed it INTO the wrapper. Only the
+            # switch-time site (_switch_sensitivity, issue #48) raises from
+            # inside this try — the event and codegen refusals are raised during
+            # setup and never reach here — which is why one site regressed and
+            # the other two did not.
+            raise
         except RuntimeError as e:
             raise SimulationError(f"Simulation failed: {e}{_tracking_hint(track_decades)}") from e
 

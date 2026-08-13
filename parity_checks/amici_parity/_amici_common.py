@@ -2,13 +2,17 @@
 
 This is the AMICI analogue of ``rr_parity/_rr_common.py``'s reference block
 (``rr_ode``). The bngsim test side (``bn_ode``) and every engine-agnostic helper
-(``align_common``, ``_integrate_stats``, ``_warm_rep_count``, ``schedule``,
-``hardware_info``, ``DEFAULT_RTOL``/``DEFAULT_ATOL``) are imported verbatim from
+(``_integrate_stats``, ``_warm_rep_count``, ``schedule``, ``hardware_info``,
+``DEFAULT_RTOL``/``DEFAULT_ATOL``) are imported verbatim from
 ``rr_parity._rr_common`` so the two suites share ONE bngsim adapter and ONE
 integration-timing taxonomy. This module adds only what is AMICI-specific:
 
   * ``amici_ode``            — the reference run (build / load / integrate), with a
                               timing dict mirroring ``rr_ode``'s schema.
+  * ``align_common``         — the shared species aligner, wrapped to undo AMICI's
+                              ``amici_`` id-collision prefix first (issue #321).
+                              AMICI's naming rule, so it does not belong in the
+                              generic helper RoadRunner also uses.
   * ``measure_warmup``       — per-process warmup (bngsim SymPy + AMICI import).
   * ``set_amici_quiet``      — silence AMICI's logger and compiler chatter.
   * ``classify_reference_refusal`` — map an AMICI failure to a refusal subclass.
@@ -67,7 +71,6 @@ from rr_parity import _rr_common as _rc  # noqa: E402
 
 # Re-export the shared surface so amici_run.py imports only this module.
 bn_ode = _rc.bn_ode
-align_common = _rc.align_common
 schedule = _rc.schedule
 hardware_info = _rc.hardware_info
 load_and_filter = _rc.load_and_filter
@@ -77,6 +80,62 @@ _integrate_stats = _rc._integrate_stats
 _warm_rep_count = _rc._warm_rep_count
 DEFAULT_RTOL = _rc.DEFAULT_RTOL
 DEFAULT_ATOL = _rc.DEFAULT_ATOL
+
+
+# --------------------------------------------------------------------------- #
+# AMICI's `amici_` id-collision prefix (issue #321)
+# --------------------------------------------------------------------------- #
+# AMICI renames any SBML id that collides with a symbol in its own generated C++
+# namespace — `x` IS the state vector there — so `<species id="x">` is reported
+# as `amici_x` in `rdata.state_ids`. The exact-id intersection in
+# `_rr_common.align_common` then comes out EMPTY and the job is reported as a
+# structural loader divergence at value=inf: the loudest verdict the suite has,
+# on models where the two engines agree perfectly.
+#
+# This is the species-side twin of bngsim's `_lp_` local-parameter prefix, which
+# `_amici_sens.bn_param_to_sbml_id` already strips — and it gets the same
+# discipline: the prefix is POSITIONAL (only a leading occurrence), and an
+# ambiguous strip is DROPPED rather than guessed at. Guessing is the dangerous
+# failure here: mis-pairing two different species produces a confident-looking
+# DIFF, which is far worse than the loud one it replaces.
+#
+# Kept in the AMICI adapter, not in `_rr_common`, because it is AMICI's naming
+# rule — RoadRunner never emits it, and the shared helper should stay generic.
+AMICI_ID_PREFIX = "amici_"
+
+
+def amici_state_id(name: str) -> str:
+    """Map one AMICI-reported state id back to its SBML id."""
+    if name.startswith(AMICI_ID_PREFIX):
+        return name[len(AMICI_ID_PREFIX) :]
+    return name
+
+
+def normalize_amici_names(am_names: list[str]) -> list[str]:
+    """De-prefix AMICI's state ids, leaving any ambiguous one untouched.
+
+    Ambiguity means two reported ids normalize to the same SBML id — e.g. a model
+    that genuinely declares both ``x`` and ``amici_x``. Stripping there would
+    silently pair the wrong series, so both are left as-is: they simply fail to
+    match, which is a visible non-comparison rather than an invisible wrong one.
+    """
+    stripped = [amici_state_id(n) for n in am_names]
+    counts: dict[str, int] = {}
+    for s in stripped:
+        counts[s] = counts.get(s, 0) + 1
+    return [s if counts[s] == 1 else raw for raw, s in zip(am_names, stripped, strict=True)]
+
+
+def align_common(bn_names: list[str], am_names: list[str]):
+    """``_rr_common.align_common`` with AMICI's ``amici_`` prefix undone first.
+
+    Same ``(bn_idx, am_idx, common)`` contract, and ``common`` carries SBML ids
+    (bngsim's namespace), so downstream comment strings stay readable. The
+    returned ``am_idx`` still indexes the ORIGINAL ``am_names`` order, which is
+    what the caller slices its ``rdata`` columns with.
+    """
+    return _rc.align_common(bn_names, normalize_amici_names(am_names))
+
 
 # On-disk cache of compiled AMICI extensions, keyed by SBML content + build flags.
 # AMICI does NO automatic staleness check, so the key is the whole hash: a changed

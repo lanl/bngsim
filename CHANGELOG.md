@@ -41,6 +41,46 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A declared switch-time refusal is now typed, and `run()` no longer launders
+  it (issue #320).** `compute_switch_time_sens` refuses a parameter that both
+  sets an `if()` switch time and acts inside a branch, because the crossing jump
+  is then not the whole gradient (issue #48). That refusal was a bare
+  `ValueError`, so the `amici_parity` sensitivity sweep scored it `EXCEPTION` —
+  "AMICI ran and bngsim broke" — where it accounted for **26 of 77 rows across 13
+  corpus models**. It now raises `SensitivityUnsupportedError`, and the sweep
+  buckets it `UNSUPPORTED`, matched by type.
+
+  Typing it exposed a second defect. `run()` wraps `RuntimeError` raised in the
+  solve region into `SimulationError`; the refusal had been escaping only because
+  a plain `ValueError` is not a `RuntimeError`. Adding the `BngsimError` base
+  silently routed it *into* that wrapper, so the newly-typed refusal reached
+  callers as a generic solver failure — destroying the distinction it had just
+  been given. `run()` now passes `SensitivityUnsupportedError` through unchanged,
+  as it already did for `SimulationTimeout`. Only the switch-time site raises
+  from inside that `try` (the event and codegen refusals are raised during
+  setup), which is why one of the three typed sites regressed and the other two
+  did not.
+
+- **`amici_parity`: AMICI's `amici_` id-collision prefix is now undone before
+  species alignment (issue #321).** AMICI renames SBML ids that collide with its
+  own generated C++ symbols — `x` *is* the state vector there — so
+  `<species id="x">` comes back as `amici_x`. `align_common` intersected ids
+  exactly, so the intersection came out empty and the job was reported as a
+  structural loader divergence at `value=inf` — the loudest verdict the suite
+  emits — on models where the two engines agree exactly.
+
+  `BIOMD0000000114`, `115`, `346` and `919` now all `PASS` at `max_rel_err=0`, on
+  **both** the sensitivity and the state-parity job: `align_common` is shared, so
+  the ODE matrix carried the same false DIFFs.
+
+  The de-prefixing lives in the AMICI adapter rather than the shared
+  `_rr_common` helper, because it is AMICI's naming rule and RoadRunner never
+  emits it. It follows the same discipline as bngsim's `_lp_` local-parameter
+  prefix: positional (leading occurrence only), and an ambiguous strip is dropped
+  rather than guessed at — mis-pairing two species would yield a
+  confident-looking DIFF, which is worse than the loud non-comparison it
+  replaces.
+
 - **A codegen BUILD failure is no longer reported as a non-differentiable
   model.** The model-path codegen entry points (`prepare_model_codegen`,
   `prepare_model_codegen_source`) catch every exception and return `None`,

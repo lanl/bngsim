@@ -209,8 +209,16 @@ method pinning.
 
 ### Parameter alignment — the one hard part
 
-Species ids match across engines (same SBML), so `align_common` handles them
-unchanged. Parameter ids do **not**, because each engine flattens SBML *local*
+Species ids match across engines (same SBML), so `align_common` handles them with
+one adjustment: AMICI renames any id that collides with a symbol in its own
+generated C++ namespace — `x` *is* the state vector there — so `<species id="x">`
+comes back as `amici_x`. `_amici_common.align_common` undoes that leading prefix
+before intersecting (issue #321); without it, `BIOMD0000000114`/`115`/`346`/`919`
+were reported as fully disjoint species sets at `value=inf` despite the engines
+agreeing to `max_rel_err=0`. The strip is positional, and an ambiguous one (a
+model declaring both `x` and `amici_x`) is dropped rather than guessed at.
+
+Parameter ids do **not** match, because each engine flattens SBML *local*
 (per-`kineticLaw`) parameters under its own scheme:
 
 | | SBML reaction `J0`, local parameter `V1` |
