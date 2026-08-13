@@ -142,9 +142,19 @@ def _compare_ode(bn, am) -> tuple[str, float, str, str, float]:
 SETTLED_REFUSALS = frozenset({"adjudicated_confirm", "adjudicated_uncoverable"})
 
 
-def _classify_failure(bn_exc: str, am_exc: str) -> tuple[str, str]:
+def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) -> tuple[str, str]:
     """Map per-engine raise status to ``(status, exception)``. AMICI is the
-    existence proof, so the engine that failed determines the bucket."""
+    existence proof, so the engine that failed determines the bucket.
+
+    ``bn_unsupported`` marks a DECLARED bngsim refusal — here that means
+    ``UnderSpecifiedModelError``: the model reads a symbol it never defines and
+    bngsim will not guess ``0.0`` (issue #323). It wins over every other bucket,
+    including the both-raised BAD_TEST, because the declaration is a fact about
+    this model that stays true whatever AMICI did. Both are non-scoring, so the
+    choice costs no signal and gains a countable one.
+    """
+    if bn_unsupported:
+        return "unsupported", f"{bn_exc} || {am_exc}" if am_exc else bn_exc
     if bn_exc and am_exc:  # neither ran -> the test/model is the problem
         return "bad_test", f"{am_exc} || {bn_exc}"
     if am_exc:  # bngsim ran but the reference couldn't -> nothing to compare against
@@ -176,6 +186,7 @@ def _worker(spec: dict, q) -> None:
     # --- bngsim side (record status; do NOT short-circuit on a generic raise) ---
     bn = None
     bn_exc = ""
+    bn_unsupported = False
     bn_timing = None
     bn_wall = 0.0
     try:
@@ -194,6 +205,7 @@ def _worker(spec: dict, q) -> None:
             bn_timing = bn[3]
             bn = bn[:3]
     except Exception as exc:
+        bn_unsupported = ac.is_declared_refusal(exc)
         bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
 
     # --- AMICI side (always run; it's the reference / existence proof) ---
@@ -231,7 +243,7 @@ def _worker(spec: dict, q) -> None:
 
     # --- classify from per-engine status (the reference anchors the verdict) ---
     if bn_exc or am_exc:
-        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc)
+        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc, bn_unsupported)
         q.put(res)
         return
 

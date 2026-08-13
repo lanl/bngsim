@@ -3670,7 +3670,7 @@ def _build_model_from_sbml_doc(doc):
         if _offenders:
             import os
 
-            from bngsim._exceptions import ModelError
+            from bngsim._exceptions import UnderSpecifiedModelError
 
             if os.environ.get("BNGSIM_ALLOW_UNSET_PARAMS") == "1":
                 for pid in _offenders:
@@ -3696,7 +3696,7 @@ def _build_model_from_sbml_doc(doc):
                         f"Parameters {names} have no value attribute and no "
                         "initialAssignment, but are referenced by a"
                     )
-                raise ModelError(
+                raise UnderSpecifiedModelError(
                     f"{lead} kineticLaw / rule / event / initialAssignment "
                     "expression in the model. The model is under-specified: "
                     "bngsim refuses to default the value to 0.0, which would "

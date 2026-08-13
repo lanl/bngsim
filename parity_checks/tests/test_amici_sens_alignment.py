@@ -515,6 +515,103 @@ class TestIsDeclaredRefusal:
         assert not run._is_declared_refusal(RuntimeError("no C compiler"))
 
 
+class TestUnderSpecifiedIsAlsoDeclared:
+    """Issue #323. `UnderSpecifiedModelError` is raised at LOAD — the model reads
+    a symbol it never defines — so it reaches BOTH amici jobs, not just the
+    sensitivity one. AMICI accepts the same models by defaulting the symbol to 0,
+    which is why bngsim looks like the one that "broke".
+
+    It is not a bngsim bug and not a capability gap in the sensitivity machinery;
+    it is bngsim declining to guess. 12 corpus models sat in EXCEPTION for this.
+    """
+
+    def test_it_is_recognized_as_a_declared_refusal(self):
+        import _amici_common as ac
+        import bngsim
+
+        assert ac.is_declared_refusal(bngsim.UnderSpecifiedModelError("no value for 'k'"))
+
+    def test_a_plain_model_error_is_not(self):
+        """The guard that keeps the bucket meaningful: `ModelError` also covers
+        .net parse failures and invalid model state, which ARE actionable."""
+        import _amici_common as ac
+        import bngsim
+
+        assert not ac.is_declared_refusal(bngsim.ModelError("failed to parse .net"))
+
+    def test_the_ode_runner_classifies_it_too(self):
+        """`align_common`'s lesson, applied to the taxonomy: this refusal is
+        load-time, so the state-parity job hits it identically. Fixing only the
+        sensitivity runner would leave the ODE matrix mislabelled."""
+        import amici_run as run
+
+        assert run._classify_failure("bngsim: UnderSpecifiedModelError: x", "", True)[0] == (
+            "unsupported"
+        )
+        assert run._classify_failure("bngsim: ModelError: x", "")[0] == "exception"
+
+    def test_the_ode_runner_flag_defaults_off(self):
+        import amici_run as run
+
+        assert run._classify_failure("bngsim: x", "")[0] == "exception"
+        assert run._classify_failure("", "amici: x")[0] == "reference_failed"
+        assert run._classify_failure("bngsim: x", "amici: y")[0] == "bad_test"
+
+
+class TestDegeneracyWitnesses:
+    """Issue #328. A job can be PASS when the whole sensitivity tensor lies below
+    what either solver resolves — nothing was compared, but the row looks like a
+    real pass.
+
+    The floor is applied PER PARAMETER COLUMN. Reducing it with `max` over the
+    parameter axis (the first thing I wrote) lets one tiny-valued parameter
+    inflate the threshold for the entire tensor and marks a live model
+    degenerate — the same global-reduction mistake as issue #322's transversality
+    floor, one module over.
+    """
+
+    ATOL = 1e-12
+
+    def test_floors_are_per_column_not_reduced(self):
+        f = asens.sens_resolution_floors([1.0, 1e-6], self.ATOL)
+        assert f is not None and len(f) == 2
+        assert f[1] > f[0], "a smaller |p| must give a LOOSER floor"
+
+    def test_absent_inputs_report_not_assessed(self):
+        """`None`, not a fabricated 0 — the field must not claim a verdict the
+        run had no basis for."""
+        assert asens.sens_resolution_floors(None, self.ATOL) is None
+        assert asens.sens_resolution_floors([1.0], None) is None
+        assert asens.resolvable_param_columns(np.zeros((2, 1, 1)), None, None) is None
+
+    def test_an_all_tiny_tensor_has_no_resolvable_column(self):
+        """`MODEL1907180003`: max|sx| = 4.7e-18 against a floor of 2.8e-10."""
+        sx = np.full((5, 3, 2), 1e-18)
+        assert asens.resolvable_param_columns(sx, [1.0, 1.0], self.ATOL) == 0
+
+    def test_a_healthy_tensor_has_every_column_resolvable(self):
+        sx = np.full((5, 3, 2), 1.0)
+        assert asens.resolvable_param_columns(sx, [1.0, 1.0], self.ATOL) == 2
+
+    def test_one_tiny_valued_parameter_does_not_condemn_the_whole_tensor(self):
+        """The `BIOMD0000000002` regression. It has real dynamics and a genuine
+        `max|sx|`, but one small-valued parameter raises that column's floor above
+        the tensor peak. Under a global `max` floor the model read as entirely
+        unresolvable; per column, the other parameters still count."""
+        sx = np.zeros((4, 2, 2))
+        sx[:, :, 0] = 1e-3  # ordinary column, |p| = 1  -> floor 1e-10
+        sx[:, :, 1] = 1e-9  # column whose |p| is tiny  -> very loose floor
+        n = asens.resolvable_param_columns(sx, [1.0, 1e-9], self.ATOL)
+        assert n == 1, "the ordinary column must still be counted as resolvable"
+
+    def test_a_column_exactly_at_its_floor_is_not_resolvable(self):
+        """Boundary: `>` not `>=`, so a value indistinguishable from the floor is
+        not claimed as signal."""
+        floors = asens.sens_resolution_floors([1.0], self.ATOL)
+        sx = np.full((3, 1, 1), float(floors[0]))
+        assert asens.resolvable_param_columns(sx, [1.0], self.ATOL) == 0
+
+
 class TestClassifyFailure:
     @staticmethod
     def _cls(bn, am, unsup=False):

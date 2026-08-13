@@ -83,6 +83,7 @@ import _amici_common as ac  # noqa: E402
 
 # Engine-agnostic surface, re-exported so the runner imports only this module.
 align_common = ac.align_common
+is_declared_refusal = ac.is_declared_refusal
 schedule = ac.schedule
 hardware_info = ac.hardware_info
 load_and_filter = ac.load_and_filter
@@ -597,6 +598,46 @@ def sensitivity_noise_mask(
     p = np.abs(np.asarray(param_values, dtype=float))
     floor = np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
     return np.abs(np.asarray(bn_sx) - np.asarray(am_sx)) <= floor[np.newaxis, np.newaxis, :]
+
+
+def sens_resolution_floors(param_values, atol, factor: float = SENS_NOISE_FACTOR):
+    """Per-parameter resolvable magnitude ``factor*atol/|p_j|``, or ``None``.
+
+    Shares the formula with :func:`sensitivity_noise_mask` rather than restating
+    it, so the two cannot drift into disagreeing about what "resolvable" means.
+    Returns ``None`` when the caller has no parameter values — exactly when the
+    mask is also inactive — so a report field of ``None`` honestly reads "not
+    assessed" rather than a fabricated 0.
+
+    Returned PER COLUMN, never reduced to one scalar. Reducing with ``max`` would
+    let a single tiny-valued parameter inflate the threshold for the whole tensor
+    and mark a live model degenerate: ``BIOMD0000000002`` has real dynamics
+    (state span 1.9) and a genuine ``max|sx| = 3.7e-5``, but one small parameter
+    puts the largest column floor at ``8.3e-5``, which a global max would declare
+    "entirely unresolvable". That is the same global-reduction mistake as the
+    transversality noise floor in issue #322, one module over.
+    """
+    if param_values is None or atol is None:
+        return None
+    p = np.abs(np.asarray(param_values, dtype=float))
+    if p.size == 0:
+        return None
+    return np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
+
+
+def resolvable_param_columns(bn_sx: np.ndarray, param_values, atol) -> int | None:
+    """How many parameter columns carry a sensitivity above their OWN floor.
+
+    ``0`` means every column is beneath what the solver can resolve, i.e. the
+    comparison established nothing regardless of how well the engines agreed —
+    the vacuous-pass condition of issue #328. ``None`` when the floor is not
+    assessable.
+    """
+    floors = sens_resolution_floors(param_values, atol)
+    if floors is None or bn_sx.size == 0:
+        return None
+    peaks = np.nanmax(np.abs(bn_sx), axis=(0, 1))  # peak over (time, species) per param
+    return int(np.count_nonzero(peaks > floors))
 
 
 def sens_verdict(

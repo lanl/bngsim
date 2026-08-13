@@ -39,6 +39,7 @@ from bngsim._exceptions import (
     SsaBoundaryWarning,
     SsaValidationError,
     StopConditionMet,
+    UnderSpecifiedModelError,
 )
 from bngsim._model import Model
 from bngsim._named_array import NamedArray
@@ -190,6 +191,7 @@ __all__ = [
     "SensitivityUnsupportedError",
     "SsaValidationError",
     "StopConditionMet",
+    "UnderSpecifiedModelError",
     # SSA validation
     "SsaIssue",
     "validate_for_ssa",

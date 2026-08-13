@@ -144,12 +144,35 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     )
 
     n_p = bn_sx.shape[2]
+
+    # Degeneracy witnesses (issue #328). A job can be reported PASS when the
+    # WHOLE sensitivity tensor lies below the magnitude either solver can
+    # resolve: nothing was meaningfully compared, but the row is indistinguishable
+    # from a real pass. differ's significance gate cannot catch it — that gate is
+    # relative to the file-wide peak, and when everything is tiny there is no
+    # larger peak to be judged against.
+    #
+    # These make the census computable from the report instead of from a corpus
+    # re-run. Note the OBVIOUS proxy does not work: n_noise_forgiven/n_cells hits
+    # 100% for excellent agreement too, because the mask keys on |bn-am|, not on
+    # magnitude — MODEL7909395757 forgives 3636/3636 cells at max|sx| = 0.6.
+    # Magnitude has to be recorded directly, and PER COLUMN: a single
+    # tiny-valued parameter would otherwise inflate a global floor and mark a
+    # live model degenerate (see sens_resolution_floors).
+    sx_used = bn_sx[:, bn_idx, :]
+    sx_peak = float(np.nanmax(np.abs(sx_used))) if sx_used.size else 0.0
+    x_used = bn_x[:, bn_idx]
+    state_span = float(np.nanmax(np.nanmax(x_used, axis=0) - np.nanmin(x_used, axis=0)))
+    n_resolvable = asens.resolvable_param_columns(sx_used, param_values, atol)
+
     comment = (
         f"{len(common)} sp x {n_p} par; fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
         f"forgiven {v['budget_forgiven']}, noise {v['n_noise_forgiven']}); "
         f"state {'ok' if sv['passed'] else 'DIFF'}"
     )
+    if n_resolvable == 0:
+        comment += "; DEGENERATE: no parameter column resolvable"
     return {
         "status": "pass" if v["passed"] else "diff",
         "value": v["max_rel"],
@@ -159,6 +182,10 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
         "n_common_species": len(common),
         "n_params": int(n_p),
         "n_noise_forgiven": int(v["n_noise_forgiven"]),
+        # issue #328 — the two numbers a vacuous-pass census needs.
+        "max_abs_sx": sx_peak,
+        "n_resolvable_params": n_resolvable,
+        "state_span": state_span,
     }
 
 
@@ -240,22 +267,10 @@ def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) ->
     return "exception", bn_exc
 
 
-def _is_declared_refusal(exc: BaseException) -> bool:
-    """True when bngsim DECLARED it cannot differentiate this model.
-
-    Recognized by TYPE — ``bngsim.SensitivityUnsupportedError`` — never by
-    message text. Both refusals carry long, frequently-edited prose that cites GH
-    issue numbers; a message-prefix match would silently demote every one of them
-    back to EXCEPTION the first time someone rewords a sentence, which is the
-    exact signal dilution UNSUPPORTED exists to remove.
-
-    ``getattr`` rather than a hard import so a bngsim predating the class
-    degrades to the old EXCEPTION bucket instead of failing every job.
-    """
-    import bngsim
-
-    cls = getattr(bngsim, "SensitivityUnsupportedError", None)
-    return cls is not None and isinstance(exc, cls)
+# Shared with amici_run.py — see `_amici_common.is_declared_refusal` for why the
+# match is by exception TYPE and never by message text. Kept under this name so
+# the module reads the same as before it was hoisted.
+_is_declared_refusal = asens.is_declared_refusal
 
 
 def _worker(spec: dict, q) -> None:
@@ -314,7 +329,12 @@ def _worker(spec: dict, q) -> None:
         param_values = [float(_m.get_param(bn_by_id[i])) for i in shared_ids]
         del _m
     except Exception as exc:
-        res["status"] = "exception"
+        # A DECLARED refusal here is almost always UnderSpecifiedModelError: the
+        # model reads a symbol it never defines, so the load itself refuses
+        # (issue #323). AMICI accepts the same models by defaulting the symbol to
+        # 0, which is why this shows up as bngsim-only. It is a documented
+        # refusal, not a bug — UNSUPPORTED, not EXCEPTION.
+        res["status"] = "unsupported" if _is_declared_refusal(exc) else "exception"
         res["exception"] = f"bngsim-params: {type(exc).__name__}: {exc}"[:400]
         res["wall_sec"] = round(am_wall, 3)
         q.put(res)
@@ -631,6 +651,11 @@ def main() -> int:
                         "n_common_species",
                         "state_passed",
                         "state_max_rel",
+                        # issue #328 — degeneracy witnesses, so a vacuous-pass
+                        # census is a query over the report rather than a re-run.
+                        "max_abs_sx",
+                        "n_resolvable_params",
+                        "state_span",
                     )
                     if k in r
                 },

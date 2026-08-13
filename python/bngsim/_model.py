@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from bngsim._exceptions import ModelError, ParameterError
+from bngsim._exceptions import ModelError, ParameterError, UnderSpecifiedModelError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -379,6 +379,8 @@ class Model:
             return load_antimony_via_sbml(path, compartment_sizes)
         except (ImportError, FileNotFoundError):
             raise
+        except UnderSpecifiedModelError:
+            raise  # typed refusal — see from_sbml (Antimony loads via SBML)
         except Exception as e:
             raise ModelError(f"Failed to load Antimony file {path}: {e}") from e
 
@@ -407,6 +409,8 @@ class Model:
             return load_antimony_string_via_sbml(text, compartment_sizes)
         except ImportError:
             raise
+        except UnderSpecifiedModelError:
+            raise  # typed refusal — see from_sbml (Antimony loads via SBML)
         except Exception as e:
             raise ModelError(f"Failed to load Antimony string: {e}") from e
 
@@ -474,6 +478,13 @@ class Model:
             model = load_sbml(path, compartment_sizes)
         except (ImportError, FileNotFoundError):
             raise
+        except UnderSpecifiedModelError:
+            # Already the precise, typed refusal (issue #323): the model reads a
+            # symbol it never defines. Re-wrapping it as a generic ModelError
+            # would erase the distinction a caller — and the parity taxonomy —
+            # uses to tell a documented refusal from an actionable bug. Same
+            # reasoning as run()'s SensitivityUnsupportedError pass-through.
+            raise
         except Exception as e:
             raise ModelError(f"Failed to load SBML file {path}: {e}") from e
         # GH #145 eager escape hatch: BNGSIM_EAGER_JACOBIAN=1 is honored inside the
@@ -517,6 +528,8 @@ class Model:
             model = load_sbml_string(text, compartment_sizes)
         except ImportError:
             raise
+        except UnderSpecifiedModelError:
+            raise  # typed refusal — see from_sbml
         except Exception as e:
             raise ModelError(f"Failed to load SBML string: {e}") from e
         if defer_jacobian is False:
