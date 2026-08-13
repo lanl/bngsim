@@ -442,6 +442,14 @@ def amici_ode(
         ls_code = -1
     linear_solver = _linear_solver_names().get(ls_code, f"kind_{ls_code}")
 
+    # Anchor the initial condition at t_start, matching bn_ode/rr_ode. AMICI's t0
+    # defaults to 0 regardless of where the output grid begins, so on a model whose
+    # SED-ML initialTime is nonzero it would integrate [0, t_start] FIRST and report
+    # an already-evolved state at the grid's first point, while bngsim and
+    # RoadRunner both apply the initial state AT t_start. That is a silent
+    # apples-to-oranges comparison, not a tolerance effect: it does not shrink as
+    # rtol/atol tighten. 21 of the 1323 corpus models have t_start != 0.
+    model.set_t0(t_start)
     ts = np.linspace(t_start, t_end, n_points)
     model.set_timepoints(ts)
 

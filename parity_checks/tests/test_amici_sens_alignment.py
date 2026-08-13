@@ -384,3 +384,95 @@ class TestSensitivityNoiseFloor:
         v = asens.sens_verdict(bn, am)
         assert not v["passed"]
         assert v["n_noise_forgiven"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Initial-time alignment
+# --------------------------------------------------------------------------- #
+class TestInitialTimeAlignment:
+    """AMICI's t0 defaults to 0 no matter where the output grid starts.
+
+    bngsim and RoadRunner both apply the initial state AT ``t_start`` (rr_parity's
+    ``bn_ode`` documents this: the SED-ML ``initialTime`` is passed as ``t_start``
+    so pre-``outputStartTime`` dynamics fire). Without an explicit ``set_t0``,
+    AMICI instead integrates ``[0, t_start]`` first and reports an already-evolved
+    state at the grid's first point — the engines silently solve different initial
+    value problems.
+
+    This was not hypothetical: it made BIOMD0000000569 DIFF with a state
+    disagreement frozen at 1.6e-4 across four orders of magnitude of integration
+    tolerance (the tell that it was structural, not numerical), and it reaches 21
+    of the 1323 corpus models. Asserted here with a recording double, because the
+    real failure needs a nonzero-``initialTime`` model from the gitignored corpus
+    and a ~15 s AMICI compile.
+    """
+
+    T_START = 1e-5
+
+    def _fake_built(self, recorder):
+        ss = pytest.importorskip("amici.sim.sundials")
+
+        class _RData:
+            status = 0
+            cpu_time = 1.0
+            x = np.zeros((3, 1))
+            sx = np.zeros((3, 1, 1))
+            state_ids = ["A"]
+
+        class _Solver:
+            def set_relative_tolerance(self, v): ...
+            def set_absolute_tolerance(self, v): ...
+            def set_sensitivity_order(self, v): ...
+            def set_sensitivity_method(self, v): ...
+            def set_internal_sensitivity_method(self, v): ...
+            def get_linear_solver(self):
+                return int(getattr(ss, "LinearSolver_KLU", 2))
+
+        class _Model:
+            def get_free_parameter_ids(self):
+                return ["k1"]
+
+            def set_parameter_scale(self, v): ...
+            def set_parameter_list(self, v): ...
+            def create_solver(self):
+                return _Solver()
+
+            def set_t0(self, t):
+                recorder.append(t)
+
+            def set_timepoints(self, ts):
+                recorder.append(("ts", float(ts[0])))
+
+            def simulate(self, solver=None):
+                return _RData()
+
+        zero = dict.fromkeys(
+            ("parse_sec", "interpret_sec", "jac_derive_sec", "codegen_sec", "compile_sec"), 0.0
+        )
+        return (_Model(), {**zero, "load_sec": 0.0}, True)
+
+    def test_t0_is_pinned_to_t_start(self):
+        rec = []
+        asens.amici_sens(
+            self._fake_built(rec), self.T_START, 1.0, 3, 1e-9, 1e-12, ["k1"], "staggered"
+        )
+        assert self.T_START in rec, f"set_t0({self.T_START}) was never called; got {rec}"
+
+    def test_t0_is_set_before_the_timepoints(self):
+        """Ordering matters to AMICI: t0 must be in place when the output grid is
+        installed, or the grid is interpreted against the stale t0."""
+        rec = []
+        asens.amici_sens(
+            self._fake_built(rec), self.T_START, 1.0, 3, 1e-9, 1e-12, ["k1"], "staggered"
+        )
+        i_t0 = rec.index(self.T_START)
+        i_ts = next(i for i, e in enumerate(rec) if isinstance(e, tuple) and e[0] == "ts")
+        assert i_t0 < i_ts
+
+    def test_the_grid_still_starts_at_t_start(self):
+        """The fix must not shift the reported grid — only where the IC is applied."""
+        rec = []
+        t, _x, _sx, _names, _timing = asens.amici_sens(
+            self._fake_built(rec), self.T_START, 1.0, 3, 1e-9, 1e-12, ["k1"], "staggered"
+        )
+        assert t[0] == self.T_START
