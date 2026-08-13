@@ -607,9 +607,27 @@ class TestDegeneracyWitnesses:
     def test_a_column_exactly_at_its_floor_is_not_resolvable(self):
         """Boundary: `>` not `>=`, so a value indistinguishable from the floor is
         not claimed as signal."""
-        floors = asens.sens_resolution_floors([1.0], self.ATOL)
+        floors = asens.sens_resolution_floors([1.0], self.ATOL, factor=asens.DEGENERACY_FACTOR)
         sx = np.full((3, 1, 1), float(floors[0]))
         assert asens.resolvable_param_columns(sx, [1.0], self.ATOL) == 0
+
+    def test_the_degeneracy_claim_uses_the_RAW_floor_not_the_forgiveness_factor(self):
+        """The two thresholds carry opposite risk and must not share a constant.
+
+        `SENS_NOISE_FACTOR` is 100x the raw resolution on purpose — being generous
+        when FORGIVING a cell avoids false DIFFs. Being generous when CLAIMING
+        VACUITY does the reverse: it invents vacuity and discounts a real pass.
+        Measured on the corpus, reusing 100x mislabels 5 live models
+        (BIOMD0000000335, 500, 501, 827, MODEL1201140005).
+
+        A sensitivity sitting between the raw floor and 100x it is real signal.
+        """
+        assert asens.DEGENERACY_FACTOR < asens.SENS_NOISE_FACTOR
+        raw = asens.sens_resolution_floors([1.0], self.ATOL, factor=1.0)[0]
+        sx = np.full((3, 1, 1), raw * 10)  # above raw, below 100x raw
+        assert asens.resolvable_param_columns(sx, [1.0], self.ATOL) == 1, (
+            "a value clearing the raw floor must count as signal"
+        )
 
 
 class TestClassifyFailure:

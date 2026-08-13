@@ -625,15 +625,32 @@ def sens_resolution_floors(param_values, atol, factor: float = SENS_NOISE_FACTOR
     return np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
 
 
+# The mask's generous multiplier is deliberately NOT reused for the degeneracy
+# test: the two questions carry opposite risk.
+#
+#   forgiving a cell   — being generous avoids false DIFFs, so SENS_NOISE_FACTOR
+#                        is 100x the raw resolution on purpose.
+#   claiming vacuity   — being generous INVENTS vacuity, marking real signal
+#                        unresolvable and quietly discounting a genuine pass.
+#
+# Measured on the corpus: at factor=100, 5 of 19 flagged models (BIOMD0000000335,
+# 500, 501, 827, MODEL1201140005) have columns that clear their raw floor and are
+# not degenerate at all. So the claim is made against the RAW resolution.
+DEGENERACY_FACTOR = 1.0
+
+
 def resolvable_param_columns(bn_sx: np.ndarray, param_values, atol) -> int | None:
-    """How many parameter columns carry a sensitivity above their OWN floor.
+    """How many parameter columns carry a sensitivity above their OWN raw floor.
 
     ``0`` means every column is beneath what the solver can resolve, i.e. the
     comparison established nothing regardless of how well the engines agreed —
     the vacuous-pass condition of issue #328. ``None`` when the floor is not
     assessable.
+
+    Judged at ``DEGENERACY_FACTOR`` (the raw ``atol/|p_j|``), not at the mask's
+    ``SENS_NOISE_FACTOR`` — see above for why the asymmetry is deliberate.
     """
-    floors = sens_resolution_floors(param_values, atol)
+    floors = sens_resolution_floors(param_values, atol, factor=DEGENERACY_FACTOR)
     if floors is None or bn_sx.size == 0:
         return None
     peaks = np.nanmax(np.abs(bn_sx), axis=(0, 1))  # peak over (time, species) per param
