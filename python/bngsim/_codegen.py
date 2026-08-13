@@ -9266,6 +9266,34 @@ def last_codegen_cache_hit() -> bool | None:
     return getattr(_codegen_timing, "last_cache_hit", None)
 
 
+def _record_codegen_error(exc: BaseException | None) -> None:
+    """Record WHY the most recent model-path ``prepare_*`` returned ``None``.
+
+    The two model-path entry points swallow every exception and return ``None``,
+    because most callers want "no codegen available, fall back to the interpreted
+    RHS" rather than a traceback. That conflates two very different conditions
+    under one sentinel: codegen **declined** the model (nothing to compile), and
+    codegen **failed** (a compile timeout on a huge translation unit, a cc error,
+    an unreadable cache). A caller that must tell them apart — the forward-
+    sensitivity path, which refuses either way but for opposite reasons — has no
+    way to, and the refusal it emits ends up asserting a cause it never checked.
+
+    ``BIOMD0000000608`` is the case that made this concrete: a 66.6 MB C source
+    that generated fine and then blew a 600 s compile budget was reported as
+    "its rate laws could not be differentiated to closed form".
+    """
+    _codegen_timing.last_error = exc
+
+
+def last_codegen_error() -> BaseException | None:
+    """The exception behind the most recent model-path ``prepare_*`` ``None``, or
+    ``None`` when that call declined (or succeeded) without failing.
+
+    Cleared at the start of every model-path ``prepare_*``, so it always describes
+    the most recent call on this thread and never a stale one."""
+    return getattr(_codegen_timing, "last_error", None)
+
+
 def prepare_model_codegen(model) -> Path | None:
     """Generate C code from a built model, compile, and return .so path.
 
@@ -9299,6 +9327,7 @@ def prepare_model_codegen(model) -> Path | None:
     """
     t0 = time.perf_counter()
     cache_hit: bool | None = None
+    _record_codegen_error(None)
     try:
         emit_output_sens = bool(getattr(model, "_want_output_sens", False))
         # Issue #209: resolved ONCE and handed to both the key and the generator,
@@ -9375,6 +9404,7 @@ def prepare_model_codegen(model) -> Path | None:
         return compile_rhs(c_source, model_hash)
     except Exception as e:
         logger.warning("Model codegen failed: %s", e)
+        _record_codegen_error(e)
         return None
     finally:
         _record_codegen_sec(model, time.perf_counter() - t0, cache_hit)
@@ -9429,6 +9459,7 @@ def prepare_model_codegen_source(model) -> str | None:
     ``None`` (matching ``prepare_model_codegen``) if source generation fails.
     """
     t0 = time.perf_counter()
+    _record_codegen_error(None)
     try:
         c_source, _ = generate_combined_from_model(
             model,
@@ -9438,6 +9469,7 @@ def prepare_model_codegen_source(model) -> str | None:
         return c_source
     except Exception as e:
         logger.warning("Model codegen source generation failed: %s", e)
+        _record_codegen_error(e)
         return None
     finally:
         _record_codegen_sec(model, time.perf_counter() - t0)

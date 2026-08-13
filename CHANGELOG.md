@@ -14,7 +14,56 @@ in `CMakeLists.txt`) is derived from it.
 
 ## [Unreleased]
 
+### Added
+
+- **`bngsim.SensitivityUnsupportedError` — a clean forward-sensitivity refusal is
+  now distinguishable by type.** bngsim has two constructs it *declares* it
+  cannot differentiate and raises on rather than answer wrongly: an event whose
+  crossing time moves with a requested parameter in a way `dt*/dp` cannot be
+  computed for (GH #205), and a rate law codegen cannot differentiate to closed
+  form — a non-smooth `min`/`max`/`abs`/`floor`, `rateOf()` in a rate law, an
+  unparseable expression (GH #214). Both raised a bare `ValueError`, which made a
+  documented capability gap indistinguishable from a bug without matching on
+  message text.
+
+  Both now raise `SensitivityUnsupportedError`, the forward-sensitivity peer of
+  `SsaValidationError`. A fitting driver can catch it to fall back on a
+  derivative-free optimizer; the `amici_parity` sensitivity sweep buckets it as
+  `UNSUPPORTED` (non-scoring) instead of `EXCEPTION` (an actionable bngsim bug),
+  matching it by type rather than by message prefix so rewording a refusal
+  cannot silently sink it back. `BIOMD0000000342` is the corpus model that was
+  diluting `EXCEPTION` this way.
+
+  **Not a break.** The class inherits both `BngsimError` and `ValueError`, so
+  every existing `except ValueError` handler keeps working. Environment failures
+  are deliberately excluded: "no C compiler and no JIT available" is a fixable
+  local problem, not a property of the model, and stays a plain `RuntimeError`.
+
 ### Fixed
+
+- **A codegen BUILD failure is no longer reported as a non-differentiable
+  model.** The model-path codegen entry points (`prepare_model_codegen`,
+  `prepare_model_codegen_source`) catch every exception and return `None`,
+  because most callers want "no codegen, fall back to the interpreted RHS"
+  rather than a traceback. The forward-sensitivity path read that `None` as a
+  single condition and raised "its rate laws could not be differentiated to
+  closed form" — a cause it had never checked.
+
+  `BIOMD0000000608` is the case that found it. Its rate laws differentiate
+  perfectly: codegen generated **66.6 MB** of C and then blew the 600 s compile
+  budget on it. The user-facing advice was therefore exactly wrong — the fix is
+  more cores, `BNGSIM_CODEGEN_JOBS`, or `BNGSIM_CODEGEN_TIMEOUT`, not rewriting a
+  smooth rate law — and the original exception was discarded along with its
+  traceback.
+
+  The two entry points now record why they returned `None`
+  (`bngsim._codegen.last_codegen_error()`, cleared on entry so it is never
+  stale), and the sensitivity path asks before it refuses: a recorded cause
+  raises the existing "Failed to build the analytical sensitivity RHS" envelope,
+  chained with `raise ... from`, and only a `None` with no cause is a declared
+  refusal. This matters more now that declared refusals are non-scoring in the
+  parity taxonomy — misattributing a resource failure would have made it
+  disappear from the tally rather than merely mislabel it.
 
 - **A parameter that reaches the model only through an `<initialAssignment>` is
   no longer frozen (issue #313).** bngsim evaluates every `<initialAssignment>`

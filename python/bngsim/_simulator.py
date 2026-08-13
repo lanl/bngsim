@@ -39,10 +39,16 @@ from bngsim._atol import (
     is_scalar_atol,
     normalize_atol_vector,
 )
-from bngsim._codegen import _codegen_jit_backend, last_codegen_cache_hit, last_codegen_sec
+from bngsim._codegen import (
+    _codegen_jit_backend,
+    last_codegen_cache_hit,
+    last_codegen_error,
+    last_codegen_sec,
+)
 from bngsim._exceptions import (
     DenseSolverFallbackWarning,
     ModelError,
+    SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
     SsaBoundaryWarning,
@@ -1235,7 +1241,7 @@ class Simulator:
             reason = sorted(blocked.values())[0] + "."
             detail = ""
         if reason:
-            raise ValueError(
+            raise SensitivityUnsupportedError(
                 "Output sensitivities are not supported for this model's events: "
                 + reason
                 + detail
@@ -1612,9 +1618,20 @@ class Simulator:
                 "in-process MIR JIT."
             ) from e
 
-        # A None return means codegen DECLINED — the model's rate laws could not
-        # be differentiated to closed form. Refuse rather than return unreliable
-        # finite-difference sensitivities (GH #214).
+        # A None return means one of two very different things, because the
+        # model-path ``prepare_*`` entry points swallow every exception behind the
+        # same sentinel: codegen DECLINED the model (its rate laws do not
+        # differentiate to closed form), or codegen FAILED (a compile timeout, a
+        # cc error). Only the first is a property of the model, and only the first
+        # is a declared refusal — so ask which it was instead of asserting.
+        #
+        # Asserting was wrong in practice, not just in principle:
+        # ``BIOMD0000000608`` generated 66.6 MB of perfectly differentiated C and
+        # then blew a 600 s compile budget, and was reported as "its rate laws
+        # could not be differentiated to closed form". Now that a declared refusal
+        # is a typed, NON-SCORING outcome in the parity taxonomy, that
+        # misattribution would hide a resource limit rather than merely mislabel it.
+        cause = last_codegen_error()
         diff_err = (
             "Could not generate an analytical sensitivity RHS for this model: its "
             "rate laws could not be differentiated to closed form (e.g. a "
@@ -1624,9 +1641,25 @@ class Simulator:
             "finite-difference derivatives (GH #214). If the rate law is smooth "
             "but unsupported here, please file a codegen issue."
         )
+
+        def _refusal() -> Exception:
+            """The refusal that matches what actually happened. Returned, not
+            raised, so each call site keeps ``raise`` on its own line and the
+            narrowing of ``auto_src`` / ``auto_so`` below stays obvious."""
+            if cause is not None:
+                # Same envelope as the try/except above — a build that failed,
+                # whatever swallowed the exception on the way out.
+                return RuntimeError(
+                    "Failed to build the analytical sensitivity RHS required for "
+                    f"forward sensitivity ({type(cause).__name__}: {cause}). This "
+                    "is a BUILD failure, not a statement about the model's "
+                    "differentiability."
+                )
+            return SensitivityUnsupportedError(diff_err)
+
         if jit_backend:
             if auto_src is None:
-                raise ValueError(diff_err)
+                raise _refusal() from cause
             self._codegen_c_source = auto_src
             if hasattr(model, "_codegen_c_source"):
                 model._codegen_c_source = self._codegen_c_source
@@ -1637,7 +1670,7 @@ class Simulator:
             )
         else:
             if auto_so is None:
-                raise ValueError(diff_err)
+                raise _refusal() from cause
             self._codegen_so_path = str(auto_so)
             if hasattr(model, "_codegen_so_path"):
                 model._codegen_so_path = self._codegen_so_path

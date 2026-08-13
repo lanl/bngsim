@@ -202,8 +202,10 @@ engines obtain from a coupled CVODES extended-ODE solve — and what the **warm*
 per-solve cost of producing it is on each side.
 
 It shares the corpus, the `_core.differ` oracle, the verdict taxonomy and the
-cold/warm timing taxonomy with the ODE job. What is genuinely new is the
-parameter alignment, the parameter cap, and the method pinning.
+cold/warm timing taxonomy with the ODE job — plus one outcome the ODE job never
+emits, `UNSUPPORTED` (see [Declared refusals](#declared-refusals-are-unsupported-not-exception)).
+What is genuinely new is the parameter alignment, the parameter cap, and the
+method pinning.
 
 ### Parameter alignment — the one hard part
 
@@ -261,6 +263,40 @@ A sensitivity comparison means nothing if the engines are not on the same
 trajectory. Each row carries its own state verdict, kept out of the headline
 metric so a sensitivity DIFF on a model whose states already disagree is never
 mistaken for a sensitivity-specific bug.
+
+### Declared refusals are `UNSUPPORTED`, not `EXCEPTION`
+
+Forward sensitivity has constructs bngsim *declares* it cannot differentiate, and
+raises on rather than answer wrongly:
+
+- an **event** whose crossing time moves with a requested parameter in a way
+  `dt*/dp` cannot be computed for, which would leave every post-jump sensitivity
+  silently stale (GH #205; `BIOMD0000000342`); and
+- a **rate law** codegen cannot differentiate to closed form — a non-smooth
+  `min`/`max`/`abs`/`floor`, `rateOf()` inside a rate law, an unparseable
+  expression — where the alternative is unreliable finite differences (GH #214).
+
+Both are `bngsim.SensitivityUnsupportedError`, and the runner buckets them
+`UNSUPPORTED` (non-scoring), not `EXCEPTION`. This is the same treatment
+rr_parity gives `SsaValidationError`, for the same reason: `EXCEPTION` means
+*AMICI ran and bngsim broke*, an actionable bug, and mixing documented capability
+gaps into it dilutes exactly the signal the bucket exists to carry.
+
+The match is on exception **type**, never on message prefix. These refusals carry
+long prose citing GH issue numbers; a prefix match would silently demote every
+one of them back to `EXCEPTION` the first time someone rewords a sentence — a
+regression with no test that could catch it and no symptom but a quietly worse
+number.
+
+**What is NOT a declared refusal.** A codegen *build* failure — a compile
+timeout, a `cc` error, no backend at all — stays `EXCEPTION`. The model-path
+codegen entry points return the same `None` for "declined" and "failed", so the
+second used to be reported as the first: `BIOMD0000000608` generated 66.6 MB of
+correctly-differentiated C, blew its 600 s compile budget, and was told its rate
+laws were not differentiable. Routing that into a non-scoring bucket would hide a
+resource limit instead of merely mislabelling it, so the refusal now consults
+`bngsim._codegen.last_codegen_error()` and only refuses as *declared* when
+nothing actually failed.
 
 ### Run + render
 
