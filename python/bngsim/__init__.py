@@ -33,6 +33,7 @@ from bngsim._exceptions import (
     DenseSolverFallbackWarning,
     ModelError,
     ParameterError,
+    SensitivityUnsupportedError,
     SimulationError,
     SimulationTimeout,
     SsaBoundaryWarning,
@@ -186,6 +187,7 @@ __all__ = [
     "SimulationTimeout",
     "SsaBoundaryWarning",
     "DenseSolverFallbackWarning",
+    "SensitivityUnsupportedError",
     "SsaValidationError",
     "StopConditionMet",
     # SSA validation

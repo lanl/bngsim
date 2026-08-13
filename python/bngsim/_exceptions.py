@@ -12,6 +12,8 @@ Hierarchy::
     ├── SimulationTimeout     — wall-clock budget exceeded during run()
     ├── ParameterError        — unknown parameter name, type mismatch
     ├── SsaValidationError    — SBML construct incompatible with SSA
+    ├── SensitivityUnsupportedError — construct forward sensitivity can't
+    │                           differentiate (also a ValueError)
     └── StopConditionMet      — stop condition triggered (carries partial result)
 """
 
@@ -121,6 +123,37 @@ class SsaValidationError(BngsimError):
                     + " cannot be overridden — those need a model fix."
                 )
         return "\n".join(lines)
+
+
+class SensitivityUnsupportedError(BngsimError, ValueError):
+    """Forward sensitivity is unavailable for this model, by declaration.
+
+    A *clean refusal*, not a failure. bngsim inspected the model, found a
+    construct whose derivative it cannot produce correctly, and declined rather
+    than return silently-wrong numbers. Two constructs raise it today:
+
+    - an **event** whose crossing time moves with a requested parameter and
+      whose ``dt*/dp`` bngsim cannot compute, so every post-jump sensitivity
+      would be stale (GH #205, remaining subclasses tracked in issue #144); and
+    - a **rate law** codegen could not differentiate to closed form — a
+      non-smooth ``min``/``max``/``abs``/``floor``, ``rateOf()`` inside a rate
+      law, or an unparseable expression (GH #214). bngsim refuses rather than
+      fall back to finite differences.
+
+    This is the forward-sensitivity peer of :class:`SsaValidationError`: both
+    say "this model exercises a feature this regime does not support", and both
+    are distinguishable **by type**, so a caller can separate a declared non-run
+    from an actionable bug without pattern-matching on message text. A fitting
+    driver can catch it to fall back on a derivative-free optimizer; the parity
+    suites bucket it as ``UNSUPPORTED`` (non-scoring) rather than ``EXCEPTION``.
+
+    Also inherits :class:`ValueError`, which both sites raised before this class
+    existed, so existing ``except ValueError`` handlers keep working.
+
+    Environment failures are deliberately NOT this exception: "no C compiler and
+    no JIT available" is a fixable local problem, not a property of the model,
+    and stays a plain ``RuntimeError``.
+    """
 
 
 class SimulationTimeout(BngsimError):

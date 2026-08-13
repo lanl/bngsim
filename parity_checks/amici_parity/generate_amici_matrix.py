@@ -54,7 +54,10 @@ def classify_row(outcome: str) -> tuple[str, str]:
     PASSED (green) = PASS
     FAILED (red) = DIFF or TIMEOUT
     TRIAGED (yellow) = REFERENCE_FAILED or EXCEPTION
-    REFUSED (gray) = BAD_TEST
+    REFUSED (gray) = BAD_TEST or UNSUPPORTED
+
+    UNSUPPORTED is gray, not yellow: a DECLARED refusal ("this engine does not
+    support this construct") needs no triage, unlike an EXCEPTION.
     """
     if outcome == "PASS":
         return "status-passed", "PASSED"
@@ -62,7 +65,7 @@ def classify_row(outcome: str) -> tuple[str, str]:
         return "status-failed", "FAILED"
     elif outcome in ("REFERENCE_FAILED", "EXCEPTION"):
         return "status-triaged", "TRIAGED"
-    elif outcome == "BAD_TEST":
+    elif outcome in ("BAD_TEST", "UNSUPPORTED"):
         return "status-refused", "REFUSED"
     else:
         return "status-refused", "REFUSED"

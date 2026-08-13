@@ -251,6 +251,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         ("jobs", meta.get("n_jobs", len(results))),
         ("pass", tallies.get("PASS", 0)),
         ("diff", tallies.get("DIFF", 0)),
+        ("unsupported", tallies.get("UNSUPPORTED", 0)),
         ("ref failed", tallies.get("REFERENCE_FAILED", 0)),
         ("bad test", tallies.get("BAD_TEST", 0)),
         ("timeout", tallies.get("TIMEOUT", 0)),
@@ -321,10 +322,16 @@ report <span class="mono">dx/dp</span> rather than <span class="mono">dx/dln(p)<
 evaluation — not the first solve. <b>Build</b> is the one-time pre-simulation cost; AMICI's
 sensitivity C++ compile dominates it and is cached on disk, so it is paid once per model per
 corpus, never per iteration.</p>
-<p><b>Non-scoring rows.</b> REFERENCE_FAILED means AMICI could not produce an oracle (bngsim is
-untested, not vindicated). BAD_TEST means either both engines failed, or the model has no
-parameter both engines can differentiate — there is nothing to compare, which is not a verdict
-about bngsim.</p>
+<p><b>Non-scoring rows.</b> None of these count toward the failing tally
+(<span class="mono">DIFF / EXCEPTION / TIMEOUT</span> are the scoring outcomes).
+UNSUPPORTED means bngsim <i>declared</i> it cannot differentiate this model — a
+<span class="mono">SensitivityUnsupportedError</span> raised because an event's crossing time
+moves in a way it cannot compute, or because a rate law does not differentiate to closed form.
+It is matched by exception <b>type</b>, never by message text, and is a documented capability gap
+rather than a bug, so bucketing it with EXCEPTION would only dilute that signal.
+REFERENCE_FAILED means AMICI could not produce an oracle (bngsim is untested, not vindicated).
+BAD_TEST means either both engines failed, or the model has no parameter both engines can
+differentiate — there is nothing to compare, which is not a verdict about bngsim.</p>
 <p class="note">Timings collected under {workers or "?"}-way process concurrency on
 {_escape(str(hw.get("cpu", "unknown")))}
 ({hw.get("physical_cores", "?")} physical cores) — comparable within this page, not against a

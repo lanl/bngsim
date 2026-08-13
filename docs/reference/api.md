@@ -246,6 +246,7 @@ All inherit from `bngsim.BngsimError` (which inherits `RuntimeError`):
 - **`SimulationError`** — Solver failures (convergence, NaN)
 - **`SimulationTimeout`** — Wall-clock budget exceeded; `.timeout` and `.elapsed` attributes
 - **`ParameterError`** — Unknown parameter name, invalid value
+- **`SensitivityUnsupportedError`** — Forward sensitivity declined for this model: an event whose crossing time moves in a way `dt*/dp` cannot be computed for, or a rate law that does not differentiate to closed form. A declared capability gap, not a failure — catch it to fall back on a derivative-free optimizer. Also inherits `ValueError` (what both sites raised before the class existed), so `except ValueError` still catches it. A missing compiler/JIT is *not* this exception; that stays a plain `RuntimeError`.
 - **`StopConditionMet`** — Stop condition triggered; `.result` has partial data
 
 ## Universal `.net` reader

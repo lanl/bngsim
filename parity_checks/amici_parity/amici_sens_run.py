@@ -11,10 +11,18 @@ verdict taxonomy, same report shape — only the quantity under test changes.
     both ran, metric over tolerance / non-finite  DIFF
     both ran, species/time grids disjoint ....... DIFF (loud, value=inf)
     no shared differentiable parameter ........... BAD_TEST (nothing to compare)
+    bngsim DECLARED it cannot differentiate ..... UNSUPPORTED (clean refusal; non-scoring)
     bngsim raised, AMICI ran .................... EXCEPTION (actionable bngsim bug)
     bngsim ran, AMICI raised .................... REFERENCE_FAILED (no oracle; non-scoring)
     both raised .................................. BAD_TEST (no signal; non-scoring)
     wall-clock cap exceeded ...................... TIMEOUT
+
+UNSUPPORTED is the forward-sensitivity peer of rr_parity's ``SsaValidationError``
+row: bngsim inspected the model, found a construct whose derivative it cannot
+produce (a non-differentiable event crossing time, a rate law codegen cannot
+differentiate to closed form) and declined rather than return wrong numbers. It
+is recognized BY TYPE — ``bngsim.SensitivityUnsupportedError`` — never by message
+text, so rewording a refusal cannot silently sink it back into EXCEPTION.
 
 One job per (model, sensitivity method). Both engines are pinned to the SAME
 CVODES corrector method within a job — ``staggered`` (CVODES'/bngsim's default)
@@ -211,12 +219,43 @@ def make_specs(
     return specs, n_tol_ov
 
 
-def _classify_failure(bn_exc: str, am_exc: str) -> tuple[str, str]:
+def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) -> tuple[str, str]:
+    """Attribute a failed job to an engine. ``(status, exception_text)``.
+
+    ``bn_unsupported`` marks a DECLARED bngsim refusal (a
+    ``SensitivityUnsupportedError``: the model carries a construct bngsim states
+    it cannot differentiate). It wins over every other bucket, including the
+    both-raised BAD_TEST: the declaration is a fact about bngsim and this model,
+    and stays true whatever AMICI did with it. Both buckets are non-scoring, so
+    the choice costs no signal and gains a named one — UNSUPPORTED rows are
+    countable as "bngsim's declared sensitivity gap", which BAD_TEST ("nothing
+    to compare") is not. The AMICI text is kept in the message either way.
+    """
+    if bn_unsupported:
+        return "unsupported", f"{bn_exc} || {am_exc}" if am_exc else bn_exc
     if bn_exc and am_exc:
         return "bad_test", f"{am_exc} || {bn_exc}"
     if am_exc:
         return "reference_failed", am_exc
     return "exception", bn_exc
+
+
+def _is_declared_refusal(exc: BaseException) -> bool:
+    """True when bngsim DECLARED it cannot differentiate this model.
+
+    Recognized by TYPE — ``bngsim.SensitivityUnsupportedError`` — never by
+    message text. Both refusals carry long, frequently-edited prose that cites GH
+    issue numbers; a message-prefix match would silently demote every one of them
+    back to EXCEPTION the first time someone rewords a sentence, which is the
+    exact signal dilution UNSUPPORTED exists to remove.
+
+    ``getattr`` rather than a hard import so a bngsim predating the class
+    degrades to the old EXCEPTION bucket instead of failing every job.
+    """
+    import bngsim
+
+    cls = getattr(bngsim, "SensitivityUnsupportedError", None)
+    return cls is not None and isinstance(exc, cls)
 
 
 def _worker(spec: dict, q) -> None:
@@ -301,6 +340,7 @@ def _worker(spec: dict, q) -> None:
     # --- bngsim side ---
     bn = None
     bn_exc = ""
+    bn_unsupported = False
     bn_timing = None
     bn_wall = 0.0
     try:
@@ -318,6 +358,7 @@ def _worker(spec: dict, q) -> None:
         bn_wall = time.perf_counter() - t0
         bn, bn_timing = out[:4], out[4]
     except Exception as exc:
+        bn_unsupported = _is_declared_refusal(exc)
         bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
 
     # --- AMICI side (over the model built above) ---
@@ -355,7 +396,7 @@ def _worker(spec: dict, q) -> None:
         res["timing"] = timing
 
     if bn_exc or am_exc:
-        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc)
+        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc, bn_unsupported)
         q.put(res)
         return
 
@@ -392,6 +433,7 @@ def _make_progress(checkpoint_path: Path | None = None):
             "pass": "PASS",
             "diff": "DIFF",
             "exception": "ERR ",
+            "unsupported": "UNSUP",
             "reference_failed": "REFFAIL",
             "bad_test": "BADTEST",
             "timeout": "SLOW",
@@ -400,7 +442,7 @@ def _make_progress(checkpoint_path: Path | None = None):
         extra = ""
         if st in ("pass", "diff") and res.get("value") is not None:
             extra = f" {res['metric']}={res['value']:.3g} (Np={res.get('n_params', '?')})"
-        elif st in ("exception", "dead", "reference_failed", "bad_test"):
+        elif st in ("exception", "dead", "unsupported", "reference_failed", "bad_test"):
             extra = f" {(res.get('exception') or 'died')[:64]}"
         elif st == "timeout":
             extra = f" >{res.get('cap')}s"
@@ -662,7 +704,12 @@ def main() -> int:
             "trajectories are compared separately and reported per row. Failure is "
             "attributed per engine: bngsim raised + AMICI ran -> EXCEPTION; bngsim "
             "ran + AMICI raised -> REFERENCE_FAILED (non-scoring); both raised, or "
-            "no shared differentiable parameter -> BAD_TEST."
+            "no shared differentiable parameter -> BAD_TEST. A bngsim "
+            "SensitivityUnsupportedError — a DECLARED refusal to differentiate a "
+            "construct (non-differentiable event crossing time, or a rate law "
+            "codegen cannot close-form differentiate) — is UNSUPPORTED, matched by "
+            "exception TYPE and not by message text, and is non-scoring: it is a "
+            "documented capability gap, not an actionable bug."
         ),
     }
     write_report(out_path, results, meta=meta)

@@ -29,10 +29,18 @@ ensure_build_path
   pinned swig is not). When that entry is wrong, cmake cannot find SWIG and
   EVERY model lands in REFERENCE_FAILED/compile — a sweep of false negatives
   that reads as an AMICI feature gap.
+
+_classify_failure / _is_declared_refusal
+  A model bngsim *declares* it cannot differentiate must land in UNSUPPORTED,
+  not EXCEPTION. EXCEPTION means "AMICI ran and bngsim broke" — the bucket a
+  reader triages — so a documented capability gap sitting in it is pure noise.
+  The recognition is by exception TYPE; the tests below pin that, because a
+  message match would keep passing right up until someone rewords a refusal.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -384,6 +392,191 @@ class TestSensitivityNoiseFloor:
         v = asens.sens_verdict(bn, am)
         assert not v["passed"]
         assert v["n_noise_forgiven"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Declared refusals -> UNSUPPORTED
+# --------------------------------------------------------------------------- #
+_REFUSAL_PROSE = (
+    "Output sensitivities are not supported for this model's events: the "
+    "event-time sensitivity dt*/dp is non-zero"
+)
+
+
+class TestIsDeclaredRefusal:
+    """The recognition contract: by exception TYPE, never by message text.
+
+    The alternative considered was matching the refusal's message prefix in the
+    runner — no library change, no public API. These three tests are the reason
+    it was rejected: the prefix and the type disagree in both directions, and
+    only one of the two disagreements is loud.
+    """
+
+    def test_the_real_exception_is_recognized(self):
+        import amici_sens_run as run
+        import bngsim
+
+        exc = bngsim.SensitivityUnsupportedError(_REFUSAL_PROSE)
+        assert run._is_declared_refusal(exc)
+
+    def test_a_reworded_refusal_is_still_recognized(self):
+        """The property the typed exception buys. Both messages are long prose
+        citing GH issue numbers and get edited; under a prefix match this row
+        would silently revert to EXCEPTION, with no test able to catch it and no
+        symptom except a quietly worse number in the next report."""
+        import amici_sens_run as run
+        import bngsim
+
+        exc = bngsim.SensitivityUnsupportedError("completely different wording")
+        assert run._is_declared_refusal(exc)
+
+    def test_the_refusal_prose_on_a_plain_value_error_is_not_recognized(self):
+        """The mirror image, and the reason type beats text even ignoring
+        rewording: an unrelated site could quote or wrap this prose, and a
+        prefix match would launder a real bngsim failure into a non-scoring
+        row."""
+        import amici_sens_run as run
+
+        assert not run._is_declared_refusal(ValueError(_REFUSAL_PROSE))
+
+    def test_an_ordinary_bngsim_failure_is_not_recognized(self):
+        import amici_sens_run as run
+        import bngsim
+
+        assert not run._is_declared_refusal(bngsim.SimulationError("CVODE failed"))
+        assert not run._is_declared_refusal(RuntimeError("no C compiler"))
+
+
+class TestClassifyFailure:
+    @staticmethod
+    def _cls(bn, am, unsup=False):
+        import amici_sens_run as run
+
+        return run._classify_failure(bn, am, unsup)
+
+    def test_a_declared_refusal_is_unsupported(self):
+        st, msg = self._cls("bngsim: SensitivityUnsupportedError: ...", "", unsup=True)
+        assert st == "unsupported"
+        assert "SensitivityUnsupportedError" in msg
+
+    def test_a_declared_refusal_wins_over_both_raised(self):
+        """bngsim's declaration is a fact about bngsim and this model; it stays
+        true whatever AMICI did. Both buckets are non-scoring, so preferring the
+        named one costs no signal — and BAD_TEST ('nothing to compare') cannot be
+        counted as bngsim's sensitivity gap, which is the number this exists to
+        produce. The AMICI text is kept either way."""
+        st, msg = self._cls("bngsim: SensitivityUnsupportedError: x", "amici: y", unsup=True)
+        assert st == "unsupported"
+        assert "amici: y" in msg and "SensitivityUnsupportedError" in msg
+
+    def test_an_undeclared_bngsim_failure_is_still_an_exception(self):
+        """The guard that keeps the bucket meaningful: UNSUPPORTED must not
+        become a place real bugs go quiet."""
+        assert self._cls("bngsim: SimulationError: boom", "")[0] == "exception"
+
+    def test_the_pre_existing_attributions_are_unchanged(self):
+        assert self._cls("", "amici: compile failed")[0] == "reference_failed"
+        assert self._cls("bngsim: x", "amici: y")[0] == "bad_test"
+        assert self._cls("bngsim: x", "")[0] == "exception"
+
+    def test_the_flag_defaults_off(self):
+        """``_classify_failure`` is called positionally in the worker; the default
+        keeps any other caller on the old behavior."""
+        import amici_sens_run as run
+
+        assert run._classify_failure("bngsim: x", "")[0] == "exception"
+
+
+class TestUnsupportedIsNonScoring:
+    def test_the_status_maps_to_the_unsupported_outcome(self):
+        import amici_sens_run as run
+        from _core import Outcome
+
+        assert run._OUTCOME["unsupported"] is Outcome.UNSUPPORTED
+
+    def test_it_is_excluded_from_the_failing_tally(self):
+        """The point of the whole change. ``main()``'s exit code is
+        ``sum(counts[o] for o in FAILING)``, so a declared refusal must not move
+        it — otherwise a model bngsim honestly declined still reads as a failure
+        and the sweep cannot go green."""
+        from _core import FAILING, Outcome, tally
+
+        counts = tally([Outcome.PASS, Outcome.UNSUPPORTED, Outcome.UNSUPPORTED])
+        assert counts["UNSUPPORTED"] == 2
+        assert sum(counts.get(o.value, 0) for o in FAILING) == 0
+
+    def test_it_has_a_progress_tag_and_shows_the_reason(self, capsys):
+        """A status with no entry in the tag map prints its raw key, and one
+        missing from the detail branch prints no reason at all. The run log is the
+        only live view of a multi-hour sweep, so both matter."""
+        import amici_sens_run as run
+
+        run._make_progress(None)(
+            1,
+            2,
+            {
+                "status": "unsupported",
+                "model_id": "BIOMD0000000342",
+                "sens_method": "staggered",
+                "exception": "bngsim: SensitivityUnsupportedError: events",
+            },
+        )
+        line = capsys.readouterr().out
+        assert "UNSUP" in line
+        assert "BIOMD0000000342" in line
+        assert "SensitivityUnsupportedError" in line
+
+
+class TestMatrixRendersUnsupported:
+    """The rendered page must show the bucket, or the run log is the only place
+    it exists and the matrix over-reports EXCEPTION-free-ness without saying why.
+    """
+
+    @staticmethod
+    def _render(tmp_path):
+        import generate_amici_sens_matrix as gen
+
+        report = tmp_path / "report_sens.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "_meta": {
+                        "tally": {"PASS": 3, "UNSUPPORTED": 2, "DIFF": 0},
+                        "n_models": 3,
+                        "sens_methods": ["staggered"],
+                    },
+                    "results": [
+                        {
+                            "model_id": "BIOMD0000000342",
+                            "method": "sens/staggered",
+                            "outcome": "UNSUPPORTED",
+                            "exception": "bngsim: SensitivityUnsupportedError: events",
+                            "extra": {"sens_method": "staggered"},
+                        }
+                    ],
+                }
+            )
+        )
+        out = tmp_path / "matrix.html"
+        gen.generate_html(report, out)
+        return out.read_text()
+
+    def test_the_count_is_carded(self, tmp_path):
+        html = self._render(tmp_path)
+        assert "unsupported" in html
+
+    def test_the_legend_explains_the_bucket(self, tmp_path):
+        html = self._render(tmp_path)
+        assert "UNSUPPORTED" in html
+        assert "SensitivityUnsupportedError" in html
+
+    def test_the_row_is_refused_grey_not_triage_yellow(self, tmp_path):
+        """A declared refusal needs no triage; colouring it like an EXCEPTION
+        would put it back in the reader's queue, which is the thing being fixed."""
+        from generate_amici_matrix import classify_row
+
+        assert classify_row("UNSUPPORTED") == ("status-refused", "REFUSED")
+        assert "status-refused" in self._render(tmp_path)
 
 
 # --------------------------------------------------------------------------- #
