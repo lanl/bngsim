@@ -45,6 +45,7 @@ from bngsim._codegen import (
     _inline_derived_param_refs,
     _split_top_level_commas,
 )
+from bngsim._exceptions import SensitivityUnsupportedError
 
 logger = logging.getLogger(__name__)
 
@@ -1282,11 +1283,13 @@ def compute_switch_time_sens(
 
     Raises
     ------
-    ValueError
+    SensitivityUnsupportedError
         If a requested parameter sets a switch time *and* scales something inside
         a branch. The jump alone is then not the whole gradient, and pinning
         would discard the genuine in-branch ``∂f/∂p``; bngsim refuses rather than
-        return a partially-correct derivative.
+        return a partially-correct derivative. Typed (issue #320) so a caller can
+        tell this declared gap from a bug without matching on message text; it
+        still inherits ``ValueError``, which this raised before.
     """
     names = list(sens_param_names)
     if not names or core.n_functions == 0:
@@ -1432,7 +1435,7 @@ def compute_switch_time_sens(
     pure = _condition_only_params(core, switch_params, derived_exprs)
     impure = sorted(switch_params - pure)
     if impure:
-        raise ValueError(
+        raise SensitivityUnsupportedError(
             "Forward sensitivity w.r.t. "
             + ", ".join(f"'{p}'" for p in impure)
             + " is not supported: each sets an if() switch time AND appears inside "

@@ -395,6 +395,74 @@ class TestSensitivityNoiseFloor:
 
 
 # --------------------------------------------------------------------------- #
+# AMICI's `amici_` id-collision prefix (issue #321)
+# --------------------------------------------------------------------------- #
+class TestAmiciIdPrefix:
+    """AMICI renames SBML ids that collide with its own generated C++ symbols
+    (`x` IS the state vector there), so `<species id="x">` comes back as
+    `amici_x`. An exact-id intersection then yields NOTHING and the job is
+    reported as a structural loader divergence at value=inf — the loudest
+    verdict the suite emits — on models where the engines actually agree.
+
+    Species-side twin of the `_lp_` parameter prefix above, and it inherits the
+    same two rules: the prefix is positional, and an ambiguous strip is dropped
+    rather than guessed at.
+    """
+
+    @staticmethod
+    def _ac():
+        import _amici_common as ac
+
+        return ac
+
+    def test_the_biomd114_shape_now_aligns(self):
+        """`BIOMD0000000114` declares `<species id="x">` / `<species id="y">`; the
+        whole corpus regression is this one line."""
+        got = self._ac().align_common(["x", "y"], ["amici_x", "amici_y"])
+        assert got is not None
+        bn_idx, am_idx, common = got
+        assert common == ["x", "y"]
+        assert bn_idx == [0, 1] and am_idx == [0, 1]
+
+    def test_unprefixed_ids_are_untouched(self):
+        got = self._ac().align_common(["A", "B"], ["A", "B"])
+        assert got == ([0, 1], [0, 1], ["A", "B"])
+
+    def test_the_prefix_is_positional_not_a_substring_to_scrub(self):
+        """A species whose own id merely contains the marker keeps it."""
+        assert self._ac().normalize_amici_names(["x_amici_y"]) == ["x_amici_y"]
+        assert self._ac().normalize_amici_names(["amici_z"]) == ["z"]
+
+    def test_an_ambiguous_strip_is_dropped_not_guessed(self):
+        """A model declaring BOTH `x` and `amici_x` makes the strip ambiguous.
+        Pairing the wrong series would produce a confident-looking DIFF, which is
+        strictly worse than the loud non-comparison it would replace — so both
+        are left raw."""
+        assert self._ac().normalize_amici_names(["x", "amici_x"]) == ["x", "amici_x"]
+
+    def test_the_returned_index_addresses_the_original_amici_order(self):
+        """The caller slices `rdata` columns with `am_idx`, so it must index the
+        ids AMICI actually reported — not the de-prefixed list. Getting this
+        wrong silently transposes two species' trajectories."""
+        bn_idx, am_idx, common = self._ac().align_common(["x", "y"], ["amici_y", "amici_x"])
+        assert common == ["x", "y"]
+        assert am_idx == [1, 0]
+
+    def test_a_genuinely_disjoint_set_still_returns_none(self):
+        """The de-prefixing must not manufacture a match where none exists —
+        None is how a real loader divergence stays loud."""
+        assert self._ac().align_common(["a"], ["amici_b"]) is None
+
+    def test_the_shared_rr_helper_is_left_generic(self):
+        """The rule is AMICI's, so it lives in the AMICI adapter. RoadRunner never
+        emits the prefix, and teaching the shared helper about it would make
+        rr_parity silently strip a legitimate `amici_`-named species."""
+        from rr_parity import _rr_common as rc
+
+        assert rc.align_common(["x"], ["amici_x"]) is None
+
+
+# --------------------------------------------------------------------------- #
 # Declared refusals -> UNSUPPORTED
 # --------------------------------------------------------------------------- #
 _REFUSAL_PROSE = (

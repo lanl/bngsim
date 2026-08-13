@@ -243,6 +243,58 @@ class TestSwallowedBuildFailureIsNotARefusal:
 
 
 # --------------------------------------------------------------------------- #
+# run() must not launder a declared refusal into SimulationError
+# --------------------------------------------------------------------------- #
+class TestRunDoesNotWrapTheRefusal:
+    """The trap that adding a ``BngsimError`` base opened up (issue #320).
+
+    ``run()`` wraps ``RuntimeError`` raised in the solve region into
+    ``SimulationError``. ``SensitivityUnsupportedError`` inherits ``ValueError``
+    **and**, via ``BngsimError``, ``RuntimeError`` — so the moment the
+    switch-time refusal was typed it began being caught by that arm and
+    rewrapped, destroying the very distinction the type exists to carry. As a
+    plain ``ValueError`` it had fallen past the arm untouched.
+
+    Only the switch-time site (issue #48) raises from inside that ``try``; the
+    event and codegen refusals are raised during setup. So the bug hit exactly
+    one of the three typed sites, and only through the public path — the
+    detection helper stayed correctly typed the whole time. Hence this asserts
+    through ``run()``.
+    """
+
+    @staticmethod
+    def _dual_role_model():
+        """``sigma`` sets an if() switch time AND scales the post-switch rate."""
+        b = ModelBuilder()
+        b.add_parameter("sigma", 2.0)
+        b.add_parameter("rate_counter", 1.0)
+        t_idx = b.add_species("T()", 0.0)
+        x_idx = b.add_species("X()", 0.0)
+        b.add_observable("t", [(t_idx, 1.0)])
+        b.add_function("rate_X", "if((t>=sigma),sigma*2,0)")
+        b.add_reaction([], [t_idx], "elementary", "rate_counter")
+        b.add_reaction([], [x_idx], "functional", "rate_X")
+        return bngsim.Model(_core=b.build())
+
+    def test_the_refusal_is_not_rewrapped_as_a_solver_failure(self):
+        sim = bngsim.Simulator(
+            self._dual_role_model(), method="ode", sensitivity_params=["sigma"], codegen=True
+        )
+        with pytest.raises(SensitivityUnsupportedError) as ei:
+            sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
+        assert not isinstance(ei.value, bngsim.SimulationError)
+        assert "Simulation failed" not in str(ei.value)
+        assert "issue #48" in str(ei.value)
+
+    def test_the_pass_through_is_not_a_blanket_escape(self):
+        """The other half: genuine solver failures must still become
+        SimulationError. A pass-through written one base too high would stop
+        wrapping everything."""
+        assert issubclass(bngsim.SimulationError, bngsim.BngsimError)
+        assert not issubclass(bngsim.SimulationError, SensitivityUnsupportedError)
+
+
+# --------------------------------------------------------------------------- #
 # The boundary: an environment failure is NOT a declared refusal
 # --------------------------------------------------------------------------- #
 class TestBackendFailureIsNotARefusal:
