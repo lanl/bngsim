@@ -16,6 +16,48 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **`amici_parity` budgets the coupled system rather than capping parameters
+  (issue #331).** Forward sensitivity integrates `n_species*(Np+1)` states, so a
+  job's cost is set by that product, not by `Np` alone. The old flat cap of 20
+  spent the same columns on a 3-species toy and a 1604-species model, leaving
+  **534 of 1115 models (48%) compared on a 20-column sample**. `--param-budget`
+  (default 20,000 coupled states) derives each model's parameter count from its
+  species count instead; `--param-cap` remains as an optional extra ceiling, and
+  `--param-cap 20` reproduces the old behavior.
+
+  Measured over the corpus: **441 models get more parameters, 525 are unchanged,
+  and exactly one gets fewer** (`MODEL1009150002`, 20 → 12), for 3.66x the solve
+  work — which is ~+5% of wall, since the solve is only 1.8% of a sweep dominated
+  by timeouts (37%) and AMICI compiles (37%).
+
+  Uncapped is deliberately not the default. `MODEL1009150002` currently passes
+  with a 14.4 s warm `simultaneous` solve at `Np=20`; at its full 7304 parameters
+  that extrapolates to roughly **87 minutes**, so removing the bound would convert
+  three passing models into TIMEOUTs. Memory is not the constraint (~0.6 GB worst
+  case) — wall-clock is.
+
+- **`amici_parity` records degeneracy witnesses per row (issue #328).** A job
+  could be reported `PASS` when the whole forward-sensitivity tensor lay below
+  the magnitude either solver can resolve — nothing was meaningfully compared,
+  but the row was indistinguishable from a real pass. Each row now carries
+  `max_abs_sx`, `n_resolvable_params` (parameter columns whose peak exceeds
+  **their own** floor) and `state_span`, and the comment says `DEGENERATE` when
+  no column is resolvable, so the census is a query over the report rather than
+  a corpus re-run.
+
+  The obvious proxy does not work and is deliberately not used:
+  `n_noise_forgiven / n_cells` reaches 100% for *excellent agreement* too,
+  because the mask keys on `|bn − am|` rather than on magnitude —
+  `MODEL7909395757` forgives 3636/3636 cells at `max|sx| = 0.6`. Magnitude has
+  to be recorded directly.
+
+  The floor is applied **per parameter column**. Reducing it with `max` over the
+  parameter axis lets one tiny-valued parameter inflate the threshold for the
+  entire tensor and marks a live model degenerate — `BIOMD0000000002` has real
+  dynamics and 11 of 20 resolvable columns, but a global floor declared it
+  wholly unresolvable. That is the same global-reduction mistake as issue #322's
+  transversality floor.
+
 - **`bngsim.SensitivityUnsupportedError` — a clean forward-sensitivity refusal is
   now distinguishable by type.** bngsim has two constructs it *declares* it
   cannot differentiate and raises on rather than answer wrongly: an event whose
@@ -40,6 +82,32 @@ in `CMakeLists.txt`) is derived from it.
   local problem, not a property of the model, and stays a plain `RuntimeError`.
 
 ### Fixed
+
+- **`bngsim.UnderSpecifiedModelError` — an under-specified model is a declared
+  refusal, not a bug (issue #323).** When a `<parameter>` has no `value` and no
+  `<initialAssignment>` yet is referenced by a kineticLaw / rule / event, bngsim
+  refuses rather than default it to `0.0`. That refusal was a bare `ModelError`,
+  which also covers `.net` parse failures and invalid model state, so a caller
+  could not tell a documented refusal from an actionable bug. The `amici_parity`
+  suites scored **12 corpus models** as `EXCEPTION` for it; they are now
+  `UNSUPPORTED`, matched by type, in **both** the sensitivity and state-parity
+  jobs (the refusal is raised at load, so it reaches both).
+
+  Confirmed with `BNGSIM_ALLOW_UNSET_PARAMS=1`: with the hatch on, **none of the
+  12 is an `EXCEPTION`** — 6 agree with AMICI at `max_rel_err=0`, 5 fail in both
+  engines (3 with the identical first-RHS-evaluation error), and 1 runs in
+  bngsim where AMICI cannot. The strictness is the only difference.
+
+  The default stays strict, and `MODEL1006230032` is why: under the hatch it
+  integrates to **all five species identically zero for the whole run**, with
+  every cross-engine verdict green. A model computing nothing, reported as
+  agreement.
+
+  As with issue #320, typing it exposed re-wrapping: `Model.from_sbml`,
+  `from_sbml_string`, `from_antimony` and `from_antimony_string` all rebuilt it
+  as a generic `ModelError`, so the type a caller saw depended on which entry
+  point they used. All four now pass it through. It still subclasses
+  `ModelError`, so existing handlers are unaffected.
 
 - **A declared switch-time refusal is now typed, and `run()` no longer launders
   it (issue #320).** `compute_switch_time_sens` refuses a parameter that both

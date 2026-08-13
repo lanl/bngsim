@@ -126,6 +126,39 @@ def normalize_amici_names(am_names: list[str]) -> list[str]:
     return [s if counts[s] == 1 else raw for raw, s in zip(am_names, stripped, strict=True)]
 
 
+# --------------------------------------------------------------------------- #
+# bngsim's DECLARED refusals (issues #319, #320, #323)
+# --------------------------------------------------------------------------- #
+# Recognized BY TYPE, never by message text. These refusals carry long prose that
+# cites GH issue numbers and gets reworded; a prefix match would silently demote
+# every one of them back to EXCEPTION the first time someone edits a sentence,
+# which is the exact signal dilution UNSUPPORTED exists to remove.
+#
+#   SensitivityUnsupportedError — bngsim inspected the model and will not
+#       differentiate this construct (a non-differentiable event crossing time,
+#       a rate law with no closed-form derivative, a switch-time parameter that
+#       also acts in-branch). Sensitivity job only.
+#   UnderSpecifiedModelError    — the model reads a symbol it never defines, so
+#       bngsim refuses to guess 0.0. Raised at LOAD, so it reaches both jobs.
+#
+# Both are clean, documented, non-scoring refusals — not actionable bngsim bugs.
+_DECLARED_REFUSAL_NAMES = ("SensitivityUnsupportedError", "UnderSpecifiedModelError")
+
+
+def is_declared_refusal(exc: BaseException) -> bool:
+    """True when bngsim DECLARED it will not handle this model.
+
+    ``getattr`` rather than a hard import so a bngsim predating either class
+    degrades to the old EXCEPTION bucket instead of failing every job.
+    """
+    import bngsim
+
+    types = tuple(
+        t for t in (getattr(bngsim, n, None) for n in _DECLARED_REFUSAL_NAMES) if t is not None
+    )
+    return bool(types) and isinstance(exc, types)
+
+
 def align_common(bn_names: list[str], am_names: list[str]):
     """``_rr_common.align_common`` with AMICI's ``amici_`` prefix undone first.
 

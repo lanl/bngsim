@@ -198,6 +198,37 @@ def test_c2_unset_param_referenced_in_kineticlaw_rejects(monkeypatch):
     assert "kdeg" in str(exc.value)
 
 
+def test_c2_unset_param_refusal_is_typed(monkeypatch):
+    """It is `UnderSpecifiedModelError`, not a bare `ModelError` (issue #323).
+
+    `ModelError` also covers .net parse failures and invalid model state, so a
+    caller could not tell "this model is under-specified" — a documented refusal
+    with an escape hatch — from an actionable bug without matching message text.
+    The amici_parity suites bucket this one `UNSUPPORTED` rather than
+    `EXCEPTION`, by type; 12 corpus models were mislabelled before it existed.
+
+    The test above deliberately still catches `bngsim.ModelError`: that is the
+    back-compat contract, and it fails if the subclassing is ever dropped.
+    """
+    monkeypatch.delenv("BNGSIM_ALLOW_UNSET_PARAMS", raising=False)
+    with pytest.raises(bngsim.UnderSpecifiedModelError) as exc:
+        bngsim.Model.from_sbml_string(_C2_UNSET_CONSUMED_SBML)
+    assert issubclass(bngsim.UnderSpecifiedModelError, bngsim.ModelError)
+    assert "kdeg" in str(exc.value)
+    # The hatch must stay advertised — it is the only way past this refusal.
+    assert "BNGSIM_ALLOW_UNSET_PARAMS" in str(exc.value)
+
+
+def test_c2_other_model_errors_are_not_typed_as_under_specified(monkeypatch):
+    """Guard against over-typing: an unrelated load failure must NOT become
+    `UnderSpecifiedModelError`, or the parity suites would route real bugs into
+    a non-scoring bucket."""
+    monkeypatch.delenv("BNGSIM_ALLOW_UNSET_PARAMS", raising=False)
+    with pytest.raises(Exception) as exc:
+        bngsim.Model.from_sbml_string("<not-sbml/>")
+    assert not isinstance(exc.value, bngsim.UnderSpecifiedModelError)
+
+
 def test_c2_unset_param_referenced_escape_hatch_loads(monkeypatch, caplog):
     """BNGSIM_ALLOW_UNSET_PARAMS=1 restores the legacy lenient behavior:
     load with the parameter defaulted to 0.0 and a load-time warning that

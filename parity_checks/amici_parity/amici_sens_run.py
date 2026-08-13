@@ -144,12 +144,35 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     )
 
     n_p = bn_sx.shape[2]
+
+    # Degeneracy witnesses (issue #328). A job can be reported PASS when the
+    # WHOLE sensitivity tensor lies below the magnitude either solver can
+    # resolve: nothing was meaningfully compared, but the row is indistinguishable
+    # from a real pass. differ's significance gate cannot catch it — that gate is
+    # relative to the file-wide peak, and when everything is tiny there is no
+    # larger peak to be judged against.
+    #
+    # These make the census computable from the report instead of from a corpus
+    # re-run. Note the OBVIOUS proxy does not work: n_noise_forgiven/n_cells hits
+    # 100% for excellent agreement too, because the mask keys on |bn-am|, not on
+    # magnitude — MODEL7909395757 forgives 3636/3636 cells at max|sx| = 0.6.
+    # Magnitude has to be recorded directly, and PER COLUMN: a single
+    # tiny-valued parameter would otherwise inflate a global floor and mark a
+    # live model degenerate (see sens_resolution_floors).
+    sx_used = bn_sx[:, bn_idx, :]
+    sx_peak = float(np.nanmax(np.abs(sx_used))) if sx_used.size else 0.0
+    x_used = bn_x[:, bn_idx]
+    state_span = float(np.nanmax(np.nanmax(x_used, axis=0) - np.nanmin(x_used, axis=0)))
+    n_resolvable = asens.resolvable_param_columns(sx_used, param_values, atol)
+
     comment = (
         f"{len(common)} sp x {n_p} par; fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
         f"forgiven {v['budget_forgiven']}, noise {v['n_noise_forgiven']}); "
         f"state {'ok' if sv['passed'] else 'DIFF'}"
     )
+    if n_resolvable == 0:
+        comment += "; DEGENERATE: no parameter column resolvable"
     return {
         "status": "pass" if v["passed"] else "diff",
         "value": v["max_rel"],
@@ -159,6 +182,10 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
         "n_common_species": len(common),
         "n_params": int(n_p),
         "n_noise_forgiven": int(v["n_noise_forgiven"]),
+        # issue #328 — the two numbers a vacuous-pass census needs.
+        "max_abs_sx": sx_peak,
+        "n_resolvable_params": n_resolvable,
+        "state_span": state_span,
     }
 
 
@@ -170,6 +197,7 @@ def make_specs(
     atol: float,
     timeout: float | None,
     param_cap: int,
+    param_budget: int,
     config_env: dict,
 ) -> tuple[list[dict], int]:
     """Expand the manifest jobs into worker specs. ``(specs, n_tol_overridden)``.
@@ -213,6 +241,7 @@ def make_specs(
                     "params": params,
                     "cap": float(cap),
                     "param_cap": int(param_cap),
+                    "param_budget": int(param_budget),
                     "config_env": dict(config_env),
                 }
             )
@@ -240,22 +269,10 @@ def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) ->
     return "exception", bn_exc
 
 
-def _is_declared_refusal(exc: BaseException) -> bool:
-    """True when bngsim DECLARED it cannot differentiate this model.
-
-    Recognized by TYPE — ``bngsim.SensitivityUnsupportedError`` — never by
-    message text. Both refusals carry long, frequently-edited prose that cites GH
-    issue numbers; a message-prefix match would silently demote every one of them
-    back to EXCEPTION the first time someone rewords a sentence, which is the
-    exact signal dilution UNSUPPORTED exists to remove.
-
-    ``getattr`` rather than a hard import so a bngsim predating the class
-    degrades to the old EXCEPTION bucket instead of failing every job.
-    """
-    import bngsim
-
-    cls = getattr(bngsim, "SensitivityUnsupportedError", None)
-    return cls is not None and isinstance(exc, cls)
+# Shared with amici_run.py — see `_amici_common.is_declared_refusal` for why the
+# match is by exception TYPE and never by message text. Kept under this name so
+# the module reads the same as before it was hoisted.
+_is_declared_refusal = asens.is_declared_refusal
 
 
 def _worker(spec: dict, q) -> None:
@@ -304,9 +321,16 @@ def _worker(spec: dict, q) -> None:
 
         _src = Path(xml).read_text() if Path(xml).exists() else xml
         _m = sbml_loader.load_sbml_string(_src)
+        # The cap is derived PER MODEL from the coupled-state budget (issue #331):
+        # cost scales with n_species*(Np+1), so a flat Np ceiling over-spends on
+        # big models and under-samples small ones. n_species is only knowable
+        # here, once the model is loaded.
+        eff_cap = asens.budget_cap(len(_m.species_names), spec["param_budget"], spec["param_cap"])
         shared_ids, bn_by_id, n_cand = asens.shared_sensitivity_params(
-            list(_m.param_names), _m.compartment_size_params, am_ids, cap=spec["param_cap"]
+            list(_m.param_names), _m.compartment_size_params, am_ids, cap=eff_cap
         )
+        res["param_cap_effective"] = eff_cap
+        res["n_species_model"] = len(_m.species_names)
         # Parameter VALUES, in the shared order — the noise floor needs |p_j| to
         # convert the solver's state-space atol into a resolvable magnitude for
         # s_ij = dx_i/dp_j. Read here, while the model is loaded for the name
@@ -314,7 +338,12 @@ def _worker(spec: dict, q) -> None:
         param_values = [float(_m.get_param(bn_by_id[i])) for i in shared_ids]
         del _m
     except Exception as exc:
-        res["status"] = "exception"
+        # A DECLARED refusal here is almost always UnderSpecifiedModelError: the
+        # model reads a symbol it never defines, so the load itself refuses
+        # (issue #323). AMICI accepts the same models by defaulting the symbol to
+        # 0, which is why this shows up as bngsim-only. It is a documented
+        # refusal, not a bug — UNSUPPORTED, not EXCEPTION.
+        res["status"] = "unsupported" if _is_declared_refusal(exc) else "exception"
         res["exception"] = f"bngsim-params: {type(exc).__name__}: {exc}"[:400]
         res["wall_sec"] = round(am_wall, 3)
         q.put(res)
@@ -481,6 +510,7 @@ def _bngsim_config_meta(args) -> dict:
         "rtol": args.rtol,
         "atol": args.atol,
         "param_cap": args.param_cap,
+        "param_budget": args.param_budget,
     }
 
 
@@ -504,11 +534,22 @@ def main() -> int:
         f"(default: {','.join(asens.SENS_METHODS)}).",
     )
     ap.add_argument(
+        "--param-budget",
+        type=int,
+        default=asens.DEFAULT_PARAM_BUDGET,
+        help="Ceiling on the COUPLED SYSTEM SIZE n_species*Np, from which each "
+        "model's parameter count is derived (issue #331). Cost scales with that "
+        "product, not with Np alone, so a flat cap over-spends on big models and "
+        f"under-samples small ones (default {asens.DEFAULT_PARAM_BUDGET}, "
+        "0 = no budget).",
+    )
+    ap.add_argument(
         "--param-cap",
         type=int,
-        default=asens.DEFAULT_PARAM_CAP,
-        help="Max sensitivity parameters per model; the coupled system is "
-        f"n_species*(Np+1) (default {asens.DEFAULT_PARAM_CAP}, 0 = uncapped).",
+        default=0,
+        help="Optional ADDITIONAL hard ceiling on parameters per model, applied "
+        "on top of --param-budget (default 0 = none; the budget governs). Set to "
+        f"{asens.DEFAULT_PARAM_CAP} to reproduce the pre-#331 flat cap.",
     )
     ap.add_argument("--checkpoint", default="")
     ap.add_argument(
@@ -558,6 +599,7 @@ def main() -> int:
         atol=args.atol,
         timeout=args.timeout,
         param_cap=args.param_cap,
+        param_budget=args.param_budget,
         config_env=dict(combo_spec["env"]),
     )
 
@@ -572,7 +614,8 @@ def main() -> int:
     )
     print(f"  bngsim {ver['bngsim']}   amici {ver['amici']}   manifest {manifest.name}")
     print(
-        f"  param cap: {args.param_cap or 'none'} (coupled system n_species*(Np+1))   "
+        f"  param budget: {args.param_budget or 'none'} coupled states"
+        f"   extra cap: {args.param_cap or 'none'}   "
         f"tol rtol={args.rtol:g} atol={args.atol:g}"
     )
     print()
@@ -631,6 +674,13 @@ def main() -> int:
                         "n_common_species",
                         "state_passed",
                         "state_max_rel",
+                        # issue #328 — degeneracy witnesses, so a vacuous-pass
+                        # census is a query over the report rather than a re-run.
+                        "param_cap_effective",
+                        "n_species_model",
+                        "max_abs_sx",
+                        "n_resolvable_params",
+                        "state_span",
                     )
                     if k in r
                 },
@@ -663,6 +713,7 @@ def main() -> int:
         "config": _bngsim_config_meta(args),
         "sens_methods": methods,
         "param_cap": args.param_cap,
+        "param_budget": args.param_budget,
         "state_parity": {
             "n_state_diff": n_state_diff,
             "note": (

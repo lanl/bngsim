@@ -8,6 +8,7 @@ Hierarchy::
 
     BngsimError (RuntimeError)
     ├── ModelError            — .net parse failures, invalid model state
+    │   └── UnderSpecifiedModelError — reads a symbol it never defines
     ├── SimulationError       — solver failures (convergence, NaN, etc.)
     ├── SimulationTimeout     — wall-clock budget exceeded during run()
     ├── ParameterError        — unknown parameter name, type mismatch
@@ -36,6 +37,31 @@ class ModelError(BngsimError):
     - A .net file cannot be parsed
     - A model is in an invalid state for simulation
     - A reserved name conflict is detected
+    """
+
+
+class UnderSpecifiedModelError(ModelError):
+    """The model reads a symbol it never gives a value.
+
+    Raised at load when a ``<parameter>`` has no ``value`` attribute and no
+    ``<initialAssignment>``, yet is referenced by a kineticLaw / rule / event /
+    initialAssignment expression. SBML leaves such a value undefined, so there is
+    nothing to integrate; bngsim refuses rather than default it to ``0.0``, which
+    would silently zero out every expression that consumes it and return a
+    wrong-but-plausible trajectory. RoadRunner refuses the same models.
+
+    That failure mode is not hypothetical. `MODEL1006230032` under
+    ``BNGSIM_ALLOW_UNSET_PARAMS=1`` integrates to **all five species identically
+    zero for the whole run**, and every cross-engine check — state, sensitivity,
+    both engines — agrees, because AMICI defaults the same symbol the same way.
+    A model computing nothing, with every verdict green.
+
+    Typed (issue #323) so a caller can tell "this model is under-specified" from
+    the other things :class:`ModelError` covers — a ``.net`` parse failure, an
+    invalid model state. Parity suites bucket it ``UNSUPPORTED``: a clean,
+    documented refusal, not an actionable bngsim bug. Set the parameter's value,
+    add an ``<initialAssignment>``, or opt into the legacy lenient behavior with
+    ``BNGSIM_ALLOW_UNSET_PARAMS=1`` (which downgrades this to a warning).
     """
 
 

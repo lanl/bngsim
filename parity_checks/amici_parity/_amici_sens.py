@@ -42,17 +42,26 @@ directly comparable and the shared list is their intersection. Two exclusions:
 A model whose intersection is EMPTY yields no comparison at all; the runner
 classifies it BAD_TEST rather than passing it vacuously.
 
-Why a parameter cap
--------------------
+Why the parameter list is bounded, and by WHAT
+----------------------------------------------
 Forward sensitivity integrates a coupled system of size ``n_species*(Np+1)``, so
-cost grows linearly in ``Np`` and a 100-parameter model is 100x the work of a
-1-parameter one. Comparing models at wildly different ``Np`` also makes the
-timing column meaningless. So the shared list is capped (default
-:data:`DEFAULT_PARAM_CAP`) by :func:`select_params`, which spreads its pick
-evenly over the sorted id list — deterministic across re-runs, and not
-concentrated on whichever reaction happens to sort first. The ``Np`` actually
-used is recorded per model in the report, because no timing number is
-interpretable without it.
+a job's cost is set by that **product**, not by ``Np`` alone. The bound is
+therefore a budget on the product (:data:`DEFAULT_PARAM_BUDGET`, via
+:func:`budget_cap`), not a flat ceiling on ``Np``: a flat cap spends the same 20
+columns on a 3-species toy and on a 1604-species model, over-paying at one end
+and under-sampling at the other. Whatever the resulting cap, :func:`select_params`
+spreads its pick evenly over the sorted id list — deterministic across re-runs,
+and not concentrated on whichever reaction happens to sort first.
+
+Uncapped is deliberately not the default. ``MODEL1009150002`` (1604 species,
+7304 parameters) has a measured warm ``simultaneous`` solve of 14.4 s at
+``Np=20``; at full ``Np`` that extrapolates to roughly 87 minutes, so removing
+the bound converts three currently-PASSing models into TIMEOUTs. Memory is not
+the constraint (~0.6 GB worst case) — wall-clock is.
+
+Both the ``Np`` used and the pre-cap candidate count are recorded per model, so
+the report discloses what was dropped instead of silently truncating, and no
+timing number is read without the ``Np`` that produced it.
 
 Parameter scale
 ---------------
@@ -83,6 +92,7 @@ import _amici_common as ac  # noqa: E402
 
 # Engine-agnostic surface, re-exported so the runner imports only this module.
 align_common = ac.align_common
+is_declared_refusal = ac.is_declared_refusal
 schedule = ac.schedule
 hardware_info = ac.hardware_info
 load_and_filter = ac.load_and_filter
@@ -96,6 +106,42 @@ DEFAULT_ATOL = ac.DEFAULT_ATOL
 
 # Max parameters per model. See "Why a parameter cap" above.
 DEFAULT_PARAM_CAP = 20
+
+# --------------------------------------------------------------------------- #
+# The coupled-state budget (issue #331)
+# --------------------------------------------------------------------------- #
+# Forward sensitivity integrates a system of size ``n_species*(Np+1)``, so the
+# cost of a job is set by that PRODUCT, not by ``Np`` alone. A flat parameter cap
+# is therefore the wrong shape: it spends the same 20 columns on a 3-species toy
+# (free) and on a 1604-species model (brutal), while leaving 441 small models
+# sampled at 20 when they could be compared in full.
+#
+# Budgeting the product fixes both ends at once. Measured over the corpus at
+# 20,000 states: 441 models get MORE parameters than the flat cap of 20, 525 are
+# unchanged, and exactly ONE gets fewer — ``MODEL1009150002`` (1604 species),
+# which drops 20 -> 12. That model is why an uncapped run is not an option: at
+# its full 7304 parameters one warm ``simultaneous`` solve extrapolates from a
+# measured 14.4 s to roughly 87 MINUTES, so uncapping would convert three
+# currently-PASSing models into TIMEOUTs — trading real signal for none.
+#
+# Memory is NOT the constraint (the worst case is ~0.6 GB of CVODES Nordsieck
+# history); wall-clock is.
+DEFAULT_PARAM_BUDGET = 20_000
+
+
+def budget_cap(n_species: int, budget: int, hard_cap: int = 0) -> int:
+    """Parameters affordable for this model, from the coupled-state budget.
+
+    ``budget`` is the ceiling on ``n_species * Np``; ``0`` disables it. ``hard_cap``
+    is an optional additional ceiling (``--param-cap``), ``0`` for none. At least
+    one parameter is always allowed — a model is never silently reduced to no
+    comparison at all, which would masquerade as BAD_TEST.
+    """
+    cap = 0 if not budget else max(1, budget // max(int(n_species), 1))
+    if hard_cap:
+        cap = min(cap, hard_cap) if cap else hard_cap
+    return cap
+
 
 # The two CVODES forward-sensitivity corrector methods both engines expose.
 # staggered    (CV_STAGGERED)   — state solved first, then the sensitivities as a
@@ -597,6 +643,63 @@ def sensitivity_noise_mask(
     p = np.abs(np.asarray(param_values, dtype=float))
     floor = np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
     return np.abs(np.asarray(bn_sx) - np.asarray(am_sx)) <= floor[np.newaxis, np.newaxis, :]
+
+
+def sens_resolution_floors(param_values, atol, factor: float = SENS_NOISE_FACTOR):
+    """Per-parameter resolvable magnitude ``factor*atol/|p_j|``, or ``None``.
+
+    Shares the formula with :func:`sensitivity_noise_mask` rather than restating
+    it, so the two cannot drift into disagreeing about what "resolvable" means.
+    Returns ``None`` when the caller has no parameter values — exactly when the
+    mask is also inactive — so a report field of ``None`` honestly reads "not
+    assessed" rather than a fabricated 0.
+
+    Returned PER COLUMN, never reduced to one scalar. Reducing with ``max`` would
+    let a single tiny-valued parameter inflate the threshold for the whole tensor
+    and mark a live model degenerate: ``BIOMD0000000002`` has real dynamics
+    (state span 1.9) and a genuine ``max|sx| = 3.7e-5``, but one small parameter
+    puts the largest column floor at ``8.3e-5``, which a global max would declare
+    "entirely unresolvable". That is the same global-reduction mistake as the
+    transversality noise floor in issue #322, one module over.
+    """
+    if param_values is None or atol is None:
+        return None
+    p = np.abs(np.asarray(param_values, dtype=float))
+    if p.size == 0:
+        return None
+    return np.where(p > 0, factor * atol / np.where(p > 0, p, 1.0), factor * atol)
+
+
+# The mask's generous multiplier is deliberately NOT reused for the degeneracy
+# test: the two questions carry opposite risk.
+#
+#   forgiving a cell   — being generous avoids false DIFFs, so SENS_NOISE_FACTOR
+#                        is 100x the raw resolution on purpose.
+#   claiming vacuity   — being generous INVENTS vacuity, marking real signal
+#                        unresolvable and quietly discounting a genuine pass.
+#
+# Measured on the corpus: at factor=100, 5 of 19 flagged models (BIOMD0000000335,
+# 500, 501, 827, MODEL1201140005) have columns that clear their raw floor and are
+# not degenerate at all. So the claim is made against the RAW resolution.
+DEGENERACY_FACTOR = 1.0
+
+
+def resolvable_param_columns(bn_sx: np.ndarray, param_values, atol) -> int | None:
+    """How many parameter columns carry a sensitivity above their OWN raw floor.
+
+    ``0`` means every column is beneath what the solver can resolve, i.e. the
+    comparison established nothing regardless of how well the engines agreed —
+    the vacuous-pass condition of issue #328. ``None`` when the floor is not
+    assessable.
+
+    Judged at ``DEGENERACY_FACTOR`` (the raw ``atol/|p_j|``), not at the mask's
+    ``SENS_NOISE_FACTOR`` — see above for why the asymmetry is deliberate.
+    """
+    floors = sens_resolution_floors(param_values, atol, factor=DEGENERACY_FACTOR)
+    if floors is None or bn_sx.size == 0:
+        return None
+    peaks = np.nanmax(np.abs(bn_sx), axis=(0, 1))  # peak over (time, species) per param
+    return int(np.count_nonzero(peaks > floors))
 
 
 def sens_verdict(
