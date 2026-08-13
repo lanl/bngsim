@@ -197,6 +197,7 @@ def make_specs(
     atol: float,
     timeout: float | None,
     param_cap: int,
+    param_budget: int,
     config_env: dict,
 ) -> tuple[list[dict], int]:
     """Expand the manifest jobs into worker specs. ``(specs, n_tol_overridden)``.
@@ -240,6 +241,7 @@ def make_specs(
                     "params": params,
                     "cap": float(cap),
                     "param_cap": int(param_cap),
+                    "param_budget": int(param_budget),
                     "config_env": dict(config_env),
                 }
             )
@@ -319,9 +321,16 @@ def _worker(spec: dict, q) -> None:
 
         _src = Path(xml).read_text() if Path(xml).exists() else xml
         _m = sbml_loader.load_sbml_string(_src)
+        # The cap is derived PER MODEL from the coupled-state budget (issue #331):
+        # cost scales with n_species*(Np+1), so a flat Np ceiling over-spends on
+        # big models and under-samples small ones. n_species is only knowable
+        # here, once the model is loaded.
+        eff_cap = asens.budget_cap(len(_m.species_names), spec["param_budget"], spec["param_cap"])
         shared_ids, bn_by_id, n_cand = asens.shared_sensitivity_params(
-            list(_m.param_names), _m.compartment_size_params, am_ids, cap=spec["param_cap"]
+            list(_m.param_names), _m.compartment_size_params, am_ids, cap=eff_cap
         )
+        res["param_cap_effective"] = eff_cap
+        res["n_species_model"] = len(_m.species_names)
         # Parameter VALUES, in the shared order — the noise floor needs |p_j| to
         # convert the solver's state-space atol into a resolvable magnitude for
         # s_ij = dx_i/dp_j. Read here, while the model is loaded for the name
@@ -501,6 +510,7 @@ def _bngsim_config_meta(args) -> dict:
         "rtol": args.rtol,
         "atol": args.atol,
         "param_cap": args.param_cap,
+        "param_budget": args.param_budget,
     }
 
 
@@ -524,11 +534,22 @@ def main() -> int:
         f"(default: {','.join(asens.SENS_METHODS)}).",
     )
     ap.add_argument(
+        "--param-budget",
+        type=int,
+        default=asens.DEFAULT_PARAM_BUDGET,
+        help="Ceiling on the COUPLED SYSTEM SIZE n_species*Np, from which each "
+        "model's parameter count is derived (issue #331). Cost scales with that "
+        "product, not with Np alone, so a flat cap over-spends on big models and "
+        f"under-samples small ones (default {asens.DEFAULT_PARAM_BUDGET}, "
+        "0 = no budget).",
+    )
+    ap.add_argument(
         "--param-cap",
         type=int,
-        default=asens.DEFAULT_PARAM_CAP,
-        help="Max sensitivity parameters per model; the coupled system is "
-        f"n_species*(Np+1) (default {asens.DEFAULT_PARAM_CAP}, 0 = uncapped).",
+        default=0,
+        help="Optional ADDITIONAL hard ceiling on parameters per model, applied "
+        "on top of --param-budget (default 0 = none; the budget governs). Set to "
+        f"{asens.DEFAULT_PARAM_CAP} to reproduce the pre-#331 flat cap.",
     )
     ap.add_argument("--checkpoint", default="")
     ap.add_argument(
@@ -578,6 +599,7 @@ def main() -> int:
         atol=args.atol,
         timeout=args.timeout,
         param_cap=args.param_cap,
+        param_budget=args.param_budget,
         config_env=dict(combo_spec["env"]),
     )
 
@@ -592,7 +614,8 @@ def main() -> int:
     )
     print(f"  bngsim {ver['bngsim']}   amici {ver['amici']}   manifest {manifest.name}")
     print(
-        f"  param cap: {args.param_cap or 'none'} (coupled system n_species*(Np+1))   "
+        f"  param budget: {args.param_budget or 'none'} coupled states"
+        f"   extra cap: {args.param_cap or 'none'}   "
         f"tol rtol={args.rtol:g} atol={args.atol:g}"
     )
     print()
@@ -653,6 +676,8 @@ def main() -> int:
                         "state_max_rel",
                         # issue #328 — degeneracy witnesses, so a vacuous-pass
                         # census is a query over the report rather than a re-run.
+                        "param_cap_effective",
+                        "n_species_model",
                         "max_abs_sx",
                         "n_resolvable_params",
                         "state_span",
@@ -688,6 +713,7 @@ def main() -> int:
         "config": _bngsim_config_meta(args),
         "sens_methods": methods,
         "param_cap": args.param_cap,
+        "param_budget": args.param_budget,
         "state_parity": {
             "n_state_diff": n_state_diff,
             "note": (

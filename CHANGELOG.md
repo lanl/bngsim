@@ -16,6 +16,26 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **`amici_parity` budgets the coupled system rather than capping parameters
+  (issue #331).** Forward sensitivity integrates `n_species*(Np+1)` states, so a
+  job's cost is set by that product, not by `Np` alone. The old flat cap of 20
+  spent the same columns on a 3-species toy and a 1604-species model, leaving
+  **534 of 1115 models (48%) compared on a 20-column sample**. `--param-budget`
+  (default 20,000 coupled states) derives each model's parameter count from its
+  species count instead; `--param-cap` remains as an optional extra ceiling, and
+  `--param-cap 20` reproduces the old behavior.
+
+  Measured over the corpus: **441 models get more parameters, 525 are unchanged,
+  and exactly one gets fewer** (`MODEL1009150002`, 20 → 12), for 3.66x the solve
+  work — which is ~+5% of wall, since the solve is only 1.8% of a sweep dominated
+  by timeouts (37%) and AMICI compiles (37%).
+
+  Uncapped is deliberately not the default. `MODEL1009150002` currently passes
+  with a 14.4 s warm `simultaneous` solve at `Np=20`; at its full 7304 parameters
+  that extrapolates to roughly **87 minutes**, so removing the bound would convert
+  three passing models into TIMEOUTs. Memory is not the constraint (~0.6 GB worst
+  case) — wall-clock is.
+
 - **`amici_parity` records degeneracy witnesses per row (issue #328).** A job
   could be reported `PASS` when the whole forward-sensitivity tensor lay below
   the magnitude either solver can resolve — nothing was meaningfully compared,

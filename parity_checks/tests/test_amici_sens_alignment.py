@@ -267,6 +267,7 @@ class TestMakeSpecs:
             atol=1e-12,
             timeout=None,
             param_cap=20,
+            param_budget=0,
             config_env={},
         )
 
@@ -304,6 +305,7 @@ class TestMakeSpecs:
             atol=1e-12,
             timeout=None,
             param_cap=20,
+            param_budget=0,
             config_env={},
         )
         assert n_ov == 1
@@ -556,6 +558,45 @@ class TestUnderSpecifiedIsAlsoDeclared:
         assert run._classify_failure("bngsim: x", "")[0] == "exception"
         assert run._classify_failure("", "amici: x")[0] == "reference_failed"
         assert run._classify_failure("bngsim: x", "amici: y")[0] == "bad_test"
+
+
+class TestCoupledStateBudget:
+    """Issue #331. Cost is set by ``n_species * Np``, so THAT is what is budgeted.
+
+    A flat cap on ``Np`` is the wrong shape in both directions: it over-spends on
+    a 1604-species model and under-samples a 3-species one. Measured over the
+    corpus at 20,000 states, 441 models get MORE parameters than the flat cap of
+    20 and exactly one gets fewer.
+    """
+
+    def test_a_small_model_is_allowed_far_more_than_the_old_flat_cap(self):
+        assert asens.budget_cap(n_species=10, budget=20_000) == 2000
+
+    def test_a_huge_model_is_pulled_BELOW_the_old_flat_cap(self):
+        """`MODEL1009150002`, 1604 species: 20 -> 12. This is the one model the
+        budget restricts, and the reason uncapped is not an option — at its full
+        7304 parameters a warm simultaneous solve extrapolates to ~87 minutes."""
+        assert asens.budget_cap(n_species=1604, budget=20_000) == 12
+
+    def test_at_least_one_parameter_is_always_affordable(self):
+        """A model reduced to zero columns would report BAD_TEST ("nothing to
+        compare"), which would read as a corpus gap rather than a budget choice."""
+        assert asens.budget_cap(n_species=10**9, budget=20_000) == 1
+
+    def test_zero_budget_means_no_budget(self):
+        assert asens.budget_cap(n_species=1604, budget=0) == 0
+
+    def test_the_hard_cap_still_applies_on_top(self):
+        """`--param-cap` survives as an override, so the pre-#331 behavior is
+        reproducible with `--param-cap 20`."""
+        assert asens.budget_cap(n_species=10, budget=20_000, hard_cap=20) == 20
+        assert asens.budget_cap(n_species=1604, budget=20_000, hard_cap=20) == 12
+
+    def test_the_hard_cap_alone_works_with_no_budget(self):
+        assert asens.budget_cap(n_species=10, budget=0, hard_cap=20) == 20
+
+    def test_a_degenerate_species_count_does_not_divide_by_zero(self):
+        assert asens.budget_cap(n_species=0, budget=20_000) == 20_000
 
 
 class TestDegeneracyWitnesses:
