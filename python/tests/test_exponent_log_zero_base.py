@@ -467,7 +467,7 @@ class TestTheSolve:
         )
 
 
-# ─── why #317 stops at the emitter ─────────────────────────────────────────
+# ─── #317's shape, through a solve ─────────────────────────────────────────
 
 # Every #317 shape needs a logarithm in the rate law itself. A first-order
 # derivative introduces at most one `ln(g)` per product-rule term — that is all
@@ -482,35 +482,39 @@ class TestTheSolve:
 # this guard. That was GH #333 and it is fixed — `test_rate_law_zero_base_log.py`
 # holds its contract, and a solve now runs from `S = 0` on both engines.
 #
-# What still blocks the end-to-end case is not a zero base at all. Adding
-# sensitivity columns changes the error control and so the step selection, and
-# the resulting sequence evaluates this rate law at `S < 0`, where `ln` is
-# genuinely undefined and #310's contract keeps the NaN. The corrector then
-# collapses (`flag=-4`, at `t = 0`, independent of tolerance). Replacing
-# `ln(S)` with `ln(abs(S))` — identical for every `S > 0` — makes the same run
-# complete, which is what identifies the negative argument as the cause.
+# The forward-sensitivity run then stayed broken for one more issue's worth of
+# time, and the cause was not a zero base, a negative one, or anything in this
+# file: it was GH #151's native SymPy-free differentiator, which recognizes
+# `^` and `ln` but reaches none of the emitters this guard lives in. It
+# differentiated `vmax·S^n·ln(S)` term by term into
+# `(n·S^(n-1))·ln(S) + S^n·(1/S)` — both halves `0·∞` at `S = 0` — and that
+# expression is the Jacobian entry, so it entered the `J·yS` half of the analytic
+# sensitivity RHS and made every column NaN on the first call, including columns
+# for parameters the logarithm does not touch. GH #336 fixed that by deferring a
+# state-dependent logarithm to SymPy, where this guard applies; the assertion
+# below (a strict xfail until then) is the end-to-end case.
 #
-# So this is the model leaving its own domain, which bngsim evaluates literally
-# by policy, and GH #336 is now what it costs the user: a bare CVODE flag naming
-# no species and no rate law, because the codegen path a sensitivity run forces
-# carries no non-finite diagnostic.
+# It is worth saying why the earlier reading — "the solver evaluates the law at
+# `S < 0`" — looked right. The evidence for it was that `ln(abs(S))` makes the
+# same run complete. It does, but not because `abs` finitizes a negative
+# argument: `abs` is not in the native differentiator's whitelist, so spelling it
+# that way pushed the whole law onto SymPy and picked up the guard.
 LOG_RATE_LAW = HILL_ZERO_IC.replace(
     "1 activate() vmax*Atot^n/(KM^n + Atot^n)",
     "1 activate() vmax*Atot^n*ln(Atot)",
 )
 
 
-class TestWhatStillBlocksTheEndToEndCase:
+class TestTheShapeThroughASolve:
     @pytest.fixture
     def log_net(self, tmp_path):
         net = tmp_path / "logpow.net"
         net.write_text(LOG_RATE_LAW)
         return net
 
-    def test_the_value_of_that_rate_law_now_integrates_from_zero(self, log_net):
+    def test_the_value_of_that_rate_law_integrates_from_zero(self, log_net):
         """GH #333, from this file's side: the same model whose RHS used to be
-        NaN at ``Atot = 0`` now solves. Only the sensitivity run below is still
-        out of reach, which is what narrows the remaining gap to #336."""
+        NaN at ``Atot = 0`` solves."""
         model = bngsim.Model.from_net(log_net)
         assert model._guarded_functions, "the rate law should have been guarded"
         species = np.asarray(
@@ -521,10 +525,10 @@ class TestWhatStillBlocksTheEndToEndCase:
         assert np.all(np.isfinite(species))
 
     def test_the_derivative_of_that_rate_law_is_guarded(self, log_net):
-        """The half of it that *is* fixed, taken from the model's own rate-law
-        text rather than a hand-built expression: `∂/∂n` of `vmax·S^n·ln S` is
-        the ``ln(S)^2`` shape, and through bngsim's own converter it now answers
-        the limit at ``S = 0`` instead of NaN."""
+        """Taken from the model's own rate-law text rather than a hand-built
+        expression: `∂/∂n` of `vmax·S^n·ln S` is the ``ln(S)^2`` shape, and
+        through bngsim's own converter it answers the limit at ``S = 0`` instead
+        of NaN."""
         import sympy as sp
         from bngsim._jacobian import _exprtk_to_sympy
 
@@ -541,27 +545,11 @@ class TestWhatStillBlocksTheEndToEndCase:
         assert np.isnan(_at(deriv, **point))
         assert _at(_guard_exponent_log_at_zero(deriv), **point) == 0.0
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=bngsim.SimulationError,
-        reason=(
-            "The RHS is finite now (#333) and the plain solve above passes, but "
-            "the sensitivity columns move the step selection onto a sequence "
-            "that evaluates this rate law at Atot < 0, where ln is genuinely "
-            "undefined — so the corrector collapses. That is the model leaving "
-            "its domain, not a guard bngsim is missing, and it is not this "
-            "file's contract to assert. Kept as a strict xfail because it is "
-            "still the only route to #317's ln(S)^2 shape through a solve "
-            "rather than through the emitter: whatever makes it pass — GH #336's "
-            "diagnostic, a non-negativity constraint, or a modeller writing "
-            "ln(abs(S)) — should drop this marker and keep the assertion."
-        ),
-    )
     def test_the_solve_completes_and_the_exponent_column_is_finite(self, log_net):
-        """The end-to-end case #317 cannot currently reach. `ln(abs(Atot))` in
-        place of `ln(Atot)` — identical for every `Atot > 0` — makes this same
-        run complete, which is what identifies the negative argument rather than
-        the zero one as what stops it."""
+        """The end-to-end case, and the only route to #317's ``ln(S)^2`` shape
+        through a solve rather than through the emitter. Carried a strict xfail
+        until GH #336 stopped the native differentiator from re-introducing the
+        NaN this guard removes."""
         model = bngsim.Model.from_net(log_net)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
         result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
@@ -570,14 +558,19 @@ class TestWhatStillBlocksTheEndToEndCase:
         assert np.all(np.isfinite(sens))
         assert np.max(np.abs(sens)) > 1e-3
 
-    def test_the_same_law_off_the_singularity_already_works(self, tmp_path):
-        """The control for the xfail above: one floating-point value apart, and
-        the whole solve is fine. Keeps that xfail honest — it is pinning the
-        exact zero, not a model that is broken for some unrelated reason."""
+    def test_the_zero_start_agrees_with_the_limit_from_above(self, log_net, tmp_path):
+        """The control on the case above: one floating-point value apart the run
+        always worked, so starting *at* zero is only credible if it lands on what
+        approaching zero gives."""
         net = tmp_path / "logpow_eps.net"
         net.write_text(LOG_RATE_LAW.replace("1 A() 0.0", "1 A() 1e-30"))
 
-        model = bngsim.Model.from_net(net)
-        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
-        result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
-        assert np.all(np.isfinite(np.asarray(result.sensitivities)))
+        def final(path):
+            model = bngsim.Model.from_net(path)
+            sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
+            result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
+            sens = np.asarray(result.sensitivities)
+            assert np.all(np.isfinite(sens))
+            return sens[-1, :, 0]
+
+        np.testing.assert_allclose(final(log_net), final(net), rtol=1e-6, atol=1e-9)

@@ -431,6 +431,46 @@ def _var_names(node, out: set[str]):
     return out
 
 
+def _takes_log_of_state(node, state_names: AbstractSet[str]) -> bool:
+    """True if the rate law takes a logarithm of something the state can move.
+
+    GH #336. Such a law is outside this module's family, and the reason is the
+    one thing this path cannot do: guard a removable singularity. Differentiating
+    ``S^n·ln(S)`` term by term gives ``(n·S^(n-1))·ln(S) + S^n·(1/S)`` — the
+    honest product and chain rules, and both halves are ``0·∞`` at ``S = 0``
+    where the derivative's own limit is ``0``. #310 and #317 removed exactly that
+    NaN, but they did it inside the SymPy emitters
+    (``_guard_exponent_log_at_zero``, reached from ``sympy_to_exprtk`` /
+    ``sympy_to_c``), which this module bypasses by construction — so a
+    log-bearing law reaching here was silently reintroducing the NaN that guard
+    exists to remove, in the Jacobian and in the ``J·yS`` half of the analytic
+    sensitivity RHS that shares the same builder.
+
+    Deferring is the whole fix: SymPy's ``x^n/x → x^(n-1)`` rewrite and the
+    zero-base guard both then apply, which is the pre-#151 behaviour for these
+    laws. It costs derivation budget (#95) only where a logarithm of a state
+    variable actually appears — 2.1% of corpus rate laws mention a logarithm at
+    all — and nothing else changes: an expression with no such logarithm never
+    reaches this test's ``True`` branch and is emitted byte-identically.
+
+    A logarithm of a *constant* argument (``ln(KM)``, or the ``ln(base)`` that
+    :func:`_diff_pow` synthesizes for a constant-base exponential ``a^x``) is not
+    state-dependent, has no singularity the state can reach, and stays native.
+    """
+    tag = node[0]
+    if tag == "call":
+        if node[1] == "log" and (_var_names(node[2][0], set()) & state_names):
+            return True
+        return _takes_log_of_state(node[2][0], state_names)
+    if tag == "neg":
+        return _takes_log_of_state(node[1], state_names)
+    if tag in ("+", "-", "*", "/", "^"):
+        return _takes_log_of_state(node[1], state_names) or _takes_log_of_state(
+            node[2], state_names
+        )
+    return False
+
+
 # ─── Emitters ────────────────────────────────────────────────────────────────
 
 
@@ -576,6 +616,12 @@ def differentiate_rate_law_native(
         if nm not in observable_names and nm not in constant_names:
             return None
 
+    state_names = names & observable_names
+    # GH #336: a logarithm of a state variable carries a removable singularity
+    # that only the SymPy emitters' guard takes out. See _takes_log_of_state.
+    if _takes_log_of_state(node, state_names):
+        return None
+
     # Differentiate only the observables that actually appear (scanning all of
     # ``observable_names`` was O(n_obs) per reaction). Sorted so the emitted
     # ExprTk/C derivative ordering is deterministic regardless of set hash-seed
@@ -583,7 +629,7 @@ def differentiate_rate_law_native(
     # affects the numerical result.
     result: dict = {}
     try:
-        for obs in sorted(names & observable_names):
+        for obs in sorted(state_names):
             deriv = _diff(node, obs)
             if _is_zero(deriv):
                 continue

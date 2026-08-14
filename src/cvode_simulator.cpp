@@ -87,9 +87,18 @@ namespace bngsim {
 // that legitimately needs many steps advances every batch, however slowly. So
 // retry while t moves and raise a diagnosable error the moment it does not,
 // naming the t and h CVODE wedged at.
+//
+// A collapsed step is also what a nan in the right-hand side looks like from
+// out here, so the message ends with whatever non-finite witness this run left
+// (GH #336) — the discontinuity story below is the common cause, not the only
+// one, and a run that names a rate law should say so rather than send the user
+// looking for an `if()` that is not there.
+struct CvodeUserData;
+static std::string nonfinite_witness_suffix(CvodeUserData &data); // defined below
+
 static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vector y,
                                   sunrealtype *t_ret, int &flag, const char *context,
-                                  const std::function<void()> &check_budget) {
+                                  CvodeUserData &data, const std::function<void()> &check_budget) {
     while (flag == CV_TOO_MUCH_WORK) {
         if (check_budget)
             check_budget();
@@ -122,7 +131,7 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
             << "leaves the right-hand side smooth in t and applies the jump at the root, which "
             << "an output point does NOT do (CV_NORMAL interpolates output points, so a sample "
             << "time at the crossing does not bound the step that spans it).";
-        throw std::runtime_error(msg.str());
+        throw std::runtime_error(msg.str() + nonfinite_witness_suffix(data));
     }
 }
 
@@ -140,6 +149,49 @@ static void retry_while_advancing(void *cvode_mem, sunrealtype t_target, N_Vecto
 // The root function is: g_i(t, y) = trigger_i(t, y) - 0.5
 // Zero-crossing at 0.5 detects the false→true transition.
 // SUNDIALS signature: int g(sunrealtype t, N_Vector y, sunrealtype* gout, void* user_data)
+
+// ─── Non-finite witness (GH #336) ────────────────────────────────────────────
+//
+// A rate law evaluated outside its own domain — `ln` of a transiently-negative
+// concentration, a fractional power of one — answers nan, and #310's contract is
+// that such a nan is honest and stays one. What the user sees is the corrector
+// giving up: `CVODE integration failed at t=... with flag=-4`, naming no time, no
+// species and no rate law.
+//
+// The interpreted evaluator at least says something. Every registered ExprTk
+// adapter carries issue #42's NonFiniteWarningSet, which prints
+// `'ln(-1e-09)' returned nan` the moment it happens. The compiled path carries
+// nothing — the emitted C calls libm's `log` directly — and that is the path a
+// forward-sensitivity run *forces*, so the case where the diagnostic is most
+// needed is the one that has none.
+//
+// Instrumenting the emitted C would put a finiteness test on the hot path of
+// every rate law of every model. This does the same job from outside it, and
+// costs a healthy solve nothing: the callbacks ALREADY scan their own output for
+// non-finiteness (the GH #135 clamp retries), so all that is added is a copy of
+// (t, y) the first time such a scan trips with no clamp left to try. Nothing is
+// printed then — a step CVODE goes on to recover from must stay silent. Only if
+// the integration fails is the witness state re-evaluated through the
+// interpreted evaluator, which does carry the instrumentation, and the result
+// appended to the exception message.
+struct NonFiniteWitness {
+    bool captured = false;
+    const char *source = nullptr; // "The compiled RHS", "The Jacobian", ...
+    double t = 0.0;
+    std::vector<double> y;
+
+    // First one wins: the earliest excursion is the one that explains the rest,
+    // and re-capturing would keep overwriting it with the collapsed steps that
+    // follow. Also what makes the sensitivity-RHS scan free after it trips.
+    void capture(const char *src, double t_now, const double *y_ptr, int ns) {
+        if (captured)
+            return;
+        captured = true;
+        source = src;
+        t = t_now;
+        y.assign(y_ptr, y_ptr + ns);
+    }
+};
 
 // The codegen calling contract (symbol signatures + the two user_data structs)
 // lives in bngsim/codegen_abi.hpp: the steady-state solver resolves the same
@@ -314,6 +366,12 @@ struct CvodeUserData {
     // unchanged) for every run that is not asking for sensitivities and every
     // model with no such condition. Owned by run().
     const std::vector<int> *state_switch_roots = nullptr;
+
+    // Earliest state at which a callback produced a non-finite value with no
+    // clamp left to try (GH #336). Written by the RHS / Jacobian /
+    // sensitivity-RHS callbacks, read only if the integration fails — see
+    // NonFiniteWitness above.
+    NonFiniteWitness nonfinite_witness;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -397,6 +455,112 @@ static inline bool jac_has_nonfinite(const double *jac_data, std::size_t count) 
     return false;
 }
 
+// Format a double the way a diagnostic wants it: enough digits to see that a
+// concentration is -1.2e-09 rather than "0", without printf's 6-digit padding.
+static std::string diag_number(double v) {
+    std::ostringstream os;
+    os << std::setprecision(6) << v;
+    return os.str();
+}
+
+// Turn a captured witness (see NonFiniteWitness) into something the user can act
+// on, or "" when there is nothing to say. Two things get named, most direct
+// first: the rate laws that answer non-finite at the witness state, and the
+// species that are below zero there — the state a logarithm, a `sqrt` or a
+// fractional power cannot take, and the one a modeller can do something about.
+//
+// The functions are re-evaluated through the INTERPRETED evaluator, and that is
+// the point rather than an implementation convenience: that path carries issue
+// #42's non-finite instrumentation, so the model's own
+// `'ln(-1.2e-09)' returned nan` lands on stderr as a side effect of asking. The
+// compiled path's missing diagnostic, borrowed from the engine that still has
+// it. Mutating the model's observable and function caches costs nothing here:
+// this runs on the failure path, the caller throws immediately after, and every
+// entry point recomputes both from the state it is handed. Any exception out of
+// the model is swallowed — a diagnostic that replaces the real error is worse
+// than no diagnostic.
+static std::string describe_nonfinite_witness(NetworkModel &model, const NonFiniteWitness &w) {
+    if (!w.captured || w.y.empty())
+        return "";
+    // At most this many of each are named: the point is to identify the law, and
+    // a model whose whole expression graph has gone nan would otherwise paste
+    // thousands of entries into one exception message.
+    constexpr int kMaxNamed = 3;
+    try {
+        std::ostringstream os;
+        os << " " << w.source << " returned a non-finite value at t=" << diag_number(w.t) << ".";
+
+        model.update_observables(w.y.data());
+        model.evaluate_functions(w.t);
+        const std::vector<double> &values = model.function_value_cache();
+        const auto fnames = model.function_names();
+        const auto fexprs = model.function_expressions();
+        std::string laws;
+        int n_laws = 0;
+        for (std::size_t i = 0; i < values.size() && i < fnames.size(); ++i) {
+            if (std::isfinite(values[i]))
+                continue;
+            if (++n_laws > kMaxNamed)
+                continue;
+            if (!laws.empty())
+                laws += ", ";
+            laws += fnames[i];
+            if (i < fexprs.size() && !fexprs[i].empty())
+                laws += "() = " + fexprs[i];
+            laws += " -> " + diag_number(values[i]);
+        }
+        if (n_laws > 0) {
+            os << " Non-finite there: " << laws << (n_laws > kMaxNamed ? ", ..." : "") << ".";
+        }
+
+        const auto species = model.species_names();
+        std::string negatives;
+        int n_negative = 0;
+        for (std::size_t i = 0; i < w.y.size(); ++i) {
+            if (!(w.y[i] < 0.0))
+                continue;
+            if (++n_negative > kMaxNamed)
+                continue;
+            if (!negatives.empty())
+                negatives += ", ";
+            negatives += (i < species.size() ? species[i] : "species " + std::to_string(i + 1));
+            negatives += " = " + diag_number(w.y[i]);
+        }
+        if (n_negative > 0) {
+            os << " Species below zero there: " << negatives
+               << (n_negative > kMaxNamed ? ", ..." : "") << ".";
+        }
+
+        os << " bngsim evaluates a rate law literally, so a state outside its domain"
+              " — a logarithm, a sqrt or a fractional power of a negative value —"
+              " stays nan, and the corrector cannot converge through one. Constrain"
+              " the species, or write the law so it is defined there.";
+        return os.str();
+    } catch (...) {
+        return "";
+    }
+}
+
+// What every failure message this file raises ends with: the run's non-finite
+// witness, or nothing at all when it left none (GH #336). Forward-declared above
+// retry_while_advancing, which throws before CvodeUserData is a complete type.
+static std::string nonfinite_witness_suffix(CvodeUserData &data) {
+    return describe_nonfinite_witness(*data.model, data.nonfinite_witness);
+}
+
+// The message a CVODE hard failure raises with. `flag` gains SUNDIALS' own name
+// for it (CVodeGetReturnFlagName mallocs the string), and the witness — if this
+// run left one — gains the species and the rate law behind it.
+static std::string cvode_failure_message(double t, int flag, CvodeUserData &data) {
+    std::string msg =
+        "CVODE integration failed at t=" + std::to_string(t) + " with flag=" + std::to_string(flag);
+    if (char *name = CVodeGetReturnFlagName(static_cast<long int>(flag))) {
+        msg += " (" + std::string(name) + ")";
+        std::free(name);
+    }
+    return msg + "." + nonfinite_witness_suffix(data);
+}
+
 static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) {
     auto *data = static_cast<CvodeUserData *>(user_data);
     const double *y_ptr = N_VGetArrayPointer(y);
@@ -442,8 +606,14 @@ static int cvode_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *user_data) 
         // species at a small negative value and make the solve chatter.
         data->model->compute_derivs(static_cast<double>(t), clamp_state_nonneg(data, y_ptr),
                                     ydot_ptr);
-        if (rhs_has_nonfinite(data, ydot_ptr))
+        if (rhs_has_nonfinite(data, ydot_ptr)) {
+            // Nothing left to clamp: keep the state as evidence in case the run
+            // does not survive this (GH #336), then hand CVODE the recoverable
+            // code it has always had.
+            data->nonfinite_witness.capture("The RHS", static_cast<double>(t), y_ptr,
+                                            data->model->n_species());
             return 1; // still non-finite (e.g. inf from 1/conc) -> recoverable
+        }
     }
     return 0; // success
 }
@@ -507,8 +677,14 @@ static int cvode_codegen_rhs(sunrealtype t, N_Vector y, N_Vector ydot, void *use
                               &data->codegen_so_data);
         if (rc != 0)
             return rc;
-        if (rhs_has_nonfinite(data, ydot_ptr))
+        if (rhs_has_nonfinite(data, ydot_ptr)) {
+            // See cvode_rhs: the clamp is spent, so keep the state for the
+            // failure message the compiled path would otherwise not have
+            // (GH #336).
+            data->nonfinite_witness.capture("The compiled RHS", static_cast<double>(t), y_ptr,
+                                            data->model->n_species());
             return 1; // still non-finite -> recoverable
+        }
     }
     return 0;
 }
@@ -537,10 +713,27 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
     so_data.plist = data->codegen_plist;
     so_data.n_sens = data->codegen_n_sens;
 
-    return data->codegen_sens_fn(Ns, static_cast<double>(t), N_VGetArrayPointer(y),
-                                 N_VGetArrayPointer(ydot), iS, N_VGetArrayPointer(yS),
-                                 N_VGetArrayPointer(ySdot), &so_data, N_VGetArrayPointer(tmp1),
-                                 N_VGetArrayPointer(tmp2));
+    double *y_ptr = N_VGetArrayPointer(y);
+    double *ySdot_ptr = N_VGetArrayPointer(ySdot);
+    int rc = data->codegen_sens_fn(Ns, static_cast<double>(t), y_ptr, N_VGetArrayPointer(ydot), iS,
+                                   N_VGetArrayPointer(yS), ySdot_ptr, &so_data,
+                                   N_VGetArrayPointer(tmp1), N_VGetArrayPointer(tmp2));
+
+    // GH #336: the one compiled callback with no output scan of its own. The GH
+    // #135 clamp retries belong to the RHS and the Jacobian; a sensitivity
+    // column has no boundary value to clamp to, and this callback deliberately
+    // returns rc untouched — the numerics do not move. But `ySdot = J·yS +
+    // ∂f/∂p` carries ∂(rate law)/∂y, so a rate law outside its domain reaches
+    // here whether or not the state RHS was rescued, and CVODES' sensitivity
+    // error test is then what collapses the step. Scanning for the witness is
+    // one isfinite pass over the n_species doubles the callback has just
+    // written, against the O(nnz) chain rule it took to write them — and the
+    // `captured` short-circuit retires it after the first trip.
+    if (rc == 0 && !data->nonfinite_witness.captured && rhs_has_nonfinite(data, ySdot_ptr)) {
+        data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
+                                        y_ptr, data->model->n_species());
+    }
+    return rc;
 }
 
 // ─── Analytical Dense Jacobian ───────────────────────────────────────────────
@@ -566,9 +759,13 @@ static int cvode_analytical_dense_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/
     // clamped state ONLY when an entry is non-finite — a fractional power of a
     // transiently-negative concentration. Byte-identical otherwise.
     const std::size_t n = static_cast<std::size_t>(model->n_species());
-    if (jac_has_nonfinite(jac, n * n))
+    if (jac_has_nonfinite(jac, n * n)) {
         model->fill_dense_analytical_jacobian(static_cast<double>(t),
                                               clamp_state_nonneg(data, y_ptr), jac);
+        if (jac_has_nonfinite(jac, n * n))
+            data->nonfinite_witness.capture("The Jacobian", static_cast<double>(t), y_ptr,
+                                            model->n_species()); // GH #336
+    }
     return 0;
 }
 
@@ -600,9 +797,13 @@ static int cvode_codegen_dense_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, S
     // mirror carries the same fractional-power Jacobian term, and its emitted C
     // memsets the matrix first, so the re-fill on the clamped state overwrites it.
     const std::size_t n = static_cast<std::size_t>(data->model->n_species());
-    if (jac_has_nonfinite(jac, n * n))
+    if (jac_has_nonfinite(jac, n * n)) {
         rc = data->codegen_jac_fn(static_cast<double>(t), clamp_state_nonneg(data, y_ptr), jac,
                                   &data->codegen_so_data);
+        if (rc == 0 && jac_has_nonfinite(jac, n * n))
+            data->nonfinite_witness.capture("The compiled Jacobian", static_cast<double>(t), y_ptr,
+                                            data->model->n_species()); // GH #336
+    }
     return rc;
 }
 
@@ -672,9 +873,13 @@ static int cvode_analytical_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, SUNM
     model->fill_sparse_analytical_jacobian(static_cast<double>(t), conc, jac_data);
     // Conditional nonnegative-clamp retry (see jac_has_nonfinite); the sparse fill
     // memsets the nnz value array first, so the re-fill cleanly overwrites it.
-    if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz)))
+    if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
         model->fill_sparse_analytical_jacobian(static_cast<double>(t),
                                                clamp_state_nonneg(data, conc), jac_data);
+        if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz)))
+            data->nonfinite_witness.capture("The Jacobian", static_cast<double>(t), conc,
+                                            model->n_species()); // GH #336
+    }
 
     return 0; // success
 }
@@ -712,9 +917,13 @@ static int cvode_codegen_sparse_jac(sunrealtype t, N_Vector y, N_Vector /*fy*/, 
         return rc;
     // Conditional nonnegative-clamp retry (see jac_has_nonfinite); the compiled
     // sparse mirror memsets the nnz value array first.
-    if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz)))
+    if (jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz))) {
         rc = data->codegen_jac_sparse_fn(static_cast<double>(t), clamp_state_nonneg(data, y_ptr),
                                          jac_data, &data->codegen_so_data);
+        if (rc == 0 && jac_has_nonfinite(jac_data, static_cast<std::size_t>(sp.nnz)))
+            data->nonfinite_witness.capture("The compiled Jacobian", static_cast<double>(t), y_ptr,
+                                            model->n_species()); // GH #336
+    }
     return rc;
 }
 
@@ -1737,6 +1946,13 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
     // stays 0 through to record_solver_stats.)
     closed_segments = SegmentCounters{};
 
+    // And the same restart on the GH #336 witness, which the warm path's reused
+    // user_data would otherwise carry across run()s: a step an earlier run
+    // recovered from must not be offered as the explanation for a later run's
+    // failure. The cold run() path builds its user_data per call and needs no
+    // equivalent.
+    w.user_data.nonfinite_witness = NonFiniteWitness{};
+
     // ─── Integration loop (no events, no sensitivities) ──────────────────────
     void *cvode_mem = w.cvode_mem;
     double *y_data = w.y.data();
@@ -1822,13 +2038,12 @@ Result CvodeSimulator::Impl::run_warm(const TimeSpec &times, const SolverOptions
         sunrealtype t_ret;
         int flag = CVode(cvode_mem, t_out[i], w.y, &t_ret, CV_NORMAL);
         retry_while_advancing(cvode_mem, t_out[i], w.y, &t_ret, flag,
-                              "while integrating to the next output point", [&budget] {
+                              "while integrating to the next output point", w.user_data, [&budget] {
                                   if (budget.active())
                                       budget.check();
                               });
         if (flag < 0) {
-            throw std::runtime_error("CVODE integration failed at t=" + std::to_string(t_out[i]) +
-                                     " with flag=" + std::to_string(flag));
+            throw std::runtime_error(cvode_failure_message(t_out[i], flag, w.user_data));
         }
 
         const double *fvals = fill_row(t_ret);
@@ -5530,15 +5745,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
             // what made this never return (issue #54). The wall-clock budget is
             // still re-checked between batches.
             retry_while_advancing(cvode_mem, t_target, y, &t_ret, flag,
-                                  "while integrating to the next output point", [&budget] {
+                                  "while integrating to the next output point", user_data,
+                                  [&budget] {
                                       if (budget.active())
                                           budget.check();
                                   });
 
             if (flag < 0) {
-                throw std::runtime_error(
-                    "CVODE integration failed at t=" + std::to_string(t_target) +
-                    " with flag=" + std::to_string(flag));
+                throw std::runtime_error(cvode_failure_message(t_target, flag, user_data));
             }
             t_now = t_ret;
 
