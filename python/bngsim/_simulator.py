@@ -358,6 +358,15 @@ class Simulator:
         ``(t, i, k)`` entry is ``∂x_i(t) / ∂p_k`` evaluated at the
         baseline parameter values. Only valid for ``method="ode"``.
 
+        Each name must be a coordinate some write can move. A slot a model
+        **function** owns — a ``functions`` block entry, or an SBML
+        ``<parameter>`` an ``<assignmentRule>`` defines — is not one: the
+        engine rewrites it from the function's own expression before every
+        derivative evaluation, so its column can only be identically zero.
+        Naming one raises :class:`ValueError` rather than returning that zero
+        (issue #329); differentiate the parameters the function's expression
+        reads instead. :attr:`Model.primary_param_names` omits them.
+
     sensitivity_ic : list[str], optional
         Species names to integrate forward initial-condition
         sensitivities for. The result carries a
@@ -1024,6 +1033,7 @@ class Simulator:
         if self._sensitivity_ic and dispatch != "ode":
             raise ValueError("sensitivity_ic is only supported for method='ode'.")
         self._raise_if_compartment_size_params(self._sensitivity_params)
+        self._raise_if_function_backed_params(self._sensitivity_params)
 
         # Forward sensitivity REQUIRES an analytical codegen sensitivity RHS
         # (GH #214 follow-up): the interpreted path finite-differences the whole
@@ -1128,6 +1138,107 @@ class Simulator:
         except AttributeError:  # pragma: no cover - defensive
             return set()
         return {n for n, f in zip(self._model.param_names, flags, strict=True) if f}
+
+    def _function_backed_params(self) -> set[str]:
+        """Parameter slots a model **function** owns (issue #227/#266).
+
+        The intersection of :attr:`Model.param_is_internal` with
+        :attr:`Model.function_names`: the slot where ``evaluate_functions()``
+        parks what the function last evaluated to. Two ways to get one — bngsim
+        synthesizes the slot for a ``functions`` block entry that names nothing
+        declared (#227), or the SBML file declares a ``<parameter>`` and an
+        ``<assignmentRule>`` over it binds the function to *that* row (#266).
+        Both behave identically, which is why this is one set.
+
+        The other half of ``param_is_internal`` — ``_V0_<comp>``, issue #170's
+        record of a compartment's size at load — is deliberately **not** here;
+        see :meth:`_raise_if_function_backed_params`.
+
+        Degrades to "none" against a core built before either flag existed,
+        which loses the refusal rather than breaking the run.
+        """
+        try:
+            internal = self._model._internal_param_names()
+        except AttributeError:  # pragma: no cover - defensive
+            return set()
+        return internal & set(self._model.function_names)
+
+    def _raise_if_function_backed_params(self, param_names: list[str]) -> None:
+        """Refuse a forward-sensitivity column for a **function's backing slot** (#329).
+
+        Issue #227 established that the slot holding a function's evaluated value
+        is not a knob: ``evaluate_functions()`` rewrites it from the function's
+        own expression before every derivative evaluation, so ``set_param``
+        refuses a value-changing write to it — and unlike a derived parameter,
+        ``force_override`` does not lift that refusal, because there is no pin
+        the next evaluation would respect. Issue #203 dropped these from
+        ``compute_all_sensitivities(params=None)`` with a warning saying the
+        column "would be identically zero".
+
+        It was still reachable by name, and it answered `0.0` rather than
+        raising. That is the shape issue #329 found: the #328 degeneracy census
+        sampled 20 parameters per model straight out of ``Model.param_names``,
+        drew mostly ``<assignmentRule>`` targets on three assignment-rule-driven
+        models (38 of 46 in BIOMD0000000126, 35 of 38 in BIOMD0000000266, 17 of
+        36 in MODEL1006230116), and read the resulting all-zero tensor as a
+        missing chain rule through ``<assignmentRule>``. The chain rule is there
+        — :mod:`test_assignment_rule_param_sensitivity` differentiates one
+        against its closed form — and the real derivatives for those models'
+        actual knobs are zero, which a finite difference through bngsim's own
+        trajectory confirms. What was missing was this refusal.
+
+        A plain ``ValueError``, not :class:`SensitivityUnsupportedError`. That
+        type means "bngsim declares it cannot differentiate this construct", and
+        the ``amici_parity`` sweep buckets it as non-scoring UNSUPPORTED. Nothing
+        here is undifferentiable; the *name* is not a coordinate. Same category
+        as :meth:`_raise_if_compartment_size_params`, and it raises the same way.
+
+        Narrow on purpose. It does **not** cover the other ``param_is_internal``
+        kind, ``_V0_<comp>``: that one does appear in the emitted RHS, its column
+        is not structurally zero, and issue #203 shipped a test asserting an
+        explicit ask still returns it. And it does not cover a **derived**
+        parameter (``param_is_expression``), whose column is exactly the
+        "derivative on its own terms" a ``force_override`` pin makes real —
+        ``bngsim.jax.differentiable_solve(flat=True)`` differentiates over those.
+        This is only the class where no write of any kind can move the
+        coordinate, so no derivative of one exists to report.
+        """
+        if not param_names:
+            return
+        bad = sorted(set(param_names) & self._function_backed_params())
+        if not bad:
+            return
+        # The defining expression lives on the FUNCTION, not on the slot: a
+        # function-backed parameter carries param_is_expression=False and an
+        # empty param expression, which is the whole reason it cannot be pinned.
+        try:
+            by_name = dict(
+                zip(
+                    self._model.function_names,
+                    self._model._core.function_expressions,
+                    strict=False,
+                )
+            )
+        except AttributeError:  # pragma: no cover - defensive
+            by_name = {}
+        shown = "; ".join(f"{n} = {by_name[n]}" for n in bad[:3] if by_name.get(n))
+        defined = f"These are defined as: {shown}. " if shown else ""
+        raise ValueError(
+            f"Forward sensitivity is not supported for {_abbreviate(bad)}: a "
+            f"function of each name owns that parameter slot — bngsim stores the "
+            f"function's evaluated value there and recomputes it from the "
+            f"function's own expression before every derivative evaluation "
+            f"(issue #227), and an SBML <assignmentRule> over a declared "
+            f"<parameter> binds the function to that declared row just the same "
+            f"(issue #266). No write moves such a slot — set_param refuses one, "
+            f"and force_override does not lift that refusal — so the column has "
+            f"no write to be the derivative of, and CVODES can only report it as "
+            f"identically zero (issue #329). {defined}Differentiate the "
+            f"parameters those expressions read instead; "
+            f"Model.primary_param_names omits these names for that reason, and "
+            f"their effect is already carried through the chain rule by the "
+            f"primaries underneath."
+        )
 
     def _raise_if_compartment_size_params(self, param_names: list[str]) -> None:
         """Refuse a forward-sensitivity column for an **unwritable** compartment size.
@@ -4363,6 +4474,10 @@ class Simulator:
             hard requirement ``Simulator(..., sensitivity_params=...)`` carries
             (GH #214): the interpreted finite-difference sensitivity path is not
             reliable at tight tolerances, so it is refused rather than used.
+            Also if ``params`` names a slot a model **function** owns (issue
+            #329) — under ``params=None`` those are dropped with the warning
+            below, and naming one gets the same answer as a hard refusal rather
+            than the identically-zero column it would otherwise produce.
         SimulationError
             If a chunk simulation fails *and* the column-by-column retry shows
             at least one of its columns cannot be integrated on its own either
@@ -4430,6 +4545,11 @@ class Simulator:
             # narrowed *which* sizes that answer is "no" for: only the ones
             # set_param itself refuses.
             self._raise_if_compartment_size_params(target_params)
+            # Issue #329 — and the same for a function's backing slot, which the
+            # `params=None` branch below drops with a warning saying its column
+            # "would be identically zero". Naming it was the one route that got
+            # that zero handed back instead.
+            self._raise_if_function_backed_params(target_params)
         else:
             # ...but "every parameter" is a request for everything computable,
             # and on an SBML model that list leads with the compartments. Raising
@@ -5227,6 +5347,12 @@ class Simulator:
             # steady state has forgotten x(0) — so only the ∂f/∂V half is in play
             # here, and it is the half that is complete.)
             self._raise_if_compartment_size_params(list(sensitivity_params))
+            # Issue #329 — a function's backing slot is refused here for the
+            # same reason the constructor refuses it: ∂f/∂p is read out of that
+            # same emitted sensitivity RHS, where the slot is a value the engine
+            # rewrites rather than a coordinate, so the column is structurally
+            # zero at steady state too.
+            self._raise_if_function_backed_params(list(sensitivity_params))
             # Issue #63 — the same hard codegen requirement run() and
             # compute_all_sensitivities() apply (GH #214): dY_ss/dp wants the
             # analytical ∂f/∂p the codegen sensitivity RHS emits, so a request

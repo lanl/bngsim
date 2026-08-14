@@ -1021,14 +1021,23 @@ def test_biomd44_resolves_every_column_at_every_chunk_size():
     column was unresolvable only because ``∂/∂n base^n = base^n·ln(base)`` was
     ``NaN`` wherever the base was zero. With that guarded at its limit the
     column integrates like any other, so what this pins now is the third
-    verdict: all 23 columns resolve, at every chunk size, to the same numbers —
+    verdict: all 18 columns resolve, at every chunk size, to the same numbers —
     and the formerly-marginal one is checked against finite differences, since
     "it no longer raises" is not by itself evidence that it is right.
+
+    18, not 23: issue #329 refuses the five slots a model **function** owns
+    (``vin``, ``v2``, ``v3``, ``v7``, ``_vd_v7_unified`` — this model's rate
+    laws, bound to their own parameter rows). The engine rewrites those from the
+    function's expression before every derivative evaluation, so they were
+    columns of exact zeros padding a claim about columns that resolve. They are
+    dropped here the same way the unwritable compartment sizes already were,
+    and for the same reason: not a coordinate any write can move.
     """
     m0 = bngsim.Model.load(str(_BIOMD44))
     refused = set(m0.unwritable_compartment_size_params)
+    refused |= m0._internal_param_names() & set(m0.function_names)
     names = [p for p in m0.param_names if p not in refused]
-    assert "_lp_v7_n" in names
+    assert "_lp_v7_n" in names and len(names) == 18
 
     run = dict(params=names, n_workers=1, rtol=1e-10, atol=1e-12)
     reference = None

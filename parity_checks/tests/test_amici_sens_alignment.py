@@ -87,6 +87,22 @@ class TestSharedSensitivityParams:
         shared, _bn, _n = asens.shared_sensitivity_params(["uVol", "k1"], ["uVol"], ["uVol", "k1"])
         assert shared == ["k1"]
 
+    def test_function_backed_slots_are_excluded(self):
+        """An ``<assignmentRule>`` target is a slot bngsim rewrites from the rule's
+        own expression before every derivative evaluation, so it refuses the column
+        (issue #329) rather than answering the identically-zero one. AMICI lowers
+        the same construct to an expression and already drops it from its free ids;
+        excluding it here keeps a future AMICI that offers one from turning a whole
+        model's row into an EXCEPTION."""
+        shared, _bn, n_cand = asens.shared_sensitivity_params(
+            ["k1", "X10"],
+            [],
+            ["k1", "X10"],
+            bn_function_backed_params={"X10"},
+        )
+        assert shared == ["k1"]
+        assert n_cand == 1
+
     def test_amici_fixed_parameters_are_excluded(self):
         """Only AMICI's FREE ids are passed in; a parameter bngsim knows but AMICI
         holds fixed has no sx column, so it cannot be compared."""

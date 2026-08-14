@@ -31,11 +31,20 @@ Their *parameter* ids do NOT match, because each engine flattens SBML **local**
 
 Global parameters keep their SBML id verbatim on both sides. So the mapping is a
 ``_lp_`` prefix strip on the bngsim side, after which the two id sets are
-directly comparable and the shared list is their intersection. Two exclusions:
+directly comparable and the shared list is their intersection. Three exclusions:
 
   * **compartment-size parameters** (``Model.compartment_size_params``) — bngsim
     refuses these as sensitivity targets (they are structural, not kinetic), so
     they can never be part of a shared list;
+  * **function-backed slots** — a name that is both a bngsim parameter and a
+    bngsim *function*, which is what an SBML ``<parameter>`` an
+    ``<assignmentRule>`` defines becomes. The engine rewrites that slot from the
+    rule's own expression before every derivative evaluation, so bngsim refuses
+    the column (issue #329) and there is no coordinate for either engine to
+    differentiate. AMICI lowers the same construct to an *expression* and drops
+    it from ``get_free_parameter_ids()``, so the intersection below already
+    excluded these in practice; naming the exclusion keeps a future AMICI that
+    exposes one from turning a whole model's row into an EXCEPTION;
   * anything AMICI reports as *fixed* rather than free — ``get_free_parameter_ids()``
     is the authoritative AMICI-side set, and a fixed parameter has no ``sx`` column.
 
@@ -205,6 +214,7 @@ def shared_sensitivity_params(
     bn_compartment_size_params,
     amici_free_ids: list[str],
     cap: int = DEFAULT_PARAM_CAP,
+    bn_function_backed_params=None,
 ) -> tuple[list[str], dict[str, str], int]:
     """The cross-engine sensitivity parameter list.
 
@@ -215,10 +225,12 @@ def shared_sensitivity_params(
     disclose what the cap dropped rather than silently truncating.
 
     Excludes bngsim's compartment-size parameters (it refuses them as sensitivity
-    targets) and anything not in AMICI's free-parameter set (a fixed parameter has
-    no ``sx`` column). ``shared_ids`` may be empty; that is the caller's BAD_TEST.
+    targets), the slots a bngsim *function* owns — ``bn_function_backed_params``,
+    an ``<assignmentRule>`` target being the SBML shape (issue #329) — and
+    anything not in AMICI's free-parameter set (a fixed parameter has no ``sx``
+    column). ``shared_ids`` may be empty; that is the caller's BAD_TEST.
     """
-    excluded = set(bn_compartment_size_params or ())
+    excluded = set(bn_compartment_size_params or ()) | set(bn_function_backed_params or ())
     bn_by_id: dict[str, str] = {}
     for name in bn_param_names:
         if name in excluded:

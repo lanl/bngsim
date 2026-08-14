@@ -83,6 +83,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A forward-sensitivity column for an `<assignmentRule>` target is refused
+  rather than answered `0.0` (issue #329).** Naming a parameter that a model
+  *function* owns — an SBML `<parameter>` an `<assignmentRule>` defines, or a
+  `functions` block entry — in `Simulator(sensitivity_params=...)`,
+  `compute_all_sensitivities(params=[...])`, or
+  `steady_state(sensitivity_params=...)` now raises `ValueError`.
+
+  Such a slot is not a coordinate: the engine rewrites it from the function's own
+  expression before every derivative evaluation, so `set_param` refuses a
+  value-changing write to it (#227/#266) and — unlike a derived parameter —
+  `force_override` does not lift that refusal, because there is no pin the next
+  evaluation would respect. Issue #203 had already dropped these from
+  `compute_all_sensitivities(params=None)` with a warning saying the column
+  "would be identically zero"; naming one explicitly was the remaining route that
+  handed that zero back.
+
+  **What the zero cost.** The #328 degeneracy census sampled 20 parameters per
+  model straight out of `Model.param_names` and found three assignment-rule-driven
+  corpus models with a moving state and an exactly-zero sensitivity tensor.
+  `Model.param_names` on such a model is mostly rule targets — 38 of 46 in
+  `BIOMD0000000126`, 35 of 38 in `BIOMD0000000266`, 17 of 36 in
+  `MODEL1006230116` — so the sample was almost entirely non-knobs, and the
+  all-zero result read as a missing chain rule through `<assignmentRule>`, #313's
+  `<initialAssignment>` bug one construct over.
+
+  **It was not.** The chain rule is there — a parameter whose only route to the
+  right-hand side is an `<assignmentRule>` differentiates to its closed form, one
+  rule deep and two — and the three models' real knobs genuinely have zero
+  influence, which a finite difference through bngsim's own trajectory settles
+  with no reference engine. `MODEL1006230116` is the clearest: its one rate rule
+  is `d(Ca_sr)/dt = 1`, a constant, so every derivative is zero while the state
+  still spans 100. The `amici_parity` sweep never compared those columns either
+  (AMICI lowers the same construct to an expression and drops it from its free
+  ids, so the intersection was already 7/1/18 real parameters, not 20); the sweep
+  now excludes them on the bngsim side too, so the two engines' eligibility rules
+  agree by construction rather than by coincidence.
+
+  The refusal is narrow. `_V0_<comp>` is internal too and stays answerable — it
+  really is in the emitted right-hand side, and #203 shipped a test asserting the
+  explicit ask returns it — as does a derived parameter, whose column is the
+  "derivative on its own terms" a `force_override` pin makes real and what
+  `bngsim.jax.differentiable_solve(flat=True)` differentiates over. Only the class
+  where no write of any kind moves the coordinate is refused.
+
 - **The zero-base logarithm guard reaches the Jacobian, and a compiled solve
   that fails on a non-finite value now names the rate law (issue #336).** Two
   findings, and the second is the reason the first went unseen for two issues.
