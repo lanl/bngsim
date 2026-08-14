@@ -198,6 +198,15 @@ FALLBACK_CASES = [
     # base=0 — so the native path declines it (SymPy simplifies A/A→1 better).
     ("general_power_x_pow_x", "A^A", {"A"}, set()),
     ("general_power_in_base_and_exp", "k*A^(A+1)", {"A"}, {"k"}),
+    # GH #336: a logarithm of a state variable. Differentiating it here is easy
+    # (`d/dA ln(A) = 1/A`) and that is the trap — the derivative carries #310 /
+    # #317's removable singularity at `A = 0`, and only the SymPy emitters apply
+    # the guard that removes it. `vmax·A^n·ln(A)` differentiated natively is
+    # `(n·A^(n-1))·ln(A) + A^n·(1/A)`, both halves `0·∞` at zero, and it reached
+    # the Jacobian and the `J·yS` half of the analytic sensitivity RHS.
+    ("state_dependent_log", "vmax*A^n*ln(A)", {"A"}, {"vmax", "n"}),
+    ("bare_state_log", "k*ln(A)", {"A"}, {"k"}),
+    ("state_log_under_a_sum", "k*A + vmax*ln(A/Km)", {"A"}, {"k", "vmax", "Km"}),
 ]
 
 
@@ -206,6 +215,15 @@ def test_native_falls_back_outside_family(name, expr, obs, const):
     """An expression outside the recognized family yields None, deferring to the
     SymPy path — never a silently-wrong derivative."""
     assert N.differentiate_rate_law_native(expr, {}, obs, const) is None
+
+
+def test_a_logarithm_of_a_constant_stays_native():
+    """The other side of the GH #336 decline, and what keeps it narrow: only a
+    logarithm the *state* can drive to zero has a singularity to guard.
+    ``ln(Km)`` over a parameter is a constant factor, differentiates to nothing,
+    and must not cost a SymPy derivation."""
+    dd = N.differentiate_rate_law_native("vmax*ln(Km)*A/(Km+A)", {}, {"A"}, {"vmax", "Km"})
+    assert dd is not None and "A" in dd
 
 
 def test_constant_rate_is_a_success_not_a_fallback():

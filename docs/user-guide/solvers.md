@@ -329,6 +329,49 @@ unsupported: selecting one raises an error naming the budget and this variable,
 the same way selecting a function containing a non-differentiable construct does.
 Observable and species sensitivities are unaffected.
 
+## When a solve fails on a rate law's domain
+
+bngsim evaluates a rate law literally. A logarithm, a `sqrt` or a fractional
+power of a negative concentration is `nan`, and that `nan` is kept rather than
+papered over — the same policy the SSA's negative-count warning states. What the
+integrator does with it is give up, historically with nothing but a number:
+
+```
+CVODE integration failed at t=1.000000 with flag=-4
+```
+
+Such a failure now names what it found (GH #336):
+
+```
+CVODE integration failed at t=1.000000 with flag=-4 (CV_CONV_FAILURE). The
+compiled RHS returned a non-finite value at t=1. Non-finite there:
+logterm() = ln(1 - Atot) -> nan. Species below zero there: C() = -1. bngsim
+evaluates a rate law literally, so a state outside its domain ...
+```
+
+The first sentence says which callback saw it and when — `The RHS`, `The
+compiled RHS`, `The Jacobian`, `The compiled sensitivity RHS` — which separates
+a right-hand side that leaves the domain from a *derivative* that does. What
+follows is the state read back at that point: the rate laws that evaluate
+non-finite there, and any species below zero.
+
+The check costs a healthy solve nothing and says nothing about one. CVODE
+routinely takes a step that dips a zero-pinned species slightly negative and
+recovers from it, and a run that finishes prints no diagnostic at all. Only a
+run that *fails* replays the offending state, and it does so through the
+interpreted evaluator — so a model's own instrumentation
+(`bngsim: warning: 'ln(-1e-09)' returned nan`) appears on stderr alongside the
+message, even for a compiled run that never touched the interpreted right-hand
+side.
+
+The fix is in the model: constrain the species, or write the law so it is
+defined where the solver will look. `ln(abs(S))` — identical to `ln(S)` for
+every `S > 0` — is the cheapest spelling. An `if()` guard works too but is not
+free: a state-dependent condition in a *declared* rate law reads as a state
+switch whose crossing time moves, which the forward-sensitivity path declines
+(the same reason the GH #333 zero-base rewrite lands on a function's evaluation
+expression and never on its declared one).
+
 ## Logging
 
 ```python

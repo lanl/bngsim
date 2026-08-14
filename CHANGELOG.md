@@ -83,6 +83,54 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The zero-base logarithm guard reaches the Jacobian, and a compiled solve
+  that fails on a non-finite value now names the rate law (issue #336).** Two
+  findings, and the second is the reason the first went unseen for two issues.
+
+  **The guard leak.** #310 and #317 take the limit of `base^exp·ln(base)` at
+  `base == 0`, and both apply it inside the SymPy emitters (`sympy_to_exprtk` /
+  `sympy_to_c`). #151's native SymPy-free differentiator recognizes `^` and `ln`
+  and emits closed forms directly, reaching neither. So `vmax·S^n·ln(S)`
+  differentiated natively to `(n·S^(n-1))·ln(S) + S^n·(1/S)` — both halves `0·∞`
+  at `S = 0`, where the derivative's own limit is `0`. That expression *is* the
+  Jacobian entry and the `J·yS` half of the analytic sensitivity RHS, which is
+  why #336's reproducer failed on its first call, at the exact zero, for **every
+  parameter** — including `kdeg`, which appears only in a rate law with no
+  logarithm. A logarithm of a state-dependent argument now defers to SymPy,
+  where the guard applies; a logarithm of a constant (`ln(KM)`) stays native and
+  costs no derivation budget. The reproducer's `d(species)/dn` is now
+  `[5.0e-25, 0, 194.65]` against the `A(0)=1e-30` control's `194.65`, and #317's
+  end-to-end test drops its strict `xfail`.
+
+  This also corrects #338's diagnosis of the same reproducer. The evidence there
+  was that `ln(abs(S))` makes the run complete — true, but not because `abs`
+  finitizes a negative argument: `abs` is not in the native differentiator's
+  whitelist, so spelling it that way pushed the law onto SymPy and picked up the
+  guard.
+
+  **The missing diagnostic.** A rate law that genuinely leaves its domain still
+  answers `nan` (#310's contract), and on the compiled path the user learned
+  nothing: the emitted C calls libm's `log` directly, with none of issue #42's
+  instrumentation the interpreted ExprTk adapters carry — and a
+  forward-sensitivity run *forces* codegen. `CVODE integration failed at t=... with
+  flag=-4` now reads:
+
+  > CVODE integration failed at t=1.000000 with flag=-4 (CV_CONV_FAILURE). The
+  > compiled RHS returned a non-finite value at t=1. Non-finite there:
+  > `logterm() = ln(1 - Atot)` -> nan. Species below zero there: `C() = -1`. …
+
+  No finiteness test was added to the generated C. The callbacks already scan
+  their output for non-finiteness (#135's nonnegative-clamp retries), so the
+  first scan that trips with no clamp left to try keeps `(t, y)` as a witness,
+  and only a run that *fails* replays that state through the interpreted
+  evaluator — which does carry the instrumentation, so the model's own
+  `'ln(-1e-09)' returned nan` appears alongside. A run CVODE recovers from stays
+  silent. The one addition to a healthy hot path is an `isfinite` scan of the
+  compiled sensitivity RHS's output, which has no clamp retry of its own;
+  measured on `fceri_fyn` (1281 species, 4 sensitivity columns, 5 runs) at
+  6.33 s median with it and 6.32 s without — below the noise floor. Numerics are
+  unchanged: no callback's return value moved.
+
 - **A grazing-but-transversal event crossing is now computed instead of refused
   (issue #322).** The transversality guard protecting `dt*/dp = -num/flow` had
   two arms. The first — near-total cancellation of `flow`'s own terms — is the
