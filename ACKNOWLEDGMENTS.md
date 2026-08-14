@@ -128,7 +128,7 @@ BNGsim reads and/or writes these community standards:
   Jacobians.
   - Meurer A, Smith CP, Paprocki M, et al. SymPy: symbolic computing in Python.
     *PeerJ Comput Sci.* 2017;3:e103. doi:10.7717/peerj-cs.103
-- **pandas** — the `Result.to_dataframe()` export.
+- **pandas** — the `Result.dataframe` export.
   - McKinney W. Data structures for statistical computing in Python. In:
     *Proceedings of the 9th Python in Science Conference (SciPy).* 2010:56–61.
     doi:10.25080/Majora-92bf1922-00a

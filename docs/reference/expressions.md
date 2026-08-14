@@ -100,22 +100,37 @@ BNGsim treats all identifiers as **case-sensitive**. Parameters `k3` and `K3`
 are distinct variables with independent values. This matches BNG conventions
 and prevents silent name collisions during expression evaluation.
 
-## Registering Custom Functions (Python API)
+## Adding Functions from Python
 
-The ExprTk evaluator supports user-registered functions from Python:
+There is no Python hook for registering a callable as an expression function.
+The evaluator is a C++ object, and the right-hand side runs with the GIL
+released, so a Python callback would have to reacquire it on every evaluation —
+serializing the thread-parallel batch sweeps that releasing it buys. Two
+supported routes cover what such a callback would be used for.
+
+**Declare the function in the model.** A `begin functions` block in the `.net`
+file (or the equivalent in the BNGL, SBML or Antimony source) is where a
+closed-form function belongs; it is compiled with the rest of the rate laws and
+differentiated symbolically for sensitivities:
+
+```
+begin functions
+    1 hill()  A_tot^2 / (Kh^2 + A_tot^2)
+end functions
+```
+
+**Add a table function from Python.** An external signal supplied as data and
+interpolated at each step — a forcing term, a dosing schedule, or a measured
+time course:
 
 ```python
 model = bngsim.Model.from_net("model.net")
-
-# Zero-arg function (e.g., external signal)
-model.evaluator.define_function("signal", lambda: current_signal_value)
-
-# One-arg function
-model.evaluator.define_function("hill", lambda x: x**2 / (1 + x**2))
+model.add_table_function("signal", file="signal.tfun")
+model.add_table_function("drive", times=[0, 1, 2, 5, 10], values=[0, 0, 1, 5, 5])
 ```
 
-Custom functions can take 0–3 arguments. They are called during RHS evaluation,
-so they should be fast (avoid I/O or heavy computation).
+See the [table function guide](../user-guide/table-functions.md) for the `.tfun`
+format, non-time index variables, and the interpolation and extrapolation rules.
 
 ## Full ExprTk Documentation
 
