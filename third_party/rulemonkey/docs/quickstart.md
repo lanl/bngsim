@@ -180,8 +180,8 @@ try {
 An empty (default-constructed) callback disables polling, so callers
 that don't want cancellation pay no per-event overhead.
 
-See [`examples/embed.cpp`](../examples/embed.cpp) for a complete
-compilable example, and [`include/rulemonkey/simulator.hpp`](../include/rulemonkey/simulator.hpp)
+See [`examples/embed.cpp`](https://github.com/richardposner/RuleMonkey/blob/main/examples/embed.cpp) for a complete
+compilable example, and [`include/rulemonkey/simulator.hpp`](https://github.com/richardposner/RuleMonkey/blob/main/include/rulemonkey/simulator.hpp)
 for the full contract.
 
 ## What's next

@@ -186,6 +186,47 @@ struct RateLaw {
   bool is_local_b = false;
   bool local_arg_is_molecule_b = false;
 
+  // NFsim's DOR1: a *bimolecular* rule carrying a single local function, with
+  // only one of the two reactants tagged (`S(s~0) + E()%x -> ...  lf(x)`).
+  // Its propensity is `(Σ_t w_t·f(t)) · (Σ_u w_u)` over the tagged and
+  // untagged reactants — i.e. a FunctionProduct whose untagged factor is the
+  // constant 1.  The loader normalizes such a rule to
+  // RateLawType::FunctionProduct and sets exactly one of these flags to mark
+  // which side is that constant; both stay false for a genuine two-factor
+  // FunctionProduct and for a unimolecular local-function rule.
+  bool unity_factor_a = false;
+  bool unity_factor_b = false;
+
+  // Set when this rule's local-function chain reads something global that
+  // moves during a run — a bare observable, `time`, a global function
+  // built on either (issue #38).  Such a rule's per-instance rates all
+  // change when nothing in any instance's own neighbourhood did, so the
+  // engine's affected-molecule delta path cannot see it and the rule has
+  // to be rescanned after every event.  False for a local rate built only
+  // from tagged observables and constants — the shape every corpus model
+  // uses — which keeps the delta path in charge there.
+  bool local_rate_tracks_global = false;
+
+  // What that chain actually reads, resolved (issue #40).  The flag above
+  // answers "could this rule read a moving global?"; gating an O(N)
+  // rescan needs "did one of them move?", and that needs the list, not
+  // the verdict.  A bare observable is typically a volume proxy, a total
+  // or a clock and is constant for the whole run, so on most models the
+  // honest answer is "no" at every event and the rescan is pure waste.
+  //
+  // `global_dep_observables` are the observable slots the chain reads at
+  // system scope, sorted and de-duplicated; comparing their values
+  // against the last rescan's is exact, since a per-instance rate can
+  // only move if something the rate reads moved.  The two flags below are
+  // the cases with no value to compare: `time` advances every event, and
+  // `global_dep_opaque` marks a dependency the §8b walk could not
+  // enumerate.  Either one means "always dirty" — the unconditional
+  // rescan, i.e. the pre-#40 behaviour.  All three are meaningful only
+  // when `local_rate_tracks_global` is set.
+  std::vector<int> global_dep_observables;
+  bool global_dep_time = false;
+  bool global_dep_opaque = false;
+
   // For MM
   double mm_Km = 0.0;
   double mm_kcat = 0.0;
@@ -248,6 +289,115 @@ struct Rule {
   std::vector<Constraint> constraints;
 };
 
+// Which of a rule's reactant patterns does it TRANSFORM?
+//
+// A reactant pattern that no operation touches is pure context, and two
+// separate results follow from that one fact:
+//
+//   * every embedding of it yields the identical reaction, so it is counted
+//     once per matching COMPLEX rather than once per matching molecule
+//     (issue #33);
+//   * all of its automorphisms stabilize the reaction center, so it
+//     contributes 1 to BNG2's symmetry_factor — which is what makes the
+//     factor attributable to the transformed slot on an MM rule (issue #37).
+//
+// Both readers derive it from the flat reactant-pattern component indices the
+// operations already carry (RM stores no per-reactant transformation list,
+// but the mapping op -> pattern is exact), so the derivation lives here
+// rather than being written twice.
+//
+// The classification must be conservative: an operation whose reactant
+// endpoint failed to resolve at load leaves no trace on any pattern, and
+// silently reading that as "context" would halve a real rule's rate.  An
+// unresolved endpoint therefore clears `resolvable`, and callers must then
+// treat every pattern as transformed.
+struct ReactantTransforms {
+  std::vector<char> transformed; // one entry per reactant pattern, 1 = touched
+  bool resolvable = false;
+
+  // Convenience for the two-slot callers.  Answers "transformed" for any
+  // slot the derivation could not resolve or that does not exist.
+  bool is_context(size_t slot) const {
+    return resolvable && slot < transformed.size() && transformed[slot] == 0;
+  }
+};
+
+inline ReactantTransforms reactant_pattern_transforms(const Rule& rule) {
+  ReactantTransforms out;
+  int const n_rp = static_cast<int>(rule.reactant_pattern_starts.size());
+  int const n_rp_mols = static_cast<int>(rule.reactant_pattern.molecules.size());
+  if (n_rp <= 0)
+    return out;
+  out.transformed.assign(static_cast<size_t>(n_rp), 0);
+  out.resolvable = true;
+
+  // pattern molecule index -> reactant pattern index
+  auto rp_of_mol = [&](int mi) -> int {
+    int p = -1;
+    for (int i = 0; i < n_rp; ++i)
+      if (rule.reactant_pattern_starts[i] <= mi)
+        p = i;
+    return p;
+  };
+  // flat reactant component index -> pattern molecule index
+  auto mol_of_flat = [&](int flat) -> int {
+    int base = 0;
+    for (int mi = 0; mi < n_rp_mols; ++mi) {
+      int const nc = static_cast<int>(rule.reactant_pattern.molecules[mi].components.size());
+      if (flat >= base && flat < base + nc)
+        return mi;
+      base += nc;
+    }
+    return -1;
+  };
+  auto touch_flat = [&](int flat) {
+    int const mi = mol_of_flat(flat);
+    int const p = (mi >= 0) ? rp_of_mol(mi) : -1;
+    if (p < 0)
+      out.resolvable = false;
+    else
+      out.transformed[static_cast<size_t>(p)] = 1;
+  };
+
+  for (const auto& op : rule.operations) {
+    switch (op.type) {
+    case OpType::StateChange:
+      if (op.comp_flat >= 0)
+        touch_flat(op.comp_flat);
+      else
+        out.resolvable = false;
+      break;
+    case OpType::AddBond:
+    case OpType::DeleteBond:
+      // Each endpoint is either a reactant component (transforms that
+      // pattern) or a component of a molecule the rule synthesizes
+      // (product-side only, transforms no reactant pattern).  Anything else
+      // is unresolved.
+      if (op.comp_flat_a >= 0)
+        touch_flat(op.comp_flat_a);
+      else if (op.product_mol_a < 0)
+        out.resolvable = false;
+      if (op.comp_flat_b >= 0)
+        touch_flat(op.comp_flat_b);
+      else if (op.product_mol_b < 0)
+        out.resolvable = false;
+      break;
+    case OpType::DeleteMolecule: {
+      int const mi = op.delete_pattern_mol_idx;
+      int const p = (mi >= 0) ? rp_of_mol(mi) : -1;
+      if (p < 0)
+        out.resolvable = false;
+      else
+        out.transformed[static_cast<size_t>(p)] = 1;
+      break;
+    }
+    case OpType::AddMolecule:
+      break; // product side only
+    }
+  }
+  return out;
+}
+
 // ---- Observable ------------------------------------------------------------
 
 struct Observable {
@@ -268,8 +418,18 @@ struct GlobalFunction {
   std::string expression_text;
 
   // Local function support
-  std::vector<std::string> argument_names;         // e.g. {"z"}
-  std::vector<std::string> local_observable_names; // observables referenced locally
+  std::vector<std::string> argument_names; // e.g. {"z"}
+
+  // Observables this function references, split by scope (issue #38).  An
+  // observable is LOCAL iff the expression applies it to one of this
+  // function's own argument names — `NbrUp(z)` — and GLOBAL when written
+  // bare — `Obs_Vol`.  BNG2's `<ListOfReferences>` marks both `Observable`
+  // with nothing to tell them apart, so the split comes from parsing
+  // `expression_text` (expr::classify_by_tag_application).  Both lists are
+  // empty for a non-local function, where every observable is global by
+  // construction.
+  std::vector<std::string> local_observable_names;  // evaluated at the tagged molecule
+  std::vector<std::string> global_observable_names; // read at system scope
 
   bool is_local() const { return !argument_names.empty(); }
 

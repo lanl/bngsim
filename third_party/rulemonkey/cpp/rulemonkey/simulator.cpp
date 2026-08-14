@@ -1276,6 +1276,9 @@ Model load_model(const std::string& xml_path,
   }
 
   // ---- 5. Functions ----
+  // Observables a local function references both tagged and bare — RM
+  // resolves them as tagged and warns (see the split below).
+  std::vector<std::string> mixed_scope_observables;
   auto* func_list = find_child(*model_node, "ListOfFunctions");
   if (func_list) {
     for (auto& fn : func_list->children) {
@@ -1296,7 +1299,11 @@ Model load_model(const std::string& xml_path,
         }
       }
 
-      // Parse references to identify locally-evaluated observables
+      // Collect the observables this function references.  Which of them
+      // are evaluated locally is decided further down, once the
+      // expression text is in hand — `<ListOfReferences>` cannot answer it
+      // (issue #38).
+      std::vector<std::string> referenced_observables;
       auto* ref_list = find_child(fn, "ListOfReferences");
       if (ref_list) {
         for (auto& rn : ref_list->children) {
@@ -1304,7 +1311,7 @@ Model load_model(const std::string& xml_path,
             continue;
           auto rtype = opt_attr(rn, "type");
           if (rtype == "Observable") {
-            gf.local_observable_names.push_back(need_attr(rn, "name"));
+            referenced_observables.push_back(need_attr(rn, "name"));
           }
         }
       }
@@ -1384,6 +1391,41 @@ Model load_model(const std::string& xml_path,
         auto* expr_node = find_child(fn, "Expression");
         if (expr_node && !expr_node->text.empty())
           gf.expression_text = trim(expr_node->text);
+      }
+
+      // Split the referenced observables by scope (issue #38).  An
+      // observable is local iff the expression applies it to one of THIS
+      // function's own arguments; a bare reference is the global,
+      // system-wide count and must keep reading its global value.  BNG2
+      // states the same split in the network it generates for the model,
+      // folding the bare observable into the rate expression and
+      // resolving only the tagged one per instance:
+      //
+      //     1 _R_local1() ((kc*Obs_Src)*1)
+      //
+      // Before this split RM localized every referenced observable, so a
+      // bare one evaluated at the tagged molecule, read 0 whenever its
+      // pattern was absent from that molecule's complex — which for a
+      // system-wide quantity is essentially always — and zeroed the
+      // propensity.  The rule then never fired, silently.
+      if (gf.is_local()) {
+        auto const scoped =
+            expr::classify_by_tag_application(gf.expression_text, gf.argument_names);
+        auto const& tagged = scoped.tag_applied;
+        for (auto& obs_name : referenced_observables) {
+          if (std::find(tagged.begin(), tagged.end(), obs_name) == tagged.end()) {
+            gf.global_observable_names.push_back(obs_name);
+            continue;
+          }
+          gf.local_observable_names.push_back(obs_name);
+          // Written BOTH ways in one function (`O + O(x)`) the observable
+          // wants two values out of one eval-layout slot, which RM cannot
+          // express.  The tagged reading wins — it is the one that needs
+          // the local machinery — and the model is flagged rather than
+          // quietly mis-evaluated.
+          if (std::find(scoped.bare.begin(), scoped.bare.end(), obs_name) != scoped.bare.end())
+            mixed_scope_observables.push_back("'" + obs_name + "' in function '" + gf.name + "'");
+        }
       }
 
       model.function_index[gf.name] = static_cast<int>(model.functions.size());
@@ -1738,6 +1780,10 @@ Model load_model(const std::string& xml_path,
           continue;
         }
 
+        // Reactant pattern the single local-function argument is tagged on,
+        // -1 until resolved.  Only consulted for the DOR1 normalization below.
+        int local_arg_rp_idx = -1;
+
         if (rl_type == "Ele") {
           rule.rate_law.type = RateLawType::Ele;
           auto* rc_list = find_child(*rl_node, "ListOfRateConstants");
@@ -1778,6 +1824,17 @@ Model load_model(const std::string& xml_path,
                                "rule '%s' not found in reactant_id_map; defaulting to "
                                "complex-wide scope\n",
                                argval.c_str(), rule.name.c_str());
+                }
+                // Which reactant pattern carries the tag?  Irrelevant for a
+                // unimolecular rule (there is only one) but load-bearing for
+                // the DOR1 normalization below, which has to know whether the
+                // per-instance factor belongs on the A or the B sampler slot.
+                if (rit != reactant_id_map.end()) {
+                  int const mol_off = rit->second.first;
+                  for (int k = 0; k < static_cast<int>(rule.reactant_pattern_starts.size()); ++k) {
+                    if (rule.reactant_pattern_starts[k] <= mol_off)
+                      local_arg_rp_idx = k;
+                  }
                 }
               }
             }
@@ -1879,6 +1936,42 @@ Model load_model(const std::string& xml_path,
             }
           }
         }
+
+        // NFsim DOR1 — a bimolecular rule with ONE tagged reactant, e.g.
+        //   R: S(s~0) + E()%x -> S(s~1) + E()%x   lf(x)
+        // The per-instance factor applies to the tagged reactant only; the
+        // untagged one contributes its plain embedding count, so the rule is
+        // a FunctionProduct whose other factor is the constant 1.  Normalizing
+        // it here means the engine's DOR2 propensity, incremental update and
+        // sampler cover it unchanged — the alternative was a fourth
+        // propensity branch duplicating all three.
+        //
+        // Without this the rule kept RateLawType::Function with molecularity
+        // 2, which no branch of recompute_rule_state handled: it fell through
+        // to the mass-action path with the local function evaluated on no
+        // molecule at all, leaving rs.local_propensity_total at 0 while
+        // has_local_rates stayed true.  The first incremental_update then read
+        // that never-populated accumulator as the propensity and the rule went
+        // inert after a single firing (issue #34).
+        if (rule.rate_law.type == RateLawType::Function && rule.rate_law.is_local &&
+            rule.molecularity == 2) {
+          rule.rate_law.type = RateLawType::FunctionProduct;
+          rule.rate_law.is_local_b = true;
+          if (local_arg_rp_idx == 1) {
+            // Tag on reactant pattern 1 — move the factor to the B slot.
+            rule.rate_law.function_name_b = rule.rate_law.function_name;
+            rule.rate_law.local_arg_is_molecule_b = rule.rate_law.local_arg_is_molecule;
+            rule.rate_law.function_name.clear();
+            rule.rate_law.unity_factor_a = true;
+            // Per-molecule scope on the unity side skips the per-complex
+            // rate cache, which would only churn to memoize the constant 1.
+            rule.rate_law.local_arg_is_molecule = true;
+          } else {
+            rule.rate_law.function_name_b.clear();
+            rule.rate_law.unity_factor_b = true;
+            rule.rate_law.local_arg_is_molecule_b = true;
+          }
+        }
       }
 
       // Detect same_components
@@ -1927,6 +2020,9 @@ Model load_model(const std::string& xml_path,
       //     molecules in M(a!1).M(a!1), where a_total=2 per dimer)
       //   - Bimolecular: sf not applied (same_components formula and
       //     embedding_correction already handle the combinatorics)
+      //   - MM(kcat,Km): sf scales the count of the reactant the rule
+      //     transforms, *inside* the law rather than on the finished
+      //     propensity, since the law is not linear in it (issue #37)
 
       model.rules.push_back(std::move(rule));
     }
@@ -1970,6 +2066,14 @@ Model load_model(const std::string& xml_path,
     // they don't need global recomputation and should not be marked
     // rate_dependent.  If an observable is ALSO reachable via a global
     // path, the global path will add it normally.
+    //
+    // That list is the TAGGED observables only (issue #38).  A bare
+    // observable inside a local function keeps its global value, so it
+    // falls through to the worklist here and is marked rate_dependent —
+    // which is what keeps it refreshed after every event rather than only
+    // at sample points.  Misclassifying it as local would have skipped
+    // that refresh too, so a fix to the local-scope override alone could
+    // still have read a stale global value.
     std::unordered_set<std::string> rate_vars;
     std::vector<std::string> worklist(seeds.begin(), seeds.end());
     while (!worklist.empty()) {
@@ -2005,6 +2109,153 @@ Model load_model(const std::string& xml_path,
     }
   }
 
+  // ---- 8b. Local rates that track a moving global (issue #38, #40) ----
+  //
+  // A local function built only from tagged observables and constants has
+  // a per-instance value that can only change when that instance's own
+  // neighbourhood changes — which is exactly what the engine's
+  // affected-molecule delta path already covers.  Let a bare observable in
+  // (or `time`, or a global function over either) and that stops holding:
+  // every instance's rate moves at once, with no molecule marked affected.
+  // Flag those rules so the engine rescans them after each event instead.
+  //
+  // Marking is deliberately narrow.  Every model in the three corpora
+  // takes the constant-and-tagged-only shape, so none of them acquires a
+  // per-event rescan from this.
+  //
+  // The walk also records WHAT the chain reads, not just that it reads
+  // something (issue #40).  "Could this rule read a moving global?" is the
+  // right question for choosing the rescan path and the wrong one for
+  // running it every event: a bare observable is usually a volume proxy or
+  // a total that never moves, and then every one of those O(N) rescans
+  // recomputes rates that cannot have changed.  The engine compares these
+  // resolved values against the previous rescan's and skips when they
+  // agree — which is why the list is collected here, where the walk
+  // already visits exactly those tokens.
+  {
+    // What a function's evaluation consults that a reaction event can
+    // move.  `obs` are observable slots read at system scope; `time`
+    // advances every event, and `opaque` marks a dependency this walk
+    // cannot name — both mean "assume moved", i.e. rescan unconditionally.
+    struct GlobalDeps {
+      std::vector<int> obs;
+      bool time = false;
+      bool opaque = false;
+      bool any() const { return !obs.empty() || time || opaque; }
+      void merge(const GlobalDeps& o) {
+        obs.insert(obs.end(), o.obs.begin(), o.obs.end());
+        time = time || o.time;
+        opaque = opaque || o.opaque;
+      }
+    };
+
+    // Memoized and cycle-safe.  Re-entering a function still being walked
+    // is a reference cycle, whose dependency set cannot be enumerated by
+    // this walk (it would need its own fixed point) — so answer `opaque`
+    // and let the engine rescan unconditionally.  The pre-#40 walk broke
+    // the same cycle with a provisional `false`, which was safe when the
+    // verdict only chose a path and is not safe now that a missing
+    // observable would suppress a rescan.  Nothing in the corpora writes
+    // one: a cyclic function chain has no value to evaluate at all.
+    std::unordered_map<std::string, GlobalDeps> fn_deps;
+    std::unordered_set<std::string> in_progress;
+    auto global_deps = [&](const std::string& fname, auto&& self) -> GlobalDeps {
+      auto fi = model.function_index.find(fname);
+      if (fi == model.function_index.end())
+        return {};
+      if (auto memo = fn_deps.find(fname); memo != fn_deps.end())
+        return memo->second;
+      if (!in_progress.insert(fname).second) {
+        GlobalDeps cyclic;
+        cyclic.opaque = true;
+        return cyclic;
+      }
+      const auto& gf = model.functions[fi->second];
+
+      GlobalDeps deps;
+
+      // A TFUN's counter is a time / observable / function value unless it
+      // is a plain parameter, and the table turns it into a moving rate.
+      // The table itself is fixed, so the counter's own dependencies are
+      // the TFUN's: a table read at an unchanged counter returns an
+      // unchanged value.
+      if (gf.is_tfun && gf.tfun_counter_source != TfunCounterSource::Parameter) {
+        switch (gf.tfun_counter_source) {
+        case TfunCounterSource::Time:
+          deps.time = true;
+          break;
+        case TfunCounterSource::Observable: {
+          auto oi = model.observable_index.find(gf.tfun_counter_name);
+          if (oi != model.observable_index.end())
+            deps.obs.push_back(oi->second);
+          else
+            deps.opaque = true; // counter names an observable that isn't there
+          break;
+        }
+        case TfunCounterSource::Function: {
+          // Engine::get_tfun_counter_value evaluates this one at global
+          // scope; a local callee has no tag there, so don't pretend to
+          // know what it reads.
+          auto ci = model.function_index.find(gf.tfun_counter_name);
+          if (ci == model.function_index.end() || model.functions[ci->second].is_local())
+            deps.opaque = true;
+          else
+            deps.merge(self(gf.tfun_counter_name, self));
+          break;
+        }
+        default:
+          deps.opaque = true; // is_tfun with no counter source RM can read
+          break;
+        }
+      }
+
+      for (const auto& tok : expr::collect_variables(gf.expression_text)) {
+        // An observable tagged inside THIS function is per-instance and
+        // already covered by the affected-molecule path; any other
+        // observable reference is the system-wide count.  A parameter or
+        // a builtin name matches none of the three and is constant.
+        bool const is_time = (tok == "time" || tok == "t");
+        auto const oi = model.observable_index.find(tok);
+        bool const is_global_obs =
+            oi != model.observable_index.end() &&
+            std::find(gf.local_observable_names.begin(), gf.local_observable_names.end(), tok) ==
+                gf.local_observable_names.end();
+        if (is_time)
+          deps.time = true;
+        if (is_global_obs)
+          deps.obs.push_back(oi->second);
+        if (model.function_index.count(tok) != 0U)
+          deps.merge(self(tok, self));
+      }
+
+      std::sort(deps.obs.begin(), deps.obs.end());
+      deps.obs.erase(std::unique(deps.obs.begin(), deps.obs.end()), deps.obs.end());
+      in_progress.erase(fname);
+      fn_deps[fname] = deps;
+      return deps;
+    };
+
+    // The DOR1 normalization clears the name on whichever side it turned
+    // into the constant 1, so an empty name is exactly "no factor here".
+    for (auto& rule : model.rules) {
+      auto& rl = rule.rate_law;
+      if (!rl.is_local && rl.type != RateLawType::FunctionProduct)
+        continue;
+      GlobalDeps deps;
+      if (!rl.function_name.empty())
+        deps.merge(global_deps(rl.function_name, global_deps));
+      if (!rl.function_name_b.empty())
+        deps.merge(global_deps(rl.function_name_b, global_deps));
+      std::sort(deps.obs.begin(), deps.obs.end());
+      deps.obs.erase(std::unique(deps.obs.begin(), deps.obs.end()), deps.obs.end());
+
+      rl.local_rate_tracks_global = deps.any();
+      rl.global_dep_observables = std::move(deps.obs);
+      rl.global_dep_time = deps.time;
+      rl.global_dep_opaque = deps.opaque;
+    }
+  }
+
   // Scan for unsupported features if requested
   if (unsupported_out) {
     *unsupported_out = scan_unsupported(*model_node);
@@ -2022,6 +2273,153 @@ Model load_model(const std::string& xml_path,
                "rules, and rules with exclude/include constraints are deferred; "
                "the rule would be silently dropped. Pass --ignore-unsupported to "
                "run anyway without that rule."});
+    for (const auto& what : mixed_scope_observables)
+      unsupported_out->push_back(
+          {Severity::Warn, "Function/Expression",
+           "Observable " + what +
+               " is referenced both applied to the function's tag and bare, i.e. "
+               "at local and at global scope in one expression. RM evaluates it "
+               "at local scope throughout; the bare reference reads the local "
+               "value rather than the system-wide count."});
+    // ERROR-level: a negative Michaelis constant (issue #46).  The law's
+    // sFree is the positive root of a quadratic whose discriminant is
+    // (S-Km-E)^2 + 4*Km*S; with Km < 0 that can go negative, and where it
+    // does not the expression still yields a finite but meaningless rate, so
+    // the rule would run on a number that means nothing.  Refuse rather than
+    // simulate it.  Km is resolved through the parameter cascade here, so
+    // this catches a constant and a derived parameter alike; a value that
+    // arrives later through set_param / parameter_scan cannot be caught at
+    // load, and is clamped to zero with a warning by set_rule_propensity.
+    // `!(Km > 0) && Km != 0` refuses a negative Km and a NaN one (a parameter
+    // expression can evaluate to NaN) while leaving Km == 0 alone — that one
+    // is a removable singularity the engine reads as kcat*min(S,E).
+    for (const auto& rule : model.rules) {
+      double const km = rule.rate_law.mm_Km;
+      if (rule.rate_law.type != RateLawType::MM || km == 0 || km > 0)
+        continue;
+      unsupported_out->push_back(
+          {Severity::Error, "RateLaw@type=MM",
+           "Rule '" + rule.id + "' (" + rule.name +
+               ") has a Michaelis constant Km=" + std::to_string(km) +
+               " — MM(kcat,Km) requires Km > 0, and a negative Km puts the rate law "
+               "outside its domain (the rate is NaN wherever the discriminant goes "
+               "negative, and meaningless where it does not). Fix the parameter. Pass "
+               "--ignore-unsupported to run anyway; the rule's propensity is clamped "
+               "to zero, so it will not fire."});
+    }
+
+    // WARN-level: MM constructs where RM cannot reproduce BNG2 (issue #45).
+    // BNG2.pl is the reference RM is written against, so both entries below
+    // are divergences from it and both say so.  They warn rather than refuse
+    // because the constructs are idiomatic BNGL — refusing would put a large
+    // share of real MM models out of reach — and because RM's own reading is
+    // well defined.  What the warning buys is that the divergence is named at
+    // load rather than discovered by diffing trajectories.
+    for (const auto& rule : model.rules) {
+      if (rule.rate_law.type != RateLawType::MM)
+        continue;
+
+      // (a) A reactant pattern that can match more than one species.  BNG2's
+      // network expansion emits one MM reaction per matching (substrate,
+      // enzyme) species PAIR, each evaluating the law on that pair's own
+      // counts, while RM applies one law to the summed match counts.
+      // Measured: a substrate pattern matching two species runs 2.00x faster
+      // under BNG2 in saturation (the factor is the number of matching
+      // substrate species), and an ENZYME pattern matching two species runs
+      // 1.81x faster with the enzyme in excess, since the law is not linear
+      // in the enzyme count either.  Both axes vanish where the law is
+      // linear.
+      //
+      // Matching BNG2 would need a live map from species canonical form to
+      // match count on each slot, maintained per event so the law could be
+      // evaluated once per species pair.  That is species-level bookkeeping
+      // of the kind a network-free engine exists to avoid, and it costs most
+      // on the very models that carry this construct: CaMKII_holo in the
+      // reference corpus leaves six of seven components open on its
+      // substrate pattern and has large complexes to canonicalize.  RM keeps
+      // the pooled reading and names the divergence.
+      //
+      // BNG2 warns about the substrate axis at rule-read time via
+      // checkSpeciesGraph(..., IsSpecies => 1) and the warning does not
+      // survive into the XML, so RM recomputes the predicate: a pattern
+      // matches at most one species iff every molecule specifies every
+      // component its type declares, each with a definite state and a
+      // definite bond status.  BNG2 runs that check on the substrate only,
+      // so the enzyme axis is silent in BNG2 as well; RM checks both slots.
+      {
+        auto multi_species_reason = [&](int start, int end) -> std::string {
+          for (int mi = start; mi < end; ++mi) {
+            const auto& pm = rule.reactant_pattern.molecules[mi];
+            if (pm.type_index < 0 || pm.type_index >= static_cast<int>(model.molecule_types.size()))
+              continue;
+            const auto& mt = model.molecule_types[pm.type_index];
+            if (pm.components.size() < mt.components.size())
+              return "molecule " + pm.type_name + " leaves " +
+                     std::to_string(mt.components.size() - pm.components.size()) +
+                     " of its components unspecified";
+            for (const auto& pc : pm.components) {
+              bool const stateful = pc.comp_type_index >= 0 &&
+                                    pc.comp_type_index < static_cast<int>(mt.components.size()) &&
+                                    mt.components[pc.comp_type_index].allowed_states.size() > 1;
+              if (stateful && pc.required_state_index < 0)
+                return "component " + pm.type_name + "." + pc.name + " has no definite state";
+              if (pc.bond_constraint == BondConstraint::Wildcard ||
+                  pc.bond_constraint == BondConstraint::Bound)
+                return "component " + pm.type_name + "." + pc.name + " has no definite bond status";
+            }
+          }
+          return {};
+        };
+
+        int const n_mols = static_cast<int>(rule.reactant_pattern.molecules.size());
+        int const n_rp = static_cast<int>(rule.reactant_pattern_starts.size());
+        for (int slot = 0; slot < n_rp && slot < 2; ++slot) {
+          int const start = rule.reactant_pattern_starts[slot];
+          int const end = (slot + 1 < n_rp) ? rule.reactant_pattern_starts[slot + 1] : n_mols;
+          std::string const why = multi_species_reason(start, end);
+          if (why.empty())
+            continue;
+          const char* const which = (slot == 0) ? "substrate" : "enzyme";
+          unsupported_out->push_back(
+              {Severity::Warn, "RateLaw@type=MM",
+               "Rule '" + rule.id + "' (" + rule.name + ") has an MM(kcat,Km) rate law whose " +
+                   which + " pattern can match more than one species (" + why +
+                   "). BNG2 expands this into one MM reaction per matching species pair, each "
+                   "evaluating the law on that pair's own counts, so its ODE/SSA runs faster "
+                   "than RM (measured 2.00x for a two-species substrate in saturation, 1.81x "
+                   "for a two-species enzyme with the enzyme in excess). RM applies one "
+                   "Michaelis-Menten law to the summed match counts, since matching BNG2 would "
+                   "require tracking the matching species individually. Enumerate them in "
+                   "separate rules to get BNG2's reading, or write the enzyme mechanism "
+                   "explicitly (S + E <-> SE -> P + E), which both engines agree on."});
+        }
+      }
+
+      // (b) A symmetry_factor that cannot be attributed.  It belongs to the
+      // reactant pattern the rule transforms (issue #37); when the rule
+      // transforms BOTH, the scalar is a product of the two patterns' factors
+      // and the XML gives one number with no way to split it.  RM applies the
+      // whole factor to the substrate, which is right for the canonical shape
+      // and exact wherever the law is linear (the rate goes as S*E there), but
+      // up to 2x off in saturation if the symmetry was the enzyme slot's.
+      if (rule.symmetry_factor != 1.0) {
+        ReactantTransforms const rt = reactant_pattern_transforms(rule);
+        bool const both_transformed = rt.resolvable && rt.transformed.size() > 1 &&
+                                      rt.transformed[0] != 0 && rt.transformed[1] != 0;
+        if (both_transformed)
+          unsupported_out->push_back(
+              {Severity::Warn, "ReactionRule@symmetry_factor",
+               "Rule '" + rule.id + "' (" + rule.name +
+                   ") has symmetry_factor=" + std::to_string(rule.symmetry_factor) +
+                   " on an MM(kcat,Km) rate law and transforms both of its reactant "
+                   "patterns, so the factor cannot be attributed to one of them from "
+                   "the XML, the scalar being a product of both patterns\' factors. "
+                   "RM applies it to the substrate count, which reproduces BNG2 for "
+                   "the ordinary shape where the enzyme is a catalyst and anywhere "
+                   "the law is linear. If the symmetry is the enzyme pattern\'s, RM "
+                   "runs up to 2x fast against BNG2 in saturation."});
+      }
+    }
   }
 
   return model;
@@ -2033,6 +2431,71 @@ Model load_model(const std::string& xml_path,
 
 bool has_child(const XmlNode& parent, const std::string& name) {
   return find_child(parent, name) != nullptr;
+}
+
+// Are the molecules of one <ReactantPattern> tied together by that pattern's
+// own bonds?  A `.`-joined reactant whose molecules share no bond —
+// `A(x).B(y)`, meaning "these molecules, anywhere in the same complex" — is a
+// shape the n-ary sampler cannot place, since it reaches a pattern's non-seed
+// molecules by following bonds out of the seed.  Mirrors nary_slot_connected()
+// in engine.cpp.  A single-molecule pattern is trivially connected.
+bool reactant_pattern_connected(const XmlNode& rp) {
+  std::vector<std::string> mol_ids;
+  if (auto* ml = find_child(rp, "ListOfMolecules")) {
+    for (auto& mn : ml->children)
+      if (mn.name == "Molecule")
+        mol_ids.push_back(opt_attr(mn, "id"));
+  }
+  int const n = static_cast<int>(mol_ids.size());
+  if (n <= 1)
+    return true;
+
+  // A component id is "<molecule id>_C<k>", so a bond endpoint belongs to the
+  // longest molecule id it starts with (on an underscore boundary).
+  auto mol_of_site = [&](const std::string& site) {
+    int best = -1;
+    for (int mi = 0; mi < n; ++mi) {
+      const std::string& mid = mol_ids[mi];
+      if (mid.empty() || site.size() <= mid.size())
+        continue;
+      if (site.compare(0, mid.size(), mid) != 0 || site[mid.size()] != '_')
+        continue;
+      if (best < 0 || mid.size() > mol_ids[best].size())
+        best = mi;
+    }
+    return best;
+  };
+
+  std::vector<std::vector<int>> adj(n);
+  if (auto* bl = find_child(rp, "ListOfBonds")) {
+    for (auto& bn : bl->children) {
+      if (bn.name != "Bond")
+        continue;
+      int const a = mol_of_site(opt_attr(bn, "site1"));
+      int const b = mol_of_site(opt_attr(bn, "site2"));
+      if (a >= 0 && b >= 0 && a != b) {
+        adj[a].push_back(b);
+        adj[b].push_back(a);
+      }
+    }
+  }
+
+  std::vector<char> seen(n, 0);
+  std::vector<int> stack{0};
+  seen[0] = 1;
+  int reached = 1;
+  while (!stack.empty()) {
+    int const cur = stack.back();
+    stack.pop_back();
+    for (int const nb : adj[cur]) {
+      if (seen[nb] != 0)
+        continue;
+      seen[nb] = 1;
+      ++reached;
+      stack.push_back(nb);
+    }
+  }
+  return reached == n;
 }
 
 // Check if any ReactionRule has a non-empty attribute.
@@ -2147,6 +2610,86 @@ std::vector<UnsupportedFeature> scan_unsupported(const XmlNode& model_node) {
                               advice +
                               " Pass --ignore-unsupported to run anyway (rule will not fire).";
       warnings.push_back({Severity::Error, "RateLaw@type=" + std::string(type_name), msg});
+    }
+  }
+
+  // ERROR-level: an n-ary rule (>= 3 ReactantPatterns) in a shape the
+  // engine's n-ary path does not implement (issues #24, #26).
+  //
+  // Rules of three or more reactant patterns are simulated when every
+  // pattern is one connected piece — a single molecule or a bonded complex —
+  // and the rate law is elementary; see the NaryState comment in engine.cpp
+  // for the propensity and sampler.  The shapes below fall outside that and
+  // would otherwise hit the two-slot machinery, whose slot B swallows
+  // patterns 2..n into one bond-free pattern that scores zero embeddings for
+  // free reactants.  The rule would then hold zero propensity and never
+  // fire, with mass still conserved, so the trajectory looks valid unless
+  // compared against another engine.
+  //
+  // This mirrors nary_shape_supported() in engine.cpp; the two must agree,
+  // or a rule rejected there and not refused here goes silently inert again.
+  constexpr int kMaxNaryPatterns = 6; // == engine.cpp's kMaxNarySlots
+  if (auto* rr_list = find_child(model_node, "ListOfReactionRules")) {
+    for (auto& rr : rr_list->children) {
+      if (rr.name != "ReactionRule")
+        continue;
+      auto* rp_list = find_child(rr, "ListOfReactantPatterns");
+      if (!rp_list)
+        continue;
+
+      int rp_count = 0;
+      bool all_connected = true;
+      for (auto& rpn : rp_list->children) {
+        if (rpn.name != "ReactantPattern")
+          continue;
+        ++rp_count;
+        if (!reactant_pattern_connected(rpn))
+          all_connected = false;
+      }
+      if (rp_count < 3)
+        continue;
+
+      std::string rate_type = "Ele";
+      if (auto* rl = find_child(rr, "RateLaw")) {
+        auto it = rl->attributes.find("type");
+        if (it != rl->attributes.end())
+          rate_type = it->second;
+      }
+
+      // Each reason completes "Rule 'r' has N reactant patterns, ...".
+      std::string reason;
+      if (rp_count > kMaxNaryPatterns) {
+        reason = "past the engine's n-ary limit of " + std::to_string(kMaxNaryPatterns);
+      } else if (!all_connected) {
+        reason = "one of them a disconnected complex — the n-ary path places a "
+                 "pattern's non-seed molecules by following its bonds, so the "
+                 "molecules of a `.`-joined reactant must be bonded to each other";
+      } else if (rate_type != "Ele") {
+        // Reachable in practice for `Function` (a local or global rate
+        // function on a multi-reactant rule).  `MM` cannot get this far —
+        // BNG2 itself refuses to write XML for it: "Michaelis-Menton type
+        // ratelaw require exactly 2 reactants".
+        reason = "under a '" + rate_type +
+                 "' rate law — the n-ary path implements elementary "
+                 "(mass-action) rates only";
+      } else {
+        continue; // supported — the engine simulates this rule
+      }
+
+      auto rule_name = opt_attr(rr, "name");
+      if (rule_name.empty())
+        rule_name = opt_attr(rr, "id");
+      std::string msg = "Rule '";
+      msg += rule_name;
+      msg += "' has ";
+      msg += std::to_string(rp_count);
+      msg += " reactant patterns, ";
+      msg += reason;
+      msg += ". The rule would silently have zero propensity and never fire, while "
+             "the rest of the model simulates normally. Rewrite it as a sequence of "
+             "at most bimolecular steps (e.g. A + A -> A2 followed by A2 + A -> P). "
+             "Pass --ignore-unsupported to run anyway (this rule will not fire).";
+      warnings.push_back({Severity::Error, "ListOfReactantPatterns", msg});
     }
   }
 

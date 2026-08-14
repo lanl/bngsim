@@ -270,13 +270,14 @@ struct SrProfile {
   static constexpr int kPathUniMultiFm = 2;
   static constexpr int kPathUniMultiGen = 3;
   static constexpr int kPathBimol = 4;
-  static constexpr int kNPaths = 5;
+  static constexpr int kPathNary = 5; // >= 3 reactant patterns (issue #24)
+  static constexpr int kNPaths = 6;
 
   uint64_t calls = 0;
-  std::array<uint64_t, kNPaths> path_calls = {0, 0, 0, 0, 0};
-  std::array<uint64_t, kNPaths> path_null_no_seed = {0, 0, 0, 0, 0};
-  std::array<uint64_t, kNPaths> path_null_post = {0, 0, 0, 0, 0};
-  std::array<uint64_t, kNPaths> path_success = {0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_calls = {0, 0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_null_no_seed = {0, 0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_null_post = {0, 0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_success = {0, 0, 0, 0, 0, 0};
 
   // Sampler sub-decisions (global, not per-path).
   uint64_t sampler_calls = 0;
@@ -304,16 +305,23 @@ struct SrProfile {
   uint64_t uni_mm_gen_null = 0;
   uint64_t bimol_embs_a_sum = 0;
   uint64_t bimol_embs_b_sum = 0;
+  // same_mol_rejects counts both the seed-vs-seed rejection and the wider
+  // injectivity rejection a multi-molecule pattern needs (a molecule reached
+  // through one pattern's bonds also matching the other slot).
   uint64_t bimol_same_mol_rejects = 0;
   uint64_t bimol_same_cx_rejects = 0;
   uint64_t bimol_embs_empty = 0;
+  // resolve_calls counts every seed embedding walked, including the ones
+  // walked while filtering a multi-molecule pattern down to the embeddings
+  // that reach a whole match; failures counts draws lost because no
+  // embedding reached one.
   uint64_t bimol_resolve_calls = 0;
   uint64_t bimol_resolve_failures = 0;
 
   // K-sampled whole-call chrono, bucketed per path.
   uint64_t sampled_calls = 0;
-  std::array<uint64_t, kNPaths> path_ns = {0, 0, 0, 0, 0};
-  std::array<uint64_t, kNPaths> path_hits = {0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_ns = {0, 0, 0, 0, 0, 0};
+  std::array<uint64_t, kNPaths> path_hits = {0, 0, 0, 0, 0, 0};
 };
 
 struct RemoveBondProfile {
@@ -1110,8 +1118,8 @@ inline void report_cmm_fc(const CmmFcProfile& q, const CountMultiProfile& cm) {
 
 inline void report_select_reactants(const SrProfile& q, double timing_sample) {
   const int K = kSelectReactantsProfileSampleEvery;
-  static const char* const path_names[SrProfile::kNPaths] = {"zero", "uni_single", "uni_multi_fm",
-                                                             "uni_multi_gen", "bimol"};
+  static const char* const path_names[SrProfile::kNPaths] = {
+      "zero", "uni_single", "uni_multi_fm", "uni_multi_gen", "bimol", "nary"};
   auto path_sec = [&](int p) -> double {
     return static_cast<double>(q.path_ns[p]) / 1e9 * static_cast<double>(K);
   };
