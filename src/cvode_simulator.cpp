@@ -2447,10 +2447,23 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // NaN is folded in by the same test for the same reason — it is not a scale
     // either, and it would propagate silently into every tolerance rather than
     // stopping anywhere it could be reported.
+    //
+    // BNGSIM_SENS_PBAR=unit pins every column to 1.0 from the same binary and the
+    // same .so — the pbar AMICI passes (it hands CVODES a NULL pbar,
+    // amici/src/solver.cpp:243, and CVODES then uses 1.0), so a corpus A/B for
+    // "is bngsim's parameter-magnitude scaling why AMICI integrates a model we
+    // do not" is a one-variable experiment rather than a two-build comparison.
+    // Same idiom as BNGSIM_SENS_ERROR_FLOOR=0 for issue #177. Diagnostic only:
+    // unset is the shipped behaviour, and this is read once at setup.
+    const char *pbar_env = std::getenv("BNGSIM_SENS_PBAR");
+    const bool pbar_unit = pbar_env && std::string(pbar_env) == "unit";
     pbar.resize(n_sens);
     for (int i = 0; i < n_sens_p; ++i) {
         const double val = params[sens_param_indices[i]].value;
         pbar[i] = (std::isfinite(val) && val != 0.0) ? std::abs(val) : 1.0;
+        if (pbar_unit) {
+            pbar[i] = 1.0;
+        }
     }
     for (int i = 0; i < n_sens_ic; ++i) {
         pbar[n_sens_p + i] = 1.0;
@@ -2677,13 +2690,24 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // than moving it. (The clamp is a backstop, not the working path: it fires
     // where the tolerance had already collapsed to nothing.)
     const double kMinAtolS = std::numeric_limits<double>::min();
+    // BNGSIM_SENS_ATOLS=flat drops BOTH factors of the shape above and states the
+    // bare atol for every (row, column) — literally AMICI's rule, which builds
+    // one scalar per column and hands it to CVodeSensSStolerances
+    // (amici/src/solver.cpp:652). The pbar hatch alone does not get there: on a
+    // model whose states are large, scale[i] moves the tolerance further than
+    // pbar does and in the opposite direction (BIOMD0000000879 has N(0) = 2e10
+    // against delta = 1e4). Two knobs, because the two factors are separate
+    // claims and attributing a rescue to one of them means being able to turn
+    // them independently. Diagnostic only; unset is the shipped behaviour.
+    const char *atols_env = std::getenv("BNGSIM_SENS_ATOLS");
+    const bool atols_flat = atols_env && std::string(atols_env) == "flat";
     sens.atolS_base.resize(static_cast<size_t>(n_sens) * static_cast<size_t>(ns));
     for (int iS = 0; iS < n_sens; ++iS) {
         double *atolS_col = N_VGetArrayPointer(sens.abstolS[iS]);
         const double pb = pbar[iS];
         for (int i = 0; i < ns; ++i) {
             const double atol_i = per_species_atol ? atol_v[static_cast<size_t>(i)] : atol;
-            double a = atol_i * sens_state_scale[i] / pb;
+            double a = atols_flat ? atol_i : (atol_i * sens_state_scale[i] / pb);
             if (!(a > 0.0)) { // also catches NaN
                 a = kMinAtolS;
             }
