@@ -148,7 +148,15 @@ def _run_worker_to_the_engine_calls(monkeypatch, *, spec_extra: dict):
     ``import bngsim._sbml_loader as ...`` resolves through the parent package's
     attribute once any other test has imported it, and would silently fall
     through to the real loader depending on test order.
+
+    ``measure_warmup`` and ``set_amici_quiet`` are stubbed for a different
+    reason: they open ``_worker`` *outside* any try, and both import ``amici``.
+    Without that, this test is a test of whether AMICI happens to be installed —
+    which is precisely how it failed in CI, where it is not. Nothing here needs
+    AMICI: the point is which number each engine wrapper is handed.
     """
+    monkeypatch.setattr(asens, "measure_warmup", lambda: {})
+    monkeypatch.setattr(asens, "set_amici_quiet", lambda: None)
     monkeypatch.setattr(asens, "amici_free_parameter_ids", lambda xml: (["k1"], object()))
     monkeypatch.setattr(
         asens, "shared_sensitivity_params", lambda *a, **k: (["k1"], {"k1": "k1"}, 1)
