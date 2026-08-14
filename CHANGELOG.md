@@ -84,6 +84,59 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **An event whose trigger residual starts exactly ON its threshold no longer
+  fires spuriously (issue #340).** `BIOMD0000000285` declares `PIdeath > 0` on a
+  species whose initial amount is 0. The trigger is false at `t_start` (`0 > 0`)
+  but its residual sits exactly on zero, and the aggregation cascade that feeds
+  `PIdeath` starts at zero too, so `d(PIdeath)/dt` there is zero as well. The
+  species still creeps positive once the cascade turns over, the boolean trigger
+  flips, and bngsim read that as a rising edge: `kalive := 0` at **t = 2.7e-27**,
+  freezing every species at its initial value for the whole run. Both of the
+  model's death events did it at the same instant, which is how forward
+  sensitivity saw it — an ambiguous `dt*/dp` at a crossing whose time is set by
+  the step controller rather than by the model. It fires on a plain ODE run too;
+  the sensitivity path is only where it became loud.
+
+  What separates that from a trigger that genuinely crosses at `t_start` is
+  `dg/dt` along the flow, read there and nowhere else — after one step the
+  residual is off zero and the coincidence has left no trace:
+
+  - `dg/dt > 0` — the trajectory **leaves** the threshold into the trigger's true
+    side. The crossing is real and sits at `t_start`. Unchanged.
+  - `dg/dt <= 0` — it does not leave, so a root reported at `t_start` is the
+    initial condition being re-read rather than a transition, and does not fire.
+    The mark is one-shot and scoped to a window of 100 ulps of the run's time
+    scale, so a later genuine crossing of the same trigger (a residual that dips
+    to the false side and comes back) is untouched.
+
+  This is the rule SUNDIALS applies to its own root functions — a `g_i`
+  identically zero at `t0` is deactivated until it has moved away — which bngsim
+  cannot inherit, because the root it registers is the **boolean** trigger minus
+  0.5 and that is never zero. AMICI roots on the residual, gets the rule from
+  SUNDIALS, and does not fire here; bngsim now agrees with it on this model to 8
+  significant figures.
+
+  **The `dg/dt` test is what makes this safe, and it is not optional.** A
+  structural scan of the 1323-model `rr_parity` corpus finds 19 event triggers
+  whose residual is exactly zero at `t_start` (27 further triggers do not resolve
+  statically and are not in that count). **Nine of them are `time > 0`** —
+  `BIOMD0000000318/338/339/474/632/736`, `MODEL1108260014/1412200000/1708210000`,
+  which is how those models spell "at the start". Their residual is exactly zero
+  too; only `dg/dt = 1` tells them apart from `PIdeath > 0`, and suppressing on
+  the zero residual alone would have silently disarmed all nine. Of the
+  remaining ten, five read *true* at `t_start` (`>=`/`<=` sitting on the
+  threshold, governed by the existing `initialValue` rule), three declare
+  `initialValue="true"` and were already suppressed, and two are
+  `BIOMD0000000285`'s.
+
+  **Measured blast radius: one model.** Every corpus model that declares an event
+  — 194 of them — was run at its manifest horizon and tolerances before and
+  after. 190 completed on both sides and **exactly one trajectory changed:
+  `BIOMD0000000285`.** The other 189 agree to within 1e-9 relative; the four
+  non-completions (`BIOMD0000000137` fast-reaction refusal, `BIOMD0000000404`
+  timeout, `MODEL2006080001` RHS failure, `MODEL2205030001` undefined-symbol
+  refusal) are identical messages on both sides.
+
 - **The forward-sensitivity job raises its integrator step budget, symmetrically
   (issue #339).** Both engines default to 10,000 steps per solve — bngsim's
   `Simulator.run(max_steps=)`, AMICI's `Solver.set_max_steps` — and the harness

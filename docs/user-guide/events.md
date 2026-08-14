@@ -43,6 +43,26 @@ BNGsim's event implementation uses CVODE rootfinding (`CVodeRootInit`) for
 precise event detection — the integrator finds the exact time point where the
 trigger crosses zero, applies the assignments, and restarts.
 
+#### Triggers that start on their threshold
+
+A trigger reading false whose *residual* is exactly zero at the start time is
+not below its threshold, it is sitting on it — `S > 0` with `S(t_start) = 0`.
+Whether the first move off that surface is a crossing depends on where the
+trajectory goes, and bngsim decides it from `dg/dt` along the flow at the start
+time:
+
+- **It leaves into the true side** (`dg/dt > 0`) — the crossing is real and
+  located at the start time. `time > 0` is this case, and so is a species with a
+  nonzero production rate there. The event fires.
+- **It does not leave** (`dg/dt <= 0`) — nothing crosses. A root reported at the
+  start time is the initial condition being re-read, and its instant would be
+  set by the integrator's first step rather than by the model, so the event does
+  not fire. A later, genuine crossing of the same trigger is unaffected.
+
+This mirrors what SUNDIALS does with a root function that is identically zero at
+`t0`. Declare `initialValue="true"` on the trigger if you want an event
+suppressed at the start time regardless of the flow.
+
 ### Supported event features
 
 | Feature | Status | Notes |
