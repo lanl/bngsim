@@ -46,10 +46,11 @@ in `CMakeLists.txt`) is derived from it.
   a corpus re-run.
 
   The obvious proxy does not work and is deliberately not used:
-  `n_noise_forgiven / n_cells` reaches 100% for *excellent agreement* too,
-  because the mask keys on `|bn − am|` rather than on magnitude —
-  `MODEL7909395757` forgives 3636/3636 cells at `max|sx| = 0.6`. Magnitude has
-  to be recorded directly.
+  `n_below_noise_floor / n_cells` (issue #316's renaming of what shipped as
+  `n_noise_forgiven`) reaches 100% for *excellent agreement* too, because the
+  mask keys on `|bn − am|` rather than on magnitude — `MODEL7909395757` has
+  3636/3636 cells inside the floor at `max|sx| = 0.6`. Magnitude has to be
+  recorded directly.
 
   The floor is applied **per parameter column**. Reducing it with `max` over the
   parameter axis lets one tiny-valued parameter inflate the threshold for the
@@ -82,6 +83,59 @@ in `CMakeLists.txt`) is derived from it.
   local problem, not a property of the model, and stays a plain `RuntimeError`.
 
 ### Fixed
+
+- **The sensitivity noise floor now reports what it *rescued*, not what fell
+  inside it (issue #316).** #312 added the solver-resolution floor and, with it,
+  a per-row `n_noise_forgiven` documented as "the count of cells the floor
+  silenced ... so a run can never quietly forgive its way to a PASS". It counted
+  `mask.sum()` — every cell *inside* the floor, a strict superset of the cells
+  the floor rescued, dominated by cells the two engines already agreed on and in
+  particular by cells where both return exactly `0.0`. A run with **zero
+  disagreement anywhere** reported every one of its cells as forgiven, and a
+  matrix comment reading `noise 4820` said nothing about whether that row would
+  have passed without the floor.
+
+  It could not be fixed where it lived: `sens_verdict` built the mask *before*
+  calling `differ` and never saw `fail_mask`, so it had nothing to intersect
+  against. `differ.deterministic_verdict` now returns two audit keys whenever a
+  `forgive_mask` is supplied — `n_forgive_rescued` (cells removed from
+  `effective_fail` by that mask **and by nothing else**: a one-side-non-finite
+  cell is re-added unconditionally, and a cell the near-zero backstop or the
+  dynamic-range gate already forgave owes the mask nothing) and
+  `passed_without_forgive` (the verdict recomputed with the mask empty, through
+  the same code path rather than a re-derivation of it). Both are *absent* when
+  no mask was passed, so "no mask" cannot be misread as "the mask rescued
+  nothing".
+
+  A row now carries three numbers, because the audit question needs three:
+  `n_below_noise_floor` (how much of the tensor is under solver resolution — the
+  old number, under a name that describes it), `n_noise_rescued` (how much of the
+  verdict rested on the floor), and `noise_decisive` (whether the floor is what
+  made this row a PASS). On the issue's own two demonstrations: exact agreement
+  goes 12 → `rescued 0, decisive False`; one genuinely rescued cell among 99
+  trivially-agreeing ones goes 100 → `rescued 1, decisive True`.
+
+  `n_noise_forgiven` is **not** kept as an alias. Its meaning would change under a
+  name already written into every row of the shipped reports, and a census cannot
+  tell which definition a row was written under.
+
+  `noise_decisive` is currently equivalent to `passed and n_noise_rescued > 0` —
+  a rescued *soft* cell can only live in a column the significance gate calls
+  real, and a column is real only when some cell exceeds `HARD_REL_CEILING`
+  (0.05, 500x `REL_TOL`), which is itself a hard fail no budget absorbs. It is
+  computed from the recomputed verdict anyway, since that equivalence is a
+  property of two constants and a gate ordering rather than of the field; a
+  2,000-case fuzz pins it, so a future change to either is a visible event.
+
+  **`parity_checks/tests` now runs in CI**, found while fixing the above. No
+  workflow executed it, so the shared oracle every suite's verdict comes out of
+  had no gate at all — and a silent change to `differ` does not produce a failing
+  sweep, it produces a wrong one. These are the harness's unit tests, not the
+  sweeps: ~3 s, no new provisioning, and every dependency they lack they already
+  skip for (measured with amici and roadrunner both unimportable: 420 passed, 23
+  skipped, 2.9 s). Carries the same two-denominator false-green floor as the main
+  suite; `COLLECTED` is 443 whether or not amici, roadrunner and BNG2.pl are
+  present, which is what makes that floor meaningful.
 
 - **`amici_parity` exception capture keeps the end of the message, and every row
   carries a stable failure key (issue #324).** A report row's `exception` is

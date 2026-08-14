@@ -736,9 +736,30 @@ def sens_verdict(
     Omitting either reproduces the original scale-only behavior, so the function
     stays usable from a context that does not know the parameter values.
 
-    The returned dict is ``differ``'s, plus ``n_noise_forgiven`` — the count of
-    cells the floor silenced, recorded so a run can never quietly forgive its way
-    to a PASS without that being visible in the report.
+    The returned dict is ``differ``'s, plus three floor-specific numbers. They
+    are three because the audit question needs all three, and issue #316 is what
+    happens when one is asked to do the others' work.
+
+    * ``n_below_noise_floor`` — cells inside the floor. A statement about the
+      **data**: how much of the tensor is at or under solver resolution. This
+      was shipped as ``n_noise_forgiven`` and described as "the count of cells
+      the floor silenced", which it is not: it counts every cell the two engines
+      already agreed on, and in particular every cell where both return exactly
+      ``0.0`` — the common case the floor exists for. A run with zero
+      disagreement anywhere reported 100% "forgiven".
+    * ``n_noise_rescued`` — cells that were failing and that the floor, and
+      nothing else, cleared. A statement about the **verdict**: how much of it
+      rested on the floor.
+    * ``noise_decisive`` — whether this row would have been a DIFF without the
+      floor. Today that is exactly ``passed and n_noise_rescued > 0`` (see
+      ``differ.deterministic_verdict`` for why the two cannot diverge under the
+      current constants); it is carried as its own field because it is read off
+      the **recomputed** verdict rather than argued from a count, and it is the
+      question a reviewer actually asks.
+
+    ``n_noise_forgiven`` is deliberately NOT kept as an alias. Its meaning would
+    change under a name already written into every row of the shipped reports,
+    and a census cannot tell which definition a row was written under.
     """
     from _core import differ
 
@@ -748,7 +769,11 @@ def sens_verdict(
     v = differ.deterministic_verdict(
         flatten_tensor(bn_sx), flatten_tensor(am_sx), forgive_mask=mask
     )
-    v["n_noise_forgiven"] = int(mask.sum()) if mask is not None else 0
+    v["n_below_noise_floor"] = int(mask.sum()) if mask is not None else 0
+    v["n_noise_rescued"] = int(v.pop("n_forgive_rescued", 0))
+    # No floor means nothing to be decisive: `passed_without_forgive` is absent,
+    # and the verdict is already the floor-free one.
+    v["noise_decisive"] = bool(v["passed"] and not v.pop("passed_without_forgive", True))
     return v
 
 

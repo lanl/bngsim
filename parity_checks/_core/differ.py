@@ -90,6 +90,30 @@ def deterministic_verdict(
     the genuinely-failing cells, 0 when it passes), and the bucket counts
     (``n_fail``/``n_soft_fail``/``frac_soft_fail``/``n_hard_fail``/
     ``budget_forgiven``/``n_cells``) for the report comment.
+
+    When ``forgive_mask`` is given, two more keys audit what it did (issue #316).
+    A caller cannot compute either from outside: the mask alone says which cells
+    are *inside* it, which is a strict superset of the cells it changed anything
+    for — most masked cells were never failing, and of those that were, the
+    near-zero backstop or the dynamic-range gate may already have forgiven them.
+
+    * ``n_forgive_rescued`` — cells removed from ``effective_fail`` by this mask
+      and by nothing else. "How much of the verdict rested on the mask."
+    * ``passed_without_forgive`` — the same verdict **recomputed** with the mask
+      empty. "Did the mask turn a fail into a pass."
+
+    Under the current constants the second is implied by the first: a rescued
+    cell that is merely *soft* can only exist in a column the significance gate
+    calls real, and a column is real only if some cell exceeds
+    ``HARD_REL_CEILING`` (0.05) — which is 500x ``REL_TOL``, so that cell is
+    itself a hard fail. There is no way to rescue a soft cell without also
+    leaving a hard one behind. It is computed rather than inferred anyway,
+    because that equivalence is a property of two constants and a gate ordering,
+    none of which this field should depend on; ``test_noise_floor_audit`` pins
+    the equivalence so a future change to either is a visible event.
+
+    Both keys are absent when no mask was passed, so a consumer cannot mistake
+    "no mask" for "the mask rescued nothing".
     """
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
@@ -152,9 +176,6 @@ def deterministic_verdict(
     below_dyn_range = (
         fail_mask & (~col_is_real)[np.newaxis, :] & ~one_side_nonfinite & ~hard_abs_fail
     )
-    effective_fail = (
-        fail_mask & ~(forgive | near_zero_mask | below_dyn_range)
-    ) | one_side_nonfinite
 
     # A relative blow-up is HARD only on a cell whose column carries magnitude
     # (significance gate) and diverges past the ceiling at the column's peak scale
@@ -164,30 +185,47 @@ def deterministic_verdict(
     # column, but the dynamic-range gate above now subsumes the global soft path
     # (a sub-ceiling column is forgiven outright rather than counted against it).
     hard_rel_fail = (reld_peak > HARD_REL_CEILING) & col_significant[np.newaxis, :]
-    hard_fail = effective_fail & (hard_rel_fail | hard_abs_fail | one_side_nonfinite)
-    soft_fail = effective_fail & ~hard_fail
 
-    total_cells = int(effective_fail.size)
-    n_soft_fail = int(np.sum(soft_fail))
-    frac_soft_fail = (n_soft_fail / total_cells) if total_cells else 0.0
-    budget_ok = frac_soft_fail <= FAIL_FRAC_BUDGET
-    remaining_fail = hard_fail if budget_ok else effective_fail
-    n_remaining = int(np.sum(remaining_fail))
+    def _resolve(forgive_now: np.ndarray) -> dict:
+        """Everything downstream of ``forgive``, so the #316 counterfactual is
+        the real verdict rather than a re-derivation of it that could drift."""
+        effective_fail = (
+            fail_mask & ~(forgive_now | near_zero_mask | below_dyn_range)
+        ) | one_side_nonfinite
+        hard_fail = effective_fail & (hard_rel_fail | hard_abs_fail | one_side_nonfinite)
+        soft_fail = effective_fail & ~hard_fail
 
-    max_rel = float(np.max(reld_peak[remaining_fail])) if n_remaining else 0.0
-    max_abs = float(np.max(absd_clean[remaining_fail])) if n_remaining else 0.0
-    return {
-        "passed": n_remaining == 0,
-        "max_rel": max_rel,
-        "max_abs": max_abs,
-        "n_cells": total_cells,
-        "n_fail": int(np.sum(fail_mask)),
-        "n_soft_fail": n_soft_fail,
-        "frac_soft_fail": frac_soft_fail,
-        "n_hard_fail": int(np.sum(hard_fail)),
-        "budget_forgiven": n_soft_fail if budget_ok else 0,
-        "scale": scale,
-    }
+        total_cells = int(effective_fail.size)
+        n_soft_fail = int(np.sum(soft_fail))
+        frac_soft_fail = (n_soft_fail / total_cells) if total_cells else 0.0
+        budget_ok = frac_soft_fail <= FAIL_FRAC_BUDGET
+        remaining_fail = hard_fail if budget_ok else effective_fail
+        n_remaining = int(np.sum(remaining_fail))
+
+        return {
+            "passed": n_remaining == 0,
+            "max_rel": float(np.max(reld_peak[remaining_fail])) if n_remaining else 0.0,
+            "max_abs": float(np.max(absd_clean[remaining_fail])) if n_remaining else 0.0,
+            "n_cells": total_cells,
+            "n_fail": int(np.sum(fail_mask)),
+            "n_soft_fail": n_soft_fail,
+            "frac_soft_fail": frac_soft_fail,
+            "n_hard_fail": int(np.sum(hard_fail)),
+            "budget_forgiven": n_soft_fail if budget_ok else 0,
+            "scale": scale,
+        }
+
+    out = _resolve(forgive)
+    if forgive_mask is not None:
+        # Issue #316 — what the mask actually did, which `forgive.sum()` cannot
+        # say. A cell counts as rescued only if it was failing, the mask cleared
+        # it, and nothing else would have: a one-side-non-finite cell is re-added
+        # unconditionally, and a cell the near-zero backstop or the dynamic-range
+        # gate already forgave owes the mask nothing.
+        rescued = fail_mask & forgive & ~one_side_nonfinite & ~near_zero_mask & ~below_dyn_range
+        out["n_forgive_rescued"] = int(np.sum(rescued))
+        out["passed_without_forgive"] = bool(_resolve(np.zeros_like(fail_mask))["passed"])
+    return out
 
 
 def ensemble_k_for(n_rep: int) -> float:
