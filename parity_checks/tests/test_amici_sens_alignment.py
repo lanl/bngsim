@@ -695,7 +695,7 @@ class TestClassifyFailure:
         return run._classify_failure(bn, am, unsup)
 
     def test_a_declared_refusal_is_unsupported(self):
-        st, msg = self._cls("bngsim: SensitivityUnsupportedError: ...", "", unsup=True)
+        st, msg, _cls = self._cls("bngsim: SensitivityUnsupportedError: ...", "", unsup=True)
         assert st == "unsupported"
         assert "SensitivityUnsupportedError" in msg
 
@@ -705,7 +705,7 @@ class TestClassifyFailure:
         named one costs no signal — and BAD_TEST ('nothing to compare') cannot be
         counted as bngsim's sensitivity gap, which is the number this exists to
         produce. The AMICI text is kept either way."""
-        st, msg = self._cls("bngsim: SensitivityUnsupportedError: x", "amici: y", unsup=True)
+        st, msg, _cls = self._cls("bngsim: SensitivityUnsupportedError: x", "amici: y", unsup=True)
         assert st == "unsupported"
         assert "amici: y" in msg and "SensitivityUnsupportedError" in msg
 

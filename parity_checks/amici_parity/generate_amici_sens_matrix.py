@@ -224,7 +224,14 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         val = r.get("value")
         val_txt = "—" if val is None else (f"{val:.3g}" if val == val else "nan")
 
+        # Issue #324 — lead a failure detail with its grouping key. The message
+        # behind it is capped and its variable part can be an arbitrarily long
+        # symbol enumeration, so the key is what makes a column of these
+        # scannable ("everything that says bngsim-params:ModelError").
         detail = _escape(r.get("comment") or r.get("exception") or "")
+        exc_cls = r.get("exception_class")
+        if exc_cls and not r.get("comment"):
+            detail = f"[{_escape(exc_cls)}] {detail}"
         rows.append(
             f"<tr class='{cls}'>"
             f"<td class='mono'>{_escape(r.get('model_id', ''))}</td>"

@@ -83,6 +83,41 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`amici_parity` exception capture keeps the end of the message, and every row
+  carries a stable failure key (issue #324).** A report row's `exception` is
+  capped at 400 characters — the report is the durable artifact and 2,646
+  unbounded tracebacks are not readable — but the cap was a plain head cut, and
+  that is the wrong end to keep.
+
+  Several bngsim refusals enumerate model symbols *before* naming the fault. The
+  under-specified-model refusal (#323) reads `Parameters 'A', 'B', ... have no
+  value attribute and no initialAssignment, but are referenced by ...`, so on a
+  model with a long parameter list all 400 characters were names and the
+  diagnostic never appeared. `MODEL0848342500`, `MODEL7980735163` and
+  `MODEL9808533471` (892–1173 characters of message each) could not be classified
+  from the report at all and had to be read against their source — on a sweep that
+  costs ~4 hours at 4 workers to redo.
+
+  The cap now drops the **middle**, marking how many characters went, at the same
+  400-character budget. All three models now close with `... Set the parameter
+  value or add an initialAssignment. To restore the legacy lenient default-to-0
+  behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1.`
+
+  Every row also carries **`exception_class`** — `"<phase>:<ExceptionType>"`, e.g.
+  `bngsim-params:UnderSpecifiedModelError`, joined with ` || ` when both engines
+  raised. That key is stable across models however long their symbol lists are,
+  which is the by-hand grouping the issue describes doing. Deliberately the
+  exception *type* rather than a parsed leading clause: a clause is a guess about
+  wording, the type is a fact, and it is already the axis `is_declared_refusal`
+  matches on. Optional on `JobResult`, so other suites and older reports leave it
+  null.
+
+  One consequence worth naming: `reference_refusal` (`feature_gap` / `compile` /
+  `integrator` / `other`) is now decided in the worker against the **full** AMICI
+  message. It used to be classified in the parent against the capped text, so a
+  keyword past the head budget set the subclass only by accident of message
+  length — and middle-elision makes the head smaller still.
+
 - **A forward-sensitivity column for an `<assignmentRule>` target is refused
   rather than answered `0.0` (issue #329).** Naming a parameter that a model
   *function* owns — an SBML `<parameter>` an `<assignmentRule>` defines, or a

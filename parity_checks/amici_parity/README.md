@@ -306,6 +306,45 @@ resource limit instead of merely mislabelling it, so the refusal now consults
 `bngsim._codegen.last_codegen_error()` and only refuses as *declared* when
 nothing actually failed.
 
+### Reading a failure out of the report
+
+A row's `exception` is capped at 400 characters, because the report is the
+durable artifact and 2,646 unbounded tracebacks are not readable. The cap drops
+the **middle**, not the tail, and says how much it dropped:
+
+```
+bngsim-params: UnderSpecifiedModelError: Parameters 'Ca_SR_DS_Calcium_Concentrations',
+'Ca_SR_LCC_and_RyR_fluxes', ... ...[518 chars elided]... ame model). Set the parameter
+value or add an initialAssignment. To restore the legacy lenient default-to-0
+behavior, set BNGSIM_ALLOW_UNSET_PARAMS=1.
+```
+
+That shape is deliberate (issue #324). Several bngsim refusals enumerate model
+symbols *before* naming the fault, so a head cut spent the whole budget on names
+— `MODEL0848342500`, `MODEL7980735163` and `MODEL9808533471` could not be
+classified from the report at all and had to be read against their source.
+
+**Group on `exception_class`, not on `exception`.** Every row carries
+`"<phase>:<ExceptionType>"` — `bngsim-params:UnderSpecifiedModelError`,
+`amici-build:SBMLException`, `compare:ValueError` — which is stable across models
+however long their symbol lists are, and is joined with ` || ` when both engines
+raised. The phase is where in the job the raise came from: `amici-build`,
+`bngsim-params`, `bngsim`, `amici`, `compare`. A bad_test row with no raise
+behind it (no differentiable parameter shared with AMICI) is keyed
+`shared-params:none`.
+
+```bash
+python3 -c "
+import json, collections
+rows = json.load(open('runs/report_sens_full.json'))['results']
+print(collections.Counter(r['exception_class'] for r in rows if r.get('exception_class')))
+"
+```
+
+`reference_refusal` (`feature_gap` / `compile` / `integrator` / `other`) is
+decided in the worker against the **full** AMICI message, not against the capped
+text, so it does not depend on where the cap happened to fall.
+
 ### Run + render
 
 ```bash

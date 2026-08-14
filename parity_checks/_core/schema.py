@@ -107,6 +107,94 @@ class Job:
 
 
 # --------------------------------------------------------------------------- #
+# Exception capture for a report row (issue #324)
+# --------------------------------------------------------------------------- #
+# A report row's `exception` is a bounded field: 2,646 rows carrying an unbounded
+# traceback repr would make the durable artifact unreadable and unwieldy, so the
+# text is capped. The cap used to be a plain head cut, and that is what #324
+# found: several bngsim refusals put the phrase naming the failure CLASS at the
+# END, after an enumeration of model symbols. The under-specified-model refusal
+# (#323) reads "Parameters 'A', 'B', ... have no value attribute and no
+# initialAssignment, but are referenced by ..." — on a model with a long
+# parameter list all 400 characters were names and the diagnostic never appeared.
+# Three models could not be classified from the report at all and had to be
+# grouped by hand against their source, on a sweep that costs ~4 hours to redo.
+EXCEPTION_TEXT_LIMIT = 400
+
+# Head/tail split of the surviving budget. The head carries the phase, exception
+# type and opening clause; the tail carries the trailing diagnostic an
+# enumeration would otherwise push out.
+_ELIDE_HEAD_NUM, _ELIDE_HEAD_DEN = 3, 5
+_ELIDE_MARKER = " ...[{n} chars elided]... "
+
+
+def _elide_middle(text: str, limit: int) -> str:
+    """``text`` capped at ``limit`` chars, dropping the MIDDLE rather than the tail.
+
+    The marker names how many characters went, so an elided message can never be
+    mistaken for one that genuinely reads that way. The result is exactly
+    ``limit`` characters when anything was dropped, so the cap on report size is
+    the same one the head cut gave.
+
+    The marker's own width depends on the digit count of the number it prints,
+    which depends on how much the marker leaves room to keep — so the split is a
+    two-step fixpoint rather than one subtraction.
+    """
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    marker = _ELIDE_MARKER.format(n=dropped)
+    for _ in range(4):
+        keep = limit - len(marker)
+        if keep < 2:  # pathologically small limit — nothing sane to split
+            return text[:limit]
+        if len(text) - keep == dropped:
+            break
+        dropped = len(text) - keep
+        marker = _ELIDE_MARKER.format(n=dropped)
+    keep = limit - len(marker)
+    head = keep * _ELIDE_HEAD_NUM // _ELIDE_HEAD_DEN
+    tail = keep - head
+    return f"{text[:head]}{marker}{text[len(text) - tail :]}"
+
+
+@dataclass(frozen=True)
+class CapturedException:
+    """One exception, rendered for a report row three ways (issue #324).
+
+    ``full`` is the untruncated text and never reaches the report — it exists so
+    a *classifier* runs against the whole message rather than against whatever
+    survived the cap. That distinction is the point: a keyword sitting past the
+    head budget used to decide a subclass only by accident of message length.
+    """
+
+    text: str  # "<phase>: <Type>: <message>", middle-elided to the limit
+    cls: str  # "<phase>:<Type>" — the stable grouping key
+    full: str  # the same text, uncapped; for classifiers, not for the report
+
+
+def capture_exception(
+    phase: str, exc: BaseException, limit: int = EXCEPTION_TEXT_LIMIT
+) -> CapturedException:
+    """Render ``exc`` for a report row, tagged with the ``phase`` that raised it.
+
+    ``phase`` is the step in the job the raise came from — ``"bngsim"``,
+    ``"amici"``, ``"amici-build"``, ``"bngsim-params"``, ``"compare"``. Paired
+    with the exception type it gives ``cls``, a key that is **stable across
+    models**: two models failing the same way group together however different
+    their symbol names are, which is exactly what a report-only census needs and
+    what a message truncated mid-enumeration cannot give.
+
+    Deliberately not a parsed subclass. A leading clause is a guess about message
+    wording; the type is a fact, and it is already the axis
+    ``is_declared_refusal`` matches on.
+    """
+    name = type(exc).__name__
+    full = f"{phase}: {name}: {exc}"
+    return CapturedException(text=_elide_middle(full, limit), cls=f"{phase}:{name}", full=full)
+
+
+# --------------------------------------------------------------------------- #
 # Report (results)
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -121,6 +209,12 @@ class JobResult:
     value: float | None = None  # the actual max_rel / zscore observed
     tol: float | None = None
     exception: str = ""
+    # Stable grouping key for `exception` — "<phase>:<ExceptionType>", or two of
+    # those joined by " || " when both engines raised (issue #324). `exception`
+    # is capped and its variable part (a symbol enumeration) can be arbitrarily
+    # long, so it is not a key a census can group on; this is. Defaulted/optional,
+    # so suites that don't set it and older reports simply leave it null.
+    exception_class: str | None = None
     wall_sec: float | None = None
     timestamp: str = ""
     versions: dict = field(default_factory=dict)  # {"bngsim":..., "<ref>":...}

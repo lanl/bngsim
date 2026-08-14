@@ -76,6 +76,7 @@ from _core import (  # noqa: E402
     FAILING,
     JobResult,
     Outcome,
+    capture_exception,
     differ,
     read_manifest,
     tally,
@@ -248,8 +249,14 @@ def make_specs(
     return specs, n_tol_ov
 
 
-def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) -> tuple[str, str]:
-    """Attribute a failed job to an engine. ``(status, exception_text)``.
+def _classify_failure(
+    bn_exc: str,
+    am_exc: str,
+    bn_unsupported: bool = False,
+    bn_cls: str = "",
+    am_cls: str = "",
+) -> tuple[str, str, str]:
+    """Attribute a failed job to an engine. ``(status, exception_text, exception_class)``.
 
     ``bn_unsupported`` marks a DECLARED bngsim refusal (a
     ``SensitivityUnsupportedError``: the model carries a construct bngsim states
@@ -259,14 +266,27 @@ def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) ->
     the choice costs no signal and gains a named one — UNSUPPORTED rows are
     countable as "bngsim's declared sensitivity gap", which BAD_TEST ("nothing
     to compare") is not. The AMICI text is kept in the message either way.
+
+    ``bn_cls`` / ``am_cls`` are the ``CapturedException.cls`` keys for the same
+    two raises (issue #324). The class tracks the text exactly — whichever sides
+    the text keeps, the class keeps, joined the same way — so a census can group
+    on it without re-parsing a capped message. Optional so a caller that has no
+    classes still gets the old two thirds of the answer, as ``""``.
     """
     if bn_unsupported:
-        return "unsupported", f"{bn_exc} || {am_exc}" if am_exc else bn_exc
+        if am_exc:
+            return "unsupported", f"{bn_exc} || {am_exc}", _join_cls(bn_cls, am_cls)
+        return "unsupported", bn_exc, bn_cls
     if bn_exc and am_exc:
-        return "bad_test", f"{am_exc} || {bn_exc}"
+        return "bad_test", f"{am_exc} || {bn_exc}", _join_cls(am_cls, bn_cls)
     if am_exc:
-        return "reference_failed", am_exc
-    return "exception", bn_exc
+        return "reference_failed", am_exc, am_cls
+    return "exception", bn_exc, bn_cls
+
+
+def _join_cls(first: str, second: str) -> str:
+    """Join two grouping keys the way their texts are joined, skipping blanks."""
+    return " || ".join(c for c in (first, second) if c)
 
 
 # Shared with amici_run.py — see `_amici_common.is_declared_refusal` for why the
@@ -302,14 +322,22 @@ def _worker(spec: dict, q) -> None:
     # build failure is therefore REFERENCE_FAILED with bngsim untested. ---
     built = None
     am_exc = ""
+    am_cls = ""
+    am_full = ""
     am_wall = 0.0
     try:
         t0 = time.perf_counter()
         am_ids, built = asens.amici_free_parameter_ids(xml)
         am_wall = time.perf_counter() - t0
     except Exception as exc:
+        cap = capture_exception("amici-build", exc)
         res["status"] = "reference_failed"
-        res["exception"] = f"amici-build: {type(exc).__name__}: {exc}"[:400]
+        res["exception"] = cap.text
+        res["exception_class"] = cap.cls
+        # Issue #324 — classify from the FULL message, here, rather than from the
+        # capped one in the parent. The keyword that names an AMICI refusal
+        # subclass is not guaranteed to sit inside the head budget.
+        res["reference_refusal"] = asens.classify_reference_refusal(cap.full)
         res["wall_sec"] = round(time.perf_counter() - t0, 3)
         res["timing"] = {"warmup": warmup}
         q.put(res)
@@ -355,8 +383,14 @@ def _worker(spec: dict, q) -> None:
         # (issue #323). AMICI accepts the same models by defaulting the symbol to
         # 0, which is why this shows up as bngsim-only. It is a documented
         # refusal, not a bug — UNSUPPORTED, not EXCEPTION.
+        #
+        # This site is issue #324's own reproducer: #323's message enumerates the
+        # under-specified parameters BEFORE saying what is wrong with them, so on
+        # a model with a long list the head cut kept only names.
+        cap = capture_exception("bngsim-params", exc)
         res["status"] = "unsupported" if _is_declared_refusal(exc) else "exception"
-        res["exception"] = f"bngsim-params: {type(exc).__name__}: {exc}"[:400]
+        res["exception"] = cap.text
+        res["exception_class"] = cap.cls
         res["wall_sec"] = round(am_wall, 3)
         q.put(res)
         return
@@ -370,6 +404,9 @@ def _worker(spec: dict, q) -> None:
             f"no shared differentiable parameter (amici free={len(am_ids)}, "
             f"bngsim-eligible shared={n_cand})"
         )
+        # Not a raise, but it is a row a census wants to group, and the counts in
+        # the text above make it un-groupable without a key of its own (#324).
+        res["exception_class"] = "shared-params:none"
         res["wall_sec"] = round(am_wall, 3)
         res["timing"] = {"warmup": warmup}
         q.put(res)
@@ -381,6 +418,7 @@ def _worker(spec: dict, q) -> None:
     # --- bngsim side ---
     bn = None
     bn_exc = ""
+    bn_cls = ""
     bn_unsupported = False
     bn_timing = None
     bn_wall = 0.0
@@ -400,7 +438,8 @@ def _worker(spec: dict, q) -> None:
         bn, bn_timing = out[:4], out[4]
     except Exception as exc:
         bn_unsupported = _is_declared_refusal(exc)
-        bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
+        cap = capture_exception("bngsim", exc)
+        bn_exc, bn_cls = cap.text, cap.cls
 
     # --- AMICI side (over the model built above) ---
     am = None
@@ -420,7 +459,8 @@ def _worker(spec: dict, q) -> None:
         am_wall += time.perf_counter() - t0
         am, am_timing = out[:4], out[4]
     except Exception as exc:
-        am_exc = f"amici: {type(exc).__name__}: {exc}"[:400]
+        cap = capture_exception("amici", exc)
+        am_exc, am_cls, am_full = cap.text, cap.cls, cap.full
 
     res["wall_sec"] = round(bn_wall + am_wall, 3)
     if am is not None:
@@ -437,15 +477,23 @@ def _worker(spec: dict, q) -> None:
         res["timing"] = timing
 
     if bn_exc or am_exc:
-        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc, bn_unsupported)
+        res["status"], res["exception"], res["exception_class"] = _classify_failure(
+            bn_exc, am_exc, bn_unsupported, bn_cls, am_cls
+        )
+        if res["status"] == "reference_failed":
+            # Issue #324 — the full AMICI text, not the capped one the parent
+            # would otherwise re-read out of the row.
+            res["reference_refusal"] = asens.classify_reference_refusal(am_full)
         q.put(res)
         return
 
     try:
         res.update(_compare(bn, am, param_values=param_values, atol=p["atol"]))
     except Exception as exc:
+        cap = capture_exception("compare", exc)
         res["status"] = "exception"
-        res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
+        res["exception"] = cap.text
+        res["exception_class"] = cap.cls
     q.put(res)
 
 
@@ -654,7 +702,12 @@ def main() -> int:
             comment = f"worker died (exit={r.get('exitcode')})"
         refusal = None
         if outcome == Outcome.REFERENCE_FAILED:
-            refusal = asens.classify_reference_refusal(r.get("exception", ""))
+            # Issue #324 — prefer the worker's verdict, which saw the full AMICI
+            # message. Falling back to the stored text keeps a resumed run whose
+            # checkpoint predates this field classifying as it always did.
+            refusal = r.get("reference_refusal") or asens.classify_reference_refusal(
+                r.get("exception", "")
+            )
             comment = (
                 f"{comment} | amici refusal={refusal}" if comment else f"amici refusal={refusal}"
             )
@@ -671,6 +724,7 @@ def main() -> int:
                 value=r.get("value"),
                 tol=r.get("tol"),
                 exception=r.get("exception", ""),
+                exception_class=r.get("exception_class"),
                 wall_sec=round(wall, 3) if wall else None,
                 timestamp=now,
                 versions=ver,

@@ -66,6 +66,7 @@ from _core import (  # noqa: E402
     FAILING,
     JobResult,
     Outcome,
+    capture_exception,
     differ,
     read_manifest,
     tally,
@@ -142,9 +143,15 @@ def _compare_ode(bn, am) -> tuple[str, float, str, str, float]:
 SETTLED_REFUSALS = frozenset({"adjudicated_confirm", "adjudicated_uncoverable"})
 
 
-def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) -> tuple[str, str]:
-    """Map per-engine raise status to ``(status, exception)``. AMICI is the
-    existence proof, so the engine that failed determines the bucket.
+def _classify_failure(
+    bn_exc: str,
+    am_exc: str,
+    bn_unsupported: bool = False,
+    bn_cls: str = "",
+    am_cls: str = "",
+) -> tuple[str, str, str]:
+    """Map per-engine raise status to ``(status, exception, exception_class)``.
+    AMICI is the existence proof, so the engine that failed determines the bucket.
 
     ``bn_unsupported`` marks a DECLARED bngsim refusal — here that means
     ``UnderSpecifiedModelError``: the model reads a symbol it never defines and
@@ -152,14 +159,25 @@ def _classify_failure(bn_exc: str, am_exc: str, bn_unsupported: bool = False) ->
     including the both-raised BAD_TEST, because the declaration is a fact about
     this model that stays true whatever AMICI did. Both are non-scoring, so the
     choice costs no signal and gains a countable one.
+
+    ``bn_cls`` / ``am_cls`` are the ``CapturedException.cls`` grouping keys for
+    the same two raises, joined exactly as their texts are (issue #324).
     """
     if bn_unsupported:
-        return "unsupported", f"{bn_exc} || {am_exc}" if am_exc else bn_exc
+        if am_exc:
+            return "unsupported", f"{bn_exc} || {am_exc}", _join_cls(bn_cls, am_cls)
+        return "unsupported", bn_exc, bn_cls
     if bn_exc and am_exc:  # neither ran -> the test/model is the problem
-        return "bad_test", f"{am_exc} || {bn_exc}"
+        return "bad_test", f"{am_exc} || {bn_exc}", _join_cls(am_cls, bn_cls)
     if am_exc:  # bngsim ran but the reference couldn't -> nothing to compare against
-        return "reference_failed", am_exc
-    return "exception", bn_exc  # the reference ran but bngsim raised -> bngsim bug
+        return "reference_failed", am_exc, am_cls
+    # the reference ran but bngsim raised -> bngsim bug
+    return "exception", bn_exc, bn_cls
+
+
+def _join_cls(first: str, second: str) -> str:
+    """Join two grouping keys the way their texts are joined, skipping blanks."""
+    return " || ".join(c for c in (first, second) if c)
 
 
 def _worker(spec: dict, q) -> None:
@@ -186,6 +204,7 @@ def _worker(spec: dict, q) -> None:
     # --- bngsim side (record status; do NOT short-circuit on a generic raise) ---
     bn = None
     bn_exc = ""
+    bn_cls = ""
     bn_unsupported = False
     bn_timing = None
     bn_wall = 0.0
@@ -206,11 +225,14 @@ def _worker(spec: dict, q) -> None:
             bn = bn[:3]
     except Exception as exc:
         bn_unsupported = ac.is_declared_refusal(exc)
-        bn_exc = f"bngsim: {type(exc).__name__}: {exc}"[:400]
+        cap = capture_exception("bngsim", exc)
+        bn_exc, bn_cls = cap.text, cap.cls
 
     # --- AMICI side (always run; it's the reference / existence proof) ---
     am = None
     am_exc = ""
+    am_cls = ""
+    am_full = ""
     am_timing = None
     am_wall = 0.0
     try:
@@ -221,7 +243,8 @@ def _worker(spec: dict, q) -> None:
             am_timing = am[3]
             am = am[:3]
     except Exception as exc:
-        am_exc = f"amici: {type(exc).__name__}: {exc}"[:400]
+        cap = capture_exception("amici", exc)
+        am_exc, am_cls, am_full = cap.text, cap.cls, cap.full
 
     # Total job wall — bngsim + reference. Note: on a cold cache the AMICI wall is
     # dominated by the one-time C++ compile (~20s); the per-phase `timing` dict
@@ -243,7 +266,13 @@ def _worker(spec: dict, q) -> None:
 
     # --- classify from per-engine status (the reference anchors the verdict) ---
     if bn_exc or am_exc:
-        res["status"], res["exception"] = _classify_failure(bn_exc, am_exc, bn_unsupported)
+        res["status"], res["exception"], res["exception_class"] = _classify_failure(
+            bn_exc, am_exc, bn_unsupported, bn_cls, am_cls
+        )
+        if res["status"] == "reference_failed":
+            # Issue #324 — classify from the FULL AMICI message, not the capped
+            # one the parent would otherwise re-read out of the row.
+            res["reference_refusal"] = ac.classify_reference_refusal(am_full)
         q.put(res)
         return
 
@@ -253,8 +282,10 @@ def _worker(spec: dict, q) -> None:
         res["status"], res["value"], res["comment"] = status, value, comment
         res["metric"], res["tol"] = metric, m_tol
     except Exception as exc:
+        cap = capture_exception("compare", exc)
         res["status"] = "exception"
-        res["exception"] = f"compare: {type(exc).__name__}: {exc}"[:400]
+        res["exception"] = cap.text
+        res["exception_class"] = cap.cls
     q.put(res)
 
 
@@ -484,7 +515,12 @@ def main() -> int:
         # a manual list. No RR-style settled-win class applies to AMICI.
         refusal = None
         if outcome == Outcome.REFERENCE_FAILED:
-            refusal = ac.classify_reference_refusal(r.get("exception", ""))
+            # Issue #324 — prefer the worker's verdict, which saw the full AMICI
+            # message. The stored-text fallback keeps a resumed run whose
+            # checkpoint predates this field classifying as it always did.
+            refusal = r.get("reference_refusal") or ac.classify_reference_refusal(
+                r.get("exception", "")
+            )
             comment = (
                 f"{comment} | amici refusal={refusal}" if comment else f"amici refusal={refusal}"
             )
@@ -498,6 +534,7 @@ def main() -> int:
                 value=r.get("value"),
                 tol=r.get("tol"),
                 exception=r.get("exception", ""),
+                exception_class=r.get("exception_class"),
                 wall_sec=round(wall, 3) if wall else None,
                 timestamp=now,
                 versions=ver,

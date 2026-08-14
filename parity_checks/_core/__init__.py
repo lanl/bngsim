@@ -12,12 +12,15 @@ from __future__ import annotations
 from . import bngpath, differ, fingerprint, oracles, versions
 from .bngpath import BngResolution, require_bng, resolve_bng, skip_reason
 from .schema import (
+    EXCEPTION_TEXT_LIMIT,
     SCHEMA_VERSION,
+    CapturedException,
     Golden,
     Job,
     JobResult,
     Oracle,
     Override,
+    capture_exception,
     read_golden,
     read_manifest,
     read_report,
@@ -28,8 +31,11 @@ from .schema import (
 from .taxonomy import ALL, CLEAN, FAILING, Outcome, tally
 
 __all__ = [
+    "EXCEPTION_TEXT_LIMIT",
     "SCHEMA_VERSION",
     "BngResolution",
+    "CapturedException",
+    "capture_exception",
     "bngpath",
     "require_bng",
     "resolve_bng",
