@@ -775,6 +775,16 @@ def guard_rate_law_text(text: str) -> str | None:
     ``if()`` alone), a text that does not parse, or one that cannot be re-emitted.
     Turning a working model into a broken one is the only outcome not on the
     table, so every uncertain case declines.
+
+    The result is respelled to call ``ln`` rather than ``log``. They are the same
+    function to ExprTk, but not to bngsim: ``ln`` is a registered adapter carrying
+    the ``NonFiniteWarningSet`` (issue #42's follow-up), while ``log`` is ExprTk's
+    built-in and is not instrumented. Since every rate law this rewrites was
+    *declared* with ``ln``, emitting ``log`` silently traded away the model's own
+    non-finite diagnostic — measured: an un-rewritten ``vmax*ln(Atot)`` reports
+    ``'ln(-1e-09)' returned nan`` at a negative concentration, and the rewritten
+    ``vmax*Atot^n*ln(Atot)`` reported nothing at all. That warning is the only
+    thing naming the rate law when a solve later fails with a bare CVODE flag.
     """
     if not _LOG_CALL_RE.search(text) or "if(" in text:
         return None
@@ -790,7 +800,11 @@ def guard_rate_law_text(text: str) -> str | None:
         # An unguarded round trip only re-spells an expression (``a*b`` → ``b*a``);
         # only a rewrite that actually introduced the branch is worth taking.
         return None
-    return guarded
+    # Back to the instrumented spelling. ``\blog\(`` cannot match ``log10(`` or
+    # ``log2(`` — the digits sit between the name and the paren — and the only
+    # other thing it reaches is the constant divisor those two are rewritten to
+    # (``log(10)``), where ln and log agree and no argument is ever non-finite.
+    return re.sub(r"\blog\(", "ln(", guarded)
 
 
 def guard_function_expressions(core) -> list[tuple[str, str, str]]:
