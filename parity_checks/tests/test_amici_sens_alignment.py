@@ -360,7 +360,11 @@ class TestSensitivityNoiseFloor:
         assert not asens.sens_verdict(bn, am)["passed"], "precondition: fails without the floor"
         v = asens.sens_verdict(bn, am, param_values=p, atol=self.ATOL)
         assert v["passed"]
-        assert v["n_noise_forgiven"] > 0
+        # Issue #316 — the floor rescued real failing cells here, and the row
+        # would have been a DIFF without it. `n_below_noise_floor` alone would
+        # have said "> 0" even had nothing been failing.
+        assert v["n_noise_rescued"] > 0
+        assert v["noise_decisive"] is True
 
     def test_a_real_large_magnitude_divergence_still_fails(self):
         """BIOMD0000000457's shape: one parameter column completely wrong at a
@@ -403,13 +407,16 @@ class TestSensitivityNoiseFloor:
 
     def test_omitting_the_inputs_reproduces_the_unfloored_verdict(self):
         """Back-compat: a caller that does not know the parameter values gets
-        exactly the original scale-only behavior, and an honest zero count."""
+        exactly the original scale-only behavior, and honest zero counts."""
         bn = np.zeros((6, 2, 2))
         am = np.zeros((6, 2, 2))
         am[:, :, 0] = 1e-11
         v = asens.sens_verdict(bn, am)
         assert not v["passed"]
-        assert v["n_noise_forgiven"] == 0
+        assert v["n_below_noise_floor"] == 0
+        assert v["n_noise_rescued"] == 0
+        # No floor ran, so it cannot have decided anything.
+        assert v["noise_decisive"] is False
 
 
 # --------------------------------------------------------------------------- #

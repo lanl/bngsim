@@ -154,22 +154,27 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
     # larger peak to be judged against.
     #
     # These make the census computable from the report instead of from a corpus
-    # re-run. Note the OBVIOUS proxy does not work: n_noise_forgiven/n_cells hits
-    # 100% for excellent agreement too, because the mask keys on |bn-am|, not on
-    # magnitude — MODEL7909395757 forgives 3636/3636 cells at max|sx| = 0.6.
-    # Magnitude has to be recorded directly, and PER COLUMN: a single
-    # tiny-valued parameter would otherwise inflate a global floor and mark a
-    # live model degenerate (see sens_resolution_floors).
+    # re-run. Note the OBVIOUS proxy does not work: n_below_noise_floor/n_cells
+    # hits 100% for excellent agreement too, because the mask keys on |bn-am|,
+    # not on magnitude — MODEL7909395757 has 3636/3636 cells inside the floor at
+    # max|sx| = 0.6. Magnitude has to be recorded directly, and PER COLUMN: a
+    # single tiny-valued parameter would otherwise inflate a global floor and
+    # mark a live model degenerate (see sens_resolution_floors).
     sx_used = bn_sx[:, bn_idx, :]
     sx_peak = float(np.nanmax(np.abs(sx_used))) if sx_used.size else 0.0
     x_used = bn_x[:, bn_idx]
     state_span = float(np.nanmax(np.nanmax(x_used, axis=0) - np.nanmin(x_used, axis=0)))
     n_resolvable = asens.resolvable_param_columns(sx_used, param_values, atol)
 
+    # Issue #316 — the comment reports what the floor RESCUED, not how much of
+    # the tensor sits inside it. The old "noise N" was the latter under a name
+    # that read as the former, so a row could say "noise 4820" while the floor
+    # had changed nothing about the verdict.
     comment = (
         f"{len(common)} sp x {n_p} par; fail {v['n_fail']}/{v['n_cells']} "
         f"(hard {v['n_hard_fail']}, soft {v['n_soft_fail']}, "
-        f"forgiven {v['budget_forgiven']}, noise {v['n_noise_forgiven']}); "
+        f"forgiven {v['budget_forgiven']}, noise-rescued {v['n_noise_rescued']}"
+        f"{' DECISIVE' if v['noise_decisive'] else ''}); "
         f"state {'ok' if sv['passed'] else 'DIFF'}"
     )
     if n_resolvable == 0:
@@ -182,7 +187,13 @@ def _compare(bn, am, param_values=None, atol=None) -> dict:
         "state_max_rel": float(sv["max_rel"]),
         "n_common_species": len(common),
         "n_params": int(n_p),
-        "n_noise_forgiven": int(v["n_noise_forgiven"]),
+        # issue #316 — three numbers, because the audit question needs three.
+        # How much of the tensor is under solver resolution (data); how much of
+        # the verdict rested on the floor (verdict); and whether the floor was
+        # what made this row a PASS (decision).
+        "n_below_noise_floor": int(v["n_below_noise_floor"]),
+        "n_noise_rescued": int(v["n_noise_rescued"]),
+        "noise_decisive": bool(v["noise_decisive"]),
         # issue #328 — the two numbers a vacuous-pass census needs.
         "max_abs_sx": sx_peak,
         "n_resolvable_params": n_resolvable,
@@ -740,6 +751,12 @@ def main() -> int:
                         "n_common_species",
                         "state_passed",
                         "state_max_rel",
+                        # issue #316 — what the solver-resolution floor is doing:
+                        # how much of the tensor sits under it, how much of the
+                        # verdict it rescued, and whether it decided the row.
+                        "n_below_noise_floor",
+                        "n_noise_rescued",
+                        "noise_decisive",
                         # issue #328 — degeneracy witnesses, so a vacuous-pass
                         # census is a query over the report rather than a re-run.
                         "param_cap_effective",

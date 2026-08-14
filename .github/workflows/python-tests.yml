@@ -290,6 +290,73 @@ jobs:
             exit 1
           fi
 
+      # The parity harness's own unit tests (issue #316). Nothing ran these until
+      # now, which is a false green over the code that decides every parity
+      # verdict: `_core/differ.py` is the shared oracle for rr_parity,
+      # bng_parity, copasi_parity and amici_parity alike, and a silent change
+      # there does not produce a failing sweep — it produces a wrong one.
+      #
+      # This is NOT the sweeps. A sweep is hours against a gitignored corpus and
+      # stays a local/manual job; this directory is unit tests of the harness
+      # logic — schema, taxonomy, differ, outcome classification, parameter
+      # alignment — and costs ~3 s. Every dependency it does not have it skips
+      # for: `pytest.importorskip` covers amici and roadrunner, the BNG2.pl
+      # resolver covers PyBioNetGen, and the corpus tests gate on the model file
+      # rather than the directory (GH #192). Measured in a bare environment with
+      # amici and roadrunner both unimportable: 420 passed, 23 skipped, 2.9 s.
+      #
+      # Run on every matrix leg rather than one, because `test_rr_common.py`
+      # exercises the spawn-based worker scheduler, whose behavior is genuinely
+      # platform-dependent.
+      #
+      # BNGSIM_SKIP_AUDIT is deliberately not set: the audit hook lives in
+      # python/tests/conftest.py and its _DECLARED_SKIPS vocabulary does not
+      # cover this suite, so `strict` here would fail on skips nobody has
+      # triaged yet rather than catch anything.
+      - name: Run the parity-harness unit tests
+        id: parity_pytest
+        if: ${{ !github.event.inputs.pytest_args }}
+        run: |
+          set -o pipefail
+          uv run --no-sync python -m pytest -p no:cacheprovider parity_checks/tests \
+            -q --tb=short 2>&1 | tee parity-tests-${{ matrix.label }}.log
+
+      - name: Guard against a false green (parity harness)
+        if: ${{ !github.event.inputs.pytest_args }}
+        run: |
+          set -euo pipefail
+          # Same two-denominator reasoning as the guard above, and the same
+          # reason it needs two. COLLECTED is environment-independent here for
+          # the same structural reason: every skip in this suite is function- or
+          # class-level, so a missing engine moves tests between columns without
+          # changing the total — 443 both fully provisioned and with amici,
+          # roadrunner and BNG2.pl all absent. PASSED is environment-sensitive
+          # (426 provisioned, 420 bare), so its floor is looser.
+          COLLECTED_FLOOR=433
+          PASS_FLOOR=390
+
+          LOG="parity-tests-${{ matrix.label }}.log"
+          summary="$(grep -E '[0-9]+ (passed|failed).* in [0-9.]+s' "$LOG" | tail -1 || true)"
+          if [ -z "$summary" ]; then
+            echo "::error::No pytest summary line — the parity suite did not run to completion."
+            exit 1
+          fi
+          echo "summary: $summary"
+
+          count() { echo "$summary" | grep -oE "[0-9]+ $1" | grep -oE '^[0-9]+' || echo 0; }
+          passed="$(count passed)"
+          collected=$(( passed + $(count skipped) + $(count xfailed) + $(count xpassed) ))
+
+          echo "collected $collected (floor $COLLECTED_FLOOR); passed $passed (floor $PASS_FLOOR)."
+          if [ "$collected" -lt "$COLLECTED_FLOOR" ]; then
+            echo "::error::Only $collected parity tests collected, expected >= $COLLECTED_FLOOR — tests stopped being collected rather than failing."
+            exit 1
+          fi
+          if [ "$passed" -lt "$PASS_FLOOR" ]; then
+            echo "::error::Only $passed parity tests passed, expected >= $PASS_FLOOR — a group of tests turned into skips."
+            exit 1
+          fi
+
       # Conditioned on the pytest step having been reached, not just on always():
       # if the build fails there is no log to upload, and if-no-files-found=error
       # would then report a second, misleading failure on top of the real one.
@@ -301,4 +368,12 @@ jobs:
         with:
           name: python-tests-log-${{ matrix.label }}
           path: python-tests-${{ matrix.label }}.log
+          if-no-files-found: error
+
+      - name: Upload parity pytest log
+        if: always() && steps.parity_pytest.conclusion != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-tests-log-${{ matrix.label }}
+          path: parity-tests-${{ matrix.label }}.log
           if-no-files-found: error

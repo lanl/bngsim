@@ -272,6 +272,39 @@ trajectory. Each row carries its own state verdict, kept out of the headline
 metric so a sensitivity DIFF on a model whose states already disagree is never
 mistaken for a sensitivity-specific bug.
 
+### Reading what the solver-resolution noise floor did
+
+A zero derivative that one engine returns as exact `0.0` and the other as its own
+integration noise gives `|a−b|/max(|a|,|b|) == 1.0` however tiny both numbers
+are, so the shared differ cannot forgive it on scale. The sensitivity job passes
+a per-column floor (`atol/|p_j|`) through `differ`'s `forgive_mask` hook for
+exactly that case.
+
+Three fields say what the floor is doing, and they answer three different
+questions (issue #316):
+
+| field | question | about |
+|---|---|---|
+| `n_below_noise_floor` | how much of the tensor is under solver resolution? | the **data** |
+| `n_noise_rescued` | how many failing cells did the floor, and nothing else, clear? | the **verdict** |
+| `noise_decisive` | would this row have been a `DIFF` without the floor? | the **decision** |
+
+Group on the second and third. The first is dominated by cells the engines
+already agreed on — every cell where both return exactly `0.0` is inside the
+floor — so a run with *no disagreement anywhere* has 100% of its cells there.
+That is what shipped as `n_noise_forgiven` under a name that read as the second
+column; the old name is retired rather than redefined, so a report written under
+either definition is unambiguous.
+
+```bash
+python3 -c "
+import json
+rows = json.load(open('runs/report_sens_full.json'))['results']
+print(sum(1 for r in rows if (r.get('extra') or {}).get('noise_decisive')),
+      'rows where the floor decided the verdict')
+"
+```
+
 ### Declared refusals are `UNSUPPORTED`, not `EXCEPTION`
 
 Forward sensitivity has constructs bngsim *declares* it cannot differentiate, and
