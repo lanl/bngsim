@@ -36,14 +36,17 @@ source builds, the KLU dependency, and optional extras.
 import bngsim
 
 # Load a model (BioNetGen .net/.xml, Antimony, or SBML) and run an ODE simulation
-model = bngsim.Model.from_net_file("model.net")
+model = bngsim.Model.from_net("model.net")
 sim = bngsim.Simulator(model, method="ode")
-result = sim.run(t_end=100.0, n_steps=1000)
+result = sim.run(t_span=(0.0, 100.0), n_points=1001)
 
-result.times          # (1001,) NumPy array of time points
-result["A"]           # trajectory of observable "A"
-result.to_dataframe() # pandas DataFrame of all observables
+result.time               # (1001,) NumPy array of time points
+result.observables["A"]   # trajectory of observable "A"
+result.dataframe          # pandas DataFrame of time + all observables
 ```
+
+Other formats load through the sibling constructors — `Model.from_sbml`,
+`Model.from_antimony`, and their `*_string` variants.
 
 Stochastic (`method="ssa"` / `"psa"`), network-free (NFsim / RuleMonkey), sensitivity
 analysis, steady-state, and events are all covered in the [quickstart](docs/quickstart.md)

@@ -11,12 +11,12 @@ subprocess spawning, no Perl dependency.
 ```python
 import bngsim
 
-model = bngsim.Model.from_net_file("model.net")
+model = bngsim.Model.from_net("model.net")
 sim = bngsim.Simulator(model, method="ode")
-result = sim.run(t_end=100.0, n_steps=1000)
+result = sim.run(t_span=(0.0, 100.0), n_points=1001)
 
-print(result.times)              # (1001,) NumPy array
-print(result["A"])               # trajectory of observable "A"
+print(result.time)                # (1001,) NumPy array
+print(result.observables["A"])    # trajectory of observable "A"
 ```
 
 New here? Start with {doc}`installation` and the {doc}`quickstart`.
