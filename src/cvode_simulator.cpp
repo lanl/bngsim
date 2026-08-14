@@ -2422,11 +2422,35 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
         sens_plist[n_sens_p + i] = ic_plist_sentinel;
     }
 
-    // pbar: |p| (or 1.0 if zero) for param cols; 1.0 for IC cols.
+    // pbar: |p| for param cols; 1.0 for IC cols.
+    //
+    // pbar is a *scale*, not a value: it non-dimensionalizes column iS so the
+    // internal FD probe and the absolute tolerance below can be stated in units
+    // of the parameter. A value that carries no scale therefore falls back to
+    // 1.0 — which is exactly what CVODES itself uses when pbar is NULL.
+    //
+    // Two values carry no scale, and both reach here from real SBML:
+    //
+    //   0     the parameter is at the origin; |p| would make every derived
+    //         quantity a division by zero.
+    //   ±inf  the parameter is unbounded. Genome-scale FBC models spell a
+    //         missing flux bound this way — MODEL1703150000 offers
+    //         `_lp_r_0553_UPPER_BOUND = inf` and `_lp_r_0185_LOWER_BOUND = -inf`
+    //         among its 8566 parameters (issue #326). Left unguarded, pbar picks
+    //         up the inf, atolS below becomes atol·scale/inf = 0 for the entire
+    //         column, and since a fresh parameter column seeds s(0) = 0 the
+    //         initial error weight is 1/(rtol·0 + 0). CVODES rejects the setup
+    //         with "Initial ewtS has component(s) equal to zero (illegal)",
+    //         surfacing as a bare CV_ILL_INPUT (flag −22) that names neither the
+    //         parameter nor the tolerance.
+    //
+    // NaN is folded in by the same test for the same reason — it is not a scale
+    // either, and it would propagate silently into every tolerance rather than
+    // stopping anywhere it could be reported.
     pbar.resize(n_sens);
     for (int i = 0; i < n_sens_p; ++i) {
-        double val = params[sens_param_indices[i]].value;
-        pbar[i] = (val != 0.0) ? std::abs(val) : 1.0;
+        const double val = params[sens_param_indices[i]].value;
+        pbar[i] = (std::isfinite(val) && val != 0.0) ? std::abs(val) : 1.0;
     }
     for (int i = 0; i < n_sens_ic; ++i) {
         pbar[n_sens_p + i] = 1.0;
@@ -2640,13 +2664,29 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     if (!sens.abstolS) {
         throw std::runtime_error("N_VCloneVectorArray failed for sensitivity tolerances");
     }
+    // The floor under the quotient. Zero is not a tolerance CVODES accepts on
+    // the sensitivity axis — a fresh parameter column seeds s(0) = 0, so
+    // rtol·|s| + atolS is exactly 0 there and the initial error weight is a
+    // division by zero, rejected as CV_ILL_INPUT before the first step (issue
+    // #326). pbar is finite and non-zero by construction above, which removes
+    // the way MODEL1703150000 reached that zero, but not the only way: with a
+    // well-scaled state (scale = 1) and a large enough parameter, atol/pbar
+    // underflows past the smallest subnormal from two perfectly finite numbers.
+    // Clamp to the smallest positive normal — numerically inert, since nothing
+    // in a sensitivity lives at 1e-308, and it retires the failure mode rather
+    // than moving it. (The clamp is a backstop, not the working path: it fires
+    // where the tolerance had already collapsed to nothing.)
+    const double kMinAtolS = std::numeric_limits<double>::min();
     sens.atolS_base.resize(static_cast<size_t>(n_sens) * static_cast<size_t>(ns));
     for (int iS = 0; iS < n_sens; ++iS) {
         double *atolS_col = N_VGetArrayPointer(sens.abstolS[iS]);
-        const double pb = (pbar[iS] != 0.0) ? pbar[iS] : 1.0;
+        const double pb = pbar[iS];
         for (int i = 0; i < ns; ++i) {
             const double atol_i = per_species_atol ? atol_v[static_cast<size_t>(i)] : atol;
-            const double a = atol_i * sens_state_scale[i] / pb;
+            double a = atol_i * sens_state_scale[i] / pb;
+            if (!(a > 0.0)) { // also catches NaN
+                a = kMinAtolS;
+            }
             sens.atolS_base[static_cast<size_t>(iS) * ns + i] = a;
             atolS_col[i] = a;
         }
