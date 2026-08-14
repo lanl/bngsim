@@ -582,6 +582,75 @@ class TestStateDependentTrigger:
         with pytest.raises(Exception, match="tangentially"):
             sim.run(t_span=(0, 3), n_points=13, rtol=1e-10, atol=1e-12)
 
+    def test_a_grazing_but_transversal_crossing_is_COMPUTED_not_refused(self):
+        """Issue #322. Small ``|dg/dt|`` is not the same as non-transversality.
+
+        The refusal above is a genuine tangency: ``bulk`` and ``bulk_plus`` both
+        drive at ~5e7 and the residual's rate CANCELS to 0.5 — the terms are
+        large, their sum is not. This model is the opposite shape and used to be
+        refused anyway:
+
+          * ``S`` decays to a tiny clamp threshold, so at the crossing
+            ``f[S] = -k*S ~ -1e-9``. There is ONE term and no cancellation, so
+            ``|flow| == scale`` exactly.
+          * ``F`` is an unrelated fast species at 5e7, so ``||f||inf`` is huge.
+
+        The retired absolute floor was ``eps * sum|dg/dx| * ||f||inf`` ~ 8.8e-8,
+        which exceeds ``|flow| = 1e-9`` — so a perfectly transversal crossing was
+        refused because some OTHER species happened to be fast. That is the
+        BIOMD0000000711 shape (a non-negativity clamp on a slow species in a
+        model with fast dynamics), where the real derivative is large but
+        entirely correct: analytic 3.17424e6 vs finite-difference 3.17411e6.
+
+        dt*/dp IS large here. A large derivative is an answer, and the jump
+        consumes it only as a product with a flow term that carries the same
+        smallness, so the result lands finite.
+        """
+
+        def build():
+            b = ModelBuilder()
+            b.add_parameter("k", 1.0)
+            b.add_parameter("bulk", 5.0e7)
+            s = b.add_species("S", 1.0)
+            f = b.add_species("F", 0.0)
+            b.add_observable("Sobs", [(s, 1.0)])
+            b.add_reaction([s], [], "elementary", "k")  # dS/dt = -k*S
+            b.add_reaction([], [f], "elementary", "bulk")  # unrelated fast species
+            b.add_event("clamp", "Sobs < 1e-9", [(s, "0.0")])
+            return bngsim.Model(_core=b.build())
+
+        m = build()
+        sim = bngsim.Simulator(m, method="ode", sensitivity_params=["k"])
+        r = sim.run(t_span=(0, 30), n_points=61, rtol=1e-11, atol=1e-14)
+        t = np.asarray(r.time)
+        ana = np.asarray(r.sensitivities)[:, 0, 0]  # dS/dk
+        assert np.isfinite(ana).all(), "the grazing jump must land finite"
+
+        # The jump itself has an EXACT expected value, so assert that rather than
+        # finite-differencing it. The clamp sets S := 0, after which dS/dt = -k*0
+        # = 0, so S is identically 0 for every k in a neighbourhood and dS/dk is
+        # exactly 0 from the crossing onward. That is the sharpest possible check
+        # on the #322 property: dt*/dp is enormous here, and if it leaked into the
+        # jump instead of cancelling against f⁺ = 0 the column would be visibly
+        # non-zero. (S = exp(-k t) reaches the 1e-9 threshold at t = ln(1e9)/k.)
+        t_cross = np.log(1e9)
+        after = t > t_cross + 1.0
+        assert after.any()
+        assert np.allclose(ana[after], 0.0, atol=1e-12), (
+            f"post-clamp dS/dk should be exactly 0; got max {np.abs(ana[after]).max():.3e}"
+        )
+
+        # Before the crossing the closed form is exact too: S = exp(-k t) gives
+        # dS/dk = -t*exp(-k t). Compared where it is above the solver's own atol —
+        # a finite difference is NOT usable in the tail here, because S decays to
+        # ~1e-8 and differencing two such values against atol=1e-14 leaves the
+        # quotient only ~1% accurate (this is why the earlier FD form of this
+        # test reported 5.7e-3 while the analytic column was right).
+        closed = -t * np.exp(-t)
+        big = np.abs(closed) > 1e-6
+        rel = np.abs(ana[big] - closed[big]) / np.abs(closed[big])
+        assert rel.max() < 1e-6, f"pre-crossing analytic vs closed form {rel.max():.3e}"
+
     @pytest.mark.parametrize("param", ["a", "b", "c", "d"])
     def test_neuron_matches_finite_differences(self, param):
         """The issue #144 reproduction: AMICI's ``neuron``, all four parameters.
