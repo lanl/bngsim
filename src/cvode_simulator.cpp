@@ -3127,24 +3127,29 @@ void CvodeSimulator::Impl::resume_sens_after_reinit(
 //     failure this path replaces the blanket "state-dependent trigger" refusal
 //     with.
 //
-// Two ways the denominator stops being resolvable, and both are refused:
+// ONE way the denominator stops being resolvable, and it is refused here:
 //
-//   1. It is a near-total *cancellation* of its own terms. dg/dt is assembled
-//      as ∂g/∂t + Σ ∂g/∂x_j·f_j and each factor is a central difference
-//      carrying ~1e-10 relative error, so once the sum falls to 1e-8 of the
-//      scale of the terms it is made of, the quotient is reporting the
-//      differences' noise rather than the trajectory.
-//   2. It is at the *absolute* noise floor of f itself. A component of the RHS
-//      is accumulated from rate terms as large as the largest in the vector, so
-//      it carries roughly ε·‖f‖∞ regardless of its own size (the same scaling
-//      the codegen FD oracle uses). A denominator at that level is a trajectory
-//      that has stopped moving through the trigger surface — the tangential
-//      crossing — and 8× the floor is where it stops being distinguishable.
+//   It is a near-total *cancellation* of its own terms. dg/dt is assembled as
+//   ∂g/∂t + Σ ∂g/∂x_j·f_j and each factor is a central difference carrying
+//   ~1e-10 relative error, so once the sum falls to 1e-8 of the scale of the
+//   terms it is made of, the quotient is reporting the differences' noise
+//   rather than the trajectory.
 //
-// A denominator that is small but neither cancelled nor at the floor is left
-// alone: dt*/dθ really is large there, and a large derivative is an answer.
+// There was a second, ABSOLUTE arm — ε·‖f‖∞ scaled by Σ|∂g/∂x| — retired in
+// issue #322. It is a valid roundoff bound but a badly loose one: ‖f‖∞ ranges
+// over every state, including ones the trigger never touches, so it overstates
+// the true error by ‖f‖∞/|f_support|. On BIOMD0000000711 that was a factor of
+// ~1e16 and it refused a crossing whose derivative is perfectly computable.
+//
+// A denominator that is small but NOT cancelled is now left alone, which is the
+// long-standing rule in the line below applied consistently: dt*/dθ really is
+// large there, and a large derivative is an answer. It is safe to allow because
+// dt*/dθ is never consumed alone — every use multiplies it by a flow term that
+// carries the same smallness, so a grazing crossing cancels back to a finite
+// jump. The residual risk (a product that does NOT cancel) is caught by the
+// post-jump finiteness guard in apply_event_sensitivity_jump, where the overflow
+// is observed rather than predicted.
 static constexpr double kTransversalityRelFloor = 1e-8;
-static constexpr double kTransversalityNoiseFactor = 8.0;
 
 bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, int ns,
                                                 const std::vector<double> &x_minus,
@@ -3266,31 +3271,43 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
     // Transversality: the denominator is dg/dt along the flow.
     double flow = gt;
     double scale = std::fabs(gt);
-    double gx_l1 = 0.0;
-    double f_norm = 0.0;
-    for (int i = 0; i < ns; ++i) {
-        f_norm = std::max(f_norm, std::fabs(f_minus[i]));
-    }
     for (int j : support) {
         const double term = gx[j] * f_minus[j];
         flow += term;
         scale += std::fabs(term);
-        gx_l1 += std::fabs(gx[j]);
     }
-    const double noise_floor =
-        kTransversalityNoiseFactor * std::numeric_limits<double>::epsilon() * gx_l1 * f_norm;
+
+    // What makes a crossing non-transversal is CANCELLATION: terms of some size
+    // summing to ~0. `scale` is exactly Σ|terms|, so |flow| <= relfloor*scale is
+    // that test, and it is the only test made here (issue #322).
+    //
+    // There used to be a second, absolute arm: eps * gx_l1 * max_i|f_i|. That is
+    // a VALID bound on the roundoff in `flow` but a very loose one, because
+    // max_i|f_i| ranges over every state including ones the trigger never
+    // touches. It is inflated by max|f| / |f_support|, so a model with one fast
+    // species poisoned the test for events on every slow species. On
+    // BIOMD0000000711 the true roundoff is ~eps*1.19e-13 ≈ 3e-29 while the bound
+    // computed 2.22e-12 — off by ~1e16, and it refused the crossing.
+    //
+    // Removing it does NOT mean a grazing crossing now yields garbage. `tau` is
+    // never used alone: every consumer multiplies it by a flow term
+    // ((f⁻-f⁺)·tau, f⁺·tau, f⁻·tau), and for a grazing crossing those factors
+    // carry the same smallness as the denominator, so the blow-up cancels and
+    // the jump lands finite. Where it genuinely does not cancel the result is
+    // non-finite, and the caller's post-jump guard refuses there — at the point
+    // where the damage is observable, instead of inferring it from a proxy.
     if (!std::isfinite(flow) || scale == 0.0 ||
-        std::fabs(flow) <= std::max(kTransversalityRelFloor * scale, noise_floor)) {
+        std::fabs(flow) <= kTransversalityRelFloor * scale) {
         std::ostringstream msg;
         msg << "Forward sensitivity: " << subject << " tangentially at t=" << t_evt
             << " — the residual's rate of change along the trajectory is " << flow
-            << ", not resolvable against the " << scale << " scale of its own terms (nor the "
-            << noise_floor
-            << " noise floor of the right-hand side). The crossing time is not differentiable "
-               "there (an arbitrarily small parameter change destroys the crossing or splits it "
-               "in two), so dt*/dp is unbounded and bngsim refuses rather than divide by it "
-               "(issue #144). Move the threshold off the trajectory's turning point, or "
-               "drop sensitivities for this run.";
+            << ", which its own terms (scale " << scale
+            << ") cancel to within " << kTransversalityRelFloor
+            << ". The crossing time is not differentiable there (an arbitrarily small "
+               "parameter change destroys the crossing or splits it in two), so dt*/dp is "
+               "unbounded and bngsim refuses rather than divide by it (issue #144). Move the "
+               "threshold off the trajectory's turning point, or drop sensitivities for this "
+               "run.";
         throw std::runtime_error(msg.str());
     }
 
@@ -3575,6 +3592,38 @@ void CvodeSimulator::Impl::apply_event_sensitivity_jump(
                     acc -= f_plus[k] * tau_c;
                 }
                 N_VGetArrayPointer(yS_guard[c])[k] = acc;
+            }
+        }
+    }
+
+    // Post-jump conditioning guard (issue #322). residual_dtstar now refuses
+    // only genuine non-transversality (cancellation), so a GRAZING crossing —
+    // small |flow|, no cancellation — reaches here with a large ∂t*/∂p. That is
+    // usually harmless: every use of tau above multiplies it by a flow term
+    // ((f⁻-f⁺)·tau, f⁺·tau), and those factors carry the same smallness, so the
+    // ratio lands finite. BIOMD0000000711's non-negativity clamp is exactly this
+    // shape and its jump reduces to the incoming s⁻.
+    //
+    // Where the cancellation does NOT occur the product overflows, and that is
+    // the honest place to refuse: the damage is measured rather than predicted
+    // from a proxy on an intermediate. Checking the OUTPUT also covers every
+    // route into the jump at once, including ones a guard on tau alone would
+    // miss.
+    if (tau_nonzero) {
+        for (int c = 0; c < n_sens; ++c) {
+            const double *col = N_VGetArrayPointer(yS_guard[c]);
+            for (int i = 0; i < ns; ++i) {
+                if (!std::isfinite(col[i])) {
+                    std::ostringstream msg;
+                    msg << "Forward sensitivity: the jump across the event at t=" << t_evt
+                        << " produced a non-finite dx/dp (column " << c << ", species " << i
+                        << "). The crossing time moves with this parameter, and the crossing is "
+                           "grazing enough that ∂t*/∂p overflows the jump rather than cancelling "
+                           "against the flow difference — so the derivative does not exist in any "
+                           "usable sense there (issue #322). Move the threshold off the "
+                           "trajectory's turning point, or drop sensitivities for this run.";
+                    throw std::runtime_error(msg.str());
+                }
             }
         }
     }

@@ -83,6 +83,33 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A grazing-but-transversal event crossing is now computed instead of refused
+  (issue #322).** The transversality guard protecting `dt*/dp = -num/flow` had
+  two arms. The first — near-total cancellation of `flow`'s own terms — is the
+  real definition of non-transversality and is kept. The second was an absolute
+  floor, `eps * sum|dg/dx| * ||f||inf`: a *valid* roundoff bound, but loose by
+  `||f||inf / |f_support|` because it ranged over every state including ones the
+  trigger never touches. One fast species therefore poisoned the test for events
+  on every slow species.
+
+  On `BIOMD0000000711` — a non-negativity clamp on a viral load that decays to
+  ~0 — the true roundoff is ~3e-29 while that bound computed 2.22e-12, off by a
+  factor of ~1e16, and it refused a crossing whose derivative is perfectly
+  computable. With the arm removed the model runs and the answer is right:
+  analytic **3.17424e6** against a finite difference of **3.17411e6**, agreeing
+  to 8.6e-4 over 700 points.
+
+  Removing it is safe because `dt*/dp` is never consumed alone: every use in the
+  jump multiplies it by a flow term (`(f⁻-f⁺)·tau`, `f⁺·tau`) that carries the
+  same smallness, so a grazing crossing cancels back to a finite jump. Where it
+  genuinely does not cancel, a new post-jump finiteness guard refuses — at the
+  point where the overflow is observed, rather than predicted from a proxy on an
+  intermediate.
+
+  `BIOMD0000000285` still refuses, now for its actual cause rather than a
+  mis-scaled floor: two events whose trigger species both start at exactly 0
+  fire spuriously at t=0.
+
 - **`bngsim.UnderSpecifiedModelError` — an under-specified model is a declared
   refusal, not a bug (issue #323).** When a `<parameter>` has no `value` and no
   `<initialAssignment>` yet is referenced by a kineticLaw / rule / event, bngsim
