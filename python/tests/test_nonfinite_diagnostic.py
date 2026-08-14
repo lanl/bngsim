@@ -314,15 +314,22 @@ class TestTheFailureMessage:
     ):
         """The mechanism, asserted rather than described: replaying the witness
         state through the interpreted evaluator is what makes issue #42's
-        ``'ln(...)' returned nan`` appear for a run that never touched the
+        ``bngsim: warning: 'ln(...)'`` appear for a run that never touched the
         interpreted right-hand side.
 
         ``jacobian="analytical"`` so the run is a single integration attempt —
         under the default ``"auto"`` a GH #176 finite-difference retry follows
         the failure and would leave its own warnings on stderr, which would make
         the count prove nothing about where this one came from. Exactly one, and
-        the replay evaluates each function exactly once."""
+        the replay evaluates each function exactly once.
+
+        The *value* is deliberately not asserted. Which state the witness holds
+        is a step-sequence detail and it differs by platform: where `Atot` has
+        gone past 1 the argument is negative and `ln` answers ``nan``, and where
+        a step lands on `Atot == 1` exactly it answers ``-inf``. Both are
+        non-finite, both name the same rate law, and pinning one of them pins the
+        step sequence rather than the diagnostic."""
         capfd.readouterr()
         with pytest.raises(bngsim.SimulationError):
             _run(out_of_domain_net, codegen=True, jacobian="analytical")
-        assert capfd.readouterr().err.count("returned nan") == 1
+        assert capfd.readouterr().err.count("bngsim: warning: 'ln(") == 1
