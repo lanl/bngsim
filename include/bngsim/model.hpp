@@ -370,7 +370,32 @@ class NetworkModel {
     std::vector<double> reported_volume_factors() const;
     std::vector<std::string> observable_names() const;
     std::vector<std::string> function_names() const;
+    // Defining expression of each function, parallel to function_names(). Exists
+    // so the GH #333 guard can test every rate law for a logarithm without
+    // building the whole functional_jacobian_context(), whose function_map runs
+    // to tens of thousands of entries on a genome-scale model and would be paid
+    // on every Model construction.
+    std::vector<std::string> function_expressions() const;
     std::vector<std::string> load_warnings() const;
+
+    // Per-function evaluation expression, parallel to function_names(). Empty
+    // where the value is computed from the declared expression, which is every
+    // function the GH #333 guard did not rewrite.
+    std::vector<std::string> function_eval_expressions() const;
+
+    // Point a function's *value* at a different expression and recompile its
+    // evaluator (GH #333), leaving the declared expression — the one that gets
+    // differentiated — untouched. Returns false if no function by that name
+    // exists; throws if the replacement does not compile, leaving the original
+    // in place.
+    //
+    // The one caller is the Python-side zero-base logarithm guard, which rewrites
+    // ``S^n*ln(S)`` to its limit at ``S == 0``. That rewrite is symbolic and
+    // therefore lives in Python (sympy), but ``.net`` models are built entirely
+    // in C++ via ModelBuilder, so there is no build-time seam to apply it at —
+    // hence a post-build replacement here, which both the interpreted ExprTk
+    // evaluator and the codegen C emitter pick up because both read this field.
+    bool set_function_eval_expression(const std::string &name, const std::string &expression);
 
     // Evaluate all functions and return their current values (for recording in Result).
     std::vector<double> function_values() const;

@@ -1434,6 +1434,31 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                "names a parameter slot holding its evaluated value, which "
                                "``param_is_internal`` flags and ``primary_param_names`` omits "
                                "(issue #227).")
+        .def_property_readonly("function_expressions", &bngsim::NetworkModel::function_expressions,
+                               "Defining expression of each function, parallel to "
+                               "``function_names``. Exists so the issue #333 zero-base "
+                               "logarithm guard can test every rate law for a logarithm "
+                               "without building the whole ``functional_jacobian_context()``, "
+                               "whose function_map runs to tens of thousands of entries on a "
+                               "genome-scale model and would be paid on every Model construction.")
+        .def_property_readonly(
+            "function_eval_expressions", &bngsim::NetworkModel::function_eval_expressions,
+            "Per-function evaluation expression, parallel to ``function_names``. Empty where "
+            "the value is computed from the declared expression, which is every function the "
+            "issue #333 zero-base logarithm guard did not rewrite.")
+        .def("set_function_eval_expression", &bngsim::NetworkModel::set_function_eval_expression,
+             py::arg("name"), py::arg("expression"),
+             "Point a function's VALUE at a different expression and recompile its evaluator "
+             "(issue #333), leaving the declared expression — the one that gets differentiated "
+             "— untouched. Returns False if no function by that name exists; raises if the "
+             "replacement does not compile, leaving the original in place. The one caller is "
+             "the zero-base logarithm guard, which rewrites S^n*ln(S) to its limit at S == 0: "
+             "the rewrite is symbolic and so lives in Python, while .net models are built "
+             "entirely in C++, leaving no build-time seam to apply it at. The two expressions "
+             "stay separate because the guarded form carries a state-dependent condition "
+             "(S == 0) that the forward-sensitivity path reads as a moving state switch and "
+             "refuses (the #52 / #150 machinery), so overwriting the declared law would trade "
+             "a NaN at one point for a declined analytic sensitivity RHS over the whole run.")
         .def_property_readonly("n_events", &bngsim::NetworkModel::n_events)
         .def("event_sensitivity_unsupported_reason",
              &bngsim::NetworkModel::event_sensitivity_unsupported_reason,
@@ -1621,6 +1646,12 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     py::dict fd;
                     fd["name"] = f.name;
                     fd["expression"] = f.expression;
+                    // GH #333: the expression the VALUE is computed from, when it
+                    // differs from the declared one. Empty for every function the
+                    // zero-base logarithm guard did not rewrite. The RHS emitter
+                    // prefers it; every emitter that DIFFERENTIATES keeps reading
+                    // "expression", which is the smooth declared law.
+                    fd["eval_expression"] = f.eval_expression;
                     func_list.append(fd);
                 }
                 d["functions"] = func_list;

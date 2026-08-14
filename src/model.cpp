@@ -2384,6 +2384,50 @@ std::vector<std::string> NetworkModel::function_names() const {
     return names;
 }
 
+std::vector<std::string> NetworkModel::function_expressions() const {
+    std::vector<std::string> exprs;
+    exprs.reserve(impl_->functions.size());
+    for (const auto &f : impl_->functions) {
+        exprs.push_back(f.expression);
+    }
+    return exprs;
+}
+
+std::vector<std::string> NetworkModel::function_eval_expressions() const {
+    std::vector<std::string> exprs;
+    exprs.reserve(impl_->functions.size());
+    for (const auto &f : impl_->functions) {
+        exprs.push_back(f.eval_expression);
+    }
+    return exprs;
+}
+
+bool NetworkModel::set_function_eval_expression(const std::string &name,
+                                                const std::string &expression) {
+    for (auto &f : impl_->functions) {
+        if (f.name != name) {
+            continue;
+        }
+        // Compile before publishing either field, so a replacement that does not
+        // parse leaves the function exactly as it was rather than half-updated.
+        // The superseded evaluator entry stays in the evaluator's expression list
+        // — compile() only appends — which costs one dead slot per replaced
+        // function and keeps every other function's id stable.
+        int compiled = -1;
+        try {
+            compiled = impl_->evaluator->compile(expression);
+        } catch (const std::exception &e) {
+            throw std::runtime_error("set_function_eval_expression: function '" + name +
+                                     "' replacement did not compile: " + expression + " — " +
+                                     e.what());
+        }
+        f.evaluator_id = compiled;
+        f.eval_expression = expression;
+        return true;
+    }
+    return false;
+}
+
 std::vector<double> NetworkModel::function_values() const {
     // Return current evaluated values of all functions.
     // evaluate_functions() must have been called first.

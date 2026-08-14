@@ -379,6 +379,23 @@ struct Function {
     std::string name;       // e.g. "_rateLaw1", "michment"
     std::string expression; // e.g. "k3/(K4+G)"
     int evaluator_id = -1;  // index into expression evaluator array
+
+    // GH #333: the expression the *value* is computed from, when it must differ
+    // from the declared one. Empty means "same as expression", which is every
+    // model that does not multiply a power by a logarithm of its own base.
+    //
+    // The two are separate rather than one rewritten string because the declared
+    // form is what gets *differentiated*, and the guarded form is not
+    // differentiable in the sense bngsim needs: writing the limit as a run-time
+    // branch puts a state-dependent condition (`S == 0`) in the rate law, which
+    // the forward-sensitivity path correctly reads as a moving state switch and
+    // refuses (the #52 / #150 machinery). Overwriting `expression` therefore
+    // traded a NaN at one point for a declined analytic sensitivity RHS over the
+    // whole run. Keeping the declared law smooth lets the derivative emitters go
+    // on differentiating it and apply their own guard (#310, #317) to the result,
+    // while only the value consumers -- the ExprTk evaluator and the codegen C
+    // emitter -- read the branch.
+    std::string eval_expression;
 };
 
 // ─── Stoichiometry entry (sparse) ────────────────────────────────────────────

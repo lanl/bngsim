@@ -877,6 +877,22 @@ def _find_close_paren_strict(expr: str, open_pos: int) -> int:
     return -1
 
 
+def _guarded_rate_law_text(expr: str) -> str:
+    """GH #333 zero-base logarithm guard for one rate law, or ``expr`` unchanged.
+
+    A thin forward to ``bngsim._jacobian.guard_rate_law_text``, imported inside
+    the call because the module dependency runs the other way (``_jacobian``
+    imports this module, so a top-level import here would close the cycle). The
+    guard's own substring gate makes this a cheap no-op for a rate law without a
+    logarithm, which is 97.9% of the corpus.
+    """
+    try:
+        from bngsim._jacobian import guard_rate_law_text
+    except ImportError:  # pragma: no cover - _jacobian is always importable here
+        return expr
+    return guard_rate_law_text(expr) or expr
+
+
 def _extract_tfun_calls(expr: str) -> tuple[str, list[dict]]:
     """Locate every ``tfun(...)`` call inside ``expr`` and replace each with a
     unique placeholder identifier.
@@ -2605,6 +2621,13 @@ def generate_rhs_c(net_path: str) -> str:
         ident_lookup = _build_ident_lookup(param_idx, obs_idx, functions, use_arrays=chunk)
         tf_id = 0
         for _i, (_, name, expr) in enumerate(functions):
+            # GH #333: this emitter builds its C from the .net file rather than
+            # from a loaded Model, so the guard the Model constructor applies to
+            # a rate law's evaluation expression never reaches it. Two RHS
+            # emitters for the same rate law that disagree about the value at a
+            # zero logarithm base is the failure this closes; the rewrite itself
+            # is shared, not reimplemented.
+            expr = _guarded_rate_law_text(expr)
             rewritten, tfun_calls = _extract_tfun_calls(expr)
             if not tfun_calls:
                 c_expr = _translate_expr(expr, ident_lookup)
@@ -6049,7 +6072,13 @@ def _emit_function_lines(
                 f"data->tfun_ctx);  /* {f['name']} */"
             )
             continue
-        c_expr = _translate_expr_to_c(f["expression"], lookup)
+        # GH #333: compute the VALUE from the guarded expression where one exists,
+        # so the compiled C and the interpreted ExprTk evaluator agree about a
+        # rate law at a zero logarithm base. Only the value is switched — every
+        # emitter that differentiates reads ``expression``, the smooth declared
+        # law, because the guarded form's ``S == 0`` branch would otherwise read
+        # as a moving state switch and cost the analytic sensitivity RHS.
+        c_expr = _translate_expr_to_c(f.get("eval_expression") or f["expression"], lookup)
         lines.append(f"    func[{i}] = {c_expr};  /* {f['name']} */")
     return lines
 
