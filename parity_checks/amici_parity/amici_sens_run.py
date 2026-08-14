@@ -326,8 +326,20 @@ def _worker(spec: dict, q) -> None:
         # big models and under-samples small ones. n_species is only knowable
         # here, once the model is loaded.
         eff_cap = asens.budget_cap(len(_m.species_names), spec["param_budget"], spec["param_cap"])
+        # Issue #329 — a parameter name that is also a FUNCTION name is a slot the
+        # engine rewrites from that function's expression before every derivative
+        # evaluation (an <assignmentRule> target, in SBML terms), so bngsim refuses
+        # the column rather than answering the identically-zero one it used to.
+        # Same set the Simulator refuses (`Simulator._function_backed_params`),
+        # spelled the same way so the harness cannot ask for a column the library
+        # would reject nor drop one it would answer.
+        _fn_backed = _m._internal_param_names() & set(_m.function_names)
         shared_ids, bn_by_id, n_cand = asens.shared_sensitivity_params(
-            list(_m.param_names), _m.compartment_size_params, am_ids, cap=eff_cap
+            list(_m.param_names),
+            _m.compartment_size_params,
+            am_ids,
+            cap=eff_cap,
+            bn_function_backed_params=_fn_backed,
         )
         res["param_cap_effective"] = eff_cap
         res["n_species_model"] = len(_m.species_names)

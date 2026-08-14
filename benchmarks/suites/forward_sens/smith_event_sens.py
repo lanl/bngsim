@@ -104,7 +104,14 @@ def main(argv=None):
         return 2
 
     model = bngsim.Model.from_sbml(str(SMITH))
-    pnames = [p for p in model.param_names if p not in TRIGGER_PARAMS]
+    # Issue #329 — Smith declares 442 of its 948 parameters as <assignmentRule>
+    # targets, and bngsim refuses a sensitivity column for one: the engine
+    # rewrites that slot from the rule's own expression before every derivative
+    # evaluation, so no write moves it and the column can only be zero. They were
+    # the bulk of the auto-pick candidate set below, contributing 40 columns of
+    # exact zeros for the norm ranking to sort through.
+    _fn_backed = model._internal_param_names() & set(model.function_names)
+    pnames = [p for p in model.param_names if p not in TRIGGER_PARAMS and p not in _fn_backed]
     p0 = {p: model.get_param(p) for p in model.param_names}
 
     if args.params:

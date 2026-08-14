@@ -140,13 +140,35 @@ anything dropped is named in a warning. Two classes come out:
   every derivative evaluation, so that column is identically zero (issue #227) —
   differentiate the parameters the function's expression reads.
 
-Naming either in `params=[...]` still returns its column — an explicit ask is a
-statement that you want that derivative *on its own terms*, treating the
-parameter as a free axis. That is exactly what
+Naming a derived parameter — or `_V0_<comp>` — in `params=[...]` still returns
+its column: an explicit ask is a statement that you want that derivative *on its
+own terms*, treating the parameter as a free axis. That is exactly what
 `bngsim.jax.differentiable_solve(..., flat=True)` asks for, and why the default
 here (`flat=False`'s list) and that opt-in now agree end to end. (`flat=True`
 leaves out the synthesized slots too, for the same reason: its vector is one
 `set_param` per name, and those writes are refused.)
+
+**A function's slot is the exception, and it raises** (issue #329). "On its own
+terms" needs terms to exist: a derived parameter has them, because
+`set_param(..., force_override=True)` pins it and the pin survives. A function's
+slot has none — the next `evaluate_functions()` overwrites it whatever you do,
+which is why `set_param` refuses it outright and `force_override` does not help.
+So the column can only ever be identically zero, and asking for it by name in
+`sensitivity_params=`, `params=[...]`, or `steady_state(sensitivity_params=...)`
+is refused with a `ValueError` naming the expression to differentiate instead.
+
+This matters most on **assignment-rule-driven SBML**, where the rule targets can
+outnumber the real knobs several to one — 38 of 46 parameters in
+`BIOMD0000000126`, 35 of 38 in `BIOMD0000000266`. Passing `model.param_names`
+wholesale used to return a tensor that was mostly structural zeros with nothing
+marking which columns those were. Pass `model.primary_param_names`, or let
+`params=None` pick it.
+
+The chain rule *through* an `<assignmentRule>` is unaffected: a parameter whose
+only route to the right-hand side is a rule target differentiates normally, since
+bngsim lowers the rule to a function the emitted sensitivity RHS differentiates
+like any other expression. It is the rule's **target** that is not a column, not
+the parameters underneath it.
 
 What is *not* dropped is a constant written as arithmetic — `gamma 1/7`,
 `pi 2*asin(1)`, `c6 ln(2)/120`. Those name nothing, so there is no primary

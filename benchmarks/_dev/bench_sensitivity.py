@@ -58,11 +58,23 @@ def bench_one(net_path, t_end, n_points, n_runs, sens_params=None):
 
 
 def get_param_names(net_path):
-    """Get all parameter names from a .net file."""
+    """Every parameter of a .net file that is a forward-sensitivity coordinate.
+
+    Not quite ``param_names``: a slot a model FUNCTION owns is excluded (issue
+    #329). The engine rewrites such a slot from the function's own expression
+    before every derivative evaluation, so no write moves it, its column can only
+    be identically zero, and bngsim refuses it rather than answering that zero.
+    Empty models and models with no ``functions`` block are unaffected.
+    """
     from bngsim._bngsim_core import NetworkModel
 
     model = NetworkModel.from_net(str(net_path))
-    return list(model.param_names)
+    fn = set(model.function_names)
+    return [
+        n
+        for n, internal in zip(model.param_names, model.param_is_internal, strict=True)
+        if not (internal and n in fn)
+    ]
 
 
 def main():
