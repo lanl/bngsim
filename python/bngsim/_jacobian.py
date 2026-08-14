@@ -596,8 +596,53 @@ def _remove_removable_power_denominators(expr):
     return bottom_up(expr, rewrite_mul)
 
 
+def _is_log_carrier(node, base, sp):
+    """Is ``node``'s entire dependence on ``base`` confined to ``log`` arguments?
+
+    That is the test for "this factor grows at most like a power of ``ln(base)``
+    as ``base → 0+``". A *polynomial* in ``log(…base…)`` over ``base``-free
+    coefficients is ``O(ln(base)^m)`` for some finite ``m``, which ``base^exp``
+    with ``exp > 0`` dominates — so the product tends to ``0``.
+
+    A factor that mentions ``base`` *outside* a ``log`` is not a carrier and is
+    left strictly alone: ``1/(base + K)`` is finite at ``base == 0`` and needs no
+    help, while ``1/base`` is a genuine pole whose divergence is not logarithmic
+    and which a blanket ``0`` would silently swallow.
+
+    The test is "blank the logarithms, then check what is left", in two parts,
+    and both parts are load-bearing.
+
+    *``base`` must not survive the blanking.* That has to be asked of the whole
+    expression rather than by walking ``node.args``, because ``Mul``/``Add``
+    match *sub-products*: ``thr/(alpha*k1thr)`` contains ``thr/k1thr`` while none
+    of its three arguments does. A structural recursion bottoms out reporting "no
+    ``base`` below this point" and calls an ordinary rational factor logarithmic
+    — which misfires the guard onto expressions holding no logarithm at all, as
+    BIOMD0000000066 and BIOMD0000000247 demonstrate.
+
+    *What is left must be a polynomial in the blanked logarithm.* A polynomial of
+    degree ``m`` is ``O(|ln base|^m)``, which is the growth the limit argument
+    needs. "``base`` appears only under a ``log``" does **not** on its own imply
+    it: ``exp`` inverts the logarithm, so ``exp(log(X)/g)`` is ``X^(1/g)`` — a
+    power of ``base``, not a logarithm of one (BIOMD0000000613 writes a Hill
+    exponent this way). Left unchecked, that reasoning would answer ``0`` for
+    ``base^n·exp(-2·ln base)`` = ``base^(n-2)``, which is ``+inf`` at ``base = 0``
+    for ``n < 2``. Non-polynomial dependence is declined instead: ``1/ln(base)``
+    and ``1/(a + ln base)`` tend to ``0`` rather than diverging, so they never
+    produced the NaN this guard exists to remove, and declining them costs a
+    branch that was never needed.
+    """
+    if not node.has(sp.log) or not node.has(base):
+        return False
+    placeholder = sp.Dummy("_log")
+    stripped = node.replace(lambda e: isinstance(e, sp.log), lambda e: placeholder)
+    if stripped.has(base):
+        return False
+    return bool(stripped.is_polynomial(placeholder))
+
+
 def _guard_exponent_log_at_zero(expr):
-    """Guard the ``base**exp * log(base)`` form against ``base == 0`` (GH #310).
+    """Guard ``base**exp · (logarithmic in base)`` against ``base == 0`` (GH #310).
 
     Differentiating a Hill/power law w.r.t. its **exponent** produces
     ``d/dn base^n = base^n · ln(base)``. On the non-negative concentration domain
@@ -607,8 +652,12 @@ def _guard_exponent_log_at_zero(expr):
     ``∂f/∂p`` is enough to poison that parameter's whole sensitivity column, or
     to defeat the corrector outright when it is the only column.
 
-    So each ``Pow(base, exp) · log(base)`` pair inside a ``Mul`` is rewritten to
-    the limit at ``base == 0``:
+    The limit argument does not depend on the logarithm appearing exactly once.
+    ``base^exp`` with ``exp > 0`` decays faster than *any* power of ``ln(base)``
+    diverges, so for each ``Mul`` this collects the ``Pow(base, exp)`` factor
+    together with every sibling factor whose dependence on ``base`` is confined to
+    ``log`` arguments (:func:`_is_log_carrier`) and rewrites that
+    sub-product to its limit at ``base == 0``:
 
     * ``exp`` a positive number → ``Piecewise((0, Eq(base, 0)), (raw, True))``,
       the branch decided at build time;
@@ -617,6 +666,18 @@ def _guard_exponent_log_at_zero(expr):
     * ``exp`` a non-positive number → left alone. ``base^exp·ln(base)`` has no
       finite limit there (``base^exp`` is already ``inf``/``1``), so a NaN is the
       honest answer and a blanket ``0`` would paper over a real singularity.
+
+    Taking the whole logarithmic sub-product rather than one sibling ``log`` node
+    is what closes GH #317. A single-``log`` pairing misses every shape where the
+    divergence is spelled differently — ``ln(base)^2`` from a rate law that itself
+    contains a logarithm, ``(a + ln base)`` from the product rule, ``ln(base/K)``
+    whose argument is not structurally ``base`` — each of which a *first-order*
+    ``sp.diff`` of ordinary SBML produces, and each of which then NaNs at
+    ``base == 0`` with the pairing guard sitting right beside it.
+
+    Siblings that mention ``base`` outside a ``log``, and siblings free of ``base``
+    altogether, stay outside the ``Piecewise`` and multiply through as before, so a
+    singularity that is not this one still reports itself.
 
     Only ``base == 0`` is caught, never ``base < 0``: a negative base under a
     fractional exponent is a genuine NaN and stays one.
@@ -632,22 +693,29 @@ def _guard_exponent_log_at_zero(expr):
     def rewrite_mul(node):
         if not isinstance(node, sp.Mul):
             return node
+        # Every carrier holds a logarithm, so a Mul without one can never be
+        # rewritten. Answering that in one subtree walk keeps the scan below off
+        # the overwhelming majority of nodes (2331 of 124132 corpus expressions
+        # contain a logarithm at all).
+        if not node.has(sp.log):
+            return node
 
         factors = list(node.args)
-        absorbed: set[int] = set()
-        for log_i, factor in enumerate(factors):
-            if log_i in absorbed:
-                continue
-            if not (isinstance(factor, sp.log) and len(factor.args) == 1):
-                continue
-            base = factor.args[0]
-            # ``log(2)`` and friends are constant and finite; nothing to guard.
-            if base.is_number or base.is_positive:
-                continue
+        guarded = False
+        changed = True
+        while changed:
+            changed = False
             for pow_i, power_factor in enumerate(factors):
-                if pow_i in absorbed or not isinstance(power_factor, sp.Pow):
+                if not isinstance(power_factor, sp.Pow):
                     continue
-                if power_factor.base != base:
+                base = power_factor.base
+                # ``2^x·log(2)`` and friends are constant and finite at every
+                # point of the domain; nothing to guard.
+                if base.is_number or base.is_positive:
+                    continue
+                # A base that is itself a logarithm cannot be tested for by
+                # :func:`_is_log_carrier`, which blanks logarithms to look for it.
+                if base.has(sp.log):
                     continue
                 exp = power_factor.exp
                 if exp.is_number:
@@ -656,14 +724,25 @@ def _guard_exponent_log_at_zero(expr):
                     cond = sp.Eq(base, 0)
                 else:
                     cond = sp.And(sp.Eq(base, 0), exp > 0)
-                raw = sp.Mul(power_factor, factor, evaluate=False)
+
+                carriers = [
+                    i
+                    for i, factor in enumerate(factors)
+                    if i != pow_i and _is_log_carrier(factor, base, sp)
+                ]
+                if not carriers:
+                    continue
+
+                raw = sp.Mul(power_factor, *(factors[i] for i in carriers), evaluate=False)
+                absorbed = set(carriers)
                 factors[pow_i] = sp.Piecewise((sp.Integer(0), cond), (raw, True))
-                absorbed.add(log_i)
+                factors = [f for i, f in enumerate(factors) if i not in absorbed]
+                guarded = changed = True
                 break
 
-        if not absorbed:
+        if not guarded:
             return node
-        return sp.Mul(*(f for i, f in enumerate(factors) if i not in absorbed), evaluate=False)
+        return sp.Mul(*factors, evaluate=False)
 
     return bottom_up(expr, rewrite_mul)
 

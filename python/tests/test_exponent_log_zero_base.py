@@ -23,6 +23,15 @@ is ``0`` only for a *positive* exponent; at ``n <= 0`` the expression has no
 finite limit and a NaN is the honest report, so a numeric non-positive exponent
 is left alone and a symbolic one is decided at run time against its current
 value. A negative base is likewise untouched: that NaN is real.
+
+GH #317 is the same NaN reached by a differently-spelled divergence. The limit
+argument never depended on the logarithm appearing exactly once — ``base^exp``
+with ``exp > 0`` decays faster than *any* power of ``ln(base)`` diverges — but
+the first implementation paired one ``log`` *node* with a ``Pow`` sibling, so
+``ln(base)^2``, ``(a + ln base)`` and ``ln(base/K)`` all walked past it and
+NaN'd with the guard sitting beside them. The guard now takes the whole
+logarithmic sub-product of each ``Mul``; ``TestShapesBeyondOneSiblingLog``
+covers each shape, and ``TestWhatStaysOutside`` pins what it still declines.
 """
 
 from __future__ import annotations
@@ -149,6 +158,197 @@ class TestTheGuard:
         assert _guard_exponent_log_at_zero(expr) == expr
 
 
+# ─── GH #317: divergences the sibling pairing could not see ────────────────
+
+
+def _at(expr, **values):
+    """Evaluate ``expr`` numerically, with the ``0·inf`` warnings quieted."""
+    import sympy as sp
+
+    names = sorted(values, key=str)
+    f = sp.lambdify([sp.Symbol(k) for k in names], expr, "numpy")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return f(*(values[k] for k in names))
+
+
+class TestShapesBeyondOneSiblingLog:
+    """Each of these is ``base^exp · (something logarithmic in base)`` at
+    ``base == 0``, so each has limit ``0`` for ``exp > 0`` by exactly the
+    argument #310 made. The first implementation matched only a bare ``log``
+    node sitting beside the ``Pow`` in the same ``Mul``, and so answered NaN for
+    every one of them.
+
+    Every shape here is what a *first-order* ``sp.diff`` hands the emitter for
+    an ordinary rate law — no ``factor()``/``collect()``/``simplify()`` involved.
+    """
+
+    def test_a_squared_logarithm(self):
+        """``d/dn`` of a rate law that itself contains ``ln S``. The ``log`` is
+        wrapped in a ``Pow``, so an ``isinstance(factor, sp.log)`` test never
+        sees it."""
+        import sympy as sp
+
+        x, n, v = sp.symbols("x n v")
+        expr = sp.diff(v * x**n * sp.log(x), n)
+        assert expr == v * x**n * sp.log(x) ** 2  # the shape under test
+
+        assert np.isnan(_at(expr, x=0.0, n=3.0, v=1.5))
+        assert _at(_guard_exponent_log_at_zero(expr), x=0.0, n=3.0, v=1.5) == 0.0
+
+    def test_a_logarithm_inside_a_sum_factor(self):
+        """A hand-factored log difference: the ``log`` sits inside an ``Add``
+        factor rather than beside the ``Pow``. ``bottom_up`` does descend into
+        the ``Add``, but each summand is then a ``Mul`` with no ``Pow`` of the
+        base in it, so the pairing had nothing to pair."""
+        import sympy as sp
+
+        x, n, K = sp.symbols("x n K")
+        expr = sp.Mul(sp.Pow(x, n), sp.log(x) - sp.log(K), evaluate=False)
+
+        assert np.isnan(_at(expr, x=0.0, n=3.0, K=2.0))
+        assert _at(_guard_exponent_log_at_zero(expr), x=0.0, n=3.0, K=2.0) == 0.0
+
+    def test_a_logarithm_whose_argument_is_not_structurally_the_base(self):
+        """``ln(S/K)`` diverges at ``S = 0`` just as ``ln S`` does, but its
+        argument is ``S/K``, which is not structurally equal to the ``Pow``'s
+        base ``S``. The old equality test at the pairing step rejected it."""
+        import sympy as sp
+
+        x, n, K, v = sp.symbols("x n K v")
+        expr = sp.diff(v * x**n * sp.log(x / K), n)
+
+        assert np.isnan(_at(expr, x=0.0, n=3.0, K=5.0, v=1.5))
+        assert _at(_guard_exponent_log_at_zero(expr), x=0.0, n=3.0, K=5.0, v=1.5) == 0.0
+
+    def test_the_product_rule_leaves_a_sum_beside_the_pow(self):
+        """The shape a plain first-order derivative actually produces for
+        ``v·S^n·(a + ln S)`` — a ``log`` sibling *and* an ``Add`` sibling. The
+        pairing guard fired here, absorbed the bare ``log``, and still returned
+        NaN because the ``Add`` went on diverging next to the ``0``."""
+        import sympy as sp
+
+        x, n, v, a = sp.symbols("x n v a")
+        expr = sp.diff(v * x**n * (a + sp.log(x)), n)
+
+        assert np.isnan(_at(expr, x=0.0, n=3.0, v=1.5, a=0.7))
+        assert _at(_guard_exponent_log_at_zero(expr), x=0.0, n=3.0, v=1.5, a=0.7) == 0.0
+
+    def test_every_logarithmic_sibling_lands_in_one_piecewise(self):
+        """Absorbing the siblings one at a time would nest a ``Piecewise`` per
+        ``log`` and pay a branch for each. One product, one branch — and nothing
+        logarithmic in the base may be left multiplying outside it, which is
+        precisely the bug the previous test describes."""
+        import sympy as sp
+
+        x, n, v, a = sp.symbols("x n v a")
+        guarded = _guard_exponent_log_at_zero(sp.diff(v * x**n * (a + sp.log(x)), n))
+
+        branches = [e for e in sp.preorder_traversal(guarded) if isinstance(e, sp.Piecewise)]
+        assert len(branches) == 1
+        raw = branches[0].args[1][0]
+        assert raw == x**n * (a + sp.log(x)) * sp.log(x)
+        # ...and the only factor left outside is the base-free `v`.
+        assert set(guarded.args) - {branches[0]} == {v}
+
+    def test_a_second_base_in_the_same_product_is_guarded_too(self):
+        """Two independent powers, each with its own logarithm, get their own
+        branch: absorbing the first must not end the scan."""
+        import sympy as sp
+
+        x, y, n, m = sp.symbols("x y n m")
+        expr = sp.Mul(sp.Pow(x, n), sp.Pow(y, m), sp.log(x), sp.log(y), evaluate=False)
+        guarded = _guard_exponent_log_at_zero(expr)
+
+        branches = [e for e in sp.preorder_traversal(guarded) if isinstance(e, sp.Piecewise)]
+        assert len(branches) == 2
+        assert _at(guarded, x=0.0, y=2.0, n=3.0, m=3.0) == 0.0
+        assert _at(guarded, x=2.0, y=0.0, n=3.0, m=3.0) == 0.0
+
+
+class TestWhatStaysOutside:
+    """The generalization widens what counts as "logarithmic in the base", and
+    must not widen into swallowing singularities that are real. So a sibling
+    qualifies only when blanking the logarithms removes ``base`` from it *and*
+    leaves a polynomial in those logarithms — the second half because ``exp``
+    inverts a logarithm, which
+    :meth:`test_an_exponential_undoes_a_logarithm_and_is_not_a_carrier` is
+    about."""
+
+    def test_a_pole_beside_the_guard_is_still_reported(self):
+        """``1/(S + K)`` mentions the base outside a logarithm. It is finite at
+        ``S = 0`` and needs no help, so it stays outside the ``Piecewise`` and
+        multiplies through — which means that when it is *not* finite (``K = 0``
+        too), the NaN it produces still reaches the caller instead of being
+        rewritten to a confident zero."""
+        import sympy as sp
+
+        x, n, K = sp.symbols("x n K")
+        expr = sp.Mul(sp.Pow(x, n), sp.log(x), sp.Pow(x + K, -1), evaluate=False)
+        guarded = _guard_exponent_log_at_zero(expr)
+
+        assert _at(guarded, x=0.0, n=3.0, K=2.0) == 0.0  # this guard's own case
+        assert np.isnan(_at(guarded, x=0.0, n=3.0, K=0.0))  # somebody else's pole
+
+    def test_an_exponential_undoes_a_logarithm_and_is_not_a_carrier(self):
+        """``exp(ln(u)/k)`` is ``u^(1/k)`` — a *power* of the base wearing a
+        logarithm's clothes. So "the base appears only under a ``log``" is not
+        on its own enough to call a factor logarithmic, and the test is that
+        what remains after blanking the logarithms is a polynomial in them.
+
+        The first expression is how BIOMD0000000613 writes a Hill exponent, and
+        it is what caught this: reading it as a carrier is *answerable* there
+        (the product really is ``OC0^(gam+1)·c``), so it passes unnoticed. The
+        second is the same construction where the answer is not ``0`` at all —
+        at ``k = -1`` it is ``x^(n-2)``, which diverges at ``x = 0`` for
+        ``n < 2`` and must keep saying so.
+        """
+        import sympy as sp
+
+        x, n, k, A, T = sp.symbols("x n k A T")
+
+        hill = sp.Mul(
+            sp.Pow(x, n), sp.exp(sp.log(A * sp.Pow(x, n) / T - sp.Pow(x, n)) / n), evaluate=False
+        )
+        assert _guard_exponent_log_at_zero(hill) == hill
+
+        divergent = sp.Mul(sp.Pow(x, n), sp.exp(sp.log(sp.Pow(x, 2)) / k), evaluate=False)
+        assert _guard_exponent_log_at_zero(divergent) == divergent
+
+    def test_a_nonpositive_exponent_keeps_its_nan_under_a_power_of_log(self):
+        """``ln(S)^2/S^2`` diverges; widening the ``log`` side must not weaken
+        the exponent-sign test that #310 put on the ``Pow`` side."""
+        import sympy as sp
+
+        x = sp.Symbol("x")
+        expr = sp.Mul(sp.Pow(x, -2), sp.Pow(sp.log(x), 2), evaluate=False)
+        assert _guard_exponent_log_at_zero(expr) == expr
+
+    def test_a_nonzero_base_is_still_untouched(self):
+        """Off the singularity the guard is a branch not taken, and the raw
+        branch holds the same factors it always did.
+
+        Not asserted bit-for-bit: pulling the logarithmic factors into the
+        ``Piecewise`` re-associates the product, so the last ulp can move. That
+        is the whole of the numerical difference away from ``base == 0`` — a few
+        parts in 1e16, against a guard that exists to replace a NaN.
+        """
+        import sympy as sp
+
+        x, n, K, v, a = sp.symbols("x n K v a")
+        for expr in (
+            sp.diff(v * x**n * sp.log(x), n),
+            sp.diff(v * x**n * sp.log(x / K), n),
+            sp.diff(v * x**n * (a + sp.log(x)), n),
+        ):
+            guarded = _guard_exponent_log_at_zero(expr)
+            for xv in (1e-8, 0.5, 2.0, 37.0):
+                full = dict(x=xv, n=3.0, K=5.0, v=1.5, a=0.7)
+                point = {k: full[k] for k in (str(s) for s in expr.free_symbols)}
+                np.testing.assert_allclose(
+                    _at(guarded, **point), _at(expr, **point), rtol=1e-15, atol=0
+                )
+
+
 # ─── the emitters ──────────────────────────────────────────────────────────
 
 
@@ -173,6 +373,28 @@ class TestBothEmitters:
         s = sympy_to_exprtk(expr)
         assert s is not None
         assert "if(((x == 0) and (n > 0)),0,((x)^(n))*log(x))" in s
+        assert "Eq(" not in s
+
+    def test_both_emitters_carry_the_squared_logarithm_into_the_branch(self):
+        """GH #317 through the emitters: the ``log`` is inside a ``Pow`` here,
+        and what each backend must show is the *whole* product under one test,
+        not a guarded factor multiplied by an unguarded divergence."""
+        import sympy as sp
+
+        x, n, v = sp.symbols("x n v")
+        expr = sp.diff(v * x**n * sp.log(x), n)  # v*x**n*log(x)**2
+
+        c = sympy_to_c(expr, lambda s: {"x": "y[0]", "n": "p[0]", "v": "p[1]"}.get(s))
+        assert c is not None
+        assert (
+            "((y[0] == 0.0) && (p[0] > 0.0))) ? (0.0) : "
+            "(pow(y[0], p[0])*((log(y[0]))*(log(y[0]))))" in c
+        )
+        assert "Eq(" not in c
+
+        s = sympy_to_exprtk(expr)
+        assert s is not None
+        assert "if(((x == 0) and (n > 0)),0,((x)^(n))*((log(x))^(2)))" in s
         assert "Eq(" not in s
 
 
@@ -243,3 +465,85 @@ class TestTheSolve:
             rtol=1e-6,
             atol=1e-9,
         )
+
+
+# ─── why #317 stops at the emitter ─────────────────────────────────────────
+
+# Every #317 shape needs a logarithm in the rate law itself. A first-order
+# derivative introduces at most one `ln(g)` per product-rule term — that is all
+# `d/dn g^n = g^n·ln(g)` can contribute — so a log-free law cannot produce
+# `ln(base)^2`, `(a + ln base)` or `ln(base/K)` beside the power no matter how
+# sympy associates the result. (Measured: over 1644 corpus models and 117842
+# first-order derivatives, the generalized guard and the old sibling pairing
+# emit the same expression for every one.)
+#
+# But a rate law that *does* contain `ln(S)` fails in the RHS at `S = 0`, before
+# any derivative is consulted: the value path never passes through the emitters
+# that apply this guard. That is GH #333, and it is what keeps #317 latent.
+LOG_RATE_LAW = HILL_ZERO_IC.replace(
+    "1 activate() vmax*Atot^n/(KM^n + Atot^n)",
+    "1 activate() vmax*Atot^n*ln(Atot)",
+)
+
+
+class TestWhyThisStaysOutOfReachEndToEnd:
+    @pytest.fixture
+    def log_net(self, tmp_path):
+        net = tmp_path / "logpow.net"
+        net.write_text(LOG_RATE_LAW)
+        return net
+
+    def test_the_derivative_of_that_rate_law_is_guarded(self, log_net):
+        """The half of it that *is* fixed, taken from the model's own rate-law
+        text rather than a hand-built expression: `∂/∂n` of `vmax·S^n·ln S` is
+        the ``ln(S)^2`` shape, and through bngsim's own converter it now answers
+        the limit at ``S = 0`` instead of NaN."""
+        import sympy as sp
+        from bngsim._jacobian import _exprtk_to_sympy
+
+        expr = _exprtk_to_sympy("vmax*Atot^n*log(Atot)")
+        deriv = sp.diff(expr, sp.Symbol("n"))
+        assert (
+            deriv
+            == sp.Symbol("vmax")
+            * sp.Symbol("Atot") ** sp.Symbol("n")
+            * sp.log(sp.Symbol("Atot")) ** 2
+        )
+
+        point = {"Atot": 0.0, "n": 3.0, "vmax": 1.5}
+        assert np.isnan(_at(deriv, **point))
+        assert _at(_guard_exponent_log_at_zero(deriv), **point) == 0.0
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=bngsim.SimulationError,
+        reason=(
+            "GH #333: the RHS value path applies no zero-base log guard, so "
+            "vmax*Atot^n*ln(Atot) is NaN at Atot = 0 and CVODE fails at the "
+            "first call. When #333 lands this XPASSes: drop the marker and this "
+            "becomes the end-to-end case for #317."
+        ),
+    )
+    def test_the_solve_completes_and_the_exponent_column_is_finite(self, log_net):
+        """`lim_{S→0+} vmax·S^n·ln S = 0`, and an initial condition of `1e-30`
+        rather than `0.0` runs this same model to completion — so the failure is
+        at the single point where the limit exists, not on a neighbourhood."""
+        model = bngsim.Model.from_net(log_net)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
+        result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
+
+        sens = np.asarray(result.sensitivities)[:, :, 0]
+        assert np.all(np.isfinite(sens))
+        assert np.max(np.abs(sens)) > 1e-3
+
+    def test_the_same_law_off_the_singularity_already_works(self, tmp_path):
+        """The control for the xfail above: one floating-point value apart, and
+        the whole solve is fine. Keeps that xfail honest — it is pinning the
+        exact zero, not a model that is broken for some unrelated reason."""
+        net = tmp_path / "logpow_eps.net"
+        net.write_text(LOG_RATE_LAW.replace("1 A() 0.0", "1 A() 1e-30"))
+
+        model = bngsim.Model.from_net(net)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
+        result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
+        assert np.all(np.isfinite(np.asarray(result.sensitivities)))
