@@ -3301,8 +3301,8 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
         std::ostringstream msg;
         msg << "Forward sensitivity: " << subject << " tangentially at t=" << t_evt
             << " — the residual's rate of change along the trajectory is " << flow
-            << ", which its own terms (scale " << scale
-            << ") cancel to within " << kTransversalityRelFloor
+            << ", which its own terms (scale " << scale << ") cancel to within "
+            << kTransversalityRelFloor
             << ". The crossing time is not differentiable there (an arbitrarily small "
                "parameter change destroys the crossing or splits it in two), so dt*/dp is "
                "unbounded and bngsim refuses rather than divide by it (issue #144). Move the "
