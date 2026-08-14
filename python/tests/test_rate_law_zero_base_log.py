@@ -98,6 +98,22 @@ class TestTheRewrite:
         assert guard_rate_law_text("vmax*ln(KM)") is None
         assert guard_rate_law_text("vmax*log10(Atot)") is None
 
+    def test_the_rewrite_keeps_the_instrumented_spelling_of_the_logarithm(self):
+        """``ln`` and ``log`` are the same function to ExprTk and not to bngsim:
+        ``ln`` is a registered adapter carrying the ``NonFiniteWarningSet``
+        (issue #42's follow-up), ``log`` is ExprTk's uninstrumented built-in.
+
+        Every rate law this rewrites was declared with ``ln``, so emitting
+        ``log`` traded the model's own non-finite diagnostic away for free — and
+        that warning is the only thing that names the rate law when a solve later
+        dies on a bare CVODE flag. The C emitters translate either spelling to
+        C's ``log``, so this costs the compiled path nothing.
+        """
+        guarded = guard_rate_law_text("vmax*Atot^n*ln(Atot)")
+        assert guarded is not None
+        assert "ln(" in guarded
+        assert "log(" not in guarded
+
     def test_an_existing_conditional_is_left_alone(self):
         """Two reasons, and either is sufficient. It makes the pass idempotent —
         re-running it over text this rewrite produced cannot wrap the guard
@@ -148,6 +164,17 @@ class TestTheModel:
         with np.errstate(divide="ignore", invalid="ignore"):
             below = model._core._eval_functions(0.0, [-1e-9, 4.0, 1.0])
         assert np.isnan(below["logterm"])
+
+    def test_a_negative_base_still_reports_itself(self, log_net, capfd):
+        """...and it must still say so. A solve that wanders below zero fails
+        with a bare CVODE flag naming no species and no rate law, so this warning
+        is the only thread back to the cause — which is exactly why the rewrite
+        may not quietly move the call off the instrumented ``ln`` adapter."""
+        model = bngsim.Model.from_net(log_net)
+        capfd.readouterr()  # drop anything the load itself printed
+        with np.errstate(divide="ignore", invalid="ignore"):
+            model._core._eval_functions(0.0, [-1e-9, 4.0, 1.0])
+        assert "ln(-1e-09)" in capfd.readouterr().err
 
 
 # ─── both RHS emitters ─────────────────────────────────────────────────────

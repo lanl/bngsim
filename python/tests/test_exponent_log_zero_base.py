@@ -482,10 +482,18 @@ class TestTheSolve:
 # this guard. That was GH #333 and it is fixed — `test_rate_law_zero_base_log.py`
 # holds its contract, and a solve now runs from `S = 0` on both engines.
 #
-# What still blocks the end-to-end case is narrower and is GH #336: a *forward
-# sensitivity* run on such a model at exactly `S = 0` fails in the corrector
-# (`flag=-4`) for every parameter, including ones the logarithm does not touch.
-# So the value at zero is reachable now and the derivative at zero is not.
+# What still blocks the end-to-end case is not a zero base at all. Adding
+# sensitivity columns changes the error control and so the step selection, and
+# the resulting sequence evaluates this rate law at `S < 0`, where `ln` is
+# genuinely undefined and #310's contract keeps the NaN. The corrector then
+# collapses (`flag=-4`, at `t = 0`, independent of tolerance). Replacing
+# `ln(S)` with `ln(abs(S))` — identical for every `S > 0` — makes the same run
+# complete, which is what identifies the negative argument as the cause.
+#
+# So this is the model leaving its own domain, which bngsim evaluates literally
+# by policy, and GH #336 is now what it costs the user: a bare CVODE flag naming
+# no species and no rate law, because the codegen path a sensitivity run forces
+# carries no non-finite diagnostic.
 LOG_RATE_LAW = HILL_ZERO_IC.replace(
     "1 activate() vmax*Atot^n/(KM^n + Atot^n)",
     "1 activate() vmax*Atot^n*ln(Atot)",
@@ -537,20 +545,23 @@ class TestWhatStillBlocksTheEndToEndCase:
         strict=True,
         raises=bngsim.SimulationError,
         reason=(
-            "GH #336: the RHS is finite now (#333), and the plain solve above "
-            "passes, but a forward-sensitivity run at exactly Atot = 0 still "
-            "fails in the corrector with flag=-4 — for every parameter, "
-            "including ones the logarithm does not touch. When #336 lands this "
-            "XPASSes: drop the marker and this becomes the end-to-end case for "
-            "#317, since d/dn of vmax*S^n*ln(S) is the ln(S)^2 shape and "
-            "evaluating it AT S = 0 is the only way to reach that guard through "
-            "a solve rather than through the emitter."
+            "The RHS is finite now (#333) and the plain solve above passes, but "
+            "the sensitivity columns move the step selection onto a sequence "
+            "that evaluates this rate law at Atot < 0, where ln is genuinely "
+            "undefined — so the corrector collapses. That is the model leaving "
+            "its domain, not a guard bngsim is missing, and it is not this "
+            "file's contract to assert. Kept as a strict xfail because it is "
+            "still the only route to #317's ln(S)^2 shape through a solve "
+            "rather than through the emitter: whatever makes it pass — GH #336's "
+            "diagnostic, a non-negativity constraint, or a modeller writing "
+            "ln(abs(S)) — should drop this marker and keep the assertion."
         ),
     )
     def test_the_solve_completes_and_the_exponent_column_is_finite(self, log_net):
-        """`lim_{S→0+} vmax·S^n·ln S = 0`, and an initial condition of `1e-30`
-        rather than `0.0` runs this same model to completion — so the failure is
-        at the single point where the limit exists, not on a neighbourhood."""
+        """The end-to-end case #317 cannot currently reach. `ln(abs(Atot))` in
+        place of `ln(Atot)` — identical for every `Atot > 0` — makes this same
+        run complete, which is what identifies the negative argument rather than
+        the zero one as what stops it."""
         model = bngsim.Model.from_net(log_net)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["n"])
         result = sim.run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
