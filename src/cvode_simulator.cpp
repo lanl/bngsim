@@ -1422,6 +1422,20 @@ struct CvodeSimulator::Impl {
                                       const std::vector<std::vector<double>> &s_minus,
                                       SensitivityState &sens, bool at_run_start = false);
 
+    // Sync the model's live evaluation state to (t, x): species concentrations,
+    // observables, functions, and the rateOf buffer a trigger may read (GH
+    // #106). Every finite difference of a trigger residual is taken through
+    // this, so all of them see the same picture of the model.
+    void sync_model_at(double t, const double *x, int ns);
+
+    // dg/dt along the flow at (t, x) — the denominator of dt*/dθ, and the test
+    // for whether a trajectory LEAVES a threshold it starts on (issue #340).
+    // Fills `gx_out` (∂g/∂x, sized ns, zero off `support`) and `scale_out`
+    // (Σ|term|), and leaves the model synced at (t, x).
+    double residual_flow(int gidx, const std::vector<int> &support, double t, int ns,
+                         const std::vector<double> &x, const std::vector<double> &f,
+                         std::vector<double> &gx_out, double &scale_out);
+
     // ∂t*/∂θ at a located crossing of the surface g = 0, by the implicit
     // function theorem (issue #144, reused for the rate-law switches of issue
     // #150). `gidx`/`support` are the residual and the species a difference of
@@ -3389,6 +3403,68 @@ bool CvodeSimulator::Impl::state_trigger_dtstar(int event_idx0, double t_evt, in
     return true;
 }
 
+void CvodeSimulator::Impl::sync_model_at(double t, const double *x, int ns) {
+    auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
+    for (int i = 0; i < ns; ++i) {
+        sp_vec[i].concentration = x[i];
+    }
+    model.update_observables(x);
+    model.evaluate_functions(t);
+    // A trigger may read rateOf(species) (GH #106), whose bound value is only
+    // refreshed by a derivative probe — without this a difference would report
+    // 0 through that path instead of dx/dt's own dependence.
+    if (model.uses_rateof()) {
+        model.refresh_rateof_derivs(t, x);
+    }
+}
+
+double CvodeSimulator::Impl::residual_flow(int gidx, const std::vector<int> &support, double t,
+                                           int ns, const std::vector<double> &x,
+                                           const std::vector<double> &f,
+                                           std::vector<double> &gx_out, double &scale_out) {
+    auto &eval = model.evaluator();
+    std::vector<double> xwork(x.begin(), x.end());
+
+    // ∂g/∂x, over the species that can move g.
+    gx_out.assign(static_cast<std::size_t>(ns), 0.0);
+    for (int j : support) {
+        const double xj = x[j];
+        double h = 1e-6 * std::fabs(xj);
+        if (h == 0.0) {
+            h = 1e-9;
+        }
+        xwork[j] = xj + h;
+        sync_model_at(t, xwork.data(), ns);
+        const double g_hi = eval.evaluate(gidx);
+        xwork[j] = xj - h;
+        sync_model_at(t, xwork.data(), ns);
+        const double g_lo = eval.evaluate(gidx);
+        xwork[j] = xj; // restore this component
+        gx_out[j] = (g_hi - g_lo) / (2.0 * h);
+    }
+
+    // ∂g/∂t — the trigger's own explicit time dependence, held at x.
+    const double h_t = 1e-6 * std::max(std::fabs(t), 1.0);
+    sync_model_at(t + h_t, xwork.data(), ns);
+    const double g_t_hi = eval.evaluate(gidx);
+    sync_model_at(t - h_t, xwork.data(), ns);
+    const double g_t_lo = eval.evaluate(gidx);
+    const double gt = (g_t_hi - g_t_lo) / (2.0 * h_t);
+
+    // Back to (x, t), which is where the caller's remaining differences — and
+    // the caller itself, once it is done — expect to find the model.
+    sync_model_at(t, xwork.data(), ns);
+
+    double flow = gt;
+    scale_out = std::fabs(gt);
+    for (int j : support) {
+        const double term = gx_out[j] * f[j];
+        flow += term;
+        scale_out += std::fabs(term);
+    }
+    return flow;
+}
+
 void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &support,
                                            const std::string &subject, double t_evt, int ns,
                                            const std::vector<double> &x_minus,
@@ -3400,54 +3476,25 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
     const int n_sens_p = sens.n_p;
 
     auto &eval = model.evaluator();
-    auto &sp_vec = const_cast<std::vector<Species> &>(model.species());
     auto &params = const_cast<std::vector<Parameter> &>(model.parameters());
 
-    std::vector<double> xwork(x_minus.begin(), x_minus.end());
-    auto sync = [&](double t) {
-        for (int i = 0; i < ns; ++i) {
-            sp_vec[i].concentration = xwork[i];
-        }
-        model.update_observables(xwork.data());
-        model.evaluate_functions(t);
-        // A trigger may read rateOf(species) (GH #106), whose bound value is
-        // only refreshed by a derivative probe — without this the difference
-        // would report 0 through that path instead of dx/dt's own dependence.
-        if (model.uses_rateof()) {
-            model.refresh_rateof_derivs(t, xwork.data());
-        }
-    };
     // Sync after perturbing parameter `skip_idx`: the first sync refreshes the
     // rule-bound parameters a model function writes, rederive_expression_params
     // then carries the perturbation into the derived parameters, and the second
     // sync lets a function read those. A threshold written over a derived
     // parameter (`v > 2*vth`) would otherwise report a flat ∂g/∂p of zero.
     auto perturbed_sync = [&](int skip_idx, double t) {
-        sync(t);
+        sync_model_at(t, x_minus.data(), ns);
         rederive_expression_params(skip_idx);
-        sync(t);
+        sync_model_at(t, x_minus.data(), ns);
     };
 
-    sync(t_evt);
-
-    // ∂g/∂x, over the species that can move g.
-    std::vector<double> gx(static_cast<std::size_t>(ns), 0.0);
-    for (int j : support) {
-        const double xj = x_minus[j];
-        double h = 1e-6 * std::fabs(xj);
-        if (h == 0.0) {
-            h = 1e-9;
-        }
-        xwork[j] = xj + h;
-        sync(t_evt);
-        const double g_hi = eval.evaluate(gidx);
-        xwork[j] = xj - h;
-        sync(t_evt);
-        const double g_lo = eval.evaluate(gidx);
-        xwork[j] = xj; // restore this component
-        gx[j] = (g_hi - g_lo) / (2.0 * h);
-    }
-    sync(t_evt);
+    // Transversality: the denominator is dg/dt along the flow. Taken first
+    // because it is read at the nominal parameter point, which is where the
+    // caller's state already is.
+    std::vector<double> gx;
+    double scale = 0.0;
+    const double flow = residual_flow(gidx, support, t_evt, ns, x_minus, f_minus, gx, scale);
 
     // ∂g/∂p, per requested parameter column. A trigger that names no parameter
     // (`v > 30`) leaves this zero and pays only the differences.
@@ -3470,27 +3517,10 @@ void CvodeSimulator::Impl::residual_dtstar(int gidx, const std::vector<int> &sup
         gp[c] = (g_hi - g_lo) / (2.0 * h);
     }
 
-    // ∂g/∂t — the trigger's own explicit time dependence, held at x⁻.
-    const double h_t = 1e-6 * std::max(std::fabs(t_evt), 1.0);
-    sync(t_evt + h_t);
-    const double g_t_hi = eval.evaluate(gidx);
-    sync(t_evt - h_t);
-    const double g_t_lo = eval.evaluate(gidx);
-    const double gt = (g_t_hi - g_t_lo) / (2.0 * h_t);
-
     // Back to the nominal parameter point and to (x⁻, t*), which is the state
     // the caller's own differences expect to find.
     restore_nominal_params(sens);
-    sync(t_evt);
-
-    // Transversality: the denominator is dg/dt along the flow.
-    double flow = gt;
-    double scale = std::fabs(gt);
-    for (int j : support) {
-        const double term = gx[j] * f_minus[j];
-        flow += term;
-        scale += std::fabs(term);
-    }
+    sync_model_at(t_evt, x_minus.data(), ns);
 
     // What makes a crossing non-transversal is CANCELLATION: terms of some size
     // summing to ~0. `scale` is exactly Σ|terms|, so |flow| <= relfloor*scale is
@@ -4893,6 +4923,15 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
     const int n_events = model.n_events();
     std::vector<bool> trigger_was_true(n_events, false);
 
+    // ─── Triggers sitting exactly on their threshold at t_start (issue #340) ──
+    // Set for an event whose trigger reads false at t_start while its residual
+    // is exactly zero AND the flow does not carry it into the trigger's true
+    // side. The first root such an event reports at t_start is the initial
+    // condition, not a crossing, and is refused there. One-shot: cleared at the
+    // event's first root, so nothing later is ever suppressed. Filled by the
+    // t=0 trigger initialization below.
+    std::vector<char> on_threshold_at_start(n_events, 0);
+
     // ─── Random tie-break among equal-priority simultaneous events (GH #242) ──
     // SBML L3v2 §4.11.6: among events firing at the same instant with the SAME
     // (maximum) priority, one is chosen at random each round. This per-run RNG
@@ -5436,6 +5475,64 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 }
             }
 
+            // ─── Triggers that start ON their threshold (issue #340) ─────
+            //
+            // A trigger reading false whose residual is EXACTLY zero is not
+            // below its threshold, it is on it: `PIdeath > 0` with
+            // PIdeath(t_start) = 0. Whether the first move off that surface is
+            // a crossing the model locates, or an arbitrary consequence of
+            // where the first step landed, is decided by dg/dt along the flow
+            // at t_start — and only there, because once the solver has taken a
+            // step the residual is off zero and every trace of the coincidence
+            // is gone.
+            //
+            //   dg/dt > 0 — the trajectory LEAVES the threshold into the
+            //     trigger's true side. `time > 0` is this, with dg/dt = 1: the
+            //     crossing is real and sits at t_start. Left alone, so those
+            //     events fire exactly as they did before.
+            //   dg/dt <= 0 — the trajectory does not leave. Any root the
+            //     solver then reports at t_start is the initial condition
+            //     being re-read, not a transition, and its time is set by the
+            //     step controller rather than by the model. BIOMD0000000285 is
+            //     this case: `PIdeath > 0` with the whole aggregation cascade
+            //     feeding PIdeath still at zero, so dg/dt is 0 exactly, yet
+            //     the root lands at t = 2.7e-27 and kills the cell before the
+            //     model has moved. Marked here and refused at the root below.
+            //
+            // This is the rule CVODE applies to its own root functions —
+            // SUNDIALS deactivates any g_i that is identically zero at t0 and
+            // reactivates it only once it has moved away — which bngsim cannot
+            // inherit, because the root it registers is the BOOLEAN trigger
+            // minus 0.5 and that is never zero. AMICI, which roots on the
+            // residual, gets it from SUNDIALS for free and does not fire here.
+            if (!on_threshold_at_start.empty()) {
+                std::vector<double> t0_f;
+                std::vector<double> t0_x;
+                std::vector<double> gx_scratch;
+                for (int ei = 0; ei < n_events; ++ei) {
+                    if (trigger_was_true[ei]) {
+                        continue;
+                    }
+                    const int gidx = model.event_trigger_residual_expr(ei);
+                    if (gidx < 0 || eval_ref_outer.evaluate(gidx) != 0.0) {
+                        continue;
+                    }
+                    if (t0_f.empty()) {
+                        t0_f.assign(static_cast<std::size_t>(ns), 0.0);
+                        model.compute_derivs(times.t_start, y_data, t0_f.data());
+                        t0_x.assign(y_data, y_data + ns);
+                    }
+                    double scale = 0.0;
+                    const double flow =
+                        impl_->residual_flow(gidx, model.event_trigger_residual_species(ei),
+                                             times.t_start, ns, t0_x, t0_f, gx_scratch, scale);
+                    on_threshold_at_start[ei] = (flow > 0.0) ? 0 : 1;
+                }
+                // Nothing to undo: residual_flow's differences walk the model
+                // through perturbed states but leave it synced at (t_start, y),
+                // rateOf buffer included, which is where it was found.
+            }
+
             // If a t=0 immediate event mutated the state vector, tell CVODE
             // to restart from the modified y. (CVodeInit was called with
             // the original y above; without ReInit, internal state is
@@ -5837,6 +5934,20 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                 // A rising-edge fire is a root-detected event whose trigger now
                 // reads true and was previously false. Trigger states are also
                 // refreshed here for events that crossed without rising.
+                //
+                // Except at t_start for a trigger that started ON its threshold
+                // (issue #340): the residual was exactly zero there and the flow
+                // did not carry it across, so this root is the initial condition
+                // being re-read rather than a transition. "At t_start" is 100
+                // ulps of the run's own time scale — the window inside which
+                // CVODE cannot place a root any more precisely than t_start
+                // itself, so a root there says nothing about WHEN it happened.
+                // The mark is one-shot, and the window keeps a genuine later
+                // crossing (a residual that dips to the false side and comes
+                // back) firing normally even before the mark is cleared.
+                const double t0_root_window =
+                    100.0 * std::numeric_limits<double>::epsilon() *
+                    std::max(std::fabs(times.t_start), t_out.back() - times.t_start);
                 std::vector<int> firing; // event indices that just fired
                 firing.reserve(n_events);
                 for (int ei = 0; ei < n_events; ++ei) {
@@ -5844,10 +5955,14 @@ Result CvodeSimulator::run(const TimeSpec &times, const SolverOptions &opts) {
                         continue;
                     double trigger_val = eval_ref_outer.evaluate(events_outer[ei].trigger_expr_idx);
                     bool trigger_now = (trigger_val > 0.5);
-                    if (trigger_now && !trigger_was_true[ei]) {
+                    const bool at_start =
+                        on_threshold_at_start[ei] != 0 &&
+                        static_cast<double>(t_ret) - times.t_start <= t0_root_window;
+                    if (trigger_now && !trigger_was_true[ei] && !at_start) {
                         firing.push_back(ei);
                     }
                     trigger_was_true[ei] = trigger_now;
+                    on_threshold_at_start[ei] = 0;
                 }
 
                 // Snapshot state before firing so the chatter guard (GH #95)
