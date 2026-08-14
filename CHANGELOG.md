@@ -84,6 +84,49 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The forward-sensitivity job raises its integrator step budget, symmetrically
+  (issue #339).** Both engines default to 10,000 steps per solve — bngsim's
+  `Simulator.run(max_steps=)`, AMICI's `Solver.set_max_steps` — and the harness
+  set neither, so the budgets were already equal. What #331 changed is what they
+  are spent on: raising `Np` from a flat 20 to a coupled-state budget put up to
+  306 sensitivity columns in the error test, and on the first sweep carrying it
+  **8 models went `PASS` → `REFERENCE_FAILED`** with AMICI out of steps. Losing
+  the oracle to a solver setting neither engine's user chose is not a result.
+
+  `--max-steps` (default **100,000**) is now applied to both engines from one
+  read of the job spec, so no future edit can raise it for one and not the other,
+  and each row records the budget it was solved under.
+
+  **Measured, not scaled.** #339 proposed scaling the budget to the coupled
+  system; the data does not support that. All 8 were probed at 10k / 100k / 1M:
+
+  | model | Np | at 10k | at 100k |
+  |---|---|---|---|
+  | `BIOMD0000000832` | 56 | `AMICI_ERROR` | ok, 0.6 s |
+  | `BIOMD0000000061` | 69 | `TOO_MUCH_WORK` | ok, 0.9 s |
+  | `BIOMD0000000667` | 83 | `TOO_MUCH_WORK` | ok, 4.4 s |
+  | `BIOMD0000000474` | 150 | `TOO_MUCH_WORK` | ok, 15.9 s |
+  | `MODEL2401050001` | 161 | `TOO_MUCH_WORK` | ok, 11.9 s |
+  | `MODEL2202020001` | 188 | `TOO_MUCH_WORK` | ok, 5.0 s |
+  | `MODEL0911120000` | 33 | `TOO_MUCH_WORK` | **fails at 1M too** |
+  | `MODEL1701170001` | 135 | `FIRST_SRHSFUNC_ERR` | **fails at 1M too** |
+
+  Coupled size does not predict the need: the *smallest* system of the eight (9
+  species x 34) is the one no budget rescues, while 37 x 189 clears 100,000 in 5
+  seconds. Step count tracks the stiffness a model happens to have, not its
+  width. 1,000,000 is not chosen because a higher ceiling is paid for by the
+  models it cannot help — a recovering model costs ~nothing extra, while
+  `MODEL0911120000` goes 0.2 s → 3.1 s → 32.6 s across the three budgets. The
+  per-job `--timeout` remains the real bound on a runaway.
+
+  Re-running the eight end to end: **6 PASS, 2 `REFERENCE_FAILED`**. The last two
+  are now an *established* verdict rather than one inherited from a default —
+  AMICI's own generated sensitivity RHS returns `NaN` (`sxdot[7]` at t=27.57;
+  `sxdot[0]` on the first call), so no budget helps. Recorded in
+  `AMICI_KNOWN_ISSUES.md` as Class 3, with the point for triage that a
+  `TOO_MUCH_WORK` status alone does not distinguish "budget too small" from
+  "cannot converge at all".
+
 - **The sensitivity noise floor now reports what it *rescued*, not what fell
   inside it (issue #316).** #312 added the solver-resolution floor and, with it,
   a per-row `n_noise_forgiven` documented as "the count of cells the floor

@@ -265,6 +265,29 @@ compile is shared between them (the corrector method is a solver setting, not a
 codegen one), so jobs are scheduled **method-major**: the second method's pass is
 load-only.
 
+### The step budget is raised, and raised symmetrically
+
+Both engines default to 10,000 integrator steps per solve. That was calibrated for
+a coupled system of `n_species*(20+1)`; #331's coupled-state budget spends it on up
+to `n_species*(306+1)`, and on the first sweep carrying that, 8 models lost their
+oracle to `AMICI_TOO_MUCH_WORK` alone.
+
+`--max-steps` (default 100,000) is applied to **both** engines from one read of the
+job spec — bngsim's `Simulator.run(max_steps=)` and AMICI's `Solver.set_max_steps`.
+Symmetry is the requirement, not the value: a budget raised for the reference alone
+would hand the oracle room the engine under test does not get, and would turn an
+engine-capability difference into a harness artifact. Each row records the
+`max_steps` it was solved under, since a timing number is uninterpretable without
+it and a `REFERENCE_FAILED` row needs to say what budget it failed at.
+
+The number is measured rather than scaled to the coupled system. 6 of the 8 models
+recover at 100,000; the other 2 fail at 1,000,000 too, because a `NaN` in AMICI's
+sensitivity RHS is the real cause (see `AMICI_KNOWN_ISSUES.md`, Class 3). Coupled
+size does not predict step need — the smallest system of the eight is the one no
+budget rescues. A higher ceiling is paid for by the models it cannot help, so
+1,000,000 buys nothing and costs a hopeless model 30 s instead of 3 s. `--timeout`
+remains the real bound on a runaway.
+
 ### State parity is checked too, and reported separately
 
 A sensitivity comparison means nothing if the engines are not on the same

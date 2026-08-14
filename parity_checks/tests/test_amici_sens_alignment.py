@@ -865,6 +865,10 @@ class TestInitialTimeAlignment:
             def set_sensitivity_order(self, v): ...
             def set_sensitivity_method(self, v): ...
             def set_internal_sensitivity_method(self, v): ...
+
+            def set_max_steps(self, v):  # issue #339
+                recorder.append(("max_steps", int(v)))
+
             def get_linear_solver(self):
                 return int(getattr(ss, "LinearSolver_KLU", 2))
 

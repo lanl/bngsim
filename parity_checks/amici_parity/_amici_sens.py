@@ -137,6 +137,41 @@ DEFAULT_PARAM_CAP = 20
 # history); wall-clock is.
 DEFAULT_PARAM_BUDGET = 20_000
 
+# Per-solve integrator step budget, applied to BOTH engines (issue #339).
+#
+# Both default to 10,000 (bngsim's `Simulator.run(max_steps=)`, AMICI's
+# `Solver.set_max_steps`) and the harness used to set neither, so the budgets
+# were already equal. What #331 changed is what they are spent on: raising Np
+# from a flat 20 to a coupled-state budget put up to 306 sensitivity columns in
+# the error test, and on the first sweep carrying it 8 models went PASS ->
+# REFERENCE_FAILED with AMICI out of steps. Losing the oracle to a solver
+# setting neither engine's user chose is not a result.
+#
+# 100,000 is measured, not scaled. Every one of those 8 was probed at 10k, 100k
+# and 1M:
+#
+#   BIOMD0000000832 (Np 56)  10k AMICI_ERROR      -> 100k ok  0.6 s
+#   BIOMD0000000061 (Np 69)  10k TOO_MUCH_WORK    -> 100k ok  0.9 s
+#   BIOMD0000000667 (Np 83)  10k TOO_MUCH_WORK    -> 100k ok  4.4 s
+#   BIOMD0000000474 (Np 150) 10k TOO_MUCH_WORK    -> 100k ok 15.9 s
+#   MODEL2401050001 (Np 161) 10k TOO_MUCH_WORK    -> 100k ok 11.9 s
+#   MODEL2202020001 (Np 188) 10k TOO_MUCH_WORK    -> 100k ok  5.0 s
+#   MODEL0911120000 (Np 33)  fails at 10k, 100k AND 1M — NaN in sxdot[7]
+#   MODEL1701170001 (Np 135) fails at all three  — NaN in sxdot[0], first call
+#
+# So a flat budget, NOT one scaled to the coupled system as #339 proposed: the
+# data does not support that scaling. The smallest coupled system of the eight
+# (9 species x 34) is the one no budget rescues, while 37 x 189 clears 100k in
+# 5 s. Step need tracks the stiffness a model happens to have, not its width.
+#
+# The ceiling is chosen against the failure cost, not the success cost. A model
+# that recovers pays ~nothing (the 10k run burned its budget before failing
+# anyway); a model that never converges pays the whole budget before giving up,
+# and MODEL0911120000 goes 0.2 s -> 3.1 s -> 32.6 s across 10k/100k/1M. 1M buys
+# no model and costs every hopeless one 30 s, so 100k it is. The per-job wall cap
+# (`--timeout`) remains the real bound on a runaway.
+DEFAULT_SENS_MAX_STEPS = 100_000
+
 
 def budget_cap(n_species: int, budget: int, hard_cap: int = 0) -> int:
     """Parameters affordable for this model, from the coupled-state budget.
@@ -259,6 +294,7 @@ def bn_sens(
     atol: float,
     sens_params: list[str],
     method: str,
+    max_steps: int = DEFAULT_SENS_MAX_STEPS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
     """One bngsim forward-sensitivity run.
 
@@ -277,6 +313,13 @@ def bn_sens(
     The COLD solve's tensor is what the verdict uses; warm reps are timing-only
     and never change it (``model.reset()`` restores the IC between reps, since
     bngsim's ``run()`` continues from state).
+
+    ``max_steps`` is the per-solve integrator step budget, and it must be the
+    same number :func:`amici_sens` is given — see
+    :data:`DEFAULT_SENS_MAX_STEPS`. Both engines default to 10,000 on their own;
+    the whole suite rests on them being solved under identical conditions, so
+    raising it for one and not the other would hand a budget to one engine that
+    the other does not get.
     """
     import bngsim
     import bngsim._sbml_loader as sbml_loader
@@ -301,7 +344,9 @@ def bn_sens(
     sens_setup_sec = time.perf_counter() - t1
 
     t1 = time.perf_counter()
-    r = sim.run(t_span=(t_start, t_end), n_points=n_points, rtol=rtol, atol=atol)
+    r = sim.run(
+        t_span=(t_start, t_end), n_points=n_points, rtol=rtol, atol=atol, max_steps=max_steps
+    )
     cold_sec = time.perf_counter() - t1
 
     warm: list[float] = []
@@ -309,7 +354,13 @@ def bn_sens(
         try:
             model.reset()
             t1 = time.perf_counter()
-            sim.run(t_span=(t_start, t_end), n_points=n_points, rtol=rtol, atol=atol)
+            sim.run(
+                t_span=(t_start, t_end),
+                n_points=n_points,
+                rtol=rtol,
+                atol=atol,
+                max_steps=max_steps,
+            )
             warm.append(time.perf_counter() - t1)
         except Exception:
             break
@@ -479,6 +530,7 @@ def amici_sens(
     atol: float,
     sens_ids: list[str],
     method: str,
+    max_steps: int = DEFAULT_SENS_MAX_STEPS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str], dict]:
     """One AMICI CVODES forward-sensitivity run over the pre-built model.
 
@@ -510,6 +562,10 @@ def amici_sens(
     solver = model.create_solver()
     solver.set_relative_tolerance(rtol)
     solver.set_absolute_tolerance(atol)
+    # Issue #339 — the same step budget bn_sens runs under. Symmetry is the
+    # requirement, not the value: raising it for the reference alone would give
+    # the oracle room the engine under test does not get.
+    solver.set_max_steps(int(max_steps))
     solver.set_sensitivity_order(ss.SensitivityOrder_first)
     solver.set_sensitivity_method(ss.SensitivityMethod_forward)
     solver.set_internal_sensitivity_method(
