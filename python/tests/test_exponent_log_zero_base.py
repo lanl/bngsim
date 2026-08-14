@@ -477,21 +477,40 @@ class TestTheSolve:
 # first-order derivatives, the generalized guard and the old sibling pairing
 # emit the same expression for every one.)
 #
-# But a rate law that *does* contain `ln(S)` fails in the RHS at `S = 0`, before
-# any derivative is consulted: the value path never passes through the emitters
-# that apply this guard. That is GH #333, and it is what keeps #317 latent.
+# Such a rate law used to fail in the RHS at `S = 0` before any derivative was
+# consulted, because the value path never passed through the emitters that apply
+# this guard. That was GH #333 and it is fixed — `test_rate_law_zero_base_log.py`
+# holds its contract, and a solve now runs from `S = 0` on both engines.
+#
+# What still blocks the end-to-end case is narrower and is GH #336: a *forward
+# sensitivity* run on such a model at exactly `S = 0` fails in the corrector
+# (`flag=-4`) for every parameter, including ones the logarithm does not touch.
+# So the value at zero is reachable now and the derivative at zero is not.
 LOG_RATE_LAW = HILL_ZERO_IC.replace(
     "1 activate() vmax*Atot^n/(KM^n + Atot^n)",
     "1 activate() vmax*Atot^n*ln(Atot)",
 )
 
 
-class TestWhyThisStaysOutOfReachEndToEnd:
+class TestWhatStillBlocksTheEndToEndCase:
     @pytest.fixture
     def log_net(self, tmp_path):
         net = tmp_path / "logpow.net"
         net.write_text(LOG_RATE_LAW)
         return net
+
+    def test_the_value_of_that_rate_law_now_integrates_from_zero(self, log_net):
+        """GH #333, from this file's side: the same model whose RHS used to be
+        NaN at ``Atot = 0`` now solves. Only the sensitivity run below is still
+        out of reach, which is what narrows the remaining gap to #336."""
+        model = bngsim.Model.from_net(log_net)
+        assert model._guarded_functions, "the rate law should have been guarded"
+        species = np.asarray(
+            bngsim.Simulator(model, method="ode")
+            .run(t_span=(0, 5), n_points=4, rtol=1e-10, atol=1e-12)
+            .species
+        )
+        assert np.all(np.isfinite(species))
 
     def test_the_derivative_of_that_rate_law_is_guarded(self, log_net):
         """The half of it that *is* fixed, taken from the model's own rate-law
@@ -518,10 +537,14 @@ class TestWhyThisStaysOutOfReachEndToEnd:
         strict=True,
         raises=bngsim.SimulationError,
         reason=(
-            "GH #333: the RHS value path applies no zero-base log guard, so "
-            "vmax*Atot^n*ln(Atot) is NaN at Atot = 0 and CVODE fails at the "
-            "first call. When #333 lands this XPASSes: drop the marker and this "
-            "becomes the end-to-end case for #317."
+            "GH #336: the RHS is finite now (#333), and the plain solve above "
+            "passes, but a forward-sensitivity run at exactly Atot = 0 still "
+            "fails in the corrector with flag=-4 — for every parameter, "
+            "including ones the logarithm does not touch. When #336 lands this "
+            "XPASSes: drop the marker and this becomes the end-to-end case for "
+            "#317, since d/dn of vmax*S^n*ln(S) is the ln(S)^2 shape and "
+            "evaluating it AT S = 0 is the only way to reach that guard through "
+            "a solve rather than through the emitter."
         ),
     )
     def test_the_solve_completes_and_the_exponent_column_is_finite(self, log_net):

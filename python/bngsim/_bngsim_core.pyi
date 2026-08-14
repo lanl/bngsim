@@ -199,6 +199,10 @@ class NetworkModel:
         """
         Set a single species concentration by name
         """
+    def set_function_eval_expression(self, name: str, expression: str) -> bool:
+        """
+        Point a function's VALUE at a different expression and recompile its evaluator (issue #333), leaving the declared expression — the one that gets differentiated — untouched. Returns False if no function by that name exists; raises if the replacement does not compile, leaving the original in place. The one caller is the zero-base logarithm guard, which rewrites S^n*ln(S) to its limit at S == 0: the rewrite is symbolic and so lives in Python, while .net models are built entirely in C++, leaving no build-time seam to apply it at. The two expressions stay separate because the guarded form carries a state-dependent condition (S == 0) that the forward-sensitivity path reads as a moving state switch and refuses (the #52 / #150 machinery), so overwriting the declared law would trade a NaN at one point for a declined analytic sensitivity RHS over the whole run.
+        """
     def set_functional_jacobian(self, terms: list) -> bool:
         """
         Compile and attach symbolically-derived Functional Jacobian terms (GH #76). Returns True if the analytical Jacobian was populated.
@@ -237,6 +241,16 @@ class NetworkModel:
     def conservation_laws(self) -> dict:
         """
         Conservation laws detected from stoichiometry matrix
+        """
+    @property
+    def function_eval_expressions(self) -> list[str]:
+        """
+        Per-function evaluation expression, parallel to ``function_names``. Empty where the value is computed from the declared expression, which is every function the issue #333 zero-base logarithm guard did not rewrite.
+        """
+    @property
+    def function_expressions(self) -> list[str]:
+        """
+        Defining expression of each function, parallel to ``function_names``. Exists so the issue #333 zero-base logarithm guard can test every rate law for a logarithm without building the whole ``functional_jacobian_context()``, whose function_map runs to tens of thousands of entries on a genome-scale model and would be paid on every Model construction.
         """
     @property
     def function_names(self) -> list[str]:

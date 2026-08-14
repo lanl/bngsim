@@ -16,6 +16,22 @@ import numpy as np
 
 from bngsim._exceptions import ModelError, ParameterError, UnderSpecifiedModelError
 
+
+def _guard_function_expressions(core) -> list[tuple[str, str, str]]:
+    """GH #333 rate-law guard, imported lazily.
+
+    ``bngsim._jacobian`` pulls in ``bngsim._codegen``, so importing it at module
+    scope would put both in front of every ``import bngsim``. Deferred to here,
+    where it costs a ``sys.modules`` lookup per Model — and only for a model that
+    has a function at all, since the guard's own substring gate exits first.
+    """
+    if not getattr(core, "n_functions", 0):
+        return []
+    from bngsim._jacobian import guard_function_expressions
+
+    return guard_function_expressions(core)
+
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -86,6 +102,7 @@ class Model:
         "_named_sens_seeds",
         "_declared_ic_sens",
         "_ic_write_log",
+        "_guarded_functions",
     )
 
     def __init__(self, _core: NetworkModel) -> None:
@@ -237,6 +254,15 @@ class Model:
         # assigned — that is the set whose ∂x_k(0)/∂θ is no longer the carried
         # derivative. Never observable to a caller that does not arm it.
         self._ic_write_log: set[str] | None = None
+        # GH #333: rewrite any rate law of the form ``base^exp · ln(base)`` to its
+        # limit at ``base == 0``, so the *value* path agrees with the derivative
+        # path that #310/#317 already guard. Applied here rather than in either
+        # loader because this constructor is the single funnel every input format
+        # reaches (``.net``, SBML, ``_net_reader``, ``coupling``), and because a
+        # ``.net`` model is built entirely in C++, leaving no earlier seam. Gated
+        # on a substring test for a logarithm, so a model without one — 97.9% of
+        # the corpus — pays nothing and never touches sympy.
+        self._guarded_functions: list[tuple[str, str, str]] = _guard_function_expressions(_core)
 
     # ─── Factory methods ──────────────────────────────────────────────────
 

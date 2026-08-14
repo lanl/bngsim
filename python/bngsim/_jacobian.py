@@ -747,6 +747,108 @@ def _guard_exponent_log_at_zero(expr):
     return bottom_up(expr, rewrite_mul)
 
 
+# A rate law can only need the zero-base logarithm guard if it contains a
+# logarithm, and a substring test settles that without touching sympy. That
+# matters: over the 1644-model corpus only 2.09% of rate laws mention a
+# logarithm at all, so gating on this turns a 21.4 s whole-corpus sympy pass
+# into a 0.9 s one — and leaves the 97.9% that cannot be affected untouched,
+# which is what keeps this off the derivation budget (#96, #97).
+_LOG_CALL_RE = re.compile(r"\b(?:ln|log|log10|log2)\s*\(")
+
+
+def guard_rate_law_text(text: str) -> str | None:
+    """Guarded ExprTk spelling of one rate law, or ``None`` if it needs no guard.
+
+    The single implementation of GH #333's rewrite, so the model path
+    (:func:`guard_function_expressions`) and the ``.net`` codegen emitter, which
+    builds its C from the file rather than from a loaded model, cannot drift
+    apart — they are two RHS emitters for the same rate law and a guard on one
+    only would make them disagree about the value at zero.
+
+    Not a second copy of the guard itself: parsing to sympy and printing back
+    through :func:`sympy_to_exprtk` applies :func:`_guard_exponent_log_at_zero`
+    on the way out. Do **not** pre-apply the guard before calling that, or the
+    emitter wraps an already-wrapped expression.
+
+    ``None`` for anything this must not touch — no logarithm present, an existing
+    conditional (which keeps the pass idempotent and leaves a modeller's own
+    ``if()`` alone), a text that does not parse, or one that cannot be re-emitted.
+    Turning a working model into a broken one is the only outcome not on the
+    table, so every uncertain case declines.
+    """
+    if not _LOG_CALL_RE.search(text) or "if(" in text:
+        return None
+    try:
+        import sympy  # noqa: F401
+    except ImportError:
+        return None
+    sym = _exprtk_to_sympy(text)
+    if sym is None:
+        return None
+    guarded = sympy_to_exprtk(sym)
+    if guarded is None or guarded == text or "if(" not in guarded:
+        # An unguarded round trip only re-spells an expression (``a*b`` → ``b*a``);
+        # only a rewrite that actually introduced the branch is worth taking.
+        return None
+    return guarded
+
+
+def guard_function_expressions(core) -> list[tuple[str, str, str]]:
+    """Rewrite a model's rate laws to their limit at a zero logarithm base (GH #333).
+
+    #310 and #317 guard ``base^exp · ln(base)`` at ``base == 0`` on the way out
+    of the two *derivative* emitters. The rate law's own value never passes
+    through them — ExprTk evaluates it straight from the model's text, and the
+    codegen C emitter prints that same text — so a law containing ``ln(S)``
+    answered ``NaN`` at ``S = 0`` while its own ``∂f/∂n`` answered the limit.
+    One value apart, at ``S = 1e-30``, the identical model ran to completion.
+
+    The rewrite itself is the emitter's, not a second implementation: parsing to
+    sympy and printing back through :func:`sympy_to_exprtk` applies
+    :func:`_guard_exponent_log_at_zero` on the way out, so the value path and the
+    derivative path cannot drift apart by construction. Do **not** pre-apply the
+    guard here — the emitter would then wrap an already-wrapped expression.
+
+    The rewrite lands on the function's *evaluation* expression
+    (``core.set_function_eval_expression``), never on its declared one. That
+    separation is the whole design: the guard's ``S == 0`` branch is a
+    state-dependent condition, and a rate law carrying one is read by the
+    forward-sensitivity path as a state switch whose crossing time moves, which
+    it refuses (the #52 / #150 machinery). Overwriting the declared law therefore
+    bought a finite value at one point and lost the analytic sensitivity RHS for
+    the entire run — measured, not theorised. Differentiation keeps reading the
+    smooth declared law and the derivative emitters apply their own guard (#310,
+    #317) to the result.
+
+    Returns the ``(name, before, after)`` triples that changed, which is what the
+    tests assert on. Silent no-op for a function that does not parse or cannot be
+    re-emitted: this must never be able to turn a working model into a broken
+    one, so anything the round trip cannot express is left exactly as declared.
+    """
+    changed: list[tuple[str, str, str]] = []
+    try:
+        names = list(core.function_names)
+        texts = list(core.function_expressions)
+    except Exception:
+        return changed
+    # The overwhelmingly common case, and the one worth settling before anything
+    # else: no function mentions a logarithm, so nothing here can apply.
+    candidates = [(n, t) for n, t in zip(names, texts, strict=False) if _LOG_CALL_RE.search(t)]
+    if not candidates:
+        return changed
+
+    for name, text in candidates:
+        guarded = guard_rate_law_text(text)
+        if guarded is None:
+            continue
+        try:
+            if core.set_function_eval_expression(name, guarded):
+                changed.append((name, text, guarded))
+        except Exception:
+            continue
+    return changed
+
+
 # ─── sympy → ExprTk emitter ────────────────────────────────────────────────
 
 
