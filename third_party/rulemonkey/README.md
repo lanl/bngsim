@@ -31,6 +31,12 @@ cmake --build --preset release
 ctest --preset release
 ```
 
+Linux (GCC/Clang), macOS (AppleClang) and Windows (MSVC) are built and
+tested in CI.  On Windows, run those three commands from a Developer
+Command Prompt for Visual Studio: the `release` preset uses the Ninja
+generator, which finds `cl.exe` only when the MSVC environment is already
+on `PATH`.
+
 The `rm_driver` and `rm_scan` executables are built at
 `build/release/rm_driver` and `build/release/rm_scan`.
 
@@ -238,6 +244,32 @@ CMake snippets for both consumption modes).
   SSA loop, pattern matching layers, complex tracking, the
   2-mol/1-bond fast path, `fire_rule`'s OpType switch, and the five
   `select_reactants` paths.
+
+## Citation
+
+If you use RuleMonkey in published work, please cite the original
+RuleMonkey paper:
+
+> Colvin J, Monine MI, Gutenkunst RN, Hlavacek WS, Von Hoff DD,
+> Posner RG.  *RuleMonkey: software for stochastic simulation of
+> rule-based models.*  BMC Bioinformatics 11:404 (2010).
+> doi:[10.1186/1471-2105-11-404](https://doi.org/10.1186/1471-2105-11-404)
+> · [PMC2921409](https://pmc.ncbi.nlm.nih.gov/articles/PMC2921409/)
+
+```bibtex
+@article{colvin2010rulemonkey,
+  title   = {RuleMonkey: software for stochastic simulation of rule-based models},
+  author  = {Colvin, Joshua and Monine, Michael I and Gutenkunst, Ryan N and
+             Hlavacek, William S and Von Hoff, Daniel D and Posner, Richard G},
+  journal = {BMC Bioinformatics},
+  volume  = {11},
+  pages   = {404},
+  year    = {2010},
+  doi     = {10.1186/1471-2105-11-404},
+  pmid    = {20673321},
+  pmcid   = {PMC2921409}
+}
+```
 
 ## License
 

@@ -140,5 +140,5 @@ Two header-parsing notes:
 ## See also
 
 - [`quickstart.md`](quickstart.md) — full command-line walkthrough.
-- [`include/rulemonkey/types.hpp`](../include/rulemonkey/types.hpp)
+- [`include/rulemonkey/types.hpp`](https://github.com/richardposner/RuleMonkey/blob/main/include/rulemonkey/types.hpp)
   — the in-process `Result` struct that holds full-precision values.

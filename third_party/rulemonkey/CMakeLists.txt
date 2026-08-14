@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(RuleMonkey VERSION 3.7.0 LANGUAGES CXX)
+project(RuleMonkey VERSION 3.9.0 LANGUAGES CXX)
 
 if(CMAKE_VERSION VERSION_LESS 3.21)
     if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
@@ -28,6 +28,34 @@ endif()
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+endif()
+
+# ---------------------------------------------------------------------------
+# MSVC-only compile flags (issue #29).
+#
+# Directory-wide rather than per-target: every translation unit in the tree
+# needs both, including the vendored exprtk object library declared below and
+# the test executables under tests/.  add_compile_options only reaches targets
+# created after it, hence the placement here, ahead of the first add_library.
+# Guarded on MSVC, so the -Wall -Wextra -Werror sets further down (gated on
+# Clang|GNU) are untouched.
+#
+#   /bigobj  Required: third_party/exprtk/exprtk.hpp is a 1.6 MB single
+#            header, and expression.cpp instantiates past the 65,536-section
+#            limit of the default object format.  Without this the build
+#            stops at `fatal error C1128`.  engine.cpp is large enough to be
+#            at risk of the same, so the flag covers the tree rather than
+#            just the exprtk TU.
+#   /utf-8   Defensive: the sources are UTF-8 and a number of user-facing
+#            diagnostic strings embed non-ASCII characters, which MSVC
+#            otherwise decodes as the build machine's active code page.  The
+#            hosted CI runner's is already UTF-8 (no C4819 there either way),
+#            so this is for developer machines whose locale differs — without
+#            it, whether RM's error messages come out intact depends on who
+#            compiled the library.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/utf-8 /bigobj)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -157,11 +185,31 @@ if(RULEMONKEY_ENABLE_ASAN)
     set(_rm_asan_flags -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_compile_options(rulemonkey  PRIVATE ${_rm_asan_flags})
     target_link_options   (rulemonkey  PUBLIC  ${_rm_asan_flags})
+    # The vendored expression layer must be instrumented too.  Its objects are
+    # folded into librulemonkey.a, and ExprTkEvaluator's std::vector<std::string>
+    # members are grown from this TU but read from instrumented ones.  libc++
+    # emits container annotations only from instrumented code, so leaving this
+    # object library out desynchronizes them and ASan reports a
+    # container-overflow inside expression.cpp on every model load — a false
+    # positive whose visibility depends on the toolchain's annotation coverage
+    # (Xcode 26 reports it; the CI runner's older libc++ did not).
+    if(TARGET rm_bngsim_expr)
+        target_compile_options(rm_bngsim_expr PRIVATE ${_rm_asan_flags})
+    endif()
     foreach(_rm_cli_target rm_driver rm_scan)
         if(TARGET ${_rm_cli_target})
             target_compile_options(${_rm_cli_target} PRIVATE ${_rm_asan_flags})
         endif()
     endforeach()
+    # Everything declared BELOW this point — tests/ and examples/ — gets the
+    # flags directory-wide.  Same reason as rm_bngsim_expr above, one boundary
+    # further out: a test TU builds a std::vector and hands it to the library
+    # to fill, and libc++ emits container annotations only from instrumented
+    # code, so an uninstrumented test TU desynchronizes them and ASan reports a
+    # container-overflow against a perfectly ordinary resize inside the
+    # library.  It also means `ctest --preset asan` actually sanitizes the test
+    # harnesses' own code, which it did not before.
+    add_compile_options(${_rm_asan_flags})
 endif()
 
 # ---------------------------------------------------------------------------

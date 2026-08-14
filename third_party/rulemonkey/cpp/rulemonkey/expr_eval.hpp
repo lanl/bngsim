@@ -34,4 +34,38 @@ namespace rulemonkey::expr {
 // function reference IS returned.
 std::vector<std::string> collect_variables(const std::string& expr);
 
+// Identifiers of a BNGL expression split by whether they are written
+// applied to one of `tag_names`.  Each list is de-duplicated and in
+// first-seen order; a name written both ways appears in BOTH.
+struct TagScopedNames {
+  std::vector<std::string> tag_applied; // occurs at least once as `Name(tag)`
+  std::vector<std::string> bare;        // occurs at least once in any other form
+};
+
+// Classify every identifier in `expr` by tag application: `Name(tag)`,
+// with `tag` (trimmed) one of `tag_names`, is tag-applied; every other
+// occurrence — bare `Name`, or `Name(something_else)` — is bare.
+//
+// This is what separates a local function's locally-evaluated observables
+// from the global ones it also references (issue #38).  BNG2 emits both
+// kinds identically in `<ListOfReferences>` —
+//
+//     <Reference name="Cnt_Wz"  type="Observable"/>   <!-- local  -->
+//     <Reference name="Obs_Src" type="Observable"/>   <!-- global -->
+//
+// — so the only surviving evidence is the expression itself:
+//
+//     (kcat*Obs_Src)+(0*Cnt_Wz(x))
+//
+// with `x` the function's own `<Argument id=>`.  Pass that function's own
+// argument names as `tag_names`: in a chain of local functions each callee
+// is tagged with its OWN parameter, so the classification is per function.
+//
+// Like collect_variables the scan is deliberately permissive — called
+// functions (`flipUp(x)`), constants and builtins all come back too.
+// Callers match the result against a known name set, so the extra tokens
+// contribute nothing.
+TagScopedNames classify_by_tag_application(const std::string& expr,
+                                           const std::vector<std::string>& tag_names);
+
 } // namespace rulemonkey::expr
