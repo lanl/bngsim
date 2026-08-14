@@ -211,6 +211,7 @@ def make_specs(
     param_cap: int,
     param_budget: int,
     config_env: dict,
+    max_steps: int = asens.DEFAULT_SENS_MAX_STEPS,
 ) -> tuple[list[dict], int]:
     """Expand the manifest jobs into worker specs. ``(specs, n_tol_overridden)``.
 
@@ -224,6 +225,11 @@ def make_specs(
     result is still *correct*, but every loser throws away a full C++ compile.
     Method-major means the second method's jobs start only once the first pass has
     populated the cache, making them load-only.
+
+    ``max_steps`` rides on the spec rather than being read from a module constant
+    inside the worker, so the number a row was solved under is a property of the
+    job the report can carry — and so a test can pin that both engines got the
+    same one (issue #339).
 
     Extracted from ``main()`` so this ordering property is directly testable
     without running a sweep.
@@ -254,6 +260,7 @@ def make_specs(
                     "cap": float(cap),
                     "param_cap": int(param_cap),
                     "param_budget": int(param_budget),
+                    "max_steps": int(max_steps),
                     "config_env": dict(config_env),
                 }
             )
@@ -425,6 +432,12 @@ def _worker(spec: dict, q) -> None:
 
     res["n_params"] = len(shared_ids)
     res["n_param_candidates"] = n_cand
+    # Issue #339 — read ONCE and handed to both engines below, so no future edit
+    # can raise the budget for one and not the other. Recorded on the row for the
+    # same reason `n_params` is: a timing number is uninterpretable without it,
+    # and a REFERENCE_FAILED row needs to say what budget it failed under.
+    max_steps = int(spec.get("max_steps", asens.DEFAULT_SENS_MAX_STEPS))
+    res["max_steps"] = max_steps
 
     # --- bngsim side ---
     bn = None
@@ -444,6 +457,7 @@ def _worker(spec: dict, q) -> None:
             p["atol"],
             [bn_by_id[i] for i in shared_ids],
             method,
+            max_steps=max_steps,
         )
         bn_wall = time.perf_counter() - t0
         bn, bn_timing = out[:4], out[4]
@@ -466,6 +480,7 @@ def _worker(spec: dict, q) -> None:
             p["atol"],
             shared_ids,
             method,
+            max_steps=max_steps,
         )
         am_wall += time.perf_counter() - t0
         am, am_timing = out[:4], out[4]
@@ -582,6 +597,7 @@ def _bngsim_config_meta(args) -> dict:
         "atol": args.atol,
         "param_cap": args.param_cap,
         "param_budget": args.param_budget,
+        "max_steps": args.max_steps,
     }
 
 
@@ -621,6 +637,17 @@ def main() -> int:
         help="Optional ADDITIONAL hard ceiling on parameters per model, applied "
         "on top of --param-budget (default 0 = none; the budget governs). Set to "
         f"{asens.DEFAULT_PARAM_CAP} to reproduce the pre-#331 flat cap.",
+    )
+    ap.add_argument(
+        "--max-steps",
+        type=int,
+        default=asens.DEFAULT_SENS_MAX_STEPS,
+        help="Per-solve integrator step budget, applied SYMMETRICALLY to both "
+        f"engines (default {asens.DEFAULT_SENS_MAX_STEPS}, issue #339). Both "
+        "default to 10,000 on their own, which #331's higher Np exhausted on 8 "
+        "models — 6 of them recover here and 2 fail at any budget (a NaN in "
+        "AMICI's sensitivity RHS). The per-job --timeout remains the real bound "
+        "on a runaway.",
     )
     ap.add_argument("--checkpoint", default="")
     ap.add_argument(
@@ -672,6 +699,7 @@ def main() -> int:
         param_cap=args.param_cap,
         param_budget=args.param_budget,
         config_env=dict(combo_spec["env"]),
+        max_steps=args.max_steps,
     )
 
     ver = versions.stamp("amici")
@@ -687,7 +715,8 @@ def main() -> int:
     print(
         f"  param budget: {args.param_budget or 'none'} coupled states"
         f"   extra cap: {args.param_cap or 'none'}   "
-        f"tol rtol={args.rtol:g} atol={args.atol:g}"
+        f"tol rtol={args.rtol:g} atol={args.atol:g}   "
+        f"max_steps {args.max_steps} (both engines)"
     )
     print()
 
@@ -761,6 +790,9 @@ def main() -> int:
                         # census is a query over the report rather than a re-run.
                         "param_cap_effective",
                         "n_species_model",
+                        # issue #339 — the step budget the row was solved under,
+                        # the same number on both sides.
+                        "max_steps",
                         "max_abs_sx",
                         "n_resolvable_params",
                         "state_span",
@@ -797,6 +829,7 @@ def main() -> int:
         "sens_methods": methods,
         "param_cap": args.param_cap,
         "param_budget": args.param_budget,
+        "max_steps": args.max_steps,
         "state_parity": {
             "n_state_diff": n_state_diff,
             "note": (

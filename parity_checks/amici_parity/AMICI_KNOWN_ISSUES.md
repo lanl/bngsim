@@ -50,6 +50,25 @@ Both engines ran but disagree, and **RoadRunner sides with bngsim** (max_rel_err
   (`BIOMD339`, `MODEL2003200002`) are inconclusive: RoadRunner refused them too, so there
   is no third oracle — but bngsim ran cleanly.
 
+## Class 3 — AMICI's sensitivity RHS goes non-finite (2, forward-sensitivity sweep)
+
+Found while establishing issue #339's step budget. Both models were reported
+`AMICI_TOO_MUCH_WORK` / `AMICI_FIRST_SRHSFUNC_ERR` and read as step-budget
+exhaustion; probing them at **10,000, 100,000 and 1,000,000** steps shows the budget
+is not the cause. AMICI's own generated sensitivity right-hand side returns `NaN`,
+so the corrector cannot converge and burns whatever budget it is given:
+
+| model | Np | AMICI diagnostic |
+|---|---|---|
+| `MODEL0911120000` | 33 | `[AMICI:NaN] AMICI encountered a NaN value for sxdot[7] at t=27.574128` — then `TOO_MUCH_WORK` at every budget (0.2 s → 3.1 s → 32.6 s as the budget rises) |
+| `MODEL1701170001` | 135 | `NaN value for sxdot[0]` on the **first** RHS call → `AMICI_FIRST_SRHSFUNC_ERR`, immediately, at every budget |
+
+bngsim solves both at the same `Np` and the same tolerances, so these stay
+`REFERENCE_FAILED` — no oracle, not a bngsim defect. The distinction matters for
+triage: a `TOO_MUCH_WORK` row is *usually* a budget that can be raised (6 of the 8
+models in #339 were), and these two are the counterexample that shows the status
+code alone does not settle it.
+
 ## Bottom line
 
 AMICI passes ~79% of the SBML ODE corpus. Where it fails it is an **AMICI**
