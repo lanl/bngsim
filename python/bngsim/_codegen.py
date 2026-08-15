@@ -7217,9 +7217,15 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
     difference quotient integrates the variational equation straight through it,
     dropping the very jump the analytic path was declined for. On AMICI's
     ``nested_events`` that is the saltation factor ``f⁺/f⁻``, and every parameter
-    column comes back a factor of two low after the crossing (issue #146). Until
-    issue #150 supplies the jump, this warning is the only thing standing between
-    that and a number a caller would take at face value.
+    column comes back a factor of two low after the crossing (issue #146). This
+    warning is the only thing standing between that and a number a caller would
+    take at face value.
+
+    Issue #150 supplied that jump for the common case and #355 widened what
+    counts as a clock threshold, so what still reaches here is the residue
+    neither reaches: a comparison inside a call argument, an equality (measure
+    zero, nothing to bracket), a comparison outside an ``if()`` head, or a clock
+    threshold that does not reduce to a constant over the primaries.
 
     Issue #232 added the second producer of that same verdict, and it is the one
     that made "correct, but slower" dangerous rather than merely imprecise: a
@@ -7244,7 +7250,15 @@ def _warn_functional_sens_rhs_refused(reason: str) -> None:
             "The analytic sensitivity RHS does apply that jump, so removing the decline "
             "named above restores a correct gradient (issue #232)."
             if isinstance(reason, DeclinedAtMovingCrossingReason)
-            else "Tracked in issue #150."
+            # No machinery compensates this one, and naming an issue here would
+            # be a dangling pointer: issue #150 (state comparisons) and issue
+            # #355 (clock thresholds by their crossing rather than their
+            # spelling) both shipped, and what is left is what neither reaches.
+            else (
+                "Neither the issue #48 switch-time jump, which needs a crossing time "
+                "known a priori, nor the issue #150 saltation jump, which needs a "
+                "single comparison over state to root on, applies to this condition."
+            )
         )
         logger.warning(
             "Forward sensitivity: %s. The analytic sensitivity RHS is declined for this "

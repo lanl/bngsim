@@ -678,6 +678,113 @@ class TestEndToEnd:
         assert np.asarray(run.sensitivities).shape[2] == 2
 
 
+class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
+    """Issue #355. ``_clock_threshold_split_bare`` matches on *where the clock
+    sits*: exactly one side must be the clock symbol itself. Two shapes that are
+    the same threshold fail that test, and the corpus carries both —
+    ``(time()-Tdam)<0`` (the PEtab spelling) and
+    ``0>=Dam0-krepair*(time()-Tdam)`` (affine, parameter-dependent slope).
+
+    Declining them is not free. The gate is per model, so one of these takes the
+    whole model onto CVODES' difference quotient, which integrates straight
+    through the crossing and drops the ``(f⁻−f⁺)·∂t*/∂p`` jump — the failure
+    issue #232 measured at 53%. Three of issue #326's five open models are
+    written the second way and stall at exactly their crossing.
+
+    The recogniser now solves the residual for the clock instead of matching on
+    it, so a threshold is recognised by the crossing it has and not by how it was
+    typed.
+    """
+
+    def test_the_shifted_spelling_resolves_to_the_same_threshold(self):
+        """``(t-sigma)>=0`` is ``t>=sigma``, and must produce the same threshold
+        *expression* — that expression is what ``∂t*/∂p`` is differentiated
+        from, so an equal-but-differently-spelled one would still be right while
+        a different one would be silently wrong."""
+        clocks = frozenset({"t"})
+        assert sw._clock_threshold_split("t>=sigma", clocks) == ("t", "sigma")
+        assert sw._clock_threshold_split_bare("(t-sigma)>=0", clocks) is None
+        clock, threshold = sw._clock_threshold_split("(t-sigma)>=0", clocks)
+        assert clock == "t"
+        assert threshold.replace(" ", "") == "sigma"
+
+    def test_an_affine_slope_resolves_to_the_crossing_in_closed_form(self):
+        """The shape that blocks issue #326's stalling family. ``0 >= D0 −
+        krep*(t − sigma)`` crosses at ``t = sigma + D0/krep``, which is a
+        differentiable expression in three parameters — exactly what issue #48's
+        jump needs and precisely what a lexical test cannot see."""
+        clock, threshold = sw._clock_threshold_split(
+            "0.0>=(D0-(krep*(t-sigma)))", frozenset({"t"})
+        )
+        assert clock == "t"
+        import sympy as sp
+
+        got = sp.sympify(threshold.replace("^", "**"))
+        want = sp.sympify("sigma + D0/krep")
+        assert sp.simplify(got - want) == 0
+
+    def test_the_bare_spelling_is_answered_by_the_bare_test(self):
+        """The blast-radius property, asserted rather than assumed: the widened
+        recogniser is only ever reached by an atom the bare one declined, so no
+        threshold recognised before this issue changes path or text."""
+        clocks = frozenset({"t"})
+        for atom in ("t>=sigma", "t<14", "sigma<=t", "t>2*sigma"):
+            bare = sw._clock_threshold_split_bare(atom, clocks)
+            assert bare is not None
+            assert sw._clock_threshold_split(atom, clocks) == bare
+
+    def test_the_clock_on_both_sides_is_still_not_a_clock_threshold(self):
+        """``t<2*t`` is affine and does solve — to ``t*=0`` — but the bare test
+        rejects it deliberately and the state path claims it. Relaxing *which
+        side* the clock may sit in must not relax *how many* sides it may sit
+        on, or a crossing moves between two machineries for no gain."""
+        assert sw._clock_threshold_split("t<2*t", frozenset({"t"})) is None
+
+    def test_a_non_linear_condition_is_declined(self):
+        """``−b/a`` is the crossing only when the residual is degree 1 in the
+        clock. Anything else has to keep declining rather than stop in the wrong
+        place."""
+        assert sw._clock_threshold_split("(t*t-sigma)<0", frozenset({"t"})) is None
+
+    def test_a_state_threshold_is_not_captured_by_the_solve(self):
+        """The solve must not annex the issue #150 path. ``I-thresh<0`` reads no
+        clock at all, so it is not a clock atom in either recogniser."""
+        assert sw._clock_threshold_split("(I-thresh)<0", frozenset({"t"})) is None
+
+    def test_the_two_spellings_integrate_to_the_same_sensitivities(self, tmp_path):
+        """The end-to-end statement, and the one that would catch a threshold
+        that resolved to the wrong expression: the same model written both ways
+        must produce the same tensor, ``sigma`` column included — which is
+        entirely the crossing jump.
+
+        Before this issue the shifted spelling did not merely differ, it took a
+        different code path (difference quotient, no jump at all)."""
+        params = ["beta", "gamma", "sigma"]
+        bare = _run_sens(_model(tmp_path, SWITCHED), params, t_end=12.0)
+        shifted = _run_sens(
+            _model(tmp_path, _with_law("if((t-sigma)>=0,beta,0)*I"), name="shift.net"),
+            params,
+            t_end=12.0,
+        )
+        a, b = np.asarray(bare.sensitivities), np.asarray(shifted.sensitivities)
+        assert a.shape == b.shape
+        scale = max(float(np.max(np.abs(a))), 1e-300)
+        np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-9 * scale)
+        # Not vacuous: the switch column carries the jump on both spellings.
+        assert float(np.max(np.abs(b[:, :, 2]))) > 1.0
+
+    def test_the_shifted_spelling_gets_the_jump_rather_than_the_fallback(self, tmp_path):
+        """Agreement above would also be satisfied by both spellings quietly
+        landing on the difference quotient. This asserts the mechanism: the
+        shifted model is admitted by the gate and its crossing is registered."""
+        core = _model(tmp_path, _with_law("if((t-sigma)>=0,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None
+        assert terms
+        # and it is the CLOCK path that claims it, not issue #150's state root
+        assert sw.state_switch_conditions(core) == []
+
+
 # A crossing NOTHING compensates, post-#150. An equality on a continuous
 # trajectory is satisfied on a measure-zero set, so there is no transversal
 # crossing for the issue #150 root to bracket and no rising edge for issue #48
