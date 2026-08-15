@@ -312,8 +312,25 @@ class TestDetection:
         assert compute_switch_time_sens(core, ["k"], 0.0, 5.0) == ([], [])
 
 
-class TestUnsupported:
-    """A switch time that also acts in-branch is refused, not approximated."""
+class TestDualRoleParameter:
+    """A switch time that also acts in-branch (`if(t>=sigma, sigma*2, 0)`).
+
+    Its gradient is the interior variational term PLUS the crossing jump, not
+    the jump alone. Whether bngsim delivers that sum is decided by the
+    sensitivity RHS the run installs (issue #358):
+
+    * with an analytic RHS, ``bngsim_dfdp`` already carries the in-branch
+      ``∂f/∂sigma`` (the clean ``Piecewise`` derivative, no boundary delta), so
+      the two terms sum to the correct total — accepted;
+    * on CVODES' difference quotient there is no ``bngsim_dfdp``, and pinning
+      holds the in-branch term at a wrong 0 — refused, as before.
+
+    Closed form for ``X = sigma*2*(t-sigma)`` past the switch:
+    ``∂X/∂sigma = 2t - 4*sigma`` = ``-2`` at ``t=5, sigma=3`` (interior ``+4``,
+    jump ``-6``).
+    """
+
+    CLOSED_FORM_DXDSIGMA = 2 * 5.0 - 4 * SIGMA  # = -2.0 at t_end = 5
 
     @staticmethod
     def _dual_role():
@@ -330,41 +347,107 @@ class TestUnsupported:
         b.add_reaction([], [x_idx], "functional", "rate_X")
         return bngsim.Model(_core=b.build())
 
-    def test_detection_raises(self):
-        with pytest.raises(ValueError, match="if\\(\\) switch time AND appears inside"):
+    # ── The detection helper: refuse by default, accept on the analytic path ──
+
+    def test_detection_refuses_without_an_analytic_rhs(self):
+        """The conservative default: a caller that cannot tell which sensitivity
+        RHS the run installs keeps the pre-#358 refusal."""
+        with pytest.raises(SensitivityUnsupportedError, match="if\\(\\) switch time AND appears"):
             compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
 
-    def test_run_raises_rather_than_returning_the_jump_alone(self):
+    def test_detection_accepts_with_an_analytic_rhs(self):
+        """Told the run carries an analytic sensitivity RHS, the same parameter
+        is accepted: its in-branch ∂f/∂p is `bngsim_dfdp`'s to supply, and the
+        detector returns the crossing record for the jump to add on top."""
+        records, pinned = compute_switch_time_sens(
+            self._dual_role()._core, ["sigma"], 0.0, 5.0, has_analytic_sens_rhs=True
+        )
+        assert len(records) == 1  # the single crossing at t* = sigma = 3
+        t_star, _clock, threshold, dtstar = records[0]
+        assert t_star == pytest.approx(SIGMA)
+        assert threshold == pytest.approx(SIGMA)
+        assert dtstar == [pytest.approx(1.0)]  # ∂t*/∂sigma = 1
+        assert pinned  # sigma is still pinned (inert on the analytic path)
+
+    # ── Through the public API ──────────────────────────────────────────────
+
+    def test_run_on_the_analytic_path_sums_the_two_terms(self):
+        """The whole point of #358: codegen=True installs an analytic sensitivity
+        RHS, so the run succeeds and lands on the closed form rather than
+        refusing. Checked across tolerances — a jump read at a perturbed switch
+        would scale the column by (1 ∓ √rtol)."""
+        for rtol in (1e-8, 1e-10, 1e-12):
+            sim = bngsim.Simulator(
+                self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
+            )
+            r = sim.run(
+                sample_times=list(np.linspace(0.0, 5.0, 26)),
+                rtol=rtol,
+                atol=rtol * 1e-2,
+                max_steps=10**7,
+            )
+            x_idx = 1  # X() is the second species
+            got = np.asarray(r.sensitivities)[-1, x_idx, 0]
+            assert got == pytest.approx(self.CLOSED_FORM_DXDSIGMA, abs=1e-8)
+
+    def test_run_matches_central_finite_difference(self):
+        """FD reference on plain runs (which never had the stall), the oracle #358
+        asked for on a model where a parameter is both a switch time and an
+        in-branch coefficient."""
+
+        def x_end(sigma):
+            b = ModelBuilder()
+            b.add_parameter("sigma", sigma)
+            b.add_parameter("rate_counter", 1.0)
+            t_idx = b.add_species("T()", 0.0)
+            x_idx = b.add_species("X()", 0.0)
+            b.add_observable("t", [(t_idx, 1.0)])
+            b.add_function("rate_X", "if((t>=sigma),sigma*2,0)")
+            b.add_reaction([], [t_idx], "elementary", "rate_counter")
+            b.add_reaction([], [x_idx], "functional", "rate_X")
+            m = bngsim.Model(_core=b.build())
+            r = bngsim.Simulator(m, method="ode").run(
+                sample_times=list(np.linspace(0.0, 5.0, 26)),
+                rtol=1e-12,
+                atol=1e-14,
+                max_steps=10**7,
+            )
+            return np.asarray(r.species)[-1, x_idx]
+
+        h = 1e-6
+        fd = (x_end(SIGMA + h) - x_end(SIGMA - h)) / (2 * h)
         sim = bngsim.Simulator(
             self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
         )
-        with pytest.raises(ValueError, match="issue #48"):
+        r = sim.run(
+            sample_times=list(np.linspace(0.0, 5.0, 26)), rtol=1e-11, atol=1e-13, max_steps=10**7
+        )
+        got = np.asarray(r.sensitivities)[-1, 1, 0]
+        assert got == pytest.approx(fd, abs=1e-5)
+
+    def test_run_on_the_difference_quotient_still_refuses(self, monkeypatch):
+        """The refusal has to STAY where it is load-bearing. Forcing the
+        Functional model back onto CVODES' difference quotient (the pre-#67
+        hatch) restores the exact conditions #358 does not narrow: no
+        `bngsim_dfdp`, and pinning holds the in-branch term at a wrong 0."""
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
+        sim = bngsim.Simulator(
+            self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
+        )
+        with pytest.raises(SensitivityUnsupportedError, match="issue #358"):
             sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
 
     # ── The refusal is TYPED (issue #320) ───────────────────────────────────
     #
-    # This is a declared capability gap, not a bug: bngsim inspected the model,
-    # found a parameter whose gradient it cannot assemble, and refused rather
-    # than return the jump alone. Before it was typed, the amici_parity sweep
-    # scored it EXCEPTION ("AMICI ran and bngsim broke" — the bucket a reader
-    # triages), where it was 26 of 77 rows across 13 corpus models. The two
-    # tests above deliberately keep catching `ValueError`: that is the
-    # back-compat contract, and they fail if the ValueError base is ever
-    # dropped.
+    # A declared capability gap, not a bug. Before it was typed, the amici_parity
+    # sweep scored it EXCEPTION ("AMICI ran and bngsim broke"). The refusal still
+    # inherits `ValueError`, the back-compat contract.
 
     def test_the_detection_refusal_is_typed(self):
         with pytest.raises(SensitivityUnsupportedError):
             compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
-
-    def test_the_run_refusal_is_typed(self):
-        """Through the public API, which is what the parity harness sees — the
-        detection helper being typed is worth nothing if the Simulator path
-        rewraps it on the way out."""
-        sim = bngsim.Simulator(
-            self._dual_role(), method="ode", sensitivity_params=["sigma"], codegen=True
-        )
-        with pytest.raises(SensitivityUnsupportedError, match="issue #48"):
-            sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
+        with pytest.raises(ValueError):  # the base it has always raised
+            compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
 
     def test_it_is_not_typed_as_the_codegen_refusal(self):
         """Distinct declared gaps share a type but must keep distinct messages —
@@ -374,6 +457,111 @@ class TestUnsupported:
             compute_switch_time_sens(self._dual_role()._core, ["sigma"], 0.0, 5.0)
         assert "closed form" not in str(ei.value)
         assert "Split the parameter" in str(ei.value)
+
+
+class TestClockThresholdBehindAFunction:
+    """A clock threshold hidden behind a function reference is still detected.
+
+    ``compute_switch_time_sens`` inlines function references before scanning,
+    exactly as the issue #150 state detector already does — "the gate and the
+    detector must scan the SAME text". Here the crossing is written
+    ``if((clk>=0), k, 0)`` with ``clk = t - sigma``: the raw body's atom is
+    ``clk>=0``, which names no clock and was silently skipped, so the crossing
+    (and its jump) went missing and the switch-time column came back a wrong
+    zero. This is the pattern BIOMD0000001007's ``heav_x = if((x<0), 0, ...)``
+    over ``x = time() - ModelValue_27`` carries, whose ``Tdam`` column was short
+    by exactly this crossing.
+    """
+
+    @staticmethod
+    def _model():
+        b = ModelBuilder()
+        b.add_parameter("sigma", SIGMA)
+        b.add_parameter("k", K)
+        b.add_parameter("rate_counter", 1.0)
+        t_idx = b.add_species("T()", 0.0)
+        x_idx = b.add_species("X()", 0.0)
+        b.add_observable("t", [(t_idx, 1.0)])
+        b.add_function("clk", "t-sigma")  # the clock, one function-reference away
+        b.add_function("rate_X", "if((clk>=0),k,0)")
+        b.add_reaction([], [t_idx], "elementary", "rate_counter")
+        b.add_reaction([], [x_idx], "functional", "rate_X")
+        return bngsim.Model(_core=b.build())
+
+    def test_the_crossing_is_detected(self):
+        records, pinned = compute_switch_time_sens(self._model()._core, ["sigma", "k"], 0.0, 5.0)
+        assert len(records) == 1
+        t_star, _clock, threshold, dtstar = records[0]
+        assert t_star == pytest.approx(SIGMA)
+        assert threshold == pytest.approx(SIGMA)
+        assert dtstar[0] == pytest.approx(1.0)  # ∂t*/∂sigma = 1, through `clk`
+        assert dtstar[1] == pytest.approx(0.0)  # k does not move the crossing
+        assert pinned == [0]  # sigma pinned; k is not a switch-time parameter
+
+    def test_the_gradient_is_the_jump_not_a_wrong_zero(self):
+        """Without the inline, the crossing is invisible and ∂X/∂sigma comes back
+        0; with it, the jump lands the closed form ``X = k·max(0, t-sigma)``."""
+        sim = bngsim.Simulator(
+            self._model(), method="ode", sensitivity_params=["sigma", "k"], codegen=True
+        )
+        r = sim.run(
+            sample_times=list(np.linspace(0.0, 5.0, 26)), rtol=1e-10, atol=1e-12, max_steps=10**7
+        )
+        S = np.asarray(r.sensitivities)
+        assert S[-1, 1, 0] == pytest.approx(-K, abs=1e-8)  # ∂X/∂sigma = -k
+        assert S[-1, 1, 1] == pytest.approx(5.0 - SIGMA, rel=1e-6)  # ∂X/∂k = t - sigma
+
+
+class TestUncompensatedCrossingGuard:
+    """A switch time that also gates a crossing nothing brackets is refused.
+
+    Pinning a switch-time parameter (issue #48) holds it nominal against CVODES'
+    difference-quotient probe, which is safe only when *every* crossing it moves
+    is compensated. ``period`` here sets a clock switch (``time() < period*4``)
+    AND drives a ``floor()``-periodic pulse (``time() - floor(time()/period)*
+    period >= 0.5``) whose crossing neither issue #48 nor issue #150 can locate.
+    Pinning would hold that crossing's dependence on ``period`` at a wrong 0 —
+    MODEL1708310001's ``cycle_int`` measured ∂/∂cycle_int = 0 against a finite
+    difference of ~19 — so it is refused rather than answered with a silent zero.
+    The refusal stands whether or not an analytic RHS is claimed: an
+    uncompensated crossing is exactly what puts the model on the difference
+    quotient (issue #68), so there is no analytic path here to sum anything on.
+    """
+
+    @staticmethod
+    def _model():
+        b = ModelBuilder()
+        b.add_parameter("period", 3.0)
+        b.add_parameter("amp", 1.0)
+        b.add_parameter("rate_counter", 1.0)
+        t_idx = b.add_species("T()", 0.0)
+        x_idx = b.add_species("X()", 0.0)
+        b.add_observable("t", [(t_idx, 1.0)])
+        b.add_function(
+            "rate_X",
+            "if((time()<(period*4)),if(((time()-(floor((time()/period))*period))>=0.5),amp,0),0)",
+        )
+        b.add_reaction([], [t_idx], "elementary", "rate_counter")
+        b.add_reaction([], [x_idx], "functional", "rate_X")
+        return bngsim.Model(_core=b.build())
+
+    @pytest.mark.parametrize("has_analytic", [False, True])
+    def test_a_switch_time_that_also_gates_a_floor_pulse_is_refused(self, has_analytic):
+        with pytest.raises(SensitivityUnsupportedError, match="nothing compensates"):
+            compute_switch_time_sens(
+                self._model()._core,
+                ["period", "amp"],
+                0.0,
+                20.0,
+                has_analytic_sens_rhs=has_analytic,
+            )
+
+    def test_a_parameter_that_only_gates_the_floor_pulse_is_not_a_switch_time(self):
+        """``amp`` moves no crossing — it scales the pulse — so it is neither a
+        switch time nor caught by the guard, and requesting it alone is a no-op
+        (the switch-time detector leaves it to the ordinary sensitivity path)."""
+        records, pinned = compute_switch_time_sens(self._model()._core, ["amp"], 0.0, 20.0)
+        assert records == [] and pinned == []
 
 
 # ─── SBML shape ──────────────────────────────────────────────────────────────

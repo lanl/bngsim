@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import ctypes
 import logging
 import os
 import threading
@@ -542,6 +543,9 @@ class Simulator:
         "_codegen",
         "_codegen_so_path",
         "_codegen_c_source",
+        # Memoized: does the codegen artifact export bngsim_codegen_sens_rhs?
+        # (issue #358 — decides the in-branch switch-time refusal narrowing)
+        "_codegen_sens_rhs_available",
         "_net_path",
         # JAX AD Jacobian support
         "_jax_jac_evaluator",
@@ -1535,6 +1539,12 @@ class Simulator:
         use — the chunked path differentiates a subset per chunk, so it cannot be
         assumed to be ``self._sensitivity_params``.
 
+        A parameter that also acts *inside* a branch (``if(t>=sigma, sigma*k,
+        0)``) is refused only when this run has no analytic sensitivity RHS —
+        there its non-zero in-branch ``∂f/∂p`` cannot be combined with the jump;
+        with an analytic RHS ``bngsim_dfdp`` carries that term and the two are
+        summed (issue #358), which is why ``has_analytic_sens_rhs`` is passed.
+
         A no-op unless some ``if()`` threshold actually moves with a requested
         parameter, which leaves every other model's integration untouched.
         """
@@ -1544,7 +1554,13 @@ class Simulator:
         from bngsim._switch_sensitivity import compute_switch_time_sens
 
         try:
-            records, pinned = compute_switch_time_sens(core, names, float(t_start), float(t_end))
+            records, pinned = compute_switch_time_sens(
+                core,
+                names,
+                float(t_start),
+                float(t_end),
+                has_analytic_sens_rhs=self._codegen_provides_sens_rhs(),
+            )
         except ValueError:
             # An unsupported switch parameter (one that also acts in-branch) is a
             # refusal the caller must see, not a detection hiccup to swallow.
@@ -1569,6 +1585,35 @@ class Simulator:
             )
             opts.set_switch_time_sens(records)
             opts.set_switch_pinned_params(pinned)
+
+    def _codegen_provides_sens_rhs(self) -> bool:
+        """Whether the codegen artifact this run installs exports ``bngsim_codegen_sens_rhs``.
+
+        This is the exact symbol the C++ resolves with ``try_symbol`` to choose
+        the analytic sensitivity RHS over CVODES' internal difference quotient,
+        so reading it back off the artifact is the ground truth for "is this run
+        on the analytic path" — it reflects the issue #67 hatch, the #209/#217
+        request gate and whatever the structural cache served, without
+        re-deriving anything. Only :meth:`_apply_switch_time_sens` consults it
+        (issue #358), so it is computed on demand and memoized rather than at
+        construction. The JIT source carries the symbol name only where it also
+        defines the function (a declined build omits the whole block), so the
+        substring test matches the ``.so`` symbol test — the same pair
+        ``test_codegen_sens_rhs_gate`` uses.
+        """
+        cached = getattr(self, "_codegen_sens_rhs_available", None)
+        if cached is not None:
+            return cached
+        available = False
+        if self._codegen_c_source:
+            available = "bngsim_codegen_sens_rhs" in self._codegen_c_source
+        elif self._codegen_so_path:
+            try:
+                available = hasattr(ctypes.CDLL(self._codegen_so_path), "bngsim_codegen_sens_rhs")
+            except OSError:  # pragma: no cover - a missing/damaged .so surfaces elsewhere
+                available = False
+        self._codegen_sens_rhs_available = available
+        return available
 
     def _apply_state_switch_sens(self, opts, core) -> None:
         """Register the state-dependent rate-law switches to jump at (issue #150).
