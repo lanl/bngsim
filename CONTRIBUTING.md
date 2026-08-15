@@ -55,6 +55,30 @@ a transient isolated build env and never into `.venv`. On `--extra test` the
 script falls back to whatever pybind11 the system supplies, and tells you when it
 is doing that.
 
+### Re-locking after a `pyproject.toml` change
+
+`uv.lock` records `provides-extras`, so **any** edit to this project's dependency
+metadata — adding an extra, moving a pin — invalidates the lock. CI's
+`uv sync --extra dev` then re-resolves instead of installing from it, and a
+re-resolve has to fetch metadata for every locked package, including the
+`parity` group's git-pinned PyBioNetGen. So the CI failure reads as a
+PyBioNetGen build error on a PR that never touched PyBioNetGen. **Run `uv lock`
+and commit the result in the same PR.**
+
+PyBioNetGen is in `no-build-isolation-package`, which means it builds against
+your `.venv` rather than an isolated one — so that venv needs the two things its
+legacy `setup.py` assumes and does not declare:
+
+```bash
+uv pip install setuptools pip   # setup.py imports setuptools, then shells out
+                                # to `pip install numpy`
+uv lock                         # ~20 min: it downloads BNG2.pl at build time
+```
+
+Without them `uv lock` fails with `ModuleNotFoundError: No module named
+'setuptools'`, or with a `CalledProcessError` from `pip install numpy` — neither
+of which names the venv as the missing piece.
+
 ### Legacy BioNetGen (BNG2.pl) for `parity_checks/`
 
 bngsim has no BNGL parser, so every BNGL job shells out to BNG2.pl for network

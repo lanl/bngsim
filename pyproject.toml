@@ -226,6 +226,11 @@ amici = [
 # at build time, so it cannot build in an isolated env that lacks them. Same
 # reason bootstrap_parity_env.py passes --no-build-isolation by hand.
 no-build-isolation-package = ["bionetgen"]
+# Consequence worth knowing before you edit anything above: with isolation off,
+# PyBioNetGen builds against THIS venv, so re-locking needs `setuptools` and
+# `pip` installed in it. And `uv.lock` records `provides-extras`, so any edit to
+# the dependency metadata in this file invalidates the lock and forces exactly
+# that re-resolve. See CONTRIBUTING.md, "Re-locking after a pyproject change".
 
 [project.scripts]
 # SBML → .net network converter (GH #215). Also runnable as
