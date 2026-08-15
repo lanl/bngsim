@@ -396,7 +396,145 @@ def _unit_rate_clock_species(core, ctx=None) -> dict[str, int]:
     return symbols
 
 
+def _clock_symbol_sub(expr: str, sym: str, repl: str) -> str:
+    """Replace whole-word occurrences of clock symbol *sym* in *expr*.
+
+    ``time()`` is a call and ``time`` is a bare name; both are in
+    ``clock_symbols``. The bare pattern excludes a following ``(`` so it cannot
+    eat the call form's head and leave ``()`` behind.
+    """
+    if sym.endswith("()"):
+        return re.sub(rf"(?<![A-Za-z0-9_]){re.escape(sym[:-2])}\s*\(\s*\)", repl, expr)
+    return re.sub(rf"(?<![A-Za-z0-9_]){re.escape(sym)}(?![A-Za-z0-9_(])", repl, expr)
+
+
+# Placeholder the clock is solved for. Leading underscore and a `bng` infix so it
+# cannot collide with a model parameter, since it is parsed alongside them.
+_CLOCK_SOLVE_SYMBOL = "_bng_clock_t"
+
+
+def _clock_affine_threshold(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
+    """``(clock_symbol, threshold_expr)`` for an atom that is *affine in a clock*
+    but does not put that clock bare on one side — or ``None``.
+
+    Issue #355. :func:`_clock_threshold_split_bare` recognizes a threshold by its
+    spelling: exactly one side must be the clock symbol itself. Two shapes that
+    are the same threshold fail that test, and both are in the corpus:
+
+        (time()-Tdam) < 0                 the PEtab spelling of time() < Tdam
+        0 >= Dam0 - krepair*(time()-Tdam) affine with a parameter-dependent slope
+
+    Neither reads live state, and both have a crossing time in closed form, so
+    both are exactly what issue #48's machinery exists to compensate — the bare
+    test is simply not asking the right question. Declining them is not free: the
+    gate is per model, so one of these takes the whole model off the analytic
+    sensitivity RHS and onto CVODES' difference quotient, which integrates
+    straight through the crossing and drops the jump (issue #232 measured 53%).
+
+    So: form the residual ``lhs − rhs``, and if it is degree 1 in the clock,
+    solve it. ``a·t + b = 0`` gives ``t* = −b/a``, and the returned threshold
+    expression is that quotient — which is what ``∂t*/∂p`` must be differentiated
+    from, and is why this is a symbolic solve rather than the numeric two-probe
+    that :func:`_crossing_time_of_condition` uses for the same shapes. That one
+    needs a *number* (where to stop); this one needs an *expression* (what to
+    chain-rule).
+
+    Tried only after the bare test declines, never instead of it, so no atom
+    recognized today changes path, spelling, or threshold text. Every failure
+    here returns ``None``, which is exactly the status quo for these atoms.
+
+    Rejected, deliberately:
+
+    * more than one distinct clock symbol — two unit-rate clocks carry different
+      offsets and nothing here knows them;
+    * a residual not linear in the clock (``t*t < k``), where ``−b/a`` is not the
+      crossing;
+    * a clock coefficient that is not free of the clock, or is a literal zero
+      (no crossing at all);
+    * an atom reading the clock on BOTH sides. ``t < 2*t`` is affine and does
+      solve (to ``t* = 0``), but :func:`_clock_threshold_split_bare` rejects it
+      deliberately and the state path claims it instead; admitting it here would
+      move a crossing between two machineries for no gain, which is not what this
+      issue measured. One side, as before — the change is where in that side the
+      clock may sit, not how many sides it may sit on.
+
+    A threshold reading live state is NOT rejected here — it does not have to be.
+    The callers already resolve the returned expression against the primaries and
+    get nothing back for a free symbol that is not one, which is the same door
+    every other unresolvable threshold leaves by.
+    """
+    split = _relational_split(atom)
+    if split is None:
+        return None
+    lhs, rhs = split
+
+    # Longest first so `time()` is consumed before `time` can match its head.
+    present = [
+        c
+        for c in sorted(clock_symbols, key=len, reverse=True)
+        if _clock_symbol_sub(atom, c, "\x00") != atom
+    ]
+    if not present:
+        return None  # not a clock atom at all — the overwhelmingly common case
+    clock_sym = present[0]
+    # Exactly one side may read the clock, which is the half of the bare test's
+    # rule this issue does NOT relax: `t < 2*t` stays the state path's.
+    on_left = _clock_symbol_sub(lhs, clock_sym, "\x00") != lhs
+    on_right = _clock_symbol_sub(rhs, clock_sym, "\x00") != rhs
+    if on_left == on_right:
+        return None
+    residual = _clock_symbol_sub(f"({lhs})-({rhs})", clock_sym, _CLOCK_SOLVE_SYMBOL)
+    if any(_clock_symbol_sub(residual, c, "\x00") != residual for c in clock_symbols):
+        return None  # a second clock symbol survives: two clocks, unknown offsets
+
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import parse_expr
+
+        from bngsim._codegen import _preprocess_derived_expr
+
+        expr = parse_expr(_preprocess_derived_expr(residual), evaluate=True)
+        t = sp.Symbol(_CLOCK_SOLVE_SYMBOL)
+        if t not in expr.free_symbols:
+            return None
+        a = sp.diff(expr, t)
+        if t in a.free_symbols or a == 0:
+            return None  # not linear in the clock, or no crossing
+        threshold = sp.simplify(-(expr - a * t) / a)
+        if t in threshold.free_symbols:  # pragma: no cover - implied by linearity
+            return None
+        text = str(threshold).replace("**", "^")
+    except Exception as exc:  # noqa: BLE001 - an unparseable atom is just declined
+        logger.debug("clock affine solve declined %r: %s", atom, exc)
+        return None
+
+    if any(_clock_symbol_sub(text, c, "\x00") != text for c in clock_symbols):
+        return None
+    return clock_sym, text
+
+
 def _clock_threshold_split(atom: str, clock_symbols: AbstractSet[str]) -> tuple[str, str] | None:
+    """``(clock_symbol, threshold_expr)`` for a clock threshold, else ``None``.
+
+    Two recognizers, asked in order, and the order is the blast radius: the
+    spelling test below answers first and unchanged, so every atom admitted
+    before issue #355 is admitted by the same code with the same threshold text.
+    Only an atom it *declines* reaches :func:`_clock_affine_threshold`, which
+    solves the residual for the clock instead of matching on where the clock sits
+    (``(time()-Tdam)<0``, ``0>=Dam0-krepair*(time()-Tdam)``).
+
+    :func:`_clock_threshold_split_oriented` deliberately does NOT come through
+    here — see its docstring.
+    """
+    bare = _clock_threshold_split_bare(atom, clock_symbols)
+    if bare is not None:
+        return bare
+    return _clock_affine_threshold(atom, clock_symbols)
+
+
+def _clock_threshold_split_bare(
+    atom: str, clock_symbols: AbstractSet[str]
+) -> tuple[str, str] | None:
     """Split a relational atom into ``(clock_symbol, threshold_expr)``, or
     ``None`` when it is not a clock-versus-threshold comparison.
 
@@ -466,8 +604,19 @@ def _clock_threshold_split_oriented(
     orientation-blind: an ``if()`` branch flips at the threshold whichever way
     the comparison points, and the core reads f⁻/f⁺ by evaluating the RHS on
     each side.
+
+    Bound to :func:`_clock_threshold_split_bare`, NOT to the widened
+    :func:`_clock_threshold_split` (issue #355). Orientation here is read off
+    *which side the clock sits on*, and that is only meaningful when the clock is
+    bare: for ``0 >= Dam0 - krepair*(time()-Tdam)`` the clock is on the right, so
+    this would answer "upper" where the solved threshold
+    ``time() >= Tdam + Dam0/krepair`` is plainly a lower one. Getting it right
+    would mean reading the sign of the clock's coefficient, which is a parameter
+    expression and so not always statically signed. Events are a separate
+    machinery with its own crossing detector; widening them is not what #355
+    measured, so this stays where it was.
     """
-    split = _clock_threshold_split(atom, clock_symbols)
+    split = _clock_threshold_split_bare(atom, clock_symbols)
     if split is None:
         return None
     op_split = _relational_split_op(atom)

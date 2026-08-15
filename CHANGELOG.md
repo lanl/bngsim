@@ -123,6 +123,41 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A clock threshold is recognized by the crossing it has, not by how it was
+  typed (issue #355).** `_clock_threshold_split` decided what counted as a
+  recognized clock threshold by *where the clock sat*: exactly one side had to be
+  the clock symbol itself. So `time()<T` was admitted and `time()-T<0` — the same
+  threshold, constant moved across the comparison — was declined, as was anything
+  affine with a parameter-dependent slope.
+
+  That was not cosmetic. The gate is per model, so one such condition took the
+  **whole model** off the analytic sensitivity RHS and onto CVODES' difference
+  quotient, which integrates straight through the crossing and drops the
+  `(f⁻−f⁺)·∂t*/∂p` jump — the failure issue #232 measured at 53% wrong. And the
+  decline warning said the condition "reads model state" when what it reads is
+  the clock.
+
+  The recognizer now solves the residual for the clock: `a·t + b = 0` gives the
+  crossing `t* = −b/a` as a symbolic expression, which is what `∂t*/∂p` must be
+  differentiated from. The spelling test still answers **first and unchanged**,
+  so no threshold recognized before this change moves path or threshold text;
+  only an atom it declines reaches the solve. Reading the clock on *both* sides
+  (`t<2*t`) is still not a clock threshold — that one stays the state path's.
+
+  Blast radius measured over all 1323 `rr_parity` models: **7 carry an atom that
+  newly resolves**, and re-sweeping all of them against AMICI moved 8 of 14 rows
+  with **zero regressions** — `MODEL2307130001` goes TIMEOUT → PASS on both
+  corrector methods, and `BIOMD0000001007/1009/1010` (three of issue #326's five
+  open models, all stalling at `t ≈ 49.99841887`, which is exactly where
+  `time()-Tdam` crosses with `Tdam = 50`) convert from an unexplained
+  `CVODE made no progress` into a precise declared refusal naming `Dam0`,
+  `Tdam` and `krepair` as parameters that set a switch time *and* appear inside a
+  branch. Those three are explained rather than fixed, and #326's recorded ruling
+  that they carry no time discontinuity does not hold.
+
+  Also corrects the decline warning, which pointed readers at issue #150 —
+  closed 2026-08-03 — for a residue #150 never covered.
+
 - **An event whose trigger residual starts exactly ON its threshold no longer
   fires spuriously (issue #340).** `BIOMD0000000285` declares `PIdeath > 0` on a
   species whose initial amount is 0. The trigger is false at `t_start` (`0 > 0`)
