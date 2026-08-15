@@ -16,6 +16,45 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **The sensitivity tolerance shape stays as it is, and the measurement that
+  settles it is now on the record (issue #354).** No behavior change:
+  `atolS[iS][i] = atol*scale[i]/pbar[iS]` is unchanged, both #352 hatches keep
+  their shipped defaults, and this is comments plus tests.
+
+  The alternative — drop the `/pbar` divisor, which is what AMICI's flat `atol`
+  amounts to — was swept over the full 1323-model corpus x 2 corrector methods,
+  one variable, both arms from one binary via `BNGSIM_SENS_PBAR=unit`. It lost
+  on every axis: **rescued 2 rows and broke 8** (every moved row re-verified
+  serially, which mattered — a third apparent rescue was a worker that died in
+  the arm and did not reproduce); **identical `max_rel_err` against the same
+  AMICI oracle on all 1946 rows that passed both ways**, so it buys no accuracy
+  anywhere; and a load-independent step count over 452 models of median 1.032x,
+  p90 1.407x.
+
+  The mechanism is that **`pbar` has two consumers and the hatch moves both**.
+  Besides dividing `atolS` it is handed to `CVodeSetSensParams`, where CVODES
+  uses it as the perturbation scale of its internal difference quotient — live
+  on the 117 of 1323 corpus models with no analytic sensitivity RHS
+  (structurally: `floor()`, `abs()`, `ceil()`, a non-emittable functional
+  species-derivative). Six of the eight broken rows are those models. Pinned to
+  1.0, a probe of `sqrt(eps)*|p|` becomes `sqrt(eps)`: measured against the
+  closed form on a declined one-reaction model, **124x worse at `k=1e6` and
+  9176x at `k=1e8`**, and exact parity at `k=1` where `pbar` is 1.0 anyway. Three
+  new tests in `test_sensitivity_tolerance_hatches.py` pin that, including a
+  positive control that the model under test really is on the
+  difference-quotient path.
+
+  The framing that motivated the change does not survive either.
+  `CVodeSensEEtolerances` divides by `pbar` itself — in SUNDIALS' words, "the
+  scaled sensitivity `pbar_i*yS_i` has the same error weight vector calculation
+  as the solution vector" — so the `/pbar` half *is* CVODES' own rule and
+  `scale[i]` (#214) is what bngsim adds. AMICI reaches the same place from the
+  other side, putting parameters on a log scale and applying the chain-rule
+  factor `p` itself (`amici/src/model.cpp:1005`); the parity harness has to pin
+  that off to make the two tensors commensurable, which is what creates the
+  apparent asymmetry. "Match AMICI's shape" would mean adopting a setting AMICI
+  only runs when something else carries the scaling.
+
 - **`amici_parity` budgets the coupled system rather than capping parameters
   (issue #331).** Forward sensitivity integrates `n_species*(Np+1)` states, so a
   job's cost is set by that product, not by `Np` alone. The old flat cap of 20

@@ -2448,13 +2448,30 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // either, and it would propagate silently into every tolerance rather than
     // stopping anywhere it could be reported.
     //
+    // pbar has TWO consumers, and only one of them is a tolerance. Below it
+    // divides atolS; here it is also handed to CVodeSetSensParams, where CVODES
+    // uses it as the perturbation scale of its internal difference quotient
+    // (cvSensRhsInternalDQ). That second consumer is live exactly on the models
+    // with no analytic sensitivity RHS — 117 of the 1323-model rr_parity corpus,
+    // structurally so (floor(), abs(), ceil(), a non-emittable functional
+    // species-derivative), not by budget. On those, pinning pbar to 1.0 replaces
+    // a relative probe with an absolute one and the quotient loses most of its
+    // significant digits: measured against the closed form on a declined
+    // one-reaction model, 124x worse at k=1e6 and 9176x at k=1e8, and exact
+    // parity at k=1 where pbar is 1.0 anyway (test_sensitivity_tolerance_hatches).
+    //
     // BNGSIM_SENS_PBAR=unit pins every column to 1.0 from the same binary and the
-    // same .so — the pbar AMICI passes (it hands CVODES a NULL pbar,
-    // amici/src/solver.cpp:243, and CVODES then uses 1.0), so a corpus A/B for
-    // "is bngsim's parameter-magnitude scaling why AMICI integrates a model we
-    // do not" is a one-variable experiment rather than a two-build comparison.
-    // Same idiom as BNGSIM_SENS_ERROR_FLOOR=0 for issue #177. Diagnostic only:
-    // unset is the shipped behaviour, and this is read once at setup.
+    // same .so, so a corpus A/B for "is bngsim's parameter-magnitude scaling why
+    // AMICI integrates a model we do not" is a one-variable experiment rather
+    // than a two-build comparison. Same idiom as BNGSIM_SENS_ERROR_FLOOR=0 for
+    // issue #177. Diagnostic only: unset is the shipped behaviour, and this is
+    // read once at setup.
+    //
+    // It is NOT "AMICI's configuration", and reading it that way is what the
+    // comment it replaces got wrong. AMICI does hand CVODES a NULL pbar
+    // (amici/src/solver.cpp:243), but AMICI always supplies an analytic
+    // sensitivity RHS, so it has no difference quotient for that NULL to damage.
+    // Setting this hatch changes a second thing AMICI does not have.
     const char *pbar_env = std::getenv("BNGSIM_SENS_PBAR");
     const bool pbar_unit = pbar_env && std::string(pbar_env) == "unit";
     pbar.resize(n_sens);
@@ -2690,6 +2707,28 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     // than moving it. (The clamp is a backstop, not the working path: it fires
     // where the tolerance had already collapsed to nothing.)
     const double kMinAtolS = std::numeric_limits<double>::min();
+    // ── Why this shape stays (issue #354, settled by measurement) ────────
+    // The alternative — drop the /pbar divisor, which is what AMICI's flat atol
+    // amounts to — was swept over the full 1323-model corpus x 2 corrector
+    // methods, one variable, both arms from this binary via the hatch below.
+    // It lost on every axis, so nothing here changes:
+    //
+    //   rescued 2 rows, broke 8   (serially re-verified; a third apparent
+    //                              rescue was a worker that died in the arm)
+    //   max_rel_err vs the same AMICI oracle: IDENTICAL on all 1946 rows that
+    //                              passed both ways — it buys no accuracy at all
+    //   steps (452 models, load-independent): median 1.032x, p90 1.407x
+    //
+    // Six of the eight breaks are difference-quotient models, i.e. the pbar
+    // consumer described above rather than this one. And the framing that
+    // motivated the change does not survive either: CVodeSensEEtolerances
+    // divides by pbar itself ("the scaled sensitivity pbar_i*yS_i has the same
+    // error weight vector calculation as the solution vector"), so the /pbar
+    // half IS CVODES' own rule and scale[i] is what bngsim adds; AMICI reaches
+    // the same place by putting parameters on a log scale and applying the
+    // chain-rule factor p itself (amici/src/model.cpp:1005), which the parity
+    // harness has to pin off to make the two tensors commensurable.
+    //
     // BNGSIM_SENS_ATOLS=flat drops BOTH factors of the shape above and states the
     // bare atol for every (row, column) — literally AMICI's rule, which builds
     // one scalar per column and hands it to CVodeSensSStolerances
