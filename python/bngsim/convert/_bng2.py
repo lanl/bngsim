@@ -17,7 +17,6 @@ dodges that artifact and actually exercises time-dependent forcing.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import tempfile
@@ -38,23 +37,25 @@ _PROBE_TIMES = (0.0137, 0.37, 4.1, 53.0, 6700.0)
 
 
 def find_bng2() -> Path | None:
-    """Locate ``BNG2.pl`` via ``$BNGPATH`` (the parity-suite convention) or ``PATH``.
+    """Locate ``BNG2.pl``, or ``None`` when it cannot be found.
 
-    Returns ``None`` if not found. Deliberately does **not** hardcode an absolute
-    path — the production gate's contract is "set ``$BNGPATH`` or put ``BNG2.pl`` on
-    ``PATH``"; the test suite supplies its own local fallback.
+    A thin front for :func:`bngsim._bngpath.resolve_bng` (GH #162). This used to
+    be its own lookup over ``$BNGPATH`` and ``$PATH`` — a seventh near-duplicate
+    of a resolver that exists *because* near-duplicates drifted — and it was the
+    weakest of them: it never consulted ``$BNG2_PL`` or PyBioNetGen's bundled
+    copy, so a machine carrying either looked BNG-less here while the parity
+    suite found it fine. Delegating makes both mechanisms work and keeps one
+    precedence order for the whole project.
+
+    Deliberately still does **not** hardcode an absolute path: the contract is
+    ``$BNG2_PL`` / ``$BNGPATH`` / ``BNG2.pl`` on ``PATH`` / an installed
+    PyBioNetGen. Returns the path even when ``perl`` is missing — callers here
+    report their own failure; :func:`bngsim._bngpath.skip_reason` is the
+    perl-aware form.
     """
-    bngpath = os.environ.get("BNGPATH")
-    cands: list[Path] = []
-    if bngpath:
-        cands += [Path(bngpath) / "BNG2.pl", Path(bngpath)]
-    which = shutil.which("BNG2.pl")
-    if which:
-        cands.append(Path(which))
-    for c in cands:
-        if c.is_file():
-            return c
-    return None
+    from bngsim._bngpath import resolve_bng
+
+    return resolve_bng().bng2_pl
 
 
 def _strip_pattern(name: str) -> str:

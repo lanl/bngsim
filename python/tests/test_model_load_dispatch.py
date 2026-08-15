@@ -85,20 +85,44 @@ def test_load_unknown_suffix_lists_supported(tmp_path: Path):
     with pytest.raises(ModelError) as exc:
         Model.load(p)
     msg = str(exc.value)
-    for suffix in (".ant", ".net", ".sbml", ".xml"):
+    for suffix in (".ant", ".bngl", ".net", ".sbml", ".xml"):
         assert suffix in msg
 
 
-def test_load_bngl_explains_no_parser(tmp_path: Path):
-    """.bngl gets the specific 'expand with BNG2.pl first' message, not a bare list.
+def test_load_dispatches_bngl(monkeypatch, tmp_path: Path):
+    """.bngl routes to from_bngl, forwarding defer_jacobian (GH #162).
 
-    bngsim has no BNGL parser at all, so 'unsupported suffix' would send the
-    caller looking for a from_bngl that cannot exist.
+    Routing only — network generation itself needs BNG2.pl and is covered by
+    test_bngl_loading.py, which skips without it. Stubbing the factory is what
+    lets the *dispatch* assertion run in every environment, which is the point
+    of this file.
+    """
+    seen = {}
+
+    def _fake(cls, path, **kw):
+        seen.update(path=Path(path), **kw)
+        return "sentinel"
+
+    monkeypatch.setattr(Model, "from_bngl", classmethod(_fake))
+    p = tmp_path / "model.bngl"
+    p.write_text("begin model\nend model\n")
+
+    assert Model.load(p, defer_jacobian=False) == "sentinel"
+    assert seen == {"path": p, "defer_jacobian": False}
+
+
+def test_load_bngl_rejects_compartment_sizes(tmp_path: Path):
+    """compartment_sizes= is refused for .bngl, as it already is for .net.
+
+    BNG2.pl bakes each volume into the generated rate constants, so the override
+    would have to happen in the source before generation — accepting a dict that
+    does nothing is issue #164's expensive failure. Refused before BNG2.pl is
+    even looked for, so this asserts in any environment.
     """
     p = tmp_path / "model.bngl"
     p.write_text("begin model\nend model\n")
-    with pytest.raises(ModelError, match="BNG2.pl"):
-        Model.load(p)
+    with pytest.raises(ModelError, match="compartment_sizes"):
+        Model.load(p, compartment_sizes={"cell": 2.0})
 
 
 def test_load_suffixless_path_is_a_model_error(tmp_path: Path):

@@ -6,8 +6,9 @@
 
 Factory methods:
 - **`Model.load(path)`** — Load any supported file, dispatching on its suffix
-  (`.ant`, `.xml`/`.sbml`, `.net`); raises `ModelError` for anything else
+  (`.ant`, `.xml`/`.sbml`, `.net`, `.bngl`); raises `ModelError` for anything else
 - **`Model.from_net(path)`** — Load from BNG `.net` file
+- **`Model.from_bngl(path, *, protocol=False, bng2_pl=None, net_out=None, timeout=600, cache=True)`** — Load from BNGL `.bngl` by running `BNG2.pl generate_network` (requires `bngsim[bngl]`, or `$BNGPATH`/`$BNG2_PL`, plus `perl`). The file's actions block is **not** executed — only `generate_network`, carrying the source's own `max_iter`/`max_agg`/`max_stoich`; `protocol=True` returns `(model, ProtocolSpec)` so the actions are recovered rather than discarded. Generated networks are cached under `~/.cache/bngsim/networks` (`$BNGSIM_BNGL_CACHE_DIR`), keyed on the flattened model text and the BNG2.pl that produced it
 - **`Model.from_antimony(path)`** — Load from Antimony `.ant` file (requires `antimony`, `python-libsbml`)
 - **`Model.from_antimony_string(text)`** — Load from Antimony string
 - **`Model.from_sbml(path)`** — Load from SBML `.xml` file (requires `python-libsbml`)

@@ -151,6 +151,40 @@ HAS_LIBSBML: bool = _has_module("libsbml")
 HAS_ANTIMONY: bool = _has_module("antimony")
 HAS_VIVARIUM: bool = _has_module("vivarium")
 
+
+def _bngl_available() -> bool:
+    """Whether ``Model.from_bngl`` can actually run here (GH #162).
+
+    The odd one out among the flags above, and deliberately a *probe* rather than
+    an import check: BNGL loading needs an external Perl toolchain, not a module.
+    ``pip install 'bngsim[bngl]'`` is one way to get BNG2.pl, ``$BNGPATH`` at a
+    BioNetGen you already have is another, and neither is visible to
+    ``find_spec``; conversely a machine with ``bionetgen`` importable but no
+    ``perl`` — stock Windows — cannot load BNGL at all. Only running the resolver
+    answers it.
+
+    Exposed as the lazy module attribute ``bngsim.HAS_BNGL`` (see
+    ``__getattr__``) so ``import bngsim`` never pays for it: the resolver may
+    ``import bionetgen``, a 12.8 MB package that pulls in libroadrunner, seaborn
+    and networkx, and nothing about importing bngsim should.
+    """
+    from bngsim._bngpath import resolve_bng
+
+    return resolve_bng().ok
+
+
+def __getattr__(name: str) -> object:
+    """Lazily probe ``HAS_BNGL`` (PEP 562); everything else is a normal attribute.
+
+    Re-probed on each access rather than cached, so a caller that exports
+    ``$BNGPATH`` at runtime sees the change. That stays cheap: the only expensive
+    step is the first ``import bionetgen``, which ``sys.modules`` memoizes.
+    """
+    if name == "HAS_BNGL":
+        return _bngl_available()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     # Version
     "__version__",
@@ -226,6 +260,9 @@ __all__ = [
     "HAS_LIBSBML",
     "HAS_ANTIMONY",
     "HAS_VIVARIUM",
+    # Lazy (see __getattr__ above): a runtime probe for BNG2.pl + perl, not a
+    # module check, and not paid for at import.
+    "HAS_BNGL",
     "capabilities",
     # Codegen
     "prepare_codegen",
@@ -325,10 +362,18 @@ def capabilities() -> dict[str, Any]:
 
         ``"features"`` always contains the same keys regardless of build:
         ``nfsim``, ``rulemonkey``, ``klu``, ``lapack_dense``, ``mir``,
-        ``libsbml``, ``antimony``, ``vivarium``, ``sbml_import``, ``sbml_ssa``,
-        ``sbml_psa``, ``antimony_import``, ``codegen``,
+        ``libsbml``, ``antimony``, ``vivarium``, ``bngl``, ``sbml_import``,
+        ``sbml_ssa``, ``sbml_psa``, ``antimony_import``, ``codegen``,
         ``output_sensitivities``, ``effective_ic_sensitivity``.
         ``"missing"`` is empty when every feature is available.
+
+        ``bngl`` reports whether :meth:`bngsim.Model.from_bngl` (and
+        ``Model.load("x.bngl")``) can run here — GH #162. Unlike its neighbours
+        this one is a **runtime probe, not an import check**: BNGL loading shells
+        out to BNG2.pl, so it needs both a locatable BioNetGen (the ``bngl``
+        extra, or ``$BNGPATH``/``$BNG2_PL``, or ``BNG2.pl`` on ``PATH``) *and* a
+        ``perl`` to run it. Computing it is why ``capabilities()`` can be slow on
+        its first call in a process where ``bionetgen`` is installed.
 
         ``output_sensitivities`` reports whether this install can emit the
         ``(n_times, n_outputs, n_param)`` output-sensitivity tensor via
@@ -386,6 +431,7 @@ def capabilities() -> dict[str, Any]:
         "libsbml": HAS_LIBSBML,
         "antimony": HAS_ANTIMONY,
         "vivarium": HAS_VIVARIUM,
+        "bngl": _bngl_available(),
         "sbml_import": HAS_LIBSBML,
         "sbml_ssa": HAS_LIBSBML,
         "sbml_psa": HAS_LIBSBML,
@@ -444,6 +490,14 @@ def capabilities() -> dict[str, Any]:
         missing["antimony"] = "optional dependency 'antimony' not installed"
     if not HAS_VIVARIUM:
         missing["vivarium"] = "optional dependency 'vivarium-core' not installed"
+    if not features["bngl"]:
+        # The resolver's own trail, not a generic "install the extra": on a box
+        # with three BioNetGens the useful sentence is which places were looked
+        # in, and a found-BNG2.pl-but-no-perl install needs a different fix
+        # entirely. `pip install 'bngsim[bngl]'` is named inside it.
+        from bngsim._bngpath import resolve_bng
+
+        missing["bngl"] = f"BNGL loading unavailable — {resolve_bng().why_not()}"
     if not features["antimony_import"]:
         if not HAS_ANTIMONY and not HAS_LIBSBML:
             missing["antimony_import"] = (

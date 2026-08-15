@@ -58,8 +58,9 @@ is doing that.
 ### Legacy BioNetGen (BNG2.pl) for `parity_checks/`
 
 bngsim has no BNGL parser, so every BNGL job shells out to BNG2.pl for network
-generation before simulating in-process. Without it the `parity_checks/` engine
-tests skip. Two ways to supply it — pick either:
+generation before simulating in-process — the `parity_checks/` engine tests, the
+cBNGL round-trip gate, and (since #162) `Model.from_bngl` itself. Without it
+those skip. Two ways to supply it — pick either:
 
 ```bash
 uv sync --extra dev --group parity   # installs the pinned PyBioNetGen, which
@@ -67,16 +68,26 @@ uv sync --extra dev --group parity   # installs the pinned PyBioNetGen, which
 export BNGPATH=/path/to/BioNetGen-2.9.3   # ...or point at an install you already have
 ```
 
-Resolution order is `$BNG2_PL` → `$BNGPATH` → PyBioNetGen's bundled copy, so an
-env var always **overrides** an installed package (`_core.bngpath`). `$BNGPATH`
-may be the BioNetGen folder or the `BNG2.pl` script itself. When nothing
-resolves, the skip message names every location that was tried — if a test says
-"no usable BNG2.pl", that message is the diagnosis, not a dead end.
+Resolution order is `$BNG2_PL` → `$BNGPATH` → `BNG2.pl` on `$PATH` →
+PyBioNetGen's bundled copy, so an env var always **overrides** an installed
+package. `$BNGPATH` may be the BioNetGen folder or the `BNG2.pl` script itself.
+When nothing resolves, the skip message names every location that was tried — if
+a test says "no usable BNG2.pl", that message is the diagnosis, not a dead end.
+
+The resolver is `bngsim._bngpath`, in the shipped package since #162 because
+`Model.from_bngl` needs it; `_core.bngpath` re-exports it and adds the
+`sys.exit`-ing `require_bng` the sweep entrypoints use. Do not add a local
+BNG2.pl lookup anywhere — that module's header records the six near-duplicates
+that disagreed about precedence, and a seventh had appeared in
+`bngsim.convert._bng2` before it was folded back in.
 
 The `parity` group pins the same commit as
 `parity_checks/requirements-pybionetgen.txt`; `test_pin_agreement.py` fails if
-they drift. For a fully isolated parity/benchmark environment (rather than
-adding PyBioNetGen to your dev venv), use
+they drift. It is **not** the `bngl` extra: that extra wants the PyPI release
+for BNG2.pl, this group wants an exact commit for engine-routing provenance, and
+`dev` deliberately omits `bngl` so no environment has to reconcile a range with
+a git pin. For a fully isolated parity/benchmark environment (rather than adding
+PyBioNetGen to your dev venv), use
 `parity_checks/bng_parity/bootstrap_parity_env.py` instead.
 
 ### AMICI for `parity_checks/amici_parity/`

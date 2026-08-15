@@ -16,6 +16,93 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **BNGL models load, behind a `bngl` extra (issue #162).**
+  `Model.from_bngl("m.bngl")` and `Model.load("m.bngl")` now work;
+  `_LOAD_DISPATCH` gained `.bngl` and the "expand it yourself first" refusal is
+  gone. bngsim still has no BNGL parser and does not want one — BNGL describes
+  *rules*, and turning them into a network is `BNG2.pl generate_network`'s job —
+  so the loader shells out and reads the emitted `.net` through
+  `Model.from_net`. `pip install 'bngsim[bngl]'` supplies BNG2.pl via
+  PyBioNetGen; `$BNG2_PL` / `$BNGPATH` / a `BNG2.pl` on `PATH` all outrank it,
+  and `perl` has to be there too (so BNGL loading reports itself unavailable on
+  stock Windows rather than failing at load time).
+
+  **The file's experiment is not executed — and only the experiment is
+  stripped.** A `.bngl` in the wild ends in `simulate({...})` or
+  `parameter_scan({...})`, and BNG2.pl runs whatever it is handed, so loading a
+  model would have meant running the author's whole experiment to obtain a
+  network `generate_network` alone produces in seconds. But dropping *every*
+  action is the opposite mistake, and the first cut here made it: an action-scope
+  `setOption("NumberPerQuantityUnit",6.0221e23)` above the model block
+  configures the generation, and without it BNG2.pl emitted the same topology
+  with every bimolecular rate constant off by that factor — `1e12` where the
+  reference network says `1.66e-12`, caught by diffing
+  `benchmarks/models/bngl/ode/catalysis.bngl` against a direct BNG2.pl run.
+  What is dropped is now exactly the verbs that would run the experiment, write
+  an artifact (a stray `writeNET` would land on the network being read), or stop
+  BNG2.pl early — plus everything after the source's own `generate_network`,
+  which is where the protocol begins. That call's `max_iter` / `max_agg` /
+  `max_stoich` are forwarded: they are what make an unbounded rule set finite, so
+  regenerating with BNG2.pl's defaults would silently give a *different model* (or
+  never return). `from_bngl(..., protocol=True)` returns `(model, ProtocolSpec)`
+  so the experiment is recovered rather than discarded.
+
+  Verified by diffing against direct `BNG2.pl` runs over fifteen corpus models:
+  thirteen are byte-identical. The other two differ only because the *reference*
+  is contaminated by its own protocol — `toy-jim.bngl` equilibrates with
+  `simulate({...steady_state=>1})`, and BNG2.pl rewrites the `.net` as it goes,
+  leaving evaluated numbers where the model declared `R_tot`. Loading through
+  `from_bngl` keeps the declared symbolic seeds, so `set_param("R_tot", ...)`
+  still reaches the initial condition. `ode/fceri_gamma` and
+  `ode/prion_aggregation` reproduce the species/reaction counts recorded in their
+  own header comments, which is what pins the option forwarding.
+
+  **Generated networks are cached**, under `~/.cache/bngsim/networks`
+  (`$BNGSIM_BNGL_CACHE_DIR`), keyed on a digest of the flattened model text
+  *and* the BNG2.pl that produced it — so an edit or a BioNetGen upgrade
+  regenerates, and an actions-only edit correctly reuses. That is not only
+  speed: `Model.from_net` records the path in `_net_path`, and codegen prefers
+  that file precisely because a BNG2.pl network carries derived rate-constant
+  parameters (`_rateLaw{N}`) whose chain rules the model-based path does not
+  reconstruct (issue #15). A scratch directory deleted on the way out would have
+  left every `from_bngl` model with a dangling path, failing at simulate time on
+  the models that need the `.net` route most. An unwritable cache degrades to a
+  per-process directory rather than failing the load.
+
+  Compartmental (cBNGL) input loads — BNG2.pl bakes the volumes into the
+  generated rate constants exactly as for a hand-generated `.net`, which is why
+  `compartment_sizes=` is refused for `.bngl` as it already was for `.net`.
+  Verified across `benchmarks/models/bngl/`; the models that do not load are the
+  network-free ones, which time out with a message naming the remedy.
+
+  `bngsim.HAS_BNGL` and `capabilities()["features"]["bngl"]` report it. Unlike
+  its neighbours `HAS_BNGL` is a **runtime probe, not an import check** — BNG2.pl
+  can arrive from an env var, and `bionetgen`-importable-but-no-`perl` cannot
+  load BNGL at all — and it is a lazy module attribute, so `import bngsim` never
+  pulls in `bionetgen` (a 12.8 MB package that brings libroadrunner with it).
+  `capabilities()["missing"]["bngl"]` carries the resolver's full trail.
+
+  The extra is deliberately **not** a base dependency and **not** folded into
+  `dev`: promoting `bionetgen` would put libroadrunner, seaborn and networkx
+  into every install and add a Perl runtime requirement, and `dev` carrying it
+  would hand the resolver both a version range and the `parity` group's git pin
+  to reconcile. A test asserts the base install stays clear of both.
+
+### Changed
+
+- **The BNG2.pl resolver is now shipped, as `bngsim._bngpath` (issue #162).**
+  It was `parity_checks/_core/bngpath.py`, which is developer-only and not
+  packaged — and `bngsim.convert._bng2.find_bng2` had already grown a seventh,
+  weaker copy of the lookup the module exists to prevent duplicating: `$BNGPATH`
+  and `$PATH` only, no `$BNG2_PL`, no bundled PyBioNetGen, no record of what was
+  tried. So a machine carrying either of those looked BNG-less to the cBNGL
+  round-trip gate while the parity suite found BNG2.pl fine. Both now resolve
+  through one module, `_core.bngpath` re-exports from it (a test asserts object
+  identity, not equal behavior), and the promotion is a strict superset:
+  `BNG2.pl` on `$PATH` joined the precedence order between the env vars and the
+  bundled copy. `require_bng`, which `sys.exit`s, stays in `parity_checks/` —
+  a sweep-entrypoint concern with no business in a library.
+
 - **The sensitivity tolerance shape stays as it is, and the measurement that
   settles it is now on the record (issue #354).** No behavior change:
   `atolS[iS][i] = atol*scale[i]/pbar[iS]` is unchanged, both #352 hatches keep

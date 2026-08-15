@@ -10,7 +10,7 @@ import logging
 import time
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from bngsim._bngsim_core import NetworkModel
+    from bngsim.convert import ProtocolSpec
 
 logger = logging.getLogger("bngsim")
 
@@ -46,6 +47,7 @@ _LOAD_DISPATCH: dict[str, str] = {
     ".xml": "from_sbml",
     ".sbml": "from_sbml",
     ".net": "from_net",
+    ".bngl": "from_bngl",
 }
 
 
@@ -286,13 +288,14 @@ class Model:
         ``.xml``       :meth:`from_sbml`
         ``.sbml``      :meth:`from_sbml`
         ``.net``       :meth:`from_net`
+        ``.bngl``      :meth:`from_bngl`
         =============  =====================
 
-        Matching is case-insensitive. ``.bngl`` is *not* loadable: bngsim has no
-        BNGL parser, so a BNGL model must be expanded to a ``.net`` network by
-        BNG2.pl first (``pip install bionetgen`` ships it). Note this is not the
-        parity_checks/ ``parity`` group, which pins an exact PyBioNetGen commit
-        for engine-routing provenance rather than for BNG2.pl.
+        Matching is case-insensitive. ``.bngl`` needs BNG2.pl on the machine
+        (``pip install 'bngsim[bngl]'``) because bngsim has no BNGL parser — see
+        :meth:`from_bngl`, and note that extra is not the parity_checks/
+        ``parity`` group, which pins an exact PyBioNetGen commit for
+        engine-routing provenance rather than for BNG2.pl.
 
         Parameters
         ----------
@@ -304,8 +307,9 @@ class Model:
             the analytical Functional Jacobian eagerly at load.
         compartment_sizes : dict[str, float], optional
             Compartment id → volume, forwarded to the SBML-family factories
-            (issue #164 — see :meth:`from_sbml`). Rejected for ``.net``, whose
-            volumes BNG2.pl already folded into the network's rate constants.
+            (issue #164 — see :meth:`from_sbml`). Rejected for ``.net`` and
+            ``.bngl``, whose volumes BNG2.pl folds into the network's rate
+            constants during network generation.
 
         Returns
         -------
@@ -321,36 +325,36 @@ class Model:
             If the file does not exist.
         ModelError
             If the suffix is not a loadable format, the file cannot be parsed,
-            or ``compartment_sizes`` is given for a ``.net`` model.
+            ``compartment_sizes`` is given for a ``.net``/``.bngl`` model, or
+            BNG2.pl is unavailable for a ``.bngl`` one.
         """
         path = Path(path)
         suffix = path.suffix.lower()
         factory = _LOAD_DISPATCH.get(suffix)
         if factory is None:
             known = ", ".join(sorted(_LOAD_DISPATCH))
-            hint = ""
-            if suffix == ".bngl":
-                hint = (
-                    " BNGL is not loadable directly — bngsim has no BNGL parser;"
-                    " expand the model to a .net network with BNG2.pl first."
-                )
             raise ModelError(
                 f"Cannot infer a model format from {path.name!r} "
                 f"(suffix {suffix or 'missing'!r}); expected one of: {known}. "
-                f"Use the format-specific factory to load it explicitly.{hint}"
+                f"Use the format-specific factory to load it explicitly."
             )
-        if compartment_sizes and factory == "from_net":
-            # A .net network is post-BNG2.pl: the compartment volumes are already
-            # folded into its rate constants and there is no compartment left to
+        if compartment_sizes and factory in ("from_net", "from_bngl"):
+            # Post-BNG2.pl, the compartment volumes are already folded into the
+            # network's rate constants and there is no compartment left to
             # override. Say so rather than accept a dict that would do nothing
             # (issue #164 exists because a silently-dropped volume write is the
-            # expensive failure).
+            # expensive failure). A .bngl still HAS a `begin compartments` block,
+            # but it is BNG2.pl that bakes it and the override would have to
+            # happen in the source — so the honest remedy is the same one.
+            kind = ".net" if factory == "from_net" else ".bngl"
             raise ModelError(
-                f"compartment_sizes= is not supported for .net models ({path.name}): "
+                f"compartment_sizes= is not supported for {kind} models ({path.name}): "
                 f"BNG2.pl folds compartment volumes into the generated network's rate "
                 f"constants, so the loaded model has no compartment size to set. "
                 f"Regenerate the network from BNGL at the volume you want."
             )
+        if factory == "from_bngl":
+            return cls.from_bngl(path, defer_jacobian=defer_jacobian)
         if factory == "from_antimony":
             # from_antimony takes no defer_jacobian (it routes through the SBML
             # string loader, which is lazy); apply the eager hatch exactly as
@@ -613,6 +617,141 @@ class Model:
         if eager_jacobian_requested(defer_jacobian):
             m.prepare_analytical_jacobian()
         return m
+
+    # The `protocol` flag changes the return type, so it is overloaded rather
+    # than left as a union every caller has to narrow — `Model.load` dispatching
+    # here would otherwise have to cast.
+    @overload
+    @classmethod
+    def from_bngl(
+        cls,
+        path: str | Path,
+        *,
+        protocol: Literal[False] = ...,
+        bng2_pl: str | Path | None = ...,
+        net_out: str | Path | None = ...,
+        timeout: int = ...,
+        cache: bool = ...,
+        defer_jacobian: bool | None = ...,
+    ) -> Model: ...
+
+    @overload
+    @classmethod
+    def from_bngl(
+        cls,
+        path: str | Path,
+        *,
+        protocol: Literal[True],
+        bng2_pl: str | Path | None = ...,
+        net_out: str | Path | None = ...,
+        timeout: int = ...,
+        cache: bool = ...,
+        defer_jacobian: bool | None = ...,
+    ) -> tuple[Model, ProtocolSpec]: ...
+
+    @classmethod
+    def from_bngl(
+        cls,
+        path: str | Path,
+        *,
+        protocol: bool = False,
+        bng2_pl: str | Path | None = None,
+        net_out: str | Path | None = None,
+        timeout: int = 600,
+        cache: bool = True,
+        defer_jacobian: bool | None = None,
+    ) -> Model | tuple[Model, ProtocolSpec]:
+        """Load a rule-based BNGL (``.bngl``) model, via BNG2.pl (GH #162).
+
+        bngsim simulates reaction *networks*, and BNGL describes *rules*, so this
+        is not a parser: the model block is handed to ``BNG2.pl
+        generate_network``, and the ``.net`` it emits is loaded through
+        :meth:`from_net`. That makes BNG2.pl a requirement — ``pip install
+        'bngsim[bngl]'`` supplies it (PyBioNetGen bundles it), or point
+        ``$BNGPATH``/``$BNG2_PL`` at a BioNetGen you already have. It is a Perl
+        script, so ``perl`` must be on ``PATH`` too (macOS and most Linux
+        distributions ship one; stock Windows does not).
+
+        The file's **actions block is not executed.** A ``.bngl`` typically ends
+        in ``simulate({...})`` or ``parameter_scan({...})``, and running the file
+        as written would run the author's entire experiment just to obtain a
+        network. Only ``generate_network`` is run — carrying the source's own
+        ``max_iter``/``max_agg``/``max_stoich``, since those are what make an
+        unbounded rule set finite. Pass ``protocol=True`` to get the actions back
+        as a :class:`~bngsim.convert.ProtocolSpec` rather than lose them.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to the ``.bngl`` file.
+        protocol : bool
+            Return ``(model, ProtocolSpec)`` instead of just the model, the spec
+            being the parsed actions block (:func:`bngsim.convert.parse_bngl_protocol`
+            in non-strict mode, so a fidelity-affecting action is recorded in
+            ``spec.lossy`` and warned about rather than raising).
+        bng2_pl : str or Path, optional
+            An explicit BioNetGen folder or ``BNG2.pl`` path, outranking
+            ``$BNG2_PL``, ``$BNGPATH``, ``PATH`` and an installed PyBioNetGen.
+        net_out : str or Path, optional
+            Write the generated network here and load it from there, instead of
+            from the cache. The way to keep the ``.net`` as an artifact.
+        timeout : int
+            Seconds to allow ``generate_network`` (default 600). A rule set whose
+            network is unbounded hits this.
+        cache : bool
+            Reuse a previously generated network for unchanged BNGL (default).
+            The cache is content-addressed under ``~/.cache/bngsim/networks``
+            (override with ``$BNGSIM_BNGL_CACHE_DIR``), keyed on the flattened
+            model text *and* the BNG2.pl that produced it, so it cannot go stale.
+            ``False`` regenerates into a per-process directory.
+        defer_jacobian : bool, optional
+            GH #145 escape hatch, forwarded to :meth:`from_net`.
+
+        Returns
+        -------
+        Model or tuple[Model, ProtocolSpec]
+            The loaded model, and the actions block when ``protocol=True``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file does not exist.
+        ModelError
+            If BNG2.pl (or ``perl``) cannot be found — with every mechanism that
+            was consulted named — or if ``generate_network`` fails or times out,
+            with the tail of BNG2.pl's own output attached.
+
+        Notes
+        -----
+        Compartmental BNGL loads: BNG2.pl bakes each compartment's volume into
+        the generated rate constants, exactly as for a hand-generated ``.net``.
+        For the same reason there is no ``compartment_sizes=`` here — the volume
+        has to change in the BNGL source, before generation.
+
+        Examples
+        --------
+        >>> model = bngsim.Model.from_bngl("egfr.bngl")           # doctest: +SKIP
+        >>> model, spec = bngsim.Model.from_bngl(                  # doctest: +SKIP
+        ...     "egfr.bngl", protocol=True)
+        >>> [e.t_end for e in spec.experiments]                    # doctest: +SKIP
+        [100.0]
+        """
+        from bngsim._bngl_loader import load_bngl
+
+        model = load_bngl(
+            path,
+            bng2_pl=bng2_pl,
+            net_out=net_out,
+            timeout=timeout,
+            cache=cache,
+            defer_jacobian=defer_jacobian,
+        )
+        if not protocol:
+            return model
+
+        from bngsim.convert import parse_bngl_protocol
+
+        return model, parse_bngl_protocol(Path(path), strict=False)
 
     # ─── Lazy analytical Jacobian (GH #145) ───────────────────────────────
 
