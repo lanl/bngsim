@@ -82,6 +82,30 @@ hdf5 = ["h5py>=3.0"]
 # only long-stable DataArray/Dataset API, and 2024.7 is the era whose
 # `pandas>=2.0` requirement matches this project's own `pandas` extra.
 xarray = ["xarray>=2024.7"]
+# BNGL (.bngl) input for Model.from_bngl / Model.load (GH #162). bngsim has no
+# BNGL parser: rules become a network only through BNG2.pl, and PyBioNetGen is
+# how BNG2.pl reaches PyPI.
+#
+# This must NOT become a base dependency, and is not folded into `dev` either.
+# `bionetgen` 0.8.6 is a 12.8 MB wheel requiring cement, nbopen, numpy, pyyaml,
+# colorlog, xmltodict, seaborn, libroadrunner, sympy, lxml, networkx,
+# python-libsbml, pylru, pyparsing. Promoting it would pull **libroadrunner**
+# into every install -- contradicting the `roadrunner` extra's stated policy
+# three stanzas down -- add seaborn and networkx to a core scientific install,
+# add a Perl runtime requirement (BNG2.pl is Perl: fine on macOS/Linux, absent
+# on stock Windows), and invert the layering, since PyBioNetGen *consumes*
+# bngsim through its in-Python bridge (RuleWorld/PyBioNetGen#102).
+#
+# It is also NOT the `parity` group, which pins `bionetgen @ git+...@43b09a5`
+# for engine-routing provenance (the older 5109a46 silently routed
+# simulator='bngsim' to legacy BNG2.pl -- see
+# parity_checks/requirements-pybionetgen.txt). A user loading a BNGL file needs
+# BNG2.pl, not that commit; the PyPI release here does not satisfy the parity
+# suite, and keeping them apart is what stops a resolver from having to
+# reconcile a range with a git pin. That separation is also why `dev` omits this
+# extra: a developer venv gets BNG2.pl from `--group parity` (or $BNGPATH), and
+# a dev environment carrying both requirements would have to resolve them.
+bngl = ["bionetgen>=0.8.6"]
 test = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -202,6 +226,11 @@ amici = [
 # at build time, so it cannot build in an isolated env that lacks them. Same
 # reason bootstrap_parity_env.py passes --no-build-isolation by hand.
 no-build-isolation-package = ["bionetgen"]
+# Consequence worth knowing before you edit anything above: with isolation off,
+# PyBioNetGen builds against THIS venv, so re-locking needs `setuptools` and
+# `pip` installed in it. And `uv.lock` records `provides-extras`, so any edit to
+# the dependency metadata in this file invalidates the lock and forces exactly
+# that re-resolve. See CONTRIBUTING.md, "Re-locking after a pyproject change".
 
 [project.scripts]
 # SBML → .net network converter (GH #215). Also runnable as

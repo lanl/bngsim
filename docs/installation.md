@@ -159,10 +159,33 @@ uv run --directory bngsim python -m pytest python/tests/test_method_normalizatio
 ```bash
 pip install bngsim            # core package
 pip install bngsim[antimony]  # Antimony .ant loading
+pip install bngsim[bngl]      # BNGL .bngl loading (PyBioNetGen, for BNG2.pl)
 pip install bngsim[pandas]   # pandas DataFrame support
 pip install bngsim[hdf5]     # HDF5 save/load (h5py)
-pip install bngsim[dev]      # all of the above + pytest + ruff
+pip install bngsim[dev]      # all of the above except bngl, + pytest + ruff
 ```
+
+## BNGL note
+
+- BNGL loading (`Model.from_bngl`, `Model.load("x.bngl")`) shells out to
+  **BNG2.pl** for network generation, because BNGsim has no BNGL parser — see
+  [Loading models](user-guide/loading-models.md). `bngsim[bngl]` supplies it via
+  PyBioNetGen, but `$BNG2_PL` / `$BNGPATH` pointing at a BioNetGen you already
+  have works just as well and takes precedence.
+- BNG2.pl is Perl, so `perl` must be on `PATH` too. macOS and most Linux
+  distributions ship one; stock Windows does not, and BNGL loading reports
+  itself unavailable there rather than failing at load time.
+- The extra is deliberately **not** a base dependency and is **not** folded into
+  `dev`. `bionetgen` is a 12.8 MB wheel that requires `libroadrunner`, `seaborn`
+  and `networkx`, so promoting it would put RoadRunner into every install —
+  contradicting the policy stated for the `roadrunner` extra below — and add a
+  Perl runtime requirement to a package that runs fine without one. It also
+  inverts the layering: PyBioNetGen *consumes* BNGsim through its in-Python
+  bridge.
+- It is not the `parity` dependency group either. That group pins an exact
+  PyBioNetGen commit for engine-routing provenance; loading a BNGL file needs
+  BNG2.pl, not that commit. Keeping them separate is why `dev` omits `bngl` — a
+  developer environment gets BNG2.pl from `--group parity` or `$BNGPATH`.
 
 ## Antimony version note
 
@@ -194,7 +217,15 @@ bngsim.HAS_KLU           # compiled SuiteSparse/KLU sparse linear solver
 bngsim.HAS_LAPACK_DENSE  # compiled BLAS/LAPACK dense factor (opt-in, speed only)
 bngsim.HAS_LIBSBML       # optional Python dependency 'python-libsbml'
 bngsim.HAS_ANTIMONY      # optional Python dependency 'antimony'
+bngsim.HAS_BNGL          # BNG2.pl *and* perl are reachable — see below
 ```
+
+`HAS_BNGL` is the one flag that is not an import check. BNGL loading needs an
+external Perl toolchain, which can arrive from the `bngl` extra, from
+`$BNGPATH`, or from a `BNG2.pl` on `PATH` — and a machine with `bionetgen`
+importable but no `perl` cannot load BNGL at all. So it is probed when you read
+it, not fixed at import (which also keeps `import bngsim` from ever pulling in
+`bionetgen`), and it tracks an environment variable you export at runtime.
 
 `HAS_LAPACK_DENSE` is the one flag that is `True` on the macOS wheels
 (Accelerate) and `False` on the manylinux and Windows ones. Nothing is missing
@@ -233,6 +264,11 @@ tool needs to report differently:
 - **Optional Python dependency** — message starts with "optional
   dependency" and names the PyPI package (`'python-libsbml'`,
   `'antimony'`). Caller should tell users to `pip install` it.
+- **External toolchain** — `missing["bngl"]` starts with "BNGL loading
+  unavailable" and then names *every* location that was searched for BNG2.pl,
+  plus the fixes. Print it verbatim: on a machine carrying several BioNetGen
+  installs the useful sentence is which ones were consulted, and a
+  found-BNG2.pl-but-no-`perl` install needs a different fix from a missing one.
 
-Stable feature keys: `nfsim`, `rulemonkey`, `libsbml`, `antimony`,
+Stable feature keys: `nfsim`, `rulemonkey`, `libsbml`, `antimony`, `bngl`,
 `sbml_import`, `sbml_ssa`, `sbml_psa`, `antimony_import`, `codegen`.

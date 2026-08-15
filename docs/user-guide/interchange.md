@@ -127,10 +127,12 @@ COMBINE archive. The `.bngl` also drives the L3 gate over the model's *own*
 horizon instead of a blanket one.
 
 **Starting from a `.bngl` model (the full export pipeline).** The converter's model
-input is the flattened **`.net`** (bngsim loads `.net`/SBML/Antimony, not rule-based
-`.bngl`), so a rule-based model is first expanded to a network with BioNetGen, then
-packaged — passing the same `.bngl` so its actions become the SED-ML protocol *and*
-its source rides along:
+input is the flattened **`.net`**, so a rule-based model is first expanded to a
+network with BioNetGen, then packaged — passing the same `.bngl` so its actions
+become the SED-ML protocol *and* its source rides along. (`Model.from_bngl` runs
+that expansion for you when you only want to *simulate* the model — see
+[Loading models](loading-models.md) — but the packager wants the `.net` on disk,
+so flatten it explicitly here.)
 
 ```bash
 # 1. Flatten the rule-based model to a network with BioNetGen (the .bngl needs a

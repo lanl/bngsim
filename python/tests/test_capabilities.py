@@ -25,6 +25,7 @@ EXPECTED_FEATURE_KEYS = frozenset(
         "libsbml",
         "antimony",
         "vivarium",
+        "bngl",
         "sbml_import",
         "sbml_ssa",
         "sbml_psa",
@@ -256,6 +257,11 @@ class TestCapabilitiesMissingExplanations:
         # False on a Linux/Windows wheel and True on macOS, so pin it rather
         # than let the local build decide whether this logic test passes.
         monkeypatch.setattr(bngsim, "HAS_LAPACK_DENSE", True)
+        # ...and BNGL (GH #162), for the same reason one step further out: it is
+        # not a flag at all but a probe for an external Perl toolchain, so on a
+        # machine without BNG2.pl this build-independent logic test would
+        # otherwise fail on an environment fact it is not about.
+        monkeypatch.setattr(bngsim, "_bngl_available", lambda: True)
         caps = bngsim.capabilities()
         assert caps["missing"] == {}
         assert all(caps["features"].values())

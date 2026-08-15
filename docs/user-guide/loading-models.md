@@ -5,18 +5,101 @@
 When you already have a path, `Model.load` picks the right factory for you:
 
 ```python
-model = bngsim.Model.load("model.ant")   # -> Model.from_antimony
-model = bngsim.Model.load("model.xml")   # -> Model.from_sbml  (.sbml too)
-model = bngsim.Model.load("model.net")   # -> Model.from_net
+model = bngsim.Model.load("model.ant")    # -> Model.from_antimony
+model = bngsim.Model.load("model.xml")    # -> Model.from_sbml  (.sbml too)
+model = bngsim.Model.load("model.net")    # -> Model.from_net
+model = bngsim.Model.load("model.bngl")   # -> Model.from_bngl  (needs BNG2.pl)
 ```
 
 Matching is case-insensitive, and `defer_jacobian` is forwarded to the selected
 factory. An unrecognized suffix raises `ModelError` listing the loadable ones.
+The format-specific factories below remain the explicit route when the suffix
+does not match the contents (for example an SBML document saved as `.txt`).
 
-`.bngl` is **not** loadable: BNGsim has no BNGL parser, so a rule-based model
-must be expanded to a `.net` network by BNG2.pl first. The format-specific
-factories below remain the explicit route when the suffix does not match the
-contents (for example an SBML document saved as `.txt`).
+## BNGL model loading
+
+BNGsim simulates reaction *networks*; BNGL describes *rules*. Turning one into
+the other is network generation — BNG2.pl's job — so `Model.from_bngl` runs it
+rather than parsing BNGL itself:
+
+```python
+model = bngsim.Model.from_bngl("egfr.bngl")
+```
+
+That needs BNG2.pl on the machine. Either install the extra, which brings
+PyBioNetGen (BNG2.pl is bundled with it):
+
+```bash
+pip install 'bngsim[bngl]'
+```
+
+...or point at a BioNetGen you already have. The resolution order is
+`bng2_pl=` argument → `$BNG2_PL` → `$BNGPATH` → `BNG2.pl` on `PATH` → installed
+PyBioNetGen, so an environment variable always overrides an installed package:
+
+```bash
+export BNGPATH=/path/to/BioNetGen-2.9.3
+```
+
+BNG2.pl is a Perl script, so `perl` must also be on `PATH` — macOS and most
+Linux distributions ship one; stock Windows does not, and BNGL loading is simply
+unavailable there. `bngsim.HAS_BNGL` is the probe for the whole arrangement
+(both halves, checked at the moment you ask), and when it is `False`,
+`bngsim.capabilities()["missing"]["bngl"]` names every location that was
+searched:
+
+```python
+if not bngsim.HAS_BNGL:
+    print(bngsim.capabilities()["missing"]["bngl"])
+```
+
+### The actions block is not executed
+
+A `.bngl` in the wild ends in `simulate({...})` or `parameter_scan({...})`.
+Running the file as written would run the author's entire experiment just to
+obtain a network, so only `generate_network` is run — carrying the source's own
+`max_iter` / `max_agg` / `max_stoich`, since those are what make an unbounded
+rule set finite. Pass `protocol=True` to recover the actions instead of losing
+them:
+
+```python
+model, spec = bngsim.Model.from_bngl("egfr.bngl", protocol=True)
+[e.t_span for e in spec.experiments]   # the simulate(...) calls, as a ProtocolSpec
+```
+
+See [Interchange](interchange.md) for what a `ProtocolSpec` carries.
+
+### Generated networks are cached
+
+Network generation is the expensive step, so the emitted `.net` is kept under
+`~/.cache/bngsim/networks` (override with `$BNGSIM_BNGL_CACHE_DIR`) and reused
+when the same BNGL is loaded again. The key is a digest of the flattened model
+text *and* the BNG2.pl that produced it, so the cache cannot go stale: editing
+the model — or upgrading BioNetGen — regenerates, while editing only the actions
+block correctly reuses.
+
+Keeping the network is not only a speed choice. `Model.from_net` records the
+path, and codegen prefers that file because a BNG2.pl network carries derived
+rate-constant parameters whose chain rules the in-memory path does not
+reconstruct. To keep the `.net` as an artifact of your own, pass `net_out=`:
+
+```python
+model = bngsim.Model.from_bngl("egfr.bngl", net_out="egfr.net")
+```
+
+`cache=False` regenerates into a per-process directory instead.
+
+### Compartments and errors
+
+Compartmental (cBNGL) models load: BNG2.pl bakes each compartment's volume into
+the generated rate constants, exactly as for a hand-generated `.net`. For that
+reason `Model.load` refuses `compartment_sizes=` on `.bngl` as it does on
+`.net` — the volume has to change in the BNGL source, before generation.
+
+A model whose network is unbounded hits `timeout=` (600 s by default) and gets a
+`ModelError` saying so; a model BNG2.pl rejects gets one carrying the tail of
+BNG2.pl's own output, which is the only thing that can localize a BNGL syntax
+error.
 
 ## Antimony and SBML model loading
 

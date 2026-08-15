@@ -1,4 +1,4 @@
-"""Regression guards for :mod:`_core.bngpath` — the shared BNG2.pl resolver.
+"""Regression guards for the shared BNG2.pl resolver, now :mod:`bngsim._bngpath`.
 
 The bug this module replaced: six near-duplicate helpers, and the test-side ones
 asked the installed PyBioNetGen for its bundled BNG2.pl *first*, consulting
@@ -7,12 +7,37 @@ importable an explicit ``export BNGPATH=...`` was therefore silently ignored —
 you could point at a different BioNetGen and the suite would keep using the
 bundled one, with nothing said. These pin the precedence so that inversion
 cannot come back.
+
+The resolver moved into the shipped package for GH #162 (``Model.from_bngl``
+needs it, and ``parity_checks/`` is not packaged), so these test it where it now
+lives; ``_core.bngpath`` re-exports, and :func:`test_core_reexports_the_shipped_resolver`
+is what keeps that a re-export rather than a seventh copy.
 """
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
-from _core import bngpath
+from bngsim import _bngpath as bngpath
+
+
+@pytest.fixture(autouse=True)
+def _no_bng2_on_path(monkeypatch):
+    """Neutralize the ``$PATH`` mechanism, so each test measures the one it names.
+
+    Every precedence test below fixes the env vars and the bundled copy but says
+    nothing about ``$PATH`` — which became a mechanism in GH #162. On a machine
+    that happens to have ``BNG2.pl`` on ``PATH`` those tests would resolve to it
+    and fail for a reason having nothing to do with what they assert. ``perl``
+    still resolves normally, since ``BngResolution.ok`` depends on it.
+    """
+    real = shutil.which
+    monkeypatch.setattr(
+        bngpath.shutil,
+        "which",
+        lambda name, *a, **k: None if name == "BNG2.pl" else real(name, *a, **k),
+    )
 
 
 @pytest.fixture
@@ -115,3 +140,61 @@ def test_failure_names_every_mechanism_tried(monkeypatch):
 def test_skip_reason_is_none_when_usable(monkeypatch, fake_bng):
     monkeypatch.setenv("BNG2_PL", fake_bng("ok"))
     assert bngpath.skip_reason() is None
+
+
+def test_path_lookup_loses_to_env_but_beats_bundled(monkeypatch, fake_bng):
+    """``BNG2.pl`` on ``$PATH`` sits between the env vars and PyBioNetGen.
+
+    That mechanism arrived with GH #162: ``bngsim.convert._bng2.find_bng2`` had
+    it and this resolver did not, so folding the two together had to keep it or
+    quietly stop finding a BNG2.pl somebody had put on their PATH. It ranks
+    below the env vars (an override is an override) and above the bundled copy
+    (putting it on PATH is a deliberate act; having a package installed is not).
+    """
+    on_path = fake_bng("onpath")
+    monkeypatch.delenv("BNG2_PL", raising=False)
+    monkeypatch.delenv("BNGPATH", raising=False)
+    monkeypatch.setattr(
+        bngpath.shutil,
+        "which",
+        lambda n, *a, **k: f"{on_path}/BNG2.pl" if n == "BNG2.pl" else "/usr/bin/perl",
+    )
+    monkeypatch.setattr(bngpath, "_bundled_bngpath", lambda: (fake_bng("bundled"), "bundled"))
+
+    r = bngpath.resolve_bng()
+    assert r.source == bngpath.ON_PATH
+    assert str(r.root) == on_path
+
+    monkeypatch.setenv("BNGPATH", fake_bng("env"))
+    assert bngpath.resolve_bng().source == bngpath.ENV_BNGPATH
+
+
+def test_no_perl_is_reported_as_its_own_failure(monkeypatch, fake_bng):
+    """A found BNG2.pl with no perl must not read as "no BioNetGen".
+
+    They need opposite fixes, and this is the stock-Windows case: `pip install
+    'bngsim[bngl]'` succeeds there and buys nothing, so the message has to say
+    the missing piece is the interpreter.
+    """
+    monkeypatch.setenv("BNG2_PL", fake_bng("present"))
+    monkeypatch.setattr(bngpath.shutil, "which", lambda n, *a, **k: None)
+
+    r = bngpath.resolve_bng()
+    assert not r.ok
+    assert r.bng2_pl is not None
+    assert "perl" in r.why_not()
+
+
+def test_core_reexports_the_shipped_resolver():
+    """``_core.bngpath`` must stay a re-export, not a copy (GH #162).
+
+    The whole module exists because duplicated locators drifted. A parity script
+    reaching it through ``_core`` and a ``Model.from_bngl`` reaching it through
+    ``bngsim`` have to be resolving with the same code, so assert object
+    identity rather than equal behavior.
+    """
+    from _core import bngpath as core_bngpath
+
+    assert core_bngpath.resolve_bng is bngpath.resolve_bng
+    assert core_bngpath.skip_reason is bngpath.skip_reason
+    assert core_bngpath.BngResolution is bngpath.BngResolution
