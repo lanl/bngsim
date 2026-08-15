@@ -115,6 +115,100 @@ def test_atols_flat_drops_the_state_scale_too(monkeypatch):
     _check_closed_form(hatched, k, s0)
 
 
+# ── pbar's SECOND consumer (issue #354) ─────────────────────────────────────
+#
+# Everything above tests pbar as a tolerance. It is also the perturbation scale
+# CVODES uses for its internal difference quotient (``cvSensRhsInternalDQ``),
+# which carries the sensitivity columns of every model whose analytic
+# sensitivity RHS was declined — 117 of the 1323-model rr_parity corpus,
+# structurally (``floor()``, ``abs()``, ``ceil()``, a non-emittable functional
+# species-derivative). There, ``unit`` does not loosen or tighten an error test:
+# it replaces a probe of ``sqrt(eps)*|p|`` with one of ``sqrt(eps)``, and for a
+# large parameter the quotient loses most of its significant digits.
+#
+# This is why the #354 corpus A/B came out as it did — six of its eight broken
+# rows are difference-quotient models — and why "set the hatch to match AMICI"
+# is wrong: AMICI passes a NULL pbar too, but always supplies an analytic
+# sensitivity RHS, so it has no difference quotient for that NULL to damage.
+
+
+def _declined_model(k: float) -> bngsim.Model:
+    """``S' = -k*S``, but written so the analytic sensitivity RHS is declined.
+
+    ``abs()`` has no derivative at the origin, so codegen refuses the whole model
+    and CVODES' difference quotient carries the column. A functional rate law is
+    multiplied by its reactant concentration, so the law is ``abs(k)`` and the
+    flux is ``abs(k)*S`` — the same dynamics as the elementary model above, and
+    therefore the same closed form.
+    """
+    b = ModelBuilder()
+    b.add_parameter("k", k)
+    s_idx = b.add_species("S", 1.0)
+    b.add_function("rate", "abs(k)")
+    b.add_reaction([s_idx], [], "functional", "rate")
+    return bngsim.Model(b.build())
+
+
+def _run_declined(monkeypatch, k: float, **hatches):
+    for name in _HATCHES:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in hatches.items():
+        monkeypatch.setenv(name, value)
+    sim = bngsim.Simulator(_declined_model(k), method="ode", sensitivity_params=["k"])
+    return sim.run(t_span=(0.0, 10.0 / k), n_points=11, rtol=1e-9, atol=1e-12)
+
+
+def _rel_err(res, k: float) -> float:
+    """Max error against the closed form, relative to the column's own peak."""
+    t = np.asarray(res.time)
+    got = np.asarray(res.sensitivities)[:, 0, 0]
+    exact = -t * np.exp(-k * t)
+    return float(np.max(np.abs(got - exact)) / np.max(np.abs(exact)))
+
+
+def test_the_declined_model_really_is_on_the_difference_quotient():
+    """The positive control for the two tests below.
+
+    They are only about the DQ probe if this model has no analytic sensitivity
+    RHS. Were ``abs()`` ever made differentiable, the assertions would still pass
+    — on the analytic path, testing nothing they claim to test — so the premise
+    is checked rather than assumed.
+    """
+    from bngsim._codegen import generate_combined_from_model
+
+    _src, has_sens_rhs = generate_combined_from_model(
+        _declined_model(1.0), emit_output_sens=False, emit_sens_rhs=True
+    )
+    assert not has_sens_rhs
+
+
+def test_pbar_unit_degrades_the_difference_quotient_for_a_large_parameter(monkeypatch):
+    """The cost the tolerance framing of ``pbar`` does not describe."""
+    k = 1e6
+    shipped = _rel_err(_run_declined(monkeypatch, k), k)
+    hatched = _rel_err(_run_declined(monkeypatch, k, BNGSIM_SENS_PBAR="unit"), k)
+    # Measured 1.7e-8 vs 2.1e-6 (124x) at this k, and 9176x at k=1e8. The
+    # threshold is an order of magnitude inside that, so it pins the effect
+    # without pinning the arithmetic of one platform's difference quotient.
+    assert shipped < 1e-6
+    assert hatched > 10 * shipped
+
+
+def test_pbar_unit_is_inert_on_the_difference_quotient_at_unit_scale(monkeypatch):
+    """The control that makes the test above about |p| and not about the hatch.
+
+    At ``k = 1`` the shipped pbar already IS 1.0, so the two configurations hand
+    CVODES the same probe and must agree exactly. A difference here would mean
+    the hatch moved something other than the parameter scale.
+    """
+    k = 1.0
+    shipped = _run_declined(monkeypatch, k)
+    hatched = _run_declined(monkeypatch, k, BNGSIM_SENS_PBAR="unit")
+    np.testing.assert_array_equal(
+        np.asarray(shipped.sensitivities), np.asarray(hatched.sensitivities)
+    )
+
+
 # ── Shipped behaviour is what you get without them ──────────────────────────
 
 
