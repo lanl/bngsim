@@ -105,6 +105,33 @@ end groups
 """
 
 
+# GH #353 — a non-finite STATE, not a rate law out of its domain. A rate-rule
+# species whose initial condition is already non-finite makes every law that
+# reads it non-finite before a step is taken; the diagnostic's below-zero scan is
+# blind to it (``nan < 0.0`` is false), so the corrupt state went unnamed and the
+# innocent rate law took the blame. ``{ic}``/``{kval}`` pick the flavour: ``inf``
+# survives the nonnegative clamp directly; ``nan`` is clamped to 0, so a ``nan``
+# rate constant keeps the clamped RHS non-finite (``nan*0 = nan``) and forces the
+# witness to capture the unclamped ``nan`` state — the shape of the #353 model,
+# whose NaN compartment size had made an IA-derived parameter ``nan`` too.
+NONFINITE_STATE_SBML = """<?xml version="1.0" encoding="UTF-8"?>
+<sbml xmlns="http://www.sbml.org/sbml/level3/version1/core" level="3" version="1">
+  <model id="nonfinite_state">
+    <listOfCompartments>
+      <compartment id="C" size="1" spatialDimensions="3" constant="true"/>
+    </listOfCompartments>
+    <listOfSpecies>
+      <species id="A" compartment="C" initialConcentration="{ic}"
+               hasOnlySubstanceUnits="true" boundaryCondition="false" constant="false"/>
+    </listOfSpecies>
+    <listOfParameters><parameter id="k" value="{kval}" constant="true"/></listOfParameters>
+    <listOfRules>
+      <rateRule variable="A"><math xmlns="http://www.w3.org/1998/Math/MathML"><apply><times/><ci>k</ci><ci>A</ci></apply></math></rateRule>
+    </listOfRules>
+  </model>
+</sbml>"""
+
+
 @pytest.fixture
 def log_sens_net(tmp_path):
     net = tmp_path / "logsens.net"
@@ -333,3 +360,38 @@ class TestTheFailureMessage:
         with pytest.raises(bngsim.SimulationError):
             _run(out_of_domain_net, codegen=True, jacobian="analytical")
         assert capfd.readouterr().err.count("bngsim: warning: 'ln(") == 1
+
+
+class TestNonFiniteStateNamesTheSpecies:
+    """GH #353 — when the *state* is non-finite, name the species, not just the
+    rate law. The below-zero scan cannot see a ``nan`` (``nan < 0.0`` is false),
+    so a corrupt initial condition left the user staring at a law that only
+    answered ``nan`` because its inputs already had."""
+
+    @pytest.mark.parametrize(
+        "ic, kval, shown",
+        [("INF", "0.1", "inf"), ("NaN", "NaN", "nan")],
+        ids=["inf", "nan"],
+    )
+    def test_the_failure_names_the_non_finite_species(self, ic, kval, shown):
+        src = NONFINITE_STATE_SBML.format(ic=ic, kval=kval)
+        model = bngsim.Model.from_sbml_string(src)
+        with pytest.raises(bngsim.SimulationError) as excinfo:
+            bngsim.Simulator(model, method="ode").run(t_span=(0, 1), n_points=3)
+        message = str(excinfo.value)
+        assert "Non-finite species there: A = " + shown in message
+
+    def test_it_points_at_the_state_not_the_law_domain(self):
+        """The closing sentence must not send the reader to constrain a species or
+        rewrite a law — the state was already non-finite before the law ran. The
+        below-zero-only domain advice is what issue #353 called misdirection."""
+        src = NONFINITE_STATE_SBML.format(ic="INF", kval="0.1")
+        model = bngsim.Model.from_sbml_string(src)
+        with pytest.raises(bngsim.SimulationError) as excinfo:
+            bngsim.Simulator(model, method="ode").run(t_span=(0, 1), n_points=3)
+        message = str(excinfo.value)
+        assert "symptom, not the cause" in message
+        assert "check the initial condition" in message
+        # The finite-but-out-of-domain advice ("a logarithm, a sqrt ...") belongs
+        # to a different failure and must not fire here.
+        assert "outside its" not in message

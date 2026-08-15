@@ -514,6 +514,31 @@ static std::string describe_nonfinite_witness(NetworkModel &model, const NonFini
         }
 
         const auto species = model.species_names();
+
+        // A non-finite STATE component is named first and separately from a
+        // merely-negative one: ``nan < 0.0`` is false, so a nan slot is invisible
+        // to the below-zero scan (GH #353), and the user is left staring at a rate
+        // law that only answered nan because its inputs already were — e.g.
+        // MODEL2002070001, whose amount-only species load as nan from a non-finite
+        // compartment size before a single step. Naming the corrupt state points
+        // at the initial condition, not the innocent law.
+        std::string nonfinite;
+        int n_nonfinite = 0;
+        for (std::size_t i = 0; i < w.y.size(); ++i) {
+            if (std::isfinite(w.y[i]))
+                continue;
+            if (++n_nonfinite > kMaxNamed)
+                continue;
+            if (!nonfinite.empty())
+                nonfinite += ", ";
+            nonfinite += (i < species.size() ? species[i] : "species " + std::to_string(i + 1));
+            nonfinite += " = " + diag_number(w.y[i]);
+        }
+        if (n_nonfinite > 0) {
+            os << " Non-finite species there: " << nonfinite
+               << (n_nonfinite > kMaxNamed ? ", ..." : "") << ".";
+        }
+
         std::string negatives;
         int n_negative = 0;
         for (std::size_t i = 0; i < w.y.size(); ++i) {
@@ -531,10 +556,22 @@ static std::string describe_nonfinite_witness(NetworkModel &model, const NonFini
                << (n_negative > kMaxNamed ? ", ..." : "") << ".";
         }
 
-        os << " bngsim evaluates a rate law literally, so a state outside its domain"
-              " — a logarithm, a sqrt or a fractional power of a negative value —"
-              " stays nan, and the corrector cannot converge through one. Constrain"
-              " the species, or write the law so it is defined there.";
+        // A non-finite state has already broken the input to every law, so the
+        // domain advice below (which is about a finite-but-out-of-range state)
+        // would misdirect; point at the state itself instead.
+        if (n_nonfinite > 0) {
+            os << " A non-finite state component makes every law that reads it"
+                  " non-finite before the corrector runs, so the rate laws above"
+                  " are the symptom, not the cause — check the initial condition"
+                  " (an under-specified species, or a compartment size that is not"
+                  " finite and positive).";
+        } else {
+            os << " bngsim evaluates a rate law literally, so a state outside its"
+                  " domain — a logarithm, a sqrt or a fractional power of a negative"
+                  " value — stays nan, and the corrector cannot converge through"
+                  " one. Constrain the species, or write the law so it is defined"
+                  " there.";
+        }
         return os.str();
     } catch (...) {
         return "";

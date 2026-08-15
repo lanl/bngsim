@@ -266,6 +266,37 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A non-finite compartment size no longer loads an amount-only species as
+  `nan` (issue #353).** `MODEL2002070001` declares `size="NaN"` on both of its
+  compartments and makes every species `hasOnlySubstanceUnits="true"` — the
+  quantities are amounts, and no rate law reads a size. RoadRunner and AMICI both
+  integrate it in amount units. bngsim stores a *concentration* (`amount / V`), so
+  the `NaN` size divided a well-specified `initialAmount=10` into `nan`: six of
+  seven species loaded non-finite and the **plain ODE run** — sensitivities off —
+  failed at `t=0` with `flag=-9`, naming the rate laws as if they were the cause.
+
+  A non-finite size is not a legitimate divisor. The loader now substitutes a
+  unit volume for it (and warns, once per compartment), so an amount-only species
+  loads as its declared amount and the model integrates in amounts, matching both
+  reference engines to solver tolerance. A model with a *finite* size is untouched
+  — its amount is still stored as `amount / V`, byte-for-byte — so the
+  substitution can only ever turn a `nan` state into a usable one. Refusing the
+  model instead, the way issue #170 refuses an ambiguous compartment-size *write*,
+  would have made bngsim strictly worse than the engines it checks against; #170's
+  writability guard already keeps a later `set_param` on the substituted size
+  honest.
+
+- **The non-finite diagnostic names the corrupt state, not just the innocent
+  law (issue #353).** `describe_nonfinite_witness` reported the species it thought
+  responsible with a below-zero test — and `nan < 0.0` is false, so a `nan` state
+  was invisible to it. What the user got was the rate laws that answered `nan`
+  (because their inputs already had) and a closing sentence about rate-law domains
+  that sent them to fix a law that was fine. The witness scan now names non-finite
+  state components first and separately, and when the state itself is non-finite
+  the closing guidance points at the initial condition (an under-specified
+  species, or a size that is not finite and positive) rather than at the laws that
+  merely inherited it.
+
 - **A clock threshold is recognized by the crossing it has, not by how it was
   typed (issue #355).** `_clock_threshold_split` decided what counted as a
   recognized clock threshold by *where the clock sat*: exactly one side had to be

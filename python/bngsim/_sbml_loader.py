@@ -3385,7 +3385,14 @@ def _build_model_from_sbml_doc(doc):
     # Gather all raw values for numeric context
     for j in range(sbml_model.getNumCompartments()):
         c = sbml_model.getCompartment(j)
-        eval_ctx[c.getId()] = c.getSize() if c.isSetSize() else 1.0
+        _sz = c.getSize() if c.isSetSize() else 1.0
+        # (#353) A non-finite size cannot divide an initialAmount into a
+        # concentration; the compartment loop further below substitutes 1.0 and
+        # warns. Mirror that substitution here so an initialAssignment that reads
+        # the size resolves against the same value instead of seeding a nan into
+        # the IC graph. A compartment whose own initialAssignment supplies a
+        # finite size still overrides this seed in the IA loop below.
+        eval_ctx[c.getId()] = _sz if _math.isfinite(_sz) else 1.0
     for j in range(sbml_model.getNumParameters()):
         p = sbml_model.getParameter(j)
         if p.isSetValue():
@@ -3884,6 +3891,30 @@ def _build_model_from_sbml_doc(doc):
         # Override with initialAssignment value if available
         if cid in ia_values:
             vol = ia_values[cid]
+        # (#353) A non-finite declared size — MODEL2002070001 declares
+        # ``size="NaN"`` on both compartments — is unusable as the
+        # amount↔concentration divisor: the stored value ``amount/V`` becomes nan
+        # and poisons the whole state before a single step, so a well-specified
+        # ``initialAmount=10`` amount-only species loads as nan (issue #353). The
+        # size is not a legitimate divisor here — RoadRunner and AMICI both
+        # integrate this model in *amount* units, with V absent from every rate
+        # law — so substitute a unit volume: each amount-only species then loads
+        # as its declared amount and the model integrates in amounts, matching
+        # both oracles. Warn rather than refuse; refusing a model the reference
+        # engines run would be a strict regression, and #170's writability guard
+        # keeps a subsequent ``set_param`` on the size honest. A rate law that
+        # actually reads the size (none does in the #353 model) would see 1.0.
+        if not _math.isfinite(vol):
+            logger.warning(
+                "compartment '%s' declares a non-finite size (%s); substituting "
+                "1.0 for the amount/concentration conversion so amount-only "
+                "species load as their declared amounts rather than nan. A rate "
+                "law that reads this compartment's size would see the substituted "
+                "value.",
+                cid,
+                vol,
+            )
+            vol = 1.0
         comp_volumes[cid] = vol
         # Skip adding as a builder parameter if the compartment will be
         # promoted to a species — by a rate rule (step 8) or by an event

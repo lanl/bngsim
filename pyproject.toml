@@ -354,6 +354,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 "python/tests/test_compartment_size_initial_assignment.py" = ["E501"]
 "python/tests/test_sbml_initial_assignment_param_lift.py" = ["E501"]
 "python/tests/test_compartment_size_xcompartment.py" = ["E501"]
+"python/tests/test_sbml_nonfinite_compartment_size.py" = ["E501"]
 "python/tests/test_sbml_to_net.py" = ["E501"]
 
 # ── cibuildwheel: binary wheels for Linux / macOS / Windows (GH #140) ─────────
