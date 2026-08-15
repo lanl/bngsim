@@ -244,6 +244,9 @@ bngsim-sbml2bngl = "bngsim.convert._cli:sbml2bngl_main"
 bngsim-validate-conversion = "bngsim.convert._cli:validate_main"
 # COMBINE archive (.omex) packaging (GH #219): pack/unpack SBML + SED-ML + manifest.
 bngsim-omex = "bngsim.convert._cli:omex_main"
+# Codegen artifact cache: info / clean / prune / clear (issue #205). Also runnable
+# as ``python -m bngsim.cache``, which is the form that works without reinstalling.
+bngsim-cache = "bngsim.cache:main"
 
 [tool.scikit-build]
 cmake.source-dir = "."

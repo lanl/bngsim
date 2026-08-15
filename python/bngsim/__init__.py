@@ -55,6 +55,12 @@ from bngsim._simulator import (
 )
 from bngsim._ssa_validation import SsaIssue, validate_for_ssa
 from bngsim._version import __version__
+from bngsim.cache import (
+    clean_codegen_cache,
+    clear_codegen_cache,
+    codegen_cache_info,
+    prune_codegen_cache,
+)
 from bngsim.convert import sbml_to_net
 from bngsim.coupling import (
     ConservationError,
@@ -266,6 +272,15 @@ __all__ = [
     "capabilities",
     # Codegen
     "prepare_codegen",
+    # Codegen artifact cache (issue #205). The cache is content-addressed and
+    # nothing prunes it automatically, so these are the supported way for a
+    # notebook or a fitting harness to see how big it has grown and bound it —
+    # the same four verbs `bngsim-cache` exposes. `bngsim.cache` carries the rest
+    # (the entry taxonomy, the size/duration parsers).
+    "codegen_cache_info",
+    "clean_codegen_cache",
+    "prune_codegen_cache",
+    "clear_codegen_cache",
     # .net reader (universal parser)
     "parse_net_file",
     "build_model_from_parsed",
