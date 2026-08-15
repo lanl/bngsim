@@ -51,6 +51,78 @@ Dask workers compiling the same model never observe a partial `.so`. Set
 scratch, or at a directory of artifacts pre-warmed on a login node so worker
 jobs never compile (see [Scheduler-free cluster evaluation](pybnf.md#scheduler-free-cluster-evaluation)).
 
+### Managing the artifact cache
+
+The cache is content-addressed and **nothing prunes it automatically** — bngsim
+never deletes from this directory as a side effect of being used, because the
+failure mode (evicting the artifact another process is about to `dlopen`) is the
+exact class of bug the cache exists to avoid. So it grows until you bound it.
+
+It grows faster than "a cache grows" suggests. The key folds a digest of the
+codegen emitters' own source, so *any* edit to `_codegen.py` / `_jacobian.py` /
+`_saturable_jacobian.py` / `_switch_sensitivity.py` — a comment included — orphans
+every artifact on the machine at once. That is the right trade (the alternative,
+under-invalidation, is a silently wrong gradient), but on a machine that tracks
+bngsim development it means a fresh corpus of dead artifacts per emitter edit: six
+weeks of ordinary work left 2.0 GB across 14,377 entries on one developer box.
+
+`bngsim-cache` (also `python -m bngsim.cache`, which works without reinstalling)
+has four verbs:
+
+```bash
+bngsim-cache info                          # path, entries, size, dates, by kind
+bngsim-cache clean                         # leaked compile partials only
+bngsim-cache prune --older-than 30d        # evict artifacts unused for 30 days
+bngsim-cache prune --max-size 2G           # ...or until the directory fits
+bngsim-cache clear --yes                   # everything bngsim owns
+```
+
+`info` reports a breakdown by artifact kind — model RHS, SSA propensity, the
+source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard_*`
+scratch directories and stray `.c`, which nothing else cleans up).
+
+`clean` is safe by construction: it removes only that debris, so no compiled
+artifact is touched and no cache hit is lost. `prune` bounds the cache by age
+and/or total size, evicting least-recently-used artifacts first; it runs `clean`'s
+sweep before evicting anything, so `--max-size` is a bound on the whole directory.
+`clear` empties it, which means every model recompiles on its next run.
+
+Every mutating verb takes `--dry-run`, and two guarantees hold across all of them:
+
+- **Only files bngsim wrote are ever removed.** `BNGSIM_CODEGEN_CACHE_DIR` is a
+  path you choose, and pointing it at shared scratch is normal, so anything
+  unrecognized is reported as `foreign` and left alone — by `clear` as much as by
+  `clean`.
+- **Nothing recently touched is removed.** A compile in flight writes its `.c` and
+  its shard directory into this very directory, so every verb holds off on entries
+  used or written within `--min-age` (default `1h`, comfortably over the 600 s default
+  `BNGSIM_CODEGEN_TIMEOUT`), and on POSIX also holds a partial whose compile is
+  still running. Raise it if you build genome-scale models with the timeout lifted.
+
+"Least-recently-used" is the newer of a file's access and modification time.
+Whether access times move at all is a property of the mount — a `noatime` Linux
+mount never updates them, and on macOS APFS a plain `read()` leaves `atime` alone
+while `dlopen` advances it, which is the only access that matters here. Where they
+are not recorded the order degrades to build time (a FIFO — still bounded, just
+less well targeted), and `info` says which one you are getting.
+
+The same four verbs are available in-process, for a notebook or a fitting harness
+that wants to bound its own cache without shelling out:
+
+```python
+import bngsim
+
+info = bngsim.codegen_cache_info()
+print(info.total_bytes, info.by_kind)
+
+bngsim.prune_codegen_cache(max_size="2G")
+```
+
+An entry carries no record of the codegen key that built it — the key is mixed
+*into* the content hash rather than kept beside it — so neither the CLI nor the API
+can report how much of the cache is orphaned. Making that answerable needs the key
+in the filename, which is tracked separately as issue #363.
+
 > **HPC / cluster note.** The codegen path shells out to a C compiler (`cc`)
 > at `Simulator` construction. On many HPC systems compute nodes have **no
 > compiler on `PATH` by default** even when the login node does — codegen then

@@ -16,6 +16,62 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **The codegen artifact cache is inspectable and prunable: `bngsim-cache`
+  (issue #205).** `~/.cache/bngsim/codegen` grew without bound and there was no
+  supported way to look at it — 2.0 GB across 14,377 entries after six weeks of
+  ordinary work on one developer machine, with `rm -rf` on a path you had to know
+  by heart as the only remedy. New console script `bngsim-cache` (also
+  `python -m bngsim.cache`, which needs no reinstall) with four verbs:
+
+  - `info` — path, entry count, total size, build/last-used dates, and a
+    breakdown by artifact kind (model RHS, SSA propensity, the `src_` fallback
+    key of #174, plus the leaked partials below).
+  - `clean` — remove *only* the debris of interrupted compiles: `bngsim_shard_*`
+    scratch directories, the stray `rhs_<hash>.<pid>_<n>.c` beside them, and
+    temp/sidecar libraries. Nothing else cleans these up, and no compiled
+    artifact is touched, so no cache hit is lost.
+  - `prune --older-than 30d` / `--max-size 2G` — evict least-recently-used
+    artifacts to fit an age and/or size bound. The partial sweep runs first, so
+    the size cap is a bound on the whole directory.
+  - `clear` — everything, behind a confirmation prompt (`--yes` for scripts;
+    required, not assumed, when stdin is not a terminal).
+
+  `--dry-run` on every mutating verb, `--json` on `info`, and `-C/--cache-dir` to
+  point any of them at a directory other than the configured cache — e.g. to
+  audit a pre-warmed artifact directory from a login node.
+  `bngsim.codegen_cache_info()`, `clean_codegen_cache()`,
+  `prune_codegen_cache()` and `clear_codegen_cache()` are the same four in
+  process, for a notebook or a fitting harness.
+
+  **Nothing prunes automatically, deliberately.** No size cap at `compile_rhs`
+  time, no sweep on import or on `Simulator` construction. A library that deletes
+  files as a side effect of being used is a surprise, and the failure mode —
+  evicting the artifact another process is about to `dlopen` — is the exact class
+  of bug the cache exists to avoid.
+
+  Two safety properties hold across every verb. **Only files bngsim wrote are
+  ever removed**: `BNGSIM_CODEGEN_CACHE_DIR` is a user-supplied path that people
+  point at shared scratch, so anything unrecognized is classified `foreign`,
+  reported, and left alone — by `clear` as much as by `clean`. And **nothing
+  recently touched is removed**: a compile in flight writes its scratch files
+  into this very directory, so every verb holds off on entries used or written
+  within `--min-age` (default `1h`, over the 600 s default `BNGSIM_CODEGEN_TIMEOUT`) and
+  on POSIX additionally holds a partial whose compile is still running.
+
+  LRU order is `max(atime, mtime)`, which was measured rather than assumed: a
+  plain `read()` on macOS APFS leaves `atime` untouched while `dlopen` — the only
+  way this cache is ever used — advances it, and a `noatime` mount never moves it
+  at all. Taking the newer of the two gives true recency wherever the filesystem
+  records it and degrades to build order where it does not, and `info` reports
+  which one you are getting.
+
+  Not addressed here, and filed rather than guessed at: an entry carries no
+  record of the codegen key that built it, so nothing can report how much of the
+  cache is *orphaned* (#363, which needs the key in the filename); and MSVC leaks
+  a `.lib`/`.exp` pair per successful Windows compile (#362, whose two-line fix
+  would invalidate every cache on every machine — `clean` collects the debris in
+  the meantime).
+
 - **BNGL models load, behind a `bngl` extra (issue #162).**
   `Model.from_bngl("m.bngl")` and `Model.load("m.bngl")` now work;
   `_LOAD_DISPATCH` gained `.bngl` and the "expand it yourself first" refusal is
