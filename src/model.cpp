@@ -2222,13 +2222,15 @@ std::vector<double> NetworkModel::species_ic_param_ref_divisors() const {
     out.reserve(refs.size());
     for (const auto &ref : refs) {
         const auto &sp = impl_->species[static_cast<std::size_t>(ref.first)];
-        // `std::isfinite` is not in resolve_ic_from_param's guard, which divides
-        // by a NaN volume and stores the NaN — a model with an unset compartment
-        // size (MODEL2002070001) is NaN throughout and there is nothing here to
-        // rescue. What this guard buys is that the *seed* stays the finite number
-        // it was rather than becoming a NaN yS(0) that poisons a whole CVODES
-        // column. Same call as build_per_species_sympy's degenerate-coefficient
-        // check, for the same reason.
+        // `std::isfinite` is not in resolve_ic_from_param's guard, which would
+        // divide by a NaN volume and store the NaN. Since issue #353 the loader
+        // substitutes a unit volume for a non-finite declared size, so a model
+        // like MODEL2002070001 no longer arrives here with a NaN volume_factor;
+        // this guard remains the runtime backstop for any volume_factor that is
+        // still non-finite, keeping the *seed* the finite number it was rather
+        // than a NaN yS(0) that poisons a whole CVODES column. Same call as
+        // build_per_species_sympy's degenerate-coefficient check, for the same
+        // reason.
         const bool usable =
             sp.amount_valued && sp.volume_factor != 0.0 && std::isfinite(sp.volume_factor);
         out.push_back(usable ? sp.volume_factor : 1.0);
@@ -2279,10 +2281,12 @@ std::vector<std::tuple<int, int, double>> NetworkModel::compartment_ic_sens_seed
         if (!amount_declared && !amount_param_ref)
             continue;
         const double seed = -sp.initial_conc / v;
-        // A model whose compartment size never got a value is NaN throughout
-        // (its stored IC included). Emitting the row would put a NaN in yS(0) and
-        // fail the whole solve; leaving it out is the pre-#170 behaviour for a
-        // model that has no usable numbers anyway.
+        // Since issue #353 a non-finite declared compartment size is substituted
+        // with a unit volume at load, so a model like MODEL2002070001 arrives here
+        // with finite numbers and this column is emitted (and FD-correct). The
+        // guard stays as the backstop for any seed still non-finite through
+        // another path: emitting a NaN row would put a NaN in yS(0) and fail the
+        // whole solve, so leave it out.
         if (!std::isfinite(seed))
             continue;
         out.emplace_back(static_cast<int>(i), sp.volume_param_idx0, seed);
