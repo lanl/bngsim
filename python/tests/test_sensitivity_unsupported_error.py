@@ -276,7 +276,13 @@ class TestRunDoesNotWrapTheRefusal:
         b.add_reaction([], [x_idx], "functional", "rate_X")
         return bngsim.Model(_core=b.build())
 
-    def test_the_refusal_is_not_rewrapped_as_a_solver_failure(self):
+    def test_the_refusal_is_not_rewrapped_as_a_solver_failure(self, monkeypatch):
+        # The dual-role refusal now fires only on CVODES' difference quotient
+        # (issue #358): with an analytic sensitivity RHS the two terms are summed
+        # and the run succeeds. Force the difference-quotient path so the refusal
+        # still raises from inside run()'s solve `try` — the site issue #320 is
+        # about — and confirm it is not laundered into SimulationError.
+        monkeypatch.setenv("BNGSIM_NO_FUNCTIONAL_SENS_RHS", "1")
         sim = bngsim.Simulator(
             self._dual_role_model(), method="ode", sensitivity_params=["sigma"], codegen=True
         )
@@ -284,7 +290,7 @@ class TestRunDoesNotWrapTheRefusal:
             sim.run(t_span=(0.0, 5.0), n_points=11, rtol=1e-10, atol=1e-12)
         assert not isinstance(ei.value, bngsim.SimulationError)
         assert "Simulation failed" not in str(ei.value)
-        assert "issue #48" in str(ei.value)
+        assert "issue #358" in str(ei.value)
 
     def test_the_pass_through_is_not_a_blanket_escape(self):
         """The other half: genuine solver failures must still become

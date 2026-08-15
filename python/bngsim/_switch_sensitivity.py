@@ -300,14 +300,29 @@ def _condition_only_params(
     derivative and is excluded, so the caller can refuse instead of silently
     dropping it.
 
-    Both the function bodies and the elementary rate constants are checked, each
-    with derived-parameter references inlined first so a threshold spelled
-    ``sigma = t0 + t_delta`` is attributed to ``t0``/``t_delta``.
+    Both the functional rate laws and the elementary rate constants are checked,
+    each with function references and derived-parameter references inlined first,
+    so a threshold spelled ``sigma = t0 + t_delta`` is attributed to
+    ``t0``/``t_delta`` and a clock hidden behind a helper function — ``clk =
+    t - sigma`` in ``if(clk>=0, k, 0)`` — is judged by its inlined text.
+
+    Inlining is *not* optional: it is what keeps this predicate scanning the same
+    text as :func:`compute_switch_time_sens`. Scanning a helper's raw body in
+    isolation reads ``sigma`` in ``clk = t - sigma`` as an in-branch use and
+    refuses a parameter that is condition-only — which is why the functions
+    scanned here are the reaction rate laws (fully inlined), not every helper
+    function standalone.
     """
     if not candidates:
         return set()
+    from bngsim._jacobian import _inline_functions
+
     data = core.codegen_data()
     params = data["parameters"]
+    func_map = dict(core.functional_jacobian_context()["function_map"])
+
+    def _flatten(expr: str) -> str:
+        return _inline_derived_param_refs(_inline_functions(expr, func_map) or expr, derived_exprs)
 
     pats = {
         name: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
@@ -315,8 +330,18 @@ def _condition_only_params(
     }
     pure = set(candidates)
 
-    for fn in data["functions"]:
-        flat = _inline_derived_param_refs(fn.get("expression", ""), derived_exprs)
+    # The reaction rate laws, fully inlined. A helper function reaches the RHS
+    # only where it is referenced, so inlining it into the rate law that uses it
+    # puts each of its parameters in the branch or the condition it actually
+    # occupies there — which scanning the helper on its own cannot know.
+    for rxn in data["reactions"]:
+        if rxn.get("type") != "functional":
+            continue
+        fname = rxn.get("function_name")
+        body = func_map.get(fname) if fname else rxn.get("rate_expression")
+        if not body:
+            continue
+        flat = _flatten(body)
         if not flat:
             continue
         spans = _condition_spans(flat)
@@ -328,8 +353,8 @@ def _condition_only_params(
 
     # An elementary reaction's rate constant is read directly, never through a
     # condition. (A *functional* reaction's rate_param_indices entry is the
-    # synthesized holder for the function's value, whose body is already covered
-    # by the function scan above.)
+    # synthesized holder for the function's value, whose body is covered by the
+    # rate-law scan above.)
     for rxn in data["reactions"]:
         if rxn.get("type") != "elementary":
             continue
@@ -337,7 +362,7 @@ def _condition_only_params(
             if not (0 <= pidx < len(params)):
                 continue
             p = params[pidx]
-            flat = _inline_derived_param_refs(p.get("expression", "") or p["name"], derived_exprs)
+            flat = _flatten(p.get("expression", "") or p["name"])
             for name in list(pure):
                 if pats[name].search(flat):
                     pure.discard(name)
@@ -1401,11 +1426,56 @@ def _not_a_clock_threshold(
     )
 
 
+def _switch_params_in_uncompensated_conditions(
+    scope: SwitchConditionScope, function_bodies, candidates: set[str]
+) -> set[str]:
+    """Subset of *candidates* that also read a condition nothing compensates.
+
+    A switch-time parameter is *pinned* against CVODES' difference-quotient probe
+    (issue #48): the probe is held at the parameter's nominal value so it cannot
+    drag the switch into the approach and stall the integrator. That is safe only
+    when every crossing the parameter moves is compensated — stopped at (issue
+    #48) or rooted on (issue #150). If the parameter ALSO reads a condition whose
+    crossing nothing brackets — a ``floor()``-periodic dose schedule,
+    ``if((time - floor(time/period)*period) >= offset, ...)`` — the probe was the
+    only thing that would have captured that crossing's dependence on it, and
+    pinning drops it: the column comes back a silent zero (MODEL1708310001's
+    ``cycle_int`` measured ∂/∂cycle_int = 0 against a finite difference peaking at
+    ~19). Such a parameter cannot be pinned, and un-pinning reintroduces the issue
+    #48 stall, so the caller refuses it.
+
+    The atom test is :func:`uncompensated_condition_reason`'s — compensated by
+    issue #48, then issue #150, then a literal-only comparison — so the two cannot
+    disagree about which crossings are compensated. Only relevant on the
+    difference-quotient path: an uncompensated crossing is exactly what declines
+    the analytic sensitivity RHS (issue #68), so a model that reaches here with an
+    analytic RHS has none of these conditions and this returns empty.
+    """
+    if not candidates:
+        return set()
+    unsafe: set[str] = set()
+    for body in function_bodies:
+        for atom in _iter_condition_atoms(body):
+            if clock_crossing_compensated(atom, scope):
+                continue
+            if state_switch_residual(scope.core, atom):
+                continue
+            atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
+            if not _IDENTIFIER.search(atom_flat):
+                continue
+            names_in = {m.group(0) for m in _IDENTIFIER.finditer(atom_flat)}
+            unsafe |= candidates & names_in
+            if unsafe == candidates:
+                return unsafe  # nothing more to find
+    return unsafe
+
+
 def compute_switch_time_sens(
     core,
     sens_param_names,
     t_start: float,
     t_end: float,
+    has_analytic_sens_rhs: bool = False,
 ) -> tuple[list[tuple[float, int, float, list[float]]], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
 
@@ -1417,6 +1487,13 @@ def compute_switch_time_sens(
         Requested sensitivity parameters, in the column order the run will use.
     t_start, t_end
         Reported time window; crossings outside it contribute nothing.
+    has_analytic_sens_rhs
+        Whether this run installs an analytic sensitivity RHS
+        (``bngsim_codegen_sens_rhs``) rather than falling back to CVODES'
+        internal difference quotient. It decides one thing only: whether a
+        parameter that is *both* a switch time and an in-branch coefficient is
+        accepted or refused (issue #358, see below). Left ``False`` by default so
+        a caller that cannot tell keeps the conservative refusal.
 
     Returns
     -------
@@ -1434,24 +1511,41 @@ def compute_switch_time_sens(
     ------
     SensitivityUnsupportedError
         If a requested parameter sets a switch time *and* scales something inside
-        a branch. The jump alone is then not the whole gradient, and pinning
-        would discard the genuine in-branch ``∂f/∂p``; bngsim refuses rather than
-        return a partially-correct derivative. Typed (issue #320) so a caller can
-        tell this declared gap from a bug without matching on message text; it
-        still inherits ``ValueError``, which this raised before.
+        a branch, *and* ``has_analytic_sens_rhs`` is false. On the difference
+        quotient the jump alone is not the whole gradient and pinning holds the
+        genuine in-branch ``∂f/∂p`` at a wrong 0, so bngsim refuses rather than
+        return a partially-correct derivative; an analytic RHS carries that term
+        itself and the pair is accepted (issue #358). Typed (issue #320) so a
+        caller can tell this declared gap from a bug without matching on message
+        text; it still inherits ``ValueError``, which this raised before.
     """
     names = list(sens_param_names)
     if not names or core.n_functions == 0:
         return [], []
 
     ctx = core.functional_jacobian_context()
-    function_bodies = list(ctx["function_map"].values())
+    func_map = dict(ctx["function_map"])
     # Cheapest possible gate, checked before anything else: a model with no
-    # conditional rate law has no switch to find. Keeps the RHS probes and the
-    # sympy work off the path of every ordinary sensitivity run, including the
-    # per-row batch path.
-    if not any(_IF_CALL.search(body) for body in function_bodies):
+    # conditional rate law has no switch to find. On the RAW bodies, so a
+    # genome-scale model with tens of thousands of functions and no `if()`
+    # short-circuits before any inlining — inlining cannot create an `if()` that
+    # no body already has. Keeps the RHS probes and the sympy work off the path
+    # of every ordinary sensitivity run, including the per-row batch path.
+    if not any(_IF_CALL.search(body) for body in func_map.values()):
         return [], []
+    # Inline function references before scanning, exactly as the issue #150 state
+    # detector (:func:`state_switch_conditions`) already does — "the gate and the
+    # detector must scan the SAME text". A clock threshold can hide behind a
+    # function: BIOMD0000001007 writes `heav_x = if((x<0), 0, if((x>0), 1, 0))`
+    # with `x = time() - ModelValue_27`, so the raw body's atom is `x<0`, which
+    # names no clock and is silently skipped — while `state_switch_conditions`
+    # inlines to `(time()-ModelValue_27)<0`, recognizes the clock crossing and
+    # `continue`s past it as #48's job. The crossing was then compensated by
+    # neither detector, dropping the saltation jump for every parameter that moves
+    # it (∂t*/∂Tdam=1 through ModelValue_27) and leaving that column short.
+    from bngsim._jacobian import _inline_functions
+
+    function_bodies = [_inline_functions(body, func_map) or body for body in func_map.values()]
 
     # Counter-species clocks (the BNGL idiom) plus literal simulation time (what
     # SBML's `time` csymbol emits, and what a BNGL model may write directly).
@@ -1581,19 +1675,67 @@ def compute_switch_time_sens(
         for c in range(len(names))
         if dtstar[c] != 0.0
     }
+    # A switch-time parameter is safe to pin only if EVERY crossing it moves is
+    # compensated. One that also reads a condition nothing brackets — a
+    # `floor()`-periodic dose schedule — cannot be: pinning holds the probe that
+    # was the uncompensated crossing's only handler, so the column comes back a
+    # silent zero (MODEL1708310001's `cycle_int`). Refused before the in-branch
+    # test below, and regardless of the sensitivity RHS, because an uncompensated
+    # crossing is what put this model on the difference quotient to begin with
+    # (issue #68) — there is no analytic path here to combine anything on.
+    unsafe = _switch_params_in_uncompensated_conditions(scope, function_bodies, switch_params)
+    if unsafe:
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity w.r.t. "
+            + ", ".join(f"'{p}'" for p in sorted(unsafe))
+            + " is not supported on this model: each moves a detected switch time AND "
+            "also reads a condition whose crossing nothing compensates (a "
+            "floor()-periodic schedule or an equality, say). Pinning it against "
+            "CVODES' difference-quotient probe (issue #48) would hold that crossing's "
+            "dependence on it at a wrong 0, and un-pinning would drag the switch into "
+            "the approach and stall (issue #358). bngsim refuses rather than return a "
+            "partially-correct derivative. Drop it from sensitivity_params."
+        )
+
+    # A parameter that ALSO scales something inside a branch (`if(t>=sigma,
+    # sigma*k, 0)`) has a genuine non-zero in-branch ∂f/∂p, so its gradient is
+    # the interior variational term PLUS the crossing jump, not the jump alone.
+    #
+    # Whether bngsim can deliver that sum is decided entirely by the sensitivity
+    # RHS this run installs (issue #358):
+    #
+    # * On the **analytic** path, `bngsim_dfdp` already emits the in-branch
+    #   ∂f/∂p — the clean `Piecewise` derivative, gated by the same clock
+    #   threshold, no boundary delta (`d/dsigma if(t>=sigma, sigma*k, 0)` is
+    #   `if(t>=sigma, k, 0)`) — so the variational equation integrates the
+    #   interior term and the saltation jump `(f⁻−f⁺)·∂t*/∂p` adds the boundary.
+    #   The two already-computed terms sum to the correct total derivative, and
+    #   pinning below is inert (CVODES never perturbs `sens_p` when a user sens
+    #   RHS is set, so there is no probe to hold nominal). Accept.
+    # * On the **difference-quotient** path there is no `bngsim_dfdp`; the whole
+    #   ∂f/∂p is CVODES' internal probe, and pinning a switch-time parameter is
+    #   load-bearing in both directions the header comment names — it forces the
+    #   in-branch term to a WRONG 0 for an impure parameter, and un-pinning to
+    #   recover it would drag the switch into the approach and stall. bngsim
+    #   cannot combine the two, so it refuses rather than return a
+    #   partially-correct derivative (the same hazard the issue #68 gate exists
+    #   for). Refuse.
     pure = _condition_only_params(core, switch_params, derived_exprs)
     impure = sorted(switch_params - pure)
-    if impure:
+    if impure and not has_analytic_sens_rhs:
         raise SensitivityUnsupportedError(
             "Forward sensitivity w.r.t. "
             + ", ".join(f"'{p}'" for p in impure)
-            + " is not supported: each sets an if() switch time AND appears inside "
-            "a branch (or as a rate constant), so its gradient is not the crossing "
-            "jump alone — there is also a non-zero in-branch ∂f/∂p that bngsim "
-            "cannot currently combine with the jump (issue #48). bngsim refuses "
-            "rather than return a partially-correct derivative. Split the "
-            "parameter into a separate switch time and rate constant, or drop it "
-            "from sensitivity_params."
+            + " is not supported on this model: each sets an if() switch time AND "
+            "appears inside a branch (or as a rate constant), so its gradient is "
+            "the in-branch ∂f/∂p plus the crossing jump — and this run has no "
+            "analytic sensitivity RHS, so ∂f/∂p is CVODES' internal difference "
+            "quotient, which pinning holds at a wrong 0 for such a parameter "
+            "(issue #358). An analytic sensitivity RHS combines the two; a model "
+            "reaches the difference quotient only when a rate law it must "
+            "differentiate carries a non-smooth builtin or a state-dependent "
+            "condition (issue #68). Split the parameter into a separate switch "
+            "time and rate constant, or drop it from sensitivity_params."
         )
 
     pinned = sorted(param_idx[p] for p in switch_params if p in param_idx)
