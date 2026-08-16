@@ -414,6 +414,39 @@ class TestBooleanConditionEmission:
                 assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
 
 
+class TestNonFiniteEmissionGuard:
+    """GH #335 third-order effect. Differentiating a Piecewise guarded by an
+    ``Eq`` over a removable singularity can leave a sympy ``zoo``
+    (ComplexInfinity) in the guarded branch — the ``==`` rewrite makes it
+    reachable, and BIOMD0000000446 hits it. Printed verbatim that reads
+    ``zoo`` / ``oo`` / ``nan``, a token ExprTk rejects and the C compiler will not
+    build, so the emitters must decline (→ FD Jacobian) rather than ship it. The
+    existing post-print guard only spelled ``nan`` / ``inf``, so the sympy
+    singletons slipped through into a broken string.
+    """
+
+    @pytest.mark.parametrize("const", [sp.zoo, sp.oo, -sp.oo, sp.nan])
+    def test_non_finite_singleton_in_a_branch_declines(self, const):
+        x = sp.Symbol("x")
+        expr = sp.Piecewise((const, sp.Eq(x, 0)), (x, True))
+        assert J._is_emittable(expr) is False
+        assert J.sympy_to_exprtk(expr) is None
+        assert J.sympy_to_c(expr, lambda n: "y[0]") is None
+
+    def test_bare_non_finite_declines(self):
+        assert J._is_emittable(sp.zoo) is False
+        assert J.sympy_to_exprtk(2 * sp.Symbol("k") + sp.zoo) is None
+
+    def test_finite_guarded_quotient_still_emits(self):
+        """The guard must not reject an ordinary finite derivative — the very
+        shape (``k/x`` guarded at ``x==0``) whose *singular* cousin it rejects."""
+        x, k = sp.symbols("x k")
+        fin = sp.Piecewise((0, sp.Eq(x, 0)), (k / x, True))
+        assert J._is_emittable(fin) is True
+        assert J.sympy_to_exprtk(fin) is not None
+        assert J.sympy_to_c(fin, lambda n: {"x": "y[0]", "k": "p[0]"}.get(n)) is not None
+
+
 class TestFallbackContract:
     """Inputs the path cannot guarantee must return None (→ FD Jacobian), never
     a silently-wrong derivative."""

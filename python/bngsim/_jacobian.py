@@ -482,6 +482,17 @@ def _is_emittable(expr) -> bool:
     # FD. Checked first because it is the cheap structural case (GH #250).
     if expr.has(sp.Derivative):
         return False
+    # A symbolic ComplexInfinity / Infinity / NaN cannot be emitted: printed
+    # verbatim it reads ``zoo`` / ``oo`` / ``nan``, which ExprTk rejects and the C
+    # compiler will not build. sympy yields one where it could not resolve a
+    # singularity — differentiating a Piecewise guarded by an ``Eq`` over a
+    # removable singularity puts ``zoo`` in the guarded branch, reachable via the
+    # ``==`` rewrite (GH #335) — so decline to the finite-difference Jacobian. The
+    # emitters keep their post-print ``nan``/``inf`` check as well, for a non-finite
+    # *literal* folded in while printing (e.g. a ``1.0/0.0``); this catches the
+    # symbolic singletons that check's regex does not spell.
+    if expr.has(sp.zoo, sp.oo, -sp.oo, sp.nan):
+        return False
     for fn in expr.atoms(sp.Function):
         name = type(fn).__name__
         # Piecewise is a Function subclass in sympy but the printer emits it as
