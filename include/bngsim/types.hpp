@@ -860,6 +860,22 @@ struct SwitchTimeSens {
     // is itself a fitted initial condition would move t*, which the Python
     // detector refuses rather than silently zeroing.
     std::vector<double> dtstar_dp;
+    // ── Isolating one of several crossings on the same instant (issue #375) ──
+    // The f⁻/f⁺ read above nudges the CLOCK, which flips every condition
+    // thresholding that clock at this instant *together* — so where two switch
+    // times coincide, the difference is their sum and each parameter would be
+    // charged with the other's jump. These are parameter deltas applied only
+    // while f⁻ is read, sized so this crossing's threshold alone rises off the
+    // instant: with the clock held on the after side, this condition falls back
+    // to its before-branch and no other one moves. The difference is then this
+    // crossing's own jump, and the core's per-crossing sum is correct again.
+    //
+    // Empty — every model whose switch times are distinct, which is nearly all
+    // of them — takes the plain f⁻ − f⁺ path unchanged. The Python detector
+    // (bngsim._switch_sensitivity) picks the parameter and the step, and refuses
+    // the run outright when no parameter is private to one of the crossings.
+    std::vector<int> isolate_param_idx0;
+    std::vector<double> isolate_delta; // parallel to isolate_param_idx0
 };
 
 // One event whose crossing time moves with the sensitivity parameters (issue

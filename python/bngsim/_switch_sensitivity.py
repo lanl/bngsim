@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from typing import NamedTuple
@@ -1470,13 +1471,216 @@ def _switch_params_in_uncompensated_conditions(
     return unsafe
 
 
+class SwitchCrossing(NamedTuple):
+    """One crossing for ``SolverOptions.set_switch_time_sens`` (issues #48, #375).
+
+    The first four fields are the record as issue #48 shipped it. The last two
+    are the isolation bump: parameter deltas the core applies *only* while it
+    reads this crossing's ``f⁻``, chosen so this condition alone falls back to
+    its before-branch while every other condition landing on the same instant
+    stays on its after-branch. Empty — the overwhelmingly common case — means no
+    other condition crosses here and the plain ``f⁻ − f⁺`` is this crossing's
+    jump on its own.
+    """
+
+    t_star: float
+    clock_idx0: int
+    threshold: float
+    dtstar: list[float]
+    isolate_param_idx0: list[int]
+    isolate_delta: list[float]
+
+
+class _Crossing(NamedTuple):
+    """A detected clock threshold, before it is decided whether it emits."""
+
+    t_star: float
+    clock_idx0: int
+    threshold: float
+    dtstar: list[float]
+    # ∂threshold/∂primary over ALL primaries, not just the requested columns.
+    # This is the crossing's identity: two spellings of one threshold share it,
+    # two thresholds that merely share a value do not (issue #375).
+    partials: dict[str, float]
+
+
+def _q(x: float) -> str:
+    """A relative-precision key for a float, for grouping crossings."""
+    return f"{x:.12g}"
+
+
+def _is_same_crossing(a: _Crossing, b: _Crossing) -> bool:
+    """Whether two detected thresholds are the SAME crossing written twice.
+
+    Same clock, same value, and the same ∂threshold/∂primary — which is what
+    distinguishes `t>=t0` appearing in six rate laws (one crossing) from
+    `t>=tau0` and `t>=tauPIP2syn` where the two parameters happen to hold the
+    same number (two crossings, issue #375). The partials are compared with a
+    tolerance because two spellings can reduce through different arithmetic.
+    """
+    if a.clock_idx0 != b.clock_idx0 or _q(a.threshold) != _q(b.threshold):
+        return False
+    if a.partials.keys() != b.partials.keys():
+        return False
+    return all(
+        abs(v - b.partials[n]) <= 1e-9 * max(abs(v), abs(b.partials[n]), 1.0)
+        for n, v in a.partials.items()
+    )
+
+
+def _absorb_crossing(found: list[_Crossing], cand: _Crossing) -> None:
+    """Add ``cand``, or fold it into the crossing it duplicates.
+
+    Folding keeps the larger-magnitude partial per column rather than summing,
+    which is the pre-#375 rule and the right one *within* a crossing: one
+    threshold gating six rate laws must be jumped across once, not six times.
+    """
+    for i, seen in enumerate(found):
+        if _is_same_crossing(seen, cand):
+            merged = list(seen.dtstar)
+            for c, v in enumerate(cand.dtstar):
+                if abs(v) > abs(merged[c]):
+                    merged[c] = v
+            found[i] = seen._replace(dtstar=merged)
+            return
+    found.append(cand)
+
+
+# How far a crossing's threshold is pushed to take it off the instant, relative
+# to the threshold's own magnitude. Large enough to clear the core's clock nudge
+# (64 ulp) by orders of magnitude; small enough that anything else the bumped
+# parameter reaches — an in-branch coefficient, on an issue #358 impure switch
+# time — moves by a part in a million and cannot be mistaken for the jump.
+_ISOLATION_REL = 1e-6
+# The same bump has to survive being added to the threshold, so it may not sink
+# into the last bits of it.
+_ISOLATION_MIN_ULP = 1024.0
+_EPS = sys.float_info.epsilon
+
+
+def _isolation_bump(
+    cross: _Crossing,
+    group: Sequence[_Crossing],
+    param_idx: dict[str, int],
+    thresholds_on_clock: AbstractSet[float],
+) -> tuple[int, float]:
+    """The ``(param_idx0, delta)`` that takes ``cross`` alone off this instant.
+
+    The core reads a crossing's jump by nudging the *clock* a few ulp either
+    side of the threshold, which flips every condition thresholding that clock
+    there at once — so when several land on one instant, the difference it reads
+    is their sum and no amount of re-keying separates them (issue #375). What
+    does separate them is moving one condition's threshold instead: raise it by
+    a hair and, with the clock held on the after side, that condition alone
+    reads its before-branch. The difference is then this crossing's own jump.
+
+    Which parameter to raise is the whole of the choice. It has to be one this
+    crossing's threshold depends on and *no* coinciding threshold does, or the
+    bump moves the others too and isolates nothing; when no such parameter
+    exists the crossings are not separable this way and bngsim refuses rather
+    than return the merged answer #375 reported.
+    """
+    others: set[str] = set()
+    for other in group:
+        if other is not cross:
+            others |= set(other.partials)
+    private = {n: v for n, v in cross.partials.items() if n not in others and n in param_idx}
+    if not private:
+        shared = sorted(set(cross.partials) & others)
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported on this model: the switch times "
+            f"crossing together at t={cross.t_star:.6g} cannot be told apart. bngsim reads "
+            "a crossing's jump by nudging the clock across the threshold, which flips "
+            "every condition thresholding it at that instant at once, so a coinciding "
+            "crossing is separated by moving its threshold off the instant instead "
+            "(issue #375) — and every parameter this one's threshold depends on ("
+            + ", ".join(f"'{n}'" for n in sorted(cross.partials))
+            + ") is also read by a threshold it coincides with"
+            + (" (" + ", ".join(f"'{n}'" for n in shared) + ")" if shared else "")
+            + ". Returning the merged jump would charge each parameter with the other's, "
+            "so bngsim refuses. Separating the switch times — they are equal only by "
+            "coincidence of value — makes this model supported."
+        )
+    # The largest partial gives the smallest parameter step for a given move of
+    # the threshold, so it is the one least able to disturb anything else.
+    name = max(private, key=lambda n: abs(private[n]))
+    span = max(abs(cross.threshold), 1.0)
+    delta_threshold = _ISOLATION_REL * span
+    # Never step so far that the bumped threshold reaches a DIFFERENT threshold
+    # on the same clock: that would flip a condition this crossing does not own,
+    # which is the very contamination being removed.
+    gaps = [abs(t - cross.threshold) for t in thresholds_on_clock if _q(t) != _q(cross.threshold)]
+    if gaps:
+        delta_threshold = min(delta_threshold, 0.25 * min(gaps))
+    # Unreachable while :func:`_q` groups on 12 significant digits: the closest
+    # threshold it calls *different* is far enough away that a quarter of the gap
+    # still clears this floor. Widening `_q` would silently start producing steps
+    # that vanish into the threshold's last bits, flipping nothing — and a jump
+    # read from two identical RHS evaluations is an exact zero, the one outcome
+    # worth failing over. Kept as the thing that fails instead, with the margin
+    # itself pinned by test_the_quantisation_leaves_room_for_the_isolation_step.
+    floor = _ISOLATION_MIN_ULP * _EPS * span
+    if delta_threshold < floor:
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported on this model: the switch times "
+            f"crossing together at t={cross.t_star:.6g} sit closer to a neighbouring "
+            "threshold than the step that would separate them, so isolating this "
+            "crossing's jump would flip a condition it does not own (issue #375). "
+            "bngsim refuses rather than return a merged jump."
+        )
+    return param_idx[name], delta_threshold / private[name]
+
+
+def _emit_switch_records(
+    found: list[_Crossing], param_idx: dict[str, int]
+) -> list[SwitchCrossing]:
+    """Turn detected crossings into records, isolating any that coincide.
+
+    A crossing no requested parameter moves emits nothing — but it is still in
+    ``found``, and its presence on an instant is exactly what puts the crossings
+    that DO emit there onto the isolation path. That is why issue #375
+    reproduced with a single parameter requested: the coinciding condition
+    contaminates the core's ``f⁻`` whether or not anyone asked about it.
+    """
+    by_instant: dict[str, list[_Crossing]] = {}
+    thresholds_on_clock: dict[int, set[float]] = {}
+    for cross in found:
+        by_instant.setdefault(_q(cross.t_star), []).append(cross)
+        thresholds_on_clock.setdefault(cross.clock_idx0, set()).add(cross.threshold)
+
+    records: list[SwitchCrossing] = []
+    for group in by_instant.values():
+        for cross in group:
+            if not any(v != 0.0 for v in cross.dtstar):
+                continue  # no requested parameter moves this crossing
+            if len(group) > 1:
+                idx0, delta = _isolation_bump(
+                    cross, group, param_idx, thresholds_on_clock[cross.clock_idx0]
+                )
+                isolate_idx, isolate_delta = [idx0], [delta]
+            else:
+                isolate_idx, isolate_delta = [], []
+            records.append(
+                SwitchCrossing(
+                    t_star=cross.t_star,
+                    clock_idx0=cross.clock_idx0,
+                    threshold=cross.threshold,
+                    dtstar=cross.dtstar,
+                    isolate_param_idx0=isolate_idx,
+                    isolate_delta=isolate_delta,
+                )
+            )
+    records.sort(key=lambda r: r.t_star)
+    return records
+
+
 def compute_switch_time_sens(
     core,
     sens_param_names,
     t_start: float,
     t_end: float,
     has_analytic_sens_rhs: bool = False,
-) -> tuple[list[tuple[float, int, float, list[float]]], list[int]]:
+) -> tuple[list[SwitchCrossing], list[int]]:
     """Switch-time crossings and their ``∂t*/∂p``, plus the parameters to pin.
 
     Parameters
@@ -1498,11 +1702,17 @@ def compute_switch_time_sens(
     Returns
     -------
     records
-        ``(t_star, clock_species_idx0, threshold, [∂t*/∂p per column])`` sorted by
-        ``t_star``, for ``SolverOptions.set_switch_time_sens``. Empty unless some
-        ``if()`` threshold actually moves with one of ``sens_param_names`` — a
-        model whose switch times are all fixed constants needs no jump and is
-        left alone.
+        :class:`SwitchCrossing` values sorted by ``t_star``, for
+        ``SolverOptions.set_switch_time_sens``. Empty unless some ``if()``
+        threshold actually moves with one of ``sens_param_names`` — a model whose
+        switch times are all fixed constants needs no jump and is left alone.
+
+        One record per DISTINCT crossing, where distinctness is
+        ``∂threshold/∂primary`` rather than the threshold's value: one threshold
+        gating six rate laws is still one crossing (jumping it six times would be
+        as wrong as merging), while two thresholds that merely hold the same
+        number are two (issue #375). Records that share an instant carry the
+        isolation bump that lets the core read each one's own jump.
     pinned
         0-based indices of the switch-time parameters, for
         ``SolverOptions.set_switch_pinned_params``.
@@ -1518,6 +1728,11 @@ def compute_switch_time_sens(
         itself and the pair is accepted (issue #358). Typed (issue #320) so a
         caller can tell this declared gap from a bug without matching on message
         text; it still inherits ``ValueError``, which this raised before.
+
+        Also if two crossings land on the same instant and no parameter is
+        private to one of them, so neither can be moved off it without moving the
+        other (issue #375). The merged jump that used to be returned there
+        charged each parameter with the other's.
     """
     names = list(sens_param_names)
     if not names or core.n_functions == 0:
@@ -1566,10 +1781,22 @@ def compute_switch_time_sens(
     # #41/#43 chain rules do. Columns for such a name stay 0.
     col_of = {name: c for c, name in enumerate(names)}
 
-    # Keyed on (clock species, threshold value) so the same threshold appearing
-    # in many rate laws — `t>=t0` gates six functions in Lin2021 — is one
-    # crossing, stopped at and jumped across once.
-    found: dict[tuple[int, float], tuple[float, list[float]]] = {}
+    # Every clock threshold this model spells, one entry per DISTINCT crossing.
+    # "Distinct" is decided by ∂threshold/∂primary, not by the threshold's value:
+    # the same threshold appearing in many rate laws — `t>=t0` gates six
+    # functions in Lin2021 — has one set of partials and collapses to one
+    # crossing, while two thresholds that merely happen to share a *number*
+    # (`tau0 = tauPIP2syn = 0.05` on BIOMD0000000075) have different partials and
+    # stay apart. Keying on the value alone is issue #375: it merged those two
+    # into one record whose ∂t*/∂p was the union, and the core then charged each
+    # parameter with the other's jump.
+    #
+    # Crossings that no *requested* parameter moves are collected here too, and
+    # deliberately: they emit no record, but a condition flipping at the same
+    # instant still contaminates the f⁻−f⁺ the core reads, so their presence is
+    # what turns isolation on below. Dropping them early is why #375 reproduced
+    # even when a single parameter was requested.
+    found: list[_Crossing] = []
 
     for body in function_bodies:
         for cond in _iter_if_conditions(body):
@@ -1606,17 +1833,10 @@ def compute_switch_time_sens(
                     warn_on_failure=False,
                 )
                 dtstar = [0.0] * len(names)
-                moved = False
                 for prim_name, coeff in partials.items():
                     col = col_of.get(prim_name)
                     if col is not None and coeff != 0.0:
                         dtstar[col] += float(coeff)
-                        moved = True
-                if not moved:
-                    # A crossing that no requested parameter moves contributes a
-                    # zero jump. Skipping it keeps this feature's footprint to
-                    # models that actually fit a switch time.
-                    continue
 
                 threshold_value = _evaluate_threshold(
                     threshold_expr, param_idx, values, derived_exprs
@@ -1645,23 +1865,18 @@ def compute_switch_time_sens(
                 if not (t_start < t_star <= t_end):
                     continue
 
-                key = (clock_idx0, threshold_value)
-                prev = found.get(key)
-                if prev is None:
-                    found[key] = (t_star, dtstar)
-                else:
-                    # Same crossing reached through a different (but equal)
-                    # threshold spelling — keep the larger-magnitude partial
-                    # rather than double-counting the jump.
-                    for c in range(len(names)):
-                        if abs(dtstar[c]) > abs(prev[1][c]):
-                            prev[1][c] = dtstar[c]
+                _absorb_crossing(
+                    found,
+                    _Crossing(
+                        t_star=t_star,
+                        clock_idx0=clock_idx0,
+                        threshold=threshold_value,
+                        dtstar=dtstar,
+                        partials={n: float(v) for n, v in partials.items() if v != 0.0},
+                    ),
+                )
 
-    records = [
-        (t_star, clock_idx0, threshold, dtstar)
-        for (clock_idx0, threshold), (t_star, dtstar) in found.items()
-    ]
-    records.sort(key=lambda r: r[0])
+    records = _emit_switch_records(found, param_idx)
     if not records:
         return [], []
 
@@ -1671,7 +1886,7 @@ def compute_switch_time_sens(
     # displacing the switch into the approach (which stalls the integrator).
     switch_params = {
         names[c]
-        for _t, _ci, _thr, dtstar in records
+        for _t, _ci, _thr, dtstar, _ii, _id in records
         for c in range(len(names))
         if dtstar[c] != 0.0
     }

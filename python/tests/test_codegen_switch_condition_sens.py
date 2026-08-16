@@ -379,7 +379,7 @@ class TestPythonKeywordThresholdParameters:
         assert reason is None, reason
         records, pinned = sw.compute_switch_time_sens(core, [name, "gap"], 0.0, 100.0)
         # onset = <name> + gap = 2.0 + 1.0, and ∂t*/∂p is 1 for both.
-        assert records == [(3.0, 3, 3.0, [1.0, 1.0])]
+        assert records == [(3.0, 3, 3.0, [1.0, 1.0], [], [])]
         assert pinned
 
     @pytest.mark.parametrize(
@@ -430,7 +430,7 @@ class TestPythonKeywordThresholdParameters:
         _terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
         assert reason is None, reason
         records, _pinned = sw.compute_switch_time_sens(core, ["del", "gap", "lead"], 0.0, 100.0)
-        assert records == [(3.0, 3, 3.0, [1.0, 1.0, 1.0])]
+        assert records == [(3.0, 3, 3.0, [1.0, 1.0, 1.0], [], [])]
 
     def test_colliding_aliases_bail_rather_than_merge(self):
         """``_sympy_symbol_alias_map`` returns ``None`` when two parameters would

@@ -261,7 +261,7 @@ class TestDetection:
         core = _minimal()[0]._core
         records, pinned = compute_switch_time_sens(core, ["sigma", "k"], 0.0, 5.0)
         assert len(records) == 1
-        t_star, clock_idx0, threshold, dtstar = records[0]
+        t_star, clock_idx0, threshold, dtstar = records[0][:4]
         assert t_star == pytest.approx(SIGMA)
         assert clock_idx0 == 0  # the counter species
         assert threshold == pytest.approx(SIGMA)
@@ -363,7 +363,7 @@ class TestDualRoleParameter:
             self._dual_role()._core, ["sigma"], 0.0, 5.0, has_analytic_sens_rhs=True
         )
         assert len(records) == 1  # the single crossing at t* = sigma = 3
-        t_star, _clock, threshold, dtstar = records[0]
+        t_star, _clock, threshold, dtstar = records[0][:4]
         assert t_star == pytest.approx(SIGMA)
         assert threshold == pytest.approx(SIGMA)
         assert dtstar == [pytest.approx(1.0)]  # ∂t*/∂sigma = 1
@@ -491,7 +491,7 @@ class TestClockThresholdBehindAFunction:
     def test_the_crossing_is_detected(self):
         records, pinned = compute_switch_time_sens(self._model()._core, ["sigma", "k"], 0.0, 5.0)
         assert len(records) == 1
-        t_star, _clock, threshold, dtstar = records[0]
+        t_star, _clock, threshold, dtstar = records[0][:4]
         assert t_star == pytest.approx(SIGMA)
         assert threshold == pytest.approx(SIGMA)
         assert dtstar[0] == pytest.approx(1.0)  # ∂t*/∂sigma = 1, through `clk`
@@ -643,7 +643,7 @@ class TestSbmlPiecewiseInTime:
         core = self._model()._core
         records, pinned = compute_switch_time_sens(core, SBML_PARAMS, 0.0, SBML_T_END)
         assert len(records) == 1
-        t_star, clock_idx0, threshold, dtstar = records[0]
+        t_star, clock_idx0, threshold, dtstar = records[0][:4]
         assert t_star == pytest.approx(SBML_T0)
         assert clock_idx0 == -1  # literal simulation time, not a species
         assert threshold == pytest.approx(SBML_T0)
