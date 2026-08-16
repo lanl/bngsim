@@ -266,6 +266,64 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A power law whose base reaches zero no longer NaNs its own derivative
+  (issue #351).** SymPy differentiates `u^n` as `n·u^n·u'/u` and leaves the two
+  `Pow`s uncombined — with a symbolic exponent and a base of unknown sign,
+  `u^a·u^b = u^(a+b)` crosses a branch cut it will not assume. Wherever `u`
+  reaches zero the emitted C is `pow(u,n)/u` = `0/0` = NaN, at a point where the
+  law's own value is finite and the true derivative is an ordinary number. One
+  NaN poisons that parameter's whole sensitivity column, or defeats the corrector
+  outright when it is the only column: `BIOMD0000000703` failed `CV_CONV_FAILURE`
+  at `t=0` through `(A4 − A4_star)^nA4` with `A4(0) = A4_star = 1.0`, while its
+  plain ODE run succeeded at the same tolerances.
+
+  The rewrite that removes it (`_remove_removable_power_denominators`, extended
+  from GH #96) now cancels `base^n / d` whenever `d` **is the base itself**, for
+  any base whatever — a symbol, a difference, a whole rational sub-expression.
+  GH #96 could only ask "is `base` a linear multiple of the symbol `d`?", which
+  required `d` to be a bare `Symbol` and so reached `x^n/x` by accident while
+  missing `(A4 − A4_star)^n/(A4 − A4_star)` entirely.
+
+  **This needs no case split on the exponent, and that is the point.**
+  `pow(u, n-1)` in IEEE arithmetic is `0` for `n > 1`, `1` for `n = 1`
+  (`pow(0,0)` is 1 by C99) and `+inf` for `n < 1` — the true value of `n·u^(n-1)`
+  in every regime, *including* the infinite one. Unlike the log /
+  fractional-power family (#310/#317/#333/#336), where the state is outside the
+  law's domain and no finite answer exists, here the answer existed and the
+  emitter was throwing it away by not cancelling. Only a **symbolic** exponent
+  can reach the bug at all: sympy evaluates `diff(u**3, x)` to `3*u**2*u'`
+  itself, so no division is ever emitted for a literal one.
+
+  Both emitters share the one chokepoint, so the interpreted RHS Jacobian and
+  the compiled `∂f/∂p` get the same arithmetic.
+
+  **Corpus-wide before/after over the 1,319 rr_parity models** (each variant in
+  its own process with its own cold cache, because `_CODEGEN_CACHE_KEY` digests
+  the emitter sources and a shared cache would have reported "no change" for
+  everything): 22 models' emitted source changes, 1,258 are byte-identical, 39
+  do not load for unrelated reasons. Of the 22, exactly **two** models' numbers
+  move, and finite differences back the new value in both:
+
+  - `BIOMD0000000703` — 440 of 2,772 sensitivity cells were non-finite; now none
+    are, and the column matches a central difference of the trajectory to 1e-7.
+  - `BIOMD0000000617` — a *silently wrong finite* answer, which is the worse half
+    of this bug. `∂v/∂Kxx1` at t=10 was `0.9436790062` against FD's
+    `0.9764789789`; it is now `0.9764789783`, agreeing to 1.8e-12. 20 of 252
+    cells moved, all toward FD. Nothing flagged this model before — it produced
+    no NaN, raised nothing, and had simply been wrong by 1e-4 relative.
+
+  The other 20 are unchanged to 1e-9 or better.
+
+- **MSVC no longer leaks a `.lib`/`.exp` pair into the codegen cache on every
+  successful Windows compile (issue #362).** `cl /LD /Fe:<out>` writes an import
+  library and an export file beside the DLL, and `compile_rhs`'s cleanup named
+  only the DLL — which on the success path has already been `os.replace`d away,
+  so its `unlink` was a no-op and the pair stayed, one per compile, forever.
+  Unlike the shard-directory and stray-`.c` leaks `bngsim-cache clean` collects
+  (#205), this one did not need an interrupted compile. It rides along here
+  because #351 already invalidates every cached artifact (#51), so the fix costs
+  nothing extra rather than spending a global invalidation on its own.
+
 - **A non-finite compartment size no longer loads an amount-only species as
   `nan` (issue #353).** `MODEL2002070001` declares `size="NaN"` on both of its
   compartments and makes every species `hasOnlySubstanceUnits="true"` — the
