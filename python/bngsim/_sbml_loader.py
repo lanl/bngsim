@@ -4310,6 +4310,17 @@ def _build_model_from_sbml_doc(doc):
     _ic_expr_symbols = _const_param_ids | live_volume_param_comps
     ia_single_param_ref: dict[str, str] = {}
     ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
+    # An IC expression may also read ANOTHER STATE, and it means that state's
+    # initial value — `A = M*(1 - mu_a/alpha_A)` (BIOMD0000000838),
+    # `A88 = A46 + ARPPtot` (BIOMD0000000643), eleven of BIOMD0000001102's
+    # twelve. Rejecting those cost the whole seed: 24 of 1102's 27 columns read
+    # zero at t=0 where both other engines report a number. The reference is
+    # resolved below to whatever expresses that state's own IC, so the chain
+    # rule composes through the existing derived-parameter DAG (#43) instead of
+    # needing a second differentiator.
+    _ia_state_targets: set[str] = set()
+    _ic_cand: dict[str, object] = {}  # sym → math, for the compound candidates
+    _ic_cand_deps: dict[str, set[str]] = {}  # sym → the states it reads
     for j in range(sbml_model.getNumInitialAssignments()):
         ia = sbml_model.getInitialAssignment(j)
         sym = ia.getSymbol()
@@ -4318,6 +4329,7 @@ def _build_model_from_sbml_doc(doc):
         math = ia.getMath()
         if math is None:
             continue
+        _ia_state_targets.add(sym)
         # libsbml: AST_NAME is the only node type for a bare <ci>. Reject
         # operators, numbers, function applications, and AST_NAME_TIME etc.
         if math.getNumChildren() == 0 and math.getType() == libsbml.AST_NAME:
@@ -4328,12 +4340,64 @@ def _build_model_from_sbml_doc(doc):
                 ia_param_expr[sym] = _safe_name(ref)
             continue
         names = _ast_name_set(math)
-        if not names or _ast_references_time(math) or not names <= _ic_expr_symbols:
+        if not names or _ast_references_time(math):
             continue
-        try:
-            ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(math, func_defs)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("initialAssignment for %s not lowered for IC sensitivity: %s", sym, e)
+        if not names <= (_ic_expr_symbols | _ic_seed_symbols):
+            continue
+        _ic_cand[sym] = math
+        _ic_cand_deps[sym] = names & _ic_seed_symbols
+
+    # Lower the compound candidates in dependency order, so a state reference
+    # resolves to a symbol that is already declared. Kahn with SBML declaration
+    # order as the tie-break, matching §2's lift; a reference cycle (illegal
+    # SBML) drops out and stays folded.
+    _ic_pending = {k: set(v) for k, v in _ic_cand_deps.items()}
+    _ic_decl_index = {s: i for i, s in enumerate(_ic_cand)}
+    while _ic_pending:
+        _ic_ready = sorted(
+            (k for k, d in _ic_pending.items() if not (d & _ic_pending.keys())),
+            key=lambda k: _ic_decl_index[k],
+        )
+        if not _ic_ready:
+            for k in _ic_pending:
+                logger.debug("initialAssignment for %s not lowered: IC reference cycle", k)
+            break
+        for sym in _ic_ready:
+            del _ic_pending[sym]
+            subs: dict[str, str] = {}
+            for dep in _ic_cand_deps[sym]:
+                if dep in ia_single_param_ref:
+                    # That state's IC *is* a parameter; read it straight.
+                    subs[dep] = _safe_name(ia_single_param_ref[dep])
+                elif dep in ia_param_expr:
+                    subs[dep] = _safe_name(f"_ic_{dep}")
+                elif dep not in _ia_state_targets:
+                    # No initialAssignment of its own, so its IC is a declared
+                    # constant: substitute the value section 0 resolved. Its
+                    # ∂/∂p is genuinely zero, so nothing is dropped.
+                    subs[dep] = _real_literal(float(eval_ctx.get(dep, 0.0)))
+                else:
+                    # It HAS an initialAssignment that did not lower, so its own
+                    # ∂x(0)/∂p is unavailable. Folding it to a number here would
+                    # silently drop that term and answer a partial derivative as
+                    # if it were the whole one — the failure this issue is about.
+                    logger.debug(
+                        "initialAssignment for %s not lowered: it reads %s, "
+                        "whose own initial condition did not lower",
+                        sym,
+                        dep,
+                    )
+                    subs = {}
+                    break
+            else:
+                try:
+                    ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(
+                        _ic_cand[sym], func_defs, local_params=subs or None
+                    )
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug(
+                        "initialAssignment for %s not lowered for IC sensitivity: %s", sym, e
+                    )
 
     # (#170) The residue: a section-0 fold of a live size that neither §2 nor the
     # loop above put back on the size. An initial condition still folded, a named
