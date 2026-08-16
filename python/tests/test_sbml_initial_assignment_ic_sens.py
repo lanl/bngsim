@@ -205,24 +205,32 @@ class TestNotLowered:
     """What must NOT be lowered. A wrong initial condition is far worse than a
     missing sensitivity seed, so the predicate is deliberately strict."""
 
-    def test_non_constant_parameter_leaves_the_ic_alone(self):
-        """``constant="false"`` parameters are promoted to species by this
-        loader, so an IC reading one is not a parameter expression at all.
+    def test_unwritten_non_constant_parameter_is_lowered(self):
+        """An UNWRITTEN ``constant="false"`` parameter is lowered like any other.
 
-        BIOMD0000000856 (``WHISBF = 0.66*NSt``, ``NSt`` non-constant) is the
-        case that proved it: lowering it produced a derived parameter that
-        evaluated to 0 against a symbol that is a *species* in the built model,
-        and the build-time IC resolution wrote that 0 over the species' real
-        initial condition — moving a plain, non-sensitivity trajectory.
+        This test used to assert the opposite, on the reasoning that such a
+        parameter is "promoted to a species by this loader". It is not: the
+        loader promotes rate-rule targets and event-assignment targets, and
+        nothing else. SBML's ``constant="false"`` declares that a symbol *may*
+        vary, not that anything varies it, and COPASI emits it routinely on
+        parameters no rule ever writes — so the extra filter withheld the seed
+        from every IC expression reading one (issue #379, BIOMD0000000611).
+
+        BIOMD0000000856, the case the old reasoning cited, is still refused —
+        by the subtraction that always did the work. Its ``NSt`` is an event
+        assignment target. That guard is pinned in
+        ``test_sbml_ia_ic_chain_sens.py::TestEventWrittenUpstreamStaysFolded``.
         """
         sbml = SBML_IA_PRODUCT.replace(
             '<parameter id="b" value="0.3" constant="true"/>',
             '<parameter id="b" value="0.3" constant="false"/>',
         )
         m = bngsim.Model.from_sbml_string(sbml)
-        # The IC is still the initialAssignment's value, not 0.
+        # The invariant that always mattered: the IC is the fold, never 0.
         assert m._core.get_concentration("u") == pytest.approx(-18.0)
-        assert not [n for n in m._core.param_names if n.startswith("_ic_")]
+        # And the seed it was denied now exists.
+        _m, t, s = _run(sbml, ["b"])
+        np.testing.assert_allclose(s[:, 0, 0], -60.0 * np.exp(-0.5 * t), rtol=1e-7, atol=1e-8)
 
     def test_time_dependent_ic_is_not_lowered(self):
         sbml = SBML_IA_PRODUCT.replace(
