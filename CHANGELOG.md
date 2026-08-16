@@ -307,6 +307,53 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **Two switch times set to the same number no longer charge each other's jump
+  (issue #375).** A switch-time parameter's whole gradient is the jump
+  `s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p` at its crossing (issue #48), and the core reads
+  `f⁻`/`f⁺` by nudging the *clock* a few ulp either side of the threshold. That
+  reads the whole right-hand side, so every condition thresholding that clock at
+  that value flips together and the difference is their **sum**. The detector
+  keyed crossings on the threshold's *value*, so two conditions holding the same
+  number merged into one record whose `∂t*/∂p` was the union of both, and each
+  parameter came back with the other's jump added.
+
+  On two independent ramps — `if(time()>=tA, 0, kA)` and `if(time()>=tB, 0, kB)`,
+  sharing no state and neither rate law naming the other's parameter — the exact
+  matrix `[[kA, 0], [0, kB]]` came back as `[[kA, kA], [kB, kB]]` at `tA = tB`,
+  and exactly right the moment they differed. On the corpus it reaches
+  `BIOMD0000000075` and `BIOMD0000000161`, which each ship three stimulus onsets
+  at `tau = 0.05`: `∂PI_PM/∂tau0_PLCact` read `2.7e+03` where the true value is
+  unresolvably small, and `∂PIP2_PM/∂tau0_PLCact` came back `-2.6e+03` against a
+  true `+23.7` — wrong sign, two orders of magnitude, nothing logged. The
+  spurious entries largely cancel along the conservation chain, so a sum over
+  species looks right while the individual columns do not.
+
+  **Two things had to change, and the first alone would not have been enough.**
+  Crossings are now keyed on `∂threshold/∂primary` rather than on the threshold's
+  value, so one threshold gating six rate laws still collapses to one crossing —
+  that merge is load-bearing, or its jump is applied six times — while two
+  thresholds that merely share a number stay apart. But separate records would
+  still each read the same clock-nudged `f⁻ − f⁺` and still get the combined
+  jump. So a crossing that shares its instant is now separated by moving its
+  *threshold* instead: `SwitchTimeSens` carries a parameter bump the core applies
+  only while it reads `f⁻`, sized so this crossing's threshold alone rises off
+  the instant. With the clock held on the after side, that condition alone falls
+  back to its before-branch, the difference is its own jump, and the core's
+  existing per-instant sum is correct again.
+
+  The parameter raised is one no coinciding threshold reads, and the step is
+  capped at a quarter of the distance to the nearest neighbouring threshold so it
+  cannot flip a condition this crossing does not own. Where no such parameter
+  exists the crossings are genuinely inseparable this way and bngsim raises
+  `SensitivityUnsupportedError` rather than return the merged jump. Models whose
+  switch times are distinct — nearly all of them — carry no bump and take the
+  pre-#375 path unchanged.
+
+  Crossings that no *requested* parameter moves are now detected and kept as
+  well. They emit no column, but they flip at that instant and contaminate `f⁻`
+  just the same, which is why #375 reproduced even when a single parameter was
+  requested.
+
 - **`run(sample_times=…)` is documented for what it actually does (issue #368).**
   The docstring asked for "at least 3 values" where the code takes 2, and read as
   though the argument were an output grid laid over `t_span`. It overrides

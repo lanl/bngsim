@@ -1152,11 +1152,16 @@ struct SwitchJumpScratch {
     std::vector<double> f_minus;
     std::vector<double> f_plus;
     std::vector<double> ywork;
+    // f with THIS crossing's condition alone on its before-branch, for a
+    // crossing that shares its instant with another (issue #375). Sized with
+    // the rest; untouched on the overwhelmingly common isolated crossing.
+    std::vector<double> f_iso;
 
     void resize(int ns) {
         f_minus.resize(static_cast<size_t>(ns));
         f_plus.resize(static_cast<size_t>(ns));
         ywork.resize(static_cast<size_t>(ns));
+        f_iso.resize(static_cast<size_t>(ns));
     }
 
     // Non-copyable on purpose: taking this by value would compile and run,
@@ -4104,6 +4109,68 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
     rhs_on_branch(-eps_clock, sw_f_minus);
     rhs_on_branch(+eps_clock, sw_f_plus);
 
+    // ── One crossing's own share of a shared instant (issue #375) ────────────
+    // The nudge above moves the CLOCK, so where several conditions threshold it
+    // at the same value they flip together and f⁻ − f⁺ is their *sum*. Charging
+    // that sum to each crossing's ∂t*/∂p is what #375 reported: on two coupled
+    // ramps whose switches happen to be set to the same number, every parameter
+    // came back with its neighbour's jump added, two orders of magnitude wrong
+    // on BIOMD0000000075 with nothing logged.
+    //
+    // The separation is to move the *threshold* rather than the clock: with the
+    // clock held on the after side, raising this crossing's threshold by a hair
+    // drops this condition — and only this one — back to its before-branch. The
+    // Python detector chose a parameter no coinciding threshold reads, so the
+    // bump cannot move a crossing this one does not own; where no such parameter
+    // exists it refuses the run instead of reaching here.
+    const std::vector<double> *jump_from = &sw_f_minus;
+    if (!sw.isolate_param_idx0.empty()) {
+        auto &params_live = const_cast<std::vector<Parameter> &>(model.parameters());
+        auto &eval_ref = model.evaluator();
+        auto rebuild_derived = [&]() {
+            for (auto &p : params_live) {
+                if (p.is_expression && p.evaluator_id >= 0) {
+                    p.value = eval_ref.evaluate(p.evaluator_id);
+                }
+            }
+        };
+        // Saved and put back here rather than through restore_nominal_params():
+        // that restores from sens.p, which is empty on a run with no parameter
+        // columns to probe, and leaving a bumped threshold behind would corrupt
+        // the resumed integration rather than one difference.
+        std::vector<double> saved;
+        saved.reserve(sw.isolate_param_idx0.size());
+        for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+            const int pi = sw.isolate_param_idx0[k];
+            if (pi < 0 || static_cast<size_t>(pi) >= params_live.size()) {
+                throw std::runtime_error("switch-time isolation names parameter index " +
+                                         std::to_string(pi) +
+                                         ", which this model does not have (issue #375)");
+            }
+            saved.push_back(params_live[static_cast<size_t>(pi)].value);
+            params_live[static_cast<size_t>(pi)].value += sw.isolate_delta[k];
+        }
+        rebuild_derived();
+        rhs_on_branch(+eps_clock, scratch.f_iso);
+        for (size_t k = 0; k < sw.isolate_param_idx0.size(); ++k) {
+            params_live[static_cast<size_t>(sw.isolate_param_idx0[k])].value = saved[k];
+        }
+        rebuild_derived();
+
+        // An isolated difference of exactly zero is a legitimate answer here and
+        // is deliberately not checked for. A condition can flip with no effect
+        // on the RHS at all — `if(t>=tB, 0, k*Zobs)` at a crossing where Zobs is
+        // still zero has both branches evaluating to 0 — and that crossing's
+        // jump genuinely IS zero, while a coinciding neighbour's is not. An
+        // earlier draft treated the unchanged RHS as a failed isolation and
+        // threw; that turns a model with a quiet switch into a crashed run,
+        // which is a worse answer than the merged jump #375 was filed for. What
+        // makes the bump trustworthy is upstream instead: the detector only ever
+        // picks a parameter the threshold's own ∂threshold/∂p is non-zero in.
+        jump_from = &scratch.f_iso;
+    }
+    const std::vector<double> &sw_f_jump = *jump_from;
+
     // ── Land the clock ON its threshold, not a few ulp short (issue #82) ──
     // The stop time puts t exactly on t*, but the condition is read off the
     // CLOCK SPECIES, and that clock is integrated: counter(t*) comes back
@@ -4162,7 +4229,7 @@ void CvodeSimulator::Impl::apply_switch_sensitivity_jump(void *cvode_mem, N_Vect
         }
         double *col = N_VGetArrayPointer(yS_guard[c]);
         for (int i = 0; i < ns; ++i) {
-            col[i] += (sw_f_minus[i] - sw_f_plus[i]) * dtstar;
+            col[i] += (sw_f_jump[i] - sw_f_plus[i]) * dtstar;
         }
     }
 

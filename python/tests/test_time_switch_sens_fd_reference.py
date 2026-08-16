@@ -47,10 +47,12 @@ next reader from re-deriving that: a column that regressed to a silent zero, to 
 dropped crossing jump, or to the left-limit at the node fails loudly.
 
 The sweep that established this did turn up a real defect, on other models:
-crossings that share a threshold *value* merge into one record, so two switch
-times that happen to be equal charge each other's jump (issue #375). Its minimal
-reproducer is the strict xfail at the end of this file — the same subject, and
-the one shape in it where a finite difference **is** the reliable side.
+crossings that share a threshold *value* merged into one record, so two switch
+times that happened to be equal charged each other's jump (issue #375). That one
+was real and is fixed; its reproducer and the isolation that repairs it live in
+``test_coincident_switch_time_isolation.py``. Worth keeping the pair in view — a
+switch-time column can be wrong for a reason a finite difference sees clearly, and
+wrong-looking for a reason it cannot see at all.
 """
 
 from __future__ import annotations
@@ -311,55 +313,3 @@ class TestTheModelIsNotDeclined:
             if "sensitivity RHS is declined" in r.getMessage()
         ]
         assert refusals == []
-
-
-# ─── Issue #375: two switch times that happen to be equal ────────────────────
-# Found by the corpus sweep above rather than by #368, and filed rather than
-# fixed: the merge that causes it exists to stop one switch time written into two
-# rate laws from double-counting its jump, and separating the two cases needs a
-# per-condition RHS difference the core cannot currently produce.
-#
-# X ramps at kA until tA and stops; Y ramps at kB until tB and stops. They share
-# no state and neither rate law mentions the other's parameter, so the exact
-# matrix at any t past both switches is diagonal: [[kA, 0], [0, kB]].
-_K_A, _K_B = 2.0, 5.0
-_PAIR_TS = [0.0, 0.5, 1.5, 2.0]
-
-
-def _two_switch_model(t_a, t_b):
-    b = ModelBuilder()
-    for name, value in (("tA", t_a), ("tB", t_b), ("kA", _K_A), ("kB", _K_B)):
-        b.add_parameter(name, value)
-    x_idx = b.add_species("X()", 0.0)
-    y_idx = b.add_species("Y()", 0.0)
-    b.add_function("rateX", "if(time()>=tA,0,kA)")
-    b.add_function("rateY", "if(time()>=tB,0,kB)")
-    b.add_reaction([], [x_idx], "functional", "rateX")
-    b.add_reaction([], [y_idx], "functional", "rateY")
-    return bngsim.Model(_core=b.build()), x_idx, y_idx
-
-
-def _two_switch_matrix(t_a, t_b):
-    """The final ``[[∂X/∂tA, ∂X/∂tB], [∂Y/∂tA, ∂Y/∂tB]]``."""
-    model, x_idx, y_idx = _two_switch_model(t_a, t_b)
-    r = bngsim.Simulator(model, method="ode", sensitivity_params=["tA", "tB"]).run(
-        sample_times=_PAIR_TS, **_RUN
-    )
-    S = np.asarray(r.sensitivities)
-    return np.array([[S[-1, x_idx, 0], S[-1, x_idx, 1]], [S[-1, y_idx, 0], S[-1, y_idx, 1]]])
-
-
-def test_distinct_switch_times_stay_diagonal():
-    # The control arm, and the reason #375 is a merge bug and not a jump bug:
-    # move the two crossings apart and every entry is exact.
-    np.testing.assert_allclose(_two_switch_matrix(1.0, 1.3), np.diag([_K_A, _K_B]), atol=1e-9)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="issue #375: crossings sharing a threshold value merge into one "
-    "record, so each switch time is charged with the other's jump",
-)
-def test_coincident_switch_times_stay_diagonal():
-    np.testing.assert_allclose(_two_switch_matrix(1.0, 1.0), np.diag([_K_A, _K_B]), atol=1e-9)

@@ -386,7 +386,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def(
             "set_switch_time_sens",
             [](bngsim::SolverOptions &self,
-               const std::vector<std::tuple<double, int, double, std::vector<double>>> &records) {
+               const std::vector<std::tuple<double, int, double, std::vector<double>,
+                                            std::vector<int>, std::vector<double>>> &records) {
                 self.sensitivity.switch_times.clear();
                 self.sensitivity.switch_times.reserve(records.size());
                 for (const auto &r : records) {
@@ -395,6 +396,13 @@ PYBIND11_MODULE(_bngsim_core, m) {
                     sw.clock_species_idx0 = std::get<1>(r);
                     sw.threshold = std::get<2>(r);
                     sw.dtstar_dp = std::get<3>(r);
+                    sw.isolate_param_idx0 = std::get<4>(r);
+                    sw.isolate_delta = std::get<5>(r);
+                    if (sw.isolate_param_idx0.size() != sw.isolate_delta.size()) {
+                        throw std::invalid_argument(
+                            "set_switch_time_sens: isolate_param_idx0 and isolate_delta must be "
+                            "the same length");
+                    }
                     self.sensitivity.switch_times.push_back(std::move(sw));
                 }
                 std::stable_sort(
@@ -405,16 +413,21 @@ PYBIND11_MODULE(_bngsim_core, m) {
             },
             py::arg("records"),
             "Set the switch-time crossings to stop at and jump across, as "
-            "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column]) "
-            "records (issue #48). A switch time is a fitted parameter that sets "
+            "(t_star, clock_species_idx0, threshold, [∂t*/∂p per param column], "
+            "[isolate_param_idx0], [isolate_delta]) records (issue #48). A "
+            "switch time is a fitted parameter that sets "
             "WHEN a step in the dynamics occurs — an `if(t>=sigma, ...)` onset "
             "time. Its whole gradient is the jump s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p at "
             "the crossing, since ∂f/∂p is a clean 0 inside each smooth branch. "
             "clock_species_idx0 is the unit-rate counter species whose crossing "
             "of `threshold` flips the branch (-1 for literal simulation time). "
-            "Detection and the chain rule to fitted primaries are done by "
-            "bngsim._switch_sensitivity; empty (the default) leaves the "
-            "integration loop untouched.")
+            "isolate_param_idx0/isolate_delta are the parameter bumps applied "
+            "only while f⁻ is read, so that a crossing sharing its instant with "
+            "another falls back to its before-branch alone and is charged only "
+            "its own jump (issue #375); both empty — every model with distinct "
+            "switch times — reads the plain f⁻ − f⁺. Detection and the chain "
+            "rule to fitted primaries are done by bngsim._switch_sensitivity; "
+            "empty records (the default) leave the integration loop untouched.")
         .def(
             "set_event_time_sens",
             [](bngsim::SolverOptions &self,
