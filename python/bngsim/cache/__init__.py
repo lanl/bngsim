@@ -13,11 +13,19 @@ orphans every artifact on the machine at once. That is the right trade (the
 alternative, under-invalidation, is a silently wrong gradient), but it means the
 directory accumulates a full corpus of dead artifacts per emitter edit.
 
+Which is why an artifact's name carries the key that built it — ``rhs_<key>_<hash>``
+(issue #363). The key is mixed into ``<hash>`` as well, so it is what decides
+validity; carrying it *beside* the hash is what makes the dead corpus **countable**.
+:func:`codegen_cache_info` reports live and orphaned as two numbers, and
+``prune --orphaned`` sweeps exactly the artifacts this install can never load again —
+much better targeted than an age bound, which throws away live artifacts that merely
+have not been used lately.
+
 Four verbs, also on the command line as ``bngsim-cache`` / ``python -m bngsim.cache``:
 
-* :func:`codegen_cache_info` — what is in there, by kind, with sizes and dates.
+* :func:`codegen_cache_info` — what is in there, by kind and by key, with sizes and dates.
 * :func:`clean_codegen_cache` — leaked partials only. No artifact is touched.
-* :func:`prune_codegen_cache` — age and/or size bound, evicting least-recently-used.
+* :func:`prune_codegen_cache` — an orphan, age and/or size bound; LRU within it.
 * :func:`clear_codegen_cache` — everything bngsim owns.
 
 Three properties hold across all of them.
@@ -81,6 +89,7 @@ __all__ = [
     "CacheEntry",
     "CacheInfo",
     "CacheSweep",
+    "artifact_key",
     "classify",
     "clean_codegen_cache",
     "clear_codegen_cache",
@@ -96,25 +105,26 @@ __all__ = [
 # ─── Entry kinds ─────────────────────────────────────────────────────────────
 #
 # The taxonomy is the artifact-naming scheme in _codegen, read backwards. Every
-# compiled artifact is `rhs_{model_hash}{suffix}`; three model_hash namespaces are
-# in use, and they are worth separating in a report because they answer different
-# questions about where the bloat came from.
+# compiled artifact is `rhs_{key}_{model_hash}{suffix}` (_artifact_stem); three
+# model_hash namespaces are in use, and they are worth separating in a report
+# because they answer different questions about where the bloat came from.
 KIND_RHS = "rhs"
 """A compiled model RHS (with whatever Jacobian / output / sensitivity callbacks
 the run asked for appended). The bulk of any real cache."""
 
 KIND_SSAPROP = "ssaprop"
-"""A compiled SSA propensity vector — ``rhs_ssaprop_<hash>``, its own namespace so
-it can never collide with an RHS artifact."""
+"""A compiled SSA propensity vector — ``rhs_<key>_ssaprop_<hash>``, its own
+namespace so it can never collide with an RHS artifact."""
 
 KIND_SRC = "src"
-"""``rhs_src_<hash>``: the source-hash fallback key (issue #174), used when the
+"""``rhs_<key>_src_<hash>``: the source-hash fallback key (issue #174), used when the
 structural model key cannot be serialized. Its presence in a cache is a signal —
 it means some model took the slow path that re-derives the source every time."""
 
 KIND_PARTIAL_C = "partial-c"
-"""A ``rhs_<hash>.<pid>_<n>.c`` left behind by an interrupted compile. ``compile_rhs``
-unlinks it in a ``finally``, so one on disk means the process died outright."""
+"""A ``rhs_<key>_<hash>.<pid>_<n>.c`` left behind by an interrupted compile.
+``compile_rhs`` unlinks it in a ``finally``, so one on disk means the process died
+outright."""
 
 KIND_PARTIAL_LIB = "partial-lib"
 """The library half of the same leak: the process-unique temp artifact a killed
@@ -163,10 +173,9 @@ _KIND_LABELS: dict[str, str] = {
 _LIB_SUFFIXES = frozenset({".so", ".dylib", ".dll"})
 
 #: MSVC's ``cl /LD /Fe:<out>`` writes an import library and an export file beside
-#: the output, and ``compile_rhs``'s ``finally`` unlinks only the ``.dll`` — so on
-#: Windows these accumulate one pair per compile. Classified as partials so ``clean``
-#: sweeps them; fixing the leak at its source is lanl/bngsim#362, which cannot ride
-#: in this change because editing ``_codegen.py`` invalidates every cache everywhere.
+#: the output. ``compile_rhs`` now unlinks them (lanl/bngsim#362), but every pair
+#: leaked before that fix is still on disk, and an interrupted compile still leaves
+#: one — so they stay classified as partials and ``clean`` still sweeps them.
 _SIDECAR_SUFFIXES = frozenset({".lib", ".exp", ".pdb", ".ilk", ".obj"})
 
 #: The process-unique token ``compile_rhs`` appends to in-flight names:
@@ -176,6 +185,12 @@ _TEMP_TOKEN = re.compile(r"\.(\d+)_(\d+)$")
 
 _SHARD_PREFIX = "bngsim_shard_"
 _ARTIFACT_PREFIX = "rhs_"
+
+#: The two ``model_hash`` namespaces ``_codegen`` prefixes, as they appear *without*
+#: a key field in front of them — i.e. how a pre-#363 artifact spells them. Naming
+#: them is what keeps ``rhs_ssaprop_<hash>`` from parsing as key ``ssaprop``; a real
+#: key is ``<version>+<digest>`` and can be neither of these.
+_LEGACY_NAMESPACES = frozenset({"ssaprop", "src"})
 
 DEFAULT_MIN_AGE = 3600.0
 """Seconds an entry must be untouched before any sweep will remove it.
@@ -188,6 +203,26 @@ runs for tens of minutes.
 """
 
 
+def _split_stem(stem: str) -> tuple[str | None, str]:
+    """``(codegen key, remainder)`` for a ``rhs_``-prefixed stem.
+
+    The key is ``None`` for a name written before issue #363 put it there — those
+    are ``rhs_<hash>`` and ``rhs_<namespace>_<hash>``, neither of which this install
+    will ever look up again, so they count as orphaned.
+
+    The ``<pid>_<counter>`` token of an in-flight compile is stripped first, because
+    it is the one other place an underscore appears in a name bngsim writes: without
+    that, the legacy partial ``rhs_<hash>.4711_0.c`` would parse its own PID token as
+    a key field.
+    """
+    m = _TEMP_TOKEN.search(stem)
+    body = (stem[: m.start()] if m else stem)[len(_ARTIFACT_PREFIX) :]
+    head, sep, rest = body.partition("_")
+    if not sep or head in _LEGACY_NAMESPACES:
+        return None, body
+    return head, rest
+
+
 def classify(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str:
     """Return the :data:`KINDS` entry ``path``'s *name* identifies it as.
 
@@ -195,6 +230,10 @@ def classify(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str
     removal in this module, so it must not depend on reading, opening, or trusting
     the content of a file that some other process may be writing. ``is_dir``
     defaults to a ``stat`` of the path; pass it to classify a name in the abstract.
+
+    Pre-#363 names (no key field) classify exactly as they always did: they are
+    still bngsim's files, so ``clear`` and ``prune`` must still be able to remove
+    them. What they no longer have is a key — see :func:`artifact_key`.
     """
     name = PurePath(path).name
     if is_dir is None:
@@ -213,12 +252,40 @@ def classify(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str
         return KIND_FOREIGN
     if suffix not in _LIB_SUFFIXES:
         return KIND_FOREIGN
-    body = stem[len(_ARTIFACT_PREFIX) :]
+    _, body = _split_stem(stem)
     if body.startswith("ssaprop_"):
         return KIND_SSAPROP
     if body.startswith("src_"):
         return KIND_SRC
     return KIND_RHS
+
+
+def artifact_key(path: str | os.PathLike[str], *, is_dir: bool | None = None) -> str | None:
+    """Return the codegen key ``path``'s *name* carries, or ``None`` if it carries none.
+
+    The counterpart to :func:`classify`, and name-only for the same reason. An
+    artifact is ``rhs_<key>_<hash><suffix>`` (issue #363), where ``<key>`` is
+    :data:`bngsim._codegen._CODEGEN_CACHE_KEY` — the ``_CODEGEN_VERSION`` and a
+    digest of the emitters' own source. Comparing it against this install's is the
+    whole of "is this entry live or orphaned":
+
+    >>> import bngsim._codegen as _cg
+    >>> from bngsim.cache import artifact_key
+    >>> artifact_key(f"{_cg._artifact_stem('0123456789abcdef')}.so") == _cg._CODEGEN_CACHE_KEY
+    True
+
+    ``None`` means the name carries no key field: one written before #363, or one
+    bngsim does not write at all (a shard directory, anything without the ``rhs_``
+    prefix). Which of those it is is :func:`classify`'s answer, not this one's —
+    and the accounting only ever asks this about entries ``classify`` has already
+    called an artifact.
+    """
+    name = PurePath(path).name
+    if is_dir is None:
+        is_dir = Path(path).is_dir()
+    if is_dir or not name.startswith(_ARTIFACT_PREFIX):
+        return None
+    return _split_stem(PurePath(name).stem)[0]
 
 
 @dataclass(frozen=True)
@@ -233,6 +300,10 @@ class CacheEntry:
     """When the entry was last written — for an artifact, when it was compiled."""
     last_used: float
     """``max(atime, mtime)``, the LRU key. See :func:`_stamp` for why both."""
+    codegen_key: str | None = None
+    """The codegen key the name carries (issue #363), or ``None`` for a foreign
+    entry, a shard directory, or an artifact written under the pre-#363 scheme.
+    See :func:`artifact_key`; :meth:`CacheInfo.orphaned` is what compares it."""
 
     @property
     def is_artifact(self) -> bool:
@@ -257,18 +328,74 @@ class CacheInfo:
     exists: bool
     entries: tuple[CacheEntry, ...]
     codegen_key: str
-    """This install's :data:`bngsim._codegen._CODEGEN_CACHE_KEY`.
+    """This install's :data:`bngsim._codegen._CODEGEN_CACHE_KEY` — and, since issue
+    #363, the key an artifact this install builds carries in its *name*.
 
-    Reported for context, not as a filter. An entry cannot be attributed to the key
-    that built it — the key is mixed *into* the content hash rather than carried in
-    the filename — so nothing here can say how many entries are orphaned. Making
-    that answerable means putting the codegen version in the name
-    (``rhs_<version>_<hash>``), which is lanl/bngsim#363.
+    So it is a filter, not just context: every entry whose
+    :attr:`CacheEntry.codegen_key` differs is an artifact this install can never
+    load again. :attr:`live` / :attr:`orphaned` / :attr:`by_key` are that
+    comparison, and ``prune(orphaned=True)`` is the sweep it enables.
     """
+
+    @property
+    def _key_field(self) -> str:
+        """:attr:`codegen_key` as a filename carries it — what entry keys are
+        compared against. Identity for the shipped key format (pinned by
+        ``test_codegen_cache_key.py``); the indirection exists so that a key format
+        needing escaping could not silently make every entry look orphaned."""
+        return _codegen._artifact_key_field(self.codegen_key)
 
     @property
     def total_bytes(self) -> int:
         return sum(e.size for e in self.entries)
+
+    @property
+    def live(self) -> tuple[CacheEntry, ...]:
+        """Artifacts built under this install's key — the ones a run can still hit."""
+        field = self._key_field
+        return tuple(e for e in self.entries if e.is_artifact and e.codegen_key == field)
+
+    @property
+    def orphaned(self) -> tuple[CacheEntry, ...]:
+        """Artifacts built under any *other* key, plus every pre-#363 name.
+
+        Dead weight for this install by construction: the key is part of the content
+        hash, so nothing here will ever be looked up again. On a machine that tracks
+        bngsim development this is usually most of the cache — one emitter edit
+        orphans every artifact at once (issue #51).
+
+        Not necessarily dead for the *machine*: a second venv with a different bngsim
+        owns its own key, and from its point of view this install's artifacts are the
+        orphans. That is what ``keep_keys`` on :func:`prune_codegen_cache` is for.
+        """
+        field = self._key_field
+        return tuple(e for e in self.entries if e.is_artifact and e.codegen_key != field)
+
+    @property
+    def live_bytes(self) -> int:
+        return sum(e.size for e in self.live)
+
+    @property
+    def orphaned_bytes(self) -> int:
+        return sum(e.size for e in self.orphaned)
+
+    @property
+    def by_key(self) -> dict[str | None, tuple[int, int]]:
+        """``{codegen key: (entries, bytes)}`` over compiled artifacts.
+
+        Artifacts only: a leaked partial is ``clean``'s business whatever key it
+        carries, and a foreign entry is nobody's. ``None`` is the pre-#363 bucket.
+
+        This is the audit of a shared or pre-warmed artifact directory the issue asks
+        for — which bngsim versions' artifacts are in it, and how much each holds.
+        """
+        out: dict[str | None, tuple[int, int]] = {}
+        for e in self.entries:
+            if not e.is_artifact:
+                continue
+            n, b = out.get(e.codegen_key, (0, 0))
+            out[e.codegen_key] = (n + 1, b + e.size)
+        return out
 
     @property
     def by_kind(self) -> dict[str, tuple[int, int]]:
@@ -316,12 +443,26 @@ class CacheInfo:
             return None if t is None else datetime.fromtimestamp(t).isoformat(timespec="seconds")
 
         built, used = self.built_span, self.used_span
+        field = self._key_field
         return {
             "path": str(self.path),
             "exists": self.exists,
             "codegen_key": self.codegen_key,
             "entries": len(self.entries),
             "total_bytes": self.total_bytes,
+            "live_entries": len(self.live),
+            "live_bytes": self.live_bytes,
+            "orphaned_entries": len(self.orphaned),
+            "orphaned_bytes": self.orphaned_bytes,
+            # A list, not an object: the pre-#363 bucket's key is null, which JSON
+            # cannot spell as a member name. Ordered largest-first, which is the
+            # order a reader deciding what to sweep wants them in.
+            "by_key": [
+                {"key": k, "entries": n, "bytes": b, "live": k == field}
+                for k, (n, b) in sorted(
+                    self.by_key.items(), key=lambda kv: (-kv[1][1], kv[0] or "")
+                )
+            ],
             "built_oldest": _iso(built[0]),
             "built_newest": _iso(built[1]),
             "last_used_oldest": _iso(used[0]),
@@ -450,15 +591,16 @@ def _scan(cache_dir: Path) -> Iterator[CacheEntry]:
                 size=size,
                 mtime=mtime,
                 last_used=last_used,
+                codegen_key=artifact_key(de.name, is_dir=is_dir),
             )
 
 
 def codegen_cache_info(cache_dir: str | os.PathLike[str] | None = None) -> CacheInfo:
-    """Census the codegen artifact cache: what is in it, by kind, with sizes and dates.
+    """Census the codegen artifact cache: what is in it, by kind and by codegen key.
 
     Reads only directory metadata (one ``scandir``, plus a walk of any shard
     directory), so it is cheap even on the 14,000-entry cache issue #205 reports and
-    never opens an artifact.
+    never opens an artifact — the key comes off the *name* (issue #363).
 
     Examples
     --------
@@ -467,6 +609,10 @@ def codegen_cache_info(cache_dir: str | os.PathLike[str] | None = None) -> Cache
     >>> info.total_bytes >= 0
     True
     >>> set(info.by_kind) == set(bngsim.cache.KINDS)
+    True
+    >>> len(info.live) + len(info.orphaned) == sum(
+    ...     1 for e in info.entries if e.is_artifact
+    ... )
     True
     """
     path = codegen_cache_dir(cache_dir)
@@ -485,7 +631,8 @@ def codegen_cache_info(cache_dir: str | os.PathLike[str] | None = None) -> Cache
 def _compile_may_be_running(entry: CacheEntry) -> bool:
     """Whether ``entry`` looks like it belongs to a compile that is still alive.
 
-    A partial's name carries the PID that wrote it (``rhs_<hash>.<pid>_<n>.c``), so
+    A partial's name carries the PID that wrote it (``rhs_<key>_<hash>.<pid>_<n>.c``),
+    so
     the ``min_age`` floor can be backed up with a direct liveness check — which
     matters because the floor is calibrated against the *default* 600 s compile
     budget, and ``BNGSIM_CODEGEN_TIMEOUT=0`` with a genome-scale model is a
@@ -596,7 +743,7 @@ def clean_codegen_cache(
     compiled artifact is touched and no cache hit is lost. What it collects is the
     debris of compiles that died between writing their scratch files and the
     ``finally`` that removes them: ``bngsim_shard_*`` directories full of ``.o``, the
-    ``rhs_<hash>.<pid>_<n>.c`` beside them, and (on Windows) the ``.lib``/``.exp``
+    ``rhs_<key>_<hash>.<pid>_<n>.c`` beside them, and (on Windows) the ``.lib``/``.exp``
     sidecars ``compile_rhs`` never unlinks.
 
     Parameters
@@ -623,16 +770,25 @@ def clean_codegen_cache(
 def prune_codegen_cache(
     cache_dir: str | os.PathLike[str] | None = None,
     *,
+    orphaned: bool = False,
+    keep_keys: Sequence[str | None] = (),
     older_than: float | str | None = None,
     max_size: int | str | None = None,
     min_age: float | str = DEFAULT_MIN_AGE,
     dry_run: bool = False,
 ) -> CacheSweep:
-    """Bound the cache by age, by size, or both, evicting least-recently-used first.
+    """Bound the cache by orphan status, age, size, or any combination of them.
 
-    At least one of ``older_than`` / ``max_size`` is required — a prune with no bound
-    is either a no-op or a :func:`clear_codegen_cache`, and guessing which is not
-    this function's business.
+    At least one of ``orphaned`` / ``older_than`` / ``max_size`` is required — a
+    prune with no bound is either a no-op or a :func:`clear_codegen_cache`, and
+    guessing which is not this function's business.
+
+    ``orphaned=True`` is the targeted one, and usually the one wanted after an
+    emitter edit: it evicts every artifact whose name carries a codegen key other
+    than this install's (:attr:`CacheInfo.orphaned`), which is exactly the set no
+    run can hit again. An age bound cannot express that — it keeps orphans that
+    happen to be recent and throws away live artifacts that merely have not been
+    loaded lately.
 
     Order of operations, and the one surprise worth stating: **prune subsumes clean.**
     The partial sweep runs first, then artifacts are evicted. That is what makes
@@ -647,25 +803,51 @@ def prune_codegen_cache(
 
     Parameters
     ----------
+    orphaned
+        Evict every artifact whose codegen key is not this install's, including the
+        pre-#363 names that carry no key at all. Bounded by ``keep_keys``.
+    keep_keys
+        Additional codegen keys to treat as live, for a cache directory shared by
+        several bngsim installs — a venv per project is ordinary, and each has its
+        own key, so what is orphaned from one venv's point of view is live from
+        another's. ``None`` in this sequence spares the pre-#363 names (the artifacts
+        of an install too old to write a key), which is the same situation one
+        version further back. Only meaningful with ``orphaned=True``; passing it
+        without raises, rather than reading as a protection the age and size bounds
+        do not in fact honor.
+
+        An explicit list rather than a registry of live keys maintained beside the
+        cache: such a registry would have to be written by every install that ever
+        compiles — including ones that never run this CLI — and a stale entry either
+        protects a dead corpus forever or, in the direction that costs something,
+        goes missing and authorizes deleting a live one. The flag is a decision the
+        person sweeping makes with :func:`codegen_cache_info`'s per-key table in
+        front of them.
     older_than
         Seconds, or a duration string like ``"30d"``. Artifacts not used within this
         window are evicted. "Used" is ``max(atime, mtime)`` — see :func:`_stamp`.
     max_size
-        Bytes, or a size string like ``"2G"`` (powers of 1024). After the age pass,
-        artifacts are evicted least-recently-used until the *directory* fits.
+        Bytes, or a size string like ``"2G"`` (powers of 1024). After the orphan and
+        age passes, artifacts are evicted least-recently-used until the *directory*
+        fits.
     min_age
         The floor below which nothing is removed, whatever the other bounds say. It
         applies to the LRU pass too, which is where it earns its keep: on a cache
         whose entries have all been loaded recently and which is over the cap, LRU
         order still has to nominate one of them — and the one it nominates may be
-        the artifact a sibling process is about to ``dlopen``.
+        the artifact a sibling process is about to ``dlopen``. It applies to the
+        orphan pass as well: an orphan minutes old is one another process just
+        compiled under its own key and is about to ``dlopen``.
     dry_run
         Select and report, delete nothing.
     """
-    if older_than is None and max_size is None:
+    if older_than is None and max_size is None and not orphaned:
         raise ValueError(
-            "prune needs a bound: pass older_than= (e.g. '30d'), max_size= (e.g. '2G'), or both"
+            "prune needs a bound: pass orphaned=True, older_than= (e.g. '30d'), "
+            "max_size= (e.g. '2G'), or a combination"
         )
+    if keep_keys and not orphaned:
+        raise ValueError("keep_keys= applies to the orphan pass; pass orphaned=True with it")
     min_age_s = parse_duration(min_age)
     older_than_s = None if older_than is None else parse_duration(older_than)
     max_size_b = None if max_size is None else parse_size(max_size)
@@ -681,6 +863,17 @@ def prune_codegen_cache(
         (e for e in info.entries if e.is_artifact),
         key=lambda e: (e.last_used, str(e.path)),
     )
+
+    if orphaned:
+        # Before the age and size passes, so what they see is the cache as it will
+        # be: on a developer machine the orphan sweep alone usually brings the
+        # directory under a --max-size cap, and the LRU pass then has no live
+        # artifact left to nominate.
+        keep = {info._key_field, *keep_keys}
+        for e in artifacts:
+            if e.codegen_key not in keep and e not in chosen:
+                selected.append(e)
+                chosen.add(e)
 
     if older_than_s is not None:
         cutoff = now - older_than_s
@@ -848,6 +1041,44 @@ def _fmt_age(t: float | None, now: float) -> str:
     return f" ({days:.0f} day{'s' if round(days) != 1 else ''} ago)"
 
 
+#: How many keys the text report lists before summarizing the tail. A machine that
+#: tracks bngsim development accumulates one key per emitter edit, so the full list
+#: can run to dozens — and the reader's question ("what is holding the space, and is
+#: any of it mine?") is answered by the largest few plus this install's.
+_KEY_TABLE_ROWS = 8
+
+#: What the pre-#363 bucket is called in the table, and the token ``--keep-key``
+#: takes to spare it. A single ``-`` because that is what the table shows, and
+#: because argparse reads a lone dash as a value rather than as an option.
+_NO_KEY_LABEL = "-"
+
+
+def _key_table(info: CacheInfo) -> list[str]:
+    """The per-key artifact breakdown, largest first, with this install's key marked.
+
+    Empty when there is nothing to attribute. With one key it is a single row that
+    says so plainly; with several it is the audit of a shared or pre-warmed artifact
+    directory — which bngsim versions' artifacts are in it, and what each holds.
+    """
+    by_key = info.by_key
+    if not by_key:
+        return []
+    field = info._key_field
+    rows = sorted(by_key.items(), key=lambda kv: (-kv[1][1], kv[0] or ""))
+    head, tail = rows[:_KEY_TABLE_ROWS], rows[_KEY_TABLE_ROWS:]
+    width = max(len(k or _NO_KEY_LABEL) for k, _ in head) + 7  # room for " (live)"
+    lines = ["", f"  {'codegen key':<{width}} {'entries':>9} {'size':>12}"]
+    lines.append(f"  {'-' * width} {'-' * 9} {'-' * 12}")
+    for key, (n, b) in head:
+        label = (key or _NO_KEY_LABEL) + (" (live)" if key == field else "")
+        lines.append(f"  {label:<{width}} {n:>9,} {_fmt_size(b):>12}")
+    if tail:
+        n = sum(c for _, (c, _) in tail)
+        b = sum(s for _, (_, s) in tail)
+        lines.append(f"  {f'… {len(tail)} more key(s)':<{width}} {n:>9,} {_fmt_size(b):>12}")
+    return lines
+
+
 def _format_info(info: CacheInfo, *, now: float) -> str:
     lines = [f"codegen cache: {info.path}"]
     if not info.exists:
@@ -869,6 +1100,10 @@ def _format_info(info: CacheInfo, *, now: float) -> str:
     elif info.entries:
         lines.append("  last used: not recorded by this filesystem — prune orders by build time")
     lines.append(f"  key:       {info.codegen_key}")
+    lines.append(f"  live:      {len(info.live):,} artifact(s), {_fmt_size(info.live_bytes)}")
+    lines.append(
+        f"  orphaned:  {len(info.orphaned):,} artifact(s), {_fmt_size(info.orphaned_bytes)}"
+    )
 
     by_kind = info.by_kind
     lines.append("")
@@ -877,6 +1112,8 @@ def _format_info(info: CacheInfo, *, now: float) -> str:
     for kind in KINDS:
         n, b = by_kind[kind]
         lines.append(f"  {_KIND_LABELS[kind]:<15} {n:>9,} {_fmt_size(b):>12}")
+
+    lines.extend(_key_table(info))
 
     notes: list[str] = []
     n_partial = sum(by_kind[k][0] for k in PARTIAL_KINDS)
@@ -889,12 +1126,15 @@ def _format_info(info: CacheInfo, *, now: float) -> str:
     if n_foreign:
         notes.append(
             f"{n_foreign:,} entr{'y' if n_foreign == 1 else 'ies'} in this directory "
-            "were not written by bngsim; no verb here will remove them."
+            f"{'was' if n_foreign == 1 else 'were'} not written by bngsim; no verb "
+            "here will remove them."
         )
-    if info.entries:
+    if info.orphaned:
         notes.append(
-            "An entry carries no record of the codegen key that built it, so this "
-            "cannot say how many are orphaned; any emitter edit orphans all of them."
+            f"{len(info.orphaned):,} artifact(s) hold {_fmt_size(info.orphaned_bytes)} "
+            "under a codegen key that is not this install's; `bngsim-cache prune "
+            "--orphaned` removes exactly those. If another bngsim install shares this "
+            "directory, spare its key with `--keep-key`."
         )
     if notes:
         lines.append("")
@@ -905,13 +1145,32 @@ def _format_info(info: CacheInfo, *, now: float) -> str:
     return "\n".join(lines)
 
 
-def _format_sweep(sweep: CacheSweep, *, verb: str, max_size: int | None = None) -> str:
+#: Keys named individually in a sweep report before it summarizes the rest.
+_SWEEP_KEYS_SHOWN = 4
+
+
+def _format_sweep(
+    sweep: CacheSweep, *, verb: str, max_size: int | None = None, orphaned: bool = False
+) -> str:
     what = "would remove" if sweep.dry_run else "removed"
     lines = [
         f"{verb}: {what} {len(sweep.removed):,} entr"
         f"{'y' if len(sweep.removed) == 1 else 'ies'}, {_fmt_size(sweep.removed_bytes)}"
         f"  ({_fmt_size(sweep.total_bytes_before)} -> {_fmt_size(sweep.total_bytes_after)})"
     ]
+    if orphaned:
+        # Whose artifacts went, by name. The one thing a user cannot check afterwards
+        # is what a sweep took, and on a shared cache "which install did I just make
+        # recompile?" is the question a wrong --keep-key raises.
+        keys = sorted({e.codegen_key or _NO_KEY_LABEL for e in sweep.removed if e.is_artifact})
+        if keys:
+            shown = ", ".join(keys[:_SWEEP_KEYS_SHOWN])
+            more = (
+                f" (+{len(keys) - _SWEEP_KEYS_SHOWN} more)"
+                if len(keys) > _SWEEP_KEYS_SHOWN
+                else ""
+            )
+            lines.append(f"  orphaned artifacts under {len(keys):,} key(s): {shown}{more}")
     if sweep.held:
         lines.append(
             f"  held back {len(sweep.held):,}: too new, or a compile still holds them (--min-age)"
@@ -1010,10 +1269,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     info = sub.add_parser(
         "info",
-        help="report path, entry count, size, dates, and a breakdown by artifact kind",
+        help="report path, size, dates, live vs orphaned, and breakdowns by kind and key",
         description=(
             "Census the cache. Reads directory metadata only, so it stays fast on a "
-            "cache with tens of thousands of entries."
+            "cache with tens of thousands of entries. Live and orphaned are read off "
+            "the codegen key each artifact's name carries; `prune --orphaned` is the "
+            "sweep for the second number."
         ),
     )
     _add_cache_dir(info, before_verb=False)
@@ -1028,7 +1289,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="remove leaked compile partials only; no compiled artifact is touched",
         description=(
             "Remove the debris of compiles that were killed before their cleanup ran: "
-            "bngsim_shard_* scratch directories, the rhs_<hash>.<pid>_<n>.c beside "
+            "bngsim_shard_* scratch directories, the rhs_<key>_<hash>.<pid>_<n>.c beside "
             "them, and the temp/sidecar libraries. Safe by construction — the "
             "selection excludes every usable artifact, so no cache hit is lost."
         ),
@@ -1038,15 +1299,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
     prune = sub.add_parser(
         "prune",
-        help="bound the cache by age and/or total size, evicting least-recently-used",
+        help="drop orphaned artifacts, and/or bound the cache by age and total size",
         description=(
-            "Evict artifacts to fit an age and/or size bound, least-recently-used "
-            "first. Prune subsumes clean: leaked partials are swept first, so the "
-            "--max-size cap is on the whole directory rather than on artifacts alone. "
-            "At least one bound is required."
+            "Evict artifacts to fit an orphan, age and/or size bound, "
+            "least-recently-used first. Prune subsumes clean: leaked partials are "
+            "swept first, so the --max-size cap is on the whole directory rather than "
+            "on artifacts alone. At least one bound is required."
         ),
     )
     _add_cache_dir(prune, before_verb=False)
+    prune.add_argument(
+        "--orphaned",
+        action="store_true",
+        help=(
+            "evict every artifact built under a codegen key other than this install's "
+            "— what `info` reports as orphaned, and what no run here can load again. "
+            "The targeted sweep after an emitter edit, where --older-than would keep "
+            "recent orphans and throw away live artifacts merely idle for a while"
+        ),
+    )
+    prune.add_argument(
+        "--keep-key",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help=(
+            "spare this codegen key during --orphaned, for a cache directory shared "
+            "by several bngsim installs (a venv per project each has its own key, so "
+            "one venv's orphans are another's live artifacts). Repeatable; the keys "
+            "are the ones `info` lists, and a bare - spares the entries predating "
+            "keyed names"
+        ),
+    )
     prune.add_argument(
         "--older-than",
         type=_duration_arg,
@@ -1133,21 +1417,31 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if sweep.failed else 0
 
     if args.cmd == "prune":
-        if args.older_than is None and args.max_size is None:
+        if args.older_than is None and args.max_size is None and not args.orphaned:
             print(
-                "error: prune needs a bound: --older-than (e.g. 30d), --max-size "
-                "(e.g. 2G), or both.",
+                "error: prune needs a bound: --orphaned, --older-than (e.g. 30d), "
+                "--max-size (e.g. 2G), or a combination.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.keep_key and not args.orphaned:
+            print(
+                "error: --keep-key applies to the orphan pass; pass --orphaned with it.",
                 file=sys.stderr,
             )
             return 2
         sweep = prune_codegen_cache(
             cache_dir,
+            orphaned=args.orphaned,
+            # A bare `-` is how `info` renders the pre-keyed-name bucket, so it is
+            # what spares it here too.
+            keep_keys=[None if k == _NO_KEY_LABEL else k for k in args.keep_key],
             older_than=args.older_than,
             max_size=args.max_size,
             min_age=args.min_age,
             dry_run=args.dry_run,
         )
-        print(_format_sweep(sweep, verb="prune", max_size=args.max_size))
+        print(_format_sweep(sweep, verb="prune", max_size=args.max_size, orphaned=args.orphaned))
         return 1 if sweep.failed else 0
 
     # clear

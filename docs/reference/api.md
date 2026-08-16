@@ -280,9 +280,9 @@ to bound it. Each mirrors one `bngsim-cache` verb and takes `dry_run=True`; all 
 accept a `cache_dir` positional to operate on a directory other than the configured
 one. See the [codegen guide](../user-guide/codegen.md#managing-the-artifact-cache).
 
-- **`bngsim.codegen_cache_info(cache_dir=None)`** → `CacheInfo` — path, entry count, `total_bytes`, `by_kind`, `built_span` / `used_span`, and `atime_is_live` (whether this filesystem records access times, i.e. whether prune's LRU order is real recency or build order). Reads directory metadata only. `.to_dict()` is the JSON form.
+- **`bngsim.codegen_cache_info(cache_dir=None)`** → `CacheInfo` — path, entry count, `total_bytes`, `by_kind`, `by_key`, `live` / `orphaned` (artifacts under this install's codegen key and under any other, issue #363), `built_span` / `used_span`, and `atime_is_live` (whether this filesystem records access times, i.e. whether prune's LRU order is real recency or build order). Reads directory metadata only — the key comes off the artifact's *name*. `.to_dict()` is the JSON form.
 - **`bngsim.clean_codegen_cache(cache_dir=None, *, min_age=3600.0, dry_run=False)`** → `CacheSweep` — remove leaked compile partials only (`bngsim_shard_*` directories, stray `.c`, temp libraries). No compiled artifact is touched, so no cache hit is lost.
-- **`bngsim.prune_codegen_cache(cache_dir=None, *, older_than=None, max_size=None, min_age=3600.0, dry_run=False)`** → `CacheSweep` — bound the cache by age (`older_than="30d"`) and/or total size (`max_size="2G"`), evicting least-recently-used artifacts. At least one bound is required; the partial sweep runs first, so the size cap covers the whole directory.
+- **`bngsim.prune_codegen_cache(cache_dir=None, *, orphaned=False, keep_keys=(), older_than=None, max_size=None, min_age=3600.0, dry_run=False)`** → `CacheSweep` — bound the cache by orphan status (`orphaned=True` drops every artifact built under another codegen key, the targeted sweep after an emitter edit), age (`older_than="30d"`) and/or total size (`max_size="2G"`), evicting least-recently-used artifacts. At least one bound is required; the partial sweep runs first, so the size cap covers the whole directory. `keep_keys` spares other installs sharing the directory (`None` in it spares the pre-#363 names) and is only accepted with `orphaned=True`.
 - **`bngsim.clear_codegen_cache(cache_dir=None, *, min_age=0.0, dry_run=False)`** → `CacheSweep` — remove every artifact and partial bngsim owns.
 
 Entries bngsim did not write are classified `foreign`, reported, and **never**
@@ -291,7 +291,8 @@ user-supplied path. Nothing modified within `min_age` is removed either, so a sw
 cannot delete the scratch files of a compile that is still running.
 
 `bngsim.cache` carries the rest: the `CacheEntry` / `CacheInfo` / `CacheSweep` types,
-the `KIND_*` taxonomy, `classify()`, and the `parse_duration` / `parse_size` value
+the `KIND_*` taxonomy, `classify()` and `artifact_key()` (the kind and the codegen key
+an entry's name identifies it by), and the `parse_duration` / `parse_size` value
 parsers the CLI uses.
 
 ## Utility functions

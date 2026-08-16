@@ -70,8 +70,9 @@ weeks of ordinary work left 2.0 GB across 14,377 entries on one developer box.
 has four verbs:
 
 ```bash
-bngsim-cache info                          # path, entries, size, dates, by kind
+bngsim-cache info                          # path, entries, size, dates, live vs orphaned
 bngsim-cache clean                         # leaked compile partials only
+bngsim-cache prune --orphaned              # every artifact under an older codegen key
 bngsim-cache prune --older-than 30d        # evict artifacts unused for 30 days
 bngsim-cache prune --max-size 2G           # ...or until the directory fits
 bngsim-cache clear --yes                   # everything bngsim owns
@@ -79,13 +80,14 @@ bngsim-cache clear --yes                   # everything bngsim owns
 
 `info` reports a breakdown by artifact kind — model RHS, SSA propensity, the
 source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard_*`
-scratch directories and stray `.c`, which nothing else cleans up).
+scratch directories and stray `.c`, which nothing else cleans up) — and a second
+breakdown by codegen key.
 
 `clean` is safe by construction: it removes only that debris, so no compiled
-artifact is touched and no cache hit is lost. `prune` bounds the cache by age
-and/or total size, evicting least-recently-used artifacts first; it runs `clean`'s
-sweep before evicting anything, so `--max-size` is a bound on the whole directory.
-`clear` empties it, which means every model recompiles on its next run.
+artifact is touched and no cache hit is lost. `prune` bounds the cache by orphan
+status, age and/or total size, evicting least-recently-used artifacts first; it runs
+`clean`'s sweep before evicting anything, so `--max-size` is a bound on the whole
+directory. `clear` empties it, which means every model recompiles on its next run.
 
 Every mutating verb takes `--dry-run`, and two guarantees hold across all of them:
 
@@ -118,10 +120,49 @@ print(info.total_bytes, info.by_kind)
 bngsim.prune_codegen_cache(max_size="2G")
 ```
 
-An entry carries no record of the codegen key that built it — the key is mixed
-*into* the content hash rather than kept beside it — so neither the CLI nor the API
-can report how much of the cache is orphaned. Making that answerable needs the key
-in the filename, which is tracked separately as issue #363.
+### Which artifacts are dead
+
+An artifact is named `rhs_<key>_<hash><suffix>`, where `<key>` is the codegen cache
+key described above — the `_CODEGEN_VERSION` constant and a digest of the emitters'
+source. The key is mixed into `<hash>` as well, so it is what decides validity;
+carrying it beside the hash is what makes the dead corpus *countable*:
+
+```console
+$ bngsim-cache info
+codegen cache: /home/you/.cache/bngsim/codegen
+  entries:   14,377
+  size:      2.0 GiB
+  ...
+  key:       28+317a5b34d5dc9959
+  live:      412 artifact(s), 61.0 MiB
+  orphaned:  13,901 artifact(s), 1.9 GiB
+
+  codegen key                  entries         size
+  -------------------------- --------- ------------
+  27+9f0c1de2ab3c4d5e             9,001      1.2 GiB
+  28+317a5b34d5dc9959 (live)        412     61.0 MiB
+  -                               4,900    700.0 MiB
+```
+
+`prune --orphaned` removes exactly that second number: every artifact whose key is
+not this install's, which is precisely the set no run here can load again. It is far
+better targeted than `--older-than`, which keeps orphans that happen to be recent and
+throws away live artifacts that are merely idle.
+
+The per-key table is what makes a shared or pre-warmed artifact directory auditable —
+which bngsim's artifacts are in it, and how much each is holding. That matters before
+pruning one: a venv per project is ordinary and each has its own key, so one venv's
+orphans are another's live artifacts. Spare a sibling install's key with `--keep-key`,
+repeatable:
+
+```bash
+bngsim-cache prune --orphaned --keep-key 27+9f0c1de2ab3c4d5e
+```
+
+Artifacts written before this naming landed (issue #363) carry no key at all. They
+count as orphaned — no keyed lookup will ever reach one again — and `info` lists them
+under `-`, which is also what spares them: `--keep-key -`. Landing the scheme was
+therefore a one-time full invalidation: every cache on every machine recompiles once.
 
 > **HPC / cluster note.** The codegen path shells out to a C compiler (`cc`)
 > at `Simulator` construction. On many HPC systems compute nodes have **no

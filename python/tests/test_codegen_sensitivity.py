@@ -146,11 +146,11 @@ class TestSensRhsCorrectness:
         # Clear cache for this model to force re-generation
         import platform
 
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         model_hash = compute_model_hash(net_path)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        cached = CACHE_DIR / f"rhs_{model_hash}{suffix}"
+        cached = CACHE_DIR / f"{_artifact_stem(model_hash)}{suffix}"
         if cached.exists():
             cached.unlink()
 
@@ -184,14 +184,14 @@ class TestSensRhsCorrectness:
         import platform
 
         import bngsim
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         net_path = _get_reversible_net()
 
         # Clear cache
         model_hash = compute_model_hash(net_path)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        cached = CACHE_DIR / f"rhs_{model_hash}{suffix}"
+        cached = CACHE_DIR / f"{_artifact_stem(model_hash)}{suffix}"
         if cached.exists():
             cached.unlink()
 
@@ -261,13 +261,13 @@ class TestDerivedRateConstantSens:
         """Codegen sens for ``kon`` must include chain rule via ``_rateLaw1 = chi*kon``."""
         import platform
 
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         net = _get_derived_rate_const_net()
         # Clear cache so the (possibly updated) codegen runs.
         h = compute_model_hash(net)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        cached = CACHE_DIR / f"rhs_{h}{suffix}"
+        cached = CACHE_DIR / f"{_artifact_stem(h)}{suffix}"
         if cached.exists():
             cached.unlink()
 
@@ -327,12 +327,12 @@ class TestDerivedQuotientChainRule:
         import platform
 
         import bngsim
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         net = _get_derived_quotient_net()
         h = compute_model_hash(net)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        cached = CACHE_DIR / f"rhs_{h}{suffix}"
+        cached = CACHE_DIR / f"{_artifact_stem(h)}{suffix}"
         if cached.exists():
             cached.unlink()
 
@@ -385,14 +385,13 @@ class TestNestedDerivedChainRule:
     def _clear_cache(net):
         import platform
 
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         h = compute_model_hash(net)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        for prefix in ("rhs_", "sens_"):
-            cached = CACHE_DIR / f"{prefix}{h}{suffix}"
-            if cached.exists():
-                cached.unlink()
+        cached = CACHE_DIR / f"{_artifact_stem(h)}{suffix}"
+        if cached.exists():
+            cached.unlink()
 
     def test_dfdp_case_includes_nested_reaction(self):
         """The generated ``bngsim_dfdp`` case for ``kcr`` must carry the
@@ -491,14 +490,13 @@ class TestDerivedICParamSens:
     def _clear_cache(net):
         import platform
 
-        from bngsim._codegen import CACHE_DIR, compute_model_hash
+        from bngsim._codegen import CACHE_DIR, _artifact_stem, compute_model_hash
 
         h = compute_model_hash(net)
         suffix = ".dylib" if platform.system() == "Darwin" else ".so"
-        for prefix in ("rhs_", "sens_"):
-            cached = CACHE_DIR / f"{prefix}{h}{suffix}"
-            if cached.exists():
-                cached.unlink()
+        cached = CACHE_DIR / f"{_artifact_stem(h)}{suffix}"
+        if cached.exists():
+            cached.unlink()
 
     _SAMPLE_TIMES = list(np.linspace(0.0, 3.0, 31))
 

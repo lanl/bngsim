@@ -102,6 +102,61 @@ class TestSourceDigest:
         assert f"{cg._CODEGEN_VERSION}+{cg._CODEGEN_SOURCE_DIGEST}" == cg._CODEGEN_CACHE_KEY
 
 
+class TestTheKeyIsFilenameSafe:
+    """Issue #363 — the key is carried in the artifact filename, so its *format* is
+    now load-bearing rather than an internal detail.
+
+    ``rhs_<key>_<hash><suffix>`` parses on ``_`` and on the ``.<pid>_<n>`` token of
+    an in-flight compile, so a key that grew either character would move the field
+    boundary and make ``bngsim-cache`` misread names it wrote itself. Pinned here
+    rather than assumed, which is what the issue asked for.
+    """
+
+    def test_the_shipped_key_needs_no_escaping(self):
+        """``<version>+<digest>`` is alphanumerics and a ``+``, which is legal on
+        POSIX and NTFS alike — so the field in the name IS the key, and what
+        ``info`` prints is what ``prune --keep-key`` takes."""
+        assert cg._artifact_key_field() == cg._CODEGEN_CACHE_KEY
+        assert cg._artifact_stem("0123456789abcdef").startswith(f"rhs_{cg._CODEGEN_CACHE_KEY}_")
+
+    @pytest.mark.parametrize(
+        "key",
+        ["28+", "28", "28+abcdef/../.././etc", "28+a b", "28+a_b", "28+a.4711_0"],
+        ids=[
+            "pyc-only-install",
+            "no-digest",
+            "path-traversal",
+            "space",
+            "underscore",
+            "temp-token",
+        ],
+    )
+    def test_an_exotic_key_still_yields_one_parseable_field(self, key, monkeypatch):
+        """The empty digest of a ``.pyc``-only install is the case that actually
+        happens; the rest are the ways a future key format could break the name.
+        Each must produce a single field a reader can lift back out, and none may
+        introduce a path separator or forge the ``<pid>_<n>`` token of a partial.
+        """
+        from bngsim.cache import KIND_RHS, artifact_key, classify
+
+        monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", key)
+        field = cg._artifact_key_field()
+        name = f"{cg._artifact_stem('0123456789abcdef')}{cg._shared_lib_suffix()}"
+
+        assert "/" not in name and os.sep not in name and "_" not in field
+        assert classify(name, is_dir=False) == KIND_RHS
+        assert artifact_key(name, is_dir=False) == field
+
+    def test_two_keys_never_collapse_onto_one_field(self, monkeypatch):
+        """Offending characters are mapped, not dropped: two installs that differ
+        only in an escaped character must still be two rows in ``info`` — and, more
+        to the point, must not have one's ``--keep-key`` spare the other's."""
+        monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", "28+a b")
+        one = cg._artifact_key_field()
+        monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", "28+a  b")
+        assert cg._artifact_key_field() != one
+
+
 class TestTheDocumentedModuleList:
     """Issue #267 — the prose a contributor reads must not carry its own copy.
 
@@ -221,11 +276,13 @@ class TestStaleArtifactIsNotServed:
         net = tmp_path / "nested.net"
         shutil.copy(DATA_DIR / "nested_derived_rate_const.net", net)
 
-        # The hash an older codegen (different emitters, same _CODEGEN_VERSION)
-        # would have produced for this same .net.
+        # The hash — and, since issue #363, the name — an older codegen (different
+        # emitters, same _CODEGEN_VERSION) would have produced for this same .net.
+        # Built through _artifact_stem under the patched key, so it is that install's
+        # real filename rather than this file's guess at it.
         monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", "23+staleemitterdigest")
         stale_hash = cg.compute_model_hash(str(net))
-        stale_so = cache / f"rhs_{stale_hash}{cg._shared_lib_suffix()}"
+        stale_so = cache / f"{cg._artifact_stem(stale_hash)}{cg._shared_lib_suffix()}"
         stale_so.write_bytes(b"not a shared library - loading this must never happen\n")
 
         monkeypatch.undo()

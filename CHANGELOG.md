@@ -16,6 +16,47 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Added
 
+- **A codegen artifact says which codegen key built it, so a cache sweep can tell
+  live from orphaned (issue #363).** Artifacts are now named
+  `rhs_<key>_<hash><suffix>` — e.g. `rhs_28+317a5b34d5dc9959_9e1f…` — where `<key>`
+  is `_CODEGEN_CACHE_KEY`, the `_CODEGEN_VERSION` constant plus a digest of the
+  emitters' own source (#51). The key is still mixed *into* `<hash>`, so nothing
+  about invalidation changes; carrying it beside the hash is what makes the dead
+  corpus **countable**.
+
+  That matters because #51's key is deliberately conservative: any edit to
+  `_codegen.py` / `_jacobian.py` / `_saturable_jacobian.py` / `_switch_sensitivity.py`
+  — a comment included — orphans every artifact on the machine at once. So on a
+  machine that tracks bngsim development, "everything from before my last emitter
+  edit is garbage" is the common case, and until now it was unexpressible: two
+  opaque hex strings, with time as the only signal a filename carried.
+
+  - `bngsim-cache info` reports **live** and **orphaned** as two numbers, plus a
+    per-key table — the audit of a shared or pre-warmed artifact directory, which
+    says which bngsim's artifacts are in it and how much each holds.
+  - `bngsim-cache prune --orphaned` sweeps exactly the artifacts this install can
+    never load again. Much better targeted than `--older-than`, which keeps orphans
+    that happen to be recent and evicts live artifacts that are merely idle. The
+    `--min-age` floor still applies: a *fresh* orphan is a sibling process's compile
+    under its own key, about to be `dlopen`ed.
+  - `--keep-key KEY` (repeatable) spares another install's artifacts, because a venv
+    per project is ordinary and each has its own key — "orphaned" from one venv's
+    point of view is live from another's, and sweeping on that would make a shared
+    cache thrash. `prune_codegen_cache(orphaned=True, keep_keys=[…])` is the API
+    form; passing `keep_keys` without `orphaned` raises rather than reading as a
+    protection the age and size bounds do not honor.
+  - `CacheEntry.codegen_key`, `CacheInfo.live` / `.orphaned` / `.by_key`, and
+    `bngsim.cache.artifact_key()` expose the same thing in process.
+
+  **This is a one-time full invalidation.** Every artifact already on disk is under
+  the old scheme and unreachable under the new one, so every model recompiles once.
+  `info` counts those pre-#363 names as orphaned (nothing will ever look one up
+  again) and lists them under `-`; `prune --orphaned --keep-key -` spares them, for
+  a directory shared with an install too old to write a key. No `_CODEGEN_VERSION`
+  bump: this edits `_codegen.py`, so #51's source digest invalidates every cache on
+  every machine anyway — which is the argument for landing the rename together with
+  it, since the cost is paid once either way.
+
 - **The codegen artifact cache is inspectable and prunable: `bngsim-cache`
   (issue #205).** `~/.cache/bngsim/codegen` grew without bound and there was no
   supported way to look at it — 2.0 GB across 14,377 entries after six weeks of
@@ -27,7 +68,7 @@ in `CMakeLists.txt`) is derived from it.
     breakdown by artifact kind (model RHS, SSA propensity, the `src_` fallback
     key of #174, plus the leaked partials below).
   - `clean` — remove *only* the debris of interrupted compiles: `bngsim_shard_*`
-    scratch directories, the stray `rhs_<hash>.<pid>_<n>.c` beside them, and
+    scratch directories, the stray `rhs_<key>_<hash>.<pid>_<n>.c` beside them, and
     temp/sidecar libraries. Nothing else cleans these up, and no compiled
     artifact is touched, so no cache hit is lost.
   - `prune --older-than 30d` / `--max-size 2G` — evict least-recently-used
@@ -65,12 +106,12 @@ in `CMakeLists.txt`) is derived from it.
   records it and degrades to build order where it does not, and `info` reports
   which one you are getting.
 
-  Not addressed here, and filed rather than guessed at: an entry carries no
-  record of the codegen key that built it, so nothing can report how much of the
-  cache is *orphaned* (#363, which needs the key in the filename); and MSVC leaks
-  a `.lib`/`.exp` pair per successful Windows compile (#362, whose two-line fix
-  would invalidate every cache on every machine — `clean` collects the debris in
-  the meantime).
+  Not addressed here, and filed rather than guessed at: an entry carried no
+  record of the codegen key that built it, so nothing could report how much of the
+  cache was *orphaned* (#363, above, which put the key in the filename); and MSVC
+  leaked a `.lib`/`.exp` pair per successful Windows compile (#362, whose fix rode
+  along with an invalidation this release was paying anyway — `clean` collects any
+  debris left from before it).
 
 - **BNGL models load, behind a `bngl` extra (issue #162).**
   `Model.from_bngl("m.bngl")` and `Model.load("m.bngl")` now work;
