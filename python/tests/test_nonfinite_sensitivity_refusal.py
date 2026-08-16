@@ -119,14 +119,20 @@ class TestTheSensitivityCounters:
     sensitivity counters are reported separately (issue #384)."""
 
     def test_the_state_counter_does_not_see_the_sensitivity_rejections(self):
-        r = _run(BNGSIM_SENS_ERROR_FLOOR="0")
-        stats = r.solver_stats
-        assert stats["n_err_test_fails"] == 0
+        """The two are different quantities, and this model is where that shows.
+
+        The relation is asserted rather than either absolute value: how many
+        steps a stiff 41x75 coupled solve rejects is platform arithmetic, and a
+        sibling test in this file has already been bitten once by pinning a
+        number that only held on one OS. What is portable is that the
+        sensitivity solve rejects a great deal that the state solve never sees.
+        """
+        stats = _run(BNGSIM_SENS_ERROR_FLOOR="0").solver_stats
         assert stats["n_sens_err_test_fails"] > 0, (
-            "the run whose state error test never fails is exactly the one whose "
-            "sensitivity error test fails dozens of times — if this ever reads 0, "
-            "the counter is being read off the wrong solve again"
+            "if this ever reads 0, the counter is being read off the state "
+            "solve again — which is the whole defect"
         )
+        assert stats["n_sens_err_test_fails"] > stats["n_err_test_fails"]
 
     def test_both_counters_are_present_and_zero_without_sensitivities(self):
         m = bngsim.Model.from_sbml(_model_path())
