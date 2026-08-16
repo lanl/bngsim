@@ -119,6 +119,72 @@ both engines) are honored. rr_parity's `known_artifact` / `invalid_reference` /
 them here could mask a genuine bngsim-vs-AMICI difference, so they are **not**
 applied. AMICI adjudicates every model independently.
 
+### AMICI-calibrated dispositions (`amici_dispositions.py`)
+
+That reasoning is sound and unchanged — but for a long time there was no
+**amici-calibrated** path either, so when *AMICI* was the wrong engine the row had
+nowhere to go and scored as a bngsim `DIFF` (issue #380). `amici_dispositions.py`
+is that path. It is read by the runners directly and deliberately **not** baked
+into the job manifest the way rr_parity's `overrides.py` is: the SBML manifest is
+shared with rr_parity, and an AMICI-calibrated entry written into it would leak
+into that suite.
+
+Two dispositions, and the difference is which engine (if either) is at fault:
+
+| entry | what it means | `DIFF` becomes |
+|---|---|---|
+| `INVALID_REFERENCE` | AMICI ran and returned finite numbers, but a defect in its own handling of the model makes them unusable as an oracle | `REFERENCE_FAILED` + `reference_refusal=invalid_result` |
+| `COMPARISON_ARTIFACT` | neither engine is wrong; the residual is a cell no oracle can resolve | `PASS`, reason recorded |
+
+`REFERENCE_FAILED` and **not** `PASS`, because `PASS` would assert the engines
+agreed and they did not — this is the mirror of what #319/#323 did for bngsim's
+own declared refusals (`UNSUPPORTED` rather than a silent `EXCEPTION`): name the
+gap, do not claim the win. `REFERENCE_FAILED` and **not** `BAD_TEST`, because
+`BAD_TEST` means neither engine could run the model, and here bngsim did.
+(rr_parity's `invalid_reference` lands on `BAD_TEST` for exactly the reason it
+does not apply here: *there*, bngsim had also failed.) `COMPARISON_ARTIFACT` is
+correspondingly **narrower** than rr_parity's `KNOWN_ARTIFACT`, which also covers
+"the reference engine has the bug" — that case is `INVALID_REFERENCE` here,
+precisely so a reference defect is never dressed up as agreement.
+
+**The bar is rr_parity's, and it is high.** An entry that turned a real bngsim
+defect non-scoring would hide a regression, so every entry must cite evidence
+naming which engine is wrong and how we know, from an oracle that is **not
+bngsim** — otherwise bngsim adjudicates its own case. In practice that means
+RoadRunner as an independent third engine, with the perturbation applied to the
+SBML *text* so no engine can discard the write.
+
+Three ways it stays honest:
+
+- it applies **only to a `DIFF`**. A row that agrees on its own is flagged
+  `STALE` (prune it); a row that raised, timed out or had no oracle is reported
+  *inapplicable* rather than stale — a timeout falsifies nothing.
+- the reason lands in the row's `comment`, so the report says why in the row and
+  not only in the module.
+- an entry records the `max_rel` it was authored against. A later sweep that
+  disagrees by more than 2× still disposes of the row but marks it `DRIFTED`:
+  the disagreement changed character, so the recorded attribution is no longer
+  known to cover it. That is the guard against an entry silently absorbing a
+  *different*, real defect on the same model.
+
+Keys are `"<model_id>:<regime>"` with regime `ode` or `sens` — regime-scoped like
+rr_parity's, but **not** scoped to the CVODES corrector method, because #325
+measured these models producing a near-identical `max_rel` under both `staggered`
+and `simultaneous`. Currently authored: two of the three sensitivity rows triaged
+out of #325 — one confirmed AMICI defect (no switch-time term) and one row where
+neither engine is wrong. See `AMICI_KNOWN_ISSUES.md` Class 4. The third,
+`MODEL1607210000`, is deliberately **not** authored: #383 seeded the
+initialAssignment initial-condition term bngsim was missing and the row now
+PASSes at `max_rel=0`, so an entry would be dead weight the runner could only
+flag STALE — the retirement and the one question it leaves open are recorded as a
+NOTE in the module. The ODE regime has the mechanism wired but no entries; the 44
+Class-2 ODE divergences are a separate triage.
+
+The sensitivity matrix renders a disposed row as **`REF INVALID`** rather than the
+plain gray `REFERENCE_FAILED` badge, because "AMICI answered, wrongly" and "AMICI
+could not answer" are materially different facts for anyone deciding what to
+re-triage.
+
 ## Files
 
 | File | Role |
@@ -128,6 +194,7 @@ applied. AMICI adjudicates every model independently.
 | `build_amici_jobs.py` | builds the curated subset `amici_ode_jobs.json` (stratified by species count + feature coverage) |
 | `generate_amici_matrix.py` | renders `runs/report_ode.json` → `runs/amici_matrix.html` (fork of rr_parity's generator) |
 | `amici_ode_jobs.json` | the curated job manifest (model paths resolve under `rr_parity/`) |
+| `amici_dispositions.py` | the AMICI-calibrated per-row dispositions (#380) both runners read |
 | `amici_sens_run.py` | the **forward-sensitivity** sweep runner; writes `runs/report_sens.json` |
 | `_amici_sens.py` | the sensitivity adapters (`bn_sens`, `amici_sens`) + the cross-engine parameter alignment |
 | `generate_amici_sens_matrix.py` | renders `runs/report_sens.json` → `runs/amici_sens_matrix.html` |

@@ -47,9 +47,12 @@ HERE = Path(__file__).resolve().parent
 _sys.path.insert(0, str(HERE.parent))
 _sys.path.insert(0, str(HERE))
 
-# Reuse the ODE generator's small formatting helpers rather than restating them,
-# so the two pages format a millisecond, a row colour and a verdict badge
-# identically. Importing it is side-effect free (everything is behind main()).
+# ``INVALID_RESULT_REFUSAL`` from the disposition module rather than a literal, so
+# the badge below and the class the runner writes can never drift apart. The other
+# import reuses the ODE generator's small formatting helpers rather than restating
+# them, so the two pages format a millisecond, a row colour and a verdict badge
+# identically. Both are side-effect free (everything is behind main()).
+from amici_dispositions import INVALID_RESULT_REFUSAL  # noqa: E402
 from generate_amici_matrix import (  # noqa: E402
     classify_row,
     fmt_ms,
@@ -79,7 +82,7 @@ def is_degenerate_pass(outcome: str, extra: dict) -> bool:
     return outcome == "PASS" and extra.get("n_resolvable_params") == 0
 
 
-def sens_row_class(outcome: str, extra: dict) -> tuple[str, str]:
+def sens_row_class(outcome: str, extra: dict, refusal: str | None = None) -> tuple[str, str]:
     """``(row css class, verdict badge)`` for one sensitivity row.
 
     Mirrors the SSA matrix's vacuous-pass treatment (GH #190): a PASS that
@@ -88,10 +91,19 @@ def sens_row_class(outcome: str, extra: dict) -> tuple[str, str]:
     still record it as PASS — this is issue #328's "keep PASS, flag it": the
     outcome is unchanged, only how a reader sees the row, so a vacuous row can no
     longer be read as evidence of agreement.
+
+    ``refusal`` gets the same treatment for the opposite direction (issue #380).
+    A REFERENCE_FAILED row normally means AMICI could not produce an answer at
+    all; ``invalid_result`` means it produced one and the answer is the problem —
+    a materially different fact for a reader deciding whether a model is worth
+    re-triaging, and one the shared gray badge would flatten. Same outcome, same
+    tally, distinct badge.
     """
     if is_degenerate_pass(outcome, extra):
         return "status-refused", "NO SIGNAL"
     cls, _cat = classify_row(outcome)
+    if outcome == "REFERENCE_FAILED" and refusal == INVALID_RESULT_REFUSAL:
+        return cls, "REF INVALID"
     return cls, outcome
 
 
@@ -232,7 +244,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     rows = []
     for r in sorted(results, key=lambda x: (x.get("model_id", ""), x.get("method", ""))):
         extra = r.get("extra") or {}
-        cls, badge = sens_row_class(r.get("outcome", ""), extra)
+        cls, badge = sens_row_class(r.get("outcome", ""), extra, r.get("reference_refusal"))
         timing = r.get("timing") or {}
         bn_warm = _engine_warm(timing, "bngsim")
         am_warm = _engine_warm(timing, "amici")
@@ -293,6 +305,9 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     n_no_signal = sum(
         1 for r in results if is_degenerate_pass(r.get("outcome", ""), r.get("extra") or {})
     )
+    # Issue #380 — the REFERENCE_FAILED rows where AMICI answered and the answer is
+    # what is unusable, as opposed to the ones where it could not answer at all.
+    n_ref_invalid = sum(1 for r in results if r.get("reference_refusal") == INVALID_RESULT_REFUSAL)
 
     cards = [
         ("models", meta.get("n_models", "—")),
@@ -302,6 +317,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
         ("diff", tallies.get("DIFF", 0)),
         ("unsupported", tallies.get("UNSUPPORTED", 0)),
         ("ref failed", tallies.get("REFERENCE_FAILED", 0)),
+        ("ref invalid", n_ref_invalid),
         ("bad test", tallies.get("BAD_TEST", 0)),
         ("timeout", tallies.get("TIMEOUT", 0)),
         ("param cap", cap if cap else "none"),
@@ -391,6 +407,16 @@ rather than a bug, so bucketing it with EXCEPTION would only dilute that signal.
 REFERENCE_FAILED means AMICI could not produce an oracle (bngsim is untested, not vindicated).
 BAD_TEST means either both engines failed, or the model has no parameter both engines can
 differentiate — there is nothing to compare, which is not a verdict about bngsim.</p>
+<p><b>REF INVALID</b> is a REFERENCE_FAILED reached by an authored disposition rather than by an
+AMICI crash (issue #380): AMICI <i>ran</i> and returned finite numbers, but a defect in its own
+handling of the model makes them unusable as an oracle, established against an independent third
+engine with the perturbation applied to the SBML text. {n_ref_invalid} row(s) here are in that
+category, each carrying its evidence in the detail column. It is REFERENCE_FAILED and not PASS
+because the engines did not agree — naming the gap is the point — and not BAD_TEST because bngsim
+ran the model fine. A DIFF that <i>neither</i> engine is at fault for (a cell at a discontinuity
+that no finite-difference oracle can resolve) is instead reclassified to PASS, again with the
+reason in the detail column. Both hold only while the row is genuinely a DIFF: one that agrees on
+its own is flagged STALE for pruning, so a disposition can never quietly outlive its evidence.</p>
 <p class="note">Timings collected under {workers or "?"}-way process concurrency on
 {_escape(str(hw.get("cpu", "unknown")))}
 ({hw.get("physical_cores", "?")} physical cores) — comparable within this page, not against a

@@ -17,6 +17,14 @@ verdict taxonomy, same report shape — only the quantity under test changes.
     both raised .................................. BAD_TEST (no signal; non-scoring)
     wall-clock cap exceeded ...................... TIMEOUT
 
+Two of those verdicts can also be reached by an AUTHORED disposition rather than
+by the engines (issue #380, ``amici_dispositions.py``): a DIFF attributed with
+third-oracle evidence to a defect in AMICI's own answer becomes REFERENCE_FAILED
+with ``reference_refusal=invalid_result``, and a DIFF that is an artifact of
+comparing at a cell no oracle can resolve becomes PASS. Both record their reason
+on the row, apply only while the row is genuinely a DIFF, and are flagged STALE
+the moment it agrees on its own.
+
 UNSUPPORTED is the forward-sensitivity peer of rr_parity's ``SsaValidationError``
 row: bngsim inspected the model, found a construct whose derivative it cannot
 produce (a non-differentiable event crossing time, a rate law codegen cannot
@@ -72,6 +80,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
 import _amici_sens as asens  # noqa: E402
+import amici_dispositions  # noqa: E402
 from _core import (  # noqa: E402
     FAILING,
     JobResult,
@@ -92,9 +101,13 @@ RR_ODE_JOBS = RR_PARITY / "ode_jobs.json"
 DEFAULT_SENS_TIMEOUT = 600.0
 
 
+SENS_REGIME = "sens"
+
+
 def _job_tol(job) -> dict | None:
     """The engine-agnostic ``tol`` override (ill-conditioned IVP), or None. As in
-    ``amici_run.py``, the RoadRunner-calibrated overrides are NOT applied here."""
+    ``amici_run.py``, the RoadRunner-calibrated overrides are NOT applied here —
+    an AMICI-calibrated disposition lives in ``amici_dispositions.py`` instead."""
     for o in job.overrides:
         if o.field == "tol":
             return {"rtol": float(o.value["rtol"]), "atol": float(o.value["atol"])}
@@ -733,6 +746,12 @@ def main() -> int:
     results = []
     now = _dt.datetime.now().isoformat(timespec="seconds")
     n_state_diff = 0
+    # AMICI-calibrated dispositions (issue #380): a row whose DIFF was attributed
+    # to a defect in AMICI's own answer, or to a cell no oracle can resolve. Read
+    # from the module rather than from the manifest, because the manifest is shared
+    # with rr_parity and an AMICI-calibrated entry must not leak into that suite.
+    dispositions = amici_dispositions.dispositions_for_regime(SENS_REGIME)
+    disposition_states = Counter()
     for r in raw:
         outcome = _OUTCOME.get(r.get("status"), Outcome.EXCEPTION)
         comment = r.get("comment", "")
@@ -751,6 +770,18 @@ def main() -> int:
             comment = (
                 f"{comment} | amici refusal={refusal}" if comment else f"amici refusal={refusal}"
             )
+        # Applied AFTER the auto-derived refusal, so an INVALID_REFERENCE row —
+        # which has no AMICI exception to classify — sets its own
+        # ``invalid_result`` class instead of being handed a default one, and so a
+        # row the disposition does not apply to keeps whatever the exception said.
+        disp = dispositions.get(r["model_id"])
+        if disp:
+            outcome, comment, disp_refusal, state = amici_dispositions.apply_disposition(
+                disp, outcome, r.get("value"), comment
+            )
+            disposition_states[f"{disp['kind']}:{state}"] += 1
+            if disp_refusal:
+                refusal = disp_refusal
         if r.get("state_passed") is False:
             n_state_diff += 1
         wall = r.get("wall_sec") or 0.0
@@ -845,14 +876,34 @@ def main() -> int:
             "note": (
                 "Sub-classification of REFERENCE_FAILED (bngsim ran, AMICI refused), "
                 "auto-derived from the AMICI exception: feature_gap / compile / "
-                "integrator / other."
+                "integrator / other. The one class that is NOT auto-derived is "
+                f"'{amici_dispositions.INVALID_RESULT_REFUSAL}' — AMICI answered and "
+                "the answer is what is unusable, so there is no exception to read; it "
+                "comes from an authored amici_dispositions entry."
             ),
         },
         "overrides": {
             "tol_overridden_jobs": n_tol_ov,
             "note": (
                 "Only engine-agnostic tol overrides are honored, as in amici_run.py; "
-                "the RoadRunner-calibrated overrides are NOT applied."
+                "the RoadRunner-calibrated overrides are NOT applied. AMICI-calibrated "
+                "dispositions are separate — see 'dispositions' below."
+            ),
+        },
+        "dispositions": {
+            "counts": dict(disposition_states.most_common()),
+            "note": (
+                "AMICI-calibrated per-row dispositions (issue #380), from "
+                "amici_dispositions.py. 'invalid_reference:applied' — AMICI ran but "
+                "its answer is defective, so the DIFF became a non-scoring "
+                "REFERENCE_FAILED/"
+                f"{amici_dispositions.INVALID_RESULT_REFUSAL}; 'comparison_artifact:"
+                "applied' — neither engine is wrong and the DIFF became a PASS with "
+                "the reason recorded. ':stale' means the row agrees on its own now "
+                "(prune the entry); ':inapplicable' means the row produced no "
+                "comparison this run (it raised, timed out or had no oracle), so the "
+                "entry was neither used nor falsified. Every applied row carries its "
+                "reason in the row comment."
             ),
         },
         "oracle_basis": (
@@ -876,7 +927,12 @@ def main() -> int:
             "construct (non-differentiable event crossing time, or a rate law "
             "codegen cannot close-form differentiate) — is UNSUPPORTED, matched by "
             "exception TYPE and not by message text, and is non-scoring: it is a "
-            "documented capability gap, not an actionable bug."
+            "documented capability gap, not an actionable bug. A DIFF may finally "
+            "be re-dispositioned by an AUTHORED amici_dispositions entry, which "
+            "requires third-oracle evidence naming which engine is wrong: an "
+            "AMICI-side defect makes the row REFERENCE_FAILED (no oracle, "
+            "non-scoring), and a cell no oracle can resolve makes it PASS. Both "
+            "record the evidence in the row's comment."
         ),
     }
     write_report(out_path, results, meta=meta)
@@ -894,6 +950,10 @@ def main() -> int:
         print(
             "  REFERENCE_FAILED by refusal: "
             + ", ".join(f"{c}={n}" for c, n in refusal_breakdown.items())
+        )
+    if disposition_states:
+        print(
+            "  dispositions: " + ", ".join(f"{c}={n}" for c, n in disposition_states.most_common())
         )
     print(f"  report: {out_path}")
     print("=" * 72)
