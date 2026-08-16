@@ -4115,20 +4115,47 @@ def _build_model_from_sbml_doc(doc):
     # t=0 value and the rule — not this expression — is what a write has to
     # survive; those are left to §4 and not refused over, since `ia_values` for
     # an AR target is overwritten by the rule anyway.
+    # A parameter initialAssignment may also read a SPECIES, and it means that
+    # species' initial value: `k_MET_expression = MET*k_MET_degradation +
+    # MET*k_phospho_MET_basal` (BIOMD0000001102), whose target is a rate
+    # constant. An initialAssignment is a t=0 evaluation, so a species whose own
+    # IC is a declared constant contributes a constant here — substitute it and
+    # the lift keeps the parameters the expression also reads, instead of
+    # freezing all of them behind the fold.
+    #
+    # Restricted to a species with no initialAssignment and no assignment rule
+    # of its own. One with an IA would need §3's `_ic_<sym>` parameter, declared
+    # *after* these, so reading it here would be a forward reference; one with a
+    # rule has its t=0 value defined by §4, not by its declaration.
+    _species_ic_const: dict[str, float] = {}
+    for _j in range(sbml_model.getNumSpecies()):
+        _sid = sbml_model.getSpecies(_j).getId()
+        if _sid in _ia_math or _sid in _ar_targets:
+            continue
+        _species_ic_const[_sid] = float(eval_ctx.get(_sid, 0.0))
+
     _lift_expr: dict[str, str] = {}
     _lift_deps: dict[str, set[str]] = {}
     for _pid, _m in _ia_math.items():
         if _pid in comp_param_idx or _pid not in _param_decl_index or _pid in _ar_targets:
             continue
         _names = _ast_name_set(_m)
-        if not _names or not _names <= _param_pool or _ast_references_time(_m):
+        if not _names or _ast_references_time(_m):
             continue
+        if not _names <= (_param_pool | _species_ic_const.keys()):
+            continue
+        _sp_subs = {
+            _n: _real_literal(_species_ic_const[_n]) for _n in _names & _species_ic_const.keys()
+        }
         try:
-            _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(_m, func_defs)
+            _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(
+                _m, func_defs, local_params=_sp_subs or None
+            )
         except Exception as e:  # noqa: BLE001 - fall through to the refusal
             logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
             continue
-        _lift_deps[_pid] = _names
+        # Species are substituted, not referenced, so they are not lift deps.
+        _lift_deps[_pid] = _names - _species_ic_const.keys()
 
     # Kahn, with SBML declaration order as the tie-break so the emitted parameter
     # list is deterministic. Whatever is still pending when nothing is ready sits
@@ -4218,6 +4245,7 @@ def _build_model_from_sbml_doc(doc):
     # deferred to a second pass below because it needs species_idx, which
     # this section is what builds.
     assignment_targets = set()
+    _ar_math: dict[str, object] = {}
     for i in range(sbml_model.getNumRules()):
         rule = sbml_model.getRule(i)
         # A no-MathML assignmentRule is a no-op: it does not define its target
@@ -4226,6 +4254,7 @@ def _build_model_from_sbml_doc(doc):
         # speciesReference path (GH #243).
         if rule.isAssignment() and rule.getMath() is not None:
             assignment_targets.add(rule.getVariable())
+            _ar_math[rule.getVariable()] = rule.getMath()
 
     # Detect species whose initialAssignment makes the IC a function of model
     # PARAMETERS: these get registered as species_ic_param_refs so CVODES
@@ -4308,6 +4337,46 @@ def _build_model_from_sbml_doc(doc):
     # compartment the model can move is an AR/rate-rule/event target, which
     # `vstatic_divide_comps` already excluded from `live_volume_param_comps`.
     _ic_expr_symbols = _const_param_ids | live_volume_param_comps
+
+    # An assignmentRule target is normally off limits here — §4's rule owns the
+    # slot and recomputes it every step, so it is not a symbol a parameter
+    # expression may rest on. But a rule that reads NO state is a constant of
+    # the built model, and an IC that reads one is still a parameter expression.
+    # BIOMD0000000807 is the case: `n(0) = n0`, `n0 = N0/K`, `N0 = r_N/mu_N - 1`
+    # — a two-level rule chain over five constants, which left `mu_N`, `r_N`,
+    # `K`, `G0` and `A0` with no seed at all. Inlined rather than referenced,
+    # because the target itself is function-backed in the built model; the
+    # inlined text is over real parameters only.
+    _ic_const_ar: dict[str, str] = {}
+
+    def _resolve_const_ar(_name: str, _stack: frozenset) -> str | None:
+        _m = _ar_math.get(_name)
+        if _m is None or _ast_references_time(_m):
+            return None
+        _names = _ast_name_set(_m)
+        if _names & _ic_seed_symbols:
+            return None  # reads state, so it is not constant
+        _subs: dict[str, str] = {}
+        for _n in _names:
+            if _n in _ar_math:
+                if _n in _stack:
+                    return None  # illegal SBML; refuse rather than recurse
+                _inner = _resolve_const_ar(_n, _stack | {_n})
+                if _inner is None:
+                    return None
+                _subs[_n] = f"({_inner})"
+            elif _n not in _ic_expr_symbols:
+                return None
+        try:
+            return _ast_to_exprtk_with_funcdefs(_m, func_defs, local_params=_subs or None)
+        except Exception:  # noqa: BLE001 - pragma: no cover, defensive
+            return None
+
+    for _ar_name in _ar_math:
+        _resolved = _resolve_const_ar(_ar_name, frozenset({_ar_name}))
+        if _resolved is not None:
+            _ic_const_ar[_ar_name] = _resolved
+
     ia_single_param_ref: dict[str, str] = {}
     ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
     # An IC expression may also read ANOTHER STATE, and it means that state's
@@ -4321,6 +4390,7 @@ def _build_model_from_sbml_doc(doc):
     _ia_state_targets: set[str] = set()
     _ic_cand: dict[str, object] = {}  # sym → math, for the compound candidates
     _ic_cand_deps: dict[str, set[str]] = {}  # sym → the states it reads
+    _ic_cand_ar: dict[str, set[str]] = {}  # sym → the constant rule targets it reads
     for j in range(sbml_model.getNumInitialAssignments()):
         ia = sbml_model.getInitialAssignment(j)
         sym = ia.getSymbol()
@@ -4334,7 +4404,12 @@ def _build_model_from_sbml_doc(doc):
         # operators, numbers, function applications, and AST_NAME_TIME etc.
         if math.getNumChildren() == 0 and math.getType() == libsbml.AST_NAME:
             ref = math.getName()
-            if ref in _param_ids:
+            if ref in _ic_const_ar:
+                # A rule owns the named slot, so linking the IC to it registers
+                # nothing (`add_species_param_ref` drops a non-parameter name).
+                # Its constant expansion is a parameter expression, though.
+                ia_param_expr[sym] = _ic_const_ar[ref]
+            elif ref in _param_ids:
                 ia_single_param_ref[sym] = ref
             elif ref in live_volume_param_comps:
                 ia_param_expr[sym] = _safe_name(ref)
@@ -4342,10 +4417,11 @@ def _build_model_from_sbml_doc(doc):
         names = _ast_name_set(math)
         if not names or _ast_references_time(math):
             continue
-        if not names <= (_ic_expr_symbols | _ic_seed_symbols):
+        if not names <= (_ic_expr_symbols | _ic_seed_symbols | _ic_const_ar.keys()):
             continue
         _ic_cand[sym] = math
         _ic_cand_deps[sym] = names & _ic_seed_symbols
+        _ic_cand_ar[sym] = names & _ic_const_ar.keys()
 
     # Lower the compound candidates in dependency order, so a state reference
     # resolves to a symbol that is already declared. Kahn with SBML declaration
@@ -4364,7 +4440,9 @@ def _build_model_from_sbml_doc(doc):
             break
         for sym in _ic_ready:
             del _ic_pending[sym]
-            subs: dict[str, str] = {}
+            subs: dict[str, str] = {
+                _ar: f"({_ic_const_ar[_ar]})" for _ar in _ic_cand_ar.get(sym, ())
+            }
             for dep in _ic_cand_deps[sym]:
                 if dep in ia_single_param_ref:
                     # That state's IC *is* a parameter; read it straight.
@@ -4387,7 +4465,6 @@ def _build_model_from_sbml_doc(doc):
                         sym,
                         dep,
                     )
-                    subs = {}
                     break
             else:
                 try:
