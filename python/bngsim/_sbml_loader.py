@@ -4251,29 +4251,35 @@ def _build_model_from_sbml_doc(doc):
     # either, because `set_param` does not re-resolve an initialAssignment, so
     # the oracle holds x(0) fixed in exactly the same way the seed does.
     #
-    # The referenced symbols must be genuinely CONSTANT parameters. Anything
-    # the model can move — an assignment-rule or rate-rule target, an event
-    # assignment target, or a bare `constant="false"` declaration — is
-    # *promoted to a species* by this loader, so an expression reading one is
-    # not a parameter expression at all. BIOMD0000000856 is the case that
-    # proves it: `WHISBF = 0.66*NSt` with `NSt` declared non-constant, whose
-    # synthetic derived parameter evaluated to 0 against a symbol that is a
-    # species in the built model — and the build-time IC resolution then wrote
-    # that 0 back over the species' real initial condition, moving a plain
-    # trajectory. A wrong IC is far worse than a missing sensitivity seed, so
-    # this predicate is deliberately strict; a rejected model keeps the
-    # pre-existing behaviour of no seed.
+    # The referenced symbols must be parameters nothing in the model can MOVE.
+    # A wrong IC is far worse than a missing sensitivity seed — BIOMD0000000856
+    # is the case that proves it: `WHISBF = 0.66*NSt`, whose synthetic derived
+    # parameter evaluated to 0 against a symbol that is a species in the built
+    # model, and the build-time IC resolution then wrote that 0 back over the
+    # species' real initial condition, moving a plain trajectory. A rejected
+    # model keeps the pre-existing behaviour of no seed.
+    #
+    # What makes a symbol unsafe here is being *promoted to a species*, and this
+    # loader promotes exactly two kinds: a rate-rule target and an event
+    # assignment target (§8/§10 — see the parameter loop above, which skips
+    # those two and no others). The three subtractions below are therefore the
+    # whole predicate. `NSt` is caught by them: it is an event assignment
+    # target, and every `constant="false"` parameter in BIOMD0000000856 is
+    # written by an event or an assignment rule.
+    #
+    # An additional `getConstant()` filter used to sit on top, and it was not
+    # doing the work its comment claimed (#379). SBML's `constant="false"` is a
+    # declaration that a symbol *may* vary, not that anything varies it, and
+    # COPASI emits it routinely on parameters no rule and no event ever writes.
+    # Such a parameter is a constant of the built model — §2 adds it with
+    # `add_parameter` like any other — so excluding it bought no safety and cost
+    # every IC expression that reads one. BIOMD0000000611 is the case: `Dilution`
+    # is `constant="false"` and unwritten, it divides all 17 species
+    # initialAssignments, and one symbol failing this predicate withheld the seed
+    # from every one of them — 18 of 106 sensitivity columns identically zero,
+    # including the largest in the tensor, silently.
     _param_ids = {sbml_model.getParameter(j).getId() for j in range(sbml_model.getNumParameters())}
-    _const_param_ids = (
-        {
-            sbml_model.getParameter(j).getId()
-            for j in range(sbml_model.getNumParameters())
-            if sbml_model.getParameter(j).getConstant()
-        }
-        - assignment_targets
-        - rate_rule_targets
-        - event_promoted_params
-    )
+    _const_param_ids = _param_ids - assignment_targets - rate_rule_targets - event_promoted_params
     _species_ids_set = {
         sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())
     }
