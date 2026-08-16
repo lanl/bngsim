@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,8 +17,117 @@ import pytest
 _DATA_DIR_ENV = os.environ.get("BNGSIM_TEST_DATA")
 
 
+# ─── Test-owned artifact caches (issue #372) ──────────────────────────────────
+#
+# bngsim keeps two content-addressed caches under the user's home: compiled .so
+# artifacts in ``~/.cache/bngsim/codegen`` and BNG2.pl-generated networks in
+# ``~/.cache/bngsim/networks``. Both are resolved once at import from an env var,
+# and until this hook existed nothing redirected either one at session scope — so
+# every test that built a `codegen=True` Simulator or loaded a `.bngl` wrote into
+# the developer's real cache and left it there. Two suite runs in one afternoon
+# accounted for 303 live artifacts; the orphan pile behind them was 146 MB.
+#
+# Three things were wrong with that, in increasing order of severity:
+#
+#   * It accumulates, on laptops and on any CI runner with a persistent home.
+#     `bngsim-cache prune --orphaned` cleans it up, but nothing should be filling
+#     a user-facing cache as a side effect of running tests.
+#   * It puts FABRICATED keys in a real directory. A test that stands in for
+#     another install by monkeypatching ``_CODEGEN_CACHE_KEY`` leaves an artifact
+#     under a key no install has ever had, and since #363 put the key in the
+#     filename that artifact shows up as a row in somebody's `bngsim-cache info`.
+#   * It couples runs. A test meaning to exercise a cold compile can be handed a
+#     .so that a previous run — or another test — compiled under the same key.
+#
+# The redirect points both caches at a directory the SUITE owns instead. It is
+# persistent rather than a per-run temp dir on purpose: artifacts stay warm
+# across runs (a cold full suite measured 19m19s against roughly 14m warm), which
+# is the whole reason a shared cache was tempting in the first place. What is
+# given up — a guaranteed cold start every run — is available on demand, because
+# the default location lives under ``.pytest_cache/d/`` and ``pytest
+# --cache-clear`` wipes it.
+#
+# Individual tests still monkeypatch ``CACHE_DIR`` to a ``tmp_path`` when they
+# need true isolation (a cold compile, a cache they can count entries in), and
+# that keeps working: a function-scoped patch overrides the session value and
+# restores it. This hook is the floor, not a replacement for those.
+
+#: One knob for both caches: point it at scratch, at a CI-restored warm cache, or
+#: at a throwaway directory for a guaranteed cold run. It overrides
+#: ``BNGSIM_CODEGEN_CACHE_DIR`` / ``BNGSIM_BNGL_CACHE_DIR`` for the duration of a
+#: pytest session rather than deferring to them — a developer who exports those
+#: is pointing bngsim's real cache somewhere, and the suite has no more business
+#: writing there than in ``~/.cache``.
+_TEST_CACHE_ROOT_ENV = "BNGSIM_TEST_CACHE_DIR"
+
+#: (env var read at import, module holding the resolved CACHE_DIR, subdirectory).
+#: Both halves are set: the env var so subprocesses that import bngsim inherit the
+#: redirect, the module attribute so it still holds if something imported bngsim
+#: before this hook ran.
+_REDIRECTED_CACHES: tuple[tuple[str, str, str], ...] = (
+    ("BNGSIM_CODEGEN_CACHE_DIR", "bngsim._codegen", "codegen"),
+    ("BNGSIM_BNGL_CACHE_DIR", "bngsim._bngl_loader", "networks"),
+)
+
+#: Set only when the cache root is a temp directory this session created, in
+#: which case teardown removes it. A ``.pytest_cache`` root is left alone.
+_EPHEMERAL_CACHE_ROOT: Path | None = None
+
+
+def _test_cache_root(config: pytest.Config) -> tuple[Path, bool]:
+    """Resolve where the suite's artifact caches live.
+
+    Returns the directory and whether this session created it as a throwaway —
+    kept a pure function of ``config`` + environment (the caller records the
+    throwaway) so both branches can be exercised against a stub config without
+    reaching into module state.
+    """
+    env = os.environ.get(_TEST_CACHE_ROOT_ENV, "").strip()
+    if env:
+        return Path(env).expanduser(), False
+    # ``getattr``, not ``config.cache``: disabling the plugin does not leave the
+    # attribute None, it leaves the Config without one at all (the cacheprovider
+    # is what sets it), so the direct read is an AttributeError on every CI leg.
+    cache = getattr(config, "cache", None)
+    if cache is not None:
+        # Under ``.pytest_cache/d/``, which is what makes ``pytest --cache-clear``
+        # the one-flag way to force the cold run this persistence gives up.
+        return cache.mkdir("bngsim"), False
+    # ``-p no:cacheprovider``, which every CI leg passes. That is an instruction
+    # not to write under the rootdir, so take a per-run temp dir and remove it at
+    # the end — a cold run, which is what a fresh runner gets anyway.
+    return Path(tempfile.mkdtemp(prefix="bngsim-test-cache-")), True
+
+
+def _redirect_artifact_caches(config: pytest.Config) -> Path:
+    """Point bngsim's compiled-artifact and network caches at a test-owned dir."""
+    global _EPHEMERAL_CACHE_ROOT
+    root, ephemeral = _test_cache_root(config)
+    if ephemeral:
+        _EPHEMERAL_CACHE_ROOT = root
+    for env_var, module_name, subdir in _REDIRECTED_CACHES:
+        target = root / subdir
+        target.mkdir(parents=True, exist_ok=True)
+        os.environ[env_var] = str(target)
+        # Never let the redirect itself break collection: a bngsim that cannot be
+        # imported is the preflight's story to tell, in its own words.
+        with contextlib.suppress(Exception):
+            importlib.import_module(module_name).CACHE_DIR = target
+    return root
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Remove the cache root only when this session created a temp one."""
+    if _EPHEMERAL_CACHE_ROOT is not None:
+        shutil.rmtree(_EPHEMERAL_CACHE_ROOT, ignore_errors=True)
+
+
 def pytest_configure(config: pytest.Config) -> None:
-    """Stale-binary preflight (issue #125).
+    """Cache redirect (issue #372), then the stale-binary preflight (issue #125).
+
+    The redirect goes first because it has to land before the first bngsim import
+    — ``CACHE_DIR`` is resolved once, at import, from the env vars it sets. See the
+    block above.
 
     The whole point of the test suite is to make true statements about the
     code. But the editable install loads a separately-built _bngsim_core that
@@ -25,6 +138,15 @@ def pytest_configure(config: pytest.Config) -> None:
     one. Escape hatches: BNGSIM_ALLOW_STALE_CORE=1 (proceed with a warning) or
     BNGSIM_NO_BUILD_CHECK=1 (skip the check entirely).
     """
+    root = _redirect_artifact_caches(config)
+    # Named on every run, beside the binary identity line: a developer who wonders
+    # why their ~/.cache stopped growing gets the answer without reading conftest.
+    print(
+        f"[bngsim] artifact caches: {root} (test-owned; ${_TEST_CACHE_ROOT_ENV} relocates)",
+        file=sys.stderr,
+        flush=True,
+    )
+
     try:
         from bngsim import _build_provenance as bp
     except Exception:
@@ -450,6 +572,17 @@ def skip_audit() -> SimpleNamespace:
         tier_of=_tier_of,
         ANYWHERE=_ANYWHERE,
         LOCAL_ONLY=_LOCAL_ONLY,
+    )
+
+
+@pytest.fixture(scope="session")
+def artifact_caches() -> SimpleNamespace:
+    """The cache redirect's own internals, for ``test_artifact_cache_isolation.py``
+    (issue #372). Handed over as a fixture for the reason ``skip_audit`` above is."""
+    return SimpleNamespace(
+        root_env=_TEST_CACHE_ROOT_ENV,
+        redirected=_REDIRECTED_CACHES,
+        resolve_root=_test_cache_root,
     )
 
 

@@ -109,21 +109,31 @@ class TestSensRhsCodeGeneration:
 class TestSensRhsCompilation:
     """Test that the generated sensitivity C code compiles."""
 
-    def test_combined_compiles(self):
+    def test_combined_compiles(self, tmp_path, monkeypatch):
         """Combined RHS + sens RHS should compile to .so."""
-        from bngsim._codegen import compile_rhs
+        import bngsim._codegen as cg
 
         net_path = _get_simple_decay_net()
         combined, has_sens = generate_combined_c(net_path)
         assert has_sens
+
+        # A hash this test invents is a key no install will ever look up, so the
+        # .so it produces is born orphaned — it must not be compiled into a cache
+        # that outlives the test (#372). Four such `test_sens_*` artifacts were
+        # still sitting in a developer's ~/.cache months after the run that wrote
+        # them. Captured first so the assertion below can prove that stopped.
+        session_cache = cg.CACHE_DIR
+        monkeypatch.setattr(cg, "CACHE_DIR", tmp_path)
 
         # Use a unique hash to avoid cache collisions
         import hashlib
 
         test_hash = "test_sens_" + hashlib.sha256(combined.encode()).hexdigest()[:8]
 
-        so_path = compile_rhs(combined, test_hash)
+        so_path = cg.compile_rhs(combined, test_hash)
         assert so_path.exists()
+        assert so_path.parent == tmp_path, f"{so_path} not under the test's own cache"
+        assert not list(session_cache.glob("*test_sens_*")), "invented key leaked into the cache"
 
         # Verify both symbols are present via dlopen
         import ctypes

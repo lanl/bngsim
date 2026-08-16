@@ -307,6 +307,31 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **Running the test suite no longer fills the developer's own bngsim caches
+  (issue #372).** A pytest session redirects both content-addressed caches —
+  compiled `.so` artifacts and BNG2.pl-generated networks — from `~/.cache/bngsim`
+  to a directory the suite owns: `.pytest_cache/d/bngsim/`, or a per-run temp
+  directory when the cache provider is off (`-p no:cacheprovider`, which every CI
+  leg passes). Both the module attribute and the env var are set, so subprocesses
+  that import bngsim land there too.
+
+  Nothing had redirected `CACHE_DIR` at session scope, so every test that built a
+  `codegen=True` simulator or loaded a `.bngl` wrote into the real cache and left
+  it there. On the box this was filed from, two suite runs in one afternoon
+  accounted for 303 live artifacts, behind an orphan pile of 146 MB; two BNGL test
+  files alone left seven `.net` files in `~/.cache/bngsim/networks`. Since #363 put
+  the codegen key in the artifact *name*, the worst of it became visible: two rows
+  in `bngsim-cache info` under a key **no install has ever had**, left by a test
+  that monkeypatched the key without the directory. `test_prepare_codegen_memo.py`
+  and `test_codegen_sensitivity.py` — the two that invented keys — now patch
+  `CACHE_DIR` as well, and assert their artifacts stayed contained.
+
+  The redirect is persistent rather than per-run, so runs stay warm (a cold full
+  suite measured 19m19s against roughly 14m). `pytest --cache-clear` wipes it for
+  a deliberate cold run, and `BNGSIM_TEST_CACHE_DIR` relocates it. This is test
+  infrastructure only — no library behavior changes, and `BNGSIM_CODEGEN_CACHE_DIR`
+  / `BNGSIM_BNGL_CACHE_DIR` mean exactly what they meant for anything but pytest.
+
 - **Two switch times set to the same number no longer charge each other's jump
   (issue #375).** A switch-time parameter's whole gradient is the jump
   `s⁺ = s⁻ + (f⁻−f⁺)·∂t*/∂p` at its crossing (issue #48), and the core reads
