@@ -495,6 +495,31 @@ class TestIssue56CompoundConditions:
         assert vals["kA"] == pytest.approx(1.0)
         assert vals["kB"] == pytest.approx(0.0)
 
+    def test_equality_condition_selects_the_right_branch(self):
+        """GH #335: ``==`` reached ``parse_expr`` untranslated, where Python
+        evaluated ``sel == 1`` to the bool ``False`` and the whole condition was
+        discarded — ``if(sel==1, kA, kB)`` collapsed to ``kB``, so ``∂/∂kA`` was a
+        silent zero at *every* ``sel`` and ``∂/∂kB`` a wrong one. With the fix the
+        branch is chosen by the equality: at ``sel = 1`` the ``kA`` branch is live,
+        elsewhere ``kB``."""
+        result = _compute_derived_param_jacobian("if(sel==1, kA, kB)", self._PRIMARIES, self._IDX)
+        assert result is not None
+        assert set(result.keys()) == {"kA", "kB"}
+        live = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 1.0})  # sel == 1
+        assert live["kA"] == pytest.approx(1.0) and live["kB"] == pytest.approx(0.0)
+        other = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 5.0})  # sel != 1
+        assert other["kA"] == pytest.approx(0.0) and other["kB"] == pytest.approx(1.0)
+
+    def test_inequality_condition_selects_the_right_branch(self):
+        """The ``!=`` twin: ``parse_expr`` evaluated it to ``True`` and took the
+        matched branch unconditionally."""
+        result = _compute_derived_param_jacobian("if(sel!=1, kA, kB)", self._PRIMARIES, self._IDX)
+        assert result is not None
+        live = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 5.0})  # sel != 1 → kA
+        assert live["kA"] == pytest.approx(1.0) and live["kB"] == pytest.approx(0.0)
+        other = _eval_c_partials(result, {0: 0.3, 1: 0.9, 2: 1.0})  # sel == 1 → kB
+        assert other["kA"] == pytest.approx(0.0) and other["kB"] == pytest.approx(1.0)
+
 
 class TestIssue56NumericPartials:
     """The IC-seed / switch-threshold counterpart
@@ -518,6 +543,17 @@ class TestIssue56NumericPartials:
     def test_compound_condition_seeds_are_recovered(self, expr, expected):
         out = _derived_expr_partials_numeric(expr, self._PRIMARIES, self._IDX, self._VALUES, {})
         assert out == pytest.approx(expected)
+
+    def test_equality_condition_seed_is_not_silently_wrong(self):
+        """GH #335 on the IC-seed twin. ``sel = 5``, so ``sel == 5`` is the live
+        branch. Before the fix ``==`` was consumed by Python at parse time and the
+        condition dropped, taking the *else* branch (``R0``) unconditionally — the
+        seed came back ``{R0: 1.0}`` rather than the correct ``R0*scale`` partials.
+        A wrong number, not merely a lost one, on this path."""
+        out = _derived_expr_partials_numeric(
+            "if(sel==5, R0*scale, R0)", self._PRIMARIES, self._IDX, self._VALUES, {}
+        )
+        assert out == pytest.approx({"R0": 2.0, "scale": 100.0})
 
 
 class TestIssue56FailuresAreNotSilent:

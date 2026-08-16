@@ -262,6 +262,102 @@ class TestLogicalOperators:
         assert J.build_per_observable_terms(f"if({expr},k*A,0)", {}, {"A"}, {"k"}) is None
 
 
+class TestEqualityOperators:
+    """GH #335. ``==`` / ``!=`` are the two relationals ``parse_expr`` evaluates
+    with *Python* semantics — ``Symbol('x') == 0`` is the bool ``False`` — so
+    before the fix they were silently discarded: ``if(x==0,1,2)`` parsed to a
+    bare ``2`` (the condition gone, the else-branch left) and ``if(x!=0,1,2)`` to
+    ``1``. They are rewritten to the ``Eq`` / ``Ne`` call form, exactly as the
+    logical connectives are and at the same tighter-than-logical precedence, so
+    the comparison reaches sympy as a real relational. The four ordering
+    relationals already build sympy relationals and must stay untouched.
+    """
+
+    def test_equality_condition_is_preserved(self):
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy("if(x==0,1,2)") == sp.Piecewise((1, sp.Eq(x, 0)), (2, True))
+
+    def test_inequality_condition_is_preserved(self):
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy("if(x!=0,1,2)") == sp.Piecewise((1, sp.Ne(x, 0)), (2, True))
+
+    def test_condition_no_longer_collapses_to_a_bare_branch(self):
+        """The exact defect in the report: the comparison must not vanish, leaving
+        the else-branch (``2``) or the matched branch (``1``) as a constant."""
+        assert J._exprtk_to_sympy("if(x==0,1,2)") != sp.Integer(2)
+        assert J._exprtk_to_sympy("if(x!=0,1,2)") != sp.Integer(1)
+        # and the ``k/x`` guard the report highlights is now a real guard
+        x, k = sp.symbols("x k")
+        assert J._exprtk_to_sympy("if(x==0,0,k/x)") == sp.Piecewise(
+            (0, sp.Eq(x, 0)), (k / x, True)
+        )
+
+    def test_nested_equality_keeps_every_branch(self):
+        """BIOMD0000000248's shape — a nested ``==`` selector collapsed to the
+        innermost else-branch (``VmaxVH``), dropping the other two. Every branch
+        must now be reachable."""
+        sel, a, b, c = sp.symbols("sel a b c")
+        g = J._exprtk_to_sympy("if((sel==1),a,if((sel==2),b,c))")
+        assert g is not None
+        assert g.subs(sel, 1) == a and g.subs(sel, 2) == b and g.subs(sel, 3) == c
+
+    def test_equality_binds_tighter_than_logicals(self):
+        """``flag==1 && x>0`` is ``(flag==1) && (x>0)``: the equality is an operand
+        of the And, matching ExprTk/BNGL precedence."""
+        flag, x, k = sp.symbols("flag x k")
+        assert J._exprtk_to_sympy("if(flag==1 && x>0, k, 0)") == sp.Piecewise(
+            (k, sp.And(sp.Eq(flag, 1), x > 0)), (0, True)
+        )
+        assert J._exprtk_to_sympy("if(flag!=1 || x>0, k, 0)") == sp.Piecewise(
+            (k, sp.Or(sp.Ne(flag, 1), x > 0)), (0, True)
+        )
+
+    @pytest.mark.parametrize(
+        "op,rel",
+        [
+            ("<", sp.StrictLessThan),
+            ("<=", sp.LessThan),
+            (">", sp.StrictGreaterThan),
+            (">=", sp.GreaterThan),
+        ],
+    )
+    def test_ordering_relationals_are_untouched(self, op, rel):
+        """<, <=, >, >= already parse to sympy relationals; the equality rewrite
+        must not disturb them (they carry no ``==`` / ``!=`` to match)."""
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy(f"if(x{op}1,1,2)") == sp.Piecewise((1, rel(x, 1)), (2, True))
+
+    def test_equality_present_but_logical_free_still_descends(self):
+        """The cheap pre-filter must fire on ``==`` with no logical operator
+        present — that case short-circuited before the fix and left it raw."""
+        pre = J._rewrite_logicals("Piecewise((1, x==0), (2, True))")
+        assert "Eq(x, 0)" in pre and "x==0" not in pre
+
+    def test_derivative_tracks_the_active_branch(self):
+        """The payoff: ``d/dA if(sel==1, k*A, k*A*A)`` selects ``k`` in the matched
+        branch and ``2*k*A`` in the else, each matching an FD of the original.
+        Before the fix the condition was gone and one branch answered for both."""
+        expr = "if(sel==1, k*A, k*A*A)"
+        obs, const = {"A"}, {"k", "sel"}
+        terms = J.build_per_observable_terms(expr, {}, obs, const)
+        assert terms is not None, "equality-guarded law unexpectedly fell back"
+        varnames = sorted(obs | const) + [_TIME]
+        f = _lambdify(expr, varnames)
+        for sel in (1.0, 2.0):  # matched branch, then else
+            region = {"A": 1.7, "k": 0.5, "sel": sel, _TIME: 0.0}
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+    def test_emitted_equality_derivative_round_trips(self):
+        """The emitted derivative carries the ``Eq`` condition through; it must
+        re-parse (the ExprTk printer spells it infix, GH #310)."""
+        terms = J.build_per_observable_terms("if(sel==1, k*A, k*A*A)", {}, {"A"}, {"k", "sel"})
+        assert terms
+        for _obs, s in terms:
+            assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
+
+
 class TestFallbackContract:
     """Inputs the path cannot guarantee must return None (→ FD Jacobian), never
     a silently-wrong derivative."""

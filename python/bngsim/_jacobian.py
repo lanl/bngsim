@@ -178,11 +178,21 @@ def _build_local_dict(preprocessed: str, sp):
     called = {m.group(1) for m in _IDENT_CALL_RE.finditer(preprocessed)}
     all_idents = set(_IDENT_RE.findall(preprocessed))
 
-    local: dict = {"Piecewise": sp.Piecewise, "Not": sp.Not, "And": sp.And, "Or": sp.Or}
+    local: dict = {
+        "Piecewise": sp.Piecewise,
+        "Not": sp.Not,
+        "And": sp.And,
+        "Or": sp.Or,
+        # ``Eq`` / ``Ne`` are the call form ``_rewrite_logicals`` produces for
+        # ``==`` / ``!=`` (GH #335). Bound here — like the connectives — so the
+        # round trip does not lean on ``parse_expr``'s implicit sympy global dict.
+        "Eq": sp.Eq,
+        "Ne": sp.Ne,
+    }
     alias_of: dict[str, str] = {}
 
     for ident in all_idents:
-        if ident in ("Piecewise", "Not", "And", "Or") or ident in _LITERAL_KEYWORDS:
+        if ident in ("Piecewise", "Not", "And", "Or", "Eq", "Ne") or ident in _LITERAL_KEYWORDS:
             # Bound/handled by sympy as literals; never a parameter symbol.
             continue
         if ident in called and ident in _EXPRTK_TO_SYMPY_FUNC:
