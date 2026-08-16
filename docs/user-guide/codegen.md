@@ -66,8 +66,7 @@ under-invalidation, is a silently wrong gradient), but on a machine that tracks
 bngsim development it means a fresh corpus of dead artifacts per emitter edit: six
 weeks of ordinary work left 2.0 GB across 14,377 entries on one developer box.
 
-`bngsim-cache` (also `python -m bngsim.cache`, which works without reinstalling)
-has four verbs:
+`bngsim-cache` has four verbs:
 
 ```bash
 bngsim-cache info                          # path, entries, size, dates, live vs orphaned
@@ -77,6 +76,22 @@ bngsim-cache prune --older-than 30d        # evict artifacts unused for 30 days
 bngsim-cache prune --max-size 2G           # ...or until the directory fits
 bngsim-cache clear --yes                   # everything bngsim owns
 ```
+
+**Getting at the command.** `pip install bngsim` puts `bngsim-cache` on your `PATH`.
+If it is not there — a source checkout whose virtualenv is not activated is the usual
+reason — either use the launcher directly or run the module, which needs no console
+script and no reinstall:
+
+```bash
+python -m bngsim.cache info
+```
+
+```bash
+.venv/bin/bngsim-cache info
+```
+
+Whichever Python you invoke it with is the one whose codegen key counts as *live*
+below, so run it from the environment whose cache you mean to sweep.
 
 `info` reports a breakdown by artifact kind — model RHS, SSA propensity, the
 source-hash fallback key, plus the debris of interrupted compiles (`bngsim_shard_*`
