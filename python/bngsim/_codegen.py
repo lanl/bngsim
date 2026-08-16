@@ -310,6 +310,15 @@ _CODEGEN_CACHE_KEY = f"{_CODEGEN_VERSION}+{_CODEGEN_SOURCE_DIGEST}"
 #: would move the field boundary and make a partial look like an artifact.
 _KEY_FIELD_UNSAFE = re.compile(r"[^A-Za-z0-9+-]")
 
+#: What makes a key field recognizable *as* one, and therefore what tells
+#: ``rhs_<key>_<hash>`` from the pre-#363 ``rhs_<hash>``. It is already structural
+#: in the key — ``f"{version}+{digest}"`` — and :func:`_artifact_key_field`
+#: guarantees it is present, because a ``model_hash`` may itself contain ``_``
+#: (``compile_rhs`` takes whatever string its caller keys on) and splitting on the
+#: underscore alone would then read the first piece of a keyless legacy name as a
+#: key. ``bngsim.cache`` reads it back through this constant.
+_KEY_FIELD_MARKER = "+"
+
 
 def _artifact_key_field(key: str | None = None) -> str:
     """``key`` (default: this install's) as it appears in an artifact filename.
@@ -328,8 +337,14 @@ def _artifact_key_field(key: str | None = None) -> str:
     the field with it — short, still non-empty, still distinct from every other
     version's. The ``or`` guard covers only a key that is empty outright, which no
     live code path produces.
+
+    The field always ends up carrying :data:`_KEY_FIELD_MARKER`, appended if the key
+    somehow lacks it. That is the shape contract the reader depends on — see the
+    constant — and the appending branch is unreachable for every key this module
+    constructs, so a name written today is byte-identical either way.
     """
-    return _KEY_FIELD_UNSAFE.sub("-", _CODEGEN_CACHE_KEY if key is None else key) or "none"
+    field = _KEY_FIELD_UNSAFE.sub("-", _CODEGEN_CACHE_KEY if key is None else key) or "none"
+    return field if _KEY_FIELD_MARKER in field else field + _KEY_FIELD_MARKER
 
 
 def _artifact_stem(model_hash: str) -> str:

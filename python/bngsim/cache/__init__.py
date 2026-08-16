@@ -186,11 +186,19 @@ _TEMP_TOKEN = re.compile(r"\.(\d+)_(\d+)$")
 _SHARD_PREFIX = "bngsim_shard_"
 _ARTIFACT_PREFIX = "rhs_"
 
-#: The two ``model_hash`` namespaces ``_codegen`` prefixes, as they appear *without*
-#: a key field in front of them — i.e. how a pre-#363 artifact spells them. Naming
-#: them is what keeps ``rhs_ssaprop_<hash>`` from parsing as key ``ssaprop``; a real
-#: key is ``<version>+<digest>`` and can be neither of these.
-_LEGACY_NAMESPACES = frozenset({"ssaprop", "src"})
+#: What tells a key field from the first underscore-separated piece of a pre-#363
+#: name. Read from ``_codegen`` rather than spelled here, because it is that
+#: module's shape contract for the field: :func:`bngsim._codegen._artifact_key_field`
+#: guarantees every key it renders carries this.
+#:
+#: An underscore alone cannot do the job. ``compile_rhs`` keys on whatever string
+#: its caller hands it, and some contain underscores — the pre-#363
+#: ``rhs_test_sens_0cec059f`` on a developer machine split into key ``test`` and
+#: hash ``sens_0cec059f``, inventing a key that never existed and filing four real
+#: artifacts under it in ``info``. The two namespaces (``rhs_ssaprop_<hash>``,
+#: ``rhs_src_<hash>``) were the same bug with a known spelling; the marker covers
+#: them and every other hash, so they need no special case.
+_KEY_FIELD_MARKER = _codegen._KEY_FIELD_MARKER
 
 DEFAULT_MIN_AGE = 3600.0
 """Seconds an entry must be untouched before any sweep will remove it.
@@ -206,19 +214,21 @@ runs for tens of minutes.
 def _split_stem(stem: str) -> tuple[str | None, str]:
     """``(codegen key, remainder)`` for a ``rhs_``-prefixed stem.
 
-    The key is ``None`` for a name written before issue #363 put it there — those
-    are ``rhs_<hash>`` and ``rhs_<namespace>_<hash>``, neither of which this install
-    will ever look up again, so they count as orphaned.
+    The key is ``None`` for a name written before issue #363 put it there — a
+    ``rhs_<hash>`` whose hash this install will never look up again, so it counts as
+    orphaned. Telling the two apart is :data:`_KEY_FIELD_MARKER`'s job, because a
+    hash can itself contain underscores (``rhs_test_sens_0cec059f``, the ``ssaprop_``
+    and ``src_`` namespaces) and splitting on the first one would invent a key out of
+    the front of a keyless name.
 
-    The ``<pid>_<counter>`` token of an in-flight compile is stripped first, because
-    it is the one other place an underscore appears in a name bngsim writes: without
-    that, the legacy partial ``rhs_<hash>.4711_0.c`` would parse its own PID token as
-    a key field.
+    The ``<pid>_<counter>`` token of an in-flight compile is stripped first, for the
+    same reason in the other direction: without that, the legacy partial
+    ``rhs_<hash>.4711_0.c`` would offer its own PID token as the split point.
     """
     m = _TEMP_TOKEN.search(stem)
     body = (stem[: m.start()] if m else stem)[len(_ARTIFACT_PREFIX) :]
     head, sep, rest = body.partition("_")
-    if not sep or head in _LEGACY_NAMESPACES:
+    if not sep or _KEY_FIELD_MARKER not in head:
         return None, body
     return head, rest
 
