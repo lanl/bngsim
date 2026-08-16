@@ -330,6 +330,13 @@ class TestClassify:
             ("rhs_ssaprop_0123456789abcdef.so", False, None),
             ("rhs_src_0123456789abcdef.so", False, None),
             ("rhs_0123456789abcdef.4711_0.c", False, None),
+            # A pre-#363 hash that carries underscores of its own. `compile_rhs` keys
+            # on whatever string its caller hands it, and this one is real: four
+            # `rhs_test_sens_<hex>` artifacts from test_codegen_sensitivity.py sat in
+            # a developer cache, and reading `test` off the front of them invented a
+            # codegen key that never existed and gave it a row in `info`.
+            ("rhs_test_sens_0cec059f.dylib", False, None),
+            ("rhs_serialhash.so", False, None),
             # Nothing bngsim wrote carries a key at all.
             ("notes.txt", False, None),
             ("bngsim_shard_a1b2c3", True, None),
@@ -448,6 +455,23 @@ class TestLiveVersusOrphaned:
 
         assert [e.path for e in info.orphaned] == [legacy]
         assert info.by_key == {None: (1, 1024)}
+
+    def test_a_pre_key_hash_with_underscores_invents_no_key(self, cache: Path) -> None:
+        """`compile_rhs` keys on whatever string its caller passes, underscores and
+        all, so the split that finds the key cannot be "the first underscore".
+
+        Found on a real cache: four `rhs_test_sens_<hex>` from
+        test_codegen_sensitivity.py were filed under a codegen key `test` — a key no
+        install has ever had, holding a row in `info` and answering to `--keep-key
+        test`. They are orphans like any other pre-#363 name.
+        """
+        legacy = write_entry(cache, "rhs_test_sens_0cec059f.dylib")
+
+        info = ch.codegen_cache_info()
+
+        assert info.by_key == {None: (1, 1024)}
+        assert [e.path for e in info.orphaned] == [legacy]
+        assert ch.prune_codegen_cache(orphaned=True, keep_keys=["test"]).removed == (info.orphaned)
 
     def test_partials_and_foreign_entries_are_not_scored_either_way(self, cache: Path) -> None:
         """``by_key`` attributes *artifacts*. A leaked partial is ``clean``'s business

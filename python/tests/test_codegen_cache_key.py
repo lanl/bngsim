@@ -119,9 +119,24 @@ class TestTheKeyIsFilenameSafe:
         assert cg._artifact_key_field() == cg._CODEGEN_CACHE_KEY
         assert cg._artifact_stem("0123456789abcdef").startswith(f"rhs_{cg._CODEGEN_CACHE_KEY}_")
 
+    @pytest.mark.parametrize("key", ["28+abcdef0123456789", "28+", "28", "test", ""])
+    def test_the_field_always_carries_the_marker(self, key, monkeypatch):
+        """The marker is what a reader splits on, so it is a shape contract rather
+        than a property of today's key format.
+
+        Without it the split has to be "the first underscore", and a ``model_hash``
+        may contain those: the real ``rhs_test_sens_0cec059f`` parsed as key ``test``.
+        A key that lost its ``+`` would be worse than mislabeled — every artifact
+        this install writes would read as pre-#363, i.e. as orphaned, and
+        ``prune --orphaned`` would delete a live cache. So the field is given one
+        when the key has none.
+        """
+        monkeypatch.setattr(cg, "_CODEGEN_CACHE_KEY", key)
+        assert cg._KEY_FIELD_MARKER in cg._artifact_key_field()
+
     @pytest.mark.parametrize(
         "key",
-        ["28+", "28", "28+abcdef/../.././etc", "28+a b", "28+a_b", "28+a.4711_0"],
+        ["28+", "28", "28+abcdef/../.././etc", "28+a b", "28+a_b", "28+a.4711_0", "test"],
         ids=[
             "pyc-only-install",
             "no-digest",
@@ -129,6 +144,7 @@ class TestTheKeyIsFilenameSafe:
             "space",
             "underscore",
             "temp-token",
+            "no-marker",
         ],
     )
     def test_an_exotic_key_still_yields_one_parseable_field(self, key, monkeypatch):
