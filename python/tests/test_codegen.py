@@ -378,12 +378,17 @@ class TestCompileConfig:
         with pytest.raises(RuntimeError, match="BNGSIM_CODEGEN_TIMEOUT"):
             c.compile_rhs("int main(){return 0;}", "deadbeefcafe0001")
 
-        leftovers = list(c.CACHE_DIR.glob("rhs_deadbeefcafe0001.*"))
+        leftovers = list(c.CACHE_DIR.glob(f"{c._artifact_stem('deadbeefcafe0001')}.*"))
         assert leftovers == [], f"temp artifacts not cleaned up: {leftovers}"
 
     def test_atomic_install_replaces_into_cache(self, monkeypatch, tmp_path):
         """compile_rhs builds to a process-unique temp then os.replace()s it
-        into the hash-named cache path; the final .so is the cached name."""
+        into the cache path; the final .so is the cached name.
+
+        That name is ``rhs_<key>_<hash>`` since issue #363 — the codegen key beside
+        the hash, so a sweep can tell a live artifact from an orphaned one — which is
+        asserted here through ``_artifact_stem`` *and* spelled out, since this is the
+        test that pins the installed name."""
         from bngsim import _codegen as c
 
         monkeypatch.setattr(c, "CACHE_DIR", tmp_path)
@@ -391,10 +396,12 @@ class TestCompileConfig:
         c_source = generate_rhs_c(path)
         so_path = c.compile_rhs(c_source, "feedfacefeedface")
 
-        assert so_path == tmp_path / f"rhs_feedfacefeedface{so_path.suffix}"
+        stem = c._artifact_stem("feedfacefeedface")
+        assert stem == f"rhs_{c._CODEGEN_CACHE_KEY}_feedfacefeedface"
+        assert so_path == tmp_path / f"{stem}{so_path.suffix}"
         assert so_path.exists()
         # No temp .c or temp .so left behind.
-        assert list(tmp_path.glob("rhs_feedfacefeedface.*.c")) == []
+        assert list(tmp_path.glob(f"{stem}.*.c")) == []
 
     def test_msvc_sidecars_are_cleaned_up_after_a_successful_compile(self, monkeypatch, tmp_path):
         """lanl/bngsim#362 — ``cl /LD /Fe:<out>`` writes an import library and an

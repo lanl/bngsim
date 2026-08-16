@@ -189,6 +189,12 @@ yourself and say why in the comment block above it:
 - a **C++** change that alters `codegen_data()` and therefore the emitted source;
 - any time you want to deliberately invalidate a release's caches.
 
+The key is also carried in the artifact's *name* — `rhs_<key>_<hash><suffix>`, built
+by `_artifact_stem()` (issue #363) — so `bngsim-cache info` can report how much of a
+cache your edit just orphaned and `bngsim-cache prune --orphaned` can sweep exactly
+that. Build every artifact path through that helper: a call site that spells the name
+itself is a silent cache miss, not an error.
+
 ## Before opening a PR
 
 - Keep new code consistent with the surrounding style (`.clang-format` for C++,

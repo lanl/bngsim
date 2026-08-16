@@ -8,7 +8,8 @@ and reused for all parameter evaluations in a PyBNF fitting run.
 Architecture (AMICI/libRoadRunner pattern):
   1. generate_rhs_c(net_path) -> str: Parse .net, emit C source
   2. compile_rhs(c_source, model_hash) -> Path: cc -O3 -shared -fPIC
-  3. Cache compiled .so by model hash in ~/.cache/bngsim/codegen/
+  3. Cache the compiled .so as rhs_<key>_<hash> in ~/.cache/bngsim/codegen/,
+     where <key> is _CODEGEN_CACHE_KEY (issue #363) and <hash> mixes it in
 """
 
 from __future__ import annotations
@@ -302,6 +303,55 @@ _CODEGEN_SOURCE_DIGEST = _compute_codegen_source_digest()
 # The token every codegen cache key mixes in. Use this, never ``_CODEGEN_VERSION``
 # alone, anywhere a cached artifact's validity is decided (issue #51).
 _CODEGEN_CACHE_KEY = f"{_CODEGEN_VERSION}+{_CODEGEN_SOURCE_DIGEST}"
+
+#: Characters an artifact filename may not carry in its key field: everything but
+#: alphanumerics, ``+`` and ``-``. ``_`` and ``.`` are excluded because the name
+#: parses on them — ``rhs_<key>_<hash>.<pid>_<n>.c`` — so a key containing either
+#: would move the field boundary and make a partial look like an artifact.
+_KEY_FIELD_UNSAFE = re.compile(r"[^A-Za-z0-9+-]")
+
+
+def _artifact_key_field(key: str | None = None) -> str:
+    """``key`` (default: this install's) as it appears in an artifact filename.
+
+    Identity for the key format actually shipped — ``f"{version}+{digest}"``, whose
+    characters are all filename-safe on POSIX and Windows alike, pinned by
+    ``test_codegen_cache_key.py``. The substitution is here so that a future key
+    format cannot silently produce a name that does not round-trip; it maps the
+    offending characters to ``-`` rather than dropping them, so two keys stay two
+    fields. Collapsing two keys onto one field would mislabel an entry in
+    ``bngsim-cache info``, never serve the wrong artifact: the key is still mixed
+    into the content hash, which is what decides validity.
+
+    A ``.pyc``-only install has an empty source digest (see
+    :func:`_compute_codegen_source_digest`), so the key degrades to ``"28+"`` and
+    the field with it — short, still non-empty, still distinct from every other
+    version's. The ``or`` guard covers only a key that is empty outright, which no
+    live code path produces.
+    """
+    return _KEY_FIELD_UNSAFE.sub("-", _CODEGEN_CACHE_KEY if key is None else key) or "none"
+
+
+def _artifact_stem(model_hash: str) -> str:
+    """``rhs_<key>_<hash>`` — the base name of every artifact this module writes.
+
+    The one place the scheme is spelled. ``get_cached_so``, ``compile_rhs`` (both
+    its installed name and its ``.<pid>_<n>`` temporaries), and the ``ssaprop_`` /
+    ``src_`` namespaces all route through here, because a partial conversion is a
+    silent cache miss rather than an error.
+
+    Carrying the key *beside* the hash rather than only inside it (issue #363) is
+    what makes ``bngsim-cache info`` able to say how much of a cache is orphaned
+    and ``bngsim-cache prune --orphaned`` able to sweep exactly that. Nothing about
+    invalidation changes: the key is still mixed into the hash, so an artifact built
+    under another key was already unreachable — it was merely unidentifiable too.
+
+    Read at call time, not bound at import, so a test that monkeypatches
+    ``_CODEGEN_CACHE_KEY`` to stand in for another install gets that install's
+    names as well as its hashes.
+    """
+    return f"rhs_{_artifact_key_field()}_{model_hash}"
+
 
 # Accessor-token prefix for the SBML rateOf csymbol (GH #106). MUST match
 # _RATEOF_PREFIX in bngsim/_sbml_loader.py and register_rateof_accessors() in
@@ -4296,9 +4346,14 @@ def _build_compile_cmd(c_path: Path, so_path: Path, opt_flag: str) -> list[str]:
 
 
 def get_cached_so(model_hash: str) -> Path | None:
-    """Return path to cached shared library if it exists."""
+    """Return path to cached shared library if it exists.
+
+    The name carries this install's codegen key (see :func:`_artifact_stem`), so an
+    artifact built under a different key is not merely a hash miss — it is a
+    different filename, which is what lets ``bngsim-cache`` count it as orphaned.
+    """
     suffix = _shared_lib_suffix()
-    so_path = CACHE_DIR / f"rhs_{model_hash}{suffix}"
+    so_path = CACHE_DIR / f"{_artifact_stem(model_hash)}{suffix}"
     if so_path.exists():
         return so_path
     return None
@@ -4769,7 +4824,8 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     suffix = _shared_lib_suffix()
-    so_path = CACHE_DIR / f"rhs_{model_hash}{suffix}"
+    stem = _artifact_stem(model_hash)
+    so_path = CACHE_DIR / f"{stem}{suffix}"
 
     # Check cache
     if so_path.exists():
@@ -4781,7 +4837,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
     # to shared paths risks a compiler reading a half-written .c or a caller
     # loading a partially-linked .so. os.replace() is atomic on POSIX/Windows.
     token = f"{os.getpid()}_{next(_compile_counter)}"
-    tmp_so_path = CACHE_DIR / f"rhs_{model_hash}.{token}{suffix}"
+    tmp_so_path = CACHE_DIR / f"{stem}.{token}{suffix}"
 
     compiler = _find_c_compiler()
     compiler_name = Path(compiler[0]).stem.lower()
@@ -4809,7 +4865,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
             _compile_sharded(driver_src, units, tmp_so_path, opt_flag, jobs, timeout, compiler)
             os.replace(tmp_so_path, so_path)
         else:
-            c_path = CACHE_DIR / f"rhs_{model_hash}.{token}.c"
+            c_path = CACHE_DIR / f"{stem}.{token}.c"
             # UTF-8: generated source has non-ASCII comment glyphs; the locale
             # default (cp1252 on Windows) would raise UnicodeEncodeError.
             c_path.write_text(c_source, encoding="utf-8")
