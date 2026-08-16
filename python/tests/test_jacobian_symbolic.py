@@ -358,6 +358,62 @@ class TestEqualityOperators:
             assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
 
 
+class TestBooleanConditionEmission:
+    """GH #335 second-order effect. Comparing a 1/0 ``if`` to a constant — a
+    common BNGL boolean-coercion idiom, ``if((if(c,1,0)==1) and rest, …)`` — makes
+    sympy fold the ``Eq``-over-Piecewise condition into an ``ITE`` node. ``ITE`` is
+    a ``Boolean``, not a ``Function``, so ``_is_emittable``'s ``atoms(Function)``
+    scan does not see it (the Min/Max blind spot) and the printers would fall
+    through to a literal ``ITE(...)`` the engine rejects — silently dropping the
+    whole model's analytical Jacobian to finite differences (surfaced on
+    MODEL1708310001). ``_normalize_booleans`` rewrites it to the equivalent
+    And/Or/Not form before emission.
+    """
+
+    _ITE_RATE = "if((if(A<Km,1,0)==1) and (A>Km2), k*A, 0)"
+
+    def test_normalize_booleans_rewrites_ite_to_and_or(self):
+        from sympy.logic.boolalg import ITE
+
+        c, t = sp.symbols("c t")
+        out = J._normalize_booleans(ITE(c > 0, t > 0, sp.false))
+        assert not out.has(ITE)
+        assert out == sp.And(c > 0, t > 0)  # the False branch collapses away
+
+    def test_ite_free_expression_is_returned_unchanged(self):
+        """The common case must be a no-op — same object, so emitted text is
+        byte-for-byte unchanged for every rate law that never folds to an ITE."""
+        expr = sp.Piecewise((1, sp.Eq(sp.Symbol("x"), 0)), (2, True))
+        assert J._normalize_booleans(expr) is expr
+
+    def test_ite_condition_emits_without_leaking_ite(self):
+        from sympy.logic.boolalg import ITE
+
+        d = J.differentiate_rate_law(self._ITE_RATE, {}, {"A"}, {"k", "Km", "Km2"})["A"]
+        assert d.has(ITE), "the fixture must actually fold to an ITE, else it guards nothing"
+        s = J.sympy_to_exprtk(d)
+        assert s is not None and "ITE" not in s
+        assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
+        c = J.sympy_to_c(
+            d, lambda n: {"A": "y[0]", "k": "p[0]", "Km": "p[1]", "Km2": "p[2]"}.get(n)
+        )
+        assert c is not None and "ITE" not in c
+
+    def test_ite_gated_derivative_matches_fd_per_branch(self):
+        terms = J.build_per_observable_terms(self._ITE_RATE, {}, {"A"}, {"k", "Km", "Km2"})
+        assert terms is not None, "ITE-gated law unexpectedly fell back"
+        varnames = sorted({"A", "k", "Km", "Km2"}) + [_TIME]
+        f = _lambdify(self._ITE_RATE, varnames)
+        for region in (  # both conditions true; above Km; below Km2
+            {"A": 1.0, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+            {"A": 3.0, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+            {"A": 0.2, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+        ):
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+
 class TestFallbackContract:
     """Inputs the path cannot guarantee must return None (→ FD Jacobian), never
     a silently-wrong derivative."""

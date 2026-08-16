@@ -493,6 +493,36 @@ def _is_emittable(expr) -> bool:
     return True
 
 
+def _normalize_booleans(expr):
+    """Rewrite sympy ``ITE`` nodes into the ``And`` / ``Or`` / ``Not`` form the
+    printers can emit, or return ``expr`` unchanged when it has none.
+
+    ``ITE`` is a ``Boolean``, not a ``Function``, so ``_is_emittable``'s
+    ``atoms(Function)`` scan does not see it (the same blind spot ``Min`` / ``Max``
+    have) and both printers fall through to a literal ``ITE(...)`` the engine
+    cannot parse. sympy folds a relational over a Piecewise into one — e.g.
+    ``And(Eq(if(c,1,0), 1), rest)`` becomes ``ITE(c, rest, False)`` — which the
+    ``==`` rewrite (GH #335) newly makes reachable: a rate law comparing a 1/0
+    ``if`` to a constant is a common BNGL boolean-coercion idiom.
+
+    ``ITE(c, t, f)`` is exactly ``(c & t) | (~c & f)``, a boolean identity, and
+    on the branches an ITE actually carries (``t`` / ``f`` are booleans, since
+    sympy only builds ITE in boolean context) sympy collapses any ``True`` /
+    ``False`` branch on construction — ``ITE(c, rest, False)`` → ``And(c, rest)``
+    — leaving pure And/Or/Not/relationals every printer already handles. Guarded
+    on ``has(ITE)`` so every ITE-free expression is returned untouched and its
+    emitted text is byte-for-byte unchanged.
+    """
+    try:
+        import sympy as sp
+        from sympy.logic.boolalg import ITE
+    except ImportError:
+        return expr
+    if not expr.has(ITE):
+        return expr
+    return expr.replace(ITE, lambda c, t, f: sp.Or(sp.And(c, t), sp.And(sp.Not(c), f)))
+
+
 def _linear_multiple_quotient(base, sym, sp):
     """``base / sym`` when ``base`` is a linear multiple of ``sym`` — i.e. when
     the quotient is free of ``sym`` — computed structurally, or ``None`` (GH #96).
@@ -1035,6 +1065,7 @@ def sympy_to_exprtk(expr) -> str | None:
         import sympy as sp  # noqa: F401
     except ImportError:
         return None
+    expr = _normalize_booleans(expr)
     if not _is_emittable(expr):
         return None
     try:
@@ -1247,6 +1278,7 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
         import sympy as sp  # noqa: F401
     except ImportError:
         return None
+    expr = _normalize_booleans(expr)
     if not _is_emittable(expr):
         return None
     try:
