@@ -21,6 +21,7 @@ fixable, and what these tests pin, is that the failure must not be silent.
 """
 
 import os
+import re
 from pathlib import Path
 
 import bngsim
@@ -79,14 +80,30 @@ class TestTheRefusal:
 
         The column is what to drop to get a usable run out of the same model,
         and the time is where to start a bisection.
+
+        The exact crossing time is deliberately NOT asserted. This is a knife
+        edge — the same sweep that shows 0 non-finite cells at tau 1.05e-3 and
+        33661 at 1.2e-3 also moves the instant across platforms, and an earlier
+        version of this test pinned macOS's ``t=9.64`` and failed on both Linux
+        legs while the refusal itself fired identically. What is portable is the
+        SHAPE of the diagnostic: a column, a count, and a located output point.
         """
         with pytest.raises(bngsim.SimulationError) as exc:
             _run()
         msg = str(exc.value)
         assert "parameter_63" in msg
-        assert "9.64" in msg  # the first affected output point
-        assert "964" in msg  # ...and its index, for a direct lookup
-        assert "41 cell" in msg
+        assert re.search(r"\d+ cell\(s\)", msg)
+        assert re.search(rf"output point t=[\d.eE+-]+ \(index \d+ of {N_POINTS}\)", msg)
+
+    def test_the_message_carries_both_remedies(self):
+        """The two things a caller can do next, and the counter that explains
+        why the solver looked clean. Asserted because a diagnostic that stops
+        naming them is a diagnostic that stops being actionable."""
+        with pytest.raises(bngsim.SimulationError) as exc:
+            _run()
+        msg = str(exc.value)
+        assert "n_sens_err_test_fails" in msg
+        assert "BNGSIM_SENS_ERROR_FLOOR=0" in msg
 
     def test_the_remedy_the_message_advertises_works(self):
         """The diagnostic names ``BNGSIM_SENS_ERROR_FLOOR=0``. If that stops
