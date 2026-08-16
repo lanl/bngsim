@@ -497,6 +497,17 @@ class TestRefusedARRow:
         assert np.isnan(r.sensitivities[:, i, :]).all()
         assert r.ar_sensitivity_refused == frozenset({"T"})
 
+    def test_the_declared_nan_does_not_trip_the_384_refusal(self):
+        """Issue #384 refuses a tensor that comes back non-finite. This row is
+        non-finite ON PURPOSE, so the two must not collide.
+
+        They do not, structurally rather than by exclusion list: #384 checks
+        inside the solver, and a declared row is written by the Python layer
+        afterwards. Asserted here because that ordering is the whole reason the
+        check needs no knowledge of this feature, and a future move of either
+        one would break it silently — this run would start raising."""
+        assert self._run() is not None
+
     def test_ordinary_rows_survive_the_refusal(self):
         r = self._run()
         i = list(r.species_names).index("A")

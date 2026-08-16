@@ -22,15 +22,26 @@ enum LinearSolverKind {
 };
 
 struct SolverStats {
-    int n_steps = 0;                         // total internal solver steps
-    int n_rhs_evals = 0;                     // RHS function evaluations
-    int n_jac_evals = 0;                     // Jacobian evaluations
-    int n_err_test_fails = 0;                // error test failures
-    int n_nonlin_iters = 0;                  // nonlinear solver iterations
-    int n_nonlin_conv_fails = 0;             // nonlinear (Newton) convergence failures —
-                                             // the most direct robustness signal for the
-                                             // Jacobian: an inexact Jacobian makes Newton
-                                             // give up more often, forcing step cuts
+    int n_steps = 0;             // total internal solver steps
+    int n_rhs_evals = 0;         // RHS function evaluations
+    int n_jac_evals = 0;         // Jacobian evaluations
+    int n_err_test_fails = 0;    // error test failures
+    int n_nonlin_iters = 0;      // nonlinear solver iterations
+    int n_nonlin_conv_fails = 0; // nonlinear (Newton) convergence failures —
+                                 // the most direct robustness signal for the
+                                 // Jacobian: an inexact Jacobian makes Newton
+                                 // give up more often, forcing step cuts
+
+    // The SENSITIVITY counters, which are separate in CVODES and were missing
+    // here (issue #384). The two above come from CVodeGetNum*, which count the
+    // state solve only; a forward-sensitivity run can reject nineteen steps on
+    // its sensitivity error test and still report `n_err_test_fails == 0`. That
+    // is not a smaller number than the truth, it is a different quantity, and
+    // reading it as "the solve was clean" is how a poisoned column got called
+    // healthy. 0 on a run with no sensitivities.
+    int n_sens_err_test_fails = 0;    // CVodeGetSensNumErrTestFails
+    int n_sens_nonlin_conv_fails = 0; // CVodeGetSensNumNonlinSolvConvFails
+
     int linear_solver = LINEAR_SOLVER_DENSE; // LinearSolverKind actually used
 
     // GH #132 adaptive gate: of this run's dense factorizations, how many took the
