@@ -61,6 +61,40 @@ except Exception:  # pragma: no cover — the legend falls back to documented va
     _differ = None
 
 
+def is_degenerate_pass(outcome: str, extra: dict) -> bool:
+    """A PASS that established nothing — issue #328's vacuous pass.
+
+    ``n_resolvable_params == 0`` means every parameter column of the sensitivity
+    tensor sat below the magnitude the solver can resolve (``atol/|p_j|``), so the
+    comparison measured integration noise against zero: the two engines "agreed"
+    about a tensor neither could resolve. ``None`` (the floor was not assessable)
+    is not a degeneracy claim, and ``differ``'s own significance gate cannot catch
+    this — that gate is relative to the file-wide peak, and when the whole tensor
+    is tiny there is no larger peak to judge against.
+
+    Only a PASS can be vacuous. A DIFF failed on something real — the noise floor
+    never forgives a one-sided non-finite cell, so a NaN column still DIFFs — so a
+    zero-resolvable DIFF established a genuine disagreement, not nothing.
+    """
+    return outcome == "PASS" and extra.get("n_resolvable_params") == 0
+
+
+def sens_row_class(outcome: str, extra: dict) -> tuple[str, str]:
+    """``(row css class, verdict badge)`` for one sensitivity row.
+
+    Mirrors the SSA matrix's vacuous-pass treatment (GH #190): a PASS that
+    resolved no parameter column is rendered as a gray coverage gap with a
+    distinct ``NO SIGNAL`` badge, not a green ``PASS``. The report and the tally
+    still record it as PASS — this is issue #328's "keep PASS, flag it": the
+    outcome is unchanged, only how a reader sees the row, so a vacuous row can no
+    longer be read as evidence of agreement.
+    """
+    if is_degenerate_pass(outcome, extra):
+        return "status-refused", "NO SIGNAL"
+    cls, _cat = classify_row(outcome)
+    return cls, outcome
+
+
 def _fmt_ratio(bn: float | None, am: float | None) -> tuple[str, str]:
     """``(text, css_class)`` for the bngsim-vs-AMICI warm-solve ratio.
 
@@ -197,8 +231,8 @@ def generate_html(report_path: Path, output_path: Path) -> None:
 
     rows = []
     for r in sorted(results, key=lambda x: (x.get("model_id", ""), x.get("method", ""))):
-        cls, _cat = classify_row(r.get("outcome", ""))
         extra = r.get("extra") or {}
+        cls, badge = sens_row_class(r.get("outcome", ""), extra)
         timing = r.get("timing") or {}
         bn_warm = _engine_warm(timing, "bngsim")
         am_warm = _engine_warm(timing, "amici")
@@ -236,7 +270,7 @@ def generate_html(report_path: Path, output_path: Path) -> None:
             f"<tr class='{cls}'>"
             f"<td class='mono'>{_escape(r.get('model_id', ''))}</td>"
             f"<td>{_escape(extra.get('sens_method') or r.get('method', ''))}</td>"
-            f"<td><span class='badge'>{_escape(r.get('outcome', ''))}</span></td>"
+            f"<td><span class='badge'>{_escape(badge)}</span></td>"
             f"<td>{state_txt}</td>"
             f"<td class='mono'>{val_txt}</td>"
             f"<td>{np_txt}</td>"
@@ -253,10 +287,18 @@ def generate_html(report_path: Path, output_path: Path) -> None:
     ceil = getattr(_differ, "HARD_REL_CEILING", 0.05)
     budget = getattr(_differ, "FAIL_FRAC_BUDGET", 5e-3)
 
+    # Issue #328 — how many of those PASS rows established nothing (every parameter
+    # column below the solver's resolvable floor). A subset of the pass tally, not
+    # a separate outcome, so the reader sees "N passed, of which M compared nothing".
+    n_no_signal = sum(
+        1 for r in results if is_degenerate_pass(r.get("outcome", ""), r.get("extra") or {})
+    )
+
     cards = [
         ("models", meta.get("n_models", "—")),
         ("jobs", meta.get("n_jobs", len(results))),
         ("pass", tallies.get("PASS", 0)),
+        ("no signal", n_no_signal),
         ("diff", tallies.get("DIFF", 0)),
         ("unsupported", tallies.get("UNSUPPORTED", 0)),
         ("ref failed", tallies.get("REFERENCE_FAILED", 0)),
@@ -320,6 +362,16 @@ across the parameters of a single model.</p>
 <p><b>State</b> is a separate verdict on the underlying trajectories. A sensitivity DIFF on a row
 where state is also DIFF says nothing about the sensitivity machinery — the two engines were not
 on the same trajectory to begin with. {n_state_diff} row(s) in this run are in that category.</p>
+<p><b>NO SIGNAL</b> is a PASS that established nothing (issue #328): every parameter column of the
+sensitivity tensor sat below the magnitude either solver can resolve (<span class="mono">atol/|p_j|</span>),
+so the two engines "agreed" about a tensor neither could resolve. {n_no_signal} row(s) here are in
+that category. Such a row stays a PASS in the tally — the comparison did not fail — but it is
+rendered as a gray coverage gap rather than a green agreement, so a vacuous row is not read as
+evidence. The <span class="mono">differ</span> significance gate cannot catch this on its own: that
+gate is relative to the file-wide peak, and when the whole tensor is tiny there is no larger peak to
+judge against. The per-row <span class="mono">extra</span> fields disambiguate the cause — a near-zero
+<span class="mono">state_span</span> means the model does essentially nothing over the horizon, while
+a moving state with an all-zero <span class="mono">max_abs_sx</span> is worth a second look.</p>
 <p><b>Np</b> is how many parameters were actually differentiated; "20 of 43" means the cap
 dropped the rest. The coupled system solved is <span class="mono">n_species*(Np+1)</span>, so a
 warm time cannot be compared across rows with different Np. Both engines are handed the identical
