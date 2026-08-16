@@ -397,17 +397,25 @@ def test_biomd327_refuses_the_size_its_neighbour_is_defined_from():
         assert np.array_equal(np.asarray(w.get_state()), np.asarray(r.get_state())), cid
 
 
-def test_model1710030000_refuses_rather_than_half_honouring_the_write():
-    """The other real shape, and why the refusal has to stay.
+def test_model1710030000_now_honours_the_write_exactly():
+    """The other real shape — and the refusal has been earned away.
 
     ``cell`` feeds four species initial conditions. One (``S21 =
-    393.927*0.055*cell``) lowers; the other three also read ``numConcFactor``, an
-    SBML ``constant="false"`` parameter the IC predicate rejects because such a
-    symbol is usually promoted to a species. Three folded ICs out of four is a
-    write that reproduces most of a rebuild, so the size is refused.
+    393.927*0.055*cell``) always lowered; the other three also read
+    ``numConcFactor``, and they used to be rejected, leaving three folded ICs
+    out of four — a write that reproduces most of a rebuild, so the size was
+    refused. Issue #379's substitution lowers all four, which makes the size
+    genuinely writable, so the refusal is gone.
+
+    The assertion is the property the refusal existed to protect, not the
+    refusal itself: a write must land exactly where a rebuild lands.
     """
     m = bngsim.Model.from_sbml(_corpus("MODEL1710030000"))
     assert m.compartment_size_params == ["cell"]
-    assert m.unwritable_compartment_size_params == ["cell"]
-    with pytest.raises(ValueError, match="compartment size"):
-        m.set_param("cell", 0.0979)
+    assert m.unwritable_compartment_size_params == []
+
+    new = m.get_param("cell") * 2.5
+    written = bngsim.Model.from_sbml(_corpus("MODEL1710030000"))
+    written.set_param("cell", new)
+    rebuilt = bngsim.Model.from_sbml(_corpus("MODEL1710030000"), compartment_sizes={"cell": new})
+    assert np.array_equal(np.asarray(written.get_state()), np.asarray(rebuilt.get_state()))

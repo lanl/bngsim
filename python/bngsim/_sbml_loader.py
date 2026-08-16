@@ -4127,10 +4127,16 @@ def _build_model_from_sbml_doc(doc):
     # of its own. One with an IA would need §3's `_ic_<sym>` parameter, declared
     # *after* these, so reading it here would be a forward reference; one with a
     # rule has its t=0 value defined by §4, not by its declaration.
+    # A VOLUME-TAINTED species must not be substituted. Section 0 binds a
+    # `hasOnlySubstanceUnits` symbol to its *amount*, so its seed is `conc*V` and
+    # substituting the number would bake a live compartment size into the lifted
+    # expression as a literal — the fold #164 refuses the size over, reproduced
+    # one layer down and no longer visible to the refusal. `volume_taint` is what
+    # already knows; a size that no write can move is not in it.
     _species_ic_const: dict[str, float] = {}
     for _j in range(sbml_model.getNumSpecies()):
         _sid = sbml_model.getSpecies(_j).getId()
-        if _sid in _ia_math or _sid in _ar_targets:
+        if _sid in _ia_math or _sid in _ar_targets or volume_taint.get(_sid):
             continue
         _species_ic_const[_sid] = float(eval_ctx.get(_sid, 0.0))
 
@@ -4449,12 +4455,7 @@ def _build_model_from_sbml_doc(doc):
                     subs[dep] = _safe_name(ia_single_param_ref[dep])
                 elif dep in ia_param_expr:
                     subs[dep] = _safe_name(f"_ic_{dep}")
-                elif dep not in _ia_state_targets:
-                    # No initialAssignment of its own, so its IC is a declared
-                    # constant: substitute the value section 0 resolved. Its
-                    # ∂/∂p is genuinely zero, so nothing is dropped.
-                    subs[dep] = _real_literal(float(eval_ctx.get(dep, 0.0)))
-                else:
+                elif dep in _ia_state_targets:
                     # It HAS an initialAssignment that did not lower, so its own
                     # ∂x(0)/∂p is unavailable. Folding it to a number here would
                     # silently drop that term and answer a partial derivative as
@@ -4466,6 +4467,20 @@ def _build_model_from_sbml_doc(doc):
                         dep,
                     )
                     break
+                elif volume_taint.get(dep):
+                    # Its value hides a live compartment size (§2's comment).
+                    logger.debug(
+                        "initialAssignment for %s not lowered: it reads %s, "
+                        "whose value depends on a writable compartment size",
+                        sym,
+                        dep,
+                    )
+                    break
+                else:
+                    # No initialAssignment of its own, so its IC is a declared
+                    # constant: substitute the value section 0 resolved. Its
+                    # ∂/∂p is genuinely zero, so nothing is dropped.
+                    subs[dep] = _real_literal(float(eval_ctx.get(dep, 0.0)))
             else:
                 try:
                     ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(
