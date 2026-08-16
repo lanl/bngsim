@@ -252,18 +252,25 @@ def test_an_initial_assignment_reading_a_plain_species_now_lifts():
 
 
 def test_an_initial_assignment_that_cannot_be_lifted_names_what_it_freezes(caplog):
-    """The residue, on the shape the substitution above must NOT take.
+    """The residue, on the shape the substitution must NOT take.
 
-    ``A`` is ``hasOnlySubstanceUnits``, so section 0 binds its symbol to an
-    *amount* — ``conc*V`` — and substituting the number would bake a writable
-    compartment size into the lifted expression as a literal. That is the fold
-    #164 refuses a size over, one layer down, so the lift declines and ``q``
-    stays frozen. Say so, rather than let ``set_param`` take and a sensitivity
-    column read a confident zero.
+    ``A``'s own initialAssignment reads ``time``, so ``A(0)`` does not lower and
+    its ``dx(0)/dtheta`` is unavailable. Substituting A's number into ``k0 = q*A``
+    would silently drop that term and answer a partial derivative as if it were
+    the whole one, so the lift declines and ``q`` stays frozen behind the fold.
+    Say so, rather than let ``set_param`` take and a sensitivity column read a
+    confident zero.
     """
     unliftable = UNLIFTABLE.replace(
-        '<species id="A" compartment="C" initialConcentration="2" hasOnlySubstanceUnits="false"',
-        '<species id="A" compartment="C" initialConcentration="2" hasOnlySubstanceUnits="true"',
+        "    <listOfInitialAssignments>",
+        """    <listOfInitialAssignments>
+      <initialAssignment symbol="A">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><plus/><cn>2</cn><csymbol encoding="text"
+            definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol></apply>
+        </math>
+      </initialAssignment>""",
+        1,
     )
     assert unliftable != UNLIFTABLE, "fixture text drifted"
     with caplog.at_level(logging.WARNING, logger="bngsim"):

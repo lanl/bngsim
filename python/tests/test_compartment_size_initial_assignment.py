@@ -228,23 +228,32 @@ def test_the_double_rounding_through_the_lifted_parameter_is_at_most_one_ulp():
 # ── The refusal ─────────────────────────────────────────────────────────────
 
 
-def test_a_fold_that_cannot_be_lifted_refuses_the_size_by_name():
+def test_an_amount_valued_species_fold_now_names_the_size():
     """``P = A`` with ``A`` amount-valued and declared by concentration.
 
     Section 0 binds an ``hasOnlySubstanceUnits`` species symbol to its *amount*,
-    so the seed is ``conc·V`` and ``P`` folds the volume without ever naming it.
-    No parameter holds a species amount, so there is nothing to lift onto — and
-    the honest answer is the one #164 gave: refuse the size, name it, and point
-    at ``compartment_sizes=``. Honoring only the folds that *can* be lifted
-    would reproduce part of a rebuild, and half a volume is not a volume.
+    so the seed is ``conc·V`` and ``P`` folded the volume without ever naming
+    it. That used to be unliftable — no parameter holds a species amount — so
+    #164's honest answer was to refuse the size and point at
+    ``compartment_sizes=``.
+
+    There *is* something to lift onto: the conversion itself. ``A``'s symbol is
+    worth ``conc·V`` and ``conc`` is a declaration constant, so the substitution
+    emits ``128.0*C`` and the size stays symbolic (issue #379). The refusal is
+    earned away rather than relaxed — the assertion below is the property it
+    protected, that a write lands exactly where a rebuild lands.
     """
     src = _src(1.0, IA_SPECIES, a_ic='initialConcentration="128"', hosu="true")
     m = bngsim.Model.from_sbml_string(src)
-    assert "C" in m.unwritable_compartment_size_params
-    with pytest.raises(ValueError, match="compartment size"):
-        m.set_param("C", 4.0)
-    # …and the rebuild still works, which is what the refusal points the caller at.
-    assert bngsim.Model.from_sbml_string(src, compartment_sizes={"C": 4.0})
+    assert m.unwritable_compartment_size_params == []
+    assert m.get_param("P") == pytest.approx(128.0)
+
+    written = bngsim.Model.from_sbml_string(src)
+    written.set_param("C", 4.0)
+    rebuilt = bngsim.Model.from_sbml_string(src, compartment_sizes={"C": 4.0})
+    assert written.get_param("P") == pytest.approx(512.0)  # conc 128 at V=4
+    assert written.get_param("P") == rebuilt.get_param("P")
+    assert np.array_equal(np.asarray(written.get_state()), np.asarray(rebuilt.get_state()))
 
 
 @pytest.mark.parametrize(

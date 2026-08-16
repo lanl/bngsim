@@ -4127,18 +4127,50 @@ def _build_model_from_sbml_doc(doc):
     # of its own. One with an IA would need §3's `_ic_<sym>` parameter, declared
     # *after* these, so reading it here would be a forward reference; one with a
     # rule has its t=0 value defined by §4, not by its declaration.
-    # A VOLUME-TAINTED species must not be substituted. Section 0 binds a
-    # `hasOnlySubstanceUnits` symbol to its *amount*, so its seed is `conc*V` and
-    # substituting the number would bake a live compartment size into the lifted
-    # expression as a literal — the fold #164 refuses the size over, reproduced
-    # one layer down and no longer visible to the refusal. `volume_taint` is what
-    # already knows; a size that no write can move is not in it.
-    _species_ic_const: dict[str, float] = {}
+    # What a species symbol is worth at t=0, as ExprTk over parameters.
+    #
+    # Section 0 binds the symbol to `amt if hasOnlySubstanceUnits else conc`, and
+    # exactly one of those two is a CONVERSION by the compartment size — which is
+    # what `volume_taint` marks. Substituting the converted *number* would bake a
+    # writable size into the lifted expression as a literal: the fold #164
+    # refuses a size over, reproduced one layer down and no longer visible to the
+    # refusal. So emit the conversion instead, keeping the size symbolic, and a
+    # later `set_param` on it still reaches this initial condition.
+    #
+    # A species tainted by anything OTHER than its own conversion is skipped —
+    # the taint then came through a rule or another symbol, and this local
+    # rewrite cannot stand for it.
+    #
+    # `rateOf(x)` is the exception in both sections: it needs the species SYMBOL,
+    # not the symbol's value, so a substitution turns it into `rateOf(<number>)`
+    # and §10.6's accessor emits 0. Expressions carrying one keep the old
+    # parameters-only predicate.
+    _ic_rateof_names = {name for name, (_p, _b) in func_defs.items() if _b is _RATEOF_FUNCDEF}
+
+    _species_ic_expr: dict[str, str] = {}
     for _j in range(sbml_model.getNumSpecies()):
-        _sid = sbml_model.getSpecies(_j).getId()
-        if _sid in _ia_math or _sid in _ar_targets or volume_taint.get(_sid):
+        _sp_ic = sbml_model.getSpecies(_j)
+        _sid = _sp_ic.getId()
+        if _sid in _ia_math or _sid in _ar_targets:
             continue
-        _species_ic_const[_sid] = float(eval_ctx.get(_sid, 0.0))
+        _taint = volume_taint.get(_sid, set())
+        if not _taint:
+            _species_ic_expr[_sid] = _real_literal(float(eval_ctx.get(_sid, 0.0)))
+            continue
+        _cid_ic = _sp_ic.getCompartment()
+        if _taint != {_cid_ic} or _cid_ic not in live_volume_param_comps:
+            continue
+        _vol_sym = _safe_name(_cid_ic)
+        if _sp_ic.getHasOnlySubstanceUnits() and _sp_ic.isSetInitialConcentration():
+            # The symbol means an amount; the declaration is a concentration.
+            _species_ic_expr[_sid] = (
+                f"({_real_literal(float(_sp_ic.getInitialConcentration()))}*{_vol_sym})"
+            )
+        elif not _sp_ic.getHasOnlySubstanceUnits() and _sp_ic.isSetInitialAmount():
+            # The symbol means a concentration; the declaration is an amount.
+            _species_ic_expr[_sid] = (
+                f"({_real_literal(float(_sp_ic.getInitialAmount()))}/{_vol_sym})"
+            )
 
     _lift_expr: dict[str, str] = {}
     _lift_deps: dict[str, set[str]] = {}
@@ -4148,11 +4180,11 @@ def _build_model_from_sbml_doc(doc):
         _names = _ast_name_set(_m)
         if not _names or _ast_references_time(_m):
             continue
-        if not _names <= (_param_pool | _species_ic_const.keys()):
+        if not _names <= (_param_pool | _species_ic_expr.keys()):
             continue
-        _sp_subs = {
-            _n: _real_literal(_species_ic_const[_n]) for _n in _names & _species_ic_const.keys()
-        }
+        _sp_subs = {_n: _species_ic_expr[_n] for _n in _names & _species_ic_expr.keys()}
+        if _sp_subs and _ast_has_rateof(_m, _ic_rateof_names):
+            continue
         try:
             _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(
                 _m, func_defs, local_params=_sp_subs or None
@@ -4161,7 +4193,7 @@ def _build_model_from_sbml_doc(doc):
             logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
             continue
         # Species are substituted, not referenced, so they are not lift deps.
-        _lift_deps[_pid] = _names - _species_ic_const.keys()
+        _lift_deps[_pid] = _names - _species_ic_expr.keys()
 
     # Kahn, with SBML declaration order as the tie-break so the emitted parameter
     # list is deterministic. Whatever is still pending when nothing is ready sits
@@ -4425,6 +4457,8 @@ def _build_model_from_sbml_doc(doc):
             continue
         if not names <= (_ic_expr_symbols | _ic_seed_symbols | _ic_const_ar.keys()):
             continue
+        if (names & _ic_seed_symbols) and _ast_has_rateof(math, _ic_rateof_names):
+            continue
         _ic_cand[sym] = math
         _ic_cand_deps[sym] = names & _ic_seed_symbols
         _ic_cand_ar[sym] = names & _ic_const_ar.keys()
@@ -4467,8 +4501,12 @@ def _build_model_from_sbml_doc(doc):
                         dep,
                     )
                     break
-                elif volume_taint.get(dep):
-                    # Its value hides a live compartment size (§2's comment).
+                elif dep in _species_ic_expr:
+                    # No initialAssignment of its own, so its t=0 value is what
+                    # its declaration says -- a constant, or its conversion by a
+                    # still-symbolic compartment size (see `_species_ic_expr`).
+                    subs[dep] = _species_ic_expr[dep]
+                else:
                     logger.debug(
                         "initialAssignment for %s not lowered: it reads %s, "
                         "whose value depends on a writable compartment size",
@@ -4476,11 +4514,6 @@ def _build_model_from_sbml_doc(doc):
                         dep,
                     )
                     break
-                else:
-                    # No initialAssignment of its own, so its IC is a declared
-                    # constant: substitute the value section 0 resolved. Its
-                    # ∂/∂p is genuinely zero, so nothing is dropped.
-                    subs[dep] = _real_literal(float(eval_ctx.get(dep, 0.0)))
             else:
                 try:
                     ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(
