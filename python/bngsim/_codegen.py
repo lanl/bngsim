@@ -1321,6 +1321,12 @@ _LOGICAL_LEVELS: tuple[tuple[str, tuple[tuple[str, bool], ...]], ...] = (
 _COMMA_TOKEN: tuple[tuple[str, bool], ...] = ((",", False),)
 
 
+# ExprTk's two equality relationals. Both start with a distinct character (``=``
+# vs ``!``), so listing them together never lets one shadow the other, and
+# neither overlaps ``<=`` / ``>=`` (whose ``=`` is not preceded by ``=`` / ``!``).
+_EQUALITY_TOKENS: tuple[tuple[str, bool], ...] = (("==", False), ("!=", False))
+
+
 def _depth0_token_spans(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[tuple[int, int]]:
     """Spans of every ``tokens`` occurrence at paren depth 0 in ``s``.
 
@@ -1364,11 +1370,16 @@ def _depth0_token_spans(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[tu
     return spans if depth == 0 else []
 
 
-# Cheap pre-filter: a substring with no logical token at all is returned as-is,
-# which keeps the rewrite off the hot path *and* stops it descending into deeply
-# nested logical-free expressions (e.g. the 354-deep nested-if daily lookup table
-# in the mallela2024 COVID model).
-_LOGICAL_PRESENT_RE = re.compile(r"[&|]|\band\b|\bor\b")
+# Cheap pre-filter: a substring with neither a logical token nor an equality
+# operator is returned as-is, which keeps the rewrite off the hot path *and*
+# stops it descending into deeply nested logical-free expressions (e.g. the
+# 354-deep nested-if daily lookup table in the mallela2024 COVID model).
+# ``==`` / ``!=`` join the filter (GH #335): they need the same descent so
+# ``a == b`` can be rewritten before parse_expr evaluates it with Python
+# semantics. The four ordering relationals are deliberately absent — parse_expr
+# already turns ``<``/``<=``/``>``/``>=`` into sympy relationals, so a condition
+# built only from those still short-circuits here and is left untouched.
+_LOGICAL_OR_EQUALITY_PRESENT_RE = re.compile(r"[&|]|\band\b|\bor\b|[=!]=")
 
 # Nesting budget for the rewrite. A logical nested deeper than this is
 # pathological; exhausting the budget returns the substring untouched, so
@@ -1378,7 +1389,8 @@ _LOGICAL_REWRITE_BUDGET = 100
 
 
 def _rewrite_logicals(expr: str) -> str:
-    """Rewrite ExprTk logical AND / OR into sympy ``And(...)`` / ``Or(...)`` calls.
+    """Rewrite ExprTk logical AND / OR into sympy ``And(...)`` / ``Or(...)`` calls
+    and the equality relationals ``==`` / ``!=`` into ``Eq(...)`` / ``Ne(...)``.
 
     A direct ``&&`` → ``&`` substitution is **not** correct. Python binds ``&``
     tighter than a comparison, so ``a >= b & c < d`` reassociates to
@@ -1386,8 +1398,17 @@ def _rewrite_logicals(expr: str) -> str:
     comparison. Rewriting to the call form preserves ExprTk's precedence
     (comparisons bind tighter than logicals), which is what BNGL means — and it
     holds whether or not the author parenthesized each operand.
+
+    ``==`` / ``!=`` need the same treatment for a different reason (GH #335):
+    ``parse_expr`` evaluates ``Symbol('x') == 0`` with *Python* semantics, so it
+    returns the bool ``False`` and the comparison is gone before sympy sees a
+    condition — ``if(x==0,1,2)`` would parse to a bare ``2``. Rewriting them to
+    the ``Eq`` / ``Ne`` call form is the exact analogue of the logical rewrite:
+    it keeps the operator out of Python's hands and preserves the same tighter-
+    than-logical precedence. The four ordering relationals build sympy
+    relationals directly and are left untouched.
     """
-    if not _LOGICAL_PRESENT_RE.search(expr):
+    if not _LOGICAL_OR_EQUALITY_PRESENT_RE.search(expr):
         return expr
     if expr.count("(") != expr.count(")"):
         return expr  # malformed; parse_expr will raise and the caller falls back
@@ -1408,8 +1429,27 @@ def _split_depth0(s: str, tokens: tuple[tuple[str, bool], ...]) -> list[str] | N
     return [p.strip() for p in parts]
 
 
+def _split_equality_depth0(s: str) -> tuple[str, str, str] | None:
+    """Split ``s`` at its right-most depth-0 ``==`` / ``!=`` into
+    ``(fn, left, right)`` with ``fn`` ∈ ``{"Eq", "Ne"}``, or ``None`` when the
+    string carries no depth-0 equality operator.
+
+    Right-most so a (pathological) chained ``a == b == c`` left-associates the
+    way ExprTk evaluates it — ``Eq(Eq(a, b), c)`` — rather than the reverse.
+    Equality binds tighter than the logical connectives, so this is tried only
+    after the comma and And/Or levels have peeled those away, leaving a single
+    comparison at each leaf.
+    """
+    spans = _depth0_token_spans(s, _EQUALITY_TOKENS)
+    if not spans:
+        return None
+    start, end = spans[-1]
+    fn = "Eq" if s[start:end] == "==" else "Ne"
+    return fn, s[:start], s[end:]
+
+
 def _rewrite_logicals_checked(s: str, budget: int) -> str:
-    if budget <= 0 or not _LOGICAL_PRESENT_RE.search(s):
+    if budget <= 0 or not _LOGICAL_OR_EQUALITY_PRESENT_RE.search(s):
         return s
     # A depth-0 comma is an argument separator (``Piecewise((v, cond), …)``,
     # ``max(a, b)``), never a logical operand boundary — recurse per argument
@@ -1423,6 +1463,20 @@ def _rewrite_logicals_checked(s: str, budget: int) -> str:
             continue
         return (
             f"{fn}(" + ", ".join(_rewrite_logicals_checked(p, budget - 1) for p in operands) + ")"
+        )
+    # Equality / inequality: tighter-binding than every logical, so reached only
+    # once the connectives above are gone. Wrap into the ``Eq`` / ``Ne`` call form
+    # (GH #335) and recurse into each operand — an operand can carry a nested
+    # ``if()`` whose own condition holds another ``==``.
+    rel = _split_equality_depth0(s)
+    if rel is not None:
+        fn, left, right = rel
+        return (
+            f"{fn}("
+            + _rewrite_logicals_checked(left, budget - 1)
+            + ", "
+            + _rewrite_logicals_checked(right, budget - 1)
+            + ")"
         )
     return _rewrite_logicals_in_groups(s, budget)
 
@@ -1455,7 +1509,7 @@ def _rewrite_logicals_in_groups(s: str, budget: int) -> str:
 # A primary parameter sharing one of these names would be shadowed by the class
 # and silently differentiate to zero, so the chain rule refuses the expression
 # instead (see ``_preprocess_derived_expr``'s callers).
-_DERIVED_RESERVED_NAMES = frozenset({"Piecewise", "And", "Or", "Not", "True", "False"})
+_DERIVED_RESERVED_NAMES = frozenset({"Piecewise", "And", "Or", "Not", "Eq", "Ne", "True", "False"})
 
 
 def _preprocess_derived_expr(expr: str) -> str:
@@ -2087,7 +2141,7 @@ def _prepare_derived_expr(
     # ``Piecewise`` so the if-translation in pass 1 resolves to sympy's class.
     sym_map: dict[str, sp.Symbol] = {sym_name_of[p]: sp.Symbol(sym_name_of[p]) for p in referenced}
     local_dict: dict = dict(sym_map)
-    local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not)
+    local_dict.update(Piecewise=sp.Piecewise, And=sp.And, Or=sp.Or, Not=sp.Not, Eq=sp.Eq, Ne=sp.Ne)
 
     try:
         sym_expr = parse_expr(s_aliased, local_dict=local_dict, evaluate=True)

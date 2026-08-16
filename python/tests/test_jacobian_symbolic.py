@@ -262,6 +262,191 @@ class TestLogicalOperators:
         assert J.build_per_observable_terms(f"if({expr},k*A,0)", {}, {"A"}, {"k"}) is None
 
 
+class TestEqualityOperators:
+    """GH #335. ``==`` / ``!=`` are the two relationals ``parse_expr`` evaluates
+    with *Python* semantics — ``Symbol('x') == 0`` is the bool ``False`` — so
+    before the fix they were silently discarded: ``if(x==0,1,2)`` parsed to a
+    bare ``2`` (the condition gone, the else-branch left) and ``if(x!=0,1,2)`` to
+    ``1``. They are rewritten to the ``Eq`` / ``Ne`` call form, exactly as the
+    logical connectives are and at the same tighter-than-logical precedence, so
+    the comparison reaches sympy as a real relational. The four ordering
+    relationals already build sympy relationals and must stay untouched.
+    """
+
+    def test_equality_condition_is_preserved(self):
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy("if(x==0,1,2)") == sp.Piecewise((1, sp.Eq(x, 0)), (2, True))
+
+    def test_inequality_condition_is_preserved(self):
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy("if(x!=0,1,2)") == sp.Piecewise((1, sp.Ne(x, 0)), (2, True))
+
+    def test_condition_no_longer_collapses_to_a_bare_branch(self):
+        """The exact defect in the report: the comparison must not vanish, leaving
+        the else-branch (``2``) or the matched branch (``1``) as a constant."""
+        assert J._exprtk_to_sympy("if(x==0,1,2)") != sp.Integer(2)
+        assert J._exprtk_to_sympy("if(x!=0,1,2)") != sp.Integer(1)
+        # and the ``k/x`` guard the report highlights is now a real guard
+        x, k = sp.symbols("x k")
+        assert J._exprtk_to_sympy("if(x==0,0,k/x)") == sp.Piecewise(
+            (0, sp.Eq(x, 0)), (k / x, True)
+        )
+
+    def test_nested_equality_keeps_every_branch(self):
+        """BIOMD0000000248's shape — a nested ``==`` selector collapsed to the
+        innermost else-branch (``VmaxVH``), dropping the other two. Every branch
+        must now be reachable."""
+        sel, a, b, c = sp.symbols("sel a b c")
+        g = J._exprtk_to_sympy("if((sel==1),a,if((sel==2),b,c))")
+        assert g is not None
+        assert g.subs(sel, 1) == a and g.subs(sel, 2) == b and g.subs(sel, 3) == c
+
+    def test_equality_binds_tighter_than_logicals(self):
+        """``flag==1 && x>0`` is ``(flag==1) && (x>0)``: the equality is an operand
+        of the And, matching ExprTk/BNGL precedence."""
+        flag, x, k = sp.symbols("flag x k")
+        assert J._exprtk_to_sympy("if(flag==1 && x>0, k, 0)") == sp.Piecewise(
+            (k, sp.And(sp.Eq(flag, 1), x > 0)), (0, True)
+        )
+        assert J._exprtk_to_sympy("if(flag!=1 || x>0, k, 0)") == sp.Piecewise(
+            (k, sp.Or(sp.Ne(flag, 1), x > 0)), (0, True)
+        )
+
+    @pytest.mark.parametrize(
+        "op,rel",
+        [
+            ("<", sp.StrictLessThan),
+            ("<=", sp.LessThan),
+            (">", sp.StrictGreaterThan),
+            (">=", sp.GreaterThan),
+        ],
+    )
+    def test_ordering_relationals_are_untouched(self, op, rel):
+        """<, <=, >, >= already parse to sympy relationals; the equality rewrite
+        must not disturb them (they carry no ``==`` / ``!=`` to match)."""
+        x = sp.Symbol("x")
+        assert J._exprtk_to_sympy(f"if(x{op}1,1,2)") == sp.Piecewise((1, rel(x, 1)), (2, True))
+
+    def test_equality_present_but_logical_free_still_descends(self):
+        """The cheap pre-filter must fire on ``==`` with no logical operator
+        present — that case short-circuited before the fix and left it raw."""
+        pre = J._rewrite_logicals("Piecewise((1, x==0), (2, True))")
+        assert "Eq(x, 0)" in pre and "x==0" not in pre
+
+    def test_derivative_tracks_the_active_branch(self):
+        """The payoff: ``d/dA if(sel==1, k*A, k*A*A)`` selects ``k`` in the matched
+        branch and ``2*k*A`` in the else, each matching an FD of the original.
+        Before the fix the condition was gone and one branch answered for both."""
+        expr = "if(sel==1, k*A, k*A*A)"
+        obs, const = {"A"}, {"k", "sel"}
+        terms = J.build_per_observable_terms(expr, {}, obs, const)
+        assert terms is not None, "equality-guarded law unexpectedly fell back"
+        varnames = sorted(obs | const) + [_TIME]
+        f = _lambdify(expr, varnames)
+        for sel in (1.0, 2.0):  # matched branch, then else
+            region = {"A": 1.7, "k": 0.5, "sel": sel, _TIME: 0.0}
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+    def test_emitted_equality_derivative_round_trips(self):
+        """The emitted derivative carries the ``Eq`` condition through; it must
+        re-parse (the ExprTk printer spells it infix, GH #310)."""
+        terms = J.build_per_observable_terms("if(sel==1, k*A, k*A*A)", {}, {"A"}, {"k", "sel"})
+        assert terms
+        for _obs, s in terms:
+            assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
+
+
+class TestBooleanConditionEmission:
+    """GH #335 second-order effect. Comparing a 1/0 ``if`` to a constant — a
+    common BNGL boolean-coercion idiom, ``if((if(c,1,0)==1) and rest, …)`` — makes
+    sympy fold the ``Eq``-over-Piecewise condition into an ``ITE`` node. ``ITE`` is
+    a ``Boolean``, not a ``Function``, so ``_is_emittable``'s ``atoms(Function)``
+    scan does not see it (the Min/Max blind spot) and the printers would fall
+    through to a literal ``ITE(...)`` the engine rejects — silently dropping the
+    whole model's analytical Jacobian to finite differences (surfaced on
+    MODEL1708310001). ``_normalize_booleans`` rewrites it to the equivalent
+    And/Or/Not form before emission.
+    """
+
+    _ITE_RATE = "if((if(A<Km,1,0)==1) and (A>Km2), k*A, 0)"
+
+    def test_normalize_booleans_rewrites_ite_to_and_or(self):
+        from sympy.logic.boolalg import ITE
+
+        c, t = sp.symbols("c t")
+        out = J._normalize_booleans(ITE(c > 0, t > 0, sp.false))
+        assert not out.has(ITE)
+        assert out == sp.And(c > 0, t > 0)  # the False branch collapses away
+
+    def test_ite_free_expression_is_returned_unchanged(self):
+        """The common case must be a no-op — same object, so emitted text is
+        byte-for-byte unchanged for every rate law that never folds to an ITE."""
+        expr = sp.Piecewise((1, sp.Eq(sp.Symbol("x"), 0)), (2, True))
+        assert J._normalize_booleans(expr) is expr
+
+    def test_ite_condition_emits_without_leaking_ite(self):
+        from sympy.logic.boolalg import ITE
+
+        d = J.differentiate_rate_law(self._ITE_RATE, {}, {"A"}, {"k", "Km", "Km2"})["A"]
+        assert d.has(ITE), "the fixture must actually fold to an ITE, else it guards nothing"
+        s = J.sympy_to_exprtk(d)
+        assert s is not None and "ITE" not in s
+        assert J._exprtk_to_sympy(s) is not None, f"emitted {s!r} does not re-parse"
+        c = J.sympy_to_c(
+            d, lambda n: {"A": "y[0]", "k": "p[0]", "Km": "p[1]", "Km2": "p[2]"}.get(n)
+        )
+        assert c is not None and "ITE" not in c
+
+    def test_ite_gated_derivative_matches_fd_per_branch(self):
+        terms = J.build_per_observable_terms(self._ITE_RATE, {}, {"A"}, {"k", "Km", "Km2"})
+        assert terms is not None, "ITE-gated law unexpectedly fell back"
+        varnames = sorted({"A", "k", "Km", "Km2"}) + [_TIME]
+        f = _lambdify(self._ITE_RATE, varnames)
+        for region in (  # both conditions true; above Km; below Km2
+            {"A": 1.0, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+            {"A": 3.0, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+            {"A": 0.2, "k": 0.5, "Km": 2.0, "Km2": 0.5, _TIME: 0.0},
+        ):
+            for obs_name, deriv_str in terms:
+                df = _lambdify(deriv_str, varnames)
+                assert float(df(**region)) == pytest.approx(_fd(f, region, obs_name), abs=1e-4)
+
+
+class TestNonFiniteEmissionGuard:
+    """GH #335 third-order effect. Differentiating a Piecewise guarded by an
+    ``Eq`` over a removable singularity can leave a sympy ``zoo``
+    (ComplexInfinity) in the guarded branch — the ``==`` rewrite makes it
+    reachable, and BIOMD0000000446 hits it. Printed verbatim that reads
+    ``zoo`` / ``oo`` / ``nan``, a token ExprTk rejects and the C compiler will not
+    build, so the emitters must decline (→ FD Jacobian) rather than ship it. The
+    existing post-print guard only spelled ``nan`` / ``inf``, so the sympy
+    singletons slipped through into a broken string.
+    """
+
+    @pytest.mark.parametrize("const", [sp.zoo, sp.oo, -sp.oo, sp.nan])
+    def test_non_finite_singleton_in_a_branch_declines(self, const):
+        x = sp.Symbol("x")
+        expr = sp.Piecewise((const, sp.Eq(x, 0)), (x, True))
+        assert J._is_emittable(expr) is False
+        assert J.sympy_to_exprtk(expr) is None
+        assert J.sympy_to_c(expr, lambda n: "y[0]") is None
+
+    def test_bare_non_finite_declines(self):
+        assert J._is_emittable(sp.zoo) is False
+        assert J.sympy_to_exprtk(2 * sp.Symbol("k") + sp.zoo) is None
+
+    def test_finite_guarded_quotient_still_emits(self):
+        """The guard must not reject an ordinary finite derivative — the very
+        shape (``k/x`` guarded at ``x==0``) whose *singular* cousin it rejects."""
+        x, k = sp.symbols("x k")
+        fin = sp.Piecewise((0, sp.Eq(x, 0)), (k / x, True))
+        assert J._is_emittable(fin) is True
+        assert J.sympy_to_exprtk(fin) is not None
+        assert J.sympy_to_c(fin, lambda n: {"x": "y[0]", "k": "p[0]"}.get(n)) is not None
+
+
 class TestFallbackContract:
     """Inputs the path cannot guarantee must return None (→ FD Jacobian), never
     a silently-wrong derivative."""

@@ -178,11 +178,21 @@ def _build_local_dict(preprocessed: str, sp):
     called = {m.group(1) for m in _IDENT_CALL_RE.finditer(preprocessed)}
     all_idents = set(_IDENT_RE.findall(preprocessed))
 
-    local: dict = {"Piecewise": sp.Piecewise, "Not": sp.Not, "And": sp.And, "Or": sp.Or}
+    local: dict = {
+        "Piecewise": sp.Piecewise,
+        "Not": sp.Not,
+        "And": sp.And,
+        "Or": sp.Or,
+        # ``Eq`` / ``Ne`` are the call form ``_rewrite_logicals`` produces for
+        # ``==`` / ``!=`` (GH #335). Bound here — like the connectives — so the
+        # round trip does not lean on ``parse_expr``'s implicit sympy global dict.
+        "Eq": sp.Eq,
+        "Ne": sp.Ne,
+    }
     alias_of: dict[str, str] = {}
 
     for ident in all_idents:
-        if ident in ("Piecewise", "Not", "And", "Or") or ident in _LITERAL_KEYWORDS:
+        if ident in ("Piecewise", "Not", "And", "Or", "Eq", "Ne") or ident in _LITERAL_KEYWORDS:
             # Bound/handled by sympy as literals; never a parameter symbol.
             continue
         if ident in called and ident in _EXPRTK_TO_SYMPY_FUNC:
@@ -472,6 +482,17 @@ def _is_emittable(expr) -> bool:
     # FD. Checked first because it is the cheap structural case (GH #250).
     if expr.has(sp.Derivative):
         return False
+    # A symbolic ComplexInfinity / Infinity / NaN cannot be emitted: printed
+    # verbatim it reads ``zoo`` / ``oo`` / ``nan``, which ExprTk rejects and the C
+    # compiler will not build. sympy yields one where it could not resolve a
+    # singularity — differentiating a Piecewise guarded by an ``Eq`` over a
+    # removable singularity puts ``zoo`` in the guarded branch, reachable via the
+    # ``==`` rewrite (GH #335) — so decline to the finite-difference Jacobian. The
+    # emitters keep their post-print ``nan``/``inf`` check as well, for a non-finite
+    # *literal* folded in while printing (e.g. a ``1.0/0.0``); this catches the
+    # symbolic singletons that check's regex does not spell.
+    if expr.has(sp.zoo, sp.oo, -sp.oo, sp.nan):
+        return False
     for fn in expr.atoms(sp.Function):
         name = type(fn).__name__
         # Piecewise is a Function subclass in sympy but the printer emits it as
@@ -481,6 +502,36 @@ def _is_emittable(expr) -> bool:
         if name not in _SYMPY_FUNC_TO_EXPRTK:
             return False
     return True
+
+
+def _normalize_booleans(expr):
+    """Rewrite sympy ``ITE`` nodes into the ``And`` / ``Or`` / ``Not`` form the
+    printers can emit, or return ``expr`` unchanged when it has none.
+
+    ``ITE`` is a ``Boolean``, not a ``Function``, so ``_is_emittable``'s
+    ``atoms(Function)`` scan does not see it (the same blind spot ``Min`` / ``Max``
+    have) and both printers fall through to a literal ``ITE(...)`` the engine
+    cannot parse. sympy folds a relational over a Piecewise into one — e.g.
+    ``And(Eq(if(c,1,0), 1), rest)`` becomes ``ITE(c, rest, False)`` — which the
+    ``==`` rewrite (GH #335) newly makes reachable: a rate law comparing a 1/0
+    ``if`` to a constant is a common BNGL boolean-coercion idiom.
+
+    ``ITE(c, t, f)`` is exactly ``(c & t) | (~c & f)``, a boolean identity, and
+    on the branches an ITE actually carries (``t`` / ``f`` are booleans, since
+    sympy only builds ITE in boolean context) sympy collapses any ``True`` /
+    ``False`` branch on construction — ``ITE(c, rest, False)`` → ``And(c, rest)``
+    — leaving pure And/Or/Not/relationals every printer already handles. Guarded
+    on ``has(ITE)`` so every ITE-free expression is returned untouched and its
+    emitted text is byte-for-byte unchanged.
+    """
+    try:
+        import sympy as sp
+        from sympy.logic.boolalg import ITE
+    except ImportError:
+        return expr
+    if not expr.has(ITE):
+        return expr
+    return expr.replace(ITE, lambda c, t, f: sp.Or(sp.And(c, t), sp.And(sp.Not(c), f)))
 
 
 def _linear_multiple_quotient(base, sym, sp):
@@ -1025,6 +1076,7 @@ def sympy_to_exprtk(expr) -> str | None:
         import sympy as sp  # noqa: F401
     except ImportError:
         return None
+    expr = _normalize_booleans(expr)
     if not _is_emittable(expr):
         return None
     try:
@@ -1237,6 +1289,7 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
         import sympy as sp  # noqa: F401
     except ImportError:
         return None
+    expr = _normalize_booleans(expr)
     if not _is_emittable(expr):
         return None
     try:
