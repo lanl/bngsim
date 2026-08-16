@@ -199,18 +199,21 @@ class TestUnresolvableStep:
         _, d_p = _columns()
         np.testing.assert_allclose(d_p, _closed_form_dX_dp(), rtol=1e-6, atol=1e-14)
 
-    @pytest.mark.parametrize("rel_h", [1e-1, 1e-2])
-    def test_a_resolvable_step_confirms_it(self, rel_h):
-        # X is exactly linear in p, so a large step carries no truncation error:
-        # a step chosen for signal rather than for smallness reproduces the
-        # analytic column. This is the refinement #368's reference never ran.
-        # The oracle runs a decade tighter than the column it checks, so what is
-        # left between them is the derivative and not the two runs' own error.
+    # The admissible bound scales as 1/h, and that is the whole lesson rather
+    # than a fudge: X is exactly linear in p, so neither step carries truncation
+    # error, and what separates the quotient from the column is only the two
+    # runs' own error divided by 2h. A decade smaller step buys a decade looser
+    # bound — the same arithmetic that leaves #368's h = 1e-6·p with no bound at
+    # all. Both are still three to four orders better than that step's 25%.
+    @pytest.mark.parametrize("rel_h, bound", [(1e-1, 1e-3), (1e-2, 1e-2)])
+    def test_a_resolvable_step_confirms_it(self, rel_h, bound):
+        # The oracle runs a decade tighter than the column it checks, so the
+        # floor being divided is the oracle's and not the column's.
         h = rel_h * P0
         tol = dict(rtol=1e-13, atol=1e-16)
         fd = (_plain_X(p=P0 + h, **tol) - _plain_X(p=P0 - h, **tol)) / (2 * h)
         _, d_p = _columns()
-        np.testing.assert_allclose(fd, d_p, rtol=1e-3, atol=1e-14)
+        np.testing.assert_allclose(fd, d_p, rtol=bound, atol=1e-14)
 
     def test_the_reported_step_is_below_the_solver_floor(self):
         # The issue's h = 1e-6*p. The difference it takes is smaller than the
