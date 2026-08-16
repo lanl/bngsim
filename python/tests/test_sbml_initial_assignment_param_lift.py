@@ -236,13 +236,45 @@ UNLIFTABLE = """<?xml version="1.0" encoding="UTF-8"?>
 </sbml>"""
 
 
+def test_an_initial_assignment_reading_a_plain_species_now_lifts():
+    """``k0 = q*A`` reads a species, meaning A's *initial value*.
+
+    This used to be refused, which froze ``q`` behind the fold. An
+    initialAssignment is a t=0 evaluation, so a species whose own IC is a
+    declared constant contributes a constant: it is substituted and ``q`` stays
+    symbolic (issue #379). The folded value is unchanged either way.
+    """
+    m = bngsim.Model.from_sbml_string(UNLIFTABLE)
+    assert m.get_param("k0") == 0.5
+    # `q` is no longer frozen: a write moves the derived constant.
+    m.set_param("q", 0.5)
+    assert m.get_param("k0") == 1.0
+
+
 def test_an_initial_assignment_that_cannot_be_lifted_names_what_it_freezes(caplog):
-    """``k0 = q*A`` reads a species, so it is not a parameter expression and
-    stays folded. ``q`` is then still frozen behind it — and that is the state
-    the issue's minimum bar is about: say so, rather than let ``set_param`` take
-    and a sensitivity column read a confident zero."""
+    """The residue, on the shape the substitution must NOT take.
+
+    ``A``'s own initialAssignment reads ``time``, so ``A(0)`` does not lower and
+    its ``dx(0)/dtheta`` is unavailable. Substituting A's number into ``k0 = q*A``
+    would silently drop that term and answer a partial derivative as if it were
+    the whole one, so the lift declines and ``q`` stays frozen behind the fold.
+    Say so, rather than let ``set_param`` take and a sensitivity column read a
+    confident zero.
+    """
+    unliftable = UNLIFTABLE.replace(
+        "    <listOfInitialAssignments>",
+        """    <listOfInitialAssignments>
+      <initialAssignment symbol="A">
+        <math xmlns="http://www.w3.org/1998/Math/MathML">
+          <apply><plus/><cn>2</cn><csymbol encoding="text"
+            definitionURL="http://www.sbml.org/sbml/symbols/time">t</csymbol></apply>
+        </math>
+      </initialAssignment>""",
+        1,
+    )
+    assert unliftable != UNLIFTABLE, "fixture text drifted"
     with caplog.at_level(logging.WARNING, logger="bngsim"):
-        m = bngsim.Model.from_sbml_string(UNLIFTABLE)
+        m = bngsim.Model.from_sbml_string(unliftable)
     assert m.get_param("k0") == 0.5
     frozen = [r.getMessage() for r in caplog.records if "frozen" in r.getMessage()]
     assert len(frozen) == 1

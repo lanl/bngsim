@@ -4115,20 +4115,85 @@ def _build_model_from_sbml_doc(doc):
     # t=0 value and the rule — not this expression — is what a write has to
     # survive; those are left to §4 and not refused over, since `ia_values` for
     # an AR target is overwritten by the rule anyway.
+    # A parameter initialAssignment may also read a SPECIES, and it means that
+    # species' initial value: `k_MET_expression = MET*k_MET_degradation +
+    # MET*k_phospho_MET_basal` (BIOMD0000001102), whose target is a rate
+    # constant. An initialAssignment is a t=0 evaluation, so a species whose own
+    # IC is a declared constant contributes a constant here — substitute it and
+    # the lift keeps the parameters the expression also reads, instead of
+    # freezing all of them behind the fold.
+    #
+    # Restricted to a species with no initialAssignment and no assignment rule
+    # of its own. One with an IA would need §3's `_ic_<sym>` parameter, declared
+    # *after* these, so reading it here would be a forward reference; one with a
+    # rule has its t=0 value defined by §4, not by its declaration.
+    # What a species symbol is worth at t=0, as ExprTk over parameters.
+    #
+    # Section 0 binds the symbol to `amt if hasOnlySubstanceUnits else conc`, and
+    # exactly one of those two is a CONVERSION by the compartment size — which is
+    # what `volume_taint` marks. Substituting the converted *number* would bake a
+    # writable size into the lifted expression as a literal: the fold #164
+    # refuses a size over, reproduced one layer down and no longer visible to the
+    # refusal. So emit the conversion instead, keeping the size symbolic, and a
+    # later `set_param` on it still reaches this initial condition.
+    #
+    # A species tainted by anything OTHER than its own conversion is skipped —
+    # the taint then came through a rule or another symbol, and this local
+    # rewrite cannot stand for it.
+    #
+    # `rateOf(x)` is the exception in both sections: it needs the species SYMBOL,
+    # not the symbol's value, so a substitution turns it into `rateOf(<number>)`
+    # and §10.6's accessor emits 0. Expressions carrying one keep the old
+    # parameters-only predicate.
+    _ic_rateof_names = {name for name, (_p, _b) in func_defs.items() if _b is _RATEOF_FUNCDEF}
+
+    _species_ic_expr: dict[str, str] = {}
+    for _j in range(sbml_model.getNumSpecies()):
+        _sp_ic = sbml_model.getSpecies(_j)
+        _sid = _sp_ic.getId()
+        if _sid in _ia_math or _sid in _ar_targets:
+            continue
+        _taint = volume_taint.get(_sid, set())
+        if not _taint:
+            _species_ic_expr[_sid] = _real_literal(float(eval_ctx.get(_sid, 0.0)))
+            continue
+        _cid_ic = _sp_ic.getCompartment()
+        if _taint != {_cid_ic} or _cid_ic not in live_volume_param_comps:
+            continue
+        _vol_sym = _safe_name(_cid_ic)
+        if _sp_ic.getHasOnlySubstanceUnits() and _sp_ic.isSetInitialConcentration():
+            # The symbol means an amount; the declaration is a concentration.
+            _species_ic_expr[_sid] = (
+                f"({_real_literal(float(_sp_ic.getInitialConcentration()))}*{_vol_sym})"
+            )
+        elif not _sp_ic.getHasOnlySubstanceUnits() and _sp_ic.isSetInitialAmount():
+            # The symbol means a concentration; the declaration is an amount.
+            _species_ic_expr[_sid] = (
+                f"({_real_literal(float(_sp_ic.getInitialAmount()))}/{_vol_sym})"
+            )
+
     _lift_expr: dict[str, str] = {}
     _lift_deps: dict[str, set[str]] = {}
     for _pid, _m in _ia_math.items():
         if _pid in comp_param_idx or _pid not in _param_decl_index or _pid in _ar_targets:
             continue
         _names = _ast_name_set(_m)
-        if not _names or not _names <= _param_pool or _ast_references_time(_m):
+        if not _names or _ast_references_time(_m):
+            continue
+        if not _names <= (_param_pool | _species_ic_expr.keys()):
+            continue
+        _sp_subs = {_n: _species_ic_expr[_n] for _n in _names & _species_ic_expr.keys()}
+        if _sp_subs and _ast_has_rateof(_m, _ic_rateof_names):
             continue
         try:
-            _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(_m, func_defs)
+            _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(
+                _m, func_defs, local_params=_sp_subs or None
+            )
         except Exception as e:  # noqa: BLE001 - fall through to the refusal
             logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
             continue
-        _lift_deps[_pid] = _names
+        # Species are substituted, not referenced, so they are not lift deps.
+        _lift_deps[_pid] = _names - _species_ic_expr.keys()
 
     # Kahn, with SBML declaration order as the tie-break so the emitted parameter
     # list is deterministic. Whatever is still pending when nothing is ready sits
@@ -4218,6 +4283,7 @@ def _build_model_from_sbml_doc(doc):
     # deferred to a second pass below because it needs species_idx, which
     # this section is what builds.
     assignment_targets = set()
+    _ar_math: dict[str, object] = {}
     for i in range(sbml_model.getNumRules()):
         rule = sbml_model.getRule(i)
         # A no-MathML assignmentRule is a no-op: it does not define its target
@@ -4226,6 +4292,7 @@ def _build_model_from_sbml_doc(doc):
         # speciesReference path (GH #243).
         if rule.isAssignment() and rule.getMath() is not None:
             assignment_targets.add(rule.getVariable())
+            _ar_math[rule.getVariable()] = rule.getMath()
 
     # Detect species whose initialAssignment makes the IC a function of model
     # PARAMETERS: these get registered as species_ic_param_refs so CVODES
@@ -4251,29 +4318,35 @@ def _build_model_from_sbml_doc(doc):
     # either, because `set_param` does not re-resolve an initialAssignment, so
     # the oracle holds x(0) fixed in exactly the same way the seed does.
     #
-    # The referenced symbols must be genuinely CONSTANT parameters. Anything
-    # the model can move — an assignment-rule or rate-rule target, an event
-    # assignment target, or a bare `constant="false"` declaration — is
-    # *promoted to a species* by this loader, so an expression reading one is
-    # not a parameter expression at all. BIOMD0000000856 is the case that
-    # proves it: `WHISBF = 0.66*NSt` with `NSt` declared non-constant, whose
-    # synthetic derived parameter evaluated to 0 against a symbol that is a
-    # species in the built model — and the build-time IC resolution then wrote
-    # that 0 back over the species' real initial condition, moving a plain
-    # trajectory. A wrong IC is far worse than a missing sensitivity seed, so
-    # this predicate is deliberately strict; a rejected model keeps the
-    # pre-existing behaviour of no seed.
+    # The referenced symbols must be parameters nothing in the model can MOVE.
+    # A wrong IC is far worse than a missing sensitivity seed — BIOMD0000000856
+    # is the case that proves it: `WHISBF = 0.66*NSt`, whose synthetic derived
+    # parameter evaluated to 0 against a symbol that is a species in the built
+    # model, and the build-time IC resolution then wrote that 0 back over the
+    # species' real initial condition, moving a plain trajectory. A rejected
+    # model keeps the pre-existing behaviour of no seed.
+    #
+    # What makes a symbol unsafe here is being *promoted to a species*, and this
+    # loader promotes exactly two kinds: a rate-rule target and an event
+    # assignment target (§8/§10 — see the parameter loop above, which skips
+    # those two and no others). The three subtractions below are therefore the
+    # whole predicate. `NSt` is caught by them: it is an event assignment
+    # target, and every `constant="false"` parameter in BIOMD0000000856 is
+    # written by an event or an assignment rule.
+    #
+    # An additional `getConstant()` filter used to sit on top, and it was not
+    # doing the work its comment claimed (#379). SBML's `constant="false"` is a
+    # declaration that a symbol *may* vary, not that anything varies it, and
+    # COPASI emits it routinely on parameters no rule and no event ever writes.
+    # Such a parameter is a constant of the built model — §2 adds it with
+    # `add_parameter` like any other — so excluding it bought no safety and cost
+    # every IC expression that reads one. BIOMD0000000611 is the case: `Dilution`
+    # is `constant="false"` and unwritten, it divides all 17 species
+    # initialAssignments, and one symbol failing this predicate withheld the seed
+    # from every one of them — 18 of 106 sensitivity columns identically zero,
+    # including the largest in the tensor, silently.
     _param_ids = {sbml_model.getParameter(j).getId() for j in range(sbml_model.getNumParameters())}
-    _const_param_ids = (
-        {
-            sbml_model.getParameter(j).getId()
-            for j in range(sbml_model.getNumParameters())
-            if sbml_model.getParameter(j).getConstant()
-        }
-        - assignment_targets
-        - rate_rule_targets
-        - event_promoted_params
-    )
+    _const_param_ids = _param_ids - assignment_targets - rate_rule_targets - event_promoted_params
     _species_ids_set = {
         sbml_model.getSpecies(j).getId() for j in range(sbml_model.getNumSpecies())
     }
@@ -4302,8 +4375,60 @@ def _build_model_from_sbml_doc(doc):
     # compartment the model can move is an AR/rate-rule/event target, which
     # `vstatic_divide_comps` already excluded from `live_volume_param_comps`.
     _ic_expr_symbols = _const_param_ids | live_volume_param_comps
+
+    # An assignmentRule target is normally off limits here — §4's rule owns the
+    # slot and recomputes it every step, so it is not a symbol a parameter
+    # expression may rest on. But a rule that reads NO state is a constant of
+    # the built model, and an IC that reads one is still a parameter expression.
+    # BIOMD0000000807 is the case: `n(0) = n0`, `n0 = N0/K`, `N0 = r_N/mu_N - 1`
+    # — a two-level rule chain over five constants, which left `mu_N`, `r_N`,
+    # `K`, `G0` and `A0` with no seed at all. Inlined rather than referenced,
+    # because the target itself is function-backed in the built model; the
+    # inlined text is over real parameters only.
+    _ic_const_ar: dict[str, str] = {}
+
+    def _resolve_const_ar(_name: str, _stack: frozenset) -> str | None:
+        _m = _ar_math.get(_name)
+        if _m is None or _ast_references_time(_m):
+            return None
+        _names = _ast_name_set(_m)
+        if _names & _ic_seed_symbols:
+            return None  # reads state, so it is not constant
+        _subs: dict[str, str] = {}
+        for _n in _names:
+            if _n in _ar_math:
+                if _n in _stack:
+                    return None  # illegal SBML; refuse rather than recurse
+                _inner = _resolve_const_ar(_n, _stack | {_n})
+                if _inner is None:
+                    return None
+                _subs[_n] = f"({_inner})"
+            elif _n not in _ic_expr_symbols:
+                return None
+        try:
+            return _ast_to_exprtk_with_funcdefs(_m, func_defs, local_params=_subs or None)
+        except Exception:  # noqa: BLE001 - pragma: no cover, defensive
+            return None
+
+    for _ar_name in _ar_math:
+        _resolved = _resolve_const_ar(_ar_name, frozenset({_ar_name}))
+        if _resolved is not None:
+            _ic_const_ar[_ar_name] = _resolved
+
     ia_single_param_ref: dict[str, str] = {}
     ia_param_expr: dict[str, str] = {}  # species id → ExprTk expression over params
+    # An IC expression may also read ANOTHER STATE, and it means that state's
+    # initial value — `A = M*(1 - mu_a/alpha_A)` (BIOMD0000000838),
+    # `A88 = A46 + ARPPtot` (BIOMD0000000643), eleven of BIOMD0000001102's
+    # twelve. Rejecting those cost the whole seed: 24 of 1102's 27 columns read
+    # zero at t=0 where both other engines report a number. The reference is
+    # resolved below to whatever expresses that state's own IC, so the chain
+    # rule composes through the existing derived-parameter DAG (#43) instead of
+    # needing a second differentiator.
+    _ia_state_targets: set[str] = set()
+    _ic_cand: dict[str, object] = {}  # sym → math, for the compound candidates
+    _ic_cand_deps: dict[str, set[str]] = {}  # sym → the states it reads
+    _ic_cand_ar: dict[str, set[str]] = {}  # sym → the constant rule targets it reads
     for j in range(sbml_model.getNumInitialAssignments()):
         ia = sbml_model.getInitialAssignment(j)
         sym = ia.getSymbol()
@@ -4312,22 +4437,92 @@ def _build_model_from_sbml_doc(doc):
         math = ia.getMath()
         if math is None:
             continue
+        _ia_state_targets.add(sym)
         # libsbml: AST_NAME is the only node type for a bare <ci>. Reject
         # operators, numbers, function applications, and AST_NAME_TIME etc.
         if math.getNumChildren() == 0 and math.getType() == libsbml.AST_NAME:
             ref = math.getName()
-            if ref in _param_ids:
+            if ref in _ic_const_ar:
+                # A rule owns the named slot, so linking the IC to it registers
+                # nothing (`add_species_param_ref` drops a non-parameter name).
+                # Its constant expansion is a parameter expression, though.
+                ia_param_expr[sym] = _ic_const_ar[ref]
+            elif ref in _param_ids:
                 ia_single_param_ref[sym] = ref
             elif ref in live_volume_param_comps:
                 ia_param_expr[sym] = _safe_name(ref)
             continue
         names = _ast_name_set(math)
-        if not names or _ast_references_time(math) or not names <= _ic_expr_symbols:
+        if not names or _ast_references_time(math):
             continue
-        try:
-            ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(math, func_defs)
-        except Exception as e:  # pragma: no cover - defensive
-            logger.debug("initialAssignment for %s not lowered for IC sensitivity: %s", sym, e)
+        if not names <= (_ic_expr_symbols | _ic_seed_symbols | _ic_const_ar.keys()):
+            continue
+        if (names & _ic_seed_symbols) and _ast_has_rateof(math, _ic_rateof_names):
+            continue
+        _ic_cand[sym] = math
+        _ic_cand_deps[sym] = names & _ic_seed_symbols
+        _ic_cand_ar[sym] = names & _ic_const_ar.keys()
+
+    # Lower the compound candidates in dependency order, so a state reference
+    # resolves to a symbol that is already declared. Kahn with SBML declaration
+    # order as the tie-break, matching §2's lift; a reference cycle (illegal
+    # SBML) drops out and stays folded.
+    _ic_pending = {k: set(v) for k, v in _ic_cand_deps.items()}
+    _ic_decl_index = {s: i for i, s in enumerate(_ic_cand)}
+    while _ic_pending:
+        _ic_ready = sorted(
+            (k for k, d in _ic_pending.items() if not (d & _ic_pending.keys())),
+            key=lambda k: _ic_decl_index[k],
+        )
+        if not _ic_ready:
+            for k in _ic_pending:
+                logger.debug("initialAssignment for %s not lowered: IC reference cycle", k)
+            break
+        for sym in _ic_ready:
+            del _ic_pending[sym]
+            subs: dict[str, str] = {
+                _ar: f"({_ic_const_ar[_ar]})" for _ar in _ic_cand_ar.get(sym, ())
+            }
+            for dep in _ic_cand_deps[sym]:
+                if dep in ia_single_param_ref:
+                    # That state's IC *is* a parameter; read it straight.
+                    subs[dep] = _safe_name(ia_single_param_ref[dep])
+                elif dep in ia_param_expr:
+                    subs[dep] = _safe_name(f"_ic_{dep}")
+                elif dep in _ia_state_targets:
+                    # It HAS an initialAssignment that did not lower, so its own
+                    # ∂x(0)/∂p is unavailable. Folding it to a number here would
+                    # silently drop that term and answer a partial derivative as
+                    # if it were the whole one — the failure this issue is about.
+                    logger.debug(
+                        "initialAssignment for %s not lowered: it reads %s, "
+                        "whose own initial condition did not lower",
+                        sym,
+                        dep,
+                    )
+                    break
+                elif dep in _species_ic_expr:
+                    # No initialAssignment of its own, so its t=0 value is what
+                    # its declaration says -- a constant, or its conversion by a
+                    # still-symbolic compartment size (see `_species_ic_expr`).
+                    subs[dep] = _species_ic_expr[dep]
+                else:
+                    logger.debug(
+                        "initialAssignment for %s not lowered: it reads %s, "
+                        "whose value depends on a writable compartment size",
+                        sym,
+                        dep,
+                    )
+                    break
+            else:
+                try:
+                    ia_param_expr[sym] = _ast_to_exprtk_with_funcdefs(
+                        _ic_cand[sym], func_defs, local_params=subs or None
+                    )
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug(
+                        "initialAssignment for %s not lowered for IC sensitivity: %s", sym, e
+                    )
 
     # (#170) The residue: a section-0 fold of a live size that neither §2 nor the
     # loop above put back on the size. An initial condition still folded, a named
