@@ -165,6 +165,43 @@ push, run via `uv run`) with:
 uv run pre-commit install
 ```
 
+### The suite's artifact caches are its own
+
+A pytest session redirects both of bngsim's content-addressed caches — compiled
+`.so` artifacts and BNG2.pl-generated networks — away from `~/.cache/bngsim` and
+into a directory the suite owns (issue #372). It is `.pytest_cache/d/bngsim/` by
+default, or a per-run temp directory when the cache provider is off
+(`-p no:cacheprovider`, which every CI leg passes). Both the module attribute and
+the env var are set, so subprocesses that import bngsim land there too.
+
+The directory is **persistent**, so runs stay warm: a cold full suite measured
+19m19s against roughly 14m warm. Two consequences worth knowing:
+
+```bash
+uv run python -m pytest python/tests/ --cache-clear   # force a cold-cache run
+```
+
+- `pytest --cache-clear` wipes it, which is the supported way to test a cold
+  compile path across the whole suite;
+- `BNGSIM_TEST_CACHE_DIR=/path` relocates it — node-local scratch, a cache CI
+  restores between runs, or a throwaway directory. It overrides
+  `BNGSIM_CODEGEN_CACHE_DIR` / `BNGSIM_BNGL_CACHE_DIR` for the session rather
+  than deferring to them: exporting those points bngsim's *real* cache somewhere,
+  and the suite has no more business writing there than in `~/.cache`.
+
+Being persistent, it still grows — every `_CODEGEN_CACHE_KEY` change orphans what
+came before it. The difference is that it grows somewhere disposable, under a
+directory `git clean -xdf` and `--cache-clear` both remove, and that
+`bngsim-cache info -C .pytest_cache/d/bngsim/codegen` will tell you how much of
+it your last emitter edit stranded.
+
+A test that needs true isolation — a cold compile, or a cache whose entries it
+counts — still monkeypatches `_codegen.CACHE_DIR` (or `_bngl_loader.CACHE_DIR`) to
+a `tmp_path`, which overrides the session value and restores it afterwards. Do
+that in particular when the test **invents a key**: a fabricated
+`_CODEGEN_CACHE_KEY` or model hash produces an artifact that is orphaned the
+moment it is written, and it must not be written where anything else will see it.
+
 ## Changing generated code
 
 Compiled codegen artifacts are cached under `~/.cache/bngsim/codegen` and keyed by

@@ -109,6 +109,15 @@ def test_memo_invalidates_on_codegen_cache_key_change(
     net = tmp_path / "memo_version.net"
     shutil.copy(simple_decay_net, net)
 
+    # Standing in for another install means patching the DIRECTORY as well as the
+    # key (#372). Patching only the key sends the compile below into whatever
+    # cache is live, under a key no install has ever had, and the .so outlives the
+    # process as a row in someone's `bngsim-cache info`. Captured first so the
+    # assertion at the end can prove nothing landed there.
+    session_cache = cg.CACHE_DIR
+    cache = tmp_path / "codegen"
+    monkeypatch.setattr(cg, "CACHE_DIR", cache)
+
     cg._PREPARE_CODEGEN_MEMO.clear()
     cg.prepare_codegen(str(net))
 
@@ -124,3 +133,10 @@ def test_memo_invalidates_on_codegen_cache_key_change(
 
     cg.prepare_codegen(str(net))
     assert hash_calls["n"] == 1  # stale-key memo entry was ignored
+
+    # The fabricated key produced a real artifact — under the patched dir, and
+    # nowhere else. ``_KEY_FIELD_UNSAFE`` maps the ``_`` in "_bump" to ``-``, so
+    # the name carries "-bump"; that spelling is what showed up in a developer's
+    # cache report and is what this asserts is now absent from the live cache.
+    assert list(cache.glob("*-bump*")), "the bumped-key compile produced no artifact"
+    assert not list(session_cache.glob("*-bump*")), "fabricated key leaked into the live cache"
