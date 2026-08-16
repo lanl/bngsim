@@ -65,9 +65,15 @@ and lives in [`docs/`](docs/):
   [events](docs/user-guide/events.md),
   [sensitivities](docs/user-guide/sensitivities.md),
   [steady state](docs/user-guide/steady-state.md),
+  [compiled RHS and its artifact cache](docs/user-guide/codegen.md),
   [SBML/SED-ML/OMEX interchange](docs/user-guide/interchange.md)
 - Reference — [API](docs/reference/api.md) · [expression language](docs/reference/expressions.md)
 - [Architecture](docs/about/architecture.md) · [benchmarks & validation](docs/about/benchmarks.md)
+
+The package ships one console script, `bngsim-cache` (equivalently
+`python -m bngsim.cache`): it reports on and prunes the compiled-artifact cache that
+codegen fills, which nothing empties on its own. See
+[managing the artifact cache](docs/user-guide/codegen.md#managing-the-artifact-cache).
 
 ## Benchmarks & validation
 
