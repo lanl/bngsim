@@ -307,6 +307,17 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **`run(sample_times=…)` is documented for what it actually does (issue #368).**
+  The docstring asked for "at least 3 values" where the code takes 2, and read as
+  though the argument were an output grid laid over `t_span`. It overrides
+  `t_span` outright, so its *first* entry is the integration start:
+  `sample_times=[5.0, 10.0]` integrates `[5, 10]` from the model's initial
+  conditions and never sees `[0, 5]`. That matters most to the one job this
+  argument is reached for — placing output points around a feature so a finite
+  difference can be read off them — because a grid that opens past `t = 0`
+  silently compares two runs of a different problem. Docstring only; no
+  behaviour changes.
+
 - **A power law whose base reaches zero no longer NaNs its own derivative
   (issue #351).** SymPy differentiates `u^n` as `n·u^n·u'/u` and leaves the two
   `Pow`s uncombined — with a symbolic exponent and a base of unknown sign,

@@ -2748,8 +2748,15 @@ class Simulator:
             Number of output time points (including t_start).
         sample_times : list[float], optional
             Explicit output time points. When provided, overrides
-            ``t_span`` and ``n_points``. Must contain at least 3
+            ``t_span`` and ``n_points``. Must contain at least 2
             values. Values are sorted automatically.
+
+            The override covers the interval, not just the output
+            grid: the run starts at the first sample time and ends at
+            the last, so ``sample_times=[5.0, 10.0]`` integrates over
+            ``[5, 10]`` from the model's initial conditions and never
+            sees ``[0, 5]``. Pass the start time as the first entry
+            whenever the pre-history matters.
         seed : int, optional
             Random seed for stochastic methods. When omitted (or
             ``None``), bngsim draws a fresh seed from system entropy
