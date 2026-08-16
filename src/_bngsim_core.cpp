@@ -203,6 +203,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
         .def_readwrite("n_err_test_fails", &bngsim::SolverStats::n_err_test_fails)
         .def_readwrite("n_nonlin_iters", &bngsim::SolverStats::n_nonlin_iters)
         .def_readwrite("n_nonlin_conv_fails", &bngsim::SolverStats::n_nonlin_conv_fails)
+        .def_readwrite("n_sens_err_test_fails", &bngsim::SolverStats::n_sens_err_test_fails)
+        .def_readwrite("n_sens_nonlin_conv_fails", &bngsim::SolverStats::n_sens_nonlin_conv_fails)
         .def_readwrite("linear_solver", &bngsim::SolverStats::linear_solver)
         .def_readwrite("n_dense_blas_factorizations",
                        &bngsim::SolverStats::n_dense_blas_factorizations)
@@ -226,6 +228,8 @@ PYBIND11_MODULE(_bngsim_core, m) {
             d["n_err_test_fails"] = s.n_err_test_fails;
             d["n_nonlin_iters"] = s.n_nonlin_iters;
             d["n_nonlin_conv_fails"] = s.n_nonlin_conv_fails;
+            d["n_sens_err_test_fails"] = s.n_sens_err_test_fails;
+            d["n_sens_nonlin_conv_fails"] = s.n_sens_nonlin_conv_fails;
             d["linear_solver"] = s.linear_solver;
             d["steady_state_reached"] = s.steady_state_reached;
             d["steady_state_residual"] = s.steady_state_residual;

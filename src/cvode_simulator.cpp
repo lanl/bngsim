@@ -52,6 +52,7 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1207,6 +1208,10 @@ struct CvodeSimulator::Impl {
         long int nonlin_iters = 0;
         long int nonlin_conv_fails = 0;
         long int err_test_fails = 0;
+        // The sensitivity solve's own counters (issue #384). Banked across
+        // re-inits alongside the state's, for the same reason (#182).
+        long int sens_conv_fails = 0;
+        long int sens_err_test_fails = 0;
 
         void operator+=(const SegmentCounters &o) {
             steps += o.steps;
@@ -1215,6 +1220,8 @@ struct CvodeSimulator::Impl {
             nonlin_iters += o.nonlin_iters;
             nonlin_conv_fails += o.nonlin_conv_fails;
             err_test_fails += o.err_test_fails;
+            sens_conv_fails += o.sens_conv_fails;
+            sens_err_test_fails += o.sens_err_test_fails;
         }
     };
     SegmentCounters closed_segments;
@@ -1401,6 +1408,9 @@ struct CvodeSimulator::Impl {
     // Copy CVODE's counters into the Result's solver_stats block. Used by the
     // warm path too — the two recorded the same counters in the same order.
     void record_solver_stats(void *cvode_mem, SUNLinearSolver ls, Result &result);
+
+    // Issue #384: refuse a forward-sensitivity tensor that came back non-finite.
+    static void refuse_nonfinite_sensitivities(const Result &result);
 
     // Publish the final state (and the forward-sensitivity carry-over seed)
     // back onto the model for the next action in a multi-action sequence.
@@ -3255,6 +3265,11 @@ CvodeSimulator::Impl::SegmentCounters CvodeSimulator::Impl::read_segment_counter
     CVodeGetNumNonlinSolvIters(cvode_mem, &c.nonlin_iters);
     CVodeGetNumNonlinSolvConvFails(cvode_mem, &c.nonlin_conv_fails);
     CVodeGetNumErrTestFails(cvode_mem, &c.err_test_fails);
+    // Both return CV_NO_SENS on a run without forward sensitivities, leaving
+    // the fields at 0 — which is the honest answer there, so the flag is
+    // deliberately not checked.
+    CVodeGetSensNumNonlinSolvConvFails(cvode_mem, &c.sens_conv_fails);
+    CVodeGetSensNumErrTestFails(cvode_mem, &c.sens_err_test_fails);
     return c;
 }
 
@@ -3280,6 +3295,8 @@ void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver 
     result.solver_stats().n_nonlin_iters = static_cast<int>(total.nonlin_iters);
     result.solver_stats().n_nonlin_conv_fails = static_cast<int>(total.nonlin_conv_fails);
     result.solver_stats().n_err_test_fails = static_cast<int>(total.err_test_fails);
+    result.solver_stats().n_sens_nonlin_conv_fails = static_cast<int>(total.sens_conv_fails);
+    result.solver_stats().n_sens_err_test_fails = static_cast<int>(total.sens_err_test_fails);
     result.solver_stats().linear_solver = linear_solver_used;
     // GH #132: BLAS dgetrf factorization count for this run (0 unless LAPACK-dense
     // and the adaptive K gate was crossed). `ls` is the caller's linear solver —
@@ -3288,6 +3305,95 @@ void CvodeSimulator::Impl::record_solver_stats(void *cvode_mem, SUNLinearSolver 
         const long bc = lapack_dense_blas_factor_count(ls);
         result.solver_stats().n_dense_blas_factorizations = bc > 0 ? static_cast<int>(bc) : 0;
     }
+
+    // Checked HERE because this is the one point the cold and warm run paths
+    // share; a second call site is a place the two can drift apart.
+    refuse_nonfinite_sensitivities(result);
+}
+
+// ─── Non-finite forward sensitivities (issue #384) ───────────────────────────
+//
+// CVODES can return CV_SUCCESS with NaN in the sensitivity vectors. The error
+// test is a comparison, and every comparison against NaN is false, so a column
+// that has already gone non-finite is not rejected by the machinery whose job
+// is to reject it — the run reports a clean solve and hands back a poisoned
+// gradient. BIOMD0000000480 is the case: the `parameter_63` column tracks the
+// reference to six significant figures for 963 of 1001 output points and then
+// all 41 of its rows go NaN together, with n_err_test_fails == 0.
+//
+// Refuse rather than warn. `Result.gradient` reduces the tensor, so one NaN
+// cell poisons a scalar an optimizer will happily step on, and the failure is
+// silent all the way to a wrong fit. Every NaN reaching here is a numerical
+// failure: the DECLARED NaN rows — an assignmentRule species whose own output
+// sensitivity codegen refuses (#198/#221) — are written by the Python layer
+// afterwards, so at this point the tensor should be finite everywhere.
+void CvodeSimulator::Impl::refuse_nonfinite_sensitivities(const Result &result) {
+    const int n_p = result.n_sens_params();
+    const int n_ic = result.n_sens_ic_species();
+    if (n_p <= 0 && n_ic <= 0) {
+        return;
+    }
+    const int n_t = result.n_times();
+    const int ns = result.n_species();
+
+    // Report the FIRST bad output point and every column implicated there: the
+    // time localizes the event for a bisection, and the column names what to
+    // drop to get a usable run out of the same model.
+    auto scan = [&](const std::vector<double> &data, int n_cols,
+                    const std::vector<std::string> &col_names, const char *axis) {
+        if (n_cols <= 0 || data.empty()) {
+            return;
+        }
+        const size_t stride = static_cast<size_t>(ns) * static_cast<size_t>(n_cols);
+        for (int ti = 0; ti < n_t; ++ti) {
+            std::set<int> bad_cols;
+            size_t n_bad = 0;
+            for (int si = 0; si < ns; ++si) {
+                for (int ci = 0; ci < n_cols; ++ci) {
+                    const size_t k = static_cast<size_t>(ti) * stride +
+                                     static_cast<size_t>(si) * static_cast<size_t>(n_cols) +
+                                     static_cast<size_t>(ci);
+                    if (k < data.size() && !std::isfinite(data[k])) {
+                        bad_cols.insert(ci);
+                        ++n_bad;
+                    }
+                }
+            }
+            if (bad_cols.empty()) {
+                continue;
+            }
+            std::ostringstream os;
+            os << "Forward sensitivity returned a non-finite value: " << n_bad
+               << " cell(s) at the first affected output point t="
+               << (ti < static_cast<int>(result.time().size()) ? result.time()[ti] : 0.0)
+               << " (index " << ti << " of " << n_t << "), in " << axis << " ";
+            bool first = true;
+            int shown = 0;
+            for (int ci : bad_cols) {
+                if (shown++ == 6) {
+                    os << ", … (" << (bad_cols.size() - 6) << " more)";
+                    break;
+                }
+                os << (first ? "'" : ", '")
+                   << (ci < static_cast<int>(col_names.size()) ? col_names[ci] : std::to_string(ci))
+                   << "'";
+                first = false;
+            }
+            os << ". The state trajectory and the solver's own counters can both be clean "
+                  "when this happens — CVODES' error test cannot reject a value that is "
+                  "already NaN, because every comparison against NaN is false. Check "
+                  "n_sens_err_test_fails in Result.solver_stats for what the sensitivity "
+                  "solve actually rejected. A tighter atol often resolves it, and "
+                  "BNGSIM_SENS_ERROR_FLOOR=0 disables the issue #177 tolerance floor, whose "
+                  "relaxation is what admits the blow-up on the models seen so far "
+                  "(GH #384).";
+            throw std::runtime_error(os.str());
+        }
+    };
+
+    scan(result.sensitivity_data(), n_p, result.sens_param_names(), "parameter column");
+    scan(result.sensitivity_ic_data(), n_ic, result.sens_ic_species_names(),
+         "initial-condition column");
 }
 
 // ─── Write final state back to model ─────────────────────────────────────────
