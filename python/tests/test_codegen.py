@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -394,6 +395,51 @@ class TestCompileConfig:
         assert so_path.exists()
         # No temp .c or temp .so left behind.
         assert list(tmp_path.glob("rhs_feedfacefeedface.*.c")) == []
+
+    def test_msvc_sidecars_are_cleaned_up_after_a_successful_compile(self, monkeypatch, tmp_path):
+        """lanl/bngsim#362 — ``cl /LD /Fe:<out>`` writes an import library and an
+        export file beside the DLL, and the cleanup named only the DLL.
+
+        Unlike the shard/stray-``.c`` leaks of #205 this does not need an interrupted
+        compile: on the success path the DLL has already been ``os.replace``d away, so
+        its ``unlink`` is a no-op and the pair stays — one per *successful* Windows
+        compile, forever, under a name nothing will look at again.
+
+        Driven by a stub that creates the sidecars rather than gated on Windows, so
+        the contract is asserted on every platform. A Windows-only test would run on
+        one leg of CI and prove nothing about the code path on the others.
+
+        The stub reads the output path out of the command in **both** shapes, which
+        is not incidental tidiness: the first draft assumed gcc's ``-o <path>`` and
+        died with ``ValueError: '-o' is not in list`` on windows-latest — a test
+        about an MSVC leak, failing on MSVC, for hard-coding the other compiler's
+        argv. On Windows this now runs against real ``cl``, so the assertion covers
+        the sidecars ``cl`` itself writes and not only the stub's.
+        """
+        from bngsim import _codegen as c
+
+        monkeypatch.setattr(c, "CACHE_DIR", tmp_path)
+        real_run = c._run_compile
+
+        def compile_output(cmd):
+            """The ``-o``/``/Fe:`` output path, whichever this platform's cc uses."""
+            if "-o" in cmd:
+                return Path(cmd[cmd.index("-o") + 1])
+            fe = next(tok for tok in cmd if tok.startswith("/Fe:"))
+            return Path(fe[len("/Fe:") :])
+
+        def run_and_litter(cmd, **kwargs):
+            result = real_run(cmd, **kwargs)
+            out = compile_output(cmd)
+            for suffix in (".lib", ".exp"):
+                out.with_suffix(suffix).write_bytes(b"MSVC leftovers")
+            return result
+
+        monkeypatch.setattr(c, "_run_compile", run_and_litter)
+        so_path = c.compile_rhs(generate_rhs_c(os.path.join(DATA, "simple_decay.net")), "5111dea0")
+
+        assert so_path.exists(), "the compile itself still has to succeed"
+        assert sorted(p.name for p in tmp_path.iterdir()) == [so_path.name]
 
 
 class TestCorrectness:

@@ -534,27 +534,80 @@ def _linear_multiple_quotient(base, sym, sp):
     return None
 
 
+def _power_denominator_quotient(base, denom, sp):
+    """The factor ``base^n / denom`` leaves behind when the division cancels into
+    the exponent — i.e. ``q`` such that ``base^n / denom == q · base^(n-1)`` — or
+    ``None`` when no such ``q`` exists.
+
+    Two shapes qualify, and they are not the same argument.
+
+    ``denom`` **is the base itself** (issue #351). Then ``q = 1``, unconditionally
+    and for any ``denom`` whatever — a symbol, a difference, a whole rational
+    sub-expression. This needs no reasoning about ``denom``'s form because
+    ``u^n/u == u^(n-1)`` is an identity wherever both sides are defined, and it is
+    the shape ``sp.diff`` produces for *every* power law: differentiating ``u^n``
+    gives ``n·u^n·u'/u``, and sympy leaves the two ``Pow``s uncombined (with a
+    symbolic exponent and a base of unknown sign, ``u^a·u^b = u^(a+b)`` crosses a
+    branch cut it will not assume). ``as_powers_dict`` on the very same ``Mul``
+    reports the combined exponent, so the information is there; nothing acts on it.
+
+    ``denom`` **is a symbol the base is a linear multiple of** (GH #96). Then
+    ``q = base/denom``, computed structurally by
+    :func:`_linear_multiple_quotient` — ``(c·x)^n / x`` → ``c·(c·x)^(n-1)``.
+
+    The first case is checked first and costs one structural comparison, which
+    matters: it is by far the more common of the two, and it is the one the
+    second case cannot reach. ``_linear_multiple_quotient`` requires ``denom`` to
+    be a ``Symbol``, so a base like ``A4 - A4_star`` divided by *itself* fell
+    through the whole function untouched — which is issue #351.
+    """
+    if base == denom:
+        return sp.S.One
+    if denom.is_Symbol and base.has(denom):
+        return _linear_multiple_quotient(base, denom, sp)
+    return None
+
+
 def _remove_removable_power_denominators(expr):
-    """Rewrite ``base(x)^n / x`` terms when ``base(x)`` is a linear multiple of
-    ``x``.
+    """Rewrite ``base^n / d`` to ``q · base^(n-1)`` wherever the division cancels
+    into the exponent (:func:`_power_denominator_quotient`).
 
-    SymPy often differentiates Hill/power laws as ``n*base^n/base * dbase/dx``.
-    For rate-law bases such as ``x/K`` or plain ``x``, that can print as
-    ``(x/K)^n/x``. Mathematically the singularity is removable for the
-    non-negative concentration domain BNGsim evaluates, but the raw emitted
-    ExprTk/C form produces ``0/0`` at zero-valued initial conditions. This local
-    rewrite avoids a global ``simplify()`` pass on large BioModels.
+    SymPy differentiates every power law as ``n·base^n/base · dbase/dx`` and does
+    not combine the two ``Pow``s. Wherever ``base`` reaches zero that prints as
+    ``pow(u, n) / u`` → ``0/0`` = NaN, at a point where the law's own value is
+    finite and the true derivative is an ordinary number. One NaN in ``∂f/∂p``
+    poisons that parameter's whole sensitivity column, or defeats the corrector
+    outright when it is the only column — ``BIOMD0000000703`` fails
+    ``CV_CONV_FAILURE`` at ``t=0`` on exactly this, through
+    ``(A4 − A4_star)^nA4`` with ``A4(0) = A4_star = 1.0`` (issue #351). The plain
+    ODE run succeeds at the same tolerances; only the differentiated form fails.
 
-    The quotient ``base/sym`` is taken **structurally**
-    (:func:`_linear_multiple_quotient`), never with ``sp.cancel`` (GH #96). That
-    call was the entire cost of this function, and it was cost with nothing to
-    show for it: it ran on every ``Pow`` base merely *containing* ``sym`` —
-    including whole rational ``Add`` sub-expressions, where it performs full
-    multivariate rational normalisation and then, because the result still
-    contains ``sym``, the caller discards it and moves on. On
-    ``BIOMD0000000217``'s ``∂vdead/∂l1`` one such call ran for minutes. The
-    structural test answers the same question in microseconds, for exactly the
-    set of bases the rewrite can actually use.
+    **The rewrite is the correct limit, not a papered-over singularity, and it is
+    correct without a case split on the exponent.** ``base^(n-1)`` evaluated in
+    IEEE arithmetic at ``base == 0`` gives ``0`` for ``n > 1``, ``1`` for ``n = 1``
+    (``pow(0,0)`` is 1 by C99) and ``+inf`` for ``n < 1`` — which is the true value
+    of ``n·u^(n-1)`` in each case, *including* the infinite one. That is why this
+    needs no domain guard and no refusal, unlike the ``log``/fractional-power
+    family (GH #310/#317/#333/#336): there the state is outside the law's domain
+    and no finite answer exists, whereas here the answer exists and the emitter was
+    throwing it away by not cancelling. The one residue is a run-time ``n == 0``,
+    where ``0·0^(-1)`` is NaN and the truth is ``0`` — but that is NaN today too
+    (``0·0^0/0``), so nothing regresses, and a literal ``n = 0`` never reaches here
+    because sympy folds ``u^0`` to ``1`` at build time.
+
+    Applied through the one chokepoint both emitters share, so the RHS Jacobian
+    (:func:`sympy_to_exprtk`) and the compiled ``∂f/∂p`` (:func:`sympy_to_c`) get
+    the same arithmetic — a rewrite on one path only would be an A/B of two
+    different functions.
+
+    Everything stays **structural**, never ``sp.cancel`` (GH #96). That call was
+    the entire cost of this function, and it was cost with nothing to show for it:
+    it ran on every ``Pow`` base merely *containing* ``sym`` — including whole
+    rational ``Add`` sub-expressions, where it performs full multivariate rational
+    normalisation and then, because the result still contains ``sym``, the caller
+    discards it and moves on. On ``BIOMD0000000217``'s ``∂vdead/∂l1`` one such call
+    ran for minutes. The structural tests answer the same question in microseconds,
+    for exactly the set of bases the rewrite can actually use.
     """
     import sympy as sp
     from sympy.core.traversal import bottom_up
@@ -568,17 +621,20 @@ def _remove_removable_power_denominators(expr):
         while changed:
             changed = False
             for denom_i, factor in enumerate(factors):
-                if not (isinstance(factor, sp.Pow) and factor.exp == -1 and factor.base.is_Symbol):
+                if not (isinstance(factor, sp.Pow) and factor.exp == -1):
                     continue
 
-                sym = factor.base
+                denom = factor.base
                 for power_i, power_factor in enumerate(factors):
                     if power_i == denom_i or not isinstance(power_factor, sp.Pow):
                         continue
                     base, exp = power_factor.base, power_factor.exp
-                    if exp == -1 or not base.has(sym):
+                    # Skip a second denominator: pairing 1/u with 1/u would be a
+                    # correct u^-2 and no help, and it lets the loop consume the
+                    # very factor the outer iteration is standing on.
+                    if exp == -1:
                         continue
-                    quotient = _linear_multiple_quotient(base, sym, sp)
+                    quotient = _power_denominator_quotient(base, denom, sp)
                     if quotient is None:
                         continue
 

@@ -4718,6 +4718,30 @@ def _compile_sharded(
         shutil.rmtree(work, ignore_errors=True)
 
 
+#: What ``cl /LD /Fe:<out>`` writes *beside* its DLL — an import library and an
+#: export file, named from the ``/Fe:`` base and landing in the cache directory.
+_MSVC_SIDECARS = (".lib", ".exp")
+
+
+def _unlink_msvc_sidecars(tmp_so_path: Path) -> None:
+    """Remove the import library and export file MSVC leaves beside a temp DLL
+    (lanl/bngsim#362).
+
+    Unlike the shard directories and stray ``.c`` of issue #205, this leak does not
+    need an interrupted compile: on the success path the DLL has already been
+    ``os.replace``d into its cache name, so the ``tmp_so_path.unlink`` beside this
+    call is a no-op and the pair stays — one per *successful* Windows compile,
+    forever, under a process-unique name nothing will ever look at again.
+
+    A no-op everywhere else: the names are only ever created by the MSVC branch of
+    :func:`_build_compile_cmd`, and ``missing_ok`` covers every other platform and
+    the sharded path, which links through its own scratch directory.
+    """
+    for suffix in _MSVC_SIDECARS:
+        with contextlib.suppress(OSError):
+            tmp_so_path.with_suffix(suffix).unlink(missing_ok=True)
+
+
 def compile_rhs(c_source: str, model_hash: str) -> Path:
     """Compile C source to shared library, cached by model hash.
 
@@ -4819,6 +4843,7 @@ def compile_rhs(c_source: str, model_hash: str) -> Path:
         ) from err
     finally:
         tmp_so_path.unlink(missing_ok=True)
+        _unlink_msvc_sidecars(tmp_so_path)
 
     logger.info("Compiled codegen lib: %s", so_path)
     return so_path
