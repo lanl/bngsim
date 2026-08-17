@@ -114,15 +114,42 @@ INVALID_REFERENCE: dict[str, dict] = {
     # so there is nothing left to dispose of, and an entry here would be dead
     # weight the runner would only flag STALE.
     #
-    # One thread is deliberately left hanging rather than buried: re-measured on
-    # post-#383 main, a 1% SBML-TEXT perturbation of v12_k1 / v9_k1 / Saci1181KO /
-    # v1a_v / v3_k1 moves bngsim's trajectory by EXACTLY 0 over the manifest
-    # horizon (t 0->100, 101 points) — and AMICI's by exactly 0 too, which is why
-    # they now agree. #380 reports RoadRunner moving 0.069 / 0.0098 / 0.089 /
-    # 0.089 / 0.089 for those same writes. Two engines that share no code agreeing
-    # on exact zero usually points at the model, not at a shared bug, but it is
-    # not settled here: RoadRunner is not in this environment and adjudicating it
-    # is a third-engine question, not a disposition. Filed separately.
+    # The exact zero is the MODEL's answer, not a shared engine gap (issue #387,
+    # which this NOTE used to leave open pending a third engine). Run on a venv
+    # that has RoadRunner, the 1% SBML-TEXT perturbation moves RoadRunner by
+    # exactly 0 as well — so all three engines agree, and #380's RoadRunner
+    # column (0.069 / 0.0098 / 0.089 / 0.089 / 0.089) does not reproduce. It is
+    # not just those five parameters: all 32 free parameters (27 global, 5
+    # kineticLaw-local) move both engines by 0, bar 1.11e-16 — one ulp — on
+    # Saci1181KO / v7b_k1 / v17_k1.
+    #
+    # The model cannot move. Every one of its nine <initialAssignment>s sets a
+    # species' first-order decay constant to that species' TOTAL production flux
+    # at t=0 over its own initial concentration (k4 = v3_k1*saci1181/Saci1181;
+    # k11b = v12_k1*Saci1181KO*Saci1181*AbfR_P/AbfR; and so on), so t=0 is an
+    # exact fixed point BY CONSTRUCTION for any values of the production
+    # parameters — and a fixed point stays one for all t. Scaling a production
+    # flux scales the matched decay constant identically. For k11b the cancelling
+    # pair is visible in the reactions: v11b (AbfR->AbfR_P at k11b*AbfR) against
+    # v12 (AbfR_P->AbfR at v12_k1*Saci1181KO*Saci1181*AbfR_P), and k11b is
+    # DEFINED as the ratio that makes the two identical.
+    #
+    # The control, because a sweep of zeros on its own proves only that nothing
+    # was measured: Starvation ships at 0 — which is also why a multiplicative
+    # perturbation OF it reads zero, and why the five kineticLaw-local parameters
+    # do, all of them being in the Starvation-gated v1c / v5b / v11. At
+    # Starvation=1 the model comes alive (trajectory drift 213.9, the two engines
+    # agreeing to 1.4e-6 relative) and those same five writes move BOTH engines
+    # by identical amounts: 0.205 / 0.276 / 0.987 / 5.99 / 4.93.
+    #
+    # So #383 moved bngsim off a wrong non-zero column onto a right zero one.
+    # #380's RoadRunner column is most likely a RUNTIME write (rr[pid] = ...)
+    # rather than a text edit: RoadRunner does not re-evaluate <initialAssignment>
+    # on a runtime write, so k11b keeps its base value while v12's flux takes the
+    # perturbed one, the cancellation breaks, and the trajectory moves. A 2%
+    # runtime write reproduces all five reported numbers to within 5% and in the
+    # right proportions. That is the mechanism, not a confirmed reconstruction —
+    # the exact recipe was not recovered, and nothing here depends on it.
     "MODEL2105110001:sens": {
         "issue": "GH #380",
         "max_rel": 1.0,
