@@ -229,8 +229,19 @@ class NetworkModel {
     // are cached by source text and, like the trigger-residual cache, are NOT
     // copied by clone() — an expression id means something else in another
     // evaluator. Returns nullptr and sets `why` when the condition is not one
-    // this machinery can locate and differentiate: a conjunction, a negation, an
-    // equality, or a comparison that reads no live state at all.
+    // this machinery can locate and differentiate: a conjunction, a negation, a
+    // comparison one of whose sides is itself a comparison (its residual would be
+    // a difference of two booleans — a step, with no gradient to root on), or a
+    // comparison that reads no live state at all.
+    //
+    // An EQUALITY is admitted here where event_trigger_residual_expr() above
+    // refuses it (issue #381). The two want different things from the same text:
+    // an event needs a rising edge, which `x == c` does not have, while a switch
+    // needs the surface its branch can change across, which for `x == c` is the
+    // `x − c = 0` that `x < c` names too. A lone equality then measures a zero
+    // branch gap at that root and applies no jump, and a redundant one —
+    // MODEL2003190004 spells `APC <= 0.2` as `(APC == 0.2) or (APC < 0.2)` —
+    // resolves to the residual its sibling atom already registered.
     struct StateSwitch {
         // Compiled `(lhs)-(rhs)`. Rooted on directly — a smooth residual, not
         // the boolean-minus-0.5 step the event and GH #72 roots use, so CVODE

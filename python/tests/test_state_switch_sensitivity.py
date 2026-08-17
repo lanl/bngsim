@@ -255,21 +255,33 @@ class TestTheResidual:
         assert residual and not why
         assert "X" in residual and "1" in residual
 
-    def test_two_spellings_of_one_crossing_share_a_residual(self, tmp_path):
+    @pytest.mark.parametrize("spelling", ["X<=1", "X==1", "X!=1"])
+    def test_spellings_of_one_crossing_share_a_residual(self, tmp_path, spelling):
         """The dedup key. ``X<1`` and ``X<=1`` are the same surface, and
         registering both would put two roots on one crossing — which the solver
         then refuses as an ambiguous simultaneous pair. Orientation is free for
-        the same reason: ``dt*/dθ`` is a ratio of two derivatives of ``g``."""
+        the same reason: ``dt*/dθ`` is a ratio of two derivatives of ``g``.
+
+        The equality spellings join them at issue #381. ``X == 1`` is not a
+        *branch interval* — a continuous trajectory is on it for an instant —
+        but the surface bounding that instant is still ``X − 1 = 0``, which is
+        where ``X < 1`` changes branch too. Reading it as one crossing is what
+        lets ``(X == 1) or (X < 1)``, the SBML ``<or/>``-of-``<eq/>``-and-``<lt/>``
+        spelling of ``X <= 1``, register the one root its two atoms name
+        (MODEL2003190004). Which side of that surface each spelling is true on
+        the core reads by evaluating f there, never from the operator."""
         core = _model(tmp_path)._core
-        assert core.state_switch_residual("X<1")[0] == core.state_switch_residual("X<=1")[0]
+        assert core.state_switch_residual("X<1")[0] == core.state_switch_residual(spelling)[0]
 
     @pytest.mark.parametrize(
         ("cond", "fragment"),
         [
-            ("X==1", "equality"),
             ("(X<1)&&(X>0)", "combines conditions"),
             ("not(X<1)", "combines conditions"),
             ("X", "not a relational comparison"),
+            ("X==1==1", "chains more than one comparison"),
+            ("(X<1)!=(rho<delta)", "itself a comparison"),
+            ("(X<1)<(rho<delta)", "itself a comparison"),
         ],
     )
     def test_what_cannot_be_rooted_says_why(self, tmp_path, cond, fragment):

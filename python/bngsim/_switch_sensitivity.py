@@ -844,11 +844,14 @@ class UncompensatedCrossingReason(str):
     ``<parameter>`` — has no crossing in the run window to compensate, so it too
     is admitted rather than declined (:func:`condition_cannot_cross`). What is
     left in this class is the crossing nothing compensates — a comparison inside
-    a call argument, an equality, a comparison outside an ``if()`` head, or a
-    clock threshold that does not reduce to a constant. A conjunction is not one of
-    them, and neither is a negation: :func:`_split_logical_atoms` reduces both to
-    the surfaces underneath, so ``not((X<hi) and (X>lo))`` is admitted on ground
-    2 exactly as ``(X<hi) and (X>lo)`` is (issue #234).
+    a call argument, a comparison outside an ``if()`` head, or a clock threshold
+    that does not reduce to a constant. A conjunction is not one of them, and
+    neither is a negation: :func:`_split_logical_atoms` reduces both to the
+    surfaces underneath, so ``not((X<hi) and (X>lo))`` is admitted on ground 2
+    exactly as ``(X<hi) and (X>lo)`` is (issue #234). Nor is an *equality* over
+    live state, since issue #381: ``X == 1`` bounds its own true-set with the
+    surface ``X − 1 = 0``, which is the one ``X < 1`` names, so it resolves to
+    the same residual and is claimed by the same root.
 
     A ``str`` subclass rather than a second return value because the reason is
     cached, stored in dicts and formatted at half a dozen sites between here and
@@ -882,6 +885,35 @@ class DeclinedAtMovingCrossingReason(UncompensatedCrossingReason):
     """
 
     __slots__ = ()
+
+
+# `==`, `!=` and ExprTk's bare `=`, at paren depth 0. Longest-first so `<=` and
+# `>=` are never read as a bare `=`, and `!=` is never read as a negation.
+_EQUALITY_OP = re.compile(r"==|!=|(?<![<>=!])=(?!=)")
+
+
+def is_equality_atom(atom: str) -> bool:
+    """True when *atom*'s own comparison is an equality rather than an ordering.
+
+    Read at depth 0, the same level :func:`_relational_split_op` splits at, so an
+    equality buried inside a call argument does not count as this atom's operator.
+    """
+    depth = 0
+    i = 0
+    while i < len(atom):
+        c = atom[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif depth == 0:
+            m = _RELATIONAL.match(atom, i)
+            if m is not None:
+                return _EQUALITY_OP.fullmatch(m.group(0)) is not None
+            if _EQUALITY_OP.match(atom, i) is not None:
+                return True
+        i += 1
+    return False
 
 
 def state_switch_residual(core, atom: str) -> str:
@@ -1315,6 +1347,8 @@ def state_switch_conditions(core, ctx=None) -> list[str]:
         for atom in _iter_condition_atoms(flat):
             if clock_crossing_compensated(atom, scope):
                 continue  # issue #48's crossing; jumping it here would double it
+            if is_equality_atom(atom):
+                continue  # measure-zero: rooting on it would MAKE the branch (below)
             residual = state_switch_residual(core, atom)
             if residual and residual not in seen_residual:
                 seen_residual.add(residual)
@@ -1420,7 +1454,11 @@ def uncompensated_condition_reason(
        silently skip is no better than an uncompensated state threshold here.
     2. :func:`state_switch_residual` splits it into a residual over live state,
        which is what :func:`state_switch_conditions` hands the solver to root on
-       and jump at.
+       and jump at. Since issue #381 an *equality* splits too: ``X == 1`` is
+       satisfied only on the surface ``X − 1 = 0``, which is where ``X < 1``
+       changes branch as well, so the two spell one crossing and share one root.
+       (The event path still refuses an equality, which needs a rising edge
+       rather than a surface — see ``NetworkModel::state_switch``.)
     3. :func:`condition_cannot_cross` finds it written over run-constants alone
        (``0>0``, and equally ``CRRFLX>1e-07`` for a frozen ``CRRFLX``), so it
        holds one truth value for the whole run and never crosses (issue #382).
@@ -1472,8 +1510,21 @@ def uncompensated_condition_reason(
             # well — is claimed by exactly one of the two.
             if clock_crossing_compensated(atom, scope):
                 continue
-            # Ground 2 — issue #150 roots on this crossing and jumps it.
-            if state_switch_residual(scope.core, atom):
+            # Ground 2 — an equality over live state selects no branch over any
+            # INTERVAL, so there is no crossing to compensate. Asked before
+            # ground 3 and separately from it, because nothing roots on it:
+            # `state_switch_conditions` skips it for the reason spelled out
+            # there, and admitting it under ground 3's description would claim a
+            # jump that is never applied. The residual is still required to
+            # resolve, which is what rejects an equality between run-constants
+            # (issue #382's ground, not this one) and one whose sides are
+            # themselves comparisons (a boolean difference, whose true-set IS an
+            # interval).
+            if is_equality_atom(atom):
+                if state_switch_residual(scope.core, atom):
+                    continue
+            # Ground 3 — issue #150 roots on this crossing and jumps it.
+            elif state_switch_residual(scope.core, atom):
                 continue
             atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
             # Ground 3 — a comparison over run-constants holds one truth value
@@ -1506,8 +1557,8 @@ def _not_a_clock_threshold(
     Reached only after :func:`state_switch_residual` has already declined it, so
     the crossing is neither a clock threshold issue #48 stops at nor a state
     threshold issue #150 roots on: a logical the splitter could not reduce (one
-    buried in a call argument, say), an equality, a comparison whose residual
-    will not compile. A plain conjunction or negation is *not* one of these —
+    buried in a call argument, say), a comparison whose residual will not
+    compile. A plain conjunction or negation is *not* one of these —
     :func:`_split_logical_atoms` hands their surfaces over one at a time, so this
     is never reached for them (issues #232, #234). Names the
     parameters the atom carries when it has any — a *fitted* threshold is the
@@ -2012,7 +2063,7 @@ def compute_switch_time_sens(
             + ", ".join(f"'{p}'" for p in sorted(unsafe))
             + " is not supported on this model: each moves a detected switch time AND "
             "also reads a condition whose crossing nothing compensates (a "
-            "floor()-periodic schedule or an equality, say). Pinning it against "
+            "floor()-periodic schedule, say). Pinning it against "
             "CVODES' difference-quotient probe (issue #48) would hold that crossing's "
             "dependence on it at a wrong 0, and un-pinning would drag the switch into "
             "the approach and stall (issue #358). bngsim refuses rather than return a "
