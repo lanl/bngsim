@@ -147,7 +147,9 @@ def _only_atom(body: str) -> str:
 class TestTheRule:
     """A condition is admissible on exactly three grounds: it is a recognized
     clock threshold, it is a single comparison over live state whose residual
-    the solver can root on (issue #150), or it names no symbol at all."""
+    the solver can root on (issue #150), or it cannot cross at all because it is
+    written over run-constants (issue #382 — ``0>0``, and equally a comparison
+    between frozen parameters)."""
 
     def test_a_clock_threshold_is_admitted(self, tmp_path):
         terms, reason = _decline(tmp_path, SWITCHED)
@@ -203,6 +205,98 @@ class TestTheRule:
         correctness gain."""
         terms, reason = _decline(tmp_path, _with_law("if(0>0,beta,beta)*I"))
         assert reason is None and terms
+
+    def test_a_comparison_between_run_constants_does_not_block(self, tmp_path):
+        """Issue #382 — the same compile-time constant, spelled with names.
+
+        ``thresh`` is a plain ``# Constant`` parameter, so ``thresh>1e7`` is
+        false at the first step and false at the last: no crossing, nothing to
+        compensate, and the in-branch derivative is the whole story. Refusing it
+        cost four ``MODEL09112*`` corpus models the analytic sensitivity RHS for
+        the WHOLE model, and CVODES' difference quotient — the fallback the
+        refusal hands the solve to — then failed CV_CONV_FAILURE at t=1 on every
+        one of them.
+
+        Asserted in the same breath that NEITHER detector claims it: unlike
+        grounds 1 and 2, an admission here is meant to have nothing behind it,
+        because there is no crossing for anything to be behind."""
+        core = _model(tmp_path, _with_law("if(thresh>1e7,beta,0)*I"))._core
+        terms, reason = cg._functional_dfdp_terms(core, core.codegen_data())
+        assert reason is None and terms
+        assert sw.state_switch_conditions(core) == []
+        records, _pinned = sw.compute_switch_time_sens(core, ["thresh"], 0.0, 100.0)
+        assert records == []
+
+    def test_the_branch_taken_by_a_run_constant_condition_is_the_one_measured(self, tmp_path):
+        """Admitting the condition is only right if the columns it then yields
+        are the derivatives of the branch that actually runs. Asserted
+        numerically, because the emitted term for the *untaken* arm is not
+        absent — it is ``I·1{thresh>1e7}``, the same conditional form a clock
+        threshold's in-branch derivative keeps — so reading the term list cannot
+        tell a correct emission from an inverted one. Running it can.
+
+        ``if(thresh>1e7, gamma, beta)`` takes the ``beta`` arm for the whole run
+        (``thresh`` is 40). So ``∂x/∂beta`` is live and must match a finite
+        difference, while ``∂x/∂gamma`` — through this rate law — and
+        ``∂x/∂thresh`` are exactly zero: no perturbation short of 1e7 moves
+        anything, which is what "the condition cannot cross" means.
+
+        ``gamma`` is also the recovery rate of ``_R2``, so its column is not zero
+        overall; ``I`` is what this compares, and the only route from ``gamma``
+        to ``I`` that this rate law could open is the arm that never runs."""
+        text = _with_law("if(thresh>1e7,gamma,beta)*I")
+        model = _model(tmp_path, text)
+        cols = ["beta", "gamma", "thresh"]
+        run = bngsim.Simulator(model, method="ode", sensitivity_params=cols).run(
+            t_span=(0.0, 6.0), n_points=13, rtol=1e-10, atol=1e-12
+        )
+        s = np.asarray(run.sensitivities)  # (n_t, n_species, n_param)
+        assert np.all(np.isfinite(s))
+
+        # `thresh` moves nothing at all: it enters f only through a condition
+        # that is false throughout, and there is no crossing whose jump could
+        # carry it.
+        assert np.max(np.abs(s[:, :, cols.index("thresh")])) == 0.0
+
+        # A finite difference of the model's own trajectory, for the arm that
+        # does run and for the one that does not.
+        def traj(name=None, value=None):
+            m = _model(tmp_path, text, name="fd.net")
+            if name is not None:
+                m.set_param(name, value)
+            r = bngsim.Simulator(m, method="ode").run(
+                t_span=(0.0, 6.0), n_points=13, rtol=1e-10, atol=1e-12
+            )
+            return np.asarray(r.species)
+
+        i_sp = list(model.species_names).index("person(state~I)")
+        for name, h in (("beta", 1e-8), ("thresh", 1.0)):
+            p0 = model.get_param(name)
+            fd = (traj(name, p0 + h) - traj(name, p0 - h))[:, i_sp] / (2 * h)
+            col = s[:, i_sp, cols.index(name)]
+            scale = max(np.max(np.abs(fd)), np.max(np.abs(col)), 1e-30)
+            assert np.max(np.abs(col - fd)) / scale < 1e-5, name
+
+    def test_a_condition_over_a_functions_slot_is_not_a_run_constant(self, tmp_path):
+        """The trap the run-constant test has to survive.
+
+        A model *function* also names a parameter **slot** (issues #227, #266),
+        and ``evaluate_functions()`` rewrites that slot from the function's own
+        expression before every derivative evaluation — so its value moves with
+        the trajectory even though its address is a parameter's. Reading
+        ``param_names`` alone would call ``level>0.5`` a comparison between
+        constants and admit a crossing that really does happen.
+
+        Here ``level()`` is ``I/S0``, so the condition is a state condition in
+        disguise. What must NOT happen is a silent admission on ground 3."""
+        text = _with_law("if(level>0.5,beta,0)*I").replace(
+            "    1 betaI() ", "    1 level() I/S0\n    2 betaI() "
+        )
+        core = _model(tmp_path, text)._core
+        scope = sw.switch_condition_scope(core)
+        assert "level" in scope.function_names
+        assert "level" not in scope.run_constants
+        assert not sw.condition_cannot_cross("level>0.5", scope)
 
     def test_a_comparison_outside_an_if_is_refused(self, tmp_path):
         """``beta*(I>1)`` is the boolean-as-a-number idiom: a branch with no
