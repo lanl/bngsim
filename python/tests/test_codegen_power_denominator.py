@@ -38,6 +38,15 @@ denominator to be a bare ``Symbol``, which left the commonest shape of all —
 Those tests are the third section below, and they carry the cost ceiling forward
 onto the new branch, which by construction meets denominators GH #96 rejected
 before they were ever looked at.
+
+GH #388 relaxed the other half of the GH #96 bar. Asking ``cancel`` whether a
+quotient exists means asking whether normalisation removes ``x`` from the
+*answer*, and the structural extraction inherited that: it refused
+``(x/(x + K))^n / x`` because the quotient ``1/(x + K)`` still mentions ``x``.
+The extraction returns ``q`` with ``q·x == base`` by construction, so the rewrite
+is an identity whatever ``q`` contains, and refusing this one left ``0/0`` = NaN
+in the emitted ∂/∂IP3 of ``BIOMD0000000374`` / ``375`` at ``IP3 = 0`` where the
+derivative is an ordinary ``0``.
 """
 
 from __future__ import annotations
@@ -54,9 +63,9 @@ needs_cc = pytest.mark.skipif(_CC is None, reason="no C compiler on PATH")
 pytest.importorskip("sympy")
 import sympy as sp  # noqa: E402
 from bngsim._jacobian import (  # noqa: E402
-    _linear_multiple_quotient,
     _power_denominator_quotient,
     _remove_removable_power_denominators,
+    _symbol_multiple_quotient,
     sympy_to_c,
 )
 
@@ -95,19 +104,41 @@ class TestLinearMultipleQuotient:
             (x * y, y),
             (a * x + b * x, a + b),  # the Add case a local Mul test would miss
             (x * (a + b), a + b),
+            # GH #388: the quotient may keep x. Both of these are exact — the
+            # extraction returns q with q·x == base by construction — and both
+            # were refused while the bar was "cancel eliminates x outright".
+            (x / (x + K), 1 / (x + K)),  # the saturating base of BIOMD374/375
+            (x * (a + x), a + x),
         ],
     )
     def test_accepts_every_linear_multiple(self, base, expected):
-        got = _linear_multiple_quotient(base, x, sp)
+        got = _symbol_multiple_quotient(base, x, sp)
         assert got is not None
         assert sp.simplify(got - expected) == 0
 
-    @pytest.mark.parametrize("base", [K + x, x**2, x * (a + x), sp.exp(x), y, sp.Integer(3)])
+    @pytest.mark.parametrize("base", [K + x, x**2, sp.exp(x), y, sp.Integer(3)])
     def test_rejects_everything_else(self, base):
-        """Rejection has to be exact, not merely cheap: accepting a base that is
-        not a linear multiple would rewrite ``base^n/x`` into something that is
+        """Rejection has to be exact, not merely cheap: accepting a base that
+        ``x`` does not divide would rewrite ``base^n/x`` into something that is
         not equal to it."""
-        assert _linear_multiple_quotient(base, x, sp) is None
+        assert _symbol_multiple_quotient(base, x, sp) is None
+
+    @pytest.mark.parametrize(
+        ("base", "expected"),
+        [
+            (x / (x + K), 1 / (x + K)),
+            (x * (a + x), a + x),
+            (a * x + b * x * y, a + b * y),
+        ],
+    )
+    def test_the_quotient_still_multiplies_back_to_the_base(self, base, expected):
+        """The property the rewrite rests on, checked directly rather than
+        through ``cancel``: ``q·x == base``, which is what makes
+        ``base^n/x == q·base^(n-1)`` an identity whatever ``q`` contains."""
+        quotient = _symbol_multiple_quotient(base, x, sp)
+        assert quotient is not None
+        assert sp.simplify(quotient * x - base) == 0
+        assert sp.simplify(quotient - expected) == 0
 
     def test_a_float_coefficient_agrees_in_value_not_in_form(self):
         """The one way the two forms differ, pinned so it stays a known property
@@ -118,7 +149,7 @@ class TestLinearMultipleQuotient:
         models' emitted source moved without anything semantic moving with it."""
         base = x / (sp.Float("0.5") * y + sp.Float("0.25"))
         cancelled = sp.cancel(base / x)
-        structural = _linear_multiple_quotient(base, x, sp)
+        structural = _symbol_multiple_quotient(base, x, sp)
         assert not cancelled.has(x)
         assert structural is not None
         assert sp.simplify(structural - cancelled) == 0
@@ -126,12 +157,19 @@ class TestLinearMultipleQuotient:
     @pytest.mark.parametrize(
         "base", [x, x / K, 2 * x, x * y, a * x + b * x, K + x, x**2, sp.exp(x)]
     )
-    def test_it_agrees_with_cancel(self, base):
-        """The property the replacement rests on, stated directly against the
-        thing it replaced: same accept/reject verdict, same quotient value."""
+    def test_it_agrees_with_cancel_wherever_cancel_answers(self, base):
+        """The property the GH #96 replacement rested on, stated directly against
+        the thing it replaced: same accept/reject verdict, same quotient value.
+
+        Held over every base ``cancel`` can decide. GH #388 then made the
+        structural test the *stricter* description of the two — it accepts every
+        base ``x`` divides, where ``cancel`` reports one only when normalisation
+        also removes ``x`` from the answer — so the shapes in
+        ``test_the_quotient_still_multiplies_back_to_the_base`` are deliberately
+        not in this list."""
         cancelled = sp.cancel(base / x)
         cancel_says = None if cancelled.has(x) else cancelled
-        structural = _linear_multiple_quotient(base, x, sp)
+        structural = _symbol_multiple_quotient(base, x, sp)
         if cancel_says is None:
             assert structural is None
         else:
@@ -174,7 +212,7 @@ class TestRewriteStillWorks:
 # gives `n·u^n·u'/u`, and sympy leaves the two Pows uncombined because with a
 # symbolic exponent and a base of unknown sign `u^a·u^b = u^(a+b)` crosses a
 # branch cut it will not assume. Where `u` is a bare symbol GH #96 caught it by
-# accident (`_linear_multiple_quotient(x, x)` is 1). Where `u` is anything else —
+# accident (`_symbol_multiple_quotient(x, x)` is 1). Where `u` is anything else —
 # `A4 - A4_star` in BIOMD0000000703 — nothing did, and the emitted `pow(u,n)/u`
 # is 0/0 at `u == 0`, at a point where the law's own value is finite and the true
 # derivative is an ordinary number.
