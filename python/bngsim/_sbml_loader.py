@@ -4164,16 +4164,22 @@ def _build_model_from_sbml_doc(doc):
     # function-backed slot. `_inner` is taken against every AR target rather than
     # against the survivors, so a rule whose dependency fails to convert is never
     # emitted with that dependency left as a bare reference: it simply never
-    # becomes ready, and the sweep below drops it.
+    # becomes ready, and the sweep below drops it. A rule is attempted at most
+    # once — success or failure — and `_grew` counts only rules newly attempted,
+    # so the pass loop stops as soon as nothing new becomes ready rather than
+    # re-running a failed conversion on every remaining pass.
     _ar_const_expr: dict[str, str] = {}
+    _ar_const_tried: set[str] = set()  # ready and attempted, whether or not it converted
     for _ in range(len(_ar_const_names) + 1):
         _grew = False
         for _var in list(_ar_const_names):
-            if _var in _ar_const_expr:
+            if _var in _ar_const_tried:
                 continue
             _inner = _ast_name_set(_ar_math[_var]) & _ar_targets
             if not _inner <= _ar_const_expr.keys():
                 continue
+            _ar_const_tried.add(_var)
+            _grew = True
             try:
                 _ar_const_expr[_var] = _ast_to_exprtk_with_funcdefs(
                     _ar_math[_var],
@@ -4182,7 +4188,6 @@ def _build_model_from_sbml_doc(doc):
                 )
             except Exception as e:  # noqa: BLE001 - the symbol simply stays unliftable
                 logger.debug("assignmentRule for %s not usable as a lift body: %s", _var, e)
-            _grew = True
         if not _grew:
             break
     for _var in list(_ar_const_names):
