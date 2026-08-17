@@ -219,6 +219,12 @@ def _outcome(name, t_span, n_points, floor=None):
     return None
 
 
+def _caught_in_the_rhs(msg):
+    """True when GH #395's recoverable return caught the value in the callback,
+    before any tensor existed for this scan to look at."""
+    return "sensitivity RHS returned a non-finite value" in msg
+
+
 def _refusal_or_skip(name, t_span, n_points):
     msg = _outcome(name, t_span, n_points)
     if msg is None:
@@ -239,11 +245,21 @@ class TestTheRealModels:
     about the guard in production: that a completed ``run()`` actually passes
     its tensor through it, on the shared cold/warm exit, before handing the
     result to the caller.
+
+    **GH #395 split these witnesses into two kinds, and which kind a model is
+    now says where its non-finite value was caught.** The sensitivity RHS hands
+    CVODES the recoverable code when it computes one, so a model on the analytic
+    path never gets far enough for the tensor to exist — it fails inside the
+    solve, naming the callback and the time. Only a model on CVODES' internal
+    difference quotient, where bngsim's callback is not in the loop, still
+    reaches this scan. Both refuse; they refuse in different words, and asserting
+    the wrong words would pin the defect rather than the contract.
     """
 
     # Issue #388: fails at the first output point after t_start, with the issue
     # #177 floor on or off. That is a derivative that was never defined rather
     # than one that drifted, which is why it reproduces where #480 does not.
+    # Post-GH #395 both are caught in the RHS instead of in this scan.
     STRUCTURAL = ("BIOMD0000000829", (70.0, 160.0), 201, "n_1")
     STRUCTURAL_2 = ("BIOMD0000000632", (0.0, 10.0), 201, "Gy")
 
@@ -256,16 +272,23 @@ class TestTheRealModels:
 
     @pytest.mark.parametrize("case", [STRUCTURAL, STRUCTURAL_2, KNIFE_EDGE], ids=lambda c: c[0])
     def test_the_run_refuses_rather_than_returning_the_tensor(self, case):
-        """The wiring: a real solve reaches the guard and raises through it.
+        """The wiring: a real solve refuses rather than handing the tensor back.
 
         The exact crossing time, cell count and column count are deliberately
         NOT asserted. An earlier version of this module pinned macOS's t=9.64
         and failed on both Linux legs while the refusal fired identically. What
-        is portable is the SHAPE of the diagnostic — a column, a count, and a
-        located output point — plus which column it is.
+        is portable is the SHAPE of the diagnostic, and after GH #395 there are
+        two shapes — see the class docstring — so which one is asserted follows
+        from where the value was caught, not from the model.
         """
         name, t_span, n_points, column = case
         msg = _refusal_or_skip(name, t_span, n_points)
+        if _caught_in_the_rhs(msg):
+            # Caught at the point of production: no tensor exists yet, so there
+            # is no column or output index to name. What it must localize
+            # instead is the callback and the time.
+            assert re.search(r"t=[\d.eE+-]+", msg)
+            return
         assert f"'{column}'" in msg
         assert re.search(r"\d+ cell\(s\)", msg)
         assert re.search(rf"output point t=[\d.eE+-]+ \(index \d+ of {n_points}\)", msg)
@@ -292,7 +315,8 @@ class TestTheRealModels:
         name, t_span, n_points, column = self.STRUCTURAL
         _refusal_or_skip(name, t_span, n_points)
         msg = _outcome(name, t_span, n_points, floor="0")
-        assert msg is not None and f"'{column}'" in msg
+        assert msg is not None
+        assert _caught_in_the_rhs(msg) or f"'{column}'" in msg
 
 
 class TestTheSensitivityCounters:

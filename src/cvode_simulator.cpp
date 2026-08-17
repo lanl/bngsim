@@ -372,6 +372,13 @@ struct CvodeUserData {
     // sensitivity-RHS callbacks, read only if the integration fails — see
     // NonFiniteWitness above.
     NonFiniteWitness nonfinite_witness;
+
+    // GH #395: hand CVODES the recoverable code when the sensitivity RHS goes
+    // non-finite, instead of passing the value through. Resolved once per run
+    // (not per callback, and not once per process — a function-local static
+    // would make the hatch unsettable from a test that has already run one
+    // solve). BNGSIM_SENS_NONFINITE_RECOVER=0 restores the pre-#395 behaviour.
+    bool sens_recover_nonfinite = true;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -756,21 +763,65 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
                                    N_VGetArrayPointer(yS), ySdot_ptr, &so_data,
                                    N_VGetArrayPointer(tmp1), N_VGetArrayPointer(tmp2));
 
-    // GH #336: the one compiled callback with no output scan of its own. The GH
-    // #135 clamp retries belong to the RHS and the Jacobian; a sensitivity
-    // column has no boundary value to clamp to, and this callback deliberately
-    // returns rc untouched — the numerics do not move. But `ySdot = J·yS +
-    // ∂f/∂p` carries ∂(rate law)/∂y, so a rate law outside its domain reaches
-    // here whether or not the state RHS was rescued, and CVODES' sensitivity
-    // error test is then what collapses the step. Scanning for the witness is
-    // one isfinite pass over the n_species doubles the callback has just
-    // written, against the O(nnz) chain rule it took to write them — and the
-    // `captured` short-circuit retires it after the first trip.
-    if (rc == 0 && !data->nonfinite_witness.captured && rhs_has_nonfinite(data, ySdot_ptr)) {
-        data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
-                                        y_ptr, data->model->n_species());
+    // GH #336 captured the witness here. GH #395 makes it a recoverable error as
+    // well, and the reason is that the sentence this comment used to end with —
+    // "CVODES' sensitivity error test is then what collapses the step" — is only
+    // true of column 0.
+    //
+    // `cvSensNorm` reduces the per-column weighted norms to their maximum by
+    // seeding the accumulator with column 0 and keeping `cvals[is] > nrm`:
+    //
+    //     nrm = cv_mem->cv_cvals[0];
+    //     for (is = 1; is < Ns; is++)
+    //       if (cv_mem->cv_cvals[is] > nrm) nrm = cv_mem->cv_cvals[is];
+    //
+    // Every comparison against a NaN is false, so that reduction PROPAGATES a
+    // NaN sitting in column 0 (it is the seed, never replaced) and DISCARDS one
+    // in any later column (it never wins the comparison). Both the staggered
+    // corrector's convergence test and the sensitivity error test read that one
+    // number, so a NaN in column ≥ 1 is invisible to the solver and rides all
+    // the way to the output scan, while the identical NaN in column 0 stalls the
+    // corrector into CV_CONV_FAILURE. The behaviour of a whole run depended on
+    // where in `sensitivity_params` the offending parameter happened to sit.
+    //
+    // Returning the recoverable code makes that decision here instead, where the
+    // value is known rather than inferred from a norm: CVODES cuts h and retries
+    // (`SRHSFUNC_RECVR`), which is what rescues a NaN the predictor caused by
+    // overshooting a domain boundary for one step, and gives up with
+    // CV_REPTD_SRHSFUNC_ERR — naming the time and the state through the witness —
+    // when it is the model and not the step. Note this is *not* the GH #135 clamp
+    // retry: a sensitivity column has no boundary value to clamp to, so the only
+    // move available is to ask for a smaller step.
+    //
+    // The scan can no longer be retired after the first trip the way the witness
+    // capture was: the return value has to be right on every call, not just the
+    // first. It is one isfinite pass over the n_species doubles the callback has
+    // just written — in cache, against the O(nnz) chain rule it took to write
+    // them; measured over three corpus models with 25–116 columns and 2e3–1e5
+    // steps, the whole change costs under 1% of wall clock, inside the run-to-run
+    // spread.
+    //
+    // BNGSIM_SENS_NONFINITE_RECOVER=0 restores the pre-#395 behaviour *exactly*,
+    // including the short-circuit, so the hatch is an A/B of the whole change
+    // rather than of the return value alone. Diagnostic only; unset ships.
+    if (rc != 0) {
+        return rc;
     }
-    return rc;
+    if (!data->sens_recover_nonfinite) {
+        if (!data->nonfinite_witness.captured && rhs_has_nonfinite(data, ySdot_ptr)) {
+            data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
+                                            y_ptr, data->model->n_species());
+        }
+        return 0;
+    }
+    if (rhs_has_nonfinite(data, ySdot_ptr)) {
+        if (!data->nonfinite_witness.captured) {
+            data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
+                                            y_ptr, data->model->n_species());
+        }
+        return 1; // recoverable -> CVODES cuts h and retries
+    }
+    return 0;
 }
 
 // ─── Analytical Dense Jacobian ───────────────────────────────────────────────
@@ -2675,6 +2726,63 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
         N_VGetArrayPointer(yS_guard[n_sens_p + k])[species_idx0] = 1.0;
     }
 
+    // ── The seed has to be finite before the solver ever sees it (GH #395) ──
+    // Everything above writes yS(0): the identity seeds for a parameter that
+    // reaches an initial condition (#43/#113/#111), the derived-parameter chain
+    // rule, and a carry-over installed by set_pending_sensitivity_seed (#210).
+    // A non-finite cell from any of them is never a value the run can produce
+    // an answer from — the row is NaN from t0 and stays NaN, since nothing the
+    // integrator does can restore it.
+    //
+    // Refusing it here rather than letting it ride is not tidiness. CVODES
+    // reduces the per-column error norms to their maximum with a comparison
+    // (`cvSensNorm`: seed the accumulator with column 0, keep `cvals[is] > nrm`),
+    // and every comparison against NaN is false — so the reduction propagates a
+    // NaN in column 0 and *discards* one in any later column. A poisoned seed
+    // therefore stalls the corrector into CV_CONV_FAILURE or sails through to
+    // the output scan depending only on where the parameter sits in
+    // sensitivity_params. Neither outcome tells the caller what is wrong, and
+    // which one they get is not a property of their model.
+    {
+        std::ostringstream bad;
+        int n_bad = 0;
+        constexpr int kMaxNamed = 3;
+        for (int iS = 0; iS < n_sens; ++iS) {
+            const double *col = N_VGetArrayPointer(yS_guard[iS]);
+            for (int i = 0; i < ns; ++i) {
+                if (std::isfinite(col[i])) {
+                    continue;
+                }
+                if (++n_bad > kMaxNamed) {
+                    continue;
+                }
+                const bool is_ic_col = iS >= n_sens_p;
+                const std::string col_name =
+                    is_ic_col ? "initial-condition column " + std::to_string(iS - n_sens_p)
+                              : (iS < static_cast<int>(opts.sensitivity.param_names.size())
+                                     ? "'" + opts.sensitivity.param_names[iS] + "'"
+                                     : "column " + std::to_string(iS));
+                bad << (n_bad > 1 ? ", " : "") << col_name << " row "
+                    << (i < static_cast<int>(model.species_names().size())
+                            ? model.species_names()[i]
+                            : std::to_string(i + 1))
+                    << " = " << diag_number(col[i]);
+            }
+        }
+        if (n_bad > 0) {
+            throw std::runtime_error(
+                "Forward sensitivity was handed a non-finite initial seed dx/dtheta(0): " +
+                std::to_string(n_bad) + " cell(s) — " + bad.str() +
+                (n_bad > kMaxNamed ? ", …" : "") +
+                ". That is the initial condition of the sensitivity solve, so the row is "
+                "non-finite from t0 and no step can restore it. It comes from a seed this run "
+                "was given, not from the dynamics: an initial-condition chain rule that "
+                "evaluated non-finite, or a carry-over installed by "
+                "set_pending_sensitivity_seed() from a previous run whose tensor was already "
+                "bad. Fix the seed, or drop carry_sensitivities.");
+        }
+    }
+
     // Initialize sensitivity analysis.
     if (opts.sensitivity.method == "simultaneous") {
         sens_method = CV_SIMULTANEOUS;
@@ -2685,6 +2793,10 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
         user_data.codegen_plist = sens_plist.data();
         user_data.codegen_n_sens = n_sens;
         sens_rhs_fn = cvode_codegen_sens_rhs;
+    }
+    {
+        const char *recover_env = std::getenv("BNGSIM_SENS_NONFINITE_RECOVER");
+        user_data.sens_recover_nonfinite = !(recover_env && std::string(recover_env) == "0");
     }
 
     flag = CVodeSensInit1(cvode_mem, n_sens, sens_method, sens_rhs_fn, yS_guard.arr);
