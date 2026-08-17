@@ -923,36 +923,87 @@ def _guard_exponent_log_at_zero(expr):
     return bottom_up(expr, rewrite_mul)
 
 
-def _rewrite_saturating_exp_ratio(expr):
-    """Divide ``exp(u) / (a + exp(u))^n`` through by ``exp(u)`` so it cannot
-    overflow to ``inf/inf`` (GH #388).
+def _rewrite_saturating_ratio(expr):
+    """Divide ``f^m / (a + f)^k`` through by ``f`` so it cannot overflow to
+    ``inf/inf`` (GH #388, GH #393).
 
-    Every sigmoid in the corpus is written ``1/(1 + exp(−k(t − t0)))``, and
-    differentiating one w.r.t. *any* of ``k``, ``t0`` or a shift folded into the
-    exponent produces ``c·exp(u)/(1 + exp(u))^2``. That expression is bounded by
-    ``1/4`` for every real ``u`` and tends to ``0`` at both ends — but evaluated
-    literally it is ``inf/inf`` = **NaN** as soon as ``u > 709``, which the
-    dose-schedule sigmoids reach at ``t = 0`` without trying: ``BIOMD0000000636``
-    has ``steepness · onset = 100 · 10``, and ``BIOMD0000000554`` has
-    ``sr_GLY · (to + to_GLY) = 4 · 283``. The value path never notices — ``1/(1 +
-    inf)`` is a clean ``0`` — so only the differentiated form fails, and it fails
-    at the first output point.
+    ``f`` is the one factor of a saturating term that can run off to ``inf``: an
+    ``exp(u)`` or a power ``x^n``. Both reach it in ordinary models.
 
-    The rewrite is the schoolbook one, exact for every finite ``u``::
+    **The sigmoid** (GH #388). Every dose schedule in the corpus is written
+    ``1/(1 + exp(−k(t − t0)))``, and differentiating one w.r.t. *any* of ``k``,
+    ``t0`` or a shift folded into the exponent produces ``c·exp(u)/(1 +
+    exp(u))^2``. That expression is bounded by ``1/4`` for every real ``u`` and
+    tends to ``0`` at both ends — but evaluated literally it is ``inf/inf`` =
+    **NaN** as soon as ``u > 709``, which the dose-schedule sigmoids reach at
+    ``t = 0`` without trying: ``BIOMD0000000636`` has ``steepness · onset = 100 ·
+    10``, and ``BIOMD0000000554`` has ``sr_GLY · (to + to_GLY) = 4 · 283``.
 
-        exp(u)/(a + exp(u))^n  ==  1/(1 + a·exp(−u)) · (a + exp(u))^(1−n)
+    **The Hill ratio** (GH #393). ``x^n/(K^n + x^n)`` differentiated w.r.t. the
+    *exponent* carries ``x^n·(−K^n·ln K − x^n·ln x)/(K^n + x^n)^2``, whose
+    numerator holds ``x^n`` twice over. ``BIOMD0000000829`` has ``x = 1/mTOR_R``
+    with ``mTOR_R = 4.58e−21``, so ``x^n_1 = 2.45e203`` is finite while both that
+    numerator and ``(K^n + x^n)^2`` overflow — again ``inf/inf``, again where the
+    true value is an ordinary number near zero, the fraction being saturated at
+    ``1`` and flat in its exponent.
+
+    In both cases the value path never notices — ``1/(1 + inf)`` is a clean ``0``
+    and ``x^n/(K^n + x^n)`` a clean ``1`` — so the trajectory matches its
+    reference and only the differentiated form fails.
+
+    The rewrite is the schoolbook one, exact wherever ``f`` is finite and
+    nonzero::
+
+        f^m/(a + f)^k  ==  (1/(1 + a/f))^m · (a + f)^(m−k)
 
     and no intermediate in it can overflow into a ratio of infinities: the two
-    factors are separately bounded, one saturating as ``u → +∞`` and the other as
-    ``u → −∞``, so whichever end overflows contributes ``0`` or ``1`` rather than
-    an ``inf`` that has to be cancelled against another. ``n = 1`` is included —
-    ``exp(u)/(a + exp(u))`` is the sigmoid itself, and CVODES reaches it through
-    the Jacobian — and so is any numeric ``n``, ``(a + exp(u))^(1−n)`` staying the
-    honest value (including ``+inf``) wherever the original had one.
+    factors are separately bounded, one saturating as ``f → ∞`` and the other as
+    ``f → 0``, so whichever end overflows contributes ``0`` or ``1`` rather than
+    an ``inf`` that has to be cancelled against another. ``a/f`` is spelled by
+    sympy as the reciprocal power the emitters already know — ``a·exp(−u)`` for
+    the sigmoid, ``a·x^(−n)`` for the Hill ratio — so neither printer sees a new
+    construct.
 
-    ``a`` must be free of ``exp(u)``: ``exp(u)/(x·exp(u) + exp(u))^2`` would
-    otherwise trade one overflow for another. Nothing else is required of it, and
-    nothing is required of ``u``.
+    It also holds at the endpoints the identity proper does not cover, which is
+    the point of it: at ``f = 0`` the new form is ``1/(1 + ±inf) = 0`` where the
+    old was ``0/a^k = 0``, and at ``f = ±inf`` it is ``(a + f)^(m−k)`` where the
+    old was ``inf/inf``. ``k = 1`` is included — ``f/(a + f)`` is the saturating
+    term itself, and CVODES reaches it through the Jacobian — and so is any
+    numeric ``k``, ``(a + f)^(m−k)`` staying the honest value (including
+    ``+inf``) wherever the original had one.
+
+    ``m > 1`` is the *state* direction of the same Hill ratio. ``sp.diff`` folds
+    the quotient rule's ``x^n·x^n`` into a single ``x^(2n)``, which overflows one
+    square root sooner than the fraction it belongs to — ``x^n = 2.45e203`` is
+    finite and ``x^(2n)`` is not — so the numerator is matched by base and by an
+    integer ratio of exponents rather than by identity, which is what recognises
+    ``x^(2n)`` beside ``x^n`` (and ``exp(2u)`` beside ``exp(u)``) as the same
+    ``f``. It covers the direction for a base like ``BIOMD0000000829``'s
+    ``1/mTOR_R`` and **not** for a bare species: there the fold that runs first,
+    ``_remove_removable_power_denominators`` (GH #96/#351), turns ``x^(2n)/x``
+    into ``x^(2n-1)``, which is no longer a whole power of anything in the sum.
+    Undoing that trades this overflow for the removable ``0/0`` at ``x = 0``
+    #96 exists to remove, so it is a separate decision — measured in GH #402.
+
+    ``a`` must be free of ``f``: ``exp(u)/(x·exp(u) + exp(u))^2`` would otherwise
+    trade one overflow for another. Nothing else is required of it, and nothing
+    is required of ``f`` beyond being an exponential or a power — the shapes that
+    overflow. A bare ``S/(K + S)`` is left alone, and so is ``S^2/(K + S)^2``: no
+    finite ``S`` a solver can hold makes either ``inf/inf``, so rewriting them
+    would spend a division to buy nothing.
+
+    **This runs after** :func:`_guard_exponent_log_at_zero`, not before, and the
+    order is load-bearing rather than incidental. The two rewrites want the same
+    ``x^n``, at opposite ends of its range: the guard replaces ``x^n·ln x`` with
+    its limit at ``x = 0``, and this one divides through at ``x^n → ∞``. Going
+    first takes the guard's power away — ``x^n·ln x/(K^n + x^n)`` becomes
+    ``ln x/(1 + K^n·x^-n)``, whose factors are ``−inf`` and ``0`` at ``x = 0``,
+    so a term that used to evaluate to a clean ``0`` becomes NaN. (Measured on
+    ``test_exponent_log_zero_base.py``'s ``Atot = 0`` reproducer, which is
+    exactly this shape.) Running second, the rewrite finds that power already
+    inside a ``Piecewise`` and leaves it there, and still reaches every power the
+    guard did not claim — which is where the overflow lives, since a factor with
+    a logarithm beside it is one the guard has already made finite at zero.
     """
     import sympy as sp
     from sympy.core.traversal import bottom_up
@@ -960,33 +1011,61 @@ def _rewrite_saturating_exp_ratio(expr):
     def rewrite_mul(node):
         if not isinstance(node, sp.Mul):
             return node
-        if not node.has(sp.exp):
-            return node
 
         factors = list(node.args)
+        # The gate. A term only qualifies if it divides by a *sum* raised to a
+        # negative numeric power, and almost no Mul in a differentiated rate law
+        # does — so this settles the common case with one isinstance sweep and
+        # never reaches the structural work below.
+        dens = [
+            i
+            for i, f in enumerate(factors)
+            if isinstance(f, sp.Pow)
+            and f.exp.is_number
+            and f.exp.is_negative
+            and isinstance(f.base, sp.Add)
+        ]
+        if not dens:
+            return node
+
+        # The numerators worth dividing out: an exponential, or a power whose
+        # exponent is not a plain number. A ``x^2`` needs ``x > 1e154`` to
+        # overflow and no state a solver can hold gets there, where ``x^n`` with
+        # ``n`` a Hill exponent needs only ``x > 1e31`` — so a numeric exponent
+        # buys a division for a case that does not arise.
+        volatile = [
+            i
+            for i, f in enumerate(factors)
+            if isinstance(f, sp.exp) or (isinstance(f, sp.Pow) and not f.exp.is_number)
+        ]
+        if not volatile:
+            return node
+
+        # Indices come from ``node.args`` — the untouched original — while the
+        # denominators are re-read from ``factors``, which an earlier pairing may
+        # already have divided down.
         rewritten = False
-        for num_i, num in enumerate(factors):
-            if not isinstance(num, sp.exp):
-                continue
-            for den_i, den in enumerate(factors):
-                if den_i == num_i or not isinstance(den, sp.Pow):
-                    continue
-                power = den.exp
-                if not (power.is_number and power.is_negative):
-                    continue
+        for num_i in volatile:
+            num_base, num_exp = node.args[num_i].as_base_exp()
+            for den_i in dens:
+                den = factors[den_i]
+                if den_i == num_i or not isinstance(den, sp.Pow) or not den.exp.is_negative:
+                    continue  # spent by an earlier numerator, down to (a + f)^0
                 total = den.base
-                if not isinstance(total, sp.Add) or num not in total.args:
+                match = _saturating_summand(num_base, num_exp, total, sp)
+                if match is None:
                     continue
-                rest = sp.Add(*(term for term in total.args if term != num))
-                if rest.has(num):
+                f, m = match
+                rest = sp.Add(*(term for term in total.args if term != f))
+                if rest.has(f):
                     continue
-                factors[num_i] = 1 / (1 + rest * sp.exp(-num.args[0]))
-                factors[den_i] = sp.Pow(total, power + 1)
+                factors[num_i] = sp.Pow(1 / (1 + rest / f), m)
+                factors[den_i] = sp.Pow(total, den.exp + m)
+                # This numerator is spent, but the denominator is not: a Mul can
+                # hold two distinct bases over one sum — ``x^n·y^m/(x^n + y^m)^2``
+                # is the product of two saturating terms — and dividing each out
+                # in turn leaves both bounded.
                 rewritten = True
-                # A Mul holds at most one ``exp(u)`` factor per ``u`` (sympy
-                # combines like exponentials on construction), so this numerator
-                # is spent; the scan moves on to the next one, which may pair
-                # with the very denominator just rewritten.
                 break
 
         if not rewritten:
@@ -994,6 +1073,38 @@ def _rewrite_saturating_exp_ratio(expr):
         return sp.Mul(*factors, evaluate=False)
 
     return bottom_up(expr, rewrite_mul)
+
+
+def _saturating_summand(num_base, num_exp, total, sp):
+    """The summand ``f`` of ``total`` that the numerator is a whole power of, as
+    ``(f, m)`` with ``num == f^m`` and ``m`` a positive integer — or ``None``.
+
+    Matching by base and exponent ratio rather than by identity is what lets
+    ``x^(2n)`` pair with the ``x^n`` in ``K^n + x^n``: sympy folds the quotient
+    rule's ``x^n·x^n`` into one power, and it is the folded form that overflows.
+    ``m == 1`` is the plain ``f ∈ total.args`` case.
+
+    Only an exponential or a power can be an ``f``. A bare summand — the ``S`` of
+    ``K + S`` — is left out on purpose: it takes no ``pow`` to compute and cannot
+    reach ``inf`` from a state a solver can hold, so dividing through by it would
+    add an unforced division.
+    """
+    for term in total.args:
+        if not isinstance(term, (sp.exp, sp.Pow)):
+            continue
+        term_base, term_exp = term.as_base_exp()
+        if term_base != num_base:
+            continue
+        ratio = num_exp / term_exp
+        if not ratio.is_number:
+            continue  # e.g. x^(n+1) beside x^n — not a whole power of it
+        try:
+            m = int(ratio)
+        except TypeError:
+            continue  # complex, or otherwise not an integer count
+        if m >= 1 and ratio == m:
+            return term, m
+    return None
 
 
 # A rate law can only need the zero-base logarithm guard if it contains a
@@ -1222,8 +1333,8 @@ def sympy_to_exprtk(expr) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _guard_exponent_log_at_zero(
-            _rewrite_saturating_exp_ratio(_remove_removable_power_denominators(expr))
+        expr = _rewrite_saturating_ratio(
+            _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
         )
     except Exception:
         return None
@@ -1437,8 +1548,8 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _guard_exponent_log_at_zero(
-            _rewrite_saturating_exp_ratio(_remove_removable_power_denominators(expr))
+        expr = _rewrite_saturating_ratio(
+            _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
         )
     except Exception:
         return None

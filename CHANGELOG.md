@@ -307,6 +307,75 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A Hill ratio's derivative no longer evaluates to `inf/inf` when its own base
+  is large (issue #393).** `x^n/(K^n + x^n)` saturates at `1`, so once `x^n` is
+  large the fraction is flat and every derivative of it is a very small number.
+  The quotient rule writes `x^n` in the numerator a second time, though, and
+  `x^n·x^n` overflows one square root before the fraction does — from `x^n =
+  1e154` up, not `1e308`. `BIOMD0000000829` sits in that band: its `mass_s`
+  assignment rule reads `(1/mTOR_R)^n_1/(K_m^n_1 + (1/mTOR_R)^n_1)` with
+  `mTOR_R = 4.58e-21`, so `(1/mTOR_R)^n_1 = 2.45e203` is an ordinary double and
+  its square is not. The trajectory never noticed — the fraction is a clean `1` —
+  and the `n_1` sensitivity column was NaN at the first output point.
+
+  Issue #388's rewrite, one family over. `_rewrite_saturating_ratio` (was
+  `_rewrite_saturating_exp_ratio`) divides through by the factor that runs away:
+
+      f^m/(a + f)^k  ==  (1/(1 + a/f))^m · (a + f)^(m−k)
+
+  an identity wherever `f` is finite and nonzero, with no intermediate that can
+  overflow into a ratio of infinities — one factor saturates as `f → ∞` and the
+  other as `f → 0`. For the sigmoid `f` is `exp(u)` (#388/#391); here it is
+  `x^n`. `m > 1` is the state direction of the same ratio, where sympy folds the
+  quotient rule's `x^n·x^n` into a single `x^(2n)`, so the numerator is matched
+  by base and integer exponent ratio rather than by identity. It is carried in
+  **both** emitters — `bngsim._saturable_jacobian` prints its own C and would
+  otherwise let the identical NaN back in through `J·yS`.
+
+  `BIOMD0000000829` now returns a wholly finite sensitivity tensor — including
+  the `mass_s` assignment-rule row, which the run used to decline — and every
+  column that carries signal matches central finite differences of bngsim's own
+  trajectories to 1.2e-6 or better.
+
+  **The zero-base logarithm guard now runs first.** #310/#317's guard and this
+  rewrite want the same `x^n`, at opposite ends of its range: the guard replaces
+  `x^n·ln x` with its limit at `x = 0`, this one divides through at `x^n → ∞`.
+  Dividing first takes the guard's power away and turns a term that read a clean
+  `0` at `x = 0` into a NaN. Running second, the rewrite finds that power already
+  inside a `Piecewise` and leaves it there — and still reaches every power the
+  guard did not claim, which is where the overflow lives.
+
+  **Corpus A/B.** All 1274 loadable `rr_parity` models, every rate law
+  differentiated w.r.t. every free symbol, emitted through `sympy_to_c` *and*
+  through the native emitter, both arms in one process with the pre-#393
+  pipeline patched back in for the `before` arm. 194052 SymPy-path rows and 6889
+  native-path rows; **6669 and 271 moved**, across 301 of 1242 models. 6661 of
+  the SymPy-path moves are the power numerator and the reordering; 301 rows are
+  touched by the `f^m` case.
+
+  Every moved SymPy-path row was then re-derived in both arms and evaluated *as
+  emitted text* at 24 random points each — `lambdify` is not a model of the
+  emitters, since it spells `a/x^n` as `a·x^(−n)`, and a separately-computed
+  reciprocal overflows where the quotient does not. Over 5903 rows and 118032
+  samples: **9710 points are non-finite in the old form and finite in the new
+  one**, and 34 are the reverse. Those 34 are reassociation, not the identity:
+  dividing `f` out of the numerator takes a small factor away from a sibling that
+  was overflowing behind it, and sympy's printer emits every numerator factor
+  before the division. They occur only where the sampler puts a Hill exponent at
+  160 and its base at `1e-2`; both arms are already non-finite at 28138 further
+  points in that regime. Where both were finite but disagreed by more than
+  `1e-9` relative (1713 points), each was scored against an exact evaluation at
+  200 digits: the new form is closer at 1078 and the old at 610.
+
+  A partial `x^(2n−1)` case is deliberately left out: #96/#351's removable-power
+  fold runs first and turns `x^(2n)/x` into an exponent no longer commensurate
+  with the sum's, and undoing that trades the overflow for the `0/0` at `x = 0`
+  that fold exists to remove. Measured and split out as issue #402.
+
+  No `_CODEGEN_VERSION` bump: `_jacobian` and `_saturable_jacobian` are both in
+  `_CODEGEN_SOURCE_MODULES`, so #51's source digest invalidates every cached
+  artifact anyway.
+
 - **A Hill exponent's sensitivity column no longer NaNs because the predictor put
   its base a few ulps below zero (issue #392).** Differentiating a power law
   w.r.t. its exponent produces `base^n·ln(base)`, and `_guard_exponent_log_at_zero`
