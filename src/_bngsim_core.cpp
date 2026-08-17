@@ -819,6 +819,47 @@ PYBIND11_MODULE(_bngsim_core, m) {
                                                  user_function_indices(r.expression_names()));
         });
 
+    // ─── The non-finite forward-sensitivity guard, on a tensor of your own ───
+    //
+    // The guard every ODE run passes through (issue #384), reachable without an
+    // ODE run. It exists because the guard's real-model witnesses are all
+    // floating-point events: BIOMD0000000480's blow-up is a knife edge that does
+    // not occur on every host (issue #389), and every other witness is a defect
+    // someone intends to remove (issue #388). Handing the diagnostic a tensor
+    // directly is what makes it testable without depending on either.
+    //
+    // Internal — the leading underscore is the contract. Callers get this guard
+    // for free on every run() and have no reason to invoke it by hand.
+    m.def(
+        "_refuse_nonfinite_sensitivities",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> data,
+           std::vector<double> times, std::vector<std::string> col_names, const std::string &axis) {
+            if (data.ndim() != 3) {
+                throw py::value_error("_refuse_nonfinite_sensitivities expects a 3-D "
+                                      "(n_times, n_species, n_cols) array");
+            }
+            const auto n_times = static_cast<int>(data.shape(0));
+            const auto n_species = static_cast<int>(data.shape(1));
+            const auto n_cols = static_cast<int>(data.shape(2));
+            if (static_cast<int>(times.size()) != n_times) {
+                throw py::value_error(
+                    "_refuse_nonfinite_sensitivities: " + std::to_string(times.size()) +
+                    " times but " + std::to_string(n_times) + " rows in the tensor");
+            }
+            const double *src = data.data();
+            const std::vector<double> flat(src, src + data.size());
+            bngsim::refuse_nonfinite_sensitivity_block(flat, times, n_times, n_species, n_cols,
+                                                       col_names, axis);
+        },
+        py::arg("data"), py::arg("times"), py::arg("col_names"),
+        py::arg("axis") = "parameter column",
+        "Raise RuntimeError if any cell of a (n_times, n_species, n_cols) "
+        "sensitivity tensor is non-finite, naming the first affected output "
+        "point and every column implicated there; return None otherwise. The "
+        "guard CvodeSimulator applies to every forward-sensitivity run (GH "
+        "#384), exposed so it can be tested on a synthesized tensor rather than "
+        "on a model that happens to blow up (GH #389). Internal.");
+
     // ─── NetworkModel ────────────────────────────────────────────────────────
     py::class_<bngsim::NetworkModel>(m, "NetworkModel")
         // Factory: from_net (static method)

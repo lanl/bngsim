@@ -365,6 +365,17 @@ _DECLARED_SKIPS: tuple[tuple[str, str, str], ...] = (
         "whatever FD does) is asserted unconditionally and does not skip, so this "
         "never hides the fallback going missing",
     ),
+    (
+        "returns a finite sensitivity tensor on this host",
+        _ANYWHERE,
+        "lanl/bngsim#389: the non-finite forward-sensitivity guard's real-model "
+        "witnesses are floating-point events. BIOMD0000000480's blow-up is a "
+        "knife edge that macOS x86_64 does not cross at any tolerance-floor "
+        "setting, and #388's structural witnesses go away when #388 is fixed — "
+        "both are 'nothing to refuse here', not 'the guard is broken'. The guard "
+        "itself is tested on a synthesized tensor and never skips, so this cannot "
+        "hide the refusal going missing",
+    ),
     # Missing .net / .xml fixtures. Deliberately last and deliberately narrow:
     # this is the category that rots silently, so it matches the exact phrasings
     # in use rather than a blanket "not found".

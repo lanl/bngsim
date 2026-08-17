@@ -5,9 +5,11 @@
 #include "bngsim/function_columns.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -362,6 +364,85 @@ void Result::to_cdat(const std::string &path) const {
         }
         out << "\n";
     }
+}
+
+// ─── Non-finite forward sensitivities (issue #384) ───────────────────────────
+// Rationale in result.hpp.
+
+void refuse_nonfinite_sensitivity_block(const std::vector<double> &data,
+                                        const std::vector<double> &times, int n_times,
+                                        int n_species, int n_cols,
+                                        const std::vector<std::string> &col_names,
+                                        const std::string &axis) {
+    if (n_cols <= 0 || n_species <= 0 || data.empty()) {
+        return;
+    }
+    // Report the FIRST bad output point and every column implicated there: the
+    // time localizes the event for a bisection, and the column names what to
+    // drop to get a usable run out of the same model.
+    const size_t stride = static_cast<size_t>(n_species) * static_cast<size_t>(n_cols);
+    for (int ti = 0; ti < n_times; ++ti) {
+        std::set<int> bad_cols;
+        size_t n_bad = 0;
+        for (int si = 0; si < n_species; ++si) {
+            for (int ci = 0; ci < n_cols; ++ci) {
+                const size_t k = static_cast<size_t>(ti) * stride +
+                                 static_cast<size_t>(si) * static_cast<size_t>(n_cols) +
+                                 static_cast<size_t>(ci);
+                if (k < data.size() && !std::isfinite(data[k])) {
+                    bad_cols.insert(ci);
+                    ++n_bad;
+                }
+            }
+        }
+        if (bad_cols.empty()) {
+            continue;
+        }
+        std::ostringstream os;
+        os << "Forward sensitivity returned a non-finite value: " << n_bad
+           << " cell(s) at the first affected output point t="
+           << (ti < static_cast<int>(times.size()) ? times[ti] : 0.0) << " (index " << ti << " of "
+           << n_times << "), in " << axis << " ";
+        bool first = true;
+        int shown = 0;
+        for (int ci : bad_cols) {
+            if (shown++ == 6) {
+                os << ", … (" << (bad_cols.size() - 6) << " more)";
+                break;
+            }
+            os << (first ? "'" : ", '")
+               << (ci < static_cast<int>(col_names.size()) ? col_names[ci] : std::to_string(ci))
+               << "'";
+            first = false;
+        }
+        // The floor is ONE cause, not the cause: issue #388 measured 14 corpus
+        // models that stay non-finite with it switched off, so promising it as
+        // the remedy would send those callers down a dead end.
+        os << ". The state trajectory and the solver's own counters can both be clean "
+              "when this happens — CVODES' error test cannot reject a value that is "
+              "already NaN, because every comparison against NaN is false. Check "
+              "n_sens_err_test_fails in Result.solver_stats for what the sensitivity "
+              "solve actually rejected. A tighter atol often resolves it, and "
+              "BNGSIM_SENS_ERROR_FLOOR=0 disables the issue #177 tolerance floor, whose "
+              "relaxation admits the blow-up on some models — though not on the ones that "
+              "fail at the first output point, whose derivative was never defined "
+              "(GH #384, GH #388).";
+        throw std::runtime_error(os.str());
+    }
+}
+
+void refuse_nonfinite_sensitivities(const Result &result) {
+    const int n_p = result.n_sens_params();
+    const int n_ic = result.n_sens_ic_species();
+    if (n_p <= 0 && n_ic <= 0) {
+        return;
+    }
+    const int n_t = result.n_times();
+    const int ns = result.n_species();
+    refuse_nonfinite_sensitivity_block(result.sensitivity_data(), result.time(), n_t, ns, n_p,
+                                       result.sens_param_names(), "parameter column");
+    refuse_nonfinite_sensitivity_block(result.sensitivity_ic_data(), result.time(), n_t, ns, n_ic,
+                                       result.sens_ic_species_names(), "initial-condition column");
 }
 
 } // namespace bngsim

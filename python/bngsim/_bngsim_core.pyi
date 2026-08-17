@@ -1160,6 +1160,10 @@ class TimeSpec:
     @t_start.setter
     def t_start(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
+def _refuse_nonfinite_sensitivities(data: typing.Annotated[numpy.typing.ArrayLike, numpy.float64], times: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex], col_names: collections.abc.Sequence[str], axis: str = 'parameter column') -> None:
+    """
+    Raise RuntimeError if any cell of a (n_times, n_species, n_cols) sensitivity tensor is non-finite, naming the first affected output point and every column implicated there; return None otherwise. The guard CvodeSimulator applies to every forward-sensitivity run (GH #384), exposed so it can be tested on a synthesized tensor rather than on a model that happens to blow up (GH #389). Internal.
+    """
 def bench_ssa_propensity_jit(model: NetworkModel, n_iters: typing.SupportsInt | typing.SupportsIndex = 200000) -> dict:
     """
     GH #190: benchmark the structure-specialized SSA propensity kernel (cc -O3 and MIR) vs the per-reaction compute_propensity loop.
