@@ -18,7 +18,7 @@ trajectory is exact and only the differentiated form fails — which is why all
 four models handed back a non-finite forward-sensitivity column at the very
 first output point while their ODE runs matched the reference.
 
-:func:`bngsim._jacobian._rewrite_saturating_exp_ratio` divides the ratio
+:func:`bngsim._jacobian._rewrite_saturating_ratio` divides the ratio
 through by ``exp(u)``::
 
     exp(u)/(a + exp(u))^n  ==  1/(1 + a·exp(-u)) · (a + exp(u))^(1-n)
@@ -31,6 +31,11 @@ instead of an ``inf`` that has to be cancelled against another.
 It lives at the same chokepoint as the zero-base logarithm guard (GH #310/#317)
 and the removable-power-denominator rewrite (GH #96/#351), so the ExprTk
 evaluator and every codegen backend get it from one place.
+
+GH #393 generalised the same rewrite to a *power* — ``x^n/(K^n + x^n)``, which
+overflows the identical way and is every Hill function there is. This file keeps
+the sigmoid half; ``test_saturating_power_ratio.py`` is the other, and between
+them they hold the two shapes of the one ``f`` the rewrite divides through by.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ pytest.importorskip("sympy")
 import sympy as sp  # noqa: E402
 from bngsim import _saturable_jacobian as _sat  # noqa: E402
 from bngsim._jacobian import (  # noqa: E402
-    _rewrite_saturating_exp_ratio,
+    _rewrite_saturating_ratio,
     sympy_to_c,
     sympy_to_exprtk,
 )
@@ -80,7 +85,7 @@ class TestTheDerivativeThatUsedToOverflow:
         point = {"k": kv, "t": tv, "t0": t0v}
 
         assert np.isnan(_at(deriv, **point))
-        assert _at(_rewrite_saturating_exp_ratio(deriv), **point) == 0.0
+        assert _at(_rewrite_saturating_ratio(deriv), **point) == 0.0
 
     @pytest.mark.parametrize("wrt", [k, t0])
     def test_it_is_the_same_function_where_the_raw_form_was_finite(self, wrt):
@@ -88,7 +93,7 @@ class TestTheDerivativeThatUsedToOverflow:
         well-behaved: away from the overflow the two agree to the last ulp the
         reassociation allows."""
         deriv = sp.diff(SIGMOID, wrt)
-        rewritten = _rewrite_saturating_exp_ratio(deriv)
+        rewritten = _rewrite_saturating_ratio(deriv)
 
         for kv, tv, t0v in [(1.0, 1.0, 0.5), (0.3, 7.0, 2.0), (2.0, 0.0, 1.5), (5.0, 3.2, 3.0)]:
             point = {"k": kv, "t": tv, "t0": t0v}
@@ -102,7 +107,7 @@ class TestTheDerivativeThatUsedToOverflow:
         that multiplies by a sigmoid, so leaving it out would fix the ∂f/∂p half
         and not the J·yS half."""
         expr = sp.exp(u) / (1 + sp.exp(u))
-        rewritten = _rewrite_saturating_exp_ratio(expr)
+        rewritten = _rewrite_saturating_ratio(expr)
 
         assert np.isnan(_at(expr, u=800.0))
         assert _at(rewritten, u=800.0) == 1.0
@@ -113,7 +118,7 @@ class TestTheDerivativeThatUsedToOverflow:
         """``a`` is whatever the model wrote — the rewrite multiplies it by
         ``exp(-u)`` rather than assuming the textbook ``1``."""
         expr = sp.exp(u) / (a + sp.exp(u)) ** 2
-        rewritten = _rewrite_saturating_exp_ratio(expr)
+        rewritten = _rewrite_saturating_ratio(expr)
 
         assert np.isnan(_at(expr, u=800.0, a=3.0))
         assert _at(rewritten, u=800.0, a=3.0) == 0.0
@@ -125,26 +130,29 @@ class TestWhatIsLeftAlone:
         """``exp(u)·(a + exp(u))^2`` really is ``+inf`` at ``u = 800``. There is
         no cancellation to arrange and no limit to take."""
         expr = sp.Mul(sp.exp(u), sp.Pow(a + sp.exp(u), 2), evaluate=False)
-        assert _rewrite_saturating_exp_ratio(expr) == expr
+        assert _rewrite_saturating_ratio(expr) == expr
 
     def test_a_denominator_that_does_not_hold_the_numerator_is_not_touched(self):
         """``exp(u)/(a + exp(2u))`` is not this shape: dividing through by
         ``exp(u)`` leaves ``exp(u)`` in the denominator and buys nothing."""
         expr = sp.Mul(sp.exp(u), sp.Pow(a + sp.exp(2 * u), -1), evaluate=False)
-        assert _rewrite_saturating_exp_ratio(expr) == expr
+        assert _rewrite_saturating_ratio(expr) == expr
 
     def test_a_denominator_whose_rest_holds_the_same_exponential_is_refused(self):
         """``exp(u)/(x·exp(u) + exp(u))^2``: the ``rest`` here is ``x·exp(u)``,
         so dividing through would trade one overflow for another."""
         x = sp.Symbol("x")
         expr = sp.Mul(sp.exp(u), sp.Pow(x * sp.exp(u) + sp.exp(u), -1), evaluate=False)
-        assert _rewrite_saturating_exp_ratio(expr) == expr
+        assert _rewrite_saturating_ratio(expr) == expr
 
-    def test_an_expression_with_no_exponential_comes_back_identical(self):
-        """The gate that keeps this off every derivative in the corpus that
-        cannot need it."""
+    def test_an_expression_with_neither_an_exponential_nor_a_power_over_the_sum(self):
+        """``c·t^2/(a + t)^2`` has the negative power of a sum this rewrite looks
+        for, and nothing in that sum it will divide through by: ``t`` is neither
+        an exponential nor a power, so no finite state can make the ratio
+        ``inf/inf`` and dividing by it would buy nothing (GH #393). Returned
+        identically — the same object, not a rebuilt equal."""
         expr = c * t**2 / (a + t) ** 2
-        assert _rewrite_saturating_exp_ratio(expr) is expr
+        assert _rewrite_saturating_ratio(expr) is expr
 
 
 class TestTheNativeMirror:

@@ -512,50 +512,70 @@ def _without_factor(node, factor):
     return None
 
 
-def rewrite_saturating_exp_ratio(node):
-    """Divide ``exp(w)·M / (a + exp(w))`` through by ``exp(w)`` (GH #388).
+def _reciprocal_without_overflow(node):
+    """``1/node`` written so that it underflows where ``node`` overflows, or
+    ``None`` for a shape that has no such spelling.
 
-    The native mirror of ``bngsim._jacobian._rewrite_saturating_exp_ratio``, and
-    it is needed for the same reason GH #336 had to defer log-of-state laws from
+    An exponential and a power are the two factors of a saturating term that can
+    reach ``inf``, and both invert into their own kind: ``exp(w) → exp(−w)`` and
+    ``x^n → x^(−n)``. Nothing else qualifies, and a caller that gets ``None``
+    leaves its term alone."""
+    if node[0] == "call" and node[1] == "exp":
+        return _mk_call("exp", _mk_neg(node[2][0]))
+    if node[0] == "^":
+        return _mk_pow(node[1], _mk_neg(node[2]))
+    return None
+
+
+def rewrite_saturating_ratio(node):
+    """Divide ``f·M / (a + f)`` through by ``f``, for ``f`` an ``exp(w)`` or a
+    power ``x^n`` (GH #388, GH #393).
+
+    The native mirror of ``bngsim._jacobian._rewrite_saturating_ratio``, and it
+    is needed for the same reason GH #336 had to defer log-of-state laws from
     this module: the SymPy rewrite lives in ``sympy_to_c`` / ``sympy_to_exprtk``,
-    which this path bypasses by construction, so a sigmoid differentiated here
-    kept the form that evaluates ``inf/inf`` = NaN once ``|w| > 709``.
+    which this path bypasses by construction, so a saturating term differentiated
+    here kept the form that evaluates ``inf/inf`` = NaN.
 
     ``d/dS [v/(1 + exp(w(S)))]`` comes out of :func:`_diff` as
     ``−(v/(1 + exp w))·((exp w·w′)/(1 + exp w))`` — two separate divisions, one
     of which carries ``exp(w)`` in its numerator, and it is that one that is
-    ``inf/inf``. Rewriting it to ``w′/(a·exp(−w) + 1)`` is an identity for every
-    finite ``w`` and leaves both factors bounded, so the product is the true
-    ``0`` instead of a NaN.
+    ``inf/inf`` once ``|w| > 709``. ``d/dS [v·S^n/(K^n + S^n)]`` comes out with
+    ``S^n/(K^n + S^n)`` standing alone in the same way, and is ``inf/inf`` once
+    ``S^n`` overflows — a Hill exponent of 10 needs only ``S > 1e31`` for that,
+    and a concentration divided by a small compartment volume gets there.
+    Rewriting either to ``M/(a·f⁻¹ + 1)`` is an identity wherever ``f`` is finite
+    and nonzero, and leaves both factors bounded, so the product is the true
+    limit instead of a NaN.
 
     Deferring the whole family to SymPy the way GH #336 did would also work and
-    is a much bigger hammer: an exponential of a state variable is ordinary
-    (every Arrhenius and every sigmoid has one), where a *logarithm* of one is
-    2.1% of corpus rate laws.
+    is a much bigger hammer: an exponential or a power of a state variable is
+    what this module exists for, where a *logarithm* of one is 2.1% of corpus
+    rate laws.
     """
     tag = node[0]
     if tag == "neg":
-        return _mk_neg(rewrite_saturating_exp_ratio(node[1]))
+        return _mk_neg(rewrite_saturating_ratio(node[1]))
     if tag == "call":
-        return _mk_call(node[1], rewrite_saturating_exp_ratio(node[2][0]))
+        return _mk_call(node[1], rewrite_saturating_ratio(node[2][0]))
     if tag not in ("+", "-", "*", "/", "^"):
         return node
 
-    left = rewrite_saturating_exp_ratio(node[1])
-    right = rewrite_saturating_exp_ratio(node[2])
+    left = rewrite_saturating_ratio(node[1])
+    right = rewrite_saturating_ratio(node[2])
     if tag != "/" or right[0] != "+":
         return (tag, left, right)
 
-    for exp_node, rest in ((right[1], right[2]), (right[2], right[1])):
-        if not (exp_node[0] == "call" and exp_node[1] == "exp"):
+    for saturating, rest in ((right[1], right[2]), (right[2], right[1])):
+        recip = _reciprocal_without_overflow(saturating)
+        if recip is None:
             continue
-        if _contains(rest, exp_node):
+        if _contains(rest, saturating):
             continue  # dividing through would trade one overflow for another
-        numer = _without_factor(left, exp_node)
+        numer = _without_factor(left, saturating)
         if numer is None:
             continue
-        negated = _mk_call("exp", _mk_neg(exp_node[2][0]))
-        return _mk_div(numer, _mk_add(_mk_mul(rest, negated), _ONE))
+        return _mk_div(numer, _mk_add(_mk_mul(rest, recip), _ONE))
     return (tag, left, right)
 
 
@@ -649,9 +669,9 @@ def emit_exprtk(node) -> str | None:
 
     The overflow rewrite is applied here rather than in ``_diff`` so that both
     emitters print the same arithmetic, mirroring where the SymPy path applies
-    its own (GH #388)."""
+    its own (GH #388, GH #393)."""
     try:
-        s = _emit_exprtk(rewrite_saturating_exp_ratio(node))
+        s = _emit_exprtk(rewrite_saturating_ratio(node))
     except _NativeError:
         return None
     if _NAN_INF_RE.search(s):
@@ -663,7 +683,7 @@ def emit_c(node, resolve_symbol) -> str | None:
     """Emit ``node`` as C (``math.h``) source via ``resolve_symbol``, or
     ``None`` on an unresolvable symbol / non-finite literal."""
     try:
-        s = _emit_c(rewrite_saturating_exp_ratio(node), resolve_symbol)
+        s = _emit_c(rewrite_saturating_ratio(node), resolve_symbol)
     except _NativeError:
         return None
     if _NAN_INF_RE.search(s):
