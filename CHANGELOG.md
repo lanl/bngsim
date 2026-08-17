@@ -376,6 +376,43 @@ in `CMakeLists.txt`) is derived from it.
   `_CODEGEN_SOURCE_MODULES`, so #51's source digest invalidates every cached
   artifact anyway.
 
+- **A parameter reaching the dynamics through a constant assignment rule now
+  carries its sensitivity chain (issue #385).** COPASI exports write a knob
+  through an indirection — `<initialAssignment symbol="ModelValue_0"> Theta`,
+  `<assignmentRule variable="Alpha"> ModelValue_0/(24*3.344)`,
+  `<initialAssignment symbol="ModelValue_1"> Alpha`. The lift took the first hop
+  and refused the third, so `ModelValue_1` was declared a **primary** parameter —
+  an independent knob — when it is `Theta/80.256`. Values were right either way;
+  what was lost was every sensitivity term routed through it.
+
+  On `BIOMD0000000587` that is most of `Theta`'s column and half of `rho_f`'s,
+  enough to flip two of three signs: `Theta` returned +1.06159 where RoadRunner
+  and AMICI agree on −33.2326, `f` returned −0.008265 against −37.80348, and
+  `rho_f` 180.43 against 334.1004. All three now match a central difference of
+  the trajectory, as do `BIOMD0000000586`'s three columns and
+  `BIOMD0000000852`'s `cxx` (+2.97e10 → −8.6601e14) — the issue suggested that
+  third model might be a separate defect, and it is not.
+
+  The refusal was deliberate and its reasoning was sound for the case it was
+  written against: an assignment rule's *slot* is function-backed, so a lifted
+  expression reading it re-derives from the rule's value at the last integrated
+  point rather than the `t = 0` fold the initialAssignment means
+  (`BIOMD0000000570`'s `ModelValue_60 = O2c_bar` would go 5.68 → 7.87 on the
+  next write after a run). The lift now substitutes the rule's **body**, so the
+  emitted expression never mentions the slot, and only when that body reaches
+  nothing but constant parameters — the condition under which the two readings
+  coincide anyway, because such a rule cannot move. `O2c_bar` is excluded by
+  exactly that test, its rule reading species.
+
+  Across the 1644-model corpus this moves `primary_param_names` on **19 models**
+  and nothing else: no model newly fails or newly loads, trajectories are
+  unchanged, and the identity write `set_params(dict(zip(param_names, vec)))`
+  round-trips exactly on every one of the 19. Four PBPK models
+  (`BIOMD0000001027`/`1028`/`1029`/`1039`) drop ~16 `Compartment_*` entries,
+  which are COPASI initial-size parameters like `Compartment_1 := Liver :=
+  ModelValue_1 * 0.0549` — organ volumes as fractions of body weight, whose
+  independent coordinate is the body weight (issue #203).
+
 - **A Hill exponent's sensitivity column no longer NaNs because the predictor put
   its base a few ulps below zero (issue #392).** Differentiating a power law
   w.r.t. its exponent produces `base^n·ln(base)`, and `_guard_exponent_log_at_zero`
