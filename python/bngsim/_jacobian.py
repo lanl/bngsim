@@ -534,31 +534,54 @@ def _normalize_booleans(expr):
     return expr.replace(ITE, lambda c, t, f: sp.Or(sp.And(c, t), sp.And(sp.Not(c), f)))
 
 
-def _linear_multiple_quotient(base, sym, sp):
-    """``base / sym`` when ``base`` is a linear multiple of ``sym`` — i.e. when
-    the quotient is free of ``sym`` — computed structurally, or ``None`` (GH #96).
+def _divides_by(node, sym, sp):
+    """True when ``node`` contains ``sym`` under a negative power — i.e. when
+    evaluating it performs a division by ``sym``."""
+    return any(
+        isinstance(sub, sp.Pow) and sub.base == sym and sub.exp.is_negative is True
+        for sub in sp.preorder_traversal(node)
+    )
+
+
+def _symbol_multiple_quotient(base, sym, sp):
+    """``base / sym`` when ``sym`` divides ``base`` as a factor, computed
+    structurally, or ``None`` (GH #96).
 
     This is the exact question :func:`_remove_removable_power_denominators` asks,
-    and the only one it can act on: it needs ``base = c·sym`` so that
-    ``base^n / sym`` can become ``c · base^(n-1)``. ``sp.cancel`` answered it by
+    and the only one it can act on: it needs ``base = q·sym`` so that
+    ``base^n / sym`` can become ``q · base^(n-1)``. ``sp.cancel`` answered it by
     normalising the whole rational expression first, which is unbounded work on a
-    large ``Add`` and is thrown away whenever the quotient still contains ``sym``
-    — the overwhelmingly common case, since a base that merely *mentions* ``sym``
-    (``Km + sym``) is not a multiple of it.
+    large ``Add`` and is thrown away whenever ``sym`` does not divide ``base`` at
+    all — the overwhelmingly common case, since a base that merely *mentions*
+    ``sym`` (``Km + sym``) is not a multiple of it.
 
     Handles the three shapes that can be one:
 
     * ``sym`` itself → ``1``;
-    * a ``Mul`` carrying ``sym`` as a first-power factor → the other factors,
-      provided none of *them* mentions ``sym`` (``sym·(a + sym)`` is quadratic,
-      not linear, so its quotient is rejected);
-    * an ``Add`` whose every term is itself a linear multiple → the sum of the
+    * a ``Mul`` carrying ``sym`` as a first-power factor → the other factors;
+    * an ``Add`` whose every term is itself such a multiple → the sum of the
       term quotients (``a·sym + b·sym`` → ``a + b``), which is the one case a
       purely local ``Mul`` test would miss and ``cancel`` did catch.
 
     Anything else — a genuine sum like ``Km + sym``, a power ``sym^2``, a
-    transcendental — is not a linear multiple and returns ``None``. That is the
-    same rejection ``cancel`` reached, just without the normalisation.
+    transcendental — is not a multiple of ``sym`` and returns ``None``.
+
+    **The quotient may still mention ``sym``** (GH #388). GH #96 required it not
+    to, inheriting the bar from ``cancel``, which reports a quotient only when
+    normalisation eliminates ``sym`` outright. That bar is stricter than the
+    rewrite needs: the extraction above returns ``q`` with ``q·sym == base`` *by
+    construction*, so ``base^n/sym == q·base^(n-1)`` is an identity whatever ``q``
+    contains. Requiring ``q`` to be ``sym``-free cost the commonest saturating
+    shape in the corpus — ``(x/(x + K))^n`` differentiated w.r.t. ``x``, whose
+    ``q = 1/(x + K)`` is perfectly finite at ``x = 0`` — leaving ``0/0`` = NaN in
+    the emitted derivative of ``BIOMD0000000374`` / ``375`` at ``IP3 = 0`` where
+    the true value is ``0``.
+
+    The one quotient still refused is one that *divides* by ``sym``, which would
+    trade the removable division for another of the same kind (and could let the
+    caller's rewrite loop pair the same symbol forever). No such quotient can be
+    built from the shapes above — sympy folds ``sym·sym^-1`` on construction —
+    so the check is a guard rail, not a live branch.
     """
     if base == sym:
         return sp.S.One
@@ -573,15 +596,16 @@ def _linear_multiple_quotient(base, sym, sp):
         if not found:
             return None
         quotient = sp.Mul(*rest)
-        return None if quotient.has(sym) else quotient
+        return None if _divides_by(quotient, sym, sp) else quotient
     if isinstance(base, sp.Add):
         parts = []
         for term in base.args:
-            part = _linear_multiple_quotient(term, sym, sp)
+            part = _symbol_multiple_quotient(term, sym, sp)
             if part is None:
                 return None
             parts.append(part)
-        return sp.Add(*parts)
+        quotient = sp.Add(*parts)
+        return None if _divides_by(quotient, sym, sp) else quotient
     return None
 
 
@@ -602,20 +626,20 @@ def _power_denominator_quotient(base, denom, sp):
     branch cut it will not assume). ``as_powers_dict`` on the very same ``Mul``
     reports the combined exponent, so the information is there; nothing acts on it.
 
-    ``denom`` **is a symbol the base is a linear multiple of** (GH #96). Then
+    ``denom`` **is a symbol that divides the base** (GH #96). Then
     ``q = base/denom``, computed structurally by
-    :func:`_linear_multiple_quotient` — ``(c·x)^n / x`` → ``c·(c·x)^(n-1)``.
+    :func:`_symbol_multiple_quotient` — ``(c·x)^n / x`` → ``c·(c·x)^(n-1)``.
 
     The first case is checked first and costs one structural comparison, which
     matters: it is by far the more common of the two, and it is the one the
-    second case cannot reach. ``_linear_multiple_quotient`` requires ``denom`` to
+    second case cannot reach. ``_symbol_multiple_quotient`` requires ``denom`` to
     be a ``Symbol``, so a base like ``A4 - A4_star`` divided by *itself* fell
     through the whole function untouched — which is issue #351.
     """
     if base == denom:
         return sp.S.One
     if denom.is_Symbol and base.has(denom):
-        return _linear_multiple_quotient(base, denom, sp)
+        return _symbol_multiple_quotient(base, denom, sp)
     return None
 
 
@@ -786,6 +810,20 @@ def _guard_exponent_log_at_zero(expr):
     altogether, stay outside the ``Piecewise`` and multiply through as before, so a
     singularity that is not this one still reports itself.
 
+    **One logarithm can be the carrier of more than one base** (GH #388), and the
+    grouping below is what makes that safe. ``ln(k·(t − T))`` is a carrier for
+    ``k`` and for ``t − T`` alike — blanking logarithms leaves neither behind —
+    so a scan that takes the first candidate power and *consumes* its carriers
+    leaves every later base with none. ``MODEL2403070001`` differentiates
+    ``σ·k^σ·(t − T)^(σ−1)·exp(−(k(t − T))^σ)`` w.r.t. ``σ`` into a term carrying
+    exactly that shape: the guard paired the logarithm with ``k^σ`` — a positive
+    rate constant that is never zero — and left ``(t − T)^(σ−1)·ln(k(t − T))`` to
+    NaN at ``t = T``, the one instant the meal pulse actually turns on. Powers
+    linked by a shared carrier are therefore collected into one group, guarded by
+    the ``Or`` of their conditions over the product of all of them: each
+    ``base → 0`` still sends the whole group to ``0``, because that base's power
+    decays and its siblings stay finite.
+
     Only ``base == 0`` is caught, never ``base < 0``: a negative base under a
     fractional exponent is a genuine NaN and stays one.
 
@@ -808,46 +846,150 @@ def _guard_exponent_log_at_zero(expr):
             return node
 
         factors = list(node.args)
-        guarded = False
-        changed = True
-        while changed:
-            changed = False
-            for pow_i, power_factor in enumerate(factors):
-                if not isinstance(power_factor, sp.Pow):
-                    continue
-                base = power_factor.base
-                # ``2^x·log(2)`` and friends are constant and finite at every
-                # point of the domain; nothing to guard.
-                if base.is_number or base.is_positive:
-                    continue
-                # A base that is itself a logarithm cannot be tested for by
-                # :func:`_is_log_carrier`, which blanks logarithms to look for it.
-                if base.has(sp.log):
-                    continue
-                exp = power_factor.exp
-                if exp.is_number:
-                    if not exp.is_positive:
-                        continue
-                    cond = sp.Eq(base, 0)
-                else:
-                    cond = sp.And(sp.Eq(base, 0), exp > 0)
 
-                carriers = [
-                    i
-                    for i, factor in enumerate(factors)
-                    if i != pow_i and _is_log_carrier(factor, base, sp)
-                ]
-                if not carriers:
+        # Every candidate power, with the condition that sends it to zero.
+        conditions: dict[int, object] = {}
+        for pow_i, power_factor in enumerate(factors):
+            if not isinstance(power_factor, sp.Pow):
+                continue
+            base = power_factor.base
+            # ``2^x·log(2)`` and friends are constant and finite at every
+            # point of the domain; nothing to guard.
+            if base.is_number or base.is_positive:
+                continue
+            # A base that is itself a logarithm cannot be tested for by
+            # :func:`_is_log_carrier`, which blanks logarithms to look for it.
+            if base.has(sp.log):
+                continue
+            exp = power_factor.exp
+            if exp.is_number:
+                if not exp.is_positive:
                     continue
+                conditions[pow_i] = sp.Eq(base, 0)
+            else:
+                conditions[pow_i] = sp.And(sp.Eq(base, 0), exp > 0)
+        if not conditions:
+            return node
 
-                raw = sp.Mul(power_factor, *(factors[i] for i in carriers), evaluate=False)
-                absorbed = set(carriers)
-                factors[pow_i] = sp.Piecewise((sp.Integer(0), cond), (raw, True))
-                factors = [f for i, f in enumerate(factors) if i not in absorbed]
-                guarded = changed = True
+        # Which siblings carry each candidate's logarithm. A sibling can carry
+        # more than one base — ``ln(k·u)`` carries both — which is what links
+        # two candidates into a single group below.
+        carriers_of = {
+            pow_i: {
+                i
+                for i, factor in enumerate(factors)
+                if i != pow_i and _is_log_carrier(factor, factors[pow_i].base, sp)
+            }
+            for pow_i in conditions
+        }
+        carriers_of = {pow_i: c for pow_i, c in carriers_of.items() if c}
+        if not carriers_of:
+            return node
+
+        # Group the candidates that share a carrier. Union-find over so few
+        # factors is not worth its own structure: merge any two groups whose
+        # factor sets touch, and repeat until nothing else joins.
+        groups: list[tuple[set[int], set[int]]] = [
+            ({pow_i}, {pow_i} | carriers) for pow_i, carriers in carriers_of.items()
+        ]
+        merged = True
+        while merged:
+            merged = False
+            for a in range(len(groups)):
+                for b in range(a + 1, len(groups)):
+                    if groups[a][1] & groups[b][1]:
+                        groups[a][0].update(groups[b][0])
+                        groups[a][1].update(groups[b][1])
+                        del groups[b]
+                        merged = True
+                        break
+                if merged:
+                    break
+
+        absorbed: set[int] = set()
+        for powers, members in groups:
+            raw = sp.Mul(
+                *(factors[i] for i in sorted(powers)),
+                *(factors[i] for i in sorted(members - powers)),
+                evaluate=False,
+            )
+            cond = sp.Or(*(conditions[i] for i in sorted(powers)))
+            anchor = min(powers)
+            factors[anchor] = sp.Piecewise((sp.Integer(0), cond), (raw, True))
+            absorbed.update(members - {anchor})
+
+        return sp.Mul(*(f for i, f in enumerate(factors) if i not in absorbed), evaluate=False)
+
+    return bottom_up(expr, rewrite_mul)
+
+
+def _rewrite_saturating_exp_ratio(expr):
+    """Divide ``exp(u) / (a + exp(u))^n`` through by ``exp(u)`` so it cannot
+    overflow to ``inf/inf`` (GH #388).
+
+    Every sigmoid in the corpus is written ``1/(1 + exp(−k(t − t0)))``, and
+    differentiating one w.r.t. *any* of ``k``, ``t0`` or a shift folded into the
+    exponent produces ``c·exp(u)/(1 + exp(u))^2``. That expression is bounded by
+    ``1/4`` for every real ``u`` and tends to ``0`` at both ends — but evaluated
+    literally it is ``inf/inf`` = **NaN** as soon as ``u > 709``, which the
+    dose-schedule sigmoids reach at ``t = 0`` without trying: ``BIOMD0000000636``
+    has ``steepness · onset = 100 · 10``, and ``BIOMD0000000554`` has
+    ``sr_GLY · (to + to_GLY) = 4 · 283``. The value path never notices — ``1/(1 +
+    inf)`` is a clean ``0`` — so only the differentiated form fails, and it fails
+    at the first output point.
+
+    The rewrite is the schoolbook one, exact for every finite ``u``::
+
+        exp(u)/(a + exp(u))^n  ==  1/(1 + a·exp(−u)) · (a + exp(u))^(1−n)
+
+    and no intermediate in it can overflow into a ratio of infinities: the two
+    factors are separately bounded, one saturating as ``u → +∞`` and the other as
+    ``u → −∞``, so whichever end overflows contributes ``0`` or ``1`` rather than
+    an ``inf`` that has to be cancelled against another. ``n = 1`` is included —
+    ``exp(u)/(a + exp(u))`` is the sigmoid itself, and CVODES reaches it through
+    the Jacobian — and so is any numeric ``n``, ``(a + exp(u))^(1−n)`` staying the
+    honest value (including ``+inf``) wherever the original had one.
+
+    ``a`` must be free of ``exp(u)``: ``exp(u)/(x·exp(u) + exp(u))^2`` would
+    otherwise trade one overflow for another. Nothing else is required of it, and
+    nothing is required of ``u``.
+    """
+    import sympy as sp
+    from sympy.core.traversal import bottom_up
+
+    def rewrite_mul(node):
+        if not isinstance(node, sp.Mul):
+            return node
+        if not node.has(sp.exp):
+            return node
+
+        factors = list(node.args)
+        rewritten = False
+        for num_i, num in enumerate(factors):
+            if not isinstance(num, sp.exp):
+                continue
+            for den_i, den in enumerate(factors):
+                if den_i == num_i or not isinstance(den, sp.Pow):
+                    continue
+                power = den.exp
+                if not (power.is_number and power.is_negative):
+                    continue
+                total = den.base
+                if not isinstance(total, sp.Add) or num not in total.args:
+                    continue
+                rest = sp.Add(*(term for term in total.args if term != num))
+                if rest.has(num):
+                    continue
+                factors[num_i] = 1 / (1 + rest * sp.exp(-num.args[0]))
+                factors[den_i] = sp.Pow(total, power + 1)
+                rewritten = True
+                # A Mul holds at most one ``exp(u)`` factor per ``u`` (sympy
+                # combines like exponentials on construction), so this numerator
+                # is spent; the scan moves on to the next one, which may pair
+                # with the very denominator just rewritten.
                 break
 
-        if not guarded:
+        if not rewritten:
             return node
         return sp.Mul(*factors, evaluate=False)
 
@@ -1080,7 +1222,9 @@ def sympy_to_exprtk(expr) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
+        expr = _guard_exponent_log_at_zero(
+            _rewrite_saturating_exp_ratio(_remove_removable_power_denominators(expr))
+        )
     except Exception:
         return None
     if not _printer_cache:
@@ -1293,7 +1437,9 @@ def sympy_to_c(expr, resolve_symbol) -> str | None:
     if not _is_emittable(expr):
         return None
     try:
-        expr = _guard_exponent_log_at_zero(_remove_removable_power_denominators(expr))
+        expr = _guard_exponent_log_at_zero(
+            _rewrite_saturating_exp_ratio(_remove_removable_power_denominators(expr))
+        )
     except Exception:
         return None
     printer = _c_printer()

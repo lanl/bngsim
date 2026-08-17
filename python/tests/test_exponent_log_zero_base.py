@@ -32,6 +32,12 @@ the first implementation paired one ``log`` *node* with a ``Pow`` sibling, so
 NaN'd with the guard sitting beside them. The guard now takes the whole
 logarithmic sub-product of each ``Mul``; ``TestShapesBeyondOneSiblingLog``
 covers each shape, and ``TestWhatStaysOutside`` pins what it still declines.
+
+GH #388 is the third: one logarithm can be the carrier of *two* bases —
+``ln(k·(t − T))`` diverges at either — and the scan handed it to whichever power
+it met first and then moved on, leaving the other base unguarded with nothing
+left to guard it. ``TestOneLogarithmCarriesTwoBases`` is that case, and
+``MODEL2403070001`` is where it cost a whole sensitivity column.
 """
 
 from __future__ import annotations
@@ -263,6 +269,75 @@ class TestShapesBeyondOneSiblingLog:
         assert len(branches) == 2
         assert _at(guarded, x=0.0, y=2.0, n=3.0, m=3.0) == 0.0
         assert _at(guarded, x=2.0, y=0.0, n=3.0, m=3.0) == 0.0
+
+
+class TestOneLogarithmCarriesTwoBases:
+    """GH #388. ``ln(x·y)`` diverges at ``x = 0`` and at ``y = 0`` alike, and
+    blanking logarithms — the test :func:`_is_log_carrier` makes — leaves neither
+    base behind, so it is a carrier for **both** powers beside it.
+
+    The scan used to take the first candidate power, absorb its carriers into
+    that power's ``Piecewise``, and move on. Every later base then found no
+    carrier left and went unguarded, which is not a missed optimisation: the
+    carrier it lost was the one that diverges there. Powers linked by a shared
+    carrier are grouped instead, and the group's condition is the ``Or`` of the
+    members' — each base going to zero still sends the whole product to zero,
+    because that base's power decays while its siblings stay finite.
+    """
+
+    def test_a_shared_logarithm_guards_every_base_it_carries(self):
+        import sympy as sp
+
+        x, y, n, m = sp.symbols("x y n m")
+        expr = sp.Mul(sp.Pow(x, n), sp.Pow(y, m), sp.log(x * y), evaluate=False)
+
+        assert np.isnan(_at(expr, x=0.0, y=2.0, n=3.0, m=3.0))
+        assert np.isnan(_at(expr, x=2.0, y=0.0, n=3.0, m=3.0))
+
+        guarded = _guard_exponent_log_at_zero(expr)
+        assert _at(guarded, x=0.0, y=2.0, n=3.0, m=3.0) == 0.0
+        assert _at(guarded, x=2.0, y=0.0, n=3.0, m=3.0) == 0.0
+        # and away from either zero it is still the same function
+        assert _at(guarded, x=2.0, y=3.0, n=3.0, m=3.0) == pytest.approx(
+            _at(expr, x=2.0, y=3.0, n=3.0, m=3.0), rel=1e-15
+        )
+
+    def test_the_shared_carrier_makes_one_branch_not_two(self):
+        """One product, one branch — the two powers are in the same group, so
+        the guard cannot leave half of it multiplying outside."""
+        import sympy as sp
+
+        x, y, n, m = sp.symbols("x y n m")
+        guarded = _guard_exponent_log_at_zero(
+            sp.Mul(sp.Pow(x, n), sp.Pow(y, m), sp.log(x * y), evaluate=False)
+        )
+
+        branches = [e for e in sp.preorder_traversal(guarded) if isinstance(e, sp.Piecewise)]
+        assert len(branches) == 1
+        assert branches[0].args[1][0] == x**n * y**m * sp.log(x * y)
+
+    def test_the_meal_pulse_derivative_is_finite_at_its_own_onset(self):
+        """``MODEL2403070001``'s shape, and the one that found this.
+
+        ``G_meal = σ·k^σ·(t − T)^(σ−1)·exp(−(k(t − T))^σ)`` differentiated w.r.t.
+        the shape parameter ``σ`` carries ``k^σ·(t − T)^(σ−1)·ln(k(t − T))``. The
+        logarithm was absorbed by ``k^σ`` — a rate constant that is never zero,
+        so the branch never fires — leaving ``(t − T)^(σ−1)·ln(k(t − T))`` to NaN
+        at ``t = T``, which is exactly the instant the pulse starts."""
+        import sympy as sp
+
+        sigma, k, t, T = sp.symbols("sigma k t T")
+        law = sigma * k**sigma * (t - T) ** (sigma - 1) * sp.exp(-((k * (t - T)) ** sigma))
+        deriv = sp.diff(law, sigma)
+        onset = {"sigma": 1.4, "k": 0.05, "t": 60.0, "T": 60.0}
+
+        assert np.isnan(_at(deriv, **onset))
+        assert _at(_guard_exponent_log_at_zero(deriv), **onset) == 0.0
+
+        after = {"sigma": 1.4, "k": 0.05, "t": 61.0, "T": 60.0}
+        assert _at(_guard_exponent_log_at_zero(deriv), **after) == pytest.approx(
+            _at(deriv, **after), rel=1e-14
+        )
 
 
 class TestWhatStaysOutside:

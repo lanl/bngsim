@@ -471,6 +471,94 @@ def _takes_log_of_state(node, state_names: AbstractSet[str]) -> bool:
     return False
 
 
+def _contains(node, target) -> bool:
+    """True if ``target`` occurs anywhere in ``node``."""
+    if node == target:
+        return True
+    tag = node[0]
+    if tag == "neg":
+        return _contains(node[1], target)
+    if tag in ("+", "-", "*", "/", "^"):
+        return _contains(node[1], target) or _contains(node[2], target)
+    if tag == "call":
+        return _contains(node[2][0], target)
+    return False
+
+
+def _without_factor(node, factor):
+    """``node`` with one multiplicative occurrence of ``factor`` divided out, or
+    ``None`` when ``factor`` is not a factor of ``node``.
+
+    Only the shapes a product can wear here are walked — a bare match, a unary
+    minus, either operand of a ``*``, and the numerator of a ``/``. Anything
+    else (a sum, a power, a call argument) is not a factor of the whole, and
+    saying so is what keeps the caller's rewrite an identity.
+    """
+    if node == factor:
+        return _ONE
+    tag = node[0]
+    if tag == "neg":
+        inner = _without_factor(node[1], factor)
+        return None if inner is None else _mk_neg(inner)
+    if tag == "*":
+        left = _without_factor(node[1], factor)
+        if left is not None:
+            return _mk_mul(left, node[2])
+        right = _without_factor(node[2], factor)
+        return None if right is None else _mk_mul(node[1], right)
+    if tag == "/":
+        numer = _without_factor(node[1], factor)
+        return None if numer is None else _mk_div(numer, node[2])
+    return None
+
+
+def rewrite_saturating_exp_ratio(node):
+    """Divide ``exp(w)·M / (a + exp(w))`` through by ``exp(w)`` (GH #388).
+
+    The native mirror of ``bngsim._jacobian._rewrite_saturating_exp_ratio``, and
+    it is needed for the same reason GH #336 had to defer log-of-state laws from
+    this module: the SymPy rewrite lives in ``sympy_to_c`` / ``sympy_to_exprtk``,
+    which this path bypasses by construction, so a sigmoid differentiated here
+    kept the form that evaluates ``inf/inf`` = NaN once ``|w| > 709``.
+
+    ``d/dS [v/(1 + exp(w(S)))]`` comes out of :func:`_diff` as
+    ``−(v/(1 + exp w))·((exp w·w′)/(1 + exp w))`` — two separate divisions, one
+    of which carries ``exp(w)`` in its numerator, and it is that one that is
+    ``inf/inf``. Rewriting it to ``w′/(a·exp(−w) + 1)`` is an identity for every
+    finite ``w`` and leaves both factors bounded, so the product is the true
+    ``0`` instead of a NaN.
+
+    Deferring the whole family to SymPy the way GH #336 did would also work and
+    is a much bigger hammer: an exponential of a state variable is ordinary
+    (every Arrhenius and every sigmoid has one), where a *logarithm* of one is
+    2.1% of corpus rate laws.
+    """
+    tag = node[0]
+    if tag == "neg":
+        return _mk_neg(rewrite_saturating_exp_ratio(node[1]))
+    if tag == "call":
+        return _mk_call(node[1], rewrite_saturating_exp_ratio(node[2][0]))
+    if tag not in ("+", "-", "*", "/", "^"):
+        return node
+
+    left = rewrite_saturating_exp_ratio(node[1])
+    right = rewrite_saturating_exp_ratio(node[2])
+    if tag != "/" or right[0] != "+":
+        return (tag, left, right)
+
+    for exp_node, rest in ((right[1], right[2]), (right[2], right[1])):
+        if not (exp_node[0] == "call" and exp_node[1] == "exp"):
+            continue
+        if _contains(rest, exp_node):
+            continue  # dividing through would trade one overflow for another
+        numer = _without_factor(left, exp_node)
+        if numer is None:
+            continue
+        negated = _mk_call("exp", _mk_neg(exp_node[2][0]))
+        return _mk_div(numer, _mk_add(_mk_mul(rest, negated), _ONE))
+    return (tag, left, right)
+
+
 # ─── Emitters ────────────────────────────────────────────────────────────────
 
 
@@ -557,9 +645,13 @@ def _emit_c_pow(b, e, resolve_symbol) -> str:
 
 def emit_exprtk(node) -> str | None:
     """Emit ``node`` as an ExprTk string, or ``None`` if a non-finite literal
-    slipped through (a degenerate derivative → defer to FD)."""
+    slipped through (a degenerate derivative → defer to FD).
+
+    The overflow rewrite is applied here rather than in ``_diff`` so that both
+    emitters print the same arithmetic, mirroring where the SymPy path applies
+    its own (GH #388)."""
     try:
-        s = _emit_exprtk(node)
+        s = _emit_exprtk(rewrite_saturating_exp_ratio(node))
     except _NativeError:
         return None
     if _NAN_INF_RE.search(s):
@@ -571,7 +663,7 @@ def emit_c(node, resolve_symbol) -> str | None:
     """Emit ``node`` as C (``math.h``) source via ``resolve_symbol``, or
     ``None`` on an unresolvable symbol / non-finite literal."""
     try:
-        s = _emit_c(node, resolve_symbol)
+        s = _emit_c(rewrite_saturating_exp_ratio(node), resolve_symbol)
     except _NativeError:
         return None
     if _NAN_INF_RE.search(s):
