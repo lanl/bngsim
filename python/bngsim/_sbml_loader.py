@@ -4110,6 +4110,85 @@ def _build_model_from_sbml_doc(doc):
     # through. Refused instead, which leaves the fold where §0 put it.
     _param_pool -= _ar_targets
 
+    # ...but an AR target whose rule is a constant expression over the pool is a
+    # symbol the lift CAN rest on, provided it rests on the rule's BODY and not
+    # on the target's slot (GH #385).
+    #
+    # The paragraph above is about the slot: it is function-backed, the engine
+    # rewrites it from the rule before every derivative evaluation, so a lifted
+    # expression *reading* it re-derives from the rule's value at the last
+    # integrated point. Substituting the rule's own expression sidesteps that
+    # entirely — the emitted text never mentions the target — and when the
+    # substituted body reaches nothing but constant parameters, the two readings
+    # coincide anyway: such a rule cannot move, so its value at the last
+    # integrated point IS its t=0 fold. `BIOMD0000000570`'s `O2c_bar` is
+    # excluded by exactly that test, its rule reading state.
+    #
+    # Without this, `BIOMD0000000587` classifies `ModelValue_1` and
+    # `ModelValue_3` as PRIMARY — independent knobs — when the SBML says
+    # `ModelValue_1 := Alpha := ModelValue_0/(24*3.344) := Theta/80.256` and
+    # `ModelValue_3 := rho_b := ModelValue_2/ModelValue_18 := rho_f/f`. The
+    # values are right either way; what is lost is every sensitivity term routed
+    # through them, which on that model is most of `Theta`'s column and half of
+    # `rho_f`'s — enough to flip two of the three signs.
+    #
+    # Resolved to a fixpoint so a rule may rest on another constant rule, with
+    # the pass count bounding a reference cycle (illegal SBML, but a cycle here
+    # would otherwise not terminate).
+    _ar_math = {
+        sbml_model.getRule(j).getVariable(): sbml_model.getRule(j).getMath()
+        for j in range(sbml_model.getNumRules())
+        if sbml_model.getRule(j).isAssignment() and sbml_model.getRule(j).getMath() is not None
+    }
+    _ar_const_names: dict[str, set[str]] = {}  # AR target → pool symbols it reaches
+    for _ in range(len(_ar_math) + 1):
+        _grew = False
+        for _var, _m in _ar_math.items():
+            if _var in _ar_const_names or _m is None or _ast_references_time(_m):
+                continue
+            _n = _ast_name_set(_m)
+            # Every symbol is a pool parameter, or another rule already known
+            # constant. A species, a compartment, or an unresolved rule stops it.
+            if not _n <= (_param_pool | _ar_const_names.keys()):
+                continue
+            _closure: set[str] = set()
+            for _s in _n:
+                _closure |= {_s} & _param_pool
+                _closure |= _ar_const_names.get(_s, set())
+            _ar_const_names[_var] = _closure
+            _grew = True
+        if not _grew:
+            break
+    # Bottom-up, so a substitution string carries no assignment-rule name of its
+    # own — the whole point being that the lifted text never mentions a
+    # function-backed slot. `_inner` is taken against every AR target rather than
+    # against the survivors, so a rule whose dependency fails to convert is never
+    # emitted with that dependency left as a bare reference: it simply never
+    # becomes ready, and the sweep below drops it.
+    _ar_const_expr: dict[str, str] = {}
+    for _ in range(len(_ar_const_names) + 1):
+        _grew = False
+        for _var in list(_ar_const_names):
+            if _var in _ar_const_expr:
+                continue
+            _inner = _ast_name_set(_ar_math[_var]) & _ar_targets
+            if not _inner <= _ar_const_expr.keys():
+                continue
+            try:
+                _ar_const_expr[_var] = _ast_to_exprtk_with_funcdefs(
+                    _ar_math[_var],
+                    func_defs,
+                    local_params={k: _ar_const_expr[k] for k in _inner} or None,
+                )
+            except Exception as e:  # noqa: BLE001 - the symbol simply stays unliftable
+                logger.debug("assignmentRule for %s not usable as a lift body: %s", _var, e)
+            _grew = True
+        if not _grew:
+            break
+    for _var in list(_ar_const_names):
+        if _var not in _ar_const_expr:
+            _ar_const_names.pop(_var)
+
     # Candidates: a parameter initialAssignment over parameters alone. An
     # assignment rule recomputes its target every step, so the IA fold is only a
     # t=0 value and the rule — not this expression — is what a write has to
@@ -4180,20 +4259,27 @@ def _build_model_from_sbml_doc(doc):
         _names = _ast_name_set(_m)
         if not _names or _ast_references_time(_m):
             continue
-        if not _names <= (_param_pool | _species_ic_expr.keys()):
+        # A constant assignment rule is substituted by its body (GH #385), so it
+        # counts as whatever pool symbols that body reaches — never as itself.
+        _ar_subs = {_n: _ar_const_expr[_n] for _n in _names & _ar_const_expr.keys()}
+        _expanded = set()
+        for _n in _names:
+            _expanded |= _ar_const_names[_n] if _n in _ar_subs else {_n}
+        if not _expanded <= (_param_pool | _species_ic_expr.keys()):
             continue
-        _sp_subs = {_n: _species_ic_expr[_n] for _n in _names & _species_ic_expr.keys()}
-        if _sp_subs and _ast_has_rateof(_m, _ic_rateof_names):
+        _sp_subs = {_n: _species_ic_expr[_n] for _n in _expanded & _species_ic_expr.keys()}
+        if (_sp_subs or _ar_subs) and _ast_has_rateof(_m, _ic_rateof_names):
             continue
         try:
             _lift_expr[_pid] = _ast_to_exprtk_with_funcdefs(
-                _m, func_defs, local_params=_sp_subs or None
+                _m, func_defs, local_params={**_sp_subs, **_ar_subs} or None
             )
         except Exception as e:  # noqa: BLE001 - fall through to the refusal
             logger.debug("initialAssignment for %s not lifted: %s", _pid, e)
             continue
-        # Species are substituted, not referenced, so they are not lift deps.
-        _lift_deps[_pid] = _names - _species_ic_expr.keys()
+        # Species are substituted, not referenced, so they are not lift deps; nor
+        # are the assignment-rule targets the substitution just erased.
+        _lift_deps[_pid] = _expanded - _species_ic_expr.keys()
 
     # Kahn, with SBML declaration order as the tie-break so the emitted parameter
     # list is deterministic. Whatever is still pending when nothing is ready sits
