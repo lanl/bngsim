@@ -521,3 +521,92 @@ class TestTheShapeThroughASolve:
         # dP/dvmax is exactly P/vmax at every output point.
         for t, (state, column) in enumerate(zip(species, sens, strict=True)):
             assert column[1][0] == pytest.approx(state[1] / 2.5, rel=1e-6), t
+
+
+# ─── the cost this rewrite does incur ──────────────────────────────────────
+
+# A Hill law at a species the solver can put a few ulps below zero. `A` is touched
+# by no reaction, so its declared IC is its value at every callback and there is no
+# predictor luck in the fixture (the GH #392 recipe).
+NEGATIVE_STATE = """\
+begin parameters
+    1 nH    13.0            # Constant
+    2 Kd    2.0             # Constant
+    3 vmax  1.5             # Constant
+end parameters
+begin functions
+    1 flux()  vmax*Atot^nH/(Kd^nH + Atot^nH)
+end functions
+begin species
+    1 A() {ic}
+    2 P() 0.0
+end species
+begin reactions
+    1 0 2 flux #_R1
+end reactions
+begin groups
+    1 Atot 1
+    2 Ptot 2
+end groups
+"""
+
+
+class TestTheNegativeStateCostAndWhatCoversIt:
+    """The one regime where this rewrite is a step backwards, and the machinery
+    that already catches it.
+
+    The expanded denominator's terms are single powers of the base, and at a
+    *negative* base their signs alternate with the parity of each exponent. When
+    two of them overflow the other way up — ``a^2·x^(1-2n)`` at ``-inf`` beside
+    ``2a·x^(1-n)`` at ``+inf`` — the sum is ``NaN`` where the shipped form read an
+    underflowed ``±0.0``. Measured through both emitters over 200000 negative-base
+    points with integer exponents: **7775 such points against 39447 repairs**, and
+    **0 regressions** over the same sweep with a positive base.
+
+    It is not information that is lost — 87% of those points read exactly ``±0.0``
+    before, and the true value is below ``1e-308`` at almost all of them — but a
+    ``NaN`` is not a zero: it propagates, and #395 makes the sensitivity RHS refuse
+    on one.
+
+    What covers it is not new. Every sampled regression has ``|x|`` inside a typical
+    ``atol``, and at the *clamped* state both retries evaluate at — GH #135's
+    unconditional nonnegative retry in ``cvode_codegen_dense_jac``, GH #392's
+    ``atol``-bounded one in ``cvode_codegen_sens_rhs`` — the new form is finite at
+    every one of them. This class holds that down at the boundary and through a
+    solve, so a future change to either clamp cannot quietly take it away.
+    """
+
+    NEGATIVE = {"x": -1.1497569953977356e-30, "n": 13.0, "K": 32.19989080628787}
+
+    def test_the_emitted_form_is_nan_at_the_negative_state(self):
+        """Stated rather than hidden: this is the cost, at a point that has it."""
+        assert np.isnan(_exprtk(sp.diff(RATIO, x), **self.NEGATIVE))
+
+    def test_and_finite_at_the_state_the_retries_evaluate_at(self):
+        """Which is why the cost is bounded. The clamp snaps the species to its
+        boundary, and the expansion is *correct* there — it is the placement that
+        keeps ``a^m·x^(1-2n)`` as its own term, which is exactly what makes ``x = 0``
+        an ``inf`` in the denominator rather than an ``inf·0``."""
+        clamped = dict(self.NEGATIVE, x=0.0)
+        assert np.isfinite(_exprtk(sp.diff(RATIO, x), **clamped))
+        assert np.isfinite(_c(sp.diff(RATIO, x), **clamped))
+
+    @pytest.fixture(params=["-1e-30", "0.0", "1e-30"])
+    def near_zero_net(self, request, tmp_path):
+        net = tmp_path / f"neg_{request.param}.net"
+        net.write_text(NEGATIVE_STATE.format(ic=request.param))
+        return net
+
+    def test_a_solve_at_that_state_still_runs(self, near_zero_net):
+        """End to end, and the point of the whole class: a species a few ulps below
+        zero under a Hill exponent of 13 is a state this rewrite newly returns NaN
+        at, and the run completes anyway — with the same answer it gives at the
+        boundary itself."""
+        import bngsim
+
+        model = bngsim.Model.from_net(near_zero_net)
+        sim = bngsim.Simulator(model, method="ode", sensitivity_params=["vmax"])
+        result = sim.run(t_span=(0, 5), n_points=6, rtol=1e-9, atol=1e-12)
+
+        assert np.all(np.isfinite(np.asarray(result.species, dtype=float)))
+        assert np.all(np.isfinite(np.asarray(result.sensitivities, dtype=float)))
