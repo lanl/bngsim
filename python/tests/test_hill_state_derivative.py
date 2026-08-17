@@ -46,7 +46,7 @@ from bngsim._jacobian import (  # noqa: E402
     sympy_to_exprtk,
 )
 
-x, n, K, v, p = sp.symbols("x n K v p")
+x, n, K, p = sp.symbols("x n K p")
 
 RATIO = x**n / (K**n + x**n)
 # The issue's own point: x^n is an ordinary double and its square is not.
@@ -157,15 +157,22 @@ class TestTheMeasuredDefect:
 
 
 class TestWhyTheLeftoverGoesInTheDenominator:
-    """``x^(2n-1)/(K^n + x^n)^2`` is ``(x^n)^2·x^-1`` over the sum, and there are
-    three places to put that ``x^-1``. Two of them buy this NaN with another one,
-    and both are cheap to demonstrate — which is why the shipped rewrite expands
-    the denominator instead of factoring it.
+    """``x^(2n-1)/(K^n + x^n)^2`` is ``(x^n)^2·x^-1`` over the sum, and where that
+    ``x^-1`` goes is the whole design. Three placements were measured and the
+    shipped rewrite is the third; the other two are cheap to demonstrate, which is
+    the point of holding them down here rather than in a commit message.
 
-    * Beside the term, ``x^-1·(f/(K^n + f))^2``: ``inf·0`` at ``x = 0``. That is
-      the removable ``0/0`` GH #96's fold exists to remove, handed straight back.
-    * Spread as an ``m``-th root through the factors,
-      ``1/(K^n·x^(1/2-n) + sqrt(x))^2``: correct at both ends, and ``NaN`` at a
+    * **Beside the term**, ``x^-1·(f/(K^n + f))^2``: ``inf·0`` at ``x = 0``. That
+      is the removable ``0/0`` GH #96's fold exists to remove, handed straight
+      back — the trade the issue measured when it tried reordering the two
+      rewrites.
+    * **Divided out one ``f`` at a time**, the issue's own first proposal,
+      ``x^(n-1)·(1/(1 + K^n·x^-n))·(K^n + x^n)^-1``: correct at ``x = 0``, correct
+      at a negative state, and still ``NaN`` once ``x^n`` itself overflows — the
+      leading ``x^(n-1)`` is ``inf`` beside a ``0``. It repairs the band where only
+      the *square* has overflowed and leaves the band above it.
+    * **Spread as an ``m``-th root through the factors**,
+      ``1/(K^n·x^(1/2-n) + sqrt(x))^2``: correct at both of those, and ``NaN`` at a
       negative state where the ``pow(x, 2n-1)`` it replaces is an ordinary number.
       A species dipping below zero mid-solve is routine, and an *integer* Hill
       exponent — the common case — is exactly where C's ``pow`` defines it.
@@ -186,6 +193,20 @@ class TestWhyTheLeftoverGoesInTheDenominator:
         assert self._at(beside, **zero) != self._at(beside, **zero)  # NaN
         assert self._at(self.TERM, **zero) == 0.0  # what it has to be
         assert _exprtk(self.TERM, **zero) == 0.0
+
+    def test_dividing_out_one_f_at_a_time_stops_at_the_next_overflow(self):
+        """The issue's own first proposal, verbatim. It is not wrong anywhere —
+        it is incomplete: ``x^(n-1)`` overflows whenever ``x^n`` does, so above
+        the band it repairs there is a second one it does not."""
+        one_at_a_time = x ** (n - 1) * sp.Pow(1 + K**n * x**-n, -1) * sp.Pow(K**n + x**n, -1)
+        beyond = {"x": 1e40, "n": 10.0, "K": 2.0}
+
+        # In the issue's own band it is a repair, like the shipped spelling.
+        assert np.isnan(self._at(self.TERM, **OVERFLOWING))
+        assert self._at(one_at_a_time, **OVERFLOWING) == pytest.approx(1e-21, rel=1e-9)
+        # One band up, both the numerator and the reciprocal have run out.
+        assert self._at(one_at_a_time, **beyond) != self._at(one_at_a_time, **beyond)
+        assert np.isfinite(_exprtk(self.TERM, **beyond))
 
     def test_the_leftover_spread_as_a_root_is_nan_at_a_negative_state(self):
         rooted = sp.Pow(K**n * x ** (sp.Rational(1, 2) - n) + sp.sqrt(x), -2)
@@ -333,33 +354,68 @@ class TestTheNativeMirror:
     the whole of the analytical Jacobian — guarding only the SymPy side fixes
     ∂f/∂p and lets the identical NaN back in one term later.
 
-    Its differentiator writes ``n·S^(n-1)`` directly rather than ``n·S^n/S``, so
-    there is no fold here and no reordering question: the numerator simply arrives
-    one power short of the summand, which is the same shortfall by another route.
+    It reaches the same shortfall by another route. Its differentiator writes
+    ``n·S^(n-1)`` directly rather than ``n·S^n/S``, so there is no fold here and no
+    reordering question — the numerator simply arrives one power short of the
+    summand it sits over.
+
+    **Which way the ratio faces decides whether the model survives to notice.** An
+    *activating* ``S^n/(K^n + S^n)`` has no reachable case on this path: the
+    numerator ``S^(n-1)`` can only overflow once ``S^n`` has, and by then the rate
+    law's own value is ``inf/inf`` too, so the run is already lost. An *inhibitory*
+    ``1/(1 + (S/K)^n)`` — the same family written the other way round, and just as
+    common — evaluates to a clean ``0`` at exactly the state where its derivative
+    is ``NaN``. That is the one the solve below runs, and it is why this half is
+    not merely the SymPy half's mirror image.
     """
 
     LAW = "vmax*S^nH/(KH^nH + S^nH)"
+    INHIBITORY = "vmax/(1 + (S/KH)^nH)"
     CONSTS = frozenset({"vmax", "nH", "KH"})
-    # nH = 8: at S = 1e40, S^nH overflows and S^(nH-1) does not — GH #393's point,
-    # already fixed. At S = 1e50 BOTH overflow, and that is this issue's.
     BASE = {"vmax": np.float64(1.5), "nH": np.float64(8.0), "KH": np.float64(2.0)}
 
-    def _node(self):
-        derivs = _sat.differentiate_rate_law_native(self.LAW, {}, {"S"}, self.CONSTS)
+    def _node(self, law=None, consts=None):
+        derivs = _sat.differentiate_rate_law_native(
+            law or self.LAW, {}, {"S"}, consts or self.CONSTS
+        )
         assert derivs is not None
         return derivs["S"]
 
-    def _eval(self, text, S):
+    def _eval(self, text, S, **over):
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             return float(
                 eval(  # noqa: S307 - this module's own emitted text
                     text.replace("^", "**"),
                     {"exp": np.exp},
-                    dict(self.BASE, S=np.float64(S)),
+                    dict(self.BASE, **over, S=np.float64(S)),
                 )
             )
 
-    def test_both_powers_overflowing_was_nan_and_is_now_finite(self):
+    def test_the_inhibitory_ratio_is_nan_where_its_own_value_is_a_clean_zero(self):
+        """The reachable case, and the premise of ``TestTheShapeThroughASolve``:
+        ``1/(1 + inf)`` is ``0`` and the run continues, while ``(S/K)^(n-1)`` over
+        the same ``1 + (S/K)^n`` is ``inf/inf``."""
+        node = self._node(self.INHIBITORY)
+        point = {"nH": np.float64(10.0), "KH": np.float64(1.0)}
+
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            law_value = float(
+                eval(  # noqa: S307
+                    self.INHIBITORY.replace("^", "**"),
+                    {},
+                    dict(self.BASE, **point, S=np.float64(1e35)),
+                )
+            )
+        assert law_value == 0.0  # the model runs straight past it
+
+        assert np.isnan(self._eval(_sat._emit_exprtk(node), 1e35, **point))
+        assert np.isfinite(self._eval(_sat.emit_exprtk(node), 1e35, **point))
+
+    def test_the_activating_ratio_is_repaired_too(self):
+        """``S^(nH-1)`` and ``S^nH`` both ``inf`` at ``S = 1e50``. The rate law is
+        past saving there — its own value is ``inf/inf`` — but the two emitters
+        must still agree about the derivative, which is the whole reason this
+        module carries a copy of the rewrite at all (GH #336's lesson)."""
         node = self._node()
         assert np.isnan(self._eval(_sat._emit_exprtk(node), 1e50))
         assert np.isfinite(self._eval(_sat.emit_exprtk(node), 1e50))
@@ -384,25 +440,30 @@ class TestTheNativeMirror:
 
 # ─── the shape through a solve ─────────────────────────────────────────────
 
-# A Hill law whose substrate sits in the band: nH = 10 and S = 1e20 put S^nH at
-# 1e200 — an ordinary double — and S^(2·nH-1) at 1e380, which is not. The value
-# path never notices, the ratio being saturated at 1, so the trajectory is a clean
-# straight line and only the differentiated form fails.
-HILL_STATE = """\
+# An inhibitory Hill switch whose substrate starts far above its threshold and
+# decays through it. At t = 0, `(S/KH)^nH` is 1e350 — `inf` — so the flux is a
+# clean `0` and the trajectory never notices; the Jacobian's `∂flux/∂S`, this
+# issue's shape, is `inf/inf`. By t = 10 the substrate has decayed to O(1) and the
+# switch has opened, so the run has a value to be right about as well as a NaN to
+# avoid.
+INHIBITORY_SWITCH = """\
 begin parameters
     1 nH    10.0            # Constant
     2 KH    1.0             # Constant
     3 vmax  2.5             # Constant
+    4 kdec  8.0             # Constant
+    5 one   1.0             # Constant
 end parameters
 begin functions
-    1 flux()  vmax*Stot^nH/(KH^nH + Stot^nH)
+    1 flux()  {law}
 end functions
 begin species
-    1 S() 1e20
+    1 S() 1e35
     2 P() 0.0
 end species
 begin reactions
-    1 0 2 flux #_R1
+    1 1 0 kdec #_R1
+    2 0 2 flux #_R2
 end reactions
 begin groups
     1 Stot 1
@@ -410,31 +471,46 @@ begin groups
 end groups
 """
 
+# The same law through each emitter. `cos(one - one)` is 1, so the arithmetic is
+# untouched — but `cos` is not in the native differentiator's whitelist, so that
+# law defers to SymPy and exercises `sympy_to_c`'s copy of the rewrite instead of
+# `_saturable_jacobian`'s.
+LAWS = {
+    "native": "vmax/(1 + (Stot/KH)^nH)",
+    "sympy": "vmax*cos(one - one)/(1 + (Stot/KH)^nH)",
+}
+
 
 class TestTheShapeThroughASolve:
-    @pytest.fixture
-    def hill_net(self, tmp_path):
-        net = tmp_path / "hill_state.net"
-        net.write_text(HILL_STATE)
+    @pytest.fixture(params=sorted(LAWS))
+    def switch_net(self, request, tmp_path):
+        net = tmp_path / f"inhibitory_{request.param}.net"
+        net.write_text(INHIBITORY_SWITCH.format(law=LAWS[request.param]))
         return net
 
-    def test_the_sensitivity_solve_is_finite_from_the_first_output_point(self, hill_net):
-        """End to end. ``S`` is large enough that the Jacobian's own diagonal —
-        ∂flux/∂S, which is exactly this issue's shape — overflows, and the
-        ``J·yS`` half of the sensitivity RHS carries it."""
+    def test_the_sensitivity_solve_runs_and_is_finite(self, switch_net):
+        """End to end, through both emitters.
+
+        Without the rewrite this does not return a NaN — CVODES refuses the run at
+        the first call of the sensitivity RHS (GH #395), ``CV_FIRST_SRHSFUNC_ERR``
+        at ``t = 0``, on both paths.
+        """
         import bngsim
 
-        model = bngsim.Model.from_net(hill_net)
+        model = bngsim.Model.from_net(switch_net)
         sim = bngsim.Simulator(model, method="ode", sensitivity_params=["vmax"])
         result = sim.run(t_span=(0, 10), n_points=11, rtol=1e-9, atol=1e-12)
 
         species = np.asarray(result.species)
-        assert np.all(np.isfinite(species))
-        # The ratio is saturated, so P accumulates at vmax.
-        assert species[-1][1] == pytest.approx(25.0, rel=1e-6)
-
         sens = np.asarray(result.sensitivities)
+        assert np.all(np.isfinite(species))
         assert np.all(np.isfinite(sens))
-        # dP/dvmax = t for a saturated ratio, and it is the column the Jacobian
-        # entry under test propagates.
-        assert sens[-1][1][0] == pytest.approx(10.0, rel=1e-5)
+
+        # The switch really did open: S decayed from 1e35 to O(1) and P moved.
+        assert species[-1][0] == pytest.approx(1.8048527, rel=1e-5)
+        assert species[-1][1] > 0.0
+
+        # An oracle that needs no reference run: the flux is linear in vmax, so
+        # dP/dvmax is exactly P/vmax at every output point.
+        for t, (state, column) in enumerate(zip(species, sens, strict=True)):
+            assert column[1][0] == pytest.approx(state[1] / 2.5, rel=1e-6), t
