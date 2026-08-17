@@ -307,6 +307,38 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A Hill exponent's sensitivity column no longer NaNs because the predictor put
+  its base a few ulps below zero (issue #392).** Differentiating a power law
+  w.r.t. its exponent produces `base^n·ln(base)`, and `_guard_exponent_log_at_zero`
+  (issues #310/#317) replaces that product with its limit — but the condition it
+  emits is `base == 0`, and the solver does not hand it a base of exactly zero.
+  `BIOMD0000000833`'s `S35` is `0.0` at `t = 0` and non-negative at every one of
+  2001 output points, and CVODES' predictor puts it at `-3.75e-36` between two of
+  them, twenty-four orders below the run's own `atol`. `pow(x, 4.0)` is finite
+  there so the trajectory never notices; `log(x)` is not, and `x == 0.0` is false,
+  so the branch never fires.
+
+  The compiled sensitivity RHS now retries at a state whose sub-`atol` negative
+  components are snapped to zero, which is the issue #135 conditional clamp the
+  value RHS and the analytical Jacobian have both had for years, applied where the
+  run's own tolerance is known. Nothing in the emitted C changes, so no cached
+  artifact is invalidated, and the retry is reached only from an already
+  non-finite `ySdot` — on a corpus A/B of 166 models, both arms, **nothing moved**.
+
+  Telling "numerically zero" from "negative" needs a scale the emitter does not
+  have at build time, which is why this is a retry rather than a wider condition:
+  `base <= 0` in the emitter would answer a confident `0` for a base that is
+  *genuinely* negative — `BIOMD0000000374` carries a species `V_membrane = -61` —
+  where `∂/∂n base^n` does not exist at all. A component negative by more than
+  `atol` is left alone and its NaN still reaches the issue #384/#386 refusal.
+
+  Issue #395's recoverable return already rescued the two witnesses by cutting `h`
+  until the predictor stopped overshooting, so this is mostly a matter of how much
+  work that cost: on `MODEL0911120000` the sensitivity corrector failed **1464**
+  times and now fails none, Jacobian evaluations drop 2730 → 356 and steps
+  4689 → 2692. The tensors agree to 2.9e-07 across every column that carries
+  signal. `BNGSIM_SENS_CLAMP_NUMERIC_ZERO=0` restores the previous behaviour.
+
 - **Running the test suite no longer fills the developer's own bngsim caches
   (issue #372).** A pytest session redirects both content-addressed caches —
   compiled `.so` artifacts and BNG2.pl-generated networks — from `~/.cache/bngsim`
