@@ -150,6 +150,66 @@ INVALID_REFERENCE: dict[str, dict] = {
     # runtime write reproduces all five reported numbers to within 5% and in the
     # right proportions. That is the mechanism, not a confirmed reconstruction —
     # the exact recipe was not recovered, and nothing here depends on it.
+    #
+    # MODEL0910846879 is authored on BOTH regimes because the defect is in the
+    # state trajectory: the sens row cannot agree while the x(t) it is taken about
+    # already differs by 92%, so disposing of only `:sens` would leave the `:ode`
+    # row scoring against bngsim for the same one cause.
+    #
+    # Surfaced by issue #382. That fix admits the model's run-constant conditions
+    # and so moved it off CVODES' difference quotient, which is what put a
+    # comparison in front of this row — the DIFF itself is older, and identical
+    # before and after (max_rel 0.918 ode / 1.0 sens either way).
+    "MODEL0910846879:ode": {
+        "issue": "GH #382",
+        "max_rel": 0.9184,
+        "reason": (
+            "AMICI evaluates one <assignmentRule> piecewise as 0 for the whole run "
+            "while its own operand is positive. The oracle here is not another "
+            "engine but the model's CLOSED FORM, which is stronger: the model has "
+            "no reactions and one state, so it reduces exactly. Every assignment "
+            "rule is over constants, giving TVZ = 9.341479411e-4, and the lone "
+            "rateRule dTVD/dt = (TVZ + DR - TVD)/TVDDL then integrates to "
+            "TVD(t) = TVZ + (TVD0 - TVZ)*exp(-t/30) with TVD0 = 9.80838e-4. bngsim "
+            "matches that to 1.9e-9 (integration tolerance) at every output point. "
+            "AMICI decays to 3.499040825e-5 at t=100, which is TVD0*exp(-100/30) to "
+            "10 significant figures — the trajectory for TVZ = 0 exactly. "
+            "AMICI's own expression vector says the same thing internally and is "
+            "the second half of the evidence: it computes TVZ1 = 9.3414794e-4 "
+            "correctly at every time point, then reports TVZ = "
+            "piecewise(0, TVZ1 < 0, TVZ1) as 0 at every time point — the otherwise "
+            "branch of a condition that is false throughout. The control is in the "
+            "same model: AHTH = piecewise(0, AHTH1 < 0, AHTH1) is structurally "
+            "identical and AMICI gets it right (9.5283044e-4), so this is not the "
+            "piecewise shape as such. What separates the two is that TVZ's "
+            "condition reads TVZ1, which is itself a sum over another piecewise "
+            "(AHTH), while AHTH's condition reads a plain expression. Reported "
+            "upstream as AMICI-dev/AMICI#3233, with a minimized reproducer: when a "
+            "piecewise appears inside another piecewise's CONDITION, AMICI takes "
+            "the wrong branch of the outer one. Changing the inner piecewise's "
+            "first-piece value -- which cannot change the inner value, since its "
+            "own condition is false either way -- flips the outer result, which is "
+            "what pins the mechanism. "
+            "No RoadRunner run is needed or would add anything: a closed form is "
+            "not an engine's opinion, and bngsim is not adjudicating its own case "
+            "because the form is derived from the SBML text by hand."
+        ),
+    },
+    "MODEL0910846879:sens": {
+        "issue": "GH #382",
+        "max_rel": 1.0,
+        "reason": (
+            "Downstream of the ':ode' entry on this model, and disposed of for the "
+            "same reason: AMICI holds one <assignmentRule> piecewise (TVZ) at 0 "
+            "though its operand TVZ1 is positive throughout, so its trajectory "
+            "relaxes toward 0 instead of toward TVZ. The row's own comment records "
+            "'state DIFF' with state_max_rel = 0.918 — a sensitivity tensor cannot "
+            "be compared when the trajectory it is differentiated about is already "
+            "92% apart, so the 1.0 here carries no information about d(x)/dp. See "
+            "the ':ode' entry for the closed form and for AMICI's internal "
+            "inconsistency, which is the whole of the evidence."
+        ),
+    },
     "MODEL2105110001:sens": {
         "issue": "GH #380",
         "max_rel": 1.0,

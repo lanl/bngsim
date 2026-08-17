@@ -73,17 +73,59 @@ triage: a `TOO_MUCH_WORK` row is *usually* a budget that can be raised (6 of the
 models in #339 were), and these two are the counterexample that shows the status
 code alone does not settle it.
 
-## Class 4 — AMICI answers, and the answer is unusable (1, forward-sensitivity sweep)
+## Class 4 — AMICI answers, and the answer is unusable (2 models, 3 rows)
 
 Classes 1–3 are AMICI *failing to produce* a result. This is the harder kind: AMICI
-runs, returns finite numbers, and those numbers are wrong against the SBML. It is
-triaged out of #325 and recorded as an `INVALID_REFERENCE` entry in
-`amici_dispositions.py` (issue #380), so the row is a non-scoring
-`REFERENCE_FAILED`/`invalid_result` instead of a bngsim `DIFF`. Worth reporting upstream
-to AMICI-dev.
+runs, returns finite numbers, and those numbers are wrong against the SBML. Each is
+recorded as an `INVALID_REFERENCE` entry in `amici_dispositions.py` (issue #380), so the
+row is a non-scoring `REFERENCE_FAILED`/`invalid_result` instead of a bngsim `DIFF`. Both
+are worth reporting upstream to AMICI-dev.
 
-Measured with **RoadRunner as the independent third engine** and the perturbation applied
-to the **SBML text**, so no engine can discard the write.
+The oracle is never bngsim. Usually that means **RoadRunner as the independent third
+engine**, with the perturbation applied to the **SBML text** so no engine can discard the
+write. Where a model reduces exactly, the **closed form** serves instead, and is stronger:
+there is no third implementation left to be wrong.
+
+### `MODEL0910846879` — AMICI holds an `<assignmentRule>` piecewise at 0
+
+Authored on **both** regimes (`:ode` and `:sens`), because the defect is in the state
+trajectory and the sensitivity row is downstream of it — a tensor cannot be compared when
+the `x(t)` it is differentiated about is already 92% apart.
+
+This model has no reactions and one state, so it reduces exactly. Every assignment rule is
+over constants, giving `TVZ = 9.341479411e-4`, and the lone rateRule
+`dTVD/dt = (TVZ + DR − TVD)/TVDDL` integrates to
+`TVD(t) = TVZ + (TVD0 − TVZ)·exp(−t/30)` with `TVD0 = 9.80838e-4`.
+
+| t | closed form | bngsim | AMICI |
+|---|---|---|---|
+| 0 | 9.80838e-4 | 9.80838e-4 | 9.80838e-4 |
+| 50 | 9.429665541e-4 | 9.429665538e-4 | **1.852563686e-4** |
+| 100 | 9.35813562e-4 | 9.358135621e-4 | **3.499040825e-5** |
+
+bngsim matches to 1.9e-9 (integration tolerance). AMICI's `3.499040825e-5` is
+`TVD0·exp(−100/30)` to 10 significant figures — the trajectory for `TVZ = 0` exactly.
+
+**AMICI's own expression vector is the second half of the evidence.** It computes
+`TVZ1 = 9.3414794e-4` correctly at every time point, then reports
+`TVZ = piecewise(0, TVZ1 < 0, TVZ1)` as `0` at every time point — the `otherwise` branch of
+a condition that is false throughout. The control is in the same model:
+`AHTH = piecewise(0, AHTH1 < 0, AHTH1)` is structurally identical and AMICI gets it right
+(`9.5283044e-4`). So it is not the piecewise shape as such. What separates the two is that
+`TVZ`'s condition reads `TVZ1`, which is itself a sum over another piecewise (`AHTH`),
+while `AHTH`'s condition reads a plain expression.
+
+**Reported upstream: [AMICI-dev/AMICI#3233](https://github.com/AMICI-dev/AMICI/issues/3233).**
+Minimized there to four assignment rules and one state, with the mechanism pinned: a
+piecewise inside another piecewise's *condition* makes the outer one take the wrong
+branch. Changing the inner piecewise's first-piece value flips the outer result, even
+though that value cannot change the inner value (its own condition is false either way),
+which is what shows the outer condition is what sees the wrong thing. Replacing the inner
+operand with a literal also fixes it, so the operand has to be a rule-defined parameter.
+
+Surfaced by issue #382, which moved this model off CVODES' difference quotient and so put
+a comparison in front of the row. The DIFF itself is older and is identical before and
+after that change (`max_rel` 0.918 ode / 1.0 sens either way).
 
 ### `MODEL2105110001` — AMICI computes no switch-time (saltation) term
 
