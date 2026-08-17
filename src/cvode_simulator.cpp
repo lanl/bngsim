@@ -379,6 +379,15 @@ struct CvodeUserData {
     // would make the hatch unsettable from a test that has already run one
     // solve). BNGSIM_SENS_NONFINITE_RECOVER=0 restores the pre-#395 behaviour.
     bool sens_recover_nonfinite = true;
+
+    // GH #392: the per-species absolute tolerance the sensitivity RHS uses to
+    // decide that a negative state component is numerically zero rather than
+    // negative, and the clamped copy it evaluates at. Both empty on a run with
+    // no sensitivities, and on one whose sensitivity RHS never goes non-finite.
+    // BNGSIM_SENS_CLAMP_NUMERIC_ZERO=0 leaves the tolerance vector empty, which
+    // is what turns the retry off.
+    std::vector<double> sens_zero_atol;
+    std::vector<double> sens_zero_scratch;
 };
 
 // CVODE's error-weight callback for the tracking absolute tolerance (issue
@@ -420,6 +429,60 @@ static inline double *clamp_state_nonneg(CvodeUserData *data, const double *y_pt
     for (int i = 0; i < ns; ++i)
         s[i] = y_ptr[i] > 0.0 ? y_ptr[i] : 0.0;
     return s;
+}
+
+// The sensitivity RHS's counterpart, and it snaps a strictly SMALLER set of
+// components (GH #392).
+//
+// Differentiating a Hill/power law w.r.t. its exponent produces
+// `base^n·ln(base)`, and `_guard_exponent_log_at_zero` (GH #310/#317) replaces
+// that product by its limit `0` — but the condition it emits is `base == 0`,
+// because the limit statement is about the non-negative concentration domain the
+// emitter assumes. The solver does not hand it a base of exactly zero. It hands
+// it a base a few ulps the wrong side of zero, where `pow(base, 4.0)` is finite
+// and `log(base)` is NaN, so the branch never fires: BIOMD0000000833's `S35` is
+// `0.0` at t=0 and non-negative at every one of 2001 output points, and the
+// predictor puts it at `-3.75e-36` between two of them.
+//
+// Deciding "that is numerically zero" needs a scale, which the emitter has none
+// of at build time — the honest one is the run's own absolute tolerance, and
+// this is the one place that knows it. `-3.75e-36` against `atol = 1e-12` is
+// twenty-four orders below the accuracy the run asked for; a state that far
+// inside the noise is the predictor overshooting a boundary, and the boundary
+// value is the answer. A base that is negative by MORE than atol is a different
+// claim entirely — `BIOMD0000000374` carries a species `V_membrane = -61` — and
+// `∂/∂n base^n` does not exist there at all, so that component is left alone and
+// its NaN survives to the GH #384/#386 refusal rather than being answered with a
+// confident `0`.
+//
+// This is not the clamp GH #93 removed. That one was unconditional and lived on
+// one side of a pair: the interpreted Michaelis-Menten RHS clamped `sFree` where
+// the compiled RHS did not, and the derivative emitters guarded independently of
+// both, so the same model at the same state had three answers and the emitted
+// Jacobian asserted no dependence where the RHS beside it plainly varied. This
+// one engages ONLY after the sensitivity RHS has already come back non-finite —
+// exactly the GH #135 conditional retry the value RHS and the analytical
+// Jacobian have both had since then — so wherever the sensitivity RHS is finite
+// it is not called at all and the emitted arithmetic is untouched.
+//
+// Returns nullptr when nothing would move, so the caller can skip the retry.
+static inline double *clamp_state_numerically_zero(CvodeUserData *data, const double *y_ptr) {
+    const int ns = data->model->n_species();
+    if (static_cast<int>(data->sens_zero_atol.size()) != ns)
+        return nullptr; // no sensitivity tolerances recorded, or the hatch is off
+    if (static_cast<int>(data->sens_zero_scratch.size()) != ns)
+        data->sens_zero_scratch.assign(ns, 0.0);
+    double *s = data->sens_zero_scratch.data();
+    bool moved = false;
+    for (int i = 0; i < ns; ++i) {
+        if (y_ptr[i] < 0.0 && y_ptr[i] > -data->sens_zero_atol[i]) {
+            s[i] = 0.0;
+            moved = true;
+        } else {
+            s[i] = y_ptr[i];
+        }
+    }
+    return moved ? s : nullptr;
 }
 
 // Backstop for any RHS that is still non-finite after the nonnegative clamp
@@ -789,9 +852,9 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
     // (`SRHSFUNC_RECVR`), which is what rescues a NaN the predictor caused by
     // overshooting a domain boundary for one step, and gives up with
     // CV_REPTD_SRHSFUNC_ERR — naming the time and the state through the witness —
-    // when it is the model and not the step. Note this is *not* the GH #135 clamp
-    // retry: a sensitivity column has no boundary value to clamp to, so the only
-    // move available is to ask for a smaller step.
+    // when it is the model and not the step. A sensitivity column has no boundary
+    // value of its own to clamp to, but the STATE it is evaluated at does — see
+    // clamp_state_numerically_zero and GH #392 for the retry that happens first.
     //
     // The scan can no longer be retired after the first trip the way the witness
     // capture was: the return value has to be right on every call, not just the
@@ -815,6 +878,32 @@ static int cvode_codegen_sens_rhs(int Ns, sunrealtype t, N_Vector y, N_Vector yd
         return 0;
     }
     if (rhs_has_nonfinite(data, ySdot_ptr)) {
+        // GH #392: before asking for a smaller step, ask whether the state this
+        // was evaluated at is one the model actually has. A component sitting
+        // between -atol_i and 0 is the predictor overshooting a boundary, not a
+        // negative concentration, and the emitted zero-base guard tests
+        // `base == 0` exactly — so snapping it to the boundary is what lets that
+        // guard fire and return the limit it was written to return. Ordered
+        // ahead of the recoverable return because a smaller step does not
+        // necessarily help: the predictor can keep landing a few ulps below zero
+        // on a species pinned there, and `h` reductions then run out.
+        //
+        // Nothing else changes. The retry is reached only from a non-finite
+        // ySdot, `clamp_state_numerically_zero` returns null unless some
+        // component is inside its own tolerance band, and a still-non-finite
+        // result falls through to exactly the disposition below.
+        if (double *clamped = clamp_state_numerically_zero(data, y_ptr)) {
+            rc =
+                data->codegen_sens_fn(Ns, static_cast<double>(t), clamped, N_VGetArrayPointer(ydot),
+                                      iS, N_VGetArrayPointer(yS), ySdot_ptr, &so_data,
+                                      N_VGetArrayPointer(tmp1), N_VGetArrayPointer(tmp2));
+            if (rc != 0) {
+                return rc;
+            }
+            if (!rhs_has_nonfinite(data, ySdot_ptr)) {
+                return 0;
+            }
+        }
         if (!data->nonfinite_witness.captured) {
             data->nonfinite_witness.capture("The compiled sensitivity RHS", static_cast<double>(t),
                                             y_ptr, data->model->n_species());
@@ -2797,6 +2886,36 @@ void CvodeSimulator::Impl::setup_forward_sensitivities(
     {
         const char *recover_env = std::getenv("BNGSIM_SENS_NONFINITE_RECOVER");
         user_data.sens_recover_nonfinite = !(recover_env && std::string(recover_env) == "0");
+    }
+
+    // GH #392: the width of the band below zero the sensitivity RHS is allowed
+    // to read as "numerically zero". This is the run's own per-species absolute
+    // tolerance — the same numbers CVODES' error test uses, taken from the same
+    // pair (`atol_v` when #196 gave one, the scalar otherwise) — so the band is
+    // exactly the accuracy the caller asked for and nothing wider. Recorded here
+    // rather than in create_cvode_core because the retry it feeds exists only on
+    // the sensitivity RHS: a run with no sensitivities leaves the vector empty
+    // and clamp_state_numerically_zero declines on sight.
+    //
+    // Both env reads happen once per run onto user_data, never into a
+    // function-local static: a static is written by whichever solve runs first
+    // in the process, and a monkeypatch.setenv in a later test would then be
+    // silently inert. BNGSIM_SENS_CLAMP_NUMERIC_ZERO=0 leaves the vector empty,
+    // which is the whole opt-out — clamp_state_numerically_zero then declines on
+    // every call and the sensitivity RHS is the pre-#392 one. The two hatches
+    // nest rather than compose: the retry sits inside the recoverable-return
+    // branch, so BNGSIM_SENS_NONFINITE_RECOVER=0 bypasses it as well and keeps
+    // its promise of restoring the pre-#395 path exactly. Both diagnostic only;
+    // unset ships.
+    {
+        const char *clamp_env = std::getenv("BNGSIM_SENS_CLAMP_NUMERIC_ZERO");
+        if (clamp_env && std::string(clamp_env) == "0") {
+            user_data.sens_zero_atol.clear();
+        } else if (!atol_v.empty()) {
+            user_data.sens_zero_atol = atol_v;
+        } else {
+            user_data.sens_zero_atol.assign(static_cast<std::size_t>(ns), atol);
+        }
     }
 
     flag = CVodeSensInit1(cvode_mem, n_sens, sens_method, sens_rhs_fn, yS_guard.arr);
