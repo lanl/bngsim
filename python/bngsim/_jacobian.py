@@ -1184,14 +1184,18 @@ def _divided_through(f, m, offset, rest, sp):
     it had.
 
     With one (GH #402) that spelling no longer works, and the reason is worth
-    stating because two plausible repairs are worse. The leftover cannot be left
-    standing beside the term — ``x^-1·(f/(rest + f))^m`` is ``inf·0`` at
-    ``x = 0``, which is the removable ``0/0`` GH #96's fold exists to remove — and
-    it cannot be spread as an ``m``-th root through the factors, because
-    ``x^(1/2)`` is ``NaN`` at a negative state where the ``pow(x, 2n-1)`` it
-    replaces is an ordinary number, and a species dipping below zero mid-solve is
-    routine. So the whole ``(rest + f)^m/(f^m·base^offset)`` is expanded instead,
-    into the one sum whose every term is a single power of the base::
+    stating because the three obvious placements of the leftover are all worse.
+    It cannot be **left standing beside the term** — ``x^-1·(f/(rest + f))^m`` is
+    ``inf·0`` at ``x = 0``, the removable ``0/0`` GH #96's fold exists to remove,
+    handed straight back. It cannot be **carried as a positive power out front**
+    by dividing one ``f`` out at a time — ``x^(n-1)·(1/(1 + a·x^-n))·(a + x^n)^-1``
+    is right at both those ends, and still ``inf·0`` once ``x^n`` overflows in its
+    own right, so it repairs one band and leaves the next. And it cannot be
+    **spread as an ``m``-th root** through the factors, because ``x^(1/2)`` is
+    ``NaN`` at a negative state where the ``pow(x, 2n-1)`` it replaces is an
+    ordinary number, and a species dipping below zero mid-solve is routine. So the
+    whole ``(rest + f)^m/(f^m·base^offset)`` is expanded instead, into the one sum
+    whose every term is a single power of the base::
 
         f^m·base^offset/(rest + f)^m  ==  1/Σ_j C(m,j)·rest^j·base^(−offset − j·e)
 

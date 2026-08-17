@@ -158,9 +158,16 @@ class TestTheMeasuredDefect:
 
 class TestWhyTheLeftoverGoesInTheDenominator:
     """``x^(2n-1)/(K^n + x^n)^2`` is ``(x^n)^2·x^-1`` over the sum, and where that
-    ``x^-1`` goes is the whole design. Three placements were measured and the
-    shipped rewrite is the third; the other two are cheap to demonstrate, which is
-    the point of holding them down here rather than in a commit message.
+    ``x^-1`` goes is the whole design.
+
+    Five placements were scored over one grid of 9236 evaluations against a
+    200-digit oracle. Counting points that were non-finite before and are finite
+    after, against points that went the other way, the shipped spelling — expanding
+    the divided-through denominator into a sum of single powers — repairs 716 and
+    breaks **1**, where dividing out one ``f`` at a time repairs 624 and breaks 14,
+    and spreading the leftover as an ``m``-th root breaks **251**. Three of the
+    four rejected placements are cheap to demonstrate at a single point each, which
+    is the point of holding them down here rather than in a commit message.
 
     * **Beside the term**, ``x^-1·(f/(K^n + f))^2``: ``inf·0`` at ``x = 0``. That
       is the removable ``0/0`` GH #96's fold exists to remove, handed straight
