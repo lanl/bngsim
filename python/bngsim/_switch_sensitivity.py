@@ -684,6 +684,18 @@ class SwitchConditionScope(NamedTuple):
     param_idx: dict[str, int]
     values: tuple[float, ...]
     derived_exprs: dict[str, str]
+    # Names whose value is fixed for the whole run, so a comparison written over
+    # nothing else cannot change its truth value while the solver integrates
+    # (:func:`condition_cannot_cross`). Primary parameters, less the slots a
+    # model *function* owns — ``evaluate_functions()`` rewrites those from the
+    # function's own expression before every derivative evaluation (issues #227,
+    # #266), so their value moves with the trajectory even though the address is
+    # a parameter's — and less any clock symbol.
+    run_constants: frozenset[str]
+    # Every name the model binds to a function. A call to one hides whatever its
+    # body reads from a scan of the call site, so :func:`condition_cannot_cross`
+    # declines rather than guess.
+    function_names: frozenset[str]
 
 
 def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
@@ -697,10 +709,12 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
     is_expr = list(core.param_is_expression)
     exprs = list(core.param_expressions)
     clocks = _unit_rate_clock_species(core, ctx)
+    clock_symbols = frozenset(clocks) | _TIME_SYMBOLS
+    function_names = frozenset(core.function_names)
     return SwitchConditionScope(
         core=core,
         clocks=clocks,
-        clock_symbols=frozenset(clocks) | _TIME_SYMBOLS,
+        clock_symbols=clock_symbols,
         param_names=tuple(param_names),
         param_pats={
             n: re.compile(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])") for n in param_names
@@ -711,6 +725,12 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
         derived_exprs={
             param_names[i]: exprs[i] for i in range(len(param_names)) if is_expr[i] and exprs[i]
         },
+        run_constants=frozenset(
+            n
+            for i, n in enumerate(param_names)
+            if not is_expr[i] and n not in function_names and n not in clock_symbols
+        ),
+        function_names=function_names,
     )
 
 
@@ -718,6 +738,88 @@ def switch_condition_scope(core, ctx=None) -> SwitchConditionScope:
 # a member-ish suffix. An atom with none of these is a comparison between
 # literals — a compile-time constant, with no crossing at all.
 _IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z_][A-Za-z0-9_]*")
+
+
+def condition_cannot_cross(atom_flat: str, scope: SwitchConditionScope) -> bool:
+    """True when *atom_flat* holds ONE truth value for the whole run (issue #382).
+
+    *atom_flat* is one condition atom with derived-parameter references already
+    inlined (:func:`_inline_derived_param_refs`), which is the form
+    :func:`uncompensated_condition_reason` judges. The question here is narrower
+    than "is this crossing compensated": it is whether there is a crossing **in
+    the run window** at all. A comparison written over nothing but run-constants
+    picks its branch before the first step and holds it to the last, so ``f`` has
+    no discontinuity for the trajectory to meet, and there is no jump for issue
+    #48 to stop at or issue #150 to root on. The in-branch derivative is then the
+    whole story and the analytic sensitivity RHS is admissible — which is ground
+    3 of :func:`uncompensated_condition_reason`, widened from the literals-only
+    ``0>0`` it used to mean to the spelling models actually carry.
+
+    The four `MODEL09112*` witnesses of issue #382 are reduced Guyton circulation
+    models: most of the loop is cut away and what is left refers to the removed
+    parts through frozen ``<parameter>`` declarations, so ``CRRFLX>1e-07``
+    (``CRRFLX = 0``) and ``PO2ART<80.0`` (``PO2ART = 97.0439``) are conditions
+    that cannot move. Declining them cost those models the analytic RHS entirely
+    and handed the whole sensitivity solve to CVODES' difference quotient, which
+    then failed ``CV_CONV_FAILURE`` at the first output point.
+
+    Admissible names, and why every other one is refused:
+
+    * a **primary parameter** that no model function owns and that is no clock —
+      ``scope.run_constants``. A function's backing slot is excluded because
+      ``evaluate_functions()`` rewrites it before every derivative evaluation
+      (issues #227, #266), so its value moves with the trajectory even though its
+      address is a parameter's;
+    * a **call** to anything that is not a model function — ``if``, ``exp``,
+      ``floor``. The callee is then an arithmetic builtin, and its arguments are
+      scanned by this same loop, so state reached through one is still seen. A
+      call to a *model* function is refused: its body is not at the call site and
+      may read state this scan cannot see, which is the direction that would
+      admit a crossing rather than miss one.
+
+    Everything else declines, including a name this does not recognize at all: a
+    species or observable (state, so the condition moves with the trajectory), a
+    ``rate_of__`` accessor, a clock symbol or ``time`` in either spelling, and a
+    derived parameter that survived inlining (its leaves are then unverified).
+
+    **The invariant this rests on** is the SBML loader's: a parameter whose value
+    can move mid-run is not left a parameter. A ``<rateRule>`` target and an
+    ``<eventAssignment>`` target are both *promoted to species*
+    (``rate_rule_targets`` / ``event_promoted_params`` in
+    :mod:`bngsim._sbml_loader`), so they arrive here as state and decline on that
+    ground rather than on a special case. What is left in ``param_names`` that
+    still moves is the function's backing slot, which is why that is the one
+    exclusion spelled out above.
+
+    Structural, not numeric: the verdict reads which *names* an atom carries and
+    what kind each is, never a parameter's value. So moving a rate constant
+    cannot flip it, and :func:`switch_gate_cache_digest` — which exists to carry
+    the value-dependent half of this gate — does not have to know about it.
+
+    A run-constant condition sitting exactly ON its threshold (``ANPKNS>0.0``
+    with ``ANPKNS = 0``, three of the four witnesses) is still admitted, and the
+    column it yields is the one-sided derivative: the branch does not move for
+    any perturbation on the closed side, and an infinitesimal one on the open
+    side flips the whole run at once rather than moving a crossing through it.
+    Nothing bngsim or AMICI carries compensates a discontinuity in *parameter*
+    space — it is not a crossing in time, so no saltation jump applies — and both
+    engines report the branch that is taken. What this changes is that bngsim now
+    reports it from the analytic RHS instead of refusing every column in the
+    model over it.
+    """
+    for m in _IDENTIFIER.finditer(atom_flat):
+        name = m.group(0)
+        if name in scope.run_constants:
+            continue
+        # A clock is never a run-constant, in either spelling, so it is tested
+        # before the call check: `time()` is written as a call and would
+        # otherwise be waved through as a builtin.
+        if name in scope.clock_symbols:
+            return False
+        if atom_flat[m.end() :].lstrip().startswith("(") and name not in scope.function_names:
+            continue
+        return False
+    return True
 
 
 class UncompensatedCrossingReason(str):
@@ -736,10 +838,14 @@ class UncompensatedCrossingReason(str):
     relational comparison over live state — ``Virus < 1`` — now has its crossing
     located as a CVODE root and its saltation jump applied there
     (:func:`state_switch_conditions`), so the in-branch derivative is again the
-    whole in-branch story and the analytic RHS is admitted. What is left in this
-    class is the crossing nothing compensates — a comparison inside a call
-    argument, an equality, a comparison outside an ``if()`` head, or a clock
-    threshold that does not reduce to a constant. A conjunction is not one of
+    whole in-branch story and the analytic RHS is admitted. Issue #382 took
+    another case out the same way, from the other end: a condition written over
+    run-constants alone — ``CRRFLX>1e-07`` where ``CRRFLX`` is a frozen
+    ``<parameter>`` — has no crossing in the run window to compensate, so it too
+    is admitted rather than declined (:func:`condition_cannot_cross`). What is
+    left in this class is the crossing nothing compensates — a comparison inside
+    a call argument, an equality, a comparison outside an ``if()`` head, or a
+    clock threshold that does not reduce to a constant. A conjunction is not one of
     them, and neither is a negation: :func:`_split_logical_atoms` reduces both to
     the surfaces underneath, so ``not((X<hi) and (X>lo))`` is admitted on ground
     2 exactly as ``(X<hi) and (X>lo)`` is (issue #234).
@@ -1315,8 +1421,9 @@ def uncompensated_condition_reason(
     2. :func:`state_switch_residual` splits it into a residual over live state,
        which is what :func:`state_switch_conditions` hands the solver to root on
        and jump at.
-    3. it names no symbol at all (``0>0``), so it is a constant and never
-       crosses.
+    3. :func:`condition_cannot_cross` finds it written over run-constants alone
+       (``0>0``, and equally ``CRRFLX>1e-07`` for a frozen ``CRRFLX``), so it
+       holds one truth value for the whole run and never crosses (issue #382).
 
     Admitting (2) is not a nicety: with the crossing resolved to a root, CVODES'
     difference-quotient fallback becomes *worse* than it was, not better. Its
@@ -1369,9 +1476,9 @@ def uncompensated_condition_reason(
             if state_switch_residual(scope.core, atom):
                 continue
             atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-            # Ground 3 — a comparison between literals is a compile-time
-            # constant with no crossing at all.
-            if not _IDENTIFIER.search(atom_flat):
+            # Ground 3 — a comparison over run-constants holds one truth value
+            # for the whole run, so there is no crossing at all to compensate.
+            if condition_cannot_cross(atom_flat, scope):
                 continue
             split = _clock_threshold_split(atom, scope.clock_symbols)
             if split is None:
@@ -1446,8 +1553,8 @@ def _switch_params_in_uncompensated_conditions(
     #48 stall, so the caller refuses it.
 
     The atom test is :func:`uncompensated_condition_reason`'s — compensated by
-    issue #48, then issue #150, then a literal-only comparison — so the two cannot
-    disagree about which crossings are compensated. Only relevant on the
+    issue #48, then issue #150, then :func:`condition_cannot_cross` — so the two
+    cannot disagree about which crossings are compensated. Only relevant on the
     difference-quotient path: an uncompensated crossing is exactly what declines
     the analytic sensitivity RHS (issue #68), so a model that reaches here with an
     analytic RHS has none of these conditions and this returns empty.
@@ -1462,7 +1569,7 @@ def _switch_params_in_uncompensated_conditions(
             if state_switch_residual(scope.core, atom):
                 continue
             atom_flat = _inline_derived_param_refs(atom, scope.derived_exprs) or atom
-            if not _IDENTIFIER.search(atom_flat):
+            if condition_cannot_cross(atom_flat, scope):
                 continue
             names_in = {m.group(0) for m in _IDENTIFIER.finditer(atom_flat)}
             unsafe |= candidates & names_in

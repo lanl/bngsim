@@ -371,6 +371,105 @@ in `CMakeLists.txt`) is derived from it.
   `_CODEGEN_SOURCE_MODULES`, so #51's source digest invalidates every cached
   artifact anyway.
 
+- **A switch condition that cannot cross no longer declines a model's analytic
+  sensitivity RHS (issue #382).** `MODEL0911270005` failed its forward-sensitivity
+  solve outright — `CVODE integration failed at t=1.000000 with flag=-4
+  (CV_CONV_FAILURE)` — with exactly one of its 31 shared parameters, `CRRFLX`,
+  responsible. Three more witnesses in the same document family behaved the same
+  way: `MODEL0911272039` (`ANPKNS`), `MODEL0911342562` (`ANGKNS`),
+  `MODEL0911376350` (`ALDKNS`).
+
+  **The failing column was never the defect.** These are reduced Guyton
+  circulation models: most of the loop is cut away, and what remains refers to the
+  removed parts through frozen `<parameter>` declarations. So they carry rate-law
+  conditions like `CRRFLX>1e-07` with `CRRFLX = 0`, and `PO2ART<80.0` with
+  `PO2ART = 97.0439` — comparisons that are false at the first step and false at
+  the last. The issue #68 gate admitted a condition on three grounds (a clock
+  threshold #48 stops at, a state comparison #150 roots on, or a comparison naming
+  no symbol at all, `0>0`), and a comparison between run-constants — the same
+  compile-time constant as `0>0`, only spelled with names — fell through all
+  three. That declined the analytic sensitivity RHS **for the whole model**,
+  handed the entire sensitivity solve to CVODES' difference quotient, and the
+  `CV_CONV_FAILURE` was three steps downstream of it.
+
+  Ground 3 is now `condition_cannot_cross`: an atom every one of whose names is a
+  run-constant holds one truth value for the whole run, so there is no crossing in
+  the window for anything to compensate and the in-branch derivative is the whole
+  story. The test is structural, never numeric — it reads which names an atom
+  carries and what kind each is — so moving a rate constant cannot flip it and
+  `switch_gate_cache_digest` does not have to carry it.
+
+  **Deliberately narrow about what counts as constant.** A model *function* also
+  names a parameter slot (#227/#266) and `evaluate_functions()` rewrites that slot
+  before every derivative evaluation, so those are excluded: their value moves
+  with the trajectory even though the address is a parameter's. So are clock
+  symbols and `time` in either spelling, species, observables, `rate_of__`
+  accessors, a derived parameter that survived inlining, and any call to a model
+  function — whose body is not at the call site and may read state the scan cannot
+  see. Missing a crossing is the direction that ships silent zeros, which is what
+  this gate exists to prevent.
+
+  Measured over the manifest: 28 of the 182 condition-carrying corpus models
+  change verdict, all in one direction (refused → admitted).
+  `MODEL0911270005` moves from EXCEPTION to **PASS at `max_rel_err = 0` across all
+  31 shared parameters**, on both corrector methods. AMICI cannot reference the
+  other three (it fails them itself with `Inf` in `sxdot` at t=0), so those are
+  checked against a finite difference of bngsim's own trajectory instead.
+
+  **A parameter sitting exactly on its own threshold gets the one-sided
+  derivative, and that is the honest answer rather than a quiet one.** `ANPKNS = 0`
+  under `ANPKNS > 0` is a discontinuity in *parameter* space: perturbing it down
+  moves the trajectory by exactly nothing, and perturbing it up moves it by a
+  fixed ~1.0 that does not shrink with the step — a step, not a derivative. No
+  saltation jump applies, because nothing crosses in *time*. bngsim reports the
+  branch that is taken, which is what AMICI does with the same construct and what
+  any AD system does with a `Piecewise`. What changed is that it now reports it
+  from the analytic RHS instead of refusing every column in the model over it.
+
+- **`MODEL0910846879`'s parity rows are attributed to AMICI, where the defect is
+  (issue #382).** Surfaced by the fix above — admitting the model's run-constant
+  conditions moved it off CVODES' difference quotient and so put a comparison in
+  front of a row that had none. The DIFF itself is older and is identical before
+  and after (`max_rel` 0.918 ode / 1.0 sens either way), so nothing here is a
+  regression; what changed is that it is now visible and attributable.
+
+  The model has no reactions and one state, so it reduces exactly: every
+  assignment rule is over constants, giving `TVZ = 9.341479411e-4`, and the lone
+  rateRule integrates to `TVD(t) = TVZ + (TVD0 − TVZ)·exp(−t/30)`. bngsim matches
+  that to 1.9e-9. AMICI returns `3.499040825e-5` at t=100, which is
+  `TVD0·exp(−100/30)` to 10 significant figures — the trajectory for `TVZ = 0`
+  exactly. AMICI's own expression vector confirms it from the inside: it computes
+  `TVZ1 = 9.3414794e-4` correctly at every time point and then reports
+  `TVZ = piecewise(0, TVZ1 < 0, TVZ1)` as 0 at every time point. The control is in
+  the same model — `AHTH = piecewise(0, AHTH1 < 0, AHTH1)` is structurally
+  identical and AMICI gets it right — so it is not the piecewise shape as such.
+  What separates them is that `TVZ`'s condition reads `TVZ1`, which is itself a
+  sum over another piecewise.
+
+  Reported upstream as
+  [AMICI-dev/AMICI#3233](https://github.com/AMICI-dev/AMICI/issues/3233),
+  minimized to four assignment rules and one state: a piecewise inside another
+  piecewise's *condition* makes the outer one take the wrong branch. Changing the
+  inner piecewise's first-piece value flips the outer result even though it
+  cannot change the inner value, which is what pins the mechanism to the outer
+  condition.
+
+  Recorded as `INVALID_REFERENCE` entries on both regimes (the sens row cannot
+  agree while the trajectory it is differentiated about is 92% apart), so all
+  three rows read `REFERENCE_FAILED`/`invalid_result` rather than scoring as
+  bngsim DIFFs.
+
+  The evidence is a test, not a claim: `test_amici_dispositions` recomputes the
+  closed form from the SBML values and checks bngsim against it, so the entry
+  cannot outlive the fact it rests on. Two disposition contracts were widened to
+  admit it, both preserving their intent — the third-oracle guard now accepts a
+  closed form (strictly stronger than a third engine: no implementation left to
+  be wrong) alongside RoadRunner, with a new test proving an entry supported only
+  by bngsim is still rejected; and the regime-scoping tests now distinguish "a
+  disposition must not leak into a regime it was not authored for" from "a model
+  may be authored on both", which this is the first entry to do.
+
+
 - **The codegen setup-time test now compiles something before it times it (issue
   #397).** `TestCodegenSetupTime::test_cc_codegen_records_cold_compile_then_cache_hit`
   failed one `macos-14` leg of a PR that touches neither codegen nor caching, on

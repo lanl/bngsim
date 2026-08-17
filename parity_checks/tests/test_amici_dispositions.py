@@ -52,16 +52,49 @@ _PC = Path(__file__).resolve().parent.parent
 # --------------------------------------------------------------------------- #
 # disposition_for / dispositions_for_regime
 # --------------------------------------------------------------------------- #
+def _single_regime_keys() -> list[str]:
+    """Authored keys whose model is authored on exactly ONE regime.
+
+    A model may legitimately be authored on both — MODEL0910846879's defect is in
+    the state trajectory, so it disposes of the ``ode`` row and the ``sens`` row
+    that is downstream of it (issue #382). Those are the wrong witnesses for the
+    leakage check below, which is about a disposition NOT reaching a regime it was
+    not authored for.
+    """
+    per_model: dict[str, set[str]] = {}
+    for key in ad.ALL_KEYS:
+        model_id, _, regime = key.rpartition(":")
+        per_model.setdefault(model_id, set()).add(regime)
+    return [f"{m}:{next(iter(r))}" for m, r in per_model.items() if len(r) == 1]
+
+
 def test_lookup_is_regime_scoped_and_empty_for_unknown_models():
     assert ad.disposition_for("BIOMD9999999999", "sens") is None
     # A sens disposition must not leak onto the same model's ODE job: the ODE and
     # sensitivity jobs compare different quantities, and an AMICI defect in one
     # says nothing about the other.
-    key = next(iter(ad.INVALID_REFERENCE))
-    model_id, regime = key.rsplit(":", 1)
-    assert ad.disposition_for(model_id, regime) is not None
-    other = "ode" if regime == "sens" else "sens"
-    assert ad.disposition_for(model_id, other) is None
+    single = _single_regime_keys()
+    assert single, "no single-regime entry left to test leakage with"
+    for key in single:
+        model_id, regime = key.rsplit(":", 1)
+        assert ad.disposition_for(model_id, regime) is not None
+        other = "ode" if regime == "sens" else "sens"
+        assert ad.disposition_for(model_id, other) is None, key
+
+
+def test_a_model_authored_on_both_regimes_gets_each_regimes_own_entry():
+    """The other side of the scoping rule: authoring both is allowed, and the two
+    must not collapse into one. MODEL0910846879's ``ode`` entry carries the closed
+    form; its ``sens`` entry points at that one rather than restating it, so
+    returning the wrong regime's entry would silently swap the evidence."""
+    both = [
+        m
+        for m in {k.rpartition(":")[0] for k in ad.ALL_KEYS}
+        if ad.disposition_for(m, "ode") and ad.disposition_for(m, "sens")
+    ]
+    assert "MODEL0910846879" in both
+    for model_id in both:
+        assert ad.disposition_for(model_id, "ode") != ad.disposition_for(model_id, "sens")
 
 
 def test_a_key_authored_in_both_dicts_raises_rather_than_picking_one(monkeypatch):
@@ -75,11 +108,17 @@ def test_a_key_authored_in_both_dicts_raises_rather_than_picking_one(monkeypatch
 
 
 def test_regime_map_is_keyed_by_bare_model_id():
-    """What the runners hold per result row is a model id, not a composite key."""
+    """What the runners hold per result row is a model id, not a composite key.
+
+    Membership is decided per *model*, not per key: a model authored on both
+    regimes appears in the sens map because one of its keys is a sens key, and
+    reading that off a single key would call it a leak.
+    """
     m = ad.dispositions_for_regime("sens")
+    sens_models = {k.rpartition(":")[0] for k in ad.ALL_KEYS if k.endswith(":sens")}
     for key in ad.ALL_KEYS:
-        model_id, _, regime = key.rpartition(":")
-        assert (model_id in m) is (regime == "sens")
+        model_id = key.rpartition(":")[0]
+        assert (model_id in m) is (model_id in sens_models), key
     assert all(":" not in k for k in m)
 
 
@@ -251,11 +290,106 @@ def test_the_row_383_fixed_is_not_authored():
     assert "MODEL1607210000:sens" not in ad.ALL_KEYS
 
 
-def test_the_evidence_names_the_independent_third_engine():
+# The oracles an invalid-reference claim may rest on. RoadRunner is the usual
+# one — a third engine sharing no code with either party. A CLOSED FORM is the
+# other, and it is strictly stronger: it is not an engine's opinion at all, so
+# there is no third implementation left to be wrong. Both are independent of
+# bngsim, which is the property this list exists to enforce; what is excluded is
+# an entry whose only support is bngsim's own answer.
+_INDEPENDENT_ORACLES = ("RoadRunner", "CLOSED FORM")
+
+
+def test_the_evidence_names_an_oracle_that_is_not_bngsim():
     """bngsim must never adjudicate its own case: an invalid-reference claim is
-    only as good as an oracle that is not bngsim."""
+    only as good as an oracle that is not bngsim.
+
+    Widened from "names RoadRunner" when MODEL0910846879 was authored against the
+    model's closed form (issue #382). That model has no reactions and one state,
+    so it reduces exactly and there is nothing for a third engine to add — but
+    the rule the RoadRunner check stood for is unchanged, and a claim citing
+    neither still fails here."""
     for key, entry in ad.INVALID_REFERENCE.items():
-        assert "RoadRunner" in entry["reason"], key
+        reason = entry["reason"].lower()
+        assert any(o.lower() in reason for o in _INDEPENDENT_ORACLES), key
+
+
+def test_the_closed_form_that_disposes_of_MODEL0910846879_still_holds():
+    """The evidence itself, re-derived rather than quoted.
+
+    An INVALID_REFERENCE entry is only as good as its oracle, and a reason string
+    is just a claim about one. This recomputes MODEL0910846879's closed form from
+    the SBML values and checks bngsim against it, so the entry cannot outlive the
+    fact it rests on: if bngsim ever stops matching, this fails and the
+    disposition must be re-litigated rather than quietly keeping a real bngsim
+    defect non-scoring.
+
+    The model has no reactions and one state (``TVD``, a rateRule target), and
+    every assignment rule reduces over constants, so the whole trajectory is
+    ``TVZ + (TVD0 - TVZ)*exp(-t/TVDDL)``. Deliberately NOT compared against AMICI
+    here: this test is about the oracle, and the AMICI half of the evidence is
+    that it returns ``TVD0*exp(-t/30)`` instead, which is this same form with
+    ``TVZ = 0``.
+    """
+    np = pytest.importorskip("numpy")
+    bngsim = pytest.importorskip("bngsim")
+    path = _PC / "rr_parity" / "models" / "MODEL0910846879" / "MODEL0910846879.xml"
+    if not path.is_file():
+        pytest.skip("rr_parity corpus model MODEL0910846879 not present")
+
+    # Straight from the <listOfParameters> of the model file.
+    ADHC, ANM, POT, Z10, Z11 = 1.0, 0.987545, 35.1148, 45.0, 0.01
+    ANMSLT, AHTHM, ANMTM, DR, TVDDL = 2.0, 2.0, 1.5, 0.0, 30.0
+    TVD0 = 0.000980838
+
+    ANMSML = (ANM - 1.0) * ANMSLT + 1.0
+    STH1 = (Z10 - POT) ** 2.0 * Z11 * ANMSML
+    STH = 0.8 if STH1 < 0.8 else (8.0 if STH1 > 8.0 else STH1)
+    AHCM = (ADHC - 1.0) * AHTHM + 1.0
+    ANMTH = (ANM - 1.0) * ANMTM * 0.001
+    AHTH1 = AHCM * STH * 0.001
+    AHTH = 0.0 if AHTH1 < 0.0 else AHTH1
+    TVZ1 = ANMTH + AHTH
+    TVZ = 0.0 if TVZ1 < 0.0 else TVZ1
+
+    # The piecewise AMICI holds at 0: its operand is positive, so the otherwise
+    # branch is the one that is live, for the whole run.
+    assert TVZ1 > 0.0
+    assert TVZ == TVZ1
+
+    # dTVD/dt = (TVZ + DR - TVD)/TVDDL relaxes to TVZ + DR with time constant
+    # TVDDL. DR is 0 in this model, but it is carried rather than dropped so the
+    # form stays the model's and not a simplification of it.
+    steady = TVZ + DR
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = bngsim.Model.from_sbml(str(path))
+        run = bngsim.Simulator(model, method="ode").run((0.0, 100.0), 101, rtol=1e-10, atol=1e-14)
+    t = np.asarray(run.time)
+    got = np.asarray(run.species)[:, 0]
+    exact = steady + (TVD0 - steady) * np.exp(-t / TVDDL)
+    assert np.max(np.abs(got - exact) / np.abs(exact)) < 1e-7
+
+    # And the trajectory AMICI actually returns is the SAME form with TVZ = 0,
+    # which is what makes "AMICI holds TVZ at 0" a measurement and not a guess.
+    amici_shape = DR + (TVD0 - DR) * np.exp(-t / TVDDL)
+    assert amici_shape[-1] == pytest.approx(3.499040825e-5, rel=1e-9)
+    assert np.max(np.abs(got - amici_shape) / np.abs(got)) > 0.9
+
+
+def test_an_entry_supported_only_by_bngsim_is_rejected(monkeypatch):
+    """The guard has teeth: it is the *citation* that is required, not a
+    formality. An entry whose reason rests on bngsim agreeing with itself names
+    none of the accepted oracles and must fail."""
+    monkeypatch.setattr(
+        ad,
+        "INVALID_REFERENCE",
+        {"FAKE:sens": {"issue": "GH #0", "max_rel": 1.0, "reason": "bngsim disagrees with it."}},
+    )
+    with pytest.raises(AssertionError):
+        test_the_evidence_names_an_oracle_that_is_not_bngsim()
 
 
 # --------------------------------------------------------------------------- #
