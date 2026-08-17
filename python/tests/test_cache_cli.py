@@ -626,10 +626,19 @@ class TestPrune:
         assert [e.path.name for e in sweep.removed] == [artifact_name("a" * 16)]
 
     def test_max_size_evicts_least_recently_used_until_it_fits(self, cache: Path) -> None:
-        write_entry(cache, artifact_name("a" * 16), size=400, used_days=90)
-        write_entry(cache, artifact_name("b" * 16), size=400, used_days=60)
-        keep_1 = write_entry(cache, artifact_name("c" * 16), size=400, used_days=30)
-        keep_2 = write_entry(cache, artifact_name("d" * 16), size=400, used_days=10)
+        # ``age_days`` here is not decoration: ``_stamp`` reads
+        # ``last_used = max(atime, mtime)``, so an entry whose build (mtime) is
+        # newer than its use (atime) has its recency pinned to the build. Leaving
+        # ``age_days`` at its 30-day default would clamp a/b/c (used 90/60/30) all
+        # to ``now - 30d``, and which two then evict would ride on the sub-second
+        # order of these four writes — stable alone, but a non-monotonic
+        # ``time.time()`` under a loaded full suite reorders them and drops the
+        # wrong pair. Build each entry older than its last use so ``last_used`` is
+        # the use time, separated by whole days.
+        write_entry(cache, artifact_name("a" * 16), size=400, age_days=100, used_days=90)
+        write_entry(cache, artifact_name("b" * 16), size=400, age_days=100, used_days=60)
+        keep_1 = write_entry(cache, artifact_name("c" * 16), size=400, age_days=100, used_days=30)
+        keep_2 = write_entry(cache, artifact_name("d" * 16), size=400, age_days=100, used_days=10)
 
         sweep = ch.prune_codegen_cache(max_size=900)
 
