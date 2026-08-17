@@ -35,6 +35,14 @@ applied. AMICI adjudicates every model independently — a model that rr_parity
 reclassified as a known RR artifact surfaces here as a real DIFF iff AMICI also
 diverges from bngsim, and PASSes iff AMICI agrees with bngsim (RR was the outlier).
 
+What that left missing, and ``amici_dispositions.py`` supplies (issue #380), is
+an AMICI-CALIBRATED path: when AMICI is the wrong engine the row used to have
+nowhere to go and scored as a bngsim DIFF. An authored disposition — third-oracle
+evidence required — turns such a DIFF into REFERENCE_FAILED/``invalid_result``
+(no oracle; non-scoring), and turns a DIFF that neither engine is at fault for
+into PASS with the reason recorded. Both apply only while the row is genuinely a
+DIFF and are flagged STALE the moment it agrees on its own.
+
 Usage:
     cd bngsim && .venv/bin/python parity_checks/amici_parity/amici_run.py \\
         --limit 20 --workers 4
@@ -52,6 +60,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +71,7 @@ sys.path.insert(0, str(HERE.parent))  # so `from _core import ...` resolves
 sys.path.insert(0, str(HERE))  # so the spawned child can import _amici_common / amici_run
 
 import _amici_common as ac  # noqa: E402
+import amici_dispositions  # noqa: E402
 from _core import (  # noqa: E402
     FAILING,
     JobResult,
@@ -137,10 +147,20 @@ def _compare_ode(bn, am) -> tuple[str, float, str, str, float]:
 # Worker (module-level so it is picklable under the 'spawn' start method)
 # --------------------------------------------------------------------------- #
 # Refusal classes that are SETTLED (no re-triage). AMICI has no RR-style
-# "overstrict_missing_value" win; the only settled classes are the independent-
-# oracle adjudications, which this suite does not yet apply — kept for parity with
-# the rr_parity report shape and any future adjudication overrides.
-SETTLED_REFUSALS = frozenset({"adjudicated_confirm", "adjudicated_uncoverable"})
+# "overstrict_missing_value" win. ``invalid_result`` is settled by construction:
+# it exists only where an ``amici_dispositions`` entry attributed the row to a
+# defect in AMICI's own answer with third-oracle evidence. The adjudication
+# classes are kept for parity with the rr_parity report shape and any future
+# independent-oracle overrides, which this suite does not yet apply.
+SETTLED_REFUSALS = frozenset(
+    {
+        amici_dispositions.INVALID_RESULT_REFUSAL,
+        "adjudicated_confirm",
+        "adjudicated_uncoverable",
+    }
+)
+
+ODE_REGIME = "ode"
 
 
 def _classify_failure(
@@ -502,6 +522,13 @@ def main() -> int:
 
     results = []
     now = _dt.datetime.now().isoformat(timespec="seconds")
+    # AMICI-calibrated dispositions (issue #380) — read from the module, not the
+    # manifest, because the manifest is shared with rr_parity and an
+    # AMICI-calibrated entry must not leak into that suite. None are authored for
+    # the ODE regime yet; the ODE Class-2 divergences in AMICI_KNOWN_ISSUES.md are
+    # a separate triage.
+    dispositions = amici_dispositions.dispositions_for_regime(ODE_REGIME)
+    disposition_states = Counter()
     for r in raw:
         outcome = _OUTCOME.get(r.get("status"), Outcome.EXCEPTION)
         wall = r.get("wall_sec") or 0.0
@@ -524,6 +551,17 @@ def main() -> int:
             comment = (
                 f"{comment} | amici refusal={refusal}" if comment else f"amici refusal={refusal}"
             )
+        # After the auto-derived refusal: an INVALID_REFERENCE row has no AMICI
+        # exception to classify, so it sets its own ``invalid_result`` class, while
+        # a row the disposition does not apply to keeps what the exception said.
+        disp = dispositions.get(r["model_id"])
+        if disp:
+            outcome, comment, disp_refusal, state = amici_dispositions.apply_disposition(
+                disp, outcome, r.get("value"), comment
+            )
+            disposition_states[f"{disp['kind']}:{state}"] += 1
+            if disp_refusal:
+                refusal = disp_refusal
         results.append(
             JobResult(
                 model_id=r["model_id"],
@@ -546,8 +584,6 @@ def main() -> int:
 
     results.sort(key=lambda x: (x.model_id, x.method))
     counts = tally(r.outcome for r in results)
-    from collections import Counter
-
     refusal_breakdown = dict(
         Counter(r.reference_refusal for r in results if r.reference_refusal).most_common()
     )
@@ -577,7 +613,11 @@ def main() -> int:
                 "Sub-classification of the REFERENCE_FAILED bucket (bngsim ran, "
                 "AMICI refused), auto-derived from the AMICI exception. Buckets: "
                 "feature_gap (AMICI could not import the SBML), compile (C++ "
-                "generation/compilation failed), integrator (CVODES failed), other."
+                "generation/compilation failed), integrator (CVODES failed), other. "
+                "The one class that is NOT auto-derived is "
+                f"'{amici_dispositions.INVALID_RESULT_REFUSAL}' — AMICI answered and "
+                "the answer is what is unusable, so there is no exception to read; it "
+                "comes from an authored amici_dispositions entry."
             ),
         },
         "overrides": {
@@ -587,7 +627,23 @@ def main() -> int:
                 "to BOTH engines) are honored. rr_parity's known_artifact / "
                 "invalid_reference / no_oracle_adjudicated overrides are calibrated "
                 "against RoadRunner and are intentionally NOT applied here, so AMICI "
-                "adjudicates every model independently."
+                "adjudicates every model independently. AMICI-CALIBRATED dispositions "
+                "are a separate mechanism — see 'dispositions' below."
+            ),
+        },
+        "dispositions": {
+            "counts": dict(disposition_states.most_common()),
+            "note": (
+                "AMICI-calibrated per-row dispositions (issue #380), from "
+                "amici_dispositions.py: an authored DIFF attribution backed by "
+                "third-oracle evidence. 'invalid_reference:applied' — AMICI ran but "
+                "its answer is defective, so the row became a non-scoring "
+                "REFERENCE_FAILED/"
+                f"{amici_dispositions.INVALID_RESULT_REFUSAL}; 'comparison_artifact:"
+                "applied' — neither engine is wrong and the row became a PASS with "
+                "the reason recorded. ':stale' means the row agrees on its own now "
+                "(prune the entry); ':inapplicable' means the row produced no "
+                "comparison this run, so the entry was neither used nor falsified."
             ),
         },
         "oracle_basis": (
@@ -617,6 +673,10 @@ def main() -> int:
     if refusal_breakdown:
         parts = [f"{cls}={n}" for cls, n in refusal_breakdown.items()]
         print(f"  REFERENCE_FAILED by refusal: {', '.join(parts)}")
+    if disposition_states:
+        print(
+            "  dispositions: " + ", ".join(f"{c}={n}" for c, n in disposition_states.most_common())
+        )
     print(f"  report: {out_path}")
     print("=" * 72)
     n_fail = sum(counts.get(o.value, 0) for o in FAILING)

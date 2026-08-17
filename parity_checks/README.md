@@ -123,4 +123,7 @@ disposition must never be committed from a run that used one.
   duplicate verdict were retired in **GH #69** (single-source on `_core.differ`; the
   matrix is now the adjudication home).
 - `amici_parity` — operational (ODE): `amici_run.py` → `generate_amici_matrix.py`.
-  AMICI-side limitations are catalogued in `amici_parity/AMICI_KNOWN_ISSUES.md`.
+  AMICI-side limitations are catalogued in `amici_parity/AMICI_KNOWN_ISSUES.md`, and the
+  ones where AMICI *answers* and the answer is unusable are recorded as
+  `amici_parity/amici_dispositions.py` entries so the row is non-scoring rather than a
+  bngsim `DIFF` (the AMICI-calibrated counterpart to rr_parity's `overrides.py`).
