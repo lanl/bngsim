@@ -135,32 +135,59 @@ class TestCodegenSetupTime:
         assert sim.codegen_backend == "exprtk"
         assert sim.last_codegen_sec == 0.0
 
-    def test_cc_codegen_records_cold_compile_then_cache_hit(self):
+    def test_cc_codegen_records_cold_compile_then_cache_hit(self, monkeypatch, tmp_path):
         # The cc backend compiles native C; a cold compile costs real wall time,
         # a subsequent cache hit costs ~nothing. Both must be reported from a
         # single run (no run-twice-and-subtract).
+        #
+        # WHICH of the two happened is read off ``codegen_cache_hit``, the flag the
+        # pipeline records at the ``get_cached_so`` branch (see the sibling class),
+        # never inferred from wall time. Issue #397: this was the last test still
+        # inferring it, and it flaked — 321 µs vs 177 µs — because the "cold" leg
+        # was not cold, leaving two draws from one near-zero distribution to decide
+        # the result. What remains here of T0.3 is the accessor's own claim, and it
+        # is stated as a floor rather than as an ordering.
         import bngsim._codegen as cg
 
         net = _net("simple_decay")
-        # Evict the cached .so and the .net-path memo so the next codegen is a
-        # genuine cold compile rather than a cache hit.
-        so = cg.get_cached_so(cg.compute_model_hash(net))
-        if so is not None:
-            so.unlink()
-        cg._PREPARE_CODEGEN_MEMO.clear()
+        # An EMPTY cache directory is what makes the first construction cold.
+        # Unlinking ``get_cached_so(compute_model_hash(net))`` — what this test used
+        # to do — evicts nothing at all: simple_decay has a complete analytical
+        # Jacobian and two observables and is not on a sensitivity run, so its .net
+        # codegen keys under the ":codegen_jac:codegen_outputs:no_sens_rhs" suffix
+        # (the sibling class enumerates the combinations), which hashes to a
+        # different filename than the base model hash ever names. Every construction
+        # in this file therefore reused the .so that ``TestCodegenBackend`` compiled
+        # one screen up. Redirecting CACHE_DIR states "nothing is cached" directly
+        # and cannot fall out of date as suffixes are added — as the enumeration can.
+        monkeypatch.setattr(cg, "CACHE_DIR", tmp_path / "codegen")
+        # The in-process memo answers before CACHE_DIR is ever consulted, so it has
+        # to go too. Swapped for an empty dict rather than cleared, so the entry
+        # pointing into tmp_path does not outlive the directory it names.
+        monkeypatch.setattr(cg, "_PREPARE_CODEGEN_MEMO", {})
 
         m = bngsim.Model.from_net(net)
         sim = bngsim.Simulator(m, method="ode", codegen=True, net_path=net)
         assert sim.codegen_backend == "cc"
+        assert sim.codegen_cache_hit is False  # definitive: cc really did run
         cold = sim.last_codegen_sec
-        assert cold > 0.0  # the cc compile took measurable wall time
+        # T0.3's claim, and the one ``cold > 0.0`` was too weak to make: the
+        # accessor reports the *compile's* wall time. cc is a subprocess spawn plus
+        # a compile, a link, and a dlopen — milliseconds at the very least on any
+        # runner and any compiler `CC` can name (1.2 s for this model on an M-series
+        # laptop), against ~200 µs to resolve a cache hit. The 177 µs that #397
+        # accepted as a compile is below this floor and would have failed here,
+        # loudly, instead of passing and then flaking on the next line.
+        assert cold > 1e-3
         # Model carries the same value (the accessor reads from it).
         assert sim.last_codegen_sec == m._codegen_sec
 
-        # Reconstruct: now the .so is cached, so setup collapses to near zero.
+        # Reconstruct: the .so this test just compiled is now the cached one, so the
+        # second construction reuses it instead of compiling again.
         m2 = bngsim.Model.from_net(net)
         sim2 = bngsim.Simulator(m2, method="ode", codegen=True, net_path=net)
-        assert sim2.last_codegen_sec < cold
+        assert sim2.codegen_cache_hit is True
+        assert sim2.last_codegen_sec == m2._codegen_sec
 
 
 class TestCodegenCacheHit:

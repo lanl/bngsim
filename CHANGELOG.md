@@ -307,6 +307,50 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **The codegen setup-time test now compiles something before it times it (issue
+  #397).** `TestCodegenSetupTime::test_cc_codegen_records_cold_compile_then_cache_hit`
+  failed one `macos-14` leg of a PR that touches neither codegen nor caching, on
+  `assert 0.00032 < 0.00018` — 321 µs against 177 µs. Neither number is a compile.
+  The "cold" leg was already a cache hit, so the assertion compared two draws from
+  one near-zero distribution, and whichever way the noise fell decided the run.
+
+  **The eviction was the bug, and `codegen_cache_hit` says so outright.** After the
+  three lines the test used to open with —
+
+      so = cg.get_cached_so(cg.compute_model_hash(net))
+      if so is not None:
+          so.unlink()
+      cg._PREPARE_CODEGEN_MEMO.clear()
+
+  — the first simulator reports `codegen_cache_hit is True`, in 199 µs.
+  `simple_decay` has a complete analytical Jacobian and two observables and is not
+  on a sensitivity run, so its .net codegen keys under
+  `:codegen_jac:codegen_outputs:no_sens_rhs` (GH #162/#163, issues #209/#217),
+  which hashes to a filename the base model hash never names. Nothing was ever
+  unlinked, and every "cold" construction in the file reused the .so that
+  `TestCodegenBackend` compiles one screen up. Nothing else in the suite evicts
+  this way — `get_cached_so(compute_model_hash(...))` appeared at this one call
+  site — and the sibling `TestCodegenCacheHit` both enumerates the suffixes and
+  asserts the flag, so it cannot pass while warm. The caching is not implicated.
+
+  The test now points `_codegen.CACHE_DIR` at a `tmp_path` and swaps the in-process
+  memo for an empty dict, which says "nothing is cached" outright rather than
+  naming keys that fall out of date as suffixes are added — the enumeration in the
+  sibling class already predates `:codegen_output_sens`, `:sens_term_scale`, and
+  `:chunk=`. The cold/warm ordering is read off `codegen_cache_hit`, `False` then
+  `True`: the flag the pipeline records at the `get_cached_so` branch, which the
+  sibling class documents as the definitive signal and which this was the last test
+  still inferring from wall time.
+
+  **T0.3's own claim survives as a floor, not an ordering:** `cold > 1e-3`. A cc
+  invocation is a subprocess spawn plus a compile, a link, and a dlopen — 150 ms
+  for this model on an M-series laptop, against ~200 µs to resolve a cache hit — so
+  a millisecond sits two orders below any real compile on any runner and five times
+  above the 177 µs the run accepted as one. `cold > 0.0` is what should have caught
+  this; it passes for any nonzero measurement, so it passed, and the next line
+  flaked instead. The cold leg now costs a real compile (~0.15 s) where it used to
+  cost nothing.
+
 - **A Hill ratio's derivative no longer evaluates to `inf/inf` when its own base
   is large (issue #393).** `x^n/(K^n + x^n)` saturates at `1`, so once `x^n` is
   large the fraction is flat and every derivative of it is a very small number.
