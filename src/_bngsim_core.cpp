@@ -855,10 +855,11 @@ PYBIND11_MODULE(_bngsim_core, m) {
         py::arg("axis") = "parameter column",
         "Raise RuntimeError if any cell of a (n_times, n_species, n_cols) "
         "sensitivity tensor is non-finite, naming the first affected output "
-        "point and every column implicated there; return None otherwise. The "
-        "guard CvodeSimulator applies to every forward-sensitivity run (GH "
-        "#384), exposed so it can be tested on a synthesized tensor rather than "
-        "on a model that happens to blow up (GH #389). Internal.");
+        "point, every column implicated there, and how those cells split "
+        "between inf and nan (GH #394); return None otherwise. The guard "
+        "CvodeSimulator applies to every forward-sensitivity run (GH #384), "
+        "exposed so it can be tested on a synthesized tensor rather than on a "
+        "model that happens to blow up (GH #389). Internal.");
 
     // ─── NetworkModel ────────────────────────────────────────────────────────
     py::class_<bngsim::NetworkModel>(m, "NetworkModel")
