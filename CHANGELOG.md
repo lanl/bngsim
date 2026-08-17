@@ -307,6 +307,70 @@ in `CMakeLists.txt`) is derived from it.
 
 ### Fixed
 
+- **A Hill ratio's *state* derivative no longer evaluates to `inf/inf` either
+  (issue #402).** #393 stopped `x^n/(K^n + x^n)` overflowing when it is
+  differentiated w.r.t. its exponent. It did not reach the state direction of the
+  plainest Hill ratio there is, and the reason was one rewrite upstream:
+  `_remove_removable_power_denominators` (#96/#351) folds the quotient rule's
+  `x^(2n)/x` into `x^(2n-1)` — it has to, that quotient is `0/0` at `x = 0` — and
+  `2n − 1` is no multiple of the `n` in the denominator's sum, so #393's match by
+  base-and-integer-exponent-ratio does not fire. Both `x^(2n-1)` and
+  `(K^n + x^n)^2` are `inf` from `x^n = 1e154` up, the same band, and this shape
+  is the analytical Jacobian's own diagonal rather than a corner of it. A Hill
+  exponent of 10 reaches it at `x > 1e16`, which a concentration divided by a
+  small compartment volume gets to.
+
+  One square root lower down it is **worse than a NaN**. At `x = 1e16` the
+  numerator is still finite and only the squared denominator has overflowed, so
+  the second term silently reads `0`, drops out of the subtraction, and the
+  emitted derivative comes back `1e-15` where the truth is `1e-172` — a wrong
+  number with nothing to mark it.
+
+  The numerator is now matched a numeric offset wider, so `x^(2n-1)` is
+  recognised as `(x^n)^2·x^-1`, and the leftover is placed by expanding the
+  divided-through denominator into a sum of single powers:
+
+      f^m·b^c/(a + f)^m  ==  1/Σ_j C(m,j)·a^j·b^(−c − j·e)     for f = b^e
+
+  **Where the leftover goes is the whole design**, and the two other placements
+  were measured and rejected: left standing beside the term, `x^-1·(f/(a+f))^m`
+  is `inf·0` at `x = 0` — the removable `0/0` #96's fold exists to remove, handed
+  straight back; spread as an `m`-th root through the factors it is `sqrt(x)`,
+  `NaN` at a negative state where the `pow(x, 2n-1)` it replaces is an ordinary
+  number, and a species dipping below zero mid-solve is routine. Over one grid of
+  9236 evaluations the three placements broke 251, 6 and **1** previously-finite
+  points respectively. Nothing was reordered: `offset == 0` rows keep the exact
+  text #393 gave them, because the expansion forms an `a^m` the factored spelling
+  does not.
+
+  Carried in **both** emitters. `bngsim._saturable_jacobian` prints its own C and
+  never sees a rewrite living in `sympy_to_c`; it reaches the same shortfall by
+  another route, writing `n·S^(n-1)` directly rather than `n·S^n/S`. Which way
+  the ratio faces decides whether a model survives to notice: an activating
+  `S^n/(K^n + S^n)` has no reachable case on that path — `S^(n-1)` can only
+  overflow once `S^n` has, by which time the rate law's own value is `inf/inf`
+  too — while an *inhibitory* `1/(1 + (S/K)^n)` evaluates to a clean `0` at
+  exactly the state where its derivative is `NaN`. Without the fix that model
+  does not return a NaN: CVODES refuses the run at the first call of the
+  sensitivity RHS (#395), `CV_FIRST_SRHSFUNC_ERR` at `t = 0`, on both paths.
+
+  **Corpus A/B.** All 1291 loadable `rr_parity` models, every rate law
+  differentiated w.r.t. every free symbol, emitted through `sympy_to_c` *and*
+  `sympy_to_exprtk` *and* the native emitter, both arms in one process with the
+  pre-#402 matcher patched back in for the `before` arm — verified against
+  `HEAD`'s own source over 49308 rows before anything was concluded from it.
+  272957 SymPy-path rows and 63024 native-path rows; **2238 and 800 moved**,
+  across 256 models. Every moved SymPy row was then evaluated *as emitted text*
+  at 24 random points: over 51864 samples, **5087 are non-finite before and
+  finite after, and 0 are the reverse**. Of the 889 that are finite in both and
+  differ, scored against a 200-digit evaluation, the new form is closer at 768
+  and the old at 101. Median emitted-C length change over the moved rows: **−10
+  characters**.
+
+  No `_CODEGEN_VERSION` bump: `_jacobian` and `_saturable_jacobian` are both in
+  `_CODEGEN_SOURCE_MODULES`, so #51's source digest invalidates every cached
+  artifact anyway.
+
 - **The codegen setup-time test now compiles something before it times it (issue
   #397).** `TestCodegenSetupTime::test_cc_codegen_records_cold_compile_then_cache_hit`
   failed one `macos-14` leg of a PR that touches neither codegen nor caching, on

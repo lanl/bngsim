@@ -512,6 +512,51 @@ def _without_factor(node, factor):
     return None
 
 
+def _shaved_power_factor(node, base, exponent):
+    """The factor of ``node`` that is ``base`` raised to ``exponent`` short by a
+    numeric constant, as ``(factor, shift)`` with ``factor == base^(exponent −
+    shift)`` — or ``None`` (GH #402).
+
+    This is what :func:`_without_factor` cannot find and what the quotient rule
+    always leaves: differentiating ``S^n`` gives ``n·S^(n-1)``, so the numerator
+    over a ``K^n + S^n`` is one power short of the summand rather than equal to
+    it, and ``S^(n-1)`` overflows in the same band ``S^n`` does. Walks the same
+    multiplicative shapes ``_without_factor`` does, for the same reason: anything
+    else is not a factor of the whole.
+
+    ``|shift| ≤ 1`` bounds what the caller may print. The rewrite spells the
+    leftover as ``base^shift``, and a first power of the base is a quantity the
+    solver already holds, where ``base^2`` would be a fresh way to overflow.
+    """
+    tag = node[0]
+    if tag == "^" and node[1] == base:
+        shift = _numeric_exponent_shift(node[2], exponent)
+        return None if shift is None else (node, shift)
+    if tag == "neg":
+        return _shaved_power_factor(node[1], base, exponent)
+    if tag == "*":
+        return _shaved_power_factor(node[1], base, exponent) or _shaved_power_factor(
+            node[2], base, exponent
+        )
+    if tag == "/":
+        return _shaved_power_factor(node[1], base, exponent)
+    return None
+
+
+def _numeric_exponent_shift(found, exponent):
+    """``v`` when ``found`` is the expression ``exponent − v`` for a number ``v``
+    with ``0 < |v| ≤ 1``, else ``None``. A shift of zero is left to
+    :func:`_without_factor`, which matches the whole factor and needs no leftover
+    placed."""
+    if found[0] == "-" and found[1] == exponent and _is_num(found[2]):
+        v = found[2][1]
+    elif found[0] == "+" and found[1] == exponent and _is_num(found[2]):
+        v = -found[2][1]
+    else:
+        return None
+    return v if 0 < abs(v) <= 1 else None
+
+
 def _reciprocal_without_overflow(node):
     """``1/node`` written so that it underflows where ``node`` overflows, or
     ``None`` for a shape that has no such spelling.
@@ -573,9 +618,29 @@ def rewrite_saturating_ratio(node):
         if _contains(rest, saturating):
             continue  # dividing through would trade one overflow for another
         numer = _without_factor(left, saturating)
+        if numer is not None:
+            return _mk_div(numer, _mk_add(_mk_mul(rest, recip), _ONE))
+        if saturating[0] != "^":
+            continue
+        shaved = _shaved_power_factor(left, saturating[1], saturating[2])
+        if shaved is None:
+            continue
+        factor, shift = shaved
+        numer = _without_factor(left, factor)
         if numer is None:
             continue
-        return _mk_div(numer, _mk_add(_mk_mul(rest, recip), _ONE))
+        # ``M·b^(e−v)/(rest + b^e) == M/(b^v + rest·b^(v−e))`` — the same divide
+        # through, with the shortfall ``v`` carried into both summands so no
+        # power of the base is left standing outside the division to be ``inf``
+        # beside a ``0`` (GH #402).
+        base = saturating[1]
+        return _mk_div(
+            numer,
+            _mk_add(
+                _mk_pow(base, _num(shift)),
+                _mk_mul(rest, _mk_pow(base, _mk_sub(_num(shift), saturating[2]))),
+            ),
+        )
     return (tag, left, right)
 
 

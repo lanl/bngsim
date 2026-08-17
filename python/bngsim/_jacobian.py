@@ -978,12 +978,23 @@ def _rewrite_saturating_ratio(expr):
     finite and ``x^(2n)`` is not — so the numerator is matched by base and by an
     integer ratio of exponents rather than by identity, which is what recognises
     ``x^(2n)`` beside ``x^n`` (and ``exp(2u)`` beside ``exp(u)``) as the same
-    ``f``. It covers the direction for a base like ``BIOMD0000000829``'s
-    ``1/mTOR_R`` and **not** for a bare species: there the fold that runs first,
-    ``_remove_removable_power_denominators`` (GH #96/#351), turns ``x^(2n)/x``
-    into ``x^(2n-1)``, which is no longer a whole power of anything in the sum.
-    Undoing that trades this overflow for the removable ``0/0`` at ``x = 0``
-    #96 exists to remove, so it is a separate decision — measured in GH #402.
+    ``f``.
+
+    **A ratio alone stops one rewrite short of the plainest Hill ratio there is**
+    (GH #402), which is why the match also carries an integer offset. The state
+    derivative of ``x^n/(K^n + x^n)`` for a bare species reaches here having been
+    through ``_remove_removable_power_denominators`` (GH #96/#351) already: that
+    fold turns the ``x^(2n)/x`` sympy writes into ``x^(2n-1)``, and ``2n − 1`` is
+    not a multiple of ``n``. The overflow it leaves is the same one and no
+    narrower — ``x^(2n-1)`` and ``(K^n + x^n)^2`` are both ``inf`` from
+    ``x^n = 1e154`` up, where the derivative's true value is an ordinary tiny
+    number — and it is the analytical Jacobian's own diagonal, not a corner of it.
+    Worse than the NaN, one square root lower down the emitted form reads
+    ``1e-15`` at ``x = 1e16`` where the truth is ``1e-172``: the numerator is
+    still finite there, only the squared denominator has overflowed, so the term
+    silently drops out of the subtraction instead of failing.
+    :func:`_divided_through` places the leftover; the two rewrites needed nothing
+    reordered to compose, only a numerator matched a shift wider.
 
     ``a`` must be free of ``f``: ``exp(u)/(x·exp(u) + exp(u))^2`` would otherwise
     trade one overflow for another. Nothing else is required of it, and nothing
@@ -1055,11 +1066,11 @@ def _rewrite_saturating_ratio(expr):
                 match = _saturating_summand(num_base, num_exp, total, sp)
                 if match is None:
                     continue
-                f, m = match
+                f, m, offset = match
                 rest = sp.Add(*(term for term in total.args if term != f))
                 if rest.has(f):
                     continue
-                factors[num_i] = sp.Pow(1 / (1 + rest / f), m)
+                factors[num_i] = _divided_through(f, m, offset, rest, sp)
                 factors[den_i] = sp.Pow(total, den.exp + m)
                 # This numerator is spent, but the denominator is not: a Mul can
                 # hold two distinct bases over one sum — ``x^n·y^m/(x^n + y^m)^2``
@@ -1076,13 +1087,32 @@ def _rewrite_saturating_ratio(expr):
 
 
 def _saturating_summand(num_base, num_exp, total, sp):
-    """The summand ``f`` of ``total`` that the numerator is a whole power of, as
-    ``(f, m)`` with ``num == f^m`` and ``m`` a positive integer — or ``None``.
+    """The summand ``f`` of ``total`` that the numerator is a whole power of up to
+    a small integer shift, as ``(f, m, offset)`` with ``num == f^m·base^offset``,
+    ``m`` a positive integer and ``offset`` an integer in ``{-1, 0, 1}`` — or
+    ``None``.
 
     Matching by base and exponent ratio rather than by identity is what lets
     ``x^(2n)`` pair with the ``x^n`` in ``K^n + x^n``: sympy folds the quotient
     rule's ``x^n·x^n`` into one power, and it is the folded form that overflows.
-    ``m == 1`` is the plain ``f ∈ total.args`` case.
+    ``m == 1``, ``offset == 0`` is the plain ``f ∈ total.args`` case.
+
+    **The offset is what reaches the state derivative** (GH #402). A ratio alone
+    misses it, because a second rewrite has already been over the numerator:
+    :func:`_remove_removable_power_denominators` (GH #96/#351) folds the ``x^(2n)/x``
+    that ``sp.diff`` writes for ``d/dx [x^n/(K^n + x^n)]`` into ``x^(2n-1)``, whose
+    exponent is no longer any multiple of ``n``. So the count is taken from the
+    exponents' *slope* — one ``sp.diff`` apiece against a symbol of the summand's
+    exponent — and whatever numeric constant is left over is carried separately.
+    The two exponents have to stay parallel for that to mean anything, which is
+    exactly what ``offset`` being a plain number tests: ``x^(2n + p)`` beside
+    ``x^n`` leaves ``p``, still symbolic, and is refused.
+
+    ``|offset| ≤ 1`` is a bound on what the rewrite may print, not on what the
+    fold may produce. :func:`_divided_through` spells the leftover as a factor
+    ``base^-offset``, and a first power of the base is a quantity the solver is
+    already holding — where ``base^2`` would be a new way to overflow, at
+    ``base > 1e154``, in a rewrite whose whole purpose is to remove one.
 
     Only an exponential or a power can be an ``f``. A bare summand — the ``S`` of
     ``K + S`` — is left out on purpose: it takes no ``pow`` to compute and cannot
@@ -1095,16 +1125,97 @@ def _saturating_summand(num_base, num_exp, total, sp):
         term_base, term_exp = term.as_base_exp()
         if term_base != num_base:
             continue
-        ratio = num_exp / term_exp
-        if not ratio.is_number:
-            continue  # e.g. x^(n+1) beside x^n — not a whole power of it
-        try:
-            m = int(ratio)
-        except TypeError:
-            continue  # complex, or otherwise not an integer count
-        if m >= 1 and ratio == m:
-            return term, m
+        split = _whole_power_offset(num_exp, term_exp, sp)
+        if split is not None:
+            return (term, *split)
     return None
+
+
+def _integer_at_least(value, minimum):
+    """``value`` as a Python ``int`` when it is an integer ``≥ minimum``, else
+    ``None``. Written against the *value* rather than ``is_integer`` so a
+    ``Float(2.0)`` exponent — what a rate law spelled ``x^2.0`` parses to — counts
+    as the integer it is."""
+    try:
+        n = int(value)
+    except TypeError:
+        return None  # complex, or otherwise not a count
+    return n if n >= minimum and value == n else None
+
+
+def _whole_power_offset(num_exp, term_exp, sp):
+    """``(m, offset)`` with ``num_exp == m·term_exp + offset``, ``m ≥ 1`` and
+    ``offset`` an integer in ``{-1, 0, 1}`` — or ``None`` (GH #393, GH #402).
+
+    An exact ratio settles the ``offset == 0`` case on its own and is tried first,
+    both because it is the common one and because it is the only test that can
+    answer for a summand whose exponent is a plain number (``exp(6)`` beside
+    ``exp(3)``), where the slope below has no symbol to differentiate against.
+
+    Otherwise the count comes from the slope of one exponent against the other.
+    Any symbol of ``term_exp`` will do as the pivot — if the exponents are not
+    parallel, the leftover ``num_exp − m·term_exp`` keeps a symbol and the match
+    is refused, whichever symbol was picked.
+    """
+    ratio = num_exp / term_exp
+    if ratio.is_number:
+        m = _integer_at_least(ratio, 1)
+        return None if m is None else (m, 0)
+
+    pivot = next((s for s in term_exp.free_symbols if sp.diff(term_exp, s) != 0), None)
+    if pivot is None:
+        return None
+    m = _integer_at_least(sp.cancel(sp.diff(num_exp, pivot) / sp.diff(term_exp, pivot)), 1)
+    if m is None:
+        return None
+    leftover = sp.expand(num_exp - m * term_exp)
+    if not leftover.is_number:
+        return None  # not parallel: e.g. x^(2n + p) beside x^n
+    offset = _integer_at_least(leftover, -1)
+    return None if offset is None or offset > 1 else (m, offset)
+
+
+def _divided_through(f, m, offset, rest, sp):
+    """``f^m·base^offset / (rest + f)^m`` written so no intermediate overflows —
+    the numerator's half of :func:`_rewrite_saturating_ratio`'s identity.
+
+    With no leftover this is the schoolbook ``(1/(1 + rest/f))^m``, and it is
+    emitted verbatim so every expression the offset does not reach keeps the text
+    it had.
+
+    With one (GH #402) that spelling no longer works, and the reason is worth
+    stating because the three obvious placements of the leftover are all worse.
+    It cannot be **left standing beside the term** — ``x^-1·(f/(rest + f))^m`` is
+    ``inf·0`` at ``x = 0``, the removable ``0/0`` GH #96's fold exists to remove,
+    handed straight back. It cannot be **carried as a positive power out front**
+    by dividing one ``f`` out at a time — ``x^(n-1)·(1/(1 + a·x^-n))·(a + x^n)^-1``
+    is right at both those ends, and still ``inf·0`` once ``x^n`` overflows in its
+    own right, so it repairs one band and leaves the next. And it cannot be
+    **spread as an ``m``-th root** through the factors, because ``x^(1/2)`` is
+    ``NaN`` at a negative state where the ``pow(x, 2n-1)`` it replaces is an
+    ordinary number, and a species dipping below zero mid-solve is routine. So the
+    whole ``(rest + f)^m/(f^m·base^offset)`` is expanded instead, into the one sum
+    whose every term is a single power of the base::
+
+        f^m·base^offset/(rest + f)^m  ==  1/Σ_j C(m,j)·rest^j·base^(−offset − j·e)
+
+    for ``f = base^e``. Every exponent there is an integer shift of a multiple of
+    ``e``, so a negative base keeps whatever ``pow`` made of it before; the terms
+    are summed rather than multiplied, so no pairing of them can be ``0·inf``; and
+    a term that overflows lands in a *denominator*, where it reads as the ``0``
+    the true value is.
+
+    The expansion is not free — it forms a ``rest^m`` the factored spelling does
+    not — which is the other reason ``offset == 0`` keeps the old form rather than
+    taking this one as a special case of it.
+    """
+    if offset == 0:
+        return sp.Pow(1 / (1 + rest / f), m)
+    base, exp = f.as_base_exp()
+    return sp.Pow(
+        sp.Add(*(sp.binomial(m, j) * rest**j * base ** (-offset - j * exp) for j in range(m + 1))),
+        -1,
+    )
 
 
 # A rate law can only need the zero-base logarithm guard if it contains a

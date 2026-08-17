@@ -289,11 +289,13 @@ class TestWhatIsLeftAlone:
         expr = sp.Mul(S**2, sp.Pow(K + S, -2), evaluate=False)
         assert _rewrite_saturating_ratio(expr) == expr
 
-    def test_a_numerator_that_is_not_a_whole_power_is_not_touched(self):
-        """``x^(n+1)`` beside ``x^n`` is ``x^n·x``, not ``(x^n)^m`` — the
-        exponent ratio ``(n + 1)/n`` is not an integer, so there is no ``f`` to
-        divide through by."""
-        expr = sp.Mul(x ** (n + 1), sp.Pow(K + x**n, -2), evaluate=False)
+    def test_a_numerator_offset_by_a_symbol_is_not_touched(self):
+        """``x^(2n + p)`` beside ``x^n`` is ``(x^n)^2·x^p``, and ``x^p`` is not a
+        leftover this rewrite can place: it is another power of the base, free to
+        run away on its own. Only a *numeric* offset is carried (GH #402), which
+        is what "the exponents are parallel" means."""
+        p = sp.Symbol("p")
+        expr = sp.Mul(x ** (2 * n + p), sp.Pow(K + x**n, -2), evaluate=False)
         assert _rewrite_saturating_ratio(expr) == expr
 
     def test_a_numeric_exponent_is_not_worth_a_division(self):
@@ -323,27 +325,23 @@ class TestWhatIsLeftAlone:
         expr = sp.Mul(K**n, sp.Pow(y + x**n, -1), evaluate=False)
         assert _rewrite_saturating_ratio(expr) == expr
 
-    def test_a_folded_removable_denominator_is_left_to_gh_402(self):
-        """The state derivative of the *plainest* Hill ratio is not covered, and
-        the reason is upstream of this rewrite.
+    def test_a_folded_removable_denominator_is_carried_by_gh_402(self):
+        """The state derivative of the *plainest* Hill ratio reaches this rewrite
+        having already been through another one, and for the length of GH #393 it
+        was left alone on account of it.
 
         ``x^(2n)/x`` is a removable ``0/0`` at ``x = 0``, so GH #96/#351 folds it
-        into ``x^(2n-1)`` before this rewrite ever runs — and ``x^(2n-1)`` is not
-        a whole power of the ``x^n`` in the denominator's sum, so there is no
-        ``f`` to divide through by. The emitted C is still NaN at ``x^(2n-1) =
-        inf``, where the true value is ``1e-224``.
-
-        Reordering the two rewrites matches the shape and reintroduces the
-        ``0/0`` at ``x = 0`` that GH #96 removed, so it is a trade rather than a
-        fix, measured in GH #402. This test pins the boundary rather than the
-        defect: it fails the day the fold and the divide-through learn to
-        compose, and that is the day GH #402 closes.
+        into ``x^(2n-1)`` first — and ``2n − 1`` is not a multiple of the ``n`` in
+        the denominator's sum, so a match by exponent *ratio* finds no ``f`` to
+        divide through by. GH #402 carries the leftover instead of reordering the
+        two rewrites, which is what closed it; ``test_hill_state_derivative.py``
+        holds down the arithmetic.
         """
         from bngsim._jacobian import _remove_removable_power_denominators
 
         folded = _remove_removable_power_denominators(sp.diff(x**n / (K**n + x**n), x))
         assert folded.has(x ** (2 * n - 1))  # the fold this test is about
-        assert _rewrite_saturating_ratio(folded) == folded
+        assert not _rewrite_saturating_ratio(folded).has(x ** (2 * n - 1))
 
     def test_an_expression_with_no_negative_power_of_a_sum_comes_back_identical(self):
         """The gate that keeps this off every derivative in the corpus that
