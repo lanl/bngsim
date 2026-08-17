@@ -312,4 +312,42 @@ class Result {
     SsaDiagnostics ssa_diag_;
 };
 
+// ─── Non-finite forward sensitivities (issue #384) ───────────────────────────
+//
+// CVODES can return CV_SUCCESS with NaN in the sensitivity vectors. The error
+// test is a comparison, and every comparison against NaN is false, so a column
+// that has already gone non-finite is not rejected by the machinery whose job
+// is to reject it — the run reports a clean solve and hands back a poisoned
+// gradient. BIOMD0000000480 is the case: the `parameter_63` column tracks the
+// reference to six significant figures for 963 of 1001 output points and then
+// all 41 of its rows go NaN together, with n_err_test_fails == 0.
+//
+// Refuse rather than warn. `Result.gradient` reduces the tensor, so one NaN
+// cell poisons a scalar an optimizer will happily step on, and the failure is
+// silent all the way to a wrong fit. Every NaN reaching here is a numerical
+// failure: the DECLARED NaN rows — an assignmentRule species whose own output
+// sensitivity codegen refuses (#198/#221) — are written by the Python layer
+// afterwards, so at this point the tensor should be finite everywhere.
+//
+// These live here, not in the CVODES simulator, so that the diagnostic can be
+// handed a tensor directly (issue #389). Every witness that provokes the
+// blow-up for real is a floating-point event, and the one the first version of
+// the test used — BIOMD0000000480's knife edge — does not occur on every host;
+// a guard whose only test is a witness that may or may not fire is a guard that
+// goes quietly green exactly where it is most needed.
+
+// One sensitivity axis. `data` is row-major [time][species][column]; `times`
+// supplies the output times for the message. Throws std::runtime_error naming
+// the FIRST affected output point and every column implicated there, and
+// returns normally when every cell is finite. `axis` names the column axis in
+// the message ("parameter column" / "initial-condition column").
+void refuse_nonfinite_sensitivity_block(const std::vector<double> &data,
+                                        const std::vector<double> &times, int n_times,
+                                        int n_species, int n_cols,
+                                        const std::vector<std::string> &col_names,
+                                        const std::string &axis);
+
+// Both sensitivity axes of a completed run. No-op when the run carried none.
+void refuse_nonfinite_sensitivities(const Result &result);
+
 } // namespace bngsim
