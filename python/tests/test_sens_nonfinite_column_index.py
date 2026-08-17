@@ -213,3 +213,41 @@ class TestATransientNonFiniteIsRecovered:
         )
         if first is not None:
             assert np.array_equal(first, last, equal_nan=True)
+
+
+class TestTheKnifeEdgeWitnessIsRescued:
+    """``BIOMD0000000480`` is GH #384's own witness: its ``parameter_63`` column
+    tracked AMICI to six significant figures for 963 of 1001 output points and
+    then went NaN. The recoverable return rescues it — the step carrying the NaN
+    is rejected and the retry is clean — and the column it now returns is right,
+    not merely finite: against a central finite difference of the trajectory
+    (``parameter_63 = 2.0`` perturbed in the SBML text, h = 1e-4·p) the whole run
+    agrees to 4.07e-06 and indices 960–1000 to **1.24e-07**, with the error
+    growing as h shrinks — the FD is the noisy side.
+
+    Asserted here rather than in ``test_nonfinite_sensitivity_refusal.py``,
+    whose ``TestTheRealModels`` correctly *skips* this model now. A skip records
+    that nothing happened; this records what does.
+    """
+
+    MODEL = (
+        Path(__file__).resolve().parents[2] / "benchmarks" / "sbml_events" / "BIOMD0000000480.xml"
+    )
+
+    def test_the_tensor_is_finite_and_the_column_is_not_zero(self):
+        if not self.MODEL.exists():  # pragma: no cover - corpus ships with the repo
+            pytest.skip("BIOMD0000000480 not available")
+        model = bngsim.Model.from_sbml(str(self.MODEL))
+        cap = max(1, 20000 // max(len(model.species_names), 1))
+        skip = (model._internal_param_names() & set(model.function_names)) | set(
+            model.compartment_size_params
+        )
+        targets = [n for n in model.primary_param_names if n not in skip][:cap]
+        result = bngsim.Simulator(
+            model, method="ode", sensitivity_params=targets, sensitivity_method="staggered"
+        ).run(t_span=(0.0, 10.0), n_points=1001, rtol=1e-9, atol=1e-12, max_steps=100000)
+
+        sens = np.asarray(result.sensitivities)
+        assert np.isfinite(sens).all()
+        # a column of zeros would also be finite
+        assert np.max(np.abs(sens[:, :, targets.index("parameter_63")])) > 1.0
