@@ -1388,6 +1388,78 @@ class Simulator:
             detail = " Detail: " + "; ".join(sorted(res.reasons.values())) + "."
         return list(res.compensated), detail, dict(res.blocked)
 
+    def _raise_if_uncompensated_crossing_sensitivities(self) -> None:
+        """Refuse a forward-sensitivity run left on the difference quotient over a
+        rate-law branch crossing whose time moves (issue #414).
+
+        The rate-law twin of :meth:`_raise_if_event_sensitivities`. When a rate
+        law branches on a condition whose crossing time moves with the trajectory
+        — and therefore with the parameters — but which no machinery can locate
+        (an equality, a comparison buried in a call argument, a clock threshold
+        that does not reduce to a constant), codegen declines the analytic
+        sensitivity RHS. ``CVodeSensInit1`` takes ONE callback for every column,
+        so that decline puts the whole model on CVODES' internal difference
+        quotient, which integrates the variational equation smoothly *through* the
+        crossing and drops the saltation jump ``(f⁻−f⁺)·dt*/dθ`` the analytic path
+        was declined for. On AMICI's ``nested_events`` every column comes back a
+        factor of two low after the crossing (issue #146). bngsim used to return
+        that gradient with a warning; it now refuses it, the same way it refuses
+        an event whose crossing time it cannot differentiate (GH #205) and a rate
+        law it cannot differentiate at all (GH #214).
+
+        The refusal keys on exactly the crossings the codegen decline is an
+        ``UncompensatedCrossingReason`` for
+        (:func:`bngsim._switch_sensitivity.uncompensated_condition_reason`, at its
+        call site in :func:`bngsim._codegen._functional_rate_law_partials`),
+        rescanned at the model level by
+        :func:`~bngsim._switch_sensitivity.model_uncompensated_crossing_reason` —
+        the same recognizer, so the gate and the build cannot disagree about which
+        crossings are compensated. It deliberately does NOT key on "the analytic
+        RHS is absent", because absence is not the same as a dropped jump: a
+        *compensated* crossing on the difference quotient (a ``t>=sigma`` clock
+        forced to the fallback, or an ``I>=thresh`` state threshold) still gets its
+        jump from :meth:`_apply_switch_time_sens` / :meth:`_apply_state_switch_sens`
+        at run time, so it is not refused; and an underivable-but-smooth rate law
+        with no crossing (``erf(I)*beta*I``) declines the analytic RHS but drops no
+        jump, so its difference quotient stays a correct, slower answer and is not
+        refused either. Only a crossing nothing brackets makes the fallback wrong,
+        and that is the one this refuses on. Cheap: the scan short-circuits for any
+        model with no conditional rate law.
+
+        Issue #414's other half — compensating the saltation jump for a moving
+        *state* crossing the way issue #150 did for the single-rootable-comparison
+        case — is the elaborate-design piece and is left as future work; this gate
+        settles the policy question, refusing the flagged-wrong gradient rather
+        than returning it.
+        """
+        from bngsim._switch_sensitivity import model_uncompensated_crossing_reason
+
+        try:
+            reason = model_uncompensated_crossing_reason(self._model._core)
+        except Exception as e:  # pragma: no cover - defensive
+            # Detection is best-effort: without it we cannot confirm an
+            # uncompensated crossing, so leave the pre-#414 behaviour (the codegen
+            # warning already fired) rather than refuse a run we cannot justify
+            # refusing.
+            logger.debug("Uncompensated-crossing sensitivity refusal: scan unavailable (%s)", e)
+            return
+        if reason is None:
+            return
+        raise SensitivityUnsupportedError(
+            "Forward sensitivity is not supported for this model: it branches on a "
+            "rate-law condition whose crossing time moves with the parameters and which "
+            f"no machinery can locate — {reason}. The analytic sensitivity RHS is "
+            "declined for it, so CVODES' internal difference quotient would be used "
+            "instead, and it integrates the variational equation smoothly through the "
+            "crossing, dropping the saltation jump (f⁻−f⁺)·dt*/dθ, so every sensitivity "
+            "column would be wrong at and after the crossing (issue #146). bngsim refuses "
+            "rather than return a gradient it has flagged as wrong (issue #414). Neither "
+            "the issue #48 switch-time jump (which needs a crossing time known a priori) "
+            "nor the issue #150 saltation jump (which needs a single comparison over state "
+            "to root on) applies here; validate against a trajectory finite difference if "
+            "you need an approximate gradient."
+        )
+
     def _apply_event_time_sens(self, opts, core, t_start, t_end, param_names=None) -> None:
         """Inject each event's ``∂t*/∂p`` (issue #49).
 
@@ -2946,6 +3018,11 @@ class Simulator:
         # #210's narrow carry-over warning to a unified hard raise.
         if self._sensitivity_params or self._sensitivity_ic:
             self._raise_if_event_sensitivities()
+            # Issue #414 — the rate-law twin: a branch condition whose crossing
+            # time moves but which no machinery locates leaves the whole run on
+            # CVODES' difference quotient, which drops the saltation jump. Refuse
+            # rather than return the flagged-wrong gradient.
+            self._raise_if_uncompensated_crossing_sensitivities()
 
         # GH #210 — pre-equilibration / carry-over output sensitivities. Only
         # meaningful for the ODE forward-sensitivity path; validate early.
@@ -3301,6 +3378,10 @@ class Simulator:
         # derivatives — same policy as single-shot run().
         if self._sensitivity_params or self._sensitivity_ic:
             self._raise_if_event_sensitivities()
+            # Issue #414 — same rate-law moving-crossing refusal run() applies,
+            # hoisted out of the per-row loop (the crossing is a model-structural
+            # property, not a per-row one).
+            self._raise_if_uncompensated_crossing_sensitivities()
 
         n_sims = len(params)
         logger.info(
@@ -4792,6 +4873,13 @@ class Simulator:
         # (issue #75) — see _prepare_output_sens_codegen for the wrinkles.
         self._prepare_output_sens_codegen()
 
+        # Issue #414 — refuse an uncompensated moving rate-law crossing left on the
+        # difference quotient, the same as run(). Model-structural (it re-derives
+        # from the core, not from this call's target params), so a Simulator built
+        # without sensitivity_params — the way this entry point is often reached —
+        # is gated exactly as a sensitivity-configured one.
+        self._raise_if_uncompensated_crossing_sensitivities()
+
         # Effective solver options
         effective_rtol = rtol if rtol is not None else self._rtol
         # Issue #196 — one tolerance for every chunk. The chunks are columns of
@@ -5419,6 +5507,12 @@ class Simulator:
             # sensitivity_params, while this is a METHOD argument. A no-op when a
             # codegen artifact with output sens is already attached.
             self._prepare_output_sens_codegen()
+
+            # Issue #414 — dY_ss/dp reads ∂f/∂p out of the same sensitivity RHS,
+            # so a model that declines it over a moving rate-law crossing lands on
+            # the difference quotient here too. Refuse rather than solve
+            # J·(dY/dp) = −∂f/∂p from a gradient flagged wrong at the crossing.
+            self._raise_if_uncompensated_crossing_sensitivities()
 
         from bngsim._bngsim_core import (
             SteadyStateOptions,

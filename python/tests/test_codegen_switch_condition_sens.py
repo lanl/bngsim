@@ -824,13 +824,96 @@ class TestEndToEnd:
         assert any("Switch-time forward sensitivity" in r.getMessage() for r in caplog.records)
         assert float(np.max(np.abs(np.asarray(run.sensitivities)))) > 1.0
 
-    def test_a_refused_model_still_runs_on_the_difference_quotient(self, tmp_path):
-        """Declining is a fallback, not an error: a model whose crossing nothing
-        compensates must still produce sensitivities, just via CVODES'
-        internal DQ — with the issue #146 warning attached."""
+    def test_a_moving_crossing_is_refused_not_run_on_the_difference_quotient(self, tmp_path):
+        """Issue #414. Declining the analytic sensitivity RHS over a crossing
+        nothing compensates used to fall back to CVODES' difference quotient,
+        which integrates smoothly through the moving crossing and returns a
+        gradient wrong at and after it (issue #146). bngsim now refuses that run —
+        a clean, typed non-run rather than a number it has already flagged as
+        wrong — the same way it refuses an undifferentiable event trigger (GH
+        #205) and a rate law it cannot differentiate at all (GH #214)."""
         model = _model(tmp_path, _with_law(UNCOMPENSATED))
-        run = _run_sens(model, ["beta", "gamma"], t_end=12.0)
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time moves"):
+            _run_sens(model, ["beta", "gamma"], t_end=12.0)
+
+    def test_the_refusal_names_the_moving_crossing_and_the_issue(self, tmp_path):
+        """The refusal has to be actionable: it names the offending condition —
+        the same atom the codegen warning reports — and points at the policy it
+        enacts, so a caller can tell it from the other things that raise
+        ``SensitivityUnsupportedError``."""
+        model = _model(tmp_path, _with_law(UNCOMPENSATED))
+        with pytest.raises(bngsim.SensitivityUnsupportedError) as ei:
+            _run_sens(model, ["beta"], t_end=12.0)
+        message = str(ei.value)
+        assert "I==thresh" in message
+        assert "issue #414" in message
+        # A clean, typed non-run: the parity peer of the event refusal, still a
+        # ValueError for handlers that predate the typed class.
+        assert isinstance(ei.value, ValueError)
+
+    def test_a_compensated_state_crossing_is_not_refused(self, tmp_path):
+        """The over-refusal guard on the issue #150 side. ``I>=thresh`` reads live
+        state and its crossing moves, but the solver roots on it and applies the
+        saltation jump — so the analytic RHS is admitted and its symbol is
+        present, and the run must proceed rather than be swept up in the #414
+        refusal."""
+        sim = bngsim.Simulator(
+            _model(tmp_path, _with_law("if(I>=thresh,beta,0)*I")),
+            method="ode",
+            sensitivity_params=["beta", "gamma"],
+        )
+        assert sim._codegen_provides_sens_rhs()
+        sim._raise_if_uncompensated_crossing_sensitivities()  # must not raise
+        run = sim.run(t_span=(0.0, 12.0), n_points=31, rtol=1e-11, atol=1e-11)
         assert np.asarray(run.sensitivities).shape[2] == 2
+
+    def test_a_smooth_underivable_law_with_no_crossing_is_not_refused(self, tmp_path):
+        """The over-refusal guard on the issue #56/#66 side, and the reason the
+        gate keys on the crossing and not merely on 'the analytic RHS was
+        declined'. ``erf(I)`` cannot be differentiated so the analytic sensitivity
+        RHS is declined, but the law branches on nothing — the difference quotient
+        is a correct, slower answer to the same smooth problem, so #414 must leave
+        it be."""
+        sim = bngsim.Simulator(
+            _model(tmp_path, _with_law("erf(I)*beta*I")),
+            method="ode",
+            sensitivity_params=["beta", "gamma"],
+        )
+        assert not sim._codegen_provides_sens_rhs()  # erf declined the analytic RHS
+        sim._raise_if_uncompensated_crossing_sensitivities()  # ... but no crossing, so no refusal
+
+    def test_a_compensated_clock_crossing_is_not_refused(self, tmp_path):
+        """The over-refusal guard on the issue #48 side. ``t>=sigma`` crosses at a
+        time the switch-time detector knows a priori, so the analytic RHS is
+        admitted and the run proceeds — the #414 gate must not fire on a crossing
+        something already compensates."""
+        sim = bngsim.Simulator(
+            _model(tmp_path, SWITCHED),
+            method="ode",
+            sensitivity_params=["beta", "gamma", "sigma"],
+        )
+        assert sim._codegen_provides_sens_rhs()
+        sim._raise_if_uncompensated_crossing_sensitivities()  # must not raise
+
+    def test_compute_all_sensitivities_also_refuses_a_moving_crossing(self, tmp_path):
+        """The refusal reaches the entry points that build codegen for themselves,
+        not only run(). ``compute_all_sensitivities`` is routinely called on a
+        Simulator constructed WITHOUT ``sensitivity_params``, so it gates on the
+        artifact it prepares rather than on the constructor's."""
+        sim = bngsim.Simulator(_model(tmp_path, _with_law(UNCOMPENSATED)), method="ode")
+        with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time moves"):
+            sim.compute_all_sensitivities(
+                t_span=(0.0, 12.0), n_points=11, params=["beta", "gamma"]
+            )
+
+    def test_a_plain_run_of_the_same_model_is_unaffected(self, tmp_path):
+        """The refusal is a forward-sensitivity policy, not a model verdict: the
+        same model integrates as it always did when no sensitivities are asked
+        for — the gate is behind the ``sensitivity_params or sensitivity_ic``
+        guard, so a plain run never reaches it."""
+        sim = bngsim.Simulator(_model(tmp_path, _with_law(UNCOMPENSATED)), method="ode")
+        run = sim.run(t_span=(0.0, 12.0), n_points=11)
+        assert np.asarray(run.species).shape[0] == 11
 
 
 class TestTheThresholdIsRecognisedByItsCrossingNotItsSpelling:
