@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 BNGSIM_ROOT = Path(__file__).resolve().parents[2]
@@ -108,24 +109,38 @@ def test_mir_gen_spill_reload_table_is_bounds_checked():
 
     ``try_spilled_reg_mem`` rewrites every operand naming one spilled register
     into a memory operand and records the rewritten indices in a fixed
-    ``op_nums[MAX_INSN_RELOAD_MEM_OPS]`` so it can undo them. Upstream bounds
-    that loop with ``gen_assert`` only — i.e. ``assert``, which -DNDEBUG deletes
-    from every release build — and an insn CAN name the register three times:
-    ``x = x * x`` reaches the allocator as ``dmul r, r, r``. The third store
-    then lands past the array, which glibc reports as ``*** stack smashing
-    detected ***``.
+    ``op_nums[MAX_INSN_RELOAD_MEM_OPS]`` so it can undo them. Upstream sizes that
+    table at 2 and bounds the loop with ``gen_assert`` only — i.e. ``assert``,
+    which -DNDEBUG deletes from every release build — and an insn CAN name the
+    register three times: ``x = x * x`` reaches the allocator as ``dmul r, r, r``.
+    The third store then lands past the array, which glibc reports as
+    ``*** stack smashing detected ***``.
+
+    Both halves of the carry are asserted here, because either alone is
+    insufficient. The table has to be 3 for the three-operand case to be handled
+    rather than declined, and the runtime check has to stay because 3 is not a
+    provable bound — the call site is reached for ``MIR_USE`` too, and ``MIR_USE``
+    has unbounded ``nops``.
 
     A source-level assertion, because the behavior it guards needs -O2 MIR_gen
     on a spilling function; test_codegen_jit_self_multiply.py is the end-to-end
     half and runs only where the JIT is built.
     """
     src = (MIR_DIR / "mir-gen.c").read_text()
-    start = src.index("static int try_spilled_reg_mem")
-    body = src[start : src.index("\nstatic ", start + 1)]
+    # Comments out, because the carry's own comment quotes the upstream line it
+    # replaced — matching prose here would report the fix as the bug.
+    code = re.sub(r"/\*.*?\*/", " ", src, flags=re.S)
+    start = code.index("static int try_spilled_reg_mem")
+    body = code[start : code.index("\nstatic ", start + 1)]
 
+    assert "#define MAX_INSN_RELOAD_MEM_OPS 3" in code, (
+        "the #413 carry no longer sizes op_nums for a three-operand insn naming "
+        "one spilled register in every operand (`x = x * x`)"
+    )
     assert "if (n >= MAX_INSN_RELOAD_MEM_OPS) {" in body, (
         "the #413 bounds check is gone from try_spilled_reg_mem — op_nums can be "
-        "overrun again by an insn naming one spilled register three times"
+        "overrun again by an insn naming one spilled register more times than the "
+        "table holds, which MIR_USE can do without limit"
     )
     # The check must not have been left as an assert(), which NDEBUG removes.
     recorded = body[body.index("int n = 0, op_nums") :]

@@ -7951,7 +7951,9 @@ struct rewrite_data {
   bitmap_t live, regs_to_save;
 };
 
-#define MAX_INSN_RELOAD_MEM_OPS 2
+/* Max operands of one insn which can refer to the same spilled reg: `x = x * x`
+   becomes a 3-operand insn whose output and both inputs are the same reg.  */
+#define MAX_INSN_RELOAD_MEM_OPS 3
 static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR_reg_t loc,
                                 MIR_reg_t base_reg) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -7963,23 +7965,19 @@ static int try_spilled_reg_mem (gen_ctx_t gen_ctx, MIR_insn_t insn, int nop, MIR
   MIR_op_t saved_op = *op;
   MIR_op_t mem_op = _MIR_new_var_mem_op (ctx, type, offset, base_reg, MIR_NON_VAR, 0);
   int n = 0, op_nums[MAX_INSN_RELOAD_MEM_OPS];
+  /* BNGsim local carry (lanl/bngsim#413) -- see VENDOR.json local_carries.  The
+     two lines below and the constant above are the whole carry, and they are
+     byte-identical to what was proposed upstream, so a refresh that picks the
+     fix up leaves only this comment to delete.  Upstream bounded this loop with
+     `gen_assert (n < MAX_INSN_RELOAD_MEM_OPS)` over a two-entry table, which is
+     wrong twice: an insn CAN name one spilled reg three times (`x = x * x`
+     arrives as `dmul r, r, r`), and gen_assert is assert, so -DNDEBUG deletes
+     the check from every release build and op_nums[2] is stored out of bounds.
+     glibc reports that as `*** stack smashing detected ***`; a toolchain that
+     leaves this frame unguarded corrupts it silently.  */
   for (int i = nop; i < (int) insn->nops; i++)
     if (insn->ops[i].mode == MIR_OP_VAR && insn->ops[i].u.var == reg) {
-      /* BNGsim local carry (lanl/bngsim#413) -- see VENDOR.json local_carries.
-         An insn can name one spilled register in MORE than MAX_INSN_RELOAD_MEM_OPS
-         operands: `x = x * x` reaches here as the three-operand `dmul r, r, r`,
-         so this loop matches three times.  The gen_assert that used to stand
-         here asserted the opposite, and it is `assert`, so every release build
-         (-DNDEBUG) compiles it out and stores op_nums[2] past the end of a
-         two-int array -- glibc's stack protector reports that as
-         `*** stack smashing detected ***` and aborts, while a toolchain that
-         leaves this frame unguarded corrupts it silently.  Decline the memory
-         operand instead once the table is full: the caller then falls back to
-         change_reg, exactly as it does whenever target_insn_ok_p below says no.
-         Nothing is lost in the case that motivated this -- an all-memory
-         three-operand dmul is not encodable on x86-64 or aarch64, so
-         target_insn_ok_p rejects it and this returns FALSE either way. */
-      if (n >= MAX_INSN_RELOAD_MEM_OPS) {
+      if (n >= MAX_INSN_RELOAD_MEM_OPS) { /* can not record the undo -- give up */
         for (int j = 0; j < n; j++) insn->ops[op_nums[j]] = saved_op;
         return FALSE;
       }
