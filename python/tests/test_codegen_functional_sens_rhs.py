@@ -213,13 +213,14 @@ end groups
 # observable was not — #150 admitted the second by rooting on its residual and
 # jumping the saltation term there, and #381 the third, whose equality bounds its
 # own true-set with the surface `I − 3 = 0` that `I > 3` names. The fourth is
-# what none of them can bracket: quadratic in the clock, so there is no stop time
-# to solve for, and over no live state, so there is no residual to root on.
+# what none of them can bracket: two clock terms, so it is not the single power
+# issue #418 solves, not affine for issue #48's stop time, and over no live state,
+# so there is no residual for issue #150 to root on.
 SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(time() > 3, beta, 0)*I\n")
 STATE_SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(I > 3, beta, 0)*I\n")
 EQ_SWITCHED = SIR.replace("    1 betaI() beta*I\n", "    1 betaI() if(I == 3, beta, 0)*I\n")
 UNBRACKETED = SIR.replace(
-    "    1 betaI() beta*I\n", "    1 betaI() if(time()*time() > 3, beta, 0)*I\n"
+    "    1 betaI() beta*I\n", "    1 betaI() if((time()-5)*(time()-5) > 3, beta, 0)*I\n"
 )
 
 # Michaelis–Menten written as an SBML kinetic law: loaded as a *Functional*
@@ -275,10 +276,10 @@ class TestTheGate:
         assert has_sens is True
 
     def test_a_crossing_neither_machinery_brackets_still_declines(self, tmp_path):
-        """What is left after #150 and #381. ``time()*time() > 3`` is quadratic
-        in the clock, so issue #48's affine solver cannot produce the stop time
-        its jump is applied at, and it reads no live state, so issue #150 has no
-        residual to root on."""
+        """What is left after #150, #381 and #418. ``(time()-5)*(time()-5) > 3``
+        has two clock terms, so it is not the single power issue #418 solves, not
+        affine for issue #48's stop time, and reads no live state, so issue #150
+        has no residual to root on."""
         _src, has_sens = cg.generate_combined_from_model(_model(tmp_path, UNBRACKETED))
         assert has_sens is False
 
