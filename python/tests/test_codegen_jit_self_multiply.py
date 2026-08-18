@@ -92,6 +92,10 @@ BODIES = {
     # Refused by the #68 gate (a clock threshold quadratic in t), so it emits no
     # sens RHS at all — and smashed anyway. Kept because it is the shape that
     # first surfaced this, and because it exercises the square inside a ternary.
+    # Since issue #414 a *sensitivity* run over it is refused up front (an
+    # uncompensated moving crossing), so its self-multiply-under-JIT coverage runs
+    # through the plain-ODE leg below instead; the sensitivity leg asserts the
+    # refusal (test_the_square_in_condition_sensitivity_run_is_refused).
     "square-in-condition": "if(time()*time()>=thresh,beta,0)*I",
     # Linear in t: no self-multiply, never affected. The negative control.
     "linear": "if(time()>=6.3,beta,0)*I",
@@ -145,10 +149,16 @@ def test_the_control_emits_no_self_multiply(tmp_path):
 
 
 @needs_mir_jit
-@pytest.mark.parametrize("key", list(BODIES))
+@pytest.mark.parametrize("key", ["bare-square", "linear"])
 def test_a_sensitivity_run_does_not_smash_the_stack(tmp_path, key):
     """The #413 reproducer. Before the fix this did not fail — it aborted the
-    interpreter, so there is nothing subtler to assert than "it returned"."""
+    interpreter, so there is nothing subtler to assert than "it returned".
+
+    ``square-in-condition`` is deliberately absent: issue #414 refuses a
+    sensitivity run over its uncompensated moving crossing before the solve, so
+    it can no longer reach the JIT here. Its identical self-multiply-under-JIT is
+    covered by the plain-ODE leg below and its refusal by
+    ``test_the_square_in_condition_sensitivity_run_is_refused``."""
     model = _model(tmp_path, BODIES[key], key)
     params = ["beta", "gamma"]
     sim = bngsim.Simulator(model, method="ode", sensitivity_params=params)
@@ -157,6 +167,21 @@ def test_a_sensitivity_run_does_not_smash_the_stack(tmp_path, key):
     sens = np.asarray(run.sensitivities)
     assert sens.shape == (61, model._core.n_species, len(params))
     assert np.isfinite(sens).all()
+
+
+def test_the_square_in_condition_sensitivity_run_is_refused(tmp_path):
+    """Issue #414. ``if(time()*time()>=thresh, ...)`` is a clock threshold #48's
+    affine solver cannot invert for t* and #150 cannot root on (it reads no live
+    state), so its crossing moves uncompensated and the difference quotient the
+    declined analytic RHS falls back to is wrong at it. bngsim refuses the
+    sensitivity run rather than return that gradient. Backend-independent (the
+    refusal is raised before any solve), so unlike the reproducers above this
+    needs no MIR JIT — which is also why the self-multiply this shape carries is
+    exercised under JIT through the plain-ODE leg instead."""
+    model = _model(tmp_path, BODIES["square-in-condition"], "square-in-condition")
+    sim = bngsim.Simulator(model, method="ode", sensitivity_params=["beta", "gamma"])
+    with pytest.raises(bngsim.SensitivityUnsupportedError, match="crossing time moves"):
+        sim.run(t_span=(0.0, 12.0), n_points=61, rtol=1e-11, atol=1e-11)
 
 
 @needs_mir_jit
